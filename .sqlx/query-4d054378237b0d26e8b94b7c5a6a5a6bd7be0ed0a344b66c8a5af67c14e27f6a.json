@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO raw_blocks (id, data) VALUES (?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "4d054378237b0d26e8b94b7c5a6a5a6bd7be0ed0a344b66c8a5af67c14e27f6a"
+}

@@ -1,0 +1,38 @@
+CREATE TABLE blocks (
+    id INTEGER PRIMARY KEY,
+    block_id TEXT NOT NULL UNIQUE,
+    status INTEGER NOT NULL,
+    seq_no INTEGER NOT NULL,
+    parent TEXT NOT NULL,
+    aggregated_signature BLOB,
+    signature_occurrences BLOB,
+    share_state_resource_address TEXT,
+    global_id INTEGER,
+    version INTEGER,
+    after_merge INTEGER,
+    before_split INTEGER,
+    after_split INTEGER,
+    want_split INTEGER,
+    want_merge INTEGER,
+    key_block INTEGER,
+    vert_seqno_incr INTEGER,
+    flags INTEGER,
+    vert_seq_no INTEGER,
+    shard INTEGER,
+    workchain_id INTEGER,
+    gen_utime INTEGER,
+    gen_utime_ms_part INTEGER,
+    start_lt TEXT,
+    end_lt TEXT,
+    gen_validator_list_hash_short INTEGER,
+    gen_catchain_seqno INTEGER,
+    min_ref_mc_seqno INTEGER,
+    prev_key_block_seqno INTEGER,
+    gen_software_version INTEGER,
+    gen_software_capabilities TEXT,
+    ext_messages BLOB,
+    data BLOB
+);
+CREATE INDEX index_blocks_block_id ON blocks (block_id);
+CREATE INDEX index_blocks_seq_no ON blocks (seq_no);
+CREATE INDEX index_blocks_parent ON blocks (parent);

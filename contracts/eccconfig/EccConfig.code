@@ -1,0 +1,607 @@
+.fragment gc_1b71d85f_internal, {
+	.loc modifiers/replayprotection.sol, 64
+	PUSHINT 0
+	.loc modifiers/replayprotection.sol, 65
+	GETGLOB 10
+	DUP
+	PUSHINT 32
+	DICTUMIN
+	PUSHCONT {
+		PUXC S0, S1
+		PLDDICT
+	}
+	PUSHCONT {
+		NULL
+		BLKPUSH 2, 0
+	}
+	IFELSE
+	PUSHCONT {
+		PUSH S2
+		ISNULL
+		NOT
+	}
+	PUSHCONT {
+		.loc modifiers/replayprotection.sol, 66
+		PUSH S4
+		.loc modifiers/replayprotection.sol, 67
+		GTINT 19
+		IFRETALT
+		.loc modifiers/replayprotection.sol, 70
+		PUSH S4
+		INC
+		POP S5
+		.loc modifiers/replayprotection.sol, 71
+		OVER
+		NOW
+		LEQ
+		PUSHCONT {
+			.loc modifiers/replayprotection.sol, 72
+			OVER
+			GETGLOB 10
+			PUSHINT 32
+			DICTUDEL
+			DROP
+			SETGLOB 10
+			.loc modifiers/replayprotection.sol, 0
+		}
+		PUSHCONT {
+			.loc modifiers/replayprotection.sol, 74
+			RETALT
+			.loc modifiers/replayprotection.sol, 0
+		}
+		IFELSE
+		.loc modifiers/replayprotection.sol, 0
+		XC2PU S0, S2, S3
+		PUSHINT 32
+		DICTUGETNEXT
+		PUSHCONT {
+			PUXC S0, S1
+			PLDDICT
+		}
+		PUSHCONT {
+			NULL
+			BLKPUSH 2, 0
+		}
+		IFELSE
+		BLKDROP2 2, 3
+	}
+	WHILEBRK
+	BLKDROP 5
+	.loc modifiers/replayprotection.sol, 0
+}
+
+.fragment c4_to_c7, {
+	PUSHROOT
+	CTOS
+	LDU 256 ; pubkey c4
+	LDU 1 ; ctor flag
+	LDDICT
+	LDU 256
+	LDU 32
+	ROTREV
+	PAIR
+	SWAP
+	LDU 256
+	LDDICT
+	LDREF
+	ENDS
+	CTOS
+	LDMSGADDR
+	ENDS
+	SETGLOB 14
+	SETGLOB 13
+	SETGLOB 12
+	SETGLOB 11
+	SETGLOB 10
+	SETGLOB 6
+	SETGLOB 2
+}
+
+.fragment c7_to_c4, {
+	GETGLOB 13
+	GETGLOB 12
+	GETGLOB 11
+	GETGLOB 10
+	GETGLOB 2
+	NEWC
+	STU 256
+	STONE
+	STDICT
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 256
+	STU 32
+	STU 256
+	STDICT
+	GETGLOB 14
+	NEWC
+	STSLICE
+	STBREFR
+	ENDC
+	POPROOT
+}
+
+.fragment constructor, {
+	DROP
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 6
+	THROWIF 51
+	ENDS
+	.loc EccConfig.sol, 22
+	PUSHREFSLICE {
+		.blob x8000000000000000000000000000000000000000000000000000000000000000001_
+	}
+	SETGLOB 14
+	.loc EccConfig.sol, 23
+	PUSHINT 100000000000000
+	.blob xC728
+	.loc EccConfig.sol, 0
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment getDetails_fbbf93a0_internal, {
+	.loc EccConfig.sol, 47
+	GETGLOB 13
+	.loc EccConfig.sol, 0
+}
+
+.fragment getDetails, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc EccConfig.sol, 46
+	ENDS
+	.loc EccConfig.sol, 0
+	CALLREF {
+		.inline getDetails_fbbf93a0_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 2695993219
+		STUR 130
+		STDICT
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment getMoney_98e1b410_internal, {
+	.loc EccConfig.sol, 27
+	GETPARAM 7
+	FIRST
+	PUSHINT 100000000000000
+	GREATER
+	IFRET
+	.loc EccConfig.sol, 28
+	PUSHINT 100000000000000
+	.blob xC728
+	.loc EccConfig.sol, 0
+}
+
+.fragment setNewToken_da5d7570_internal, {
+	.loc modifiers/modifiers.sol, 49
+	GETGLOB 9
+	GETGLOB 14
+	SDEQ
+	THROWIFNOT 207
+	.loc EccConfig.sol, 32
+	CALLREF {
+		.inline getMoney_98e1b410_internal
+	}
+	.loc EccConfig.sol, 33
+	OVER
+	FIRST
+	GETGLOB 13
+	PUSHINT 32
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	FALSE
+	EQUAL
+	THROWIFNOT 224
+	.loc EccConfig.sol, 35
+	PUSHINT 0
+	PUSHREF {
+	}
+	PUSHINT 0
+	DUP
+	PUSHREF {
+	}
+	TUPLE 5
+	PUSHINT 0
+	PAIR
+	PUSH S2
+	SETINDEX 0
+	.loc EccConfig.sol, 36
+	NOW
+	SETINDEX 1
+	.loc EccConfig.sol, 37
+	GETGLOB 13
+	PUSH S3
+	FIRST
+	XCHG S2
+	CALLREF {
+		UNPAIR
+		NEWC
+		ROT
+		UNTUPLE 5
+		REVERSE 6, 0
+		STU 32
+		STREF
+		STU 64
+		STU 64
+		STREF
+		STU 32
+	}
+	ROTREV
+	PUSHINT 32
+	DICTUSETB
+	SETGLOB 13
+	.loc EccConfig.sol, 38
+	OVER
+	INDEX 3
+	PUSH S2
+	FIRST
+	.blob xC726
+	.loc EccConfig.sol, 39
+	DUP
+	ISNULL
+	PUSHCONT {
+		.loc EccConfig.sol, 41
+		OVER
+		INDEX 3
+		NULL
+		PUSH S3
+		FIRST
+		XCHG S2
+		NEWC
+		SWAP
+		STVARUINT32
+		ROTREV
+		PUSHINT 32
+		DICTUSETB
+		.loc EccConfig.sol, 42
+		PUSH2 S1, S1
+		ISNULL
+		THROWIF 63
+		NEWC
+		STSLICECONST x62_
+		STSLICE
+		STSLICECONST x405f5e100
+		STDICT
+		PUSHINT 107
+		STZEROES
+		ENDC
+		PUSHINT 1
+		SENDRAWMSG
+		.loc EccConfig.sol, 0
+	}
+	IFNOT
+	.loc EccConfig.sol, 0
+	DROP2
+}
+
+.fragment setNewToken, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc EccConfig.sol, 31
+	OVER
+	PUSHCONT {
+		LDU 32
+		LDREF
+		LDREF
+		ENDS
+		CTOS
+	}
+	PUSHCONT {
+		LDU 32
+		LDREF
+	}
+	IFELSE
+	LDU 64
+	LDU 64
+	LDREF
+	ROLLREV 5
+	TUPLE 5
+	SWAP
+	LDI 1
+	SWAP
+	NULLROTRIFNOT
+	PUSHCONT {
+		LDMSGADDR
+	}
+	IF
+	ENDS
+	.loc EccConfig.sol, 0
+	CALLREF {
+		.inline setNewToken_da5d7570_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment public_function_selector, {
+	DUP
+	PUSHINT 127907267
+	EQUAL
+	IFJMPREF {
+		.inline setNewToken
+	}
+	DUP
+	PUSHINT 548509571
+	EQUAL
+	IFJMPREF {
+		.inline getDetails
+	}
+	DUP
+	PUSHINT 1756716863
+	EQUAL
+	IFJMPREF {
+		.inline constructor
+	}
+}
+
+.fragment main_external, {
+	PUSHREFSLICE {
+		.blob x8000000000000000000000000000000000000000000000000000000000000000001_
+	}
+	SETGLOB 9
+	OVER
+	CALLREF {
+		.inline c4_to_c7
+	}
+	LDU 1 ; haveSign msgSlice
+	SWAP
+	PUSHCONT {
+		PUSHPOW2 9
+		LDSLICEX
+		DUP
+		MYADDR
+		NEWC
+		STSLICE
+		STSLICE
+		ENDC
+		HASHCU
+		SWAP
+		LDU 1 ; signatureSlice hashMsgSlice hasPubkey msgSlice
+		SWAP
+		PUSHCONT {
+			LDU 256 ; signatureSlice hashMsgSlice pubkey msgSlice
+			XCHG2 S3, S3
+		}
+		PUSHCONT {
+			XCHG S2
+			GETGLOB 2
+		}
+		IFELSE
+		DUP
+		SETGLOB 5
+		CHKSIGNU
+		THROWIFNOT 40
+	}
+	PUSHCONT {
+		LDU 1 ; hasPubkey msgSlice
+		SWAP
+		THROWIF 58
+	}
+	IFELSE
+	PUSH2 S3, S0
+	.loc modifiers/replayprotection.sol, 46
+	LDU 64
+	XCPU S3, S3
+	BLKDROP2 2, 1
+	.loc modifiers/replayprotection.sol, 48
+	LDU 32
+	POP S3
+	.loc modifiers/replayprotection.sol, 49
+	DUP
+	NOW
+	GREATER
+	THROWIFNOT 250
+	.loc modifiers/replayprotection.sol, 50
+	DUP
+	NOW
+	PUSHINT 300
+	ADD
+	LESS
+	THROWIFNOT 251
+	.loc modifiers/replayprotection.sol, 53
+	OVER
+	HASHCU
+	.loc modifiers/replayprotection.sol, 54
+	OVER
+	GETGLOB 10
+	PUSHINT 32
+	DICTUGET
+	NULLSWAPIFNOT
+	PUSHCONT {
+		PLDDICT
+		SINGLE
+	}
+	IF
+	.loc modifiers/replayprotection.sol, 55
+	DUP
+	ISNULL
+	DUP
+	PUSHCONT {
+		DROP
+		DUP2
+		UNSINGLE
+		PUSHPOW2 8
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			PLDI 1
+		}
+		IF
+		NOT
+	}
+	IFNOT
+	THROWIFNOT 252
+	.loc modifiers/replayprotection.sol, 56
+	PUSH2 S1, S2
+	PAIR
+	SETGLOB 11
+	.loc modifiers/replayprotection.sol, 59
+	BLKDROP 4
+	.loc modifiers/replayprotection.sol, 0
+	LDU 32 ; funcId body
+	SWAP
+	CALLREF {
+		.inline public_function_selector
+	}
+	THROW 60
+}
+
+.fragment main_internal, {
+	PUSHROOT
+	CTOS
+	PUSHPOW2 8
+	SDSKIPFIRST
+	PLDI 1
+	SETGLOB 6
+	PUSH S2
+	CTOS
+	LDU 4 ; bounced tail
+	LDMSGADDR ; bounced src tail
+	DROP
+	SETGLOB 9
+	MODPOW2 1
+	IFRET
+	OVER
+	SEMPTY ; isEmpty
+	IFJMPREF {
+		GETGLOB 6
+		THROWIFNOT 76
+	}
+	OVER
+	LDUQ 32  ; [funcId] body' ok
+	THROWIFNOT 60
+	OVER
+	IFNOTJMPREF {
+		GETGLOB 6
+		THROWIFNOT 76
+	}
+	SWAP
+	CALLREF {
+		.inline public_function_selector
+	}
+	THROW 60
+}
+
+.fragment default_data_cell, {
+	NULL
+	PUSHINT 0
+	BLKPUSH 2, 0
+	PAIR
+	NEWC
+	PUSHINT 258
+	STZEROES
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 256
+	STU 32
+	STU 256
+	STDICT
+	NEWC
+	STSLICECONST x2_
+	STBREFR
+	ENDC
+}
+
+.fragment upd_only_time_in_c4, {
+	PUSHROOT
+	CTOS
+	LDU 256
+	LDU 64
+	NIP
+	GETGLOB 3
+	ROT
+	NEWC
+	STU 256
+	STU 64
+	STSLICE
+	ENDC
+	POPROOT
+}
+
+.fragment onTickTock, {
+}
+
+; The code below forms a value of the StateInit type.
+.blob x4_ ; split_depth = nothing
+.blob x4_ ; special = nothing
+.blob xc_ ; code = just
+.cell { ; code cell
+	PUSHREFCONT {
+		DICTPUSHCONST 32
+		DICTUGETJMPZ
+		THROW 78
+		.code-dict-cell 32, {
+		}
+		.cell { ; version
+			.blob x736f6c20302e37352e30 ; sol 0.75.0
+		}
+	}
+	POPCTR c3
+	DUP
+	IFNOTJMPREF {
+		.inline main_internal
+	}
+	DUP
+	EQINT -1
+	IFJMPREF {
+		.inline main_external
+	}
+	DUP
+	EQINT -2
+	IFJMPREF {
+		.inline onTickTock
+	}
+	THROW 11
+}
+.blob xc_ ; data = just
+.cell { 
+	.inline-computed-cell default_data_cell, 0
+}
+.blob x4_ ; library = hme_empty

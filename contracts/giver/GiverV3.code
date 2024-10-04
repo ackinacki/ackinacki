@@ -1,0 +1,828 @@
+.fragment c4_to_c7, {
+	PUSHROOT
+	CTOS
+	LDU 256 ; pubkey c4
+	LDU 1 ; ctor flag
+	LDDICT
+	ENDS
+	SETGLOB 10
+	SETGLOB 6
+	SETGLOB 2
+}
+
+.fragment c7_to_c4, {
+	GETGLOB 10
+	GETGLOB 2
+	NEWC
+	STU 256
+	STONE
+	STDICT
+	ENDC
+	POPROOT
+}
+
+.fragment constructor, {
+	DROP
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 6
+	THROWIF 51
+	ENDS
+	.loc GiverV3.sol, 0
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment getMessages_5ff6cbf3_internal, {
+	.loc GiverV3.sol, 117
+	PUSHINT 0
+	NULL
+	PAIR
+	.loc GiverV3.sol, 118
+	GETGLOB 10
+	DUP
+	PUSHPOW2 8
+	DICTUMIN
+	PUSHCONT {
+		PUXC S0, S1
+		PLDU 32
+	}
+	PUSHCONT {
+		NULL
+		BLKPUSH 2, 0
+	}
+	IFELSE
+	PUSHCONT {
+		PUSH S2
+		ISNULL
+		NOT
+	}
+	PUSHCONT {
+		.loc GiverV3.sol, 119
+		PUXC2 S4, S-1, S-1
+		PAIR
+		CALLREF {
+			UNPAIR
+			SWAP
+			NEWC
+			STU 256
+			STU 32
+		}
+		SWAP
+		UNPAIR
+		OVER
+		INC
+		ROLLREV 3
+		PUSHINT 32
+		DICTUSETB
+		PAIR
+		POP S3
+		.loc GiverV3.sol, 0
+		OVER
+		PUSHPOW2 8
+		DICTUGETNEXT
+		PUSHCONT {
+			PUXC S0, S1
+			PLDU 32
+		}
+		PUSHCONT {
+			NULL
+			BLKPUSH 2, 0
+		}
+		IFELSE
+	}
+	WHILE
+	BLKDROP 4
+	.loc GiverV3.sol, 0
+}
+
+.fragment getMessages, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc GiverV3.sol, 117
+	ENDS
+	.loc GiverV3.sol, 0
+	CALLREF {
+		.inline getMessages_5ff6cbf3_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 2536685507
+		STUR 130
+		SWAP
+		UNPAIR
+		XCHG S2
+		STU 32
+		STDICT
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment sendCurrency_9a80e5ef_internal, {
+	.loc GiverV3.sol, 56
+	PUSHINT 1
+	OVER
+	PUSHINT 32
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	PUSHCONT {
+		.loc GiverV3.sol, 57
+		PUSHINT 1
+		GETPARAM 7
+		SECOND
+		PUSHINT 32
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			LDVARUINT32
+			DROP
+		}
+		IF
+		PUSHINT 1
+		PUSH S2
+		PUSHINT 32
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			LDVARUINT32
+			DROP
+		}
+		IF
+		LESS
+		PUSHCONT {
+			.loc GiverV3.sol, 58
+			PUSHINT 1
+			OVER
+			PUSHINT 32
+			DICTUGET
+			ZEROSWAPIFNOT
+			PUSHCONT {
+				LDVARUINT32
+				DROP
+			}
+			IF
+			UFITS 64
+			PUSHINT 1
+			GETPARAM 7
+			SECOND
+			PUSHINT 32
+			DICTUGET
+			ZEROSWAPIFNOT
+			PUSHCONT {
+				LDVARUINT32
+				DROP
+			}
+			IF
+			UFITS 64
+			SUB
+			UFITS 64
+			PUSHINT 1
+			.blob xC726
+			.loc GiverV3.sol, 0
+		}
+		IF
+		.loc GiverV3.sol, 0
+	}
+	IF
+	.loc GiverV3.sol, 61
+	PUSHINT 2
+	OVER
+	PUSHINT 32
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	PUSHCONT {
+		.loc GiverV3.sol, 62
+		PUSHINT 2
+		GETPARAM 7
+		SECOND
+		PUSHINT 32
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			LDVARUINT32
+			DROP
+		}
+		IF
+		PUSHINT 2
+		PUSH S2
+		PUSHINT 32
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			LDVARUINT32
+			DROP
+		}
+		IF
+		LESS
+		PUSHCONT {
+			.loc GiverV3.sol, 63
+			PUSHINT 2
+			OVER
+			PUSHINT 32
+			DICTUGET
+			ZEROSWAPIFNOT
+			PUSHCONT {
+				LDVARUINT32
+				DROP
+			}
+			IF
+			UFITS 64
+			PUSHINT 2
+			GETPARAM 7
+			SECOND
+			PUSHINT 32
+			DICTUGET
+			ZEROSWAPIFNOT
+			PUSHCONT {
+				LDVARUINT32
+				DROP
+			}
+			IF
+			UFITS 64
+			SUB
+			UFITS 64
+			PUSHINT 2
+			.blob xC726
+			.loc GiverV3.sol, 0
+		}
+		IF
+		.loc GiverV3.sol, 0
+	}
+	IF
+	.loc GiverV3.sol, 66
+	GETPARAM 7
+	FIRST
+	PUSH S2
+	PUSHINT 1000000000000
+	ADD
+	UFITS 120
+	LEQ
+	PUSHCONT {
+		.loc GiverV3.sol, 67
+		OVER
+		PUSHINT 1000000000000
+		ADD
+		UFITS 120
+		GETPARAM 7
+		FIRST
+		SUB
+		UFITS 64
+		.blob xC728
+		.loc GiverV3.sol, 0
+	}
+	IF
+	.loc GiverV3.sol, 69
+	PUSH3 S0, S1, S2
+	NEWC
+	STSLICECONST x42_
+	STSLICE
+	SWAP
+	STGRAMS
+	STDICT
+	PUSHINT 107
+	STZEROES
+	ENDC
+	PUSHINT 3
+	SENDRAWMSG
+	.loc GiverV3.sol, 98
+	PUSHINT 0
+	.loc GiverV3.sol, 99
+	GETGLOB 10
+	DUP
+	PUSHPOW2 8
+	DICTUMIN
+	PUSHCONT {
+		PUXC S0, S1
+		PLDU 32
+	}
+	PUSHCONT {
+		NULL
+		BLKPUSH 2, 0
+	}
+	IFELSE
+	PUSHCONT {
+		PUSH S2
+		ISNULL
+		NOT
+	}
+	PUSHCONT {
+		.loc GiverV3.sol, 100
+		PUSH S4
+		GTINT 29
+		IFRETALT
+		.loc GiverV3.sol, 103
+		PUSH S4
+		INC
+		POP S5
+		.loc GiverV3.sol, 104
+		NOW
+		LEQ
+		PUSHCONT {
+			.loc GiverV3.sol, 105
+			DUP
+			GETGLOB 10
+			PUSHPOW2 8
+			DICTUDEL
+			DROP
+			SETGLOB 10
+			.loc GiverV3.sol, 0
+		}
+		IF
+		.loc GiverV3.sol, 0
+		DROP
+		OVER
+		PUSHPOW2 8
+		DICTUGETNEXT
+		PUSHCONT {
+			PUXC S0, S1
+			PLDU 32
+		}
+		PUSHCONT {
+			NULL
+			BLKPUSH 2, 0
+		}
+		IFELSE
+	}
+	WHILEBRK
+	BLKDROP 8
+	.loc GiverV3.sol, 0
+}
+
+.fragment sendCurrency, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc GiverV3.sol, 55
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDMSGADDR
+	LDVARUINT16
+	LDDICT
+	ENDS
+	.loc GiverV3.sol, 0
+	CALLREF {
+		.inline sendCurrency_9a80e5ef_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment sendTransaction_8d511ba2_internal, {
+	.loc GiverV3.sol, 51
+	PUSH3 S1, S2, S0
+	NEWC
+	STSLICECONST x6_
+	STI 1
+	STSLICECONST x1_
+	STSLICE
+	SWAP
+	STGRAMS
+	PUSHINT 108
+	STZEROES
+	ENDC
+	PUSHINT 3
+	SENDRAWMSG
+	.loc GiverV3.sol, 98
+	PUSHINT 0
+	.loc GiverV3.sol, 99
+	GETGLOB 10
+	DUP
+	PUSHPOW2 8
+	DICTUMIN
+	PUSHCONT {
+		PUXC S0, S1
+		PLDU 32
+	}
+	PUSHCONT {
+		NULL
+		BLKPUSH 2, 0
+	}
+	IFELSE
+	PUSHCONT {
+		PUSH S2
+		ISNULL
+		NOT
+	}
+	PUSHCONT {
+		.loc GiverV3.sol, 100
+		PUSH S4
+		GTINT 29
+		IFRETALT
+		.loc GiverV3.sol, 103
+		PUSH S4
+		INC
+		POP S5
+		.loc GiverV3.sol, 104
+		NOW
+		LEQ
+		PUSHCONT {
+			.loc GiverV3.sol, 105
+			DUP
+			GETGLOB 10
+			PUSHPOW2 8
+			DICTUDEL
+			DROP
+			SETGLOB 10
+			.loc GiverV3.sol, 0
+		}
+		IF
+		.loc GiverV3.sol, 0
+		DROP
+		OVER
+		PUSHPOW2 8
+		DICTUGETNEXT
+		PUSHCONT {
+			PUXC S0, S1
+			PLDU 32
+		}
+		PUSHCONT {
+			NULL
+			BLKPUSH 2, 0
+		}
+		IFELSE
+	}
+	WHILEBRK
+	BLKDROP 8
+	.loc GiverV3.sol, 0
+}
+
+.fragment sendTransaction, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc GiverV3.sol, 50
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDMSGADDR
+	LDVARUINT16
+	LDI 1
+	ENDS
+	.loc GiverV3.sol, 0
+	CALLREF {
+		.inline sendTransaction_8d511ba2_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment upgrade_7916ae0d_internal, {
+	.loc GiverV3.sol, 10
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 2
+	EQUAL
+	THROWIFNOT 101
+	.loc GiverV3.sol, 11
+	ACCEPT
+	.loc GiverV3.sol, 12
+	CALLREF {
+		.inline c7_to_c4
+	}
+	COMMIT
+	.loc GiverV3.sol, 13
+	DUP
+	SETCODE
+	.loc GiverV3.sol, 14
+	CTOS
+	DUP
+	PUSHSLICE x8adb35
+	SDEQ
+	PUSHCONT {
+		PLDREFIDX 1
+		CTOS
+	}
+	IF
+	LDREFRTOS
+	NIP
+	BLESS
+	POP C3
+	.loc GiverV3.sol, 15
+	PUSHINT 749264623
+	PUSH C3
+	CALLX
+	.loc GiverV3.sol, 0
+}
+
+.fragment upgrade, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc GiverV3.sol, 9
+	LDREF
+	ENDS
+	.loc GiverV3.sol, 0
+	CALLREF {
+		.inline upgrade_7916ae0d_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment public_function_selector, {
+	DUP
+	PUSHINT 389201859
+	LEQ
+	IFJMPREF {
+		DUP
+		PUSHINT 388172858
+		EQUAL
+		IFJMPREF {
+			.inline upgrade
+		}
+		DUP
+		PUSHINT 389201859
+		EQUAL
+		IFJMPREF {
+			.inline getMessages
+		}
+	}
+	DUP
+	PUSHINT 1224209699
+	EQUAL
+	IFJMPREF {
+		.inline sendTransaction
+	}
+	DUP
+	PUSHINT 1432757610
+	EQUAL
+	IFJMPREF {
+		.inline sendCurrency
+	}
+	DUP
+	PUSHINT 1756716863
+	EQUAL
+	IFJMPREF {
+		.inline constructor
+	}
+}
+
+.fragment main_external, {
+	OVER
+	CALLREF {
+		.inline c4_to_c7
+	}
+	LDU 1 ; haveSign msgSlice
+	SWAP
+	PUSHCONT {
+		PUSHPOW2 9
+		LDSLICEX
+		DUP
+		MYADDR
+		NEWC
+		STSLICE
+		STSLICE
+		ENDC
+		HASHCU
+		ROT
+		GETGLOB 2
+		DUP
+		SETGLOB 5
+		CHKSIGNU
+		THROWIFNOT 40
+	}
+	IF
+	PUSH S3
+	.loc GiverV3.sol, 83
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 2
+	EQUAL
+	THROWIFNOT 101
+	.loc GiverV3.sol, 84
+	OVER
+	HASHSU
+	.loc GiverV3.sol, 86
+	PUSH S2
+	LDU 64
+	LDU 32
+	PUXC2 S1, S5, S2
+	DROP2
+	.loc GiverV3.sol, 87
+	NOW
+	GREATER
+	THROWIFNOT 57
+	.loc GiverV3.sol, 88
+	OVER
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	THROWIF 102
+	.loc GiverV3.sol, 90
+	ACCEPT
+	.loc GiverV3.sol, 91
+	OVER
+	GETGLOB 10
+	PUSH S2
+	NEWC
+	STU 32
+	ROTREV
+	PUSHPOW2 8
+	DICTUSETB
+	SETGLOB 10
+	.loc GiverV3.sol, 93
+	BLKDROP 3
+	.loc GiverV3.sol, 0
+	LDU 32 ; funcId body
+	SWAP
+	CALLREF {
+		.inline public_function_selector
+	}
+	THROW 60
+}
+
+.fragment main_internal, {
+	PUSHROOT
+	CTOS
+	PUSHPOW2 8
+	SDSKIPFIRST
+	PLDI 1
+	SETGLOB 6
+	PUSH S2
+	CTOS
+	PLDU 4
+	MODPOW2 1
+	IFRET
+	OVER
+	SEMPTY ; isEmpty
+	IFJMPREF {
+		GETGLOB 6
+		THROWIFNOT 76
+	}
+	OVER
+	LDUQ 32  ; [funcId] body' ok
+	THROWIFNOT 60
+	OVER
+	IFNOTJMPREF {
+		GETGLOB 6
+		THROWIFNOT 76
+	}
+	SWAP
+	CALLREF {
+		.inline public_function_selector
+	}
+	THROW 60
+}
+
+.fragment onCodeUpgrade_fb00cc5e_internal, {
+	.loc GiverV3.sol, 0
+	CALLREF {
+		.inline c7_to_c4
+	}
+	COMMIT
+	THROW 0
+}
+
+.fragment receive, {
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc GiverV3.sol, 0
+	CALLREF {
+		.inline c7_to_c4
+	}
+}
+
+.fragment default_data_cell, {
+	PUSHREF {
+		.blob x00000000000000000000000000000000000000000000000000000000000000002_
+	}
+}
+
+.fragment upd_only_time_in_c4, {
+	PUSHROOT
+	CTOS
+	LDU 256
+	LDU 64
+	NIP
+	GETGLOB 3
+	ROT
+	NEWC
+	STU 256
+	STU 64
+	STSLICE
+	ENDC
+	POPROOT
+}
+
+.fragment onTickTock, {
+}
+
+; The code below forms a value of the StateInit type.
+.blob x4_ ; split_depth = nothing
+.blob x4_ ; special = nothing
+.blob xc_ ; code = just
+.cell { ; code cell
+	PUSHREFCONT {
+		DICTPUSHCONST 32
+		DICTUGETJMPZ
+		THROW 78
+		.code-dict-cell 32, {
+			x2ca8deef = onCodeUpgrade_fb00cc5e_internal,
+		}
+		.cell { ; version
+			.blob x736f6c20302e37352e30 ; sol 0.75.0
+		}
+	}
+	POPCTR c3
+	DUP
+	IFNOTJMPREF {
+		.inline main_internal
+	}
+	DUP
+	EQINT -1
+	IFJMPREF {
+		.inline main_external
+	}
+	DUP
+	EQINT -2
+	IFJMPREF {
+		.inline onTickTock
+	}
+	THROW 11
+}
+.blob xc_ ; data = just
+.cell { 
+	.inline-computed-cell default_data_cell, 0
+}
+.blob x4_ ; library = hme_empty

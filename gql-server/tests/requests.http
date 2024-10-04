@@ -1,0 +1,27 @@
+@port = 80
+@host = http://localhost
+@path = graphql
+
+###
+
+# should get error
+POST {{host}}:{{port}}/{{path}} HTTP/1.1
+Content-Type: application/json
+
+{"query":"{info {version}}"}
+
+###
+
+POST {{host}}:{{port}}/{{path}} HTTP/1.1
+Content-Type: application/json
+
+{"query":"\nquery{\nblockchain{\ntransaction(hash:\"9a90095face4992037671db8618a7711afb614917f8d0393fffef1faf4e47f3a\"){\n                            \n    id\n    now\n    tr_type\n    tr_type_name\n    account_addr\nbalance_delta(format: DEC)\n\n}\n}\n}\n"}
+
+###
+
+POST {{host}}:{{port}}/{{path}} HTTP/1.1
+Content-Type: application/json
+
+{
+	"query": "query accounts {\n  accounts(filter: {\n# \t\t\t\"id\": {\n# \t\t\t\t\"ge\": \"0:9a90095face4992037671db8618a7711afb614917f8d0393fffef1faf4e47f3a\",\n# \t\t\t\t\"le\": \"0:9a90095face4992037671db8618a7711afb614917f8d0393fffef1faf4e47f3az\"\n# \t\t\t}\n# \t\t}) {\n    id\n    # balance\n    # last_paid\n  }\n}\n# {\n# \t\"variables\": {\n# \t\t\"p1\": {\n# \t\t\t\"id\": {\n# \t\t\t\t\"ge\": \"0:9a90095face4992037671db8618a7711afb614917f8d0393fffef1faf4e47f3a\",\n# \t\t\t\t\"le\": \"0:9a90095face4992037671db8618a7711afb614917f8d0393fffef1faf4e47f3az\"\n# \t\t\t}\n# \t\t}\n# \t}\n# }"
+}

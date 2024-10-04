@@ -1,0 +1,34 @@
+[package]
+name = "block-manager"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "block-manager"
+
+[dependencies]
+anyhow.workspace = true
+bincode.workspace = true
+clap.workspace = true
+futures.workspace = true
+gosh_bls_lib.workspace = true
+hex.workspace = true
+lazy_static.workspace = true
+network.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tvm_block.workspace = true
+url.workspace = true
+
+signal-hook = "0.3.17"
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "sqlite"] }
+wtransport = { version = "0.1.13", features = ["dangerous-configuration"] }
+
+dotenvy = "0"
+num_cpus = "*"
+rand = "*"

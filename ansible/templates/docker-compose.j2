@@ -1,0 +1,91 @@
+services:
+  nginx{{ NODE_ID }}:
+    image: {{ REVPROXY_IMAGE }}
+    restart: unless-stopped
+    networks:
+      - ackinacki-net
+    environment:
+      - NODE_API_ADDRESS=node{{ NODE_ID }}:8600
+      - MESSAGE_ROUTER_ADDRESS=node{{ NODE_ID }}:8700
+      - Q_SERVER_ADDRESS=q_server{{ NODE_ID }}:3000
+    volumes:
+      - {{ BK_DATA_DIR }}/share:/var/www/storage/node
+    ports:
+      - target: 80
+        host_ip: {{ HOST_PRIVATE_IP }}
+        published: 8080
+        protocol: tcp
+
+  q_server{{ NODE_ID }}:
+    image: {{ GQL_IMAGE }}
+    entrypoint: []
+    restart: unless-stopped
+    environment: &q_server-base-env
+      NODE_URL: http://nginx{{ NODE_ID }}/v1/send_ext_messages
+    command:
+      - bash
+      - -c
+      - >
+        gql-server -d ./data/node-archive.db -l 0.0.0.0:3000
+    expose:
+      - "3000"
+    ports:
+      - {{ HOST_PRIVATE_IP }}:3000:3000
+    volumes:
+      - {{ BK_DATA_DIR }}/workdir:/workdir/data
+    networks:
+      - ackinacki-net
+    depends_on:
+      - node{{ NODE_ID }}
+
+  node{{ NODE_ID }}:
+    image: {{ NODE_IMAGE }}
+    restart: unless-stopped
+    environment:
+      RUST_LOG: debug
+      COLLATOR_NODE_ID: 0
+      EXTERNAL_STATE_SHARE_LOCAL_BASE_DIR: /share
+      NODE_VERBOSE: 1
+      BIND: 0.0.0.0:8500
+      API_ADDR: 0.0.0.0:8600
+      MESSAGE_ROUTER: 0.0.0.0:8700
+      GOSSIP_SEEDS: {{ GOSSIP_SEEDS | join(',') }}
+      MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES: 20s
+      NODE_JOINING_TIMEOUT: 10s
+      NODE_ID: {{ NODE_ID }}
+      NODE_ADVERTISE_ADDR: {{ HOST_PUBLIC_IP }}:{{ BIND_PORT }}
+      GOSSIP_ADVERTISE_ADDR: {{ HOST_PUBLIC_IP }}:{{ BIND_GOSSIP_PORT }}
+      GOSSIP_LISTEN_ADDR: 0.0.0.0:10000
+    entrypoint: []
+    init: true
+    command:
+      - bash
+      - -c
+      - >
+        node-config-helper
+        -c acki-nacki.conf.yaml -d
+        --blockchain-config=/bk-configs/blockchain.conf.json
+        --keys-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
+        --block-keeper-seed-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
+        --zerostate-path=/bk-configs/zerostate
+        --parallelization-level 20
+        --static-storages={{ NODE_STORAGE_LIST | join(',') }} &> /dev/null
+        && migration-tool -p ./data -n -a
+        && node -c acki-nacki.conf.yaml >> /logsdir/node.log 2>&1
+    ports:
+      - {{ BIND_GOSSIP_PORT }}:10000/udp
+      - {{ BIND_GOSSIP_PORT }}:10000/tcp
+      - {{ BIND_PORT }}:8500/udp
+      - {{ BIND_API_PORT }}:8600
+      - {{ BIND_MESSAGE_ROUTER_PORT }}:8700
+    volumes:
+      - {{ BK_DATA_DIR }}/share:/share
+      - {{ BK_DATA_DIR }}/workdir:/workdir/data
+      - {{ BK_DIR }}/bk-configs:/bk-configs
+      - {{ BK_LOGS_DIR }}:/logsdir
+    networks:
+      - ackinacki-net
+
+networks:
+  ackinacki-net:
+    name: ackinacki-net

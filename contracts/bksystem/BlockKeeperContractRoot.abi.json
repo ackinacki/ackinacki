@@ -1,0 +1,248 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"giver","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setConfig",
+			"inputs": [
+				{"name":"epochDuration","type":"uint32"},
+				{"name":"epochCliff","type":"uint64"},
+				{"name":"waitStep","type":"uint64"},
+				{"name":"minBlockKeepers","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployAckiNackiBlockKeeperNodeWallet",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "increaseActiveBlockKeeperNumber",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"seqNoStart","type":"uint64"},
+				{"name":"stake","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "decreaseActiveBlockKeeperNumber",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"seqNoStart","type":"uint64"},
+				{"name":"stake","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "receiveBlockKeeperRequestWithStakeFromWallet",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"bls_pubkey","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "receiveBlockKeeperRequestWithStakeFromWalletContinue",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"bls_pubkey","type":"bytes"},
+				{"name":"seqNoStartOld","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setNewCode",
+			"inputs": [
+				{"name":"id","type":"uint8"},
+				{"name":"code","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "canDeleteEpoch",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"seqNoStart","type":"uint64"},
+				{"name":"stake","type":"uint256"},
+				{"name":"epochDuration","type":"uint32"},
+				{"name":"reputationTime","type":"uint32"},
+				{"name":"totalStakeOld","type":"uint256"},
+				{"name":"numberOfActiveBlockKeepers","type":"uint128"},
+				{"name":"time","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "sendRequestToSlashBlockKeeper",
+			"inputs": [
+				{"name":"slashpubkey","type":"uint256"},
+				{"name":"slashSeqNoStart","type":"uint64"},
+				{"name":"seqNoStart","type":"uint64"},
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"},
+				{"name":"cell","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getBlockKeeperCoolerAddress",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"seqNoStart","type":"uint64"}
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
+			"name": "getAckiNackiBlockKeeperNodeWalletAddress",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
+			"name": "getBlockKeeperEpochAddress",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"seqNoStart","type":"uint64"}
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
+			"name": "getBlockKeeperPreEpochAddress",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"seqNoStart","type":"uint64"}
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"minStake","type":"uint128"},
+				{"name":"numberOfActiveBlockKeepers","type":"uint128"},
+				{"name":"numWallets","type":"uint256"}
+			]
+		},
+		{
+			"name": "getEpochCodeHash",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"epochCodeHash","type":"uint256"}
+			]
+		},
+		{
+			"name": "getPreEpochCodeHash",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"preEpochCodeHash","type":"uint256"}
+			]
+		},
+		{
+			"name": "getSlashCodeHash",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"slashCodeHash","type":"uint256"}
+			]
+		},
+		{
+			"name": "getRewardOut",
+			"inputs": [
+				{"name":"numberOfActiveBlockKeepers","type":"uint128"},
+				{"name":"stake","type":"uint128"},
+				{"name":"totalStake","type":"uint128"},
+				{"name":"reputationTime","type":"uint128"},
+				{"name":"timenetwork","type":"uint128"},
+				{"name":"epochDuration","type":"uint128"}
+			],
+			"outputs": [
+				{"name":"reward","type":"uint128"}
+			]
+		},
+		{
+			"name": "getRewardNow",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"reward","type":"uint128"}
+			]
+		},
+		{
+			"name": "getMinStakeNow",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"minstake","type":"uint128"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
+		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
+		{"init":false,"name":"__value","type":"uint256"},
+		{"init":false,"name":"_code","type":"map(uint8,cell)"},
+		{"init":false,"name":"_epochDuration","type":"uint32"},
+		{"init":false,"name":"_epochCliff","type":"uint64"},
+		{"init":false,"name":"_waitStep","type":"uint64"},
+		{"init":false,"name":"_minBlockKeepers","type":"uint128"},
+		{"init":false,"name":"_giver","type":"address"},
+		{"init":false,"name":"_num_wallets","type":"uint256"},
+		{"init":false,"name":"_totalStake","type":"uint256"},
+		{"init":false,"name":"_networkStart","type":"uint32"},
+		{"init":false,"name":"_numberOfActiveBlockKeepers","type":"uint128"}
+	]
+}

@@ -1,0 +1,272 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT * FROM blocks ORDER BY gen_utime DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "rowid",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "status",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "seq_no",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "parent",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "aggregated_signature",
+        "ordinal": 5,
+        "type_info": "Blob"
+      },
+      {
+        "name": "signature_occurrences",
+        "ordinal": 6,
+        "type_info": "Blob"
+      },
+      {
+        "name": "share_state_resource_address",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "global_id",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "version",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "after_merge",
+        "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "before_split",
+        "ordinal": 11,
+        "type_info": "Integer"
+      },
+      {
+        "name": "after_split",
+        "ordinal": 12,
+        "type_info": "Integer"
+      },
+      {
+        "name": "want_split",
+        "ordinal": 13,
+        "type_info": "Integer"
+      },
+      {
+        "name": "want_merge",
+        "ordinal": 14,
+        "type_info": "Integer"
+      },
+      {
+        "name": "key_block",
+        "ordinal": 15,
+        "type_info": "Integer"
+      },
+      {
+        "name": "flags",
+        "ordinal": 16,
+        "type_info": "Integer"
+      },
+      {
+        "name": "workchain_id",
+        "ordinal": 17,
+        "type_info": "Integer"
+      },
+      {
+        "name": "gen_utime",
+        "ordinal": 18,
+        "type_info": "Integer"
+      },
+      {
+        "name": "gen_utime_ms_part",
+        "ordinal": 19,
+        "type_info": "Integer"
+      },
+      {
+        "name": "start_lt",
+        "ordinal": 20,
+        "type_info": "Text"
+      },
+      {
+        "name": "end_lt",
+        "ordinal": 21,
+        "type_info": "Text"
+      },
+      {
+        "name": "gen_validator_list_hash_short",
+        "ordinal": 22,
+        "type_info": "Integer"
+      },
+      {
+        "name": "gen_catchain_seqno",
+        "ordinal": 23,
+        "type_info": "Integer"
+      },
+      {
+        "name": "min_ref_mc_seqno",
+        "ordinal": 24,
+        "type_info": "Integer"
+      },
+      {
+        "name": "prev_key_block_seqno",
+        "ordinal": 25,
+        "type_info": "Integer"
+      },
+      {
+        "name": "gen_software_version",
+        "ordinal": 26,
+        "type_info": "Integer"
+      },
+      {
+        "name": "gen_software_capabilities",
+        "ordinal": 27,
+        "type_info": "Text"
+      },
+      {
+        "name": "data",
+        "ordinal": 28,
+        "type_info": "Blob"
+      },
+      {
+        "name": "boc",
+        "ordinal": 29,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_hash",
+        "ordinal": 30,
+        "type_info": "Text"
+      },
+      {
+        "name": "root_hash",
+        "ordinal": 31,
+        "type_info": "Text"
+      },
+      {
+        "name": "prev_alt_ref_seq_no",
+        "ordinal": 32,
+        "type_info": "Integer"
+      },
+      {
+        "name": "prev_alt_ref_end_lt",
+        "ordinal": 33,
+        "type_info": "Text"
+      },
+      {
+        "name": "prev_alt_ref_file_hash",
+        "ordinal": 34,
+        "type_info": "Text"
+      },
+      {
+        "name": "prev_alt_ref_root_hash",
+        "ordinal": 35,
+        "type_info": "Text"
+      },
+      {
+        "name": "prev_ref_seq_no",
+        "ordinal": 36,
+        "type_info": "Integer"
+      },
+      {
+        "name": "prev_ref_end_lt",
+        "ordinal": 37,
+        "type_info": "Text"
+      },
+      {
+        "name": "prev_ref_file_hash",
+        "ordinal": 38,
+        "type_info": "Text"
+      },
+      {
+        "name": "prev_ref_root_hash",
+        "ordinal": 39,
+        "type_info": "Text"
+      },
+      {
+        "name": "in_msgs",
+        "ordinal": 40,
+        "type_info": "Text"
+      },
+      {
+        "name": "out_msgs",
+        "ordinal": 41,
+        "type_info": "Text"
+      },
+      {
+        "name": "shard",
+        "ordinal": 42,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "812d4d3a71def6a8207474e24ce4fcb608cefd174c9fa0bb175b3b10d3c506a3"
+}

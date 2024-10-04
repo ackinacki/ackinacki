@@ -1,0 +1,57 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setNewCode",
+			"inputs": [
+				{"name":"id","type":"uint8"},
+				{"name":"code","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployNewConfig",
+			"inputs": [
+				{"name":"dapp_id","type":"uint256"},
+				{"name":"is_unlimit","type":"bool"},
+				{"name":"available_credit","type":"int128"},
+				{"name":"credit_per_block","type":"uint128"},
+				{"name":"available_credit_max_value","type":"uint128"},
+				{"name":"start_block_seqno","type":"uint128"},
+				{"name":"end_block_seqno","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getConfigAddr",
+			"inputs": [
+				{"name":"dapp_id","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"config","type":"address"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
+		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
+		{"init":false,"name":"__value","type":"uint256"},
+		{"init":false,"name":"_code","type":"map(uint8,cell)"},
+		{"init":false,"name":"_owner","type":"address"}
+	]
+}

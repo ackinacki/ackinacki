@@ -1,0 +1,16 @@
+[package]
+name = "node-helper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+gosh_bls_lib.workspace = true
+network.workspace = true
+node.workspace = true
+parse_duration = "2.1.1"
+serde_json.workspace = true
+tvm_client.workspace = true
+url.workspace = true

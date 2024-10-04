@@ -1,0 +1,1118 @@
+.fragment DappLib_buildDappConfigCode_4131fee1, {
+	.loc libraries/DappLib.sol, 44
+	NEWC
+	STU 256
+	ENDC
+	.loc libraries/DappLib.sol, 45
+	SWAP
+	CTOS
+	SWAP
+	
+	CALLREF {
+		PUSH S1
+		PUSHSLICE x8adb35
+		SDEQ
+		PUSHREFCONT {
+			SWAP      ; salt sliceCode
+			LDREF
+			LDREF
+			DROP         ; salt selfCallCode usualSelector
+			XCHG S1, S2  ; selfCallCode salt usualSelector
+			CTOS         ; selfCallCode salt usualSelector
+			CALLREF {
+				
+				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
+				LDU 10
+				NIP
+				DUP
+				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
+				PUSHCONT {
+					LDREF
+				}
+				PUSHCONT {
+					PUSHREF {
+					}
+					SWAP
+				}
+				IFELSE
+							; selfCallCode salt restUsualSelector dict version intSelector
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+				DROP
+							; selfCallCode salt restUsualSelector dict version
+				SWAP        ; selfCallCode salt restUsualSelector version dict
+				NEWC        ; selfCallCode salt restUsualSelector version dict builder
+				STSLICECONST xF4A4_ ; DICTPUSHCONST
+				STDICT
+				PUSHINT 32
+				STUR 10
+				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
+				STREF       ; selfCallCode salt restUsualSelector builder
+				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
+				STREF       ; selfCallCode restUsualSelector builder
+				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
+				STBREF      ; selfCallCode restUsualSelector usualBuilder
+				STSLICE     ; selfCallCode usualBuilder
+	
+			}
+			NEWC        ; selfCallCode usualBuilder mainBuilder
+			STSLICECONST x8adb35
+			XCHG S1, S2 ; usualBuilder selfCallCode mainBuilder
+			STREF
+			STBREF
+			ENDC
+		}
+		PUSHREFCONT {
+			SWAP
+			CALLREF {
+				
+				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
+				LDU 10
+				NIP
+				DUP
+				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
+				PUSHCONT {
+					LDREF
+				}
+				PUSHCONT {
+					PUSHREF {
+					}
+					SWAP
+				}
+				IFELSE
+							; selfCallCode salt restUsualSelector dict version intSelector
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+				DROP
+							; selfCallCode salt restUsualSelector dict version
+				SWAP        ; selfCallCode salt restUsualSelector version dict
+				NEWC        ; selfCallCode salt restUsualSelector version dict builder
+				STSLICECONST xF4A4_ ; DICTPUSHCONST
+				STDICT
+				PUSHINT 32
+				STUR 10
+				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
+				STREF       ; selfCallCode salt restUsualSelector builder
+				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
+				STREF       ; selfCallCode restUsualSelector builder
+				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
+				STBREF      ; selfCallCode restUsualSelector usualBuilder
+				STSLICE     ; selfCallCode usualBuilder
+	
+			}
+			ENDC
+		}
+		IFELSE
+	}
+	.loc libraries/DappLib.sol, 0
+}
+
+.fragment DappLib_composeDappConfigStateInit_8b57b2ae, {
+	.loc libraries/DappLib.sol, 32
+	PUSHINT 0
+	PUSHSLICE x2_
+	DUP
+	PUSHINT 0
+	BLKPUSH 7, 0
+	TUPLE 8
+	PUSHINT 0
+	BLKPUSH 2, 0
+	PAIR
+	NEWC
+	PUSHINT 258
+	STZEROES
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 256
+	STU 32
+	STU 256
+	SWAP
+	UNTUPLE 8
+	REVERSE 9, 0
+	STI 1
+	STI 128
+	ROLLREV 9
+	NEWC
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	ROLLREV 3
+	NEWC
+	STSLICE
+	ROTREV
+	NEWC
+	STSLICE
+	STU 256
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	ROTREV
+	CALLREF {
+		.inline DappLib_buildDappConfigCode_4131fee1
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc libraries/DappLib.sol, 0
+}
+
+.fragment DappLib_calculateDappConfigAddress_1a23b042, {
+	.loc libraries/DappLib.sol, 27
+	CALLREF {
+		.inline DappLib_composeDappConfigStateInit_8b57b2ae
+	}
+	.loc libraries/DappLib.sol, 28
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc libraries/DappLib.sol, 0
+}
+
+.fragment DappLib_with_obj_calculateDappConfigAddress_1a23b042, {
+	.loc libraries/DappLib.sol, 27
+	PUXC S1, S-1
+	CALLREF {
+		.inline DappLib_composeDappConfigStateInit_8b57b2ae
+	}
+	.loc libraries/DappLib.sol, 28
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc libraries/DappLib.sol, 0
+}
+
+.fragment DappLib_with_obj_composeDappConfigStateInit_8b57b2ae, {
+	.loc libraries/DappLib.sol, 32
+	PUSHINT 0
+	PUSHSLICE x2_
+	DUP
+	PUSHINT 0
+	BLKPUSH 7, 0
+	TUPLE 8
+	PUSHINT 0
+	BLKPUSH 2, 0
+	PAIR
+	NEWC
+	PUSHINT 258
+	STZEROES
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 256
+	STU 32
+	STU 256
+	SWAP
+	UNTUPLE 8
+	REVERSE 9, 0
+	STI 1
+	STI 128
+	ROLLREV 9
+	NEWC
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	ROLLREV 3
+	NEWC
+	STSLICE
+	ROTREV
+	NEWC
+	STSLICE
+	STU 256
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	PUXC S2, S1
+	CALLREF {
+		.inline DappLib_buildDappConfigCode_4131fee1
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc libraries/DappLib.sol, 0
+}
+
+.fragment gc_1b71d85f_internal, {
+	.loc modifiers/replayprotection.sol, 64
+	PUSHINT 0
+	.loc modifiers/replayprotection.sol, 65
+	GETGLOB 10
+	DUP
+	PUSHINT 32
+	DICTUMIN
+	PUSHCONT {
+		PUXC S0, S1
+		PLDDICT
+	}
+	PUSHCONT {
+		NULL
+		BLKPUSH 2, 0
+	}
+	IFELSE
+	PUSHCONT {
+		PUSH S2
+		ISNULL
+		NOT
+	}
+	PUSHCONT {
+		.loc modifiers/replayprotection.sol, 66
+		PUSH S4
+		.loc modifiers/replayprotection.sol, 67
+		GTINT 19
+		IFRETALT
+		.loc modifiers/replayprotection.sol, 70
+		PUSH S4
+		INC
+		POP S5
+		.loc modifiers/replayprotection.sol, 71
+		OVER
+		NOW
+		LEQ
+		PUSHCONT {
+			.loc modifiers/replayprotection.sol, 72
+			OVER
+			GETGLOB 10
+			PUSHINT 32
+			DICTUDEL
+			DROP
+			SETGLOB 10
+			.loc modifiers/replayprotection.sol, 0
+		}
+		PUSHCONT {
+			.loc modifiers/replayprotection.sol, 74
+			RETALT
+			.loc modifiers/replayprotection.sol, 0
+		}
+		IFELSE
+		.loc modifiers/replayprotection.sol, 0
+		XC2PU S0, S2, S3
+		PUSHINT 32
+		DICTUGETNEXT
+		PUSHCONT {
+			PUXC S0, S1
+			PLDDICT
+		}
+		PUSHCONT {
+			NULL
+			BLKPUSH 2, 0
+		}
+		IFELSE
+		BLKDROP2 2, 3
+	}
+	WHILEBRK
+	BLKDROP 5
+	.loc modifiers/replayprotection.sol, 0
+}
+
+.fragment c4_to_c7, {
+	PUSHROOT
+	CTOS
+	LDU 256 ; pubkey c4
+	LDU 1 ; ctor flag
+	LDDICT
+	LDU 256
+	LDU 32
+	ROTREV
+	PAIR
+	SWAP
+	LDU 256
+	LDI 1
+	LDI 128
+	LDREF
+	ENDS
+	CTOS
+	LDU 128
+	LDU 128
+	LDU 128
+	LDU 128
+	LDU 128
+	LDU 128
+	ROLLREV 8
+	TUPLE 8
+	SWAP
+	LDREF
+	ENDS
+	CTOS
+	LDMSGADDR
+	LDREF
+	ENDS
+	CTOS
+	LDMSGADDR
+	LDU 256
+	ENDS
+	SETGLOB 16
+	SETGLOB 15
+	SETGLOB 14
+	SETGLOB 13
+	SETGLOB 12
+	SETGLOB 11
+	SETGLOB 10
+	SETGLOB 6
+	SETGLOB 2
+}
+
+.fragment c7_to_c4, {
+	GETGLOB 16
+	GETGLOB 15
+	GETGLOB 14
+	GETGLOB 13
+	GETGLOB 12
+	GETGLOB 11
+	GETGLOB 10
+	GETGLOB 2
+	NEWC
+	STU 256
+	STONE
+	STDICT
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 256
+	STU 32
+	STU 256
+	SWAP
+	UNTUPLE 8
+	REVERSE 9, 0
+	STI 1
+	STI 128
+	ROLLREV 9
+	NEWC
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	ROLLREV 3
+	NEWC
+	STSLICE
+	ROTREV
+	NEWC
+	STSLICE
+	STU 256
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	POPROOT
+}
+
+.fragment constructor, {
+	DROP
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 6
+	THROWIF 51
+	OVER
+	PUSHCONT {
+		LDI 1
+		LDREF
+		ENDS
+		CTOS
+	}
+	PUSHCONT {
+		LDI 1
+	}
+	IFELSE
+	LDI 128
+	LDU 128
+	LDU 128
+	LDU 128
+	LDU 128
+	LDU 128
+	LDU 128
+	ROLLREV 8
+	TUPLE 8
+	SWAP
+	ENDS
+	.loc DappConfig.sol, 26
+	MYCODE
+	
+	CALLREF {
+		CTOS
+		PUSH S0
+		PUSHSLICE x8adb35
+		SDEQ
+		PUSHREFCONT {
+			PLDREFIDX 1
+			CTOS
+			CALLREF {
+				
+				PLDREF
+				CTOS
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+	
+				LDDICT
+				NIP
+	
+				LDU 10
+				NIP
+	
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+	
+				DUP
+				SREFS
+				GTINT 1
+				PUSHCONT {
+					PLDREFIDX 1
+				}
+				PUSHCONT {
+					DROP
+					NULL
+				}
+				IFELSE
+	
+			}
+		}
+		PUSHREFCONT {
+			
+				PLDREF
+				CTOS
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+	
+				LDDICT
+				NIP
+	
+				LDU 10
+				NIP
+	
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+	
+				DUP
+				SREFS
+				GTINT 1
+				PUSHCONT {
+					PLDREFIDX 1
+				}
+				PUSHCONT {
+					DROP
+					NULL
+				}
+				IFELSE
+	
+		}
+		IFELSE
+	}
+	DUP
+	ISNULL
+	THROWIF 63
+	.loc DappConfig.sol, 27
+	CTOS
+	LDU 256
+	ENDS
+	.loc DappConfig.sol, 28
+	PUSHSLICE x8013333333333333333333333333333333333333333333333333333333333333333_
+	SETGLOB 14
+	.loc DappConfig.sol, 29
+	SETGLOB 16
+	.loc DappConfig.sol, 30
+	PUSHREFSLICE {
+		.blob x8000000000000000000000000000000000000000000000000000000000000000001_
+	}
+	SETGLOB 15
+	.loc DappConfig.sol, 31
+	GETGLOB 9
+	GETGLOB 14
+	SDEQ
+	THROWIFNOT 207
+	.loc DappConfig.sol, 32
+	PUSHINT 1000000000000
+	.blob xC728
+	.loc DappConfig.sol, 33
+	SETGLOB 13
+	.loc DappConfig.sol, 0
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment getDetails_fbbf93a0_internal, {
+	.loc DappConfig.sol, 60
+	GETGLOB 16
+	GETGLOB 13
+	.loc DappConfig.sol, 0
+}
+
+.fragment getDetails, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc DappConfig.sol, 59
+	ENDS
+	.loc DappConfig.sol, 0
+	CALLREF {
+		.inline getDetails_fbbf93a0_internal
+	}
+	PUSH S2
+	PUSHCONT {
+		PUSH S4
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 1
+		STUR 98
+		XCHG S2
+		NEWC
+		STSLICECONST xc287dad3
+		STU 256
+		SWAP
+		UNTUPLE 8
+		REVERSE 9, 0
+		STI 1
+		STI 128
+		STU 128
+		STU 128
+		STU 128
+		STU 128
+		ROTREV
+		NEWC
+		STU 128
+		STU 128
+		STBREFR
+		STBREFR
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP2
+	}
+	IFELSE
+	IFREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment getMoney_98e1b410_internal, {
+	.loc DappConfig.sol, 37
+	GETPARAM 7
+	FIRST
+	PUSHINT 1000000000000
+	GREATER
+	IFRET
+	.loc DappConfig.sol, 38
+	PUSHINT 1000000000000
+	.blob xC728
+	.loc DappConfig.sol, 0
+}
+
+.fragment setNewConfig_e0dfe236_internal, {
+	.loc modifiers/modifiers.sol, 46
+	GETGLOB 9
+	GETGLOB 15
+	SDEQ
+	THROWIFNOT 207
+	.loc DappConfig.sol, 49
+	CALLREF {
+		.inline getMoney_98e1b410_internal
+	}
+	.loc DappConfig.sol, 50
+	GETGLOB 13
+	ROLL 6
+	SETINDEX 0
+	DUP
+	SETGLOB 13
+	.loc DappConfig.sol, 51
+	ROLL 5
+	SETINDEX 1
+	DUP
+	SETGLOB 13
+	.loc DappConfig.sol, 52
+	ROLL 4
+	SETINDEX 2
+	DUP
+	SETGLOB 13
+	.loc DappConfig.sol, 53
+	ROLL 3
+	SETINDEX 3
+	DUP
+	SETGLOB 13
+	.loc DappConfig.sol, 54
+	ROT
+	SETINDEX 4
+	DUP
+	SETGLOB 13
+	.loc DappConfig.sol, 55
+	SWAP
+	SETINDEX 5
+	DUP
+	SETGLOB 13
+	.loc DappConfig.sol, 56
+	SEQNO
+	SETINDEX 6
+	SETGLOB 13
+	.loc DappConfig.sol, 0
+}
+
+.fragment setNewConfig, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc DappConfig.sol, 41
+	OVER
+	PUSHCONT {
+		LDI 1
+		LDREF
+		ENDS
+		CTOS
+	}
+	PUSHCONT {
+		LDI 1
+	}
+	IFELSE
+	LDI 128
+	LDU 128
+	LDU 128
+	LDU 128
+	LDU 128
+	ENDS
+	.loc DappConfig.sol, 0
+	CALLREF {
+		.inline setNewConfig_e0dfe236_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment public_function_selector, {
+	DUP
+	EQINT 5
+	IFJMPREF {
+		.inline setNewConfig
+	}
+	DUP
+	PUSHINT 1116199635
+	EQUAL
+	IFJMPREF {
+		.inline getDetails
+	}
+	DUP
+	PUSHINT 1728611299
+	EQUAL
+	IFJMPREF {
+		.inline constructor
+	}
+}
+
+.fragment main_external, {
+	PUSHREFSLICE {
+		.blob x8000000000000000000000000000000000000000000000000000000000000000001_
+	}
+	SETGLOB 9
+	OVER
+	CALLREF {
+		.inline c4_to_c7
+	}
+	LDU 1 ; haveSign msgSlice
+	SWAP
+	PUSHCONT {
+		PUSHPOW2 9
+		LDSLICEX
+		DUP
+		MYADDR
+		NEWC
+		STSLICE
+		STSLICE
+		ENDC
+		HASHCU
+		SWAP
+		LDU 1 ; signatureSlice hashMsgSlice hasPubkey msgSlice
+		SWAP
+		PUSHCONT {
+			LDU 256 ; signatureSlice hashMsgSlice pubkey msgSlice
+			XCHG2 S3, S3
+		}
+		PUSHCONT {
+			XCHG S2
+			GETGLOB 2
+		}
+		IFELSE
+		DUP
+		SETGLOB 5
+		CHKSIGNU
+		THROWIFNOT 40
+	}
+	PUSHCONT {
+		LDU 1 ; hasPubkey msgSlice
+		SWAP
+		THROWIF 58
+	}
+	IFELSE
+	PUSH2 S3, S0
+	.loc modifiers/replayprotection.sol, 46
+	LDU 64
+	XCPU S3, S3
+	BLKDROP2 2, 1
+	.loc modifiers/replayprotection.sol, 48
+	LDU 32
+	POP S3
+	.loc modifiers/replayprotection.sol, 49
+	DUP
+	NOW
+	GREATER
+	THROWIFNOT 250
+	.loc modifiers/replayprotection.sol, 50
+	DUP
+	NOW
+	PUSHINT 300
+	ADD
+	LESS
+	THROWIFNOT 251
+	.loc modifiers/replayprotection.sol, 53
+	OVER
+	HASHCU
+	.loc modifiers/replayprotection.sol, 54
+	OVER
+	GETGLOB 10
+	PUSHINT 32
+	DICTUGET
+	NULLSWAPIFNOT
+	PUSHCONT {
+		PLDDICT
+		SINGLE
+	}
+	IF
+	.loc modifiers/replayprotection.sol, 55
+	DUP
+	ISNULL
+	DUP
+	PUSHCONT {
+		DROP
+		DUP2
+		UNSINGLE
+		PUSHPOW2 8
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			PLDI 1
+		}
+		IF
+		NOT
+	}
+	IFNOT
+	THROWIFNOT 252
+	.loc modifiers/replayprotection.sol, 56
+	PUSH2 S1, S2
+	PAIR
+	SETGLOB 11
+	.loc modifiers/replayprotection.sol, 59
+	BLKDROP 4
+	.loc modifiers/replayprotection.sol, 0
+	LDU 32 ; funcId body
+	SWAP
+	CALLREF {
+		.inline public_function_selector
+	}
+	THROW 60
+}
+
+.fragment main_internal, {
+	PUSHROOT
+	CTOS
+	PUSHPOW2 8
+	SDSKIPFIRST
+	PLDI 1
+	SETGLOB 6
+	PUSH S2
+	CTOS
+	LDU 4 ; bounced tail
+	LDMSGADDR ; bounced src tail
+	DROP
+	SETGLOB 9
+	MODPOW2 1
+	IFRET
+	OVER
+	SEMPTY ; isEmpty
+	IFJMPREF {
+		GETGLOB 6
+		THROWIFNOT 76
+	}
+	OVER
+	LDUQ 32  ; [funcId] body' ok
+	THROWIFNOT 60
+	OVER
+	IFNOTJMPREF {
+		GETGLOB 6
+		THROWIFNOT 76
+	}
+	SWAP
+	CALLREF {
+		.inline public_function_selector
+	}
+	THROW 60
+}
+
+.fragment default_data_cell, {
+	PUSHINT 0
+	PUSHSLICE x2_
+	DUP
+	PUSHINT 0
+	BLKPUSH 7, 0
+	TUPLE 8
+	PUSHINT 0
+	BLKPUSH 2, 0
+	PAIR
+	NEWC
+	PUSHINT 258
+	STZEROES
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 256
+	STU 32
+	STU 256
+	SWAP
+	UNTUPLE 8
+	REVERSE 9, 0
+	STI 1
+	STI 128
+	ROLLREV 9
+	NEWC
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	ROLLREV 3
+	NEWC
+	STSLICE
+	ROTREV
+	NEWC
+	STSLICE
+	STU 256
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+}
+
+.fragment upd_only_time_in_c4, {
+	PUSHROOT
+	CTOS
+	LDU 256
+	LDU 64
+	NIP
+	GETGLOB 3
+	ROT
+	NEWC
+	STU 256
+	STU 64
+	STSLICE
+	ENDC
+	POPROOT
+}
+
+.fragment DappLib_with_obj_buildDappConfigCode_4131fee1, {
+	.loc libraries/DappLib.sol, 44
+	NEWC
+	STU 256
+	ENDC
+	.loc libraries/DappLib.sol, 45
+	OVER
+	CTOS
+	SWAP
+	
+	CALLREF {
+		PUSH S1
+		PUSHSLICE x8adb35
+		SDEQ
+		PUSHREFCONT {
+			SWAP      ; salt sliceCode
+			LDREF
+			LDREF
+			DROP         ; salt selfCallCode usualSelector
+			XCHG S1, S2  ; selfCallCode salt usualSelector
+			CTOS         ; selfCallCode salt usualSelector
+			CALLREF {
+				
+				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
+				LDU 10
+				NIP
+				DUP
+				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
+				PUSHCONT {
+					LDREF
+				}
+				PUSHCONT {
+					PUSHREF {
+					}
+					SWAP
+				}
+				IFELSE
+							; selfCallCode salt restUsualSelector dict version intSelector
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+				DROP
+							; selfCallCode salt restUsualSelector dict version
+				SWAP        ; selfCallCode salt restUsualSelector version dict
+				NEWC        ; selfCallCode salt restUsualSelector version dict builder
+				STSLICECONST xF4A4_ ; DICTPUSHCONST
+				STDICT
+				PUSHINT 32
+				STUR 10
+				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
+				STREF       ; selfCallCode salt restUsualSelector builder
+				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
+				STREF       ; selfCallCode restUsualSelector builder
+				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
+				STBREF      ; selfCallCode restUsualSelector usualBuilder
+				STSLICE     ; selfCallCode usualBuilder
+	
+			}
+			NEWC        ; selfCallCode usualBuilder mainBuilder
+			STSLICECONST x8adb35
+			XCHG S1, S2 ; usualBuilder selfCallCode mainBuilder
+			STREF
+			STBREF
+			ENDC
+		}
+		PUSHREFCONT {
+			SWAP
+			CALLREF {
+				
+				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
+				LDU 10
+				NIP
+				DUP
+				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
+				PUSHCONT {
+					LDREF
+				}
+				PUSHCONT {
+					PUSHREF {
+					}
+					SWAP
+				}
+				IFELSE
+							; selfCallCode salt restUsualSelector dict version intSelector
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+				DROP
+							; selfCallCode salt restUsualSelector dict version
+				SWAP        ; selfCallCode salt restUsualSelector version dict
+				NEWC        ; selfCallCode salt restUsualSelector version dict builder
+				STSLICECONST xF4A4_ ; DICTPUSHCONST
+				STDICT
+				PUSHINT 32
+				STUR 10
+				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
+				STREF       ; selfCallCode salt restUsualSelector builder
+				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
+				STREF       ; selfCallCode restUsualSelector builder
+				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
+				STBREF      ; selfCallCode restUsualSelector usualBuilder
+				STSLICE     ; selfCallCode usualBuilder
+	
+			}
+			ENDC
+		}
+		IFELSE
+	}
+	.loc libraries/DappLib.sol, 0
+}
+
+.fragment onTickTock, {
+}
+
+; The code below forms a value of the StateInit type.
+.blob x4_ ; split_depth = nothing
+.blob x4_ ; special = nothing
+.blob xc_ ; code = just
+.cell { ; code cell
+	PUSHREFCONT {
+		DICTPUSHCONST 32
+		DICTUGETJMPZ
+		THROW 78
+		.code-dict-cell 32, {
+		}
+		.cell { ; version
+			.blob x736f6c20302e37352e30 ; sol 0.75.0
+		}
+	}
+	POPCTR c3
+	DUP
+	IFNOTJMPREF {
+		.inline main_internal
+	}
+	DUP
+	EQINT -1
+	IFJMPREF {
+		.inline main_external
+	}
+	DUP
+	EQINT -2
+	IFJMPREF {
+		.inline onTickTock
+	}
+	THROW 11
+}
+.blob xc_ ; data = just
+.cell { 
+	.inline-computed-cell default_data_cell, 0
+}
+.blob x4_ ; library = hme_empty

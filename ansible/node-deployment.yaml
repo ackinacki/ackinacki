@@ -1,0 +1,97 @@
+- name: Block keeper deployment
+  hosts: [block_keepers]
+  gather_facts: no
+  become: yes
+  tasks:
+  - name: "Ensures dir exists: {{ BK_DIR }}"
+    ansible.builtin.file:
+      path: "{{ BK_DIR | mandatory }}/"
+      state: directory
+      mode: u=rwx,g=rwx,o=rwx
+
+  - name: "Ensures node share dir exists: {{ BK_DATA_DIR }}/share"
+    ansible.builtin.file:
+      path: "{{ BK_DATA_DIR | mandatory }}/share"
+      state: directory
+      mode: u=rwx,g=rwx,o=rwx
+
+  - name: "Ensures node logs dir exists: {{ BK_LOGS_DIR | mandatory }}"
+    ansible.builtin.file:
+      path: "{{ BK_LOGS_DIR | mandatory }}"
+      state: directory
+      mode: u=rwx,g=rwx,o=rwx
+  
+  - name: "Ensures keys dir exists: {{ BK_DIR }}/bk-configs"
+    ansible.builtin.file:
+      path: "{{ BK_DIR }}/bk-configs"
+      state: directory
+      mode: u=rwx,g=,o=
+
+  - name: adjust limits
+    lineinfile:
+      dest: /etc/security/limits.conf
+      state: present
+      regexp: "{{ item.r }}"
+      line: "{{ item.l }}"
+    with_items:
+      - { r: "hard nofile", l: "* hard nofile 1048576" }
+      - { r: "soft nofile", l: "* soft nofile 1048576" }
+      - { r: "hard memlock", l: "* hard memlock unlimited" }
+      - { r: "soft memlock", l: "* soft memlock unlimited" }
+      - { r: "hard nproc", l: "* hard nproc unlimited" }
+      - { r: "soft nproc", l: "* soft nproc unlimited" }
+
+  - name: sysctl limits
+    lineinfile:
+      dest: /etc/sysctl.conf
+      state: present
+      regexp: "vm.max_map_count"
+      line: "vm.max_map_count = 512000"
+
+  - name: docker memlock limit
+    become: yes
+    register: docker_changed
+    ini_file:
+      path: /lib/systemd/system/docker.service
+      section: Service
+      option: LimitMEMLOCK
+      value: infinity
+      no_extra_spaces: true
+      backup: no
+
+  - name: restart docker
+    ansible.builtin.systemd:
+      daemon_reexec: yes
+      state: restarted
+      name: docker
+    when: docker_changed.changed
+
+  - name: Copy configs files
+    copy:
+      dest: "{{ BK_DIR }}/bk-configs/"
+      src: "{{ item }}"
+    with_items: 
+      - "{{ NODE_CONFIGS }}"
+      - "{{ MASTER_KEY }}"
+
+  - name: Put docker compose file
+    ansible.builtin.template:
+      src: templates/docker-compose.j2
+      dest: "{{ BK_DIR }}/docker-compose.yaml"
+      mode: "0644"
+
+  - name: Compose pull
+    ansible.builtin.shell:
+      chdir: "{{ BK_DIR }}"
+      cmd: docker compose pull
+
+  - name: Create BLS keys
+    ansible.builtin.shell:
+      chdir: "{{ BK_DIR }}/bk-configs/"
+      cmd: "docker run -it --rm --entrypoint /usr/local/bin/node-helper {{ NODE_IMAGE }} bls > bk{{ NODE_ID }}_bls.keys.json"
+      creates: "bk{{ NODE_ID }}_bls.keys.json"
+
+  - name: Compose up
+    ansible.builtin.shell:
+      chdir: "{{ BK_DIR }}"
+      cmd: docker compose up -d

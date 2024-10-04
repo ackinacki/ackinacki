@@ -1,0 +1,63 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"code","type":"map(uint8,cell)"},
+				{"name":"walletId","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getRequestToSlashBlockKeeper",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"seqNoStart","type":"uint64"},
+				{"name":"numberOfActiveBlockKeepers","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"root","type":"address"},
+				{"name":"seqNoStart","type":"uint64"},
+				{"name":"owner","type":"address"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
+		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
+		{"init":false,"name":"__value","type":"uint256"},
+		{"init":false,"name":"_code","type":"map(uint8,cell)"},
+		{"init":true,"name":"_owner_pubkey","type":"uint256"},
+		{"init":false,"name":"_root","type":"address"},
+		{"init":true,"name":"_seqNoStart","type":"uint64"},
+		{"init":false,"name":"_slashMember","type":"map(uint256,bool)"},
+		{"init":false,"name":"_precision","type":"uint128"},
+		{"init":false,"name":"_isSlash","type":"uint128"},
+		{"init":false,"name":"_walletId","type":"uint256"}
+	]
+}
