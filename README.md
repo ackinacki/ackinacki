@@ -1,6 +1,8 @@
-# Block Keeper deployment instruction
+# Deployment instruction
 
-- [Block Keeper deployment instruction](#block-keeper-deployment-instruction)
+- [Deployment instruction](#deployment-instruction)
+- [Block Keeper](#block-keeper)
+  - [System requirements](#system-requirements)
   - [Steps](#steps)
   - [Block Keeper Wallet deployment](#block-keeper-wallet-deployment)
     - [Prerequisites](#prerequisites)
@@ -13,6 +15,14 @@
     - [Prerequisites](#prerequisites-2)
     - [Run the script](#run-the-script)
 
+# Block Keeper
+
+## System requirements
+
+| Configuration | CPU (cores) | RAM (GiB) | Storage    | Network                                          |
+| ------------- | ----------- | --------- | ---------- | ------------------------------------------------ |
+| Minimum       | 8c/16t      | 64        | 1 TB NVMe  | 1 Gbit synchronous unmetered Internet connection |
+| Recommended   | 12c/24t     | 128       | 2 TB NVMe  | 1 Gbit synchronous unmetered Internet connection |
 
 
 ## Steps 
