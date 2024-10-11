@@ -78,10 +78,10 @@ fi
 
 ABI=../contracts/bksystem/BlockKeeperContractRoot.abi.json
 WALLET_ABI=../contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json
-ELECTION=0:7777777777777777777777777777777777777777777777777777777777777777
+ROOT=0:7777777777777777777777777777777777777777777777777777777777777777
 SPONSOR_WALLET_ABI="../contracts/giver/GiverV3.abi.json"
 
-WALLET_INIT_CC=$((10 * 2))
+WALLET_INIT=1000000000
 ECC_KEY="1"
 
 gen_key () {
@@ -97,14 +97,14 @@ gen_key () {
 }
 
 read_key () {
-  local MASTER_PUB_KEY_JSON=$(jq .public $MASTER_KEY_FILE_OUTPUT_PATH | tr -d '\"')
+  local MASTER_PUB_KEY_JSON=$(jq -r .public $MASTER_KEY_FILE_OUTPUT_PATH)
   MASTER_PUB_KEY=$(echo '{"pubkey": "0x{public}"}' | sed -e "s/{public}/$MASTER_PUB_KEY_JSON/g")
 
-  SERVICE_PUB_KEY_JSON=$(jq .public $SERVICE_KEY_FILE_OUTPUT_PATH | tr -d '\"')
+  SERVICE_PUB_KEY_JSON=$(jq -r .public $SERVICE_KEY_FILE_OUTPUT_PATH)
   SERVICE_PUB_KEY=$(echo '{"key": "0x{public}"}' | sed -e "s/{public}/$SERVICE_PUB_KEY_JSON/g")
 }
 
-TVM_ACCOUNT_STATUS=$(tvm-cli -j account 0:7777777777777777777777777777777777777777777777777777777777777777 | jq '.acc_type' | tr -d '\"')
+TVM_ACCOUNT_STATUS=$(tvm-cli -j account $SPONSOR_WALLET_ADDRESS | jq -r '.acc_type')
 
 if [ "$TVM_ACCOUNT_STATUS" != "Active" ]
 then
@@ -115,15 +115,15 @@ fi
 gen_key
 read_key
 
-tvm-cli -j callx --addr $ELECTION --abi $ABI --method deployAckiNackiBlockKeeperNodeWallet "$MASTER_PUB_KEY"
+tvm-cli -j callx --addr $ROOT --abi $ABI --method deployAckiNackiBlockKeeperNodeWallet "$MASTER_PUB_KEY"
 
-WALLET_ADDR=$(tvm-cli -j runx --abi $ABI --addr $ELECTION -m getAckiNackiBlockKeeperNodeWalletAddress "$MASTER_PUB_KEY" | jq '.value0' | tr -d '\"')
+WALLET_ADDR=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeperNodeWalletAddress "$MASTER_PUB_KEY" | jq -r '.value0')
 
 echo Wallet $WALLET_ADDR is deployed.
 
 tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $MASTER_KEY_FILE_OUTPUT_PATH --method setServiceKey "$SERVICE_PUB_KEY" && echo Wallet key has been added.
 
-SERVICE_WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '.service_key' | tr -d '\"')
+SERVICE_WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r '.service_key')
 
 if [ "0x$SERVICE_PUB_KEY_JSON" = "$SERVICE_WALLET_DETAILS" ]
 then
@@ -133,19 +133,19 @@ else
   exit 1
 fi
 
-ELECTION_MIN_STAKE=$(tvm-cli -j runx --abi $ABI --addr 0:7777777777777777777777777777777777777777777777777777777777777777 -m getDetails | jq '.minStake' | tr -d '\"')
-echo "Current minimum stake is $ELECTION_MIN_STAKE"
+ROOT_MIN_STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake')
+echo "Current minimum stake is $ROOT_MIN_STAKE"
 
-ELECTION_STAKE=$(tvm-cli -j runx --abi $ABI --addr 0:7777777777777777777777777777777777777777777777777777777777777777 -m getDetails | jq '.minStake' | tr -d '\"' | xargs printf "%d * 1.1\n" | bc | cut -d'.' -f1)
+STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake' | xargs printf "%d * 2\n" | bc)
 
-echo "Sending $ELECTION_STAKE tokens..."
-GIVER_PARAMS="{\"dest\": \"$WALLET_ADDR\", \"value\": $ELECTION_STAKE, \"ecc\": {\"$ECC_KEY\": $WALLET_INIT_CC}}"
+echo "Sending $STAKE tokens..."
+GIVER_PARAMS="{\"dest\": \"$WALLET_ADDR\", \"value\": $WALLET_INIT, \"ecc\": {\"$ECC_KEY\": $STAKE}}"
 
 tvm-cli -j callx --addr $SPONSOR_WALLET_ADDRESS --abi $SPONSOR_WALLET_ABI --keys $SPONSOR_WALLET_KEY_FILE --method sendCurrency "$GIVER_PARAMS"
 
 echo "Checking wallet balance..."
 WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '{balance,walletId}')
-echo $WALLET_DETAILS | jq '.balance' | tr -d '\"' | xargs printf "Current wallet balance: %d\n"
-echo $WALLET_DETAILS | jq '.walletId' | tr -d '\"' | xargs printf "Node ID: %d\n"
+echo $WALLET_DETAILS | jq -r '.balance' | xargs printf "Current wallet balance: %d\n"
+echo $WALLET_DETAILS | jq -r '.walletId' | xargs printf "Node ID: %d\n"
 
 printf "Initial steps have been done. Save your node id\n"
