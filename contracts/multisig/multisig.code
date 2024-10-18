@@ -28,7 +28,7 @@
 }
 
 .fragment acceptTransfer_d161b641_internal, {
-	.loc multisig.sol, 255
+	.loc multisig.sol, 251
 	PUSHSLICE xc00000000000000000000000007d729cc8
 	NEWC
 	STSLICE
@@ -78,7 +78,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc multisig.sol, 254
+	.loc multisig.sol, 250
 	LDREF
 	ENDS
 	.loc multisig.sol, 0
@@ -92,7 +92,7 @@
 }
 
 .fragment confirmTransaction_5798d056_internal, {
-	.loc multisig.sol, 325
+	.loc multisig.sol, 321
 	GETGLOB 5
 	DUP
 	ISNULL
@@ -101,7 +101,7 @@
 		PUSHINT 0
 	}
 	IF
-	.loc multisig.sol, 221
+	.loc multisig.sol, 217
 	GETGLOB 13
 	PUSHPOW2 8
 	DICTUGET
@@ -110,22 +110,22 @@
 		PLDU 8
 	}
 	IF
-	.loc multisig.sol, 222
+	.loc multisig.sol, 218
 	DUP
 	ISNULL
 	THROWIF 100
-	.loc multisig.sol, 223
+	.loc multisig.sol, 219
 	DUP
 	ISNULL
 	THROWIF 63
-	.loc multisig.sol, 326
+	.loc multisig.sol, 322
 	PUSHCONT {
-		.loc multisig.sol, 233
+		.loc multisig.sol, 229
 		NOW
 		PUSHINT 3601
 		SUB
 		LSHIFT 32
-		.loc multisig.sol, 359
+		.loc multisig.sol, 355
 		GETGLOB 12
 		PUSHINT 64
 		DICTUMINREF
@@ -154,48 +154,48 @@
 			}
 			PAIR
 		}
-		.loc multisig.sol, 360
+		.loc multisig.sol, 356
 		DUP
 		ISNULL
 		PUSHCONT {
-			.loc multisig.sol, 360
+			.loc multisig.sol, 356
 			DROP2
 			.loc multisig.sol, 0
 		}
 		IFJMP
-		.loc multisig.sol, 361
+		.loc multisig.sol, 357
 		BLKPUSH 2, 0
 		ISNULL
 		THROWIF 63
 		UNPAIR
-		.loc multisig.sol, 362
+		.loc multisig.sol, 358
 		PUSH2 S1, S3
 		LEQ
-		.loc multisig.sol, 363
+		.loc multisig.sol, 359
 		DUP
 		PUSHCONT {
-			.loc multisig.sol, 363
+			.loc multisig.sol, 359
 			BLKDROP 5
 			.loc multisig.sol, 0
 		}
 		IFNOTJMP
-		.loc multisig.sol, 365
+		.loc multisig.sol, 361
 		ACCEPT
-		.loc multisig.sol, 366
+		.loc multisig.sol, 362
 		PUSHINT 0
-		.loc multisig.sol, 367
+		.loc multisig.sol, 363
 		PUSHCONT {
 			DUP2
 			LESSINT 40
 			AND
 		}
 		PUSHCONT {
-			.loc multisig.sol, 369
+			.loc multisig.sol, 365
 			INC
-			.loc multisig.sol, 370
+			.loc multisig.sol, 366
 			PUSH S2
 			INDEX 5
-			.loc multisig.sol, 192
+			.loc multisig.sol, 188
 			GETGLOB 11
 			PUSHINT 8
 			ROT
@@ -204,14 +204,14 @@
 			SUB
 			.loc multisig.sol, 0
 			SETGLOB 11
-			.loc multisig.sol, 371
+			.loc multisig.sol, 367
 			PUSH S3
 			GETGLOB 12
 			PUSHINT 64
 			DICTUDEL
 			DROP
 			SETGLOB 12
-			.loc multisig.sol, 372
+			.loc multisig.sol, 368
 			PUSH S3
 			GETGLOB 12
 			PUSHINT 64
@@ -243,22 +243,22 @@
 				PAIR
 			}
 			POP S5
-			.loc multisig.sol, 373
+			.loc multisig.sol, 369
 			PUSH S4
 			ISNULL
 			PUSHCONT {
-				.loc multisig.sol, 374
+				.loc multisig.sol, 370
 				FALSE
 			}
 			PUSHCONT {
-				.loc multisig.sol, 376
+				.loc multisig.sol, 372
 				PUSH2 S4, S4
 				ISNULL
 				THROWIF 63
 				UNPAIR
 				PUXC2 S1, S4, S5
 				DROP2
-				.loc multisig.sol, 377
+				.loc multisig.sol, 373
 				PUSH S6
 				LEQ
 			}
@@ -267,16 +267,16 @@
 			.loc multisig.sol, 0
 		}
 		WHILE
-		.loc multisig.sol, 380
+		.loc multisig.sol, 376
 		BLKDROP 6
 		CALLREF {
 			.inline c7_to_c4
 		}
 		COMMIT
-		.loc multisig.sol, 357
+		.loc multisig.sol, 353
 	}
 	CALLX
-	.loc multisig.sol, 327
+	.loc multisig.sol, 323
 	OVER
 	GETGLOB 12
 	PUSHINT 64
@@ -304,35 +304,35 @@
 			TUPLE 12
 		}
 	}
-	.loc multisig.sol, 328
+	.loc multisig.sol, 324
 	DUP
 	ISNULL
 	THROWIF 102
-	.loc multisig.sol, 329
+	.loc multisig.sol, 325
 	DUP
 	ISNULL
 	THROWIF 63
-	.loc multisig.sol, 330
+	.loc multisig.sol, 326
 	DUP
 	SECOND
 	PUSHINT 1
 	PUSH S3
-	.loc multisig.sol, 197
+	.loc multisig.sol, 193
 	LSHIFT
 	AND
 	THROWIF 103
-	.loc multisig.sol, 331
+	.loc multisig.sol, 327
 	ACCEPT
-	.loc multisig.sol, 333
+	.loc multisig.sol, 329
 	TUCK
-	.loc multisig.sol, 345
+	.loc multisig.sol, 341
 	INDEX 3
 	INC
 	PUSH S2
 	THIRD
 	GEQ
 	PUSHCONT {
-		.loc multisig.sol, 346
+		.loc multisig.sol, 342
 		OVER
 		INDEX 8
 		PUSH S2
@@ -359,10 +359,10 @@
 		PUSH S2
 		INDEX 9
 		SENDRAWMSG
-		.loc multisig.sol, 347
+		.loc multisig.sol, 343
 		OVER
 		INDEX 5
-		.loc multisig.sol, 192
+		.loc multisig.sol, 188
 		GETGLOB 11
 		PUSHINT 8
 		ROT
@@ -371,7 +371,7 @@
 		SUB
 		.loc multisig.sol, 0
 		SETGLOB 11
-		.loc multisig.sol, 348
+		.loc multisig.sol, 344
 		PUSH S2
 		GETGLOB 12
 		PUSHINT 64
@@ -379,24 +379,24 @@
 		DROP
 	}
 	PUSHCONT {
-		.loc multisig.sol, 350
+		.loc multisig.sol, 346
 		OVER
 		SECOND
 		PUSHINT 1
 		PUSH S2
-		.loc multisig.sol, 211
+		.loc multisig.sol, 207
 		LSHIFT
 		OR
 		.loc multisig.sol, 0
 		PUXC S2, S-1
 		SETINDEX 1
-		.loc multisig.sol, 351
+		.loc multisig.sol, 347
 		DUP
 		INDEX 3
 		INC
 		SETINDEX 3
 		POP S2
-		.loc multisig.sol, 352
+		.loc multisig.sol, 348
 		PUSH S2
 		GETGLOB 12
 		PUSH S3
@@ -440,7 +440,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc multisig.sol, 324
+	.loc multisig.sol, 320
 	OVER
 	PUSHCONT {
 		LDREF
@@ -461,7 +461,7 @@
 }
 
 .fragment confirmUpdate_0c724767_internal, {
-	.loc multisig.sol, 502
+	.loc multisig.sol, 498
 	GETGLOB 5
 	DUP
 	ISNULL
@@ -470,7 +470,7 @@
 		PUSHINT 0
 	}
 	IF
-	.loc multisig.sol, 221
+	.loc multisig.sol, 217
 	GETGLOB 13
 	PUSHPOW2 8
 	DICTUGET
@@ -479,22 +479,22 @@
 		PLDU 8
 	}
 	IF
-	.loc multisig.sol, 222
+	.loc multisig.sol, 218
 	DUP
 	ISNULL
 	THROWIF 100
-	.loc multisig.sol, 223
+	.loc multisig.sol, 219
 	DUP
 	ISNULL
 	THROWIF 63
-	.loc multisig.sol, 503
+	.loc multisig.sol, 499
 	PUSHCONT {
-		.loc multisig.sol, 233
+		.loc multisig.sol, 229
 		NOW
 		PUSHINT 3601
 		SUB
 		LSHIFT 32
-		.loc multisig.sol, 567
+		.loc multisig.sol, 563
 		GETGLOB 15
 		PUSHINT 64
 		DICTUMIN
@@ -517,42 +517,42 @@
 			TUPLE 8
 			PAIR
 		}
-		.loc multisig.sol, 568
+		.loc multisig.sol, 564
 		DUP
 		ISNULL
 		PUSHCONT {
-			.loc multisig.sol, 568
+			.loc multisig.sol, 564
 			DROP2
 			.loc multisig.sol, 0
 		}
 		IFJMP
-		.loc multisig.sol, 569
+		.loc multisig.sol, 565
 		BLKPUSH 2, 0
 		ISNULL
 		THROWIF 63
 		UNPAIR
-		.loc multisig.sol, 570
+		.loc multisig.sol, 566
 		PUSH2 S1, S3
 		LEQ
-		.loc multisig.sol, 571
+		.loc multisig.sol, 567
 		DUP
 		PUSHCONT {
-			.loc multisig.sol, 571
+			.loc multisig.sol, 567
 			BLKDROP 5
 			.loc multisig.sol, 0
 		}
 		IFNOTJMP
-		.loc multisig.sol, 573
+		.loc multisig.sol, 569
 		ACCEPT
-		.loc multisig.sol, 574
+		.loc multisig.sol, 570
 		PUSHCONT {
 			DUP
 		}
 		PUSHCONT {
-			.loc multisig.sol, 576
+			.loc multisig.sol, 572
 			BLKPUSH 2, 2
 			SECOND
-			.loc multisig.sol, 589
+			.loc multisig.sol, 585
 			PUSHPOW2DEC 32
 			PUSHINT 1
 			ROT
@@ -561,13 +561,13 @@
 			GETGLOB 16
 			AND
 			SETGLOB 16
-			.loc multisig.sol, 590
+			.loc multisig.sol, 586
 			GETGLOB 15
 			PUSHINT 64
 			DICTUDEL
 			DROP
 			SETGLOB 15
-			.loc multisig.sol, 577
+			.loc multisig.sol, 573
 			PUSH S2
 			GETGLOB 15
 			PUSHINT 64
@@ -592,22 +592,22 @@
 				PAIR
 			}
 			POP S4
-			.loc multisig.sol, 578
+			.loc multisig.sol, 574
 			PUSH S3
 			ISNULL
 			NOT
 			NIP
-			.loc multisig.sol, 579
+			.loc multisig.sol, 575
 			DUP
 			PUSHCONT {
-				.loc multisig.sol, 580
+				.loc multisig.sol, 576
 				PUSH2 S3, S3
 				ISNULL
 				THROWIF 63
 				UNPAIR
 				PUXC2 S1, S3, S4
 				DROP2
-				.loc multisig.sol, 581
+				.loc multisig.sol, 577
 				PUSH S5
 				LEQ
 				NIP
@@ -617,16 +617,16 @@
 			.loc multisig.sol, 0
 		}
 		WHILE
-		.loc multisig.sol, 584
+		.loc multisig.sol, 580
 		BLKDROP 5
 		CALLREF {
 			.inline c7_to_c4
 		}
 		COMMIT
-		.loc multisig.sol, 565
+		.loc multisig.sol, 561
 	}
 	CALLX
-	.loc multisig.sol, 504
+	.loc multisig.sol, 500
 	OVER
 	GETGLOB 15
 	PUSHINT 64
@@ -648,25 +648,25 @@
 		ENDS
 		TUPLE 8
 	}
-	.loc multisig.sol, 505
+	.loc multisig.sol, 501
 	DUP
 	ISNULL
 	THROWIF 115
-	.loc multisig.sol, 506
+	.loc multisig.sol, 502
 	DUP
 	ISNULL
 	THROWIF 63
-	.loc multisig.sol, 507
+	.loc multisig.sol, 503
 	INDEX 3
 	PUSHINT 1
 	PUSH S2
-	.loc multisig.sol, 197
+	.loc multisig.sol, 193
 	LSHIFT
 	AND
 	THROWIF 116
-	.loc multisig.sol, 508
+	.loc multisig.sol, 504
 	ACCEPT
-	.loc multisig.sol, 558
+	.loc multisig.sol, 554
 	OVER
 	GETGLOB 15
 	PUSHINT 64
@@ -696,22 +696,22 @@
 		PUSHINT 0
 		TUPLE 8
 	}
-	.loc multisig.sol, 559
+	.loc multisig.sol, 555
 	DUP
 	THIRD
 	INC
 	SETINDEX 2
-	.loc multisig.sol, 560
+	.loc multisig.sol, 556
 	DUP
 	INDEX 3
 	PUSHINT 1
 	ROLL 3
-	.loc multisig.sol, 211
+	.loc multisig.sol, 207
 	LSHIFT
 	OR
 	.loc multisig.sol, 0
 	SETINDEX 3
-	.loc multisig.sol, 561
+	.loc multisig.sol, 557
 	GETGLOB 15
 	SWAP
 	CALLREF {
@@ -747,7 +747,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc multisig.sol, 501
+	.loc multisig.sol, 497
 	OVER
 	PUSHCONT {
 		LDREF
@@ -799,9 +799,9 @@
 	IFELSE
 	LDU 64
 	ENDS
-	.loc multisig.sol, 162
-	.blob xC727
-	.loc multisig.sol, 163
+	.loc multisig.sol, 158
+	CNVRTSHELLQ
+	.loc multisig.sol, 159
 	GETGLOB 5
 	DUP
 	ISNULL
@@ -813,7 +813,7 @@
 	GETGLOB 2
 	EQUAL
 	THROWIFNOT 100
-	.loc multisig.sol, 164
+	.loc multisig.sol, 160
 	OVER
 	FIRST
 	GTINT 0
@@ -822,22 +822,22 @@
 	LESSINT 33
 	AND
 	THROWIFNOT 117
-	.loc multisig.sol, 165
+	.loc multisig.sol, 161
 	ACCEPT
-	.loc multisig.sol, 143
+	.loc multisig.sol, 139
 	PUSHINT 0
 	PUSH2 S0, S2
-	.loc multisig.sol, 144
+	.loc multisig.sol, 140
 	SECOND
 	PUSHINT 32
 	DICTUGET
 	THROWIFNOT 50
 	PLDU 256
 	SETGLOB 10
-	.loc multisig.sol, 146
+	.loc multisig.sol, 142
 	PUSH S2
 	FIRST
-	.loc multisig.sol, 147
+	.loc multisig.sol, 143
 	PUSHINT 0
 	PUSHCONT {
 		PUSH2 S0, S1
@@ -847,14 +847,14 @@
 		AND
 	}
 	PUSHCONT {
-		.loc multisig.sol, 148
+		.loc multisig.sol, 144
 		PUSH2 S0, S4
 		SECOND
 		PUSHINT 32
 		DICTUGET
 		THROWIFNOT 50
 		PLDU 256
-		.loc multisig.sol, 149
+		.loc multisig.sol, 145
 		DUP
 		GETGLOB 13
 		PUSHPOW2 8
@@ -862,7 +862,7 @@
 		NULLSWAPIFNOT
 		NIP
 		PUSHCONT {
-			.loc multisig.sol, 150
+			.loc multisig.sol, 146
 			PUSH2 S3, S3
 			INC
 			POP S5
@@ -880,19 +880,19 @@
 		IFNOT
 		.loc multisig.sol, 0
 		DROP
-		.loc multisig.sol, 147
+		.loc multisig.sol, 143
 		INC
 		.loc multisig.sol, 0
 	}
 	WHILE
 	DROP2
 	PUSH2 S0, S1
-	.loc multisig.sol, 153
+	.loc multisig.sol, 149
 	LEQ
-	PUXC2 S0, S0, S2
+	PUXC2 S1, S1, S2
 	CONDSEL
 	SETGLOB 18
-	.loc multisig.sol, 154
+	.loc multisig.sol, 150
 	DUP
 	LESSINT 3
 	PUSHCONT {
@@ -907,7 +907,7 @@
 	}
 	IFELSE
 	SETGLOB 17
-	.loc multisig.sol, 155
+	.loc multisig.sol, 151
 	SETGLOB 14
 	.loc multisig.sol, 0
 	DROP
@@ -918,7 +918,7 @@
 }
 
 .fragment exchangeToken_53d168e3_internal, {
-	.loc multisig.sol, 170
+	.loc multisig.sol, 166
 	GETGLOB 5
 	DUP
 	ISNULL
@@ -927,7 +927,7 @@
 		PUSHINT 0
 	}
 	IF
-	.loc multisig.sol, 221
+	.loc multisig.sol, 217
 	GETGLOB 13
 	PUSHPOW2 8
 	DICTUGET
@@ -936,17 +936,17 @@
 		PLDU 8
 	}
 	IF
-	.loc multisig.sol, 222
+	.loc multisig.sol, 218
 	DUP
 	ISNULL
 	THROWIF 100
-	.loc multisig.sol, 223
+	.loc multisig.sol, 219
 	ISNULL
 	THROWIF 63
-	.loc multisig.sol, 172
+	.loc multisig.sol, 168
 	ACCEPT
-	.loc multisig.sol, 173
-	.blob xC727
+	.loc multisig.sol, 169
+	CNVRTSHELLQ
 	.loc multisig.sol, 0
 }
 
@@ -975,7 +975,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc multisig.sol, 169
+	.loc multisig.sol, 165
 	OVER
 	PUSHCONT {
 		LDREF
@@ -996,7 +996,7 @@
 }
 
 .fragment executeUpdate_4a0c553b_internal, {
-	.loc multisig.sol, 517
+	.loc multisig.sol, 513
 	GETGLOB 5
 	DUP
 	ISNULL
@@ -1011,14 +1011,14 @@
 	NULLSWAPIFNOT
 	NIP
 	THROWIFNOT 100
-	.loc multisig.sol, 518
+	.loc multisig.sol, 514
 	PUSHCONT {
-		.loc multisig.sol, 233
+		.loc multisig.sol, 229
 		NOW
 		PUSHINT 3601
 		SUB
 		LSHIFT 32
-		.loc multisig.sol, 567
+		.loc multisig.sol, 563
 		GETGLOB 15
 		PUSHINT 64
 		DICTUMIN
@@ -1041,42 +1041,42 @@
 			TUPLE 8
 			PAIR
 		}
-		.loc multisig.sol, 568
+		.loc multisig.sol, 564
 		DUP
 		ISNULL
 		PUSHCONT {
-			.loc multisig.sol, 568
+			.loc multisig.sol, 564
 			DROP2
 			.loc multisig.sol, 0
 		}
 		IFJMP
-		.loc multisig.sol, 569
+		.loc multisig.sol, 565
 		BLKPUSH 2, 0
 		ISNULL
 		THROWIF 63
 		UNPAIR
-		.loc multisig.sol, 570
+		.loc multisig.sol, 566
 		PUSH2 S1, S3
 		LEQ
-		.loc multisig.sol, 571
+		.loc multisig.sol, 567
 		DUP
 		PUSHCONT {
-			.loc multisig.sol, 571
+			.loc multisig.sol, 567
 			BLKDROP 5
 			.loc multisig.sol, 0
 		}
 		IFNOTJMP
-		.loc multisig.sol, 573
+		.loc multisig.sol, 569
 		ACCEPT
-		.loc multisig.sol, 574
+		.loc multisig.sol, 570
 		PUSHCONT {
 			DUP
 		}
 		PUSHCONT {
-			.loc multisig.sol, 576
+			.loc multisig.sol, 572
 			BLKPUSH 2, 2
 			SECOND
-			.loc multisig.sol, 589
+			.loc multisig.sol, 585
 			PUSHPOW2DEC 32
 			PUSHINT 1
 			ROT
@@ -1085,13 +1085,13 @@
 			GETGLOB 16
 			AND
 			SETGLOB 16
-			.loc multisig.sol, 590
+			.loc multisig.sol, 586
 			GETGLOB 15
 			PUSHINT 64
 			DICTUDEL
 			DROP
 			SETGLOB 15
-			.loc multisig.sol, 577
+			.loc multisig.sol, 573
 			PUSH S2
 			GETGLOB 15
 			PUSHINT 64
@@ -1116,22 +1116,22 @@
 				PAIR
 			}
 			POP S4
-			.loc multisig.sol, 578
+			.loc multisig.sol, 574
 			PUSH S3
 			ISNULL
 			NOT
 			NIP
-			.loc multisig.sol, 579
+			.loc multisig.sol, 575
 			DUP
 			PUSHCONT {
-				.loc multisig.sol, 580
+				.loc multisig.sol, 576
 				PUSH2 S3, S3
 				ISNULL
 				THROWIF 63
 				UNPAIR
 				PUXC2 S1, S3, S4
 				DROP2
-				.loc multisig.sol, 581
+				.loc multisig.sol, 577
 				PUSH S5
 				LEQ
 				NIP
@@ -1141,16 +1141,16 @@
 			.loc multisig.sol, 0
 		}
 		WHILE
-		.loc multisig.sol, 584
+		.loc multisig.sol, 580
 		BLKDROP 5
 		CALLREF {
 			.inline c7_to_c4
 		}
 		COMMIT
-		.loc multisig.sol, 565
+		.loc multisig.sol, 561
 	}
 	CALLX
-	.loc multisig.sol, 519
+	.loc multisig.sol, 515
 	OVER
 	GETGLOB 15
 	PUSHINT 64
@@ -1172,33 +1172,33 @@
 		ENDS
 		TUPLE 8
 	}
-	.loc multisig.sol, 520
+	.loc multisig.sol, 516
 	DUP
 	ISNULL
 	THROWIF 115
-	.loc multisig.sol, 521
+	.loc multisig.sol, 517
 	DUP
 	ISNULL
 	THROWIF 63
-	.loc multisig.sol, 522
+	.loc multisig.sol, 518
 	OVER
 	HASHCU
 	OVER
 	INDEX 5
 	EQUAL
 	THROWIFNOT 119
-	.loc multisig.sol, 523
+	.loc multisig.sol, 519
 	DUP
 	THIRD
 	GETGLOB 17
 	GEQ
 	THROWIFNOT 120
-	.loc multisig.sol, 524
+	.loc multisig.sol, 520
 	ACCEPT
-	.loc multisig.sol, 526
+	.loc multisig.sol, 522
 	XC2PU S0, S2, S1
 	SECOND
-	.loc multisig.sol, 589
+	.loc multisig.sol, 585
 	PUSHPOW2DEC 32
 	PUSHINT 1
 	ROT
@@ -1207,16 +1207,16 @@
 	GETGLOB 16
 	AND
 	SETGLOB 16
-	.loc multisig.sol, 590
+	.loc multisig.sol, 586
 	GETGLOB 15
 	PUSHINT 64
 	DICTUDEL
 	DROP
 	SETGLOB 15
-	.loc multisig.sol, 528
+	.loc multisig.sol, 524
 	OVER
 	SETCODE
-	.loc multisig.sol, 529
+	.loc multisig.sol, 525
 	SWAP
 	CTOS
 	DUP
@@ -1231,7 +1231,7 @@
 	NIP
 	BLESS
 	POP C3
-	.loc multisig.sol, 530
+	.loc multisig.sol, 526
 	DUP
 	INDEX 6
 	SWAP
@@ -1251,7 +1251,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc multisig.sol, 516
+	.loc multisig.sol, 512
 	OVER
 	PUSHCONT {
 		LDREF
@@ -1287,11 +1287,11 @@
 }
 
 .fragment getCustodians_f3f1e6bf_internal, {
-	.loc multisig.sol, 463
+	.loc multisig.sol, 459
 	PUSHINT 0
 	NULL
 	PAIR
-	.loc multisig.sol, 464
+	.loc multisig.sol, 460
 	GETGLOB 13
 	PUSHPOW2 8
 	DICTUMIN
@@ -1302,19 +1302,19 @@
 		PAIR
 	}
 	IF
-	.loc multisig.sol, 465
+	.loc multisig.sol, 461
 	PUSHCONT {
 		DUP
 		ISNULL
 		NOT
 	}
 	PUSHCONT {
-		.loc multisig.sol, 466
+		.loc multisig.sol, 462
 		DUP
 		ISNULL
 		THROWIF 63
 		UNPAIR
-		.loc multisig.sol, 467
+		.loc multisig.sol, 463
 		PUXCPU S2, S-1, S1
 		PAIR
 		CALLREF {
@@ -1333,7 +1333,7 @@
 		DICTUSETB
 		PAIR
 		POP S2
-		.loc multisig.sol, 468
+		.loc multisig.sol, 464
 		GETGLOB 13
 		PUSHPOW2 8
 		DICTUGETNEXT
@@ -1360,7 +1360,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc multisig.sol, 463
+	.loc multisig.sol, 459
 	ENDS
 	.loc multisig.sol, 0
 	CALLREF {
@@ -1399,17 +1399,17 @@
 }
 
 .fragment getParameters_a5ea11da_internal, {
-	.loc multisig.sol, 408
+	.loc multisig.sol, 404
 	PUSHINT 5
-	.loc multisig.sol, 409
+	.loc multisig.sol, 405
 	PUSHINT 32
-	.loc multisig.sol, 410
+	.loc multisig.sol, 406
 	PUSHINT 3601
-	.loc multisig.sol, 411
+	.loc multisig.sol, 407
 	PUSHINT 1000000
-	.loc multisig.sol, 412
+	.loc multisig.sol, 408
 	GETGLOB 18
-	.loc multisig.sol, 413
+	.loc multisig.sol, 409
 	GETGLOB 17
 	.loc multisig.sol, 0
 }
@@ -1423,7 +1423,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc multisig.sol, 400
+	.loc multisig.sol, 396
 	ENDS
 	.loc multisig.sol, 0
 	CALLREF {
@@ -1465,7 +1465,7 @@
 }
 
 .fragment getTransaction_b07e2a3a_internal, {
-	.loc multisig.sol, 421
+	.loc multisig.sol, 417
 	GETGLOB 12
 	PUSHINT 64
 	DICTUGETREF
@@ -1492,11 +1492,11 @@
 			TUPLE 12
 		}
 	}
-	.loc multisig.sol, 422
+	.loc multisig.sol, 418
 	DUP
 	ISNULL
 	THROWIF 102
-	.loc multisig.sol, 423
+	.loc multisig.sol, 419
 	DUP
 	ISNULL
 	THROWIF 63
@@ -1512,7 +1512,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc multisig.sol, 419
+	.loc multisig.sol, 415
 	OVER
 	PUSHCONT {
 		LDREF
@@ -1576,13 +1576,13 @@
 }
 
 .fragment getTransactionIds_a2e38b54_internal, {
-	.loc multisig.sol, 444
+	.loc multisig.sol, 440
 	PUSHINT 0
 	NULL
 	PAIR
-	.loc multisig.sol, 445
+	.loc multisig.sol, 441
 	PUSHINT 0
-	.loc multisig.sol, 446
+	.loc multisig.sol, 442
 	GETGLOB 12
 	PUSHINT 64
 	DICTUMINREF
@@ -1611,21 +1611,21 @@
 		}
 		PAIR
 	}
-	.loc multisig.sol, 447
+	.loc multisig.sol, 443
 	PUSHCONT {
 		DUP
 		ISNULL
 		NOT
 	}
 	PUSHCONT {
-		.loc multisig.sol, 448
+		.loc multisig.sol, 444
 		DUP
 		ISNULL
 		THROWIF 63
 		UNPAIR
 		XCPU2 S1, S3, S0
 		BLKDROP2 2, 3
-		.loc multisig.sol, 449
+		.loc multisig.sol, 445
 		NEWC
 		STU 64
 		SWAP
@@ -1637,7 +1637,7 @@
 		DICTUSETB
 		PAIR
 		POP S2
-		.loc multisig.sol, 450
+		.loc multisig.sol, 446
 		DUP
 		GETGLOB 12
 		PUSHINT 64
@@ -1684,7 +1684,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc multisig.sol, 444
+	.loc multisig.sol, 440
 	ENDS
 	.loc multisig.sol, 0
 	CALLREF {
@@ -1723,16 +1723,16 @@
 }
 
 .fragment getTransactions_83920e90_internal, {
-	.loc multisig.sol, 429
+	.loc multisig.sol, 425
 	PUSHINT 0
 	NULL
 	PAIR
-	.loc multisig.sol, 233
+	.loc multisig.sol, 229
 	NOW
 	PUSHINT 3601
 	SUB
 	LSHIFT 32
-	.loc multisig.sol, 431
+	.loc multisig.sol, 427
 	GETGLOB 12
 	PUSHINT 64
 	DICTUMINREF
@@ -1761,23 +1761,23 @@
 		}
 		PAIR
 	}
-	.loc multisig.sol, 432
+	.loc multisig.sol, 428
 	PUSHCONT {
 		DUP
 		ISNULL
 		NOT
 	}
 	PUSHCONT {
-		.loc multisig.sol, 434
+		.loc multisig.sol, 430
 		DUP
 		ISNULL
 		THROWIF 63
 		UNPAIR
-		.loc multisig.sol, 435
+		.loc multisig.sol, 431
 		PUSH2 S1, S2
 		GREATER
 		PUSHCONT {
-			.loc multisig.sol, 436
+			.loc multisig.sol, 432
 			PUSH2 S3, S0
 			CALLREF {
 				UNTUPLE 12
@@ -1812,7 +1812,7 @@
 			.loc multisig.sol, 0
 		}
 		IF
-		.loc multisig.sol, 438
+		.loc multisig.sol, 434
 		DROP
 		GETGLOB 12
 		PUSHINT 64
@@ -1859,7 +1859,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc multisig.sol, 429
+	.loc multisig.sol, 425
 	ENDS
 	.loc multisig.sol, 0
 	CALLREF {
@@ -1898,16 +1898,16 @@
 }
 
 .fragment getUpdateRequests_bd5fbb67_internal, {
-	.loc multisig.sol, 534
+	.loc multisig.sol, 530
 	PUSHINT 0
 	NULL
 	PAIR
-	.loc multisig.sol, 233
+	.loc multisig.sol, 229
 	NOW
 	PUSHINT 3601
 	SUB
 	LSHIFT 32
-	.loc multisig.sol, 536
+	.loc multisig.sol, 532
 	GETGLOB 15
 	PUSHINT 64
 	DICTUMIN
@@ -1930,23 +1930,23 @@
 		TUPLE 8
 		PAIR
 	}
-	.loc multisig.sol, 537
+	.loc multisig.sol, 533
 	PUSHCONT {
 		DUP
 		ISNULL
 		NOT
 	}
 	PUSHCONT {
-		.loc multisig.sol, 538
+		.loc multisig.sol, 534
 		DUP
 		ISNULL
 		THROWIF 63
 		UNPAIR
-		.loc multisig.sol, 539
+		.loc multisig.sol, 535
 		PUSH2 S1, S2
 		GREATER
 		PUSHCONT {
-			.loc multisig.sol, 540
+			.loc multisig.sol, 536
 			PUSH2 S3, S0
 			CALLREF {
 				UNTUPLE 8
@@ -1977,7 +1977,7 @@
 			.loc multisig.sol, 0
 		}
 		IF
-		.loc multisig.sol, 542
+		.loc multisig.sol, 538
 		DROP
 		GETGLOB 15
 		PUSHINT 64
@@ -2017,7 +2017,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc multisig.sol, 534
+	.loc multisig.sol, 530
 	ENDS
 	.loc multisig.sol, 0
 	CALLREF {
@@ -2056,7 +2056,7 @@
 }
 
 .fragment getVersion_0d8e6e2c_internal, {
-	.loc multisig.sol, 602
+	.loc multisig.sol, 598
 	PUSHREF {
 		.blob x312e302e30
 	}
@@ -2070,7 +2070,7 @@
 	DROP
 	GETGLOB 6
 	THROWIFNOT 76
-	.loc multisig.sol, 601
+	.loc multisig.sol, 597
 	ENDS
 	.loc multisig.sol, 0
 	CALLREF {
@@ -2108,7 +2108,7 @@
 }
 
 .fragment isConfirmed_add86222_internal, {
-	.loc multisig.sol, 197
+	.loc multisig.sol, 193
 	PUSHINT 1
 	SWAP
 	LSHIFT
@@ -2121,7 +2121,7 @@
 	DROP
 	GETGLOB 6
 	THROWIFNOT 76
-	.loc multisig.sol, 389
+	.loc multisig.sol, 385
 	LDU 32
 	LDU 8
 	ENDS
@@ -2158,11 +2158,11 @@
 }
 
 .fragment sendTransaction_b5fb0cc7_internal, {
-	.loc multisig.sol, 274
+	.loc multisig.sol, 270
 	GETGLOB 14
 	EQINT 1
 	THROWIFNOT 108
-	.loc multisig.sol, 275
+	.loc multisig.sol, 271
 	GETGLOB 5
 	DUP
 	ISNULL
@@ -2174,9 +2174,9 @@
 	GETGLOB 10
 	EQUAL
 	THROWIFNOT 100
-	.loc multisig.sol, 276
+	.loc multisig.sol, 272
 	ACCEPT
-	.loc multisig.sol, 277
+	.loc multisig.sol, 273
 	XCHG3 S0, S3, S4
 	UFITS 120
 	BLKSWAP 2, 4
@@ -2206,7 +2206,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc multisig.sol, 266
+	.loc multisig.sol, 262
 	OVER
 	PUSHCONT {
 		LDREF
@@ -2232,14 +2232,14 @@
 }
 
 .fragment tvm_ctos_2d5b4b5f_internal, {
-	.loc multisig.sol, 134
+	.loc multisig.sol, 130
 	DROP
 	PUSHINT 0
 	.loc multisig.sol, 0
 }
 
 .fragment tvm_tree_cell_size_14f2ec38_internal, {
-	.loc multisig.sol, 135
+	.loc multisig.sol, 131
 	DROP
 	PUSHINT 0
 	DUP
@@ -2247,9 +2247,9 @@
 }
 
 .fragment submitTransaction_a7500750_internal, {
-	.loc multisig.sol, 287
+	.loc multisig.sol, 283
 	PUSHINT 0
-	.loc multisig.sol, 296
+	.loc multisig.sol, 292
 	GETGLOB 5
 	DUP
 	ISNULL
@@ -2258,9 +2258,9 @@
 		PUSHINT 0
 	}
 	IF
-	.loc multisig.sol, 297
+	.loc multisig.sol, 293
 	DUP
-	.loc multisig.sol, 221
+	.loc multisig.sol, 217
 	GETGLOB 13
 	PUSHPOW2 8
 	DICTUGET
@@ -2269,20 +2269,20 @@
 		PLDU 8
 	}
 	IF
-	.loc multisig.sol, 222
+	.loc multisig.sol, 218
 	DUP
 	ISNULL
 	THROWIF 100
-	.loc multisig.sol, 223
+	.loc multisig.sol, 219
 	DUP
 	ISNULL
 	THROWIF 63
-	.loc multisig.sol, 298
+	.loc multisig.sol, 294
 	PUSH S7
 	PUSHINT 1000000
 	GEQ
 	THROWIFNOT 107
-	.loc multisig.sol, 299
+	.loc multisig.sol, 295
 	PUSH S3
 	CALLREF {
 		.inline tvm_ctos_2d5b4b5f_internal
@@ -2290,7 +2290,7 @@
 	CALLREF {
 		.inline tvm_tree_cell_size_14f2ec38_internal
 	}
-	.loc multisig.sol, 300
+	.loc multisig.sol, 296
 	OVER
 	PUSHPOW2 13
 	LESS
@@ -2298,14 +2298,14 @@
 	LESSINT 8
 	AND
 	THROWIFNOT 121
-	.loc multisig.sol, 301
+	.loc multisig.sol, 297
 	PUSHCONT {
-		.loc multisig.sol, 233
+		.loc multisig.sol, 229
 		NOW
 		PUSHINT 3601
 		SUB
 		LSHIFT 32
-		.loc multisig.sol, 359
+		.loc multisig.sol, 355
 		GETGLOB 12
 		PUSHINT 64
 		DICTUMINREF
@@ -2334,48 +2334,48 @@
 			}
 			PAIR
 		}
-		.loc multisig.sol, 360
+		.loc multisig.sol, 356
 		DUP
 		ISNULL
 		PUSHCONT {
-			.loc multisig.sol, 360
+			.loc multisig.sol, 356
 			DROP2
 			.loc multisig.sol, 0
 		}
 		IFJMP
-		.loc multisig.sol, 361
+		.loc multisig.sol, 357
 		BLKPUSH 2, 0
 		ISNULL
 		THROWIF 63
 		UNPAIR
-		.loc multisig.sol, 362
+		.loc multisig.sol, 358
 		PUSH2 S1, S3
 		LEQ
-		.loc multisig.sol, 363
+		.loc multisig.sol, 359
 		DUP
 		PUSHCONT {
-			.loc multisig.sol, 363
+			.loc multisig.sol, 359
 			BLKDROP 5
 			.loc multisig.sol, 0
 		}
 		IFNOTJMP
-		.loc multisig.sol, 365
+		.loc multisig.sol, 361
 		ACCEPT
-		.loc multisig.sol, 366
+		.loc multisig.sol, 362
 		PUSHINT 0
-		.loc multisig.sol, 367
+		.loc multisig.sol, 363
 		PUSHCONT {
 			DUP2
 			LESSINT 40
 			AND
 		}
 		PUSHCONT {
-			.loc multisig.sol, 369
+			.loc multisig.sol, 365
 			INC
-			.loc multisig.sol, 370
+			.loc multisig.sol, 366
 			PUSH S2
 			INDEX 5
-			.loc multisig.sol, 192
+			.loc multisig.sol, 188
 			GETGLOB 11
 			PUSHINT 8
 			ROT
@@ -2384,14 +2384,14 @@
 			SUB
 			.loc multisig.sol, 0
 			SETGLOB 11
-			.loc multisig.sol, 371
+			.loc multisig.sol, 367
 			PUSH S3
 			GETGLOB 12
 			PUSHINT 64
 			DICTUDEL
 			DROP
 			SETGLOB 12
-			.loc multisig.sol, 372
+			.loc multisig.sol, 368
 			PUSH S3
 			GETGLOB 12
 			PUSHINT 64
@@ -2423,22 +2423,22 @@
 				PAIR
 			}
 			POP S5
-			.loc multisig.sol, 373
+			.loc multisig.sol, 369
 			PUSH S4
 			ISNULL
 			PUSHCONT {
-				.loc multisig.sol, 374
+				.loc multisig.sol, 370
 				FALSE
 			}
 			PUSHCONT {
-				.loc multisig.sol, 376
+				.loc multisig.sol, 372
 				PUSH2 S4, S4
 				ISNULL
 				THROWIF 63
 				UNPAIR
 				PUXC2 S1, S4, S5
 				DROP2
-				.loc multisig.sol, 377
+				.loc multisig.sol, 373
 				PUSH S6
 				LEQ
 			}
@@ -2447,64 +2447,64 @@
 			.loc multisig.sol, 0
 		}
 		WHILE
-		.loc multisig.sol, 380
+		.loc multisig.sol, 376
 		BLKDROP 6
 		CALLREF {
 			.inline c7_to_c4
 		}
 		COMMIT
-		.loc multisig.sol, 357
+		.loc multisig.sol, 353
 	}
 	CALLX
-	.loc multisig.sol, 302
+	.loc multisig.sol, 298
 	DROP2
 	GETGLOB 11
 	OVER
 	MULCONST 8
-	.loc multisig.sol, 182
+	.loc multisig.sol, 178
 	RSHIFT
 	MODPOW2 8
 	UFITS 8
 	.loc multisig.sol, 0
 	LESSINT 5
 	THROWIFNOT 113
-	.loc multisig.sol, 303
+	.loc multisig.sol, 299
 	ACCEPT
-	.loc multisig.sol, 305
+	.loc multisig.sol, 301
 	XCHG3 S5, S1, S3
 	XCHG3 S7, S4, S6
-	.loc multisig.sol, 238
+	.loc multisig.sol, 234
 	PUSHINT 2
 	PUSHINT 1
 	OR
-	.loc multisig.sol, 239
+	.loc multisig.sol, 235
 	ROT
 	PUSHCONT {
-		.loc multisig.sol, 240
+		.loc multisig.sol, 236
 		PUSHINT 2
 		PUSHPOW2 7
 		OR
 		NIP
-		.loc multisig.sol, 241
+		.loc multisig.sol, 237
 		GETPARAM 7
 		FIRST
 		POP S3
-		.loc multisig.sol, 242
+		.loc multisig.sol, 238
 		GETPARAM 7
 		SECOND
 		POP S2
 		.loc multisig.sol, 0
 	}
 	IF
-	.loc multisig.sol, 244
+	.loc multisig.sol, 240
 	ROTREV
-	.loc multisig.sol, 306
+	.loc multisig.sol, 302
 	GETGLOB 18
-	.loc multisig.sol, 308
+	.loc multisig.sol, 304
 	DUP
 	EQINT 1
 	PUSHCONT {
-		.loc multisig.sol, 309
+		.loc multisig.sol, 305
 		DROP
 		SWAP
 		UFITS 120
@@ -2524,28 +2524,28 @@
 		ENDC
 		SWAP
 		SENDRAWMSG
-		.loc multisig.sol, 310
+		.loc multisig.sol, 306
 		BLKDROP 3
 		PUSHINT 0
 		.loc multisig.sol, 0
 	}
 	PUSHCONT {
-		.loc multisig.sol, 312
+		.loc multisig.sol, 308
 		GETGLOB 11
 		PUSH S5
 		MULCONST 8
-		.loc multisig.sol, 187
+		.loc multisig.sol, 183
 		POW2
 		ADD
 		.loc multisig.sol, 0
 		SETGLOB 11
-		.loc multisig.sol, 228
+		.loc multisig.sol, 224
 		NOW
 		LSHIFT 32
 		LTIME
 		MODPOW2 32
 		OR
-		.loc multisig.sol, 314
+		.loc multisig.sol, 310
 		DUP
 		PUSHINT 0
 		ROLL 3
@@ -2558,17 +2558,17 @@
 		BLKSWAP 2, 13
 		SWAP
 		TUPLE 12
-		.loc multisig.sol, 317
+		.loc multisig.sol, 313
 		DUP2
 		XCHG S1, S4
-		.loc multisig.sol, 345
+		.loc multisig.sol, 341
 		INDEX 3
 		INC
 		PUSH S2
 		THIRD
 		GEQ
 		PUSHCONT {
-			.loc multisig.sol, 346
+			.loc multisig.sol, 342
 			OVER
 			INDEX 8
 			PUSH S2
@@ -2595,10 +2595,10 @@
 			PUSH S2
 			INDEX 9
 			SENDRAWMSG
-			.loc multisig.sol, 347
+			.loc multisig.sol, 343
 			OVER
 			INDEX 5
-			.loc multisig.sol, 192
+			.loc multisig.sol, 188
 			GETGLOB 11
 			PUSHINT 8
 			ROT
@@ -2607,7 +2607,7 @@
 			SUB
 			.loc multisig.sol, 0
 			SETGLOB 11
-			.loc multisig.sol, 348
+			.loc multisig.sol, 344
 			PUSH S2
 			GETGLOB 12
 			PUSHINT 64
@@ -2615,24 +2615,24 @@
 			DROP
 		}
 		PUSHCONT {
-			.loc multisig.sol, 350
+			.loc multisig.sol, 346
 			OVER
 			SECOND
 			PUSHINT 1
 			PUSH S2
-			.loc multisig.sol, 211
+			.loc multisig.sol, 207
 			LSHIFT
 			OR
 			.loc multisig.sol, 0
 			PUXC S2, S-1
 			SETINDEX 1
-			.loc multisig.sol, 351
+			.loc multisig.sol, 347
 			DUP
 			INDEX 3
 			INC
 			SETINDEX 3
 			POP S2
-			.loc multisig.sol, 352
+			.loc multisig.sol, 348
 			PUSH S2
 			GETGLOB 12
 			PUSH S3
@@ -2665,7 +2665,7 @@
 		SETGLOB 12
 		.loc multisig.sol, 0
 		BLKDROP 3
-		.loc multisig.sol, 318
+		.loc multisig.sol, 314
 		NIP
 		.loc multisig.sol, 0
 	}
@@ -2682,7 +2682,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc multisig.sol, 287
+	.loc multisig.sol, 283
 	OVER
 	PUSHCONT {
 		LDREF
@@ -2730,9 +2730,9 @@
 }
 
 .fragment submitUpdate_cf95ea5a_internal, {
-	.loc multisig.sol, 481
+	.loc multisig.sol, 477
 	PUSHINT 0
-	.loc multisig.sol, 484
+	.loc multisig.sol, 480
 	GETGLOB 5
 	DUP
 	ISNULL
@@ -2741,9 +2741,9 @@
 		PUSHINT 0
 	}
 	IF
-	.loc multisig.sol, 485
+	.loc multisig.sol, 481
 	DUP
-	.loc multisig.sol, 221
+	.loc multisig.sol, 217
 	GETGLOB 13
 	PUSHPOW2 8
 	DICTUGET
@@ -2752,15 +2752,15 @@
 		PLDU 8
 	}
 	IF
-	.loc multisig.sol, 222
+	.loc multisig.sol, 218
 	DUP
 	ISNULL
 	THROWIF 100
-	.loc multisig.sol, 223
+	.loc multisig.sol, 219
 	DUP
 	ISNULL
 	THROWIF 63
-	.loc multisig.sol, 486
+	.loc multisig.sol, 482
 	PUSH S4
 	FIRST
 	GTINT 0
@@ -2769,14 +2769,14 @@
 	LESSINT 33
 	AND
 	THROWIFNOT 117
-	.loc multisig.sol, 487
+	.loc multisig.sol, 483
 	PUSHCONT {
-		.loc multisig.sol, 233
+		.loc multisig.sol, 229
 		NOW
 		PUSHINT 3601
 		SUB
 		LSHIFT 32
-		.loc multisig.sol, 567
+		.loc multisig.sol, 563
 		GETGLOB 15
 		PUSHINT 64
 		DICTUMIN
@@ -2799,42 +2799,42 @@
 			TUPLE 8
 			PAIR
 		}
-		.loc multisig.sol, 568
+		.loc multisig.sol, 564
 		DUP
 		ISNULL
 		PUSHCONT {
-			.loc multisig.sol, 568
+			.loc multisig.sol, 564
 			DROP2
 			.loc multisig.sol, 0
 		}
 		IFJMP
-		.loc multisig.sol, 569
+		.loc multisig.sol, 565
 		BLKPUSH 2, 0
 		ISNULL
 		THROWIF 63
 		UNPAIR
-		.loc multisig.sol, 570
+		.loc multisig.sol, 566
 		PUSH2 S1, S3
 		LEQ
-		.loc multisig.sol, 571
+		.loc multisig.sol, 567
 		DUP
 		PUSHCONT {
-			.loc multisig.sol, 571
+			.loc multisig.sol, 567
 			BLKDROP 5
 			.loc multisig.sol, 0
 		}
 		IFNOTJMP
-		.loc multisig.sol, 573
+		.loc multisig.sol, 569
 		ACCEPT
-		.loc multisig.sol, 574
+		.loc multisig.sol, 570
 		PUSHCONT {
 			DUP
 		}
 		PUSHCONT {
-			.loc multisig.sol, 576
+			.loc multisig.sol, 572
 			BLKPUSH 2, 2
 			SECOND
-			.loc multisig.sol, 589
+			.loc multisig.sol, 585
 			PUSHPOW2DEC 32
 			PUSHINT 1
 			ROT
@@ -2843,13 +2843,13 @@
 			GETGLOB 16
 			AND
 			SETGLOB 16
-			.loc multisig.sol, 590
+			.loc multisig.sol, 586
 			GETGLOB 15
 			PUSHINT 64
 			DICTUDEL
 			DROP
 			SETGLOB 15
-			.loc multisig.sol, 577
+			.loc multisig.sol, 573
 			PUSH S2
 			GETGLOB 15
 			PUSHINT 64
@@ -2874,22 +2874,22 @@
 				PAIR
 			}
 			POP S4
-			.loc multisig.sol, 578
+			.loc multisig.sol, 574
 			PUSH S3
 			ISNULL
 			NOT
 			NIP
-			.loc multisig.sol, 579
+			.loc multisig.sol, 575
 			DUP
 			PUSHCONT {
-				.loc multisig.sol, 580
+				.loc multisig.sol, 576
 				PUSH2 S3, S3
 				ISNULL
 				THROWIF 63
 				UNPAIR
 				PUXC2 S1, S3, S4
 				DROP2
-				.loc multisig.sol, 581
+				.loc multisig.sol, 577
 				PUSH S5
 				LEQ
 				NIP
@@ -2899,35 +2899,35 @@
 			.loc multisig.sol, 0
 		}
 		WHILE
-		.loc multisig.sol, 584
+		.loc multisig.sol, 580
 		BLKDROP 5
 		CALLREF {
 			.inline c7_to_c4
 		}
 		COMMIT
-		.loc multisig.sol, 565
+		.loc multisig.sol, 561
 	}
 	CALLX
-	.loc multisig.sol, 488
+	.loc multisig.sol, 484
 	GETGLOB 16
 	PUSHINT 1
 	PUSH S2
-	.loc multisig.sol, 197
+	.loc multisig.sol, 193
 	LSHIFT
 	AND
 	THROWIF 113
-	.loc multisig.sol, 489
+	.loc multisig.sol, 485
 	ACCEPT
-	.loc multisig.sol, 491
+	.loc multisig.sol, 487
 	PUSHINT 1
 	OVER
-	.loc multisig.sol, 211
+	.loc multisig.sol, 207
 	LSHIFT
 	GETGLOB 16
 	OR
 	.loc multisig.sol, 0
 	SETGLOB 16
-	.loc multisig.sol, 228
+	.loc multisig.sol, 224
 	NOW
 	LSHIFT 32
 	LTIME
@@ -2936,7 +2936,7 @@
 	.loc multisig.sol, 0
 	DUP2
 	POP S5
-	.loc multisig.sol, 493
+	.loc multisig.sol, 489
 	PUSHINT 0
 	DUP
 	ROLL 5
@@ -2966,9 +2966,9 @@
 	PUSHINT 64
 	DICTUSETB
 	SETGLOB 15
-	.loc multisig.sol, 495
+	.loc multisig.sol, 491
 	PUXCPU S1, S-1, S0
-	.loc multisig.sol, 558
+	.loc multisig.sol, 554
 	GETGLOB 15
 	PUSHINT 64
 	DICTUGET
@@ -2997,22 +2997,22 @@
 		PUSHINT 0
 		TUPLE 8
 	}
-	.loc multisig.sol, 559
+	.loc multisig.sol, 555
 	DUP
 	THIRD
 	INC
 	SETINDEX 2
-	.loc multisig.sol, 560
+	.loc multisig.sol, 556
 	DUP
 	INDEX 3
 	PUSHINT 1
 	ROLL 3
-	.loc multisig.sol, 211
+	.loc multisig.sol, 207
 	LSHIFT
 	OR
 	.loc multisig.sol, 0
 	SETINDEX 3
-	.loc multisig.sol, 561
+	.loc multisig.sol, 557
 	GETGLOB 15
 	SWAP
 	CALLREF {
@@ -3048,7 +3048,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc multisig.sol, 481
+	.loc multisig.sol, 477
 	OVER
 	PUSHCONT {
 		LDREF
@@ -3339,7 +3339,7 @@
 }
 
 .fragment onCodeUpgrade_45ae15f8_internal, {
-	.loc multisig.sol, 548
+	.loc multisig.sol, 544
 	PUSHINT 0
 	DUP
 	NULL
@@ -3357,20 +3357,20 @@
 	SETGLOB 12
 	SETGLOB 11
 	SETGLOB 10
-	.loc multisig.sol, 143
+	.loc multisig.sol, 139
 	PUSHINT 0
 	PUSH2 S0, S2
-	.loc multisig.sol, 144
+	.loc multisig.sol, 140
 	SECOND
 	PUSHINT 32
 	DICTUGET
 	THROWIFNOT 50
 	PLDU 256
 	SETGLOB 10
-	.loc multisig.sol, 146
+	.loc multisig.sol, 142
 	PUSH S2
 	FIRST
-	.loc multisig.sol, 147
+	.loc multisig.sol, 143
 	PUSHINT 0
 	PUSHCONT {
 		PUSH2 S0, S1
@@ -3380,14 +3380,14 @@
 		AND
 	}
 	PUSHCONT {
-		.loc multisig.sol, 148
+		.loc multisig.sol, 144
 		PUSH2 S0, S4
 		SECOND
 		PUSHINT 32
 		DICTUGET
 		THROWIFNOT 50
 		PLDU 256
-		.loc multisig.sol, 149
+		.loc multisig.sol, 145
 		DUP
 		GETGLOB 13
 		PUSHPOW2 8
@@ -3395,7 +3395,7 @@
 		NULLSWAPIFNOT
 		NIP
 		PUSHCONT {
-			.loc multisig.sol, 150
+			.loc multisig.sol, 146
 			PUSH2 S3, S3
 			INC
 			POP S5
@@ -3413,19 +3413,19 @@
 		IFNOT
 		.loc multisig.sol, 0
 		DROP
-		.loc multisig.sol, 147
+		.loc multisig.sol, 143
 		INC
 		.loc multisig.sol, 0
 	}
 	WHILE
 	DROP2
 	PUSH2 S0, S1
-	.loc multisig.sol, 153
+	.loc multisig.sol, 149
 	LEQ
-	PUXC2 S0, S0, S2
+	PUXC2 S1, S1, S2
 	CONDSEL
 	SETGLOB 18
-	.loc multisig.sol, 154
+	.loc multisig.sol, 150
 	DUP
 	LESSINT 3
 	PUSHCONT {
@@ -3440,7 +3440,7 @@
 	}
 	IFELSE
 	SETGLOB 17
-	.loc multisig.sol, 155
+	.loc multisig.sol, 151
 	SETGLOB 14
 	.loc multisig.sol, 0
 	DROP
@@ -3487,7 +3487,7 @@
 			x672e09a2 = onCodeUpgrade_45ae15f8_internal,
 		}
 		.cell { ; version
-			.blob x736f6c20302e37352e30 ; sol 0.75.0
+			.blob x736f6c20302e37362e30 ; sol 0.76.0
 		}
 	}
 	POPCTR c3

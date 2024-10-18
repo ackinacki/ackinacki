@@ -10,10 +10,6 @@ interface IAccept {
     function acceptTransfer(bytes payload) external;
 }
 
-function exchange(uint64 stake) assembly pure {
-    ".blob xC727"
-}
-
 /// @title Multisignature wallet with setcode and exchange ecc.
 contract MultisigWallet is IAccept {
 
@@ -162,7 +158,7 @@ contract MultisigWallet is IAccept {
     /// @param owners Array of custodian keys.
     /// @param reqConfirms Default number of confirmations required for executing transaction.
     constructor(uint256[] owners, uint8 reqConfirms, uint64 value) {
-        exchange(value);
+        gosh.cnvrtshellq(value);
         require(msg.pubkey() == tvm.pubkey(), 100);
         require(owners.length > 0 && owners.length <= MAX_CUSTODIAN_COUNT, 117);
         tvm.accept();
@@ -173,7 +169,7 @@ contract MultisigWallet is IAccept {
         uint8 _index = _findCustodian(msg.pubkey());
         _index;
         tvm.accept();
-        exchange(value);
+        gosh.cnvrtshellq(value);
     }
 
     /*

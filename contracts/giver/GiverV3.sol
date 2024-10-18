@@ -21,14 +21,6 @@ abstract contract Upgradable {
     function onCodeUpgrade() internal virtual;
 }
 
-function mint(uint64 stake, uint32 key) assembly pure {
-    ".blob xC726"
-}
-
-function mintshell(uint64 value) assembly pure {
-    ".blob xC728"
-}
-
 contract GiverV3 is Upgradable {
 
     uint8 constant MAX_CLEANUP_MSGS = 30;
@@ -58,16 +50,16 @@ contract GiverV3 is Upgradable {
     function sendCurrency(address dest, varuint16 value, mapping(uint32 => varuint32) ecc) public {
         if (ecc.exists(1)) {
             if (address(this).currencies[1] < ecc[1]) {
-                mint(uint64(ecc[1]) - uint64(address(this).currencies[1]), 1);
+                gosh.mintecc(uint64(ecc[1]) - uint64(address(this).currencies[1]), 1);
             }
         }
         if (ecc.exists(2)) {
             if (address(this).currencies[2] < ecc[2]) {
-                mint(uint64(ecc[2]) - uint64(address(this).currencies[2]), 2);
+                gosh.mintecc(uint64(ecc[2]) - uint64(address(this).currencies[2]), 2);
             }
         }
         if (address(this).balance <= value + 1000 ton) {
-            mintshell(uint64(value + 1000 ton - address(this).balance));
+            gosh.mintshell(uint64(value + 1000 ton - address(this).balance));
         }
         dest.transfer({value: value, bounce: false, flag: 3, currencies: ecc});
         gc();
