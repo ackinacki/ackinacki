@@ -208,6 +208,21 @@ pub mod tests {
     }
 
     #[test]
+    fn test_code_hash_filter() {
+        let sf = serde_json::json!({ "code_hash": { "eq": "6f451fa0..." } });
+        assert_eq!(
+            Filter::into_str(("code_hash".to_owned(), sf)).unwrap(),
+            "AND code_hash = \"6f451fa0...\"".to_owned()
+        );
+
+        let sf = serde_json::json!({ "code_hash": { "include": ["6f451fa0...", "d0d80836..."]} });
+        assert_eq!(
+            Filter::into_str(("id".to_owned(), sf)).unwrap(),
+            "AND code_hash IN (\"6f451fa0...\",\"d0d80836...\")".to_string()
+        );
+    }
+
+    #[test]
     fn test_skip_nulls() {
         let bf = Some(BlockFilter {
             prev_ref: Some(ExtBlkRefFilter {
