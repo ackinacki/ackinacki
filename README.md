@@ -56,7 +56,7 @@ You have to provide necessary arguments:
 
 ```bash
 cd scripts
-create_block_keeper_wallet --help
+create_block_keeper_wallet.sh --help
 ```
 
 After successful script completion save you node id and master key file path
@@ -91,18 +91,18 @@ all:
     BK_DATA_DIR: "{{ MNT_DATA }}/block-keeper"
     BK_LOGS_DIR: "{{ MNT_DATA }}/logs-block-keeper"
     GOSSIP_SEEDS:
-      - shellnet-0.ackinacki.org:10000
-      - shellnet-1.ackinacki.org:10000
-      - shellnet-2.ackinacki.org:10000
-      - shellnet-3.ackinacki.org:10000
-      - shellnet-4.ackinacki.org:10000
+      - shellnet0.ackinacki.org:10000
+      - shellnet1.ackinacki.org:10000
+      - shellnet2.ackinacki.org:10000
+      - shellnet3.ackinacki.org:10000
+      - shellnet4.ackinacki.org:10000
       - YOUR-NODE-ADDRESS:10000
     NODE_STORAGE_LIST:
-      - http://shellnet-0.ackinacki.org/storage/node/
-      - http://shellnet-1.ackinacki.org/storage/node/
-      - http://shellnet-2.ackinacki.org/storage/node/
-      - http://shellnet-3.ackinacki.org/storage/node/
-      - http://shellnet-4.ackinacki.org/storage/node/
+      - http://shellnet0.ackinacki.org/storage/node/
+      - http://shellnet1.ackinacki.org/storage/node/
+      - http://shellnet2.ackinacki.org/storage/node/
+      - http://shellnet3.ackinacki.org/storage/node/
+      - http://shellnet4.ackinacki.org/storage/node/
       - http://YOUR-NODE-ADDRESS/storage/node/
     MASTER_KEY: PATH_TO_MASTER_KEY
     NODE_CONFIGS:
@@ -156,5 +156,5 @@ BLS keys file format - `bk{{ NODE_ID }}_bls.keys.json`
 
 ### Run the script
 ```bash
-staking path/to/master-keys-file path/to/bls-keys-file
+staking.sh path/to/master-keys-file path/to/bls-keys-file
 ```
