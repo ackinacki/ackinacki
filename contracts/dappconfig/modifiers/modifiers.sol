@@ -1,7 +1,10 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
-//
-
-pragma ever-solidity >=0.66.0;
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * GOSH contracts
+ *
+ * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
+ */
+pragma gosh-solidity >=0.76.1;
 
 import "./replayprotection.sol";
 import "./structs/structs.sol";
@@ -13,7 +16,7 @@ abstract contract Modifiers is ReplayProtection {
     uint8 constant m_ConfigCode = 1;
     
     //Deploy constants
-    uint128 constant FEE_DEPLOY_CONFIG = 15 ton;
+    uint128 constant FEE_DEPLOY_CONFIG = 15 vmshell;
 
     uint32 constant CURRENCIES_ID = 1;
     uint32 constant CURRENCIES_ID_SHELL = 2;
@@ -45,7 +48,7 @@ abstract contract Modifiers is ReplayProtection {
     }
     
     modifier minBalance(uint128 val) {
-        require(address(this).balance > val + 1 ton, ERR_LOW_BALANCE);
+        require(address(this).balance > val + 1 vmshell, ERR_LOW_BALANCE);
         _;
     }
 }

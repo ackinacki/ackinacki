@@ -328,7 +328,7 @@ where
             }
             sleep(Duration::from_millis(NODE_WAIT_FOR_ALIVE_PAUSE_TIME_MILLIS)).await;
         }
-        assert_ne!(attempts_cnt, 0, "Node failed to send message to a particular node");
+        // assert_ne!(attempts_cnt, 0, "Node failed to send message to a particular node");
     }
 
     Ok(())

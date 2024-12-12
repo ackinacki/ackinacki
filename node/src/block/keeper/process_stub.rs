@@ -6,7 +6,8 @@ use std::marker::PhantomData;
 use crate::block::keeper::process::BlockKeeperProcess;
 use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
-use crate::block::Block;
+use crate::types::BlockIdentifier;
+use crate::types::BlockSeqNo;
 
 #[cfg(test)]
 pub struct StubValidationProcess<TBlockProducer: BlockProducer> {
@@ -29,10 +30,9 @@ impl<TBlockProducer: BlockProducer> StubValidationProcess<TBlockProducer> {
 
 #[cfg(test)]
 impl<TBlockProducer: BlockProducer> BlockKeeperProcess for StubValidationProcess<TBlockProducer> {
-    type Block = <TBlockProducer as BlockProducer>::Block;
-    type BlockIdentifier = <Self::Block as Block>::BlockIdentifier;
-    type BlockSeqNo = <Self::Block as Block>::BlockSeqNo;
+    type BLSSignatureScheme = ();
     type CandidateBlock = ();
+    type OptimisticState = ();
 
     fn validate<T: Into<Self::CandidateBlock>>(&mut self, _block: T) -> anyhow::Result<()> {
         Ok(())
@@ -42,7 +42,7 @@ impl<TBlockProducer: BlockProducer> BlockKeeperProcess for StubValidationProcess
         Ok(())
     }
 
-    fn is_candidate_block_can_be_applied(&self, _block_id: &Self::BlockIdentifier) -> bool {
+    fn is_candidate_block_can_be_applied(&self, _block_id: &BlockIdentifier) -> bool {
         todo!()
     }
 
@@ -50,9 +50,11 @@ impl<TBlockProducer: BlockProducer> BlockKeeperProcess for StubValidationProcess
         todo!()
     }
 
-    fn get_verification_results(
-        &self,
-    ) -> anyhow::Result<Vec<(Self::BlockIdentifier, Self::BlockSeqNo, bool)>> {
+    fn get_verification_results(&self) -> anyhow::Result<Vec<(BlockIdentifier, BlockSeqNo, bool)>> {
+        todo!()
+    }
+
+    fn get_last_state(&self) -> Self::OptimisticState {
         todo!()
     }
 }

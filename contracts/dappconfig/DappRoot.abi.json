@@ -20,15 +20,19 @@
 			]
 		},
 		{
+			"name": "deployNewConfigCustom",
+			"inputs": [
+				{"name":"dapp_id","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "deployNewConfig",
 			"inputs": [
 				{"name":"dapp_id","type":"uint256"},
 				{"name":"is_unlimit","type":"bool"},
-				{"name":"available_credit","type":"int128"},
-				{"name":"credit_per_block","type":"uint128"},
-				{"name":"available_credit_max_value","type":"uint128"},
-				{"name":"start_block_seqno","type":"uint128"},
-				{"name":"end_block_seqno","type":"uint128"}
+				{"name":"available_balance","type":"int128"}
 			],
 			"outputs": [
 			]

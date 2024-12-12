@@ -1,0 +1,135 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"zkaddr","type":"string"},
+				{"name":"pub_recovery_phrase","type":"uint256"},
+				{"name":"value","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "addZKP",
+			"inputs": [
+				{"name":"index","type":"uint8"},
+				{"name":"modulus","type":"bytes"},
+				{"name":"index_mod_4","type":"uint8"},
+				{"name":"iss_base_64","type":"string"},
+				{"name":"header_base_64","type":"string"},
+				{"name":"expire_at","type":"uint64"},
+				{"name":"epk","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "changeSeedPhrase",
+			"inputs": [
+				{"name":"index","type":"uint8"},
+				{"name":"proof","type":"bytes"},
+				{"name":"pub_seed_phrase","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "acceptCandidateSeedPhrase",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteCandidateSeedPhrase",
+			"inputs": [
+				{"name":"index","type":"uint8"},
+				{"name":"proof","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteZKP",
+			"inputs": [
+				{"name":"index","type":"uint8"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateRecoveryPhrase",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateSeedPhrase",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "sendTransaction",
+			"inputs": [
+				{"name":"index","type":"uint8"},
+				{"name":"proof","type":"bytes"},
+				{"name":"dest","type":"address"},
+				{"name":"value","type":"uint128"},
+				{"name":"cc","type":"map(uint32,varuint32)"},
+				{"name":"bounce","type":"bool"},
+				{"name":"flags","type":"uint8"},
+				{"name":"payload","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "exchangeToken",
+			"inputs": [
+				{"name":"value","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		},
+		{
+			"name": "_zkaddr",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_zkaddr","type":"string"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
+		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
+		{"init":false,"name":"__value","type":"uint256"},
+		{"components":[{"name":"ph","type":"bytes"},{"name":"epk","type":"uint256"},{"name":"expire_at","type":"uint64"}],"init":false,"name":"_factors","type":"map(uint8,tuple)"},
+		{"init":false,"name":"_owner_pubkey","type":"uint256"},
+		{"init":false,"name":"_candidate_pubkey","type":"optional(uint256)"},
+		{"init":false,"name":"_pub_recovery_phrase","type":"uint256"},
+		{"init":false,"name":"_zkaddr","type":"string"}
+	]
+}

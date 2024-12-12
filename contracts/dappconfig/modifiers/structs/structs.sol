@@ -1,7 +1,10 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
-//
-
-pragma ever-solidity >=0.66.0;
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * GOSH contracts
+ *
+ * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
+ */
+pragma gosh-solidity >=0.76.1;
 
 //Structs
 struct MessageInfo {
@@ -11,11 +14,5 @@ struct MessageInfo {
 
 struct CreditConfig {
 	bool is_unlimit;
-    int128 available_credit;
-	uint128 credit_per_block;
-	uint128 available_credit_max_value;
-    uint128 start_block_seqno;
-	uint128 end_block_seqno;
-	uint128 last_updated_seqno;
-	uint128 available_personal_limit;
+    int128 available_balance;
 }

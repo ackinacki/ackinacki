@@ -29,6 +29,7 @@ impl Default for GlobalConfig {
             block_keeper_epoch_code_hash:
                 "88305d70a51fe7f281a5cd5a24136706b2f1b4ae1fa1d2fc69ff3db12deb3090".to_string(),
             gas_limit_for_special_transaction: 10_000_000,
+            attestation_validity_block_gap: 5,
         }
     }
 }
@@ -41,8 +42,8 @@ pub fn default_gossip_listen() -> StringSocketAddr {
     StringSocketAddr::from("127.0.0.1:10000".to_string())
 }
 
-pub fn default_lite_server_listen() -> StringSocketAddr {
-    StringSocketAddr::from("127.0.0.1:11000".to_string())
+pub fn default_block_manager_listen() -> StringSocketAddr {
+    StringSocketAddr::from("127.0.0.1:12000".to_string())
 }
 
 pub fn default_buffer_size() -> usize {

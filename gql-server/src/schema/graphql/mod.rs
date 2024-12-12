@@ -27,6 +27,7 @@ pub(crate) mod transaction;
 pub use block::Block;
 pub use block::BlockFilter;
 pub(crate) use mutations::MutationRoot;
+use transaction::TransactionLoader;
 
 use self::account::Account;
 use self::account::AccountFilter;
@@ -72,7 +73,7 @@ pub struct QueryRoot;
 #[Object]
 impl QueryRoot {
     async fn info<'ctx>(&self, ctx: &Context<'ctx>) -> FieldResult<Option<info::Info>> {
-        log::info!("info query");
+        tracing::info!("info query");
         let pool = ctx.data::<SqlitePool>()?;
 
         let block = db::Block::latest_block(pool).await?;
@@ -165,8 +166,42 @@ impl QueryRoot {
         let order_by_clause = query_order_by_str(order_by);
         let db_messages: Vec<db::Message> =
             db::Message::list(pool, filter, order_by_clause, limit).await?;
-        let messages: Vec<Option<Message>> =
+        let mut messages: Vec<Option<Message>> =
             db_messages.into_iter().map(|b| Some(b.into())).collect();
+
+        let transaction_loader = ctx.data_unchecked::<DataLoader<TransactionLoader>>();
+        if ctx.look_ahead().field("src_transaction").exists() {
+            for message in messages.iter_mut().flatten() {
+                if let Some(transaction_id) = &message.transaction_id {
+                    message.src_transaction = transaction_loader
+                        .load_one(transaction_id.to_string())
+                        .await
+                        .unwrap_or_else(|_| panic!("Failed to load transaction: {transaction_id}"))
+                        .map(Box::new);
+                }
+            }
+        }
+        if ctx.look_ahead().field("dst_transaction").exists() {
+            for message in messages.iter_mut().flatten() {
+                let dst_transaction = db::transaction::Transaction::by_in_message(
+                    ctx.data::<SqlitePool>().unwrap(),
+                    &message.id,
+                    None,
+                )
+                .await
+                .expect("Failed to load transaction by inbound message");
+
+                if let Some(transaction) = dst_transaction {
+                    message.dst_transaction = transaction_loader
+                        .load_one(transaction.id.clone())
+                        .await
+                        .unwrap_or_else(|_| {
+                            panic!("Failed to load transaction: {}", transaction.id)
+                        })
+                        .map(Box::new);
+                }
+            }
+        }
 
         Ok(Some(messages))
     }

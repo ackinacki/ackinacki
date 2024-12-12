@@ -170,8 +170,8 @@ pub struct TransactionSplitInfo {
 #[derive(SimpleObject, Clone, Debug)]
 #[graphql(complex, rename_fields = "snake_case")]
 struct TransactionStorage {
-    status_change: u8,
-    status_change_name: AccountStatusChangeEnum,
+    status_change: Option<u8>,
+    status_change_name: Option<AccountStatusChangeEnum>,
     #[graphql(skip)]
     storage_fees_collected: Option<String>,
     #[graphql(skip)]
@@ -348,6 +348,7 @@ impl From<u8> for TransactionTypeEnum {
 
 impl From<db::Transaction> for Transaction {
     fn from(trx: db::Transaction) -> Self {
+        let boc = tvm_types::base64_encode(trx.boc);
         let action = TransactionAction {
             action_list_hash: trx.action_list_hash,
             msgs_created: Some(trx.action_msgs_created),
@@ -388,8 +389,8 @@ impl From<db::Transaction> for Transaction {
             trx.credit.map(|credit| TransactionCredit { credit: Some(credit), dummy: None });
         let storage = TransactionStorage {
             status_change: trx.storage_status_change,
-            status_change_name: trx.storage_status_change.into(),
-            storage_fees_collected: Some(trx.storage_fees_collected),
+            status_change_name: Some(trx.storage_status_change.unwrap().into()),
+            storage_fees_collected: trx.storage_fees_collected,
             storage_fees_due: None,
         };
         Self {
@@ -399,7 +400,7 @@ impl From<db::Transaction> for Transaction {
             action,
             balance_delta: Some(trx.balance_delta),
             block_id: trx.block_id,
-            boc: trx.boc,
+            boc,
             bounce: None,
             chain_order: trx.chain_order,
             code_hash: None, // !!

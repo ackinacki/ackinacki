@@ -31,6 +31,14 @@
 			]
 		},
 		{
+			"name": "sendFreeToken",
+			"inputs": [
+				{"name":"dest","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "getMessages",
 			"inputs": [
 			],

@@ -49,7 +49,7 @@ async fn open_db(db_path: PathBuf) -> anyhow::Result<Pool<Sqlite>> {
                 if attempt >= 2 {
                     anyhow::bail!("Failed to open DB file {}: timeout", db_path_str);
                 } else {
-                    log::error!("{err:?}")
+                    tracing::error!("{err:?}")
                 }
             }
         }
@@ -118,9 +118,9 @@ pub async fn start(bind_to: String, db_path: PathBuf) -> anyhow::Result<()> {
             ))
         });
 
-    log::info!("Listening on: {}\n", bind_to);
-    // log::info!("GraphQL Playground: {}", playground_graphql.clone());
-    // log::info!("GraphQL IDE: {}", playground_graphql_ide);
+    tracing::info!("Listening on: {}\n", bind_to);
+    // tracing::info!("GraphQL Playground: {}", playground_graphql.clone());
+    // tracing::info!("GraphQL IDE: {}", playground_graphql_ide);
 
     let socket_addr = bind_to.parse::<SocketAddr>()?;
     warp::serve(routes).run((socket_addr.ip(), socket_addr.port())).await;

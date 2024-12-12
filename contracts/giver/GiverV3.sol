@@ -1,7 +1,4 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
-//
-
-pragma ever-solidity >= 0.61.2;
+pragma gosh-solidity >= 0.76.1;
 pragma AbiHeader expire;
 
 abstract contract Upgradable {
@@ -58,11 +55,23 @@ contract GiverV3 is Upgradable {
                 gosh.mintecc(uint64(ecc[2]) - uint64(address(this).currencies[2]), 2);
             }
         }
-        if (address(this).balance <= value + 1000 ton) {
-            gosh.mintshell(uint64(value + 1000 ton - address(this).balance));
+        if (address(this).balance <= value + 1000 vmshell) {
+            gosh.mintshell(uint64(value + 1000 vmshell - address(this).balance));
         }
         dest.transfer({value: value, bounce: false, flag: 3, currencies: ecc});
         gc();
+    }
+
+    function sendFreeToken(address dest) public pure {
+        varuint32 drop = 50 vmshell;
+        uint64 value = 10 vmshell;
+        mapping(uint32 => varuint32) data_cur;
+        data_cur[2] = drop;
+        gosh.mintecc(uint64(drop), 2);
+        if (address(this).balance <= value + 1000 vmshell) {
+            gosh.mintshell(uint64(value + 1000 vmshell - address(this).balance));
+        }
+        dest.transfer({value: value, bounce: false, flag: 3, currencies: data_cur});
     }
 
     /*

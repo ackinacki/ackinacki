@@ -1,8 +1,10 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::ops::Deref;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use num_bigint::BigUint;
@@ -33,6 +35,10 @@ use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperStatus;
 use crate::bls::gosh_bls::PubKey;
 use crate::node::SignerIndex;
+use crate::types::AccountAddress;
+use crate::types::BlockEndLT;
+use crate::types::DAppIdentifier;
+use crate::types::ThreadIdentifier;
 use crate::zerostate::ZeroState;
 
 const ZERO_ACCOUNT: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -42,9 +48,10 @@ impl ZeroState {
         &mut self,
         path: P,
         address: Option<String>,
-        dapp: Option<UInt256>,
+        dapp_id: Option<UInt256>,
         balance: Option<CurrencyCollection>,
         salt: Option<Cell>,
+        thread_identifier: &ThreadIdentifier,
     ) -> anyhow::Result<String> {
         // Load state init
         let mut state_init = StateInit::construct_from_file(path.as_ref()).map_err(|e| {
@@ -60,35 +67,53 @@ impl ZeroState {
 
         // Generate account helper structs and account itself
         let account_id = if let Some(address) = address {
-            UInt256::from_str(&address).map_err(|e| anyhow::format_err!("{e}"))?
+            UInt256::from_str(&address)
+                .map_err(|e| anyhow::format_err!("Failed to convert address to UInt256: {e}"))?
         } else {
-            state_init.hash().map_err(|e| anyhow::format_err!("{e}"))?
+            state_init
+                .hash()
+                .map_err(|e| anyhow::format_err!("Failed to calculate state init hash: {e}"))?
         };
         let address = MsgAddressInt::with_standart(None, 0, AccountId::from(account_id.clone()))
-            .map_err(|e| anyhow::format_err!("{e}"))?;
+            .map_err(|e| anyhow::format_err!("Failed to construct msg address: {e}"))?;
         let storage = AccountStorage::active_by_init_code_hash(
             0,
             CurrencyCollection::default(),
             state_init,
             true,
         );
-        let dapp_id = if let Some(dapp) = dapp { dapp } else { UInt256::default() };
         let last_paid = SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as u32;
         let storage_stat = StorageInfo::with_values(last_paid, None);
-        let mut account = Account::with_storage(&address, dapp_id, &storage_stat, &storage);
+        let mut account = Account::with_storage(&address, dapp_id.clone(), &storage_stat, &storage);
         // We can't create valid storage stat, it should be updated internally
-        account.update_storage_stat().map_err(|e| anyhow::format_err!("{e}"))?;
+        account
+            .update_storage_stat()
+            .map_err(|e| anyhow::format_err!("Failed to update account storage stat: {e}"))?;
         if let Some(balance) = balance {
             account.set_balance(balance);
         }
 
         let shard_account = ShardAccount::with_params(&account, UInt256::default(), 0)
-            .map_err(|e| anyhow::format_err!("{e}"))?;
+            .map_err(|e| anyhow::format_err!("Failed to create shard account: {e}"))?;
         // Add account to zerostate
-        self.shard_state
+        let mut shard_state = self.get_shard_state(thread_identifier)?.deref().clone();
+        shard_state
             .insert_account(&account_id, &shard_account)
-            .map_err(|e| anyhow::format_err!("{e}"))?;
+            .map_err(|e| anyhow::format_err!("Failed to insert account to shard state: {e}"))?;
+        self.state_mut(thread_identifier)?.set_shard_state(Arc::new(shard_state));
 
+        // Add account to dapp_id cache for all threads
+        if let Some(dapp_id) = dapp_id {
+            for state in self.states_mut().values_mut() {
+                state.dapp_id_table.insert(
+                    AccountAddress(AccountId::from(account_id.clone())),
+                    (
+                        Some(DAppIdentifier(AccountAddress(AccountId::from(dapp_id.clone())))),
+                        BlockEndLT(0),
+                    ),
+                );
+            }
+        }
         Ok(account_id.to_hex_string())
     }
 
@@ -98,13 +123,15 @@ impl ZeroState {
         value: Option<u128>,
         ecc: Option<ExtraCurrencyCollection>,
         dapp_id: Option<UInt256>,
+        thread_identifier: &ThreadIdentifier,
     ) -> anyhow::Result<()> {
         // Generate internal message header
-        let dest_acc_id = AccountId::from_string(&dest).map_err(|e| anyhow::format_err!("{e}"))?;
+        let dest_acc_id = AccountId::from_string(&dest)
+            .map_err(|e| anyhow::format_err!("Failed to construct dest address: {e}"))?;
 
         let mut cc = if let Some(value) = value {
             CurrencyCollection::from_grams(
-                Grams::new(value).map_err(|e| anyhow::format_err!("{e}"))?,
+                Grams::new(value).map_err(|e| anyhow::format_err!("Failed to init grams: {e}"))?,
             )
         } else {
             CurrencyCollection::default()
@@ -117,44 +144,60 @@ impl ZeroState {
             MsgAddressInt::with_standart(
                 None,
                 0,
-                AccountId::from_string(ZERO_ACCOUNT).map_err(|e| anyhow::format_err!("{e}"))?,
+                AccountId::from_string(ZERO_ACCOUNT)
+                    .map_err(|e| anyhow::format_err!("Failed to convert address: {e}"))?,
             )
-            .map_err(|e| anyhow::format_err!("{e}"))?,
+            .map_err(|e| anyhow::format_err!("Failed to create message header: {e}"))?,
             MsgAddressInt::with_standart(None, 0, dest_acc_id.clone())
-                .map_err(|e| anyhow::format_err!("{e}"))?,
+                .map_err(|e| anyhow::format_err!("Failed to convert dest address: {e}"))?,
             cc,
         );
         header.set_src_dapp_id(dapp_id);
 
         // Generate internal message
         let message = Message::with_int_header(header.clone());
-        self.add_message(message)
+        self.add_message(message, thread_identifier)
     }
 
-    pub fn add_message(&mut self, message: Message) -> anyhow::Result<()> {
+    pub fn add_message(
+        &mut self,
+        message: Message,
+        thread_identifier: &ThreadIdentifier,
+    ) -> anyhow::Result<()> {
         assert!(message.is_internal());
         // Add message to message queue
         let info = message.int_header().unwrap();
         let dest_acc_id = message.int_header().unwrap().dst.address();
         let fwd_fee = *info.fwd_fee();
-        let msg_cell = message.serialize().map_err(|e| anyhow::format_err!("{e}"))?;
+        let msg_cell = message
+            .serialize()
+            .map_err(|e| anyhow::format_err!("Failed to serialize message: {e}"))?;
         let envelope = MsgEnvelope::with_message_and_fee(&message, fwd_fee)
-            .map_err(|e| anyhow::format_err!("{e}"))?;
+            .map_err(|e| anyhow::format_err!("Failed to envelope message: {e}"))?;
         let enq = EnqueuedMsg::with_param(info.created_lt, &envelope)
-            .map_err(|e| anyhow::format_err!("{e}"))?;
-        let prefix = dest_acc_id.clone().get_next_u64().map_err(|e| anyhow::format_err!("{e}"))?;
+            .map_err(|e| anyhow::format_err!("Failed to enqueue message: {e}"))?;
+        let prefix = dest_acc_id
+            .clone()
+            .get_next_u64()
+            .map_err(|e| anyhow::format_err!("Failed to get acc prefix: {e}"))?;
         let key = OutMsgQueueKey::with_workchain_id_and_prefix(0, prefix, msg_cell.repr_hash());
-        let mut message_queue =
-            self.shard_state.read_out_msg_queue_info().map_err(|e| anyhow::format_err!("{e}"))?;
+
+        let mut shard_state = self.get_shard_state(thread_identifier)?.deref().clone();
+
+        let mut message_queue = shard_state
+            .read_out_msg_queue_info()
+            .map_err(|e| anyhow::format_err!("Failed to read out msg queue info: {e}"))?;
         message_queue
             .out_queue_mut()
-            .set(&key, &enq, &enq.aug().map_err(|e| anyhow::format_err!("{e}"))?)
-            .map_err(|e| anyhow::format_err!("{e}"))?;
+            .set(&key, &enq, &enq.aug().map_err(|e| anyhow::format_err!("Failed to get aug: {e}"))?)
+            .map_err(|e| anyhow::format_err!("Failed to put msg to queue: {e}"))?;
 
         // Update zerostate
-        self.shard_state
+        shard_state
             .write_out_msg_queue_info(&message_queue)
-            .map_err(|e| anyhow::format_err!("{e}"))?;
+            .map_err(|e| anyhow::format_err!("Failed to write out msg queue info: {e}"))?;
+
+        self.state_mut(thread_identifier)?.set_shard_state(Arc::new(shard_state));
         Ok(())
     }
 
@@ -164,8 +207,9 @@ impl ZeroState {
         pubkey: String,
         epoch_finish_timestamp: u32,
         stake: BigUint,
+        thread_id: ThreadIdentifier,
     ) {
-        self.block_keeper_set.insert(
+        self.block_keeper_sets.entry(thread_id).or_default().insert(
             index,
             BlockKeeperData {
                 index,

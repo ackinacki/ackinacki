@@ -14,6 +14,12 @@
   - [Staking](#staking)
     - [Prerequisites](#prerequisites-2)
     - [Run the script](#run-the-script)
+- [Block Manager](#block-manager)
+  - [System requirements](#system-requirements-1)
+  - [Steps](#steps-1)
+  - [Ansible](#ansible-1)
+    - [Prerequisites](#prerequisites-1)
+    - [Prepare you inventory](#prepare-you-inventory-1)
 
 # Block Keeper
 
@@ -56,7 +62,7 @@ You have to provide necessary arguments:
 
 ```bash
 cd scripts
-create_block_keeper_wallet.sh --help
+create_block_keeper_wallet --help
 ```
 
 After successful script completion save you node id and master key file path
@@ -84,6 +90,7 @@ all:
     BIND_API_PORT: 8600
     BIND_MESSAGE_ROUTER_PORT: 8700
     BIND_GOSSIP_PORT: 10000
+    BLOCK_MANAGER_PORT: 12000
     NODE_IMAGE: teamgosh/ackinacki-node
     GQL_IMAGE: teamgosh/ackinacki-gql-server
     REVPROXY_IMAGE: teamgosh/ackinacki-live
@@ -91,18 +98,18 @@ all:
     BK_DATA_DIR: "{{ MNT_DATA }}/block-keeper"
     BK_LOGS_DIR: "{{ MNT_DATA }}/logs-block-keeper"
     GOSSIP_SEEDS:
-      - shellnet0.ackinacki.org:10000
-      - shellnet1.ackinacki.org:10000
-      - shellnet2.ackinacki.org:10000
-      - shellnet3.ackinacki.org:10000
-      - shellnet4.ackinacki.org:10000
+      - shellnet-0.ackinacki.org:10000
+      - shellnet-1.ackinacki.org:10000
+      - shellnet-2.ackinacki.org:10000
+      - shellnet-3.ackinacki.org:10000
+      - shellnet-4.ackinacki.org:10000
       - YOUR-NODE-ADDRESS:10000
     NODE_STORAGE_LIST:
-      - http://shellnet0.ackinacki.org/storage/node/
-      - http://shellnet1.ackinacki.org/storage/node/
-      - http://shellnet2.ackinacki.org/storage/node/
-      - http://shellnet3.ackinacki.org/storage/node/
-      - http://shellnet4.ackinacki.org/storage/node/
+      - http://shellnet-0.ackinacki.org/storage/node/
+      - http://shellnet-1.ackinacki.org/storage/node/
+      - http://shellnet-2.ackinacki.org/storage/node/
+      - http://shellnet-3.ackinacki.org/storage/node/
+      - http://shellnet-4.ackinacki.org/storage/node/
       - http://YOUR-NODE-ADDRESS/storage/node/
     MASTER_KEY: PATH_TO_MASTER_KEY
     NODE_CONFIGS:
@@ -129,7 +136,7 @@ ansible-playbook -i test-inventory.yaml ansible/node-deployment.yaml --check --d
 If all is good you could run ansible
 
 ```bash
-ansible-playbook -i test-inventory.yaml ansible/node-deployment.yaml --check --diff
+ansible-playbook -i test-inventory.yaml ansible/node-deployment.yaml
 ```
 
 Check docker containers
@@ -157,4 +164,76 @@ BLS keys file format - `bk{{ NODE_ID }}_bls.keys.json`
 ### Run the script
 ```bash
 staking.sh path/to/master-keys-file path/to/bls-keys-file
+```
+
+# Block Manager
+
+## System requirements
+
+| Configuration | CPU (cores) | RAM (GiB) | Storage    | Network                                          |
+| ------------- | ----------- | --------- | ---------- | ------------------------------------------------ |
+| Minimum       | 4c/8t      | 32        | 1 TB NVMe  | 1 Gbit synchronous unmetered Internet connection |
+| Recommended   | 8c/16t     | 64       | 2 TB NVMe  | 1 Gbit synchronous unmetered Internet connection |
+
+## Steps 
+1. Create ansible inventory for Block Manager deployment
+2. Run ansible playbook against inventory to deploy Block Manager node
+
+## Ansible
+### Prerequisites
+- One server for Block-Manager only and SSH access to that server
+- Docker with compose plugin must be installed
+
+### Prepare you inventory
+
+This is basic inventory for Block Manager deployment. Be sure to include `block-manager` host group.
+
+```yaml
+all:
+  vars:
+    ansible_port: 22
+    ansible_user: ubuntu
+    # Path to store deployment files
+    ROOT_DIR: /home/user/deployment
+    # Path to store data
+    MNT_DATA: /home/user/data
+    BM_IMAGE: "teamgosh/ackinacki-block-manager"
+    BM_DIR: "{{ ROOT_DIR }}/block-manager"
+    BM_DATA_DIR: "{{ MNT_DATA }}/block-manager"
+    BM_LOGS_DIR: "{{ MNT_DATA }}/logs-block-manager"
+
+block_manager:
+  hosts:
+
+    YOUR-BM-HOST:
+      # Node address to connect and download states for Block Manger
+      HTTP_URL: NETWORK_NODE
+      # Node streaming address for Block Manger
+      NODE_IP: NODE_IP_ADDRESS
+```
+
+In case of testing you can use dry run and check mode
+
+```bash
+ansible-playbook -i test-inventory.yaml ansible/block-manager-deployment.yaml --check --diff
+```
+
+If all is good you could run ansible
+
+```bash
+ansible-playbook -i test-inventory.yaml ansible/block-manager-deployment.yaml
+```
+
+Check docker containers
+
+```bash
+docker ps
+#OR
+docker compose ps
+```
+
+Check block-manager logs
+
+```bash
+tail -f $MNT_DATA/logs-block-manager/block-manager.log
 ```

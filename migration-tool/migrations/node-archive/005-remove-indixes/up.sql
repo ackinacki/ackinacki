@@ -31,3 +31,6 @@ DROP INDEX index_transactions_in_msg;
 
 DROP INDEX index_blocks_parent;
 DROP INDEX index_blocks_chain_order;
+
+CREATE INDEX index_blocks_prev ON blocks (prev_ref_root_hash);
+CREATE INDEX index_blocks_prev_alt ON blocks (prev_alt_ref_root_hash);

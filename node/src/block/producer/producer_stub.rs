@@ -3,38 +3,47 @@
 
 use std::sync::mpsc::Receiver;
 
-use tvm_block::ShardStateUnsplit;
+use tvm_types::Cell;
 
+use crate::block::producer::builder::structs::ActiveThread;
 use crate::block::producer::BlockProducer;
-use crate::block::MockBlockStruct;
-#[cfg(test)]
+use crate::bls::GoshBLS;
 use crate::message::message_stub::MessageStub;
-#[cfg(test)]
-use crate::transaction::MockTransaction;
+use crate::repository::stub_repository::OptimisticStateStub;
+use crate::types::AckiNackiBlock;
 
 #[cfg(test)]
 pub struct BlockProducerStub {}
 
 #[cfg(test)]
 impl BlockProducer for BlockProducerStub {
-    type Block = MockBlockStruct;
-    type Cell = ();
     type Message = MessageStub;
-    type ShardState = ShardStateUnsplit;
-    type ThreadIdentifier = u64;
-    type Transaction = MockTransaction;
+    type OptimisticState = OptimisticStateStub;
 
-    fn produce(
-        &mut self,
+    fn produce<'a, I>(
+        self,
+        _initial_state: Self::OptimisticState,
+        _refs: I,
         _control_rx_stop: Receiver<()>,
-    ) -> anyhow::Result<(Self::Block, Self::ShardState, Self::Cell)> {
+    ) -> anyhow::Result<(AckiNackiBlock<GoshBLS>, Self::OptimisticState, Vec<(Cell, ActiveThread)>)>
+    where
+        I: std::iter::Iterator<Item = &'a Self::OptimisticState> + Clone,
+        <Self as BlockProducer>::OptimisticState: 'a,
+    {
         todo!()
     }
 
-    fn generate_verify_block(
-        &self,
-        _block: Self::Block,
-    ) -> anyhow::Result<(Self::Block, Self::ShardState, Self::Cell)> {
+    fn generate_verify_block<'a, I>(
+        self,
+        _block: &AckiNackiBlock<GoshBLS>,
+        _initial_state: Self::OptimisticState,
+        _refs: I,
+    ) -> anyhow::Result<(AckiNackiBlock<GoshBLS>, Self::OptimisticState)>
+    where
+        // TODO: remove Clone and change to Into<>
+        I: std::iter::Iterator<Item = &'a Self::OptimisticState> + Clone,
+        <Self as BlockProducer>::OptimisticState: 'a,
+    {
         todo!()
     }
 }

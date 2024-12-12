@@ -21,7 +21,7 @@ pub struct Block {
     pub after_split: Option<i64>,              // after_split INTEGER,
     pub aggregated_signature: Option<Vec<u8>>, // aggregated_signature BLOB,
     pub before_split: Option<i64>,             // before_split INTEGER,
-    pub boc: Option<String>,
+    pub boc: Option<Vec<u8>>,
     pub chain_order: Option<String>,
     pub end_lt: Option<String>, // end_lt TEXT,
     pub file_hash: Option<String>,
@@ -60,6 +60,7 @@ pub struct Block {
     pub want_split: Option<i64>,   // want_split INTEGER,
     pub workchain_id: Option<i64>, // workchain_id INTEGER,
     pub data: Option<Vec<u8>>,
+    pub thread_id: Option<String>,
 }
 
 impl Block {
@@ -75,15 +76,15 @@ impl Block {
         };
 
         let sql = format!("SELECT * FROM blocks {where_clause} {order_by} LIMIT {limit}");
-        log::debug!("SQL: {sql}");
+        tracing::debug!("SQL: {sql}");
         let res = sqlx::query_as(&sql).fetch(pool).map_ok(|b| b).try_collect::<Vec<Block>>().await;
 
         let blocks = if let Err(err) = res {
-            log::error!("ERROR: {:?}", err);
+            tracing::error!("ERROR: {:?}", err);
             anyhow::bail!("ERROR: {err}");
         } else {
             let blocks = res.unwrap();
-            log::debug!("list(): {:?}", blocks);
+            tracing::debug!("list(): {:?}", blocks);
             blocks
         };
         Ok(blocks)
@@ -152,7 +153,7 @@ impl Block {
             order_by, limit,
         );
 
-        log::trace!(target: "blockchain_api", "SQL: {sql}");
+        tracing::trace!(target: "blockchain_api", "SQL: {sql}");
 
         let result: Result<Vec<Block>, anyhow::Error> =
             sqlx::query_as(&sql).fetch_all(pool).await.map_err(|e| anyhow::format_err!("{}", e));
@@ -162,7 +163,7 @@ impl Block {
                 anyhow::bail!("ERROR: {e}");
             }
             Ok(list) => {
-                log::debug!("OK: {} rows", list.len());
+                tracing::debug!("OK: {} rows", list.len());
                 Ok(match direction {
                     PaginateDirection::Forward => list,
                     PaginateDirection::Backward => list.into_iter().rev().collect(),

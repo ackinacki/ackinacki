@@ -6,7 +6,7 @@
 		{
 			"name": "constructor",
 			"inputs": [
-				{"components":[{"name":"is_unlimit","type":"bool"},{"name":"available_credit","type":"int128"},{"name":"credit_per_block","type":"uint128"},{"name":"available_credit_max_value","type":"uint128"},{"name":"start_block_seqno","type":"uint128"},{"name":"end_block_seqno","type":"uint128"},{"name":"last_updated_seqno","type":"uint128"},{"name":"available_personal_limit","type":"uint128"}],"name":"data","type":"tuple"}
+				{"components":[{"name":"is_unlimit","type":"bool"},{"name":"available_balance","type":"int128"}],"name":"data","type":"tuple"}
 			],
 			"outputs": [
 			]
@@ -16,11 +16,7 @@
 			"id": "0x5",
 			"inputs": [
 				{"name":"is_unlimit","type":"bool"},
-				{"name":"available_credit","type":"int128"},
-				{"name":"credit_per_block","type":"uint128"},
-				{"name":"available_credit_max_value","type":"uint128"},
-				{"name":"start_block_seqno","type":"uint128"},
-				{"name":"end_block_seqno","type":"uint128"}
+				{"name":"available_balance","type":"int128"}
 			],
 			"outputs": [
 			]
@@ -31,7 +27,7 @@
 			],
 			"outputs": [
 				{"name":"dapp_id","type":"uint256"},
-				{"components":[{"name":"is_unlimit","type":"bool"},{"name":"available_credit","type":"int128"},{"name":"credit_per_block","type":"uint128"},{"name":"available_credit_max_value","type":"uint128"},{"name":"start_block_seqno","type":"uint128"},{"name":"end_block_seqno","type":"uint128"},{"name":"last_updated_seqno","type":"uint128"},{"name":"available_personal_limit","type":"uint128"}],"name":"data","type":"tuple"}
+				{"components":[{"name":"is_unlimit","type":"bool"},{"name":"available_balance","type":"int128"}],"name":"data","type":"tuple"}
 			]
 		}
 	],
@@ -43,7 +39,7 @@
 		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
 		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
 		{"init":false,"name":"__value","type":"uint256"},
-		{"components":[{"name":"is_unlimit","type":"bool"},{"name":"available_credit","type":"int128"},{"name":"credit_per_block","type":"uint128"},{"name":"available_credit_max_value","type":"uint128"},{"name":"start_block_seqno","type":"uint128"},{"name":"end_block_seqno","type":"uint128"},{"name":"last_updated_seqno","type":"uint128"},{"name":"available_personal_limit","type":"uint128"}],"init":false,"name":"_data","type":"tuple"},
+		{"components":[{"name":"is_unlimit","type":"bool"},{"name":"available_balance","type":"int128"}],"init":false,"name":"_data","type":"tuple"},
 		{"init":false,"name":"_owner","type":"address"},
 		{"init":false,"name":"_voter","type":"address"},
 		{"init":false,"name":"_dapp_id","type":"uint256"}

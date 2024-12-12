@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := build
 
-tvcs = BlockKeeperContractRoot AckiNackiBlockKeeperNodeWallet BlockKeeperEpochContract BlockKeeperCoolerContract BlockKeeperPreEpochContract BlockKeeperSlashContract
+tvcs = BlockKeeperContractRoot AckiNackiBlockKeeperNodeWallet BlockKeeperEpochContract BlockKeeperCoolerContract BlockKeeperPreEpochContract BlockKeeperEpochProxyList
 
 clean:
 	rm -f *.tvc *.abi.json *.code *.debug.json
@@ -12,7 +12,7 @@ build-contracts:
 		cp ../$$i.sol . || exit $$@; \
 	done
 	for i in $(tvcs); do \
-		sold --tvm-version gosh $$i.sol || exit $$@; \
+		$$(command -v sold || echo ../compiler/sold) --tvm-version gosh $$i.sol || exit $$@; \
 	done
 	rm *.debug.json;
 	#rm *.code;

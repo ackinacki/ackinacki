@@ -1,0 +1,28 @@
+services:
+  block_manager:
+    image: {{ BM_IMAGE }}
+    entrypoint: []
+    restart: unless-stopped
+    init: true
+    environment:
+      RUST_BACKTRACE: 1
+      RUST_LOG: debug
+      NODE_VERBOSE: 1
+      HTTP_SRC_URL: http://{{ HTTP_URL }}
+      SQLITE_PATH: ./data
+      STREAM_SRC_URL: https://{{ NODE_IP }}:12000
+    command:
+      - bash
+      - -c
+      - >
+        migration-tool -p ./data -n -a --block-manager
+        && block-manager >> /logsdir/block-manager.log 2>&1
+    volumes:
+      - {{ BM_DATA_DIR }}:/workdir/data
+      - {{ BM_LOGS_DIR }}:/logsdir
+    networks:
+      - block-manager-net
+
+networks:
+  block-manager-net:
+    name: block-manager-net

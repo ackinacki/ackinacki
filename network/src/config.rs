@@ -36,8 +36,6 @@ impl NetworkConfig {
     }
 
     pub async fn alive_nodes(&mut self, filter_self: bool) -> anyhow::Result<Vec<SocketAddr>> {
-        tracing::info!("Getting nodes from network configuration");
-        tracing::info!(target: "network", "Initial node list: {:?}", self.nodes);
         let chitchat_guard = self.gossip.lock().await;
 
         let live_nodes_without_self = chitchat_guard
@@ -63,18 +61,17 @@ impl NetworkConfig {
                 address.map(|addr| (addr, node_id.unwrap()))
             })
             .map(|(node_advertise_addr, node_id)| {
-                tracing::trace!("node_id: {node_id}, node_advertise_addr: {node_advertise_addr}");
                 let id = NodeIdentifier::from_str(node_id).expect("Failed to convert node id");
                 (id, StringSocketAddr::from(node_advertise_addr.to_string()).to_socket_addr())
             })
             .collect::<Vec<_>>();
-
-        tracing::info!(target: "network", "Alive nodes: {node_addresses:?}");
+        let old_nodes_list = self.nodes.clone();
         for (node_id, node_address) in node_addresses {
             self.nodes.insert(node_id, node_address);
         }
-        tracing::info!(target: "network", "Final node list: {:?}", self.nodes);
-
+        if self.nodes != old_nodes_list {
+            tracing::info!(target: "network", "Final node list: {:?}", self.nodes);
+        }
         Ok(Vec::from_iter(self.nodes.values().copied()))
     }
 }

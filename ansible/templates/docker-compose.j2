@@ -56,8 +56,11 @@ services:
       NODE_ADVERTISE_ADDR: {{ HOST_PUBLIC_IP }}:{{ BIND_PORT }}
       GOSSIP_ADVERTISE_ADDR: {{ HOST_PUBLIC_IP }}:{{ BIND_GOSSIP_PORT }}
       GOSSIP_LISTEN_ADDR: 0.0.0.0:10000
+      BLOCK_MANAGER_LISTEN_ADDR: 0.0.0.0:12000
     entrypoint: []
     init: true
+    expose:
+      - "8600"
     command:
       - bash
       - -c
@@ -70,14 +73,15 @@ services:
         --zerostate-path=/bk-configs/zerostate
         --parallelization-level 20
         --static-storages={{ NODE_STORAGE_LIST | join(',') }} &> /dev/null
-        && migration-tool -p ./data -n -a
+        && migration-tool -p ./data -n -a --block-manager
         && node -c acki-nacki.conf.yaml >> /logsdir/node.log 2>&1
     ports:
       - {{ BIND_GOSSIP_PORT }}:10000/udp
       - {{ BIND_GOSSIP_PORT }}:10000/tcp
       - {{ BIND_PORT }}:8500/udp
-      - {{ BIND_API_PORT }}:8600
+      - {{ HOST_PUBLIC_IP }}:8600:8600
       - {{ BIND_MESSAGE_ROUTER_PORT }}:8700
+      - {{ HOST_PUBLIC_IP }}:{{ BLOCK_MANAGER_PORT }}:12000/udp
     volumes:
       - {{ BK_DATA_DIR }}/share:/share
       - {{ BK_DATA_DIR }}/workdir:/workdir/data

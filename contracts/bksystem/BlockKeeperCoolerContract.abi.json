@@ -10,8 +10,6 @@
 				{"name":"owner","type":"address"},
 				{"name":"root","type":"address"},
 				{"name":"bls_pubkey","type":"bytes"},
-				{"name":"slashMember","type":"map(uint256,bool)"},
-				{"name":"slashed","type":"uint128"},
 				{"name":"code","type":"map(uint8,cell)"},
 				{"name":"walletId","type":"uint256"}
 			],
@@ -42,7 +40,6 @@
 				{"name":"seqNoStart","type":"uint64"},
 				{"name":"seqNoFinish","type":"uint64"},
 				{"name":"owner","type":"address"},
-				{"name":"slashMember","type":"map(uint256,bool)"},
 				{"name":"walletId","type":"uint256"}
 			]
 		},
@@ -71,8 +68,6 @@
 		{"init":false,"name":"_seqNoFinish","type":"uint64"},
 		{"init":false,"name":"_owner","type":"address"},
 		{"init":false,"name":"_bls_pubkey","type":"bytes"},
-		{"init":false,"name":"_slashMember","type":"map(uint256,bool)"},
-		{"init":false,"name":"_slashed","type":"uint128"},
 		{"init":false,"name":"_walletId","type":"uint256"}
 	]
 }

@@ -86,23 +86,21 @@ impl MessageRouter {
         bp_resolver: Arc<Mutex<dyn BPResolver>>,
     ) -> actix_web::Result<String> {
         tracing::trace!(target: "message_router", "Requests received: {}", node_requests);
-        let recipient = bp_resolver.lock().resolve(None);
-        tracing::trace!(target: "message_router", "Resolved BP: {:?}", recipient);
-        let result = if let Some(recipient) = recipient {
+        let recipients = bp_resolver.lock().resolve();
+        tracing::trace!(target: "message_router", "Resolved BPs: {:?}", recipients);
+        let mut result = "Ok. Nothing to do";
+        for recipient in recipients {
             let url = construct_url(recipient);
             tracing::info!(target: "message_router", "Forwarding requests to: {url}");
             let client = awc::Client::default();
-            match client.post(url).send_json(&node_requests).await {
+            result = match client.post(&url).send_json(&node_requests).await {
                 Ok(_) => "Ok",
                 Err(err) => {
-                    tracing::error!(target: "message_router", "redirect error: {err}");
+                    tracing::error!(target: "message_router", "redirect to {url} error: {err}");
                     "Error"
                 }
             }
-        } else {
-            tracing::warn!(target: "message_router", "BP not found");
-            "Ok. Nothing to do"
-        };
+        }
 
         Ok(result.to_string())
     }
@@ -118,21 +116,40 @@ fn construct_url(host: SocketAddr) -> String {
 
 #[cfg(test)]
 pub mod tests {
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+
+    use super::MessageRouter;
     use crate::bp_resolver::BPResolver;
 
     struct BPResolverHelper;
 
     impl BPResolver for BPResolverHelper {
-        fn resolve(&mut self, _node_id: Option<i32>) -> Option<std::net::SocketAddr> {
-            Some("0.0.0.0:8600".parse().unwrap())
+        fn resolve(&mut self) -> Vec<std::net::SocketAddr> {
+            vec!["0.0.0.0:8600".parse().unwrap()]
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn test_running() {
+        env_logger::builder().format_timestamp(None).init();
+
+        let msg_router =
+            MessageRouter::new("127.0.0.1:8700".into(), Arc::new(Mutex::new(BPResolverHelper)));
+        tracing::debug!("{}", msg_router);
+
+        loop {
+            let _ = 0u8;
         }
     }
 
     #[test]
     fn test_bp_resolver() {
         let mut bp_resolver = BPResolverHelper;
-        let bp_socket_addr = bp_resolver.resolve(None);
+        let bp_socket_addr = bp_resolver.resolve();
 
-        assert_eq!(bp_socket_addr, Some("0.0.0.0:8600".parse().unwrap()));
+        assert_eq!(bp_socket_addr, vec!["0.0.0.0:8600".parse().unwrap()]);
     }
 }

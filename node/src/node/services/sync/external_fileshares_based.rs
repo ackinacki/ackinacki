@@ -1,6 +1,8 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -10,11 +12,17 @@ use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
 
-use sha2::Digest;
-use sha2::Sha256;
 use typed_builder::TypedBuilder;
 
+use crate::block_keeper_system::BlockKeeperSet;
 use crate::node::services::sync::StateSyncService;
+use crate::repository::optimistic_state::OptimisticState;
+use crate::repository::optimistic_state::OptimisticStateImpl;
+use crate::repository::repository_impl::RepositoryImpl;
+use crate::repository::repository_impl::WrappedStateSnapshot;
+use crate::repository::Repository;
+use crate::types::BlockSeqNo;
+use crate::types::ThreadIdentifier;
 
 const RETRY_DOWNLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -26,19 +34,27 @@ pub struct ExternalFileSharesBased {
 }
 
 impl StateSyncService for ExternalFileSharesBased {
+    type Repository = RepositoryImpl;
     type ResourceAddress = String;
 
-    fn generate_resource_address(&self, data: &[u8]) -> anyhow::Result<Self::ResourceAddress> {
-        let cid: String = {
-            let hash = Sha256::digest(data);
-            hex::encode(hash)
-        };
-        Ok(cid)
+    fn generate_resource_address(
+        &self,
+        state: &OptimisticStateImpl,
+    ) -> anyhow::Result<Self::ResourceAddress> {
+        Ok(state.get_block_id().to_string())
     }
 
-    fn add_share_state_task(&mut self, data: Vec<u8>) -> anyhow::Result<Self::ResourceAddress> {
+    fn add_share_state_task(
+        &mut self,
+        mut state: <Self::Repository as Repository>::OptimisticState,
+        block_producer_groups: HashMap<
+            ThreadIdentifier,
+            Vec<<Self::Repository as Repository>::NodeIdentifier>,
+        >,
+        block_keeper_set: HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>,
+    ) -> anyhow::Result<Self::ResourceAddress> {
         tracing::trace!("add_share_state_task");
-        let cid = self.generate_resource_address(&data)?;
+        let cid = self.generate_resource_address(&state)?;
         let final_file_name = self.local_storage_share_base_path.join(&cid);
         if final_file_name.exists() {
             return Ok(cid);
@@ -57,6 +73,14 @@ impl StateSyncService for ExternalFileSharesBased {
             .name(format!("save-{}", cid))
             .spawn(move || {
                 {
+                    let serialized_state =
+                        state.serialize_into_buf().expect("Failed to serialize state");
+                    let data = bincode::serialize(&WrappedStateSnapshot {
+                        optimistic_state: serialized_state,
+                        producer_group: block_producer_groups,
+                        block_keeper_set,
+                    })
+                    .expect("Failed to serialize state for sharing");
                     tracing::trace!(
                         "add_share_state_task: trying to create file: {tmp_file_path:?}"
                     );

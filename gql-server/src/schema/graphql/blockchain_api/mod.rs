@@ -128,7 +128,7 @@ impl BlockchainQuery<'_> {
 
             let (has_previous_page, has_next_page) =
                 calc_prev_next_markers(after, before, first, last, blocks.len());
-            log::debug!("has_previous_page={:?}, after={:?}", has_previous_page, has_next_page);
+            tracing::debug!("has_previous_page={:?}, after={:?}", has_previous_page, has_next_page);
 
             let mut connection: Connection<
                 String,
@@ -294,7 +294,11 @@ impl BlockchainQuery<'_> {
 
                 let (has_previous_page, has_next_page) =
                     calc_prev_next_markers(after, before, first, last, transactions.len());
-                log::debug!("has_previous_page={:?}, after={:?}", has_previous_page, has_next_page);
+                tracing::debug!(
+                    "has_previous_page={:?}, after={:?}",
+                    has_previous_page,
+                    has_next_page
+                );
 
                 let mut connection: Connection<
                     String,

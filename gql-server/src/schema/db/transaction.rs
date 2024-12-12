@@ -6,68 +6,129 @@ use sqlx::prelude::FromRow;
 use sqlx::SqlitePool;
 
 use crate::defaults;
+use crate::helpers::u64_to_string;
+use crate::schema::graphql::blockchain_api::account::BlockchainMasterSeqNoFilter;
 use crate::schema::graphql::blockchain_api::query::PaginateDirection;
 use crate::schema::graphql::blockchain_api::query::QueryArgs;
 use crate::schema::graphql::blockchain_api::transactions::BlockchainTransactionsQueryArgs;
+
+#[allow(dead_code)]
+pub struct AccountTransactionsQueryArgs {
+    allow_latest_inconsistent_data: Option<bool>,
+    block_seq_no_range: Option<BlockchainMasterSeqNoFilter>,
+    aborted: Option<bool>,
+    min_balance_delta: Option<String>,
+    max_balance_delta: Option<String>,
+    first: Option<usize>,
+    after: Option<String>,
+    last: Option<usize>,
+    before: Option<String>,
+}
+
+impl AccountTransactionsQueryArgs {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        allow_latest_inconsistent_data: Option<bool>,
+        block_seq_no_range: Option<BlockchainMasterSeqNoFilter>,
+        aborted: Option<bool>,
+        min_balance_delta: Option<String>,
+        max_balance_delta: Option<String>,
+        first: Option<usize>,
+        after: Option<String>,
+        last: Option<usize>,
+        before: Option<String>,
+    ) -> Self {
+        Self {
+            allow_latest_inconsistent_data,
+            block_seq_no_range,
+            aborted,
+            min_balance_delta,
+            max_balance_delta,
+            first,
+            after,
+            last,
+            before,
+        }
+    }
+
+    pub fn get_limit(&self) -> usize {
+        1 + if let Some(first) = self.first {
+            first
+        } else if let Some(last) = self.last {
+            last
+        } else {
+            defaults::QUERY_BATCH_SIZE.into()
+        }
+    }
+
+    pub fn get_direction(&self) -> PaginateDirection {
+        if self.last.is_some() || self.before.is_some() {
+            PaginateDirection::Backward
+        } else {
+            PaginateDirection::Forward
+        }
+    }
+}
 
 #[allow(dead_code)]
 #[derive(Clone, FromRow, Debug)]
 pub struct Transaction {
     #[sqlx(skip)]
     pub rowid: i64, // id INTEGER PRIMARY KEY,
-    pub id: String,                      // transaction_id TEXT NOT NULL UNIQUE,
-    pub block_id: String,                // block_id TEXT NOT NULL,
-    pub boc: String,                     // boc TEXT NOT NULL,
-    pub status: u8,                      // status INTEGER NOT NULL,
-    pub storage_fees_collected: String,  // storage_fees_collected INTEGER NOT NULL,
-    pub storage_status_change: u8,       // storage_status_change INTEGER NOT NULL,
-    pub credit: Option<String>,          // credit TEXT NOT NULL,
-    pub compute_success: bool,           // compute_success INTEGER NOT NULL,
-    pub compute_msg_state_used: bool,    // compute_msg_state_used INTEGER NOT NULL,
-    pub compute_account_activated: bool, // compute_account_activated INTEGER NOT NULL,
-    pub compute_gas_fees: String,        // compute_gas_fees INTEGER NOT NULL,
-    pub compute_gas_used: f64,           // compute_gas_used INTEGER NOT NULL,
-    pub compute_gas_limit: f64,          // compute_gas_limit INTEGER NOT NULL,
-    pub compute_mode: i8,                // compute_mode INTEGER NOT NULL,
-    pub compute_exit_code: i32,          // compute_exit_code INTEGER NOT NULL,
+    pub id: String,                          // transaction_id TEXT NOT NULL UNIQUE,
+    pub aborted: bool,                       // aborted INTEGER NOT NULL,
+    pub account_addr: String,                // account_addr TEXT NOT NULL,
+    pub action_success: bool,                // action_success INTEGER NOT NULL,
+    pub action_valid: bool,                  // action_valid INTEGER NOT NULL,
+    pub action_no_funds: bool,               // action_no_funds INTEGER NOT NULL,
+    pub action_status_change: u8,            // action_status_change INTEGER NOT NULL,
+    pub action_result_code: i32,             // action_result_code INTEGER NOT NULL,
+    pub action_tot_actions: i16,             // action_tot_actions INTEGER NOT NULL,
+    pub action_spec_actions: i16,            // action_spec_actions INTEGER NOT NULL,
+    pub action_skipped_actions: i16,         // action_skipped_actions INTEGER NOT NULL,
+    pub action_msgs_created: i16,            // action_msgs_created INTEGER NOT NULL,
+    pub action_list_hash: String,            // action_list_hash INTEGER NOT NULL,
+    pub action_tot_msg_size_cells: f64,      // action_tot_msg_size_cells INTEGER NOT NULL,
+    pub action_tot_msg_size_bits: f64,       // action_tot_msg_size_bits INTEGER NOT NULL,
+    pub balance_delta: String,               // balance_delta INTEGER NOT NULL,
+    pub block_id: String,                    // block_id TEXT NOT NULL,
+    pub boc: Vec<u8>,                        // boc TEXT NOT NULL,
+    pub chain_order: String,                 // chain_order TEXT NOT NULL
+    pub credit: Option<String>,              // credit TEXT NOT NULL,
+    pub credit_first: bool,                  // credit_first INTEGER NOT NULL,
+    pub compute_account_activated: bool,     // compute_account_activated INTEGER NOT NULL,
+    pub compute_exit_code: i32,              // compute_exit_code INTEGER NOT NULL,
+    pub compute_gas_fees: String,            // compute_gas_fees INTEGER NOT NULL,
+    pub compute_gas_used: f64,               // compute_gas_used INTEGER NOT NULL,
+    pub compute_gas_limit: f64,              // compute_gas_limit INTEGER NOT NULL,
+    pub compute_mode: i8,                    // compute_mode INTEGER NOT NULL,
+    pub compute_msg_state_used: bool,        // compute_msg_state_used INTEGER NOT NULL,
+    pub compute_success: bool,               // compute_success INTEGER NOT NULL,
+    pub compute_type: u8,                    // compute_type INTEGER NOT NULL,
+    pub compute_vm_final_state_hash: String, // compute_vm_final_state_hash TEXT NOT NULL,
+    pub compute_vm_init_state_hash: String,  // compute_vm_init_state_hash TEXT NOT NULL,
     #[sqlx(try_from = "u32")]
     pub compute_vm_steps: u64, // compute_vm_steps INTEGER NOT NULL,
-    pub compute_vm_init_state_hash: String, // compute_vm_init_state_hash TEXT NOT NULL,
-    pub compute_vm_final_state_hash: String, // compute_vm_final_state_hash TEXT NOT NULL,
-    pub compute_type: u8,                // compute_type INTEGER NOT NULL,
-    pub action_success: bool,            // action_success INTEGER NOT NULL,
-    pub action_valid: bool,              // action_valid INTEGER NOT NULL,
-    pub action_no_funds: bool,           // action_no_funds INTEGER NOT NULL,
-    pub action_status_change: u8,        // action_status_change INTEGER NOT NULL,
-    pub action_result_code: i32,         // action_result_code INTEGER NOT NULL,
-    pub action_tot_actions: i16,         // action_tot_actions INTEGER NOT NULL,
-    pub action_spec_actions: i16,        // action_spec_actions INTEGER NOT NULL,
-    pub action_skipped_actions: i16,     // action_skipped_actions INTEGER NOT NULL,
-    pub action_msgs_created: i16,        // action_msgs_created INTEGER NOT NULL,
-    pub action_list_hash: String,        // action_list_hash INTEGER NOT NULL,
-    pub action_tot_msg_size_cells: f64,  // action_tot_msg_size_cells INTEGER NOT NULL,
-    pub action_tot_msg_size_bits: f64,   // action_tot_msg_size_bits INTEGER NOT NULL,
-    pub credit_first: bool,              // credit_first INTEGER NOT NULL,
-    pub aborted: bool,                   // aborted INTEGER NOT NULL,
-    pub destroyed: bool,                 // destroyed INTEGER NOT NULL,
-    pub tr_type: u8,                     // tr_type INTEGER NOT NULL,
-    pub lt: String,                      // lt INTEGER NOT NULL,
-    pub prev_trans_hash: String,         // prev_trans_hash TEXT NOT NULL,
-    pub prev_trans_lt: String,           // prev_trans_lt TEXT NOT NULL,
+    pub destroyed: bool,                     // destroyed INTEGER NOT NULL,
+    pub end_status: u8,                      // end_status INTEGER NOT NULL,
+    pub in_msg: String,                      // in_msg TEXT NOT NULL,
+    pub lt: String,                          // lt INTEGER NOT NULL,
+    pub new_hash: String,                    // new_hash TEXT NOT NULL,
     #[sqlx(try_from = "u32")]
     pub now: u64, // now INTEGER NOT NULL,
-    pub outmsg_cnt: u16,                 // outmsg_cnt INTEGER NOT NULL,
-    pub orig_status: u8,                 // orig_status INTEGER NOT NULL,
-    pub end_status: u8,                  // end_status INTEGER NOT NULL,
-    pub in_msg: String,                  // in_msg TEXT NOT NULL,
-    pub out_msgs: String,                // out_msgs TEXT,
-    pub account_addr: String,            // account_addr TEXT NOT NULL,
-    pub workchain_id: i32,               // workchain_id INTEGER NOT NULL,
-    pub total_fees: String,              // total_fees INTEGER NOT NULL,
-    pub balance_delta: String,           // balance_delta INTEGER NOT NULL,
-    pub old_hash: String,                // old_hash TEXT NOT NULL,
-    pub new_hash: String,                // new_hash TEXT NOT NULL,
-    pub chain_order: String,             // chain_order TEXT NOT NULL
+    pub old_hash: String,                    // old_hash TEXT NOT NULL,
+    pub orig_status: u8,                     // orig_status INTEGER NOT NULL,
+    pub out_msgs: String,                    // out_msgs TEXT,
+    pub outmsg_cnt: u16,                     // outmsg_cnt INTEGER NOT NULL,
+    pub prev_trans_hash: String,             // prev_trans_hash TEXT NOT NULL,
+    pub prev_trans_lt: String,               // prev_trans_lt TEXT NOT NULL,
+    pub proof: Option<Vec<u8>>,
+    pub status: u8,                             // status INTEGER NOT NULL,
+    pub storage_fees_collected: Option<String>, // storage_fees_collected INTEGER NOT NULL,
+    pub storage_status_change: Option<u8>,      // storage_status_change INTEGER NOT NULL,
+    pub total_fees: String,                     // total_fees INTEGER NOT NULL,
+    pub tr_type: u8,                            // tr_type INTEGER NOT NULL,
+    pub workchain_id: i32,                      // workchain_id INTEGER NOT NULL,
 }
 
 impl Transaction {
@@ -83,7 +144,7 @@ impl Transaction {
         };
 
         let sql = format!("SELECT * FROM transactions {filter} {order_by} LIMIT {limit}");
-        log::debug!("SQL: {sql}");
+        tracing::debug!("SQL: {sql}");
         let transactions = sqlx::query_as(&sql)
             .fetch(pool)
             .map_ok(|b| b)
@@ -119,11 +180,11 @@ impl Transaction {
         }
 
         if let Some(min_balance_delta) = args.min_balance_delta {
-            where_ops.push(format!("tr_count >= {min_balance_delta}"));
+            where_ops.push(format!("balance_delta+0 >= {}", min_balance_delta.parse::<u128>()?));
         }
 
         if let Some(max_balance_delta) = args.max_balance_delta {
-            where_ops.push(format!("tr_count <= {max_balance_delta}"));
+            where_ops.push(format!("balance_delta+0 <= {}", max_balance_delta.parse::<u128>()?));
         }
 
         let order_by = match direction {
@@ -142,7 +203,7 @@ impl Transaction {
             order_by, limit,
         );
 
-        log::trace!(target: "blockchain_api", "SQL: {sql}");
+        tracing::trace!(target: "blockchain_api", "SQL: {sql}");
 
         let result: Result<Vec<Transaction>, anyhow::Error> =
             sqlx::query_as(&sql).fetch_all(pool).await.map_err(|e| anyhow::format_err!("{}", e));
@@ -152,7 +213,92 @@ impl Transaction {
         }
 
         let mut list = result.unwrap();
-        log::debug!("OK: {} rows", list.len());
+        tracing::debug!("OK: {} rows", list.len());
+        let mut ids = Vec::new();
+        list.iter_mut().for_each(|t: &mut Transaction| {
+            ids.push(t.id.clone());
+            t.id = format!("transaction/{}", t.id);
+        });
+
+        Ok(match direction {
+            PaginateDirection::Forward => list,
+            PaginateDirection::Backward => list.into_iter().rev().collect(),
+        })
+    }
+
+    pub async fn account_transactions(
+        pool: &SqlitePool,
+        account: String,
+        args: AccountTransactionsQueryArgs,
+    ) -> anyhow::Result<Vec<Self>> {
+        let limit = args.get_limit();
+        let direction = args.get_direction();
+
+        let mut where_ops = vec![];
+        where_ops.push(format!("account_addr={account:?}"));
+
+        if let Some(aborted) = args.aborted {
+            where_ops.push(format!("aborted={}", aborted as u8));
+        }
+
+        if let Some(after) = args.after {
+            if !after.is_empty() {
+                where_ops.push(format!("chain_order > {:?}", after));
+            }
+        }
+
+        if let Some(before) = args.before {
+            if !before.is_empty() {
+                where_ops.push(format!("chain_order < {:?}", before));
+            }
+        }
+
+        if let Some(seq_no_range) = args.block_seq_no_range {
+            if let Some(start) = seq_no_range.start {
+                let start = u64_to_string(start as u64);
+                where_ops.push(format!("chain_order >= {start:?}"));
+            }
+            if let Some(end) = seq_no_range.end {
+                let end = u64_to_string(end as u64);
+                where_ops.push(format!("chain_order < {end:?}"));
+            }
+        }
+
+        if let Some(min_balance_delta) = args.min_balance_delta {
+            where_ops.push(format!("balance_delta+0 >= {}", min_balance_delta.parse::<u128>()?));
+        }
+
+        if let Some(max_balance_delta) = args.max_balance_delta {
+            where_ops.push(format!("balance_delta+0 <= {}", max_balance_delta.parse::<u128>()?));
+        }
+
+        let where_clause = if !where_ops.is_empty() {
+            format!("WHERE {}", where_ops.join(" AND "))
+        } else {
+            "".to_string()
+        };
+
+        let order_by = match direction {
+            PaginateDirection::Forward => "ASC",
+            PaginateDirection::Backward => "DESC",
+        };
+
+        let sql = format!(
+            "SELECT * FROM transactions {where_clause} ORDER BY chain_order {} LIMIT {}",
+            order_by, limit,
+        );
+
+        tracing::trace!(target: "blockchain_api.account.transactions", "SQL: {sql}");
+
+        let result: Result<Vec<Transaction>, anyhow::Error> =
+            sqlx::query_as(&sql).fetch_all(pool).await.map_err(|e| anyhow::format_err!("{}", e));
+
+        if let Err(e) = result {
+            anyhow::bail!("ERROR: {e}");
+        }
+
+        let mut list = result.unwrap();
+        tracing::debug!("OK: {} rows", list.len());
         let mut ids = Vec::new();
         list.iter_mut().for_each(|t: &mut Transaction| {
             ids.push(t.id.clone());
@@ -174,7 +320,7 @@ impl Transaction {
             "SELECT * FROM transactions WHERE in_msg={:?} LIMIT 1",
             msg_id.strip_prefix("message/").unwrap_or(msg_id),
         );
-        log::debug!("SQL: {sql}");
+        tracing::debug!("SQL: {sql}");
 
         Ok(sqlx::query_as(&sql).fetch_optional(pool).await?)
     }

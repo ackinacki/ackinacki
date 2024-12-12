@@ -4,5 +4,5 @@
 use std::net::SocketAddr;
 
 pub trait BPResolver: Send + Sync {
-    fn resolve(&mut self, node_id: Option<i32>) -> Option<SocketAddr>;
+    fn resolve(&mut self) -> Vec<SocketAddr>;
 }

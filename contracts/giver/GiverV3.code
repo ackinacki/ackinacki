@@ -39,11 +39,11 @@
 }
 
 .fragment getMessages_5ff6cbf3_internal, {
-	.loc GiverV3.sol, 109
+	.loc GiverV3.sol, 121
 	PUSHINT 0
 	NULL
 	PAIR
-	.loc GiverV3.sol, 110
+	.loc GiverV3.sol, 122
 	GETGLOB 10
 	DUP
 	PUSHPOW2 8
@@ -63,7 +63,7 @@
 		NOT
 	}
 	PUSHCONT {
-		.loc GiverV3.sol, 111
+		.loc GiverV3.sol, 123
 		PUXC2 S4, S-1, S-1
 		PAIR
 		CALLREF {
@@ -110,7 +110,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc GiverV3.sol, 109
+	.loc GiverV3.sol, 121
 	ENDS
 	.loc GiverV3.sol, 0
 	CALLREF {
@@ -316,9 +316,9 @@
 	ENDC
 	PUSHINT 3
 	SENDRAWMSG
-	.loc GiverV3.sol, 90
+	.loc GiverV3.sol, 102
 	PUSHINT 0
-	.loc GiverV3.sol, 91
+	.loc GiverV3.sol, 103
 	GETGLOB 10
 	DUP
 	PUSHPOW2 8
@@ -338,19 +338,19 @@
 		NOT
 	}
 	PUSHCONT {
-		.loc GiverV3.sol, 92
+		.loc GiverV3.sol, 104
 		PUSH S4
 		GTINT 29
 		IFRETALT
-		.loc GiverV3.sol, 95
+		.loc GiverV3.sol, 107
 		PUSH S4
 		INC
 		POP S5
-		.loc GiverV3.sol, 96
+		.loc GiverV3.sol, 108
 		NOW
 		LEQ
 		PUSHCONT {
-			.loc GiverV3.sol, 97
+			.loc GiverV3.sol, 109
 			DUP
 			GETGLOB 10
 			PUSHPOW2 8
@@ -411,6 +411,87 @@
 	THROW 0
 }
 
+.fragment sendFreeToken_229bf887_internal, {
+	.loc GiverV3.sol, 66
+	PUSHINT 50000000000
+	.loc GiverV3.sol, 67
+	PUSHINT 10000000000
+	PUSHINT 2
+	NULL
+	NEWC
+	PUSH S4
+	.loc GiverV3.sol, 69
+	STVARUINT32
+	ROTREV
+	PUSHINT 32
+	DICTUSETB
+	.loc GiverV3.sol, 70
+	ROT
+	UFITS 64
+	PUSHINT 2
+	MINTECC
+	.loc GiverV3.sol, 71
+	GETPARAM 7
+	FIRST
+	PUSH S2
+	PUSHINT 1000000000000
+	ADD
+	UFITS 64
+	LEQ
+	PUSHCONT {
+		.loc GiverV3.sol, 72
+		OVER
+		PUSHINT 1000000000000
+		ADD
+		UFITS 64
+		GETPARAM 7
+		FIRST
+		SUB
+		UFITS 64
+		MINTSHELL
+		.loc GiverV3.sol, 0
+	}
+	IF
+	.loc GiverV3.sol, 74
+	XCHG S2
+	NEWC
+	STSLICECONST x42_
+	STSLICE
+	SWAP
+	STGRAMS
+	STDICT
+	PUSHINT 107
+	STZEROES
+	ENDC
+	PUSHINT 3
+	SENDRAWMSG
+	.loc GiverV3.sol, 0
+}
+
+.fragment sendFreeToken, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	.loc GiverV3.sol, 65
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDMSGADDR
+	ENDS
+	.loc GiverV3.sol, 0
+	CALLREF {
+		.inline sendFreeToken_229bf887_internal
+	}
+	IFREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
 .fragment sendTransaction_8d511ba2_internal, {
 	.loc GiverV3.sol, 43
 	PUSH3 S1, S2, S0
@@ -426,9 +507,9 @@
 	ENDC
 	PUSHINT 3
 	SENDRAWMSG
-	.loc GiverV3.sol, 90
+	.loc GiverV3.sol, 102
 	PUSHINT 0
-	.loc GiverV3.sol, 91
+	.loc GiverV3.sol, 103
 	GETGLOB 10
 	DUP
 	PUSHPOW2 8
@@ -448,19 +529,19 @@
 		NOT
 	}
 	PUSHCONT {
-		.loc GiverV3.sol, 92
+		.loc GiverV3.sol, 104
 		PUSH S4
 		GTINT 29
 		IFRETALT
-		.loc GiverV3.sol, 95
+		.loc GiverV3.sol, 107
 		PUSH S4
 		INC
 		POP S5
-		.loc GiverV3.sol, 96
+		.loc GiverV3.sol, 108
 		NOW
 		LEQ
 		PUSHCONT {
-			.loc GiverV3.sol, 97
+			.loc GiverV3.sol, 109
 			DUP
 			GETGLOB 10
 			PUSHPOW2 8
@@ -589,7 +670,7 @@
 
 .fragment public_function_selector, {
 	DUP
-	PUSHINT 389201859
+	PUSHINT 1224209699
 	LEQ
 	IFJMPREF {
 		DUP
@@ -604,12 +685,12 @@
 		IFJMPREF {
 			.inline getMessages
 		}
-	}
-	DUP
-	PUSHINT 1224209699
-	EQUAL
-	IFJMPREF {
-		.inline sendTransaction
+		DUP
+		PUSHINT 1224209699
+		EQUAL
+		IFJMPREF {
+			.inline sendTransaction
+		}
 	}
 	DUP
 	PUSHINT 1432757610
@@ -622,6 +703,12 @@
 	EQUAL
 	IFJMPREF {
 		.inline constructor
+	}
+	DUP
+	PUSHINT 1773336965
+	EQUAL
+	IFJMPREF {
+		.inline sendFreeToken
 	}
 }
 
@@ -651,7 +738,7 @@
 	}
 	IF
 	PUSH S3
-	.loc GiverV3.sol, 75
+	.loc GiverV3.sol, 87
 	GETGLOB 5
 	DUP
 	ISNULL
@@ -663,20 +750,20 @@
 	GETGLOB 2
 	EQUAL
 	THROWIFNOT 101
-	.loc GiverV3.sol, 76
+	.loc GiverV3.sol, 88
 	OVER
 	HASHSU
-	.loc GiverV3.sol, 78
+	.loc GiverV3.sol, 90
 	PUSH S2
 	LDU 64
 	LDU 32
 	PUXC2 S1, S5, S2
 	DROP2
-	.loc GiverV3.sol, 79
+	.loc GiverV3.sol, 91
 	NOW
 	GREATER
 	THROWIFNOT 57
-	.loc GiverV3.sol, 80
+	.loc GiverV3.sol, 92
 	OVER
 	GETGLOB 10
 	PUSHPOW2 8
@@ -684,9 +771,9 @@
 	NULLSWAPIFNOT
 	NIP
 	THROWIF 102
-	.loc GiverV3.sol, 82
+	.loc GiverV3.sol, 94
 	ACCEPT
-	.loc GiverV3.sol, 83
+	.loc GiverV3.sol, 95
 	OVER
 	GETGLOB 10
 	PUSH S2
@@ -696,7 +783,7 @@
 	PUSHPOW2 8
 	DICTUSETB
 	SETGLOB 10
-	.loc GiverV3.sol, 85
+	.loc GiverV3.sol, 97
 	BLKDROP 3
 	.loc GiverV3.sol, 0
 	LDU 32 ; funcId body
@@ -801,7 +888,7 @@
 			x2ca8deef = onCodeUpgrade_fb00cc5e_internal,
 		}
 		.cell { ; version
-			.blob x736f6c20302e37362e30 ; sol 0.76.0
+			.blob x736f6c20302e37362e31 ; sol 0.76.1
 		}
 	}
 	POPCTR c3

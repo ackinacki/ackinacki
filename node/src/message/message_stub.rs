@@ -23,9 +23,9 @@ impl MessageStub {
 impl Message for MessageStub {
     type AccountId = u64;
 
-    fn is_internal(&self) -> bool {
-        false
-    }
+    //    fn is_internal(&self) -> bool {
+    //        false
+    //    }
 
     fn destination(&self) -> Self::AccountId {
         self.account_id

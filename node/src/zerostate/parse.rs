@@ -2,11 +2,13 @@
 //
 
 use std::collections::HashMap;
+
 use serde::Serialize;
 use tvm_block::GetRepresentationHash;
 use tvm_block::HashmapAugType;
 
 use super::ZeroState;
+use crate::types::ThreadIdentifier;
 
 #[derive(Serialize)]
 pub struct ZeroStateMessage {
@@ -15,6 +17,7 @@ pub struct ZeroStateMessage {
     destination: String,
     value: u128,
     ecc: HashMap<u32, String>,
+    src_dapp_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -22,12 +25,16 @@ pub struct ZeroStateAccount {
     address: String,
     code_hash: String,
     balance: u128,
+    dapp_id: String,
 }
 
 impl ZeroState {
-    pub fn read_all_accounts(&self) -> anyhow::Result<Vec<ZeroStateAccount>> {
+    pub fn read_all_accounts(
+        &mut self,
+        thread_identifier: &ThreadIdentifier,
+    ) -> anyhow::Result<Vec<ZeroStateAccount>> {
         let mut zs_accounts = vec![];
-        let accounts = self.shard_state.read_accounts();
+        let accounts = self.get_shard_state(thread_identifier)?.read_accounts();
         if let Ok(accounts) = accounts {
             accounts
                 .iterate_with_keys(|_k, v| {
@@ -42,17 +49,28 @@ impl ZeroState {
                             .map(|code| code.to_hex_string())
                             .unwrap_or("None".to_string()),
                         balance: account.balance().map(|cc| cc.grams.inner()).unwrap_or(0),
+                        dapp_id: account
+                            .get_dapp_id()
+                            .map(|val| {
+                                val.clone()
+                                    .map(|dapp_id| dapp_id.to_hex_string())
+                                    .unwrap_or("None".to_string())
+                            })
+                            .unwrap_or("None".to_string()),
                     });
                     Ok(true)
                 })
-                .map_err(|e| anyhow::format_err!("{e}"))?;
+                .map_err(|e| anyhow::format_err!("Failed to iterate accounts: {e}"))?;
         }
         Ok(zs_accounts)
     }
 
-    pub fn read_all_messages(&self) -> anyhow::Result<Vec<ZeroStateMessage>> {
+    pub fn read_all_messages(
+        &mut self,
+        thread_identifier: &ThreadIdentifier,
+    ) -> anyhow::Result<Vec<ZeroStateMessage>> {
         let mut zs_messages = vec![];
-        let out_msgs = self.shard_state.read_out_msg_queue_info();
+        let out_msgs = self.get_shard_state(thread_identifier)?.read_out_msg_queue_info();
         if let Ok(msgs) = out_msgs {
             msgs.out_queue()
                 .iterate_with_keys(|_k, v| {
@@ -81,10 +99,13 @@ impl ZeroState {
                             })
                             .unwrap_or_default(),
                         id: message.hash()?.to_hex_string(),
+                        src_dapp_id: message
+                            .int_header()
+                            .and_then(|hdr| hdr.src_dapp_id.clone().map(|val| val.to_hex_string())),
                     });
                     Ok(true)
                 })
-                .map_err(|e| anyhow::format_err!("{e}"))?;
+                .map_err(|e| anyhow::format_err!("Failed to iterate out msgs: {e}"))?;
         }
         Ok(zs_messages)
     }

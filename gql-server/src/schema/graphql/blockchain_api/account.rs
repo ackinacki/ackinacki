@@ -5,6 +5,7 @@ use async_graphql::connection::ConnectionNameType;
 use async_graphql::connection::Edge;
 use async_graphql::connection::EdgeNameType;
 use async_graphql::connection::EmptyFields;
+use async_graphql::dataloader::DataLoader;
 use async_graphql::types::connection::query;
 use async_graphql::types::connection::Connection;
 use async_graphql::Context;
@@ -14,12 +15,18 @@ use async_graphql::Object;
 use async_graphql::OutputType;
 use sqlx::SqlitePool;
 
+use super::transactions::BlockchainTransaction;
 use crate::client::BlockchainClient;
 use crate::schema::db;
-use crate::schema::db::message::PaginateDirection;
+use crate::schema::db::transaction::AccountTransactionsQueryArgs;
 use crate::schema::graphql::account::Account;
 use crate::schema::graphql::blockchain_api::calc_prev_next_markers;
+use crate::schema::graphql::blockchain_api::query::PaginateDirection;
+use crate::schema::graphql::blockchain_api::transactions::BlockchainTransactionsConnection;
+use crate::schema::graphql::blockchain_api::transactions::BlockchainTransactionsEdge;
 use crate::schema::graphql::message::Message;
+use crate::schema::graphql::transaction::Transaction;
+use crate::schema::graphql::transaction::TransactionLoader;
 
 type BlockchainAccount = Account;
 type BlockchainMessage = Message;
@@ -142,56 +149,13 @@ impl BlockchainAccountQuery<'_> {
         >,
     > {
         query(after, before, first, last, |after, before, first, last| async move {
-            log::debug!(
+            tracing::debug!(
                 "first={:?}, after={:?}, last={:?}, before={:?}",
                 first,
                 after,
                 last,
                 before
             );
-
-            // let directions = match msg_type {
-            //     None => (true, true),
-            //     Some(req_types) => req_types.into_iter().fold((false, false), |mut acc,
-            // t| {         match t {
-            //             BlockchainMessageTypeFilterEnum::ExtIn
-            //             | BlockchainMessageTypeFilterEnum::IntIn => acc.0 = true,
-            //             BlockchainMessageTypeFilterEnum::ExtOut
-            //             | BlockchainMessageTypeFilterEnum::IntOut => acc.1 = true,
-            //         }
-            //         acc
-            //     }),
-            // };
-
-            // let where_clause = {
-            //     let mut where_ops = vec![];
-            //     if directions.0 {
-            //         where_ops.push(format!("dst={:?}", self.address));
-            //     }
-            //     if directions.1 {
-            //         where_ops.push(format!("src={:?}", self.address));
-            //     }
-            //     match where_ops.len() {
-            //         0 => "".to_string(),
-            //         _ => format!("WHERE ({})", where_ops.join(" OR ")),
-            //     }
-            // };
-
-            // let limit = if let Some(first) = first {
-            //     first + 1
-            // } else if let Some(last) = last {
-            //     last + 1
-            // } else {
-            //     defaults::QUERY_BATCH_SIZE as usize
-            // };
-            // let mut messages = db::Message::list(
-            //     self.ctx.data::<SqlitePool>().unwrap(),
-            //     where_clause,
-            //     "".to_string(),
-            //     Some(limit).to_int(),
-            // )
-            // .await
-            // .unwrap();
 
             let msg_type = match msg_type {
                 Some(list) if list.is_empty() => None,
@@ -222,7 +186,7 @@ impl BlockchainAccountQuery<'_> {
 
             let (has_previous_page, has_next_page) =
                 calc_prev_next_markers(after, before, first, last, messages.len());
-            log::debug!("has_previous_page={:?}, after={:?}", has_previous_page, has_next_page);
+            tracing::debug!("has_previous_page={:?}, after={:?}", has_previous_page, has_next_page);
 
             let mut connection: Connection<
                 String,
@@ -241,11 +205,161 @@ impl BlockchainAccountQuery<'_> {
                     }
                 }
             }
-            connection.edges.extend(messages.into_iter().map(|msg| {
-                let msg: BlockchainMessage = msg.into();
-                let cursor = msg.dst_chain_order.clone().unwrap();
+
+            let selection_set = self
+                .ctx
+                .look_ahead()
+                .field("account")
+                .field("messages")
+                .field("edges")
+                .field("node");
+            let is_parent_transaction = selection_set.field("src_transaction").exists();
+            let is_child_transaction = selection_set.field("dst_transaction").exists();
+            let transaction_loader = self.ctx.data_unchecked::<DataLoader<TransactionLoader>>();
+            let mut edges: Vec<Edge<String, Message, EmptyFields, BlockchainMessageEdge>> = vec![];
+            for message in messages {
+                let parent_transaction = message.transaction_id.clone();
+                let mut message: BlockchainMessage = message.into();
+                if is_parent_transaction {
+                    if let Some(parent_transaction) = parent_transaction {
+                        message.src_transaction = transaction_loader
+                            .load_one(parent_transaction.clone())
+                            .await
+                            .unwrap_or_else(|_| {
+                                panic!("Failed to load transaction: {parent_transaction}")
+                            })
+                            .map(Box::new);
+                    }
+                }
+                if is_child_transaction {
+                    let dst_transaction = db::transaction::Transaction::by_in_message(
+                        self.ctx.data::<SqlitePool>().unwrap(),
+                        &message.id,
+                        None,
+                    )
+                    .await
+                    .expect("Failed to load transaction by inbound message");
+
+                    if let Some(transaction) = dst_transaction {
+                        message.dst_transaction = transaction_loader
+                            .load_one(transaction.id.clone())
+                            .await
+                            .unwrap_or_else(|_| {
+                                panic!("Failed to load transaction: {}", transaction.id)
+                            })
+                            .map(Box::new);
+                    }
+                }
+                let cursor = message.dst_chain_order.clone().unwrap();
                 let edge: Edge<String, Message, EmptyFields, BlockchainMessageEdge> =
-                    Edge::with_additional_fields(cursor, msg, EmptyFields);
+                    Edge::with_additional_fields(cursor, message, EmptyFields);
+                edges.push(edge);
+            }
+            connection.edges.extend(edges);
+            Ok::<_, async_graphql::Error>(connection)
+        })
+        .await
+        .ok()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    /// This node could be used for a cursor-based pagination of account transactions.
+    pub async fn transactions(
+        &self,
+        #[graphql(
+            name = "allow_latest_inconsistent_data",
+            desc = "By default there is special latency added for the fetched recent data (several seconds) to ensure impossibility of inserts before the latest fetched cursor (data consistency, for reliable pagination). It is possible to disable this guarantee and to reduce the latency of realtime data by setting this flag to true."
+        )]
+        allow_latest_inconsistent_data: Option<bool>,
+        #[graphql(name = "master_seq_no_range")] block_seq_no_range: Option<
+            BlockchainMasterSeqNoFilter,
+        >,
+        aborted: Option<bool>,
+        #[graphql(
+            name = "min_balance_delta",
+            desc = "Optional filter by min balance_delta (unoptimized, query could be dropped by timeout)."
+        )]
+        min_balance_delta: Option<String>,
+        #[graphql(
+            name = "max_balance_delta",
+            desc = "Optional filter by max balance_delta (unoptimized, query could be dropped by timeout)."
+        )]
+        max_balance_delta: Option<String>,
+        #[graphql(desc = "This field is mutually exclusive with 'last'.")] first: Option<i32>,
+        after: Option<String>,
+        #[graphql(desc = "This field is mutually exclusive with 'first'.")] last: Option<i32>,
+        before: Option<String>,
+        #[graphql(
+            desc = "Defines query scope. If true then query performed on a maximum time range supported by the cloud. If false then query performed on a recent time range supported by the cloud. You can find an actual information about time ranges on evercloud documentation."
+        )]
+        _archive: Option<bool>,
+    ) -> Option<
+        Connection<
+            String,
+            BlockchainTransaction,
+            EmptyFields,
+            EmptyFields,
+            BlockchainTransactionsConnection,
+            BlockchainTransactionsEdge,
+        >,
+    > {
+        query(after, before, first, last, |after, before, first, last| async move {
+            tracing::debug!(
+                "first={:?}, after={:?}, last={:?}, before={:?}",
+                first,
+                after,
+                last,
+                before
+            );
+
+            let args = AccountTransactionsQueryArgs::new(
+                allow_latest_inconsistent_data,
+                block_seq_no_range,
+                aborted,
+                min_balance_delta,
+                max_balance_delta,
+                first,
+                after.clone(),
+                last,
+                before.clone(),
+            );
+            let direction = args.get_direction();
+            let limit = args.get_limit();
+
+            let mut transactions: Vec<db::Transaction> = db::Transaction::account_transactions(
+                self.ctx.data::<SqlitePool>().unwrap(),
+                self.address.clone(),
+                args,
+            )
+            .await?;
+
+            let (has_previous_page, has_next_page) =
+                calc_prev_next_markers(after, before, first, last, transactions.len());
+            tracing::debug!("has_previous_page={:?}, after={:?}", has_previous_page, has_next_page);
+
+            let mut connection: Connection<
+                String,
+                Transaction,
+                EmptyFields,
+                EmptyFields,
+                BlockchainTransactionsConnection,
+                BlockchainTransactionsEdge,
+            > = Connection::new(has_previous_page, has_next_page);
+
+            if transactions.len() >= limit {
+                match direction {
+                    PaginateDirection::Forward => transactions.truncate(transactions.len() - 1),
+                    PaginateDirection::Backward => {
+                        transactions.drain(0..1);
+                    }
+                }
+            }
+
+            connection.edges.extend(transactions.into_iter().map(|transaction| {
+                let transaction: BlockchainTransaction = transaction.into();
+                let cursor = transaction.chain_order.clone();
+                let edge: Edge<String, Transaction, EmptyFields, BlockchainTransactionsEdge> =
+                    Edge::with_additional_fields(cursor, transaction, EmptyFields);
                 edge
             }));
             Ok::<_, async_graphql::Error>(connection)

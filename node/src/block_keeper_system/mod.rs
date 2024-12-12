@@ -42,19 +42,6 @@ pub type BlockKeeperSet = HashMap<SignerIndex, BlockKeeperData>;
 
 impl Debug for BlockKeeperData {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BlockKeeperData")
-            .field("index", &self.index)
-            .field("pubkey", &hex::encode(&self.pubkey))
-            .field("epoch_finish_timestamp", &self.epoch_finish_timestamp)
-            .field("status", &self.status)
-            .field("address", &self.address)
-            .field("stake", &self.stake)
-            .finish()
+        f.write_str(&format!("{:?}", self.pubkey))
     }
-}
-
-pub fn get_block_keeper_ring_pubkeys(
-    block_keeper_set: &BlockKeeperSet,
-) -> HashMap<SignerIndex, PubKey> {
-    block_keeper_set.clone().into_iter().map(|(k, v)| (k, v.pubkey)).collect()
 }

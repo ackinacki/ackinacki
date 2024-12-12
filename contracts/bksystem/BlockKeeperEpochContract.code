@@ -1,5 +1,5 @@
 .fragment BlockKeeperLib_buildBlockKeeperCoolerEpochCode_dc342e66, {
-	.loc libraries/BlockKeeperLib.sol, 114
+	.loc libraries/BlockKeeperLib.sol, 116
 	PUSHREF {
 		.blob x312e302e30
 	}
@@ -7,7 +7,7 @@
 	STREF
 	STSLICE
 	ENDC
-	.loc libraries/BlockKeeperLib.sol, 115
+	.loc libraries/BlockKeeperLib.sol, 117
 	SWAP
 	CTOS
 	SWAP
@@ -120,21 +120,21 @@
 }
 
 .fragment BlockKeeperLib_buildBlockKeeperEpochCode_94d09c5d, {
-	.loc libraries/BlockKeeperLib.sol, 85
+	.loc libraries/BlockKeeperLib.sol, 87
 	ROT
 	NEWC
 	STREF
-	.loc libraries/BlockKeeperLib.sol, 86
-	ENDC
-	HASHCU
 	.loc libraries/BlockKeeperLib.sol, 88
+	ENDC
+	HASHCU
+	.loc libraries/BlockKeeperLib.sol, 90
 	ROT
 	NEWC
 	STREF
-	.loc libraries/BlockKeeperLib.sol, 89
+	.loc libraries/BlockKeeperLib.sol, 91
 	ENDC
 	HASHCU
-	.loc libraries/BlockKeeperLib.sol, 92
+	.loc libraries/BlockKeeperLib.sol, 94
 	SWAP
 	PUSHREF {
 		.blob x312e302e30
@@ -148,7 +148,156 @@
 	STSLICE
 	STBREFR
 	ENDC
-	.loc libraries/BlockKeeperLib.sol, 93
+	.loc libraries/BlockKeeperLib.sol, 95
+	SWAP
+	CTOS
+	SWAP
+	
+	CALLREF {
+		PUSH S1
+		PUSHSLICE x8adb35
+		SDEQ
+		PUSHREFCONT {
+			SWAP      ; salt sliceCode
+			LDREF
+			LDREF
+			DROP         ; salt selfCallCode usualSelector
+			XCHG S1, S2  ; selfCallCode salt usualSelector
+			CTOS         ; selfCallCode salt usualSelector
+			CALLREF {
+				
+				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
+				LDU 10
+				NIP
+				DUP
+				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
+				PUSHCONT {
+					LDREF
+				}
+				PUSHCONT {
+					PUSHREF {
+					}
+					SWAP
+				}
+				IFELSE
+							; selfCallCode salt restUsualSelector dict version intSelector
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+				DROP
+							; selfCallCode salt restUsualSelector dict version
+				SWAP        ; selfCallCode salt restUsualSelector version dict
+				NEWC        ; selfCallCode salt restUsualSelector version dict builder
+				STSLICECONST xF4A4_ ; DICTPUSHCONST
+				STDICT
+				PUSHINT 32
+				STUR 10
+				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
+				STREF       ; selfCallCode salt restUsualSelector builder
+				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
+				STREF       ; selfCallCode restUsualSelector builder
+				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
+				STBREF      ; selfCallCode restUsualSelector usualBuilder
+				STSLICE     ; selfCallCode usualBuilder
+	
+			}
+			NEWC        ; selfCallCode usualBuilder mainBuilder
+			STSLICECONST x8adb35
+			XCHG S1, S2 ; usualBuilder selfCallCode mainBuilder
+			STREF
+			STBREF
+			ENDC
+		}
+		PUSHREFCONT {
+			SWAP
+			CALLREF {
+				
+				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
+				LDU 10
+				NIP
+				DUP
+				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
+				PUSHCONT {
+					LDREF
+				}
+				PUSHCONT {
+					PUSHREF {
+					}
+					SWAP
+				}
+				IFELSE
+							; selfCallCode salt restUsualSelector dict version intSelector
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+				DROP
+							; selfCallCode salt restUsualSelector dict version
+				SWAP        ; selfCallCode salt restUsualSelector version dict
+				NEWC        ; selfCallCode salt restUsualSelector version dict builder
+				STSLICECONST xF4A4_ ; DICTPUSHCONST
+				STDICT
+				PUSHINT 32
+				STUR 10
+				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
+				STREF       ; selfCallCode salt restUsualSelector builder
+				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
+				STREF       ; selfCallCode restUsualSelector builder
+				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
+				STBREF      ; selfCallCode restUsualSelector usualBuilder
+				STSLICE     ; selfCallCode usualBuilder
+	
+			}
+			ENDC
+		}
+		IFELSE
+	}
+	.loc libraries/BlockKeeperLib.sol, 0
+}
+
+.fragment BlockKeeperLib_buildBlockKeeperEpochProxyListCode_d2793e03, {
+	.loc libraries/BlockKeeperLib.sol, 141
+	ROLL 3
+	NEWC
+	STREF
+	.loc libraries/BlockKeeperLib.sol, 142
+	ENDC
+	HASHCU
+	.loc libraries/BlockKeeperLib.sol, 144
+	ROLL 3
+	NEWC
+	STREF
+	.loc libraries/BlockKeeperLib.sol, 145
+	ENDC
+	HASHCU
+	.loc libraries/BlockKeeperLib.sol, 147
+	ROLL 3
+	NEWC
+	STREF
+	.loc libraries/BlockKeeperLib.sol, 148
+	ENDC
+	HASHCU
+	.loc libraries/BlockKeeperLib.sol, 151
+	XCHG S2
+	PUSHREF {
+		.blob x312e302e30
+	}
+	NEWC
+	STREF
+	STU 256
+	STU 256
+	STU 256
+	SWAP
+	NEWC
+	STSLICE
+	STBREFR
+	ENDC
+	.loc libraries/BlockKeeperLib.sol, 152
 	SWAP
 	CTOS
 	SWAP
@@ -261,14 +410,14 @@
 }
 
 .fragment BlockKeeperLib_buildBlockKeeperPreEpochCode_dd2e1efb, {
-	.loc libraries/BlockKeeperLib.sol, 57
+	.loc libraries/BlockKeeperLib.sol, 59
 	SWAP
 	NEWC
 	STREF
-	.loc libraries/BlockKeeperLib.sol, 58
+	.loc libraries/BlockKeeperLib.sol, 60
 	ENDC
 	HASHCU
-	.loc libraries/BlockKeeperLib.sol, 61
+	.loc libraries/BlockKeeperLib.sol, 63
 	PUSHREF {
 		.blob x312e302e30
 	}
@@ -277,7 +426,7 @@
 	STU 256
 	STSLICE
 	ENDC
-	.loc libraries/BlockKeeperLib.sol, 62
+	.loc libraries/BlockKeeperLib.sol, 64
 	SWAP
 	CTOS
 	SWAP
@@ -389,157 +538,18 @@
 	.loc libraries/BlockKeeperLib.sol, 0
 }
 
-.fragment BlockKeeperLib_buildBlockKeeperSlashCode_7d93794c, {
-	.loc libraries/BlockKeeperLib.sol, 138
-	ROT
-	NEWC
-	STREF
-	.loc libraries/BlockKeeperLib.sol, 139
-	ENDC
-	HASHCU
-	.loc libraries/BlockKeeperLib.sol, 141
-	ROT
-	NEWC
-	STREF
-	.loc libraries/BlockKeeperLib.sol, 142
-	ENDC
-	HASHCU
-	.loc libraries/BlockKeeperLib.sol, 145
+.fragment BlockKeeperLib_buildBlockKeeperWalletCode_cfca791e, {
+	.loc libraries/BlockKeeperLib.sol, 36
 	SWAP
 	PUSHREF {
 		.blob x312e302e30
 	}
 	NEWC
 	STREF
-	STU 256
-	STU 256
-	SWAP
-	NEWC
 	STSLICE
-	STBREFR
+	STU 256
 	ENDC
-	.loc libraries/BlockKeeperLib.sol, 146
-	SWAP
-	CTOS
-	SWAP
-	
-	CALLREF {
-		PUSH S1
-		PUSHSLICE x8adb35
-		SDEQ
-		PUSHREFCONT {
-			SWAP      ; salt sliceCode
-			LDREF
-			LDREF
-			DROP         ; salt selfCallCode usualSelector
-			XCHG S1, S2  ; selfCallCode salt usualSelector
-			CTOS         ; selfCallCode salt usualSelector
-			CALLREF {
-				
-				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
-	
-				PUSHSLICE xF4A4_
-				SDBEGINSX
-				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
-				LDU 10
-				NIP
-				DUP
-				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
-				PUSHCONT {
-					LDREF
-				}
-				PUSHCONT {
-					PUSHREF {
-					}
-					SWAP
-				}
-				IFELSE
-							; selfCallCode salt restUsualSelector dict version intSelector
-				PUSHSLICE xF4BDF2C04E
-				SDBEGINSX
-				DROP
-							; selfCallCode salt restUsualSelector dict version
-				SWAP        ; selfCallCode salt restUsualSelector version dict
-				NEWC        ; selfCallCode salt restUsualSelector version dict builder
-				STSLICECONST xF4A4_ ; DICTPUSHCONST
-				STDICT
-				PUSHINT 32
-				STUR 10
-				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
-				STREF       ; selfCallCode salt restUsualSelector builder
-				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
-				STREF       ; selfCallCode restUsualSelector builder
-				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
-				STBREF      ; selfCallCode restUsualSelector usualBuilder
-				STSLICE     ; selfCallCode usualBuilder
-	
-			}
-			NEWC        ; selfCallCode usualBuilder mainBuilder
-			STSLICECONST x8adb35
-			XCHG S1, S2 ; usualBuilder selfCallCode mainBuilder
-			STREF
-			STBREF
-			ENDC
-		}
-		PUSHREFCONT {
-			SWAP
-			CALLREF {
-				
-				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
-	
-				PUSHSLICE xF4A4_
-				SDBEGINSX
-				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
-				LDU 10
-				NIP
-				DUP
-				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
-				PUSHCONT {
-					LDREF
-				}
-				PUSHCONT {
-					PUSHREF {
-					}
-					SWAP
-				}
-				IFELSE
-							; selfCallCode salt restUsualSelector dict version intSelector
-				PUSHSLICE xF4BDF2C04E
-				SDBEGINSX
-				DROP
-							; selfCallCode salt restUsualSelector dict version
-				SWAP        ; selfCallCode salt restUsualSelector version dict
-				NEWC        ; selfCallCode salt restUsualSelector version dict builder
-				STSLICECONST xF4A4_ ; DICTPUSHCONST
-				STDICT
-				PUSHINT 32
-				STUR 10
-				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
-				STREF       ; selfCallCode salt restUsualSelector builder
-				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
-				STREF       ; selfCallCode restUsualSelector builder
-				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
-				STBREF      ; selfCallCode restUsualSelector usualBuilder
-				STSLICE     ; selfCallCode usualBuilder
-	
-			}
-			ENDC
-		}
-		IFELSE
-	}
-	.loc libraries/BlockKeeperLib.sol, 0
-}
-
-.fragment BlockKeeperLib_buildBlockKeeperWalletCode_9d3c5d53, {
-	.loc libraries/BlockKeeperLib.sol, 34
-	PUSHREF {
-		.blob x312e302e30
-	}
-	NEWC
-	STREF
-	STSLICE
-	ENDC
-	.loc libraries/BlockKeeperLib.sol, 35
+	.loc libraries/BlockKeeperLib.sol, 37
 	SWAP
 	CTOS
 	SWAP
@@ -652,21 +662,22 @@
 }
 
 .fragment BlockKeeperLib_composeBlockKeeperEpochStateInit_7627e090, {
-	.loc libraries/BlockKeeperLib.sol, 71
+	.loc libraries/BlockKeeperLib.sol, 73
 	PUSHINT 0
 	BLKPUSH 5, 0
 	PUSHREF {
 	}
 	PUSHINT 0
-	BLKPUSH 6, 0
-	NULL
+	DUP
+	PUSHSLICE x2_
+	PUSHINT 0
+	BLKPUSH 3, 0
 	PUSHREF {
 	}
 	PUSHINT 0
-	PUSHINT 17
-	ROLLX
+	ROLL 16
 	PUSHSLICE x2_
-	PUSHINT 19
+	PUSHINT 18
 	ROLLX
 	NULL
 	PUSHINT 0
@@ -682,7 +693,7 @@
 	STU 32
 	STU 256
 	STDICT
-	PUSHINT 20
+	PUSHINT 19
 	ROLLREVX
 	NEWC
 	STU 256
@@ -690,25 +701,27 @@
 	STU 64
 	STU 32
 	STREF
-	STDICT
-	ROLLREV 14
-	NEWC
-	STU 128
 	STI 1
 	STU 64
+	ROLLREV 12
+	NEWC
 	STU 256
 	STU 256
+	ROLLREV 10
+	NEWC
+	STSLICE
 	STU 32
 	STU 64
 	STREF
-	ROLLREV 6
-	NEWC
 	STU 256
+	ROLLREV 5
+	NEWC
 	STU 256
 	STU 32
 	STU 128
 	STU 32
 	STU 32
+	STBREFR
 	STBREFR
 	STBREFR
 	STBREFR
@@ -727,11 +740,11 @@
 }
 
 .fragment BlockKeeperLib_calculateBlockKeeperEpochAddress_62e3801d, {
-	.loc libraries/BlockKeeperLib.sol, 66
+	.loc libraries/BlockKeeperLib.sol, 68
 	CALLREF {
 		.inline BlockKeeperLib_composeBlockKeeperEpochStateInit_7627e090
 	}
-	.loc libraries/BlockKeeperLib.sol, 67
+	.loc libraries/BlockKeeperLib.sol, 69
 	HASHCU
 	NEWC
 	STSLICECONST x801_
@@ -742,17 +755,15 @@
 }
 
 .fragment BlockKeeperLib_composeBlockKeeperCoolerEpochStateInit_84a96f02, {
-	.loc libraries/BlockKeeperLib.sol, 102
+	.loc libraries/BlockKeeperLib.sol, 104
 	PUSHINT 0
-	DUP
-	NULL
 	PUSHREF {
 	}
 	PUSHSLICE x2_
 	PUSHINT 0
-	PUSH S6
+	PUSH S4
 	PUSHSLICE x2_
-	PUSH S9
+	PUSH S7
 	NULL
 	PUSHINT 0
 	BLKPUSH 2, 0
@@ -767,18 +778,16 @@
 	STU 32
 	STU 256
 	STDICT
-	ROLLREV 9
+	ROLLREV 7
 	NEWC
 	STU 256
 	STSLICE
 	STU 64
 	STU 64
-	ROLLREV 5
+	ROLLREV 3
 	NEWC
 	STSLICE
 	STREF
-	STDICT
-	STU 128
 	STU 256
 	STBREFR
 	STBREFR
@@ -802,11 +811,100 @@
 }
 
 .fragment BlockKeeperLib_calculateBlockKeeperCoolerEpochAddress_f59805bc, {
-	.loc libraries/BlockKeeperLib.sol, 97
+	.loc libraries/BlockKeeperLib.sol, 99
 	CALLREF {
 		.inline BlockKeeperLib_composeBlockKeeperCoolerEpochStateInit_84a96f02
 	}
-	.loc libraries/BlockKeeperLib.sol, 98
+	.loc libraries/BlockKeeperLib.sol, 100
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc libraries/BlockKeeperLib.sol, 0
+}
+
+.fragment BlockKeeperLib_composeBlockKeeperEpochProxyListStateInit_6b11fbf8, {
+	.loc libraries/BlockKeeperLib.sol, 126
+	PUSHINT 0
+	DUP
+	PUSHSLICE x2_
+	NULL
+	ROLL 5
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	BLKPUSH 2, 0
+	PAIR
+	NEWC
+	PUSHINT 258
+	STZEROES
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 256
+	STU 32
+	STU 256
+	STDICT
+	STDICT
+	ROLLREV 6
+	NEWC
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		STSLICE
+	}
+	IFELSE
+	STU 256
+	ROLLREV 4
+	NEWC
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		STU 256
+	}
+	IFELSE
+	STSLICE
+	ROTREV
+	NEWC
+	STU 256
+	STI 1
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	ROLLREV 5
+	CALLREF {
+		.inline BlockKeeperLib_buildBlockKeeperEpochProxyListCode_d2793e03
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc libraries/BlockKeeperLib.sol, 0
+}
+
+.fragment BlockKeeperLib_calculateBlockKeeperEpochProxyListAddress_96701a92, {
+	.loc libraries/BlockKeeperLib.sol, 121
+	CALLREF {
+		.inline BlockKeeperLib_composeBlockKeeperEpochProxyListStateInit_6b11fbf8
+	}
+	.loc libraries/BlockKeeperLib.sol, 122
 	HASHCU
 	NEWC
 	STSLICECONST x801_
@@ -817,7 +915,7 @@
 }
 
 .fragment BlockKeeperLib_composeBlockKeeperPreEpochStateInit_5e66e79a, {
-	.loc libraries/BlockKeeperLib.sol, 44
+	.loc libraries/BlockKeeperLib.sol, 46
 	PUSHINT 0
 	PUSHREF {
 	}
@@ -875,11 +973,11 @@
 }
 
 .fragment BlockKeeperLib_calculateBlockKeeperPreEpochAddress_7d0ee01a, {
-	.loc libraries/BlockKeeperLib.sol, 39
+	.loc libraries/BlockKeeperLib.sol, 41
 	CALLREF {
 		.inline BlockKeeperLib_composeBlockKeeperPreEpochStateInit_5e66e79a
 	}
-	.loc libraries/BlockKeeperLib.sol, 40
+	.loc libraries/BlockKeeperLib.sol, 42
 	HASHCU
 	NEWC
 	STSLICECONST x801_
@@ -889,14 +987,185 @@
 	.loc libraries/BlockKeeperLib.sol, 0
 }
 
-.fragment BlockKeeperLib_composeBlockKeeperSlashStateInit_d5fedfc9, {
-	.loc libraries/BlockKeeperLib.sol, 124
+.fragment BlockKeeperLib_composeBlockKeeperWalletStateInit_68c4d4bb, {
+	.loc libraries/BlockKeeperLib.sol, 23
+	NULL
+	PUSHINT 0
+	DUP
+	PUSHSLICE x2_
+	PUSHINT 0
+	DUP
+	NULL
+	PUSHSLICE x2_
+	NULL
+	PUSHINT 0
+	NULL
 	PUSHINT 0
 	BLKPUSH 2, 0
-	NULL
-	ROLL 4
+	PAIR
+	NEWC
+	PUSHINT 258
+	STZEROES
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 256
+	STU 32
+	STU 256
+	STDICT
+	ROLLREV 10
+	NEWC
+	STU 256
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		STU 256
+	}
+	IFELSE
+	ROLLREV 8
+	NEWC
+	STSLICE
+	STDICT
+	STU 256
+	STU 8
+	ROLLREV 4
+	NEWC
+	STSLICE
+	STU 256
+	STU 128
+	STDICT
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	ROLLREV 3
+	CALLREF {
+		.inline BlockKeeperLib_buildBlockKeeperWalletCode_cfca791e
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc libraries/BlockKeeperLib.sol, 0
+}
+
+.fragment BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6, {
+	.loc libraries/BlockKeeperLib.sol, 18
+	CALLREF {
+		.inline BlockKeeperLib_composeBlockKeeperWalletStateInit_68c4d4bb
+	}
+	.loc libraries/BlockKeeperLib.sol, 19
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc libraries/BlockKeeperLib.sol, 0
+}
+
+.fragment BlockKeeperLib_with_obj_calculateBlockKeeperCoolerEpochAddress_f59805bc, {
+	.loc libraries/BlockKeeperLib.sol, 99
+	PUSH S6
+	ROLLREV 6
+	CALLREF {
+		.inline BlockKeeperLib_composeBlockKeeperCoolerEpochStateInit_84a96f02
+	}
+	.loc libraries/BlockKeeperLib.sol, 100
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc libraries/BlockKeeperLib.sol, 0
+}
+
+.fragment BlockKeeperLib_with_obj_calculateBlockKeeperEpochAddress_62e3801d, {
+	.loc libraries/BlockKeeperLib.sol, 68
+	PUSH S5
+	ROLLREV 5
+	CALLREF {
+		.inline BlockKeeperLib_composeBlockKeeperEpochStateInit_7627e090
+	}
+	.loc libraries/BlockKeeperLib.sol, 69
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc libraries/BlockKeeperLib.sol, 0
+}
+
+.fragment BlockKeeperLib_with_obj_calculateBlockKeeperEpochProxyListAddress_96701a92, {
+	.loc libraries/BlockKeeperLib.sol, 121
+	PUSH S5
+	ROLLREV 5
+	CALLREF {
+		.inline BlockKeeperLib_composeBlockKeeperEpochProxyListStateInit_6b11fbf8
+	}
+	.loc libraries/BlockKeeperLib.sol, 122
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc libraries/BlockKeeperLib.sol, 0
+}
+
+.fragment BlockKeeperLib_with_obj_calculateBlockKeeperPreEpochAddress_7d0ee01a, {
+	.loc libraries/BlockKeeperLib.sol, 41
+	PUSH S4
+	ROLLREV 4
+	CALLREF {
+		.inline BlockKeeperLib_composeBlockKeeperPreEpochStateInit_5e66e79a
+	}
+	.loc libraries/BlockKeeperLib.sol, 42
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc libraries/BlockKeeperLib.sol, 0
+}
+
+.fragment BlockKeeperLib_with_obj_calculateBlockKeeperWalletAddress_18fcb3d6, {
+	.loc libraries/BlockKeeperLib.sol, 18
+	PUXC2 S2, S-1, S-1
+	CALLREF {
+		.inline BlockKeeperLib_composeBlockKeeperWalletStateInit_68c4d4bb
+	}
+	.loc libraries/BlockKeeperLib.sol, 19
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc libraries/BlockKeeperLib.sol, 0
+}
+
+.fragment BlockKeeperLib_with_obj_composeBlockKeeperCoolerEpochStateInit_84a96f02, {
+	.loc libraries/BlockKeeperLib.sol, 104
+	PUSHINT 0
+	PUSHREF {
+	}
 	PUSHSLICE x2_
-	ROLL 6
+	PUSHINT 0
+	PUSH S4
+	PUSHSLICE x2_
+	PUSH S7
 	NULL
 	PUSHINT 0
 	BLKPUSH 2, 0
@@ -916,239 +1185,11 @@
 	STU 256
 	STSLICE
 	STU 64
-	STDICT
+	STU 64
 	ROLLREV 3
-	NEWC
-	STU 128
-	STU 128
-	STU 256
-	STBREFR
-	STBREFR
-	ENDC
-	ROLLREV 4
-	CALLREF {
-		.inline BlockKeeperLib_buildBlockKeeperSlashCode_7d93794c
-	}
-	NEWC
-	STSLICECONST x2_
-	STDICT
-	STDICT
-	STZERO
-	ENDC
-	.loc libraries/BlockKeeperLib.sol, 0
-}
-
-.fragment BlockKeeperLib_calculateBlockKeeperSlashAddress_ef143ed1, {
-	.loc libraries/BlockKeeperLib.sol, 119
-	CALLREF {
-		.inline BlockKeeperLib_composeBlockKeeperSlashStateInit_d5fedfc9
-	}
-	.loc libraries/BlockKeeperLib.sol, 120
-	HASHCU
-	NEWC
-	STSLICECONST x801_
-	STU 256
-	ENDC
-	CTOS
-	.loc libraries/BlockKeeperLib.sol, 0
-}
-
-.fragment BlockKeeperLib_composeBlockKeeperWalletStateInit_68c4d4bb, {
-	.loc libraries/BlockKeeperLib.sol, 22
-	PUSHINT 0
-	DUP
-	NULL
-	PUSHSLICE x2_
-	NULL
-	ROLL 5
-	NULL
-	PUSHINT 0
-	BLKPUSH 2, 0
-	PAIR
-	NEWC
-	PUSHINT 258
-	STZEROES
-	SWAP
-	UNPAIR
-	XCHG S2
-	STU 256
-	STU 32
-	STU 256
-	STDICT
-	ROLLREV 6
-	NEWC
-	STU 256
-	XCPU S1, S0
-	ISNULL
-	PUSHCONT {
-		DROP
-		STZERO
-	}
-	PUSHCONT {
-		SWAP
-		STONE
-		STU 256
-	}
-	IFELSE
-	ROLLREV 4
-	NEWC
-	STSLICE
-	STDICT
-	STU 256
-	STU 8
-	STBREFR
-	STBREFR
-	ENDC
-	ROTREV
-	CALLREF {
-		.inline BlockKeeperLib_buildBlockKeeperWalletCode_9d3c5d53
-	}
-	NEWC
-	STSLICECONST x2_
-	STDICT
-	STDICT
-	STZERO
-	ENDC
-	.loc libraries/BlockKeeperLib.sol, 0
-}
-
-.fragment BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6, {
-	.loc libraries/BlockKeeperLib.sol, 17
-	CALLREF {
-		.inline BlockKeeperLib_composeBlockKeeperWalletStateInit_68c4d4bb
-	}
-	.loc libraries/BlockKeeperLib.sol, 18
-	HASHCU
-	NEWC
-	STSLICECONST x801_
-	STU 256
-	ENDC
-	CTOS
-	.loc libraries/BlockKeeperLib.sol, 0
-}
-
-.fragment BlockKeeperLib_with_obj_calculateBlockKeeperCoolerEpochAddress_f59805bc, {
-	.loc libraries/BlockKeeperLib.sol, 97
-	PUSH S6
-	ROLLREV 6
-	CALLREF {
-		.inline BlockKeeperLib_composeBlockKeeperCoolerEpochStateInit_84a96f02
-	}
-	.loc libraries/BlockKeeperLib.sol, 98
-	HASHCU
-	NEWC
-	STSLICECONST x801_
-	STU 256
-	ENDC
-	CTOS
-	.loc libraries/BlockKeeperLib.sol, 0
-}
-
-.fragment BlockKeeperLib_with_obj_calculateBlockKeeperEpochAddress_62e3801d, {
-	.loc libraries/BlockKeeperLib.sol, 66
-	PUSH S5
-	ROLLREV 5
-	CALLREF {
-		.inline BlockKeeperLib_composeBlockKeeperEpochStateInit_7627e090
-	}
-	.loc libraries/BlockKeeperLib.sol, 67
-	HASHCU
-	NEWC
-	STSLICECONST x801_
-	STU 256
-	ENDC
-	CTOS
-	.loc libraries/BlockKeeperLib.sol, 0
-}
-
-.fragment BlockKeeperLib_with_obj_calculateBlockKeeperPreEpochAddress_7d0ee01a, {
-	.loc libraries/BlockKeeperLib.sol, 39
-	PUSH S4
-	ROLLREV 4
-	CALLREF {
-		.inline BlockKeeperLib_composeBlockKeeperPreEpochStateInit_5e66e79a
-	}
-	.loc libraries/BlockKeeperLib.sol, 40
-	HASHCU
-	NEWC
-	STSLICECONST x801_
-	STU 256
-	ENDC
-	CTOS
-	.loc libraries/BlockKeeperLib.sol, 0
-}
-
-.fragment BlockKeeperLib_with_obj_calculateBlockKeeperSlashAddress_ef143ed1, {
-	.loc libraries/BlockKeeperLib.sol, 119
-	PUSH S5
-	ROLLREV 5
-	CALLREF {
-		.inline BlockKeeperLib_composeBlockKeeperSlashStateInit_d5fedfc9
-	}
-	.loc libraries/BlockKeeperLib.sol, 120
-	HASHCU
-	NEWC
-	STSLICECONST x801_
-	STU 256
-	ENDC
-	CTOS
-	.loc libraries/BlockKeeperLib.sol, 0
-}
-
-.fragment BlockKeeperLib_with_obj_calculateBlockKeeperWalletAddress_18fcb3d6, {
-	.loc libraries/BlockKeeperLib.sol, 17
-	PUXC2 S2, S-1, S-1
-	CALLREF {
-		.inline BlockKeeperLib_composeBlockKeeperWalletStateInit_68c4d4bb
-	}
-	.loc libraries/BlockKeeperLib.sol, 18
-	HASHCU
-	NEWC
-	STSLICECONST x801_
-	STU 256
-	ENDC
-	CTOS
-	.loc libraries/BlockKeeperLib.sol, 0
-}
-
-.fragment BlockKeeperLib_with_obj_composeBlockKeeperCoolerEpochStateInit_84a96f02, {
-	.loc libraries/BlockKeeperLib.sol, 102
-	PUSHINT 0
-	DUP
-	NULL
-	PUSHREF {
-	}
-	PUSHSLICE x2_
-	PUSHINT 0
-	PUSH S6
-	PUSHSLICE x2_
-	PUSH S9
-	NULL
-	PUSHINT 0
-	BLKPUSH 2, 0
-	PAIR
-	NEWC
-	PUSHINT 258
-	STZEROES
-	SWAP
-	UNPAIR
-	XCHG S2
-	STU 256
-	STU 32
-	STU 256
-	STDICT
-	ROLLREV 9
-	NEWC
-	STU 256
-	STSLICE
-	STU 64
-	STU 64
-	ROLLREV 5
 	NEWC
 	STSLICE
 	STREF
-	STDICT
-	STU 128
 	STU 256
 	STBREFR
 	STBREFR
@@ -1171,22 +1212,98 @@
 	.loc libraries/BlockKeeperLib.sol, 0
 }
 
+.fragment BlockKeeperLib_with_obj_composeBlockKeeperEpochProxyListStateInit_6b11fbf8, {
+	.loc libraries/BlockKeeperLib.sol, 126
+	PUSHINT 0
+	DUP
+	PUSHSLICE x2_
+	NULL
+	ROLL 5
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	BLKPUSH 2, 0
+	PAIR
+	NEWC
+	PUSHINT 258
+	STZEROES
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 256
+	STU 32
+	STU 256
+	STDICT
+	STDICT
+	ROLLREV 6
+	NEWC
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		STSLICE
+	}
+	IFELSE
+	STU 256
+	ROLLREV 4
+	NEWC
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		STU 256
+	}
+	IFELSE
+	STSLICE
+	ROTREV
+	NEWC
+	STU 256
+	STI 1
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	PUSH S5
+	BLKSWAP 4, 2
+	CALLREF {
+		.inline BlockKeeperLib_buildBlockKeeperEpochProxyListCode_d2793e03
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc libraries/BlockKeeperLib.sol, 0
+}
+
 .fragment BlockKeeperLib_with_obj_composeBlockKeeperEpochStateInit_7627e090, {
-	.loc libraries/BlockKeeperLib.sol, 71
+	.loc libraries/BlockKeeperLib.sol, 73
 	PUSHINT 0
 	BLKPUSH 5, 0
 	PUSHREF {
 	}
 	PUSHINT 0
-	BLKPUSH 6, 0
-	NULL
+	DUP
+	PUSHSLICE x2_
+	PUSHINT 0
+	BLKPUSH 3, 0
 	PUSHREF {
 	}
 	PUSHINT 0
-	PUSHINT 17
-	ROLLX
+	ROLL 16
 	PUSHSLICE x2_
-	PUSHINT 19
+	PUSHINT 18
 	ROLLX
 	NULL
 	PUSHINT 0
@@ -1202,7 +1319,7 @@
 	STU 32
 	STU 256
 	STDICT
-	PUSHINT 20
+	PUSHINT 19
 	ROLLREVX
 	NEWC
 	STU 256
@@ -1210,25 +1327,27 @@
 	STU 64
 	STU 32
 	STREF
-	STDICT
-	ROLLREV 14
-	NEWC
-	STU 128
 	STI 1
 	STU 64
+	ROLLREV 12
+	NEWC
 	STU 256
 	STU 256
+	ROLLREV 10
+	NEWC
+	STSLICE
 	STU 32
 	STU 64
 	STREF
-	ROLLREV 6
-	NEWC
 	STU 256
+	ROLLREV 5
+	NEWC
 	STU 256
 	STU 32
 	STU 128
 	STU 32
 	STU 32
+	STBREFR
 	STBREFR
 	STBREFR
 	STBREFR
@@ -1248,7 +1367,7 @@
 }
 
 .fragment BlockKeeperLib_with_obj_composeBlockKeeperPreEpochStateInit_5e66e79a, {
-	.loc libraries/BlockKeeperLib.sol, 44
+	.loc libraries/BlockKeeperLib.sol, 46
 	PUSHINT 0
 	PUSHREF {
 	}
@@ -1305,64 +1424,18 @@
 	.loc libraries/BlockKeeperLib.sol, 0
 }
 
-.fragment BlockKeeperLib_with_obj_composeBlockKeeperSlashStateInit_d5fedfc9, {
-	.loc libraries/BlockKeeperLib.sol, 124
-	PUSHINT 0
-	BLKPUSH 2, 0
-	NULL
-	ROLL 4
-	PUSHSLICE x2_
-	ROLL 6
-	NULL
-	PUSHINT 0
-	BLKPUSH 2, 0
-	PAIR
-	NEWC
-	PUSHINT 258
-	STZEROES
-	SWAP
-	UNPAIR
-	XCHG S2
-	STU 256
-	STU 32
-	STU 256
-	STDICT
-	ROLLREV 7
-	NEWC
-	STU 256
-	STSLICE
-	STU 64
-	STDICT
-	ROLLREV 3
-	NEWC
-	STU 128
-	STU 128
-	STU 256
-	STBREFR
-	STBREFR
-	ENDC
-	PUSH S4
-	BLKSWAP 3, 2
-	CALLREF {
-		.inline BlockKeeperLib_buildBlockKeeperSlashCode_7d93794c
-	}
-	NEWC
-	STSLICECONST x2_
-	STDICT
-	STDICT
-	STZERO
-	ENDC
-	.loc libraries/BlockKeeperLib.sol, 0
-}
-
 .fragment BlockKeeperLib_with_obj_composeBlockKeeperWalletStateInit_68c4d4bb, {
-	.loc libraries/BlockKeeperLib.sol, 22
+	.loc libraries/BlockKeeperLib.sol, 23
+	NULL
+	PUSHINT 0
+	DUP
+	PUSHSLICE x2_
 	PUSHINT 0
 	DUP
 	NULL
 	PUSHSLICE x2_
 	NULL
-	ROLL 5
+	PUSHINT 0
 	NULL
 	PUSHINT 0
 	BLKPUSH 2, 0
@@ -1377,7 +1450,7 @@
 	STU 32
 	STU 256
 	STDICT
-	ROLLREV 6
+	ROLLREV 10
 	NEWC
 	STU 256
 	XCPU S1, S0
@@ -1392,18 +1465,25 @@
 		STU 256
 	}
 	IFELSE
-	ROLLREV 4
+	ROLLREV 8
 	NEWC
 	STSLICE
 	STDICT
 	STU 256
 	STU 8
+	ROLLREV 4
+	NEWC
+	STSLICE
+	STU 256
+	STU 128
+	STDICT
+	STBREFR
 	STBREFR
 	STBREFR
 	ENDC
-	PUXC S2, S1
+	PUXC2 S3, S2, S-1
 	CALLREF {
-		.inline BlockKeeperLib_buildBlockKeeperWalletCode_9d3c5d53
+		.inline BlockKeeperLib_buildBlockKeeperWalletCode_cfca791e
 	}
 	NEWC
 	STSLICECONST x2_
@@ -1507,22 +1587,24 @@
 	LDU 64
 	LDU 32
 	LDREF
-	LDDICT
+	LDI 1
+	LDU 64
 	LDREF
 	ENDS
 	CTOS
-	LDU 128
-	LDI 1
-	LDU 64
 	LDU 256
 	LDU 256
+	LDREF
+	ENDS
+	CTOS
+	LDMSGADDR
 	LDU 32
 	LDU 64
 	LDREF
+	LDU 256
 	LDREF
 	ENDS
 	CTOS
-	LDU 256
 	LDU 256
 	LDU 32
 	LDU 128
@@ -1540,10 +1622,10 @@
 	GETGLOB 7
 	GETGLOB 8
 	GETGLOB 9
-	PUSHINT 24
+	PUSHINT 23
 	PUSHINT 10
 	BLKSWX
-	PUSHINT 34
+	PUSHINT 33
 	TUPLEVAR
 	POP C7
 	SETGLOB 6
@@ -1553,11 +1635,11 @@
 .fragment c7_to_c4, {
 	PUSH C7
 	FALSE
-	PUSHINT 34
+	PUSHINT 33
 	SETINDEXVARQ
-	PUSHINT 34
+	PUSHINT 33
 	UNPACKFIRSTVAR
-	PUSHINT 34
+	PUSHINT 33
 	PUSHINT 0
 	REVX
 	BLKDROP 10
@@ -1573,7 +1655,7 @@
 	STU 32
 	STU 256
 	STDICT
-	PUSHINT 20
+	PUSHINT 19
 	ROLLREVX
 	NEWC
 	STU 256
@@ -1581,25 +1663,27 @@
 	STU 64
 	STU 32
 	STREF
-	STDICT
-	ROLLREV 14
-	NEWC
-	STU 128
 	STI 1
 	STU 64
+	ROLLREV 12
+	NEWC
 	STU 256
 	STU 256
+	ROLLREV 10
+	NEWC
+	STSLICE
 	STU 32
 	STU 64
 	STREF
-	ROLLREV 6
-	NEWC
 	STU 256
+	ROLLREV 5
+	NEWC
 	STU 256
 	STU 32
 	STU 128
 	STU 32
 	STU 32
+	STBREFR
 	STBREFR
 	STBREFR
 	STBREFR
@@ -1608,7 +1692,7 @@
 }
 
 .fragment canDelete_26f9f39c_internal, {
-	.loc modifiers/modifiers.sol, 101
+	.loc modifiers/modifiers.sol, 85
 	DROP
 	GETGLOB 9
 	GETGLOB 15
@@ -1649,7 +1733,7 @@
 		.inline c7_to_c4
 	}
 	COMMIT
-	.loc BlockKeeperEpochContract.sol, 145
+	.loc BlockKeeperEpochContract.sol, 134
 	FALSE
 	MYADDR
 	NEWC
@@ -1673,7 +1757,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc BlockKeeperEpochContract.sol, 143
+	.loc BlockKeeperEpochContract.sol, 132
 	OVER
 	PUSHCONT {
 		LDREF
@@ -1702,12 +1786,12 @@
 	IFRET
 	.loc BlockKeeperEpochContract.sol, 95
 	PUSHINT 10000000000
-	.blob xC728
+	MINTSHELL
 	.loc BlockKeeperEpochContract.sol, 0
 }
 
 .fragment cancelContinueStake_1fc2200a_internal, {
-	.loc BlockKeeperEpochContract.sol, 119
+	.loc BlockKeeperEpochContract.sol, 108
 	PUSHINT 2
 	GETGLOB 13
 	PUSHINT 8
@@ -1722,26 +1806,26 @@
 	CALLREF {
 		.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
 	}
-	.loc modifiers/modifiers.sol, 101
+	.loc modifiers/modifiers.sol, 85
 	GETGLOB 9
 	SDEQ
 	THROWIFNOT 207
 	.loc modifiers/replayprotection.sol, 29
 	ACCEPT
-	.loc BlockKeeperEpochContract.sol, 120
+	.loc BlockKeeperEpochContract.sol, 109
 	CALLREF {
 		.inline getMoney_98e1b410_internal
 	}
-	.loc BlockKeeperEpochContract.sol, 121
-	GETGLOB 21
+	.loc BlockKeeperEpochContract.sol, 110
+	GETGLOB 19
 	TRUE
 	EQUAL
 	THROWIFNOT 281
-	.loc BlockKeeperEpochContract.sol, 122
+	.loc BlockKeeperEpochContract.sol, 111
 	FALSE
-	SETGLOB 21
-	.loc BlockKeeperEpochContract.sol, 124
-	GETGLOB 28
+	SETGLOB 19
+	.loc BlockKeeperEpochContract.sol, 113
+	GETGLOB 27
 	UFITS 248
 	PUSHINT 1
 	NULL
@@ -1751,23 +1835,10 @@
 	ROTREV
 	PUSHINT 32
 	DICTUSETB
-	.loc BlockKeeperEpochContract.sol, 125
+	.loc BlockKeeperEpochContract.sol, 114
 	GETGLOB 16
 	SWAP
-	PUSHINT 2
-	GETGLOB 13
-	PUSHINT 8
-	DICTUGETREF
-	PUSHCONT {
-		PUSHREF {
-		}
-	}
-	IFNOT
-	GETGLOB 15
-	GETGLOB 14
-	CALLREF {
-		.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
-	}
+	GETGLOB 9
 	NEWC
 	STSLICECONST x62_
 	STSLICE
@@ -1779,9 +1850,9 @@
 	ENDC
 	PUSHINT 1
 	SENDRAWMSG
-	.loc BlockKeeperEpochContract.sol, 126
+	.loc BlockKeeperEpochContract.sol, 115
 	PUSHINT 0
-	SETGLOB 28
+	SETGLOB 27
 	.loc BlockKeeperEpochContract.sol, 0
 }
 
@@ -1794,7 +1865,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc BlockKeeperEpochContract.sol, 119
+	.loc BlockKeeperEpochContract.sol, 108
 	ENDS
 	.loc BlockKeeperEpochContract.sol, 0
 	CALLREF {
@@ -1813,10 +1884,8 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	PUSHINT 0
-	SETGLOB 20
 	FALSE
-	SETGLOB 21
+	SETGLOB 19
 	GETGLOB 6
 	THROWIF 51
 	OVER
@@ -1834,13 +1903,13 @@
 	LDU 256
 	LDU 32
 	ENDS
-	.loc BlockKeeperEpochContract.sol, 56
+	.loc BlockKeeperEpochContract.sol, 55
 	ROLL 3
 	SETGLOB 13
-	.loc BlockKeeperEpochContract.sol, 57
+	.loc BlockKeeperEpochContract.sol, 56
 	SWAP
-	SETGLOB 29
-	.loc BlockKeeperEpochContract.sol, 58
+	SETGLOB 28
+	.loc BlockKeeperEpochContract.sol, 57
 	MYCODE
 	
 	CALLREF {
@@ -1917,7 +1986,7 @@
 	DUP
 	ISNULL
 	THROWIF 63
-	.loc BlockKeeperEpochContract.sol, 59
+	.loc BlockKeeperEpochContract.sol, 58
 	CTOS
 	LDREF
 	LDU 256
@@ -1927,7 +1996,7 @@
 	CTOS
 	LDMSGADDR
 	ENDS
-	.loc BlockKeeperEpochContract.sol, 60
+	.loc BlockKeeperEpochContract.sol, 59
 	PUSHREF {
 		.blob x312e302e30
 	}
@@ -1936,12 +2005,12 @@
 	HASHCU
 	EQUAL
 	THROWIFNOT 210
-	.loc BlockKeeperEpochContract.sol, 61
+	.loc BlockKeeperEpochContract.sol, 60
 	SETGLOB 15
-	.loc BlockKeeperEpochContract.sol, 62
+	.loc BlockKeeperEpochContract.sol, 61
 	PUSH S5
-	SETGLOB 30
-	.loc BlockKeeperEpochContract.sol, 64
+	SETGLOB 29
+	.loc BlockKeeperEpochContract.sol, 63
 	PUSHINT 2
 	GETGLOB 13
 	PUSHINT 8
@@ -1953,14 +2022,14 @@
 	IFNOT
 	NEWC
 	STREF
-	.loc BlockKeeperEpochContract.sol, 65
+	.loc BlockKeeperEpochContract.sol, 64
 	ENDC
 	HASHCU
-	.loc BlockKeeperEpochContract.sol, 67
+	.loc BlockKeeperEpochContract.sol, 66
 	ROT
 	EQUAL
 	THROWIFNOT 210
-	.loc BlockKeeperEpochContract.sol, 68
+	.loc BlockKeeperEpochContract.sol, 67
 	PUSHINT 4
 	GETGLOB 13
 	PUSHINT 8
@@ -1972,35 +2041,38 @@
 	IFNOT
 	NEWC
 	STREF
-	.loc BlockKeeperEpochContract.sol, 69
+	.loc BlockKeeperEpochContract.sol, 68
 	ENDC
 	HASHCU
-	.loc BlockKeeperEpochContract.sol, 70
+	.loc BlockKeeperEpochContract.sol, 69
 	XC2PU S0, S2, S5
 	ADD
-	PUSHINT 33
+	PUSHINT 32
 	SETGLOBVAR
-	.loc BlockKeeperEpochContract.sol, 72
+	.loc BlockKeeperEpochContract.sol, 71
 	EQUAL
 	THROWIFNOT 210
+	.loc BlockKeeperEpochContract.sol, 72
+	PUSHINT 2
+	GETGLOB 13
+	PUSHINT 8
+	DICTUGETREF
+	PUSHCONT {
+		PUSHREF {
+		}
+	}
+	IFNOT
+	GETGLOB 15
+	GETGLOB 14
+	CALLREF {
+		.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
+	}
+	SETGLOB 23
 	.loc BlockKeeperEpochContract.sol, 73
 	PUSHCONT {
 		.loc BlockKeeperEpochContract.sol, 74
 		GETGLOB 9
-		PUSHINT 2
-		GETGLOB 13
-		PUSHINT 8
-		DICTUGETREF
-		PUSHCONT {
-			PUSHREF {
-			}
-		}
-		IFNOT
-		GETGLOB 15
-		GETGLOB 14
-		CALLREF {
-			.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
-		}
+		GETGLOB 23
 	}
 	PUSHCONT {
 		.loc BlockKeeperEpochContract.sol, 77
@@ -2035,7 +2107,7 @@
 	THROWIFNOT 210
 	.loc BlockKeeperEpochContract.sol, 79
 	ROT
-	SETGLOB 22
+	SETGLOB 20
 	.loc BlockKeeperEpochContract.sol, 80
 	NOW
 	ROT
@@ -2043,8 +2115,7 @@
 	SETGLOB 17
 	.loc BlockKeeperEpochContract.sol, 81
 	NOW
-	PUSHINT 32
-	SETGLOBVAR
+	SETGLOB 31
 	.loc BlockKeeperEpochContract.sol, 82
 	SETGLOB 18
 	.loc BlockKeeperEpochContract.sol, 83
@@ -2079,7 +2150,7 @@
 	}
 	IF
 	DUP
-	SETGLOB 23
+	SETGLOB 21
 	.loc BlockKeeperEpochContract.sol, 84
 	GETGLOB 16
 	GETGLOB 14
@@ -2087,7 +2158,9 @@
 	NEWC
 	STSLICECONST x62_
 	STSLICE
-	PUSHSLICE x405f5e100000000000000000000000000001
+	PUSHREFSLICE {
+		.blob x405f5e100000000000000000000000000001
+	}
 	STSLICER
 	ROLLREV 3
 	NEWC
@@ -2132,24 +2205,13 @@
 	IF
 	GETGLOB 17
 	GETGLOB 16
-	PUSHINT 2
-	GETGLOB 13
-	PUSHINT 8
-	DICTUGETREF
-	PUSHCONT {
-		PUSHREF {
-		}
-	}
-	IFNOT
-	GETGLOB 15
-	GETGLOB 14
-	CALLREF {
-		.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
-	}
+	GETGLOB 23
 	NEWC
 	STSLICECONST x62_
 	STSLICE
-	PUSHSLICE x405f5e100000000000000000000000000001
+	PUSHREFSLICE {
+		.blob x405f5e100000000000000000000000000001
+	}
 	STSLICER
 	ROLLREV 3
 	NEWC
@@ -2169,7 +2231,7 @@
 }
 
 .fragment continueStake_966e21d7_internal, {
-	.loc BlockKeeperEpochContract.sol, 109
+	.loc BlockKeeperEpochContract.sol, 98
 	PUSHINT 2
 	GETGLOB 13
 	PUSHINT 8
@@ -2184,33 +2246,33 @@
 	CALLREF {
 		.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
 	}
-	.loc modifiers/modifiers.sol, 101
+	.loc modifiers/modifiers.sol, 85
 	GETGLOB 9
 	SDEQ
 	THROWIFNOT 207
 	.loc modifiers/replayprotection.sol, 29
 	ACCEPT
-	.loc BlockKeeperEpochContract.sol, 110
+	.loc BlockKeeperEpochContract.sol, 99
 	CALLREF {
 		.inline getMoney_98e1b410_internal
 	}
-	.loc BlockKeeperEpochContract.sol, 111
-	GETGLOB 21
+	.loc BlockKeeperEpochContract.sol, 100
+	GETGLOB 19
 	FALSE
 	EQUAL
 	THROWIFNOT 281
-	.loc BlockKeeperEpochContract.sol, 112
+	.loc BlockKeeperEpochContract.sol, 101
 	ROT
-	SETGLOB 25
-	.loc BlockKeeperEpochContract.sol, 113
+	SETGLOB 24
+	.loc BlockKeeperEpochContract.sol, 102
 	SWAP
+	SETGLOB 25
+	.loc BlockKeeperEpochContract.sol, 103
 	SETGLOB 26
-	.loc BlockKeeperEpochContract.sol, 114
-	SETGLOB 27
-	.loc BlockKeeperEpochContract.sol, 115
+	.loc BlockKeeperEpochContract.sol, 104
 	TRUE
-	SETGLOB 21
-	.loc BlockKeeperEpochContract.sol, 116
+	SETGLOB 19
+	.loc BlockKeeperEpochContract.sol, 105
 	PUSHINT 1
 	CALLREF {
 		DEPTH
@@ -2241,7 +2303,7 @@
 		DROP
 	}
 	IF
-	SETGLOB 28
+	SETGLOB 27
 	.loc BlockKeeperEpochContract.sol, 0
 }
 
@@ -2254,7 +2316,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc BlockKeeperEpochContract.sol, 109
+	.loc BlockKeeperEpochContract.sol, 98
 	OVER
 	PUSHCONT {
 		LDU 32
@@ -2280,37 +2342,33 @@
 }
 
 .fragment destroy_38a03563_internal, {
-	.loc modifiers/modifiers.sol, 101
+	.loc modifiers/modifiers.sol, 85
 	GETGLOB 9
 	MYADDR
 	SDEQ
 	THROWIFNOT 207
 	.loc modifiers/replayprotection.sol, 29
 	ACCEPT
-	.loc BlockKeeperEpochContract.sol, 149
-	GETGLOB 23
-	GETGLOB 16
-	GETGLOB 14
-	GETGLOB 15
-	NEWC
-	STSLICECONST x62_
-	STSLICE
-	PUSHSLICE x411e1a300000000000000000000000000001
-	STSLICER
-	ROLLREV 3
-	NEWC
-	STSLICECONST x6ee0abbd
-	STU 256
-	STU 64
-	STU 256
-	STBREFR
-	ENDC
-	PUSHINT 1
-	SENDRAWMSG
-	.loc BlockKeeperEpochContract.sol, 150
+	.loc BlockKeeperEpochContract.sol, 138
+	PUSHINT 2
+	GETGLOB 13
+	PUSHINT 8
+	DICTUGETREF
 	PUSHCONT {
-		.loc BlockKeeperEpochContract.sol, 152
-		GETGLOB 28
+		PUSHREF {
+		}
+	}
+	IFNOT
+	GETGLOB 15
+	GETGLOB 14
+	CALLREF {
+		.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
+	}
+	.loc BlockKeeperEpochContract.sol, 139
+	SWAP
+	PUSHCONT {
+		.loc BlockKeeperEpochContract.sol, 141
+		GETGLOB 27
 		UFITS 248
 		PUSHINT 1
 		NULL
@@ -2320,7 +2378,29 @@
 		ROTREV
 		PUSHINT 32
 		DICTUSETB
-		.loc BlockKeeperEpochContract.sol, 153
+		.loc BlockKeeperEpochContract.sol, 142
+		GETGLOB 21
+		GETGLOB 16
+		GETGLOB 14
+		GETGLOB 15
+		NEWC
+		STSLICECONST x62_
+		STSLICE
+		PUSHREFSLICE {
+			.blob x405f5e100000000000000000000000000001
+		}
+		STSLICER
+		ROLLREV 3
+		NEWC
+		STSLICECONST x6ee0abbd
+		STU 256
+		STU 64
+		STU 256
+		STBREFR
+		ENDC
+		PUSHINT 1
+		SENDRAWMSG
+		.loc BlockKeeperEpochContract.sol, 143
 		GETGLOB 16
 		SWAP
 		PUSHINT 2
@@ -2348,15 +2428,15 @@
 		ENDC
 		PUSHINT 1
 		SENDRAWMSG
-		.loc BlockKeeperEpochContract.sol, 154
+		.loc BlockKeeperEpochContract.sol, 144
 		GETGLOB 15
 	}
 	PUSHCONT {
-		.loc BlockKeeperEpochContract.sol, 156
-		GETGLOB 21
+		.loc BlockKeeperEpochContract.sol, 146
+		GETGLOB 19
 		PUSHCONT {
-			.loc BlockKeeperEpochContract.sol, 158
-			GETGLOB 28
+			.loc BlockKeeperEpochContract.sol, 148
+			GETGLOB 27
 			UFITS 248
 			PUSHINT 1
 			NULL
@@ -2366,28 +2446,15 @@
 			ROTREV
 			PUSHINT 32
 			DICTUSETB
-			.loc BlockKeeperEpochContract.sol, 159
-			PUSHINT 33
+			.loc BlockKeeperEpochContract.sol, 149
+			PUSHINT 32
 			GETGLOBVAR
 			GETGLOB 16
-			GETGLOB 27
 			GETGLOB 26
 			GETGLOB 25
+			GETGLOB 24
 			ROLL 5
-			PUSHINT 2
-			GETGLOB 13
-			PUSHINT 8
-			DICTUGETREF
-			PUSHCONT {
-				PUSHREF {
-				}
-			}
-			IFNOT
-			GETGLOB 15
-			GETGLOB 14
-			CALLREF {
-				.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
-			}
+			PUSH S6
 			NEWC
 			STSLICECONST x62_
 			STSLICE
@@ -2406,7 +2473,7 @@
 			.loc BlockKeeperEpochContract.sol, 0
 		}
 		IF
-		.loc BlockKeeperEpochContract.sol, 161
+		.loc BlockKeeperEpochContract.sol, 151
 		PUSHINT 3
 		GETGLOB 13
 		PUSHINT 8
@@ -2449,11 +2516,11 @@
 		CALLREF {
 			.inline BlockKeeperLib_composeBlockKeeperCoolerEpochStateInit_84a96f02
 		}
-		.loc BlockKeeperEpochContract.sol, 162
+		.loc BlockKeeperEpochContract.sol, 152
 		GETPARAM 7
 		SECOND
-		.loc BlockKeeperEpochContract.sol, 163
-		GETGLOB 28
+		.loc BlockKeeperEpochContract.sol, 153
+		GETGLOB 27
 		UFITS 248
 		PUSHINT 1
 		ROT
@@ -2474,38 +2541,23 @@
 		ROTREV
 		PUSHINT 32
 		DICTUSETB
-		.loc BlockKeeperEpochContract.sol, 164
-		GETGLOB 29
+		.loc BlockKeeperEpochContract.sol, 154
+		GETGLOB 28
 		GETGLOB 13
-		GETGLOB 20
-		GETGLOB 19
 		GETGLOB 18
 		GETGLOB 15
-		PUSHINT 2
-		GETGLOB 13
-		PUSHINT 8
-		DICTUGETREF
-		PUSHCONT {
-			PUSHREF {
-			}
-		}
-		IFNOT
-		GETGLOB 15
-		GETGLOB 14
-		CALLREF {
-			.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
-		}
-		GETGLOB 22
-		ROLL 9
+		PUSH S6
+		GETGLOB 20
+		ROLL 7
 		DUP
 		HASHCU
 		NEWC
 		STSLICECONST x801_
 		STU 256
-		ROLLREV 9
-		ROLL 10
+		ROLLREV 7
+		ROLL 8
 		PUSHINT 2000000000
-		ROLL 11
+		ROLL 9
 		NEWC
 		STSLICECONST x62_
 		STB
@@ -2539,17 +2591,15 @@
 		}
 		STREF
 		STONE
-		ROLLREV 8
+		ROLLREV 6
 		NEWC
-		STSLICECONST x40686c2e
+		STSLICECONST x0065a5db
 		STU 64
 		STSLICE
-		ROLLREV 6
+		ROLLREV 4
 		NEWC
 		STSLICE
 		STREF
-		STDICT
-		STU 128
 		STDICT
 		STU 256
 		STBREFR
@@ -2557,21 +2607,66 @@
 		ENDC
 		PUSHINT 1
 		SENDRAWMSG
-		.loc BlockKeeperEpochContract.sol, 171
-		PUSHINT 2
-		GETGLOB 13
-		PUSHINT 8
-		DICTUGETREF
+		.loc BlockKeeperEpochContract.sol, 161
+		GETGLOB 19
 		PUSHCONT {
-			PUSHREF {
+			.loc BlockKeeperEpochContract.sol, 162
+			GETGLOB 16
+			PUSHINT 5
+			GETGLOB 13
+			PUSHINT 8
+			DICTUGETREF
+			PUSHCONT {
+				PUSHREF {
+				}
 			}
+			IFNOT
+			PUSHINT 2
+			GETGLOB 13
+			PUSHINT 8
+			DICTUGETREF
+			PUSHCONT {
+				PUSHREF {
+				}
+			}
+			IFNOT
+			PUSHINT 1
+			GETGLOB 13
+			PUSHINT 8
+			DICTUGETREF
+			PUSHCONT {
+				PUSHREF {
+				}
+			}
+			IFNOT
+			PUSHINT 4
+			GETGLOB 13
+			PUSHINT 8
+			DICTUGETREF
+			PUSHCONT {
+				PUSHREF {
+				}
+			}
+			IFNOT
+			GETGLOB 14
+			GETGLOB 15
+			CALLREF {
+				.inline BlockKeeperLib_calculateBlockKeeperEpochProxyListAddress_96701a92
+			}
+			NEWC
+			STSLICECONST x62_
+			STSLICE
+			PUSHSLICE x405f5e1000000000000000000000000000004a63e38f
+			STSLICER
+			STU 64
+			ENDC
+			PUSHINT 1
+			SENDRAWMSG
+			.loc BlockKeeperEpochContract.sol, 0
 		}
 		IFNOT
-		GETGLOB 15
-		GETGLOB 14
-		CALLREF {
-			.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
-		}
+		.loc BlockKeeperEpochContract.sol, 164
+		DUP
 	}
 	IFELSE
 	NEWC
@@ -2583,6 +2678,7 @@
 	PUSHINT 160
 	SENDRAWMSG
 	.loc BlockKeeperEpochContract.sol, 0
+	DROP
 }
 
 .fragment destroy, {
@@ -2594,7 +2690,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc BlockKeeperEpochContract.sol, 148
+	.loc BlockKeeperEpochContract.sol, 137
 	LDI 1
 	ENDS
 	.loc BlockKeeperEpochContract.sol, 0
@@ -2607,67 +2703,8 @@
 	THROW 0
 }
 
-.fragment getBLSPrivateKey_1fe0468c_internal, {
-	.loc modifiers/modifiers.sol, 96
-	DROP
-	DEPTH
-	ADDCONST -2
-	PICK
-	PUSHINT 200000000
-	GEQ
-	THROWIFNOT 204
-	.loc modifiers/modifiers.sol, 97
-	PUSHINT 2
-	GETGLOB 13
-	PUSHINT 8
-	DICTUGETREF
-	PUSHCONT {
-		PUSHREF {
-		}
-	}
-	IFNOT
-	GETGLOB 15
-	GETGLOB 14
-	CALLREF {
-		.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
-	}
-	.loc modifiers/modifiers.sol, 101
-	GETGLOB 9
-	SDEQ
-	THROWIFNOT 207
-	.loc modifiers/replayprotection.sol, 29
-	ACCEPT
-	.loc BlockKeeperEpochContract.sol, 99
-	CALLREF {
-		.inline getMoney_98e1b410_internal
-	}
-	.loc BlockKeeperEpochContract.sol, 0
-}
-
-.fragment getBLSPrivateKey, {
-	DROP
-	GETGLOB 6
-	THROWIFNOT 76
-	GETGLOB 2
-	ISNULL
-	IFREF {
-		.inline c4_to_c7
-	}
-	.loc BlockKeeperEpochContract.sol, 98
-	LDREF
-	ENDS
-	.loc BlockKeeperEpochContract.sol, 0
-	CALLREF {
-		.inline getBLSPrivateKey_1fe0468c_internal
-	}
-	IFREF {
-		.inline c7_to_c4
-	}
-	THROW 0
-}
-
 .fragment getDetails_fbbf93a0_internal, {
-	.loc BlockKeeperEpochContract.sol, 190
+	.loc BlockKeeperEpochContract.sol, 183
 	GETGLOB 14
 	GETGLOB 15
 	GETGLOB 16
@@ -2686,9 +2723,9 @@
 	CALLREF {
 		.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
 	}
+	GETGLOB 27
+	GETGLOB 19
 	GETGLOB 28
-	GETGLOB 21
-	GETGLOB 29
 	.loc BlockKeeperEpochContract.sol, 0
 }
 
@@ -2701,7 +2738,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc BlockKeeperEpochContract.sol, 180
+	.loc BlockKeeperEpochContract.sol, 173
 	ENDS
 	.loc BlockKeeperEpochContract.sol, 0
 	CALLREF {
@@ -2753,7 +2790,7 @@
 }
 
 .fragment getEpochCoolerCodeHash_b8eeacd1_internal, {
-	.loc BlockKeeperEpochContract.sol, 194
+	.loc BlockKeeperEpochContract.sol, 187
 	PUSHINT 3
 	GETGLOB 13
 	PUSHINT 8
@@ -2780,7 +2817,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc BlockKeeperEpochContract.sol, 193
+	.loc BlockKeeperEpochContract.sol, 186
 	ENDS
 	.loc BlockKeeperEpochContract.sol, 0
 	CALLREF {
@@ -2815,7 +2852,7 @@
 }
 
 .fragment getVersion_0d8e6e2c_internal, {
-	.loc BlockKeeperEpochContract.sol, 198
+	.loc BlockKeeperEpochContract.sol, 191
 	PUSHREF {
 		.blob x312e302e30
 	}
@@ -2829,7 +2866,7 @@
 	DROP
 	GETGLOB 6
 	THROWIFNOT 76
-	.loc BlockKeeperEpochContract.sol, 197
+	.loc BlockKeeperEpochContract.sol, 190
 	ENDS
 	.loc BlockKeeperEpochContract.sol, 0
 	CALLREF {
@@ -2866,104 +2903,8 @@
 	THROW 0
 }
 
-.fragment sendRequestToSlashBlockKeeper_90ae84ea_internal, {
-	.loc modifiers/modifiers.sol, 101
-	GETGLOB 9
-	GETGLOB 15
-	SDEQ
-	THROWIFNOT 207
-	.loc modifiers/replayprotection.sol, 29
-	ACCEPT
-	.loc BlockKeeperEpochContract.sol, 105
-	CALLREF {
-		.inline getMoney_98e1b410_internal
-	}
-	.loc BlockKeeperEpochContract.sol, 106
-	GETGLOB 16
-	GETGLOB 14
-	PUSHINT 5
-	GETGLOB 13
-	PUSHINT 8
-	DICTUGETREF
-	PUSHCONT {
-		PUSHREF {
-		}
-	}
-	IFNOT
-	PUSHINT 2
-	GETGLOB 13
-	PUSHINT 8
-	DICTUGETREF
-	PUSHCONT {
-		PUSHREF {
-		}
-	}
-	IFNOT
-	PUSHINT 4
-	GETGLOB 13
-	PUSHINT 8
-	DICTUGETREF
-	PUSHCONT {
-		PUSHREF {
-		}
-	}
-	IFNOT
-	GETGLOB 15
-	BLKSWAP 2, 7
-	CALLREF {
-		.inline BlockKeeperLib_calculateBlockKeeperSlashAddress_ef143ed1
-	}
-	NEWC
-	STSLICECONST x62_
-	STSLICE
-	PUSHSLICE x41dcd6500000000000000000000000000001
-	STSLICER
-	ROLLREV 3
-	NEWC
-	STSLICECONST x79bb3340
-	STU 256
-	STU 64
-	STU 128
-	STBREFR
-	ENDC
-	PUSHINT 1
-	SENDRAWMSG
-	.loc BlockKeeperEpochContract.sol, 0
-}
-
-.fragment sendRequestToSlashBlockKeeper, {
-	DROP
-	GETGLOB 6
-	THROWIFNOT 76
-	GETGLOB 2
-	ISNULL
-	IFREF {
-		.inline c4_to_c7
-	}
-	.loc BlockKeeperEpochContract.sol, 104
-	OVER
-	PUSHCONT {
-		LDREF
-		ENDS
-		CTOS
-	}
-	IF
-	LDU 256
-	LDU 64
-	LDU 128
-	ENDS
-	.loc BlockKeeperEpochContract.sol, 0
-	CALLREF {
-		.inline sendRequestToSlashBlockKeeper_90ae84ea_internal
-	}
-	IFREF {
-		.inline c7_to_c4
-	}
-	THROW 0
-}
-
 .fragment setStake_486598aa_internal, {
-	.loc modifiers/modifiers.sol, 101
+	.loc modifiers/modifiers.sol, 85
 	GETGLOB 9
 	GETGLOB 15
 	SDEQ
@@ -2972,9 +2913,9 @@
 	ACCEPT
 	.loc BlockKeeperEpochContract.sol, 89
 	SWAP
-	SETGLOB 24
+	SETGLOB 22
 	.loc BlockKeeperEpochContract.sol, 90
-	SETGLOB 31
+	SETGLOB 30
 	.loc BlockKeeperEpochContract.sol, 0
 }
 
@@ -3009,52 +2950,7 @@
 }
 
 .fragment slash_2da25de3_internal, {
-	.loc BlockKeeperEpochContract.sol, 129
-	PUSHINT 5
-	GETGLOB 13
-	PUSHINT 8
-	DICTUGETREF
-	PUSHCONT {
-		PUSHREF {
-		}
-	}
-	IFNOT
-	PUSHINT 2
-	GETGLOB 13
-	PUSHINT 8
-	DICTUGETREF
-	PUSHCONT {
-		PUSHREF {
-		}
-	}
-	IFNOT
-	PUSHINT 4
-	GETGLOB 13
-	PUSHINT 8
-	DICTUGETREF
-	PUSHCONT {
-		PUSHREF {
-		}
-	}
-	IFNOT
-	GETGLOB 15
-	GETGLOB 14
-	GETGLOB 16
-	CALLREF {
-		.inline BlockKeeperLib_calculateBlockKeeperSlashAddress_ef143ed1
-	}
-	.loc modifiers/modifiers.sol, 101
-	GETGLOB 9
-	SDEQ
-	THROWIFNOT 207
-	.loc modifiers/replayprotection.sol, 29
-	ACCEPT
-	.loc BlockKeeperEpochContract.sol, 130
-	CALLREF {
-		.inline getMoney_98e1b410_internal
-	}
-	.loc BlockKeeperEpochContract.sol, 131
-	GETGLOB 16
+	.loc BlockKeeperEpochContract.sol, 118
 	PUSHINT 2
 	GETGLOB 13
 	PUSHINT 8
@@ -3069,6 +2965,19 @@
 	CALLREF {
 		.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
 	}
+	.loc modifiers/modifiers.sol, 85
+	GETGLOB 9
+	SDEQ
+	THROWIFNOT 207
+	.loc modifiers/replayprotection.sol, 29
+	ACCEPT
+	.loc BlockKeeperEpochContract.sol, 119
+	CALLREF {
+		.inline getMoney_98e1b410_internal
+	}
+	.loc BlockKeeperEpochContract.sol, 120
+	GETGLOB 16
+	GETGLOB 9
 	NEWC
 	STSLICECONST x62_
 	STSLICE
@@ -3078,7 +2987,7 @@
 	ENDC
 	PUSHINT 1
 	SENDRAWMSG
-	.loc BlockKeeperEpochContract.sol, 132
+	.loc BlockKeeperEpochContract.sol, 121
 	TRUE
 	MYADDR
 	NEWC
@@ -3102,7 +3011,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc BlockKeeperEpochContract.sol, 129
+	.loc BlockKeeperEpochContract.sol, 118
 	ENDS
 	.loc BlockKeeperEpochContract.sol, 0
 	CALLREF {
@@ -3152,49 +3061,50 @@
 	COMMIT
 	.loc modifiers/replayprotection.sol, 36
 	PUSHCONT {
-		.loc BlockKeeperEpochContract.sol, 136
+		.loc BlockKeeperEpochContract.sol, 125
 		FALSE ; decl return flag
 		GETGLOB 17
 		NOW
 		LESS
 		PUSHCONT {
-			.loc BlockKeeperEpochContract.sol, 136
+			.loc BlockKeeperEpochContract.sol, 125
 			ACCEPT
 		}
 		PUSHCONT {
-			.loc BlockKeeperEpochContract.sol, 137
+			.loc BlockKeeperEpochContract.sol, 126
 			DROP
 			PUSHINT 4
 		}
 		IFELSE
 		.loc BlockKeeperEpochContract.sol, 0
 		IFRET
-		.loc BlockKeeperEpochContract.sol, 138
+		.loc BlockKeeperEpochContract.sol, 127
 		CALLREF {
 			.inline getMoney_98e1b410_internal
 		}
-		.loc BlockKeeperEpochContract.sol, 139
+		.loc BlockKeeperEpochContract.sol, 128
 		GETPARAM 7
 		FIRST
 		PUSHINT 200000000
 		LESS
 		IFRET
-		.loc BlockKeeperEpochContract.sol, 140
+		.loc BlockKeeperEpochContract.sol, 129
+		GETGLOB 31
+		GETGLOB 30
+		GETGLOB 22
 		PUSHINT 32
 		GETGLOBVAR
-		GETGLOB 31
-		GETGLOB 24
-		PUSHINT 33
-		GETGLOBVAR
-		GETGLOB 30
-		GETGLOB 23
+		GETGLOB 29
+		GETGLOB 21
 		GETGLOB 16
 		GETGLOB 14
 		GETGLOB 15
 		NEWC
 		STSLICECONST x62_
 		STSLICE
-		PUSHSLICE x405f5e100000000000000000000000000001
+		PUSHREFSLICE {
+			.blob x405f5e100000000000000000000000000001
+		}
 		STSLICER
 		ROLLREV 8
 		NEWC
@@ -3214,7 +3124,7 @@
 		ENDC
 		PUSHINT 1
 		SENDRAWMSG
-		.loc BlockKeeperEpochContract.sol, 135
+		.loc BlockKeeperEpochContract.sol, 124
 	}
 	CALLX
 	.loc BlockKeeperEpochContract.sol, 0
@@ -3229,7 +3139,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc BlockKeeperEpochContract.sol, 135
+	.loc BlockKeeperEpochContract.sol, 124
 	ENDS
 	.loc BlockKeeperEpochContract.sol, 0
 	CALLREF {
@@ -3243,7 +3153,7 @@
 
 .fragment public_function_selector, {
 	DUP
-	PUSHINT 925969989
+	PUSHINT 1071142485
 	LEQ
 	IFJMPREF {
 		DUP
@@ -3270,28 +3180,22 @@
 			.inline constructor
 		}
 		DUP
-		PUSHINT 884477270
-		EQUAL
-		IFJMPREF {
-			.inline getBLSPrivateKey
-		}
-		DUP
 		PUSHINT 925969989
 		EQUAL
 		IFJMPREF {
 			.inline touch
 		}
-	}
-	DUP
-	PUSHINT 1582632804
-	LEQ
-	IFJMPREF {
 		DUP
 		PUSHINT 1071142485
 		EQUAL
 		IFJMPREF {
 			.inline getVersion
 		}
+	}
+	DUP
+	PUSHINT 1643535916
+	LEQ
+	IFJMPREF {
 		DUP
 		PUSHINT 1367329012
 		EQUAL
@@ -3299,28 +3203,22 @@
 			.inline continueStake
 		}
 		DUP
-		PUSHINT 1471475586
-		EQUAL
-		IFJMPREF {
-			.inline sendRequestToSlashBlockKeeper
-		}
-		DUP
 		PUSHINT 1582632804
 		EQUAL
 		IFJMPREF {
 			.inline destroy
 		}
-	}
-	DUP
-	PUSHINT 1734324782
-	LEQ
-	IFJMPREF {
 		DUP
 		PUSHINT 1643535916
 		EQUAL
 		IFJMPREF {
 			.inline getEpochCoolerCodeHash
 		}
+	}
+	DUP
+	PUSHINT 1734324782
+	LEQ
+	IFJMPREF {
 		DUP
 		PUSHINT 1708985182
 		EQUAL
@@ -3508,8 +3406,10 @@
 	PUSHREF {
 	}
 	PUSHINT 0
-	BLKPUSH 6, 0
-	NULL
+	DUP
+	PUSHSLICE x2_
+	PUSHINT 0
+	BLKPUSH 3, 0
 	PUSHREF {
 	}
 	PUSHINT 0
@@ -3530,7 +3430,7 @@
 	STU 32
 	STU 256
 	STDICT
-	PUSHINT 20
+	PUSHINT 19
 	ROLLREVX
 	NEWC
 	STU 256
@@ -3538,25 +3438,27 @@
 	STU 64
 	STU 32
 	STREF
-	STDICT
-	ROLLREV 14
-	NEWC
-	STU 128
 	STI 1
 	STU 64
+	ROLLREV 12
+	NEWC
 	STU 256
 	STU 256
+	ROLLREV 10
+	NEWC
+	STSLICE
 	STU 32
 	STU 64
 	STREF
-	ROLLREV 6
-	NEWC
 	STU 256
+	ROLLREV 5
+	NEWC
 	STU 256
 	STU 32
 	STU 128
 	STU 32
 	STU 32
+	STBREFR
 	STBREFR
 	STBREFR
 	STBREFR
@@ -3579,16 +3481,18 @@
 	POPROOT
 }
 
-.fragment BlockKeeperLib_with_obj_buildBlockKeeperWalletCode_9d3c5d53, {
-	.loc libraries/BlockKeeperLib.sol, 34
+.fragment BlockKeeperLib_with_obj_buildBlockKeeperWalletCode_cfca791e, {
+	.loc libraries/BlockKeeperLib.sol, 36
+	SWAP
 	PUSHREF {
 		.blob x312e302e30
 	}
 	NEWC
 	STREF
 	STSLICE
+	STU 256
 	ENDC
-	.loc libraries/BlockKeeperLib.sol, 35
+	.loc libraries/BlockKeeperLib.sol, 37
 	OVER
 	CTOS
 	SWAP
@@ -3701,14 +3605,14 @@
 }
 
 .fragment BlockKeeperLib_with_obj_buildBlockKeeperPreEpochCode_dd2e1efb, {
-	.loc libraries/BlockKeeperLib.sol, 57
+	.loc libraries/BlockKeeperLib.sol, 59
 	SWAP
 	NEWC
 	STREF
-	.loc libraries/BlockKeeperLib.sol, 58
+	.loc libraries/BlockKeeperLib.sol, 60
 	ENDC
 	HASHCU
-	.loc libraries/BlockKeeperLib.sol, 61
+	.loc libraries/BlockKeeperLib.sol, 63
 	PUSHREF {
 		.blob x312e302e30
 	}
@@ -3717,7 +3621,7 @@
 	STU 256
 	STSLICE
 	ENDC
-	.loc libraries/BlockKeeperLib.sol, 62
+	.loc libraries/BlockKeeperLib.sol, 64
 	OVER
 	CTOS
 	SWAP
@@ -3830,21 +3734,21 @@
 }
 
 .fragment BlockKeeperLib_with_obj_buildBlockKeeperEpochCode_94d09c5d, {
-	.loc libraries/BlockKeeperLib.sol, 85
+	.loc libraries/BlockKeeperLib.sol, 87
 	ROT
 	NEWC
 	STREF
-	.loc libraries/BlockKeeperLib.sol, 86
-	ENDC
-	HASHCU
 	.loc libraries/BlockKeeperLib.sol, 88
+	ENDC
+	HASHCU
+	.loc libraries/BlockKeeperLib.sol, 90
 	ROT
 	NEWC
 	STREF
-	.loc libraries/BlockKeeperLib.sol, 89
+	.loc libraries/BlockKeeperLib.sol, 91
 	ENDC
 	HASHCU
-	.loc libraries/BlockKeeperLib.sol, 92
+	.loc libraries/BlockKeeperLib.sol, 94
 	SWAP
 	PUSHREF {
 		.blob x312e302e30
@@ -3858,7 +3762,7 @@
 	STSLICE
 	STBREFR
 	ENDC
-	.loc libraries/BlockKeeperLib.sol, 93
+	.loc libraries/BlockKeeperLib.sol, 95
 	OVER
 	CTOS
 	SWAP
@@ -3971,7 +3875,7 @@
 }
 
 .fragment BlockKeeperLib_with_obj_buildBlockKeeperCoolerEpochCode_dc342e66, {
-	.loc libraries/BlockKeeperLib.sol, 114
+	.loc libraries/BlockKeeperLib.sol, 116
 	PUSHREF {
 		.blob x312e302e30
 	}
@@ -3979,7 +3883,7 @@
 	STREF
 	STSLICE
 	ENDC
-	.loc libraries/BlockKeeperLib.sol, 115
+	.loc libraries/BlockKeeperLib.sol, 117
 	OVER
 	CTOS
 	SWAP
@@ -4091,23 +3995,30 @@
 	.loc libraries/BlockKeeperLib.sol, 0
 }
 
-.fragment BlockKeeperLib_with_obj_buildBlockKeeperSlashCode_7d93794c, {
-	.loc libraries/BlockKeeperLib.sol, 138
-	ROT
-	NEWC
-	STREF
-	.loc libraries/BlockKeeperLib.sol, 139
-	ENDC
-	HASHCU
+.fragment BlockKeeperLib_with_obj_buildBlockKeeperEpochProxyListCode_d2793e03, {
 	.loc libraries/BlockKeeperLib.sol, 141
-	ROT
+	ROLL 3
 	NEWC
 	STREF
 	.loc libraries/BlockKeeperLib.sol, 142
 	ENDC
 	HASHCU
+	.loc libraries/BlockKeeperLib.sol, 144
+	ROLL 3
+	NEWC
+	STREF
 	.loc libraries/BlockKeeperLib.sol, 145
-	SWAP
+	ENDC
+	HASHCU
+	.loc libraries/BlockKeeperLib.sol, 147
+	ROLL 3
+	NEWC
+	STREF
+	.loc libraries/BlockKeeperLib.sol, 148
+	ENDC
+	HASHCU
+	.loc libraries/BlockKeeperLib.sol, 151
+	XCHG S2
 	PUSHREF {
 		.blob x312e302e30
 	}
@@ -4115,12 +4026,13 @@
 	STREF
 	STU 256
 	STU 256
+	STU 256
 	SWAP
 	NEWC
 	STSLICE
 	STBREFR
 	ENDC
-	.loc libraries/BlockKeeperLib.sol, 146
+	.loc libraries/BlockKeeperLib.sol, 152
 	OVER
 	CTOS
 	SWAP
@@ -4247,7 +4159,7 @@
 		.code-dict-cell 32, {
 		}
 		.cell { ; version
-			.blob x736f6c20302e37352e30 ; sol 0.75.0
+			.blob x736f6c20302e37362e31 ; sol 0.76.1
 		}
 	}
 	POPCTR c3

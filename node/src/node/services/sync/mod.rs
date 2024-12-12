@@ -1,6 +1,5 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
-
 mod state_sync_service_trait;
 pub use state_sync_service_trait::StateSyncService;
 

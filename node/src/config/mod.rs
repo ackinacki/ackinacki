@@ -1,6 +1,5 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
-
 mod default;
 mod serde_config;
 #[cfg(test)]
@@ -10,9 +9,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use default::default_bind;
+use default::default_block_manager_listen;
 use default::default_buffer_size;
 use default::default_gossip_listen;
-use default::default_lite_server_listen;
 use network::socket_addr::StringSocketAddr;
 use serde::Deserialize;
 use serde::Serialize;
@@ -20,6 +19,7 @@ pub use serde_config::load_config_from_file;
 pub use serde_config::save_config_to_file;
 
 use crate::node::NodeIdentifier;
+use crate::types::BlockSeqNo;
 
 // TODO: These settings should be moved onchain.
 /// Global node config, including block producer and synchronization settings.
@@ -39,7 +39,7 @@ pub struct GlobalConfig {
 
     /// Number of non-finalized blocks, after which the block producer slows
     /// down. Defaults to 32
-    pub finalization_delay_to_slow_down: u64,
+    pub finalization_delay_to_slow_down: <BlockSeqNo as std::ops::Sub>::Output,
 
     /// Block producer slow down multiplier.
     /// Defaults to 4
@@ -47,12 +47,12 @@ pub struct GlobalConfig {
 
     /// Number of non-finalized blocks, after which the block producer stops.
     /// Defaults to 128
-    pub finalization_delay_to_stop: u64,
+    pub finalization_delay_to_stop: <BlockSeqNo as std::ops::Sub>::Output,
 
     /// Difference between the seq no of the incoming block and the seq no of
     /// the last saved block, which causes the node synchronization process
     /// to start. Defaults to 6
-    pub need_synchronization_block_diff: u64,
+    pub need_synchronization_block_diff: <BlockSeqNo as std::ops::Sub>::Output,
 
     /// Minimal time between publishing state.
     /// Defaults to 600 seconds
@@ -85,13 +85,16 @@ pub struct GlobalConfig {
 
     /// Save optimistic state frequency (every N'th block)
     /// Defaults to 200
-    pub save_state_frequency: u64,
+    pub save_state_frequency: u32,
 
     /// Block keeper epoch code hash
     pub block_keeper_epoch_code_hash: String,
 
     /// Send special transaction gas limit
     pub gas_limit_for_special_transaction: u64,
+
+    /// Number of block gap after which block attestation become invalid
+    pub attestation_validity_block_gap: <BlockSeqNo as std::ops::Sub>::Output,
 }
 
 // TODO: need to rework gossip arguments, now it has some advertised parameters
@@ -121,8 +124,8 @@ pub struct NetworkConfig {
     pub gossip_seeds: Vec<StringSocketAddr>,
 
     /// Socket to listen for lite node requests (QUIC UDP).
-    #[serde(default = "default_lite_server_listen")]
-    pub lite_server_listen_addr: StringSocketAddr,
+    #[serde(default = "default_block_manager_listen")]
+    pub block_manager_listen_addr: StringSocketAddr,
 
     /// Static storages urls (e.g. <https://example.com/storage/>)
     #[serde(default)]

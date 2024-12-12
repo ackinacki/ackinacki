@@ -31,3 +31,6 @@ CREATE INDEX index_transactions_in_msg ON transactions (in_msg);
 
 CREATE INDEX index_blocks_parent ON blocks (parent);
 CREATE INDEX index_blocks_chain_order ON blocks (chain_order);
+
+DROP INDEX index_blocks_prev;
+DROP INDEX index_blocks_prev_alt;

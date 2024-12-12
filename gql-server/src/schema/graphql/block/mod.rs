@@ -212,6 +212,7 @@ pub struct Block {
     status: u8,
     /// Returns block processing status name.
     status_name: BlockProcessingStatusEnum,
+    thread_id: Option<String>,
     tr_count: Option<i32>,
     value_flow: Option<BlockValueFlow>,
     /// uin32 block version identifier.
@@ -225,6 +226,7 @@ pub struct Block {
 
 impl From<db::Block> for Block {
     fn from(block: db::Block) -> Self {
+        let boc = block.boc.map(tvm_types::base64_encode);
         let prev_alt_ref = if block.prev_alt_ref_root_hash.is_some() {
             Some(ExtBlkRef {
                 end_lt: block.prev_alt_ref_end_lt,
@@ -242,7 +244,7 @@ impl From<db::Block> for Block {
             after_split: block.after_split.to_bool(),
             aggregated_signature: block.aggregated_signature.unwrap_or_default(),
             before_split: block.before_split.to_bool(),
-            boc: block.boc,
+            boc,
             chain_order: block.chain_order,
             created_by: None,
             directives: Directives {
@@ -288,6 +290,7 @@ impl From<db::Block> for Block {
             start_lt: Some(block.start_lt.unwrap_or("".to_string())),
             status: block.status.unwrap_or(0) as u8,
             status_name: block.status.into(),
+            thread_id: block.thread_id,
             tr_count: block.tr_count.to_int(),
             value_flow: None,
             version: block.version.to_float(),

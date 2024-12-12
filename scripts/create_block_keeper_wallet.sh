@@ -79,19 +79,19 @@ fi
 ABI=../contracts/bksystem/BlockKeeperContractRoot.abi.json
 WALLET_ABI=../contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json
 ROOT=0:7777777777777777777777777777777777777777777777777777777777777777
-SPONSOR_WALLET_ABI="../contracts/giver/GiverV3.abi.json"
+SPONSOR_WALLET_ABI="../contracts/multisig/multisig.abi.json"
 
 WALLET_INIT=1000000000
 ECC_KEY="1"
 
 gen_key () {
   if [ ! -e $MASTER_KEY_FILE_OUTPUT_PATH ]; then
-    echo $MASTER_KEY_FILE_OUTPUT_PATH not found. Generating master keys...
+    echo File $MASTER_KEY_FILE_OUTPUT_PATH not found. Generating master keys...
     tvm-cli -j genphrase --dump $MASTER_KEY_FILE_OUTPUT_PATH > $MASTER_KEY_FILE_OUTPUT_PATH.phrase
   fi
 
   if [ ! -e $SERVICE_KEY_FILE_OUTPUT_PATH ]; then
-    echo $SERVICE_KEY_FILE_OUTPUT_PATH not found. Generating service keys...
+    echo File $SERVICE_KEY_FILE_OUTPUT_PATH not found. Generating service keys...
     tvm-cli -j genphrase --dump $SERVICE_KEY_FILE_OUTPUT_PATH > $SERVICE_KEY_FILE_OUTPUT_PATH.phrase
   fi
 }
@@ -121,7 +121,7 @@ WALLET_ADDR=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeper
 
 echo Wallet $WALLET_ADDR is deployed.
 
-tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $MASTER_KEY_FILE_OUTPUT_PATH --method setServiceKey "$SERVICE_PUB_KEY" && echo Wallet key has been added.
+tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $MASTER_KEY_FILE_OUTPUT_PATH --method setServiceKey "$SERVICE_PUB_KEY" && echo Wallet service key has been added.
 
 SERVICE_WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r '.service_key')
 
@@ -133,15 +133,18 @@ else
   exit 1
 fi
 
-ROOT_MIN_STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake')
-echo "Current minimum stake is $ROOT_MIN_STAKE"
+ROOT_MIN_STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake' | xargs printf "%d / 1000000000\n" | bc -l)
+ROOT_MIN_STAKE=$((${ROOT_MIN_STAKE%.*} + 1))
 
-STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake' | xargs printf "%d * 2\n" | bc)
+echo "Current minimum stake is $ROOT_MIN_STAKE NACKLs"
 
-echo "Sending $STAKE tokens..."
-GIVER_PARAMS="{\"dest\": \"$WALLET_ADDR\", \"value\": $WALLET_INIT, \"ecc\": {\"$ECC_KEY\": $STAKE}}"
+STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake' | xargs printf "%d * 2 / 1000000000\n" | bc -l)
+STAKE=$((${STAKE%.*} + 1))
 
-tvm-cli -j callx --addr $SPONSOR_WALLET_ADDRESS --abi $SPONSOR_WALLET_ABI --keys $SPONSOR_WALLET_KEY_FILE --method sendCurrency "$GIVER_PARAMS"
+echo "Sending $STAKE NACKLs"
+SPONSOR_PARAMS="{\"dest\": \"$WALLET_ADDR\", \"value\": $WALLET_INIT, \"cc\": {\"$ECC_KEY\": $STAKE}, \"payload\": \"\", \"flags\": 0, \"bounce\": false}"
+
+tvm-cli -j call $SPONSOR_WALLET_ADDRESS sendTransaction "$SPONSOR_PARAMS" --abi $SPONSOR_WALLET_ABI --sign $SPONSOR_WALLET_KEY_FILE
 
 echo "Checking wallet balance..."
 WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '{balance,walletId}')

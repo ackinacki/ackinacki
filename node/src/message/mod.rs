@@ -2,31 +2,42 @@
 //
 
 use std::fmt::Debug;
+use std::fmt::Formatter;
 
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 use tvm_block::Deserializable;
+use tvm_block::GetRepresentationHash;
 use tvm_block::Serializable;
 use tvm_types::UInt256;
 
-use crate::account::AccountId;
-
+mod filter_messages;
 #[cfg(test)]
 pub mod message_stub;
 
 pub trait Message: Debug + Clone + Sync + Send + Serialize + for<'b> Deserialize<'b> {
-    type AccountId: AccountId;
+    type AccountId;
 
-    fn is_internal(&self) -> bool;
+    // fn is_internal(&self) -> bool;
 
     fn destination(&self) -> Self::AccountId;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct WrappedMessage {
     pub message: tvm_block::Message,
+}
+
+impl Debug for WrappedMessage {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            self.message.hash().expect("Failed to get hash for message").to_hex_string()
+        )
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -66,9 +77,9 @@ impl<'de> Deserialize<'de> for WrappedMessage {
 impl Message for WrappedMessage {
     type AccountId = tvm_types::AccountId;
 
-    fn is_internal(&self) -> bool {
-        self.message.is_internal()
-    }
+    //    fn is_internal(&self) -> bool {
+    //        self.message.is_internal()
+    //    }
 
     fn destination(&self) -> Self::AccountId {
         self.message.int_dst_account_id().unwrap_or(tvm_types::AccountId::from(UInt256::default()))

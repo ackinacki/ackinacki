@@ -1,9 +1,9 @@
 .fragment DappLib_buildDappConfigCode_4131fee1, {
-	.loc libraries/DappLib.sol, 44
+	.loc libraries/DappLib.sol, 32
 	NEWC
 	STU 256
 	ENDC
-	.loc libraries/DappLib.sol, 45
+	.loc libraries/DappLib.sol, 33
 	SWAP
 	CTOS
 	SWAP
@@ -116,13 +116,13 @@
 }
 
 .fragment DappLib_composeDappConfigStateInit_8b57b2ae, {
-	.loc libraries/DappLib.sol, 32
+	.loc libraries/DappLib.sol, 20
 	PUSHINT 0
 	PUSHSLICE x2_
 	DUP
 	PUSHINT 0
-	BLKPUSH 7, 0
-	TUPLE 8
+	DUP
+	PAIR
 	PUSHINT 0
 	BLKPUSH 2, 0
 	PAIR
@@ -136,18 +136,10 @@
 	STU 32
 	STU 256
 	SWAP
-	UNTUPLE 8
-	REVERSE 9, 0
+	UNPAIR
+	XCHG S2
 	STI 1
 	STI 128
-	ROLLREV 9
-	NEWC
-	STU 128
-	STU 128
-	STU 128
-	STU 128
-	STU 128
-	STU 128
 	ROLLREV 3
 	NEWC
 	STSLICE
@@ -155,7 +147,6 @@
 	NEWC
 	STSLICE
 	STU 256
-	STBREFR
 	STBREFR
 	STBREFR
 	ENDC
@@ -173,11 +164,11 @@
 }
 
 .fragment DappLib_calculateDappConfigAddress_1a23b042, {
-	.loc libraries/DappLib.sol, 27
+	.loc libraries/DappLib.sol, 15
 	CALLREF {
 		.inline DappLib_composeDappConfigStateInit_8b57b2ae
 	}
-	.loc libraries/DappLib.sol, 28
+	.loc libraries/DappLib.sol, 16
 	HASHCU
 	NEWC
 	STSLICECONST x801_
@@ -188,12 +179,12 @@
 }
 
 .fragment DappLib_with_obj_calculateDappConfigAddress_1a23b042, {
-	.loc libraries/DappLib.sol, 27
+	.loc libraries/DappLib.sol, 15
 	PUXC S1, S-1
 	CALLREF {
 		.inline DappLib_composeDappConfigStateInit_8b57b2ae
 	}
-	.loc libraries/DappLib.sol, 28
+	.loc libraries/DappLib.sol, 16
 	HASHCU
 	NEWC
 	STSLICECONST x801_
@@ -204,13 +195,13 @@
 }
 
 .fragment DappLib_with_obj_composeDappConfigStateInit_8b57b2ae, {
-	.loc libraries/DappLib.sol, 32
+	.loc libraries/DappLib.sol, 20
 	PUSHINT 0
 	PUSHSLICE x2_
 	DUP
 	PUSHINT 0
-	BLKPUSH 7, 0
-	TUPLE 8
+	DUP
+	PAIR
 	PUSHINT 0
 	BLKPUSH 2, 0
 	PAIR
@@ -224,18 +215,10 @@
 	STU 32
 	STU 256
 	SWAP
-	UNTUPLE 8
-	REVERSE 9, 0
+	UNPAIR
+	XCHG S2
 	STI 1
 	STI 128
-	ROLLREV 9
-	NEWC
-	STU 128
-	STU 128
-	STU 128
-	STU 128
-	STU 128
-	STU 128
 	ROLLREV 3
 	NEWC
 	STSLICE
@@ -243,7 +226,6 @@
 	NEWC
 	STSLICE
 	STU 256
-	STBREFR
 	STBREFR
 	STBREFR
 	ENDC
@@ -401,7 +383,7 @@
 	SETGLOB 14
 	.loc DappRoot.sol, 26
 	PUSHINT 100000000000000
-	.blob xC728
+	MINTSHELL
 	.loc DappRoot.sol, 0
 	CALLREF {
 		.inline c7_to_c4
@@ -418,11 +400,11 @@
 	IFRET
 	.loc DappRoot.sol, 36
 	PUSHINT 100000000000000
-	.blob xC728
+	MINTSHELL
 	.loc DappRoot.sol, 0
 }
 
-.fragment deployNewConfig_d986de00_internal, {
+.fragment deployNewConfig_636260f3_internal, {
 	.loc modifiers/modifiers.sol, 31
 	GETGLOB 5
 	DUP
@@ -437,15 +419,13 @@
 	THROWIFNOT 212
 	.loc modifiers/replayprotection.sol, 29
 	ACCEPT
-	.loc DappRoot.sol, 48
+	.loc DappRoot.sol, 56
 	CALLREF {
 		.inline getMoney_98e1b410_internal
 	}
-	.loc DappRoot.sol, 49
-	SEQNO
-	PUSHINT 0
-	TUPLE 8
-	.loc DappRoot.sol, 59
+	.loc DappRoot.sol, 57
+	PAIR
+	.loc DappRoot.sol, 61
 	PUSHINT 1
 	GETGLOB 13
 	PUSHINT 8
@@ -459,37 +439,22 @@
 	CALLREF {
 		.inline DappLib_composeDappConfigStateInit_8b57b2ae
 	}
-	.loc DappRoot.sol, 60
-	PUSHINT 1000000000000
-	PUSHINT 2
-	.blob xC726
-	.loc DappRoot.sol, 61
-	PUSHINT 2
-	NULL
-	NEWC
-	PUSHINT 1000000000000
 	.loc DappRoot.sol, 62
-	STVARUINT32
-	ROTREV
-	PUSHINT 32
-	DICTUSETB
-	.loc DappRoot.sol, 63
-	XC2PU S2, S2, S0
+	DUP
 	HASHCU
 	NEWC
 	STSLICECONST x801_
 	STU 256
-	XCHG S3
+	ROTREV
 	PUSHINT 15000000000
-	ROLL 4
+	ROLL 3
 	NEWC
 	STSLICECONST x62_
 	STB
 	SWAP
 	STGRAMS
-	STDICT
 	PUSHINT 3
-	STUR 107
+	STUR 108
 	OVER
 	CALLREF {
 		CTOS
@@ -514,22 +479,12 @@
 		BLKDROP 3
 	}
 	STREF
-	STONE
+	STSLICECONST x026e4293c_
 	SWAP
-	NEWC
-	STSLICECONST x670883e3
-	SWAP
-	UNTUPLE 8
-	REVERSE 9, 0
+	UNPAIR
+	XCHG S2
 	STI 1
 	STI 128
-	STU 128
-	STU 128
-	STU 128
-	STU 128
-	STU 128
-	STU 128
-	STBREFR
 	ENDC
 	PUSHINT 1
 	SENDRAWMSG
@@ -537,6 +492,114 @@
 }
 
 .fragment deployNewConfig, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc DappRoot.sol, 51
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	LDI 1
+	LDI 128
+	ENDS
+	.loc DappRoot.sol, 0
+	CALLREF {
+		.inline deployNewConfig_636260f3_internal
+	}
+	IFREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment deployNewConfigCustom_50458614_internal, {
+	.loc modifiers/replayprotection.sol, 29
+	ACCEPT
+	.loc DappRoot.sol, 42
+	CALLREF {
+		.inline getMoney_98e1b410_internal
+	}
+	.loc DappRoot.sol, 43
+	FALSE
+	DUP
+	PAIR
+	.loc DappRoot.sol, 47
+	PUSHINT 1
+	GETGLOB 13
+	PUSHINT 8
+	DICTUGETREF
+	PUSHCONT {
+		PUSHREF {
+		}
+	}
+	IFNOT
+	ROT
+	CALLREF {
+		.inline DappLib_composeDappConfigStateInit_8b57b2ae
+	}
+	.loc DappRoot.sol, 48
+	DUP
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ROTREV
+	PUSHINT 15000000000
+	ROLL 3
+	NEWC
+	STSLICECONST x62_
+	STB
+	SWAP
+	STGRAMS
+	PUSHINT 3
+	STUR 108
+	OVER
+	CALLREF {
+		CTOS
+		LDI 1
+		SWAP
+		PUSHCONT {
+			LDI 5
+			NIP
+		}
+		IF
+		LDI 1
+		SWAP
+		PUSHCONT {
+			LDI 2
+			NIP
+		}
+		IF
+		LDDICT
+		LDDICT
+		LDDICT
+		ENDS
+		BLKDROP 3
+	}
+	STREF
+	STSLICECONST x026e4293c_
+	SWAP
+	UNPAIR
+	XCHG S2
+	STI 1
+	STI 128
+	ENDC
+	PUSHINT 1
+	SENDRAWMSG
+	.loc DappRoot.sol, 0
+}
+
+.fragment deployNewConfigCustom, {
 	DROP
 	GETGLOB 6
 	THROWIFNOT 76
@@ -554,16 +617,10 @@
 	}
 	IF
 	LDU 256
-	LDI 1
-	LDI 128
-	LDU 128
-	LDU 128
-	LDU 128
-	LDU 128
 	ENDS
 	.loc DappRoot.sol, 0
 	CALLREF {
-		.inline deployNewConfig_d986de00_internal
+		.inline deployNewConfigCustom_50458614_internal
 	}
 	IFREF {
 		.inline c7_to_c4
@@ -572,7 +629,7 @@
 }
 
 .fragment getConfigAddr_3bdc963f_internal, {
-	.loc DappRoot.sol, 67
+	.loc DappRoot.sol, 66
 	PUSHINT 1
 	GETGLOB 13
 	PUSHINT 8
@@ -598,7 +655,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc DappRoot.sol, 66
+	.loc DappRoot.sol, 65
 	OVER
 	PUSHCONT {
 		LDREF
@@ -645,11 +702,18 @@
 }
 
 .fragment setNewCode_69de50f2_internal, {
-	.loc modifiers/modifiers.sol, 46
-	GETGLOB 9
-	GETGLOB 14
-	SDEQ
-	THROWIFNOT 207
+	.loc modifiers/modifiers.sol, 31
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 2
+	EQUAL
+	THROWIFNOT 212
 	.loc modifiers/replayprotection.sol, 29
 	ACCEPT
 	.loc modifiers/replayprotection.sol, 40
@@ -726,9 +790,20 @@
 .fragment public_function_selector, {
 	DUP
 	PUSHINT 1305503535
-	EQUAL
+	LEQ
 	IFJMPREF {
-		.inline setNewCode
+		DUP
+		PUSHINT 1003106104
+		EQUAL
+		IFJMPREF {
+			.inline deployNewConfigCustom
+		}
+		DUP
+		PUSHINT 1305503535
+		EQUAL
+		IFJMPREF {
+			.inline setNewCode
+		}
 	}
 	DUP
 	PUSHINT 1597275249
@@ -737,16 +812,16 @@
 		.inline getConfigAddr
 	}
 	DUP
+	PUSHINT 1653304180
+	EQUAL
+	IFJMPREF {
+		.inline deployNewConfig
+	}
+	DUP
 	PUSHINT 1756716863
 	EQUAL
 	IFJMPREF {
 		.inline constructor
-	}
-	DUP
-	PUSHINT 1835853706
-	EQUAL
-	IFJMPREF {
-		.inline deployNewConfig
 	}
 }
 
@@ -936,11 +1011,11 @@
 }
 
 .fragment DappLib_with_obj_buildDappConfigCode_4131fee1, {
-	.loc libraries/DappLib.sol, 44
+	.loc libraries/DappLib.sol, 32
 	NEWC
 	STU 256
 	ENDC
-	.loc libraries/DappLib.sol, 45
+	.loc libraries/DappLib.sol, 33
 	OVER
 	CTOS
 	SWAP
@@ -1067,7 +1142,7 @@
 		.code-dict-cell 32, {
 		}
 		.cell { ; version
-			.blob x736f6c20302e37352e30 ; sol 0.75.0
+			.blob x736f6c20302e37362e31 ; sol 0.76.1
 		}
 	}
 	POPCTR c3

@@ -1,0 +1,98 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"code","type":"map(uint8,cell)"},
+				{"name":"seqNoStart","type":"uint64"},
+				{"name":"service_key","type":"optional(uint256)"},
+				{"name":"walletId","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "destroy",
+			"inputs": [
+				{"name":"seqNoStart","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setOwner",
+			"inputs": [
+				{"name":"owner","type":"optional(address)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "addProxyList",
+			"inputs": [
+				{"name":"data","type":"map(uint8,string)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteProxyList",
+			"inputs": [
+				{"name":"data","type":"map(uint8,string)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "iterateProxyList",
+			"inputs": [
+				{"name":"data","type":"map(uint8,string)"},
+				{"components":[{"name":"value0","type":"uint8"},{"name":"value1","type":"string"}],"name":"member","type":"optional(tuple)"},
+				{"name":"action","type":"bool"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"root","type":"address"},
+				{"name":"ProxyList","type":"map(uint8,string)"},
+				{"name":"owner","type":"optional(address)"},
+				{"name":"service_key","type":"optional(uint256)"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
+		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
+		{"init":false,"name":"__value","type":"uint256"},
+		{"init":false,"name":"_code","type":"map(uint8,cell)"},
+		{"init":false,"name":"_ProxyList","type":"map(uint8,string)"},
+		{"init":false,"name":"_owner","type":"optional(address)"},
+		{"init":true,"name":"_owner_pubkey","type":"uint256"},
+		{"init":false,"name":"_service_key","type":"optional(uint256)"},
+		{"init":false,"name":"_root","type":"address"},
+		{"init":false,"name":"_walletId","type":"uint256"},
+		{"init":false,"name":"status","type":"bool"}
+	]
+}

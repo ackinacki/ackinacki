@@ -31,7 +31,7 @@
 			]
 		},
 		{
-			"name": "increaseActiveBlockKeeperNumber",
+			"name": "decreaseActiveBlockKeeperNumber",
 			"inputs": [
 				{"name":"pubkey","type":"uint256"},
 				{"name":"seqNoStart","type":"uint64"},
@@ -41,7 +41,7 @@
 			]
 		},
 		{
-			"name": "decreaseActiveBlockKeeperNumber",
+			"name": "increaseActiveBlockKeeperNumber",
 			"inputs": [
 				{"name":"pubkey","type":"uint256"},
 				{"name":"seqNoStart","type":"uint64"},
@@ -89,17 +89,6 @@
 				{"name":"totalStakeOld","type":"uint256"},
 				{"name":"numberOfActiveBlockKeepers","type":"uint128"},
 				{"name":"time","type":"uint128"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "sendRequestToSlashBlockKeeper",
-			"inputs": [
-				{"name":"slashpubkey","type":"uint256"},
-				{"name":"slashSeqNoStart","type":"uint64"},
-				{"name":"seqNoStart","type":"uint64"},
-				{"name":"pubkey","type":"uint256"}
 			],
 			"outputs": [
 			]
@@ -179,14 +168,6 @@
 			]
 		},
 		{
-			"name": "getSlashCodeHash",
-			"inputs": [
-			],
-			"outputs": [
-				{"name":"slashCodeHash","type":"uint256"}
-			]
-		},
-		{
 			"name": "getRewardOut",
 			"inputs": [
 				{"name":"numberOfActiveBlockKeepers","type":"uint128"},
@@ -211,6 +192,18 @@
 		{
 			"name": "getMinStakeNow",
 			"inputs": [
+			],
+			"outputs": [
+				{"name":"minstake","type":"uint128"}
+			]
+		},
+		{
+			"name": "getMinStakeOut",
+			"inputs": [
+				{"name":"numberOfActiveBlockKeepers1","type":"uint128"},
+				{"name":"numberOfActiveBlockKeepers2","type":"uint128"},
+				{"name":"timenetwork","type":"uint128"},
+				{"name":"epochDuration","type":"uint128"}
 			],
 			"outputs": [
 				{"name":"minstake","type":"uint128"}

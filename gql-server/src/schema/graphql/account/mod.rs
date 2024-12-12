@@ -10,6 +10,7 @@ pub use filter::AccountFilter;
 
 use super::currency::OtherCurrency;
 use super::formats::BigIntFormat;
+use crate::helpers::ecc_from_bytes;
 use crate::helpers::format_big_int;
 use crate::schema::db;
 
@@ -60,15 +61,15 @@ pub(crate) struct Account {
     #[graphql(skip)]
     bits: Option<String>,
     /// Bag of cells with the account struct encoded as base64.
-    boc: String,
+    boc: Option<String>,
     #[graphql(skip)]
     cells: Option<String>,
     /// If present, contains smart-contract code encoded with in base64.
-    code: String,
+    code: Option<String>,
     /// `code` field root hash.
     code_hash: String,
     /// If present, contains smart-contract data encoded with in base64.
-    data: String,
+    data: Option<String>,
     /// `data` field root hash.
     data_hash: String,
     dapp_id: Option<String>,
@@ -132,19 +133,23 @@ impl From<u8> for AccountStatusChangeEnum {
 
 impl From<db::Account> for Account {
     fn from(acc: db::Account) -> Self {
+        let balance_other = ecc_from_bytes(acc.balance_other).expect("Failed to decode ECC");
+        let boc = acc.boc.map(tvm_types::base64_encode);
+        let code = acc.code.map(tvm_types::base64_encode);
+        let data = acc.data.map(tvm_types::base64_encode);
         Self {
             id: acc.id.clone(),
             address: acc.id,
             acc_type: Some(acc.acc_type),
             acc_type_name: acc.acc_type.into(),
             balance: Some(acc.balance),
-            balance_other: None,
+            balance_other,
             bits: Some(acc.bits),
-            boc: acc.boc,
+            boc,
             cells: Some(acc.cells),
-            code: acc.code,
+            code,
             code_hash: acc.code_hash,
-            data: acc.data,
+            data,
             data_hash: acc.data_hash,
             dapp_id: acc.dapp_id,
             due_payment: None,

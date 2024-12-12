@@ -52,7 +52,7 @@ impl ToInt for Option<i64> {
             Some(value) => match *value <= i32::MAX as i64 {
                 true => Some(*value as i32),
                 false => {
-                    log::warn!("failed to convert {value} into Int");
+                    tracing::warn!("failed to convert {value} into Int");
                     None
                 }
             },
@@ -67,7 +67,7 @@ impl ToInt for Option<usize> {
             Some(value) => match *value <= i32::MAX as usize {
                 true => Some(*value as i32),
                 false => {
-                    log::warn!("failed to convert {value} into Int");
+                    tracing::warn!("failed to convert {value} into Int");
                     None
                 }
             },

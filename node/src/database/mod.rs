@@ -4,28 +4,22 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use database::documents_db::DocumentsDb;
 use tvm_block::Deserializable;
 use tvm_block::ShardStateUnsplit;
 use tvm_types::Cell;
 
-use crate::block::Block;
-use crate::block::WrappedBlock;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
-use crate::database::documents_db::DocumentsDb;
 use crate::database::serialize_block::reflect_block_in_db;
-// use crate::repository::repository_impl::RepositoryImpl;
-// use crate::repository::Repository;
+use crate::types::AckiNackiBlock;
 
-pub mod archive;
-pub mod documents_db;
 pub mod serialize_block;
-pub mod sqlite_helper;
 
 pub fn write_to_db(
     archive: Arc<dyn DocumentsDb>,
-    envelope: Envelope<GoshBLS, WrappedBlock>,
+    envelope: Envelope<GoshBLS, AckiNackiBlock<GoshBLS>>,
     shard_state: Option<Arc<ShardStateUnsplit>>,
     shard_state_cell: Option<Cell>,
     // repository: RepositoryImpl,
@@ -55,16 +49,10 @@ pub fn write_to_db(
         );
 
         let mut transaction_traces = HashMap::new();
-        let _changed_acc =
-            reflect_block_in_db(sqlite_clone, envelope, shard_state, &mut transaction_traces)
-                .map_err(|e| anyhow::format_err!("Failed to archive block data: {e}"))
-                .expect("Failed to archive block data");
+        reflect_block_in_db(sqlite_clone, envelope, shard_state, &mut transaction_traces)
+            .map_err(|e| anyhow::format_err!("Failed to archive block data: {e}"))
+            .expect("Failed to archive block data");
 
-        // if changed_acc.keys().len() != 0 {
-        //     repository_clone
-        //         .save_account_diffs(block_id, changed_acc)
-        //         .expect("Failed to save account diffs to repository");
-        // }
         tracing::trace!("reflect_block_in_db finished");
     })?;
 

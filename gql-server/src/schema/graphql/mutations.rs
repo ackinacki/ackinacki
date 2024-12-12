@@ -31,7 +31,7 @@ impl MutationRoot {
         ctx: &Context<'ctx>,
         #[graphql(desc = "List of message requests")] requests: Option<Vec<Option<Request>>>,
     ) -> FieldResult<Option<Vec<Option<String>>>> {
-        log::trace!("Processing post request...");
+        tracing::trace!("Processing post request...");
         if requests.is_none() {
             return Ok(None);
         }
@@ -50,7 +50,7 @@ impl MutationRoot {
 
         let result = fwd_to_node(ctx.data::<NodeUrl>()?, records).await;
         if let Err(err) = result {
-            log::error!("Failed to forward requests: {err}");
+            tracing::error!("Failed to forward requests: {err}");
             return Err(PostReqError::InternalError(
                 "Failed to forward requests to node".to_string(),
             )
@@ -78,7 +78,7 @@ async fn fwd_to_node(url: &str, requests: Vec<NodeRequest>) -> anyhow::Result<()
     let client = reqwest::Client::builder().default_headers(headers).build()?;
 
     let response = client.post(url).json(&serde_json::json!({"records": &requests})).send().await?;
-    log::debug!("Forward response code: {}", response.status());
+    tracing::debug!("Forward response code: {}", response.status());
 
     Ok(())
 }

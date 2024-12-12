@@ -24,7 +24,7 @@ impl Loader<String> for BlockLoader {
     ) -> anyhow::Result<HashMap<String, Self::Value>, Self::Error> {
         let ids = keys.iter().map(|m| format!("{m:?}")).collect::<Vec<_>>().join(",");
         let sql = format!("SELECT * FROM blocks WHERE id IN ({})", ids);
-        log::trace!(target: "data_loader",  "SQL: {sql}");
+        tracing::trace!(target: "data_loader",  "SQL: {sql}");
         let messages = sqlx::query_as(&sql)
             .fetch(&self.pool)
             .map_ok(|block: db::Block| {

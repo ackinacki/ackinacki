@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 build = 'build.rs'
+license-file.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,6 +12,7 @@ build = 'build.rs'
 anyhow.workspace = true
 bincode.workspace = true
 clap.workspace = true
+database.workspace = true
 gosh_bls_lib.workspace = true
 hex.workspace = true
 lazy_static.workspace = true
@@ -35,8 +37,8 @@ tvm_types.workspace = true
 tvm_vm.workspace = true
 url.workspace = true
 
-block-manager = { path = "../block-manager/" }
 chrono = { version = "0.4.38", features = ["serde"] }
+failure = "0.1.8"
 futures = { version = "0.3.30", default-features = false }
 gossip = { path = "../gossip/" }
 http-server = { path = "../http-server/" }
@@ -51,7 +53,9 @@ serde_with = "3.8.1"
 serde_yaml = "0.9.33"
 sha2 = "0.10.8"
 signal-hook = "0.3.17"
-typed-builder = "0.18.0"
+thiserror = "2.0.3"
+transport-layer = { path = "../transport-layer/" }
+typed-builder = "0.20.0"
 
 [dev-dependencies]
 mockall = "0.11.4"
@@ -59,3 +63,10 @@ mockall = "0.11.4"
 [features]
 # Use automocks in binaries
 use_automocks = []
+
+# Record time of heavy operations
+timing = []
+
+# Turn on TVM tracing
+tvm_tracing = []
+nack_test = []

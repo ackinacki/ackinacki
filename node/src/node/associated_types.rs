@@ -1,16 +1,12 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::fmt::Display;
-use std::hash::Hash;
-
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::block::keeper::process::BlockKeeperProcess;
 use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
-use crate::block::Block;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::gosh_bls::PubKey;
@@ -21,23 +17,14 @@ use crate::node::NetworkMessage;
 use crate::node::Node;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::Repository;
+use crate::types::AckiNackiBlock;
+use crate::types::BlockIdentifier;
+use crate::types::BlockSeqNo;
 
 pub type SignerIndex = u16;
 
 // Note: making it compatible with the inner type of the TVM BlockProducer
 pub type NodeIdentifier = i32;
-
-pub(crate) type BlockSeqNoFor<TBlockProducerProcess> =
-<<<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Block as Block>::BlockSeqNo;
-
-pub(crate) type BlockIdentifierFor<TBlockProducerProcess> =
-    <TBlockProducerProcess as BlockProducerProcess>::BlockIdentifier;
-
-pub(crate) type ThreadIdentifierFor<TBlockProducerProcess> =
-<<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::ThreadIdentifier;
-
-pub(crate) type BlockFor<TBlockProducerProcess> =
-    <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Block;
 
 pub(crate) type OptimisticStateFor<TBlockProducerProcess> =
     <TBlockProducerProcess as BlockProducerProcess>::OptimisticState;
@@ -65,76 +52,59 @@ for Node<
         TBLSSignatureScheme: BLSSignatureScheme<PubKey = PubKey> + Clone,
         <TBLSSignatureScheme as BLSSignatureScheme>::PubKey: PartialEq,
         TBlockProducerProcess: BlockProducerProcess,
-        <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Block:
-        Block<BlockIdentifier = BlockIdentifierFor<TBlockProducerProcess>>,
-        <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Block:
-        Block<BLSSignatureScheme = TBLSSignatureScheme>,
-        <<<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Block as Block>::BlockSeqNo:
-        Eq + Hash,
-        ThreadIdentifierFor<TBlockProducerProcess>: Default,
-        BlockFor<TBlockProducerProcess>: Clone + Display,
-        BlockIdentifierFor<TBlockProducerProcess>: Serialize + for<'de> Deserialize<'de>,
         TValidationProcess: BlockKeeperProcess<
-            CandidateBlock = Envelope<TBLSSignatureScheme, BlockFor<TBlockProducerProcess>>,
-            Block = BlockFor<TBlockProducerProcess>,
-            BlockSeqNo = BlockSeqNoFor<TBlockProducerProcess>,
-            BlockIdentifier = BlockIdentifierFor<TBlockProducerProcess>,
+            BLSSignatureScheme = TBLSSignatureScheme,
+            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+
+            OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
         >,
         TBlockProducerProcess: BlockProducerProcess<
-            CandidateBlock = Envelope<TBLSSignatureScheme, BlockFor<TBlockProducerProcess>>,
-            Block = BlockFor<TBlockProducerProcess>,
+            BLSSignatureScheme = TBLSSignatureScheme,
+            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+
         >,
         TRepository: Repository<
             BLS = TBLSSignatureScheme,
             EnvelopeSignerIndex = SignerIndex,
-            ThreadIdentifier = ThreadIdentifierFor<TBlockProducerProcess>,
-            Block = BlockFor<TBlockProducerProcess>,
-            CandidateBlock = Envelope<TBLSSignatureScheme, BlockFor<TBlockProducerProcess>>,
+
+            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
             NodeIdentifier = NodeIdentifier,
-            Attestation = Envelope<TBLSSignatureScheme, AttestationData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>>,
+            Attestation = Envelope<TBLSSignatureScheme, AttestationData>,
         >,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
             <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
         >,
-        TStateSyncService: StateSyncService,
-        TAttestationProcessor: AttestationProcessor<
-            BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>>,
-            CandidateBlock = Envelope<TBLSSignatureScheme, BlockFor<TBlockProducerProcess>>,
+        TStateSyncService: StateSyncService<
+            Repository = TRepository
         >,
-        <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Block: From<<<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Block>,
+        TAttestationProcessor: AttestationProcessor<
+            BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData>,
+            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+        >,
         TRandomGenerator: rand::Rng,
 {
-    type CandidateBlock = Envelope<TBLSSignatureScheme, BlockFor<TBlockProducerProcess>>;
-    type Ack = Envelope<TBLSSignatureScheme, AckData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>>;
-    type Nack = Envelope<TBLSSignatureScheme, NackData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>>;
+    type CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>;
+    type Ack = Envelope<TBLSSignatureScheme, AckData>;
+    type Nack = Envelope<TBLSSignatureScheme, NackData>;
     type NetworkMessage = NetworkMessage<
         TBLSSignatureScheme,
-        BlockFor<TBlockProducerProcess>,
-        AckData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
-        NackData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
-        AttestationData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
+        AckData,
+        NackData,
+        AttestationData,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-        BlockIdentifierFor<TBlockProducerProcess>,
-        BlockSeqNoFor<TBlockProducerProcess>,
         NodeIdentifier,
     >;
-    type BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>>;
+    type BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData>;
 }
 
-pub(crate) enum OptimisticForwardState<TBlockIdentifier: Clone + Sized, TBlockSeqNo: Clone + Sized>
-{
-    ProducingNextBlock(TBlockIdentifier, TBlockSeqNo),
-    ProducedBlock(TBlockIdentifier, TBlockSeqNo),
+pub(crate) enum OptimisticForwardState {
+    ProducingNextBlock(BlockIdentifier, BlockSeqNo),
+    ProducedBlock(BlockIdentifier, BlockSeqNo),
     None,
 }
 
-impl<TBlockIdentifier, TBlockSeqNo> Default
-    for OptimisticForwardState<TBlockIdentifier, TBlockSeqNo>
-where
-    TBlockIdentifier: Clone + Sized,
-    TBlockSeqNo: Clone + Sized,
-{
+impl Default for OptimisticForwardState {
     fn default() -> Self {
         Self::None
     }
@@ -182,19 +152,19 @@ pub(crate) enum BlockStatus {
 }
 
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
-pub struct AckData<TBlockId, TBlockSeqNo> {
-    pub block_id: TBlockId,
-    pub block_seq_no: TBlockSeqNo,
+pub struct AckData {
+    pub block_id: BlockIdentifier,
+    pub block_seq_no: BlockSeqNo,
 }
 
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
-pub struct NackData<TBlockId, TBlockSeqNo> {
-    pub block_id: TBlockId,
-    pub block_seq_no: TBlockSeqNo,
+pub struct NackData {
+    pub block_id: BlockIdentifier,
+    pub block_seq_no: BlockSeqNo,
 }
 
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
-pub struct AttestationData<TBlockId, TBlockSeqNo> {
-    pub block_id: TBlockId,
-    pub block_seq_no: TBlockSeqNo,
+pub struct AttestationData {
+    pub block_id: BlockIdentifier,
+    pub block_seq_no: BlockSeqNo,
 }

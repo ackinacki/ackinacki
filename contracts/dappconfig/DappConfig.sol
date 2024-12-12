@@ -1,7 +1,10 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
-//
-
-pragma ever-solidity >=0.66.0;
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * GOSH contracts
+ *
+ * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
+ */
+pragma gosh-solidity >=0.76.1;
 pragma ignoreIntOverflow;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
@@ -26,31 +29,27 @@ contract DappConfig is Modifiers {
         _dapp_id = dapp_id;
         _voter = address.makeAddrStd(0, 0);
         require(msg.sender == _owner, ERR_INVALID_SENDER);
-        mintshell(1000 ton);
+        gosh.mintshell(1000 vmshell);
         _data = data;
     }
 
     function getMoney() private pure {
-        if (address(this).balance > 1000 ton) { return; }
-        mintshell(1000 ton);
+        if (address(this).balance > 1000 vmshell) { return; }
+        gosh.mintshell(1000 vmshell);
     }
 
     function setNewConfig(
         bool is_unlimit,
-        int128 available_credit,
-	    uint128 credit_per_block,
-	    uint128 available_credit_max_value,
-        uint128 start_block_seqno,
-	    uint128 end_block_seqno
-    ) public senderIs(_voter) functionID(5) {
+        int128 available_balance
+    ) public internalMsg senderIs(_voter) functionID(5) {
         getMoney();
         _data.is_unlimit = is_unlimit;
-        _data.available_credit = available_credit;
-        _data.credit_per_block = credit_per_block;
-        _data.available_credit_max_value = available_credit_max_value;
-        _data.start_block_seqno = start_block_seqno;
-        _data.end_block_seqno = end_block_seqno;
-        _data.last_updated_seqno = block.seqno;
+        _data.available_balance = available_balance;
+    }
+
+    receive() external {
+        tvm.accept();
+        _data.available_balance += int128(msg.currencies[CURRENCIES_ID_SHELL]);
     }
 
     function getDetails() external view returns(uint256 dapp_id, CreditConfig data) {

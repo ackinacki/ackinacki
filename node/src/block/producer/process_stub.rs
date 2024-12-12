@@ -5,16 +5,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 #[cfg(test)]
-use crate::block::block_stub;
-#[cfg(test)]
-use crate::block::block_stub::BlockIdentifierStub;
-#[cfg(test)]
 use crate::block::producer::process::BlockProducerProcess;
 #[cfg(test)]
 use crate::block::producer::producer_stub::BlockProducerStub;
-use crate::block::producer::BlockProducer;
-#[cfg(test)]
-use crate::block::MockBlockStruct;
 use crate::block_keeper_system::BlockKeeperData;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
@@ -22,38 +15,44 @@ use crate::bls::GoshBLS;
 use crate::repository::stub_repository::OptimisticStateStub;
 #[cfg(test)]
 use crate::repository::stub_repository::RepositoryStub;
+use crate::types::AckiNackiBlock;
+use crate::types::BlockIdentifier;
+use crate::types::ThreadIdentifier;
+use crate::types::ThreadsTable;
 
 #[cfg(test)]
 pub struct BlockProducerProcessStub {}
 
 #[cfg(test)]
 impl BlockProducerProcess for BlockProducerProcessStub {
-    type Block = MockBlockStruct;
-    type BlockIdentifier = BlockIdentifierStub;
+    type BLSSignatureScheme = GoshBLS;
     type BlockProducer = BlockProducerStub;
-    type CandidateBlock = Envelope<GoshBLS, Self::Block>;
+    type CandidateBlock =
+        Envelope<GoshBLS, AckiNackiBlock<<Self as BlockProducerProcess>::BLSSignatureScheme>>;
     type OptimisticState = OptimisticStateStub;
     type Repository = RepositoryStub;
 
     fn start_thread_production(
         &mut self,
-        _thread_id: &<Self::BlockProducer as BlockProducer>::ThreadIdentifier,
-        _prev_block_id: &Self::BlockIdentifier,
+        _thread_id: &ThreadIdentifier,
+        _threads_table: &ThreadsTable,
+        _prev_block_id: &BlockIdentifier,
     ) -> anyhow::Result<()> {
         todo!()
     }
 
-    fn stop_thread_production(
-        &mut self,
-        _thread_id: &<Self::BlockProducer as BlockProducer>::ThreadIdentifier,
-    ) -> anyhow::Result<()> {
+    fn stop_thread_production(&mut self, _thread_id: &ThreadIdentifier) -> anyhow::Result<()> {
         todo!()
     }
 
     fn get_produced_blocks(
         &mut self,
-        _thread_id: &<Self::BlockProducer as BlockProducer>::ThreadIdentifier,
-    ) -> Vec<(MockBlockStruct, OptimisticStateStub, usize)> {
+        _thread_id: &ThreadIdentifier,
+    ) -> Vec<(
+        AckiNackiBlock<<Self as BlockProducerProcess>::BLSSignatureScheme>,
+        OptimisticStateStub,
+        usize,
+    )> {
         todo!()
     }
 
@@ -67,17 +66,20 @@ impl BlockProducerProcess for BlockProducerProcessStub {
 
     fn write_block_to_db(
         &self,
-        _block: Envelope<GoshBLS, block_stub::MockBlockStruct>,
+        _block: Envelope<
+            GoshBLS,
+            AckiNackiBlock<<Self as BlockProducerProcess>::BLSSignatureScheme>,
+        >,
         _optimistic_state: Self::OptimisticState,
     ) -> anyhow::Result<()> {
         todo!()
     }
 
-    fn send_epoch_message(
-        &self,
-        _thread_id: &<Self::BlockProducer as BlockProducer>::ThreadIdentifier,
-        _data: BlockKeeperData,
-    ) {
+    fn send_epoch_message(&self, _thread_id: &ThreadIdentifier, _data: BlockKeeperData) {
+        todo!()
+    }
+
+    fn add_state_to_cache(&mut self, _thread_id: ThreadIdentifier, _state: Self::OptimisticState) {
         todo!()
     }
 }

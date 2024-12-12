@@ -3,6 +3,7 @@ name = "migration-tool"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license-file.workspace = true
 
 [dependencies]
 anyhow.workspace = true
@@ -16,3 +17,7 @@ rusqlite_migration = { version = "1.1.0", features = ["from-directory"] }
 [[bin]]
 name = "migration-tool"
 path = "src/main.rs"
+
+[build-dependencies]
+cargo-emit = "0.2.1"
+merkle_hash = "3.7.0"

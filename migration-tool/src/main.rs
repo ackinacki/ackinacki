@@ -12,11 +12,13 @@ use rusqlite::Connection;
 use rusqlite_migration::Migrations;
 
 static MIGRATIONS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations/node");
-static MIGRATIONS_ARC_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations/node-archive");
+static M_BLOCK_KEEPER: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations/node-archive");
+static M_BLOCK_MANAGER: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations/bm-archive");
 
 enum MTarget<'a> {
     Node(Migrations<'a>),
-    Archive(Migrations<'a>),
+    BlockKeeper(Migrations<'a>),
+    BlockManager(Migrations<'a>),
 }
 
 /// Acki-Nacki DB (sqlite) migration tool
@@ -28,14 +30,18 @@ struct Args {
     #[arg(short = 'p')]
     db_path: String,
 
-    /// Migrate the node.db to a given DB schema version (default: latest)
+    /// [DEPRECATED] Migrate the node.db to the specified DB schema version (default: latest)
     #[arg(short = 'n', long = "node", num_args = 0..=1, default_missing_value = "latest")]
     schema_version: Option<String>,
 
-    /// Migrate the node-archive.db to a given DB schema version (default:
+    /// Migrate the node-archive.db to the specified DB schema version (default:
     /// latest)
     #[arg(short = 'a', long = "archive", num_args = 0..=1, default_missing_value = "latest")]
     arc_schema_version: Option<String>,
+
+    /// Migrate the bm-archive.db to the specified DB schema version (default: latest)
+    #[arg(long = "block-manager", value_name = "SCHEMA_VERSION", num_args = 0..=1, default_missing_value = "latest")]
+    bm: Option<String>,
 }
 
 fn parse_version(v: Option<String>, target: MTarget) -> anyhow::Result<u32> {
@@ -60,7 +66,8 @@ fn parse_version(v: Option<String>, target: MTarget) -> anyhow::Result<u32> {
 fn get_latest_migration_version(target: MTarget) -> anyhow::Result<u32> {
     let (migrations, migrations_dir) = match target {
         MTarget::Node(m) => (m, MIGRATIONS_DIR.clone()),
-        MTarget::Archive(m) => (m, MIGRATIONS_ARC_DIR.clone()),
+        MTarget::BlockKeeper(m) => (m, M_BLOCK_KEEPER.clone()),
+        MTarget::BlockManager(m) => (m, M_BLOCK_MANAGER.clone()),
     };
     // check that migration set is correct
     if let Err(err) = migrations.validate() {
@@ -99,10 +106,21 @@ fn main() -> anyhow::Result<()> {
     let current_arc_version =
         conn_arc.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap_or(0);
 
+    let bm_db_file = db_path.join("bm-archive.db");
+    let mut conn_bm = Connection::open(bm_db_file.clone())?;
+    let current_bm_version =
+        conn_bm.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap_or(0);
+
     let migrations = Migrations::from_directory(&MIGRATIONS_DIR).expect("node");
-    let migrations_arc = Migrations::from_directory(&MIGRATIONS_ARC_DIR).expect("node-archive");
+    let migrations_arc = Migrations::from_directory(&M_BLOCK_KEEPER).expect("node-archive");
+    let migrations_block_manager =
+        Migrations::from_directory(&M_BLOCK_MANAGER).expect("bm-archive");
+
     let m_version = get_latest_migration_version(MTarget::Node(migrations.clone()))?;
-    let m_arc_version = get_latest_migration_version(MTarget::Archive(migrations_arc.clone()))?;
+    let m_arc_version = get_latest_migration_version(MTarget::BlockKeeper(migrations_arc.clone()))?;
+    let m_bm_version =
+        get_latest_migration_version(MTarget::BlockManager(migrations_block_manager.clone()))?;
+
     let info = formatdoc!(
         r"
         db path: {}
@@ -114,12 +132,16 @@ fn main() -> anyhow::Result<()> {
         node-archive.db:
           schema version: {current_arc_version}
           latest migration version: {m_arc_version}
+
+        bm-archive.db:
+          schema version: {current_bm_version}
+          latest migration version: {m_bm_version}
     ",
         db_path.canonicalize()?.display()
     );
     println!("{info}");
 
-    if args.schema_version.is_none() && args.arc_schema_version.is_none() {
+    if args.schema_version.is_none() && args.arc_schema_version.is_none() && args.bm.is_none() {
         std::process::exit(0);
     }
 
@@ -136,8 +158,10 @@ fn main() -> anyhow::Result<()> {
         println!("done.");
     }
 
-    let migrate_arc_to =
-        parse_version(args.arc_schema_version.clone(), MTarget::Archive(migrations_arc.clone()))?;
+    let migrate_arc_to = parse_version(
+        args.arc_schema_version.clone(),
+        MTarget::BlockKeeper(migrations_arc.clone()),
+    )?;
     if current_arc_version == migrate_arc_to {
         println!("`node-archive.db` is up to date");
     } else if args.arc_schema_version.is_some() {
@@ -148,6 +172,19 @@ fn main() -> anyhow::Result<()> {
         }
         migrations_arc.to_version(&mut conn_arc, migrate_arc_to as usize)?;
         println!("done.");
+    }
+
+    let migrate_bm_to =
+        parse_version(args.bm.clone(), MTarget::BlockManager(migrations_block_manager.clone()))?;
+    if current_bm_version == migrate_bm_to {
+        println!("`bm-archive.db` is up to date");
+    } else if args.bm.is_some() {
+        if current_bm_version < migrate_bm_to {
+            print!("Upgrading `bm-archive.db` to the schema version {:?}... ", migrate_bm_to);
+        } else {
+            print!("Downgrading `bm-archive.db` to the schema version {:?}... ", migrate_bm_to);
+        }
+        migrations_block_manager.to_version(&mut conn_bm, migrate_bm_to as usize)?;
     }
 
     Ok(())
@@ -163,11 +200,15 @@ mod tests {
         static ref MIGRATIONS: Migrations<'static> =
             Migrations::from_directory(&MIGRATIONS_DIR).unwrap();
         static ref MIGRATIONS_ARC: Migrations<'static> =
-            Migrations::from_directory(&MIGRATIONS_ARC_DIR).unwrap();
+            Migrations::from_directory(&M_BLOCK_KEEPER).unwrap();
+        static ref MIGRATIONS_BM: Migrations<'static> =
+            Migrations::from_directory(&M_BLOCK_MANAGER).unwrap();
     }
 
     #[test]
     fn migrations_test() {
         assert!(MIGRATIONS.validate().is_ok());
+        assert!(MIGRATIONS_ARC.validate().is_ok());
+        assert!(MIGRATIONS_BM.validate().is_ok());
     }
 }

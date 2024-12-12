@@ -3,6 +3,7 @@ name = "http-server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license-file.workspace = true
 
 [dependencies]
 anyhow.workspace = true
@@ -12,3 +13,5 @@ serde_json.workspace = true
 tracing.workspace = true
 tvm_block.workspace = true
 tvm_types.workspace = true
+
+serde_with = "3.8.1"

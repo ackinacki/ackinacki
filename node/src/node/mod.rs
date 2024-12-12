@@ -25,8 +25,6 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::fmt::Display;
-use std::hash::Hash;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -35,15 +33,12 @@ pub use associated_types::NodeIdentifier;
 pub use associated_types::SignerIndex;
 pub use network_message::NetworkMessage;
 use parking_lot::Mutex;
-use serde::Deserialize;
-use serde::Serialize;
 use services::sync::StateSyncService;
 use typed_builder::TypedBuilder;
 
 use crate::block::keeper::process::BlockKeeperProcess;
 use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
-use crate::block::Block;
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
@@ -52,20 +47,21 @@ use crate::bls::BLSSignatureScheme;
 use crate::config::Config;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
-use crate::node::associated_types::BlockFor;
-use crate::node::associated_types::BlockIdentifierFor;
-use crate::node::associated_types::BlockSeqNoFor;
 use crate::node::associated_types::NackData;
-use crate::node::associated_types::NodeAssociatedTypes;
 use crate::node::associated_types::OptimisticForwardState;
 use crate::node::associated_types::OptimisticStateFor;
-use crate::node::associated_types::ThreadIdentifierFor;
 use crate::node::attestation_processor::AttestationProcessor;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::Repository;
+use crate::types::AckiNackiBlock;
+use crate::types::BlockIdentifier;
+use crate::types::BlockSeqNo;
+use crate::types::ThreadIdentifier;
+use crate::types::ThreadsTable;
 
 pub(crate) const DEFAULT_PRODUCTION_TIME_MULTIPLIER: u64 = 1;
 
+#[allow(dead_code)]
 #[derive(TypedBuilder)]
 pub struct Node<
     TBLSSignatureScheme,
@@ -79,27 +75,18 @@ pub struct Node<
     TBLSSignatureScheme: BLSSignatureScheme<PubKey = PubKey> + Clone,
     <TBLSSignatureScheme as BLSSignatureScheme>::PubKey: PartialEq,
     TBlockProducerProcess: BlockProducerProcess,
-    <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Block:
-    Block<BlockIdentifier = BlockIdentifierFor<TBlockProducerProcess>>,
-    <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Block:
-    Block<BLSSignatureScheme = TBLSSignatureScheme>,
-    <<<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Block as Block>::BlockSeqNo:
-    Eq + Hash,
-    BlockFor<TBlockProducerProcess>: Clone + Display,
-    BlockIdentifierFor<TBlockProducerProcess>: Serialize + for<'de> Deserialize<'de>,
     <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: 'static,
     TValidationProcess: BlockKeeperProcess<
-        CandidateBlock = Envelope<TBLSSignatureScheme, BlockFor<TBlockProducerProcess>>,
-        Block = BlockFor<TBlockProducerProcess>,
-        BlockSeqNo = BlockSeqNoFor<TBlockProducerProcess>,
-        BlockIdentifier = BlockIdentifierFor<TBlockProducerProcess>,
+            BLSSignatureScheme = TBLSSignatureScheme,
+        CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+
+        OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
     >,
     TRepository: Repository<
         BLS = TBLSSignatureScheme,
         EnvelopeSignerIndex = SignerIndex,
-        ThreadIdentifier = ThreadIdentifierFor<TBlockProducerProcess>,
-        Block = BlockFor<TBlockProducerProcess>,
-        CandidateBlock = Envelope<TBLSSignatureScheme, BlockFor<TBlockProducerProcess>>,
+
+        CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
         OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
         NodeIdentifier = NodeIdentifier,
     >,
@@ -108,8 +95,8 @@ pub struct Node<
     >,
     TStateSyncService: StateSyncService,
     TAttestationProcessor: AttestationProcessor<
-        BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>>,
-        CandidateBlock = Envelope<TBLSSignatureScheme, BlockFor<TBlockProducerProcess>>,
+        BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData>,
+        CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
     >,
     TRandomGenerator: rand::Rng,
 {
@@ -120,26 +107,20 @@ pub struct Node<
     rx: Receiver<
         NetworkMessage<
             TBLSSignatureScheme,
-            BlockFor<TBlockProducerProcess>,
-            AckData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
-            NackData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
-            AttestationData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
+            AckData,
+            NackData,
+            AttestationData,
             <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-            BlockIdentifierFor<TBlockProducerProcess>,
-            BlockSeqNoFor<TBlockProducerProcess>,
             NodeIdentifier,
         >,
     >,
     tx: Sender<
         NetworkMessage<
             TBLSSignatureScheme,
-            BlockFor<TBlockProducerProcess>,
-            AckData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
-            NackData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
-            AttestationData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
+            AckData,
+            NackData,
+            AttestationData,
             <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-            BlockIdentifierFor<TBlockProducerProcess>,
-            BlockSeqNoFor<TBlockProducerProcess>,
             NodeIdentifier,
         >,
     >,
@@ -147,50 +128,49 @@ pub struct Node<
         NodeIdentifier,
         NetworkMessage<
             TBLSSignatureScheme,
-            BlockFor<TBlockProducerProcess>,
-            AckData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
-            NackData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
-            AttestationData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
+            AckData,
+            NackData,
+            AttestationData,
             <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-            BlockIdentifierFor<TBlockProducerProcess>,
-            BlockSeqNoFor<TBlockProducerProcess>,
             NodeIdentifier,
         >,
     )>,
     raw_block_tx: Sender<Vec<u8>>,
-    block_keeper_ring_pubkeys: Arc<Mutex<BlockKeeperSet>>,
     #[allow(dead_code)]
     pubkey: <TBLSSignatureScheme as BLSSignatureScheme>::PubKey,
     secret: <TBLSSignatureScheme as BLSSignatureScheme>::Secret,
-
     #[builder(default)]
     cache_forward_optimistic: HashMap<
-        ThreadIdentifierFor<TBlockProducerProcess>,
-        OptimisticForwardState<
-            BlockIdentifierFor<TBlockProducerProcess>,
-            BlockSeqNoFor<TBlockProducerProcess>,
-        >,
+        ThreadIdentifier,
+        OptimisticForwardState,
     >,
 
     #[builder(default)]
     unprocessed_blocks_cache:
-    BTreeMap<BlockSeqNoFor<TBlockProducerProcess>, HashSet<BlockIdentifierFor<TBlockProducerProcess>>>,
+    BTreeMap<BlockSeqNo, HashSet<BlockIdentifier>>,
+
     production_timeout_multiplier: u64,
-    last_block_attestations: Vec<Envelope<TBLSSignatureScheme, AttestationData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>>>,
-    received_acks: Vec<Envelope<TBLSSignatureScheme, AckData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>>>,
-    sent_acks: BTreeMap<BlockSeqNoFor<TBlockProducerProcess>, Envelope<TBLSSignatureScheme, AckData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>>>,
-    received_nacks: Vec<Envelope<TBLSSignatureScheme, NackData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>>>,
+    last_block_attestations: Vec<Envelope<TBLSSignatureScheme, AttestationData>>,
+    received_acks: Vec<Envelope<TBLSSignatureScheme, AckData>>,
+    sent_acks: BTreeMap<BlockSeqNo, Envelope<TBLSSignatureScheme, AckData>>,
+    received_nacks: Vec<Envelope<TBLSSignatureScheme, NackData>>,
     config: Config,
-    block_producer_groups: HashMap<ThreadIdentifierFor<TBlockProducerProcess>, BTreeMap<BlockSeqNoFor<TBlockProducerProcess>, Vec<NodeIdentifier>>>,
-    block_gap_length: HashMap<ThreadIdentifierFor<TBlockProducerProcess>, usize>,
-    sent_attestations: HashMap<ThreadIdentifierFor<TBlockProducerProcess>,
-        Vec<(BlockSeqNoFor<TBlockProducerProcess>, Envelope<TBLSSignatureScheme, AttestationData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>>)>>,
-    received_attestations: BTreeMap<BlockSeqNoFor<TBlockProducerProcess>, HashMap<BlockIdentifierFor<TBlockProducerProcess>, HashSet<SignerIndex>>>,
+    block_keeper_sets: Arc<Mutex<HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>>>,
+    block_producer_groups: HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, Vec<NodeIdentifier>>>,
+    block_gap_length: HashMap<ThreadIdentifier, usize>,
+    sent_attestations: HashMap<ThreadIdentifier,
+        Vec<(BlockSeqNo, Envelope<TBLSSignatureScheme, AttestationData>)>>,
+    received_attestations: BTreeMap<BlockSeqNo, HashMap<BlockIdentifier, HashSet<SignerIndex>>>,
     attestation_processor: TAttestationProcessor,
-    blocks_for_resync_broadcasting: VecDeque<Envelope<TBLSSignatureScheme, BlockFor<TBlockProducerProcess>>>,
+    blocks_for_resync_broadcasting: VecDeque<Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>>,
     block_keeper_rng: TRandomGenerator,
-    attestations_to_send: BTreeMap<BlockSeqNoFor<TBlockProducerProcess>, Vec<Envelope<TBLSSignatureScheme, AttestationData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>>>>,
-    last_sent_attestation: Option<(BlockSeqNoFor<TBlockProducerProcess>, std::time::Instant)>,
+    producer_election_rng: TRandomGenerator,
+    attestations_to_send: BTreeMap<BlockSeqNo, Vec<Envelope<TBLSSignatureScheme, AttestationData>>>,
+    last_sent_attestation: Option<(BlockSeqNo, std::time::Instant)>,
+    ack_cache: BTreeMap<BlockSeqNo, Vec<Envelope<TBLSSignatureScheme, AckData>>>,
+    nack_cache: BTreeMap<BlockSeqNo, Vec<Envelope<TBLSSignatureScheme, NackData>>>,
+    threads_table: ThreadsTable,
+    thread_id: ThreadIdentifier,
 }
 
 impl<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
@@ -199,45 +179,37 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         TBLSSignatureScheme: BLSSignatureScheme<PubKey = PubKey> + Clone,
         <TBLSSignatureScheme as BLSSignatureScheme>::PubKey: PartialEq,
         TBlockProducerProcess:
-        BlockProducerProcess<Block = BlockFor<TBlockProducerProcess>, Repository = TRepository>,
-        <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Block:
-        Block<BlockIdentifier = BlockIdentifierFor<TBlockProducerProcess>>,
-        <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Block:
-        Block<BLSSignatureScheme = TBLSSignatureScheme>,
-        <<<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Block as Block>::BlockSeqNo:
-        Eq + Hash,
-        ThreadIdentifierFor<TBlockProducerProcess>: Default,
-        BlockFor<TBlockProducerProcess>: Clone + Display,
-        BlockIdentifierFor<TBlockProducerProcess>: Serialize + for<'de> Deserialize<'de>,
+        BlockProducerProcess< Repository = TRepository>,
         TValidationProcess: BlockKeeperProcess<
-            CandidateBlock = Envelope<TBLSSignatureScheme, BlockFor<TBlockProducerProcess>>,
-            Block = BlockFor<TBlockProducerProcess>,
-            BlockSeqNo = BlockSeqNoFor<TBlockProducerProcess>,
-            BlockIdentifier = BlockIdentifierFor<TBlockProducerProcess>,
+            BLSSignatureScheme = TBLSSignatureScheme,
+            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+
+            OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
         >,
         TBlockProducerProcess: BlockProducerProcess<
-            CandidateBlock = Envelope<TBLSSignatureScheme, BlockFor<TBlockProducerProcess>>,
-            Block = BlockFor<TBlockProducerProcess>,
+            BLSSignatureScheme = TBLSSignatureScheme,
+            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+
         >,
         TRepository: Repository<
             BLS = TBLSSignatureScheme,
             EnvelopeSignerIndex = SignerIndex,
-            ThreadIdentifier = ThreadIdentifierFor<TBlockProducerProcess>,
-            Block = BlockFor<TBlockProducerProcess>,
-            CandidateBlock = Envelope<TBLSSignatureScheme, BlockFor<TBlockProducerProcess>>,
+
+            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
             NodeIdentifier = NodeIdentifier,
-            Attestation = Envelope<TBLSSignatureScheme, AttestationData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>>,
+            Attestation = Envelope<TBLSSignatureScheme, AttestationData>,
         >,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
             <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
         >,
-        TStateSyncService: StateSyncService,
-        TAttestationProcessor: AttestationProcessor<
-            BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>>,
-            CandidateBlock = Envelope<TBLSSignatureScheme, BlockFor<TBlockProducerProcess>>,
+        TStateSyncService: StateSyncService<
+            Repository = TRepository
         >,
-        <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Block: From<<<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Block>,
+        TAttestationProcessor: AttestationProcessor<
+            BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData>,
+            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+        >,
         TRandomGenerator: rand::Rng,
 {
     #[allow(clippy::too_many_arguments)]
@@ -249,26 +221,20 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         rx: Receiver<
             NetworkMessage<
                 TBLSSignatureScheme,
-                BlockFor<TBlockProducerProcess>,
-                AckData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
-                NackData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
-                AttestationData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
+                AckData,
+                NackData,
+                AttestationData,
                 <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-                BlockIdentifierFor<TBlockProducerProcess>,
-                BlockSeqNoFor<TBlockProducerProcess>,
                 NodeIdentifier,
             >,
         >,
         tx: Sender<
             NetworkMessage<
                 TBLSSignatureScheme,
-                BlockFor<TBlockProducerProcess>,
-                AckData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
-                NackData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
-                AttestationData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
+                AckData,
+                NackData,
+                AttestationData,
                 <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-                BlockIdentifierFor<TBlockProducerProcess>,
-                BlockSeqNoFor<TBlockProducerProcess>,
                 NodeIdentifier,
             >,
         >,
@@ -276,13 +242,10 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             NodeIdentifier,
             NetworkMessage<
                 TBLSSignatureScheme,
-                BlockFor<TBlockProducerProcess>,
-                AckData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
-                NackData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
-                AttestationData<BlockIdentifierFor<TBlockProducerProcess>, BlockSeqNoFor<TBlockProducerProcess>>,
+                AckData,
+                NackData,
+                AttestationData,
                 <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-                BlockIdentifierFor<TBlockProducerProcess>,
-                BlockSeqNoFor<TBlockProducerProcess>,
                 NodeIdentifier,
             >,
         )>,
@@ -291,19 +254,26 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         secret: <TBLSSignatureScheme as BLSSignatureScheme>::Secret,
         config: Config,
         attestation_processor: TAttestationProcessor,
-        block_keeper_ring_pubkeys: Arc<Mutex<BlockKeeperSet>>,
+        block_keeper_sets: Arc<Mutex<HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>>>,
         block_keeper_rng: TRandomGenerator,
+        producer_election_rng: TRandomGenerator,
+        threads_table: ThreadsTable,
+        thread_id: ThreadIdentifier,
     ) -> Self {
         let signer = config.local.node_id as SignerIndex;
         if cfg!(test) {
-            let block_keeper_set = block_keeper_ring_pubkeys.lock();
+            let block_keeper_sets = block_keeper_sets.lock().get(&thread_id).expect("Failed to get block keepers for thread").clone();
+            assert!(!block_keeper_sets.is_empty(), "Initial BK set is empty");
             tracing::trace!("Check that zerostate contains block keeper key");
-            assert_eq!(block_keeper_set.get(&signer).map(|data| &data.pubkey), Some(&pubkey));
+            let (_seq_no, bk_set) = block_keeper_sets.last_key_value().unwrap();
+            assert_eq!(bk_set.get(&signer).map(|data| &data.pubkey), Some(&pubkey));
         }
-        tracing::trace!("Block keeper key ring: {:?}", block_keeper_ring_pubkeys);
+        tracing::trace!("Block keeper key ring: {:?}", block_keeper_sets);
 
         let sent_attestations = repository.load_sent_attestations().expect("Failed to load sent attestations");
         tracing::trace!("Block keeper loaded sent attestations len: {}", sent_attestations.len());
+        tracing::trace!("Start node for thread: {thread_id:?}");
+        tracing::trace!("Threads table: {threads_table:?}");
         let mut res = Self {
             state_sync_service,
             repository,
@@ -316,7 +286,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             pubkey,
             secret,
             cache_forward_optimistic: Default::default(),
-            block_keeper_ring_pubkeys,
+            block_keeper_sets,
             production_timeout_multiplier: DEFAULT_PRODUCTION_TIME_MULTIPLIER,
             last_block_attestations: vec![],
             config,
@@ -333,69 +303,21 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             sent_acks: Default::default(),
             attestations_to_send: Default::default(),
             last_sent_attestation: None,
+            producer_election_rng,
+            ack_cache: Default::default(),
+            nack_cache: Default::default(),
+            threads_table,
+            thread_id,
         };
 
-        let starting_thread_id = ThreadIdentifierFor::<TBlockProducerProcess>::default();
-        let (last_finalized_block_id, last_finalized_block_seq_no) = res.repository.select_thread_last_finalized_block(&starting_thread_id).expect("Failed to load last finalized block data");
-        if last_finalized_block_id != BlockIdentifierFor::<TBlockProducerProcess>::default() {
+        let (last_finalized_block_id, _last_finalized_block_seq_no) = res.repository.select_thread_last_finalized_block(&thread_id).expect("Failed to load last finalized block data");
+        if last_finalized_block_id != BlockIdentifier::default() {
             let finalized_block = res.repository.get_block_from_repo_or_archive(&last_finalized_block_id).expect("Failed to load finalized block");
-            res.set_producer_groups_from_finalized_state(starting_thread_id, last_finalized_block_seq_no, finalized_block.data().get_common_section().producer_group);
+            // Start it from zero block to be able to process old blocks or attestations it the come
+            res.set_producer_groups_from_finalized_state(thread_id, BlockSeqNo::default(), finalized_block.data().get_common_section().producer_group.clone());
         } else {
-            res.update_producer_group(&starting_thread_id, vec![]).expect("Failed to initialize producer group");
+            res.update_producer_group(&thread_id, vec![]).expect("Failed to initialize producer group");
         }
         res
-    }
-
-    fn on_ack(&mut self, ack: <Self as NodeAssociatedTypes>::Ack) -> anyhow::Result<()> {
-        let block_id: &BlockIdentifierFor<TBlockProducerProcess> = &ack.data().block_id;
-        let block_seq_no = match self.repository.get_block(block_id)? {
-            None => {
-                // log: unknown block.
-                // TODO: save in cache in case of future block incoming
-                return Ok(());
-            }
-            Some(block) => block.data().seq_no(),
-        };
-        let signatures_map = self.block_keeper_ring_signatures_map_for(&block_seq_no);
-        let _is_valid = ack
-            .verify_signatures(&signatures_map)
-            .expect("Signatures verification should not crash.");
-        if self.is_this_node_a_producer_for(
-            &ThreadIdentifierFor::<TBlockProducerProcess>::default(),
-            &block_seq_no,
-        ) {
-            self.received_acks.push(ack);
-        }
-        Ok(())
-    }
-
-    fn on_nack(&mut self, nack: <Self as NodeAssociatedTypes>::Nack) -> anyhow::Result<()> {
-        let block_id: &BlockIdentifierFor<TBlockProducerProcess> = &nack.data().block_id;
-        let block = match self.repository.get_block(block_id)? {
-            None => {
-                // log: unknown block.
-                // TODO: save in cache in case of future block incoming
-                return Ok(());
-            }
-            Some(block) => block,
-        };
-        let block_seq_no = block.data().seq_no();
-        let block_producer_id = block.data().get_common_section().producer_id;
-        let signatures_map = self.block_keeper_ring_signatures_map_for(&block_seq_no);
-        let is_valid = nack
-            .verify_signatures(&signatures_map)
-            .expect("Signatures verification should not crash.");
-        if is_valid {
-            // TODO: we should not blindly believe and check Nacked block
-            let thread_id = ThreadIdentifierFor::<TBlockProducerProcess>::default();
-            self.slash_bp_stake(&thread_id, block_seq_no, block_producer_id)?;
-            if self.is_this_node_a_producer_for(
-                &thread_id,
-                &block_seq_no,
-            ) {
-                self.received_nacks.push(nack);
-            }
-        }
-        Ok(())
     }
 }

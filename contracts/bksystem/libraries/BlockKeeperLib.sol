@@ -1,11 +1,15 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
-//
-
-pragma ever-solidity >=0.66.0;
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * GOSH contracts
+ *
+ * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
+ */
+pragma gosh-solidity >=0.76.1;
 
 import "../AckiNackiBlockKeeperNodeWallet.sol";
 import "../BlockKeeperEpochContract.sol";
 import "../BlockKeeperPreEpochContract.sol";
+import "../BlockKeeperEpochProxyList.sol";
 
 library BlockKeeperLib {
     string constant versionLib = "1.0.0";
@@ -17,18 +21,19 @@ library BlockKeeperLib {
 
     function composeBlockKeeperWalletStateInit(TvmCell code, address root, uint256 pubkey) public returns(TvmCell) {
         return abi.encodeStateInit({
-            code: buildBlockKeeperWalletCode(code, root),
+            code: buildBlockKeeperWalletCode(code, root, pubkey),
             contr: AckiNackiBlockKeeperNodeWallet,
-            varInit: { _owner_pubkey : pubkey }
+            varInit: {}
         });
     }
 
     function buildBlockKeeperWalletCode(
         TvmCell originalCode,
-        address root
+        address root, 
+        uint256 pubkey
     ) public returns (TvmCell) {
         TvmCell finalcell;
-        finalcell = abi.encode(versionLib, root);
+        finalcell = abi.encode(versionLib, root, pubkey);
         return abi.setCodeSalt(originalCode, finalcell);
     }
 
@@ -112,34 +117,38 @@ library BlockKeeperLib {
         return abi.setCodeSalt(originalCode, finalcell);
     }
 
-    function calculateBlockKeeperSlashAddress(TvmCell code, TvmCell walletCode, TvmCell preEpochCode, address root, uint256 pubkey, uint64 seqNoStart) public returns(address) {
-        TvmCell s1 = composeBlockKeeperSlashStateInit(code, walletCode, preEpochCode, root, pubkey, seqNoStart);
+    function calculateBlockKeeperEpochProxyListAddress(TvmCell code, TvmCell walletCode, TvmCell epochCode, TvmCell preepochCode, uint256 pubkey, address root) public returns(address) {
+        TvmCell s1 = composeBlockKeeperEpochProxyListStateInit(code, walletCode, epochCode, preepochCode, pubkey, root);
         return address.makeAddrStd(0, tvm.hash(s1));
     }
 
-    function composeBlockKeeperSlashStateInit(TvmCell code, TvmCell walletCode, TvmCell preEpochCode, address root, uint256 pubkey, uint64 seqNoStart) public returns(TvmCell) {
+    function composeBlockKeeperEpochProxyListStateInit(TvmCell code, TvmCell walletCode, TvmCell epochCode, TvmCell preepochCode, uint256 pubkey, address root) public returns(TvmCell) {
         return abi.encodeStateInit({
-            code: buildBlockKeeperSlashCode(code, walletCode, preEpochCode, root),
-            contr: BlockKeeperSlashContract,
-            varInit: { _owner_pubkey : pubkey, _seqNoStart : seqNoStart }
+            code: buildBlockKeeperEpochProxyListCode(code, walletCode, epochCode, preepochCode, root),
+            contr: BlockKeeperEpochProxyList,
+            varInit: { _owner_pubkey: pubkey }
         });
     }
 
-    function buildBlockKeeperSlashCode(
+    function buildBlockKeeperEpochProxyListCode(
         TvmCell originalCode,
         TvmCell walletCode,
-        TvmCell preEpochCode,
+        TvmCell epochCode,
+        TvmCell preepochCode,
         address root
     ) public returns (TvmCell) {
         TvmBuilder b;
         b.store(walletCode);
         uint256 hash1 = tvm.hash(b.toCell());
         delete b;
-        b.store(preEpochCode);
+        b.store(epochCode);
         uint256 hash2 = tvm.hash(b.toCell());
         delete b;
+        b.store(preepochCode);
+        uint256 hash3 = tvm.hash(b.toCell());
+        delete b;
         TvmCell finalcell;
-        finalcell = abi.encode(versionLib, hash1, hash2, root);
+        finalcell = abi.encode(versionLib, hash1, hash2, hash3, root);
         return abi.setCodeSalt(originalCode, finalcell);
     }
 }

@@ -1,7 +1,4 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
-//
-
-pragma tvm-solidity >=0.6.0;
+pragma gosh-solidity >=0.76.1;
 pragma ignoreIntOverflow;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
@@ -120,6 +117,7 @@ contract MultisigWallet is IAccept {
     120 - update request is not confirmed;
     121 - payload size is too big;
     122 - object is expired;
+    123 - need at least 1 reqConfirms
     */
 
     /*
@@ -161,6 +159,7 @@ contract MultisigWallet is IAccept {
         gosh.cnvrtshellq(value);
         require(msg.pubkey() == tvm.pubkey(), 100);
         require(owners.length > 0 && owners.length <= MAX_CUSTODIAN_COUNT, 117);
+        require(reqConfirms > 0, 123);
         tvm.accept();
         _initialize(owners, reqConfirms);
     }

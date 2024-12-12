@@ -1,7 +1,10 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
-//
-
-pragma ever-solidity >=0.66.0;
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * GOSH contracts
+ *
+ * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
+ */
+pragma gosh-solidity >=0.76.1;
 pragma ignoreIntOverflow;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
@@ -11,7 +14,7 @@ import "./libraries/BlockKeeperLib.sol";
 import "./BlockKeeperContractRoot.sol";
 import "./AckiNackiBlockKeeperNodeWallet.sol";
 import "./BlockKeeperEpochContract.sol";
-import "./BlockKeeperSlashContract.sol";
+import "./BlockKeeperEpochProxyList.sol";
 
 contract BlockKeeperPreEpoch is Modifiers {
     string constant version = "1.0.0";
@@ -51,28 +54,29 @@ contract BlockKeeperPreEpoch is Modifiers {
         _epochDuration = epochDuration;
         _stake = msg.currencies[CURRENCIES_ID];
         _walletId = walletId;
-        AckiNackiBlockKeeperNodeWallet(msg.sender).setLockStake{value: 0.1 ton, flag: 1}(_seqNoStart, _stake);
+        getMoney();
+        AckiNackiBlockKeeperNodeWallet(msg.sender).setLockStake{value: 0.1 vmshell, flag: 1}(_seqNoStart, _stake);
+        optional(uint256) key;
+        new BlockKeeperEpochProxyList {
+                stateInit: BlockKeeperLib.composeBlockKeeperEpochProxyListStateInit(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], _owner_pubkey, _root), 
+                value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST),
+                wid: 0, 
+                flag: 1
+        } (_code, _seqNoStart, key, _walletId);
     }
 
     function getMoney() private pure {
-        if (address(this).balance > FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET) { return; }
-        mintshell(FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET);
+        if (address(this).balance > FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET + FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST + 1 vmshell) { return; }
+        gosh.mintshell(FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET + FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST + 1 vmshell);
     }
 
     function touch() public saveMsg {       
         if (_seqNoStart <= block.seqno) { tvm.accept(); }
         else { return; } 
         getMoney();
-        if (address(this).balance < FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_WALLET + FEE_DEPLOY_BLOCK_KEEPER_SLASH + 1e9) { return; }
+        if (address(this).balance < FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_WALLET + 1e9) { return; }
         mapping(uint32 => varuint32) data_cur;
         data_cur[CURRENCIES_ID] = _stake;
-        TvmCell dataslash = BlockKeeperLib.composeBlockKeeperSlashStateInit(_code[m_BlockKeeperSlashCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, _seqNoStart);
-        new BlockKeeperSlashContract {
-            stateInit: dataslash, 
-            value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_SLASH),
-            wid: 0, 
-            flag: 1
-        } (_code, _walletId);
         
         TvmCell data = BlockKeeperLib.composeBlockKeeperEpochStateInit(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, _seqNoStart);
         address epoch = new BlockKeeperEpoch {

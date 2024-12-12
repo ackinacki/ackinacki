@@ -12,6 +12,7 @@ use crate::defaults;
 use crate::helpers::u64_to_string;
 use crate::schema::graphql::blockchain_api::account::BlockchainMasterSeqNoFilter;
 use crate::schema::graphql::blockchain_api::account::BlockchainMessageTypeFilterEnum;
+use crate::schema::graphql::blockchain_api::query::PaginateDirection;
 
 #[derive(Deserialize)]
 struct MessageBody {
@@ -23,11 +24,6 @@ struct MessageBody {
 pub struct InBlockMessage {
     pub msg_id: String,
     pub transaction_id: String,
-}
-
-pub enum PaginateDirection {
-    Forward,
-    Backward,
 }
 
 #[allow(dead_code)]
@@ -159,7 +155,7 @@ impl Message {
         };
 
         let sql = format!("SELECT * FROM messages {filter} {order_by} LIMIT {limit}");
-        log::debug!("SQL: {sql}");
+        tracing::debug!("SQL: {sql}");
         let messages =
             sqlx::query_as(&sql).fetch(pool).map_ok(|b| b).try_collect::<Vec<Message>>().await?;
 
@@ -181,13 +177,13 @@ impl Message {
         let messages = sqlx::query_as(&sql)
             .fetch(pool)
             .map_ok(|m| {
-                log::debug!("m: {m:?}");
+                tracing::debug!("m: {m:?}");
                 m
             })
             .try_collect::<Vec<InBlockMessage>>()
             .await?;
 
-        log::debug!("in block messages: {:?}", messages);
+        tracing::debug!("in block messages: {:?}", messages);
         Ok(messages)
     }
 
@@ -203,13 +199,19 @@ impl Message {
         let direction = args.get_direction();
 
         let mut where_ops = vec![];
+        let mut cursor_field = "";
         {
             let mut ops = vec![];
             if has_inbound {
                 ops.push(format!("dst={:?}", account));
+                cursor_field = "dst_chain_order";
             }
             if has_outbound {
                 ops.push(format!("src={:?}", account));
+                cursor_field = "src_chain_order";
+            }
+            if has_inbound && has_outbound {
+                cursor_field = "COALESCE(dst_chain_order,src_chain_order)";
             }
             if !ops.is_empty() {
                 where_ops.push(format!("({})", ops.join(" OR ")));
@@ -228,12 +230,12 @@ impl Message {
 
         if let Some(after) = args.after {
             if !after.is_empty() {
-                where_ops.push(format!("dst_chain_order > {:?}", after));
+                where_ops.push(format!("{cursor_field} > {:?}", after));
             }
         }
         if let Some(before) = args.before {
             if !before.is_empty() {
-                where_ops.push(format!("dst_chain_order < {:?}", before));
+                where_ops.push(format!("{cursor_field} < {:?}", before));
             }
         }
 
@@ -248,21 +250,19 @@ impl Message {
             }
         }
 
-        let order_by = match direction {
+        let order_by_sort = match direction {
             PaginateDirection::Forward => "ASC",
             PaginateDirection::Backward => "DESC",
         };
         let sql = format!(
-            "SELECT *
-            FROM messages
-            WHERE {}
-            ORDER BY dst_chain_order {} LIMIT {}",
+            "SELECT * FROM messages WHERE {} ORDER BY {} {} LIMIT {}",
             where_ops.join(" AND "),
-            order_by,
+            cursor_field,
+            order_by_sort,
             limit,
         );
 
-        log::debug!("account_messages: SQL: {sql}");
+        tracing::debug!("account_messages: SQL: {sql}");
         let result =
             sqlx::query_as(&sql).fetch_all(pool).await.map_err(|e| anyhow::format_err!("{}", e));
 
@@ -271,7 +271,7 @@ impl Message {
                 anyhow::bail!("ERROR: {e}");
             }
             Ok(mut value) => {
-                log::debug!("OK: {} rows", value.len());
+                tracing::debug!("OK: {} rows", value.len());
                 value.iter_mut().for_each(|m: &mut Message| {
                     m.id = format!("message/{}", m.id);
                     m.body = if let Some(boc) = &m.boc {
@@ -290,7 +290,7 @@ impl Message {
                             }
                             Err(_) => None,
                         }
-                        // log::trace!("parse_message(): {:?}",
+                        // tracing::trace!("parse_message(): {:?}",
                         // res.parsed["body"]);
                     } else {
                         None

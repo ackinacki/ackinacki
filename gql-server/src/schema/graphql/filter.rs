@@ -58,7 +58,7 @@ pub trait WhereOp {
                     .unwrap()
                     .to_string(),
                 (k, v) => {
-                    log::error!("unsupported filter: {k} => {v}");
+                    tracing::error!("unsupported filter: {k} => {v}");
                     unreachable!()
                 }
             })

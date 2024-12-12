@@ -1,7 +1,10 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
-//
-
-pragma ever-solidity >=0.66.0;
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * GOSH contracts
+ *
+ * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
+ */
+pragma gosh-solidity >=0.76.1;
 pragma ignoreIntOverflow;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
@@ -10,7 +13,6 @@ import "./modifiers/modifiers.sol";
 import "./libraries/BlockKeeperLib.sol";
 import "./BlockKeeperContractRoot.sol";
 import "./AckiNackiBlockKeeperNodeWallet.sol";
-import "./BlockKeeperSlashContract.sol";
 
 
 contract BlockKeeperCooler is Modifiers {
@@ -23,8 +25,6 @@ contract BlockKeeperCooler is Modifiers {
     uint64 _seqNoFinish;
     address _owner;
     bytes _bls_pubkey;
-    mapping(uint256 => bool) _slashMember;
-    uint128 _slashed = 0;
     uint256 _walletId;
 
     constructor (
@@ -32,8 +32,6 @@ contract BlockKeeperCooler is Modifiers {
         address owner,
         address root,
         bytes bls_pubkey,
-        mapping(uint256 => bool) slashMember,
-        uint128 slashed,
         mapping(uint8 => TvmCell) code,
         uint256 walletId
     ) {
@@ -45,21 +43,19 @@ contract BlockKeeperCooler is Modifiers {
         _seqNoFinish = block.seqno + waitStep;
         _owner = owner;
         _bls_pubkey = bls_pubkey;
-        _slashMember = slashMember;
-        _slashed = slashed;
         _code = code;
         _walletId = walletId;
-        AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _root, _owner_pubkey)).updateLockStakeCooler{value: 0.1 ton, flag: 1}(_seqNoStart);
+        AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _root, _owner_pubkey)).updateLockStakeCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, block.timestamp);
     }
 
     function getMoney() private pure {
         if (address(this).balance > FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_COOLER_WALLET) { return; }
-        mintshell(FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_COOLER_WALLET);
+        gosh.mintshell(FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_COOLER_WALLET);
     }
 
-    function slash() public senderIs(BlockKeeperLib.calculateBlockKeeperSlashAddress(_code[m_BlockKeeperSlashCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, _seqNoStart)) accept {  
+    function slash() public senderIs(_owner) accept {  
         getMoney();
-        AckiNackiBlockKeeperNodeWallet(_owner).slashCooler{value: 0.1 ton, flag: 1}(_seqNoStart);
+        AckiNackiBlockKeeperNodeWallet(_owner).slashCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart);
         destroy(_root);
     }
 
@@ -67,8 +63,8 @@ contract BlockKeeperCooler is Modifiers {
         if (_seqNoFinish <= block.seqno) { tvm.accept(); }
         else { return; }    
         getMoney();
-        if (address(this).balance < 0.2 ton) { return; }
-        AckiNackiBlockKeeperNodeWallet(_owner).unlockStakeCooler{value: 0.1 ton, flag: 1}(_seqNoStart);
+        if (address(this).balance < 0.2 vmshell) { return; }
+        AckiNackiBlockKeeperNodeWallet(_owner).unlockStakeCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart);
         destroy(_owner);
     }
 
@@ -87,10 +83,9 @@ contract BlockKeeperCooler is Modifiers {
         uint64 seqNoStart,
         uint64 seqNoFinish,
         address owner,
-        mapping(uint256 => bool) slashMember,
         uint256 walletId) 
     {
-        return (_owner_pubkey, _root, _seqNoStart, _seqNoFinish, _owner, _slashMember, _walletId);
+        return (_owner_pubkey, _root, _seqNoStart, _seqNoFinish, _owner, _walletId);
     }
 
     function getVersion() external pure returns(string, string) {

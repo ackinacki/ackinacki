@@ -1,7 +1,10 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
-//
-
-pragma ever-solidity >=0.66.0;
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * GOSH contracts
+ *
+ * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
+ */
+pragma gosh-solidity >=0.76.1;
 pragma ignoreIntOverflow;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
@@ -20,44 +23,43 @@ contract DappRoot is Modifiers {
     constructor (
     ) {
         _owner = address.makeAddrStd(0, 0);
-        mintshell(100000 ton);
+        gosh.mintshell(100000 vmshell);
     }
 
-    function setNewCode(uint8 id, TvmCell code) public senderIs(_owner) accept saveMsg { 
+    function setNewCode(uint8 id, TvmCell code) public onlyOwnerPubkey(tvm.pubkey()) accept saveMsg { 
         getMoney();
         _code[id] = code;
     }
 
     function getMoney() private pure {
-        if (address(this).balance > 100000 ton) { return; }
-        mintshell(100000 ton);
+        if (address(this).balance > 100000 vmshell) { return; }
+        gosh.mintshell(100000 vmshell);
+    }
+
+    function deployNewConfigCustom(
+        uint256 dapp_id
+    ) public view accept {
+        getMoney();
+        CreditConfig info = CreditConfig(
+            false,
+            0
+        );
+        TvmCell data = DappLib.composeDappConfigStateInit(_code[m_ConfigCode], dapp_id);
+        new DappConfig {stateInit: data, value: varuint16(FEE_DEPLOY_CONFIG), wid: 0, flag: 1}(info);
     }
 
     function deployNewConfig(
         uint256 dapp_id,
         bool is_unlimit,
-        int128 available_credit,
-	    uint128 credit_per_block,
-	    uint128 available_credit_max_value,
-        uint128 start_block_seqno,
-	    uint128 end_block_seqno
+        int128 available_balance
     ) public view onlyOwnerPubkey(tvm.pubkey()) accept {
         getMoney();
         CreditConfig info = CreditConfig(
             is_unlimit,
-            available_credit,
-            credit_per_block,
-            available_credit_max_value,
-            start_block_seqno,
-            end_block_seqno,
-            block.seqno,
-            uint128(0)
+            available_balance
         );
         TvmCell data = DappLib.composeDappConfigStateInit(_code[m_ConfigCode], dapp_id);
-        mint(1000 ton, CURRENCIES_ID_SHELL);
-        mapping(uint32 => varuint32) data_cur;
-        data_cur[CURRENCIES_ID_SHELL] = varuint32(1000 ton);
-        new DappConfig {stateInit: data, value: varuint16(FEE_DEPLOY_CONFIG), currencies: data_cur, wid: 0, flag: 1}(info);
+        new DappConfig {stateInit: data, value: varuint16(FEE_DEPLOY_CONFIG), wid: 0, flag: 1}(info);
     }
 
     function getConfigAddr(uint256 dapp_id) external view returns(address config) {

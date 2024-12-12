@@ -1,6 +1,3 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
-//
-
 use async_graphql::Enum;
 
 #[allow(clippy::upper_case_acronyms)]

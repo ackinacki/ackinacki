@@ -35,12 +35,13 @@ pub fn decode_epoch_data(
     if let Some(data) = account.get_data() {
         let decoded_data = abi
             .abi()
-            .map_err(|e| anyhow::format_err!("{e}"))?
+            .map_err(|e| anyhow::format_err!("Failed to load epoch ABI: {e}"))?
             .decode_storage_fields(
-                slice_from_cell(data).map_err(|e| anyhow::format_err!("{e}"))?,
+                slice_from_cell(data)
+                    .map_err(|e| anyhow::format_err!("Failed to decode epoch data cell: {e}"))?,
                 true,
             )
-            .map_err(|e| anyhow::format_err!("{e}"))?;
+            .map_err(|e| anyhow::format_err!("Failed to decode epoch storage: {e}"))?;
         let mut block_keeper_bls_key = None;
         let mut block_keeper_wallet_id = None;
         let mut block_keeper_epoch_finish = None;

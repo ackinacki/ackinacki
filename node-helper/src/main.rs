@@ -1,6 +1,3 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
-//
-
 use std::path::PathBuf;
 use std::process::exit;
 use std::sync::Arc;
@@ -95,7 +92,7 @@ struct Config {
     pub gossip_seeds: Option<Vec<StringSocketAddr>>,
 
     #[arg(long, env)]
-    pub lite_server_listen_addr: Option<StringSocketAddr>,
+    pub block_manager_listen_addr: Option<StringSocketAddr>,
 
     /// All static stores urls-bases (e.g. "https://example.com/storage/")
     #[arg(long, env, value_delimiter = ',')]
@@ -135,6 +132,10 @@ struct Config {
 
     #[arg(long)]
     pub producer_change_gap_size: Option<usize>,
+
+    /// Number of signatures, required for block acceptance.
+    #[arg(long)]
+    pub min_signatures_cnt_for_acceptance: Option<usize>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -197,8 +198,8 @@ fn main() -> anyhow::Result<()> {
                 config.network.gossip_seeds = gossip_seeds;
             }
 
-            if let Some(lite_server_listen_addr) = config_cmd.lite_server_listen_addr {
-                config.network.lite_server_listen_addr = lite_server_listen_addr;
+            if let Some(block_manager_listen_addr) = config_cmd.block_manager_listen_addr {
+                config.network.block_manager_listen_addr = block_manager_listen_addr;
             }
 
             if let Some(static_storages) = config_cmd.static_storages {
@@ -243,6 +244,12 @@ fn main() -> anyhow::Result<()> {
 
             if let Some(producer_change_gap_size) = config_cmd.producer_change_gap_size {
                 config.global.producer_change_gap_size = producer_change_gap_size;
+            }
+
+            if let Some(min_signatures_cnt_for_acceptance) =
+                config_cmd.min_signatures_cnt_for_acceptance
+            {
+                config.global.min_signatures_cnt_for_acceptance = min_signatures_cnt_for_acceptance;
             }
 
             save_config_to_file(&config, &config_cmd.config_file_path)

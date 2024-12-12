@@ -11,6 +11,7 @@ use std::io::Read;
 use std::io::Write;
 use std::num::NonZeroUsize;
 use std::ops::Add;
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -19,6 +20,10 @@ use std::thread;
 use chrono::DateTime;
 use chrono::TimeDelta;
 use chrono::Utc;
+use database::documents_db::DocumentsDb;
+use database::documents_db::SerializedItem;
+use database::sqlite::sqlite_helper::SqliteHelper;
+use database::sqlite::ArchAccount;
 use lru::LruCache;
 use parking_lot::Mutex;
 use rusqlite::params;
@@ -26,50 +31,54 @@ use rusqlite::Connection;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
+use tvm_block::HashmapAugType;
+use tvm_block::ShardStateUnsplit;
 
 use crate::block::keeper::process::prepare_prev_block_info;
-use crate::block::Block;
-use crate::block::BlockSeqNo;
-use crate::block::WrappedBlock;
-use crate::block::WrappedUInt256;
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::BLSSignatureScheme;
 use crate::bls::GoshBLS;
-use crate::database::documents_db::SerializedItem;
-use crate::database::sqlite_helper::SqliteHelper;
+use crate::database::serialize_block::prepare_account_archive_struct;
 use crate::database::write_to_db;
 use crate::message::WrappedMessage;
 use crate::node::associated_types::AttestationData;
 use crate::node::NodeIdentifier;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
-use crate::repository::BlockIdentifierFor;
-use crate::repository::BlockSeqNoFor;
 use crate::repository::Repository;
+use crate::types::next_seq_no as calc_next_seq_no;
+use crate::types::AckiNackiBlock;
+use crate::types::BlockIdentifier;
+use crate::types::BlockSeqNo;
+use crate::types::ThreadIdentifier;
+use crate::types::ThreadsTable;
 use crate::zerostate::ZeroState;
 
 const DEFAULT_OID: &str = "00000000000000000000";
-const FAILED_BLOCK_DIR: &str = "fail_dumps";
 const REQUIRED_SQLITE_SCHEMA_VERSION: u32 = 2;
 const _REQUIRED_SQLITE_ARC_SCHEMA_VERSION: u32 = 2;
 const DB_FILE: &str = "node.db";
 const DB_ARCHIVE_FILE: &str = "node-archive.db";
 pub const EXT_MESSAGE_STORE_TIMEOUT_SECONDS: i64 = 60;
 const MAX_BLOCK_SEQ_NO_THAT_CAN_BE_BUILT_FROM_ZEROSTATE: u32 = 200;
+const MAX_BLOCK_CNT_THAT_CAN_BE_LOADED_TO_PREPARE_STATE: usize = 400;
 
 pub struct RepositoryImpl {
     archive: Connection,
     data_dir: PathBuf,
     zerostate_path: Option<PathBuf>,
-    metadata: Arc<Mutex<MetadataFor<Self>>>,
+    metadatas: HashMap<ThreadIdentifier, Arc<Mutex<Metadata<BlockIdentifier, BlockSeqNo>>>>,
     last_ext_message_index: u32,
     ext_messages_mutex: Arc<Mutex<()>>,
-    blocks_cache:
-        Arc<Mutex<LruCache<WrappedUInt256, (Envelope<GoshBLS, WrappedBlock>, BlockMarkers)>>>,
-    saved_states: Arc<Mutex<BTreeMap<u32, WrappedUInt256>>>,
-    finalized_optimistic_state: OptimisticStateImpl,
+    blocks_cache: Arc<
+        Mutex<
+            LruCache<BlockIdentifier, (Envelope<GoshBLS, AckiNackiBlock<GoshBLS>>, BlockMarkers)>,
+        >,
+    >,
+    saved_states: Arc<Mutex<HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockIdentifier>>>>,
+    finalized_optimistic_states: HashMap<ThreadIdentifier, OptimisticStateImpl>,
 }
 
 #[allow(clippy::upper_case_acronyms)]
@@ -122,8 +131,8 @@ pub struct ExtMessages<TMessage: Clone> {
 #[derive(Serialize, Deserialize)]
 pub struct WrappedStateSnapshot {
     pub optimistic_state: Vec<u8>,
-    pub producer_group: HashMap<u64, Vec<NodeIdentifier>>,
-    pub block_keeper_set: BlockKeeperSet,
+    pub producer_group: HashMap<ThreadIdentifier, Vec<NodeIdentifier>>,
+    pub block_keeper_set: HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>,
 }
 
 impl<TMessage> Default for ExtMessages<TMessage>
@@ -135,7 +144,6 @@ where
     }
 }
 
-type MetadataFor<T> = Metadata<BlockIdentifierFor<T>, BlockSeqNoFor<T>>;
 type MessageFor<T> = <<T as Repository>::OptimisticState as OptimisticState>::Message;
 
 pub fn load_from_file<T: for<'de> Deserialize<'de>>(
@@ -162,32 +170,35 @@ fn save_to_file<T: Serialize>(file_path: &PathBuf, data: &T) -> anyhow::Result<(
 }
 
 impl Clone for RepositoryImpl {
+    // TODO: Repository object can consume great amount of memory, so it's better not to copy it
     fn clone(&self) -> Self {
         let db_path = self.data_dir.join(DB_ARCHIVE_FILE);
-        let arc_conn =
-            SqliteHelper::create_connection_ro(db_path).expect("Failed to open {db_path}");
+        let arc_conn = SqliteHelper::create_connection_ro(db_path.clone())
+            .unwrap_or_else(|_| panic!("Failed to open {db_path:?}"));
 
         Self {
             archive: arc_conn,
             data_dir: self.data_dir.clone(),
             zerostate_path: self.zerostate_path.clone(),
-            metadata: self.metadata.clone(),
+            metadatas: self.metadatas.clone(),
             last_ext_message_index: self.last_ext_message_index,
             ext_messages_mutex: self.ext_messages_mutex.clone(),
             blocks_cache: self.blocks_cache.clone(),
             saved_states: self.saved_states.clone(),
-            finalized_optimistic_state: self.finalized_optimistic_state.clone(),
+            finalized_optimistic_states: self.finalized_optimistic_states.clone(),
         }
     }
 }
 
 impl RepositoryImpl {
+    // TODO: remove option from zerostate_path
     pub fn new(data_dir: PathBuf, zerostate_path: Option<PathBuf>, cache_size: usize) -> Self {
         if let Err(err) = fs::create_dir_all(data_dir.clone()) {
-            log::error!("Failed to create data dir {:?}: {}", data_dir, err);
+            tracing::error!("Failed to create data dir {:?}: {}", data_dir, err);
         }
         let db_path = data_dir.join(DB_FILE);
-        let conn = SqliteHelper::create_connection(db_path).expect("Failed to open {db_path}");
+        let conn = SqliteHelper::create_connection_ro(db_path.clone())
+            .unwrap_or_else(|_| panic!("Failed to open {db_path:?}"));
 
         let arch_path = data_dir.join(DB_ARCHIVE_FILE);
         let archive = SqliteHelper::create_connection_ro(arch_path)
@@ -197,7 +208,7 @@ impl RepositoryImpl {
             conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap_or(0);
         match schema_version.cmp(&REQUIRED_SQLITE_SCHEMA_VERSION) {
             Ordering::Less => {
-                log::trace!(
+                tracing::trace!(
                     r"Error: DB schema must be uprgaded. Current version = {}, required version = {}
                     For migrate DB schema to required version, please use 'migration_tool':
                     $ migration-tool -p {} -n {REQUIRED_SQLITE_SCHEMA_VERSION} -a",
@@ -208,7 +219,7 @@ impl RepositoryImpl {
                 std::process::exit(2);
             }
             Ordering::Greater => {
-                log::trace!(
+                tracing::trace!(
                     r"The schema of the database version is higher than that required by
                     this instance of the Acki-Nacki node. Please update the app version.",
                 );
@@ -217,24 +228,37 @@ impl RepositoryImpl {
             _ => {}
         }
 
-        let mut finalized_optimistic_state = OptimisticStateImpl::zero();
+        let mut finalized_optimistic_states = HashMap::new();
+        let mut metadatas = HashMap::new();
         if let Some(path) = &zerostate_path {
             let zerostate = ZeroState::load_from_file(path).expect("Failed to load zerostate");
-            finalized_optimistic_state.shard_state = Some(Arc::new(zerostate.shard_state));
+            for thread_id in zerostate.list_threads() {
+                finalized_optimistic_states.insert(
+                    *thread_id,
+                    zerostate
+                        .state(thread_id)
+                        .expect("Failed to load state from zerostate")
+                        .clone(),
+                );
+                metadatas.insert(
+                    *thread_id,
+                    Arc::new(Mutex::new(Metadata::<BlockIdentifier, BlockSeqNo>::default())),
+                );
+            }
         };
 
         let mut repo_impl = Self {
             archive,
             data_dir: data_dir.clone(),
             zerostate_path,
-            metadata: Arc::new(Mutex::new(MetadataFor::<Self>::default())),
+            metadatas,
             last_ext_message_index: 0,
             ext_messages_mutex: Arc::new(Mutex::new(())),
             blocks_cache: Arc::new(Mutex::new(LruCache::new(
                 NonZeroUsize::new(cache_size).unwrap(),
             ))),
-            saved_states: Arc::new(Mutex::new(BTreeMap::new())),
-            finalized_optimistic_state,
+            saved_states: Default::default(),
+            finalized_optimistic_states,
         };
 
         let optimistic_dir = format!(
@@ -246,20 +270,23 @@ impl RepositoryImpl {
             for state_path in paths {
                 if let Ok(path) = state_path.map(|de| de.path()) {
                     if let Some(id_str) = path.file_name().and_then(|os_str| os_str.to_str()) {
-                        if let Ok(block_id) = WrappedUInt256::from_str(id_str) {
+                        if let Ok(block_id) = BlockIdentifier::from_str(id_str) {
                             tracing::trace!(
                                 "RepositoryImpl::new reading optimistic state: {block_id:?}"
                             );
                             if let Some(buffer) = load_from_file::<Vec<u8>>(&path).unwrap() {
-                                let state = <Self as Repository>::OptimisticState::deserialize(
-                                    &buffer,
-                                    block_id.clone(),
-                                )
-                                .unwrap();
+                                let state =
+                                    <Self as Repository>::OptimisticState::deserialize_from_buf(
+                                        &buffer,
+                                        block_id.clone(),
+                                    )
+                                    .unwrap();
                                 let seq_no = state.get_block_info().prev1().unwrap().seq_no;
                                 {
-                                    let mut saved_states = repo_impl.saved_states.lock();
-                                    saved_states.insert(seq_no, block_id);
+                                    let mut all_states = repo_impl.saved_states.lock();
+                                    let saved_states =
+                                        all_states.entry(state.thread_id).or_default();
+                                    saved_states.insert(BlockSeqNo::from(seq_no), block_id);
                                 }
                             };
                         }
@@ -268,28 +295,31 @@ impl RepositoryImpl {
             }
         }
         {
-            tracing::trace!("Repo saved states: {:?}", repo_impl.saved_states.lock());
+            let states = &repo_impl.saved_states.lock();
+            tracing::trace!("Repo saved states: {:?}", states);
         }
 
         repo_impl.load_metadata().expect("Failed to load metadata");
 
-        {
-            let metadata = repo_impl.metadata.lock();
-            if metadata.last_finalized_block_id != BlockIdentifierFor::<Self>::default() {
+        for (thread_id, metadata) in &repo_impl.metadatas {
+            let metadata = metadata.lock();
+            if metadata.last_finalized_block_id != BlockIdentifier::default() {
                 tracing::trace!("load finalized state {:?}", metadata.last_finalized_block_id);
-                repo_impl.finalized_optimistic_state = repo_impl
+                let state = repo_impl
                     .get_optimistic_state(&metadata.last_finalized_block_id)
                     .expect("Failed to get last finalized state")
                     .expect("Failed to load last finalized state");
+                repo_impl.finalized_optimistic_states.insert(*thread_id, state);
             }
         }
+
         // Node repo can contain old blocks which are useless and just consume space
         // and increase metadata size. But we must check that they were successfully stored in the
         // archive
         tracing::trace!("Start checking old blocks");
-        {
+        for (thread_id, metadata) in &repo_impl.metadatas {
             let metadata = {
-                let metadata = repo_impl.metadata.lock();
+                let metadata = metadata.lock();
                 metadata.clone()
             };
 
@@ -311,26 +341,23 @@ impl RepositoryImpl {
                             .is_block_present_in_archive(&block_id)
                             .expect("Failed to check block")
                         {
-                            let _ = repo_impl.erase_block(&block_id);
+                            let _ = repo_impl.erase_block(&block_id, thread_id);
                         } else {
-                            let block = repo_impl
-                                .get_block(&block_id)
-                                .expect("Failed to load block")
-                                .expect("Failed to load block");
-                            let state = repo_impl
-                                .get_optimistic_state(&block_id)
-                                .expect("Failed to load optimistic state")
-                                .expect("Failed to load optimistic state");
-                            write_to_db(
-                                sqlite_helper_raw.clone(),
-                                block,
-                                state.shard_state,
-                                state.shard_state_cell,
-                            )
-                            .expect("Failed to store old finalized block in archive");
+                            if let Ok(Some(block)) = repo_impl.get_block(&block_id) {
+                                if let Ok(Some(state)) = repo_impl.get_optimistic_state(&block_id) {
+                                    write_to_db(
+                                        sqlite_helper_raw.clone(),
+                                        block,
+                                        state.shard_state.shard_state,
+                                        state.shard_state.shard_state_cell,
+                                    )
+                                    .expect("Failed to store old finalized block in archive");
+                                }
+                            }
+                            let _ = repo_impl.erase_block(&block_id, thread_id);
                         }
                     } else {
-                        let _ = repo_impl.erase_block(&block_id);
+                        let _ = repo_impl.erase_block(&block_id, thread_id);
                     }
                 }
             }
@@ -340,23 +367,30 @@ impl RepositoryImpl {
         let msg_queue =
             repo_impl.load_ext_messages_queue().expect("Failed to load external messages queue");
         if msg_queue.queue.is_empty() {
-            // If saved queue is empty need to get info from the last block
-            let metadata = repo_impl.metadata.lock();
-            let mut saved_blocks =
-                metadata.block_id_to_seq_no.clone().into_iter().collect::<Vec<_>>();
-            drop(metadata);
-            if saved_blocks.is_empty() {
-                repo_impl.last_ext_message_index = 0;
-            } else {
-                saved_blocks.sort_by(|a, b| a.1.cmp(&b.1));
-                let markers = repo_impl
-                    .load_markers(&saved_blocks.last().unwrap().0)
-                    .expect("Failed to load block markers");
-                repo_impl.last_ext_message_index = markers.last_processed_ext_message;
+            // TODO: this code worked for single thread, but needs check for multithreaded version
+            for metadata in repo_impl.metadatas.values() {
+                // If saved queue is empty need to get info from the last block
+                let metadata = metadata.lock();
+                let mut saved_blocks =
+                    metadata.block_id_to_seq_no.clone().into_iter().collect::<Vec<_>>();
+                drop(metadata);
+                if saved_blocks.is_empty() {
+                    repo_impl.last_ext_message_index = 0;
+                } else {
+                    saved_blocks.sort_by(|a, b| a.1.cmp(&b.1));
+                    let markers = repo_impl
+                        .load_markers(&saved_blocks.last().unwrap().0)
+                        .expect("Failed to load block markers");
+                    // Save greates last_processed_ext_messages index
+                    if markers.last_processed_ext_message > repo_impl.last_ext_message_index {
+                        repo_impl.last_ext_message_index = markers.last_processed_ext_message;
+                    }
+                }
             }
         } else {
             repo_impl.last_ext_message_index = msg_queue.queue.last().unwrap().index;
         }
+        tracing::trace!("repository init finished");
         repo_impl
     }
 
@@ -365,14 +399,21 @@ impl RepositoryImpl {
     }
 
     fn save<T: Serialize>(&self, path: &str, oid: OID, data: &T) -> anyhow::Result<()> {
-        let start = std::time::Instant::now();
         let oid = match oid {
             OID::ID(value) => value,
             OID::SingleRow => DEFAULT_OID.to_owned(),
         };
         save_to_file(&self.get_path(path, oid), data)?;
-        tracing::trace!("repository save time: {}", start.elapsed().as_millis());
         Ok(())
+    }
+
+    fn get_metadata_for_thread(
+        &self,
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<&Arc<Mutex<Metadata<BlockIdentifier, BlockSeqNo>>>> {
+        self.metadatas
+            .get(thread_id)
+            .ok_or(anyhow::format_err!("Failed to get metadata for thread: {thread_id:?}"))
     }
 
     fn load<T: for<'de> Deserialize<'de>>(
@@ -380,7 +421,6 @@ impl RepositoryImpl {
         path: &str,
         oid: OID,
     ) -> anyhow::Result<Option<T>> {
-        let start = std::time::Instant::now();
         let oid = match oid {
             OID::ID(value) => value,
             OID::SingleRow => DEFAULT_OID.to_owned(),
@@ -388,7 +428,6 @@ impl RepositoryImpl {
         let oid_file = self.get_path(path, oid);
         let data = load_from_file(&oid_file)
             .unwrap_or_else(|_| panic!("Failed to load file: {}", oid_file.display()));
-        tracing::trace!("repository load time: {}", start.elapsed().as_millis());
         Ok(data)
     }
 
@@ -402,13 +441,11 @@ impl RepositoryImpl {
     }
 
     fn exists(&self, path: &str, oid: OID) -> bool {
-        let start = std::time::Instant::now();
         let oid = match oid {
             OID::ID(value) => value,
             OID::SingleRow => DEFAULT_OID.to_owned(),
         };
         let res = std::path::Path::new(&self.get_path(path, oid)).exists();
-        tracing::trace!("repository load time: {}", start.elapsed().as_millis());
         res
     }
 
@@ -429,89 +466,85 @@ impl RepositoryImpl {
         "ext_messages"
     }
 
-    fn load_metadata(&self) -> anyhow::Result<()> {
-        tracing::trace!("Loading metadata from the repo...");
+    fn load_metadata(&mut self) -> anyhow::Result<()> {
         let path = self.get_metadata_path();
-        if let Some(metadata) = self.load::<MetadataFor<Self>>(path, OID::SingleRow)? {
-            tracing::trace!("Metadata was successfully loaded: {metadata:?}");
-            let mut inner_ref = self.metadata.lock();
-            *inner_ref = metadata;
+        if let Some(metadatas) = self.load::<HashMap<
+            ThreadIdentifier,
+            Metadata<BlockIdentifier, BlockSeqNo>,
+        >>(path, OID::SingleRow)?
+        {
+            self.metadatas = metadatas
+                .into_iter()
+                .map(|(thread, metadata)| (thread, Arc::new(Mutex::new(metadata))))
+                .collect();
         }
         Ok(())
     }
 
-    fn save_metadata(&self, metadata: &MetadataFor<Self>) -> anyhow::Result<()> {
-        tracing::trace!("Saving metadata into the repo...");
+    fn save_metadata(&self) -> anyhow::Result<()> {
         let path = self.get_metadata_path();
-        self.save(path, OID::SingleRow, metadata)
+        let metadata: HashMap<ThreadIdentifier, Metadata<BlockIdentifier, BlockSeqNo>> = self
+            .metadatas
+            .clone()
+            .into_iter()
+            .map(|(thread, metadata)| (thread, metadata.lock().deref().clone()))
+            .collect();
+        self.save(path, OID::SingleRow, &metadata)
     }
 
-    fn erase_markers(&self, block_id: &BlockIdentifierFor<Self>) -> anyhow::Result<()> {
-        tracing::trace!("Removing markers (block_id: {block_id}) from the repo...");
+    fn erase_markers(&self, block_id: &BlockIdentifier) -> anyhow::Result<()> {
         let _ = std::fs::remove_file(self.get_path("markers", format!("{block_id:?}")));
         Ok(())
     }
 
-    fn load_markers(&self, block_id: &BlockIdentifierFor<Self>) -> anyhow::Result<BlockMarkers> {
-        let start = std::time::Instant::now();
-
+    fn load_markers(&self, block_id: &BlockIdentifier) -> anyhow::Result<BlockMarkers> {
         let mut cache = self.blocks_cache.lock();
         let res = if let Some((_, markers)) = cache.get(block_id) {
-            tracing::trace!("Loaded markers from cache: {block_id:?}");
             markers.clone()
         } else {
             let path = self.get_path("markers", format!("{block_id:?}"));
             load_from_file(&path)?.unwrap_or_default()
         };
-
-        tracing::trace!("repository load time: {}", start.elapsed().as_millis());
         Ok(res)
     }
 
     fn save_markers(
         &self,
-        block_id: &BlockIdentifierFor<Self>,
+        block_id: &BlockIdentifier,
         markers: &BlockMarkers,
     ) -> anyhow::Result<()> {
-        let start = std::time::Instant::now();
         let path = self.get_path("markers", format!("{block_id:?}"));
         let markers_clone = markers.clone();
         let _ = thread::Builder::new().name("saving block".to_string()).spawn(move || {
-            let res = save_to_file(&path, &markers_clone);
-            tracing::trace!("save markers result: {res:?}");
+            let _res = save_to_file(&path, &markers_clone);
         })?;
         let mut cache = self.blocks_cache.lock();
         if let Some(entry) = cache.get_mut(block_id) {
             entry.1 = markers.clone();
         }
-        tracing::trace!("repository save time: {}", start.elapsed().as_millis());
         Ok(())
     }
 
     fn save_ext_messages_queue(&self, queue: ExtMessages<MessageFor<Self>>) -> anyhow::Result<()> {
-        tracing::trace!("Saving ext msg queue[{}] into the repo...", queue.queue.len());
         let lock = self.ext_messages_mutex.lock();
         let path = self.get_ext_messages_queue_path();
         self.save(path, OID::SingleRow, &queue)?;
-        tracing::trace!("Saving ext msg queue into the repo finished");
         drop(lock);
         Ok(())
     }
 
     pub(crate) fn load_ext_messages_queue(&self) -> anyhow::Result<ExtMessages<MessageFor<Self>>> {
-        tracing::trace!("Loading ext msg queue from repo...");
         let lock = self.ext_messages_mutex.lock();
         let path = self.get_ext_messages_queue_path();
         let queue: ExtMessages<WrappedMessage> =
             self.load(path, OID::SingleRow).map(|res| res.unwrap_or_default())?;
-        tracing::trace!("Loaded ext msg queue[{}]", queue.queue.len());
         drop(lock);
         Ok(queue)
     }
 
     fn save_accounts(
         &self,
-        block_id: WrappedUInt256,
+        block_id: BlockIdentifier,
         accounts: HashMap<String, SerializedItem>,
     ) -> anyhow::Result<()> {
         if accounts.keys().len() == 0 {
@@ -526,42 +559,34 @@ impl RepositoryImpl {
         block: <RepositoryImpl as Repository>::CandidateBlock,
         candidate_marker: BlockMarkers,
     ) -> anyhow::Result<()> {
-        let start = std::time::Instant::now();
         let block_id = block.data().identifier();
         let path = self.get_path("blocks", format!("{block_id:?}"));
 
         let block_clone = block.clone();
         let _ = thread::Builder::new().name("saving block".to_string()).spawn(move || {
-            let res = save_to_file(&path, &block_clone);
-            tracing::trace!("save block result: {res:?}");
+            let _res = save_to_file(&path, &block_clone);
         })?;
 
         let mut cache = self.blocks_cache.lock();
         cache.push(block.data().identifier(), (block, candidate_marker));
-        tracing::trace!("repository save time: {}", start.elapsed().as_millis());
         Ok(())
     }
 
     fn load_candidate_block(
         &self,
-        identifier: &BlockIdentifierFor<RepositoryImpl>,
+        identifier: &BlockIdentifier,
     ) -> anyhow::Result<Option<<RepositoryImpl as Repository>::CandidateBlock>> {
-        let start = std::time::Instant::now();
-
         let mut cache = self.blocks_cache.lock();
         let envelope = if let Some((envelope, _)) = cache.get(identifier) {
-            tracing::trace!("Loaded candidate block from cache: {identifier:?}");
             Some(envelope.clone())
         } else {
             let path = self.get_path("blocks", format!("{identifier:?}"));
             load_from_file(&path)?
         };
-
-        tracing::trace!("repository load time: {}", start.elapsed().as_millis());
         Ok(envelope)
     }
 
-    fn erase_candidate_block(&self, block_id: &BlockIdentifierFor<Self>) -> anyhow::Result<()> {
+    fn erase_candidate_block(&self, block_id: &BlockIdentifier) -> anyhow::Result<()> {
         let path = self.get_path("blocks", format!("{block_id:?}"));
         let _ = std::fs::remove_file(path);
         let mut cache = self.blocks_cache.lock();
@@ -571,7 +596,7 @@ impl RepositoryImpl {
 
     fn load_archived_block_by_seq_no(
         &self,
-        seq_no: &BlockSeqNoFor<RepositoryImpl>,
+        seq_no: &BlockSeqNo,
     ) -> anyhow::Result<Vec<<RepositoryImpl as Repository>::CandidateBlock>> {
         tracing::trace!("Loading an archived block (seq_no: {seq_no:?})...");
         let sql = r"SELECT aggregated_signature, signature_occurrences, data
@@ -589,7 +614,7 @@ impl RepositoryImpl {
             let signature_occurrences: HashMap<u16, u16> = bincode::deserialize(&buffer)?;
 
             buffer = row.get(2)?;
-            let block_data: WrappedBlock = bincode::deserialize(&buffer)?;
+            let block_data: AckiNackiBlock<GoshBLS> = bincode::deserialize(&buffer)?;
 
             let envelope = <RepositoryImpl as Repository>::CandidateBlock::create(
                 aggregated_signature,
@@ -598,31 +623,28 @@ impl RepositoryImpl {
             );
             envelopes.push(envelope);
         }
-        tracing::trace!("load_archived_block_by_seq_no: seq_no: {seq_no}, {envelopes:?}");
         Ok(envelopes)
     }
 
-    fn is_block_present_in_archive(
-        &self,
-        identifier: &BlockIdentifierFor<RepositoryImpl>,
-    ) -> anyhow::Result<bool> {
-        tracing::trace!("Check that block presents in archive (block_id: {identifier})");
+    fn is_block_present_in_archive(&self, identifier: &BlockIdentifier) -> anyhow::Result<bool> {
         let sql = r"SELECT aggregated_signature, signature_occurrences, data, id
             FROM blocks WHERE id=?1";
         let mut stmt = self.archive.prepare(sql)?;
         let mut rows = stmt.query(params![identifier.to_string()])?;
         let res = rows.next()?.is_some();
-        tracing::trace!("Does block present in archive: {identifier:?} {res}");
         Ok(res)
     }
 
-    fn load_archived_block(
+    pub(crate) fn load_archived_block(
         &self,
-        identifier: &Option<BlockIdentifierFor<RepositoryImpl>>,
+        identifier: &Option<BlockIdentifier>,
+        thread_identifier: Option<ThreadIdentifier>,
     ) -> anyhow::Result<Option<<RepositoryImpl as Repository>::CandidateBlock>> {
         tracing::trace!("Loading an archived block (block_id: {identifier:?})...");
         let add_clause = if let Some(block_id) = identifier {
             format!(" WHERE id={:?}", block_id.to_string())
+        } else if let Some(thread_id) = thread_identifier {
+            format!(" WHERE thread_id={:?} ORDER BY seq_no DESC LIMIT 1", hex::encode(thread_id))
         } else {
             " ORDER BY seq_no DESC LIMIT 1".to_string()
         };
@@ -642,7 +664,7 @@ impl RepositoryImpl {
                 let signature_occurrences: HashMap<u16, u16> = bincode::deserialize(&buffer)?;
 
                 buffer = row.get(2)?;
-                let block_data: WrappedBlock = bincode::deserialize(&buffer)?;
+                let block_data: AckiNackiBlock<GoshBLS> = bincode::deserialize(&buffer)?;
 
                 let envelope = <RepositoryImpl as Repository>::CandidateBlock::create(
                     aggregated_signature,
@@ -657,11 +679,10 @@ impl RepositoryImpl {
         Ok(envelope)
     }
 
-    fn clear_optimistic_states(&mut self) -> anyhow::Result<()> {
-        let mut saved_states = self.saved_states.lock();
-        let (_, last_finalized_seq_no) = self.select_thread_last_finalized_block(
-            &<Self as Repository>::ThreadIdentifier::default(),
-        )?;
+    fn clear_optimistic_states(&mut self, thread_id: &ThreadIdentifier) -> anyhow::Result<()> {
+        let mut all_saved_states = self.saved_states.lock();
+        let saved_states = all_saved_states.entry(*thread_id).or_default();
+        let (_, last_finalized_seq_no) = self.select_thread_last_finalized_block(thread_id)?;
         let mut keys_to_remove = vec![];
         for (block_seq_no, block_id) in saved_states.iter() {
             if *block_seq_no > last_finalized_seq_no {
@@ -692,14 +713,24 @@ impl RepositoryImpl {
 
     fn try_load_state_from_archive(
         &self,
-        block_id: &BlockIdentifierFor<Self>,
+        block_id: &BlockIdentifier,
     ) -> anyhow::Result<Option<<Self as Repository>::OptimisticState>> {
         tracing::trace!("try_load_state_from_archive: {block_id:?}");
         // Load last block
         let block = self.get_block_from_repo_or_archive(block_id)?;
+        let thread_id = block.data().get_common_section().thread_id;
         // Check that state for this block can be built
         let block_seq_no = block.data().seq_no();
-        let saved_states = { self.saved_states.lock().clone() };
+        let mut saved_states =
+            { self.saved_states.lock().get(&thread_id).cloned().unwrap_or_default() };
+        // TODO: fix for absent finalized state
+        let finalized_state = self
+            .finalized_optimistic_states
+            .get(&thread_id)
+            .expect("Failed to load finalized state for thread")
+            .clone();
+        saved_states.insert(finalized_state.block_seq_no, finalized_state.block_id.clone());
+        tracing::trace!("try_load_state_from_archive: saved_state: {:?}", saved_states);
         let mut max_less_or_equal_key = None;
         for key in saved_states.keys() {
             if *key > block_seq_no {
@@ -708,62 +739,47 @@ impl RepositoryImpl {
             max_less_or_equal_key = Some(*key);
         }
         if max_less_or_equal_key.is_none()
-            && block_seq_no > MAX_BLOCK_SEQ_NO_THAT_CAN_BE_BUILT_FROM_ZEROSTATE
+            && block_seq_no > BlockSeqNo::from(MAX_BLOCK_SEQ_NO_THAT_CAN_BE_BUILT_FROM_ZEROSTATE)
         {
             anyhow::bail!(
                 "Requested block is too old to be built from saved states and too late to be built from zerostate"
             );
         }
-        let (state_seq_no, state_block_id) = match max_less_or_equal_key {
-            Some(seq_no) => (seq_no, saved_states.get(&seq_no).unwrap().clone()),
-            None => (BlockSeqNoFor::<Self>::default(), BlockIdentifierFor::<Self>::default()),
-        };
-        tracing::trace!(
-            "try_load_state_from_archive use state: {state_seq_no:?} {state_block_id:?}"
-        );
 
         let mut blocks = vec![];
         let mut block_id = block_id.clone();
 
-        loop {
+        let state_id = loop {
             let block = self.get_block_from_repo_or_archive(&block_id)?;
             tracing::trace!(
                 "try_load_state_from_archive: loaded block: {:?} {block_id:?}",
                 block.data().seq_no()
             );
-            if block.data().seq_no() <= state_seq_no {
-                tracing::trace!(
-                    "try_load_state_from_archive: requested block is older than last saved state"
-                );
-                return Ok(None);
-            }
             blocks.push(block.data().clone());
+            if blocks.len() > MAX_BLOCK_CNT_THAT_CAN_BE_LOADED_TO_PREPARE_STATE {
+                anyhow::bail!("Failed to load optimistic state: no appropriate state was found during depth search");
+            }
 
-            if block.data().parent() == state_block_id {
-                break;
+            if saved_states.values().any(|id| id == &block.data().parent()) {
+                break block.data().parent();
             }
             block_id = block.data().parent();
-        }
+        };
         blocks.reverse();
-        let dir_path = self.get_optimistic_state_path();
-        tracing::trace!("try_load_state_from_archive loading start state");
-        let mut state = if state_block_id == BlockIdentifierFor::<Self>::default() {
+
+        let mut state = if state_id == BlockIdentifier::default() {
             tracing::trace!("Load state from zerostate");
             let mut zero_block = <Self as Repository>::OptimisticState::zero();
             if let Some(path) = &self.zerostate_path {
                 let zerostate = ZeroState::load_from_file(path)?;
-                zero_block.shard_state = Some(Arc::new(zerostate.shard_state));
+                zero_block = zerostate.state(&thread_id)?.clone();
             };
             zero_block
+        } else if state_id == finalized_state.block_id {
+            finalized_state
         } else {
-            match self.load::<Vec<u8>>(dir_path, OID::ID(state_block_id.to_string()))? {
-                Some(buffer) => {
-                    <Self as Repository>::OptimisticState::deserialize(&buffer, block_id.clone())?
-                }
-                None => {
-                    anyhow::bail!("Failed to load saved optimistic state");
-                }
-            }
+            self.get_optimistic_state(&state_id)?
+                .ok_or(anyhow::format_err!("Optimistic state must be present"))?
         };
         tracing::trace!("try_load_state_from_archive start applying blocks");
         let mut last_processed_message_index = state.last_processed_external_message_index;
@@ -771,55 +787,51 @@ impl RepositoryImpl {
         let last_block = blocks.last().unwrap().clone();
         let final_block_info = prepare_prev_block_info(&last_block);
         let final_block_id = last_block.identifier();
+        let final_block_seq_no = last_block.seq_no();
         for block in blocks {
             tracing::trace!("try_load_state_from_archive apply block {:?}", block.identifier());
             let state_update = block
-                .block
+                .tvm_block()
                 .read_state_update()
                 .map_err(|e| anyhow::format_err!("Failed to read block state update: {e}"))?;
             state_cell = state_update
                 .apply_for(&state_cell)
                 .map_err(|e| anyhow::format_err!("Failed to apply state update: {e}"))?;
-            last_processed_message_index += block.processed_ext_messages_cnt as u32;
+            last_processed_message_index += block.processed_ext_messages_cnt() as u32;
         }
 
+        // TODO: single thread implementation. fix.
+        let threads_table = ThreadsTable::default();
+
         tracing::trace!("try_load_state_from_archive return state");
-        OptimisticStateImpl::from_shard_state_cell_and_block_info(
-            final_block_id,
-            state_cell,
-            final_block_info,
-            last_processed_message_index,
-        )
-        .map(Some)
+        Ok(Some(
+            OptimisticStateImpl::builder()
+                .block_seq_no(final_block_seq_no)
+                .block_id(final_block_id)
+                .shard_state(state_cell)
+                .last_processed_external_message_index(last_processed_message_index)
+                .threads_table(threads_table)
+                .thread_id(thread_id)
+                .dapp_id_table(HashMap::new())
+                .block_info(final_block_info)
+                .build(),
+        ))
     }
 }
 
 impl Repository for RepositoryImpl {
-    type Attestation = Envelope<GoshBLS, AttestationData<WrappedUInt256, u32>>;
+    type Attestation = Envelope<GoshBLS, AttestationData>;
     type BLS = GoshBLS;
-    type Block = WrappedBlock;
-    type CandidateBlock = Envelope<GoshBLS, WrappedBlock>;
+    type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock<Self::BLS>>;
     type EnvelopeSignerIndex = u16;
     type NodeIdentifier = NodeIdentifier;
     type OptimisticState = OptimisticStateImpl;
     type StateSnapshot = Vec<u8>;
-    type ThreadIdentifier = u64;
-
-    fn saved_optimistic_states(
-        &self,
-    ) -> BTreeMap<<Self::Block as Block>::BlockSeqNo, <Self::Block as Block>::BlockIdentifier> {
-        self.saved_states.lock().clone()
-    }
 
     fn dump_sent_attestations(
         &self,
-        data: HashMap<
-            Self::ThreadIdentifier,
-            Vec<(<Self::Block as Block>::BlockSeqNo, Self::Attestation)>,
-        >,
+        data: HashMap<ThreadIdentifier, Vec<(BlockSeqNo, Self::Attestation)>>,
     ) -> anyhow::Result<()> {
-        let start = std::time::Instant::now();
-        tracing::trace!("saving attestations");
         let path = self.get_attestations_path();
         let path = self.get_path(path, DEFAULT_OID.to_owned());
         let _ =
@@ -828,42 +840,32 @@ impl Repository for RepositoryImpl {
                 let res = save_to_file(&path, &data);
                 tracing::trace!("save attestations result: {res:?}");
             })?;
-        tracing::trace!("store attestations: {}ms", start.elapsed().as_millis());
         Ok(())
     }
 
     fn load_sent_attestations(
         &self,
-    ) -> anyhow::Result<
-        HashMap<
-            Self::ThreadIdentifier,
-            Vec<(<Self::Block as Block>::BlockSeqNo, Self::Attestation)>,
-        >,
-    > {
-        let start = std::time::Instant::now();
-        tracing::trace!("saving attestations");
+    ) -> anyhow::Result<HashMap<ThreadIdentifier, Vec<(BlockSeqNo, Self::Attestation)>>> {
         let path = self.get_attestations_path();
         let path = self.get_path(path, DEFAULT_OID.to_owned());
         let res = load_from_file(&path)?.unwrap_or_default();
-
-        tracing::trace!("load attestations: {}ms", start.elapsed().as_millis());
         Ok(res)
     }
 
     fn get_block(
         &self,
-        identifier: &BlockIdentifierFor<Self>,
+        identifier: &BlockIdentifier,
     ) -> anyhow::Result<Option<Self::CandidateBlock>> {
         self.load_candidate_block(identifier)
     }
 
     fn get_block_from_repo_or_archive(
         &self,
-        block_id: &BlockIdentifierFor<Self>,
+        block_id: &BlockIdentifier,
     ) -> anyhow::Result<<Self as Repository>::CandidateBlock> {
         Ok(if let Some(block) = self.get_block(block_id)? {
             block
-        } else if let Some(block) = self.load_archived_block(&Some(block_id.clone()))? {
+        } else if let Some(block) = self.load_archived_block(&Some(block_id.clone()), None)? {
             block
         } else {
             anyhow::bail!("get_block_from_repo_or_archive: failed to load block: {block_id:?}");
@@ -872,9 +874,10 @@ impl Repository for RepositoryImpl {
 
     fn get_block_from_repo_or_archive_by_seq_no(
         &self,
-        block_seq_no: &BlockSeqNoFor<Self>,
+        block_seq_no: &BlockSeqNo,
+        thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<Vec<<Self as Repository>::CandidateBlock>> {
-        let ids = self.get_block_id_by_seq_no(block_seq_no);
+        let ids = self.get_block_id_by_seq_no(block_seq_no, thread_id)?;
         if !ids.is_empty() {
             let mut res = vec![];
             for id in ids {
@@ -888,9 +891,10 @@ impl Repository for RepositoryImpl {
 
     fn list_blocks_with_seq_no(
         &self,
-        seq_no: &BlockSeqNoFor<Self>,
+        seq_no: &BlockSeqNo,
+        thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<Vec<Self::CandidateBlock>> {
-        let metadata = self.metadata.lock();
+        let metadata = self.get_metadata_for_thread(thread_id)?.lock();
         let mut result = vec![];
         for (block_id, block_seq_no) in metadata.block_id_to_seq_no.iter() {
             if block_seq_no == seq_no {
@@ -899,16 +903,15 @@ impl Repository for RepositoryImpl {
                 }
             }
         }
-        log::info!("list_blocks_with_seq_no: {} -> {} blocks found.", seq_no, result.len());
         Ok(result)
     }
 
     fn select_thread_last_finalized_block(
         &self,
-        _thread_id: &Self::ThreadIdentifier,
-    ) -> anyhow::Result<(BlockIdentifierFor<Self>, BlockSeqNoFor<Self>)> {
-        tracing::trace!("Start select_thread_last_finalized_block");
-        let mut metadata = self.metadata.lock();
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<(BlockIdentifier, BlockSeqNo)> {
+        // TODO: self.finalized_states can be used here
+        let mut metadata = self.get_metadata_for_thread(thread_id)?.lock();
         let mut cursor_id = metadata.last_finalized_block_id.clone();
         let mut cursor_seq_no = metadata.last_finalized_block_seq_no;
         let mut is_cursor_moved = true;
@@ -916,7 +919,7 @@ impl Repository for RepositoryImpl {
 
         while is_cursor_moved {
             is_cursor_moved = false;
-            let next_seq_no = cursor_seq_no.next();
+            let next_seq_no = calc_next_seq_no(cursor_seq_no);
 
             for (block_id, block_seq_no) in metadata.block_id_to_seq_no.iter() {
                 if next_seq_no == *block_seq_no {
@@ -933,28 +936,24 @@ impl Repository for RepositoryImpl {
         if is_metadata_update_needed {
             metadata.last_finalized_block_seq_no = cursor_seq_no;
             metadata.last_finalized_block_id = cursor_id.clone();
-            self.save_metadata(&metadata)?;
+            drop(metadata);
+            self.save_metadata()?;
         }
-        log::info!(
-            "select_thread_last_finalized_block: block_seq_no: {}, id: {}",
-            cursor_seq_no,
-            cursor_id
-        );
         Ok((cursor_id, cursor_seq_no))
     }
 
     fn select_thread_last_main_candidate_block(
         &self,
-        _thread_id: &Self::ThreadIdentifier,
-    ) -> anyhow::Result<(BlockIdentifierFor<Self>, BlockSeqNoFor<Self>)> {
-        let mut metadata = self.metadata.lock();
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<(BlockIdentifier, BlockSeqNo)> {
+        let mut metadata = self.get_metadata_for_thread(thread_id)?.lock();
         let mut cursor_id = metadata.last_main_candidate_block_id.clone();
         let mut cursor_seq_no = metadata.last_main_candidate_block_seq_no;
         let mut is_cursor_moved = true;
         let mut is_metadata_update_needed = false;
         while is_cursor_moved {
             is_cursor_moved = false;
-            let next_seq_no = cursor_seq_no.next();
+            let next_seq_no = calc_next_seq_no(cursor_seq_no);
             for (block_id, block_seq_no) in metadata.block_id_to_seq_no.iter() {
                 if next_seq_no == *block_seq_no {
                     if let Ok(Some(true)) = self.is_block_accepted_as_main_candidate(block_id) {
@@ -970,9 +969,10 @@ impl Repository for RepositoryImpl {
         if is_metadata_update_needed {
             metadata.last_main_candidate_block_seq_no = cursor_seq_no;
             metadata.last_main_candidate_block_id = cursor_id.clone();
-            self.save_metadata(&metadata)?;
+            drop(metadata);
+            self.save_metadata()?;
         }
-        log::info!(
+        tracing::info!(
             "select_thread_last_main_candidate_block: block_seq_no: {}, id: {}",
             cursor_seq_no,
             cursor_id
@@ -982,19 +982,20 @@ impl Repository for RepositoryImpl {
 
     fn mark_block_as_accepted_as_main_candidate(
         &self,
-        block_id: &BlockIdentifierFor<Self>,
+        block_id: &BlockIdentifier,
+        thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<()> {
-        tracing::trace!("mark_block_as_accepted_as_main_candidate {block_id:?}");
         let mut markers = self.load_markers(block_id)?;
         markers.is_main_candidate = Some(true);
         self.save_markers(block_id, &markers)?;
-        let mut metadata = self.metadata.lock();
+        let mut metadata = self.get_metadata_for_thread(thread_id)?.lock();
         if metadata.block_id_to_seq_no.contains_key(block_id) {
             let block_seq_no = metadata.block_id_to_seq_no.get(block_id).unwrap();
             if *block_seq_no > metadata.last_main_candidate_block_seq_no {
                 metadata.last_main_candidate_block_seq_no = *block_seq_no;
                 metadata.last_main_candidate_block_id = block_id.clone();
-                self.save_metadata(&metadata)?;
+                drop(metadata);
+                self.save_metadata()?;
             }
         }
         Ok(())
@@ -1002,72 +1003,76 @@ impl Repository for RepositoryImpl {
 
     fn is_block_accepted_as_main_candidate(
         &self,
-        block_id: &BlockIdentifierFor<Self>,
+        block_id: &BlockIdentifier,
     ) -> anyhow::Result<Option<bool>> {
         let markers = self.load_markers(block_id).unwrap_or_default();
-        tracing::trace!(
-            "is_block_accepted_as_main_candidate {block_id:?} {:?}",
-            markers.is_main_candidate
-        );
         Ok(markers.is_main_candidate)
     }
 
     fn mark_block_as_finalized(
         &mut self,
-        block_id: &BlockIdentifierFor<Self>,
+        block: &<Self as Repository>::CandidateBlock,
     ) -> anyhow::Result<()> {
-        let mut metadata = self.metadata.lock();
-        let block_seq_no = *metadata.block_id_to_seq_no.get(block_id).unwrap();
-        tracing::trace!("mark_block_as_finalized {block_seq_no:?} {block_id:?}");
-        let mut markers = self.load_markers(block_id)?;
+        let block_id = block.data().identifier();
+        let thread_id = block.data().get_common_section().thread_id;
+        let mut metadata = self.get_metadata_for_thread(&thread_id)?.lock();
+        let block_seq_no = *metadata.block_id_to_seq_no.get(&block_id).unwrap();
+        let mut markers = self.load_markers(&block_id)?;
         markers.is_finalized = Some(true);
-        self.save_markers(block_id, &markers)?;
+        self.save_markers(&block_id, &markers)?;
 
         metadata.stored_finalized_blocks.push((block_id.clone(), block_seq_no));
         if block_seq_no > metadata.last_finalized_block_seq_no {
             metadata.last_finalized_block_seq_no = block_seq_no;
             metadata.last_finalized_block_id = block_id.clone();
         }
-        self.save_metadata(&metadata)?;
+        drop(metadata);
+        self.save_metadata()?;
 
-        // // After sync we mark the incoming block as finalized and this check works
-        // if block_id != &self.finalized_optimistic_state.block_id {
-        //     let block = self
-        //         .load_candidate_block(block_id)?
-        //         .expect("Finalized block should present in the repo");
-        //     self.finalized_optimistic_state.apply_block(block.data().clone())?;
-        // }
+        if let Some(state_ref) = self.finalized_optimistic_states.get_mut(&thread_id) {
+            // After sync we mark the incoming block as finalized and this check works
+            if block_id != state_ref.block_id {
+                state_ref.apply_block(block.data())?;
+            }
+        }
         Ok(())
     }
 
-    fn is_block_finalized(
-        &self,
-        block_id: &BlockIdentifierFor<Self>,
-    ) -> anyhow::Result<Option<bool>> {
-        tracing::trace!("is_block_finalized {:?}", block_id);
+    fn is_block_finalized(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>> {
         let markers = self.load_markers(block_id).unwrap_or_default();
-        tracing::trace!("is_block_finalized {:?}: {:?}", block_id, markers.is_finalized);
         Ok(markers.is_finalized)
+    }
+
+    fn get_zero_state_for_thread(
+        &self,
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<Self::OptimisticState> {
+        let mut state = Self::OptimisticState::zero();
+        if let Some(path) = &self.zerostate_path {
+            let zerostate = ZeroState::load_from_file(path)?;
+            state = zerostate.state(thread_id)?.clone();
+        };
+        Ok(state)
     }
 
     fn get_optimistic_state(
         &self,
-        block_id: &BlockIdentifierFor<Self>,
+        block_id: &BlockIdentifier,
     ) -> anyhow::Result<Option<Self::OptimisticState>> {
-        let zero_block_id = <BlockIdentifierFor<Self>>::default();
+        let zero_block_id = <BlockIdentifier>::default();
         if block_id == &zero_block_id {
-            let mut zero_block = Self::OptimisticState::zero();
-            if let Some(path) = &self.zerostate_path {
-                let zerostate = ZeroState::load_from_file(path)?;
-                zero_block.shard_state = Some(Arc::new(zerostate.shard_state));
-            };
-            return Ok(Some(zero_block));
+            return Ok(None);
         }
         log::info!("RepositoryImpl: get_optimistic_state {:?}", block_id);
+        if let Some((_, state)) =
+            self.finalized_optimistic_states.iter().find(|(_, state)| state.block_id == *block_id)
+        {
+            return Ok(Some(state.clone()));
+        }
         let path = self.get_optimistic_state_path();
         let state = match self.load::<Vec<u8>>(path, OID::ID(block_id.to_string()))? {
             Some(buffer) => {
-                let state = Self::OptimisticState::deserialize(&buffer, block_id.clone())?;
+                let state = Self::OptimisticState::deserialize_from_buf(&buffer, block_id.clone())?;
                 Some(state)
             }
             None => self.try_load_state_from_archive(block_id)?,
@@ -1079,13 +1084,19 @@ impl Repository for RepositoryImpl {
         }))
     }
 
-    fn is_optimistic_state_present(&self, block_id: &BlockIdentifierFor<Self>) -> bool {
-        let zero_block_id = <BlockIdentifierFor<Self>>::default();
+    fn is_optimistic_state_present(&self, block_id: &BlockIdentifier) -> bool {
+        let zero_block_id = <BlockIdentifier>::default();
         if block_id == &zero_block_id {
             match &self.zerostate_path {
                 Some(path) => path.exists(),
                 None => false,
             }
+        } else if self
+            .finalized_optimistic_states
+            .iter()
+            .any(|(_, state)| state.block_id == *block_id)
+        {
+            true
         } else {
             let path = self.get_optimistic_state_path();
             self.exists(path, OID::ID(block_id.to_string()))
@@ -1093,13 +1104,14 @@ impl Repository for RepositoryImpl {
     }
 
     fn store_block<T: Into<Self::CandidateBlock>>(&self, block: T) -> anyhow::Result<()> {
-        let mut metadata = self.metadata.lock();
         let candidate_block = block.into();
-        log::info!("RepositoryImpl: store_block {:?}", candidate_block.data().identifier());
+        let thread_id = candidate_block.data().get_common_section().thread_id;
+        let mut metadata = self.get_metadata_for_thread(&thread_id)?.lock();
         metadata
             .block_id_to_seq_no
             .insert(candidate_block.data().identifier(), candidate_block.data().seq_no());
-        self.save_metadata(&metadata)?;
+        drop(metadata);
+        self.save_metadata()?;
 
         let parent_block_id = candidate_block.data().parent();
 
@@ -1107,23 +1119,16 @@ impl Repository for RepositoryImpl {
         let mut candidate_marker = self.load_markers(&candidate_block.data().identifier())?;
         if candidate_marker.last_processed_ext_message == 0 {
             candidate_marker.last_processed_ext_message = parent_marker.last_processed_ext_message
-                + (candidate_block.data().processed_ext_messages_cnt as u32);
+                + (candidate_block.data().processed_ext_messages_cnt() as u32);
             self.save_markers(&candidate_block.data().identifier(), &candidate_marker)?;
         }
-
-        log::info!(
-            "saving block: id: {}, seq_no: {}, signatures: {:?}",
-            candidate_block.data().identifier(),
-            candidate_block.data().seq_no(),
-            candidate_block.clone_signature_occurrences(),
-        );
 
         self.save_candidate_block(candidate_block, candidate_marker)?;
         // Get parent state
         // let parent_block_id = candidate_block.data().parent();
-        // log::info!("RepositoryImpl: store_block: parent {:?}", parent_block_id);
+        // tracing::info!("RepositoryImpl: store_block: parent {:?}", parent_block_id);
         // if let Some(parent_state) = self.get_optimistic_state(&parent_block_id)? {
-        // log::info!("RepositoryImpl: store_block: parent found");
+        // tracing::info!("RepositoryImpl: store_block: parent found");
         // let mut state = parent_state.clone();
         // todo!();
         // Update over the parent
@@ -1137,19 +1142,21 @@ impl Repository for RepositoryImpl {
 
     fn erase_block_and_optimistic_state(
         &self,
-        block_id: &BlockIdentifierFor<Self>,
+        block_id: &BlockIdentifier,
+        thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<()> {
-        tracing::trace!("erase_block_and_optimistic_state: {:?}", block_id);
         if !self.is_block_present_in_archive(block_id).unwrap_or(false) {
             tracing::trace!("Block was not saved to archive, do not erase it");
             return Ok(());
         }
-        let mut metadata = self.metadata.lock();
+        tracing::trace!("erase_block: {:?}", block_id);
+        let mut metadata = self.get_metadata_for_thread(thread_id)?.lock();
         assert_ne!(metadata.last_main_candidate_block_id, *block_id);
         assert_ne!(metadata.last_finalized_block_id, *block_id);
         metadata.block_id_to_seq_no.remove(block_id);
         metadata.stored_finalized_blocks.retain(|e| &e.0 != block_id);
-        self.save_metadata(&metadata)?;
+        drop(metadata);
+        self.save_metadata()?;
 
         self.erase_markers(block_id)?;
 
@@ -1159,14 +1166,19 @@ impl Repository for RepositoryImpl {
         Ok(())
     }
 
-    fn erase_block(&self, block_id: &BlockIdentifierFor<Self>) -> anyhow::Result<()> {
+    fn erase_block(
+        &self,
+        block_id: &BlockIdentifier,
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<()> {
         tracing::trace!("erase_block: {:?}", block_id);
-        let mut metadata = self.metadata.lock();
+        let mut metadata = self.get_metadata_for_thread(thread_id)?.lock();
         assert_ne!(metadata.last_main_candidate_block_id, *block_id);
         assert_ne!(metadata.last_finalized_block_id, *block_id);
         metadata.block_id_to_seq_no.remove(block_id);
         metadata.stored_finalized_blocks.retain(|e| &e.0 != block_id);
-        self.save_metadata(&metadata)?;
+        drop(metadata);
+        self.save_metadata()?;
 
         self.erase_markers(block_id)?;
         self.erase_candidate_block(block_id)?;
@@ -1175,14 +1187,13 @@ impl Repository for RepositoryImpl {
 
     fn list_stored_thread_finalized_blocks(
         &self,
-        _thread_id: &Self::ThreadIdentifier,
-    ) -> anyhow::Result<Vec<(BlockIdentifierFor<Self>, BlockSeqNoFor<Self>)>> {
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<Vec<(BlockIdentifier, BlockSeqNo)>> {
         // Note: This implementation assumes that there is only one thread exists.
-        Ok(self.metadata.lock().stored_finalized_blocks.clone())
+        Ok(self.get_metadata_for_thread(thread_id)?.lock().stored_finalized_blocks.clone())
     }
 
     fn delete_external_messages(&self, count: usize) -> anyhow::Result<()> {
-        tracing::trace!("Removing {count} external message(s) from repo...");
         if count == 0 {
             return Ok(());
         }
@@ -1195,24 +1206,18 @@ impl Repository for RepositoryImpl {
     where
         T: Into<<Self::OptimisticState as OptimisticState>::Message>,
     {
-        tracing::trace!("Add external message to repo");
         let mut queue = self.load_ext_messages_queue()?;
         let cur_last_index = queue.queue.last().map(|el| el.index).unwrap_or(0);
         assert!(self.last_ext_message_index >= cur_last_index);
         for message in messages {
             self.last_ext_message_index += 1;
             let message = message.into();
-            tracing::trace!(
-                "Add external message with index {} to repo",
-                self.last_ext_message_index
-            );
             queue.queue.push(WrappedExtMessage::new(self.last_ext_message_index, message));
         }
         self.save_ext_messages_queue(queue)
     }
 
     fn clear_ext_messages_queue_by_time(&self) -> anyhow::Result<()> {
-        tracing::trace!("Removing old message(s) from repo...");
         let mut queue = self.load_ext_messages_queue()?;
         let mut i = 0;
         let now = Utc::now();
@@ -1223,7 +1228,6 @@ impl Repository for RepositoryImpl {
             i += 1;
         }
         if i != 0 {
-            tracing::trace!("Removed {i} old message(s) from repo...");
             queue.queue.drain(0..i);
             self.save_ext_messages_queue(queue)?;
         }
@@ -1232,18 +1236,17 @@ impl Repository for RepositoryImpl {
 
     fn clear_verification_markers(
         &self,
-        excluded_starting_seq_no: &BlockSeqNoFor<Self>,
+        excluded_starting_seq_no: &BlockSeqNo,
+        thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<()> {
-        tracing::trace!("clear_verification_markers after {excluded_starting_seq_no:?}");
-        let metadata = self.metadata.lock();
+        let metadata = self.get_metadata_for_thread(thread_id)?.lock();
         let mut cursor_seq_no = *excluded_starting_seq_no;
         let mut is_cursor_moved = true;
         while is_cursor_moved {
             is_cursor_moved = false;
-            cursor_seq_no = cursor_seq_no.next();
+            cursor_seq_no = calc_next_seq_no(cursor_seq_no);
             for (block_id, block_seq_no) in metadata.block_id_to_seq_no.iter() {
                 if cursor_seq_no == *block_seq_no {
-                    tracing::trace!("clear_verification_markers {cursor_seq_no:?} {block_id:?}");
                     let mut markers = self.load_markers(block_id)?;
                     if !markers.is_verified {
                         break;
@@ -1260,25 +1263,25 @@ impl Repository for RepositoryImpl {
         Ok(())
     }
 
-    fn mark_block_as_verified(&self, block_id: &BlockIdentifierFor<Self>) -> anyhow::Result<()> {
+    fn mark_block_as_verified(&self, block_id: &BlockIdentifier) -> anyhow::Result<()> {
         let mut markers = self.load_markers(block_id)?;
         markers.is_verified = true;
         self.save_markers(block_id, &markers)
     }
 
-    fn is_block_verified(&self, block_id: &BlockIdentifierFor<Self>) -> anyhow::Result<bool> {
+    fn is_block_verified(&self, block_id: &BlockIdentifier) -> anyhow::Result<bool> {
         let markers = self.load_markers(block_id).unwrap_or_default();
         Ok(markers.is_verified)
     }
 
     fn take_state_snapshot(
         &self,
-        block_id: &BlockIdentifierFor<Self>,
-        block_producer_groups: HashMap<Self::ThreadIdentifier, Vec<Self::NodeIdentifier>>,
-        block_keeper_set: BlockKeeperSet,
+        block_id: &BlockIdentifier,
+        block_producer_groups: HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
+        block_keeper_set: HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>,
     ) -> anyhow::Result<Self::StateSnapshot> {
         let state = match self.get_optimistic_state(block_id)? {
-            Some(state) => state.serialize()?,
+            Some(mut state) => OptimisticState::serialize_into_buf(&mut state)?,
             None => {
                 tracing::trace!("State missing: {block_id:?}");
                 anyhow::bail!("State missing: {block_id:?}");
@@ -1295,8 +1298,8 @@ impl Repository for RepositoryImpl {
     fn convert_state_data_to_snapshot(
         &self,
         serialized_state: Vec<u8>,
-        block_producer_groups: HashMap<Self::ThreadIdentifier, Vec<Self::NodeIdentifier>>,
-        block_keeper_set: BlockKeeperSet,
+        block_producer_groups: HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
+        block_keeper_set: HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>,
     ) -> anyhow::Result<Self::StateSnapshot> {
         bincode::serialize(&WrappedStateSnapshot {
             optimistic_state: serialized_state,
@@ -1308,33 +1311,87 @@ impl Repository for RepositoryImpl {
 
     fn set_state_from_snapshot(
         &mut self,
-        block_id: &BlockIdentifierFor<Self>,
+        block_id: &BlockIdentifier,
         snapshot: Self::StateSnapshot,
-    ) -> anyhow::Result<(HashMap<Self::ThreadIdentifier, Vec<Self::NodeIdentifier>>, BlockKeeperSet)>
-    {
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<(
+        HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
+        HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>,
+    )> {
         tracing::debug!("set_state_from_snapshot()...");
         let wrapper_snapshot: WrappedStateSnapshot = bincode::deserialize(&snapshot)?;
         tracing::trace!("Set state from snapshot: {block_id:?}");
-        let state = <Self as Repository>::OptimisticState::deserialize(
+        let mut state = <Self as Repository>::OptimisticState::deserialize_from_buf(
             &wrapper_snapshot.optimistic_state,
             block_id.clone(),
         )?;
         self.store_optimistic(state.clone())?;
-        let seq_no = state
-            .get_block_info()
-            .prev1()
-            .map_err(|e| anyhow::format_err!("Failed to read block info: {e}"))?
-            .seq_no;
-        self.finalized_optimistic_state = state;
-        let mut saved_states = self.saved_states.lock();
+        let seq_no = BlockSeqNo::from(
+            state
+                .get_block_info()
+                .prev1()
+                .map_err(|e| anyhow::format_err!("Failed to read block info: {e}"))?
+                .seq_no,
+        );
+        if let Some(finalized_seq_no) =
+            self.finalized_optimistic_states.get(thread_id).map(|state| state.block_seq_no)
+        {
+            if seq_no > finalized_seq_no {
+                let shard_state = state.get_shard_state();
+                self.finalized_optimistic_states.insert(*thread_id, state);
+                self.sync_accounts_from_state(shard_state)?;
+            }
+        } else {
+            self.finalized_optimistic_states.insert(*thread_id, state);
+        }
+        let mut all_states = self.saved_states.lock();
+        let saved_states = all_states.entry(*thread_id).or_default();
         saved_states.insert(seq_no, block_id.clone());
 
         Ok((wrapper_snapshot.producer_group, wrapper_snapshot.block_keeper_set))
     }
 
+    fn sync_accounts_from_state(
+        &mut self,
+        shard_state: Arc<ShardStateUnsplit>,
+    ) -> anyhow::Result<()> {
+        tracing::debug!("syncing accounts from state...");
+        let mut arch_accounts: Vec<ArchAccount> = vec![];
+        let accounts = shard_state.read_accounts().map_err(|e| anyhow::format_err!("{e}"))?;
+        accounts
+            .iterate_with_keys(|_k, v| {
+                let last_trans_hash = v.last_trans_hash().clone();
+                let account = v.read_account().unwrap();
+                match prepare_account_archive_struct(account.clone(), None, None, last_trans_hash) {
+                    Ok(acc) => arch_accounts.push(acc),
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to parse account from state: {e}\naccount: {account}"
+                        );
+                    }
+                }
+
+                Ok(true)
+            })
+            .map_err(|e| anyhow::format_err!("{e}"))?;
+
+        let sqlite_helper_config = json!({ "data_dir": self.data_dir }).to_string();
+        let sqlite_helper: Arc<dyn DocumentsDb> =
+            Arc::new(SqliteHelper::from_config(&sqlite_helper_config)?);
+
+        let cnt_accounts = arch_accounts.len();
+        sqlite_helper.put_accounts(arch_accounts).map_err(|e| anyhow::format_err!("{e}"))?;
+        tracing::debug!(
+            "syncing accounts from state: {} accounts have been sent to sqlite helper",
+            cnt_accounts
+        );
+
+        Ok(())
+    }
+
     fn save_account_diffs(
         &self,
-        block_id: WrappedUInt256,
+        block_id: BlockIdentifier,
         accounts: HashMap<String, SerializedItem>,
     ) -> anyhow::Result<()> {
         // TODO split according to the sqlite limits
@@ -1342,159 +1399,209 @@ impl Repository for RepositoryImpl {
         Ok(())
     }
 
-    fn dump_verification_data<
-        TBlock: Into<Self::CandidateBlock>,
-        TState: Into<Self::OptimisticState>,
-    >(
+    fn last_stored_block_by_seq_no(
         &self,
-        prev_block: TBlock,
-        prev_state: TState,
-        cur_block: TBlock,
-        failed_block: TBlock,
-        failed_state: TState,
-        incoming_state: TState,
-    ) -> anyhow::Result<()> {
-        let prev_block = prev_block.into();
-        let prev_state = prev_state.into();
-        let cur_block = cur_block.into();
-        let failed_block = failed_block.into();
-        let failed_state = failed_state.into();
-        let incoming_state = incoming_state.into();
-
-        let failed_block_id = cur_block.data().identifier().to_string();
-
-        log::info!("RepositoryImpl: Saving verify failure dump: {}", failed_block_id);
-
-        log::info!("RepositoryImpl: store_block {:?}", prev_block.data().identifier());
-        let path = self
-            .data_dir
-            .join(FAILED_BLOCK_DIR)
-            .join(&failed_block_id)
-            .join("candidate-blocks")
-            .join(prev_block.data().identifier().to_string());
-        save_to_file(&path, &prev_block)?;
-
-        log::info!("RepositoryImpl: store_block {:?}", cur_block.data().identifier());
-        let path = self
-            .data_dir
-            .join(FAILED_BLOCK_DIR)
-            .join(&failed_block_id)
-            .join("candidate-blocks")
-            .join(cur_block.data().identifier().to_string());
-        save_to_file(&path, &cur_block)?;
-
-        log::info!("RepositoryImpl: store_block verify_{:?}", failed_block.data().identifier());
-        let path = self
-            .data_dir
-            .join(FAILED_BLOCK_DIR)
-            .join(&failed_block_id)
-            .join("candidate-blocks")
-            .join(format!("verify_{}", failed_block.data().identifier()));
-        save_to_file(&path, &failed_block)?;
-
-        log::info!("RepositoryImpl: store_state {:?}", prev_state.block_id);
-        let path = self
-            .data_dir
-            .join(FAILED_BLOCK_DIR)
-            .join(&failed_block_id)
-            .join("optimistic-state")
-            .join(prev_state.block_id.to_string());
-        let state_bytes = prev_state.serialize()?;
-        save_to_file(&path, &state_bytes)?;
-
-        log::info!("RepositoryImpl: store_state {:?}", incoming_state.block_id);
-        let path = self
-            .data_dir
-            .join(FAILED_BLOCK_DIR)
-            .join(&failed_block_id)
-            .join("optimistic-state")
-            .join(incoming_state.block_id.to_string());
-        let state_bytes = incoming_state.serialize()?;
-        save_to_file(&path, &state_bytes)?;
-
-        log::info!("RepositoryImpl: store_state {:?}", failed_state.block_id);
-        let path = self
-            .data_dir
-            .join(FAILED_BLOCK_DIR)
-            .join(&failed_block_id)
-            .join("optimistic-state")
-            .join(format!("verify_{}", failed_state.block_id));
-        let state_bytes = failed_state.serialize()?;
-        save_to_file(&path, &state_bytes)?;
-
-        Ok(())
-    }
-
-    fn last_stored_block_by_seq_no(&self) -> anyhow::Result<BlockSeqNoFor<Self>> {
-        let metadata = self.metadata.lock();
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<BlockSeqNo> {
+        let metadata = self.get_metadata_for_thread(thread_id)?.lock();
         let mut saved_seq_nos = metadata.block_id_to_seq_no.values().collect::<Vec<_>>();
         saved_seq_nos.sort();
         Ok(saved_seq_nos.last().map(|v| **v).unwrap_or_default())
     }
 
     fn store_optimistic<T: Into<Self::OptimisticState>>(&mut self, state: T) -> anyhow::Result<()> {
-        let start = std::time::Instant::now();
-        let optimistic = state.into();
+        let mut optimistic = state.into();
         let block_id = optimistic.get_block_id().clone();
         tracing::trace!("save optimistic {block_id:?}");
-        self.clear_optimistic_states()?;
-        let block_seq_no = optimistic
-            .get_block_info()
-            .prev1()
-            .map_err(|e| anyhow::format_err!("Failed to read block info: {e}"))?
-            .seq_no;
-        {
-            let mut saved_states = self.saved_states.lock();
-            saved_states.insert(block_seq_no, block_id.clone());
-            tracing::trace!("repo saved_states={:?}", saved_states);
-        }
+        self.clear_optimistic_states(&optimistic.thread_id)?;
+        let block_seq_no = BlockSeqNo::from(
+            optimistic
+                .get_block_info()
+                .prev1()
+                .map_err(|e| anyhow::format_err!("Failed to read block info: {e}"))?
+                .seq_no,
+        );
         let root_path = self.get_optimistic_state_path();
         let path = self.get_path(root_path, block_id.to_string());
+        let saved_states_clone = self.saved_states.clone();
         let _ = thread::Builder::new().name("saving optimistic state".to_string()).spawn(
             move || {
                 let start_save = std::time::Instant::now();
-                let state_bytes = optimistic.serialize().expect("Failed to serialize block");
-                tracing::trace!(
-                    "serialize state {block_id:?}: {}ms",
-                    start_save.elapsed().as_millis()
-                );
+                let thread_id = optimistic.thread_id;
+                let state_bytes = OptimisticState::serialize_into_buf(&mut optimistic)
+                    .expect("Failed to serialize block");
                 let res = save_to_file(&path, &state_bytes);
                 tracing::trace!(
                     "save optimistic {block_id:?} result: {res:?} {}",
                     start_save.elapsed().as_millis()
                 );
+                {
+                    let mut saved_states = saved_states_clone.lock();
+                    saved_states
+                        .entry(thread_id)
+                        .or_default()
+                        .insert(block_seq_no, block_id.clone());
+                    tracing::trace!("repo saved_states={:?}", saved_states);
+                }
             },
         )?;
-        tracing::trace!("store optimistic time: {}ms", start.elapsed().as_millis());
         Ok(())
     }
 
     fn get_block_id_by_seq_no(
         &self,
-        block_seq_no: &BlockSeqNoFor<Self>,
-    ) -> Vec<BlockIdentifierFor<Self>> {
-        self.metadata
+        block_seq_no: &BlockSeqNo,
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<Vec<BlockIdentifier>> {
+        Ok(self
+            .get_metadata_for_thread(thread_id)?
             .lock()
             .block_id_to_seq_no
             .iter()
             .filter(|(_id, seq_no)| *seq_no == block_seq_no)
             .map(|(id, _seq_no)| id.to_owned())
-            .collect()
+            .collect())
     }
 
     fn get_latest_block_id_with_producer_group_change(
         &self,
-        _thread_id: &Self::ThreadIdentifier,
-    ) -> anyhow::Result<BlockIdentifierFor<Self>> {
-        Ok(BlockIdentifierFor::<Self>::default())
+        _thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<BlockIdentifier> {
+        Ok(BlockIdentifier::default())
     }
 
-    fn get_finalized_state(&self) -> Self::OptimisticState {
-        self.finalized_optimistic_state.clone()
+    fn is_candidate_block_can_be_applied(&self, block: &Self::CandidateBlock) -> bool {
+        let mut parent_block_id = block.data().parent();
+        let thread_id = block.data().get_common_section().thread_id;
+        if let Some(finalized_block_seq_no) =
+            self.finalized_optimistic_states.get(&thread_id).map(|state| state.block_seq_no)
+        {
+            while block.data().seq_no() > finalized_block_seq_no {
+                if self.is_optimistic_state_present(&parent_block_id) {
+                    return true;
+                }
+                if let Ok(parent_block) = self.get_block_from_repo_or_archive(&parent_block_id) {
+                    parent_block_id = parent_block.data().parent();
+                } else {
+                    break;
+                }
+            }
+        }
+        false
     }
 
-    fn get_finalized_state_as_mut(&mut self) -> &mut Self::OptimisticState {
-        tracing::trace!("get_finalized_state_as_mut");
-        &mut self.finalized_optimistic_state
+    fn list_finalized_states(
+        &self,
+    ) -> impl Iterator<Item = (&'_ ThreadIdentifier, &'_ Self::OptimisticState)> {
+        self.finalized_optimistic_states.iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::sync::Once;
+
+    use super::RepositoryImpl;
+    use super::OID;
+
+    const ZEROSTATE: &str = "../config/zerostate";
+    const DB_PATH: &str = "./tests-data";
+    static START: Once = Once::new();
+
+    fn init_db(db_path: &str) -> anyhow::Result<()> {
+        let _ = std::fs::remove_dir_all(db_path);
+        let _ = std::fs::create_dir_all(db_path);
+
+        Command::new("../target/debug/migration-tool")
+            .arg("-p")
+            .arg(db_path)
+            .arg("-n")
+            .arg("-a")
+            .status()?;
+        Ok(())
+    }
+
+    fn init_tests() {
+        init_db(DB_PATH).expect("Failed to init DB");
+        init_db(&format!("{DB_PATH}/test_save_load")).expect("Failed to init DB");
+        init_db(&format!("{DB_PATH}/test_exists")).expect("Failed to init DB");
+        init_db(&format!("{DB_PATH}/test_remove")).expect("Failed to init DB");
+        init_db(&format!("{DB_PATH}/test_save_duplication")).expect("Failed to init DB");
+    }
+
+    #[test]
+    #[ignore]
+    fn test_save_load() -> anyhow::Result<()> {
+        START.call_once(init_tests);
+
+        let repository = RepositoryImpl::new(
+            PathBuf::from("./tests-data/test_save_load"),
+            Some(PathBuf::from(ZEROSTATE)),
+            1,
+        );
+
+        let path = "block_status";
+        let oid = OID::ID(String::from("100"));
+        let expected_data: Vec<u8> = vec![0xde, 0xad, 0xbe, 0xef];
+        repository.save(path, oid.clone(), &expected_data)?;
+
+        let data = repository.load::<Vec<u8>>(path, oid.clone())?;
+        assert_eq!(data, Some(expected_data));
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_clear_big_state() -> anyhow::Result<()> {
+        let _repository = RepositoryImpl::new(
+            PathBuf::from("/home/user/GOSH/acki-nacki/server_data/node1/"),
+            Some(PathBuf::from(ZEROSTATE)),
+            1,
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_exists() -> anyhow::Result<()> {
+        START.call_once(init_tests);
+
+        let repository = RepositoryImpl::new(
+            PathBuf::from("./tests-data/test_exists"),
+            Some(PathBuf::from(ZEROSTATE)),
+            1,
+        );
+
+        let path = "metadata";
+        let oid = OID::SingleRow;
+        let expected_data: Vec<u8> = vec![0xde, 0xad, 0xbe, 0xef];
+        repository.save(path, oid.clone(), &expected_data)?;
+
+        assert!(repository.exists(path, oid));
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_remove() -> anyhow::Result<()> {
+        START.call_once(init_tests);
+
+        let repository = RepositoryImpl::new(
+            PathBuf::from("./tests-data/test_remove"),
+            Some(PathBuf::from(ZEROSTATE)),
+            1,
+        );
+
+        let path = "optimistic_state";
+        let oid = OID::ID(String::from("200"));
+        let data: Vec<u8> = vec![0xde, 0xad, 0xbe, 0xef];
+        repository.save(path, oid.clone(), &data)?;
+        assert!(repository.exists(path, oid.clone()));
+
+        repository.remove(path, oid.clone())?;
+        assert!(!repository.exists(path, oid.clone()));
+        Ok(())
     }
 }

@@ -27,24 +27,6 @@
 			]
 		},
 		{
-			"name": "getBLSPrivateKey",
-			"inputs": [
-				{"name":"key","type":"bytes"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "sendRequestToSlashBlockKeeper",
-			"inputs": [
-				{"name":"slashpubkey","type":"uint256"},
-				{"name":"slashseqNoStart","type":"uint64"},
-				{"name":"numberOfActiveBlockKeepers","type":"uint128"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "continueStake",
 			"inputs": [
 				{"name":"epochDuration","type":"uint32"},
@@ -138,12 +120,11 @@
 		{"init":true,"name":"_seqNoStart","type":"uint64"},
 		{"init":false,"name":"_unixtimeFinish","type":"uint32"},
 		{"init":false,"name":"_bls_pubkey","type":"bytes"},
-		{"init":false,"name":"_slashMember","type":"map(uint256,bool)"},
-		{"init":false,"name":"_slashed","type":"uint128"},
 		{"init":false,"name":"_isContinue","type":"bool"},
 		{"init":false,"name":"_waitStep","type":"uint64"},
 		{"init":false,"name":"_stake","type":"uint256"},
 		{"init":false,"name":"_totalStake","type":"uint256"},
+		{"init":false,"name":"_owner_address","type":"address"},
 		{"init":false,"name":"_epochDurationContinue","type":"uint32"},
 		{"init":false,"name":"_waitStepContinue","type":"uint64"},
 		{"init":false,"name":"_bls_pubkeyContinue","type":"bytes"},

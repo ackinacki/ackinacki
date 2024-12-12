@@ -37,7 +37,10 @@ pub struct PubKey(#[serde_as(as = "Bytes")] [u8; gosh_bls_lib::bls::BLS_PUBLIC_K
 
 impl Debug for PubKey {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
+        let hexed_key = hex::encode(self.0);
+        let (prefix, data) = hexed_key.split_at(4);
+        let (_, postfix) = data.split_at(88);
+        write!(f, "{}...{}", prefix, postfix)
     }
 }
 
@@ -129,7 +132,7 @@ impl BLSSignatureScheme for GoshBLS {
         gosh_bls_lib::bls::sign(&secret.0, &buffer)
             .map(|e| -> Self::Signature { Signature(e) })
             .map_err(|e| -> anyhow::Error {
-                log::error!("{}", e);
+                tracing::error!("{}", e);
                 anyhow::anyhow!("Bls signatures inner signing process has failed")
             })
     }
@@ -139,7 +142,9 @@ impl BLSSignatureScheme for GoshBLS {
         pubkeys_occurrences: &mut dyn Iterator<Item = &(Self::PubKey, usize)>,
         data: &TData,
     ) -> anyhow::Result<bool> {
+        #[cfg(feature = "timing")]
         let start = std::time::Instant::now();
+        #[cfg(feature = "timing")]
         tracing::trace!("signature verification: start");
         let mut flattened_pubkeys: Vec<&[u8; gosh_bls_lib::bls::BLS_PUBLIC_KEY_LEN]> = vec![];
         for (pubkey, occurrences) in pubkeys_occurrences {
@@ -147,21 +152,25 @@ impl BLSSignatureScheme for GoshBLS {
                 flattened_pubkeys.push(&pubkey.0);
             }
         }
+        #[cfg(feature = "timing")]
         tracing::trace!("signature verification: flatten pubkeys: {}", start.elapsed().as_millis());
         let aggregated_public_key = gosh_bls_lib::bls::aggregate_public_keys(&flattened_pubkeys)
             .map_err(|e| -> anyhow::Error {
                 anyhow::anyhow!("Pubkey aggregation failed: {}", e)
             })?;
+        #[cfg(feature = "timing")]
         tracing::trace!(
             "signature verification: aggregate pubkeys: {}",
             start.elapsed().as_millis()
         );
         let buffer = bincode::serialize(&data)?;
+        #[cfg(feature = "timing")]
         tracing::trace!("signature verification: serialize data: {}", start.elapsed().as_millis());
         let is_valid = gosh_bls_lib::bls::verify(&signature.0, &buffer, &aggregated_public_key)
             .map_err(|_e| -> anyhow::Error {
                 anyhow::anyhow!("Bls signatures inner verification process has failed")
             })?;
+        #[cfg(feature = "timing")]
         tracing::trace!("signature verification: finish: {}", start.elapsed().as_millis());
         Ok(is_valid)
     }

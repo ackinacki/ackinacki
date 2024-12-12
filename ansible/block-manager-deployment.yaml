@@ -1,0 +1,25 @@
+---
+- name: "Ensures block manager directories"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: u=rwx,g=rwx,o=rwx
+  with_items:
+    - "{{ BM_DIR }}"
+    - "{{ BM_LOGS_DIR }}"
+
+- name: Production compose
+  ansible.builtin.template:
+    src: templates/block-manager/compose.j2
+    dest: "{{ BM_DIR }}/compose.yaml"
+    mode: "0644"
+
+- name: Compose pull
+  ansible.builtin.shell:
+    chdir: "{{ BM_DIR }}"
+    cmd: docker compose pull
+
+- name: Compose UP
+  ansible.builtin.shell:
+    chdir: "{{ BM_DIR }}"
+    cmd: docker compose up -d

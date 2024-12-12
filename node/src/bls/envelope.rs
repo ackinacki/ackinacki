@@ -96,10 +96,6 @@ where
         &self,
         signers: &HashMap<Self::SignerIndex, BLS::PubKey>,
     ) -> anyhow::Result<bool> {
-        tracing::trace!(
-            "Verify signature: signers:{signers:?}, envelope_keys:{:?}",
-            self.signature_occurrences
-        );
         let mut pubkeys_occurrences = Vec::<(BLS::PubKey, usize)>::new();
         for signer_index in self.signature_occurrences.keys() {
             let count = *self.signature_occurrences.get(signer_index).unwrap() as usize;
@@ -108,8 +104,13 @@ where
             }
             match signers.get(signer_index) {
                 None => {
-                    // log::unknown_signer_index
+                    // tracing::unknown_signer_index
                     tracing::trace!("Wrong signer index: {:?}", signer_index);
+                    tracing::trace!(
+                        "Verify signature: signers:{:?}, envelope_keys:{:?}",
+                        signers.keys(),
+                        self.signature_occurrences.keys(),
+                    );
                     return Ok(false);
                 }
                 Some(pubkey) => {
@@ -117,8 +118,19 @@ where
                 }
             }
         }
-        tracing::trace!("Verify signature: {:?}", pubkeys_occurrences);
-        BLS::verify(&self.aggregated_signature, &mut pubkeys_occurrences.iter(), &self.data)
+
+        let is_valid =
+            BLS::verify(&self.aggregated_signature, &mut pubkeys_occurrences.iter(), &self.data)?;
+        if !is_valid {
+            tracing::trace!("Signature verification failed");
+            tracing::trace!(
+                "Verify signature: signers:{:?}, envelope_keys:{:?}",
+                signers.keys(),
+                self.signature_occurrences.keys(),
+            );
+            tracing::trace!("Verify signature: {:?}", pubkeys_occurrences);
+        }
+        Ok(is_valid)
     }
 
     fn aggregated_signature(&self) -> &BLS::Signature {
@@ -155,7 +167,7 @@ where
     TData: Serialize + for<'b> Deserialize<'b> + Debug + Clone + Send + Sync + 'static,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Envelope")
+        f.debug_struct("")
             .field("data", &self.data)
             .field("signature_occurrences", &self.signature_occurrences)
             .finish()

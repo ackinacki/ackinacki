@@ -1,0 +1,6 @@
+/target
+/node/node-*
+*logs*
+venv
+Cargo.lock
+**/Cargo.lock

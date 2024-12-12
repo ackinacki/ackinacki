@@ -10,46 +10,24 @@ use serde::Serialize;
 use serde::Serializer;
 
 use crate::bls;
+use crate::bls::BLSSignatureScheme;
 use crate::node::NetworkMessage;
-
+use crate::types::AckiNackiBlock;
 // There is a strum cargo package exists that does similar thing
 // However their implementation and use makes code less readable.
 // Skipping that package with a direct implementation.
 
 const TYPE: &str = "NetworkMessage";
 
-impl<
-        BLS,
-        TBlock,
-        TAck,
-        TNack,
-        TAttestation,
-        TExternalMessage,
-        TBlockIdentifier,
-        TBlockSeqNo,
-        TNodeIdentifier,
-    > Serialize
-    for NetworkMessage<
-        BLS,
-        TBlock,
-        TAck,
-        TNack,
-        TAttestation,
-        TExternalMessage,
-        TBlockIdentifier,
-        TBlockSeqNo,
-        TNodeIdentifier,
-    >
+impl<BLS, TAck, TNack, TAttestation, TExternalMessage, TNodeIdentifier> Serialize
+    for NetworkMessage<BLS, TAck, TNack, TAttestation, TExternalMessage, TNodeIdentifier>
 where
     BLS: bls::BLSSignatureScheme,
     BLS::Signature: Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
-    TBlock: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TAck: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TNack: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TAttestation: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TExternalMessage: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TBlockIdentifier: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TBlockSeqNo: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TNodeIdentifier: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -75,39 +53,15 @@ where
     }
 }
 
-impl<
-        'de,
-        BLS,
-        TBlock,
-        TAck,
-        TNack,
-        TAttestation,
-        TExternalMessage,
-        TBlockIdentifier,
-        TBlockSeqNo,
-        TNodeIdentifier,
-    > Deserialize<'de>
-    for NetworkMessage<
-        BLS,
-        TBlock,
-        TAck,
-        TNack,
-        TAttestation,
-        TExternalMessage,
-        TBlockIdentifier,
-        TBlockSeqNo,
-        TNodeIdentifier,
-    >
+impl<'de, BLS, TAck, TNack, TAttestation, TExternalMessage, TNodeIdentifier> Deserialize<'de>
+    for NetworkMessage<BLS, TAck, TNack, TAttestation, TExternalMessage, TNodeIdentifier>
 where
     BLS: bls::BLSSignatureScheme,
     BLS::Signature: Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
-    TBlock: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TAck: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TNack: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TAttestation: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TExternalMessage: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TBlockIdentifier: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TBlockSeqNo: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TNodeIdentifier: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -129,13 +83,10 @@ where
             ],
             NetworkMessageVisitor::<
                 BLS,
-                TBlock,
                 TAck,
                 TNack,
                 TAttestation,
                 TExternalMessage,
-                TBlockIdentifier,
-                TBlockSeqNo,
                 TNodeIdentifier,
             >::new(),
         )
@@ -143,49 +94,24 @@ where
 }
 
 struct NetworkMessageVisitor<
-    BLS,
-    TBlock,
+    BLS: BLSSignatureScheme,
     TAck,
     TNack,
     TAttestation,
     TExternalMessage,
-    TBlockIdentifier,
-    TBlockSeqNo,
     TNodeIdentifier,
 > {
     _phantom_data_bls: PhantomData<BLS>,
-    _phantom_data_tblock: PhantomData<TBlock>,
+    _phantom_data_tblock: PhantomData<AckiNackiBlock<BLS>>,
     _phantom_data_tack: PhantomData<TAck>,
     _phantom_data_tnack: PhantomData<TNack>,
     _phantom_data_tattestation: PhantomData<TAttestation>,
     _phantom_data_texternalmessage: PhantomData<TExternalMessage>,
-    _phantom_data_tblockidentifier: PhantomData<TBlockIdentifier>,
-    _phantom_data_tblockseqno: PhantomData<TBlockSeqNo>,
     _phantom_data_tnodeidentifier: PhantomData<TNodeIdentifier>,
 }
 
-impl<
-        BLS,
-        TBlock,
-        TAck,
-        TNack,
-        TAttestation,
-        TExternalMessage,
-        TBlockIdentifier,
-        TBlockSeqNo,
-        TNodeIdentifier,
-    >
-    NetworkMessageVisitor<
-        BLS,
-        TBlock,
-        TAck,
-        TNack,
-        TAttestation,
-        TExternalMessage,
-        TBlockIdentifier,
-        TBlockSeqNo,
-        TNodeIdentifier,
-    >
+impl<BLS: BLSSignatureScheme, TAck, TNack, TAttestation, TExternalMessage, TNodeIdentifier>
+    NetworkMessageVisitor<BLS, TAck, TNack, TAttestation, TExternalMessage, TNodeIdentifier>
 {
     pub fn new() -> Self {
         Self {
@@ -195,59 +121,23 @@ impl<
             _phantom_data_tnack: PhantomData,
             _phantom_data_tattestation: PhantomData,
             _phantom_data_texternalmessage: PhantomData,
-            _phantom_data_tblockidentifier: PhantomData,
-            _phantom_data_tblockseqno: PhantomData,
             _phantom_data_tnodeidentifier: PhantomData,
         }
     }
 }
 
-impl<
-        'de,
-        BLS,
-        TBlock,
-        TAck,
-        TNack,
-        TAttestation,
-        TExternalMessage,
-        TBlockIdentifier,
-        TBlockSeqNo,
-        TNodeIdentifier,
-    > de::Visitor<'de>
-    for NetworkMessageVisitor<
-        BLS,
-        TBlock,
-        TAck,
-        TNack,
-        TAttestation,
-        TExternalMessage,
-        TBlockIdentifier,
-        TBlockSeqNo,
-        TNodeIdentifier,
-    >
+impl<'de, BLS, TAck, TNack, TAttestation, TExternalMessage, TNodeIdentifier> de::Visitor<'de>
+    for NetworkMessageVisitor<BLS, TAck, TNack, TAttestation, TExternalMessage, TNodeIdentifier>
 where
     BLS: bls::BLSSignatureScheme,
     BLS::Signature: Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
-    TBlock: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TAck: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TNack: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TAttestation: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TExternalMessage: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TBlockIdentifier: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TBlockSeqNo: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TNodeIdentifier: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
 {
-    type Value = NetworkMessage<
-        BLS,
-        TBlock,
-        TAck,
-        TNack,
-        TAttestation,
-        TExternalMessage,
-        TBlockIdentifier,
-        TBlockSeqNo,
-        TNodeIdentifier,
-    >;
+    type Value = NetworkMessage<BLS, TAck, TNack, TAttestation, TExternalMessage, TNodeIdentifier>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str("a NetworkMessage type.")

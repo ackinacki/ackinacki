@@ -1,21 +1,12 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
-//
-
-pragma ever-solidity >=0.66.0;
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * GOSH contracts
+ *
+ * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
+ */
+pragma gosh-solidity >=0.76.1;
 
 import "../DappConfig.sol";
-
-function exchange(uint64 stake) assembly pure {
-    ".blob xC727"
-}
-
-function mint(uint64 stake, uint32 key) assembly pure {
-    ".blob xC726"
-}
-
-function mintshell(uint64 value) assembly pure {
-    ".blob xC728"
-}
 
 library DappLib {
     string constant versionLib = "1.0.0";

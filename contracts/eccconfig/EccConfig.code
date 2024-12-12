@@ -139,7 +139,7 @@
 	SETGLOB 14
 	.loc EccConfig.sol, 23
 	PUSHINT 100000000000000
-	.blob xC728
+	MINTSHELL
 	.loc EccConfig.sol, 0
 	CALLREF {
 		.inline c7_to_c4
@@ -205,12 +205,17 @@
 	IFRET
 	.loc EccConfig.sol, 28
 	PUSHINT 100000000000000
-	.blob xC728
+	MINTSHELL
 	.loc EccConfig.sol, 0
 }
 
 .fragment setNewToken_da5d7570_internal, {
-	.loc modifiers/modifiers.sol, 49
+	.loc EccConfig.sol, 31
+	DEPTH
+	ADDCONST -5
+	PICK
+	THROWIF 72
+	.loc modifiers/modifiers.sol, 37
 	GETGLOB 9
 	GETGLOB 14
 	SDEQ
@@ -273,7 +278,7 @@
 	INDEX 3
 	PUSH S2
 	FIRST
-	.blob xC726
+	MINTECC
 	.loc EccConfig.sol, 39
 	DUP
 	ISNULL
@@ -580,7 +585,7 @@
 		.code-dict-cell 32, {
 		}
 		.cell { ; version
-			.blob x736f6c20302e37352e30 ; sol 0.75.0
+			.blob x736f6c20302e37362e31 ; sol 0.76.1
 		}
 	}
 	POPCTR c3
