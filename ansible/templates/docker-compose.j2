@@ -65,7 +65,7 @@ services:
       - bash
       - -c
       - >
-        node-config-helper
+        node-helper config
         -c acki-nacki.conf.yaml -d
         --blockchain-config=/bk-configs/blockchain.conf.json
         --keys-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
