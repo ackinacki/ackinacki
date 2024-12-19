@@ -1,6 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::HashSet;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
@@ -106,7 +107,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                 tracing::trace!("Process block from attestation processor: {}", block_from_attestation_processor.len());
                 for block in block_from_attestation_processor {
                     let res = self.store_and_accept_candidate_block(block);
-                    tracing::trace!("store_and_accept_candidate_block res: {res:?}");
+                    tracing::trace!("[synchronization] store_and_accept_candidate_block res: {res:?}");
                 }
                 self.try_finalize_blocks()?;
             }
@@ -125,6 +126,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                                 <TRepository as Repository>::StateSnapshot::from(state_buffer),
                                 &current_thread_id,
                             )?;
+                            //
 
                             for (thread_id, producer_group) in new_groups {
                                 self.set_producer_groups_from_finalized_state(thread_id, seq_no, producer_group);
@@ -139,8 +141,25 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                                 if signs.len() >= self.min_signatures_count_to_accept_broadcasted_state(seq_no) {
                                     tracing::trace!("Marked synced block as finalized");
                                     // We have already received the last finalized block end sync
+                                    let parent_block_id = block.data().parent();
+                                    self.shared_services.exec(|services| {
+                                        //services.dependency_tracking.init_thread(current_thread_id, parent_block_id.clone());
+                                        // TODO: check if we have to pass all threads in set
+                                        services.threads_tracking.init_thread(
+                                            parent_block_id.clone(),
+                                            HashSet::from_iter(vec![current_thread_id]),
+                                            &mut (&mut services.router, &mut services.load_balancing),
+                                        );
+                                    });
+                                    self.shared_services.on_block_appended(block.data());
                                     self.repository.mark_block_as_accepted_as_main_candidate(&block_id, &current_thread_id)?;
                                     self.repository.mark_block_as_finalized(&block)?;
+                                    self.shared_services.on_block_finalized(
+                                        block.data(),
+                                        &mut self.repository
+                                            .get_optimistic_state(&block.data().identifier())?
+                                            .expect("set above")
+                                    );
                                     self.clear_unprocessed_till(&seq_no, &current_thread_id)?;
                                     self.repository.clear_verification_markers(&seq_no, &current_thread_id)?;
                                     return match self.take_next_unprocessed_block(block_id, seq_no)? {
@@ -188,7 +207,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             tracing::info!("[synchronizing]({:?}) waiting for a network message", self.thread_id);
             match self.rx.recv_timeout(Duration::from_millis(self.config.global.time_to_produce_block_millis)) {
                 Err(RecvTimeoutError::Disconnected) => {
-                    tracing::error!("Disconnect signal received");
+                    tracing::error!("Disconnect signal received (synchronization)");
                     return Ok(SynchronizationResult::Interrupted);
                 }
                 Err(RecvTimeoutError::Timeout) => {}
@@ -219,9 +238,26 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                                     // send their attestation to BP again and BP will not finalize block.
                                     // So we set finalized block force with possible downgrade.
                                     // But this should be fixed with attestation resending mechanism.
+                                    let parent_block_id = candidate_block.data().parent();
+                                    self.shared_services.exec(|services| {
+                                        //services.dependency_tracking.init_thread(current_thread_id, parent_block_id.clone());
+                                        // TODO: check if we have to pass all threads in set
+                                        services.threads_tracking.init_thread(
+                                            parent_block_id.clone(),
+                                            HashSet::from_iter(vec![current_thread_id]),
+                                            &mut (&mut services.router, &mut services.load_balancing),
+                                        );
+                                    });
+                                    self.shared_services.on_block_appended(candidate_block.data());
                                     self.repository.store_block(candidate_block.clone())?;
                                     self.repository.mark_block_as_accepted_as_main_candidate(&candidate_block.data().identifier(), &current_thread_id)?;
                                     self.repository.mark_block_as_finalized(candidate_block)?;
+                                    self.shared_services.on_block_finalized(
+                                        candidate_block.data(),
+                                        &mut self.repository
+                                            .get_optimistic_state(&candidate_block.data().identifier())?
+                                            .expect("set above")
+                                    );
                                     self.repository.clear_verification_markers(&seq_no, &current_thread_id)?;
                                     tracing::trace!(
                                         "[synchronization] Mark sync block as finalized: {:?} {:?}",

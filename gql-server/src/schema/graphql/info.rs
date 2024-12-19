@@ -45,7 +45,7 @@ pub struct Info {
 impl Default for Info {
     fn default() -> Self {
         Self {
-            version: Some("0.67.4".into()),
+            version: Some("0.67.5".into()),
             time: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as f64),
             blocks_latency: None,
             messages_latency: None,

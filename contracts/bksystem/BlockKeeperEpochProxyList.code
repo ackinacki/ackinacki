@@ -1599,6 +1599,19 @@
 		DUP
 		ISNULL
 		PUSHCONT {
+			.loc modifiers/modifiers.sol, 75
+			OVER
+			ISNULL
+			THROWIF 212
+			.loc modifiers/modifiers.sol, 76
+			GETGLOB 9
+			PUSH2 S2, S2
+			ISNULL
+			THROWIF 63
+			SDEQ
+			THROWIFNOT 212
+		}
+		PUSHCONT {
 			.loc modifiers/modifiers.sol, 70
 			GETGLOB 5
 			DUP
@@ -1627,9 +1640,8 @@
 				.loc modifiers/modifiers.sol, 0
 			}
 			IF
-			.loc modifiers/modifiers.sol, 0
 		}
-		IFNOT
+		IFELSE
 		.loc modifiers/modifiers.sol, 0
 	}
 	IF
@@ -2091,6 +2103,19 @@
 		DUP
 		ISNULL
 		PUSHCONT {
+			.loc modifiers/modifiers.sol, 75
+			OVER
+			ISNULL
+			THROWIF 212
+			.loc modifiers/modifiers.sol, 76
+			GETGLOB 9
+			PUSH2 S2, S2
+			ISNULL
+			THROWIF 63
+			SDEQ
+			THROWIFNOT 212
+		}
+		PUSHCONT {
 			.loc modifiers/modifiers.sol, 70
 			GETGLOB 5
 			DUP
@@ -2119,13 +2144,12 @@
 				.loc modifiers/modifiers.sol, 0
 			}
 			IF
-			.loc modifiers/modifiers.sol, 0
 		}
-		IFNOT
+		IFELSE
 		.loc modifiers/modifiers.sol, 0
 	}
 	IF
-	.loc modifiers/modifiers.sol, 76
+	.loc modifiers/modifiers.sol, 79
 	DROP2
 	.loc BlockKeeperEpochProxyList.sol, 84
 	GETGLOB 20
@@ -2244,7 +2268,7 @@
 	CALLREF {
 		.inline BlockKeeperLib_calculateBlockKeeperEpochAddress_62e3801d
 	}
-	.loc modifiers/modifiers.sol, 85
+	.loc modifiers/modifiers.sol, 88
 	GETGLOB 9
 	SDEQ
 	THROWIFNOT 207
@@ -2433,7 +2457,7 @@
 .fragment iterateProxyList_20ca1263_internal, {
 	.loc BlockKeeperEpochProxyList.sol, 90
 	MYADDR
-	.loc modifiers/modifiers.sol, 85
+	.loc modifiers/modifiers.sol, 88
 	GETGLOB 9
 	OVER
 	SDEQ
@@ -2595,6 +2619,19 @@
 		DUP
 		ISNULL
 		PUSHCONT {
+			.loc modifiers/modifiers.sol, 75
+			OVER
+			ISNULL
+			THROWIF 212
+			.loc modifiers/modifiers.sol, 76
+			GETGLOB 9
+			PUSH2 S2, S2
+			ISNULL
+			THROWIF 63
+			SDEQ
+			THROWIFNOT 212
+		}
+		PUSHCONT {
 			.loc modifiers/modifiers.sol, 70
 			GETGLOB 5
 			DUP
@@ -2623,9 +2660,8 @@
 				.loc modifiers/modifiers.sol, 0
 			}
 			IF
-			.loc modifiers/modifiers.sol, 0
 		}
-		IFNOT
+		IFELSE
 		.loc modifiers/modifiers.sol, 0
 	}
 	IF

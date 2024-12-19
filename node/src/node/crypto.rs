@@ -121,9 +121,9 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
     pub(crate) fn block_keeper_ring_signatures_map_for(
         &self,
         seq_no: &BlockSeqNo,
-        thread_id: &ThreadIdentifier,
+        _thread_id: &ThreadIdentifier,
     ) -> HashMap<SignerIndex, <TBLSSignatureScheme as BLSSignatureScheme>::PubKey> {
-        self.get_block_keeper_pubkeys(seq_no, thread_id)
+        self.block_keeper_sets.get_block_keeper_pubkeys(seq_no)
     }
 
     pub(crate) fn block_keeper_set_for(

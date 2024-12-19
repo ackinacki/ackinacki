@@ -27,7 +27,6 @@ use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
-use crate::types::ThreadsTable;
 
 impl<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
 Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
@@ -76,8 +75,6 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         )>,
     > {
         tracing::trace!("start_block_production");
-        // TODO: fix. assumes single thread.
-        let thread_masks_table = ThreadsTable::new();
         // Produce whatever threads it has to produce
         let mut producer_tails = vec![];
         for thread_id in self.list_threads()? {
@@ -111,7 +108,6 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                 );
                 self.production_process.start_thread_production(
                     &thread_id,
-                    &thread_masks_table,
                     &block_id_to_continue
                 )?;
             }
@@ -142,6 +138,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                     block.parent(),
                     external_messages_to_erase_count,
                 );
+                self.shared_services.on_block_appended(&block);
                 let share_state_address = if let Some(seq_no) = *share_resulting_state {
                     if seq_no == block.seq_no() {
                         tracing::trace!("Node should share state for last block");
@@ -161,7 +158,10 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                 let block_will_share_state = share_state_address.is_some();
                 self.update_candidate_common_section(&mut block, share_state_address, *share_producer_group)?;
                 *share_producer_group = false;
-                if block_will_share_state || block.seq_no() % self.config.global.save_state_frequency == 0 {
+                let must_save_state = block_will_share_state
+                    || block.is_thread_splitting()
+                    || (block.seq_no() % self.config.global.save_state_frequency == 0);
+                if must_save_state {
                     self.repository.store_optimistic(optimistic_state.clone())?;
                 }
                 let signature =
@@ -187,6 +187,8 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                 let block_id = envelope.data().identifier();
                 let block_seq_no = envelope.data().seq_no();
                 self.repository.store_block(envelope.clone())?;
+                self.repository.mark_block_as_processed(&block_id)?;
+                self.repository.mark_block_as_verified(&block_id)?;
 
                 self.production_process.write_block_to_db(
                     envelope.clone(),

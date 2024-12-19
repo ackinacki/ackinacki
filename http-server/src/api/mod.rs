@@ -2,9 +2,9 @@
 //
 
 pub(crate) mod blocks;
+pub(crate) mod ext_messages;
 pub(crate) mod storage_latest;
-pub(crate) mod topics;
 
 pub use blocks::BlocksBlockHandler;
+pub use ext_messages::ExtMessagesHandler;
 pub use storage_latest::StorageLatestHandler;
-pub use topics::TopicsRequestsHandler;

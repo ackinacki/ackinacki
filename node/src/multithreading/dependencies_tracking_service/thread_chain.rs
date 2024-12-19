@@ -4,31 +4,14 @@
 use std::collections::HashMap;
 use std::vec::Vec;
 
-use anyhow::bail;
-use anyhow::ensure;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::bls::GoshBLS;
-use crate::types::AckiNackiBlock;
+use super::BlockAppendError;
+use super::BlockData;
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
-
-#[derive(Error, Debug)]
-enum BlockAppendError {
-    #[error("Thread tail does not match block parent.")]
-    TailMistmatch,
-
-    #[error("One of the refs has a conflict with this chain or other ref this block depends on. This block dependencies are impossible.")]
-    ConflictingStates,
-
-    #[error("A referenced block was marked as invalid. Probably due to a fork.")]
-    InvalidatedRef,
-
-    #[error("A thread chain state for a referenced block is not available.")]
-    MissingReferencedState,
-}
 
 #[derive(Error, Debug)]
 pub enum ThreadChainValidationFailed {
@@ -36,13 +19,13 @@ pub enum ThreadChainValidationFailed {
     AnotherChainFinalizedAtFork,
 }
 
-pub enum OtherThreadChain {
+pub enum OtherThreadChainErr {
     NotFound,
     #[allow(dead_code)]
     Invalidated,
     Finalized,
-    Active(ThreadChain),
 }
+pub type OtherThreadChainResult = anyhow::Result<ThreadChain, OtherThreadChainErr>;
 
 // Note:
 // It is not the best implementation in terms of performance. I would even agree
@@ -63,29 +46,30 @@ pub struct ThreadChain {
     //   an invalid graph (a fork).
     // - It contains tail node aswell. Just to be sure it didn't fork on that particular
     //   block.
-    validation_graph: HashMap<BlockIdentifier, Vec<(ThreadIdentifier, BlockIdentifier)>>,
-    tail: (ThreadIdentifier, BlockIdentifier),
+    pub validation_graph: HashMap<BlockIdentifier, Vec<(ThreadIdentifier, BlockIdentifier)>>,
+    pub tail: (ThreadIdentifier, BlockIdentifier),
 }
 
 impl ThreadChain {
     /// Continues thread chain validation process.
-    pub fn on_block_finalized(&mut self, block: &AckiNackiBlock<GoshBLS>) -> anyhow::Result<()> {
+    pub fn on_block_finalized(
+        &mut self,
+        parent_id: BlockIdentifier,
+        thread_id: ThreadIdentifier,
+        block_id: BlockIdentifier,
+    ) -> anyhow::Result<(), ThreadChainValidationFailed> {
         // Note: parent must be in the list of finalized to continue validation.
         // This chain has no dependency on the block if parent is not in the list.
         // This logic assumes correct order of block finalizations:
         // - a child can not be finalized before parent.
         // - a dependant block can not be finalized before all its refs finalized.
         // A parent block is removed if all its descendants were validated.
-        let parent_id = block.parent();
         if let Some(mut descendants) = self.validation_graph.remove(&parent_id) {
-            let thread_id = block.get_common_section().thread_id;
-            let block_id = block.identifier();
             if let Some(index) = descendants.iter().position(|&(e, _)| e == thread_id) {
                 let (_, expected_block_id) = descendants.remove(index);
-                ensure!(
-                    expected_block_id == block_id,
-                    ThreadChainValidationFailed::AnotherChainFinalizedAtFork
-                );
+                if expected_block_id != block_id {
+                    return Err(ThreadChainValidationFailed::AnotherChainFinalizedAtFork);
+                }
             }
             if !descendants.is_empty() {
                 self.validation_graph.insert(parent_id, descendants);
@@ -127,47 +111,51 @@ impl ThreadChain {
     /// Tries to create a new thread state object for the descendant block.
     pub fn try_append<F>(
         &self,
-        block: &AckiNackiBlock<GoshBLS>,
+        block_data: &BlockData,
         mut other: F,
-    ) -> anyhow::Result<Self>
+    ) -> anyhow::Result<Self, BlockAppendError>
     where
-        F: std::ops::FnMut(&BlockIdentifier) -> anyhow::Result<OtherThreadChain>,
+        F: std::ops::FnMut(&BlockIdentifier) -> OtherThreadChainResult,
     {
-        let parent_id = block.parent();
-        ensure!(self.tail.1 == parent_id, BlockAppendError::TailMistmatch);
-        let thread_id = block.get_common_section().thread_id;
-        let tail = (thread_id, block.identifier());
+        let parent_id = block_data.parent_block_identifier.clone();
+        if self.tail.1 != parent_id {
+            return Err(BlockAppendError::TailMistmatch);
+        }
+        let thread_id = block_data.thread_identifier;
+        let tail = (thread_id, block_data.block_identifier.clone());
         let mut state =
             Self { validation_graph: self.validation_graph.clone(), tail: tail.clone() };
         // Append an edge from the old tail to the appended block
         state.validation_graph.insert(parent_id, vec![tail.clone()]);
 
         // Out of all other states select states that are referenced from the block
-        for referenced_block_id in block.get_common_section().refs.iter() {
-            match other(referenced_block_id)? {
-                OtherThreadChain::Invalidated => bail!(BlockAppendError::InvalidatedRef),
-                OtherThreadChain::NotFound => bail!(BlockAppendError::MissingReferencedState),
-                OtherThreadChain::Finalized => {
+        for referenced_block_id in block_data.refs.iter() {
+            match other(referenced_block_id) {
+                Err(OtherThreadChainErr::Invalidated) => {
+                    return Err(BlockAppendError::InvalidatedRef);
+                }
+                Err(OtherThreadChainErr::NotFound) => {
+                    return Err(BlockAppendError::MissingReferencedState);
+                }
+                Err(OtherThreadChainErr::Finalized) => {
                     state.validation_graph.insert(referenced_block_id.clone(), vec![tail.clone()]);
                 }
-                OtherThreadChain::Active(referenced_chain) => {
+                Ok(referenced_chain) => {
                     // Merge those dependencies into the resulting state.
                     for (block_id, descendants) in &referenced_chain.validation_graph {
-                        ensure!(
-                            merge_descendants(&mut state.validation_graph, block_id, descendants),
-                            BlockAppendError::ConflictingStates
-                        );
+                        if !merge_descendants(&mut state.validation_graph, block_id, descendants) {
+                            return Err(BlockAppendError::ConflictingStates);
+                        }
                     }
                     // And add an edge from the referenced tail to the new block.
                     {
-                        ensure!(
-                            merge_descendants(
-                                &mut state.validation_graph,
-                                referenced_block_id,
-                                &[tail.clone()]
-                            ),
-                            BlockAppendError::ConflictingStates
-                        );
+                        if !merge_descendants(
+                            &mut state.validation_graph,
+                            referenced_block_id,
+                            &[tail.clone()],
+                        ) {
+                            return Err(BlockAppendError::ConflictingStates);
+                        }
                     }
                 }
             }

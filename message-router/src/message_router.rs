@@ -72,6 +72,13 @@ impl MessageRouter {
 
     fn config(cfg: &mut web::ServiceConfig, bp_resolver: Arc<Mutex<dyn BPResolver>>) {
         cfg.service(
+            // Process inbound external messages and forward its to the BP
+            //
+            // JSON: [{
+            //         "id": String,
+            //         "boc": String,
+            //         "expire"?: Int
+            //       }]
             web::resource(ROUTER_URL_PATH.to_string())
                 .route(web::post().to(move |node_requests| {
                     let resolver_clone = bp_resolver.clone();

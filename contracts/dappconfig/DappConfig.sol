@@ -21,30 +21,23 @@ contract DappConfig is Modifiers {
     uint256 _dapp_id;
 
     constructor (
+        uint256 dapp_id,
         CreditConfig data
     ) {
+        dapp_id;
         TvmCell salt = abi.codeSalt(tvm.code()).get();
-        (uint256 dapp_id) = abi.decode(salt, (uint256));
+        (uint256 dapp_id_salt) = abi.decode(salt, (uint256));
         _owner = address(0x9999999999999999999999999999999999999999999999999999999999999999);
-        _dapp_id = dapp_id;
+        _dapp_id = dapp_id_salt;
         _voter = address.makeAddrStd(0, 0);
         require(msg.sender == _owner, ERR_INVALID_SENDER);
-        gosh.mintshell(1000 vmshell);
         _data = data;
     }
 
-    function getMoney() private pure {
-        if (address(this).balance > 1000 vmshell) { return; }
-        gosh.mintshell(1000 vmshell);
-    }
-
     function setNewConfig(
-        bool is_unlimit,
-        int128 available_balance
-    ) public internalMsg senderIs(_voter) functionID(5) {
-        getMoney();
-        _data.is_unlimit = is_unlimit;
-        _data.available_balance = available_balance;
+        uint128 minted
+    ) public internalMsg senderIs(address(this)) functionID(5) {
+        _data.available_balance -= int128(minted);
     }
 
     receive() external {

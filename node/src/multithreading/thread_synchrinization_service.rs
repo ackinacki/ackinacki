@@ -2,66 +2,61 @@
 //
 
 use std::collections::HashMap;
-use std::fmt::Debug;
-use std::sync::mpsc::Receiver;
-use std::sync::Arc;
-
-use parking_lot::Mutex;
-use typed_builder::TypedBuilder;
 
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
 
-// Data for threads sync
-#[derive(Clone, Debug)]
-pub struct ThreadSyncInfo {
-    // Source thread
-    pub source_thread_id: ThreadIdentifier,
-    // Identifier of the block that has crossthread messages
-    pub block_id: BlockIdentifier,
-    // Vec of identifiers of destination threads
-    pub destination_thread_ids: Vec<ThreadIdentifier>,
-}
+// This service must be able to tell threads that there are blocks
+// that have messages or accounts for it.
+// The easiest solution would be to have a map of thread to
+// a vector of tuples of account route to a triplet of a message source.
+// This way we can use threads table and thread id to identify source messages.
+// A top level map is used to optimize search by skipping threads that were
+// already detected having outbound messages (once an outbound message from
+// a particular thread was detected we can move to another thread and search
+// from there.
+// Problem: this will grow.
+// It also seems have not much of a benefit vs always referencing all finalized
+// blocks from other threads.
+// Even more. Referencing only finalized blocks should reduce amount of time
+// BK would not be able to verify block in time due to a reference missing.
+// ---
+// Let's make an initial implementation working with finalized blocks referencing
+// for cross-thread messaging and make an implementation working  with optimistic
+// thread states later. Test it on real networks and compare results.
+//
 
-// Service that spawns senders for all thread nodes, receives ThreadSyncInfo from them and stores
-// infos for other threads to take it.
-#[derive(TypedBuilder)]
 pub struct ThreadSyncService {
-    common_receiver: Receiver<ThreadSyncInfo>,
-    #[builder(default)]
-    saved_sync_infos: HashMap<ThreadIdentifier, Arc<Mutex<Vec<ThreadSyncInfo>>>>,
+    // Note: Since this map contains only finalized blocks we don't care about
+    // possible forks since they must be resolved before finalization.
+    // Note: This table may grow in case of thread collapsing and splitting.
+    // However it is not a concern in this implementation.
+    last_finalized_blocks: HashMap<ThreadIdentifier, BlockIdentifier>,
 }
 
 impl ThreadSyncService {
-    pub fn add_thread(&mut self, thread_id: ThreadIdentifier) -> Arc<Mutex<Vec<ThreadSyncInfo>>> {
-        assert!(!self.saved_sync_infos.contains_key(&thread_id));
-        let cache = Arc::new(Mutex::new(vec![]));
-        self.saved_sync_infos.insert(thread_id, cache.clone());
-        cache
+    pub fn on_block_finalized(
+        &mut self,
+        block_identifier: &BlockIdentifier,
+        thread_identifier: &ThreadIdentifier,
+    ) -> anyhow::Result<()> {
+        self.last_finalized_blocks.insert(*thread_identifier, block_identifier.clone());
+        Ok(())
     }
 
-    pub fn execute(&self) -> anyhow::Result<()> {
-        loop {
-            match self.common_receiver.recv() {
-                Err(e) => {
-                    tracing::error!("ThreadSyncService: common receiver was disconnected: {e}");
-                    anyhow::bail!(e)
-                }
-                Ok(sync_info) => {
-                    tracing::trace!("ThreadSyncService received {sync_info:?}");
-                    for thread_id in &sync_info.destination_thread_ids {
-                        let mut cache = self
-                            .saved_sync_infos
-                            .get(thread_id)
-                            .expect("Thread sync service received sync for unexpected thread")
-                            .lock();
-                        tracing::trace!(
-                            "ThreadSyncService received push to thread buffer: {sync_info:?}"
-                        );
-                        cache.push(sync_info.clone());
-                    }
-                }
-            }
-        }
+    pub fn list_blocks_sending_messages_to_thread(
+        &mut self,
+        thread_identifier: &ThreadIdentifier,
+    ) -> anyhow::Result<Vec<BlockIdentifier>> {
+        let other_threads_last_blocks = self
+            .last_finalized_blocks
+            .iter()
+            .filter_map(|(k, v)| if k != thread_identifier { Some(v.clone()) } else { None })
+            .collect();
+        Ok(other_threads_last_blocks)
+    }
+
+    pub fn start(_: ()) -> Self {
+        Self { last_finalized_blocks: HashMap::new() }
     }
 }

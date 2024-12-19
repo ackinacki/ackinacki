@@ -108,9 +108,6 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             tracing::info!("Apply block {:?} candidate on the node {:?}", block.seq_no(), self.config.local.node_id);
             self.validation_process.apply_block(envelope).expect("Block apply should not crash");
         }
-        // Note: for not to apply block several times we mark it as verified
-        // despite the fact that the node can be not a verifier
-        self.repository.mark_block_as_verified(&block_id)?;
         Ok(do_verify)
     }
 

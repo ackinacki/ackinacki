@@ -1691,7 +1691,7 @@
 	CALLREF {
 		.inline BlockKeeperLib_calculateBlockKeeperEpochAddress_62e3801d
 	}
-	.loc modifiers/modifiers.sol, 85
+	.loc modifiers/modifiers.sol, 88
 	GETGLOB 9
 	SDEQ
 	THROWIFNOT 207
@@ -1887,7 +1887,7 @@
 	CALLREF {
 		.inline BlockKeeperLib_calculateBlockKeeperEpochAddress_62e3801d
 	}
-	.loc modifiers/modifiers.sol, 85
+	.loc modifiers/modifiers.sol, 88
 	GETGLOB 9
 	SDEQ
 	THROWIFNOT 207
@@ -2599,7 +2599,7 @@
 }
 
 .fragment getMinStakeNow_4df53332_internal, {
-	.loc BlockKeeperContractRoot.sol, 166
+	.loc BlockKeeperContractRoot.sol, 170
 	GETGLOB 14
 	NOW
 	GETGLOB 21
@@ -2620,7 +2620,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc BlockKeeperContractRoot.sol, 165
+	.loc BlockKeeperContractRoot.sol, 169
 	ENDS
 	.loc BlockKeeperContractRoot.sol, 0
 	CALLREF {
@@ -2655,7 +2655,7 @@
 }
 
 .fragment getMinStakeOut_8bc102d3_internal, {
-	.loc BlockKeeperContractRoot.sol, 174
+	.loc BlockKeeperContractRoot.sol, 178
 	XCHG3 S1, S3, S3
 	CALCMINSTAKE
 	.loc BlockKeeperContractRoot.sol, 0
@@ -2665,7 +2665,7 @@
 	DROP
 	GETGLOB 6
 	THROWIFNOT 76
-	.loc BlockKeeperContractRoot.sol, 169
+	.loc BlockKeeperContractRoot.sol, 173
 	OVER
 	PUSHCONT {
 		LDREF
@@ -2781,8 +2781,96 @@
 	THROW 0
 }
 
+.fragment getProxyListCode_6e51c6e3_internal, {
+	.loc BlockKeeperContractRoot.sol, 161
+	PUSHINT 5
+	GETGLOB 13
+	PUSHINT 8
+	DICTUGETREF
+	PUSHCONT {
+		PUSHREF {
+		}
+	}
+	IFNOT
+	PUSHINT 2
+	GETGLOB 13
+	PUSHINT 8
+	DICTUGETREF
+	PUSHCONT {
+		PUSHREF {
+		}
+	}
+	IFNOT
+	PUSHINT 1
+	GETGLOB 13
+	PUSHINT 8
+	DICTUGETREF
+	PUSHCONT {
+		PUSHREF {
+		}
+	}
+	IFNOT
+	PUSHINT 4
+	GETGLOB 13
+	PUSHINT 8
+	DICTUGETREF
+	PUSHCONT {
+		PUSHREF {
+		}
+	}
+	IFNOT
+	MYADDR
+	CALLREF {
+		.inline BlockKeeperLib_buildBlockKeeperEpochProxyListCode_d2793e03
+	}
+	.loc BlockKeeperContractRoot.sol, 0
+}
+
+.fragment getProxyListCode, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc BlockKeeperContractRoot.sol, 160
+	ENDS
+	.loc BlockKeeperContractRoot.sol, 0
+	CALLREF {
+		.inline getProxyListCode_6e51c6e3_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 2577140565
+		STUR 130
+		STREF
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
 .fragment getRewardNow_3addf5a7_internal, {
-	.loc BlockKeeperContractRoot.sol, 162
+	.loc BlockKeeperContractRoot.sol, 166
 	GETGLOB 22
 	GETGLOB 14
 	NOW
@@ -2806,7 +2894,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc BlockKeeperContractRoot.sol, 160
+	.loc BlockKeeperContractRoot.sol, 164
 	ENDS
 	.loc BlockKeeperContractRoot.sol, 0
 	CALLREF {
@@ -2900,7 +2988,7 @@
 }
 
 .fragment getVersion_0d8e6e2c_internal, {
-	.loc BlockKeeperContractRoot.sol, 178
+	.loc BlockKeeperContractRoot.sol, 182
 	PUSHREF {
 		.blob x312e302e30
 	}
@@ -2914,7 +3002,7 @@
 	DROP
 	GETGLOB 6
 	THROWIFNOT 76
-	.loc BlockKeeperContractRoot.sol, 177
+	.loc BlockKeeperContractRoot.sol, 181
 	ENDS
 	.loc BlockKeeperContractRoot.sol, 0
 	CALLREF {
@@ -2985,7 +3073,7 @@
 	CALLREF {
 		.inline BlockKeeperLib_calculateBlockKeeperEpochAddress_62e3801d
 	}
-	.loc modifiers/modifiers.sol, 85
+	.loc modifiers/modifiers.sol, 88
 	GETGLOB 9
 	SDEQ
 	THROWIFNOT 207
@@ -3071,7 +3159,7 @@
 	CALLREF {
 		.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
 	}
-	.loc modifiers/modifiers.sol, 85
+	.loc modifiers/modifiers.sol, 88
 	GETGLOB 9
 	OVER
 	SDEQ
@@ -3258,7 +3346,7 @@
 	CALLREF {
 		.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
 	}
-	.loc modifiers/modifiers.sol, 85
+	.loc modifiers/modifiers.sol, 88
 	GETGLOB 9
 	OVER
 	SDEQ
@@ -3711,7 +3799,7 @@
 			}
 		}
 		DUP
-		PUSHINT 780721302
+		PUSHINT 513163949
 		LEQ
 		IFJMPREF {
 			DUP
@@ -3721,23 +3809,34 @@
 				.inline canDeleteEpoch
 			}
 			DUP
+			PUSHINT 429656917
+			EQUAL
+			IFJMPREF {
+				.inline getProxyListCode
+			}
+			DUP
 			PUSHINT 513163949
 			EQUAL
 			IFJMPREF {
 				.inline increaseActiveBlockKeeperNumber
 			}
+		}
+		DUP
+		PUSHINT 817127611
+		LEQ
+		IFJMPREF {
 			DUP
 			PUSHINT 780721302
 			EQUAL
 			IFJMPREF {
 				.inline receiveBlockKeeperRequestWithStakeFromWalletContinue
 			}
-		}
-		DUP
-		PUSHINT 817127611
-		EQUAL
-		IFJMPREF {
-			.inline getBlockKeeperEpochAddress
+			DUP
+			PUSHINT 817127611
+			EQUAL
+			IFJMPREF {
+				.inline getBlockKeeperEpochAddress
+			}
 		}
 		DUP
 		PUSHINT 853768022

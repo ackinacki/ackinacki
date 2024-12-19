@@ -1,15 +1,13 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 
-use crate::block_keeper_system::BlockKeeperSet;
 use crate::node::services::sync::StateSyncService;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
-use crate::types::BlockSeqNo;
+use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::ThreadIdentifier;
 
 pub struct StateSyncServiceStub {}
@@ -25,7 +23,7 @@ impl StateSyncService for StateSyncServiceStub {
             ThreadIdentifier,
             Vec<<Self::Repository as Repository>::NodeIdentifier>,
         >,
-        _block_keeper_set: HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>,
+        _block_keeper_set: BlockKeeperRing,
     ) -> anyhow::Result<Self::ResourceAddress> {
         todo!()
     }

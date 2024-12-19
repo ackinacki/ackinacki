@@ -5,24 +5,19 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 
-use tvm_block::Account;
-use tvm_block::Deserializable;
 use tvm_block::GetRepresentationHash;
 use tvm_block::Message;
 use tvm_executor::BlockchainConfig;
-use tvm_types::AccountId;
-use tvm_types::SliceData;
 use tvm_types::UInt256;
 
-use crate::block::producer::builder::structs::BlockBuilder;
+use super::BlockBuilder;
 use crate::block_keeper_system::epoch::create_epoch_touch_message;
 use crate::block_keeper_system::BlockKeeperData;
 use crate::creditconfig::dappconfig::calculate_dapp_config_address;
 use crate::creditconfig::dappconfig::create_config_touch_message;
-use crate::creditconfig::dappconfig::decode_dapp_config_data;
 
 impl BlockBuilder {
-    pub fn execute_epoch_messages(
+    pub(super) fn execute_epoch_messages(
         &mut self,
         epoch_block_keeper_data: &mut Vec<BlockKeeperData>,
         blockchain_config: &BlockchainConfig,
@@ -98,7 +93,7 @@ impl BlockBuilder {
         Ok(())
     }
 
-    pub fn execute_dapp_config_messages(
+    pub(super) fn execute_dapp_config_messages(
         &mut self,
         blockchain_config: &BlockchainConfig,
         block_unixtime: u32,
@@ -112,35 +107,22 @@ impl BlockBuilder {
             if value == 0 {
                 continue;
             }
-            let addr =
-                calculate_dapp_config_address(key.clone(), self.base_config_stateinit.clone())
-                    .map_err(|e| {
-                        anyhow::format_err!("Failed to calculate dapp config address: {e}")
-                    })?;
-            let acc_id: SliceData = AccountId::from(addr.clone());
-            if let Some(acc) = self
-                .accounts
-                .account(&AccountId::from(acc_id))
-                .map_err(|e| anyhow::format_err!("Failed to get account: {e}"))?
-            {
-                let acc_d = Account::construct_from_cell(acc.account_cell().clone())
-                    .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?;
-                let data = decode_dapp_config_data(&acc_d).unwrap();
-                if let Some(configdata) = data {
-                    if configdata.is_unlimit {
-                        continue;
-                    }
-                    let message = create_config_touch_message(
-                        configdata.clone(),
-                        value,
-                        addr,
-                        self.block_info.gen_utime().as_u32(),
-                    )
-                    .map_err(|e| {
-                        anyhow::format_err!("Failed to create config touch message: {e}")
-                    })?;
-                    config_messages.push(message);
+            let data = self.dapp_credit_map.get(&key);
+            if let Some(configdata) = data {
+                if configdata.is_unlimit {
+                    continue;
                 }
+                let addr =
+                    calculate_dapp_config_address(key.clone(), self.base_config_stateinit.clone())
+                        .map_err(|e| {
+                            anyhow::format_err!("Failed to calculate dapp config address: {e}")
+                        })?;
+                let message =
+                    create_config_touch_message(value, addr, self.block_info.gen_utime().as_u32())
+                        .map_err(|e| {
+                            anyhow::format_err!("Failed to create config touch message: {e}")
+                        })?;
+                config_messages.push(message);
             }
         }
         let mut active_destinations = HashSet::new();

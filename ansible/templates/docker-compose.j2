@@ -21,7 +21,7 @@ services:
     entrypoint: []
     restart: unless-stopped
     environment: &q_server-base-env
-      NODE_URL: http://nginx{{ NODE_ID }}/v1/send_ext_messages
+      NODE_URL: http://nginx{{ NODE_ID }}/bm/v1/messages
     command:
       - bash
       - -c

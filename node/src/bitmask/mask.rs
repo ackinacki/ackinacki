@@ -16,15 +16,13 @@ pub struct Bitmask<TBitsSource> {
 impl<TBitsSource> Bitmask<TBitsSource>
 where
     // Note: Change to std::num::Zero once it's released
-    TBitsSource: Clone
-        + std::ops::BitAnd<Output = TBitsSource>
-        + PartialEq<TBitsSource>
-        + std::default::Default,
-    <TBitsSource as BitAnd>::Output: PartialEq<<TBitsSource as BitAnd>::Output>,
+    TBitsSource: Clone + PartialEq<TBitsSource> + std::default::Default,
+    for<'a> &'a TBitsSource: std::ops::BitAnd<Output = TBitsSource>,
+    for<'a> <&'a TBitsSource as BitAnd>::Output: PartialEq<<&'a TBitsSource as BitAnd>::Output>,
 {
-    pub fn is_match(&self, account_address: TBitsSource) -> bool {
-        let mask = self.mask_bits.clone() & self.meaningful_mask_bits.clone();
-        let meaningful_value = account_address & self.meaningful_mask_bits.clone();
+    pub fn is_match(&self, account_address: &TBitsSource) -> bool {
+        let mask = &self.mask_bits & &self.meaningful_mask_bits;
+        let meaningful_value = account_address & &self.meaningful_mask_bits;
         meaningful_value == mask
     }
 
@@ -60,6 +58,8 @@ mod tests {
         <TBitsSource as BitAnd>::Output: std::ops::BitXor,
         <<TBitsSource as std::ops::BitAnd>::Output as std::ops::BitXor>::Output:
             PartialEq<TBitsSource>,
+        for<'a> &'a TBitsSource: std::ops::BitAnd<Output = TBitsSource>,
+        for<'a> <&'a TBitsSource as BitAnd>::Output: PartialEq<<&'a TBitsSource as BitAnd>::Output>,
     {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let bits_count: usize = std::mem::size_of::<TBitsSource>() * 8;
@@ -81,9 +81,9 @@ mod tests {
     #[test]
     fn default_mask_matches_any() {
         let mask = Bitmask::<u64>::default();
-        assert!(mask.is_match(0u64));
-        assert!(mask.is_match(!0u64));
-        assert!(mask.is_match(123u64));
+        assert!(mask.is_match(&0u64));
+        assert!(mask.is_match(&!0u64));
+        assert!(mask.is_match(&123u64));
     }
 
     #[test]
@@ -93,7 +93,7 @@ mod tests {
             .meaningful_mask_bits(!0u16)
             .mask_bits(some_account_address)
             .build();
-        assert!(mask.is_match(some_account_address));
+        assert!(mask.is_match(&some_account_address));
     }
 
     #[test]
@@ -105,7 +105,7 @@ mod tests {
             .mask_bits(some_account_address)
             .build();
         assert!(
-            !mask.is_match(single_bit_difference_account_address),
+            !mask.is_match(&single_bit_difference_account_address),
             "Mask {mask} matched wrong address: {single_bit_difference_account_address:#b}"
         );
     }
@@ -120,7 +120,7 @@ mod tests {
             .mask_bits(some_account_address)
             .build();
         assert!(
-            mask.is_match(two_meaningles_bit_difference_account_address),
+            mask.is_match(&two_meaningles_bit_difference_account_address),
             "Mask {mask} failed to match an address: {two_meaningles_bit_difference_account_address:08b}."
         );
     }

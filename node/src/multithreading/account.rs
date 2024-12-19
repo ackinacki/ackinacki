@@ -24,20 +24,7 @@ pub(crate) fn get_account_routing_for_account(account: &Account) -> AccountRouti
         .expect("Account should not be None")
         .clone()
         .map(|dapp_id| AccountAddress(AccountId::from(dapp_id)))
-        .unwrap_or(account_address.clone());
+        .map(DAppIdentifier);
 
-    AccountRouting(DAppIdentifier(account_dapp_id), account_address)
-}
-
-// Get account routing for account ignoring its DAPP id to get account routing before DAPP id was initialized
-pub(crate) fn get_account_routing_for_account_before_dapp_id_init(
-    account: &Account,
-) -> AccountRouting {
-    // Function expects that passed account is not None and panics otherwise.
-    assert!(!account.is_none(), "None account should not be processed in multithreaded routing");
-    let account_address = AccountAddress(
-        account.get_addr().map(|addr| addr.address()).expect("Account should not be None"),
-    );
-
-    AccountRouting(DAppIdentifier(account_address.clone()), account_address)
+    AccountRouting::from((account_dapp_id, account_address))
 }

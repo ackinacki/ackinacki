@@ -319,8 +319,8 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                         let mut loaded_from_unprocessed = false;
                         loop {
                             let exec_res = self.on_incoming_candidate_block(&candidate_block, loaded_from_unprocessed)?;
-                            self.check_cached_acks_and_nacks(&candidate_block)?;
                             tracing::trace!("block process status: {exec_res:?}");
+                            self.check_cached_acks_and_nacks(&candidate_block)?;
                             let (block_id, block_seq_no) = match exec_res {
                                 BlockStatus::Ok => {
                                     sync_delay = None;
@@ -497,6 +497,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                 let block_seq_no = candidate_block.data().seq_no();
                 tracing::trace!("try_finalize_blocks block_seq_no={block_seq_no:?}");
                 let mut min_seq_no_to_finalize = block_seq_no;
+                // Note: Critical! This is no longer valid.
                 for _ in 0..self.config.global.require_minimum_blocks_to_finalize {
                     min_seq_no_to_finalize = next_seq_no(min_seq_no_to_finalize);
                 }
@@ -506,6 +507,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                 if self.config.global.require_minimum_time_milliseconds_to_finalize > 0 {
                     todo!();
                 }
+                // TODO: Check if block has all required data.
                 self.on_block_finalized(&candidate_block)?;
             }
 

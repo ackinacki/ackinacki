@@ -1,18 +1,16 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 mod default;
+mod network_config;
 mod serde_config;
 #[cfg(test)]
 mod test;
+mod validations;
 
 use std::path::PathBuf;
 use std::time::Duration;
 
-use default::default_bind;
-use default::default_block_manager_listen;
-use default::default_buffer_size;
-use default::default_gossip_listen;
-use network::socket_addr::StringSocketAddr;
+pub use network_config::NetworkConfig;
 use serde::Deserialize;
 use serde::Serialize;
 pub use serde_config::load_config_from_file;
@@ -93,54 +91,12 @@ pub struct GlobalConfig {
     /// Send special transaction gas limit
     pub gas_limit_for_special_transaction: u64,
 
+    /// Expected maximum number of threads.
+    /// Note: it can grow over this value for some time on the running network.
+    pub max_threads_count: usize,
+
     /// Number of block gap after which block attestation become invalid
     pub attestation_validity_block_gap: <BlockSeqNo as std::ops::Sub>::Output,
-}
-
-// TODO: need to rework gossip arguments, now it has some advertised parameters
-// that are not used (e.g. ["node_state"]["node_id"] section)
-/// Network settings
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct NetworkConfig {
-    /// Socket to listen other nodes messages (QUIC UDP).
-    /// Defaults to "127.0.0.1:8500"
-    #[serde(default = "default_bind")]
-    pub bind: StringSocketAddr,
-
-    /// Public node socket address that will be advertised with gossip (QUIC
-    /// UDP).
-    pub node_advertise_addr: StringSocketAddr,
-
-    /// UDP socket address to listen gossip.
-    /// Defaults to "127.0.0.1:10000"
-    #[serde(default = "default_gossip_listen")]
-    pub gossip_listen_addr: StringSocketAddr,
-
-    /// Gossip advertise socket address.
-    /// Defaults to `bind` address
-    pub gossip_advertise_addr: Option<StringSocketAddr>,
-
-    /// Gossip seed nodes socket addresses.
-    pub gossip_seeds: Vec<StringSocketAddr>,
-
-    /// Socket to listen for lite node requests (QUIC UDP).
-    #[serde(default = "default_block_manager_listen")]
-    pub block_manager_listen_addr: StringSocketAddr,
-
-    /// Static storages urls (e.g. <https://example.com/storage/>)
-    #[serde(default)]
-    pub static_storages: Vec<url::Url>,
-
-    /// Socket address for SDK API
-    pub api_addr: String,
-
-    /// Network send buffer size
-    /// Defaults to 1000
-    #[serde(default = "default_buffer_size")]
-    pub send_buffer_size: usize,
-
-    /// Public endpoint for this node
-    pub public_endpoint: Option<String>,
 }
 
 /// Node interaction settings

@@ -2,4 +2,5 @@
 //
 
 pub mod keeper;
+pub mod preprocessing;
 pub mod producer;

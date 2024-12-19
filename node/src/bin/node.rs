@@ -1,6 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::process::exit;
@@ -19,7 +20,6 @@ use clap::Parser;
 use database::documents_db::DocumentsDb;
 use database::sqlite::sqlite_helper;
 use database::sqlite::sqlite_helper::SqliteHelper;
-use itertools::Itertools;
 use message_router::message_router::MessageRouter;
 use network::config::NetworkConfig;
 use network::network::BasicNetwork;
@@ -27,11 +27,15 @@ use network::socket_addr::ToOneSocketAddr;
 use node::block::keeper::process::TVMBlockKeeperProcess;
 use node::config::load_config_from_file;
 use node::helper::bp_resolver::BPResolverImpl;
-use node::multithreading::node_message_router::NetworkMessageRouter;
-use node::multithreading::thread_synchrinization_service::ThreadSyncService;
+use node::multithreading::routing::service::Command;
+use node::multithreading::routing::service::RoutingService;
 use node::node::attestation_processor::AttestationProcessorImpl;
 use node::node::services::sync::ExternalFileSharesBased;
+use node::repository::optimistic_state::OptimisticState;
 use node::repository::Repository;
+use node::types::calculate_hash;
+use node::types::BlockIdentifier;
+use node::types::ThreadIdentifier;
 use node::zerostate::ZeroState;
 use parking_lot::Mutex;
 use rand::prelude::SeedableRng;
@@ -40,7 +44,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
 use tokio::task::JoinHandle;
-use tokio::task::JoinSet;
 
 // const ALIVE_NODES_WAIT_TIMEOUT_MILLIS: u64 = 100;
 const MINIMUM_NUMBER_OF_CORES: usize = 8;
@@ -64,6 +67,10 @@ struct Args {
 }
 
 fn main() -> Result<(), std::io::Error> {
+    if cfg!(debug_assertions) {
+        std::env::set_var("RUST_BACKTRACE", "1");
+    }
+
     // unsafe { backtrace_on_stack_overflow::enable() };
     init_tracing();
 
@@ -89,35 +96,10 @@ async fn tokio_main() {
 
 async fn execute(args: Args) -> anyhow::Result<()> {
     tracing::info!("Starting network");
-    let mut config = load_config_from_file(&args.config_path)?;
-
-    let cpu_cnt = num_cpus::get();
-    tracing::trace!("Number of cpu cores: {cpu_cnt}");
-    assert!(
-        cpu_cnt >= MINIMUM_NUMBER_OF_CORES,
-        "Number of CPU cores is less than minimum: {cpu_cnt} < {MINIMUM_NUMBER_OF_CORES}"
-    );
-    tracing::trace!("Set parallelization level to number of cpu cores: {cpu_cnt}");
-    config.local.parallelization_level = cpu_cnt;
-
+    let config = load_config_from_file(&args.config_path)?.ensure_min_cpu(MINIMUM_NUMBER_OF_CORES);
     tracing::info!("Node config: {}", serde_json::to_string_pretty(&config)?);
 
-    let seeds = config
-        .network
-        .gossip_seeds
-        .iter()
-        .map(|s| {
-            s.try_to_socket_addr().map_err(|e| {
-                tracing::error!(
-                    "Failed to convert gossip seed {} to SocketAddr, skip it ({})",
-                    s,
-                    e
-                );
-                e
-            })
-        })
-        .filter_map(|res| res.map(|socket| socket.to_string()).ok())
-        .collect_vec();
+    let seeds = config.network.get_gossip_seeds();
     tracing::info!("Gossip seeds expanded: {:?}", seeds);
 
     let gossip_listen_addr_clone = config.network.gossip_listen_addr.clone();
@@ -164,8 +146,6 @@ async fn execute(args: Args) -> anyhow::Result<()> {
         Ok(())
     });
 
-    let blockchain_config_path = &config.local.blockchain_config_path;
-
     let sqlite_helper_config = json!({
         "data_dir": std::env::var("SQLITE_DATA_DIR").unwrap_or(sqlite_helper::SQLITE_DATA_DIR.into())
     })
@@ -176,12 +156,6 @@ async fn execute(args: Args) -> anyhow::Result<()> {
 
     let zerostate_path = Some(config.local.zerostate_path.clone());
 
-    let repository = RepositoryImpl::new(
-        PathBuf::from("./data"),
-        zerostate_path,
-        (config.global.finalization_delay_to_stop * 2) as usize,
-    );
-
     tracing::trace!(
         "config.global.min_time_between_state_publish_directives={:?}",
         config.global.min_time_between_state_publish_directives
@@ -191,7 +165,7 @@ async fn execute(args: Args) -> anyhow::Result<()> {
     let zerostate =
         ZeroState::load_from_file(&config.local.zerostate_path).expect("Failed to open zerostate");
     let bk_sets = zerostate.get_block_keeper_sets()?;
-    let block_keeper_sets = Arc::new(Mutex::new(bk_sets));
+    let block_keeper_sets = bk_sets;
 
     // node should sync with other nodes, but if there are
     // no alive nodes, node should wait
@@ -219,81 +193,149 @@ async fn execute(args: Args) -> anyhow::Result<()> {
         key_pair_from_file::<GoshBLS>(config.local.block_keeper_seed_path.clone());
     let block_keeper_rng = SmallRng::from_seed(secret_seed.take_as_seed());
 
-    let (thread_sync_tx, thread_sync_rx) = std::sync::mpsc::channel();
-    let mut thread_sync_router =
-        ThreadSyncService::builder().common_receiver(thread_sync_rx).build();
+    let config_clone = config.clone();
+    // let mut node_execute_handlers = JoinSet::new();
+    // TODO: check that inner_service_loop is active
+    let (routing, routing_rx, _inner_service_loop) =
+        RoutingService::new(incoming_messages_receiver);
+    let repo_path = PathBuf::from("./data");
 
-    let mut network_message_router = NetworkMessageRouter::new(incoming_messages_receiver);
-    let mut node_execute_handlers = JoinSet::new();
+    let mut node_shared_services =
+        node::node::shared_services::SharedServices::start(routing.clone(), repo_path.clone());
 
-    for thread_id in zerostate.get_threads_table().list_threads() {
-        tracing::trace!("start node for thread: {thread_id:?}");
-        let thread_receiver = network_message_router.add_sender(*thread_id);
-        let thread_sync_buffer = thread_sync_router.add_thread(*thread_id);
-        let last_block_id = repository.get_latest_block_id_with_producer_group_change(
-            &zerostate.state(thread_id)?.thread_id,
-        )?;
-        let seed_bytes: [u8; 32] = last_block_id.as_ref().try_into()?;
-        let producer_election_rng = SmallRng::from_seed(seed_bytes);
+    let repository = RepositoryImpl::new(
+        repo_path.clone(),
+        zerostate_path.clone(),
+        (config.global.finalization_delay_to_stop * 2) as usize,
+        node_shared_services.clone(),
+    );
+    let zerostate_threads: Vec<ThreadIdentifier> = zerostate.list_threads().cloned().collect();
 
-        let production_process = TVMBlockProducerProcess::new(
-            config.clone(),
-            repository.clone(),
-            sqlite_helper.clone(),
-            thread_sync_buffer,
-        )
-        .expect("Failed to create production process");
-
-        let sync_state_service = ExternalFileSharesBased::builder()
-            .local_storage_share_base_path(config.local.external_state_share_local_base_dir.clone())
-            .static_storages(config.network.static_storages.clone())
-            .timeout(config.global.node_joining_timeout)
-            .build();
-        let validation_process = TVMBlockKeeperProcess::new(
-            blockchain_config_path,
-            repository.clone(),
-            config.clone(),
-            sqlite_helper.clone(),
-            *thread_id,
-            thread_sync_tx.clone(),
-            zerostate.state(thread_id)?.threads_table.clone(),
-        )
-        .expect("Failed to create validation process");
-
-        let block_processor = AttestationProcessorImpl::new(
-            repository.clone(),
-            block_keeper_sets.clone(),
-            *thread_id,
-        );
-
-        let mut node = Node::new(
-            sync_state_service,
-            production_process,
-            validation_process,
-            repository.clone(),
-            thread_receiver,
-            broadcast_sender.clone(),
-            single_sender.clone(),
-            raw_block_sender.clone(),
-            pubkey.clone(),
-            secret.clone(),
-            config.clone(),
-            block_processor,
-            block_keeper_sets.clone(),
-            block_keeper_rng.clone(),
-            producer_election_rng.clone(),
-            zerostate.state(thread_id)?.threads_table.clone(),
-            *thread_id,
-        );
-        let thread_id_clone = *thread_id;
-        node_execute_handlers.spawn_blocking(move || (node.execute(), thread_id_clone));
+    for thread_id in &zerostate_threads {
+        node_shared_services.exec(|services| {
+            // services.dependency_tracking.init_thread(*thread_id, BlockIdentifier::default());
+            // TODO: check if we have to pass all threads in set
+            services.threads_tracking.init_thread(
+                BlockIdentifier::default(),
+                HashSet::from_iter(vec![*thread_id].into_iter()),
+                &mut (&mut services.router, &mut services.load_balancing),
+            );
+            // TODO: the same must happen after a node sync.
+            services
+                .thread_sync
+                .on_block_finalized(&BlockIdentifier::default(), thread_id)
+                .unwrap();
+        });
     }
+    let repository_clone = repository.clone();
+    // TODO: check that inner_service_thread is active
+    let (routing, _inner_service_thread) = RoutingService::start(
+        (routing, routing_rx),
+        move |parent_block_id, thread_id, thread_receiver| {
+            let blockchain_config_path = &config.local.blockchain_config_path;
+            tracing::trace!("start node for thread: {thread_id:?}");
 
-    let thread_sync_router_handler: JoinHandle<anyhow::Result<()>> =
-        tokio::task::spawn_blocking(move || thread_sync_router.execute());
+            let mut repository = repository_clone.clone();
+            // HACK!
+            if parent_block_id != &BlockIdentifier::default() {
+                repository.init_thread(thread_id, parent_block_id)?;
+            }
+            // END OF HACK
+            let producer_election_rng = {
+                // Here is the problem!
+                // It takes the wrong block id.
+                // should take a parent block of the thread instead.
+                // Yet it requires an explanation why it was done like that
+                let last_block_id =
+                    repository.get_latest_block_id_with_producer_group_change(thread_id)?;
+                let mut seed_bytes = last_block_id.as_ref().to_vec();
+                seed_bytes.extend_from_slice(thread_id.as_ref());
+                let seed = calculate_hash(&seed_bytes)?;
+                SmallRng::from_seed(seed)
+            };
+            // TODO: seems we have a problem here
+            let new_blocks_from_other_threads = repository.add_thread_buffer(*thread_id);
+            let production_process = TVMBlockProducerProcess::new(
+                config.clone(),
+                repository.clone(),
+                sqlite_helper.clone(),
+                new_blocks_from_other_threads,
+                node_shared_services.clone(),
+            )
+            .expect("Failed to create production process");
 
-    let router_execute_handler: JoinHandle<anyhow::Result<()>> =
-        tokio::task::spawn_blocking(move || network_message_router.execute());
+            let sync_state_service = ExternalFileSharesBased::builder()
+                .local_storage_share_base_path(
+                    config.local.external_state_share_local_base_dir.clone(),
+                )
+                .static_storages(config.network.static_storages.clone())
+                .timeout(config.global.node_joining_timeout)
+                .build();
+            let threads_table = {
+                let zero_block_id = <BlockIdentifier>::default();
+                if parent_block_id == &zero_block_id {
+                    zerostate.state(thread_id)?.threads_table.clone()
+                } else {
+                    repository
+                        .get_optimistic_state(parent_block_id)
+                        .expect("thread init factory - block must be in the repo")
+                        .expect("thread init factory - block must be in the repo (option part)")
+                        .get_produced_threads_table()
+                        .clone()
+                }
+            };
+            let validation_process = TVMBlockKeeperProcess::new(
+                blockchain_config_path,
+                repository.clone(),
+                config.clone(),
+                sqlite_helper.clone(),
+                parent_block_id.clone(),
+                *thread_id,
+                node_shared_services.clone(),
+                threads_table.clone(),
+            )
+            .expect("Failed to create validation process");
+
+            let block_processor = AttestationProcessorImpl::new(
+                repository.clone(),
+                block_keeper_sets.clone(),
+                *thread_id,
+            );
+
+            let node = Node::new(
+                node_shared_services.clone(),
+                sync_state_service,
+                production_process,
+                validation_process,
+                repository.clone(),
+                thread_receiver,
+                broadcast_sender.clone(),
+                single_sender.clone(),
+                raw_block_sender.clone(),
+                pubkey.clone(),
+                secret.clone(),
+                config.clone(),
+                block_processor,
+                block_keeper_sets.clone(),
+                block_keeper_rng.clone(),
+                producer_election_rng.clone(),
+                threads_table,
+                *thread_id,
+            );
+
+            Ok(node)
+            // let thread_id_clone = *thread_id;
+            // node_execute_handlers.spawn_blocking(move || (node.execute(), thread_id_clone));
+        },
+    );
+
+    // TODO: need to start routing execution and track its status
+    //    let router_execute_handler: JoinHandle<anyhow::Result<()>> =
+    //        tokio::task::spawn_blocking(move || network_message_router.execute());
+    for thread_id in zerostate_threads {
+        tracing::trace!("Send start thread message for thread from zs: {thread_id:?}");
+        routing.control.send(Command::StartThread((thread_id, BlockIdentifier::default())))?;
+    }
 
     tracing::info!("Adding routes");
 
@@ -313,6 +355,7 @@ async fn execute(args: Args) -> anyhow::Result<()> {
         // }
     };
 
+    let config = config_clone;
     let http_server_handler: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
         let server = http_server::WebServer::new(
             config.network.api_addr,
@@ -332,26 +375,22 @@ async fn execute(args: Args) -> anyhow::Result<()> {
     }
 
     tokio::select! {
-        v = http_server_handler => {
-            tracing::error!("http_server failed: {v:?}");
-            v??
-        },
-        v = node_execute_handlers.join_next() => {
-            tracing::error!("node failed: {v:?}");
-        },
-        v = block_manager_handler => {
-            tracing::error!("lite node failed: {v:?}");
-            v??
-        },
-        v = router_execute_handler => {
-            tracing::error!("network message router failed: {v:?}");
-            v??
-        },
-        v = thread_sync_router_handler => {
-            tracing::error!("thread sync router failed: {v:?}");
-            v??
-        }
-    };
+            v = http_server_handler => {
+                tracing::error!("http_server failed: {v:?}");
+                v??
+            },
+    //        v = node_execute_handlers.join_next() => {
+    //            tracing::error!("node failed: {v:?}");
+    //        },
+            v = block_manager_handler => {
+                tracing::error!("lite node failed: {v:?}");
+                v??
+            },
+    //        v = router_execute_handler => {
+    //            tracing::error!("network message router failed: {v:?}");
+    //            v??
+    //        },
+        };
 
     Ok(())
 }

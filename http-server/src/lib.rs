@@ -43,24 +43,35 @@ where
     }
 
     pub fn route(self) -> Router {
+        // Returns latest shard state
         let storage_latest_router = Router::with_path("storage_latest")
             .get(api::StorageLatestHandler::new(self.local_storage_dir.clone()));
+        // Returns selected shard state
         let storage_router = Router::with_path("storage/<**path>")
             .get(StaticDir::new([&self.local_storage_dir]).auto_list(true));
 
-        let topics_router =
-            Router::with_path("topics/requests").post(api::TopicsRequestsHandler::<T, F>::new());
+        // Process inbound external messages
+        //
+        // JSON: [{
+        //         "id": String,
+        //         "boc": String,
+        //         "expire"?: Int
+        //       }]
+        let ext_messages_router =
+            Router::with_path("messages").post(api::ExtMessagesHandler::<T, F>::new());
 
         // TODO: not implemented yet
+        // Returns block by id
         let blocks_router = Router::with_path("blocks/<id>")
             .get(api::BlocksBlockHandler::new(self.get_block_by_id.clone()));
 
         Router::new() //
             .hoop(Logger::new())
             .hoop(affix_state::inject(self.clone()))
+            .path("bk/v1")
             .push(storage_latest_router)
             .push(storage_router)
-            .push(topics_router)
+            .push(ext_messages_router)
             .push(blocks_router)
     }
 

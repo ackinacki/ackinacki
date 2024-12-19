@@ -1,6 +1,8 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::ops::BitAnd;
+
 use anyhow::ensure;
 use serde::Deserialize;
 use serde::Serialize;
@@ -15,36 +17,31 @@ pub struct BitmasksTable<TBitsSource, TTarget> {
 impl<TBitsSource, TTarget> Default for BitmasksTable<TBitsSource, TTarget>
 where
     TTarget: Default + Clone + std::fmt::Debug + PartialEq,
-    TBitsSource: Clone
-        + std::ops::BitAnd<Output = TBitsSource>
-        + PartialEq<TBitsSource>
-        + std::default::Default
-        + std::fmt::Debug,
-    <TBitsSource as std::ops::BitAnd>::Output: PartialEq<<TBitsSource as std::ops::BitAnd>::Output>,
+    TBitsSource: Clone + PartialEq<TBitsSource> + std::default::Default + std::fmt::Debug,
+    for<'a> &'a TBitsSource: std::ops::BitAnd<Output = TBitsSource>,
+    for<'a> <&'a TBitsSource as BitAnd>::Output: PartialEq<<&'a TBitsSource as BitAnd>::Output>,
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[allow(clippy::len_without_is_empty)]
 impl<TBitsSource, TTarget> BitmasksTable<TBitsSource, TTarget>
 where
     TTarget: Default + Clone + std::fmt::Debug + PartialEq,
-    TBitsSource: Clone
-        + std::ops::BitAnd<Output = TBitsSource>
-        + PartialEq<TBitsSource>
-        + std::default::Default
-        + std::fmt::Debug,
-    <TBitsSource as std::ops::BitAnd>::Output: PartialEq<<TBitsSource as std::ops::BitAnd>::Output>,
+    TBitsSource: Clone + PartialEq<TBitsSource> + std::default::Default + std::fmt::Debug,
+    for<'a> &'a TBitsSource: std::ops::BitAnd<Output = TBitsSource>,
+    for<'a> <&'a TBitsSource as BitAnd>::Output: PartialEq<<&'a TBitsSource as BitAnd>::Output>,
 {
     pub fn rows(&self) -> impl Iterator<Item = &'_ (Bitmask<TBitsSource>, TTarget)> {
         self.masks.iter()
     }
 
     /// Scans the table to find first matching target
-    pub fn find_match(&self, bits: TBitsSource) -> TTarget {
+    pub fn find_match(&self, bits: &TBitsSource) -> TTarget {
         for (mask, target) in self.rows() {
-            if mask.is_match(bits.clone()) {
+            if mask.is_match(bits) {
                 return target.clone();
             }
         }
@@ -55,7 +52,8 @@ where
         );
     }
 
-    pub fn is_match(&self, bits: TBitsSource, target: TTarget) -> bool {
+    // TODO: check if this function can be reworked to take bits as ref
+    pub fn is_match(&self, bits: &TBitsSource, target: TTarget) -> bool {
         self.find_match(bits) == target
     }
 
@@ -87,6 +85,10 @@ where
     pub fn new() -> Self {
         Self { masks: vec![(Bitmask::<TBitsSource>::default(), TTarget::default())] }
     }
+
+    pub fn len(&self) -> usize {
+        self.masks.len()
+    }
 }
 
 #[cfg(test)]
@@ -109,7 +111,7 @@ mod tests {
             .unwrap();
         let mut threads: Vec<u8> = vec![];
         for (mask, thread_id) in threads_table.rows() {
-            let _ = mask.is_match(1u16);
+            let _ = mask.is_match(&1u16);
             threads.push(*thread_id);
         }
         assert_eq!(vec![1u8, 0u8], threads);
@@ -204,6 +206,6 @@ mod tests {
             )
             .unwrap();
         // -- end of setup --
-        assert_eq!(FIRST_MATCHING_RULE_TARGET, threads_table.find_match(0b1011_0001u8));
+        assert_eq!(FIRST_MATCHING_RULE_TARGET, threads_table.find_match(&0b1011_0001u8));
     }
 }

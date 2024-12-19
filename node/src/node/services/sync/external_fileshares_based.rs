@@ -1,7 +1,6 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -14,14 +13,13 @@ use std::time::Duration;
 
 use typed_builder::TypedBuilder;
 
-use crate::block_keeper_system::BlockKeeperSet;
 use crate::node::services::sync::StateSyncService;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::repository_impl::WrappedStateSnapshot;
 use crate::repository::Repository;
-use crate::types::BlockSeqNo;
+use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::ThreadIdentifier;
 
 const RETRY_DOWNLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -51,7 +49,7 @@ impl StateSyncService for ExternalFileSharesBased {
             ThreadIdentifier,
             Vec<<Self::Repository as Repository>::NodeIdentifier>,
         >,
-        block_keeper_set: HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>,
+        block_keeper_set: BlockKeeperRing,
     ) -> anyhow::Result<Self::ResourceAddress> {
         tracing::trace!("add_share_state_task");
         let cid = self.generate_resource_address(&state)?;
@@ -78,7 +76,7 @@ impl StateSyncService for ExternalFileSharesBased {
                     let data = bincode::serialize(&WrappedStateSnapshot {
                         optimistic_state: serialized_state,
                         producer_group: block_producer_groups,
-                        block_keeper_set,
+                        block_keeper_set: block_keeper_set.clone_inner(),
                     })
                     .expect("Failed to serialize state for sharing");
                     tracing::trace!(

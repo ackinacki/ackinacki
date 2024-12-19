@@ -18,7 +18,7 @@
   - [System requirements](#system-requirements-1)
   - [Steps](#steps-1)
   - [Ansible](#ansible-1)
-    - [Prerequisites](#prerequisites-1)
+    - [Prerequisites](#prerequisites-3)
     - [Prepare you inventory](#prepare-you-inventory-1)
 
 # Block Keeper
@@ -40,10 +40,22 @@
 ## Block Keeper Wallet deployment
 
 ### Prerequisites
-- `tvm-cli` command line tool installed
-- Sponsor Wallet with enough NACKL tokens deployed
-  
-See [this guide explaining how to install CLI and deploy Sponsor Wallet](https://dev.ackinacki.com/how-to-deploy-a-sponsor-wallet#create-a-wallet)
+- `tvm-cli` command line tool installed.  
+   See [this guide explaining how to install CLI](https://dev.ackinacki.com/how-to-deploy-a-sponsor-wallet#create-a-wallet)
+- Deployed Sponsor Wallet.  
+  See [this guide explaining how to deploy Sponsor Wallet](https://dev.ackinacki.com/how-to-deploy-a-sponsor-wallet#create-a-wallet)
+- Sufficient amount of NACKL tokens in the Sponsor Wallet balance equal to 2 minimum stakes 
+
+  * To find out the network's minimum stake, call the method in the root contract:
+
+    ```bash
+    tvm-cli -j run 0:7777777777777777777777777777777777777777777777777777777777777777 getMinStakeNow {} --abi acki-nacki/contracts/bksystem/BlockKeeperContractRoot.abi.json
+    ```
+
+  **Important!**
+  For successful restaking, the balance must contain an amount equal to double the minimum stake + 10%.
+
+  * To receive test NACKLs in the test network at shellnet.ackinacki.org, contact us via the [Telegram channel](https://t.me/+1tWNH2okaPthMWU0) and provide the address of your Sponsor Wallet.
 
 ### Configure tvm-cli
 To set appropriate network use next command
@@ -54,18 +66,30 @@ In this case we are using Shellnet network
 
 ### Deploy 
 To deploy Block Keeper Wallet use Shell script `scripts/create_block_keeper_wallet.sh`
+
+This script uses 2 types of keys.
+
+*These are all different keys that are generated in deployment scripts.
+If you already have keys, specify the file path where they are stored in the script.
+If such a file does not exist yet, it will be created.*
+
+  * Master keys - the keys of the Node Owner. These are the primary keys for accessing the wallet. With this key, you can transfer tokens.
+
+  * Service keys - auxiliary keys for accessing the wallet. Their functionality is similar to the master key, but tokens cannot be transferred with this key.
+
 You have to provide necessary arguments:
 - Sponsor Wallet address from where NACKL tokens will be sent
 - Wallet keys file. File with the owner's keys of Sponsor Wallet
 - Master keys file output path. Path to the file with keys for Block Keeper Wallet, which will be created
-- Service keys file output path. Path to the file with Service Keys for Block Keeper Wallet, which will be created
+- Service keys file output path. Path to the file with Service Keys for Block Keeper Wallet, which will be created.
 
 ```bash
 cd scripts
-create_block_keeper_wallet --help
+create_block_keeper_wallet.sh --help
 ```
 
-After successful script completion save you node id and master key file path
+After successful script completion save you `Node id` and `master key`- file path
+
 It will be used in ansible playbook
 
 ## Ansible
@@ -125,6 +149,13 @@ block_keepers:
       HOST_PRIVATE_IP: YOUR-NODE-PRIVATE-ADDRESS
 ```
 
+  **Node ID** is the identifier of the Block Keeper in the network. It is required to create a new Block Keeper.  
+  *Use the one provided by the deploy BK wallet-script*
+
+  **HOST_PRIVATE_IP** 
+  You can specify, for example, `127.0.0.1`.  
+  *The ports must not overlap*
+
 Put your configuration data to inventory and be ready to run playbook
 
 In case of testing you can use ansible-playbook dry run
@@ -138,6 +169,10 @@ If all is good you could run ansible
 ```bash
 ansible-playbook -i test-inventory.yaml ansible/node-deployment.yaml
 ```
+
+Upon completion of the script, BLS keys will be generated and saved in the file `block_keeper{{ NODE_ID }}_bls.keys.json` in the `{{ BK_DIR }}/bk-configs/` folder on the remote server, along with the node.
+
+**BLS keys** - the keys used by BK to sign blocks. The lifespan of the keys is one epoch. Each BK stores a list of BLS public keys of other BKs (for the current epoch), which they use to verify attestations on blocks.
 
 Check docker containers
 
@@ -153,13 +188,14 @@ Check node logs
 tail -f $MNT_DATA/logs-block-keeper/node.log
 ```
 
+
 ## Staking
 ### Prerequisites
 - Master keys file
 - BLS keys file
 
 BLS keys file could be found at `{{ BK_DIR }}/bk-configs/` folder. BK_DIR is a variable from the ansible inventory
-BLS keys file format - `bk{{ NODE_ID }}_bls.keys.json`
+BLS keys file format - `block_keeper{{ NODE_ID }}_bls.keys.json`
 
 ### Run the script
 ```bash

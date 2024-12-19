@@ -18,10 +18,10 @@ impl Debug for DAppIdentifier {
     }
 }
 
-impl std::ops::BitAnd for DAppIdentifier {
-    type Output = Self;
+impl std::ops::BitAnd for &'_ DAppIdentifier {
+    type Output = DAppIdentifier;
 
     fn bitand(self, rhs: Self) -> Self::Output {
-        Self(self.0 & rhs.0)
+        DAppIdentifier(&self.0 & &rhs.0)
     }
 }

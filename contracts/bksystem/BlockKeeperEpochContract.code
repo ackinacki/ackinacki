@@ -1692,7 +1692,7 @@
 }
 
 .fragment canDelete_26f9f39c_internal, {
-	.loc modifiers/modifiers.sol, 85
+	.loc modifiers/modifiers.sol, 88
 	DROP
 	GETGLOB 9
 	GETGLOB 15
@@ -1806,7 +1806,7 @@
 	CALLREF {
 		.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
 	}
-	.loc modifiers/modifiers.sol, 85
+	.loc modifiers/modifiers.sol, 88
 	GETGLOB 9
 	SDEQ
 	THROWIFNOT 207
@@ -2246,7 +2246,7 @@
 	CALLREF {
 		.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
 	}
-	.loc modifiers/modifiers.sol, 85
+	.loc modifiers/modifiers.sol, 88
 	GETGLOB 9
 	SDEQ
 	THROWIFNOT 207
@@ -2342,7 +2342,7 @@
 }
 
 .fragment destroy_38a03563_internal, {
-	.loc modifiers/modifiers.sol, 85
+	.loc modifiers/modifiers.sol, 88
 	GETGLOB 9
 	MYADDR
 	SDEQ
@@ -2904,7 +2904,7 @@
 }
 
 .fragment setStake_486598aa_internal, {
-	.loc modifiers/modifiers.sol, 85
+	.loc modifiers/modifiers.sol, 88
 	GETGLOB 9
 	GETGLOB 15
 	SDEQ
@@ -2965,7 +2965,7 @@
 	CALLREF {
 		.inline BlockKeeperLib_calculateBlockKeeperWalletAddress_18fcb3d6
 	}
-	.loc modifiers/modifiers.sol, 85
+	.loc modifiers/modifiers.sol, 88
 	GETGLOB 9
 	SDEQ
 	THROWIFNOT 207

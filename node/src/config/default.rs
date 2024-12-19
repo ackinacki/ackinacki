@@ -25,11 +25,13 @@ impl Default for GlobalConfig {
             min_signatures_cnt_for_acceptance: 3,
             sync_gap: 32,
             sync_delay_milliseconds: 500,
+            // TODO: Critical! Fix repo issue and revert the value back to 200
             save_state_frequency: 200,
             block_keeper_epoch_code_hash:
                 "88305d70a51fe7f281a5cd5a24136706b2f1b4ae1fa1d2fc69ff3db12deb3090".to_string(),
             gas_limit_for_special_transaction: 10_000_000,
             attestation_validity_block_gap: 5,
+            max_threads_count: 100,
         }
     }
 }

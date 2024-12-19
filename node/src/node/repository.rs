@@ -29,6 +29,8 @@ use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 
+const CLEANUP_HACK: u32 = 1000;
+
 impl<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
 Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
     where
@@ -436,7 +438,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         let stored_finalized_blocks =
             self.repository.list_stored_thread_finalized_blocks(&thread_id)?;
         for (block_id, block_seq_no) in stored_finalized_blocks {
-            if block.data().seq_no() > block_seq_no {
+             if block.data().seq_no() > block_seq_no + CLEANUP_HACK {
                 to_delete.push(block_id);
             }
         }
@@ -445,6 +447,12 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         }
         self.clear_unprocessed_till(&block_seq_no, &thread_id)?;
         self.clear_old_acks_and_nacks(&block_seq_no)?;
+
+        self.shared_services.on_block_finalized(
+            block.data(),
+            &mut self.repository.get_optimistic_state(&block.data().identifier())?
+                .ok_or(anyhow::anyhow!("Block must be in the repo"))?
+        );
         Ok(())
     }
 }

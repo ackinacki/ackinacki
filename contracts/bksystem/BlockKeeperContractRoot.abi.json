@@ -182,6 +182,14 @@
 			]
 		},
 		{
+			"name": "getProxyListCode",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
 			"name": "getRewardNow",
 			"inputs": [
 			],

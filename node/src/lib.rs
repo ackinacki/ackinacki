@@ -10,6 +10,7 @@ pub mod message;
 pub mod node;
 pub mod repository;
 pub mod types;
+pub mod utilities;
 pub mod zerostate;
 
 pub mod block_keeper_system;

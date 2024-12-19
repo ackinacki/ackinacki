@@ -2,16 +2,14 @@
 //
 
 use core::fmt::Display;
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::block_keeper_system::BlockKeeperSet;
 use crate::repository::Repository;
-use crate::types::BlockSeqNo;
+use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::ThreadIdentifier;
 
 pub trait StateSyncService {
@@ -33,7 +31,7 @@ pub trait StateSyncService {
             ThreadIdentifier,
             Vec<<Self::Repository as Repository>::NodeIdentifier>,
         >,
-        block_keeper_set: HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>,
+        block_keeper_set: BlockKeeperRing,
     ) -> anyhow::Result<Self::ResourceAddress>;
 
     fn add_load_state_task(

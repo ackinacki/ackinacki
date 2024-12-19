@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use database::documents_db::SerializedItem;
+use parking_lot::Mutex;
 use tvm_block::ShardStateUnsplit;
 use tvm_types::AccountId;
 
@@ -16,10 +17,14 @@ use crate::bls::GoshBLS;
 #[cfg(test)]
 use crate::message::message_stub::MessageStub;
 use crate::node::associated_types::AttestationData;
+use crate::node::shared_services::SharedServices;
 use crate::node::NodeIdentifier;
+use crate::repository::optimistic_state::DAppIdTable;
 use crate::repository::optimistic_state::OptimisticState;
+use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
 use crate::types::AccountAddress;
+use crate::types::AccountRouting;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockEndLT;
 use crate::types::BlockIdentifier;
@@ -74,7 +79,11 @@ impl OptimisticState for OptimisticStateStub {
         todo!()
     }
 
-    fn apply_block(&mut self, _block_candidate: &AckiNackiBlock<GoshBLS>) -> anyhow::Result<()> {
+    fn apply_block(
+        &mut self,
+        _block_candidate: &AckiNackiBlock<GoshBLS>,
+        _shared_services: &SharedServices,
+    ) -> anyhow::Result<()> {
         todo!()
     }
 
@@ -82,19 +91,37 @@ impl OptimisticState for OptimisticStateStub {
         todo!()
     }
 
-    fn get_threads_table(&self) -> &ThreadsTable {
+    fn get_produced_threads_table(&self) -> &ThreadsTable {
         todo!()
     }
 
-    fn split_state_for_mask(
-        self,
-        _threads_table: ThreadsTable,
-        _thread_id: ThreadIdentifier,
-    ) -> anyhow::Result<(Self, Self)> {
+    fn set_produced_threads_table(&mut self, _table: ThreadsTable) {
         todo!()
     }
 
-    fn does_account_belong_to_the_state(&self, _account_id: &AccountId) -> anyhow::Result<bool> {
+    fn crop(
+        &mut self,
+        _thread_identifier: &ThreadIdentifier,
+        _threads_table: &ThreadsTable,
+    ) -> anyhow::Result<()> {
+        todo!()
+    }
+
+    fn get_account_routing(&mut self, _account_id: &AccountId) -> anyhow::Result<AccountRouting> {
+        todo!()
+    }
+
+    fn does_routing_belong_to_the_state(
+        &mut self,
+        _account_routing: &AccountRouting,
+    ) -> anyhow::Result<bool> {
+        todo!()
+    }
+
+    fn does_account_belong_to_the_state(
+        &mut self,
+        _account_id: &AccountId,
+    ) -> anyhow::Result<bool> {
         todo!()
     }
 
@@ -102,26 +129,29 @@ impl OptimisticState for OptimisticStateStub {
         todo!()
     }
 
-    fn merge_threads_table(&mut self, _another_state: &Self) -> anyhow::Result<()> {
+    fn merge_dapp_id_tables(&mut self, _another_state: &DAppIdTable) -> anyhow::Result<()> {
         todo!()
     }
 
-    fn merge_dapp_id_tables(&mut self, _another_state: &Self) -> anyhow::Result<()> {
+    fn get_internal_message_queue_length(&mut self) -> usize {
         todo!()
     }
 
-    fn add_unprocessed_messages(&mut self, _messages: Vec<Self::Message>) {
+    fn does_state_has_messages_to_other_threads(&mut self) -> anyhow::Result<bool> {
         todo!()
     }
 
-    fn get_messages_for_another_thread(
-        &self,
-        _another_state: &Self,
-    ) -> anyhow::Result<Vec<Self::Message>> {
+    fn add_messages_from_ref(
+        &mut self,
+        _cross_thread_ref: &CrossThreadRefData,
+    ) -> anyhow::Result<()> {
         todo!()
     }
 
-    fn does_state_has_messages_to_other_threads(&self) -> anyhow::Result<bool> {
+    fn add_accounts_from_ref(
+        &mut self,
+        _cross_thread_ref: &CrossThreadRefData,
+    ) -> anyhow::Result<()> {
         todo!()
     }
 }
@@ -215,6 +245,14 @@ impl Repository for RepositoryStub {
         _thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<Vec<Envelope<GoshBLS, AckiNackiBlock<GoshBLS>>>> {
         Ok(vec![])
+    }
+
+    fn init_thread(
+        &mut self,
+        _thread_id: &ThreadIdentifier,
+        _parent_block_id: &BlockIdentifier,
+    ) -> anyhow::Result<()> {
+        todo!();
     }
 
     fn select_thread_last_finalized_block(
@@ -315,11 +353,19 @@ impl Repository for RepositoryStub {
         todo!()
     }
 
+    fn mark_block_as_processed(&self, _block_id: &BlockIdentifier) -> anyhow::Result<()> {
+        todo!()
+    }
+
+    fn is_block_processed(&self, _block_id: &BlockIdentifier) -> anyhow::Result<bool> {
+        todo!()
+    }
+
     fn take_state_snapshot(
         &self,
         _block_id: &BlockIdentifier,
         _block_producer_groups: HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
-        _block_keeper_set: HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>,
+        _block_keeper_set: BTreeMap<BlockSeqNo, BlockKeeperSet>,
     ) -> anyhow::Result<Self::StateSnapshot> {
         todo!()
     }
@@ -328,7 +374,7 @@ impl Repository for RepositoryStub {
         &self,
         _serialized_state: Vec<u8>,
         _block_producer_groups: HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
-        _block_keeper_set: HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>,
+        _block_keeper_set: BTreeMap<BlockSeqNo, BlockKeeperSet>,
     ) -> anyhow::Result<Self::StateSnapshot> {
         todo!()
     }
@@ -340,7 +386,7 @@ impl Repository for RepositoryStub {
         _thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<(
         HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
-        HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>,
+        BTreeMap<BlockSeqNo, BlockKeeperSet>,
     )> {
         todo!()
     }
@@ -409,6 +455,10 @@ impl Repository for RepositoryStub {
         &self,
         _thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<Self::OptimisticState> {
+        todo!()
+    }
+
+    fn add_thread_buffer(&self, _thread_id: ThreadIdentifier) -> Arc<Mutex<Vec<BlockIdentifier>>> {
         todo!()
     }
 

@@ -61,11 +61,6 @@ async fn open_db(db_path: PathBuf) -> anyhow::Result<Pool<Sqlite>> {
 }
 
 pub async fn start(bind_to: String, db_path: PathBuf) -> anyhow::Result<()> {
-    // let base_url = format!("http://{}", bind_to);
-    // let playground_graphql = "".to_string(); // format!("{base_url}/graphql");
-    // let playground_graphql_ide = "".to_string(); //
-    // format!("{base_url}/graphql_ide");
-
     let pool = open_db(db_path).await?;
     let node_url = match std::env::var("NODE_URL") {
         Ok(node_url) => node_url,

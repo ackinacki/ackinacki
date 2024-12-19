@@ -207,8 +207,6 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         getMoney();
         uint64 seqNoStart = block.seqno;
         TvmCell data = BlockKeeperLib.composeBlockKeeperEpochStateInit(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, seqNoStart);
-        mapping(uint32 => varuint32) data_cur;
-        data_cur[CURRENCIES_ID] = msg.currencies[CURRENCIES_ID];
         new BlockKeeperEpoch {
             stateInit: data, 
             value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_WALLET),
@@ -288,6 +286,14 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
 
     function getProxyListAddr() external view returns(address) {
         return BlockKeeperLib.calculateBlockKeeperEpochProxyListAddress(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], _owner_pubkey, _root);
+    }
+
+    function getProxyListCodeHash() external view returns(uint256) {
+        return tvm.hash(BlockKeeperLib.buildBlockKeeperEpochProxyListCode(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], _root));
+    }
+
+    function getProxyListCode() external view returns(TvmCell) {
+        return BlockKeeperLib.buildBlockKeeperEpochProxyListCode(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], _root);
     }
 
     function getVersion() external pure returns(string, string) {

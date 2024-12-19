@@ -10,16 +10,16 @@ use tvm_types::base64_decode;
 use tvm_types::UInt256;
 
 use crate::WebServer;
-pub struct TopicsRequestsHandler<T, F>(PhantomData<T>, PhantomData<F>);
+pub struct ExtMessagesHandler<T, F>(PhantomData<T>, PhantomData<F>);
 
-impl<T, F> TopicsRequestsHandler<T, F> {
+impl<T, F> ExtMessagesHandler<T, F> {
     pub fn new() -> Self {
         Self(PhantomData, PhantomData)
     }
 }
 
 #[async_trait]
-impl<T, F> Handler for TopicsRequestsHandler<T, F>
+impl<T, F> Handler for ExtMessagesHandler<T, F>
 where
     T: Clone + Send + Sync + 'static + std::fmt::Debug,
     F: Clone + Send + Sync + 'static + Fn(tvm_block::Message) -> anyhow::Result<T>,
@@ -40,24 +40,20 @@ where
         };
 
         if let Ok(body) = req.parse_json::<Value>().await {
-            if let Some(records) = body
-                .as_object()
-                .and_then(|body| body.get("records"))
-                .and_then(|records| records.as_array())
-            {
+            if let Some(records) = body.as_array() {
                 tracing::trace!(target: "node", "Process request records len: {}", records.len());
                 for record in records {
-                    let key = record
+                    let msg_id = record
                         .as_object()
-                        .and_then(|record| record.get("key"))
+                        .and_then(|record| record.get("id"))
                         .and_then(|val| val.as_str());
 
-                    let value = record
+                    let boc = record
                         .as_object()
-                        .and_then(|record| record.get("value"))
+                        .and_then(|record| record.get("boc"))
                         .and_then(|val| val.as_str());
-                    if let Some(key) = key {
-                        if let Some(value) = value {
+                    if let Some(key) = msg_id {
+                        if let Some(value) = boc {
                             tracing::trace!(target: "node", "Process request record");
                             let message = match parse_message(key, value) {
                                 Ok(m) => m,

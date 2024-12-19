@@ -51,3 +51,12 @@ where
         }
     }
 }
+
+impl<T> std::fmt::Debug for FixedSizeHashSet<T>
+where
+    T: Clone + std::hash::Hash + std::cmp::Eq,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "FixedSizeHashSet({}/{})", self.eviction_order.len(), self.capacity)
+    }
+}

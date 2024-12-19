@@ -138,6 +138,13 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             }
             return Ok(BlockStatus::BlockCantBeApplied);
         }
+        for ref_block in &candidate_block.data().get_common_section().refs {
+            if self.repository.is_block_verified(ref_block)? {
+                tracing::trace!("candidate block can't be processed because it's ref({ref_block:?}) was not processed");
+                return Ok(BlockStatus::BlockCantBeApplied);
+            }
+        }
+
         // Clear thread gap counter
         self.clear_block_gap(&thread_id);
 
@@ -284,6 +291,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             let attestations = self.attestations_to_send.entry(merged_block.data().seq_no()).or_default();
             attestations.push(block_attestation);
         }
+        self.shared_services.on_block_appended(candidate_block.data());
         if merged_block_broadcast_signatures_count >= min_broadcast_acceptance
             && !self
             .repository
@@ -296,7 +304,8 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             }
         }
         self.remove_from_unprocessed(&block_seq_no, &block_id)?;
-        tracing::trace!("Block successfully processed: {block_id:?} {}ms", start.elapsed().as_millis());
+        self.repository.mark_block_as_processed(&block_id)?;
+        tracing::trace!("Block successfully processed: {:?} {}ms", candidate_block.data(), start.elapsed().as_millis());
         Ok(BlockStatus::Ok)
     }
 
@@ -370,10 +379,12 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         let keys: Vec<BlockSeqNo> =
             self.unprocessed_blocks_cache.keys().copied().collect();
         for key in keys {
-            if &key < last_finalized_seq_no {
+            if &key <= last_finalized_seq_no {
                 let blocks = self.unprocessed_blocks_cache.remove(&key).unwrap();
                 for block_id in blocks {
-                    self.repository.erase_block(&block_id, thread_id)?;
+                    if !self.repository.is_block_verified(&block_id)?{
+                        self.repository.erase_block(&block_id, thread_id)?;
+                    }
                 }
             } else {
                 break;
@@ -439,6 +450,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         &mut self,
         candidate_block: <Self as NodeAssociatedTypes>::CandidateBlock,
     ) -> anyhow::Result<BlockStatus> {
+        // PROBLEM IS HERE! WE ACCEPT A BLOCK AS A CANDIDATE WITHOUT A CHECK THAT PARENT BLOCK WAS APPLIED. THIS HAPPENS DURING THE SYNC PROCESS.
         tracing::trace!("store_and_accept_candidate_block {:?} {:?}", candidate_block.data().identifier(), candidate_block.clone_signature_occurrences());
         let block_seq_no = candidate_block.data().seq_no();
         let min_broadcast_acceptance =
@@ -472,7 +484,8 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             );
             self.repository.store_block(merged_envelope)?;
         }
-
+        // Problematic code!
+        //self.shared_services.on_block_appended(&candidate_block.data());
         if merged_block_broadcast_signatures_count >= min_broadcast_acceptance
             && !self
             .repository

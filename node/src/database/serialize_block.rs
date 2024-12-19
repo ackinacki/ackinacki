@@ -40,7 +40,7 @@ use tvm_types::HashmapType;
 use tvm_types::SliceData;
 use tvm_types::UInt256;
 
-use crate::block::producer::builder::structs::EngineTraceInfoData;
+use crate::block::producer::builder::EngineTraceInfoData;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;

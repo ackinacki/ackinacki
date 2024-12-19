@@ -13,9 +13,13 @@ use tvm_block::GetRepresentationHash;
 use tvm_block::Serializable;
 use tvm_types::UInt256;
 
+use crate::types::BlockIdentifier;
+
 mod filter_messages;
 #[cfg(test)]
 pub mod message_stub;
+
+pub type MessageIdentifier = BlockIdentifier;
 
 pub trait Message: Debug + Clone + Sync + Send + Serialize + for<'b> Deserialize<'b> {
     type AccountId;
@@ -70,8 +74,8 @@ impl<'de> Deserialize<'de> for WrappedMessage {
         D: Deserializer<'de>,
     {
         let data = WrappedMessageData::deserialize(deserializer)?;
-        let block = WrappedMessage::wrap_deserialize(data);
-        Ok(block)
+        let message = WrappedMessage::wrap_deserialize(data);
+        Ok(message)
     }
 }
 impl Message for WrappedMessage {

@@ -46,11 +46,12 @@ where
     pub block_attestations: Vec<Envelope<TBLSSignatureScheme, AttestationData>>,
     pub producer_id: NodeIdentifier,
     pub thread_id: ThreadIdentifier,
-    pub threads_state: Option<ThreadsTable>,
+    pub threads_table: Option<ThreadsTable>,
     /// Extra references this block depends on.
     /// This can be any combination of:
     /// - sources of internal messages from another thread
     /// - source of an update of the threads state
+    /// - source of updates for account migrations due to a new dapp set.
     /// - (?)
     pub refs: Vec<BlockIdentifier>,
     pub block_keeper_set_changes: Vec<BlockKeeperSetChange>,
@@ -72,12 +73,13 @@ where
         block_keeper_set_changes: Vec<BlockKeeperSetChange>,
         verify_complexity: SignerIndex,
         refs: Vec<BlockIdentifier>,
+        threads_table: Option<ThreadsTable>,
     ) -> Self {
         CommonSection {
             block_attestations: vec![],
             directives: Directives::default(),
             thread_id,
-            threads_state: None,
+            threads_table,
             refs,
             producer_id,
             block_keeper_set_changes,
@@ -106,6 +108,7 @@ where
             producer_group: self.producer_group.clone(),
             thread_identifier: self.thread_id,
             refs: self.refs.clone(),
+            threads_table: self.threads_table.clone(),
         }
     }
 
@@ -128,9 +131,7 @@ where
             producer_group: data.producer_group,
             refs: data.refs,
             thread_id: data.thread_identifier,
-            // TODO: implement!
-            // -- this: --
-            threads_state: None, // -- end of todo --
+            threads_table: data.threads_table,
         }
     }
 }
@@ -147,6 +148,7 @@ struct WrappedCommonSection {
     pub producer_group: Vec<NodeIdentifier>,
     pub thread_identifier: ThreadIdentifier,
     pub refs: Vec<BlockIdentifier>,
+    pub threads_table: Option<ThreadsTable>,
 }
 
 impl<TBLSSignatureScheme> Serialize for CommonSection<TBLSSignatureScheme>
@@ -196,6 +198,7 @@ where
             .field("nacks", &self.nacks)
             .field("producer_group", &self.producer_group)
             .field("refs", &self.refs)
+            .field("threads_table", &self.threads_table)
             .finish()
     }
 }

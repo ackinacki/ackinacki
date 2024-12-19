@@ -11,6 +11,8 @@ use serde::Serializer;
 use tvm_types::AccountId;
 use tvm_types::UInt256;
 
+pub mod direct_bit_access_operations;
+
 #[derive(Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct AccountAddress(pub tvm_types::AccountId);
 
@@ -49,8 +51,8 @@ impl<'de> Deserialize<'de> for AccountAddress {
 
 // Note:
 // This struct can be optimized for better performance.
-impl std::ops::BitAnd for AccountAddress {
-    type Output = Self;
+impl std::ops::BitAnd for &'_ AccountAddress {
+    type Output = AccountAddress;
 
     fn bitand(self, rhs: Self) -> Self::Output {
         let lhs_buffer: [u8; 32] =
@@ -61,6 +63,6 @@ impl std::ops::BitAnd for AccountAddress {
         for i in 0..result_buffer.len() {
             result_buffer[i] = lhs_buffer[i] & rhs_buffer[i];
         }
-        Self(tvm_types::AccountId::from(result_buffer))
+        AccountAddress(tvm_types::AccountId::from(result_buffer))
     }
 }

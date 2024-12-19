@@ -1,6 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+pub static DAPP_ROOT_ADDR: &str = include_str!("../../../contracts/dappconfig/DappRoot.addr");
 pub static DAPP_CONFIG_ABI: &str =
     include_str!("../../../contracts/dappconfig/DappConfig.abi.json");
 pub static DAPP_ROOT_ABI: &str = include_str!("../../../contracts/dappconfig/DappRoot.abi.json");

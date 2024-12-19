@@ -3,7 +3,6 @@
 
 use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 use database::documents_db::DocumentsDb;
@@ -16,18 +15,20 @@ use tvm_types::UInt256;
 
 use crate::block::producer::errors::VerifyError;
 use crate::block::producer::errors::BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK;
-use crate::block::producer::BlockProducer;
-use crate::block::producer::TVMBlockProducer;
+use crate::block::producer::BlockVerifier;
+use crate::block::producer::TVMBlockVerifier;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::config::Config;
 use crate::database::write_to_db;
-use crate::multithreading::thread_synchrinization_service::ThreadSyncInfo;
 use crate::node::attestation_processor::LOOP_PAUSE_DURATION;
+use crate::node::shared_services::SharedServices;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
+use crate::repository::CrossThreadRefData;
+use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
@@ -59,14 +60,17 @@ pub struct TVMBlockKeeperProcess {
 }
 
 impl TVMBlockKeeperProcess {
+    #[allow(clippy::too_many_arguments)]
     pub fn new<P: AsRef<Path>>(
         blockchain_config_path: P,
         mut repository: RepositoryImpl,
         node_config: Config,
         archive: Option<Arc<dyn DocumentsDb>>,
+        block_id: BlockIdentifier,
         thread_id: ThreadIdentifier,
-        thread_sync_tx: Sender<ThreadSyncInfo>,
-        threads_table: ThreadsTable,
+        mut shared_services: SharedServices,
+        // TODO: remove
+        _threads_table: ThreadsTable,
     ) -> anyhow::Result<Self> {
         let blocks_queue = Arc::new(Mutex::new(VecDeque::<(
             Envelope<GoshBLS, AckiNackiBlock<<Self as BlockKeeperProcess>::BLSSignatureScheme>>,
@@ -89,11 +93,18 @@ impl TVMBlockKeeperProcess {
         let last_state_id = Arc::new(Mutex::new(BlockIdentifier::default()));
         let last_state_id_clone = last_state_id.clone();
         let blockchain_config = Arc::new(blockchain_config);
-        let last_state = Arc::new(Mutex::new(
-            repository
-                .get_zero_state_for_thread(&thread_id)
-                .expect("Failed to get optimistic state from zerostate"),
-        ));
+        let last_state = Arc::new(Mutex::new({
+            if block_id == BlockIdentifier::default() {
+                repository
+                    .get_zero_state_for_thread(&thread_id)
+                    .expect("Failed to get optimistic state from zerostate")
+            } else {
+                repository
+                    .get_optimistic_state(&block_id)
+                    .expect("Failed to get optimistic state for a thread root block")
+                    .expect("Failed to get optimistic state for a thread root block (option)")
+            }
+        }));
         let operational_state = last_state.clone();
         let handler: std::thread::JoinHandle<()> = std::thread::Builder::new()
             .name("Block keeper process".to_string())
@@ -137,20 +148,23 @@ impl TVMBlockKeeperProcess {
                         };
                     }
                     if do_verify {
-                        let mut refs = vec![];
-                        for block_id in &next_block.get_common_section().refs {
-                            let state = repository
-                                .get_optimistic_state(block_id)
-                                .expect("Failed to load ref state")
-                                .expect("Failed to load ref state");
-                            refs.push(state);
-                        }
+                        let refs = shared_services.exec(|service| {
+                            let mut refs = vec![];
+                            for block_id in &next_block.get_common_section().refs {
+                                let state = service.cross_thread_ref_data_service
+                                    .get_cross_thread_ref_data(block_id)
+                                    .expect("Failed to load ref state");
+                                refs.push(state);
+                            }
+                            refs
+                        });
                         let verify_res = verify_block(
                             &next_block,
                             blockchain_config.clone(),
                             &mut last_state,
                             node_config.clone(),
                             refs,
+                            shared_services.clone(),
                         )
                         .expect("Failed to verify block");
                         if !verify_res {
@@ -160,30 +174,32 @@ impl TVMBlockKeeperProcess {
                         dump.push((next_block.identifier(), next_block.seq_no(), verify_res));
                         // }
                     } else {
-                        last_state.apply_block(&next_block).expect("Failed to apply block");
-                    }
-                    if last_state
-                        .does_state_has_messages_to_other_threads()
-                        .expect("Failed to check optimistic state for crossthread messages")
-                    {
+                        // DEBUG!
+                        /*
+                        assert!(last_state.block_id == next_block.parent());
+                        assert!(next_block.get_common_section().refs.is_empty());
                         tracing::trace!(
-                            "State has messages for other threads: {:?}",
-                            last_state.block_id
+                            "keeper_debug: block {} on {:?}",
+                            next_block.identifier(),
+                            last_state.get_shard_state_as_cell().repr_hash(),
                         );
-                        // TODO: mark all threads as destination for now, fix it later
-                        let destination_thread_ids = threads_table
-                            .list_threads()
-                            .filter(|id| **id != thread_id)
-                            .cloned()
-                            .collect();
-                        let sync_info = ThreadSyncInfo {
-                            source_thread_id: thread_id,
-                            block_id: last_state.block_id.clone(),
-                            destination_thread_ids,
-                        };
-                        tracing::trace!("send ThreadSyncInfo: {:?}", sync_info);
-                        thread_sync_tx.send(sync_info).expect("Failed to send sync info");
+                        */
+                        // --- end of debug ---
+
+                        last_state.apply_block(
+                            &next_block,
+                            &shared_services,
+                        ).expect("Failed to apply block");
                     }
+
+                    let cross_thread_ref_data = CrossThreadRefData::from_ackinacki_block(&next_block, &mut last_state).expect("Failed to create cross-thread ref data");
+                    shared_services.exec(|service| {
+                        service.cross_thread_ref_data_service
+                            .set_cross_thread_ref_data(cross_thread_ref_data)
+                    }).expect("Failed to save cross-thread ref data");
+
+                    // Note: mark block as verified to be sure it's cross thread refs were processed
+                    repository.mark_block_as_verified(&block_id).expect("Failed to mark block as verified");
                     {
                         let mut last_state_id = last_state_id_clone.lock();
                         *last_state_id = next_block.identifier();
@@ -203,9 +219,14 @@ impl TVMBlockKeeperProcess {
                         .expect("Failed to write block data to db");
                     }
                     let seq_no = next_block.seq_no();
-                    if next_block.directives().share_state_resource_address.is_some()
-                        || (seq_no % node_config.global.save_state_frequency == 0)
-                    {
+                    let block_will_share_state = next_block
+                        .directives()
+                        .share_state_resource_address
+                        .is_some();
+                    let must_save_state = block_will_share_state
+                        || next_block.is_thread_splitting()
+                        || (seq_no % node_config.global.save_state_frequency == 0);
+                    if must_save_state {
                         repository
                             .store_optimistic(last_state.clone())
                             .expect("Failed to store optimistic state");
@@ -292,17 +313,17 @@ fn verify_block(
     blockchain_config: Arc<BlockchainConfig>,
     prev_block_optimistic_state: &mut OptimisticStateImpl,
     node_config: Config,
-    refs: Vec<OptimisticStateImpl>,
+    refs: Vec<CrossThreadRefData>,
+    shared_services: SharedServices,
 ) -> anyhow::Result<bool> {
     #[cfg(feature = "timing")]
     let start = std::time::Instant::now();
     tracing::trace!("Verifying block: {:?}", block_candidate.identifier());
 
-    let producer = TVMBlockProducer::builder()
-        .active_threads(vec![])
+    let producer = TVMBlockVerifier::builder()
         .blockchain_config(blockchain_config)
-        .message_queue(VecDeque::new())
         .node_config(node_config)
+        .shared_services(shared_services)
         .epoch_block_keeper_data(vec![])
         .build();
 

@@ -31,7 +31,7 @@ pub fn filter_int_messages_for_thread(
 
         if let Some(acc_id) = message.int_dst_account_id() {
             let account_routing = account_routing_mapper(acc_id.clone());
-            if threads_table.is_match(account_routing, thread_id) {
+            if threads_table.is_match(&account_routing, thread_id) {
                 let prefix = acc_id.clone().get_next_u64()?;
                 let key = OutMsgQueueKey::with_workchain_id_and_prefix(
                     0,
@@ -57,7 +57,7 @@ pub fn filter_ext_messages_for_thread(
     for message in ext_messages_queue {
         if let Some(acc_id) = message.int_dst_account_id() {
             let account_routing = account_routing_mapper(acc_id.clone());
-            if threads_table.is_match(account_routing, thread_id) {
+            if threads_table.is_match(&account_routing, thread_id) {
                 filtered_messages.push_back(message);
             }
         }

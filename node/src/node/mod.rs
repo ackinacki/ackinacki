@@ -8,6 +8,7 @@ mod attestations;
 mod block_keeper_system;
 mod block_processing;
 mod crypto;
+pub mod events;
 mod execution;
 mod fork_choice;
 pub mod leader_election;
@@ -20,27 +21,24 @@ pub mod services;
 mod synchronization;
 mod threads;
 mod verifier;
-
+#[macro_use]
+pub mod impl_trait_macro;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
 
 pub use associated_types::NodeIdentifier;
 pub use associated_types::SignerIndex;
 pub use network_message::NetworkMessage;
-use parking_lot::Mutex;
 use services::sync::StateSyncService;
 use typed_builder::TypedBuilder;
 
 use crate::block::keeper::process::BlockKeeperProcess;
 use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
-use crate::block_keeper_system::BlockKeeperSet;
-use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::gosh_bls::PubKey;
 use crate::bls::BLSSignatureScheme;
@@ -53,9 +51,13 @@ use crate::node::associated_types::OptimisticStateFor;
 use crate::node::attestation_processor::AttestationProcessor;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::Repository;
+use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
+pub mod shared_services;
+use shared_services::SharedServices;
+
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
@@ -101,6 +103,7 @@ pub struct Node<
     TRandomGenerator: rand::Rng,
 {
     repository: TRepository,
+    shared_services: SharedServices,
     state_sync_service: TStateSyncService,
     validation_process: TValidationProcess,
     production_process: TBlockProducerProcess,
@@ -155,7 +158,7 @@ pub struct Node<
     sent_acks: BTreeMap<BlockSeqNo, Envelope<TBLSSignatureScheme, AckData>>,
     received_nacks: Vec<Envelope<TBLSSignatureScheme, NackData>>,
     config: Config,
-    block_keeper_sets: Arc<Mutex<HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>>>,
+    block_keeper_sets: BlockKeeperRing,
     block_producer_groups: HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, Vec<NodeIdentifier>>>,
     block_gap_length: HashMap<ThreadIdentifier, usize>,
     sent_attestations: HashMap<ThreadIdentifier,
@@ -214,6 +217,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        shared_services: SharedServices,
         state_sync_service: TStateSyncService,
         production_process: TBlockProducerProcess,
         validation_process: TValidationProcess,
@@ -254,7 +258,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         secret: <TBLSSignatureScheme as BLSSignatureScheme>::Secret,
         config: Config,
         attestation_processor: TAttestationProcessor,
-        block_keeper_sets: Arc<Mutex<HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>>>,
+        mut block_keeper_sets: BlockKeeperRing,
         block_keeper_rng: TRandomGenerator,
         producer_election_rng: TRandomGenerator,
         threads_table: ThreadsTable,
@@ -262,11 +266,13 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
     ) -> Self {
         let signer = config.local.node_id as SignerIndex;
         if cfg!(test) {
-            let block_keeper_sets = block_keeper_sets.lock().get(&thread_id).expect("Failed to get block keepers for thread").clone();
-            assert!(!block_keeper_sets.is_empty(), "Initial BK set is empty");
-            tracing::trace!("Check that zerostate contains block keeper key");
-            let (_seq_no, bk_set) = block_keeper_sets.last_key_value().unwrap();
-            assert_eq!(bk_set.get(&signer).map(|data| &data.pubkey), Some(&pubkey));
+            block_keeper_sets.with_last_entry(|e| {
+                let block_keeper_sets = e.expect("must be there");
+                tracing::trace!("Check that zerostate contains block keeper key");
+                let  bk_set = block_keeper_sets.get();
+                assert_eq!(bk_set.get(&signer).map(|data| &data.pubkey), Some(&pubkey));
+            });
+
         }
         tracing::trace!("Block keeper key ring: {:?}", block_keeper_sets);
 
@@ -275,6 +281,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         tracing::trace!("Start node for thread: {thread_id:?}");
         tracing::trace!("Threads table: {threads_table:?}");
         let mut res = Self {
+            shared_services,
             state_sync_service,
             repository,
             rx,
@@ -309,15 +316,14 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             threads_table,
             thread_id,
         };
-
-        let (last_finalized_block_id, _last_finalized_block_seq_no) = res.repository.select_thread_last_finalized_block(&thread_id).expect("Failed to load last finalized block data");
-        if last_finalized_block_id != BlockIdentifier::default() {
-            let finalized_block = res.repository.get_block_from_repo_or_archive(&last_finalized_block_id).expect("Failed to load finalized block");
-            // Start it from zero block to be able to process old blocks or attestations it the come
-            res.set_producer_groups_from_finalized_state(thread_id, BlockSeqNo::default(), finalized_block.data().get_common_section().producer_group.clone());
-        } else {
+        // let (last_finalized_block_id, _last_finalized_block_seq_no) = res.repository.select_thread_last_finalized_block(&thread_id).expect("Failed to load last finalized block data");
+        // if last_finalized_block_id != BlockIdentifier::default() {
+        //     let finalized_block = res.repository.get_block_from_repo_or_archive(&last_finalized_block_id).expect("Failed to load finalized block");
+        //     // Start it from zero block to be able to process old blocks or attestations it the come
+        //     res.set_producer_groups_from_finalized_state(thread_id, BlockSeqNo::default(), finalized_block.data().get_common_section().producer_group.clone());
+        // } else {
             res.update_producer_group(&thread_id, vec![]).expect("Failed to initialize producer group");
-        }
+        // }
         res
     }
 }

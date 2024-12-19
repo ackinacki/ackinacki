@@ -71,6 +71,9 @@ abstract contract Modifiers is ReplayProtection {
                     require(addr.hasValue(), ERR_NOT_OWNER);
                     require(msg.sender == addr.get(), ERR_NOT_OWNER);  
                 }
+            } else {
+                require(addr.hasValue(), ERR_NOT_OWNER);
+                require(msg.sender == addr.get(), ERR_NOT_OWNER);  
             }
         }
         _;

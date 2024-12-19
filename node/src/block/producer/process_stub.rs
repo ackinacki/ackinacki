@@ -18,7 +18,6 @@ use crate::repository::stub_repository::RepositoryStub;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
-use crate::types::ThreadsTable;
 
 #[cfg(test)]
 pub struct BlockProducerProcessStub {}
@@ -35,7 +34,6 @@ impl BlockProducerProcess for BlockProducerProcessStub {
     fn start_thread_production(
         &mut self,
         _thread_id: &ThreadIdentifier,
-        _threads_table: &ThreadsTable,
         _prev_block_id: &BlockIdentifier,
     ) -> anyhow::Result<()> {
         todo!()

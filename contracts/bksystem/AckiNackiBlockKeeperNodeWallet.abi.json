@@ -230,6 +230,22 @@
 			]
 		},
 		{
+			"name": "getProxyListCodeHash",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"uint256"}
+			]
+		},
+		{
+			"name": "getProxyListCode",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
 			"name": "getVersion",
 			"inputs": [
 			],

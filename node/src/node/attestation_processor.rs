@@ -1,15 +1,12 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use parking_lot::Mutex;
 
-use crate::block_keeper_system::BlockKeeperSet;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::gosh_bls::PubKey;
@@ -19,8 +16,8 @@ use crate::node::associated_types::AttestationData;
 use crate::node::SignerIndex;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
+use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AckiNackiBlock;
-use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 
 pub const LOOP_PAUSE_DURATION: Duration = Duration::from_millis(10);
@@ -46,9 +43,7 @@ pub struct AttestationProcessorImpl {
 impl AttestationProcessorImpl {
     pub fn new(
         repository: <Self as AttestationProcessor>::Repository,
-        block_keeper_ring: Arc<
-            Mutex<HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>>,
-        >,
+        block_keeper_ring: BlockKeeperRing,
         thread_identifier: ThreadIdentifier,
     ) -> Self {
         let attestations_queue =
@@ -186,31 +181,12 @@ impl AttestationProcessor for AttestationProcessorImpl {
     }
 }
 
-pub fn get_block_keeper_pubkeys(
-    block_keeper_sets: Arc<Mutex<HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>>>,
-    block_seq_no: &BlockSeqNo,
-    thread_id: &ThreadIdentifier,
-) -> HashMap<SignerIndex, PubKey> {
-    let thread_bk_sets =
-        block_keeper_sets.lock().get(thread_id).expect("Failed to get BK set for thread").clone();
-    for (seq_no, bk_set) in thread_bk_sets.iter().rev() {
-        if seq_no > block_seq_no {
-            continue;
-        }
-        return bk_set.iter().map(|(k, v)| (*k, v.pubkey.clone())).collect();
-    }
-    panic!("Failed to find BK set for block with seq_no: {block_seq_no:?}")
-}
-
 fn check_block_signature(
-    block_keeper_ring: Arc<Mutex<HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>>>,
+    block_keeper_ring: BlockKeeperRing,
     candidate_block: &Envelope<GoshBLS, AckiNackiBlock<GoshBLS>>,
 ) -> bool {
-    let block_keeper_ring = get_block_keeper_pubkeys(
-        block_keeper_ring,
-        &candidate_block.data().seq_no(),
-        &candidate_block.data().get_common_section().thread_id,
-    );
+    let block_keeper_ring =
+        block_keeper_ring.get_block_keeper_pubkeys(&candidate_block.data().seq_no());
     let is_valid = candidate_block
         .verify_signatures(&block_keeper_ring)
         .expect("Signatures verification should not crash.");

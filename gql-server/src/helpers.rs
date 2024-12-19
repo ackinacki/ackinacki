@@ -234,12 +234,12 @@ pub fn init_tracing() {
             .with_target("gql_server", LevelFilter::TRACE)
             .with_target("data_loader", LevelFilter::TRACE)
             .with_target("blockchain_api", LevelFilter::TRACE)
-            .with_target("sqlx", LevelFilter::TRACE),
+            .with_target("sqlx", LevelFilter::OFF),
         _ => tracing_subscriber::filter::Targets::new()
             .with_target("gql_server", LevelFilter::INFO)
             .with_target("data_loader", LevelFilter::TRACE)
             .with_target("blockchain_api", LevelFilter::TRACE)
-            .with_target("sqlx", LevelFilter::TRACE),
+            .with_target("sqlx", LevelFilter::OFF),
     };
     tracing_subscriber::registry()
         .with(

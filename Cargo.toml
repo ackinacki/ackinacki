@@ -16,7 +16,7 @@ members = [
     "transport-layer",
 ]
 
-package.version = "0.2.0"
+package.version = "0.3.0"
 package.edition = "2021"
 package.rust-version = "1.80.0"
 package.license = "Acki Nacki Node License"
@@ -48,14 +48,14 @@ wtransport = { version = "0.5.0", features = ["dangerous-configuration"] }
 chitchat = { git = "https://github.com/gosh-sh/chitchat.git", rev = "c3ac1874aac9479f1602c2a5a652873b4e4310c1" }
 gosh_bls_lib = { git = "https://github.com/gosh-sh/gosh-bls-lib.git", tag = "0.4.0" }
 lockfree = { git = 'https://github.com/tvmlabs/lockfree.git', package = 'lockfree' }
-tvm_abi = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.0.an" }
-tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.0.an" }
-tvm_block_json = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.0.an" }
-tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.0.an", default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
-tvm_executor = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.0.an", features = ['signature_with_id'] }
-tvm_tl_codegen = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.0.an", default-features = false }
-tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.0.an" }
-tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.0.an", features = ['gosh'] }
+tvm_abi = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.2.an" }
+tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.2.an" }
+tvm_block_json = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.2.an" }
+tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.2.an", default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
+tvm_executor = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.2.an", features = ['signature_with_id'] }
+tvm_tl_codegen = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.2.an", default-features = false }
+tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.2.an" }
+tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.2.an", features = ['gosh'] }
 
 
 database = { path = "database" }

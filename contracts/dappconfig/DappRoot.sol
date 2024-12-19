@@ -45,7 +45,7 @@ contract DappRoot is Modifiers {
             0
         );
         TvmCell data = DappLib.composeDappConfigStateInit(_code[m_ConfigCode], dapp_id);
-        new DappConfig {stateInit: data, value: varuint16(FEE_DEPLOY_CONFIG), wid: 0, flag: 1}(info);
+        new DappConfig {stateInit: data, value: varuint16(FEE_DEPLOY_CONFIG), wid: 0, flag: 1}(dapp_id, info);
     }
 
     function deployNewConfig(
@@ -59,7 +59,7 @@ contract DappRoot is Modifiers {
             available_balance
         );
         TvmCell data = DappLib.composeDappConfigStateInit(_code[m_ConfigCode], dapp_id);
-        new DappConfig {stateInit: data, value: varuint16(FEE_DEPLOY_CONFIG), wid: 0, flag: 1}(info);
+        new DappConfig {stateInit: data, value: varuint16(FEE_DEPLOY_CONFIG), wid: 0, flag: 1}(dapp_id, info);
     }
 
     function getConfigAddr(uint256 dapp_id) external view returns(address config) {

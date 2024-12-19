@@ -5,7 +5,6 @@ mod parse;
 pub mod serialize;
 mod update;
 
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -16,6 +15,7 @@ use tvm_block::ShardStateUnsplit;
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
+use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
@@ -39,19 +39,14 @@ impl ZeroState {
         &self.states.iter().next().expect("Zerostate doesn't contain states").1.threads_table
     }
 
-    pub fn get_block_keeper_sets(
-        &self,
-    ) -> anyhow::Result<HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>> {
-        Ok(self
-            .block_keeper_sets
-            .clone()
-            .into_iter()
-            .map(|(k, v)| {
-                let mut map = BTreeMap::new();
-                map.insert(BlockSeqNo::from(0), v);
-                (k, map)
-            })
-            .collect())
+    pub fn get_block_keeper_sets(&self) -> anyhow::Result<BlockKeeperRing> {
+        // BK set organization changed gue to dynamic thread ID generation and we've decided to have
+        // single common BK set and use thread ID salt in leader group generation.
+        assert!(self.block_keeper_sets.len() == 1);
+        Ok(BlockKeeperRing::new(
+            BlockSeqNo::from(0),
+            self.block_keeper_sets.values().next().unwrap().clone(),
+        ))
     }
 
     pub fn unwrapped_block_keeper_sets(&self) -> &HashMap<ThreadIdentifier, BlockKeeperSet> {
@@ -66,9 +61,9 @@ impl ZeroState {
         &mut self,
         thread_identifier: &ThreadIdentifier,
     ) -> anyhow::Result<&mut OptimisticStateImpl> {
-        self.states
-            .get_mut(thread_identifier)
-            .ok_or(anyhow::format_err!("Zerostate does not contain state for requested thread"))
+        self.states.get_mut(thread_identifier).ok_or(anyhow::format_err!(
+            "Zerostate does not contain state (mut) for requested thread"
+        ))
     }
 
     pub fn state(
@@ -81,7 +76,8 @@ impl ZeroState {
     }
 
     pub fn add_thread_state(&mut self, thread_identifier: ThreadIdentifier) {
-        let state = OptimisticStateImpl { thread_id: thread_identifier, ..Default::default() };
+        let mut state = OptimisticStateImpl::default();
+        state.thread_id = thread_identifier;
         self.states.insert(thread_identifier, state);
     }
 

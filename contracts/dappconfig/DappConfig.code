@@ -400,21 +400,21 @@
 	THROWIF 51
 	OVER
 	PUSHCONT {
-		LDI 1
 		LDREF
 		ENDS
 		CTOS
 	}
-	PUSHCONT {
-		LDI 1
-	}
-	IFELSE
+	IF
+	LDU 256
+	LDI 1
 	LDI 128
 	ROTREV
 	PAIR
 	SWAP
 	ENDS
-	.loc DappConfig.sol, 26
+	.loc DappConfig.sol, 27
+	NIP
+	.loc DappConfig.sol, 28
 	MYCODE
 	
 	CALLREF {
@@ -491,29 +491,26 @@
 	DUP
 	ISNULL
 	THROWIF 63
-	.loc DappConfig.sol, 27
+	.loc DappConfig.sol, 29
 	CTOS
 	LDU 256
 	ENDS
-	.loc DappConfig.sol, 28
+	.loc DappConfig.sol, 30
 	PUSHSLICE x8013333333333333333333333333333333333333333333333333333333333333333_
 	SETGLOB 14
-	.loc DappConfig.sol, 29
+	.loc DappConfig.sol, 31
 	SETGLOB 16
-	.loc DappConfig.sol, 30
+	.loc DappConfig.sol, 32
 	PUSHREFSLICE {
 		.blob x8000000000000000000000000000000000000000000000000000000000000000001_
 	}
 	SETGLOB 15
-	.loc DappConfig.sol, 31
+	.loc DappConfig.sol, 33
 	GETGLOB 9
 	GETGLOB 14
 	SDEQ
 	THROWIFNOT 207
-	.loc DappConfig.sol, 32
-	PUSHINT 1000000000000
-	MINTSHELL
-	.loc DappConfig.sol, 33
+	.loc DappConfig.sol, 34
 	SETGLOB 13
 	.loc DappConfig.sol, 0
 	CALLREF {
@@ -523,7 +520,7 @@
 }
 
 .fragment getDetails_fbbf93a0_internal, {
-	.loc DappConfig.sol, 56
+	.loc DappConfig.sol, 49
 	GETGLOB 16
 	GETGLOB 13
 	.loc DappConfig.sol, 0
@@ -538,7 +535,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc DappConfig.sol, 55
+	.loc DappConfig.sol, 48
 	ENDS
 	.loc DappConfig.sol, 0
 	CALLREF {
@@ -581,42 +578,24 @@
 	THROW 0
 }
 
-.fragment getMoney_98e1b410_internal, {
+.fragment setNewConfig_349a3e1a_internal, {
 	.loc DappConfig.sol, 37
-	GETPARAM 7
-	FIRST
-	PUSHINT 1000000000000
-	GREATER
-	IFRET
-	.loc DappConfig.sol, 38
-	PUSHINT 1000000000000
-	MINTSHELL
-	.loc DappConfig.sol, 0
-}
-
-.fragment setNewConfig_f4cc5860_internal, {
-	.loc DappConfig.sol, 41
 	DEPTH
 	ADDCONST -5
 	PICK
 	THROWIF 72
 	.loc modifiers/modifiers.sol, 46
 	GETGLOB 9
-	GETGLOB 15
+	MYADDR
 	SDEQ
 	THROWIFNOT 207
-	.loc DappConfig.sol, 45
-	CALLREF {
-		.inline getMoney_98e1b410_internal
-	}
-	.loc DappConfig.sol, 46
+	.loc DappConfig.sol, 40
+	FITS 128
 	GETGLOB 13
-	ROT
-	SETINDEX 0
 	DUP
-	SETGLOB 13
-	.loc DappConfig.sol, 47
-	SWAP
+	SECOND
+	ROT
+	SUB
 	SETINDEX 1
 	SETGLOB 13
 	.loc DappConfig.sol, 0
@@ -631,23 +610,19 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc DappConfig.sol, 41
+	.loc DappConfig.sol, 37
 	OVER
 	PUSHCONT {
-		LDI 1
 		LDREF
 		ENDS
 		CTOS
 	}
-	PUSHCONT {
-		LDI 1
-	}
-	IFELSE
-	LDI 128
+	IF
+	LDU 128
 	ENDS
 	.loc DappConfig.sol, 0
 	CALLREF {
-		.inline setNewConfig_f4cc5860_internal
+		.inline setNewConfig_349a3e1a_internal
 	}
 	CALLREF {
 		.inline c7_to_c4
@@ -662,16 +637,16 @@
 		.inline setNewConfig
 	}
 	DUP
-	PUSHINT 81560871
-	EQUAL
-	IFJMPREF {
-		.inline constructor
-	}
-	DUP
 	PUSHINT 517429950
 	EQUAL
 	IFJMPREF {
 		.inline getDetails
+	}
+	DUP
+	PUSHINT 1499554425
+	EQUAL
+	IFJMPREF {
+		.inline constructor
 	}
 }
 
@@ -795,9 +770,9 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc DappConfig.sol, 51
+	.loc DappConfig.sol, 44
 	ACCEPT
-	.loc DappConfig.sol, 52
+	.loc DappConfig.sol, 45
 	PUSHINT 2
 	CALLREF {
 		DEPTH

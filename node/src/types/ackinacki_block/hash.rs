@@ -31,7 +31,7 @@ pub(crate) fn debug_hash(hash: &Sha256Hash) -> String {
     result
 }
 
-pub(crate) fn calculate_hash(data: &[u8]) -> anyhow::Result<Sha256Hash> {
+pub fn calculate_hash(data: &[u8]) -> anyhow::Result<Sha256Hash> {
     #[cfg(feature = "timing")]
     let start = std::time::Instant::now();
     let mut hasher = Sha256::new();

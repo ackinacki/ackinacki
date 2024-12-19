@@ -7,7 +7,7 @@ use tvm_vm::executor::EngineTraceInfoType;
 use tvm_vm::stack::Stack;
 use tvm_vm::stack::StackItem;
 
-use crate::block::producer::builder::structs::EngineTraceInfoData;
+use super::EngineTraceInfoData;
 
 impl From<&EngineTraceInfo<'_>> for EngineTraceInfoData {
     fn from(info: &EngineTraceInfo) -> Self {

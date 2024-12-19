@@ -25,7 +25,7 @@ struct Args {
     #[arg(short = 'l', long = "listen", env, num_args = 0..=1)]
     listen: Option<String>,
 
-    /// The node's endpoint for resending incoming external messages (default: http://127.0.0.1/topics/requests)
+    /// The node's endpoint for resending incoming external messages (default: http://127.0.0.1/bk/v1/messages)
     #[arg(short = 'n', long = "node_url", env)]
     node_url: Option<String>,
 }

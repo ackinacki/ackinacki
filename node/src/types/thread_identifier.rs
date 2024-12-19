@@ -12,11 +12,11 @@ use serde_with::Bytes;
 
 use crate::types::BlockIdentifier;
 
-// TODO: refactor according to the note
-// Note: This is wrong to have u16 as an underlying type for thread identifier.
+// Note:
 // It must be possible to uniquely generate new thread id from any thread without
-// collisions. Proposed identifier: a block id and a u16. It will be generated
-// by the block producer by taking prev (or current) block id after which the thread
+// collisions. Therefore the u16 as an underlying type for thread identifier was changed.
+// The new undelrying type for the identifier is a block id and a u16. It will be generated
+// by the block producer by taking the "current" block id after which the thread
 // must be spawned and adding some local index in case of multiple threads have to
 // be spawned simultaneously.
 
@@ -39,7 +39,14 @@ impl ThreadIdentifier {
         Self(res)
     }
 
-    pub fn base_id(&self) -> u16 {
+    // Note: not the best solution to have it. Yet it is a simple quick to implement
+    // solution. Seems harmless to have.
+    /// Checks if a particular block was the one where the thread was spawned.
+    pub fn is_spawning_block(&self, block_id: &BlockIdentifier) -> bool {
+        (&self.0[2..34]) == block_id.as_ref()
+    }
+
+    fn base_id(&self) -> u16 {
         (self.0[0] as u16 >> 8) + self.0[1] as u16
     }
 }

@@ -157,6 +157,10 @@ contract BlockKeeperContractRoot is Modifiers {
         return gosh.calcbkreward(numberOfActiveBlockKeepers, epochDuration, timenetwork, totalStake, stake, reputationTime);
     }     
 
+    function getProxyListCode() external view returns(TvmCell) {
+        return BlockKeeperLib.buildBlockKeeperEpochProxyListCode(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], address(this));
+    }
+
     function getRewardNow(
         ) external view returns(uint128 reward) {
         return gosh.calcbkreward(_numberOfActiveBlockKeepers, _epochDuration, uint128(block.timestamp - _networkStart), uint128(_totalStake), uint128(_totalStake), uint128(0));

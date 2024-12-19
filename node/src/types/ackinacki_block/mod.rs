@@ -25,9 +25,10 @@ use crate::types::ackinacki_block::hash::Sha256Hash;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
+use crate::types::ThreadsTable;
 
 mod common_section;
-mod hash;
+pub mod hash;
 mod serialize;
 
 pub use hash::compare_hashes;
@@ -83,6 +84,7 @@ impl<TBLSSignatureScheme: BLSSignatureScheme> AckiNackiBlock<TBLSSignatureScheme
         block_keeper_set_changes: Vec<BlockKeeperSetChange>,
         verify_complexity: SignerIndex,
         refs: Vec<BlockIdentifier>,
+        threads_table: Option<ThreadsTable>,
     ) -> Self {
         // Note: according to the node logic we will update common section of every
         // block so there is no need to calculate hash here
@@ -95,6 +97,7 @@ impl<TBLSSignatureScheme: BLSSignatureScheme> AckiNackiBlock<TBLSSignatureScheme
                 block_keeper_set_changes,
                 verify_complexity,
                 refs,
+                threads_table,
             ),
             block,
             tx_cnt,
@@ -206,13 +209,25 @@ impl<TBLSSignatureScheme: BLSSignatureScheme> AckiNackiBlock<TBLSSignatureScheme
         self.raw_data = Some(raw_data);
         if cfg!(feature = "nack_test")
             && self.seq_no() == BlockSeqNo::from(324)
-            && self.common_section.producer_id == 1
+            && self.common_section.producer_id == 4
         {
             tracing::trace!(target: "node", "Skip common section to make fake block");
             self.hash = Sha256Hash::default();
             self.raw_data = None;
         }
         Ok(())
+    }
+
+    pub fn is_thread_splitting(&self) -> bool {
+        let block_identifier = self.identifier();
+        if let Some(this_table) = &self.common_section.threads_table {
+            this_table.rows().any(|(_, thread_identifier)| {
+                thread_identifier.is_spawning_block(&block_identifier)
+            })
+        } else {
+            // No split on threads_table None possible
+            false
+        }
     }
 
     pub fn tvm_block(&self) -> &tvm_block::Block {

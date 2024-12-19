@@ -71,18 +71,17 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         tracing::trace!("update_producer_group: thread_id:{thread_id:?} initial_group: {initial_group:?}");
 
         let (_, last_block_seq_no) = self.find_thread_last_block_id_this_node_can_continue(thread_id)?;
-        let mut block_keeper_indexes: Vec<NodeIdentifier> = self
-            .block_keeper_sets
-            .lock()
-            .get_mut(thread_id)
-            .expect("Failed to get block keepers for thread")
-            .last_key_value()
-            .expect("node should have actual BK set")
-            .1
-            .keys()
-            .map(|k| k.to_owned() as NodeIdentifier)
-            .filter(|k| !initial_group.contains(k))
-            .collect();
+        let mut block_keeper_indexes: Vec<NodeIdentifier> = {
+            let bk_set = self.block_keeper_sets.with_last_entry(|e| {
+                let e = e.expect("node should have actual BK set");
+                e.get().clone()
+            });
+            bk_set
+                .keys()
+                .map(|k| k.to_owned() as NodeIdentifier)
+                .filter(|k| !initial_group.contains(k))
+                .collect()
+        };
         // Sort the list, because iteration over map is random
         block_keeper_indexes.sort();
         let mut producer_group = initial_group;
@@ -230,8 +229,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::collections::HashMap;
+
     use std::collections::HashSet;
     use std::path::PathBuf;
     use std::process::Command;
@@ -250,12 +248,16 @@ mod tests {
     use crate::block_keeper_system::BlockKeeperStatus;
     use crate::bls::GoshBLS;
     use crate::helper::key_handling::key_pair_from_file;
+    use crate::multithreading::routing::service::RoutingService;
     use crate::node::attestation_processor::AttestationProcessorImpl;
     use crate::node::services::sync::StateSyncServiceStub;
+    use crate::node::shared_services::SharedServices;
     use crate::node::Node;
     use crate::node::NodeIdentifier;
     use crate::repository::repository_impl::RepositoryImpl;
     use crate::tests::default_config;
+    use crate::types::block_keeper_ring::BlockKeeperRing;
+    use crate::types::BlockIdentifier;
     use crate::types::BlockSeqNo;
     use crate::types::ThreadIdentifier;
     use crate::types::ThreadsTable;
@@ -277,23 +279,31 @@ mod tests {
             .arg("-a")
             .status()?;
         let thread_id = ThreadIdentifier::default();
-        let repository = RepositoryImpl::new(PathBuf::from("/tmp/leader_election/"), None, 1);
+        let repository = RepositoryImpl::new(
+            PathBuf::from("/tmp/leader_election/"),
+            None,
+            1,
+            SharedServices::test_start(RoutingService::stub().0),
+        );
+        let (router, _router_rx) = crate::multithreading::routing::service::RoutingService::stub();
+        let shared_services = crate::node::shared_services::SharedServices::test_start(router);
 
         let production_process = TVMBlockProducerProcess::new(
             config.clone(),
             repository.clone(),
             None,
             Arc::new(Mutex::new(vec![])),
+            shared_services.clone(),
         )?;
 
-        let (tx, _rx) = std::sync::mpsc::channel();
         let validation_process = TVMBlockKeeperProcess::new(
             "./tests/resources/blockchain.conf.json",
             repository.clone(),
             config.clone(),
             None,
+            BlockIdentifier::default(),
             thread_id,
-            tx,
+            shared_services,
             ThreadsTable::default(),
         )?;
 
@@ -325,20 +335,17 @@ mod tests {
             );
         }
 
-        let mut bk_to_seq_no = BTreeMap::new();
-        bk_to_seq_no.insert(BlockSeqNo::from(0), block_keeper_sets);
-        let mut block_keeper_sets = HashMap::new();
-        block_keeper_sets.insert(thread_id, bk_to_seq_no);
-
-        let block_keeper_set = Arc::new(Mutex::new(block_keeper_sets));
+        let block_keeper_set = BlockKeeperRing::new(BlockSeqNo::from(0), block_keeper_sets);
 
         let block_processor = AttestationProcessorImpl::new(
             repository.clone(),
             block_keeper_set.clone(),
             ThreadIdentifier::default(),
         );
-
+        let (router, _router_rx) = crate::multithreading::routing::service::RoutingService::stub();
+        let shared_services = crate::node::shared_services::SharedServices::test_start(router);
         let mut node = Node::new(
+            shared_services,
             sync_state_service,
             production_process,
             validation_process,

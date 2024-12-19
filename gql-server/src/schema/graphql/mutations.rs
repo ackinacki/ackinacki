@@ -40,9 +40,9 @@ impl MutationRoot {
             .unwrap()
             .iter()
             .filter_map(|r| match r {
-                Some(Request { id: Some(id), body: Some(body), .. }) => {
+                Some(Request { id: Some(id), body: Some(body), expire_at }) => {
                     ids.push(Some(id.into()));
-                    Some(NodeRequest { key: id.into(), value: body.into() })
+                    Some(NodeRequest { id: id.into(), boc: body.into(), expire: *expire_at })
                 }
                 _ => None,
             })
@@ -63,11 +63,12 @@ impl MutationRoot {
 
 #[derive(serde::Serialize)]
 struct NodeRequest {
-    key: String,
-    value: String,
+    id: String,
+    boc: String,
+    expire: Option<f64>,
 }
 
-async fn fwd_to_node(url: &str, requests: Vec<NodeRequest>) -> anyhow::Result<()> {
+async fn fwd_to_node(url: &str, messages: Vec<NodeRequest>) -> anyhow::Result<()> {
     let mut headers = HeaderMap::new();
     headers.insert(reqwest::header::CACHE_CONTROL, HeaderValue::from_str("no-cache").unwrap());
     headers.insert(reqwest::header::ORIGIN, HeaderValue::from_str("same-origin").unwrap());
@@ -77,7 +78,7 @@ async fn fwd_to_node(url: &str, requests: Vec<NodeRequest>) -> anyhow::Result<()
 
     let client = reqwest::Client::builder().default_headers(headers).build()?;
 
-    let response = client.post(url).json(&serde_json::json!({"records": &requests})).send().await?;
+    let response = client.post(url).json(&serde_json::json!(&messages)).send().await?;
     tracing::debug!("Forward response code: {}", response.status());
 
     Ok(())

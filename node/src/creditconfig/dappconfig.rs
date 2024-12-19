@@ -23,6 +23,7 @@ use tvm_types::UInt256;
 use crate::creditconfig::abi::DAPP_CONFIG_ABI;
 use crate::creditconfig::DappConfig;
 
+const DAPP_DATA: &str = "dapp_id";
 const CONFIG_DATA: &str = "_data";
 const IS_UNLIMIT_DATA: &str = "is_unlimit";
 const AVAILABLE_BALANCE_DATA: &str = "available_balance";
@@ -57,6 +58,24 @@ fn get_i128_value(value: Int) -> i128 {
         num *= -1;
     }
     num
+}
+
+pub fn decode_message_config(body: SliceData) -> anyhow::Result<Option<UInt256>> {
+    let abi = get_dapp_config_abi();
+    let mut dapp = None;
+    let decoded_body = abi
+        .abi()
+        .map_err(|e| anyhow::format_err!("Failed to get DAPP config abi: {e}"))?
+        .decode_input(body, true, true)
+        .map_err(|e| anyhow::format_err!("Failed to decode DAPP config body: {e}"))?;
+    for token in decoded_body.tokens {
+        if token.name == DAPP_DATA {
+            if let TokenValue::Uint(value) = token.value {
+                dapp = Some(UInt256::from_be_bytes(&value.number.to_bytes_be()));
+            }
+        }
+    }
+    Ok(dapp)
 }
 
 pub fn decode_dapp_config_data(account: &Account) -> anyhow::Result<Option<DappConfig>> {
@@ -97,19 +116,13 @@ pub fn decode_dapp_config_data(account: &Account) -> anyhow::Result<Option<DappC
 }
 
 pub fn create_config_touch_message(
-    config: DappConfig,
     minted: u128,
     addr: UInt256,
     block_time: u32,
 ) -> anyhow::Result<Message> {
     tracing::trace!("create_Dapp_Config message: {addr:?}");
     let expire = block_time + 5;
-    let mut available_balance: i128 = config.available_balance;
-    available_balance = available_balance.saturating_sub(minted as i128);
-    let parameters = format!(
-        r#"{{"is_unlimit": {}, "available_balance": {}}}"#,
-        config.is_unlimit, available_balance,
-    );
+    let parameters = format!(r#"{{"minted": {}}}"#, minted,);
     tracing::trace!(target: "builder", "parameters {:?}", parameters);
     let msg_body = tvm_abi::encode_function_call(
         DAPP_CONFIG_ABI,
@@ -121,14 +134,14 @@ pub fn create_config_touch_message(
         None,
     )
     .map_err(|e| anyhow::format_err!("Failed to create message body: {e}"))?;
-    let src_acc_id = AccountId::from(UInt256::ZERO);
-    let dst_acc_id = AccountId::from(addr);
+    let src_acc_id = AccountId::from(addr.clone());
+    let dst_acc_id = AccountId::from(addr.clone());
     let header = InternalMessageHeader::with_addresses(
         MsgAddressInt::with_standart(None, 0, src_acc_id)
             .map_err(|e| anyhow::format_err!("Failed to get addr: {e}"))?,
         MsgAddressInt::with_standart(None, 0, dst_acc_id)
             .map_err(|e| anyhow::format_err!("Failed to get addr: {e}"))?,
-        CurrencyCollection::from_grams(Grams::from(100000000)),
+        CurrencyCollection::from_grams(Grams::from(200000000)),
     );
     let body = SliceData::load_cell(
         msg_body

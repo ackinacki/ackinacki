@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use database::documents_db::SerializedItem;
+use parking_lot::Mutex;
 use tvm_block::ShardStateUnsplit;
 
 use crate::block_keeper_system::BlockKeeperSet;
@@ -18,10 +19,16 @@ use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 
+pub mod block_markers;
+mod cross_thread_ref_data;
+pub mod cross_thread_ref_repository;
 pub mod optimistic_shard_state;
 pub mod optimistic_state;
 pub mod repository_impl;
 mod tvm_cell_serde;
+pub use cross_thread_ref_data::CrossThreadRefData;
+pub use cross_thread_ref_repository::CrossThreadRefDataRead;
+pub use cross_thread_ref_repository::CrossThreadRefDataRepository;
 
 #[cfg(test)]
 pub mod stub_repository;
@@ -59,6 +66,8 @@ pub trait Repository {
         thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<Vec<<Self as Repository>::CandidateBlock>>;
 
+    // TODO: Critical! This method must be removed. No algorithm will be correct
+    // once merge logic is added.
     fn list_blocks_with_seq_no(
         &self,
         seq_no: &BlockSeqNo,
@@ -69,6 +78,12 @@ pub trait Repository {
         &self,
         starting_block_id: &BlockSeqNo,
         thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<()>;
+
+    fn init_thread(
+        &mut self,
+        thread_id: &ThreadIdentifier,
+        parent_block_id: &BlockIdentifier,
     ) -> anyhow::Result<()>;
 
     fn select_thread_last_finalized_block(
@@ -137,18 +152,22 @@ pub trait Repository {
 
     fn is_block_verified(&self, block_id: &BlockIdentifier) -> anyhow::Result<bool>;
 
+    fn mark_block_as_processed(&self, block_id: &BlockIdentifier) -> anyhow::Result<()>;
+
+    fn is_block_processed(&self, block_id: &BlockIdentifier) -> anyhow::Result<bool>;
+
     fn take_state_snapshot(
         &self,
         block_id: &BlockIdentifier,
         block_producer_groups: HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
-        block_keeper_set: HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>,
+        block_keeper_set: BTreeMap<BlockSeqNo, BlockKeeperSet>,
     ) -> anyhow::Result<Self::StateSnapshot>;
 
     fn convert_state_data_to_snapshot(
         &self,
         serialized_state: Vec<u8>,
         block_producer_groups: HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
-        block_keeper_set: HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>,
+        block_keeper_set: BTreeMap<BlockSeqNo, BlockKeeperSet>,
     ) -> anyhow::Result<Self::StateSnapshot>;
 
     fn set_state_from_snapshot(
@@ -158,7 +177,7 @@ pub trait Repository {
         thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<(
         HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
-        HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockKeeperSet>>,
+        BTreeMap<BlockSeqNo, BlockKeeperSet>,
     )>;
 
     fn sync_accounts_from_state(
@@ -205,6 +224,8 @@ pub trait Repository {
         &self,
         thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<Self::OptimisticState>;
+
+    fn add_thread_buffer(&self, thread_id: ThreadIdentifier) -> Arc<Mutex<Vec<BlockIdentifier>>>;
 
     fn list_finalized_states(
         &self,
