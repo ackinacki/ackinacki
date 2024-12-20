@@ -17,6 +17,7 @@ use crate::schema::graphql::filter::{
 pub struct AccountFilter {
     id: OptStringFilter,
     dapp_id: OptStringFilter,
+    code_hash: OptStringFilter,
     // acc_type: OptIntFilter,
     // last_paid: OptFloatFilter,
     #[graphql(name = "OR")]
