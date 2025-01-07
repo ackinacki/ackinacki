@@ -31,9 +31,13 @@ where
 {
     //  SelectedAsBlockProducerForThread(ThreadId),
     //  DeseletedAsBlockProducerForThread(ThreadId),
-    Candidate(Envelope<BLS, AckiNackiBlock<BLS>>),
+    Candidate(Envelope<BLS, AckiNackiBlock>),
     Ack((Envelope<BLS, TAck>, ThreadIdentifier)),
+    // TODO: @AleksandrS Move nack to priority queue
+    // FUll stake only
     Nack((Envelope<BLS, TNack>, ThreadIdentifier)),
+    // Bleeding nack
+    // Bleeding((Envelope<BLS, TNack>, ThreadIdentifier)),
     ExternalMessage(TExternalMessage),
     NodeJoining((TNodeIdentifier, ThreadIdentifier)),
     BlockAttestation((Envelope<BLS, TAttestation>, ThreadIdentifier)),
@@ -41,6 +45,7 @@ where
     // TODO: consider std::ops::Range<BlockSeqNo>
     BlockRequest((BlockSeqNo, BlockSeqNo, TNodeIdentifier, ThreadIdentifier)),
     SyncFrom((BlockSeqNo, ThreadIdentifier)),
+    // SyncFinalized is broadcasted when network was stopped
     SyncFinalized((BlockIdentifier, BlockSeqNo, String, ThreadIdentifier)),
 }
 

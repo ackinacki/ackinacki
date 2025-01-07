@@ -14,49 +14,47 @@ use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
-use crate::bls::gosh_bls::PubKey;
-use crate::bls::BLSSignatureScheme;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NodeAssociatedTypes;
 use crate::node::associated_types::OptimisticStateFor;
 use crate::node::attestation_processor::AttestationProcessor;
 use crate::node::services::sync::StateSyncService;
+use crate::node::GoshBLS;
 use crate::node::Node;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
 use crate::repository::optimistic_state::OptimisticState;
+use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
 use crate::types::compare_hashes;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 
-impl<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
-Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+impl<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
     where
-        TBLSSignatureScheme: BLSSignatureScheme<PubKey = PubKey> + Clone,
-        <TBLSSignatureScheme as BLSSignatureScheme>::PubKey: PartialEq,
         TBlockProducerProcess:
         BlockProducerProcess< Repository = TRepository>,
         TValidationProcess: BlockKeeperProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
         >,
         TBlockProducerProcess: BlockProducerProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
         >,
         TRepository: Repository<
-            BLS = TBLSSignatureScheme,
+            BLS = GoshBLS,
             EnvelopeSignerIndex = SignerIndex,
 
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
             NodeIdentifier = NodeIdentifier,
-            Attestation = Envelope<TBLSSignatureScheme, AttestationData>,
+            Attestation = Envelope<GoshBLS, AttestationData>,
         >,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
             <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
@@ -65,15 +63,15 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             Repository = TRepository
         >,
         TAttestationProcessor: AttestationProcessor<
-            BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData>,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BlockAttestation = Envelope<GoshBLS, AttestationData>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
         >,
         TRandomGenerator: rand::Rng,
 {
     pub(crate) fn fork_choice_rule_for_attestations(
         &self,
-        block_attestations: &Vec<Envelope<TBLSSignatureScheme, AttestationData>>,
-    ) -> anyhow::Result<Option<Envelope<TBLSSignatureScheme, AttestationData>>> {
+        block_attestations: &Vec<Envelope<GoshBLS, AttestationData>>,
+    ) -> anyhow::Result<Option<Envelope<GoshBLS, AttestationData>>> {
         let mut blocks = vec![];
         let mut block_seq_no = None;
         for attestation in block_attestations {
@@ -262,8 +260,18 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         if distributed_votes_cnt >= total_bk_cnt || block_gap > self.config.global.attestation_validity_block_gap {
             tracing::trace!("check_if_block_should_be_finalized choose block");
             let chosen = self.fork_choice_rule(blocks_with_the_same_seq_no)?.expect("After all votes were distributed one block must be chosen");
+            let block_id = chosen.data().identifier().clone();
+            if !self.repository.is_block_processed(&block_id)? {
+                return Ok(false);
+            }
+            let block_ref_data_exists = self.shared_services.exec(|services| {
+                services.cross_thread_ref_data_service.get_cross_thread_ref_data(&block_id).is_ok()
+            });
+            if !block_ref_data_exists {
+                return Ok(false);
+            }
             self.on_candidate_block_is_accepted_by_majority(chosen.data().clone())?;
-            self.on_block_finalized(&chosen)?;
+            self.on_block_finalized(&chosen, self.block_keeper_sets.clone())?;
             Ok(true)
         } else {
             Ok(false)

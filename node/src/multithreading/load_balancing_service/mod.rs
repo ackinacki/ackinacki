@@ -1,9 +1,5 @@
 use std::collections::HashMap;
 
-use serde::Deserialize;
-use serde::Serialize;
-
-use crate::bls::BLSSignatureScheme;
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
@@ -144,15 +140,12 @@ impl LoadBalancingService {
         }
     }
 
-    pub fn handle_block_finalized<TBLSSignatureScheme, TOptimisticState>(
+    pub fn handle_block_finalized<TOptimisticState>(
         &mut self,
-        block: &AckiNackiBlock<TBLSSignatureScheme>,
+        block: &AckiNackiBlock,
         block_state: &mut TOptimisticState,
     ) where
         TOptimisticState: OptimisticState,
-        TBLSSignatureScheme: BLSSignatureScheme,
-        TBLSSignatureScheme::Signature:
-            Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
     {
         // Note: It does not create unprepared threads.
         // Reason: It must be managed from outside to decide if thread is no longer in use.
@@ -168,10 +161,10 @@ impl LoadBalancingService {
     }
 
     fn read_load(&self, thread_identifier: &ThreadIdentifier) -> anyhow::Result<Load, CheckError> {
-        tracing::trace!("read_load: {:?}, self: {:?}", thread_identifier, self.thread_load_map);
+        tracing::trace!("read_load: {:?}", thread_identifier);
         let load =
             self.thread_load_map.get(thread_identifier).ok_or(CheckError::StatsAreNotReady)?;
-        tracing::trace!("read_load: load: {:?}", load);
+        // tracing::trace!("read_load: load: {:?}", load);
         if !load.is_ready() {
             return Err(CheckError::StatsAreNotReady);
         }

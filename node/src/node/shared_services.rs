@@ -2,10 +2,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use serde::Deserialize;
-use serde::Serialize;
-
-use crate::bls::BLSSignatureScheme;
 use crate::multithreading::load_balancing_service::LoadBalancingService;
 use crate::multithreading::routing::service::RoutingService;
 use crate::multithreading::thread_synchrinization_service::ThreadSyncService;
@@ -78,14 +74,7 @@ impl SharedServices {
         f(&mut services)
     }
 
-    pub fn on_block_appended<TBLSSignatureScheme>(
-        &mut self,
-        block: &AckiNackiBlock<TBLSSignatureScheme>,
-    ) where
-        TBLSSignatureScheme: BLSSignatureScheme,
-        TBLSSignatureScheme::Signature:
-            Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
-    {
+    pub fn on_block_appended(&mut self, block: &AckiNackiBlock) {
         let block_identifier: BlockIdentifier = block.identifier();
         let parent_block_identifier: BlockIdentifier = block.parent();
         let thread_identifier: ThreadIdentifier = block.get_common_section().thread_id;
@@ -129,14 +118,11 @@ impl SharedServices {
         });
     }
 
-    pub fn on_block_finalized<TBLSSignatureScheme, TOptimisticState>(
+    pub fn on_block_finalized<TOptimisticState>(
         &mut self,
-        block: &AckiNackiBlock<TBLSSignatureScheme>,
+        block: &AckiNackiBlock,
         state: &mut TOptimisticState,
     ) where
-        TBLSSignatureScheme: BLSSignatureScheme,
-        TBLSSignatureScheme::Signature:
-            Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
         TOptimisticState: OptimisticState,
     {
         let block_identifier: BlockIdentifier = block.identifier();
@@ -163,10 +149,10 @@ impl SharedServices {
                 Err(_e) => unimplemented!(),
             }
             */
-            services.thread_sync.on_block_finalized(
-                &block_identifier,
-                &thread_identifier,
-            ).expect("Must work");
+            services
+                .thread_sync
+                .on_block_finalized(&block_identifier, &thread_identifier)
+                .expect("Must work");
             match services.threads_tracking.handle_block_finalized(
                 block_identifier.clone(),
                 thread_identifier,

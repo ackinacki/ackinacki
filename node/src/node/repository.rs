@@ -1,6 +1,8 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::sync::Arc;
+
 use itertools::Itertools;
 
 use crate::block::keeper::process::BlockKeeperProcess;
@@ -8,8 +10,7 @@ use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
-use crate::bls::gosh_bls::PubKey;
-use crate::bls::BLSSignatureScheme;
+use crate::bls::GoshBLS;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::BlockStatus;
 use crate::node::associated_types::NodeAssociatedTypes;
@@ -21,8 +22,11 @@ use crate::node::Node;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
 use crate::node::DEFAULT_PRODUCTION_TIME_MULTIPLIER;
+use crate::repository::cross_thread_ref_repository::CrossThreadRefDataHistory;
 use crate::repository::optimistic_state::OptimisticState;
+use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
+use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::next_seq_no;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
@@ -31,32 +35,30 @@ use crate::types::ThreadIdentifier;
 
 const CLEANUP_HACK: u32 = 1000;
 
-impl<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
-Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+impl<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
     where
-        TBLSSignatureScheme: BLSSignatureScheme<PubKey = PubKey> + Clone,
-        <TBLSSignatureScheme as BLSSignatureScheme>::PubKey: PartialEq,
         TBlockProducerProcess:
         BlockProducerProcess< Repository = TRepository>,
         TValidationProcess: BlockKeeperProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
         >,
         TBlockProducerProcess: BlockProducerProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
         >,
         TRepository: Repository<
-            BLS = TBLSSignatureScheme,
+            BLS = GoshBLS,
             EnvelopeSignerIndex = SignerIndex,
 
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
             NodeIdentifier = NodeIdentifier,
-            Attestation = Envelope<TBLSSignatureScheme, AttestationData>,
+            Attestation = Envelope<GoshBLS, AttestationData>,
         >,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
             <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
@@ -65,8 +67,8 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             Repository = TRepository
         >,
         TAttestationProcessor: AttestationProcessor<
-            BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData>,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BlockAttestation = Envelope<GoshBLS, AttestationData>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
         >,
         TRandomGenerator: rand::Rng,
 {
@@ -113,6 +115,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         }
     }
 
+    // TODO: remove this method, check common parent instead
     pub(crate) fn does_this_node_have_signed_block_of_the_same_height(
         &self,
         candidate_block: &<Self as NodeAssociatedTypes>::CandidateBlock,
@@ -125,6 +128,21 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             }
         }
         Ok(false)
+    }
+
+    // TODO: remove this function
+    pub(crate) fn does_this_blocks_produce_by_one_bp(
+        &self,
+        candidate_block: &<Self as NodeAssociatedTypes>::CandidateBlock,
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<(bool, Option<<Self as NodeAssociatedTypes>::CandidateBlock>)> {
+        let block_seq_no = candidate_block.data().seq_no();
+        for candidate in self.repository.list_blocks_with_seq_no(&block_seq_no, thread_id)? {
+            if candidate.data().get_common_section().producer_id == candidate_block.data().get_common_section().producer_id {
+                return Ok((true, Some(candidate)));
+            }
+        }
+        Ok((false, None))
     }
 
     pub(crate) fn find_thread_earliest_non_finalized_main_candidate_block_id(
@@ -211,7 +229,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
 
     pub(crate) fn on_candidate_block_is_accepted_by_majority(
         &mut self,
-        block: AckiNackiBlock<TBLSSignatureScheme>,
+        block: AckiNackiBlock,
     ) -> anyhow::Result<BlockStatus> {
         let block_id = block.identifier();
         let block_seq_no = block.seq_no();
@@ -367,6 +385,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
     pub(crate) fn on_block_finalized(
         &mut self,
         block: &<Self as NodeAssociatedTypes>::CandidateBlock,
+        block_keeper_sets: BlockKeeperRing
     ) -> anyhow::Result<()> {
         let block_seq_no = block.data().seq_no();
         let block_id = block.data().identifier();
@@ -396,25 +415,35 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             }
         }
         tracing::info!("on_block_finalized: {:?} {:?}", block_seq_no, block_id);
-        self.repository.mark_block_as_finalized(block)?;
+        self.repository.mark_block_as_finalized(block, block_keeper_sets.clone(), Arc::clone(&self.nack_set_cache))?;
         tracing::info!("Block marked as finalized: {:?} {:?} {:?}", block_seq_no, block_id, thread_id);
         let block = self.repository.get_block(&block_id)?.expect("Just finalized");
         tracing::info!(
-            "Last finalized block data: seq_no: {:?}, block_id: {:?}, producer_id: {}, signatures: {:?}, thread_id: {:?}",
+            "Last finalized block data: seq_no: {:?}, block_id: {:?}, producer_id: {}, signatures: {:?}, thread_id: {:?}, tx_cnt: {}",
             block.data().seq_no(),
             block.data().identifier(),
             block.data().get_common_section().producer_id,
             block.clone_signature_occurrences(),
             block.data().get_common_section().thread_id,
+            block.data().tx_cnt(),
         );
 
         self.raw_block_tx.send(bincode::serialize(&block)?)?;
 
-        if block.data().directives().share_state_resource_address.is_some() {
-            let optimistic_state = self.repository.get_optimistic_state(&block.data().identifier())?.expect("Failed to get finalized block optimistic state");
+        // Share finalized state, producer of this block has already shared this state after block production
+        if block.data().directives().share_state_resource_address.is_some() && block.data().get_common_section().producer_id != self.config.local.node_id {
+            let optimistic_state = self.repository.get_optimistic_state(&block.data().identifier(), block_keeper_sets.clone(), Arc::clone(&self.nack_set_cache))?.expect("Failed to get finalized block optimistic state");
             let producer_group = self.get_latest_producer_groups_for_all_threads();
             let block_keeper_sets = self.get_block_keeper_sets_for_all_threads();
-            let _resource_address = self.state_sync_service.add_share_state_task(optimistic_state.clone(), producer_group, block_keeper_sets)?;
+            let cross_thread_ref_data_history = self.shared_services.exec(|e| -> anyhow::Result<Vec<CrossThreadRefData>> {
+                e.cross_thread_ref_data_service.get_history_tail(&block.data().identifier())
+            })?;
+            let _resource_address = self.state_sync_service.add_share_state_task(
+                optimistic_state.clone(),
+                producer_group,
+                block_keeper_sets,
+                cross_thread_ref_data_history,
+            )?;
             self.broadcast_candidate_block(block.clone())?;
         }
         if self.current_block_producer_id(&self.thread_id, &block_seq_no) != block.data().get_common_section().producer_id {
@@ -450,7 +479,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
 
         self.shared_services.on_block_finalized(
             block.data(),
-            &mut self.repository.get_optimistic_state(&block.data().identifier())?
+            &mut self.repository.get_optimistic_state(&block.data().identifier(), block_keeper_sets.clone(), Arc::clone(&self.nack_set_cache))?
                 .ok_or(anyhow::anyhow!("Block must be in the repo"))?
         );
         Ok(())

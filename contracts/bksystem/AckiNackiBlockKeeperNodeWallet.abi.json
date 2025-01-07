@@ -11,7 +11,10 @@
 				{"name":"BlockKeeperEpochCode","type":"cell"},
 				{"name":"BlockKeeperEpochCoolerCode","type":"cell"},
 				{"name":"BlockKeeperEpochProxyListCode","type":"cell"},
-				{"name":"walletId","type":"uint256"}
+				{"name":"AckiNackiBlockKeeperNodeWalletConfigCode","type":"cell"},
+				{"name":"BLSKeyCode","type":"cell"},
+				{"name":"SignerIndexCode","type":"cell"},
+				{"name":"walletId","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -53,7 +56,9 @@
 			"name": "setLockStake",
 			"inputs": [
 				{"name":"seqNoStart","type":"uint64"},
-				{"name":"stake","type":"uint256"}
+				{"name":"stake","type":"uint256"},
+				{"name":"bls_key","type":"bytes"},
+				{"name":"signerIndex","type":"uint16"}
 			],
 			"outputs": [
 			]
@@ -61,8 +66,8 @@
 		{
 			"name": "slash",
 			"inputs": [
-				{"name":"seqno","type":"uint64"},
-				{"name":"time","type":"uint32"}
+				{"name":"slash_type","type":"uint8"},
+				{"name":"bls_key","type":"bytes"}
 			],
 			"outputs": [
 			]
@@ -70,9 +75,9 @@
 		{
 			"name": "iterateStakes",
 			"inputs": [
-				{"name":"seqno","type":"uint64"},
-				{"name":"time","type":"uint32"},
-				{"components":[{"name":"value0","type":"uint256"},{"components":[{"name":"stake","type":"uint256"},{"name":"seqNoStart","type":"uint64"},{"name":"timeStampFinish","type":"uint32"},{"name":"timeStampFinishCooler","type":"uint32"},{"name":"status","type":"uint8"}],"name":"value1","type":"tuple"}],"name":"data","type":"optional(tuple)"}
+				{"name":"slash_type","type":"uint8"},
+				{"name":"bls_key","type":"bytes"},
+				{"components":[{"name":"value0","type":"uint256"},{"components":[{"name":"stake","type":"uint256"},{"name":"seqNoStart","type":"uint64"},{"name":"timeStampFinish","type":"uint32"},{"name":"timeStampFinishCooler","type":"uint32"},{"name":"bls_key","type":"bytes"},{"name":"status","type":"uint8"},{"name":"signerIndex","type":"uint16"}],"name":"value1","type":"tuple"}],"name":"data","type":"optional(tuple)"}
 			],
 			"outputs": [
 			]
@@ -82,7 +87,9 @@
 			"inputs": [
 				{"name":"seqNoStart","type":"uint64"},
 				{"name":"timeStampFinish","type":"uint32"},
-				{"name":"stake","type":"uint256"}
+				{"name":"stake","type":"uint256"},
+				{"name":"bls_key","type":"bytes"},
+				{"name":"signerIndex","type":"uint16"}
 			],
 			"outputs": [
 			]
@@ -98,7 +105,9 @@
 			"name": "sendBlockKeeperRequestWithStake",
 			"inputs": [
 				{"name":"bls_pubkey","type":"bytes"},
-				{"name":"stake","type":"varuint32"}
+				{"name":"stake","type":"varuint32"},
+				{"name":"signerIndex","type":"uint16"},
+				{"name":"ProxyList","type":"map(uint8,string)"}
 			],
 			"outputs": [
 			]
@@ -114,7 +123,9 @@
 		{
 			"name": "cancelContinueStake",
 			"inputs": [
-				{"name":"seqNoStartOld","type":"uint64"}
+				{"name":"seqNoStartOld","type":"uint64"},
+				{"name":"bls_key","type":"bytes"},
+				{"name":"signerIndex","type":"uint16"}
 			],
 			"outputs": [
 			]
@@ -124,7 +135,8 @@
 			"inputs": [
 				{"name":"bls_pubkey","type":"bytes"},
 				{"name":"stake","type":"varuint32"},
-				{"name":"seqNoStartOld","type":"uint64"}
+				{"name":"seqNoStartOld","type":"uint64"},
+				{"name":"signerIndex","type":"uint16"}
 			],
 			"outputs": [
 			]
@@ -135,7 +147,9 @@
 				{"name":"epochDuration","type":"uint32"},
 				{"name":"epochCliff","type":"uint64"},
 				{"name":"waitStep","type":"uint64"},
-				{"name":"bls_pubkey","type":"bytes"}
+				{"name":"bls_pubkey","type":"bytes"},
+				{"name":"signerIndex","type":"uint16"},
+				{"name":"ProxyList","type":"map(uint8,string)"}
 			],
 			"outputs": [
 			]
@@ -146,7 +160,8 @@
 				{"name":"epochDuration","type":"uint32"},
 				{"name":"waitStep","type":"uint64"},
 				{"name":"seqNoStartold","type":"uint64"},
-				{"name":"bls_pubkey","type":"bytes"}
+				{"name":"bls_pubkey","type":"bytes"},
+				{"name":"signerIndex","type":"uint16"}
 			],
 			"outputs": [
 			]
@@ -158,7 +173,8 @@
 				{"name":"waitStep","type":"uint64"},
 				{"name":"bls_pubkey","type":"bytes"},
 				{"name":"seqNoStartOld","type":"uint64"},
-				{"name":"reputationTime","type":"uint32"}
+				{"name":"reputationTime","type":"uint32"},
+				{"name":"signerIndex","type":"uint16"}
 			],
 			"outputs": [
 			]
@@ -183,7 +199,9 @@
 		{
 			"name": "slashCooler",
 			"inputs": [
-				{"name":"seqNoStart","type":"uint64"}
+				{"name":"seqNoStart","type":"uint64"},
+				{"name":"slash_type","type":"uint8"},
+				{"name":"slash_stake","type":"uint256"}
 			],
 			"outputs": [
 			]
@@ -191,7 +209,9 @@
 		{
 			"name": "slashStake",
 			"inputs": [
-				{"name":"seqNoStart","type":"uint64"}
+				{"name":"seqNoStart","type":"uint64"},
+				{"name":"slash_type","type":"uint8"},
+				{"name":"slash_stake","type":"uint256"}
 			],
 			"outputs": [
 			]
@@ -214,10 +234,11 @@
 				{"name":"service_key","type":"optional(uint256)"},
 				{"name":"root","type":"address"},
 				{"name":"balance","type":"uint256"},
-				{"components":[{"name":"stake","type":"uint256"},{"name":"seqNoStart","type":"uint64"},{"name":"timeStampFinish","type":"uint32"},{"name":"timeStampFinishCooler","type":"uint32"},{"name":"status","type":"uint8"}],"name":"activeStakes","type":"map(uint256,tuple)"},
+				{"components":[{"name":"stake","type":"uint256"},{"name":"seqNoStart","type":"uint64"},{"name":"timeStampFinish","type":"uint32"},{"name":"timeStampFinishCooler","type":"uint32"},{"name":"bls_key","type":"bytes"},{"name":"status","type":"uint8"},{"name":"signerIndex","type":"uint16"}],"name":"activeStakes","type":"map(uint256,tuple)"},
 				{"name":"walletId","type":"uint256"},
 				{"name":"locked","type":"uint256"},
 				{"name":"indexLock","type":"uint128"},
+				{"name":"stakesCnt","type":"uint8"},
 				{"components":[{"name":"value","type":"uint256"},{"name":"timeStampFinish","type":"uint32"}],"name":"lockmap","type":"map(uint128,tuple)"}
 			]
 		},
@@ -267,12 +288,13 @@
 		{"init":false,"name":"_owner_pubkey","type":"uint256"},
 		{"init":false,"name":"_service_key","type":"optional(uint256)"},
 		{"init":false,"name":"_root","type":"address"},
-		{"components":[{"name":"stake","type":"uint256"},{"name":"seqNoStart","type":"uint64"},{"name":"timeStampFinish","type":"uint32"},{"name":"timeStampFinishCooler","type":"uint32"},{"name":"status","type":"uint8"}],"init":false,"name":"_activeStakes","type":"map(uint256,tuple)"},
-		{"init":false,"name":"_walletId","type":"uint256"},
+		{"components":[{"name":"stake","type":"uint256"},{"name":"seqNoStart","type":"uint64"},{"name":"timeStampFinish","type":"uint32"},{"name":"timeStampFinishCooler","type":"uint32"},{"name":"bls_key","type":"bytes"},{"name":"status","type":"uint8"},{"name":"signerIndex","type":"uint16"}],"init":false,"name":"_activeStakes","type":"map(uint256,tuple)"},
+		{"init":false,"name":"_walletId","type":"uint128"},
 		{"init":false,"name":"_stakesCnt","type":"uint8"},
 		{"init":false,"name":"_bk_root","type":"address"},
 		{"init":false,"name":"_locked","type":"uint256"},
 		{"init":false,"name":"_indexLock","type":"uint128"},
-		{"components":[{"name":"value","type":"uint256"},{"name":"timeStampFinish","type":"uint32"}],"init":false,"name":"_lockmap","type":"map(uint128,tuple)"}
+		{"components":[{"name":"value","type":"uint256"},{"name":"timeStampFinish","type":"uint32"}],"init":false,"name":"_lockmap","type":"map(uint128,tuple)"},
+		{"init":false,"name":"_bls_keys","type":"optional(cell)"}
 	]
 }

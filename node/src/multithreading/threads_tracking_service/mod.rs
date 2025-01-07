@@ -98,11 +98,7 @@ impl ThreadsTrackingService {
         &mut self,
         block_data: AppendedBlockData,
     ) -> anyhow::Result<(), CommandError> {
-        tracing::trace!(
-            "ThreadsTrackingService: append: block_data: {:?}, self: {:?}",
-            block_data,
-            self
-        );
+        tracing::trace!("ThreadsTrackingService: append: block_data: {:?}", block_data,);
         let parent_table = self
             .tables
             .get(&block_data.parent_block_identifier)

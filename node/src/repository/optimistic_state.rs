@@ -7,12 +7,14 @@ use std::fmt::Formatter;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use parking_lot::Mutex;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::serde_as;
 use tvm_block::Augmentation;
 use tvm_block::Deserializable;
 use tvm_block::EnqueuedMsg;
+use tvm_block::GetRepresentationHash;
 use tvm_block::HashmapAugType;
 use tvm_block::MsgEnvelope;
 use tvm_block::OutMsgQueueKey;
@@ -21,12 +23,15 @@ use tvm_block::ShardStateUnsplit;
 use tvm_types::AccountId;
 use tvm_types::Cell;
 use tvm_types::HashmapType;
+use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
 
 use super::optimistic_shard_state::OptimisticShardState;
 use super::repository_impl::RepositoryImpl;
 use crate::block::keeper::process::prepare_prev_block_info;
-use crate::bls::GoshBLS;
+use crate::block_keeper_system::wallet_config::create_wallet_slash_message;
+use crate::block_keeper_system::BlockKeeperSlashData;
+use crate::bls::envelope::BLSSignedEnvelope;
 use crate::message::Message;
 use crate::message::WrappedMessage;
 use crate::multithreading::account::get_account_routing_for_account;
@@ -35,6 +40,7 @@ use crate::multithreading::shard_state_operations::crop_shard_state_based_on_thr
 use crate::node::shared_services::SharedServices;
 use crate::repository::CrossThreadRefData;
 use crate::repository::CrossThreadRefDataRead;
+use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AccountAddress;
 use crate::types::AccountRouting;
 use crate::types::AckiNackiBlock;
@@ -45,6 +51,7 @@ use crate::types::BlockSeqNo;
 use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
+use crate::utilities::FixedSizeHashSet;
 
 pub trait OptimisticState: Send + Clone {
     type Cell;
@@ -63,8 +70,10 @@ pub trait OptimisticState: Send + Clone {
     fn serialize_into_buf(&mut self) -> anyhow::Result<Vec<u8>>;
     fn apply_block(
         &mut self,
-        block_candidate: &AckiNackiBlock<GoshBLS>,
+        block_candidate: &AckiNackiBlock,
         shared_services: &SharedServices,
+        block_keeper_sets: BlockKeeperRing,
+        nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<()>;
     fn get_thread_id(&self) -> &ThreadIdentifier;
     fn get_produced_threads_table(&self) -> &ThreadsTable;
@@ -91,6 +100,11 @@ pub trait OptimisticState: Send + Clone {
     fn add_accounts_from_ref(
         &mut self,
         cross_thread_ref: &CrossThreadRefData,
+    ) -> anyhow::Result<()>;
+
+    fn add_slashing_messages(
+        &mut self,
+        slashing_messages: Vec<Self::Message>,
     ) -> anyhow::Result<()>;
 }
 
@@ -123,7 +137,6 @@ pub struct OptimisticStateImpl {
     // TODO: we must clear this table after account was removed from all threads and finalized.
     // TODO: LT usage can be ambiguous because lt in different threads can change with different speed.
     pub dapp_id_table: DAppIdTable,
-    // HashMap of cross thread messages that were removed from this thread state and were not found in other threads.
     pub thread_refs_state: ThreadReferencesState,
 
     cropped: Option<(ThreadIdentifier, ThreadsTable)>,
@@ -142,8 +155,9 @@ impl Debug for OptimisticStateImpl {
             .field("block_info", &self.block_info)
             .field("threads_table", &self.threads_table)
             .field("thread_id", &self.thread_id)
-            .field("dapp_id_table", &self.dapp_id_table)
+            // .field("dapp_id_table", &self.dapp_id_table)
             .field("cropped", &self.cropped)
+            .field("thread_refs_state", &self.thread_refs_state)
             .finish()
     }
 }
@@ -269,8 +283,10 @@ impl OptimisticState for OptimisticStateImpl {
 
     fn apply_block(
         &mut self,
-        block_candidate: &AckiNackiBlock<GoshBLS>,
+        block_candidate: &AckiNackiBlock,
         shared_services: &SharedServices,
+        block_keeper_sets: BlockKeeperRing,
+        nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<()> {
         self.cropped = None;
         // TODO: Critical. Add refs. support + notes
@@ -285,6 +301,24 @@ impl OptimisticState for OptimisticStateImpl {
             block_candidate.parent(),
             "Tried to apply block that is not child"
         );
+
+        let block_nack = block_candidate.get_common_section().nacks.clone();
+        let mut wrapped_slash_messages = vec![];
+        for nack in block_nack.iter() {
+            tracing::trace!("push nack into slash {:?}", nack);
+            let reason = nack.data().reason.clone();
+            if let Some((id, bls_key, addr)) = reason.get_node_data(block_keeper_sets.clone()) {
+                let epoch_nack_data = BlockKeeperSlashData {
+                    node_id: id,
+                    bls_pubkey: bls_key,
+                    addr: addr.0,
+                    slash_type: 0,
+                };
+                let msg = create_wallet_slash_message(&epoch_nack_data)?;
+                let wrapped_message = WrappedMessage { message: msg.clone() };
+                wrapped_slash_messages.push(wrapped_message);
+            }
+        }
         #[cfg(feature = "timing")]
         let start = std::time::Instant::now();
         let last_processed_messages_index = self.last_processed_external_message_index
@@ -307,6 +341,11 @@ impl OptimisticState for OptimisticStateImpl {
         // self.get_shard_state_as_cell(),
         // );
         let mut shared_services = shared_services.clone();
+        tracing::trace!(
+            "apply_block: {:?}, refs: {:?}",
+            block_candidate.identifier(),
+            block_candidate.get_common_section().refs
+        );
         let (state, _in_threads_table) = shared_services.exec(|e| {
             let mut refs = vec![];
             for block_id in &block_candidate.get_common_section().refs {
@@ -322,6 +361,7 @@ impl OptimisticState for OptimisticStateImpl {
                 refs.iter(),
                 &block_candidate.get_common_section().thread_id,
                 &e.cross_thread_ref_data_service,
+                wrapped_slash_messages,
             )
         })?;
         *self = state;
@@ -350,10 +390,29 @@ impl OptimisticState for OptimisticStateImpl {
         self.last_processed_external_message_index = last_processed_messages_index;
         self.block_seq_no = block_candidate.seq_no();
         self.thread_id = block_candidate.get_common_section().thread_id;
+        let nacks = block_candidate.get_common_section().clone().nacks;
         if let Some(table) = &block_candidate.get_common_section().threads_table {
             self.threads_table = table.clone();
         }
-        // }
+        let current_thread_id = *self.get_thread_id();
+        let current_thread_last_block =
+            (current_thread_id, block_candidate.identifier(), block_candidate.seq_no());
+        self.thread_refs_state
+            .all_thread_refs
+            .entry(current_thread_id)
+            .and_modify(|e| {
+                *e = current_thread_last_block.clone();
+            })
+            .or_insert(current_thread_last_block);
+        let mut nack_set_cache_in = nack_set_cache.lock();
+        for nack in nacks {
+            if let Ok(nack_hash) = nack.data().clone().reason.get_hash_nack() {
+                if !nack_set_cache_in.contains(&nack_hash) {
+                    nack_set_cache_in.insert(nack_hash.clone());
+                }
+            }
+        }
+        drop(nack_set_cache_in);
         #[cfg(feature = "timing")]
         tracing::trace!("Apply block {block_id:?} time: {} ms", start.elapsed().as_millis());
         Ok(())
@@ -593,6 +652,59 @@ impl OptimisticState for OptimisticStateImpl {
         shard_state
             .write_accounts(&accounts)
             .map_err(|e| anyhow::format_err!("Failed to save accounts: {e}"))?;
+        self.set_shard_state(Arc::new(shard_state));
+        Ok(())
+    }
+
+    fn add_slashing_messages(
+        &mut self,
+        slashing_messages: Vec<Self::Message>,
+    ) -> anyhow::Result<()> {
+        let mut shard_state = self.get_shard_state().deref().clone();
+        let mut out_queue_info = shard_state
+            .read_out_msg_queue_info()
+            .map_err(|e| anyhow::format_err!("Failed to read out msg queue: {e}"))?;
+        for (index, message) in slashing_messages.into_iter().enumerate() {
+            let msg = message.message;
+            let info = msg.int_header().unwrap();
+            let fwd_fee = info.fwd_fee();
+            let msg_cell = msg
+                .serialize()
+                .map_err(|e| anyhow::format_err!("Failed to serialize message: {e}"))?;
+            let env = MsgEnvelope::with_message_and_fee(&msg, *fwd_fee)
+                .map_err(|e| anyhow::format_err!("Failed to create message envelope: {e}"))?;
+            // Note: replace message created_lt to process slashing messages first
+            let enq = EnqueuedMsg::with_param(index as u64 + 1, &env)
+                .map_err(|e| anyhow::format_err!("Failed to make enqueued message: {e}"))?;
+            let prefix = msg
+                .int_dst_account_id()
+                .unwrap()
+                .clone()
+                .get_next_u64()
+                .map_err(|e| anyhow::format_err!("Failed to generate message prefix: {e}"))?;
+            let key = OutMsgQueueKey::with_workchain_id_and_prefix(
+                shard_state.shard().workchain_id(),
+                prefix,
+                msg_cell.repr_hash(),
+            );
+            tracing::trace!(
+                "OptimisticState: add slashing message: {index} {} {}",
+                msg.hash().unwrap().to_hex_string(),
+                key.hash.to_hex_string()
+            );
+            out_queue_info
+                .out_queue_mut()
+                .set(
+                    &key,
+                    &enq,
+                    &enq.aug()
+                        .map_err(|e| anyhow::format_err!("Failed to generate message aug: {e}"))?,
+                )
+                .map_err(|e| anyhow::format_err!("Failed to put message to out queue: {e}"))?;
+        }
+        shard_state
+            .write_out_msg_queue_info(&out_queue_info)
+            .map_err(|e| anyhow::format_err!("Failed to put message to out queue: {e}"))?;
         self.set_shard_state(Arc::new(shard_state));
         Ok(())
     }

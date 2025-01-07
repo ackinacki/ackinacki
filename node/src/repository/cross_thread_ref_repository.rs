@@ -21,6 +21,17 @@ pub trait CrossThreadRefDataRead {
     ) -> anyhow::Result<CrossThreadRefData>;
 }
 
+// This is a solution for a multithreaded env Node Join operation.
+// It does not track how long the history must be added to a shared
+// state. (Hack) Instead it adds up to 100 blocks of history.
+// Assuming it should be enough before the complete implementation added.
+pub trait CrossThreadRefDataHistory {
+    fn get_history_tail(
+        &self,
+        identifier: &BlockIdentifier,
+    ) -> anyhow::Result<Vec<CrossThreadRefData>>;
+}
+
 const CROSS_THREAD_REF_DATA_CACHE_SIZE: usize = 100;
 
 #[derive(Clone)]
@@ -50,6 +61,29 @@ impl CrossThreadRefDataRead for CrossThreadRefDataRepository {
         } else {
             bail!("cross thread ref data was not set {}", identifier)
         }
+    }
+}
+
+impl CrossThreadRefDataHistory for CrossThreadRefDataRepository {
+    fn get_history_tail(
+        &self,
+        identifier: &BlockIdentifier,
+    ) -> anyhow::Result<Vec<CrossThreadRefData>> {
+        // Let's include the block data first. It must be there or fail.
+        let mut history = vec![self.get_cross_thread_ref_data(identifier)?];
+        let mut cursor = history.last().unwrap().parent_block_identifier().clone();
+        for _ in 0..100 {
+            let Ok(ref_data) = self.get_cross_thread_ref_data(&cursor) else {
+                tracing::trace!("Missing cross-thread-ref-data. Continue as is. Possible if this node recently joined to the network");
+                break;
+            };
+            history.push(ref_data.clone());
+            if cursor == BlockIdentifier::default() {
+                break;
+            }
+            cursor = ref_data.parent_block_identifier().clone();
+        }
+        Ok(history)
     }
 }
 

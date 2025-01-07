@@ -17,7 +17,7 @@ impl Default for GlobalConfig {
             finalization_delay_to_slow_down: 6,
             slow_down_multiplier: 4,
             finalization_delay_to_stop: 6,
-            need_synchronization_block_diff: 6,
+            need_synchronization_block_diff: 20,
             min_time_between_state_publish_directives: Duration::from_secs(600),
             producer_group_size: 5,
             producer_change_gap_size: 6,
@@ -58,7 +58,9 @@ impl Default for Config {
     "network": {
         "node_advertise_addr": "0.0.0.0:8500",
         "api_addr": "127.0.0.1:8600",
-        "gossip_seeds": []
+        "gossip_seeds": [],
+        "shared_state_max_download_tries": 30,
+        "shared_state_retry_download_timeout_millis": 2000
     },
     "local": {
         "node_id": 0,

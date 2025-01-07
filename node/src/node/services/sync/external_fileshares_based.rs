@@ -2,33 +2,40 @@
 //
 
 use std::collections::HashMap;
-use std::io::Write;
-use std::path::PathBuf;
-use std::sync::mpsc;
 use std::sync::mpsc::Sender;
-use std::sync::mpsc::TryRecvError;
-use std::thread;
-use std::thread::sleep;
 use std::time::Duration;
-
-use typed_builder::TypedBuilder;
 
 use crate::node::services::sync::StateSyncService;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::repository_impl::WrappedStateSnapshot;
+use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
+use crate::services::blob_sync::external_fileshares_based::ServiceInterface;
+use crate::services::blob_sync::BlobSyncService;
 use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::ThreadIdentifier;
 
-const RETRY_DOWNLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(2);
-
-#[derive(TypedBuilder)]
+#[derive(Clone)]
 pub struct ExternalFileSharesBased {
-    static_storages: Vec<url::Url>,
-    local_storage_share_base_path: PathBuf,
-    timeout: Duration,
+    pub static_storages: Vec<url::Url>,
+    pub max_download_tries: u8,
+    pub retry_download_timeout: std::time::Duration,
+    pub download_deadline_timeout: std::time::Duration,
+    blob_sync: ServiceInterface,
+}
+
+impl ExternalFileSharesBased {
+    pub fn new(blob_sync: ServiceInterface) -> Self {
+        Self {
+            static_storages: vec![],
+            max_download_tries: 3,
+            retry_download_timeout: Duration::from_secs(2),
+            download_deadline_timeout: Duration::from_secs(30),
+            blob_sync,
+        }
+    }
 }
 
 impl StateSyncService for ExternalFileSharesBased {
@@ -50,59 +57,24 @@ impl StateSyncService for ExternalFileSharesBased {
             Vec<<Self::Repository as Repository>::NodeIdentifier>,
         >,
         block_keeper_set: BlockKeeperRing,
+        cross_thread_ref_data: Vec<CrossThreadRefData>,
     ) -> anyhow::Result<Self::ResourceAddress> {
         tracing::trace!("add_share_state_task");
         let cid = self.generate_resource_address(&state)?;
-        let final_file_name = self.local_storage_share_base_path.join(&cid);
-        if final_file_name.exists() {
-            return Ok(cid);
-        }
-        let cid_clone = cid.clone();
-        let tmp_file_path = {
-            let mut path;
-            while {
-                let tmp_file_name = format!("_{}.tmp", rand::random::<u64>());
-                path = self.local_storage_share_base_path.join(tmp_file_name);
-                path.exists()
-            } {}
-            path
-        };
-        thread::Builder::new()
-            .name(format!("save-{}", cid))
-            .spawn(move || {
-                {
-                    let serialized_state =
-                        state.serialize_into_buf().expect("Failed to serialize state");
-                    let data = bincode::serialize(&WrappedStateSnapshot {
-                        optimistic_state: serialized_state,
-                        producer_group: block_producer_groups,
-                        block_keeper_set: block_keeper_set.clone_inner(),
-                    })
-                    .expect("Failed to serialize state for sharing");
-                    tracing::trace!(
-                        "add_share_state_task: trying to create file: {tmp_file_path:?}"
-                    );
-                    if let Some(parent) = tmp_file_path.parent() {
-                        if !parent.exists() {
-                            tracing::trace!(
-                                "add_share_state_task: trying create to parent dir: {parent:?}"
-                            );
-                            std::fs::create_dir_all(parent)
-                                .expect("Failed to create dir for shared state");
-                        }
-                    }
-                    let mut file = std::fs::File::create(tmp_file_path.clone())
-                        .expect("Failed to create shared state file");
-                    file.write_all(&data).expect("Failed to save shared state file");
-                }
-                tracing::trace!(
-                    "add_share_state_task: rename file: {tmp_file_path:?} -> {final_file_name:?}"
-                );
-                std::fs::rename(tmp_file_path, final_file_name)
-                    .expect("Failed to move shared state file");
-            })
-            .map_err(anyhow::Error::from)?;
-        Ok(cid_clone)
+        // TODO: fix. do not load entire state into memory.
+        let serialized_state = state.serialize_into_buf()?;
+        let data = bincode::serialize(&WrappedStateSnapshot {
+            optimistic_state: serialized_state,
+            producer_group: block_producer_groups,
+            block_keeper_set: block_keeper_set.clone_inner(),
+            cross_thread_ref_data,
+        })?;
+
+        self.blob_sync.share_blob(cid.clone(), std::io::Cursor::new(data), |_| {
+            // Refactoring from an old code. It didn't care about results :(
+        })?;
+
+        Ok(cid)
     }
 
     fn add_load_state_task(
@@ -110,117 +82,33 @@ impl StateSyncService for ExternalFileSharesBased {
         resource_address: Self::ResourceAddress,
         output: Sender<anyhow::Result<(Self::ResourceAddress, Vec<u8>)>>,
     ) -> anyhow::Result<()> {
-        let mut urls = Vec::new();
-        for storage in self.static_storages.iter() {
-            urls.push(storage.join(&resource_address)?);
-        }
-        let timeout = self.timeout;
-
-        thread::Builder::new()
-            .name(format!("load-{}", resource_address))
-            .spawn(move || {
-                tracing::info!("loading resource {}", resource_address);
-
-                let mut buf = Vec::new();
-                if let Err(err) = load_file(&urls, &mut buf, timeout) {
-                    tracing::error!("error loading resource {}: {}", resource_address, err);
-                    // sleep(RETRY_DOWNLOAD_ATTEMPT_TIMEOUT);
-                    Ok(())
-                } else {
-                    tracing::trace!("File was loaded");
-                    output.send(Ok((resource_address, buf)))
+        self.blob_sync.load_blob(
+            resource_address.clone(),
+            self.static_storages.clone(),
+            self.max_download_tries,
+            Some(self.retry_download_timeout),
+            Some(std::time::Instant::now() + self.download_deadline_timeout),
+            {
+                // Handle success
+                let resource_address = resource_address.clone();
+                let output = output.clone();
+                move |e| {
+                    let mut buffer: Vec<u8> = vec![];
+                    match e.read_to_end(&mut buffer) {
+                        Ok(_size) => {
+                            output.send(Ok((resource_address, buffer))).ok();
+                        }
+                        Err(e) => {
+                            output.send(Err(e.into())).ok();
+                        }
+                    }
                 }
-            })
-            .map_err(anyhow::Error::from)?;
+            },
+            move |e| {
+                // Handle error
+                output.send(Err(e)).ok();
+            },
+        )?;
         Ok(())
     }
-}
-
-fn load_file(urls: &Vec<url::Url>, buf: &mut Vec<u8>, timeout: Duration) -> anyhow::Result<()> {
-    tracing::trace!("load_file start {:?}", urls);
-    let (tx, rx) = mpsc::channel();
-
-    let mut threads = Vec::new();
-    let mut stop_threads = Vec::new();
-
-    for url in urls.iter() {
-        let (stop_tx, stop_rx) = mpsc::channel();
-        stop_threads.push(stop_tx);
-
-        let url = url.to_string();
-        let tx_clone = tx.clone();
-        let timeout_clone = timeout;
-        threads.push(
-            thread::Builder::new()
-                .name(format!("download-{}", &url))
-                .spawn(move || {
-                    tracing::trace!("Start reqwest loop: {}", &url);
-                    let start = std::time::Instant::now();
-                    loop {
-                        // break if timeout is exceeded
-                        if start.elapsed() >= timeout_clone {
-                            break;
-                        }
-
-                        // break if ok
-                        match reqwest::blocking::get(&url) {
-                            Ok(r) if r.status().is_success() => {
-                                let e = tx_clone.send(r);
-                                tracing::trace!("response send result: {:?}", e);
-                                let _ = stop_rx.recv();
-                                break;
-                            }
-                            Ok(r) => {
-                                tracing::error!(
-                                    "http error downloading file {}: {}",
-                                    &url,
-                                    r.status()
-                                );
-                            }
-                            Err(err) => {
-                                tracing::error!("error downloading file {}: {}", &url, err);
-                            }
-                        }
-                        tracing::trace!("waiting for stop: {}", &url);
-
-                        // break if got stop
-                        match stop_rx.try_recv() {
-                            Err(TryRecvError::Empty) => {}
-                            _ => {
-                                break;
-                            }
-                        };
-
-                        sleep(RETRY_DOWNLOAD_ATTEMPT_TIMEOUT);
-                    }
-                })
-                .expect("spawn scoped thread"),
-        );
-    }
-
-    tracing::trace!("Start waiting for rx");
-    match rx.recv() {
-        Ok(mut resp) => {
-            tracing::trace!("Response received: {:?}", resp);
-            resp.copy_to(buf)?;
-            tracing::trace!("Response received, buf_len:{}", buf.len());
-        }
-        Err(err) => {
-            tracing::error!("error downloading file: {}", err);
-        }
-    }
-
-    tracing::trace!("Response received success");
-
-    for stop_tx in stop_threads.into_iter() {
-        let _ = stop_tx.send(());
-    }
-
-    for thread in threads.into_iter() {
-        if let Err(err) = thread.join() {
-            tracing::warn!("error joining thread: {:?}", err);
-        }
-    }
-
-    Ok(())
 }

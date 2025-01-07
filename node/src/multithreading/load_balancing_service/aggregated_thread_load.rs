@@ -1,6 +1,5 @@
 use super::in_thread_accounts_load::InThreadAccountsLoad;
 use crate::bitmask::mask::Bitmask;
-use crate::bls::BLSSignatureScheme;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::types::AccountRouting;
 use crate::types::AckiNackiBlock;
@@ -43,14 +42,12 @@ impl AggregatedLoad {
         self.aggregated_value.1.best_split(current_bitmask)
     }
 
-    pub fn append_from<TBLSSignatureScheme, TOptimisticState>(
+    pub fn append_from<TOptimisticState>(
         &mut self,
-        block: &AckiNackiBlock<TBLSSignatureScheme>,
+        block: &AckiNackiBlock,
         block_state: &mut TOptimisticState,
     ) where
         TOptimisticState: OptimisticState,
-        TBLSSignatureScheme: BLSSignatureScheme,
-        TBLSSignatureScheme::Signature: Clone + Send + Sync + 'static,
     {
         self.cursor += 1;
         if self.cursor >= WINDOW_SIZE {

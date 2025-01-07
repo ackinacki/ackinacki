@@ -93,8 +93,7 @@ fn worker(
         match rx.recv() {
             Ok(v) => {
                 tracing::debug!("Data received");
-                let envelope: Envelope<GoshBLS, AckiNackiBlock<GoshBLS>> =
-                    bincode::deserialize(&v)?;
+                let envelope: Envelope<GoshBLS, AckiNackiBlock> = bincode::deserialize(&v)?;
 
                 let result = node::database::serialize_block::reflect_block_in_db(
                     sqlite_helper.clone(),

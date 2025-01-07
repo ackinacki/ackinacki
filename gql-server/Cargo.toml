@@ -16,6 +16,7 @@ env_logger = "0.11.3"
 futures = "0.3.30"
 log = "0.4.21"
 num = "0.4.1"
+rand = "0.8.5"
 reqwest = { version = "0.12.2", features = ["json", "rustls-tls"], default-features = false }
 serde.workspace = true
 serde_json = { version = "1.0.114", features = ["preserve_order"] }
@@ -30,6 +31,11 @@ tvm_client.workspace = true
 tvm_tl_codegen.workspace = true
 tvm_types.workspace = true
 warp = { version = "0.3.7", features = ["tls"] }
+
+[dev-dependencies]
+migration-tool = { workspace = true }
+testdir = "0.9.3"
+tokio = { workspace = true }
 
 [[bin]]
 name = "gql-server"

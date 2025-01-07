@@ -27,13 +27,17 @@ use tvm_block::Serializable;
 use tvm_block::ShardAccount;
 use tvm_block::StateInit;
 use tvm_block::StorageInfo;
+use tvm_client::boc::set_code_salt_cell;
 use tvm_types::AccountId;
+use tvm_types::BuilderData;
 use tvm_types::Cell;
 use tvm_types::UInt256;
 
+use crate::block_keeper_system::abi::BLOCK_KEEPER_WALLET_TVC;
 use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperStatus;
 use crate::bls::gosh_bls::PubKey;
+use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
 use crate::types::AccountAddress;
 use crate::types::BlockEndLT;
@@ -201,23 +205,47 @@ impl ZeroState {
         Ok(())
     }
 
+    pub fn calculate_block_keeper_wallet_address(
+        _owner_pubkey: UInt256,
+        mut data: StateInit,
+    ) -> anyhow::Result<UInt256> {
+        let code = data.code().unwrap();
+        let mut b = BuilderData::new();
+        _owner_pubkey.write_to(&mut b).map_err(|e| anyhow::format_err!("{e}"))?;
+        let stateinitcode = set_code_salt_cell(code.clone(), b.into_cell().unwrap())
+            .map_err(|e| anyhow::format_err!("{e}"))?;
+        data.set_code(stateinitcode);
+        data.hash().map_err(|e| anyhow::format_err!("{e}"))
+    }
+
     pub fn add_block_keeper(
         &mut self,
-        index: SignerIndex,
+        index: NodeIdentifier,
         pubkey: String,
         epoch_finish_timestamp: u32,
         stake: BigUint,
         thread_id: ThreadIdentifier,
+        signer_index: SignerIndex,
     ) {
+        let base_wallet_stateinit =
+            StateInit::construct_from_bytes(BLOCK_KEEPER_WALLET_TVC).unwrap();
+        let data = Self::calculate_block_keeper_wallet_address(
+            UInt256::from_slice(pubkey.as_bytes()),
+            base_wallet_stateinit.clone(),
+        );
         self.block_keeper_sets.entry(thread_id).or_default().insert(
-            index,
+            signer_index,
             BlockKeeperData {
-                index,
+                wallet_index: index,
                 pubkey: PubKey::from_str(&pubkey).expect("Failed to load pubkey from str"),
                 epoch_finish_timestamp,
                 status: BlockKeeperStatus::Active,
                 address: String::new(),
                 stake,
+                owner_address: AccountAddress(
+                    AccountId::from_string(&data.unwrap().as_hex_string()).unwrap(),
+                ),
+                signer_index,
             },
         );
     }

@@ -23,6 +23,17 @@ services:
     networks:
       - block-manager-net
 
+  logrotate:
+    image: stakater/logrotate:3.13.0
+    restart: unless-stopped
+    environment:
+      - CRON_SCHEDULE="58 * * * *"
+    volumes:
+      - {{ BM_LOGS_DIR }}:/logsdir
+      - ./logrotate.sh:/logrotate.sh
+    command: [ "/bin/bash", "/logrotate.sh" ]
+    init: true
+
 networks:
   block-manager-net:
     name: block-manager-net

@@ -7,7 +7,6 @@ use tvm_types::Cell;
 
 use crate::block::producer::builder::ActiveThread;
 use crate::block::producer::BlockProducer;
-use crate::bls::GoshBLS;
 use crate::message::message_stub::MessageStub;
 use crate::repository::stub_repository::OptimisticStateStub;
 use crate::repository::CrossThreadRefData;
@@ -28,7 +27,7 @@ impl BlockProducer for BlockProducerStub {
         _initial_state: Self::OptimisticState,
         _refs: I,
         _control_rx_stop: Receiver<()>,
-    ) -> anyhow::Result<(AckiNackiBlock<GoshBLS>, Self::OptimisticState, Vec<(Cell, ActiveThread)>)>
+    ) -> anyhow::Result<(AckiNackiBlock, Self::OptimisticState, Vec<(Cell, ActiveThread)>)>
     where
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
         CrossThreadRefData: 'a,

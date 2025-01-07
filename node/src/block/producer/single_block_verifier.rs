@@ -2,10 +2,12 @@
 //
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
 use anyhow::ensure;
+use tracing::instrument;
 use tvm_block::GetRepresentationHash;
 use tvm_block::HashmapAugType;
 use tvm_executor::BlockchainConfig;
@@ -13,15 +15,21 @@ use tvm_types::HashmapType;
 use typed_builder::TypedBuilder;
 
 use crate::block::producer::builder::BlockBuilder;
+use crate::block_keeper_system::wallet_config::create_wallet_slash_message;
 use crate::block_keeper_system::BlockKeeperData;
+use crate::block_keeper_system::BlockKeeperSlashData;
+use crate::bls::envelope::BLSSignedEnvelope;
+use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::config::Config;
 use crate::message::Message;
 use crate::message::WrappedMessage;
+use crate::node::associated_types::NackData;
 use crate::node::shared_services::SharedServices;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
+use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AckiNackiBlock;
 
 // Note: produces single verification block.
@@ -31,10 +39,10 @@ pub trait BlockVerifier {
 
     fn generate_verify_block<'a, I>(
         self,
-        block: &AckiNackiBlock<GoshBLS>,
+        block: &AckiNackiBlock,
         initial_state: Self::OptimisticState,
         refs: I,
-    ) -> anyhow::Result<(AckiNackiBlock<GoshBLS>, Self::OptimisticState)>
+    ) -> anyhow::Result<(AckiNackiBlock, Self::OptimisticState)>
     where
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
         CrossThreadRefData: 'a;
@@ -47,7 +55,9 @@ pub struct TVMBlockVerifier {
     node_config: Config,
     // TODO: need to fill this data for verifier
     epoch_block_keeper_data: Vec<BlockKeeperData>,
+    block_nack: Vec<Envelope<GoshBLS, NackData>>,
     shared_services: SharedServices,
+    block_keeper_sets: BlockKeeperRing,
 }
 
 impl TVMBlockVerifier {
@@ -66,24 +76,46 @@ impl BlockVerifier for TVMBlockVerifier {
     type Message = WrappedMessage;
     type OptimisticState = OptimisticStateImpl;
 
+    #[instrument(skip_all)]
     fn generate_verify_block<'a, I>(
         mut self,
-        block: &AckiNackiBlock<GoshBLS>,
+        block: &AckiNackiBlock,
         parent_block_state: Self::OptimisticState,
         refs: I,
-    ) -> anyhow::Result<(AckiNackiBlock<GoshBLS>, Self::OptimisticState)>
+    ) -> anyhow::Result<(AckiNackiBlock, Self::OptimisticState)>
     where
         // TODO: remove Clone and change to Into<>
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
         CrossThreadRefData: 'a,
     {
         let thread_identifier = block.get_common_section().thread_id;
+
+        let mut wrapped_slash_messages = vec![];
+        let mut white_list_of_slashing_messages_hashes = HashSet::new();
+        for nack in self.block_nack.iter() {
+            tracing::trace!("push nack into slash {:?}", nack);
+            let reason = nack.data().reason.clone();
+            if let Some((id, bls_key, addr)) = reason.get_node_data(self.block_keeper_sets.clone())
+            {
+                let epoch_nack_data = BlockKeeperSlashData {
+                    node_id: id,
+                    bls_pubkey: bls_key,
+                    addr: addr.0,
+                    slash_type: 0,
+                };
+                let msg = create_wallet_slash_message(&epoch_nack_data)?;
+                let wrapped_message = WrappedMessage { message: msg.clone() };
+                wrapped_slash_messages.push(wrapped_message);
+                white_list_of_slashing_messages_hashes.insert(msg.hash().unwrap());
+            }
+        }
         let (initial_state, _in_threads_table) = self.shared_services.exec(|container| {
             crate::block::preprocessing::preprocess(
                 parent_block_state,
                 refs.clone(),
                 &thread_identifier,
                 &container.cross_thread_ref_data_service,
+                wrapped_slash_messages,
             )
         })?;
         let mut ref_ids = vec![];
@@ -147,20 +179,28 @@ impl BlockVerifier for TVMBlockVerifier {
             self.node_config.clone(),
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
+
         let (verify_block, _) = producer.build_block(
             ext_messages,
             &self.blockchain_config,
             vec![],
             vec![],
             Some(check_messages_map),
+            white_list_of_slashing_messages_hashes,
         )?;
+
         tracing::trace!(target: "node", "verify block generated successfully");
         Self::print_block_info(&verify_block.block);
+
+        let mut new_state = verify_block.state;
+        if let Some(threads_table) = block.get_common_section().threads_table.clone() {
+            new_state.threads_table = threads_table;
+        }
 
         let res = (
             AckiNackiBlock::new(
                 // TODO: fix single thread implementation
-                verify_block.state.thread_id,
+                new_state.thread_id,
                 //
                 verify_block.block,
                 0,
@@ -172,9 +212,8 @@ impl BlockVerifier for TVMBlockVerifier {
                 // Skip checking load balancer actions.
                 block.get_common_section().threads_table.clone(),
             ),
-            verify_block.state,
+            new_state,
         );
-
         Ok(res)
     }
 }

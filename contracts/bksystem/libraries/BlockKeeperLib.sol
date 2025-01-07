@@ -7,9 +7,13 @@
 pragma gosh-solidity >=0.76.1;
 
 import "../AckiNackiBlockKeeperNodeWallet.sol";
+import "../AckiNackiBlockKeeperNodeWalletConfig.sol";
+import "../AckiNackiBlockKeeperNodeWalletConfig.sol";
 import "../BlockKeeperEpochContract.sol";
 import "../BlockKeeperPreEpochContract.sol";
 import "../BlockKeeperEpochProxyList.sol";
+import "../BLSKeyIndex.sol";
+import "../SignerIndex.sol";
 
 library BlockKeeperLib {
     string constant versionLib = "1.0.0";
@@ -150,5 +154,65 @@ library BlockKeeperLib {
         TvmCell finalcell;
         finalcell = abi.encode(versionLib, hash1, hash2, hash3, root);
         return abi.setCodeSalt(originalCode, finalcell);
+    }
+
+    function calculateBlockKeeperWalletConfigAddress(TvmCell code, uint128 node_id) public returns(address) {
+        TvmCell s1 = composeBlockKeeperWalletConfigStateInit(code, node_id);
+        return address.makeAddrStd(0, tvm.hash(s1));
+    }
+
+    function composeBlockKeeperWalletConfigStateInit(TvmCell code, uint128 node_id) public returns(TvmCell) {
+        return abi.encodeStateInit({
+            code: buildBlockKeeperWalletConfigCode(code, node_id),
+            contr: AckiNackiBlockKeeperNodeWalletConfig,
+            varInit: {}
+        });
+    }
+
+    function buildBlockKeeperWalletConfigCode(
+        TvmCell originalCode,
+        uint128 node_id
+    ) public returns (TvmCell) {
+        TvmCell finalcell;
+        finalcell = abi.encode(node_id);
+        return abi.setCodeSalt(originalCode, finalcell);
+    }
+
+    function calculateBLSKeyAddress(TvmCell code, bytes bls_key, address root) public returns(address) {
+        TvmCell s1 = composeBLSKeyStateInit(code, bls_key, root);
+        return address.makeAddrStd(0, tvm.hash(s1));
+    }
+
+    function composeBLSKeyStateInit(TvmCell code, bytes bls_key, address root) public returns(TvmCell) {
+        return abi.encodeStateInit({
+            code: buildBLSKeyCode(code),
+            contr: BLSKeyIndex,
+            varInit: {_bls: bls_key, _root: root}
+        });
+    }
+
+    function buildBLSKeyCode(
+        TvmCell originalCode
+    ) public returns (TvmCell) {
+        return originalCode;
+    }
+
+    function calculateSignerIndexAddress(TvmCell code, uint16 index, address root) public returns(address) {
+        TvmCell s1 = composeSignerIndexStateInit(code, index, root);
+        return address.makeAddrStd(0, tvm.hash(s1));
+    }
+
+    function composeSignerIndexStateInit(TvmCell code, uint16 index, address root) public returns(TvmCell) {
+        return abi.encodeStateInit({
+            code: buildSignerIndexCode(code),
+            contr: SignerIndex,
+            varInit: {_signerIndex: index, _root: root}
+        });
+    }
+
+    function buildSignerIndexCode(
+        TvmCell originalCode
+    ) public returns (TvmCell) {
+        return originalCode;
     }
 }

@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::mem;
+use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::sleep;
@@ -13,17 +15,25 @@ use std::time::Instant;
 use database::documents_db::DocumentsDb;
 use parking_lot::Mutex;
 use serde_json::Value;
+use tracing::instrument;
+use tracing::trace_span;
 use tvm_block::Message;
 use tvm_executor::BlockchainConfig;
+use tvm_types::Cell;
+use tvm_types::UInt256;
 
+use crate::block::producer::builder::ActiveThread;
 use crate::block::producer::BlockProducer;
 use crate::block::producer::TVMBlockProducer;
 use crate::block_keeper_system::BlockKeeperData;
+use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::BLSSignatureScheme;
 use crate::bls::GoshBLS;
 use crate::config::Config;
 use crate::database::write_to_db;
+use crate::node::associated_types::AckData;
+use crate::node::associated_types::NackData;
 use crate::node::shared_services::SharedServices;
 use crate::repository::cross_thread_ref_repository::CrossThreadRefDataRead;
 use crate::repository::optimistic_state::OptimisticState;
@@ -31,9 +41,11 @@ use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
+use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
+use crate::utilities::FixedSizeHashSet;
 
 // Note: multiple blocks production service.
 pub trait BlockProducerProcess {
@@ -42,11 +54,20 @@ pub trait BlockProducerProcess {
     type CandidateBlock;
     type OptimisticState: OptimisticState;
     type Repository: Repository;
+    type Ack: BLSSignedEnvelope;
+    type Nack: BLSSignedEnvelope;
 
     fn start_thread_production(
         &mut self,
         thread_id: &ThreadIdentifier,
         prev_block_id: &BlockIdentifier,
+        received_acks: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, AckData>>>>,
+        received_nacks: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, NackData>>>>,
+        block_keeper_sets: BlockKeeperRing,
+        nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
+        //        last_block_attestations: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, AttestationData>>>>,
+        //        sent_attestations: Arc<Mutex<HashMap<ThreadIdentifier,
+        //        Vec<(BlockSeqNo, Envelope<Self::BLSSignatureScheme, AttestationData>)>>>>,
     ) -> anyhow::Result<()>;
 
     fn stop_thread_production(&mut self, thread_id: &ThreadIdentifier) -> anyhow::Result<()>;
@@ -54,7 +75,7 @@ pub trait BlockProducerProcess {
     fn get_produced_blocks(
         &mut self,
         thread_id: &ThreadIdentifier,
-    ) -> Vec<(AckiNackiBlock<Self::BLSSignatureScheme>, Self::OptimisticState, usize)>;
+    ) -> Vec<(AckiNackiBlock, Self::OptimisticState, usize)>;
 
     fn get_production_iteration_start(&self) -> Instant;
 
@@ -76,18 +97,8 @@ pub struct TVMBlockProducerProcess {
     repository: <Self as BlockProducerProcess>::Repository,
     archive: Option<Arc<dyn DocumentsDb>>,
     node_config: Config,
-    produced_blocks: Arc<
-        Mutex<
-            HashMap<
-                ThreadIdentifier,
-                Vec<(
-                    AckiNackiBlock<<Self as BlockProducerProcess>::BLSSignatureScheme>,
-                    OptimisticStateImpl,
-                    usize,
-                )>,
-            >,
-        >,
-    >,
+    produced_blocks:
+        Arc<Mutex<HashMap<ThreadIdentifier, Vec<(AckiNackiBlock, OptimisticStateImpl, usize)>>>>,
     active_producer_threads: HashMap<
         ThreadIdentifier,
         (JoinHandle<<Self as BlockProducerProcess>::OptimisticState>, Sender<()>),
@@ -144,13 +155,260 @@ impl TVMBlockProducerProcess {
             shared_services,
         })
     }
+
+    #[allow(clippy::too_many_arguments)]
+    #[instrument(skip_all)]
+    fn produce_next(
+        initial_state: &mut OptimisticStateImpl,
+        blockchain_config: Arc<BlockchainConfig>,
+        repo_clone: &mut RepositoryImpl,
+        node_config: &Config,
+        produced_blocks: Arc<
+            Mutex<HashMap<ThreadIdentifier, Vec<(AckiNackiBlock, OptimisticStateImpl, usize)>>>,
+        >,
+        timeout: Arc<Mutex<Duration>>,
+        thread_id_clone: ThreadIdentifier,
+        iteration_start_clone: Arc<Mutex<Instant>>,
+        epoch_block_keeper_data_rx: &Receiver<BlockKeeperData>,
+        shared_services: &mut SharedServices,
+        active_block_producer_threads: &mut Vec<(Cell, ActiveThread)>,
+        received_acks: Arc<
+            Mutex<Vec<Envelope<<Self as BlockProducerProcess>::BLSSignatureScheme, AckData>>>,
+        >,
+        received_nacks: Arc<
+            Mutex<Vec<Envelope<<Self as BlockProducerProcess>::BLSSignatureScheme, NackData>>>,
+        >,
+        block_keeper_sets: BlockKeeperRing,
+    ) {
+        tracing::trace!("Start block production process iteration");
+
+        let (message_queue, epoch_block_keeper_data, block_nack, aggregated_acks, aggregated_nacks) =
+            trace_span!("read messages").in_scope(|| {
+                let messages = initial_state.get_remaining_ext_messages(repo_clone).unwrap();
+                let message_queue: VecDeque<Message> =
+                    messages.clone().into_iter().map(|wrap| wrap.message).collect();
+                let mut received_acks_in = received_acks.lock();
+                let received_acks_copy = received_acks_in.clone();
+                received_acks_in.clear();
+                drop(received_acks_in);
+                // TODO: filter that nacks are not older than last finalized block
+                let mut received_nacks_in = received_nacks.lock();
+                let received_nacks_copy = received_nacks_in.clone();
+                received_nacks_in.clear();
+                drop(received_nacks_in);
+                let aggregated_acks =
+                    aggregate_acks(received_acks_copy).expect("Failed to aggregate acks");
+                let aggregated_nacks =
+                    aggregate_nacks(received_nacks_copy).expect("Failed to aggregate nacks");
+                let block_nack = aggregated_nacks.clone();
+                let mut epoch_block_keeper_data = vec![];
+                while let Ok(data) = epoch_block_keeper_data_rx.try_recv() {
+                    tracing::trace!("Received data for epoch: {data:?}");
+                    epoch_block_keeper_data.push(data);
+                }
+
+                tracing::Span::current().record("messages.len", messages.len());
+                (
+                    message_queue,
+                    epoch_block_keeper_data,
+                    block_nack,
+                    aggregated_acks,
+                    aggregated_nacks,
+                )
+            });
+
+        let producer = TVMBlockProducer::builder()
+            .active_threads(mem::take(active_block_producer_threads))
+            .blockchain_config(blockchain_config.clone())
+            .message_queue(message_queue)
+            .node_config(node_config.clone())
+            .epoch_block_keeper_data(epoch_block_keeper_data)
+            .shared_services(shared_services.clone())
+            .block_nack(block_nack.clone())
+            .block_keeper_sets(block_keeper_sets.clone())
+            .build();
+
+        let (control_tx, control_rx) = std::sync::mpsc::channel();
+        {
+            let mut iteration_start = iteration_start_clone.lock();
+            *iteration_start = std::time::Instant::now();
+        }
+        let initial_state_clone = initial_state.clone();
+
+        let refs = trace_span!("read thread refs").in_scope(||{
+        let mut refs = vec![];
+        let mut try_refs = vec![];
+        {
+            let buffer = shared_services
+                .exec(|services| {
+                    services.thread_sync.list_blocks_sending_messages_to_thread(&thread_id_clone)
+                })
+                .expect("Failed to list potential ref block");
+            tracing::trace!("Loaded sync info buffer: {buffer:?}");
+            // Note:
+            // trying to add refs one by one and ensure they're not conflicting
+            for block_id in buffer.iter() {
+                try_refs.push(block_id.clone());
+                tracing::trace!("Add ref for block_id: {:?}", block_id);
+                use crate::multithreading::cross_thread_messaging::thread_references_state::CanRefQueryResult;
+                let can_ref_query_result = shared_services
+                    .exec(|e| {
+                        let references = try_refs
+                            .iter()
+                            .map(|b| {
+                                e.cross_thread_ref_data_service
+                                    .get_cross_thread_ref_data(b)
+                                    .expect("Failed to load ref state")
+                                    .as_reference_state_data()
+                            })
+                            .collect::<Vec<_>>();
+                        initial_state_clone.thread_refs_state.can_reference(
+                            references,
+                            |block_id| {
+                                e.cross_thread_ref_data_service.get_cross_thread_ref_data(block_id)
+                            },
+                        )
+                    })
+                    .expect("Can query block must work");
+                match can_ref_query_result {
+                    CanRefQueryResult::No => {
+                        let _ = try_refs.pop();
+                    }
+                    CanRefQueryResult::Yes(e) => {
+                        refs = e.explicitly_referenced_blocks;
+                    }
+                }
+            }
+        }
+
+        // TODO: reuse previously loaded cross thread ref data
+        let refs = shared_services.exec(|e| {
+            refs.into_iter()
+                .map(|r| {
+                    e.cross_thread_ref_data_service
+                        .get_cross_thread_ref_data(&r.1)
+                        .expect("Failed to load ref state")
+                })
+                .collect::<Vec<_>>()
+        });
+
+            if tracing::level_filters::STATIC_MAX_LEVEL >= tracing::Level::TRACE {
+                let span = tracing::Span::current();
+                span.record("refs.len",  refs.len() as i64);
+                span.record("try_refs.len", try_refs.len() as i64);
+            }
+            refs
+        });
+
+        let current_span = tracing::Span::current().clone();
+
+        let thread = std::thread::Builder::new()
+            .name(format!("Produce block {}", &thread_id_clone))
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let _current_span_scope = current_span.enter();
+
+                tracing::trace!("start production thread");
+                let (block, result_state, active_block_producer_threads) = producer
+                    // TODO: add refs to other thread states in case of sync
+                    .produce(
+                        thread_id_clone,
+                        initial_state_clone,
+                        refs.iter(),
+                        control_rx
+                    )
+                    .expect("Failed to produce block");
+
+                (block, result_state, active_block_producer_threads)
+            })
+            .unwrap();
+        let cur_timeout = { *timeout.lock() };
+        tracing::trace!("Sleep for {cur_timeout:?}");
+
+        trace_span!("sleep").in_scope(|| {
+            sleep(cur_timeout);
+        });
+
+        tracing::trace!("Send signal to stop production");
+        let _ = control_tx.send(());
+        let (mut block, result_state, new_active_block_producer_threads) =
+            thread.join().expect("Failed to join producer thread");
+        tracing::trace!("Produced block: {}", block);
+        // Update common section
+        let mut common_section = block.get_common_section().clone();
+        common_section.acks = aggregated_acks;
+        common_section.nacks = aggregated_nacks.clone();
+        block.set_common_section(common_section).expect("Failed to set common section");
+
+        // if let Some(documents_db) = documents_db.clone() {
+        //     write_to_db(
+        //         documents_db,
+        //         block.clone(),
+        //         shard_state.clone(),
+        //         repo_clone.clone(),
+        //     )
+        //     .expect("Failed to write block production results to DB");
+        // }
+
+        if tracing::level_filters::STATIC_MAX_LEVEL >= tracing::Level::TRACE {
+            if let Ok(info) = block.tvm_block().info.read_struct() {
+                use tvm_block::GetRepresentationHash;
+                let span = tracing::Span::current();
+                span.record("block.seq_no", info.seq_no() as i64);
+                span.record("block.hash", info.hash().unwrap_or_default().as_hex_string());
+            }
+        }
+
+        // DEBUGGING
+        // let mut parent_state = repo_clone.get_optimistic_state(&block.parent())
+        // .expect("Must not fail")
+        // .expect("Must have state");
+        // assert!(block.get_common_section().refs.is_empty());
+        // tracing::trace!(
+        // "debug_apply_state: block {} on {:?}",
+        // block.identifier(),
+        // parent_state.get_shard_state_as_cell().repr_hash(),
+        // );
+        // parent_state.apply_block(&block, [].iter()).unwrap();
+        //
+
+        *active_block_producer_threads = new_active_block_producer_threads;
+        *initial_state = result_state;
+
+        trace_span!("save cross thread refs").in_scope(|| {
+            let cross_thread_ref_data =
+                CrossThreadRefData::from_ackinacki_block(&block, initial_state)
+                    .expect("Failed to create cross-thread ref data");
+
+            if tracing::level_filters::STATIC_MAX_LEVEL >= tracing::Level::TRACE {
+                tracing::Span::current()
+                    .record("refs_len", cross_thread_ref_data.refs().len() as i64);
+            }
+            shared_services
+                .exec(|e| {
+                    e.cross_thread_ref_data_service.set_cross_thread_ref_data(cross_thread_ref_data)
+                })
+                .expect("Failed to save cross-thread ref data");
+        });
+
+        trace_span!("save state").in_scope(|| {
+            tracing::trace!("Save produced block");
+            let mut blocks = produced_blocks.lock();
+            let processed_ext_messages = block.processed_ext_messages_cnt();
+            let produced_data = (block, initial_state.clone(), processed_ext_messages);
+            let saves = blocks.entry(thread_id_clone).or_default();
+            saves.push(produced_data);
+        });
+        tracing::trace!("End block production process iteration");
+    }
 }
 
 impl BlockProducerProcess for TVMBlockProducerProcess {
+    type Ack = Envelope<Self::BLSSignatureScheme, AckData>;
     type BLSSignatureScheme = GoshBLS;
     type BlockProducer = TVMBlockProducer;
-    type CandidateBlock =
-        Envelope<GoshBLS, AckiNackiBlock<<Self as BlockProducerProcess>::BLSSignatureScheme>>;
+    type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>;
+    type Nack = Envelope<Self::BLSSignatureScheme, NackData>;
     type OptimisticState = OptimisticStateImpl;
     type Repository = RepositoryImpl;
 
@@ -158,6 +416,10 @@ impl BlockProducerProcess for TVMBlockProducerProcess {
         &mut self,
         thread_id: &ThreadIdentifier,
         prev_block_id: &BlockIdentifier,
+        received_acks: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, AckData>>>>,
+        received_nacks: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, NackData>>>>,
+        block_keeper_sets: BlockKeeperRing,
+        nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         // mut initial_state: Self::OptimisticState,
     ) -> anyhow::Result<()> {
         tracing::trace!(
@@ -185,7 +447,11 @@ impl BlockProducerProcess for TVMBlockProducerProcess {
                     tracing::trace!(
                         "start_thread_production: cached state block id is not appropriate. Load state from repo"
                     );
-                    if let Some(state) = self.repository.get_optimistic_state(prev_block_id)? {
+                    if let Some(state) = self.repository.get_optimistic_state(
+                        prev_block_id,
+                        block_keeper_sets.clone(),
+                        Arc::clone(&nack_set_cache),
+                    )? {
                         state
                     } else if prev_block_id == &BlockIdentifier::default() {
                         self.repository.get_zero_state_for_thread(thread_id)?
@@ -201,7 +467,11 @@ impl BlockProducerProcess for TVMBlockProducerProcess {
                 tracing::trace!(
                     "start_thread_production: cache does not contain state for this thread. Load state from repo"
                 );
-                if let Some(state) = self.repository.get_optimistic_state(prev_block_id)? {
+                if let Some(state) = self.repository.get_optimistic_state(
+                    prev_block_id,
+                    block_keeper_sets.clone(),
+                    Arc::clone(&nack_set_cache),
+                )? {
                     state
                 } else if prev_block_id == &BlockIdentifier::default() {
                     self.repository.get_zero_state_for_thread(thread_id)?
@@ -235,147 +505,29 @@ impl BlockProducerProcess for TVMBlockProducerProcess {
                 // It is also possible to track blocks dependencies through repository.
                 // TODO: think if it is the best solution given all circumstances
                 loop {
-                    tracing::trace!("Start block production process iteration");
-
-                    let messages = initial_state.get_remaining_ext_messages(&repo_clone).unwrap();
-                    let message_queue: VecDeque<Message> =
-                        messages.clone().into_iter().map(|wrap| wrap.message).collect();
-                    let mut epoch_block_keeper_data = vec![];
-                    while let Ok(data) = epoch_block_keeper_data_rx.try_recv() {
-                        tracing::trace!("Received data for epoch: {data:?}");
-                        epoch_block_keeper_data.push(data);
-                    }
-
-                    let producer = TVMBlockProducer::builder()
-                        .active_threads(active_block_producer_threads)
-                        .blockchain_config(blockchain_config.clone())
-                        .message_queue(message_queue)
-                        .node_config(node_config.clone())
-                        .epoch_block_keeper_data(epoch_block_keeper_data)
-                        .shared_services(shared_services.clone())
-                        .build();
-
-                    let (control_tx, control_rx) = std::sync::mpsc::channel();
-                    {
-                        let mut iteration_start = iteration_start_clone.lock();
-                        *iteration_start = std::time::Instant::now();
-                    }
-                    let initial_state_clone = initial_state.clone();
-                    let mut refs = vec![];
-                    let mut try_refs = vec![];
-                    {
-                        let buffer = shared_services
-                            .exec(|services| {
-                                services
-                                    .thread_sync
-                                    .list_blocks_sending_messages_to_thread(&thread_id_clone)
-                            })
-                            .expect("Failed to list potential ref block");
-                        tracing::trace!("Loaded sync info buffer: {buffer:?}");
-                        // Note:
-                        // trying to add refs one by one and ensure they're not conflicting
-                        for block_id in buffer.iter() {
-                            try_refs.push(block_id.clone());
-                            tracing::trace!("Add ref for block_id: {:?}", block_id);
-                            use crate::multithreading::cross_thread_messaging::thread_references_state::CanRefQueryResult;
-                            let can_ref_query_result = shared_services.exec(|e| {
-                                let references = try_refs.iter()
-                                    .map(|b| e.cross_thread_ref_data_service
-                                            .get_cross_thread_ref_data(b)
-                                            .expect("Failed to load ref state")
-                                            .as_reference_state_data()
-                                    )
-                                    .collect::<Vec::<_>>();
-                                initial_state_clone.thread_refs_state.can_reference(
-                                    references,
-                                    |block_id| e.cross_thread_ref_data_service
-                                            .get_cross_thread_ref_data(block_id)
-                                )
-                            }).expect("Can query block must work");
-                            match can_ref_query_result {
-                                CanRefQueryResult::No => {
-                                    let _ = try_refs.pop();
-                                },
-                                CanRefQueryResult::Yes(e) => {
-                                    refs = e.explicitly_referenced_blocks;
-                                }
-                            }
-                        }
-                    }
-
-                    let refs = shared_services.exec(|e| {
-                        refs.into_iter()
-                            .map(|r| {
-                                e.cross_thread_ref_data_service
-                                .get_cross_thread_ref_data(&r.1)
-                                .expect("Failed to load ref state")
-                            })
-                            .collect::<Vec::<_>>()
-                    });
-                    let thread = std::thread::Builder::new()
-                        .name(format!("Produce block {}", &thread_id_clone))
-                        .stack_size(16 * 1024 * 1024)
-                        .spawn(move || {
-                            tracing::trace!("start production thread");
-                            let (block, result_state, active_block_producer_threads) = producer
-                                // TODO: add refs to other thread states in case of sync
-                                .produce(
-                                    thread_id_clone,
-                                    initial_state_clone,
-                                    refs.iter(),
-                                    control_rx
-                                )
-                                .expect("Failed to produce block");
-                            (block, result_state, active_block_producer_threads)
-                        })
-                        .unwrap();
-                    let cur_timeout = { *timeout.lock() };
-                    tracing::trace!("Sleep for {cur_timeout:?}");
-                    sleep(cur_timeout);
-
-                    tracing::trace!("Send signal to stop production");
-                    let _ = control_tx.send(());
-                    let (block, result_state, new_active_block_producer_threads) =
-                        thread.join().expect("Failed to join producer thread");
-                    tracing::trace!("Produced block: {}", block);
-
-                    // DEBUGGING
-                    // let mut parent_state = repo_clone.get_optimistic_state(&block.parent())
-                    // .expect("Must not fail")
-                    // .expect("Must have state");
-                    // assert!(block.get_common_section().refs.is_empty());
-                    // tracing::trace!(
-                    // "debug_apply_state: block {} on {:?}",
-                    // block.identifier(),
-                    // parent_state.get_shard_state_as_cell().repr_hash(),
-                    // );
-                    // parent_state.apply_block(&block, [].iter()).unwrap();
-                    //
-
-                    active_block_producer_threads = new_active_block_producer_threads;
-                    initial_state = result_state;
-                    let cross_thread_ref_data =
-                        CrossThreadRefData::from_ackinacki_block(&block, &mut initial_state)
-                            .expect("Failed to create cross-thread ref data");
-                    shared_services
-                        .exec(|e| {
-                            e.cross_thread_ref_data_service
-                                .set_cross_thread_ref_data(cross_thread_ref_data)
-                        })
-                        .expect("Failed to save cross-thread ref data");
-                    {
-                        tracing::trace!("Save produced block");
-                        let mut blocks = produced_blocks.lock();
-                        let processed_ext_messages = block.processed_ext_messages_cnt();
-                        let produced_data = (block, initial_state.clone(), processed_ext_messages);
-                        let saves = blocks.entry(thread_id_clone).or_default();
-                        saves.push(produced_data);
-                    }
+                    Self::produce_next(
+                        &mut initial_state,
+                        blockchain_config.clone(),
+                        &mut repo_clone,
+                        &node_config,
+                        produced_blocks.clone(),
+                        timeout.clone(),
+                        thread_id_clone,
+                        iteration_start_clone.clone(),
+                        &epoch_block_keeper_data_rx,
+                        &mut shared_services,
+                        &mut active_block_producer_threads,
+                        received_acks.clone(),
+                        received_nacks.clone(),
+                        block_keeper_sets.clone(),
+                    );
                     if let Ok(()) = external_control_rx.try_recv() {
-                        repo_clone
-                            .store_optimistic(initial_state.clone())
-                            .expect("Failed to store optimistic state");
-                        tracing::trace!("Stop production process: {}", &thread_id_clone);
+                        trace_span!("store optimistic").in_scope(|| {
+                            repo_clone
+                                .store_optimistic(initial_state.clone())
+                                .expect("Failed to store optimistic state");
+                            tracing::trace!("Stop production process: {}", &thread_id_clone);
+                        });
                         return initial_state;
                     }
                 }
@@ -419,11 +571,7 @@ impl BlockProducerProcess for TVMBlockProducerProcess {
     fn get_produced_blocks(
         &mut self,
         thread_id: &ThreadIdentifier,
-    ) -> Vec<(
-        AckiNackiBlock<<Self as BlockProducerProcess>::BLSSignatureScheme>,
-        OptimisticStateImpl,
-        usize,
-    )> {
+    ) -> Vec<(AckiNackiBlock, OptimisticStateImpl, usize)> {
         if self.active_producer_threads.contains_key(thread_id) {
             assert!(!self
                 .active_producer_threads
@@ -468,6 +616,99 @@ impl BlockProducerProcess for TVMBlockProducerProcess {
     }
 }
 
+fn aggregate_acks(
+    mut received_acks: Vec<
+        Envelope<<TVMBlockProducerProcess as BlockProducerProcess>::BLSSignatureScheme, AckData>,
+    >,
+) -> anyhow::Result<Vec<<TVMBlockProducerProcess as BlockProducerProcess>::Ack>> {
+    let mut aggregated_acks = HashMap::new();
+    tracing::trace!("Aggregate acks start len: {}", received_acks.len());
+    for ack in &received_acks {
+        let block_id = ack.data().block_id.clone();
+        tracing::trace!("Aggregate acks block id: {:?}", block_id);
+        aggregated_acks
+            .entry(block_id)
+            .and_modify(|aggregated_ack: &mut <TVMBlockProducerProcess as BlockProducerProcess>::Ack| {
+                let mut merged_signatures_occurences =
+                    aggregated_ack.clone_signature_occurrences();
+                let initial_signatures_count = merged_signatures_occurences.len();
+                let incoming_signature_occurences = ack.clone_signature_occurrences();
+                for signer_index in incoming_signature_occurences.keys() {
+                    let new_count =
+                        (*merged_signatures_occurences.get(signer_index).unwrap_or(&0))
+                            + (*incoming_signature_occurences.get(signer_index).unwrap());
+                    merged_signatures_occurences.insert(*signer_index, new_count);
+                }
+                merged_signatures_occurences.retain(|_k, count| *count > 0);
+
+                if merged_signatures_occurences.len() > initial_signatures_count {
+                    let aggregated_signature = aggregated_ack.aggregated_signature();
+                    let merged_aggregated_signature = <TVMBlockProducerProcess as BlockProducerProcess>::BLSSignatureScheme::merge(
+                        aggregated_signature,
+                        ack.aggregated_signature(),
+                    )
+                    .expect("Failed to merge attestations");
+                    *aggregated_ack = <TVMBlockProducerProcess as BlockProducerProcess>::Ack::create(
+                        merged_aggregated_signature,
+                        merged_signatures_occurences,
+                        aggregated_ack.data().clone(),
+                    );
+                }
+            })
+            .or_insert(ack.clone());
+    }
+    tracing::trace!("Aggregate acks result len: {:?}", aggregated_acks.len());
+    received_acks.clear();
+    Ok(aggregated_acks.values().cloned().collect())
+}
+
+// TODO: fix this function nacks can't be aggregated based on block id
+fn aggregate_nacks(
+    mut received_nacks: Vec<
+        Envelope<<TVMBlockProducerProcess as BlockProducerProcess>::BLSSignatureScheme, NackData>,
+    >,
+) -> anyhow::Result<Vec<<TVMBlockProducerProcess as BlockProducerProcess>::Nack>> {
+    let mut aggregated_nacks = HashMap::new();
+    tracing::trace!("Aggregate nacks start len: {}", received_nacks.len());
+    for nack in &received_nacks {
+        let block_id = nack.data().block_id.clone();
+        tracing::trace!("Aggregate nacks block id: {:?}", block_id);
+        aggregated_nacks
+            .entry(block_id)
+            .and_modify(|aggregated_nack: &mut <TVMBlockProducerProcess as BlockProducerProcess>::Nack| {
+                let mut merged_signatures_occurences =
+                    aggregated_nack.clone_signature_occurrences();
+                let initial_signatures_count = merged_signatures_occurences.len();
+                let incoming_signature_occurences = nack.clone_signature_occurrences();
+                for signer_index in incoming_signature_occurences.keys() {
+                    let new_count =
+                        (*merged_signatures_occurences.get(signer_index).unwrap_or(&0))
+                            + (*incoming_signature_occurences.get(signer_index).unwrap());
+                    merged_signatures_occurences.insert(*signer_index, new_count);
+                }
+                merged_signatures_occurences.retain(|_k, count| *count > 0);
+
+                if merged_signatures_occurences.len() > initial_signatures_count {
+                    let aggregated_signature = aggregated_nack.aggregated_signature();
+                    let merged_aggregated_signature = <TVMBlockProducerProcess as BlockProducerProcess>::BLSSignatureScheme::merge(
+                        aggregated_signature,
+                        nack.aggregated_signature(),
+                    )
+                    .expect("Failed to merge attestations");
+                    *aggregated_nack = <TVMBlockProducerProcess as BlockProducerProcess>::Nack::create(
+                        merged_aggregated_signature,
+                        merged_signatures_occurences,
+                        aggregated_nack.data().clone(),
+                    );
+                }
+            })
+            .or_insert(nack.clone());
+    }
+    tracing::trace!("Aggregate nacks result len: {:?}", aggregated_nacks.len());
+    received_nacks.clear();
+    Ok(aggregated_nacks.values().cloned().collect())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -483,7 +724,9 @@ mod tests {
     use crate::node::shared_services::SharedServices;
     use crate::repository::repository_impl::RepositoryImpl;
     use crate::repository::Repository;
+    use crate::types::block_keeper_ring::BlockKeeperRing;
     use crate::types::ThreadIdentifier;
+    use crate::utilities::FixedSizeHashSet;
 
     #[test]
     #[ignore]
@@ -495,6 +738,8 @@ mod tests {
             Some(config.local.zerostate_path.clone()),
             1,
             SharedServices::test_start(RoutingService::stub().0),
+            BlockKeeperRing::default(),
+            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
         );
         let (router, _router_rx) = crate::multithreading::routing::service::RoutingService::stub();
         let mut production_process = TVMBlockProducerProcess::new(
@@ -509,7 +754,14 @@ mod tests {
         let (prev_block_id, _prev_block_seq_no) =
             repository.select_thread_last_main_candidate_block(&thread_id)?;
 
-        production_process.start_thread_production(&thread_id, &prev_block_id)?;
+        production_process.start_thread_production(
+            &thread_id,
+            &prev_block_id,
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
+            BlockKeeperRing::default(),
+            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
+        )?;
 
         for _i in 0..10 {
             sleep(Duration::from_millis(config.global.time_to_produce_block_millis + 10));

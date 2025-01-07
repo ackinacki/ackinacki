@@ -12,6 +12,14 @@
 			]
 		},
 		{
+			"name": "setOwner",
+			"inputs": [
+				{"name":"wallet","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "setConfig",
 			"inputs": [
 				{"name":"epochDuration","type":"uint32"},
@@ -31,7 +39,26 @@
 			]
 		},
 		{
+			"name": "deployAckiNackiBlockKeeperNodeWalletConfig",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"num","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "decreaseActiveBlockKeeperNumber",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"seqNoStart","type":"uint64"},
+				{"name":"stake","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "decreaseStakes",
 			"inputs": [
 				{"name":"pubkey","type":"uint256"},
 				{"name":"seqNoStart","type":"uint64"},
@@ -54,7 +81,35 @@
 			"name": "receiveBlockKeeperRequestWithStakeFromWallet",
 			"inputs": [
 				{"name":"pubkey","type":"uint256"},
-				{"name":"bls_pubkey","type":"bytes"}
+				{"name":"bls_pubkey","type":"bytes"},
+				{"name":"signerIndex","type":"uint16"},
+				{"name":"ProxyList","type":"map(uint8,string)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "isBLSAccepted",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"bls_pubkey","type":"bytes"},
+				{"name":"stake","type":"uint256"},
+				{"name":"isNotOk","type":"bool"},
+				{"name":"signerIndex","type":"uint16"},
+				{"name":"ProxyList","type":"map(uint8,string)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "isSignerIndexAccepted",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"bls_pubkey","type":"bytes"},
+				{"name":"stake","type":"uint256"},
+				{"name":"isNotOk","type":"bool"},
+				{"name":"signerIndex","type":"uint16"},
+				{"name":"ProxyList","type":"map(uint8,string)"}
 			],
 			"outputs": [
 			]
@@ -64,7 +119,34 @@
 			"inputs": [
 				{"name":"pubkey","type":"uint256"},
 				{"name":"bls_pubkey","type":"bytes"},
-				{"name":"seqNoStartOld","type":"uint64"}
+				{"name":"seqNoStartOld","type":"uint64"},
+				{"name":"signerIndex","type":"uint16"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "isBLSAcceptedContinue",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"bls_pubkey","type":"bytes"},
+				{"name":"stake","type":"uint256"},
+				{"name":"isNotOk","type":"bool"},
+				{"name":"seqNoStartOld","type":"uint64"},
+				{"name":"signerIndex","type":"uint16"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "isSignerIndexContinue",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"bls_pubkey","type":"bytes"},
+				{"name":"stake","type":"uint256"},
+				{"name":"isNotOk","type":"bool"},
+				{"name":"seqNoStartOld","type":"uint64"},
+				{"name":"signerIndex","type":"uint16"}
 			],
 			"outputs": [
 			]
@@ -116,6 +198,15 @@
 			"name": "getAckiNackiBlockKeeperNodeWalletAddress",
 			"inputs": [
 				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
+			"name": "getAckiNackiBlockKeeperNodeWalletConfigAddress",
+			"inputs": [
+				{"name":"num","type":"uint128"}
 			],
 			"outputs": [
 				{"name":"value0","type":"address"}
@@ -190,6 +281,15 @@
 			]
 		},
 		{
+			"name": "getProxyListAddress",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
 			"name": "getRewardNow",
 			"inputs": [
 			],
@@ -241,9 +341,12 @@
 		{"init":false,"name":"_waitStep","type":"uint64"},
 		{"init":false,"name":"_minBlockKeepers","type":"uint128"},
 		{"init":false,"name":"_giver","type":"address"},
-		{"init":false,"name":"_num_wallets","type":"uint256"},
+		{"init":false,"name":"_num_wallets","type":"uint128"},
 		{"init":false,"name":"_totalStake","type":"uint256"},
 		{"init":false,"name":"_networkStart","type":"uint32"},
-		{"init":false,"name":"_numberOfActiveBlockKeepers","type":"uint128"}
+		{"init":false,"name":"_numberOfActiveBlockKeepers","type":"uint128"},
+		{"init":false,"name":"_block_seqno","type":"uint32"},
+		{"init":false,"name":"_numberOfActiveBlockKeepersAtBlockStart","type":"uint128"},
+		{"init":false,"name":"_owner_wallet","type":"optional(address)"}
 	]
 }

@@ -5,8 +5,7 @@ use async_graphql::connection::ConnectionNameType;
 use async_graphql::connection::EdgeNameType;
 use async_graphql::OutputType;
 
-use super::query::PaginateDirection;
-use super::query::QueryArgs;
+use super::query::PaginationArgs;
 use crate::schema::graphql::message::Message;
 use crate::schema::graphql::Transaction;
 
@@ -18,30 +17,7 @@ pub struct BlockchainTransactionsQueryArgs {
     pub min_balance_delta: Option<String>,
     pub max_balance_delta: Option<String>,
     pub code_hash: Option<String>,
-    pub first: Option<usize>,
-    pub after: Option<String>,
-    pub last: Option<usize>,
-    pub before: Option<String>,
-}
-
-impl QueryArgs for BlockchainTransactionsQueryArgs {
-    fn get_limit(&self) -> usize {
-        1 + if let Some(first) = self.first {
-            first
-        } else if let Some(last) = self.last {
-            last
-        } else {
-            crate::defaults::QUERY_BATCH_SIZE as usize
-        }
-    }
-
-    fn get_direction(&self) -> PaginateDirection {
-        if self.last.is_some() || self.before.is_some() {
-            PaginateDirection::Backward
-        } else {
-            PaginateDirection::Forward
-        }
-    }
+    pub pagination: PaginationArgs,
 }
 
 pub(crate) struct BlockchainTransactionsEdge;

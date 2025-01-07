@@ -41,10 +41,10 @@
 
 ### Prerequisites
 - `tvm-cli` command line tool installed.  
-   See [this guide explaining how to install CLI](https://dev.ackinacki.com/how-to-deploy-a-sponsor-wallet#create-a-wallet)
-- Deployed Sponsor Wallet.  
-  See [this guide explaining how to deploy Sponsor Wallet](https://dev.ackinacki.com/how-to-deploy-a-sponsor-wallet#create-a-wallet)
-- Sufficient amount of NACKL tokens in the Sponsor Wallet balance equal to 2 minimum stakes 
+   See [this guide explaining how to install CLI](https://dev.ackinacki.com/how-to-deploy-a-multisig-wallet)
+- Deployed Multisig Wallet.  
+  See [this guide explaining how to deploy Multisig Wallet](https://dev.ackinacki.com/how-to-deploy-a-multisig-wallet)
+- Sufficient amount of NACKL tokens in the Multisig Wallet balance equal to 2 minimum stakes 
 
   * To find out the network's minimum stake, call the method in the root contract:
 
@@ -121,6 +121,8 @@ all:
     BK_DIR: "{{ ROOT_DIR }}/block-keeper"
     BK_DATA_DIR: "{{ MNT_DATA }}/block-keeper"
     BK_LOGS_DIR: "{{ MNT_DATA }}/logs-block-keeper"
+    LOG_ROTATE_AMOUNT: 30
+    LOG_ROTATE_SIZE: 1G
     GOSSIP_SEEDS:
       - shellnet0.ackinacki.org:10000
       - shellnet1.ackinacki.org:10000
@@ -153,7 +155,7 @@ block_keepers:
   *Use the one provided by the deploy BK wallet-script*
 
   **HOST_PRIVATE_IP** 
-  You can specify, for example, `127.0.0.1`.  
+  You can specify, for example, `127.0.0.1`.
   *The ports must not overlap*
 
 Put your configuration data to inventory and be ready to run playbook
@@ -237,6 +239,8 @@ all:
     BM_DIR: "{{ ROOT_DIR }}/block-manager"
     BM_DATA_DIR: "{{ MNT_DATA }}/block-manager"
     BM_LOGS_DIR: "{{ MNT_DATA }}/logs-block-manager"
+    LOG_ROTATE_AMOUNT: 30
+    LOG_ROTATE_SIZE: 1G
 
 block_manager:
   hosts:

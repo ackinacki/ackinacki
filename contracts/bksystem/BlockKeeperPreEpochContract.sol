@@ -29,13 +29,16 @@ contract BlockKeeperPreEpoch is Modifiers {
     bytes _bls_pubkey;
     varuint32 _stake;
     uint256 _walletId;
+    uint16 _signerIndex;
 
     constructor (
         uint64 waitStep,
         uint32 epochDuration,
         bytes bls_pubkey,
         mapping(uint8 => TvmCell) code,
-        uint256 walletId
+        uint256 walletId,
+        uint16 signerIndex,
+        mapping(uint8 => string) ProxyList
     ) {
         _code = code;
         TvmBuilder b;
@@ -54,15 +57,15 @@ contract BlockKeeperPreEpoch is Modifiers {
         _epochDuration = epochDuration;
         _stake = msg.currencies[CURRENCIES_ID];
         _walletId = walletId;
+        _signerIndex = signerIndex;
         getMoney();
-        AckiNackiBlockKeeperNodeWallet(msg.sender).setLockStake{value: 0.1 vmshell, flag: 1}(_seqNoStart, _stake);
-        optional(uint256) key;
+        AckiNackiBlockKeeperNodeWallet(msg.sender).setLockStake{value: 0.1 vmshell, flag: 1}(_seqNoStart, _stake, _bls_pubkey, _signerIndex);
         new BlockKeeperEpochProxyList {
                 stateInit: BlockKeeperLib.composeBlockKeeperEpochProxyListStateInit(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], _owner_pubkey, _root), 
                 value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST),
                 wid: 0, 
                 flag: 1
-        } (_code, _seqNoStart, key, _walletId);
+        } (_code, _seqNoStart, _walletId, ProxyList);
     }
 
     function getMoney() private pure {
@@ -74,7 +77,6 @@ contract BlockKeeperPreEpoch is Modifiers {
         if (_seqNoStart <= block.seqno) { tvm.accept(); }
         else { return; } 
         getMoney();
-        if (address(this).balance < FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_WALLET + 1e9) { return; }
         mapping(uint32 => varuint32) data_cur;
         data_cur[CURRENCIES_ID] = _stake;
         
@@ -85,7 +87,7 @@ contract BlockKeeperPreEpoch is Modifiers {
             currencies: data_cur,
             wid: 0, 
             flag: 1
-        } (_waitStep, _epochDuration, _bls_pubkey, _code, false, _walletId, 0);
+        } (_waitStep, _epochDuration, _bls_pubkey, _code, false, _walletId, 0, _signerIndex);
         selfdestruct(epoch);
     }
     

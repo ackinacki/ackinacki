@@ -398,7 +398,7 @@ impl Message {
 
 #[derive(SimpleObject, Clone, Debug)]
 #[graphql(complex, rename_fields = "snake_case")]
-pub(crate) struct OutMsg {
+pub struct OutMsg {
     #[graphql(skip)]
     import_block_lt: Option<String>,
     imported: Option<InMsg>,

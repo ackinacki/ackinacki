@@ -6,13 +6,12 @@ use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
-use crate::bls::gosh_bls::PubKey;
-use crate::bls::BLSSignatureScheme;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NodeAssociatedTypes;
 use crate::node::associated_types::OptimisticStateFor;
 use crate::node::attestation_processor::AttestationProcessor;
 use crate::node::services::sync::StateSyncService;
+use crate::node::GoshBLS;
 use crate::node::NetworkMessage;
 use crate::node::Node;
 use crate::node::NodeIdentifier;
@@ -23,32 +22,30 @@ use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 
-impl<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
-Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+impl<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
     where
-        TBLSSignatureScheme: BLSSignatureScheme<PubKey = PubKey> + Clone,
-        <TBLSSignatureScheme as BLSSignatureScheme>::PubKey: PartialEq,
         TBlockProducerProcess:
         BlockProducerProcess< Repository = TRepository>,
         TValidationProcess: BlockKeeperProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
         >,
         TBlockProducerProcess: BlockProducerProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
         >,
         TRepository: Repository<
-            BLS = TBLSSignatureScheme,
+            BLS = GoshBLS,
             EnvelopeSignerIndex = SignerIndex,
 
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
             NodeIdentifier = NodeIdentifier,
-            Attestation = Envelope<TBLSSignatureScheme, AttestationData>,
+            Attestation = Envelope<GoshBLS, AttestationData>,
         >,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
             <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
@@ -57,8 +54,8 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             Repository = TRepository
         >,
         TAttestationProcessor: AttestationProcessor<
-            BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData>,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BlockAttestation = Envelope<GoshBLS, AttestationData>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
         >,
         TRandomGenerator: rand::Rng,
 {
@@ -173,7 +170,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
     }
 
     pub(crate) fn broadcast_nack(&self, nack: <Self as NodeAssociatedTypes>::Nack) -> anyhow::Result<()> {
-        tracing::trace!("Broadcasting Nack: {:?}", nack.data());
+        tracing::trace!("Broadcasting Nack: {:?}", nack.data().block_id);
         self.tx.send(NetworkMessage::Nack((nack, self.thread_id)))?;
         Ok(())
     }

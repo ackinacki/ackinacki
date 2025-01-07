@@ -9,7 +9,6 @@ use crate::defaults;
 use crate::helpers::u64_to_string;
 use crate::schema::graphql::blockchain_api::blocks::BlockchainBlocksQueryArgs;
 use crate::schema::graphql::blockchain_api::query::PaginateDirection;
-use crate::schema::graphql::blockchain_api::query::QueryArgs;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, FromRow)]
@@ -100,25 +99,25 @@ impl Block {
 
     pub async fn blockchain_blocks(
         pool: &SqlitePool,
-        args: BlockchainBlocksQueryArgs,
+        args: &BlockchainBlocksQueryArgs,
     ) -> anyhow::Result<Vec<Block>> {
-        let direction = args.get_direction();
-        let limit = args.get_limit();
+        let direction = args.pagination.get_direction();
+        let limit = args.pagination.get_limit();
 
         let mut where_ops: Vec<String> = vec![];
 
-        if let Some(after) = args.after {
+        if let Some(after) = &args.pagination.after {
             if !after.is_empty() {
                 where_ops.push(format!("chain_order > {:?}", after));
             }
         }
-        if let Some(before) = args.before {
+        if let Some(before) = &args.pagination.before {
             if !before.is_empty() {
                 where_ops.push(format!("chain_order < {:?}", before));
             }
         }
 
-        if let Some(seq_no_range) = args.block_seq_no_range {
+        if let Some(seq_no_range) = &args.block_seq_no_range {
             if let Some(start) = seq_no_range.start {
                 let start = u64_to_string(start as u64);
                 where_ops.push(format!("chain_order >= {start:?}"));

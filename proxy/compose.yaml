@@ -1,0 +1,24 @@
+services:
+  proxy:
+    image: acki-nacki-proxy-local
+    environment:
+      RUST_LOG: info
+    command: proxy
+
+  proxy_outer:
+    image: acki-nacki-proxy-local
+    environment:
+      RUST_LOG: info
+    command: proxy
+
+  publisher:
+    image: acki-nacki-proxy-local
+    environment:
+      RUST_LOG: info
+    command: proxy_publisher --endpoint https://proxy:8080
+
+  client:
+    command: proxy_client --endpoint https://proxy:8080
+    environment:
+      RUST_LOG: info
+    image: acki-nacki-proxy-local

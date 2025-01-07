@@ -55,6 +55,14 @@ pub struct NetworkConfig {
 
     /// Public endpoint for this node
     pub public_endpoint: Option<String>,
+
+    /// Number of max tries to download shared state
+    /// Defaults to 3
+    pub shared_state_max_download_tries: u8,
+
+    /// Retry timeout for shared state download
+    /// Defaults to 2000
+    pub shared_state_retry_download_timeout_millis: u64,
 }
 
 impl NetworkConfig {

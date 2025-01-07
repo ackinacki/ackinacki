@@ -6,15 +6,12 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
-use serde::Deserialize;
-use serde::Serialize;
 use tvm_block::GetRepresentationHash;
 use tvm_block::Serializable;
 use tvm_types::write_boc;
 use tvm_types::Cell;
 
 use crate::block_keeper_system::BlockKeeperSetChange;
-use crate::bls::BLSSignatureScheme;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
 use crate::types::ackinacki_block::common_section::CommonSection;
@@ -36,13 +33,8 @@ pub use hash::compare_hashes;
 const BLOCK_SUFFIX_LEN: usize = 32;
 
 #[derive(Clone)]
-pub struct AckiNackiBlock<TBLSSignatureScheme>
-where
-    TBLSSignatureScheme: BLSSignatureScheme,
-    TBLSSignatureScheme::Signature:
-        Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
-{
-    common_section: CommonSection<TBLSSignatureScheme>,
+pub struct AckiNackiBlock {
+    common_section: CommonSection,
     block: tvm_block::Block,
     processed_ext_messages_cnt: usize,
     tx_cnt: usize,
@@ -51,7 +43,7 @@ where
     block_cell: Option<Cell>,
 }
 
-impl<TBLSSignatureScheme: BLSSignatureScheme> Display for AckiNackiBlock<TBLSSignatureScheme> {
+impl Display for AckiNackiBlock {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -67,13 +59,13 @@ impl<TBLSSignatureScheme: BLSSignatureScheme> Display for AckiNackiBlock<TBLSSig
     }
 }
 
-impl<TBLSSignatureScheme: BLSSignatureScheme> Debug for AckiNackiBlock<TBLSSignatureScheme> {
+impl Debug for AckiNackiBlock {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "seq_no: {:?}, id: {:?}", self.seq_no(), self.identifier(),)
     }
 }
 
-impl<TBLSSignatureScheme: BLSSignatureScheme> AckiNackiBlock<TBLSSignatureScheme> {
+impl AckiNackiBlock {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         thread_id: ThreadIdentifier,
@@ -157,6 +149,12 @@ impl<TBLSSignatureScheme: BLSSignatureScheme> AckiNackiBlock<TBLSSignatureScheme
         )
     }
 
+    pub fn parent_seq_no(&self) -> BlockSeqNo {
+        BlockSeqNo::from(
+            self.block.info.read_struct().unwrap().read_prev_ref().unwrap().prev1().unwrap().seq_no,
+        )
+    }
+
     pub fn identifier(&self) -> BlockIdentifier {
         self.block.hash().unwrap().into()
     }
@@ -194,14 +192,11 @@ impl<TBLSSignatureScheme: BLSSignatureScheme> AckiNackiBlock<TBLSSignatureScheme
         self.hash
     }
 
-    pub fn get_common_section(&self) -> &CommonSection<TBLSSignatureScheme> {
+    pub fn get_common_section(&self) -> &CommonSection {
         &self.common_section
     }
 
-    pub fn set_common_section(
-        &mut self,
-        common_section: CommonSection<TBLSSignatureScheme>,
-    ) -> anyhow::Result<()> {
+    pub fn set_common_section(&mut self, common_section: CommonSection) -> anyhow::Result<()> {
         self.common_section = common_section;
         let mut raw_data = self.get_raw_data_without_hash()?;
         self.hash = calculate_hash(&raw_data)?;

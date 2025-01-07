@@ -4,8 +4,10 @@
 use std::collections::HashSet;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::TryRecvError;
+use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use tokio::time::Instant;
 
 use crate::block::keeper::process::BlockKeeperProcess;
@@ -13,8 +15,7 @@ use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
-use crate::bls::gosh_bls::PubKey;
-use crate::bls::BLSSignatureScheme;
+use crate::bls::GoshBLS;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NodeAssociatedTypes;
 use crate::node::associated_types::OptimisticStateFor;
@@ -25,39 +26,41 @@ use crate::node::NetworkMessage;
 use crate::node::Node;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
+use crate::repository::cross_thread_ref_repository::CrossThreadRefDataHistory;
 use crate::repository::optimistic_state::OptimisticState;
+use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
 use crate::types::next_seq_no;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
+use crate::types::ThreadIdentifier;
+use crate::utilities::FixedSizeHashSet;
 
-impl<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
-Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+impl<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
     where
-        TBLSSignatureScheme: BLSSignatureScheme<PubKey = PubKey> + Clone,
-        <TBLSSignatureScheme as BLSSignatureScheme>::PubKey: PartialEq,
         TBlockProducerProcess:
         BlockProducerProcess< Repository = TRepository>,
         TValidationProcess: BlockKeeperProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
         >,
         TBlockProducerProcess: BlockProducerProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
         >,
         TRepository: Repository<
-            BLS = TBLSSignatureScheme,
+            BLS = GoshBLS,
             EnvelopeSignerIndex = SignerIndex,
 
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
             NodeIdentifier = NodeIdentifier,
-            Attestation = Envelope<TBLSSignatureScheme, AttestationData>,
+            Attestation = Envelope<GoshBLS, AttestationData>,
         >,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
             <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
@@ -66,8 +69,8 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             Repository = TRepository
         >,
         TAttestationProcessor: AttestationProcessor<
-            BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData>,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BlockAttestation = Envelope<GoshBLS, AttestationData>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
         >,
         TRandomGenerator: rand::Rng,
 {
@@ -84,13 +87,29 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             <TStateSyncService as StateSyncService>::ResourceAddress,
         > = None;
         let mut last_node_join_message_time = Instant::now();
-        self.broadcast_node_joining()?;
+        // Broadcast NodeJoining only the first start of the node, do not broadcast it on split
+        if self.thread_id == ThreadIdentifier::default() {
+            self.broadcast_node_joining()?;
+        }
         let mut block_request_was_sent = false;
         let mut recieved_sync_from = None;
         let current_thread_id = self.thread_id;
-        let last_accepted_block_seq_no: BlockSeqNo = self.repository.select_thread_last_main_candidate_block(
-            &current_thread_id
-        )?.1;
+        let (last_accepted_block_id, last_accepted_block_seq_no): (BlockIdentifier, BlockSeqNo) = {
+            if self.is_spawned_from_node_sync {
+                (BlockIdentifier::default(), BlockSeqNo::default())
+            } else {
+                self.repository.select_thread_last_main_candidate_block(
+                    &current_thread_id
+               )?
+            }
+        };
+        if self.is_spawned_from_node_sync {
+            self.repository.prepare_thread_sync(
+                &current_thread_id,
+                &last_accepted_block_id,
+                &last_accepted_block_seq_no,
+            )?;
+        }
         loop {
             // We have already synced with some nodes before launching the execution, but we
             // could have not reached the producer and possibly should send
@@ -121,12 +140,23 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                             // Save
                             let (block_id, seq_no) = initial_state.clone().unwrap();
                             tracing::trace!("[synchronization] set state from shared resource: {block_id:?}");
-                            let (new_groups, block_keeper_sets)  = self.repository.set_state_from_snapshot(
+                            let (
+                                new_groups,
+                                block_keeper_sets,
+                                loaded_cross_thread_ref_data
+                            )  = self.repository.set_state_from_snapshot(
                                 &block_id,
                                 <TRepository as Repository>::StateSnapshot::from(state_buffer),
                                 &current_thread_id,
                             )?;
                             //
+                            self.shared_services.exec(|services| {
+                                for ref_data in loaded_cross_thread_ref_data.into_iter() {
+                                    services.cross_thread_ref_data_service
+                                        .set_cross_thread_ref_data(ref_data)
+                                        .expect("Failed to load cross-thread-ref-data");
+                                }
+                            });
 
                             for (thread_id, producer_group) in new_groups {
                                 self.set_producer_groups_from_finalized_state(thread_id, seq_no, producer_group);
@@ -139,29 +169,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                                 let mut signs = block.clone_signature_occurrences();
                                 signs.retain(|_k, count| *count > 0);
                                 if signs.len() >= self.min_signatures_count_to_accept_broadcasted_state(seq_no) {
-                                    tracing::trace!("Marked synced block as finalized");
-                                    // We have already received the last finalized block end sync
-                                    let parent_block_id = block.data().parent();
-                                    self.shared_services.exec(|services| {
-                                        //services.dependency_tracking.init_thread(current_thread_id, parent_block_id.clone());
-                                        // TODO: check if we have to pass all threads in set
-                                        services.threads_tracking.init_thread(
-                                            parent_block_id.clone(),
-                                            HashSet::from_iter(vec![current_thread_id]),
-                                            &mut (&mut services.router, &mut services.load_balancing),
-                                        );
-                                    });
-                                    self.shared_services.on_block_appended(block.data());
-                                    self.repository.mark_block_as_accepted_as_main_candidate(&block_id, &current_thread_id)?;
-                                    self.repository.mark_block_as_finalized(&block)?;
-                                    self.shared_services.on_block_finalized(
-                                        block.data(),
-                                        &mut self.repository
-                                            .get_optimistic_state(&block.data().identifier())?
-                                            .expect("set above")
-                                    );
-                                    self.clear_unprocessed_till(&seq_no, &current_thread_id)?;
-                                    self.repository.clear_verification_markers(&seq_no, &current_thread_id)?;
+                                    self.finalize_synced_block(&block)?;
                                     return match self.take_next_unprocessed_block(block_id, seq_no)? {
                                         Some(next_block) => {
                                             tracing::trace!(
@@ -190,8 +198,10 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                             continue;
                         }
                     }
-                    Ok(Err(_e)) => {
-                        unreachable!();
+                    Ok(Err(e)) => {
+                        // Note: State download failed.
+                        // Nothing can be done at this moment. Should be investigated.
+                        panic!("{}", e);
                     }
                     Err(TryRecvError::Disconnected) => {
                         // TODO: we have to fix channel and move it entirely so this event may
@@ -238,34 +248,8 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                                     // send their attestation to BP again and BP will not finalize block.
                                     // So we set finalized block force with possible downgrade.
                                     // But this should be fixed with attestation resending mechanism.
-                                    let parent_block_id = candidate_block.data().parent();
-                                    self.shared_services.exec(|services| {
-                                        //services.dependency_tracking.init_thread(current_thread_id, parent_block_id.clone());
-                                        // TODO: check if we have to pass all threads in set
-                                        services.threads_tracking.init_thread(
-                                            parent_block_id.clone(),
-                                            HashSet::from_iter(vec![current_thread_id]),
-                                            &mut (&mut services.router, &mut services.load_balancing),
-                                        );
-                                    });
-                                    self.shared_services.on_block_appended(candidate_block.data());
                                     self.repository.store_block(candidate_block.clone())?;
-                                    self.repository.mark_block_as_accepted_as_main_candidate(&candidate_block.data().identifier(), &current_thread_id)?;
-                                    self.repository.mark_block_as_finalized(candidate_block)?;
-                                    self.shared_services.on_block_finalized(
-                                        candidate_block.data(),
-                                        &mut self.repository
-                                            .get_optimistic_state(&candidate_block.data().identifier())?
-                                            .expect("set above")
-                                    );
-                                    self.repository.clear_verification_markers(&seq_no, &current_thread_id)?;
-                                    tracing::trace!(
-                                        "[synchronization] Mark sync block as finalized: {:?} {:?}",
-                                        seq_no,
-                                        block_id
-                                    );
-                                    // if we have already received state, end synchronization
-                                    self.clear_unprocessed_till(&seq_no, &current_thread_id)?;
+                                    self.finalize_synced_block(candidate_block)?;
                                     return match self.take_next_unprocessed_block(block_id, seq_no)? {
                                         Some(next_block) => {
                                             tracing::trace!(
@@ -306,9 +290,10 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                         if !self.check_block_signature(candidate_block) {
                             continue;
                         }
-
-                        // If we have received block that can be applied end synchronization
-                        if self.is_candidate_block_can_be_applied(candidate_block)? {
+                        if self.is_candidate_block_can_be_applied(candidate_block)
+                                .unwrap_or(false)
+                        {
+                            // If we have received block that can be applied end synchronization
                             tracing::trace!("[synchronizing] Candidate block can be applied");
                             let parent_id = candidate_block.data().parent();
                             if parent_id == BlockIdentifier::default() {
@@ -324,7 +309,15 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                         } else {
                             if !block_request_was_sent {
                                 tracing::trace!("[synchronizing] Candidate block can't be applied check for block request");
-                                let (_last_block_id, last_block_seq_no) = self.find_thread_last_block_id_this_node_can_continue(&self.thread_id)?;
+                                let (_last_block_id, last_block_seq_no) = {
+                                    if self.is_spawned_from_node_sync {
+                                        (BlockIdentifier::default(), BlockSeqNo::default())
+                                    } else {
+                                       self.find_thread_last_block_id_this_node_can_continue(
+                                            &self.thread_id
+                                        )?
+                                    }
+                                };
                                 let first_missed_block_seq_no = next_seq_no(last_block_seq_no);
                                 tracing::trace!("[synchronizing] first_missed_block_seq_no: {first_missed_block_seq_no:?}");
                                 let incoming_block_seq_no = candidate_block.data().seq_no();
@@ -361,6 +354,12 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                                 initial_state_shared_resource_address =
                                     Some(resource_address.clone());
                                 initial_state = Some((candidate_block.data().identifier(), candidate_block.data().seq_no()));
+                                self.repository.prepare_thread_sync(
+                                    &current_thread_id,
+                                    &candidate_block.data().identifier(),
+                                    &candidate_block.data().seq_no()
+                                )?;
+
                                 self.state_sync_service.add_load_state_task(
                                     resource_address,
                                     synchronization_tx.clone(),
@@ -414,6 +413,56 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                 },
             }
         }
+    }
+
+    fn finalize_synced_block(&mut self, block: &Envelope<GoshBLS, AckiNackiBlock>) -> anyhow::Result<()> {
+        tracing::trace!("[synchronization] Marked synced block as finalized: {:?}", block);
+        let block_id = block.data().identifier();
+        let seq_no = block.data().seq_no();
+        let current_thread_id = self.thread_id;
+        // We have already received the last finalized block end sync
+        let parent_block_id = block.data().parent();
+        self.shared_services.exec(|services| {
+            services.threads_tracking.init_thread(
+                parent_block_id.clone(),
+                HashSet::from_iter(vec![current_thread_id]),
+                &mut (&mut services.load_balancing,),
+            );
+            let threads: Vec<ThreadIdentifier> = {
+                if let Some(threads_table) = block
+                    .data()
+                    .get_common_section()
+                    .threads_table
+                    .as_ref()
+                {
+                    threads_table
+                        .list_threads()
+                        .copied()
+                        .collect()
+                } else {
+                    let state = self.repository.get_optimistic_state(&block_id,  self.block_keeper_sets.clone(), Arc::new(Mutex::new(FixedSizeHashSet::new(0)))).expect("Failed to load finalized state").expect("Repo must have finalized state on this point");
+                    state.get_produced_threads_table()
+                        .list_threads()
+                        .copied()
+                        .collect()
+                }
+            };
+            for thread_identifier in threads {
+                services.router.join_thread(thread_identifier);
+            }
+        });
+        self.shared_services.on_block_appended(block.data());
+        self.repository.mark_block_as_accepted_as_main_candidate(&block_id, &current_thread_id)?;
+        self.repository.mark_block_as_finalized(block, self.block_keeper_sets.clone(), Arc::clone(&self.nack_set_cache))?;
+        self.shared_services.on_block_finalized(
+            block.data(),
+            &mut self.repository
+                .get_optimistic_state(&block.data().identifier(), self.block_keeper_sets.clone(), Arc::clone(&self.nack_set_cache))?
+                .expect("set above")
+        );
+        self.clear_unprocessed_till(&seq_no, &current_thread_id)?;
+        self.repository.clear_verification_markers(&seq_no, &current_thread_id)?;
+        Ok(())
     }
 
     pub(crate) fn on_sync_finalized(
@@ -475,9 +524,16 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             );
             let producer_group = self.get_latest_producer_groups_for_all_threads();
             let block_keeper_sets = self.get_block_keeper_sets_for_all_threads();
-            let state = self.repository.get_optimistic_state(&last_finalized_block_id)?.expect("Failed to load finalized state");
-            let resource_address =
-                self.state_sync_service.add_share_state_task(state, producer_group, block_keeper_sets)?;
+            let state = self.repository.get_optimistic_state(&last_finalized_block_id, self.block_keeper_sets.clone(), Arc::clone(&self.nack_set_cache))?.expect("Failed to load finalized state");
+            let cross_thread_ref_data_history = self.shared_services.exec(|e| -> anyhow::Result<Vec<CrossThreadRefData>> {
+                e.cross_thread_ref_data_service.get_history_tail(&last_finalized_block_id)
+            })?;
+            let resource_address = self.state_sync_service.add_share_state_task(
+                state,
+                producer_group,
+                block_keeper_sets,
+                cross_thread_ref_data_history,
+            )?;
             let resource_address = serde_json::to_string(&resource_address)?;
             self.broadcast_sync_finalized(last_finalized_block_id, last_finalized_seq_no, resource_address)?;
         }

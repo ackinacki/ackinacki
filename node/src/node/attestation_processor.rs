@@ -162,7 +162,7 @@ impl AttestationProcessorImpl {
 
 impl AttestationProcessor for AttestationProcessorImpl {
     type BlockAttestation = Envelope<GoshBLS, AttestationData>;
-    type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock<GoshBLS>>;
+    type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>;
     type PubKey = PubKey;
     type Repository = RepositoryImpl;
     type SignerIndex = SignerIndex;
@@ -183,7 +183,7 @@ impl AttestationProcessor for AttestationProcessorImpl {
 
 fn check_block_signature(
     block_keeper_ring: BlockKeeperRing,
-    candidate_block: &Envelope<GoshBLS, AckiNackiBlock<GoshBLS>>,
+    candidate_block: &Envelope<GoshBLS, AckiNackiBlock>,
 ) -> bool {
     let block_keeper_ring =
         block_keeper_ring.get_block_keeper_pubkeys(&candidate_block.data().seq_no());

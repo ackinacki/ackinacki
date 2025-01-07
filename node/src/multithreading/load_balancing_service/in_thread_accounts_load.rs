@@ -3,7 +3,6 @@ use tvm_types::AccountId;
 
 use crate::bitmask::mask::Bitmask;
 use crate::multithreading::load_balancing_service::AckiNackiBlock;
-use crate::multithreading::load_balancing_service::BLSSignatureScheme;
 use crate::multithreading::load_balancing_service::OptimisticState;
 use crate::types::direct_bit_access_operations::DirectBitAccess;
 use crate::types::AccountAddress;
@@ -23,14 +22,12 @@ pub struct InThreadAccountsLoad {
 }
 
 impl InThreadAccountsLoad {
-    pub fn new_from<TBLSSignatureScheme, TOptimisticState>(
-        block: &AckiNackiBlock<TBLSSignatureScheme>,
+    pub fn new_from<TOptimisticState>(
+        block: &AckiNackiBlock,
         block_state: &mut TOptimisticState,
     ) -> Self
     where
         TOptimisticState: OptimisticState,
-        TBLSSignatureScheme: BLSSignatureScheme,
-        TBLSSignatureScheme::Signature: Clone + Send + Sync + 'static,
     {
         let mut result = Self::default();
         result.append_from(block, block_state);
@@ -82,14 +79,12 @@ impl InThreadAccountsLoad {
     }
 
     #[allow(clippy::needless_range_loop)]
-    pub fn append_from<TBLSSignatureScheme, TOptimisticState>(
+    pub fn append_from<TOptimisticState>(
         &mut self,
-        block: &AckiNackiBlock<TBLSSignatureScheme>,
+        block: &AckiNackiBlock,
         block_state: &mut TOptimisticState,
     ) where
         TOptimisticState: OptimisticState,
-        TBLSSignatureScheme: BLSSignatureScheme,
-        TBLSSignatureScheme::Signature: Clone + Send + Sync + 'static,
     {
         let dapps = block_state.get_dapp_id_table();
         let _ = block

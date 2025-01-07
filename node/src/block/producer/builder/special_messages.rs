@@ -15,6 +15,7 @@ use crate::block_keeper_system::epoch::create_epoch_touch_message;
 use crate::block_keeper_system::BlockKeeperData;
 use crate::creditconfig::dappconfig::calculate_dapp_config_address;
 use crate::creditconfig::dappconfig::create_config_touch_message;
+use crate::repository::optimistic_state::OptimisticState;
 
 impl BlockBuilder {
     pub(super) fn execute_epoch_messages(
@@ -43,7 +44,17 @@ impl BlockBuilder {
                         self.block_info.gen_utime().as_u32(),
                     )?;
                     if let Some(acc_id) = msg.int_dst_account_id() {
-                        if !active_destinations.contains(&acc_id) {
+                        if !self
+                            .initial_optimistic_state
+                            .does_account_belong_to_the_state(&acc_id)?
+                        {
+                            epoch_block_keeper_data.remove(0);
+                            tracing::warn!(
+                                target: "builder",
+                                "Epoch msg destination does not belong to the current thread: {:?}",
+                                msg
+                            );
+                        } else if !active_destinations.contains(&acc_id) {
                             epoch_block_keeper_data.remove(0);
                             tracing::trace!(target: "builder", "Parallel epoch message: {:?} to {:?}", msg.hash().unwrap(), acc_id.to_hex_string());
                             let thread = self.execute(

@@ -17,7 +17,9 @@ struct Stake {
         uint64 seqNoStart;
         uint32 timeStampFinish;
         uint32 timeStampFinishCooler;
+        bytes bls_key;
         uint8 status;
+        uint16 signerIndex;
 }
 
 struct LockStake {

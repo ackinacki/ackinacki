@@ -45,10 +45,6 @@ impl ThreadIdentifier {
     pub fn is_spawning_block(&self, block_id: &BlockIdentifier) -> bool {
         (&self.0[2..34]) == block_id.as_ref()
     }
-
-    fn base_id(&self) -> u16 {
-        (self.0[0] as u16 >> 8) + self.0[1] as u16
-    }
 }
 
 impl Display for ThreadIdentifier {
@@ -58,7 +54,7 @@ impl Display for ThreadIdentifier {
 }
 impl Debug for ThreadIdentifier {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "ThreadIdentifier({})<{}>", self.base_id(), hex::encode(self.0))
+        write!(formatter, "ThreadIdentifier<{}>", hex::encode(self.0))
     }
 }
 

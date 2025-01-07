@@ -9,7 +9,7 @@ use crate::defaults;
 use crate::helpers::u64_to_string;
 use crate::schema::graphql::blockchain_api::account::BlockchainMasterSeqNoFilter;
 use crate::schema::graphql::blockchain_api::query::PaginateDirection;
-use crate::schema::graphql::blockchain_api::query::QueryArgs;
+use crate::schema::graphql::blockchain_api::query::PaginationArgs;
 use crate::schema::graphql::blockchain_api::transactions::BlockchainTransactionsQueryArgs;
 
 #[allow(dead_code)]
@@ -19,10 +19,7 @@ pub struct AccountTransactionsQueryArgs {
     aborted: Option<bool>,
     min_balance_delta: Option<String>,
     max_balance_delta: Option<String>,
-    first: Option<usize>,
-    after: Option<String>,
-    last: Option<usize>,
-    before: Option<String>,
+    pub pagination: PaginationArgs,
 }
 
 impl AccountTransactionsQueryArgs {
@@ -33,10 +30,7 @@ impl AccountTransactionsQueryArgs {
         aborted: Option<bool>,
         min_balance_delta: Option<String>,
         max_balance_delta: Option<String>,
-        first: Option<usize>,
-        after: Option<String>,
-        last: Option<usize>,
-        before: Option<String>,
+        pagination: PaginationArgs,
     ) -> Self {
         Self {
             allow_latest_inconsistent_data,
@@ -44,28 +38,7 @@ impl AccountTransactionsQueryArgs {
             aborted,
             min_balance_delta,
             max_balance_delta,
-            first,
-            after,
-            last,
-            before,
-        }
-    }
-
-    pub fn get_limit(&self) -> usize {
-        1 + if let Some(first) = self.first {
-            first
-        } else if let Some(last) = self.last {
-            last
-        } else {
-            defaults::QUERY_BATCH_SIZE.into()
-        }
-    }
-
-    pub fn get_direction(&self) -> PaginateDirection {
-        if self.last.is_some() || self.before.is_some() {
-            PaginateDirection::Backward
-        } else {
-            PaginateDirection::Forward
+            pagination,
         }
     }
 }
@@ -156,34 +129,34 @@ impl Transaction {
 
     pub async fn blockchain_transactions(
         pool: &SqlitePool,
-        args: BlockchainTransactionsQueryArgs,
+        args: &BlockchainTransactionsQueryArgs,
     ) -> anyhow::Result<Vec<Transaction>> {
-        let direction = args.get_direction();
-        let limit = args.get_limit();
+        let direction = args.pagination.get_direction();
+        let limit = args.pagination.get_limit();
 
         let mut where_ops: Vec<String> = vec![];
 
-        if let Some(after) = args.after {
+        if let Some(after) = &args.pagination.after {
             if !after.is_empty() {
                 where_ops.push(format!("chain_order > {:?}", after));
             }
         }
 
-        if let Some(before) = args.before {
+        if let Some(before) = &args.pagination.before {
             if !before.is_empty() {
                 where_ops.push(format!("chain_order < {:?}", before));
             }
         }
 
-        if let Some(code_hash) = args.code_hash {
+        if let Some(code_hash) = &args.code_hash {
             where_ops.push(format!("code_hash == {code_hash:?}"));
         }
 
-        if let Some(min_balance_delta) = args.min_balance_delta {
+        if let Some(min_balance_delta) = &args.min_balance_delta {
             where_ops.push(format!("balance_delta+0 >= {}", min_balance_delta.parse::<u128>()?));
         }
 
-        if let Some(max_balance_delta) = args.max_balance_delta {
+        if let Some(max_balance_delta) = &args.max_balance_delta {
             where_ops.push(format!("balance_delta+0 <= {}", max_balance_delta.parse::<u128>()?));
         }
 
@@ -212,12 +185,11 @@ impl Transaction {
             anyhow::bail!("ERROR: {e}");
         }
 
-        let mut list = result.unwrap();
+        let list = result.unwrap();
         tracing::debug!("OK: {} rows", list.len());
         let mut ids = Vec::new();
-        list.iter_mut().for_each(|t: &mut Transaction| {
+        list.iter().for_each(|t: &Transaction| {
             ids.push(t.id.clone());
-            t.id = format!("transaction/{}", t.id);
         });
 
         Ok(match direction {
@@ -229,11 +201,8 @@ impl Transaction {
     pub async fn account_transactions(
         pool: &SqlitePool,
         account: String,
-        args: AccountTransactionsQueryArgs,
+        args: &AccountTransactionsQueryArgs,
     ) -> anyhow::Result<Vec<Self>> {
-        let limit = args.get_limit();
-        let direction = args.get_direction();
-
         let mut where_ops = vec![];
         where_ops.push(format!("account_addr={account:?}"));
 
@@ -241,19 +210,19 @@ impl Transaction {
             where_ops.push(format!("aborted={}", aborted as u8));
         }
 
-        if let Some(after) = args.after {
+        if let Some(after) = &args.pagination.after {
             if !after.is_empty() {
                 where_ops.push(format!("chain_order > {:?}", after));
             }
         }
 
-        if let Some(before) = args.before {
+        if let Some(before) = &args.pagination.before {
             if !before.is_empty() {
                 where_ops.push(format!("chain_order < {:?}", before));
             }
         }
 
-        if let Some(seq_no_range) = args.block_seq_no_range {
+        if let Some(seq_no_range) = &args.block_seq_no_range {
             if let Some(start) = seq_no_range.start {
                 let start = u64_to_string(start as u64);
                 where_ops.push(format!("chain_order >= {start:?}"));
@@ -264,11 +233,11 @@ impl Transaction {
             }
         }
 
-        if let Some(min_balance_delta) = args.min_balance_delta {
+        if let Some(min_balance_delta) = &args.min_balance_delta {
             where_ops.push(format!("balance_delta+0 >= {}", min_balance_delta.parse::<u128>()?));
         }
 
-        if let Some(max_balance_delta) = args.max_balance_delta {
+        if let Some(max_balance_delta) = &args.max_balance_delta {
             where_ops.push(format!("balance_delta+0 <= {}", max_balance_delta.parse::<u128>()?));
         }
 
@@ -278,14 +247,15 @@ impl Transaction {
             "".to_string()
         };
 
-        let order_by = match direction {
+        let order_by = match args.pagination.get_direction() {
             PaginateDirection::Forward => "ASC",
             PaginateDirection::Backward => "DESC",
         };
 
         let sql = format!(
             "SELECT * FROM transactions {where_clause} ORDER BY chain_order {} LIMIT {}",
-            order_by, limit,
+            order_by,
+            args.pagination.get_limit(),
         );
 
         tracing::trace!(target: "blockchain_api.account.transactions", "SQL: {sql}");
@@ -297,15 +267,14 @@ impl Transaction {
             anyhow::bail!("ERROR: {e}");
         }
 
-        let mut list = result.unwrap();
+        let list = result.unwrap();
         tracing::debug!("OK: {} rows", list.len());
         let mut ids = Vec::new();
-        list.iter_mut().for_each(|t: &mut Transaction| {
+        list.iter().for_each(|t: &Transaction| {
             ids.push(t.id.clone());
-            t.id = format!("transaction/{}", t.id);
         });
 
-        Ok(match direction {
+        Ok(match args.pagination.get_direction() {
             PaginateDirection::Forward => list,
             PaginateDirection::Backward => list.into_iter().rev().collect(),
         })

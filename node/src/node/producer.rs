@@ -2,6 +2,7 @@
 //
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::block::keeper::process::BlockKeeperProcess;
@@ -9,7 +10,6 @@ use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
-use crate::bls::gosh_bls::PubKey;
 use crate::bls::BLSSignatureScheme;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NodeAssociatedTypes;
@@ -17,10 +17,13 @@ use crate::node::associated_types::OptimisticForwardState;
 use crate::node::associated_types::OptimisticStateFor;
 use crate::node::attestation_processor::AttestationProcessor;
 use crate::node::services::sync::StateSyncService;
+use crate::node::GoshBLS;
 use crate::node::Node;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
+use crate::repository::cross_thread_ref_repository::CrossThreadRefDataHistory;
 use crate::repository::optimistic_state::OptimisticState;
+use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
 use crate::types::next_seq_no;
 use crate::types::AckiNackiBlock;
@@ -28,30 +31,28 @@ use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 
-impl<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
-Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+impl<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
     where
-        TBLSSignatureScheme: BLSSignatureScheme<PubKey = PubKey> + Clone,
-        <TBLSSignatureScheme as BLSSignatureScheme>::PubKey: PartialEq,
         TBlockProducerProcess:
         BlockProducerProcess< Repository = TRepository>,
         TValidationProcess: BlockKeeperProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
         >,
         TBlockProducerProcess: BlockProducerProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
         >,
         TRepository: Repository<
-            BLS = TBLSSignatureScheme,
+            BLS = GoshBLS,
             EnvelopeSignerIndex = SignerIndex,
 
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
             NodeIdentifier = NodeIdentifier,
-            Attestation = Envelope<TBLSSignatureScheme, AttestationData>,
+            Attestation = Envelope<GoshBLS, AttestationData>,
         >,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
             <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
@@ -60,8 +61,8 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             Repository = TRepository
         >,
         TAttestationProcessor: AttestationProcessor<
-            BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData>,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BlockAttestation = Envelope<GoshBLS, AttestationData>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
         >,
         TRandomGenerator: rand::Rng,
 {
@@ -108,28 +109,46 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                 );
                 self.production_process.start_thread_production(
                     &thread_id,
-                    &block_id_to_continue
+                    &block_id_to_continue,
+                    Arc::clone(&self.received_acks),
+                    Arc::clone(&self.received_nacks),
+                    self.block_keeper_sets.clone(),
+                    Arc::clone(&self.nack_set_cache),
                 )?;
+            //    self.received_acks.clear();
+            //    self.received_nacks.clear();
             }
         }
         Ok(producer_tails)
     }
 
+    #[allow(clippy::needless_range_loop)]
     pub(crate) fn on_production_timeout(
         &mut self,
-        producer_tails: &mut [(
+        producer_tails: &mut Vec<(
             ThreadIdentifier,
             BlockIdentifier,
             BlockSeqNo,
-        )],
+        )>,
         share_resulting_state: &mut Option<BlockSeqNo>,
         share_producer_group: &mut bool,
     ) -> anyhow::Result<bool> {
         tracing::trace!("on_production_timeout start");
         let mut did_produce_something = false;
-        for (thread_id, _parent_block_id, _parent_block_seq_no) in producer_tails.iter() {
-            let produced_data = self.production_process.get_produced_blocks(thread_id);
-            did_produce_something = !produced_data.is_empty();
+        let mut indexes_to_remove = vec![];
+        for index in 0..producer_tails.len() {
+            let thread_id = producer_tails[index].0;
+
+            let mut produced_data = self.production_process.get_produced_blocks(&thread_id);
+            produced_data.sort_by(|a, b| a.0.seq_no().cmp(&b.0.seq_no()));
+
+            // While producer process was generating blocks, the node could receive valid
+            // blocks, and the generated blocks could be discarded.
+            // Get minimal block seq no that can be accepted from producer process.
+            let minimal_seq_no_that_can_be_accepted_from_producer_process =
+                self.repository.select_thread_last_finalized_block(&thread_id)?.1;
+            tracing::trace!("on_production_timeout: minimal_seq_no_that_can_be_accepted_from_producer_process = {minimal_seq_no_that_can_be_accepted_from_producer_process:?}");
+
             for (mut block, optimistic_state, external_messages_to_erase_count) in produced_data {
                 tracing::info!(
                     "Got block from producer id: {:?}; seq_no: {:?}, parent: {:?}, external_messages_to_erase_count: {}",
@@ -138,6 +157,14 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                     block.parent(),
                     external_messages_to_erase_count,
                 );
+
+                if block.seq_no() <= minimal_seq_no_that_can_be_accepted_from_producer_process {
+                    tracing::trace!("Produced block is older than last finalized block. Stop production for thread: {thread_id:?}");
+                    self.production_process.stop_thread_production(&thread_id)?;
+                    indexes_to_remove.push(index);
+                    break;
+                }
+                did_produce_something = true;
                 self.shared_services.on_block_appended(&block);
                 let share_state_address = if let Some(seq_no) = *share_resulting_state {
                     if seq_no == block.seq_no() {
@@ -145,8 +172,17 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                         *share_resulting_state = None;
                         let producer_group = self.get_latest_producer_groups_for_all_threads();
                         let block_keeper_sets = self.get_block_keeper_sets_for_all_threads();
+
+                        let cross_thread_ref_data_history = self.shared_services.exec(|e| -> anyhow::Result<Vec<CrossThreadRefData>> {
+                            e.cross_thread_ref_data_service.get_history_tail(&block.identifier())
+                        })?;
                         // Start share state task in a separate thread
-                        let resource_address = self.state_sync_service.add_share_state_task(optimistic_state.clone(), producer_group, block_keeper_sets)?;
+                        let resource_address = self.state_sync_service.add_share_state_task(
+                            optimistic_state.clone(),
+                            producer_group,
+                            block_keeper_sets,
+                            cross_thread_ref_data_history
+                        )?;
 
                         Some(resource_address)
                     } else {
@@ -156,7 +192,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                     None
                 };
                 let block_will_share_state = share_state_address.is_some();
-                self.update_candidate_common_section(&mut block, share_state_address, *share_producer_group)?;
+                self.update_candidate_common_section(&mut block, share_state_address, *share_producer_group, &optimistic_state)?;
                 *share_producer_group = false;
                 let must_save_state = block_will_share_state
                     || block.is_thread_splitting()
@@ -165,10 +201,10 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                     self.repository.store_optimistic(optimistic_state.clone())?;
                 }
                 let signature =
-                    <TBLSSignatureScheme as BLSSignatureScheme>::sign(&self.secret, &block)?;
+                    <GoshBLS as BLSSignatureScheme>::sign(&self.secret, &block)?;
                 let mut signature_occurrences = HashMap::new();
                 let self_signer_index =
-                    self.get_node_signer_index_for_block_seq_no(&self.config.local.node_id, &block.seq_no());
+                    self.get_node_signer_index_for_block_seq_no(&block.seq_no()).expect("BP must have valid signer index");
                 signature_occurrences.insert(self_signer_index, 1);
                 let envelope = <Self as NodeAssociatedTypes>::CandidateBlock::create(
                     signature,
@@ -179,7 +215,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                 // Check if this node has already signed block of the same height
                 if self.does_this_node_have_signed_block_of_the_same_height(&envelope)? {
                     tracing::trace!("Don't accept produced block because this node has already signed a block of the same height");
-                    self.production_process.stop_thread_production(thread_id)?;
+                    self.production_process.stop_thread_production(&thread_id)?;
                     self.production_timeout_multiplier = 0;
                     return Ok(false);
                 }
@@ -194,11 +230,11 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                     envelope.clone(),
                     optimistic_state,
                 )?;
-                match self.cache_forward_optimistic.get(thread_id) {
+                match self.cache_forward_optimistic.get(&thread_id) {
                     None | Some(OptimisticForwardState::None) => {
                         tracing::trace!("insert to cache_forward_optimistic {:?} {:?}", block_seq_no, block_id);
                         self.cache_forward_optimistic.insert(
-                            *thread_id,
+                            thread_id,
                             OptimisticForwardState::ProducedBlock(block_id, block_seq_no),
                         );
                     }
@@ -208,14 +244,14 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                     )) => {
                         tracing::trace!("insert to cache_forward_optimistic {:?} {:?}", block_seq_no, block_id);
                         self.cache_forward_optimistic.insert(
-                            *thread_id,
+                            thread_id,
                             OptimisticForwardState::ProducedBlock(block_id, block_seq_no),
                         );
                     }
                     Some(OptimisticForwardState::ProducedBlock(_, _)) => {
                         tracing::trace!("insert to cache_forward_optimistic {:?} {:?}", block_seq_no, block_id);
                         self.cache_forward_optimistic.insert(
-                            *thread_id,
+                            thread_id,
                             OptimisticForwardState::ProducedBlock(block_id, block_seq_no),
                         );
                     }
@@ -224,7 +260,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
 
                 let block_seq_no = envelope.data().seq_no();
                 let (_last_finalized_block_id, last_finalized_seq_no) =
-                    self.repository.select_thread_last_finalized_block(thread_id)?;
+                    self.repository.select_thread_last_finalized_block(&thread_id)?;
                 tracing::trace!("last_finalized_seq_no={last_finalized_seq_no:?}");
                 if (block_seq_no - last_finalized_seq_no) > self.config.global.finalization_delay_to_stop {
                     tracing::trace!(
@@ -245,22 +281,26 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                     self.production_process.set_timeout(self.get_production_timeout());
                 }
                 self.repository.delete_external_messages(external_messages_to_erase_count)?;
-                self.clear_block_gap(thread_id);
-                if !self.is_this_node_in_block_keeper_set(&envelope.data().seq_no(), thread_id) {
-                    self.production_process.stop_thread_production(thread_id)?;
+                self.clear_block_gap(&thread_id);
+                if !self.is_this_node_in_block_keeper_set(&envelope.data().seq_no(), &thread_id) {
+                    self.production_process.stop_thread_production(&thread_id)?;
                 }
                 self.broadcast_candidate_block(envelope)?;
-                self.update_block_keeper_set_from_common_section(&block, thread_id)?;
+                self.update_block_keeper_set_from_common_section(&block, &thread_id)?;
             }
+        }
+        for index in indexes_to_remove {
+            producer_tails.remove(index);
         }
         Ok(did_produce_something)
     }
 
     fn update_candidate_common_section(
         &mut self,
-        candidate_block: &mut AckiNackiBlock<TBLSSignatureScheme>,
+        candidate_block: &mut AckiNackiBlock,
         share_state_address: Option<<TStateSyncService as StateSyncService>::ResourceAddress>,
         share_producer_group: bool,
+        optimistic_state: &OptimisticStateFor<TBlockProducerProcess>,
     ) -> anyhow::Result<()> {
         tracing::trace!("update_candidate_common_section: share_state {} block_seq_no: {:?}, attestations_len: {}, id: {:?}", share_state_address.is_some(),  candidate_block.seq_no(), self.last_block_attestations.len(), candidate_block.identifier());
         if share_producer_group {
@@ -271,18 +311,15 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             }
         }
         let aggregated_attestations = self.aggregate_attestations()?;
-        let aggregated_acks = self.aggregate_acks()?;
-        let aggregated_nacks = self.aggregate_nacks()?;
         let mut common_section = candidate_block.get_common_section().clone();
         common_section.block_attestations = aggregated_attestations;
-        common_section.acks = aggregated_acks;
-        common_section.nacks = aggregated_nacks;
         common_section.producer_group = self.get_latest_producer_group(&self.thread_id);
 
         if let Some(resource_address) = share_state_address {
             let directive = serde_json::to_string(&resource_address)?;
             tracing::trace!("Set share state directive for block {:?} {:?}: {directive}", candidate_block.seq_no(), candidate_block.identifier());
             common_section.directives.share_state_resource_address = Some(directive);
+            common_section.threads_table = Some(optimistic_state.get_produced_threads_table().clone());
         }
 
         candidate_block.set_common_section(common_section)?;
@@ -297,14 +334,14 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
     }
 
     // TODO: unite these functions to one
-    fn aggregate_attestations(&mut self) -> anyhow::Result<Vec<Envelope<TBLSSignatureScheme, AttestationData>>> {
+    fn aggregate_attestations(&mut self) -> anyhow::Result<Vec<Envelope<GoshBLS, AttestationData>>> {
         let mut aggregated_attestations = HashMap::new();
         tracing::trace!("Aggregate attestations start len: {}", self.last_block_attestations.len());
         for attestation in &self.last_block_attestations {
             let block_id = attestation.data().block_id.clone();
             tracing::trace!("Aggregate attestations block id: {:?}", block_id);
             aggregated_attestations.entry(block_id)
-                .and_modify(|envelope: &mut Envelope<TBLSSignatureScheme, AttestationData>| {
+                .and_modify(|envelope: &mut Envelope<GoshBLS, AttestationData>| {
                     let mut merged_signatures_occurences = envelope.clone_signature_occurrences();
                     let initial_signatures_count = merged_signatures_occurences.len();
                     let incoming_signature_occurences = attestation.clone_signature_occurrences();
@@ -317,11 +354,11 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
 
                     if merged_signatures_occurences.len() > initial_signatures_count {
                         let aggregated_signature = envelope.aggregated_signature();
-                        let merged_aggregated_signature = TBLSSignatureScheme::merge(
+                        let merged_aggregated_signature = GoshBLS::merge(
                             aggregated_signature,
                             attestation.aggregated_signature(),
                         ).expect("Failed to merge attestations");
-                        *envelope = Envelope::<TBLSSignatureScheme, AttestationData>::create(
+                        *envelope = Envelope::<GoshBLS, AttestationData>::create(
                             merged_aggregated_signature,
                             merged_signatures_occurences,
                             envelope.data().clone(),
@@ -333,81 +370,5 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         tracing::trace!("Aggregate attestations result len: {:?}", aggregated_attestations.len());
         self.last_block_attestations.clear();
         Ok(aggregated_attestations.values().cloned().collect())
-    }
-
-    fn aggregate_acks(&mut self) -> anyhow::Result<Vec<<Self as NodeAssociatedTypes>::Ack>> {
-        let mut aggregated_acks = HashMap::new();
-        tracing::trace!("Aggregate acks start len: {}", self.received_acks.len());
-        for ack in &self.received_acks {
-            let block_id = ack.data().block_id.clone();
-            tracing::trace!("Aggregate acks block id: {:?}", block_id);
-            aggregated_acks.entry(block_id)
-                .and_modify(|aggregated_ack: &mut <Self as NodeAssociatedTypes>::Ack| {
-                    let mut merged_signatures_occurences = aggregated_ack.clone_signature_occurrences();
-                    let initial_signatures_count = merged_signatures_occurences.len();
-                    let incoming_signature_occurences = ack.clone_signature_occurrences();
-                    for signer_index in incoming_signature_occurences.keys() {
-                        let new_count = (*merged_signatures_occurences.get(signer_index).unwrap_or(&0))
-                            + (*incoming_signature_occurences.get(signer_index).unwrap());
-                        merged_signatures_occurences.insert(*signer_index, new_count);
-                    }
-                    merged_signatures_occurences.retain(|_k, count| *count > 0);
-
-                    if merged_signatures_occurences.len() > initial_signatures_count {
-                        let aggregated_signature = aggregated_ack.aggregated_signature();
-                        let merged_aggregated_signature = TBLSSignatureScheme::merge(
-                            aggregated_signature,
-                            ack.aggregated_signature(),
-                        ).expect("Failed to merge attestations");
-                        *aggregated_ack = <Self as NodeAssociatedTypes>::Ack::create(
-                            merged_aggregated_signature,
-                            merged_signatures_occurences,
-                            aggregated_ack.data().clone(),
-                        );
-                    }
-                })
-                .or_insert(ack.clone());
-        }
-        tracing::trace!("Aggregate acks result len: {:?}", aggregated_acks.len());
-        self.received_acks.clear();
-        Ok(aggregated_acks.values().cloned().collect())
-    }
-
-    fn aggregate_nacks(&mut self) -> anyhow::Result<Vec<<Self as NodeAssociatedTypes>::Nack>> {
-        let mut aggregated_nacks = HashMap::new();
-        tracing::trace!("Aggregate nacks start len: {}", self.received_nacks.len());
-        for nack in &self.received_nacks {
-            let block_id = nack.data().block_id.clone();
-            tracing::trace!("Aggregate nacks block id: {:?}", block_id);
-            aggregated_nacks.entry(block_id)
-                .and_modify(|aggregated_nack: &mut <Self as NodeAssociatedTypes>::Nack| {
-                    let mut merged_signatures_occurences = aggregated_nack.clone_signature_occurrences();
-                    let initial_signatures_count = merged_signatures_occurences.len();
-                    let incoming_signature_occurences = nack.clone_signature_occurrences();
-                    for signer_index in incoming_signature_occurences.keys() {
-                        let new_count = (*merged_signatures_occurences.get(signer_index).unwrap_or(&0))
-                            + (*incoming_signature_occurences.get(signer_index).unwrap());
-                        merged_signatures_occurences.insert(*signer_index, new_count);
-                    }
-                    merged_signatures_occurences.retain(|_k, count| *count > 0);
-
-                    if merged_signatures_occurences.len() > initial_signatures_count {
-                        let aggregated_signature = aggregated_nack.aggregated_signature();
-                        let merged_aggregated_signature = TBLSSignatureScheme::merge(
-                            aggregated_signature,
-                            nack.aggregated_signature(),
-                        ).expect("Failed to merge attestations");
-                        *aggregated_nack = <Self as NodeAssociatedTypes>::Nack::create(
-                            merged_aggregated_signature,
-                            merged_signatures_occurences,
-                            aggregated_nack.data().clone(),
-                        );
-                    }
-                })
-                .or_insert(nack.clone());
-        }
-        tracing::trace!("Aggregate nacks result len: {:?}", aggregated_nacks.len());
-        self.received_nacks.clear();
-        Ok(aggregated_nacks.values().cloned().collect())
     }
 }

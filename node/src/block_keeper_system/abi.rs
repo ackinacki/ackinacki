@@ -3,3 +3,11 @@
 
 pub static EPOCH_ABI: &str =
     include_str!("../../../contracts/bksystem/BlockKeeperEpochContract.abi.json");
+pub static BLOCK_KEEPER_WALLET_ABI: &str =
+    include_str!("../../../contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json");
+pub static BLOCK_KEEPER_WALLET_TVC: &[u8] =
+    include_bytes!("../../../contracts/bksystem/AckiNackiBlockKeeperNodeWallet.tvc");
+pub static BLOCK_KEEPER_WALLET_CONFIG_ABI: &str =
+    include_str!("../../../contracts/bksystem/AckiNackiBlockKeeperNodeWalletConfig.abi.json");
+pub static BLOCK_KEEPER_WALLET_CONFIG_TVC: &[u8] =
+    include_bytes!("../../../contracts/bksystem/AckiNackiBlockKeeperNodeWalletConfig.tvc");

@@ -28,9 +28,8 @@ impl Loader<String> for BlockLoader {
         let messages = sqlx::query_as(&sql)
             .fetch(&self.pool)
             .map_ok(|block: db::Block| {
-                let mut block: Self::Value = block.into();
-                let block_id = block.id;
-                block.id = format!("block/{}", block_id);
+                let block: Self::Value = block.into();
+                let block_id = block.id.clone();
                 (block_id, block)
             })
             .try_collect::<HashMap<String, Self::Value>>()

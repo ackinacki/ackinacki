@@ -7,8 +7,7 @@ use crate::block::keeper::process::BlockKeeperProcess;
 use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
 use crate::bls::envelope::Envelope;
-use crate::bls::gosh_bls::PubKey;
-use crate::bls::BLSSignatureScheme;
+use crate::bls::GoshBLS;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::OptimisticStateFor;
 use crate::node::attestation_processor::AttestationProcessor;
@@ -23,32 +22,30 @@ use crate::types::AckiNackiBlock;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 
-impl<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
-Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+impl<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
     where
-        TBLSSignatureScheme: BLSSignatureScheme<PubKey = PubKey> + Clone,
-        <TBLSSignatureScheme as BLSSignatureScheme>::PubKey: PartialEq,
         TBlockProducerProcess:
         BlockProducerProcess< Repository = TRepository>,
         TValidationProcess: BlockKeeperProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
         >,
         TBlockProducerProcess: BlockProducerProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
         >,
         TRepository: Repository<
-            BLS = TBLSSignatureScheme,
+            BLS = GoshBLS,
             EnvelopeSignerIndex = SignerIndex,
 
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
             NodeIdentifier = NodeIdentifier,
-            Attestation = Envelope<TBLSSignatureScheme, AttestationData>,
+            Attestation = Envelope<GoshBLS, AttestationData>,
         >,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
             <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
@@ -57,8 +54,8 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             Repository = TRepository
         >,
         TAttestationProcessor: AttestationProcessor<
-            BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData>,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BlockAttestation = Envelope<GoshBLS, AttestationData>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
         >,
         TRandomGenerator: rand::Rng,
 {
@@ -237,7 +234,7 @@ mod tests {
 
     use num_bigint::BigUint;
     use num_traits::Zero;
-    use parking_lot::Mutex;
+    use parking_lot::lock_api::Mutex;
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
 
@@ -254,13 +251,15 @@ mod tests {
     use crate::node::shared_services::SharedServices;
     use crate::node::Node;
     use crate::node::NodeIdentifier;
+    use crate::node::SignerIndex;
     use crate::repository::repository_impl::RepositoryImpl;
     use crate::tests::default_config;
     use crate::types::block_keeper_ring::BlockKeeperRing;
+    use crate::types::AccountAddress;
     use crate::types::BlockIdentifier;
     use crate::types::BlockSeqNo;
     use crate::types::ThreadIdentifier;
-    use crate::types::ThreadsTable;
+    use crate::utilities::FixedSizeHashSet;
 
     #[test]
     fn test_leader_election() -> anyhow::Result<()> {
@@ -284,6 +283,8 @@ mod tests {
             None,
             1,
             SharedServices::test_start(RoutingService::stub().0),
+            BlockKeeperRing::default(),
+            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
         );
         let (router, _router_rx) = crate::multithreading::routing::service::RoutingService::stub();
         let shared_services = crate::node::shared_services::SharedServices::test_start(router);
@@ -301,10 +302,11 @@ mod tests {
             repository.clone(),
             config.clone(),
             None,
-            BlockIdentifier::default(),
+            Some(BlockIdentifier::default()),
             thread_id,
             shared_services,
-            ThreadsTable::default(),
+            BlockKeeperRing::default(),
+            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
         )?;
 
         let (_incoming_messages_sender, incoming_messages_receiver) = std::sync::mpsc::channel();
@@ -325,12 +327,14 @@ mod tests {
             block_keeper_sets.insert(
                 i,
                 BlockKeeperData {
-                    index: i,
+                    owner_address: AccountAddress::default(),
+                    wallet_index: i as NodeIdentifier,
                     pubkey: pubkey.clone(),
                     epoch_finish_timestamp: 0,
                     status: BlockKeeperStatus::Active,
                     address: "".to_string(),
                     stake: BigUint::zero(),
+                    signer_index: i as SignerIndex,
                 },
             );
         }
@@ -361,8 +365,9 @@ mod tests {
             block_keeper_set,
             block_keeper_rng.clone(),
             block_keeper_rng,
-            ThreadsTable::default(),
             ThreadIdentifier::default(),
+            true,
+            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
         );
 
         // Prepare set that contains all node ids

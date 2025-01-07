@@ -5,7 +5,6 @@ use serde::Serialize;
 use tvm_block::HashmapAugType;
 use typed_builder::TypedBuilder;
 
-use crate::bls::GoshBLS;
 use crate::repository::optimistic_state::DAppIdTable;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
@@ -44,7 +43,7 @@ impl CrossThreadRefData {
     }
 
     pub fn from_ackinacki_block(
-        block: &AckiNackiBlock<GoshBLS>,
+        block: &AckiNackiBlock,
         optimistic_state: &mut OptimisticStateImpl,
     ) -> anyhow::Result<Self> {
         // TODO: in fact we crop state here but take the removed part. It would be better to optimize it

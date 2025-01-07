@@ -84,7 +84,7 @@ fn get_latest_migration_version(target: MTarget) -> anyhow::Result<u32> {
         a
     });
 
-    Ok(version.try_into().unwrap())
+    Ok(version.try_into()?)
 }
 
 fn main() -> anyhow::Result<()> {

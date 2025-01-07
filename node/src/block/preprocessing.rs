@@ -1,3 +1,4 @@
+use crate::message::WrappedMessage;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::CrossThreadRefData;
 use crate::repository::CrossThreadRefDataRead;
@@ -11,12 +12,18 @@ pub fn preprocess<'a, I, TRepo>(
     refs: I,
     descendant_thread_identifier: &ThreadIdentifier,
     repository: &TRepo,
+    slashing_messages: Vec<WrappedMessage>,
 ) -> anyhow::Result<(State, ThreadsTable)>
 where
     I: std::iter::Iterator<Item = &'a CrossThreadRefData>,
     CrossThreadRefData: 'a,
     TRepo: CrossThreadRefDataRead,
 {
+    tracing::trace!(
+        "preprocessing: {} slashing_messages: {slashing_messages:?}",
+        slashing_messages.len()
+    );
+
     let in_table = parent_block_state.get_produced_threads_table().clone();
     let mut preprocessed_state = parent_block_state;
 
@@ -33,6 +40,23 @@ where
         preprocessed_state.merge_dapp_id_tables(state.dapp_id_table())?;
         ref_data.push(state.as_reference_state_data());
     }
+
+    let current_thread_last_block = (
+        preprocessed_state.thread_id,
+        preprocessed_state.block_id.clone(),
+        preprocessed_state.block_seq_no,
+    );
+
+    // Note: block has threads table changes, add new thread to the all_thread_refs
+    for thread_id in preprocessed_state.threads_table.list_threads() {
+        if thread_id.is_spawning_block(&preprocessed_state.block_id) {
+            preprocessed_state
+                .thread_refs_state
+                .all_thread_refs
+                .insert(*thread_id, current_thread_last_block.clone());
+        }
+    }
+
     let all_referenced_blocks = preprocessed_state
         .thread_refs_state
         .move_refs(ref_data, |block_id| repository.get_cross_thread_ref_data(block_id))?;
@@ -45,6 +69,7 @@ where
         preprocessed_state.add_accounts_from_ref(&block_data)?;
     }
     preprocessed_state.crop(descendant_thread_identifier, &in_table)?;
-    preprocessed_state.thread_id = *descendant_thread_identifier;
+    preprocessed_state.add_slashing_messages(slashing_messages)?;
+
     Ok((preprocessed_state, in_table))
 }

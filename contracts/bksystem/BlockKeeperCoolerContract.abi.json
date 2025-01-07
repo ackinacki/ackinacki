@@ -11,7 +11,8 @@
 				{"name":"root","type":"address"},
 				{"name":"bls_pubkey","type":"bytes"},
 				{"name":"code","type":"map(uint8,cell)"},
-				{"name":"walletId","type":"uint256"}
+				{"name":"walletId","type":"uint256"},
+				{"name":"signerIndex","type":"uint16"}
 			],
 			"outputs": [
 			]
@@ -19,6 +20,7 @@
 		{
 			"name": "slash",
 			"inputs": [
+				{"name":"slash_type","type":"uint8"}
 			],
 			"outputs": [
 			]
@@ -40,7 +42,8 @@
 				{"name":"seqNoStart","type":"uint64"},
 				{"name":"seqNoFinish","type":"uint64"},
 				{"name":"owner","type":"address"},
-				{"name":"walletId","type":"uint256"}
+				{"name":"walletId","type":"uint256"},
+				{"name":"signerIndex","type":"uint16"}
 			]
 		},
 		{
@@ -68,6 +71,8 @@
 		{"init":false,"name":"_seqNoFinish","type":"uint64"},
 		{"init":false,"name":"_owner","type":"address"},
 		{"init":false,"name":"_bls_pubkey","type":"bytes"},
-		{"init":false,"name":"_walletId","type":"uint256"}
+		{"init":false,"name":"_walletId","type":"uint256"},
+		{"init":false,"name":"_stake","type":"uint256"},
+		{"init":false,"name":"_signerIndex","type":"uint16"}
 	]
 }

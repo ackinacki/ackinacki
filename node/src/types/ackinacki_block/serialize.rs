@@ -12,11 +12,10 @@ use tvm_block::Serializable;
 use tvm_types::read_single_root_boc;
 use tvm_types::write_boc;
 
-use crate::bls::BLSSignatureScheme;
 use crate::types::ackinacki_block::common_section::CommonSection;
 use crate::types::AckiNackiBlock;
 
-impl<TBLSSignatureScheme: BLSSignatureScheme> AckiNackiBlock<TBLSSignatureScheme> {
+impl AckiNackiBlock {
     pub fn get_raw_data_without_hash(&self) -> anyhow::Result<Vec<u8>> {
         tracing::trace!("full serialize block data");
         let common_section = bincode::serialize(&self.common_section)?;
@@ -38,7 +37,7 @@ impl<TBLSSignatureScheme: BLSSignatureScheme> AckiNackiBlock<TBLSSignatureScheme
     }
 }
 
-impl<TBLSSignatureScheme: BLSSignatureScheme> Serialize for AckiNackiBlock<TBLSSignatureScheme> {
+impl Serialize for AckiNackiBlock {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -55,9 +54,7 @@ impl<TBLSSignatureScheme: BLSSignatureScheme> Serialize for AckiNackiBlock<TBLSS
     }
 }
 
-impl<'de, TBLSSignatureScheme: BLSSignatureScheme> Deserialize<'de>
-    for AckiNackiBlock<TBLSSignatureScheme>
-{
+impl<'de> Deserialize<'de> for AckiNackiBlock {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -70,9 +67,8 @@ impl<'de, TBLSSignatureScheme: BLSSignatureScheme> Deserialize<'de>
                 .map_err(|_| D::Error::custom("Failed to deserialize common section len"))?,
         );
         let (common_section_data, rest) = rest.split_at(common_section_len);
-        let common_section: CommonSection<TBLSSignatureScheme> =
-            bincode::deserialize(common_section_data)
-                .map_err(|_| D::Error::custom("Failed to deserialize common section"))?;
+        let common_section: CommonSection = bincode::deserialize(common_section_data)
+            .map_err(|_| D::Error::custom("Failed to deserialize common section"))?;
 
         let (block_len_data, rest) = rest.split_at(8);
         let block_len = usize::from_be_bytes(

@@ -9,6 +9,7 @@ pub mod helper;
 pub mod message;
 pub mod node;
 pub mod repository;
+pub mod services;
 pub mod types;
 pub mod utilities;
 pub mod zerostate;

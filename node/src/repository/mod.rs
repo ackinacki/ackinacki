@@ -14,6 +14,7 @@ use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::BLSSignatureScheme;
 use crate::node::associated_types::AttestationData;
 use crate::repository::optimistic_state::OptimisticState;
+use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
@@ -29,6 +30,10 @@ mod tvm_cell_serde;
 pub use cross_thread_ref_data::CrossThreadRefData;
 pub use cross_thread_ref_repository::CrossThreadRefDataRead;
 pub use cross_thread_ref_repository::CrossThreadRefDataRepository;
+use tvm_types::UInt256;
+
+use crate::repository::repository_impl::RepositoryMetadata;
+use crate::utilities::FixedSizeHashSet;
 
 #[cfg(test)]
 pub mod stub_repository;
@@ -38,7 +43,7 @@ pub trait Repository {
     type CandidateBlock: BLSSignedEnvelope<
         SignerIndex = Self::EnvelopeSignerIndex,
         BLS = Self::BLS,
-        Data = AckiNackiBlock<Self::BLS>,
+        Data = AckiNackiBlock,
     >;
     type EnvelopeSignerIndex;
     type NodeIdentifier;
@@ -80,10 +85,21 @@ pub trait Repository {
         thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<()>;
 
+    fn has_thread_metadata(&self, thread_id: &ThreadIdentifier) -> bool;
+
+    fn prepare_thread_sync(
+        &mut self,
+        thread_id: &ThreadIdentifier,
+        known_finalized_block_id: &BlockIdentifier,
+        known_finalized_block_seq_no: &BlockSeqNo,
+    ) -> anyhow::Result<()>;
+
     fn init_thread(
         &mut self,
         thread_id: &ThreadIdentifier,
         parent_block_id: &BlockIdentifier,
+        block_keeper_sets: BlockKeeperRing,
+        nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<()>;
 
     fn select_thread_last_finalized_block(
@@ -107,9 +123,19 @@ pub trait Repository {
         block_id: &BlockIdentifier,
     ) -> anyhow::Result<Option<bool>>;
 
+    fn mark_block_as_suspicious(
+        &mut self,
+        block_id: &BlockIdentifier,
+        result: bool,
+    ) -> anyhow::Result<()>;
+
+    fn is_block_suspicious(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>>;
+
     fn mark_block_as_finalized(
         &mut self,
         block: &<Self as Repository>::CandidateBlock,
+        block_keeper_sets: BlockKeeperRing,
+        nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<()>;
 
     fn is_block_finalized(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>>;
@@ -117,6 +143,8 @@ pub trait Repository {
     fn get_optimistic_state(
         &self,
         block_id: &BlockIdentifier,
+        block_keeper_sets: BlockKeeperRing,
+        nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<Option<Self::OptimisticState>>;
 
     fn is_optimistic_state_present(&self, block_id: &BlockIdentifier) -> bool;
@@ -156,20 +184,6 @@ pub trait Repository {
 
     fn is_block_processed(&self, block_id: &BlockIdentifier) -> anyhow::Result<bool>;
 
-    fn take_state_snapshot(
-        &self,
-        block_id: &BlockIdentifier,
-        block_producer_groups: HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
-        block_keeper_set: BTreeMap<BlockSeqNo, BlockKeeperSet>,
-    ) -> anyhow::Result<Self::StateSnapshot>;
-
-    fn convert_state_data_to_snapshot(
-        &self,
-        serialized_state: Vec<u8>,
-        block_producer_groups: HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
-        block_keeper_set: BTreeMap<BlockSeqNo, BlockKeeperSet>,
-    ) -> anyhow::Result<Self::StateSnapshot>;
-
     fn set_state_from_snapshot(
         &mut self,
         block_id: &BlockIdentifier,
@@ -178,6 +192,7 @@ pub trait Repository {
     ) -> anyhow::Result<(
         HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
         BTreeMap<BlockSeqNo, BlockKeeperSet>,
+        Vec<CrossThreadRefData>,
     )>;
 
     fn sync_accounts_from_state(
@@ -230,4 +245,6 @@ pub trait Repository {
     fn list_finalized_states(
         &self,
     ) -> impl Iterator<Item = (&'_ ThreadIdentifier, &'_ Self::OptimisticState)>;
+
+    fn get_all_metadata(&self) -> RepositoryMetadata;
 }

@@ -27,15 +27,17 @@ use network::socket_addr::ToOneSocketAddr;
 use node::block::keeper::process::TVMBlockKeeperProcess;
 use node::config::load_config_from_file;
 use node::helper::bp_resolver::BPResolverImpl;
+use node::helper::shutdown_tracing;
 use node::multithreading::routing::service::Command;
 use node::multithreading::routing::service::RoutingService;
 use node::node::attestation_processor::AttestationProcessorImpl;
 use node::node::services::sync::ExternalFileSharesBased;
-use node::repository::optimistic_state::OptimisticState;
 use node::repository::Repository;
+use node::services::blob_sync;
 use node::types::calculate_hash;
 use node::types::BlockIdentifier;
 use node::types::ThreadIdentifier;
+use node::utilities::FixedSizeHashSet;
 use node::zerostate::ZeroState;
 use parking_lot::Mutex;
 use rand::prelude::SeedableRng;
@@ -47,6 +49,7 @@ use tokio::task::JoinHandle;
 
 // const ALIVE_NODES_WAIT_TIMEOUT_MILLIS: u64 = 100;
 const MINIMUM_NUMBER_OF_CORES: usize = 8;
+const DEFAULT_NACK_SIZE_CACHE: usize = 1000;
 
 lazy_static::lazy_static!(
     static ref LONG_VERSION: String = format!("{}\nBUILD_GIT_BRANCH={}\nBUILD_GIT_COMMIT={}\nBUILD_GIT_DATE={}\nBUILD_TIME={}",
@@ -67,12 +70,12 @@ struct Args {
 }
 
 fn main() -> Result<(), std::io::Error> {
+    eprintln!("Starting Acki-Nacki Node version: {}", *LONG_VERSION);
     if cfg!(debug_assertions) {
         std::env::set_var("RUST_BACKTRACE", "1");
     }
 
     // unsafe { backtrace_on_stack_overflow::enable() };
-    init_tracing();
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -86,12 +89,18 @@ fn main() -> Result<(), std::io::Error> {
 
 async fn tokio_main() {
     let args = Args::parse();
+    init_tracing();
+    tracing::info!("Tracing initialized");
 
-    if let Err(err) = execute(args).await {
-        tracing::error!("{err}");
-        exit(1);
+    let exit_code = match execute(args).await {
+        Ok(_) => 0,
+        Err(err) => {
+            tracing::error!("{err}");
+            1
+        }
     };
-    exit(0);
+    shutdown_tracing();
+    exit(exit_code);
 }
 
 async fn execute(args: Args) -> anyhow::Result<()> {
@@ -202,12 +211,20 @@ async fn execute(args: Args) -> anyhow::Result<()> {
 
     let mut node_shared_services =
         node::node::shared_services::SharedServices::start(routing.clone(), repo_path.clone());
-
+    let blob_sync_service =
+        blob_sync::external_fileshares_based::ExternalFileSharesBased::builder()
+            .local_storage_share_base_path(config.local.external_state_share_local_base_dir.clone())
+            .build()
+            .start()
+            .expect("Blob sync service start");
+    let nack_set_cache = Arc::new(Mutex::new(FixedSizeHashSet::new(DEFAULT_NACK_SIZE_CACHE)));
     let repository = RepositoryImpl::new(
         repo_path.clone(),
         zerostate_path.clone(),
         (config.global.finalization_delay_to_stop * 2) as usize,
         node_shared_services.clone(),
+        block_keeper_sets.clone(),
+        Arc::clone(&nack_set_cache),
     );
     let zerostate_threads: Vec<ThreadIdentifier> = zerostate.list_threads().cloned().collect();
 
@@ -229,6 +246,10 @@ async fn execute(args: Args) -> anyhow::Result<()> {
     }
     let repository_clone = repository.clone();
     // TODO: check that inner_service_thread is active
+    assert!(
+        !config.network.static_storages.is_empty(),
+        "Must have access to state sharing services"
+    );
     let (routing, _inner_service_thread) = RoutingService::start(
         (routing, routing_rx),
         move |parent_block_id, thread_id, thread_receiver| {
@@ -237,8 +258,15 @@ async fn execute(args: Args) -> anyhow::Result<()> {
 
             let mut repository = repository_clone.clone();
             // HACK!
-            if parent_block_id != &BlockIdentifier::default() {
-                repository.init_thread(thread_id, parent_block_id)?;
+            if parent_block_id.is_some()
+                && parent_block_id.as_ref().unwrap() != &BlockIdentifier::default()
+            {
+                repository.init_thread(
+                    thread_id,
+                    parent_block_id.as_ref().unwrap(),
+                    block_keeper_sets.clone(),
+                    Arc::clone(&nack_set_cache),
+                )?;
             }
             // END OF HACK
             let producer_election_rng = {
@@ -264,26 +292,6 @@ async fn execute(args: Args) -> anyhow::Result<()> {
             )
             .expect("Failed to create production process");
 
-            let sync_state_service = ExternalFileSharesBased::builder()
-                .local_storage_share_base_path(
-                    config.local.external_state_share_local_base_dir.clone(),
-                )
-                .static_storages(config.network.static_storages.clone())
-                .timeout(config.global.node_joining_timeout)
-                .build();
-            let threads_table = {
-                let zero_block_id = <BlockIdentifier>::default();
-                if parent_block_id == &zero_block_id {
-                    zerostate.state(thread_id)?.threads_table.clone()
-                } else {
-                    repository
-                        .get_optimistic_state(parent_block_id)
-                        .expect("thread init factory - block must be in the repo")
-                        .expect("thread init factory - block must be in the repo (option part)")
-                        .get_produced_threads_table()
-                        .clone()
-                }
-            };
             let validation_process = TVMBlockKeeperProcess::new(
                 blockchain_config_path,
                 repository.clone(),
@@ -292,7 +300,8 @@ async fn execute(args: Args) -> anyhow::Result<()> {
                 parent_block_id.clone(),
                 *thread_id,
                 node_shared_services.clone(),
-                threads_table.clone(),
+                block_keeper_sets.clone(),
+                Arc::clone(&nack_set_cache),
             )
             .expect("Failed to create validation process");
 
@@ -301,6 +310,14 @@ async fn execute(args: Args) -> anyhow::Result<()> {
                 block_keeper_sets.clone(),
                 *thread_id,
             );
+            let mut sync_state_service =
+                ExternalFileSharesBased::new(blob_sync_service.interface());
+            sync_state_service.static_storages = config.network.static_storages.clone();
+            sync_state_service.max_download_tries = config.network.shared_state_max_download_tries;
+            sync_state_service.retry_download_timeout = std::time::Duration::from_millis(
+                config.network.shared_state_retry_download_timeout_millis,
+            );
+            sync_state_service.download_deadline_timeout = config.global.node_joining_timeout;
 
             let node = Node::new(
                 node_shared_services.clone(),
@@ -319,8 +336,9 @@ async fn execute(args: Args) -> anyhow::Result<()> {
                 block_keeper_sets.clone(),
                 block_keeper_rng.clone(),
                 producer_election_rng.clone(),
-                threads_table,
                 *thread_id,
+                parent_block_id.is_some(),
+                Arc::clone(&nack_set_cache),
             );
 
             Ok(node)
@@ -390,7 +408,7 @@ async fn execute(args: Args) -> anyhow::Result<()> {
     //            tracing::error!("network message router failed: {v:?}");
     //            v??
     //        },
-        };
+        }
 
     Ok(())
 }

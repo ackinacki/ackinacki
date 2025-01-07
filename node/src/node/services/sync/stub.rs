@@ -6,6 +6,7 @@ use std::sync::mpsc::Sender;
 
 use crate::node::services::sync::StateSyncService;
 use crate::repository::repository_impl::RepositoryImpl;
+use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
 use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::ThreadIdentifier;
@@ -24,6 +25,7 @@ impl StateSyncService for StateSyncServiceStub {
             Vec<<Self::Repository as Repository>::NodeIdentifier>,
         >,
         _block_keeper_set: BlockKeeperRing,
+        _cross_thread_ref_data: Vec<CrossThreadRefData>,
     ) -> anyhow::Result<Self::ResourceAddress> {
         todo!()
     }

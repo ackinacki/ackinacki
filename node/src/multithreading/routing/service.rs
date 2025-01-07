@@ -30,7 +30,6 @@ type NetworkMessage =
 type PoisonedQueue = PQueue<NetworkMessage>;
 
 type Node = NodeImpl<
-    GoshBLS,
     ExternalFileSharesBased,
     TVMBlockProducerProcess,
     TVMBlockKeeperProcess,
@@ -47,9 +46,10 @@ pub enum Command {
     StartThread(
         (
             ThreadIdentifier, // Thread to start
-            BlockIdentifier,  // Parent block
+            BlockIdentifier,  // Thread parent block
         ),
     ),
+    JoinThread(ThreadIdentifier),
 }
 
 #[derive(Clone)]
@@ -81,7 +81,7 @@ impl RoutingService {
     ) -> (Self, std::thread::JoinHandle<Result<(), anyhow::Error>>)
     where
         F: FnMut(
-                &BlockIdentifier,
+                Option<BlockIdentifier>,
                 &ThreadIdentifier,
                 Receiver<NetworkMessage>,
             ) -> anyhow::Result<Node>
@@ -99,6 +99,10 @@ impl RoutingService {
         (control, inner_loop)
     }
 
+    pub fn join_thread(&mut self, thread_id: ThreadIdentifier) {
+        let _ = self.control.send(Command::JoinThread(thread_id));
+    }
+
     #[cfg(test)]
     pub fn stub() -> (Self, Receiver<Command>) {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -108,12 +112,12 @@ impl RoutingService {
     fn create_node_thread<F>(
         dispatcher: &mut Dispatcher,
         thread_identifier: ThreadIdentifier,
-        parent_block_id: BlockIdentifier,
+        parent_block_id: Option<BlockIdentifier>,
         node_factory: &mut F,
     ) -> anyhow::Result<Node>
     where
         F: FnMut(
-                &BlockIdentifier,
+                Option<BlockIdentifier>,
                 &ThreadIdentifier,
                 Receiver<NetworkMessage>,
             ) -> anyhow::Result<Node>
@@ -122,7 +126,7 @@ impl RoutingService {
         tracing::trace!("NetworkMessageRouter: add sender for thread: {thread_identifier:?}");
         let (incoming_messages_sender, incoming_messages_receiver) = std::sync::mpsc::channel();
         dispatcher.add_route(thread_identifier, incoming_messages_sender);
-        node_factory(&parent_block_id, &thread_identifier, incoming_messages_receiver)
+        node_factory(parent_block_id, &thread_identifier, incoming_messages_receiver)
     }
 
     fn route(dispatcher: &Dispatcher, message: NetworkMessage, poisoned_queue: &mut PoisonedQueue) {
@@ -137,6 +141,9 @@ impl RoutingService {
             Err(DispatchError::DestinationClosed(thread_identifier, _msg)) => {
                 panic!("DestinationClosed {}", thread_identifier);
                 // todo!();
+                // tracing::trace!(
+                //     "Received network message for closed destination: {thread_identifier:?}"
+                // );
             }
         }
     }
@@ -148,7 +155,7 @@ impl RoutingService {
     ) -> anyhow::Result<()>
     where
         F: FnMut(
-                &BlockIdentifier,
+                Option<BlockIdentifier>,
                 &ThreadIdentifier,
                 Receiver<NetworkMessage>,
             ) -> anyhow::Result<Node>
@@ -175,10 +182,38 @@ impl RoutingService {
                             let mut node = Self::create_node_thread(
                                 &mut dispatcher,
                                 thread_identifier,
-                                parent_block_identifier,
+                                Some(parent_block_identifier),
                                 &mut node_factory,
                             )
                             .expect("Must be able to create node instances");
+                            std::thread::Builder::new()
+                                .name(format!("{}", &thread_identifier))
+                                .spawn_scoped(s, move || {
+                                    tracing::trace!("Starting thread: {}", &thread_identifier);
+                                    let thread_exit_result = node.execute();
+                                    tracing::trace!(
+                                        "Thread {} exited with result: {:?}",
+                                        &thread_identifier,
+                                        &thread_exit_result
+                                    );
+                                    (thread_exit_result, thread_identifier)
+                                })
+                                .unwrap();
+                            poisoned_queue
+                                .retain(|message| dispatcher.dispatch(message.clone()).is_err());
+                        }
+                        JoinThread(thread_identifier) => {
+                            if dispatcher.has_route(&thread_identifier) {
+                                continue;
+                            }
+                            let mut node = Self::create_node_thread(
+                                &mut dispatcher,
+                                thread_identifier,
+                                None,
+                                &mut node_factory,
+                            )
+                            .expect("Must be able to create node instances");
+                            node.is_spawned_from_node_sync = true;
                             std::thread::Builder::new()
                                 .name(format!("{}", &thread_identifier))
                                 .spawn_scoped(s, move || {

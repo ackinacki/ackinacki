@@ -10,8 +10,7 @@ use crate::block_keeper_system::BlockKeeperSet;
 use crate::block_keeper_system::BlockKeeperSetChange;
 use crate::block_keeper_system::BlockKeeperStatus;
 use crate::bls::envelope::Envelope;
-use crate::bls::gosh_bls::PubKey;
-use crate::bls::BLSSignatureScheme;
+use crate::bls::GoshBLS;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::OptimisticStateFor;
 use crate::node::attestation_processor::AttestationProcessor;
@@ -28,32 +27,30 @@ use crate::types::ThreadIdentifier;
 
 const EPOCH_TOUCH_RETRY_TIME_DELTA: u32 = 5;
 
-impl<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
-Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+impl<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
     where
-        TBLSSignatureScheme: BLSSignatureScheme<PubKey = PubKey> + Clone,
-        <TBLSSignatureScheme as BLSSignatureScheme>::PubKey: PartialEq,
         TBlockProducerProcess:
         BlockProducerProcess< Repository = TRepository>,
         TValidationProcess: BlockKeeperProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
         >,
         TBlockProducerProcess: BlockProducerProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
         >,
         TRepository: Repository<
-            BLS = TBLSSignatureScheme,
+            BLS = GoshBLS,
             EnvelopeSignerIndex = SignerIndex,
 
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
             NodeIdentifier = NodeIdentifier,
-            Attestation = Envelope<TBLSSignatureScheme, AttestationData>,
+            Attestation = Envelope<GoshBLS, AttestationData>,
         >,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
             <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
@@ -62,8 +59,8 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             Repository = TRepository
         >,
         TAttestationProcessor: AttestationProcessor<
-            BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData>,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BlockAttestation = Envelope<GoshBLS, AttestationData>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
         >,
         TRandomGenerator: rand::Rng,
 {
@@ -111,7 +108,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
 
     pub(crate) fn update_block_keeper_set_from_common_section(
         &mut self,
-        block: &AckiNackiBlock<TBLSSignatureScheme>,
+        block: &AckiNackiBlock,
         // TODO: remove
         _thread_id: &ThreadIdentifier
     ) -> anyhow::Result<()> {
@@ -142,9 +139,15 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         }
         for block_keeper_change in &common_section.block_keeper_set_changes {
             if let BlockKeeperSetChange::BlockKeeperAdded((signer_index, block_keeper_data)) = block_keeper_change {
-                tracing::trace!("insert block keeper key: {signer_index} {block_keeper_data:?}");
+                tracing::trace!("insert block keeper key: {signer_index} {block_keeper_data}");
                 tracing::trace!("insert block keeper key: {:?}", new_bk_set);
                 new_bk_set.insert(*signer_index, block_keeper_data.clone());
+                if block_keeper_data.wallet_index == self.config.local.node_id {
+                    self.signer_index_map.insert(
+                        block.seq_no(),
+                        *signer_index,
+                    );
+                }
             }
         }
         self.block_keeper_sets.insert(block_seq_no, new_bk_set);

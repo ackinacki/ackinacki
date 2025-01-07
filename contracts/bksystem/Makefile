@@ -1,7 +1,6 @@
 .DEFAULT_GOAL := build
 
-tvcs = BlockKeeperContractRoot AckiNackiBlockKeeperNodeWallet BlockKeeperEpochContract BlockKeeperCoolerContract BlockKeeperPreEpochContract BlockKeeperEpochProxyList
-
+tvcs = SignerIndex BLSKeyIndex BlockKeeperContractRoot AckiNackiBlockKeeperNodeWallet AckiNackiBlockKeeperNodeWalletConfig BlockKeeperEpochContract BlockKeeperCoolerContract BlockKeeperPreEpochContract BlockKeeperEpochProxyList 
 clean:
 	rm -f *.tvc *.abi.json *.code *.debug.json
 	rm -rf .solc_imports
@@ -14,7 +13,7 @@ build-contracts:
 	for i in $(tvcs); do \
 		$$(command -v sold || echo ../compiler/sold) --tvm-version gosh $$i.sol || exit $$@; \
 	done
-	rm *.debug.json;
-	#rm *.code;
+	rm -r *.debug.json;
+	rm -r *.code;
 
 build: clean build-contracts

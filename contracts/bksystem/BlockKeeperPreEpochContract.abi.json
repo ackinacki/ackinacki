@@ -10,7 +10,9 @@
 				{"name":"epochDuration","type":"uint32"},
 				{"name":"bls_pubkey","type":"bytes"},
 				{"name":"code","type":"map(uint8,cell)"},
-				{"name":"walletId","type":"uint256"}
+				{"name":"walletId","type":"uint256"},
+				{"name":"signerIndex","type":"uint16"},
+				{"name":"ProxyList","type":"map(uint8,string)"}
 			],
 			"outputs": [
 			]
@@ -61,6 +63,7 @@
 		{"init":false,"name":"_owner","type":"address"},
 		{"init":false,"name":"_bls_pubkey","type":"bytes"},
 		{"init":false,"name":"_stake","type":"varuint32"},
-		{"init":false,"name":"_walletId","type":"uint256"}
+		{"init":false,"name":"_walletId","type":"uint256"},
+		{"init":false,"name":"_signerIndex","type":"uint16"}
 	]
 }

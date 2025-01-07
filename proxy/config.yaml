@@ -1,0 +1,22 @@
+server:
+  cert: certs/server.ca.pem
+  key: certs/server.key.pem
+
+connections:
+  connection1:
+    subscriber: true
+    publisher: true
+    tags:
+      - tag1
+    cert: certs/client.ca.pem
+    outer:
+      enabled: true
+      url: https://localhost:4433
+
+  connection2:
+    subscriber: true
+    publisher: true
+    tags:
+      - tag1
+    cert: certs/client.ca.pem
+    outer: null

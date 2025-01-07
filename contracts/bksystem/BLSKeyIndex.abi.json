@@ -1,0 +1,73 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"wallet","type":"address"},
+				{"name":"pubkey","type":"uint256"},
+				{"name":"stake","type":"uint256"},
+				{"name":"signerIndex","type":"uint16"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "isBLSKeyAccept",
+			"inputs": [
+				{"name":"ProxyList","type":"map(uint8,string)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "isBLSKeyAcceptContinue",
+			"inputs": [
+				{"name":"seqNoStartOld","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "destroyRoot",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "destroy",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
+		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
+		{"init":false,"name":"__value","type":"uint256"},
+		{"init":true,"name":"_bls","type":"bytes"},
+		{"init":true,"name":"_root","type":"address"},
+		{"init":false,"name":"_wallet","type":"address"},
+		{"init":false,"name":"_wallet_pubkey","type":"uint256"},
+		{"init":false,"name":"_stake","type":"uint256"},
+		{"init":false,"name":"_signerIndex","type":"uint16"},
+		{"init":false,"name":"_ready","type":"bool"}
+	]
+}

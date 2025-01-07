@@ -8,6 +8,7 @@ use std::sync::mpsc::Sender;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
 use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::ThreadIdentifier;
@@ -32,6 +33,7 @@ pub trait StateSyncService {
             Vec<<Self::Repository as Repository>::NodeIdentifier>,
         >,
         block_keeper_set: BlockKeeperRing,
+        cross_thread_ref_data: Vec<CrossThreadRefData>,
     ) -> anyhow::Result<Self::ResourceAddress>;
 
     fn add_load_state_task(

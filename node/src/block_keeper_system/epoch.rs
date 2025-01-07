@@ -9,20 +9,26 @@ use tvm_abi::TokenValue;
 use tvm_block::Account;
 use tvm_block::ExternalInboundMessageHeader;
 use tvm_block::Message;
+use tvm_block::MsgAddress;
 use tvm_block::MsgAddressInt;
 use tvm_client::encoding::slice_from_cell;
+use tvm_types::AccountId;
 use tvm_types::SliceData;
 
 use crate::block_keeper_system::abi::EPOCH_ABI;
 use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperStatus;
 use crate::bls::gosh_bls::PubKey;
+use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
+use crate::types::AccountAddress;
 
 const BLS_PUBKEY_TOKEN_KEY: &str = "_bls_pubkey";
 const WALLET_ID_TOKEN_KEY: &str = "_walletId";
 const EPOCH_FINISH_TOKEN_KEY: &str = "_unixtimeFinish";
-const STAKE_KEY: &str = "_stake";
+const STAKE_TOKEN_KEY: &str = "_stake";
+const OWNER_TOKEN_KEY: &str = "_owner_address";
+const SIGNER_INDEX_KEY: &str = "_signerIndex";
 
 fn get_epoch_abi() -> tvm_client::abi::Abi {
     tvm_client::abi::Abi::Json(EPOCH_ABI.to_string())
@@ -46,6 +52,8 @@ pub fn decode_epoch_data(
         let mut block_keeper_wallet_id = None;
         let mut block_keeper_epoch_finish = None;
         let mut block_keeper_stake = None;
+        let mut wallet_address = None;
+        let mut signer_index = None;
         for token in decoded_data {
             if token.name == BLS_PUBKEY_TOKEN_KEY {
                 if let TokenValue::Bytes(pubkey) = token.value {
@@ -58,7 +66,7 @@ pub fn decode_epoch_data(
                     block_keeper_wallet_id = Some(if wallet_id.number.is_zero() {
                         0
                     } else {
-                        wallet_id.number.to_u64_digits()[0] as SignerIndex
+                        wallet_id.number.to_u64_digits()[0] as NodeIdentifier
                     });
                 }
             } else if token.name == EPOCH_FINISH_TOKEN_KEY {
@@ -70,11 +78,33 @@ pub fn decode_epoch_data(
                         epoch_finish.number.to_u32_digits()[0]
                     });
                 }
-            } else if token.name == STAKE_KEY {
+            } else if token.name == STAKE_TOKEN_KEY {
                 if let TokenValue::Uint(stake) = token.value {
                     tracing::trace!("decoded epoch stake: {stake:?}");
                     block_keeper_stake =
                         Some(if stake.number.is_zero() { BigUint::zero() } else { stake.number });
+                }
+            } else if token.name == OWNER_TOKEN_KEY {
+                if let TokenValue::Address(addr) = token.value {
+                    tracing::trace!("decoded wallet address: {addr:?}");
+                    wallet_address = match addr {
+                        MsgAddress::AddrNone => None,
+                        MsgAddress::AddrExt(_) => None,
+                        MsgAddress::AddrStd(data) => {
+                            let addr = data.address;
+                            Some(addr)
+                        }
+                        MsgAddress::AddrVar(_) => None,
+                    };
+                }
+            } else if token.name == SIGNER_INDEX_KEY {
+                if let TokenValue::Uint(index) = token.value {
+                    tracing::trace!("decoded signer index: {index:?}");
+                    signer_index = Some(if index.number.is_zero() {
+                        0
+                    } else {
+                        index.number.to_u32_digits()[0] as SignerIndex
+                    });
                 }
             }
         }
@@ -82,17 +112,22 @@ pub fn decode_epoch_data(
             && block_keeper_wallet_id.is_some()
             && block_keeper_epoch_finish.is_some()
             && block_keeper_stake.is_some()
+            && wallet_address.is_some()
+            && signer_index.is_some()
         {
-            let index = block_keeper_wallet_id.unwrap();
+            let signer_index = signer_index.unwrap();
             return Ok(Some((
-                index,
+                signer_index,
                 BlockKeeperData {
-                    index,
+                    wallet_index: block_keeper_wallet_id.unwrap(),
                     pubkey: block_keeper_bls_key.unwrap(),
                     epoch_finish_timestamp: block_keeper_epoch_finish.unwrap(),
                     status: BlockKeeperStatus::Active,
+                    // TODO: better fix pure unwrap for address
                     address: account.get_addr().unwrap().to_string(),
                     stake: block_keeper_stake.unwrap(),
+                    owner_address: AccountAddress(AccountId::from(wallet_address.unwrap())),
+                    signer_index,
                 },
             )));
         }

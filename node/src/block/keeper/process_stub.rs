@@ -54,7 +54,7 @@ impl<TBlockProducer: BlockProducer> BlockKeeperProcess for StubValidationProcess
         todo!()
     }
 
-    fn get_last_state(&self) -> Self::OptimisticState {
+    fn get_last_state(&self) -> Option<Self::OptimisticState> {
         todo!()
     }
 }

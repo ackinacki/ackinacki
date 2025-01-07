@@ -10,11 +10,11 @@ use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
-use crate::bls::gosh_bls::PubKey;
-use crate::bls::BLSSignatureScheme;
+use crate::bls::GoshBLS;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::BlockStatus;
 use crate::node::associated_types::ExecutionResult;
+use crate::node::associated_types::NackReason;
 use crate::node::associated_types::NodeAssociatedTypes;
 use crate::node::associated_types::OptimisticStateFor;
 use crate::node::associated_types::SynchronizationResult;
@@ -27,6 +27,7 @@ use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::repository_impl::EXT_MESSAGE_STORE_TIMEOUT_SECONDS;
+use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
 use crate::types::next_seq_no;
 use crate::types::AckiNackiBlock;
@@ -34,32 +35,30 @@ use crate::types::BlockSeqNo;
 
 const ATTESTATIONS_APPLY_BLOCK_SEQ_NO_GAP: u32 = 0;
 
-impl<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
-Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+impl<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
     where
-        TBLSSignatureScheme: BLSSignatureScheme<PubKey = PubKey> + Clone,
-        <TBLSSignatureScheme as BLSSignatureScheme>::PubKey: PartialEq,
         TBlockProducerProcess:
         BlockProducerProcess< Repository = TRepository>,
         TValidationProcess: BlockKeeperProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
         >,
         TBlockProducerProcess: BlockProducerProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
         >,
         TRepository: Repository<
-            BLS = TBLSSignatureScheme,
+            BLS = GoshBLS,
             EnvelopeSignerIndex = SignerIndex,
 
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
             NodeIdentifier = NodeIdentifier,
-            Attestation = Envelope<TBLSSignatureScheme, AttestationData>,
+            Attestation = Envelope<GoshBLS, AttestationData>,
         >,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
             <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
@@ -68,8 +67,8 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             Repository = TRepository
         >,
         TAttestationProcessor: AttestationProcessor<
-            BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData>,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BlockAttestation = Envelope<GoshBLS, AttestationData>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
         >,
         TRandomGenerator: rand::Rng,
 {
@@ -81,13 +80,20 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         loop {
             let thread_id = self.thread_id;
             // Synchronization can be executed not once if node lose too much blocks.
-            let synchronization_result = if self.is_this_node_a_producer_for_new_block(
-                &thread_id,
-            ) {
-                self.execute_restarted_producer()?
-            } else {
-                self.restart_bk()?;
-                self.execute_synchronizing()?
+            let synchronization_result = {
+                if self.is_spawned_from_node_sync {
+                    // Note: repository is not ready at this stage. Just sync the node thread.
+                    let result = self.execute_synchronizing();
+                    self.is_spawned_from_node_sync = false;
+                    result?
+                } else if self.is_this_node_a_producer_for_new_block(
+                    &thread_id,
+                ) {
+                    self.execute_restarted_producer()?
+                } else {
+                    self.restart_bk()?;
+                    self.execute_synchronizing()?
+                }
             };
             tracing::trace!("Synchronization finished: {:?}", synchronization_result);
             tracing::trace!("Unprocessed blocks: {:?}", self.unprocessed_blocks_cache);
@@ -234,6 +240,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                     Err(RecvTimeoutError::Timeout)
                 } else {
                     tracing::trace!("trying to receive messages from other nodes");
+
                     self.rx.recv_timeout(recv_timeout)
                 }
             };
@@ -342,13 +349,28 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                                     }
                                 }
                                 BlockStatus::Skipped => {
+                                    // Note: check if this node has attestation for skipped block and resend it
+                                    if let Some(attestation_datas) = self.sent_attestations.get(&self.thread_id) {
+                                        for (_, attestation) in attestation_datas {
+                                            if attestation.data().block_id == candidate_block.data().identifier() {
+                                                self.send_block_attestation(self.current_block_producer_id(&self.thread_id, &candidate_block.data().seq_no()), attestation.clone())?;
+                                            }
+                                        }
+                                    }
                                     break;
                                 }
                                 BlockStatus::BadBlock => {
-                                    let block_nack = self.generate_nack(candidate_block.data().identifier(),candidate_block.data().seq_no())?;
-                                    self.received_nacks.push(block_nack.clone());
-                                    self.broadcast_nack(block_nack)?;
-                                    self.rotate_producer_group(&thread_id)?;
+                                    let block_producer_id = candidate_block.data().get_common_section().producer_id;
+                                    let thread_id = candidate_block.data().get_common_section().thread_id;
+                                    if let Some(block_nack) = self.generate_nack(candidate_block.data().identifier(),candidate_block.data().seq_no(), NackReason::BadBlock{envelope: candidate_block})? {
+                                        let mut received_nacks_in = self.received_nacks.lock();
+                                        received_nacks_in.push(block_nack.clone());
+                                        drop(received_nacks_in);
+                                        self.broadcast_nack(block_nack)?;
+                                    }
+                                    if self.get_latest_block_producer(&thread_id) == block_producer_id {
+                                        self.rotate_producer_group(&thread_id)?;
+                                    }
                                     break;
                                 }
                                 BlockStatus::SynchronizationRequired => {
@@ -449,10 +471,12 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             return Ok(false);
         }
         let mut signatures: Vec<SignerIndex> = block_attestation.clone_signature_occurrences().keys().cloned().collect();
-        signatures.retain(|index| *index != self.config.local.node_id as SignerIndex);
-        if signatures.is_empty() {
-            tracing::trace!("Replay protection no new signatures {block_attestation:?}");
-            return Ok(false);
+        if let Some(signer_index) = self.get_node_signer_index_for_block_seq_no(&block_attestation.data().block_seq_no) {
+            signatures.retain(|index| *index != signer_index);
+            if signatures.is_empty() {
+                tracing::trace!("Replay protection no new signatures {block_attestation:?}");
+                return Ok(false);
+            }
         }
         {
             let saved_attestations = self.received_attestations.entry(block_attestation.data().block_seq_no).or_default();
@@ -508,7 +532,19 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                     todo!();
                 }
                 // TODO: Check if block has all required data.
-                self.on_block_finalized(&candidate_block)?;
+                let block_id = candidate_block.data().identifier().clone();
+                if self.repository.is_block_processed(&block_id)? {
+                    let block_ref_data_exists = self.shared_services.exec(|services| {
+                        services.cross_thread_ref_data_service.get_cross_thread_ref_data(&block_id).is_ok()
+                    });
+                    if block_ref_data_exists {
+                        self.on_block_finalized(&candidate_block, self.block_keeper_sets.clone())?;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
             }
 
             if let Some((_block_id, mut block_seq_no)) = self.find_thread_earliest_non_finalized_main_candidate_block_id(&thread)? {
@@ -520,34 +556,6 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
                 }
             }
         }
-        // // TODO: temporary hack to let node finalize blocks if it missed block attestations.
-        // // This hack won't be needed when we add block request mechanism.
-        // // Finalize block that is N blocks behind the last accepted as main candidate.
-        // for thread in self.list_threads()? {
-        //     let (_last_main_candidate_id, last_main_candidate_seq_no) =
-        //         self.repository.select_thread_last_main_candidate_block(&thread)?;
-        //     if last_main_candidate_seq_no.into() > (self.config.global.require_minimum_blocks_to_finalize as u64) {
-        //         let (_, last_finalized_seq_no) =
-        //             self.repository.select_thread_last_finalized_block(&thread)?;
-        //         let mut finalize_candidate_seq_no = last_main_candidate_seq_no;
-        //         for _ in 0..self.config.global.require_minimum_blocks_to_finalize {
-        //             finalize_candidate_seq_no = finalize_candidate_seq_no.prev();
-        //         }
-        //         if finalize_candidate_seq_no > last_finalized_seq_no {
-        //             tracing::trace!(
-        //                 "check possible finalized candidate: {finalize_candidate_seq_no:?}"
-        //             );
-        //             for block_id in self.repository.get_block_id_by_seq_no(&finalize_candidate_seq_no)
-        //             {
-        //                 if let Some(true) =
-        //                     self.repository.is_block_accepted_as_main_candidate(&block_id)?
-        //                 {
-        //                     self.on_block_finalized(&block_id, &finalize_candidate_seq_no)?;
-        //                 }
-        //             }
-        //         }
-        //     }
-        // }
         #[cfg(feature = "timing")]
         tracing::trace!("try_finalize_blocks elapsed: {}ms", start.elapsed().as_millis());
         Ok(())

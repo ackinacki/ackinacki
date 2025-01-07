@@ -8,8 +8,24 @@
 			"inputs": [
 				{"name":"code","type":"map(uint8,cell)"},
 				{"name":"seqNoStart","type":"uint64"},
-				{"name":"service_key","type":"optional(uint256)"},
-				{"name":"walletId","type":"uint256"}
+				{"name":"walletId","type":"uint256"},
+				{"name":"ProxyList","type":"map(uint8,string)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setServiceKey",
+			"inputs": [
+				{"name":"service_key","type":"optional(uint256)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "toClose",
+			"inputs": [
+				{"name":"seqNoStart","type":"uint64"}
 			],
 			"outputs": [
 			]
@@ -51,7 +67,7 @@
 			"inputs": [
 				{"name":"data","type":"map(uint8,string)"},
 				{"components":[{"name":"value0","type":"uint8"},{"name":"value1","type":"string"}],"name":"member","type":"optional(tuple)"},
-				{"name":"action","type":"bool"}
+				{"name":"is_add","type":"bool"}
 			],
 			"outputs": [
 			]
@@ -93,6 +109,7 @@
 		{"init":false,"name":"_service_key","type":"optional(uint256)"},
 		{"init":false,"name":"_root","type":"address"},
 		{"init":false,"name":"_walletId","type":"uint256"},
-		{"init":false,"name":"status","type":"bool"}
+		{"init":false,"name":"status","type":"bool"},
+		{"init":false,"name":"_is_closed","type":"bool"}
 	]
 }

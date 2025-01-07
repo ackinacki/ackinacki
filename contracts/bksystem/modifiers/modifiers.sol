@@ -18,15 +18,20 @@ abstract contract Modifiers is ReplayProtection {
     uint8 constant m_BlockKeeperEpochCoolerCode = 3;
     uint8 constant m_BlockKeeperPreEpochCode = 4;
     uint8 constant m_BlockKeeperEpochProxyListCode = 5;
-    uint8 constant m_BlockKeeperSlashCode = 6;
+    uint8 constant m_AckiNackiBlockKeeperNodeWalletConfigCode = 6;
+    uint8 constant m_BLSKeyCode = 7;
+    uint8 constant m_SignerIndexCode = 8;
     
     //Deploy constants
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_WALLET = 20 vmshell;
+    uint64 constant FEE_DEPLOY_BLOCK_KEEPER_WALLET_CONFIG = 5 vmshell;
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET = 30 vmshell;
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_WALLET = 10 vmshell;
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_COOLER_WALLET = 2 vmshell;
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_SLASH = 4 vmshell;
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST = 10 vmshell;
+    uint64 constant FEE_DEPLOY_BLS_KEY = 3 vmshell;
+    uint64 constant FEE_DEPLOY_SIGNER_INDEX = 7 vmshell;
 
     uint8 constant PRE_EPOCH_DEPLOYED = 0;
     uint8 constant EPOCH_DEPLOYED = 1;
@@ -34,6 +39,11 @@ abstract contract Modifiers is ReplayProtection {
 
     uint32 constant CURRENCIES_ID = 1;
     uint32 constant CURRENCIES_ID_SHELL = 2;
+
+    uint8 constant FULL_STAKE_SLASH = 0;
+    uint8 constant FULL_STAKE_PERCENT = 100;
+    uint8 constant PART_STAKE_0 = 1;
+    uint8 constant PART_STAKE_PERCENT_0 = 50;
 
     uint128 constant MAX_LOCK_NUMBER = 1000000000;
             
@@ -54,6 +64,14 @@ abstract contract Modifiers is ReplayProtection {
     }
 
     modifier onlyOwnerPubkey(uint256 rootpubkey) {
+        require(msg.pubkey() == rootpubkey, ERR_NOT_OWNER);
+        _;
+    }
+
+    modifier onlyOwnerWallet(optional(address) owner_wallet, uint256 rootpubkey) {
+        if (owner_wallet.hasValue()) {
+            require(msg.sender == owner_wallet.get(), ERR_NOT_OWNER);
+        }
         require(msg.pubkey() == rootpubkey, ERR_NOT_OWNER);
         _;
     }

@@ -19,7 +19,7 @@ pub mod serialize_block;
 
 pub fn write_to_db(
     archive: Arc<dyn DocumentsDb>,
-    envelope: Envelope<GoshBLS, AckiNackiBlock<GoshBLS>>,
+    envelope: Envelope<GoshBLS, AckiNackiBlock>,
     shard_state: Option<Arc<ShardStateUnsplit>>,
     shard_state_cell: Option<Cell>,
     // repository: RepositoryImpl,

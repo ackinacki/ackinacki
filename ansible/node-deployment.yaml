@@ -80,6 +80,12 @@
       dest: "{{ BK_DIR }}/docker-compose.yaml"
       mode: "0644"
 
+  - name: Logrotate entrypoint
+    ansible.builtin.template:
+      src: templates/logrotate.j2
+      dest: "{{ BK_DIR }}/logrotate.sh"
+      mode: "0755"
+
   - name: Compose pull
     ansible.builtin.shell:
       chdir: "{{ BK_DIR }}"

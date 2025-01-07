@@ -102,7 +102,7 @@ struct NetworkMessageVisitor<
     TNodeIdentifier,
 > {
     _phantom_data_bls: PhantomData<BLS>,
-    _phantom_data_tblock: PhantomData<AckiNackiBlock<BLS>>,
+    _phantom_data_tblock: PhantomData<AckiNackiBlock>,
     _phantom_data_tack: PhantomData<TAck>,
     _phantom_data_tnack: PhantomData<TNack>,
     _phantom_data_tattestation: PhantomData<TAttestation>,

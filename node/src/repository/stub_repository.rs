@@ -9,8 +9,10 @@ use database::documents_db::SerializedItem;
 use parking_lot::Mutex;
 use tvm_block::ShardStateUnsplit;
 use tvm_types::AccountId;
+use tvm_types::UInt256;
 
 use super::repository_impl::RepositoryImpl;
+use super::repository_impl::RepositoryMetadata;
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
@@ -23,6 +25,7 @@ use crate::repository::optimistic_state::DAppIdTable;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
+use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AccountAddress;
 use crate::types::AccountRouting;
 use crate::types::AckiNackiBlock;
@@ -33,6 +36,7 @@ use crate::types::BlockSeqNo;
 use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
+use crate::utilities::FixedSizeHashSet;
 
 #[cfg(test)]
 #[derive(Clone)]
@@ -81,8 +85,10 @@ impl OptimisticState for OptimisticStateStub {
 
     fn apply_block(
         &mut self,
-        _block_candidate: &AckiNackiBlock<GoshBLS>,
+        _block_candidate: &AckiNackiBlock,
         _shared_services: &SharedServices,
+        _block_keeper_sets: BlockKeeperRing,
+        _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<()> {
         todo!()
     }
@@ -148,6 +154,13 @@ impl OptimisticState for OptimisticStateStub {
         todo!()
     }
 
+    fn add_slashing_messages(
+        &mut self,
+        _slashing_messages: Vec<Self::Message>,
+    ) -> anyhow::Result<()> {
+        todo!()
+    }
+
     fn add_accounts_from_ref(
         &mut self,
         _cross_thread_ref: &CrossThreadRefData,
@@ -158,7 +171,7 @@ impl OptimisticState for OptimisticStateStub {
 
 #[cfg(test)]
 pub struct RepositoryStub {
-    _storage: HashMap<BlockIdentifier, Envelope<GoshBLS, AckiNackiBlock<GoshBLS>>>,
+    _storage: HashMap<BlockIdentifier, Envelope<GoshBLS, AckiNackiBlock>>,
     optimistic_state: HashMap<BlockIdentifier, <Self as Repository>::OptimisticState>,
     finalized_states: HashMap<ThreadIdentifier, OptimisticStateStub>,
 }
@@ -198,7 +211,7 @@ impl From<OptimisticStateStub> for Vec<u8> {
 impl Repository for RepositoryStub {
     type Attestation = Envelope<GoshBLS, AttestationData>;
     type BLS = GoshBLS;
-    type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock<GoshBLS>>;
+    type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>;
     type EnvelopeSignerIndex = u16;
     type NodeIdentifier = NodeIdentifier;
     type OptimisticState = OptimisticStateStub;
@@ -208,6 +221,10 @@ impl Repository for RepositoryStub {
         &self,
         _data: HashMap<ThreadIdentifier, Vec<(BlockSeqNo, Self::Attestation)>>,
     ) -> anyhow::Result<()> {
+        todo!()
+    }
+
+    fn has_thread_metadata(&self, _thread_id: &ThreadIdentifier) -> bool {
         todo!()
     }
 
@@ -243,14 +260,25 @@ impl Repository for RepositoryStub {
         &self,
         _seq_no: &BlockSeqNo,
         _thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<Vec<Envelope<GoshBLS, AckiNackiBlock<GoshBLS>>>> {
+    ) -> anyhow::Result<Vec<Envelope<GoshBLS, AckiNackiBlock>>> {
         Ok(vec![])
+    }
+
+    fn prepare_thread_sync(
+        &mut self,
+        _thread_id: &ThreadIdentifier,
+        _known_finalized_block_id: &BlockIdentifier,
+        _known_finalized_block_seq_no: &BlockSeqNo,
+    ) -> anyhow::Result<()> {
+        todo!();
     }
 
     fn init_thread(
         &mut self,
         _thread_id: &ThreadIdentifier,
         _parent_block_id: &BlockIdentifier,
+        _block_keeper_sets: BlockKeeperRing,
+        _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<()> {
         todo!();
     }
@@ -284,7 +312,24 @@ impl Repository for RepositoryStub {
         Ok(None)
     }
 
-    fn mark_block_as_finalized(&mut self, _block: &Self::CandidateBlock) -> anyhow::Result<()> {
+    fn mark_block_as_suspicious(
+        &mut self,
+        _block_id: &BlockIdentifier,
+        _result: bool,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn is_block_suspicious(&self, _block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>> {
+        todo!()
+    }
+
+    fn mark_block_as_finalized(
+        &mut self,
+        _block: &Self::CandidateBlock,
+        _block_keeper_sets: BlockKeeperRing,
+        _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -295,6 +340,8 @@ impl Repository for RepositoryStub {
     fn get_optimistic_state(
         &self,
         block_id: &BlockIdentifier,
+        _block_keeper_sets: BlockKeeperRing,
+        _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<Option<OptimisticStateStub>> {
         Ok(self.optimistic_state.get(block_id).map(|s| s.to_owned()))
     }
@@ -361,24 +408,6 @@ impl Repository for RepositoryStub {
         todo!()
     }
 
-    fn take_state_snapshot(
-        &self,
-        _block_id: &BlockIdentifier,
-        _block_producer_groups: HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
-        _block_keeper_set: BTreeMap<BlockSeqNo, BlockKeeperSet>,
-    ) -> anyhow::Result<Self::StateSnapshot> {
-        todo!()
-    }
-
-    fn convert_state_data_to_snapshot(
-        &self,
-        _serialized_state: Vec<u8>,
-        _block_producer_groups: HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
-        _block_keeper_set: BTreeMap<BlockSeqNo, BlockKeeperSet>,
-    ) -> anyhow::Result<Self::StateSnapshot> {
-        todo!()
-    }
-
     fn set_state_from_snapshot(
         &mut self,
         _block_id: &BlockIdentifier,
@@ -387,6 +416,7 @@ impl Repository for RepositoryStub {
     ) -> anyhow::Result<(
         HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
         BTreeMap<BlockSeqNo, BlockKeeperSet>,
+        Vec<CrossThreadRefData>,
     )> {
         todo!()
     }
@@ -466,5 +496,9 @@ impl Repository for RepositoryStub {
         &self,
     ) -> impl Iterator<Item = (&'_ ThreadIdentifier, &'_ Self::OptimisticState)> {
         self.finalized_states.iter()
+    }
+
+    fn get_all_metadata(&self) -> RepositoryMetadata {
+        todo!()
     }
 }

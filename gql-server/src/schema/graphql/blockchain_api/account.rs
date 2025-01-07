@@ -20,8 +20,7 @@ use crate::client::BlockchainClient;
 use crate::schema::db;
 use crate::schema::db::transaction::AccountTransactionsQueryArgs;
 use crate::schema::graphql::account::Account;
-use crate::schema::graphql::blockchain_api::calc_prev_next_markers;
-use crate::schema::graphql::blockchain_api::query::PaginateDirection;
+use crate::schema::graphql::blockchain_api::query::PaginationArgs;
 use crate::schema::graphql::blockchain_api::transactions::BlockchainTransactionsConnection;
 use crate::schema::graphql::blockchain_api::transactions::BlockchainTransactionsEdge;
 use crate::schema::graphql::message::Message;
@@ -76,10 +75,27 @@ impl ConnectionNameType for BlockchainMessagesConnection {
     }
 }
 
+pub struct BlockchainAccountEdge;
+
+impl EdgeNameType for BlockchainAccountEdge {
+    fn type_name<T: OutputType>() -> String {
+        "BlockchainAccountEdge".to_string()
+    }
+}
+
+pub struct BlockchainAccountsConnection;
+
+impl ConnectionNameType for BlockchainAccountsConnection {
+    fn type_name<T: OutputType>() -> String {
+        "BlockchainAccountsConnection".to_string()
+    }
+}
+
 #[derive(Clone)]
 pub struct BlockchainAccountQuery<'a> {
     pub ctx: &'a Context<'a>,
     pub address: String,
+    pub preloaded: Option<db::Account>,
 }
 
 #[Object]
@@ -93,13 +109,14 @@ impl BlockchainAccountQuery<'_> {
         )]
         _by_block: Option<String>,
     ) -> Option<BlockchainAccount> {
+        if let Some(preloaded) = &self.preloaded {
+            return Some(preloaded.clone().into());
+        }
         let pool = self.ctx.data::<SqlitePool>().unwrap();
-        db::Account::by_address(pool, Some(self.address.clone())).await.unwrap().map(|db_account| {
-            let account_id = db_account.id.clone();
-            let mut account: Account = db_account.into();
-            account.id = format!("account/{account_id}");
-            account
-        })
+        db::Account::by_address(pool, Some(self.address.clone()))
+            .await
+            .unwrap()
+            .map(|db_account| db_account.into())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -167,25 +184,18 @@ impl BlockchainAccountQuery<'_> {
                 counterparties,
                 msg_type,
                 min_value,
-                first,
-                after.clone(),
-                last,
-                before.clone(),
+                PaginationArgs { first, after, last, before },
             );
-            let direction = args.get_direction();
-
-            let limit = args.get_limit();
-
             let mut messages = db::Message::account_messages(
                 self.ctx.data::<SqlitePool>().unwrap(),
                 self.ctx.data::<BlockchainClient>().unwrap().clone(),
                 self.address.clone(),
-                args,
+                &args,
             )
             .await?;
 
             let (has_previous_page, has_next_page) =
-                calc_prev_next_markers(after, before, first, last, messages.len());
+                args.pagination.get_bound_markers(messages.len());
             tracing::debug!("has_previous_page={:?}, after={:?}", has_previous_page, has_next_page);
 
             let mut connection: Connection<
@@ -197,14 +207,7 @@ impl BlockchainAccountQuery<'_> {
                 BlockchainMessageEdge,
             > = Connection::new(has_previous_page, has_next_page);
 
-            if messages.len() >= limit {
-                match direction {
-                    PaginateDirection::Forward => messages.truncate(messages.len() - 1),
-                    PaginateDirection::Backward => {
-                        messages.drain(0..1);
-                    }
-                }
-            }
+            args.pagination.shrink_portion(&mut messages);
 
             let selection_set = self
                 .ctx
@@ -318,23 +321,18 @@ impl BlockchainAccountQuery<'_> {
                 aborted,
                 min_balance_delta,
                 max_balance_delta,
-                first,
-                after.clone(),
-                last,
-                before.clone(),
+                PaginationArgs { first, after, last, before },
             );
-            let direction = args.get_direction();
-            let limit = args.get_limit();
 
             let mut transactions: Vec<db::Transaction> = db::Transaction::account_transactions(
                 self.ctx.data::<SqlitePool>().unwrap(),
                 self.address.clone(),
-                args,
+                &args,
             )
             .await?;
 
             let (has_previous_page, has_next_page) =
-                calc_prev_next_markers(after, before, first, last, transactions.len());
+                args.pagination.get_bound_markers(transactions.len());
             tracing::debug!("has_previous_page={:?}, after={:?}", has_previous_page, has_next_page);
 
             let mut connection: Connection<
@@ -346,14 +344,7 @@ impl BlockchainAccountQuery<'_> {
                 BlockchainTransactionsEdge,
             > = Connection::new(has_previous_page, has_next_page);
 
-            if transactions.len() >= limit {
-                match direction {
-                    PaginateDirection::Forward => transactions.truncate(transactions.len() - 1),
-                    PaginateDirection::Backward => {
-                        transactions.drain(0..1);
-                    }
-                }
-            }
+            args.pagination.shrink_portion(&mut transactions);
 
             connection.edges.extend(transactions.into_iter().map(|transaction| {
                 let transaction: BlockchainTransaction = transaction.into();

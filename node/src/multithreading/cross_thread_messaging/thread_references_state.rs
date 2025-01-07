@@ -10,7 +10,7 @@ use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 
-#[derive(TypedBuilder, Clone, Serialize, Deserialize)]
+#[derive(TypedBuilder, Clone, Serialize, Deserialize, Debug)]
 pub struct ThreadReferencesState {
     // Note that ThreadIdentifier is duplicated as a key and in the value.
     // It was intentionally done this way, since it is possible to have a thread

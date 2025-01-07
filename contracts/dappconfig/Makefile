@@ -12,7 +12,7 @@ build-contracts:
 		cp ../$$i.sol . || exit $$@; \
 	done
 	for i in $(tvcs); do \
-		../compiler/sold --tvm-version gosh $$i.sol || exit $$@; \
+		$$(command -v sold || echo ../compiler/sold) --tvm-version gosh $$i.sol || exit $$@; \
 	done
 	rm *.debug.json;
 	#rm *.code;

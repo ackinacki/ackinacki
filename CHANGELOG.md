@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.2] – 2024-12-30
+
+## New
+- Proxy service 
+
+## Fixed
+- Signer index integration
+- Fixed some Shellnet bugs
+
+## [0.3.1] – 2024-12-30
+
+## New
+- Slashing
+- Add log rotate to public deployments BK and BM 
+  
+## Improved
+- Change DNS name to IPs in storage 
+- Adjust real network node parameters
+- Tracing spans added
+
+## Fixed
+- Node join 
+- Share state
+  
 ## [0.3.0] – 2024-12-12
 
 ## New
@@ -14,7 +38,7 @@ All notable changes to this project will be documented in this file.
   - with `tvm-tracing` feature enabled
   - with `allow-dappid-thread-split` and `tvm_tracing` features enabled 
   
- ## Improvements
+ ## Improved
 
 - BK API  root URL is now `bk/v1` with 1 endpoint `bk/v1/messages` 
   that can receive POST requests with external messages (previously `topic/requests`) 

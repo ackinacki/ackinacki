@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
 
+// use std::thread::sleep;
 use database::documents_db::DocumentsDb;
 use parking_lot::Mutex;
 use serde_json::Value;
@@ -22,6 +23,7 @@ use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::config::Config;
 use crate::database::write_to_db;
+use crate::node::associated_types::NackData;
 use crate::node::attestation_processor::LOOP_PAUSE_DURATION;
 use crate::node::shared_services::SharedServices;
 use crate::repository::optimistic_state::OptimisticState;
@@ -30,12 +32,13 @@ use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::CrossThreadRefData;
 use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
+use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockInfo;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
-use crate::types::ThreadsTable;
+use crate::utilities::FixedSizeHashSet;
 
 pub trait BlockKeeperProcess {
     type BLSSignatureScheme;
@@ -44,19 +47,19 @@ pub trait BlockKeeperProcess {
 
     fn validate<T: Into<Self::CandidateBlock>>(&mut self, block: T) -> anyhow::Result<()>;
     fn apply_block<T: Into<Self::CandidateBlock>>(&mut self, block: T) -> anyhow::Result<()>;
+    // This is so wrong. Result of this function is a subject to raise condition!
     fn is_candidate_block_can_be_applied(&self, parent_block_id: &BlockIdentifier) -> bool;
     fn clear_queue(&mut self) -> anyhow::Result<()>;
     fn get_verification_results(&self) -> anyhow::Result<Vec<(BlockIdentifier, BlockSeqNo, bool)>>;
-    fn get_last_state(&self) -> Self::OptimisticState;
+    fn get_last_state(&self) -> Option<Self::OptimisticState>;
 }
 
 pub struct TVMBlockKeeperProcess {
     // queue_of_blocks_to_process (block, do_verification)
     blocks_queue: Arc<Mutex<VecDeque<(<Self as BlockKeeperProcess>::CandidateBlock, bool)>>>,
-    last_state_id: Arc<Mutex<BlockIdentifier>>,
     verified_blocks_with_result: Arc<Mutex<Vec<(BlockIdentifier, BlockSeqNo, bool)>>>,
     handler: std::thread::JoinHandle<()>,
-    last_state: Arc<Mutex<OptimisticStateImpl>>,
+    last_state: Arc<Mutex<Option<OptimisticStateImpl>>>,
 }
 
 impl TVMBlockKeeperProcess {
@@ -66,16 +69,14 @@ impl TVMBlockKeeperProcess {
         mut repository: RepositoryImpl,
         node_config: Config,
         archive: Option<Arc<dyn DocumentsDb>>,
-        block_id: BlockIdentifier,
+        block_id: Option<BlockIdentifier>,
         thread_id: ThreadIdentifier,
         mut shared_services: SharedServices,
-        // TODO: remove
-        _threads_table: ThreadsTable,
+        block_keeper_sets: BlockKeeperRing,
+        nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<Self> {
-        let blocks_queue = Arc::new(Mutex::new(VecDeque::<(
-            Envelope<GoshBLS, AckiNackiBlock<<Self as BlockKeeperProcess>::BLSSignatureScheme>>,
-            bool,
-        )>::new()));
+        let blocks_queue =
+            Arc::new(Mutex::new(VecDeque::<(Envelope<GoshBLS, AckiNackiBlock>, bool)>::new()));
         let blockchain_config_path = blockchain_config_path.as_ref();
         let json = std::fs::read_to_string(blockchain_config_path)?;
         let map = serde_json::from_str::<serde_json::Map<String, Value>>(&json)?;
@@ -90,27 +91,30 @@ impl TVMBlockKeeperProcess {
         let blocks_queue_clone = blocks_queue.clone();
         let verified_blocks_with_result = Arc::new(Mutex::new(vec![]));
         let verified_blocks_with_result_clone = verified_blocks_with_result.clone();
-        let last_state_id = Arc::new(Mutex::new(BlockIdentifier::default()));
-        let last_state_id_clone = last_state_id.clone();
         let blockchain_config = Arc::new(blockchain_config);
-        let last_state = Arc::new(Mutex::new({
-            if block_id == BlockIdentifier::default() {
-                repository
-                    .get_zero_state_for_thread(&thread_id)
-                    .expect("Failed to get optimistic state from zerostate")
-            } else {
-                repository
-                    .get_optimistic_state(&block_id)
-                    .expect("Failed to get optimistic state for a thread root block")
-                    .expect("Failed to get optimistic state for a thread root block (option)")
-            }
+        let last_cached_state = Arc::new(Mutex::new({
+            block_id.map(|e| {
+                if e == BlockIdentifier::default() {
+                    repository
+                        .get_zero_state_for_thread(&thread_id)
+                        .expect("Failed to get optimistic state from zerostate")
+                } else {
+                    repository
+                        .get_optimistic_state(
+                            &e,
+                            block_keeper_sets.clone(),
+                            Arc::clone(&nack_set_cache),
+                        )
+                        .expect("Failed to get optimistic state for a thread root block")
+                        .expect("Failed to get optimistic state for a thread root block (option)")
+                }
+            })
         }));
-        let operational_state = last_state.clone();
+        let operational_state = last_cached_state.clone();
         let handler: std::thread::JoinHandle<()> = std::thread::Builder::new()
             .name("Block keeper process".to_string())
             .spawn(move || {
                 loop {
-                    let mut last_state = { operational_state.lock().clone() };
                     #[cfg(feature = "timing")]
                     let start = std::time::Instant::now();
                     let next_envelope = {
@@ -133,21 +137,34 @@ impl TVMBlockKeeperProcess {
                     );
 
                     let prev_block_id = next_block.parent();
-                    let last_block_id = { last_state_id_clone.lock().clone() };
-                    if prev_block_id != last_block_id {
+                    let cached: Option<OptimisticStateImpl> = {
+                        let guarded = operational_state.lock();
+                        let last_cached_state_block_id = guarded.as_ref().map(|e| e.get_block_id());
+                        if Some(&prev_block_id) == last_cached_state_block_id {
+                            guarded.clone()
+                        } else {
+                            None
+                        }
+                    };
+                    let mut prev_state = cached.unwrap_or_else(||{
                         tracing::trace!(
                             "last state is not valid for incoming block, load from repo"
                         );
-                        last_state = if let Some(last_state) = repository
-                            .get_optimistic_state(&prev_block_id)
+                        repository
+                            .get_optimistic_state(&prev_block_id, block_keeper_sets.clone(), Arc::clone(&nack_set_cache))
                             .expect("Failed to get optimistic state of the previous block")
-                        {
-                            last_state
-                        } else {
-                            continue;
-                        };
-                    }
-                    if do_verify {
+                            .unwrap_or_else(|| panic!("Failed to get optimistic state for a block: {prev_block_id:?}"))
+                    });
+
+                    let block_nack = next_block.get_common_section().nacks.clone();
+                    let is_suspicious = match repository.is_block_suspicious(&next_block.identifier()) {
+                        Ok(Some(status)) => {
+                            status
+                        },
+                        Ok(None) => false,
+                        Err(_) => false,
+                    };
+                    if do_verify || is_suspicious {
                         let refs = shared_services.exec(|service| {
                             let mut refs = vec![];
                             for block_id in &next_block.get_common_section().refs {
@@ -161,10 +178,12 @@ impl TVMBlockKeeperProcess {
                         let verify_res = verify_block(
                             &next_block,
                             blockchain_config.clone(),
-                            &mut last_state,
+                            &mut prev_state,
                             node_config.clone(),
                             refs,
                             shared_services.clone(),
+                            block_nack,
+                            block_keeper_sets.clone(),
                         )
                         .expect("Failed to verify block");
                         if !verify_res {
@@ -186,25 +205,25 @@ impl TVMBlockKeeperProcess {
                         */
                         // --- end of debug ---
 
-                        last_state.apply_block(
+                        prev_state.apply_block(
                             &next_block,
                             &shared_services,
+                            block_keeper_sets.clone(),
+                            Arc::clone(&nack_set_cache)
                         ).expect("Failed to apply block");
                     }
 
-                    let cross_thread_ref_data = CrossThreadRefData::from_ackinacki_block(&next_block, &mut last_state).expect("Failed to create cross-thread ref data");
+                    let cross_thread_ref_data = CrossThreadRefData::from_ackinacki_block(&next_block, &mut prev_state).expect("Failed to create cross-thread ref data");
                     shared_services.exec(|service| {
                         service.cross_thread_ref_data_service
                             .set_cross_thread_ref_data(cross_thread_ref_data)
                     }).expect("Failed to save cross-thread ref data");
 
                     // Note: mark block as verified to be sure it's cross thread refs were processed
-                    repository.mark_block_as_verified(&block_id).expect("Failed to mark block as verified");
+                    repository.mark_block_as_verified(&next_block.identifier()).expect("Failed to mark block as verified");
                     {
-                        let mut last_state_id = last_state_id_clone.lock();
-                        *last_state_id = next_block.identifier();
                         let mut saved_state = operational_state.lock();
-                        *saved_state = last_state.clone();
+                        *saved_state = Some(prev_state.clone());
                     }
                     let (_last_block_id, _last_seq_no) =
                         (next_block.identifier(), next_block.seq_no());
@@ -212,8 +231,8 @@ impl TVMBlockKeeperProcess {
                         write_to_db(
                             archive,
                             next_envelope,
-                            last_state.shard_state.shard_state.clone(),
-                            last_state.shard_state.shard_state_cell.clone(),
+                            prev_state.shard_state.shard_state.clone(),
+                            prev_state.shard_state.shard_state_cell.clone(),
                             // repository.clone(),
                         )
                         .expect("Failed to write block data to db");
@@ -228,7 +247,7 @@ impl TVMBlockKeeperProcess {
                         || (seq_no % node_config.global.save_state_frequency == 0);
                     if must_save_state {
                         repository
-                            .store_optimistic(last_state.clone())
+                            .store_optimistic(prev_state.clone())
                             .expect("Failed to store optimistic state");
                     }
                     #[cfg(feature = "timing")]
@@ -243,15 +262,14 @@ impl TVMBlockKeeperProcess {
             handler,
             blocks_queue,
             verified_blocks_with_result,
-            last_state_id,
-            last_state,
+            last_state: last_cached_state,
         })
     }
 }
 
 impl BlockKeeperProcess for TVMBlockKeeperProcess {
     type BLSSignatureScheme = GoshBLS;
-    type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock<Self::BLSSignatureScheme>>;
+    type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>;
     type OptimisticState = OptimisticStateImpl;
 
     fn validate<T: Into<Self::CandidateBlock>>(&mut self, block: T) -> anyhow::Result<()> {
@@ -271,8 +289,8 @@ impl BlockKeeperProcess for TVMBlockKeeperProcess {
     }
 
     fn is_candidate_block_can_be_applied(&self, parent_block_id: &BlockIdentifier) -> bool {
-        let last_state_id = { self.last_state_id.lock().clone() };
-        if &last_state_id == parent_block_id {
+        let guarded = self.last_state.lock();
+        if guarded.as_ref().map(|e| e.get_block_id() == parent_block_id).unwrap_or(false) {
             true
         } else {
             // Parent block can be in the queue
@@ -303,18 +321,21 @@ impl BlockKeeperProcess for TVMBlockKeeperProcess {
         Ok(res)
     }
 
-    fn get_last_state(&self) -> Self::OptimisticState {
+    fn get_last_state(&self) -> Option<Self::OptimisticState> {
         self.last_state.lock().clone()
     }
 }
 
-fn verify_block(
-    block_candidate: &AckiNackiBlock<GoshBLS>,
+#[allow(clippy::too_many_arguments)]
+pub fn verify_block(
+    block_candidate: &AckiNackiBlock,
     blockchain_config: Arc<BlockchainConfig>,
     prev_block_optimistic_state: &mut OptimisticStateImpl,
     node_config: Config,
     refs: Vec<CrossThreadRefData>,
     shared_services: SharedServices,
+    block_nack: Vec<Envelope<GoshBLS, NackData>>,
+    block_keeper_sets: BlockKeeperRing,
 ) -> anyhow::Result<bool> {
     #[cfg(feature = "timing")]
     let start = std::time::Instant::now();
@@ -325,6 +346,8 @@ fn verify_block(
         .node_config(node_config)
         .shared_services(shared_services)
         .epoch_block_keeper_data(vec![])
+        .block_nack(block_nack)
+        .block_keeper_sets(block_keeper_sets)
         .build();
 
     // TODO: need to refactor this point to reuse generated verify block
@@ -447,7 +470,7 @@ fn verify_block(
     Ok(res)
 }
 
-pub fn prepare_prev_block_info(block_candidate: &AckiNackiBlock<GoshBLS>) -> BlockInfo {
+pub fn prepare_prev_block_info(block_candidate: &AckiNackiBlock) -> BlockInfo {
     #[cfg(feature = "timing")]
     let start = std::time::Instant::now();
     let info = block_candidate.tvm_block().read_info().unwrap();

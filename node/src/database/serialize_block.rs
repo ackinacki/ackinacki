@@ -54,7 +54,7 @@ lazy_static::lazy_static!(
 
 pub fn reflect_block_in_db(
     archive: Arc<dyn DocumentsDb>,
-    envelope: Envelope<GoshBLS, AckiNackiBlock<GoshBLS>>,
+    envelope: Envelope<GoshBLS, AckiNackiBlock>,
     shard_state: Arc<ShardStateUnsplit>,
     transaction_traces: &mut HashMap<UInt256, Vec<EngineTraceInfoData>, RandomState>,
 ) -> anyhow::Result<()> {
@@ -454,7 +454,7 @@ pub(crate) fn prepare_deleted_account_archive_struct(
 }
 
 pub(crate) fn prepare_block_archive_struct(
-    envelope: Envelope<GoshBLS, AckiNackiBlock<GoshBLS>>,
+    envelope: Envelope<GoshBLS, AckiNackiBlock>,
     block_root: &Cell,
     boc: &[u8],
     file_hash: &UInt256,

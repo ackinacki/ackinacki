@@ -21,6 +21,7 @@ pub mod services;
 mod synchronization;
 mod threads;
 mod verifier;
+use std::sync::Arc;
 #[macro_use]
 pub mod impl_trait_macro;
 use std::collections::BTreeMap;
@@ -34,14 +35,15 @@ pub use associated_types::NodeIdentifier;
 pub use associated_types::SignerIndex;
 pub use network_message::NetworkMessage;
 use services::sync::StateSyncService;
+use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
 
 use crate::block::keeper::process::BlockKeeperProcess;
 use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
 use crate::bls::envelope::Envelope;
-use crate::bls::gosh_bls::PubKey;
 use crate::bls::BLSSignatureScheme;
+use crate::bls::GoshBLS;
 use crate::config::Config;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
@@ -55,18 +57,18 @@ use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
+use crate::utilities::FixedSizeHashSet;
 pub mod shared_services;
+use parking_lot::Mutex;
 use shared_services::SharedServices;
 
 use crate::types::ThreadIdentifier;
-use crate::types::ThreadsTable;
 
 pub(crate) const DEFAULT_PRODUCTION_TIME_MULTIPLIER: u64 = 1;
 
 #[allow(dead_code)]
 #[derive(TypedBuilder)]
 pub struct Node<
-    TBLSSignatureScheme,
     TStateSyncService,
     TBlockProducerProcess,
     TValidationProcess,
@@ -74,21 +76,19 @@ pub struct Node<
     TAttestationProcessor,
     TRandomGenerator,
 > where
-    TBLSSignatureScheme: BLSSignatureScheme<PubKey = PubKey> + Clone,
-    <TBLSSignatureScheme as BLSSignatureScheme>::PubKey: PartialEq,
     TBlockProducerProcess: BlockProducerProcess,
     <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: 'static,
     TValidationProcess: BlockKeeperProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-        CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+        CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
         OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
     >,
     TRepository: Repository<
-        BLS = TBLSSignatureScheme,
+        BLS = GoshBLS,
         EnvelopeSignerIndex = SignerIndex,
 
-        CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+        CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
         OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
         NodeIdentifier = NodeIdentifier,
     >,
@@ -97,8 +97,8 @@ pub struct Node<
     >,
     TStateSyncService: StateSyncService,
     TAttestationProcessor: AttestationProcessor<
-        BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData>,
-        CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+        BlockAttestation = Envelope<GoshBLS, AttestationData>,
+        CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
     >,
     TRandomGenerator: rand::Rng,
 {
@@ -107,9 +107,10 @@ pub struct Node<
     state_sync_service: TStateSyncService,
     validation_process: TValidationProcess,
     production_process: TBlockProducerProcess,
+    // TODO: @AleksandrS Add priority rx
     rx: Receiver<
         NetworkMessage<
-            TBLSSignatureScheme,
+            GoshBLS,
             AckData,
             NackData,
             AttestationData,
@@ -119,7 +120,7 @@ pub struct Node<
     >,
     tx: Sender<
         NetworkMessage<
-            TBLSSignatureScheme,
+            GoshBLS,
             AckData,
             NackData,
             AttestationData,
@@ -130,7 +131,7 @@ pub struct Node<
     single_tx: Sender<(
         NodeIdentifier,
         NetworkMessage<
-            TBLSSignatureScheme,
+            GoshBLS,
             AckData,
             NackData,
             AttestationData,
@@ -140,8 +141,8 @@ pub struct Node<
     )>,
     raw_block_tx: Sender<Vec<u8>>,
     #[allow(dead_code)]
-    pubkey: <TBLSSignatureScheme as BLSSignatureScheme>::PubKey,
-    secret: <TBLSSignatureScheme as BLSSignatureScheme>::Secret,
+    pubkey: <GoshBLS as BLSSignatureScheme>::PubKey,
+    secret: <GoshBLS as BLSSignatureScheme>::Secret,
     #[builder(default)]
     cache_forward_optimistic: HashMap<
         ThreadIdentifier,
@@ -153,55 +154,59 @@ pub struct Node<
     BTreeMap<BlockSeqNo, HashSet<BlockIdentifier>>,
 
     production_timeout_multiplier: u64,
-    last_block_attestations: Vec<Envelope<TBLSSignatureScheme, AttestationData>>,
-    received_acks: Vec<Envelope<TBLSSignatureScheme, AckData>>,
-    sent_acks: BTreeMap<BlockSeqNo, Envelope<TBLSSignatureScheme, AckData>>,
-    received_nacks: Vec<Envelope<TBLSSignatureScheme, NackData>>,
+    pub last_block_attestations: Vec<Envelope<GoshBLS, AttestationData>>,
+    pub received_acks: Arc<Mutex<Vec<Envelope<GoshBLS, AckData>>>>,
+    sent_acks: BTreeMap<BlockSeqNo, Envelope<GoshBLS, AckData>>,
+    pub received_nacks: Arc<Mutex<Vec<Envelope<GoshBLS, NackData>>>>,
     config: Config,
     block_keeper_sets: BlockKeeperRing,
     block_producer_groups: HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, Vec<NodeIdentifier>>>,
     block_gap_length: HashMap<ThreadIdentifier, usize>,
-    sent_attestations: HashMap<ThreadIdentifier,
-        Vec<(BlockSeqNo, Envelope<TBLSSignatureScheme, AttestationData>)>>,
-    received_attestations: BTreeMap<BlockSeqNo, HashMap<BlockIdentifier, HashSet<SignerIndex>>>,
+    pub sent_attestations: HashMap<ThreadIdentifier,
+        Vec<(BlockSeqNo, Envelope<GoshBLS, AttestationData>)>>,
+    pub received_attestations: BTreeMap<BlockSeqNo, HashMap<BlockIdentifier, HashSet<SignerIndex>>>,
     attestation_processor: TAttestationProcessor,
-    blocks_for_resync_broadcasting: VecDeque<Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>>,
+    blocks_for_resync_broadcasting: VecDeque<Envelope<GoshBLS, AckiNackiBlock>>,
     block_keeper_rng: TRandomGenerator,
     producer_election_rng: TRandomGenerator,
-    attestations_to_send: BTreeMap<BlockSeqNo, Vec<Envelope<TBLSSignatureScheme, AttestationData>>>,
+    attestations_to_send: BTreeMap<BlockSeqNo, Vec<Envelope<GoshBLS, AttestationData>>>,
     last_sent_attestation: Option<(BlockSeqNo, std::time::Instant)>,
-    ack_cache: BTreeMap<BlockSeqNo, Vec<Envelope<TBLSSignatureScheme, AckData>>>,
-    nack_cache: BTreeMap<BlockSeqNo, Vec<Envelope<TBLSSignatureScheme, NackData>>>,
-    threads_table: ThreadsTable,
+    ack_cache: BTreeMap<BlockSeqNo, Vec<Envelope<GoshBLS, AckData>>>,
+    nack_cache: BTreeMap<BlockSeqNo, Vec<Envelope<GoshBLS, NackData>>>,
     thread_id: ThreadIdentifier,
+    // Note: hack. check usage
+    pub is_spawned_from_node_sync: bool,
+    nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
+
+    // Note: signer index map is initially empty,
+    // it is filled after BK epoch contract deploy or loaded from zerostate
+    signer_index_map: BTreeMap<BlockSeqNo, SignerIndex>,
 }
 
-impl<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
-Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+impl<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
     where
-        TBLSSignatureScheme: BLSSignatureScheme<PubKey = PubKey> + Clone,
-        <TBLSSignatureScheme as BLSSignatureScheme>::PubKey: PartialEq,
         TBlockProducerProcess:
         BlockProducerProcess< Repository = TRepository>,
         TValidationProcess: BlockKeeperProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
         >,
         TBlockProducerProcess: BlockProducerProcess<
-            BLSSignatureScheme = TBLSSignatureScheme,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BLSSignatureScheme = GoshBLS,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
 
         >,
         TRepository: Repository<
-            BLS = TBLSSignatureScheme,
+            BLS = GoshBLS,
             EnvelopeSignerIndex = SignerIndex,
 
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
             OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
             NodeIdentifier = NodeIdentifier,
-            Attestation = Envelope<TBLSSignatureScheme, AttestationData>,
+            Attestation = Envelope<GoshBLS, AttestationData>,
         >,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
             <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
@@ -210,8 +215,8 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             Repository = TRepository
         >,
         TAttestationProcessor: AttestationProcessor<
-            BlockAttestation = Envelope<TBLSSignatureScheme, AttestationData>,
-            CandidateBlock = Envelope<TBLSSignatureScheme, AckiNackiBlock<TBLSSignatureScheme>>,
+            BlockAttestation = Envelope<GoshBLS, AttestationData>,
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
         >,
         TRandomGenerator: rand::Rng,
 {
@@ -224,7 +229,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         repository: TRepository,
         rx: Receiver<
             NetworkMessage<
-                TBLSSignatureScheme,
+                GoshBLS,
                 AckData,
                 NackData,
                 AttestationData,
@@ -234,7 +239,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         >,
         tx: Sender<
             NetworkMessage<
-                TBLSSignatureScheme,
+                GoshBLS,
                 AckData,
                 NackData,
                 AttestationData,
@@ -245,7 +250,7 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         single_tx: Sender<(
             NodeIdentifier,
             NetworkMessage<
-                TBLSSignatureScheme,
+                GoshBLS,
                 AckData,
                 NackData,
                 AttestationData,
@@ -254,32 +259,42 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             >,
         )>,
         raw_block_tx: Sender<Vec<u8>>,
-        pubkey: <TBLSSignatureScheme as BLSSignatureScheme>::PubKey,
-        secret: <TBLSSignatureScheme as BLSSignatureScheme>::Secret,
+        pubkey: <GoshBLS as BLSSignatureScheme>::PubKey,
+        secret: <GoshBLS as BLSSignatureScheme>::Secret,
         config: Config,
         attestation_processor: TAttestationProcessor,
         mut block_keeper_sets: BlockKeeperRing,
         block_keeper_rng: TRandomGenerator,
         producer_election_rng: TRandomGenerator,
-        threads_table: ThreadsTable,
         thread_id: ThreadIdentifier,
+        update_producer_group: bool,
+        nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> Self {
-        let signer = config.local.node_id as SignerIndex;
-        if cfg!(test) {
-            block_keeper_sets.with_last_entry(|e| {
-                let block_keeper_sets = e.expect("must be there");
-                tracing::trace!("Check that zerostate contains block keeper key");
-                let  bk_set = block_keeper_sets.get();
-                assert_eq!(bk_set.get(&signer).map(|data| &data.pubkey), Some(&pubkey));
-            });
+        let signer_map = BTreeMap::from_iter({
 
+            let initial_bk_sets_guarded = block_keeper_sets.sets.lock();
+            let (_, initial_bk_set) = initial_bk_sets_guarded.last_key_value().expect("Zerostate must contain initial BK set");
+            if let Some(signer_index) = initial_bk_set.values().find(|data| data.wallet_index == config.local.node_id).map(|data| data.signer_index) {
+                vec![(BlockSeqNo::default(), signer_index)]
+            } else {
+                vec![]
+            }
+        });
+        if cfg!(test) {
+            if let Some((_, signer)) = signer_map.last_key_value() {
+                block_keeper_sets.with_last_entry(|e| {
+                    let block_keeper_sets = e.expect("must be there");
+                    tracing::trace!("Check that zerostate contains block keeper key");
+                    let bk_set = block_keeper_sets.get();
+                    assert_eq!(bk_set.get(signer).map(|data| &data.pubkey), Some(&pubkey));
+                });
+            }
         }
         tracing::trace!("Block keeper key ring: {:?}", block_keeper_sets);
 
         let sent_attestations = repository.load_sent_attestations().expect("Failed to load sent attestations");
         tracing::trace!("Block keeper loaded sent attestations len: {}", sent_attestations.len());
         tracing::trace!("Start node for thread: {thread_id:?}");
-        tracing::trace!("Threads table: {threads_table:?}");
         let mut res = Self {
             shared_services,
             state_sync_service,
@@ -313,8 +328,10 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
             producer_election_rng,
             ack_cache: Default::default(),
             nack_cache: Default::default(),
-            threads_table,
             thread_id,
+            is_spawned_from_node_sync: false,
+            nack_set_cache: Arc::clone(&nack_set_cache),
+            signer_index_map: signer_map,
         };
         // let (last_finalized_block_id, _last_finalized_block_seq_no) = res.repository.select_thread_last_finalized_block(&thread_id).expect("Failed to load last finalized block data");
         // if last_finalized_block_id != BlockIdentifier::default() {
@@ -322,7 +339,9 @@ Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess, TValidationP
         //     // Start it from zero block to be able to process old blocks or attestations it the come
         //     res.set_producer_groups_from_finalized_state(thread_id, BlockSeqNo::default(), finalized_block.data().get_common_section().producer_group.clone());
         // } else {
-            res.update_producer_group(&thread_id, vec![]).expect("Failed to initialize producer group");
+            if update_producer_group {
+                res.update_producer_group(&thread_id, vec![]).expect("Failed to initialize producer group");
+            }
         // }
         res
     }

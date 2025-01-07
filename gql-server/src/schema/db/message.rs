@@ -13,6 +13,7 @@ use crate::helpers::u64_to_string;
 use crate::schema::graphql::blockchain_api::account::BlockchainMasterSeqNoFilter;
 use crate::schema::graphql::blockchain_api::account::BlockchainMessageTypeFilterEnum;
 use crate::schema::graphql::blockchain_api::query::PaginateDirection;
+use crate::schema::graphql::blockchain_api::query::PaginationArgs;
 
 #[derive(Deserialize)]
 struct MessageBody {
@@ -33,10 +34,7 @@ pub struct AccountMessagesQueryArgs {
     counterparties: Option<Vec<String>>,
     msg_type: Option<Vec<BlockchainMessageTypeFilterEnum>>,
     min_value: Option<String>,
-    first: Option<usize>,
-    after: Option<String>,
-    last: Option<usize>,
-    before: Option<String>,
+    pub pagination: PaginationArgs,
 }
 
 impl AccountMessagesQueryArgs {
@@ -47,10 +45,7 @@ impl AccountMessagesQueryArgs {
         counterparties: Option<Vec<String>>,
         msg_type: Option<Vec<BlockchainMessageTypeFilterEnum>>,
         min_value: Option<String>,
-        first: Option<usize>,
-        after: Option<String>,
-        last: Option<usize>,
-        before: Option<String>,
+        pagination: PaginationArgs,
     ) -> Self {
         Self {
             allow_latest_inconsistent_data,
@@ -58,10 +53,7 @@ impl AccountMessagesQueryArgs {
             counterparties,
             msg_type,
             min_value,
-            first,
-            after,
-            last,
-            before,
+            pagination,
         }
     }
 
@@ -86,24 +78,6 @@ impl AccountMessagesQueryArgs {
 
     fn has_int_out(&self) -> bool {
         self.has_msg_type(BlockchainMessageTypeFilterEnum::IntOut)
-    }
-
-    pub fn get_limit(&self) -> usize {
-        1 + if let Some(first) = self.first {
-            first
-        } else if let Some(last) = self.last {
-            last
-        } else {
-            defaults::QUERY_BATCH_SIZE.into()
-        }
-    }
-
-    pub fn get_direction(&self) -> PaginateDirection {
-        if self.last.is_some() || self.before.is_some() {
-            PaginateDirection::Backward
-        } else {
-            PaginateDirection::Forward
-        }
     }
 }
 
@@ -191,12 +165,12 @@ impl Message {
         pool: &SqlitePool,
         an_client: BlockchainClient,
         account: String,
-        args: AccountMessagesQueryArgs,
+        args: &AccountMessagesQueryArgs,
     ) -> anyhow::Result<Vec<Message>> {
         let has_inbound = args.has_ext_in() || args.has_int_in();
         let has_outbound = args.has_ext_out() || args.has_int_out();
-        let limit = args.get_limit();
-        let direction = args.get_direction();
+        let limit = args.pagination.get_limit();
+        let direction = args.pagination.get_direction();
 
         let mut where_ops = vec![];
         let mut cursor_field = "";
@@ -218,28 +192,28 @@ impl Message {
             }
         };
 
-        if let Some(msg_types) = args.msg_type {
+        if let Some(msg_types) = &args.msg_type {
             if !msg_types.is_empty() {
                 let u8ed = msg_types
-                    .into_iter()
-                    .map(|t| (<BlockchainMessageTypeFilterEnum as Into<u8>>::into(t)).to_string())
+                    .iter()
+                    .map(|t| (<BlockchainMessageTypeFilterEnum as Into<u8>>::into(*t)).to_string())
                     .collect::<Vec<String>>();
                 where_ops.push(format!("msg_type IN ({})", u8ed.join(",")));
             }
         }
 
-        if let Some(after) = args.after {
+        if let Some(after) = &args.pagination.after {
             if !after.is_empty() {
                 where_ops.push(format!("{cursor_field} > {:?}", after));
             }
         }
-        if let Some(before) = args.before {
+        if let Some(before) = &args.pagination.before {
             if !before.is_empty() {
                 where_ops.push(format!("{cursor_field} < {:?}", before));
             }
         }
 
-        if let Some(seq_no_range) = args.master_seq_no_range {
+        if let Some(seq_no_range) = &args.master_seq_no_range {
             if let Some(start) = seq_no_range.start {
                 let start = u64_to_string(start as u64);
                 where_ops.push(format!("dst_chain_order >= {start:?}"));
@@ -273,7 +247,6 @@ impl Message {
             Ok(mut value) => {
                 tracing::debug!("OK: {} rows", value.len());
                 value.iter_mut().for_each(|m: &mut Message| {
-                    m.id = format!("message/{}", m.id);
                     m.body = if let Some(boc) = &m.boc {
                         let params =
                             ParamsOfParse { boc: tvm_types::base64_encode(boc).to_string() };

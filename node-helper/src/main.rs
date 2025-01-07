@@ -136,6 +136,14 @@ struct Config {
     /// Number of signatures, required for block acceptance.
     #[arg(long)]
     pub min_signatures_cnt_for_acceptance: Option<usize>,
+
+    /// Number of max tries to download shared state
+    #[arg(long)]
+    pub shared_state_max_download_tries: Option<u8>,
+
+    /// Retry timeout for shared state download
+    #[arg(long)]
+    pub shared_state_retry_download_timeout_millis: Option<u64>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -250,6 +258,19 @@ fn main() -> anyhow::Result<()> {
                 config_cmd.min_signatures_cnt_for_acceptance
             {
                 config.global.min_signatures_cnt_for_acceptance = min_signatures_cnt_for_acceptance;
+            }
+
+            if let Some(shared_state_max_download_tries) =
+                config_cmd.shared_state_max_download_tries
+            {
+                config.network.shared_state_max_download_tries = shared_state_max_download_tries;
+            }
+
+            if let Some(shared_state_retry_download_timeout_millis) =
+                config_cmd.shared_state_retry_download_timeout_millis
+            {
+                config.network.shared_state_retry_download_timeout_millis =
+                    shared_state_retry_download_timeout_millis;
             }
 
             save_config_to_file(&config, &config_cmd.config_file_path)

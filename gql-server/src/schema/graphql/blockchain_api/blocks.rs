@@ -6,8 +6,7 @@ use async_graphql::connection::EdgeNameType;
 use async_graphql::OutputType;
 
 use super::account::BlockchainMasterSeqNoFilter;
-use super::query::PaginateDirection;
-use super::query::QueryArgs;
+use super::query::PaginationArgs;
 use crate::schema::graphql::Block;
 
 pub(crate) type BlockchainBlock = Block;
@@ -17,30 +16,7 @@ pub struct BlockchainBlocksQueryArgs {
     pub block_seq_no_range: Option<BlockchainMasterSeqNoFilter>,
     pub min_tr_count: Option<i32>,
     pub max_tr_count: Option<i32>,
-    pub first: Option<usize>,
-    pub after: Option<String>,
-    pub last: Option<usize>,
-    pub before: Option<String>,
-}
-
-impl QueryArgs for BlockchainBlocksQueryArgs {
-    fn get_limit(&self) -> usize {
-        1 + if let Some(first) = self.first {
-            first
-        } else if let Some(last) = self.last {
-            last
-        } else {
-            crate::defaults::QUERY_BATCH_SIZE as usize
-        }
-    }
-
-    fn get_direction(&self) -> PaginateDirection {
-        if self.last.is_some() || self.before.is_some() {
-            PaginateDirection::Backward
-        } else {
-            PaginateDirection::Forward
-        }
-    }
+    pub pagination: PaginationArgs,
 }
 
 pub(crate) struct BlockchainBlocksEdge;

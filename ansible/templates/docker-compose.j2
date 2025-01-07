@@ -50,8 +50,8 @@ services:
       API_ADDR: 0.0.0.0:8600
       MESSAGE_ROUTER: 0.0.0.0:8700
       GOSSIP_SEEDS: {{ GOSSIP_SEEDS | join(',') }}
-      MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES: 20s
-      NODE_JOINING_TIMEOUT: 10s
+      MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES: 600s
+      NODE_JOINING_TIMEOUT: 60s
       NODE_ID: {{ NODE_ID }}
       NODE_ADVERTISE_ADDR: {{ HOST_PUBLIC_IP }}:{{ BIND_PORT }}
       GOSSIP_ADVERTISE_ADDR: {{ HOST_PUBLIC_IP }}:{{ BIND_GOSSIP_PORT }}
@@ -72,6 +72,7 @@ services:
         --block-keeper-seed-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
         --zerostate-path=/bk-configs/zerostate
         --parallelization-level 20
+        --shared-state-max-download-tries 30
         --static-storages={{ NODE_STORAGE_LIST | join(',') }} &> /dev/null
         && migration-tool -p ./data -n -a --block-manager
         && node -c acki-nacki.conf.yaml >> /logsdir/node.log 2>&1
@@ -89,6 +90,17 @@ services:
       - {{ BK_LOGS_DIR }}:/logsdir
     networks:
       - ackinacki-net
+
+  logrotate{{ NODE_ID }}:
+    image: stakater/logrotate:3.13.0
+    restart: unless-stopped
+    environment:
+      - CRON_SCHEDULE="58 * * * *"
+    volumes:
+      - {{ BK_LOGS_DIR }}:/logsdir
+      - ./logrotate.sh:/logrotate.sh
+    command: [ "/bin/bash", "/logrotate.sh" ]
+    init: true
 
 networks:
   ackinacki-net:

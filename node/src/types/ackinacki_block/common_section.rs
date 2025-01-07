@@ -12,7 +12,7 @@ use serde::Serializer;
 
 use crate::block_keeper_system::BlockKeeperSetChange;
 use crate::bls::envelope::Envelope;
-use crate::bls::BLSSignatureScheme;
+use crate::bls::GoshBLS;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
@@ -36,14 +36,9 @@ impl Debug for Directives {
 }
 
 #[derive(Clone)]
-pub struct CommonSection<TBLSSignatureScheme>
-where
-    TBLSSignatureScheme: BLSSignatureScheme,
-    TBLSSignatureScheme::Signature:
-        Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
-{
+pub struct CommonSection {
     pub directives: Directives,
-    pub block_attestations: Vec<Envelope<TBLSSignatureScheme, AttestationData>>,
+    pub block_attestations: Vec<Envelope<GoshBLS, AttestationData>>,
     pub producer_id: NodeIdentifier,
     pub thread_id: ThreadIdentifier,
     pub threads_table: Option<ThreadsTable>,
@@ -56,17 +51,12 @@ where
     pub refs: Vec<BlockIdentifier>,
     pub block_keeper_set_changes: Vec<BlockKeeperSetChange>,
     pub verify_complexity: SignerIndex,
-    pub acks: Vec<Envelope<TBLSSignatureScheme, AckData>>,
-    pub nacks: Vec<Envelope<TBLSSignatureScheme, NackData>>,
+    pub acks: Vec<Envelope<GoshBLS, AckData>>,
+    pub nacks: Vec<Envelope<GoshBLS, NackData>>,
     pub producer_group: Vec<NodeIdentifier>,
 }
 
-impl<TBLSSignatureScheme> CommonSection<TBLSSignatureScheme>
-where
-    TBLSSignatureScheme: BLSSignatureScheme,
-    TBLSSignatureScheme::Signature:
-        Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
-{
+impl CommonSection {
     pub fn new(
         thread_id: ThreadIdentifier,
         producer_id: NodeIdentifier,
@@ -113,12 +103,12 @@ where
     }
 
     fn wrap_deserialize(data: WrappedCommonSection) -> Self {
-        let block_attestations: Vec<Envelope<TBLSSignatureScheme, AttestationData>> =
+        let block_attestations: Vec<Envelope<GoshBLS, AttestationData>> =
             bincode::deserialize(&data.block_attestations)
                 .expect("Failed to deserialize block attestations");
-        let acks: Vec<Envelope<TBLSSignatureScheme, AckData>> =
+        let acks: Vec<Envelope<GoshBLS, AckData>> =
             bincode::deserialize(&data.acks).expect("Failed to deserialize acks");
-        let nacks: Vec<Envelope<TBLSSignatureScheme, NackData>> =
+        let nacks: Vec<Envelope<GoshBLS, NackData>> =
             bincode::deserialize(&data.nacks).expect("Failed to deserialize nacks");
         Self {
             directives: data.directives,
@@ -151,12 +141,7 @@ struct WrappedCommonSection {
     pub threads_table: Option<ThreadsTable>,
 }
 
-impl<TBLSSignatureScheme> Serialize for CommonSection<TBLSSignatureScheme>
-where
-    TBLSSignatureScheme: BLSSignatureScheme,
-    TBLSSignatureScheme::Signature:
-        Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
-{
+impl Serialize for CommonSection {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -165,12 +150,7 @@ where
     }
 }
 
-impl<'de, TBLSSignatureScheme> Deserialize<'de> for CommonSection<TBLSSignatureScheme>
-where
-    TBLSSignatureScheme: BLSSignatureScheme,
-    TBLSSignatureScheme::Signature:
-        Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
-{
+impl<'de> Deserialize<'de> for CommonSection {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -180,12 +160,7 @@ where
     }
 }
 
-impl<TBLSSignatureScheme> Debug for CommonSection<TBLSSignatureScheme>
-where
-    TBLSSignatureScheme: BLSSignatureScheme,
-    TBLSSignatureScheme::Signature:
-        Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
-{
+impl Debug for CommonSection {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("")
             .field("thread_id", &self.thread_id)

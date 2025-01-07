@@ -14,8 +14,6 @@ use blocks::BlockchainBlock;
 use blocks::BlockchainBlocksConnection;
 use blocks::BlockchainBlocksEdge;
 use blocks::BlockchainBlocksQueryArgs;
-use query::PaginateDirection;
-use query::QueryArgs;
 use sqlx::SqlitePool;
 use transactions::BlockchainMessage;
 use transactions::BlockchainTransaction;
@@ -27,7 +25,11 @@ use super::block::BlockLoader;
 use super::message::MessageLoader;
 use super::transaction::TransactionLoader;
 use crate::schema::db;
+use crate::schema::db::account::BlockchainAccountsQueryArgs;
 use crate::schema::graphql;
+use crate::schema::graphql::blockchain_api::account::BlockchainAccountEdge;
+use crate::schema::graphql::blockchain_api::account::BlockchainAccountsConnection;
+use crate::schema::graphql::blockchain_api::query::PaginationArgs;
 
 pub mod account;
 pub mod blocks;
@@ -44,7 +46,78 @@ impl BlockchainQuery<'_> {
     #[graphql(name = "account")]
     /// Account-related information.
     async fn account(&self, address: String) -> Option<BlockchainAccountQuery> {
-        Some(BlockchainAccountQuery { ctx: self.ctx, address })
+        Some(BlockchainAccountQuery { ctx: self.ctx, address, preloaded: None })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    /// This node could be used for a cursor-based pagination of blocks.
+    async fn accounts(
+        &self,
+        #[graphql(desc = "Filter by code hash")] code_hash: Option<String>,
+
+        #[graphql(desc = "This field is mutually exclusive with 'last'.")] first: Option<i32>,
+
+        after: Option<String>,
+
+        #[graphql(desc = "This field is mutually exclusive with 'first'.")] last: Option<i32>,
+
+        before: Option<String>,
+    ) -> Option<
+        Connection<
+            String,
+            BlockchainAccountQuery,
+            EmptyFields,
+            EmptyFields,
+            BlockchainAccountsConnection,
+            BlockchainAccountEdge,
+        >,
+    > {
+        let result = query(after, before, first, last, |after, before, first, last| async move {
+            let query_args = BlockchainAccountsQueryArgs {
+                code_hash: code_hash.clone(),
+                pagination: PaginationArgs { first, after, last, before },
+            };
+            let mut accounts: Vec<db::Account> = db::account::Account::blockchain_accounts(
+                self.ctx.data::<SqlitePool>().unwrap(),
+                &query_args,
+            )
+            .await?;
+
+            let (has_previous_page, has_next_page) =
+                query_args.pagination.get_bound_markers(accounts.len());
+
+            let mut connection: Connection<
+                String,
+                BlockchainAccountQuery,
+                EmptyFields,
+                EmptyFields,
+                BlockchainAccountsConnection,
+                BlockchainAccountEdge,
+            > = Connection::new(has_previous_page, has_next_page);
+
+            query_args.pagination.shrink_portion(&mut accounts);
+
+            connection.edges.extend(accounts.into_iter().map(|account| {
+                let cursor = account.id.clone();
+                let address = account.id.clone();
+                let account =
+                    BlockchainAccountQuery { address, ctx: self.ctx, preloaded: Some(account) };
+                let edge: Edge<String, BlockchainAccountQuery, EmptyFields, BlockchainAccountEdge> =
+                    Edge::with_additional_fields(cursor, account, EmptyFields);
+                edge
+            }));
+
+            Ok::<_, async_graphql::Error>(connection)
+        })
+        .await;
+        match result {
+            Ok(connection) => Some(connection),
+            Err(e) => {
+                println!("Failed to load accounts: {}", e.message);
+                tracing::error!("Failed to load accounts: {}", e.message);
+                None
+            }
+        }
     }
 
     async fn block(&self, hash: String) -> Option<BlockchainBlock> {
@@ -115,19 +188,16 @@ impl BlockchainQuery<'_> {
                 block_seq_no_range,
                 min_tr_count,
                 max_tr_count,
-                first,
-                after: after.clone(),
-                last,
-                before: before.clone(),
+                pagination: PaginationArgs { first, after, last, before },
             };
-            let mut blocks: Vec<db::Block> = db::block::Block::blockchain_blocks(
-                self.ctx.data::<SqlitePool>().unwrap(),
-                args.clone(),
-            )
-            .await?;
+            let mut blocks: Vec<db::Block> =
+                db::block::Block::blockchain_blocks(self.ctx.data::<SqlitePool>().unwrap(), &args)
+                    .await?;
 
-            let (has_previous_page, has_next_page) =
-                calc_prev_next_markers(after, before, first, last, blocks.len());
+            let (has_previous_page, has_next_page) = (
+                args.pagination.has_previous_page(blocks.len()),
+                args.pagination.has_next_page(blocks.len()),
+            );
             tracing::debug!("has_previous_page={:?}, after={:?}", has_previous_page, has_next_page);
 
             let mut connection: Connection<
@@ -139,19 +209,10 @@ impl BlockchainQuery<'_> {
                 BlockchainBlocksEdge,
             > = Connection::new(has_previous_page, has_next_page);
 
-            if blocks.len() >= args.get_limit() {
-                match args.get_direction() {
-                    PaginateDirection::Forward => blocks.truncate(blocks.len() - 1),
-                    PaginateDirection::Backward => {
-                        blocks.drain(0..1);
-                    }
-                }
-            }
+            args.pagination.shrink_portion(&mut blocks);
 
             connection.edges.extend(blocks.into_iter().map(|block| {
-                let mut block: BlockchainBlock = block.into();
-                block.id = format!("block/{}", block.id);
-                // eprintln!("{block:?}");
+                let block: BlockchainBlock = block.into();
                 let cursor = block.chain_order.clone().unwrap();
                 let edge: Edge<String, graphql::block::Block, EmptyFields, BlockchainBlocksEdge> =
                     Edge::with_additional_fields(cursor, block, EmptyFields);
@@ -280,20 +341,19 @@ impl BlockchainQuery<'_> {
                     min_balance_delta,
                     max_balance_delta,
                     code_hash,
-                    first,
-                    after: after.clone(),
-                    last,
-                    before: before.clone(),
+                    pagination: PaginationArgs { first, after, last, before },
                 };
                 let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
                 let mut transactions = db::transaction::Transaction::blockchain_transactions(
                     self.ctx.data::<SqlitePool>().unwrap(),
-                    args.clone(),
+                    &args,
                 )
                 .await?;
 
-                let (has_previous_page, has_next_page) =
-                    calc_prev_next_markers(after, before, first, last, transactions.len());
+                let (has_previous_page, has_next_page) = (
+                    args.pagination.has_previous_page(transactions.len()),
+                    args.pagination.has_next_page(transactions.len()),
+                );
                 tracing::debug!(
                     "has_previous_page={:?}, after={:?}",
                     has_previous_page,
@@ -309,14 +369,7 @@ impl BlockchainQuery<'_> {
                     BlockchainTransactionsEdge,
                 > = Connection::new(has_previous_page, has_next_page);
 
-                if transactions.len() >= args.get_limit() {
-                    match args.get_direction() {
-                        PaginateDirection::Forward => transactions.truncate(transactions.len() - 1),
-                        PaginateDirection::Backward => {
-                            transactions.drain(0..1);
-                        }
-                    }
-                }
+                args.pagination.shrink_portion(&mut transactions);
 
                 let selection_set =
                     self.ctx.look_ahead().field("transactions").field("edges").field("node");
@@ -357,18 +410,4 @@ impl BlockchainQuery<'_> {
         .await
         .ok()
     }
-}
-
-fn calc_prev_next_markers(
-    after: Option<String>,
-    before: Option<String>,
-    first: Option<usize>,
-    last: Option<usize>,
-    num_nodes: usize,
-) -> (bool, bool) {
-    let has_prev_page =
-        if let Some(last) = last { num_nodes > last || after.is_some() } else { false };
-    let has_next_page =
-        if let Some(first) = first { num_nodes > first || before.is_some() } else { false };
-    (has_prev_page, has_next_page)
 }
