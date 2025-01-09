@@ -11,6 +11,9 @@ use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use http_server::ExtMsgFeedback;
+use http_server::FeedbackError;
+use http_server::FeedbackErrorCode;
 use tracing::instrument;
 use tracing::trace_span;
 use tvm_block::Account;
@@ -87,6 +90,7 @@ use crate::types::BlockEndLT;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::DAppIdentifier;
+use crate::types::ThreadIdentifier;
 
 impl BlockBuilder {
     /// Initialize BlockBuilder
@@ -627,7 +631,7 @@ impl BlockBuilder {
         mut epoch_block_keeper_data: Vec<BlockKeeperData>,
         check_messages_map: Option<HashMap<UInt256, u64>>,
         white_list_of_slashing_messages_hashes: HashSet<UInt256>,
-    ) -> anyhow::Result<(PreparedBlock, usize)> {
+    ) -> anyhow::Result<(PreparedBlock, usize, Vec<ExtMsgFeedback>)> {
         active_threads.clear();
         let mut processed_ext_messages_cnt = 0;
         tracing::info!(target: "builder", "Start build of block: {}", self.block_info.seq_no());
@@ -903,105 +907,132 @@ impl BlockBuilder {
                 }
             }
 
-                #[cfg(feature = "timing")]
-                tracing::info!(target: "builder", "Internal messages execution time {} ms", start.elapsed().as_millis());
-                Ok::<_, anyhow::Error>(())
+            #[cfg(feature = "timing")]
+            tracing::info!(target: "builder", "Internal messages execution time {} ms", start.elapsed().as_millis());
+            Ok::<_, anyhow::Error>(())
         })?;
 
+        let mut ext_message_feedbacks: Vec<ExtMsgFeedback> = vec![];
         trace_span!("external messages execution").in_scope(|| {
+            #[cfg(feature = "timing")]
+            let start = std::time::Instant::now();
 
-        #[cfg(feature = "timing")]
-        let start = std::time::Instant::now();
+            // Third step: execute external messages if block is not full
 
-        // Third step: execute external messages if block is not full
-
-        if !block_full {
-            let mut active_destinations = HashSet::new();
-            let mut active_ext_threads = VecDeque::new();
-            loop {
-                // If active pool is not full add threads
-                if active_ext_threads.len() < self.parallelization_level {
-                    while !ext_messages_queue.is_empty() {
-                        if active_ext_threads.len() == self.parallelization_level {
-                            break;
-                        }
-                        if let Some(acc_id) = ext_messages_queue[0].int_dst_account_id() {
-                            if !active_destinations.contains(&acc_id) {
-                                if self
-                                    .initial_optimistic_state
-                                    .does_account_belong_to_the_state(&acc_id)?
-                                {
-                                    // Execute ext message if its destination matches current thread
-                                    let msg = ext_messages_queue.pop_front().unwrap();
-                                    tracing::trace!(target: "builder", "Parallel ext message: {:?} to {:?}", msg.hash().unwrap(), acc_id.to_hex_string());
-                                    let thread = self.execute(
-                                        msg,
-                                        blockchain_config,
-                                        &acc_id,
-                                        block_unixtime,
-                                        block_lt,
-                                        &check_messages_map,
-                                    )?;
-                                    active_ext_threads.push_back(thread);
-                                    active_destinations.insert(acc_id);
-                                } else {
-                                    // If message destination doesn't belong to the current thread, remove it from the queue
-                                    tracing::warn!(
-                                        target: "builder",
-                                        "Found external msg with internal destination that doesn't match current thread: {:?}",
-                                        ext_messages_queue.pop_front().unwrap()
-                                    );
-                                    // Move ext messages cursor
-                                    processed_ext_messages_cnt += 1;
-                                }
-                            } else {
+            if !block_full {
+                let mut active_destinations = HashSet::new();
+                let mut active_ext_threads = VecDeque::new();
+                loop {
+                    // If active pool is not full add threads
+                    if active_ext_threads.len() < self.parallelization_level {
+                        while !ext_messages_queue.is_empty() {
+                            if active_ext_threads.len() == self.parallelization_level {
                                 break;
                             }
-                        } else {
-                            tracing::warn!(
-                                target: "builder",
-                                "Found external msg with not valid internal destination: {:?}",
-                                ext_messages_queue.pop_front().unwrap()
-                            );
-                            // Move ext messages cursor
-                            processed_ext_messages_cnt += 1;
+                            if let Some(acc_id) = ext_messages_queue[0].int_dst_account_id() {
+                                if !active_destinations.contains(&acc_id) {
+                                    if self
+                                        .initial_optimistic_state
+                                        .does_account_belong_to_the_state(&acc_id)?
+                                    {
+                                        // Execute ext message if its destination matches current thread
+                                        let msg = ext_messages_queue.pop_front().unwrap();
+                                        tracing::trace!(target: "builder", "Parallel ext message: {:?} to {:?}", msg.hash().unwrap(), acc_id.to_hex_string());
+                                        let thread = self.execute(
+                                            msg,
+                                            blockchain_config,
+                                            &acc_id,
+                                            block_unixtime,
+                                            block_lt,
+                                            &check_messages_map,
+                                        )?;
+                                        active_ext_threads.push_back(thread);
+                                        active_destinations.insert(acc_id);
+                                    } else {
+                                        // If message destination doesn't belong to the current thread, remove it from the queue
+                                        let skipped_msg = ext_messages_queue.pop_front().unwrap();
+                                        tracing::warn!(
+                                            target: "builder",
+                                            "Found external msg with internal destination that doesn't match current thread: {:?}",
+                                            skipped_msg
+                                        );
+                                        // Move ext messages cursor
+                                        processed_ext_messages_cnt += 1;
+                                        ext_message_feedbacks.push(create_feedback(
+                                            skipped_msg,
+                                            None,
+                                            self.initial_optimistic_state.get_thread_for_account(&acc_id).ok(),
+                                            Some(FeedbackError {
+                                                code: FeedbackErrorCode::InternalError,
+                                                message: Some("Internal processing error: thread mismatch".to_string()),
+                                            }),
+                                        )?);
+                                    }
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                let skipped_msg = ext_messages_queue.pop_front().unwrap();
+                                tracing::warn!(
+                                    target: "builder",
+                                    "Found external msg with not valid internal destination: {:?}",
+                                    skipped_msg
+                                );
+                                // Move ext messages cursor
+                                processed_ext_messages_cnt += 1;
+                                ext_message_feedbacks.push(create_feedback(
+                                    skipped_msg,
+                                    None,
+                                    None,
+                                    Some(FeedbackError {
+                                        code: FeedbackErrorCode::InternalError,
+                                        message: Some("Invalid destination".to_string()),
+                                    }),
+                                )?);
+                            }
                         }
                     }
-                }
 
-                while !active_ext_threads.is_empty() {
-                    if active_ext_threads.front().unwrap().thread.is_finished() {
-                        let thread = active_ext_threads.pop_front().unwrap();
-                        let thread_result = thread.thread.join().map_err(|_| {
-                            anyhow::format_err!("Failed to execute transaction in parallel")
-                        })??;
-                        tracing::trace!(target: "builder", "Thread with dapp_id and minted shell {:?} {:?} {:?}", thread_result.dapp_id.clone(), thread_result.minted_shell.clone(), thread_result.transaction.clone());
-                        let acc_id = thread_result.account_id.clone();
-                        tracing::trace!(target: "builder", "parallel ext message finished dest: {}", acc_id.to_hex_string());
-                        self.after_transaction(thread_result)?;
-                        active_destinations.remove(&acc_id);
-                        processed_ext_messages_cnt += 1;
-                    } else {
+                    while !active_ext_threads.is_empty() {
+                        if active_ext_threads.front().unwrap().thread.is_finished() {
+                            let thread = active_ext_threads.pop_front().unwrap();
+                            let thread_result = thread.thread.join().map_err(|_| {
+                                anyhow::format_err!("Failed to execute transaction in parallel")
+                            })??;
+                            tracing::trace!(target: "builder", "Thread with dapp_id and minted shell {:?} {:?} {:?}", thread_result.dapp_id.clone(), thread_result.minted_shell.clone(), thread_result.transaction.clone());
+                            let acc_id = thread_result.account_id.clone();
+                            tracing::trace!(target: "builder", "parallel ext message finished dest: {}", acc_id.to_hex_string());
+                            let feedback = create_feedback(
+                                thread.message,
+                                Some(thread_result.transaction.clone()),
+                                self.initial_optimistic_state.get_thread_for_account(&acc_id).ok(),
+                                None,
+                            )?;
+                            self.after_transaction(thread_result)?;
+                            active_destinations.remove(&acc_id);
+                            processed_ext_messages_cnt += 1;
+                            ext_message_feedbacks.push(feedback);
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if self.is_limits_reached() {
+                        block_full = true;
+                        tracing::debug!(target: "builder", "Ext messages stop because block is full");
+                        break;
+                    }
+                    if ext_messages_queue.is_empty() && active_ext_threads.is_empty() {
+                        tracing::debug!(target: "builder", "Ext messages stop");
                         break;
                     }
                 }
-
-                if self.is_limits_reached() {
-                    block_full = true;
-                    tracing::debug!(target: "builder", "Ext messages stop because block is full");
-                    break;
-                }
-                if ext_messages_queue.is_empty() && active_ext_threads.is_empty() {
-                    tracing::debug!(target: "builder", "Ext messages stop");
-                    break;
-                }
             }
-        }
-        #[cfg(feature = "timing")]
-        tracing::info!(target: "builder", "External messages execution time {} ms", start.elapsed().as_millis());
+            #[cfg(feature = "timing")]
+            tracing::info!(target: "builder", "External messages execution time {} ms", start.elapsed().as_millis());
 
             tracing::Span::current().record("messages.count", processed_ext_messages_cnt as i64);
-Ok::<_, anyhow::Error>(())
+            Ok::<_, anyhow::Error>(())
         })?;
 
         #[cfg(feature = "timing")]
@@ -1209,6 +1240,7 @@ Ok::<_, anyhow::Error>(())
                 block_keeper_set_changes,
             },
             processed_ext_messages_cnt,
+            ext_message_feedbacks,
         ))
     }
 
@@ -1479,4 +1511,58 @@ Ok::<_, anyhow::Error>(())
         );
         self.new_messages.insert(n_index, (message, tr_cell));
     }
+}
+
+fn create_feedback(
+    message: Message,
+    transaction: Option<Transaction>,
+    thread_id: Option<ThreadIdentifier>,
+    error: Option<FeedbackError>,
+) -> anyhow::Result<ExtMsgFeedback> {
+    let hash = message.hash().map_err(|e| anyhow::format_err!("{e}"))?;
+    let message_hash = hash.to_hex_string();
+
+    let mut feedback = ExtMsgFeedback {
+        message_hash,
+        thread_id: thread_id.map(|thread_id| thread_id.into()),
+        error,
+        ..Default::default()
+    };
+
+    if let Some(t) = transaction {
+        feedback.tx_hash = Some(t.hash().map_err(|e| anyhow::format_err!("{e}"))?.to_hex_string());
+
+        let tr_desc = t.read_description().map_err(|e| anyhow::format_err!("{e}"))?;
+        feedback.aborted = tr_desc.is_aborted();
+
+        if let Some(ph) = tr_desc.compute_phase_ref() {
+            match ph {
+                TrComputePhase::Vm(compute) => {
+                    feedback.tvm_exit_code = compute.exit_code;
+                    if compute.exit_code != 0 {
+                        feedback.error = Some(FeedbackError {
+                            code: FeedbackErrorCode::TvmError,
+                            message: Some("Failed to execute the message. Error occurred during the compute phase.".to_owned()),
+                        });
+                    }
+                }
+                TrComputePhase::Skipped(skipped) => {
+                    let reason = match skipped.reason {
+                        ComputeSkipReason::NoState => "Account doesn't have state",
+                        ComputeSkipReason::BadState => "Acoount has invalid state",
+                        ComputeSkipReason::NoGas => "Not enough funds",
+                        ComputeSkipReason::Suspended => "Acount is suspended",
+                    };
+                    feedback.error = Some(FeedbackError {
+                        code: FeedbackErrorCode::TvmError,
+                        message: Some(reason.to_string()),
+                    });
+                    // Unused exit code to indicate a skipped compute phase
+                    feedback.tvm_exit_code = 99;
+                }
+            }
+        }
+    }
+
+    Ok(feedback)
 }

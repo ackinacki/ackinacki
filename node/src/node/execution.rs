@@ -109,7 +109,6 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             }?;
             match exec_result {
                 ExecutionResult::SynchronizationRequired => {
-                    self.validation_process.clear_queue()?;
                     continue;
                 }
                 ExecutionResult::Disconnected => {
@@ -198,7 +197,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             }
             if !self.is_this_node_a_producer_for_new_block(&thread_id) {
                 if  clear_ext_messages_timestamp.elapsed() > Duration::from_secs(EXT_MESSAGE_STORE_TIMEOUT_SECONDS as u64) {
-                    self.repository.clear_ext_messages_queue_by_time()?;
+                    self.repository.clear_ext_messages_queue_by_time(&self.thread_id)?;
                     clear_ext_messages_timestamp = std::time::Instant::now();
                 }
                 self.send_attestations()?;
@@ -254,7 +253,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                     if !self.blocks_for_resync_broadcasting.is_empty() {
                         let block = self.blocks_for_resync_broadcasting.pop_front().unwrap();
                         tracing::trace!("send block from blocks_for_resync_broadcasting({})", self.blocks_for_resync_broadcasting.len());
-                        self.broadcast_candidate_block(block)?;
+                        self.broadcast_candidate_block_that_was_possibly_produced_by_another_node(block)?;
                     }
                     if recv_timeout.is_zero() && !in_flight_productions.is_empty() {
                         tracing::info!("Cut off block producer");
@@ -292,7 +291,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                     if self.is_this_node_a_producer_for_new_block(&thread_id) && self.production_timeout_multiplier == 0 {
                         if let Some(block) = self.find_thread_earliest_non_finalized_block(&thread_id)? {
                             tracing::trace!("Broadcast first non finalized block: {block}");
-                            self.broadcast_candidate_block(block)?;
+                            self.broadcast_candidate_block_that_was_possibly_produced_by_another_node(block)?;
                         }
                     }
                 }
@@ -320,8 +319,14 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                             }
                         }
                     }
-                    NetworkMessage::Candidate(mut candidate_block) => {
+                    NetworkMessage::ResentCandidate((ref candidate_block, _)) | NetworkMessage::Candidate(ref candidate_block) => {
+                        let mut candidate_block = candidate_block.clone();
                         tracing::info!("Incoming candidate block");
+                        let extra_attestation_destination = if let NetworkMessage::ResentCandidate((_, node_id))= msg {
+                            Some(node_id)
+                        } else {
+                            None
+                        };
                         last_block_received = std::time::Instant::now();
                         let mut loaded_from_unprocessed = false;
                         loop {
@@ -331,6 +336,10 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                             let (block_id, block_seq_no) = match exec_res {
                                 BlockStatus::Ok => {
                                     sync_delay = None;
+                                    if let Some(new_bp_id) = extra_attestation_destination {
+                                        let block = self.repository.get_block(&candidate_block.data().identifier())?.expect("Block was just processed, it should not fail");
+                                        self.generate_and_send_block_attestation(&block, new_bp_id)?;
+                                    }
                                     (candidate_block.data().identifier(),candidate_block.data().seq_no())
                                 }
                                 BlockStatus::BlockCantBeApplied => {
@@ -357,6 +366,16 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                                             }
                                         }
                                     }
+                                    if !self.is_candidate_block_older_than_the_last_finalized_block(&candidate_block)? {
+                                        tracing::trace!("block skipped extra_attestation_destination: {:?}", extra_attestation_destination);
+                                        if let Some(new_bp_id) = extra_attestation_destination {
+                                            if let Some(block) = self.repository.get_block(&candidate_block.data().identifier())? {
+                                                self.generate_and_send_block_attestation(&block, new_bp_id)?;
+                                            } else {
+                                                tracing::trace!("Failed to load block to generate attestation: {:?}", candidate_block.data().identifier());
+                                            }
+                                        }
+                                    }
                                     break;
                                 }
                                 BlockStatus::BadBlock => {
@@ -374,6 +393,11 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                                     break;
                                 }
                                 BlockStatus::SynchronizationRequired => {
+                                    if let Some(new_bp_id) = extra_attestation_destination {
+                                        if let Some(block) = self.repository.get_block(&candidate_block.data().identifier())? {
+                                            self.generate_and_send_block_attestation(&block, new_bp_id)?;
+                                        }
+                                    }
                                     return Ok(ExecutionResult::SynchronizationRequired);
                                 }
                             };
@@ -394,12 +418,12 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                         tracing::info!("Nack block: {:?}, signatures: {:?}", nack.data(), nack.clone_signature_occurrences());
                         self.on_nack(&nack)?;
                     }
-                    NetworkMessage::ExternalMessage(msg) => {
+                    NetworkMessage::ExternalMessage((msg, _)) => {
                         let mut ext_messages = vec![msg];
 
                         loop {
                             match self.rx.try_recv() {
-                                Ok(NetworkMessage::ExternalMessage(msg)) => {
+                                Ok(NetworkMessage::ExternalMessage((msg, _))) => {
                                     ext_messages.push(msg);
                                 },
                                 Ok(other) => {
@@ -414,7 +438,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
 
                         tracing::info!("Received external messages: {}", ext_messages.len());
                         // TODO: here we get incoming ext_messages one by one and in case of big amount of messages we can spend a lot of time processing them one by one
-                        self.repository.add_external_message(ext_messages)?;
+                        self.repository.add_external_message(ext_messages, &self.thread_id)?;
                     }
                     NetworkMessage::BlockAttestation((attestation, _)) => {
                         tracing::info!("Received block attestation {attestation:?}");
@@ -519,13 +543,14 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                 self.find_thread_earliest_non_finalized_block(&thread)?
             {
                 let block_seq_no = candidate_block.data().seq_no();
-                tracing::trace!("try_finalize_blocks block_seq_no={block_seq_no:?}");
+                tracing::trace!("try_finalize_blocks check block_seq_no={block_seq_no:?} block_id={:?}", candidate_block.data().identifier());
                 let mut min_seq_no_to_finalize = block_seq_no;
                 // Note: Critical! This is no longer valid.
                 for _ in 0..self.config.global.require_minimum_blocks_to_finalize {
                     min_seq_no_to_finalize = next_seq_no(min_seq_no_to_finalize);
                 }
                 if min_seq_no_to_finalize > last_main_candidate_seq_no {
+                    tracing::trace!("try_finalize_blocks block seq is too low for finalization min_seq_no_to_finalize({min_seq_no_to_finalize:?}) > last_main_candidate_seq_no({last_main_candidate_seq_no:?})");
                     break;
                 }
                 if self.config.global.require_minimum_time_milliseconds_to_finalize > 0 {
@@ -540,9 +565,11 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                     if block_ref_data_exists {
                         self.on_block_finalized(&candidate_block, self.block_keeper_sets.clone())?;
                     } else {
+                        tracing::trace!("try_finalize_blocks failed to load cross thread ref data for block");
                         break;
                     }
                 } else {
+                    tracing::trace!("try_finalize_blocks block is not marked as processed");
                     break;
                 }
             }

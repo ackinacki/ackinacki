@@ -48,9 +48,9 @@ contract BLSKeyIndex is Modifiers {
         _ready = true;
     }
 
-    function isBLSKeyAcceptContinue(uint64 seqNoStartOld) public senderIs(_root) accept {
+    function isBLSKeyAcceptContinue(uint64 seqNoStartOld, mapping(uint8 => string) ProxyList) public senderIs(_root) accept {
         getMoney();
-        BlockKeeperContractRoot(_root).isBLSAcceptedContinue{value: 0.1 vmshell}(_wallet_pubkey, _bls, _stake, _ready, seqNoStartOld, _signerIndex);
+        BlockKeeperContractRoot(_root).isBLSAcceptedContinue{value: 0.1 vmshell}(_wallet_pubkey, _bls, _stake, _ready, seqNoStartOld, _signerIndex, ProxyList);
         _ready = true;
     }
 

@@ -20,7 +20,6 @@ use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 
-pub mod block_markers;
 mod cross_thread_ref_data;
 pub mod cross_thread_ref_repository;
 pub mod optimistic_shard_state;
@@ -32,6 +31,7 @@ pub use cross_thread_ref_repository::CrossThreadRefDataRead;
 pub use cross_thread_ref_repository::CrossThreadRefDataRepository;
 use tvm_types::UInt256;
 
+use crate::node::block_state::repository::BlockState;
 use crate::repository::repository_impl::RepositoryMetadata;
 use crate::utilities::FixedSizeHashSet;
 
@@ -123,12 +123,6 @@ pub trait Repository {
         block_id: &BlockIdentifier,
     ) -> anyhow::Result<Option<bool>>;
 
-    fn mark_block_as_suspicious(
-        &mut self,
-        block_id: &BlockIdentifier,
-        result: bool,
-    ) -> anyhow::Result<()>;
-
     fn is_block_suspicious(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>>;
 
     fn mark_block_as_finalized(
@@ -136,6 +130,7 @@ pub trait Repository {
         block: &<Self as Repository>::CandidateBlock,
         block_keeper_sets: BlockKeeperRing,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
+        block_state: BlockState,
     ) -> anyhow::Result<()>;
 
     fn is_block_finalized(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>>;
@@ -170,9 +165,17 @@ pub trait Repository {
         thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<Vec<(BlockIdentifier, BlockSeqNo)>>;
 
-    fn delete_external_messages(&self, count: usize) -> anyhow::Result<()>;
+    fn delete_external_messages(
+        &self,
+        count: usize,
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<()>;
 
-    fn add_external_message<T>(&mut self, messages: Vec<T>) -> anyhow::Result<()>
+    fn add_external_message<T>(
+        &mut self,
+        messages: Vec<T>,
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<()>
     where
         T: Into<<Self::OptimisticState as OptimisticState>::Message>;
 
@@ -224,7 +227,7 @@ pub trait Repository {
         thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<BlockIdentifier>;
 
-    fn clear_ext_messages_queue_by_time(&self) -> anyhow::Result<()>;
+    fn clear_ext_messages_queue_by_time(&self, thread_id: &ThreadIdentifier) -> anyhow::Result<()>;
 
     fn dump_sent_attestations(
         &self,

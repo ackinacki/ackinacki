@@ -50,10 +50,21 @@ pub struct CommonSection {
     /// - (?)
     pub refs: Vec<BlockIdentifier>,
     pub block_keeper_set_changes: Vec<BlockKeeperSetChange>,
+    // Dynamic parameter: an expected number of Acki-Nacki for this block
     pub verify_complexity: SignerIndex,
     pub acks: Vec<Envelope<GoshBLS, AckData>>,
     pub nacks: Vec<Envelope<GoshBLS, NackData>>,
+    // TODO: (andrew-k) check producer_group field neccessity
     pub producer_group: Vec<NodeIdentifier>,
+    // This parameter tell us what was the number of blocks expected
+    // to gather minimum number of attestations for the block to be
+    // finalized. The same parameter was used to calculate Acki-Nacki
+    // value.
+    // TODO:
+    // pub network_dynamic_parameter_beta: u8,
+
+    // The expected number of Acki-Nacki per block
+    // pub network_dynamic_parameter_v: Option<usize>,
 }
 
 impl CommonSection {

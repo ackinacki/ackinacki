@@ -199,7 +199,6 @@ for Node<
         NackData,
         AttestationData,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-        NodeIdentifier,
     >;
     type BlockAttestation = Envelope<GoshBLS, AttestationData>;
 }

@@ -1,7 +1,6 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -9,10 +8,7 @@ use message_router::bp_resolver::BPResolver;
 use network::config::NetworkConfig;
 use parking_lot::Mutex;
 
-use crate::node::NodeIdentifier;
 use crate::repository::repository_impl::RepositoryImpl;
-use crate::repository::Repository;
-use crate::types::ThreadIdentifier;
 
 pub struct BPResolverImpl {
     network: NetworkConfig,
@@ -25,18 +21,8 @@ impl BPResolver for BPResolverImpl {
         let _alive_nodes =
             futures::executor::block_on(fut_nodes).expect("Failed to update nodes addresses");
         let repository = self.repository.lock();
-        let metadatas = repository.get_all_metadata();
+        let bp_id_for_thread_map = repository.get_nodes_by_threads();
         drop(repository);
-        let metadatas_guarded = metadatas.lock();
-        let bp_id_for_thread_map: HashMap<ThreadIdentifier, Option<NodeIdentifier>> =
-            metadatas_guarded
-                .iter()
-                .map(|(k, v)| {
-                    let thread_metadata = v.lock();
-                    (*k, thread_metadata.last_finalized_producer_id)
-                })
-                .collect();
-        drop(metadatas_guarded);
         let mut nodes_vec = vec![];
         // TODO: this list of threads can change in runtime need to take smth like shared services
         for (thread_id, bp_id) in bp_id_for_thread_map.into_iter() {

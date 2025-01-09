@@ -97,6 +97,8 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             let candidate_block = self.repository.get_block_from_repo_or_archive(&block_id)?;
             if self.is_this_node_in_block_keeper_set(&block_seq_no, &thread_id) {
                 if result {
+                    // Note: mark block as verified to be sure it's cross thread refs were processed
+                    self.repository.mark_block_as_verified(&block_id)?;
                     // If validation succeeded send Ack to BP and save it to cache
                     if let Some(block_ack) = self.generate_ack(block_id.clone(), block_seq_no)? {
                         let mut received_acks_in = self.received_acks.lock();
@@ -310,7 +312,10 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             return Ok(());
         }
 
-        self.repository.mark_block_as_suspicious(block_id, true)?;
+        self.blocks_states
+            .get(block_id.clone())?
+            .lock()
+            .add_suspicious()?;
 
          let Ok(is_valid_nack) = self.is_valid_nack(nack, thread_id, block.clone())
          else {
@@ -329,7 +334,10 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             }
         } else {
             tracing::trace!("invalid nack {:?}", nack);
-            self.repository.mark_block_as_suspicious(block_id, false)?;
+            self.blocks_states
+                .get(block_id.clone())?
+                .lock()
+                .resolve_suspicious()?;
             let block_seq_no = block.data().parent_seq_no();
             let bk_set = self.block_keeper_sets.get_block_keeper_data(&block_seq_no);
             if let Some(signer_index) = self.get_node_signer_index_for_block_seq_no(&block_seq_no) {
@@ -363,7 +371,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                 self.is_valid_bad_block_nack(block, envelope, thread_id)
             },
             NackReason::WrongNack{nack_data_envelope: _} => {
-                tracing::trace!("WrongNack nack"); 
+                tracing::trace!("WrongNack nack");
                 Ok(false)
             }
         }
@@ -372,7 +380,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
 
     // TODO: rework to check that blocks have the same parent id, were produced by the same node and have different hashes
     fn is_valid_same_height_nack(&mut self, block: Envelope<GoshBLS, AckiNackiBlock>, nack_first_envelope: Envelope<GoshBLS, AckiNackiBlock>, nack_second_envelope: Envelope<GoshBLS, AckiNackiBlock>, thread_id: &ThreadIdentifier) -> anyhow::Result<bool> {
-        tracing::trace!("SameHeightBlock nack");   
+        tracing::trace!("SameHeightBlock nack");
         let nack_target_node_id = nack_first_envelope.data().get_common_section().producer_id;
         let bk_set = self.block_keeper_sets.get_block_keeper_data(&block.data().parent_seq_no());
         let data = match bk_set.get(&(nack_target_node_id as u16)) {
@@ -425,10 +433,12 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
 
 
     fn is_valid_bad_block_nack(&mut self, block: Envelope<GoshBLS, AckiNackiBlock>, nack_envelope: Envelope<GoshBLS, AckiNackiBlock>, thread_id: &ThreadIdentifier) -> anyhow::Result<bool> {
-        tracing::trace!("BadBlock nack");   
+        tracing::trace!("BadBlock nack");
         let nack_target_node_id = nack_envelope.data().get_common_section().producer_id;
         let block_nack = block.data().get_common_section().nacks.clone();
         let block_id = block.data().identifier();
+        // TODO: check if black was already validated.
+        //if self.blocks_state.get(block_id)?.
         let bk_set = self.block_keeper_sets.get_block_keeper_data(&block.data().parent_seq_no());
         let data = match bk_set.get(&(nack_target_node_id as u16)) {
             Some(keeper_data) => keeper_data,
@@ -467,7 +477,8 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             (self.config.global.finalization_delay_to_stop * 2) as usize,
             self.shared_services.clone(),
             self.block_keeper_sets.clone(),
-            Arc::clone(&self.nack_set_cache)
+            Arc::clone(&self.nack_set_cache),
+            self.blocks_states.clone(),
         );
         match repository
             .get_optimistic_state(&block_id, self.block_keeper_sets.clone(), Arc::clone(&self.nack_set_cache))

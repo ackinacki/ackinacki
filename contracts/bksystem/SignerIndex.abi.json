@@ -25,7 +25,8 @@
 		{
 			"name": "isSignerIndexAcceptContinue",
 			"inputs": [
-				{"name":"seqNoStartOld","type":"uint64"}
+				{"name":"seqNoStartOld","type":"uint64"},
+				{"name":"ProxyList","type":"map(uint8,string)"}
 			],
 			"outputs": [
 			]

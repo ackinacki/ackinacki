@@ -17,9 +17,9 @@ members = [
     "transport-layer",
 ]
 
-package.version = "0.3.2"
+package.version = "0.3.3"
 package.edition = "2021"
-package.rust-version = "1.80.0"
+package.rust-version = "1.83.0"
 package.license = "Acki Nacki Node License"
 package.license-file = "LICENSE.md"
 
@@ -37,12 +37,12 @@ opentelemetry = "0.27"
 opentelemetry-otlp = { version = "0.27", features = ["metrics"] }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
 parking_lot = '0.12'
-parse_duration = "2.1.1"
 rcgen = "0.13"
 rusqlite = { version = "0", features = ["bundled"] }
-salvo = { version = "0.71", features = ["affix-state", "anyhow", "catch-panic", "logging", "quinn", "rustls", "serve-static", "test"] }
+salvo = { version = "0.75", features = ["affix-state", "anyhow", "catch-panic", "logging", "quinn", "rustls", "serve-static", "test"] }
 serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.114"
+serde_with = "3.8.1"
 tokio = { version = "1.36.0", features = ["full"] }
 tracing = "0.1.40"
 tracing-opentelemetry = "0.28"

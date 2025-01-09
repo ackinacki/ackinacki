@@ -46,10 +46,6 @@ impl<TBlockProducer: BlockProducer> BlockKeeperProcess for StubValidationProcess
         todo!()
     }
 
-    fn clear_queue(&mut self) -> anyhow::Result<()> {
-        todo!()
-    }
-
     fn get_verification_results(&self) -> anyhow::Result<Vec<(BlockIdentifier, BlockSeqNo, bool)>> {
         todo!()
     }

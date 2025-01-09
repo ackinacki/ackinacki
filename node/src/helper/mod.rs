@@ -27,7 +27,7 @@ pub fn init_tracing() {
             .with_target("block_manager", LevelFilter::TRACE)
             .with_target("node", LevelFilter::TRACE)
             .with_target("executor", tvm_trace_level)
-            .with_target("network", LevelFilter::TRACE)
+            .with_target("network", LevelFilter::INFO)
             .with_target("tvm", tvm_trace_level)
             .with_target("builder", builder_trace_level)
             .with_target("database", LevelFilter::INFO)

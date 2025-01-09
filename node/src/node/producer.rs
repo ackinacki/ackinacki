@@ -110,6 +110,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                 self.production_process.start_thread_production(
                     &thread_id,
                     &block_id_to_continue,
+                    self.feedback_sender.clone(),
                     Arc::clone(&self.received_acks),
                     Arc::clone(&self.received_nacks),
                     self.block_keeper_sets.clone(),
@@ -280,7 +281,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                     self.production_timeout_multiplier = self.config.global.slow_down_multiplier;
                     self.production_process.set_timeout(self.get_production_timeout());
                 }
-                self.repository.delete_external_messages(external_messages_to_erase_count)?;
+                self.repository.delete_external_messages(external_messages_to_erase_count, &self.thread_id)?;
                 self.clear_block_gap(&thread_id);
                 if !self.is_this_node_in_block_keeper_set(&envelope.data().seq_no(), &thread_id) {
                     self.production_process.stop_thread_production(&thread_id)?;

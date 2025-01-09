@@ -47,6 +47,18 @@ impl ThreadIdentifier {
     }
 }
 
+impl From<[u8; 34]> for ThreadIdentifier {
+    fn from(array: [u8; 34]) -> Self {
+        Self(array)
+    }
+}
+
+impl From<ThreadIdentifier> for [u8; 34] {
+    fn from(val: ThreadIdentifier) -> Self {
+        val.0
+    }
+}
+
 impl Display for ThreadIdentifier {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "<T:{}>", hex::encode(self.0))

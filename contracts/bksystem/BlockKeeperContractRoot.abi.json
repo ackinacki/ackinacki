@@ -120,7 +120,8 @@
 				{"name":"pubkey","type":"uint256"},
 				{"name":"bls_pubkey","type":"bytes"},
 				{"name":"seqNoStartOld","type":"uint64"},
-				{"name":"signerIndex","type":"uint16"}
+				{"name":"signerIndex","type":"uint16"},
+				{"name":"ProxyList","type":"map(uint8,string)"}
 			],
 			"outputs": [
 			]
@@ -133,7 +134,8 @@
 				{"name":"stake","type":"uint256"},
 				{"name":"isNotOk","type":"bool"},
 				{"name":"seqNoStartOld","type":"uint64"},
-				{"name":"signerIndex","type":"uint16"}
+				{"name":"signerIndex","type":"uint16"},
+				{"name":"ProxyList","type":"map(uint8,string)"}
 			],
 			"outputs": [
 			]
@@ -146,7 +148,8 @@
 				{"name":"stake","type":"uint256"},
 				{"name":"isNotOk","type":"bool"},
 				{"name":"seqNoStartOld","type":"uint64"},
-				{"name":"signerIndex","type":"uint16"}
+				{"name":"signerIndex","type":"uint16"},
+				{"name":"ProxyList","type":"map(uint8,string)"}
 			],
 			"outputs": [
 			]

@@ -19,6 +19,7 @@ use crate::bls::GoshBLS;
 #[cfg(test)]
 use crate::message::message_stub::MessageStub;
 use crate::node::associated_types::AttestationData;
+use crate::node::block_state::repository::BlockState;
 use crate::node::shared_services::SharedServices;
 use crate::node::NodeIdentifier;
 use crate::repository::optimistic_state::DAppIdTable;
@@ -114,6 +115,13 @@ impl OptimisticState for OptimisticStateStub {
     }
 
     fn get_account_routing(&mut self, _account_id: &AccountId) -> anyhow::Result<AccountRouting> {
+        todo!()
+    }
+
+    fn get_thread_for_account(
+        &mut self,
+        _account_id: &AccountId,
+    ) -> anyhow::Result<ThreadIdentifier> {
         todo!()
     }
 
@@ -312,14 +320,6 @@ impl Repository for RepositoryStub {
         Ok(None)
     }
 
-    fn mark_block_as_suspicious(
-        &mut self,
-        _block_id: &BlockIdentifier,
-        _result: bool,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
     fn is_block_suspicious(&self, _block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>> {
         todo!()
     }
@@ -329,6 +329,7 @@ impl Repository for RepositoryStub {
         _block: &Self::CandidateBlock,
         _block_keeper_sets: BlockKeeperRing,
         _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
+        _block_state: BlockState,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -381,11 +382,19 @@ impl Repository for RepositoryStub {
         todo!();
     }
 
-    fn delete_external_messages(&self, _count: usize) -> anyhow::Result<()> {
+    fn delete_external_messages(
+        &self,
+        _count: usize,
+        _thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<()> {
         todo!()
     }
 
-    fn add_external_message<T>(&mut self, _messages: Vec<T>) -> anyhow::Result<()>
+    fn add_external_message<T>(
+        &mut self,
+        _messages: Vec<T>,
+        _thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<()>
     where
         T: Into<<Self::OptimisticState as OptimisticState>::Message>,
     {
@@ -465,7 +474,10 @@ impl Repository for RepositoryStub {
         todo!()
     }
 
-    fn clear_ext_messages_queue_by_time(&self) -> anyhow::Result<()> {
+    fn clear_ext_messages_queue_by_time(
+        &self,
+        _thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<()> {
         todo!()
     }
 

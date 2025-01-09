@@ -79,7 +79,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                 let block: <Self as NodeAssociatedTypes>::CandidateBlock = self.repository.get_block(&block_id)?
                     .unwrap_or_else(|| panic!("Block {:?} must be saved. Fail immediately otherwise. In case of this type of an issue another node must become a leader and continue over the state it has and assumes to be the latest finalized or accepted as the main candidate by majority.", &block_id));
 
-                self.broadcast_candidate_block(block.clone())?;
+                self.broadcast_candidate_block_that_was_possibly_produced_by_another_node(block.clone())?;
             }
             // Now. We have to find what is the next block to resend to continue.
             let next_block_seq_no = next_seq_no(block_seq_no);
@@ -128,7 +128,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                     "This node has signed another sequence. Can not continue as a producer or can be penalized for 2 blocks with the same seq_no signed"
                 );
                 replay.push_back((next.data().identifier(), next.data().seq_no()));
-                self.broadcast_candidate_block(next)?;
+                self.broadcast_candidate_block_that_was_possibly_produced_by_another_node(next)?;
             }
             if next.len() > 1 {
                 panic!(
@@ -185,7 +185,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         for thread_id in self.list_threads()? {
             let mut sent_attestations = self.sent_attestations.get(&thread_id).cloned().unwrap_or_default();
             let (mut cursor_id, cursor_seq_no) =
-                self.repository.select_thread_last_main_candidate_block(&thread_id)?;
+                self.repository.select_thread_last_finalized_block(&thread_id)?;
             let mut local_next_seq_no = next_seq_no(cursor_seq_no);
             loop {
                 let mut found_block = false;
@@ -195,6 +195,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                         local_next_seq_no = next_seq_no(local_next_seq_no);
                         cursor_id = candidate.data().identifier();
                         if self.is_candidate_block_signed_by_this_node(&candidate)? {
+                            self.shared_services.on_block_appended(candidate.data());
                             if !sent_attestations.iter().any(|(seq_no, _)| seq_no == &candidate.data().seq_no()) {
                                 let block_attestation = <Self as NodeAssociatedTypes>::BlockAttestation::create(
                                     candidate.aggregated_signature().clone(),

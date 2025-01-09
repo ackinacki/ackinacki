@@ -65,6 +65,10 @@ contract BlockKeeperEpochProxyList is Modifiers {
         _service_key = service_key;
     }
 
+    function setNewProxyList(uint64 seqNoStart, mapping(uint8 => string) ProxyList) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, seqNoStart)) accept {
+        _ProxyList = ProxyList;
+    }
+
     function getMoney() private pure {
         if (address(this).balance > FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST) { return; }
         gosh.mintshell(FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST);

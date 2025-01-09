@@ -98,7 +98,14 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         }
         let next_block_seq_no = next_seq_no(last_block_seq_no);
         tracing::trace!("select_producer_group for {last_block_seq_no:?}: producer_group: {:?}", producer_group);
-        self.block_producer_groups.entry(*thread_id).or_default().insert(next_block_seq_no, producer_group);
+        let entry = self.block_producer_groups.entry(*thread_id).or_default();
+        // Note: Producer group map must be initialized from zero block seq_no if it was empty,
+        // because node can receive old blocks
+        if entry.is_empty() {
+            entry.insert(BlockSeqNo::default(), producer_group);
+        } else {
+            entry.insert(next_block_seq_no, producer_group);
+        }
         tracing::trace!("Producer groups: {:?}", self.block_producer_groups);
         Ok(())
     }
@@ -141,6 +148,10 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                     &self.thread_id,
                 );
             }
+        }
+        if !this_node_became_a_producer {
+            let thread_id = self.thread_id;
+            self.resend_attestations_on_bp_change(self.get_latest_block_producer(&thread_id))?;
         }
         Ok(this_node_became_a_producer)
     }
@@ -249,6 +260,7 @@ mod tests {
     use crate::node::attestation_processor::AttestationProcessorImpl;
     use crate::node::services::sync::StateSyncServiceStub;
     use crate::node::shared_services::SharedServices;
+    use crate::node::BlockStateRepository;
     use crate::node::Node;
     use crate::node::NodeIdentifier;
     use crate::node::SignerIndex;
@@ -278,6 +290,8 @@ mod tests {
             .arg("-a")
             .status()?;
         let thread_id = ThreadIdentifier::default();
+        let blocks_states =
+            BlockStateRepository::new(PathBuf::from("/tmp/leader_election/block-state/"));
         let repository = RepositoryImpl::new(
             PathBuf::from("/tmp/leader_election/"),
             None,
@@ -285,6 +299,7 @@ mod tests {
             SharedServices::test_start(RoutingService::stub().0),
             BlockKeeperRing::default(),
             Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
+            blocks_states,
         );
         let (router, _router_rx) = crate::multithreading::routing::service::RoutingService::stub();
         let shared_services = crate::node::shared_services::SharedServices::test_start(router);
@@ -313,6 +328,7 @@ mod tests {
         let (broadcast_sender, _broadcast_recv) = std::sync::mpsc::channel();
         let (single_sender, _single_recv) = std::sync::mpsc::channel();
         let (raw_block_sender, _raw_block_recv) = std::sync::mpsc::channel();
+        let (feedback_sender, _feedback_receiver) = std::sync::mpsc::channel();
 
         let (pubkey, secret) =
             key_pair_from_file::<GoshBLS>("../config/block_keeper1_bls.keys.json".to_string());
@@ -348,6 +364,8 @@ mod tests {
         );
         let (router, _router_rx) = crate::multithreading::routing::service::RoutingService::stub();
         let shared_services = crate::node::shared_services::SharedServices::test_start(router);
+        let repo_path = PathBuf::from("/tmp/leader_election/");
+        let blocks_states = BlockStateRepository::new(repo_path.clone().join("blocks-states"));
         let mut node = Node::new(
             shared_services,
             sync_state_service,
@@ -366,8 +384,10 @@ mod tests {
             block_keeper_rng.clone(),
             block_keeper_rng,
             ThreadIdentifier::default(),
+            feedback_sender,
             true,
             Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
+            blocks_states,
         );
 
         // Prepare set that contains all node ids

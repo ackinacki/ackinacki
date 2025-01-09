@@ -1,10 +1,12 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use http_server::ExtMsgFeedback;
 use parking_lot::Mutex;
 use tvm_types::UInt256;
 
@@ -44,6 +46,7 @@ impl BlockProducerProcess for BlockProducerProcessStub {
         &mut self,
         _thread_id: &ThreadIdentifier,
         _prev_block_id: &BlockIdentifier,
+        _feedback_sender: Sender<Vec<ExtMsgFeedback>>,
         _received_acks: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, AckData>>>>,
         _received_nacks: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, NackData>>>>,
         _block_keeper_sets: BlockKeeperRing,

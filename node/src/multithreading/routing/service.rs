@@ -1,5 +1,15 @@
+use std::collections::HashMap;
+use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
+
+use http_server::ExtMsgFeedback;
+use http_server::FeedbackError;
+use http_server::FeedbackErrorCode;
+use parking_lot::Mutex;
+use tokio::sync::oneshot;
+use tvm_block::GetRepresentationHash;
 
 use super::dispatcher::DispatchError;
 use super::dispatcher::Dispatcher;
@@ -15,7 +25,6 @@ use crate::node::attestation_processor::AttestationProcessorImpl;
 use crate::node::services::sync::ExternalFileSharesBased;
 use crate::node::NetworkMessage as NodeNetworkMessage;
 use crate::node::Node as NodeImpl;
-use crate::node::NodeIdentifier;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
@@ -25,7 +34,10 @@ use crate::types::ThreadIdentifier;
 const MAX_POISONED_QUEUE_SIZE: usize = 10000;
 
 type NetworkMessage =
-    NodeNetworkMessage<GoshBLS, AckData, NackData, AttestationData, WrappedMessage, NodeIdentifier>;
+    NodeNetworkMessage<GoshBLS, AckData, NackData, AttestationData, WrappedMessage>;
+
+type FeedbackMessage = (NetworkMessage, Option<oneshot::Sender<ExtMsgFeedback>>);
+type FeedbackRegistry = HashMap<String, oneshot::Sender<ExtMsgFeedback>>;
 
 type PoisonedQueue = PQueue<NetworkMessage>;
 
@@ -55,13 +67,19 @@ pub enum Command {
 #[derive(Clone)]
 pub struct RoutingService {
     pub control: Sender<Command>,
+    pub feedback_sender: Sender<Vec<ExtMsgFeedback>>,
 }
 
 impl RoutingService {
     pub fn new(
         inbound_network: Receiver<NetworkMessage>,
-    ) -> (RoutingService, Receiver<Command>, std::thread::JoinHandle<Result<(), anyhow::Error>>)
-    {
+        inbound_ext_messages: Receiver<FeedbackMessage>,
+    ) -> (
+        RoutingService,
+        Receiver<Command>,
+        std::thread::JoinHandle<Result<(), anyhow::Error>>,
+        std::thread::JoinHandle<Result<(), anyhow::Error>>,
+    ) {
         let (control, handler) = std::sync::mpsc::channel();
         let forwarding_thread = {
             let control = control.clone();
@@ -72,7 +90,26 @@ impl RoutingService {
                 })
                 .unwrap()
         };
-        (RoutingService { control }, handler, forwarding_thread)
+        let (feedback_sender, feedback_receiver) = std::sync::mpsc::channel();
+        let forwarding_ext_messages_thread = {
+            let control = control.clone();
+            std::thread::Builder::new()
+                .name("routing_service_external_messages_forwarding_loop".to_string())
+                .spawn(move || {
+                    Self::inner_external_messages_forwarding_loop(
+                        inbound_ext_messages,
+                        feedback_receiver,
+                        control,
+                    )
+                })
+                .unwrap()
+        };
+        (
+            RoutingService { control, feedback_sender },
+            handler,
+            forwarding_thread,
+            forwarding_ext_messages_thread,
+        )
     }
 
     pub fn start<F>(
@@ -84,6 +121,7 @@ impl RoutingService {
                 Option<BlockIdentifier>,
                 &ThreadIdentifier,
                 Receiver<NetworkMessage>,
+                Sender<Vec<ExtMsgFeedback>>,
             ) -> anyhow::Result<Node>
             + std::marker::Send
             + 'static,
@@ -91,11 +129,13 @@ impl RoutingService {
         let (control, handler) = channel;
         let dispatcher = Dispatcher::new();
         let inner_loop = {
+            let feedback_sender = control.feedback_sender.clone();
             std::thread::Builder::new()
                 .name("routing_service_main_loop".to_string())
-                .spawn(|| Self::inner_main_loop(handler, dispatcher, node_factory))
+                .spawn(|| Self::inner_main_loop(handler, feedback_sender, dispatcher, node_factory))
                 .unwrap()
         };
+        tracing::debug!("NetworkMessageRouter: started");
         (control, inner_loop)
     }
 
@@ -106,11 +146,13 @@ impl RoutingService {
     #[cfg(test)]
     pub fn stub() -> (Self, Receiver<Command>) {
         let (tx, rx) = std::sync::mpsc::channel();
-        (Self { control: tx }, rx)
+        let (feedback_sender, _feedback_receiver) = std::sync::mpsc::channel();
+        (Self { control: tx, feedback_sender }, rx)
     }
 
     fn create_node_thread<F>(
         dispatcher: &mut Dispatcher,
+        feedback_sender: Sender<Vec<ExtMsgFeedback>>,
         thread_identifier: ThreadIdentifier,
         parent_block_id: Option<BlockIdentifier>,
         node_factory: &mut F,
@@ -120,13 +162,19 @@ impl RoutingService {
                 Option<BlockIdentifier>,
                 &ThreadIdentifier,
                 Receiver<NetworkMessage>,
+                Sender<Vec<ExtMsgFeedback>>,
             ) -> anyhow::Result<Node>
             + std::marker::Send,
     {
         tracing::trace!("NetworkMessageRouter: add sender for thread: {thread_identifier:?}");
         let (incoming_messages_sender, incoming_messages_receiver) = std::sync::mpsc::channel();
         dispatcher.add_route(thread_identifier, incoming_messages_sender);
-        node_factory(parent_block_id, &thread_identifier, incoming_messages_receiver)
+        node_factory(
+            parent_block_id,
+            &thread_identifier,
+            incoming_messages_receiver,
+            feedback_sender,
+        )
     }
 
     fn route(dispatcher: &Dispatcher, message: NetworkMessage, poisoned_queue: &mut PoisonedQueue) {
@@ -150,6 +198,7 @@ impl RoutingService {
 
     fn inner_main_loop<F>(
         control: Receiver<Command>,
+        feedback_sender: Sender<Vec<ExtMsgFeedback>>,
         mut dispatcher: Dispatcher,
         mut node_factory: F,
     ) -> anyhow::Result<()>
@@ -158,6 +207,7 @@ impl RoutingService {
                 Option<BlockIdentifier>,
                 &ThreadIdentifier,
                 Receiver<NetworkMessage>,
+                Sender<Vec<ExtMsgFeedback>>,
             ) -> anyhow::Result<Node>
             + std::marker::Send,
     {
@@ -181,6 +231,7 @@ impl RoutingService {
                             }
                             let mut node = Self::create_node_thread(
                                 &mut dispatcher,
+                                feedback_sender.clone(),
                                 thread_identifier,
                                 Some(parent_block_identifier),
                                 &mut node_factory,
@@ -208,6 +259,7 @@ impl RoutingService {
                             }
                             let mut node = Self::create_node_thread(
                                 &mut dispatcher,
+                                feedback_sender.clone(),
                                 thread_identifier,
                                 None,
                                 &mut node_factory,
@@ -248,6 +300,90 @@ impl RoutingService {
                     anyhow::bail!(e)
                 }
                 Ok(message) => control.send(Command::Route(message))?,
+            }
+        }
+    }
+
+    fn inner_external_messages_forwarding_loop(
+        inbound_ext_messages: Receiver<FeedbackMessage>,
+        feedback_receiver: Receiver<Vec<ExtMsgFeedback>>,
+        control: Sender<Command>,
+    ) -> anyhow::Result<()> {
+        // let queue_limit =
+        let queue_size = Arc::new(AtomicUsize::new(0));
+        let feedback_registry = Arc::new(Mutex::new(HashMap::new()));
+        let _ = {
+            let registry = Arc::clone(&feedback_registry);
+            std::thread::Builder::new()
+                .name("routing_service_ext_messages_feedback_loop".to_string())
+                .spawn(move || Self::inner_feedback_loop(feedback_receiver, registry, queue_size))
+                .unwrap()
+        };
+        loop {
+            match inbound_ext_messages.recv() {
+                Err(e) => {
+                    tracing::error!(
+                        "NetworkMessageRouter: external messages receiver was disconnected: {e}"
+                    );
+                }
+                Ok(message) => {
+                    tracing::debug!("NetworkMessageRouter: received external message");
+                    let (message, sender) = message;
+                    if let NetworkMessage::ExternalMessage((ref ext_message, _)) = message {
+                        let message_hash = ext_message
+                            .message
+                            .hash()
+                            .map_err(|e| anyhow::format_err!("{e}"))?
+                            .to_hex_string();
+                        let is_msg_exists =
+                            { feedback_registry.lock().contains_key(&message_hash) };
+                        if is_msg_exists {
+                            if let Some(sender) = sender {
+                                let feedback = ExtMsgFeedback {
+                                    message_hash,
+                                    error: Some(FeedbackError {
+                                        code: FeedbackErrorCode::DuplicateMessage,
+                                        message: None,
+                                    }),
+                                    ..Default::default()
+                                };
+
+                                let _ = sender.send(feedback); // warn about duplicate
+                            }
+                        } else {
+                            feedback_registry.lock().insert(message_hash, sender.unwrap());
+                        }
+                        control.send(Command::Route(message))?
+                    }
+                }
+            }
+        }
+    }
+
+    fn inner_feedback_loop(
+        feedback_receiver: Receiver<Vec<ExtMsgFeedback>>,
+        feedback_registry: Arc<Mutex<FeedbackRegistry>>,
+        queue_size: Arc<AtomicUsize>,
+    ) -> anyhow::Result<()> {
+        loop {
+            match feedback_receiver.recv() {
+                Err(e) => {
+                    tracing::error!(
+                        "NetworkMessageRouter: feedback receiver was disconnected: {e}"
+                    );
+                }
+                Ok(feedbacks) => {
+                    tracing::debug!("NetworkMessageRouter: received feedback: {:?}", feedbacks);
+                    for feedback in feedbacks {
+                        if let Some(sender) =
+                            feedback_registry.lock().remove(&feedback.message_hash)
+                        {
+                            let _ = sender.send(feedback);
+                        } else {
+                            queue_size.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                }
             }
         }
     }

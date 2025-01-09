@@ -43,9 +43,10 @@ use crate::bls::envelope::Envelope;
 use crate::bls::BLSSignatureScheme;
 use crate::bls::GoshBLS;
 use crate::database::serialize_block::prepare_account_archive_struct;
-use crate::database::write_to_db;
 use crate::message::WrappedMessage;
 use crate::node::associated_types::AttestationData;
+use crate::node::block_state::repository::BlockState;
+use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
@@ -73,13 +74,14 @@ const MAX_BLOCK_CNT_THAT_CAN_BE_LOADED_TO_PREPARE_STATE: usize = 400;
 
 pub type RepositoryMetadata =
     Arc<Mutex<HashMap<ThreadIdentifier, Arc<Mutex<Metadata<BlockIdentifier, BlockSeqNo>>>>>>;
+pub type RepositoryLastExtMessageIndex = Arc<Mutex<HashMap<ThreadIdentifier, u32>>>;
 
 pub struct RepositoryImpl {
     archive: Connection,
     data_dir: PathBuf,
     zerostate_path: Option<PathBuf>,
     metadatas: RepositoryMetadata,
-    last_ext_message_index: u32,
+    last_ext_message_index: RepositoryLastExtMessageIndex,
     ext_messages_mutex: Arc<Mutex<()>>,
     blocks_cache:
         Arc<Mutex<LruCache<BlockIdentifier, (Envelope<GoshBLS, AckiNackiBlock>, BlockMarkers)>>>,
@@ -89,6 +91,7 @@ pub struct RepositoryImpl {
         Arc<Mutex<HashMap<ThreadIdentifier, Arc<Mutex<Vec<BlockIdentifier>>>>>>,
     shared_services: SharedServices,
     nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
+    blocks_states: BlockStateRepository,
 }
 
 #[allow(clippy::upper_case_acronyms)]
@@ -100,12 +103,9 @@ enum OID {
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct BlockMarkers {
-    is_finalized: Option<bool>,
-    is_main_candidate: Option<bool>,
-    last_processed_ext_message: u32,
-    is_verified: bool,
-    is_processed: bool,
-    pub is_block_suspicious: bool,
+    pub is_processed: bool,
+    pub is_main_candidate: Option<bool>,
+    pub last_processed_ext_message: u32,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
@@ -197,7 +197,7 @@ impl Clone for RepositoryImpl {
             data_dir: self.data_dir.clone(),
             zerostate_path: self.zerostate_path.clone(),
             metadatas: self.metadatas.clone(),
-            last_ext_message_index: self.last_ext_message_index,
+            last_ext_message_index: self.last_ext_message_index.clone(),
             ext_messages_mutex: self.ext_messages_mutex.clone(),
             blocks_cache: self.blocks_cache.clone(),
             saved_states: self.saved_states.clone(),
@@ -205,6 +205,7 @@ impl Clone for RepositoryImpl {
             finalized_blocks_buffers: self.finalized_blocks_buffers.clone(),
             shared_services: self.shared_services.clone(),
             nack_set_cache: Arc::clone(&self.nack_set_cache),
+            blocks_states: self.blocks_states.clone(),
         }
     }
 }
@@ -218,6 +219,7 @@ impl RepositoryImpl {
         shared_services: SharedServices,
         block_keeper_sets: BlockKeeperRing,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
+        blocks_states: BlockStateRepository,
     ) -> Self {
         if let Err(err) = fs::create_dir_all(data_dir.clone()) {
             tracing::error!("Failed to create data dir {:?}: {}", data_dir, err);
@@ -253,10 +255,12 @@ impl RepositoryImpl {
             }
             _ => {}
         }
-        let metadata = Arc::new(Mutex::new(
-            Self::load_metadata(&data_dir)
-                .expect("Must be able to create or load repository metadata"),
-        ));
+        let metadata = Arc::new(Mutex::new({
+            let metadata = Self::load_metadata(&data_dir)
+                .expect("Must be able to create or load repository metadata");
+            tracing::trace!("Loaded metadata: {:?}", metadata);
+            metadata
+        }));
 
         let mut finalized_optimistic_states = HashMap::new();
         {
@@ -271,10 +275,14 @@ impl RepositoryImpl {
                             .expect("Failed to load state from zerostate")
                             .clone(),
                     );
-                    metadatas.insert(
-                        *thread_id,
-                        Arc::new(Mutex::new(Metadata::<BlockIdentifier, BlockSeqNo>::default())),
-                    );
+                    if !metadatas.contains_key(thread_id) {
+                        metadatas.insert(
+                            *thread_id,
+                            Arc::new(
+                                Mutex::new(Metadata::<BlockIdentifier, BlockSeqNo>::default()),
+                            ),
+                        );
+                    }
                 }
             };
         }
@@ -283,7 +291,7 @@ impl RepositoryImpl {
             data_dir: data_dir.clone(),
             zerostate_path,
             metadatas: metadata,
-            last_ext_message_index: 0,
+            last_ext_message_index: Arc::new(Mutex::new(HashMap::new())),
             ext_messages_mutex: Arc::new(Mutex::new(())),
             blocks_cache: Arc::new(Mutex::new(LruCache::new(
                 NonZeroUsize::new(cache_size).unwrap(),
@@ -293,6 +301,7 @@ impl RepositoryImpl {
             finalized_blocks_buffers: Arc::new(Mutex::new(HashMap::new())),
             shared_services,
             nack_set_cache: Arc::clone(&nack_set_cache),
+            blocks_states,
         };
 
         let optimistic_dir = format!(
@@ -352,84 +361,93 @@ impl RepositoryImpl {
         // Node repo can contain old blocks which are useless and just consume space
         // and increase metadata size. But we must check that they were successfully stored in the
         // archive
-        tracing::trace!("Start checking old blocks");
+        // tracing::trace!("Start checking old blocks");
+        // for (thread_id, metadata) in guarded.iter() {
+        //     let metadata = {
+        //         let metadata = metadata.lock();
+        //         metadata.clone()
+        //     };
+        //
+        //     let last_finalized_seq_no = metadata.last_finalized_block_seq_no;
+        //     let sqlite_helper_config = json!({
+        //         "data_dir": data_dir
+        //     })
+        //     .to_string();
+        //     let sqlite_helper_raw = Arc::new(
+        //         SqliteHelper::from_config(&sqlite_helper_config)
+        //             .expect("Failed to create archive DB helper"),
+        //     );
+        //     for (block_id, block_seq_no) in metadata.block_id_to_seq_no {
+        //         if block_seq_no < last_finalized_seq_no {
+        //             let markers =
+        //                 repo_impl.load_markers(&block_id).expect("Failed to load block markers");
+        //             if let Some(true) = markers.is_finalized {
+        //                 if repo_impl
+        //                     .is_block_present_in_archive(&block_id)
+        //                     .expect("Failed to check block")
+        //                 {
+        //                     let _ = repo_impl.erase_block(&block_id, thread_id);
+        //                 } else {
+        //                     if let Ok(Some(block)) = repo_impl.get_block(&block_id) {
+        //                         if let Ok(Some(state)) = repo_impl.get_optimistic_state(
+        //                             &block_id,
+        //                             block_keeper_sets.clone(),
+        //                             Arc::clone(&nack_set_cache),
+        //                         ) {
+        //                             write_to_db(
+        //                                 sqlite_helper_raw.clone(),
+        //                                 block,
+        //                                 state.shard_state.shard_state,
+        //                                 state.shard_state.shard_state_cell,
+        //                             )
+        //                             .expect("Failed to store old finalized block in archive");
+        //                         }
+        //                     }
+        //                     let _ = repo_impl.erase_block(&block_id, thread_id);
+        //                 }
+        //             } else {
+        //                 let _ = repo_impl.erase_block(&block_id, thread_id);
+        //             }
+        //         }
+        //     }
+        // }
+        // tracing::trace!("Finished checking old blocks");
+
+        let mut guarded_last_ext_message_index = repo_impl.last_ext_message_index.lock();
         for (thread_id, metadata) in guarded.iter() {
-            let metadata = {
-                let metadata = metadata.lock();
-                metadata.clone()
-            };
-
-            let last_finalized_seq_no = metadata.last_finalized_block_seq_no;
-            let sqlite_helper_config = json!({
-                "data_dir": data_dir
-            })
-            .to_string();
-            let sqlite_helper_raw = Arc::new(
-                SqliteHelper::from_config(&sqlite_helper_config)
-                    .expect("Failed to create archive DB helper"),
-            );
-            for (block_id, block_seq_no) in metadata.block_id_to_seq_no {
-                if block_seq_no < last_finalized_seq_no {
-                    let markers =
-                        repo_impl.load_markers(&block_id).expect("Failed to load block markers");
-                    if let Some(true) = markers.is_finalized {
-                        if repo_impl
-                            .is_block_present_in_archive(&block_id)
-                            .expect("Failed to check block")
-                        {
-                            let _ = repo_impl.erase_block(&block_id, thread_id);
-                        } else {
-                            if let Ok(Some(block)) = repo_impl.get_block(&block_id) {
-                                if let Ok(Some(state)) = repo_impl.get_optimistic_state(
-                                    &block_id,
-                                    block_keeper_sets.clone(),
-                                    Arc::clone(&nack_set_cache),
-                                ) {
-                                    write_to_db(
-                                        sqlite_helper_raw.clone(),
-                                        block,
-                                        state.shard_state.shard_state,
-                                        state.shard_state.shard_state_cell,
-                                    )
-                                    .expect("Failed to store old finalized block in archive");
-                                }
-                            }
-                            let _ = repo_impl.erase_block(&block_id, thread_id);
-                        }
-                    } else {
-                        let _ = repo_impl.erase_block(&block_id, thread_id);
-                    }
-                }
-            }
-        }
-        tracing::trace!("Finished checking old blocks");
-
-        let msg_queue =
-            repo_impl.load_ext_messages_queue().expect("Failed to load external messages queue");
-        if msg_queue.queue.is_empty() {
-            // TODO: this code worked for single thread, but needs check for multithreaded version
-            for metadata in guarded.values() {
+            let msg_queue = repo_impl
+                .load_ext_messages_queue(thread_id)
+                .expect("Failed to load external messages queue");
+            if msg_queue.queue.is_empty() {
                 // If saved queue is empty need to get info from the last block
                 let metadata = metadata.lock();
                 let mut saved_blocks =
                     metadata.block_id_to_seq_no.clone().into_iter().collect::<Vec<_>>();
                 drop(metadata);
                 if saved_blocks.is_empty() {
-                    repo_impl.last_ext_message_index = 0;
+                    // repo_impl.last_ext_message_index = 0;
+                    guarded_last_ext_message_index.insert(*thread_id, 0);
                 } else {
                     saved_blocks.sort_by(|a, b| a.1.cmp(&b.1));
                     let markers = repo_impl
                         .load_markers(&saved_blocks.last().unwrap().0)
                         .expect("Failed to load block markers");
                     // Save greates last_processed_ext_messages index
-                    if markers.last_processed_ext_message > repo_impl.last_ext_message_index {
-                        repo_impl.last_ext_message_index = markers.last_processed_ext_message;
+                    if let Some(last_stored_index) = guarded_last_ext_message_index.get(thread_id) {
+                        if markers.last_processed_ext_message > *last_stored_index {
+                            // repo_impl.last_ext_message_index = markers.last_processed_ext_message;
+                            guarded_last_ext_message_index
+                                .insert(*thread_id, markers.last_processed_ext_message);
+                        }
                     }
                 }
+            } else {
+                // repo_impl.last_ext_message_index = msg_queue.queue.last().unwrap().index;
+                guarded_last_ext_message_index
+                    .insert(*thread_id, msg_queue.queue.last().unwrap().index);
             }
-        } else {
-            repo_impl.last_ext_message_index = msg_queue.queue.last().unwrap().index;
         }
+        drop(guarded_last_ext_message_index);
         drop(guarded);
         tracing::trace!("repository init finished");
         repo_impl
@@ -572,6 +590,7 @@ impl RepositoryImpl {
         block_id: &BlockIdentifier,
         markers: &BlockMarkers,
     ) -> anyhow::Result<()> {
+        tracing::trace!("save markers {block_id:?} {:?}", markers);
         let path = self.get_path("markers", format!("{block_id:?}"));
         let markers_clone = markers.clone();
         let _ = thread::Builder::new().name("saving marker".to_string()).spawn(move || {
@@ -584,19 +603,26 @@ impl RepositoryImpl {
         Ok(())
     }
 
-    fn save_ext_messages_queue(&self, queue: ExtMessages<MessageFor<Self>>) -> anyhow::Result<()> {
+    fn save_ext_messages_queue(
+        &self,
+        queue: ExtMessages<MessageFor<Self>>,
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<()> {
         let lock = self.ext_messages_mutex.lock();
         let path = self.get_ext_messages_queue_path();
-        self.save(path, OID::SingleRow, &queue)?;
+        self.save(path, OID::ID(thread_id.to_string()), &queue)?;
         drop(lock);
         Ok(())
     }
 
-    pub(crate) fn load_ext_messages_queue(&self) -> anyhow::Result<ExtMessages<MessageFor<Self>>> {
+    pub(crate) fn load_ext_messages_queue(
+        &self,
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<ExtMessages<MessageFor<Self>>> {
         let lock = self.ext_messages_mutex.lock();
         let path = self.get_ext_messages_queue_path();
         let queue: ExtMessages<WrappedMessage> =
-            self.load(path, OID::SingleRow).map(|res| res.unwrap_or_default())?;
+            self.load(path, OID::ID(thread_id.to_string())).map(|res| res.unwrap_or_default())?;
         drop(lock);
         Ok(queue)
     }
@@ -877,6 +903,22 @@ impl RepositoryImpl {
         tracing::trace!("try_load_state_from_archive return state");
         Ok(Some(state))
     }
+
+    pub fn get_nodes_by_threads(&self) -> HashMap<ThreadIdentifier, Option<NodeIdentifier>> {
+        let metadata = self.get_all_metadata();
+        let metadata_guarded = metadata.lock();
+        let bp_id_for_thread_map: HashMap<ThreadIdentifier, Option<NodeIdentifier>> =
+            metadata_guarded
+                .iter()
+                .map(|(k, v)| {
+                    let thread_metadata = v.lock();
+                    (*k, thread_metadata.last_finalized_producer_id)
+                })
+                .collect();
+        drop(metadata_guarded);
+
+        bp_id_for_thread_map
+    }
 }
 
 impl Repository for RepositoryImpl {
@@ -958,7 +1000,12 @@ impl Repository for RepositoryImpl {
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<()> {
         let mut guarded = self.metadatas.lock();
-        ensure!(!guarded.contains_key(thread_id));
+        if guarded.contains_key(thread_id) {
+            let metadata = guarded.get(thread_id).unwrap().lock();
+            assert_eq!(&metadata.last_finalized_block_id, parent_block_id);
+            return Ok(());
+        }
+
         tracing::trace!(
             "Checking - {}. Markers - {:?}",
             parent_block_id,
@@ -1155,25 +1202,16 @@ impl Repository for RepositoryImpl {
         Ok(markers.is_main_candidate)
     }
 
-    fn mark_block_as_suspicious(
-        &mut self,
-        block_id: &BlockIdentifier,
-        result: bool,
-    ) -> anyhow::Result<()> {
-        let mut markers = self.load_markers(block_id)?;
-        markers.is_block_suspicious = result;
-        self.save_markers(block_id, &markers)?;
-        Ok(())
-    }
-
     fn mark_block_as_finalized(
         &mut self,
         block: &<Self as Repository>::CandidateBlock,
         block_keeper_sets: BlockKeeperRing,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
+        block_state: BlockState,
     ) -> anyhow::Result<()> {
         let block_id = block.data().identifier();
         let thread_id = block.data().get_common_section().thread_id;
+        let mut guarded_block_state = block_state.lock();
         {
             for (thread, buffer) in self.finalized_blocks_buffers.lock().iter() {
                 if *thread != thread_id {
@@ -1186,10 +1224,6 @@ impl Repository for RepositoryImpl {
         let metadata = self.get_metadata_for_thread(&thread_id)?;
         let mut metadata = metadata.lock();
         let block_seq_no = *metadata.block_id_to_seq_no.get(&block_id).unwrap();
-        let mut markers = self.load_markers(&block_id)?;
-        markers.is_finalized = Some(true);
-        self.save_markers(&block_id, &markers)?;
-
         metadata.stored_finalized_blocks.push((block_id.clone(), block_seq_no));
         if block_seq_no > metadata.last_finalized_block_seq_no {
             metadata.last_finalized_block_seq_no = block_seq_no;
@@ -1198,6 +1232,8 @@ impl Repository for RepositoryImpl {
                 Some(block.data().get_common_section().producer_id)
         }
         drop(metadata);
+        guarded_block_state.set_finalized()?;
+        drop(guarded_block_state);
         self.save_metadata()?;
 
         if let Some(state_ref) = self.finalized_optimistic_states.get_mut(&thread_id) {
@@ -1218,8 +1254,9 @@ impl Repository for RepositoryImpl {
     }
 
     fn is_block_finalized(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>> {
-        let markers = self.load_markers(block_id).unwrap_or_default();
-        Ok(markers.is_finalized)
+        let markers = self.blocks_states.get(block_id.clone())?;
+        let result = markers.lock().is_finalized();
+        Ok(Some(result))
     }
 
     fn get_zero_state_for_thread(
@@ -1388,32 +1425,44 @@ impl Repository for RepositoryImpl {
         Ok(self.get_metadata_for_thread(thread_id)?.lock().stored_finalized_blocks.clone())
     }
 
-    fn delete_external_messages(&self, count: usize) -> anyhow::Result<()> {
+    fn delete_external_messages(
+        &self,
+        count: usize,
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<()> {
         if count == 0 {
             return Ok(());
         }
-        let mut queue = self.load_ext_messages_queue()?;
+        let mut queue = self.load_ext_messages_queue(thread_id)?;
         queue.queue.drain(0..count);
-        self.save_ext_messages_queue(queue)
+        self.save_ext_messages_queue(queue, thread_id)
     }
 
-    fn add_external_message<T>(&mut self, messages: Vec<T>) -> anyhow::Result<()>
+    fn add_external_message<T>(
+        &mut self,
+        messages: Vec<T>,
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<()>
     where
         T: Into<<Self::OptimisticState as OptimisticState>::Message>,
     {
-        let mut queue = self.load_ext_messages_queue()?;
+        let mut queue = self.load_ext_messages_queue(thread_id)?;
         let cur_last_index = queue.queue.last().map(|el| el.index).unwrap_or(0);
-        assert!(self.last_ext_message_index >= cur_last_index);
+        let mut guarded_last_ext_message_index = self.last_ext_message_index.lock();
+        let mut stored_last_index = *guarded_last_ext_message_index.get(thread_id).unwrap_or(&0);
+        assert!(stored_last_index >= cur_last_index);
         for message in messages {
-            self.last_ext_message_index += 1;
+            stored_last_index += 1;
             let message = message.into();
-            queue.queue.push(WrappedExtMessage::new(self.last_ext_message_index, message));
+            queue.queue.push(WrappedExtMessage::new(stored_last_index, message));
         }
-        self.save_ext_messages_queue(queue)
+        let _ = guarded_last_ext_message_index.entry(*thread_id).insert_entry(stored_last_index);
+        drop(guarded_last_ext_message_index);
+        self.save_ext_messages_queue(queue, thread_id)
     }
 
-    fn clear_ext_messages_queue_by_time(&self) -> anyhow::Result<()> {
-        let mut queue = self.load_ext_messages_queue()?;
+    fn clear_ext_messages_queue_by_time(&self, thread_id: &ThreadIdentifier) -> anyhow::Result<()> {
+        let mut queue = self.load_ext_messages_queue(thread_id)?;
         let mut i = 0;
         let now = Utc::now();
         while i < queue.queue.len() {
@@ -1424,63 +1473,43 @@ impl Repository for RepositoryImpl {
         }
         if i != 0 {
             queue.queue.drain(0..i);
-            self.save_ext_messages_queue(queue)?;
+            self.save_ext_messages_queue(queue, thread_id)?;
         }
         Ok(())
     }
 
     fn clear_verification_markers(
         &self,
-        excluded_starting_seq_no: &BlockSeqNo,
+        _excluded_starting_seq_no: &BlockSeqNo,
         thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<()> {
-        let metadata = self.get_metadata_for_thread(thread_id)?;
-        let metadata = metadata.lock();
-        let mut cursor_seq_no = *excluded_starting_seq_no;
-        let mut is_cursor_moved = true;
-        while is_cursor_moved {
-            is_cursor_moved = false;
-            cursor_seq_no = calc_next_seq_no(cursor_seq_no);
-            for (block_id, block_seq_no) in metadata.block_id_to_seq_no.iter() {
-                if cursor_seq_no == *block_seq_no {
-                    let mut markers = self.load_markers(block_id)?;
-                    if !markers.is_verified {
-                        break;
-                    }
-                    markers.is_verified = false;
-                    self.save_markers(block_id, &markers)?;
-                    is_cursor_moved = true;
-                }
-            }
-            if !is_cursor_moved {
-                break;
-            }
-        }
+        let _metadata = self.get_metadata_for_thread(thread_id)?;
+        // TODO: remove calls
         Ok(())
     }
 
     fn mark_block_as_processed(&self, block_id: &BlockIdentifier) -> anyhow::Result<()> {
         let mut markers = self.load_markers(block_id)?;
         markers.is_processed = true;
+        tracing::trace!(?block_id, "mark_block_as_processed");
         self.save_markers(block_id, &markers)
     }
 
     fn is_block_processed(&self, block_id: &BlockIdentifier) -> anyhow::Result<bool> {
-        let markers = self.load_markers(block_id).unwrap_or_default();
-        tracing::trace!(?block_id, "is_block_verified");
-        Ok(markers.is_processed)
+        let is_processed = self.load_markers(block_id).unwrap_or_default().is_processed;
+        tracing::trace!(?block_id, "is_block_processed: {is_processed}");
+        Ok(is_processed)
     }
 
+    // TODO: refactor callers
     fn mark_block_as_verified(&self, block_id: &BlockIdentifier) -> anyhow::Result<()> {
-        let mut markers = self.load_markers(block_id)?;
-        markers.is_verified = true;
-        self.save_markers(block_id, &markers)
+        self.blocks_states.get(block_id.clone())?.lock().set_verified()
     }
 
     fn is_block_verified(&self, block_id: &BlockIdentifier) -> anyhow::Result<bool> {
-        let markers = self.load_markers(block_id).unwrap_or_default();
-        tracing::trace!(?block_id, "is_block_verified");
-        Ok(markers.is_verified)
+        let result = self.blocks_states.get(block_id.clone())?.lock().is_verified();
+        tracing::trace!(?block_id, "is_block_verified: {result}");
+        Ok(result)
     }
 
     fn set_state_from_snapshot(
@@ -1531,8 +1560,9 @@ impl Repository for RepositoryImpl {
     }
 
     fn is_block_suspicious(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>> {
-        let markers = self.load_markers(block_id)?;
-        Ok(Some(markers.is_block_suspicious))
+        let guarded = self.blocks_states.get(block_id.clone())?;
+        let result = guarded.lock().has_unresolved_nacks();
+        Ok(Some(result))
     }
 
     fn sync_accounts_from_state(
@@ -1708,6 +1738,7 @@ mod tests {
     use super::OID;
     use crate::multithreading::routing::service::RoutingService;
     use crate::node::shared_services::SharedServices;
+    use crate::repository::repository_impl::BlockStateRepository;
     use crate::types::block_keeper_ring::BlockKeeperRing;
     use crate::utilities::FixedSizeHashSet;
 
@@ -1741,6 +1772,8 @@ mod tests {
     fn test_save_load() -> anyhow::Result<()> {
         START.call_once(init_tests);
 
+        let blocks_states =
+            BlockStateRepository::new(PathBuf::from("./tests-data/test_save_load/block-state"));
         let repository = RepositoryImpl::new(
             PathBuf::from("./tests-data/test_save_load"),
             Some(PathBuf::from(ZEROSTATE)),
@@ -1748,6 +1781,7 @@ mod tests {
             SharedServices::test_start(RoutingService::stub().0),
             BlockKeeperRing::default(),
             Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
+            blocks_states,
         );
 
         let path = "block_status";
@@ -1763,6 +1797,9 @@ mod tests {
     #[test]
     #[ignore]
     fn test_clear_big_state() -> anyhow::Result<()> {
+        let blocks_states = BlockStateRepository::new(PathBuf::from(
+            "/home/user/GOSH/acki-nacki/server_data/node1/block-state/",
+        ));
         let _repository = RepositoryImpl::new(
             PathBuf::from("/home/user/GOSH/acki-nacki/server_data/node1/"),
             Some(PathBuf::from(ZEROSTATE)),
@@ -1770,6 +1807,7 @@ mod tests {
             SharedServices::test_start(RoutingService::stub().0),
             BlockKeeperRing::default(),
             Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
+            blocks_states,
         );
         Ok(())
     }
@@ -1778,6 +1816,8 @@ mod tests {
     #[ignore]
     fn test_exists() -> anyhow::Result<()> {
         START.call_once(init_tests);
+        let blocks_states =
+            BlockStateRepository::new(PathBuf::from("./tests-data/test_exists/block-state"));
 
         let repository = RepositoryImpl::new(
             PathBuf::from("./tests-data/test_exists"),
@@ -1786,6 +1826,7 @@ mod tests {
             SharedServices::test_start(RoutingService::stub().0),
             BlockKeeperRing::default(),
             Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
+            blocks_states,
         );
 
         let path = "metadata";
@@ -1801,7 +1842,8 @@ mod tests {
     #[ignore]
     fn test_remove() -> anyhow::Result<()> {
         START.call_once(init_tests);
-
+        let blocks_states =
+            BlockStateRepository::new(PathBuf::from("./tests-data/test_remove/block-state"));
         let repository = RepositoryImpl::new(
             PathBuf::from("./tests-data/test_remove"),
             Some(PathBuf::from(ZEROSTATE)),
@@ -1809,6 +1851,7 @@ mod tests {
             SharedServices::test_start(RoutingService::stub().0),
             BlockKeeperRing::default(),
             Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
+            blocks_states,
         );
 
         let path = "optimistic_state";

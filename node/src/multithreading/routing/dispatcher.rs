@@ -8,11 +8,9 @@ use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
 use crate::node::NetworkMessage;
-use crate::node::NodeIdentifier;
 use crate::types::ThreadIdentifier;
 
-type Payload =
-    NetworkMessage<GoshBLS, AckData, NackData, AttestationData, WrappedMessage, NodeIdentifier>;
+type Payload = NetworkMessage<GoshBLS, AckData, NackData, AttestationData, WrappedMessage>;
 
 pub enum DispatchError {
     NoRoute(ThreadIdentifier, Payload),
@@ -46,11 +44,12 @@ impl Dispatcher {
     #[allow(clippy::result_large_err)]
     pub fn dispatch(&self, message: Payload) -> anyhow::Result<(), DispatchError> {
         let thread_id = match &message {
-            NetworkMessage::Candidate(candidate_block) => {
+            NetworkMessage::Candidate(candidate_block)
+            | NetworkMessage::ResentCandidate((candidate_block, _)) => {
                 candidate_block.data().get_common_section().thread_id
             }
             // Node entities share one repository, so send ext message only to one node for not to duplicate messages in repo
-            NetworkMessage::ExternalMessage(_) => ThreadIdentifier::default(),
+            NetworkMessage::ExternalMessage((_, thread_id)) => *thread_id,
             NetworkMessage::Ack((_, thread_id)) => *thread_id,
             NetworkMessage::Nack((_, thread_id)) => *thread_id,
             NetworkMessage::BlockAttestation((_, thread_id)) => *thread_id,

@@ -7,6 +7,7 @@ pub mod attestation_processor;
 mod attestations;
 mod block_keeper_system;
 mod block_processing;
+pub mod block_state;
 mod crypto;
 pub mod events;
 mod execution;
@@ -33,6 +34,7 @@ use std::sync::mpsc::Sender;
 
 pub use associated_types::NodeIdentifier;
 pub use associated_types::SignerIndex;
+use http_server::ExtMsgFeedback;
 pub use network_message::NetworkMessage;
 use services::sync::StateSyncService;
 use tvm_types::UInt256;
@@ -59,6 +61,7 @@ use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::utilities::FixedSizeHashSet;
 pub mod shared_services;
+use block_state::repository::BlockStateRepository;
 use parking_lot::Mutex;
 use shared_services::SharedServices;
 
@@ -115,7 +118,6 @@ pub struct Node<
             NackData,
             AttestationData,
             <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-            NodeIdentifier,
         >,
     >,
     tx: Sender<
@@ -125,7 +127,6 @@ pub struct Node<
             NackData,
             AttestationData,
             <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-            NodeIdentifier,
         >,
     >,
     single_tx: Sender<(
@@ -136,7 +137,6 @@ pub struct Node<
             NackData,
             AttestationData,
             <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-            NodeIdentifier,
         >,
     )>,
     raw_block_tx: Sender<Vec<u8>>,
@@ -174,6 +174,7 @@ pub struct Node<
     ack_cache: BTreeMap<BlockSeqNo, Vec<Envelope<GoshBLS, AckData>>>,
     nack_cache: BTreeMap<BlockSeqNo, Vec<Envelope<GoshBLS, NackData>>>,
     thread_id: ThreadIdentifier,
+    feedback_sender: Sender<Vec<ExtMsgFeedback>>,
     // Note: hack. check usage
     pub is_spawned_from_node_sync: bool,
     nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
@@ -181,6 +182,8 @@ pub struct Node<
     // Note: signer index map is initially empty,
     // it is filled after BK epoch contract deploy or loaded from zerostate
     signer_index_map: BTreeMap<BlockSeqNo, SignerIndex>,
+
+    blocks_states: BlockStateRepository,
 }
 
 impl<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
@@ -234,7 +237,6 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                 NackData,
                 AttestationData,
                 <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-                NodeIdentifier,
             >,
         >,
         tx: Sender<
@@ -244,7 +246,6 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                 NackData,
                 AttestationData,
                 <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-                NodeIdentifier,
             >,
         >,
         single_tx: Sender<(
@@ -255,7 +256,6 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                 NackData,
                 AttestationData,
                 <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-                NodeIdentifier,
             >,
         )>,
         raw_block_tx: Sender<Vec<u8>>,
@@ -267,8 +267,10 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         block_keeper_rng: TRandomGenerator,
         producer_election_rng: TRandomGenerator,
         thread_id: ThreadIdentifier,
+        feedback_sender: Sender<Vec<ExtMsgFeedback>>,
         update_producer_group: bool,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
+        blocks_states: BlockStateRepository,
     ) -> Self {
         let signer_map = BTreeMap::from_iter({
 
@@ -329,9 +331,11 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             ack_cache: Default::default(),
             nack_cache: Default::default(),
             thread_id,
+            feedback_sender,
             is_spawned_from_node_sync: false,
             nack_set_cache: Arc::clone(&nack_set_cache),
             signer_index_map: signer_map,
+            blocks_states,
         };
         // let (last_finalized_block_id, _last_finalized_block_seq_no) = res.repository.select_thread_last_finalized_block(&thread_id).expect("Failed to load last finalized block data");
         // if last_finalized_block_id != BlockIdentifier::default() {

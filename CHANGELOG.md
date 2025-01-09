@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.3] – 2024-01-08
+
+## New
+- `bm/v2/messages` api with synchronous message processing
+
+## Improvements
+- Refactor block state markers and state storage organization
+  
+## Fixed
+- Attestation sending on rotate
+
 ## [0.3.2] – 2024-12-30
 
 ## New

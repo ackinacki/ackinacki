@@ -13,6 +13,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use database::documents_db::DocumentsDb;
+use http_server::ExtMsgFeedback;
 use parking_lot::Mutex;
 use serde_json::Value;
 use tracing::instrument;
@@ -57,10 +58,12 @@ pub trait BlockProducerProcess {
     type Ack: BLSSignedEnvelope;
     type Nack: BLSSignedEnvelope;
 
+    #[allow(clippy::too_many_arguments)]
     fn start_thread_production(
         &mut self,
         thread_id: &ThreadIdentifier,
         prev_block_id: &BlockIdentifier,
+        feedback_sender: Sender<Vec<ExtMsgFeedback>>,
         received_acks: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, AckData>>>>,
         received_nacks: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, NackData>>>>,
         block_keeper_sets: BlockKeeperRing,
@@ -179,6 +182,7 @@ impl TVMBlockProducerProcess {
             Mutex<Vec<Envelope<<Self as BlockProducerProcess>::BLSSignatureScheme, NackData>>>,
         >,
         block_keeper_sets: BlockKeeperRing,
+        feedback_sender: Sender<Vec<ExtMsgFeedback>>,
     ) {
         tracing::trace!("Start block production process iteration");
 
@@ -315,7 +319,8 @@ impl TVMBlockProducerProcess {
                         thread_id_clone,
                         initial_state_clone,
                         refs.iter(),
-                        control_rx
+                        control_rx,
+                        feedback_sender,
                     )
                     .expect("Failed to produce block");
 
@@ -416,6 +421,7 @@ impl BlockProducerProcess for TVMBlockProducerProcess {
         &mut self,
         thread_id: &ThreadIdentifier,
         prev_block_id: &BlockIdentifier,
+        feedback_sender: Sender<Vec<ExtMsgFeedback>>,
         received_acks: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, AckData>>>>,
         received_nacks: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, NackData>>>>,
         block_keeper_sets: BlockKeeperRing,
@@ -520,6 +526,7 @@ impl BlockProducerProcess for TVMBlockProducerProcess {
                         received_acks.clone(),
                         received_nacks.clone(),
                         block_keeper_sets.clone(),
+                        feedback_sender.clone(),
                     );
                     if let Ok(()) = external_control_rx.try_recv() {
                         trace_span!("store optimistic").in_scope(|| {
@@ -733,6 +740,9 @@ mod tests {
     fn test_producer() -> anyhow::Result<()> {
         crate::tests::init_db("./tmp/node-data-5").expect("Failed to init DB 1");
         let config = crate::tests::default_config(1);
+        let blocks_states = crate::node::block_state::repository::BlockStateRepository::new(
+            PathBuf::from("./tmp/node-data-5/block-state"),
+        );
         let repository = RepositoryImpl::new(
             PathBuf::from("./tmp/node-data-5"),
             Some(config.local.zerostate_path.clone()),
@@ -740,6 +750,7 @@ mod tests {
             SharedServices::test_start(RoutingService::stub().0),
             BlockKeeperRing::default(),
             Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
+            blocks_states,
         );
         let (router, _router_rx) = crate::multithreading::routing::service::RoutingService::stub();
         let mut production_process = TVMBlockProducerProcess::new(
@@ -753,10 +764,12 @@ mod tests {
         let thread_id = ThreadIdentifier::default();
         let (prev_block_id, _prev_block_seq_no) =
             repository.select_thread_last_main_candidate_block(&thread_id)?;
+        let (feedback_sender, _feedback_receiver) = std::sync::mpsc::channel();
 
         production_process.start_thread_production(
             &thread_id,
             &prev_block_id,
+            feedback_sender,
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
             BlockKeeperRing::default(),

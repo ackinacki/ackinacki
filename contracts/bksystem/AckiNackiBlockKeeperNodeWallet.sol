@@ -168,7 +168,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         SignerIndex(BlockKeeperLib.calculateSignerIndexAddress(_code[m_SignerIndexCode], signerIndex, _root)).destroy{value: 0.1 ton, flag: 1}();
     }
 
-    function sendBlockKeeperRequestWithStakeContinue(bytes bls_pubkey, varuint32 stake, uint64 seqNoStartOld, uint16 signerIndex) public onlyOwnerPubkeyArray([_owner_pubkey, _service_key.getOrDefault()]) accept saveMsg {
+    function sendBlockKeeperRequestWithStakeContinue(bytes bls_pubkey, varuint32 stake, uint64 seqNoStartOld, uint16 signerIndex, mapping(uint8 => string) ProxyList) public onlyOwnerPubkeyArray([_owner_pubkey, _service_key.getOrDefault()]) accept saveMsg {
         getMoney();
         TvmBuilder b;
         b.store(seqNoStartOld);
@@ -181,7 +181,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         _stakesCnt += 1;
         mapping(uint32 => varuint32) data_cur;
         data_cur[CURRENCIES_ID] = stake;
-        BlockKeeperContractRoot(_root).receiveBlockKeeperRequestWithStakeFromWalletContinue{value: 0.1 vmshell, currencies: data_cur, flag: 1} (_owner_pubkey, bls_pubkey, seqNoStartOld, signerIndex);
+        BlockKeeperContractRoot(_root).receiveBlockKeeperRequestWithStakeFromWalletContinue{value: 0.1 vmshell, currencies: data_cur, flag: 1} (_owner_pubkey, bls_pubkey, seqNoStartOld, signerIndex, ProxyList);
     } 
 
     function deployPreEpochContract(uint32 epochDuration, uint64 epochCliff, uint64 waitStep, bytes bls_pubkey, uint16 signerIndex, mapping(uint8 => string) ProxyList) public view senderIs(_root) accept  {
@@ -204,7 +204,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         } (waitStep, epochDuration, bls_pubkey, _code, _walletId, signerIndex, ProxyList);
     }
 
-    function deployBlockKeeperContractContinue(uint32 epochDuration, uint64 waitStep, uint64 seqNoStartold, bytes bls_pubkey, uint16 signerIndex) public view senderIs(_root) accept  {
+    function deployBlockKeeperContractContinue(uint32 epochDuration, uint64 waitStep, uint64 seqNoStartold, bytes bls_pubkey, uint16 signerIndex, mapping(uint8 => string) ProxyList) public view senderIs(_root) accept  {
         getMoney();
         mapping(uint32 => varuint32) data_cur;
         data_cur[CURRENCIES_ID] = msg.currencies[CURRENCIES_ID];
@@ -213,7 +213,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         uint256 stakeHash = tvm.hash(b.toCell());
         delete b;
         require(_activeStakes.exists(stakeHash) == true, ERR_STAKE_DIDNT_EXIST);
-        BlockKeeperEpoch(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, seqNoStartold)).continueStake{value: 0.1 vmshell, flag: 1, currencies: data_cur}(epochDuration, waitStep, bls_pubkey, signerIndex);    
+        BlockKeeperEpoch(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, seqNoStartold)).continueStake{value: 0.1 vmshell, flag: 1, currencies: data_cur}(epochDuration, waitStep, bls_pubkey, signerIndex, ProxyList);    
     }
 
     function deployBlockKeeperContractContinueAfterDestroy(uint32 epochDuration, uint64 waitStep, bytes bls_pubkey, uint64 seqNoStartOld, uint32 reputationTime, uint16 signerIndex) public view senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, seqNoStartOld)) accept  {

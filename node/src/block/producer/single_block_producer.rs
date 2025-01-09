@@ -4,8 +4,10 @@
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
+use http_server::ExtMsgFeedback;
 use tracing::instrument;
 use tracing::trace_span;
 use tvm_block::GetRepresentationHash;
@@ -51,6 +53,7 @@ pub trait BlockProducer {
         parent_block_state: Self::OptimisticState,
         refs: I,
         control_rx_stop: Receiver<()>,
+        sender_feedback: Sender<Vec<ExtMsgFeedback>>,
     ) -> anyhow::Result<(AckiNackiBlock, Self::OptimisticState, Vec<(Cell, ActiveThread)>)>
     where
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
@@ -93,6 +96,7 @@ impl BlockProducer for TVMBlockProducer {
         parent_block_state: Self::OptimisticState,
         refs: I,
         control_rx_stop: Receiver<()>,
+        feedback_sender: Sender<Vec<ExtMsgFeedback>>,
     ) -> anyhow::Result<(AckiNackiBlock, Self::OptimisticState, Vec<(Cell, ActiveThread)>)>
     where
         // TODO: remove Clone and change to Into<>
@@ -158,14 +162,15 @@ impl BlockProducer for TVMBlockProducer {
             self.node_config.clone(),
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
-        let (mut prepared_block, processed_ext_msgs_cnt) = producer.build_block(
-            self.message_queue.clone(),
-            &self.blockchain_config,
-            active_threads,
-            self.epoch_block_keeper_data.clone(),
-            None,
-            white_list_of_slashing_messages_hashes,
-        )?;
+        let (mut prepared_block, processed_ext_msgs_cnt, mut ext_message_feedbacks) = producer
+            .build_block(
+                self.message_queue.clone(),
+                &self.blockchain_config,
+                active_threads,
+                self.epoch_block_keeper_data.clone(),
+                None,
+                white_list_of_slashing_messages_hashes,
+            )?;
         tracing::trace!(target: "node", "block generated successfully");
         Self::print_block_info(&prepared_block.block);
 
@@ -175,6 +180,12 @@ impl BlockProducer for TVMBlockProducer {
 
         let res = trace_span!("post production").in_scope(|| {
             let produced_block_id = prepared_block.state.block_id.clone();
+            if !ext_message_feedbacks.is_empty() {
+                for feedback in &mut ext_message_feedbacks {
+                    feedback.block_hash = Some(produced_block_id.to_string());
+                }
+                let _ = feedback_sender.send(ext_message_feedbacks);
+            }
             let proposed_action = {
                 match self.shared_services.exec(|e| {
                     let result = e.load_balancing.check(

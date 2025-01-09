@@ -222,7 +222,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Ok(msg) => match msg {
-                    NetworkMessage::Candidate(ref candidate_block) => {
+                    NetworkMessage::Candidate(ref candidate_block) | NetworkMessage::ResentCandidate((ref candidate_block, _)) => {
                         tracing::info!("[synchronizing] Incoming candidate block");
                         tracing::info!(
                             "[synchronizing] Incoming block candidate: {}, signatures: {:?}",
@@ -453,7 +453,13 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         });
         self.shared_services.on_block_appended(block.data());
         self.repository.mark_block_as_accepted_as_main_candidate(&block_id, &current_thread_id)?;
-        self.repository.mark_block_as_finalized(block, self.block_keeper_sets.clone(), Arc::clone(&self.nack_set_cache))?;
+        self.repository.mark_block_as_finalized(
+            block,
+            self.block_keeper_sets.clone(),
+            Arc::clone(&self.nack_set_cache),
+            self.blocks_states
+                .get(block_id)?
+        )?;
         self.shared_services.on_block_finalized(
             block.data(),
             &mut self.repository

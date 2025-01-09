@@ -68,10 +68,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         // Verify block
         let is_block_already_verified = self.repository.is_block_verified(&block_id)?;
         if is_block_already_verified
-            || self.is_this_node_a_producer_for(
-                &thread_id,
-                &block.seq_no(),
-            )
+            || block.get_common_section().producer_id == self.config.local.node_id
             || thread_id != self.thread_id
         {
             return Ok(false);

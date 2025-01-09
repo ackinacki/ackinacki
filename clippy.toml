@@ -1,7 +1,7 @@
 # :schema
 # There is also a scripts/clippy_wasm/clippy.toml which forbids some methods that are not available in wasm.
 
-msrv = "1.80"
+msrv = "1.83"
 
 allow-unwrap-in-tests = true
 type-complexity-threshold = 2000 # for our needs long types are fine

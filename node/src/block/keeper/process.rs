@@ -49,7 +49,6 @@ pub trait BlockKeeperProcess {
     fn apply_block<T: Into<Self::CandidateBlock>>(&mut self, block: T) -> anyhow::Result<()>;
     // This is so wrong. Result of this function is a subject to raise condition!
     fn is_candidate_block_can_be_applied(&self, parent_block_id: &BlockIdentifier) -> bool;
-    fn clear_queue(&mut self) -> anyhow::Result<()>;
     fn get_verification_results(&self) -> anyhow::Result<Vec<(BlockIdentifier, BlockSeqNo, bool)>>;
     fn get_last_state(&self) -> Option<Self::OptimisticState>;
 }
@@ -220,7 +219,7 @@ impl TVMBlockKeeperProcess {
                     }).expect("Failed to save cross-thread ref data");
 
                     // Note: mark block as verified to be sure it's cross thread refs were processed
-                    repository.mark_block_as_verified(&next_block.identifier()).expect("Failed to mark block as verified");
+                    // repository.mark_block_as_verified(&next_block.identifier()).expect("Failed to mark block as verified");
                     {
                         let mut saved_state = operational_state.lock();
                         *saved_state = Some(prev_state.clone());
@@ -302,13 +301,6 @@ impl BlockKeeperProcess for TVMBlockKeeperProcess {
             }
             false
         }
-    }
-
-    fn clear_queue(&mut self) -> anyhow::Result<()> {
-        tracing::trace!("Clear keeper process queue");
-        let mut blocks_queue = self.blocks_queue.lock();
-        blocks_queue.clear();
-        Ok(())
     }
 
     fn get_verification_results(&self) -> anyhow::Result<Vec<(BlockIdentifier, BlockSeqNo, bool)>> {

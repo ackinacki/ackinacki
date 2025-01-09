@@ -20,7 +20,6 @@ use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::Repository;
 use crate::types::next_seq_no;
 use crate::types::AckiNackiBlock;
-use crate::types::BlockSeqNo;
 
 const RESEND_ATTESTATION_BLOCK_DIFF: u32 = 10;
 
@@ -185,14 +184,34 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
     }
 
     pub(crate) fn resend_attestations_on_bp_change(
-        &self,
-        _block_seq_no: BlockSeqNo,
+        &mut self,
         bp_id: NodeIdentifier,
     ) -> anyhow::Result<()> {
-        if let Some(sent_attestations) = self.sent_attestations.get(&self.thread_id) {
-            for (_, attestation) in sent_attestations {
-                tracing::trace!("Resend attestation to the new producer: {:?}", attestation);
-                self.send_block_attestation(bp_id, attestation.clone())?;
+        // TODO: resend attestations for all block after finalized, this could be non-optimal and
+        // needs fixing
+        let thread_id = self.thread_id;
+        let (mut block_id, mut block_seq_no) = self.repository.select_thread_last_finalized_block(&thread_id)?;
+        loop {
+            let next_block_seq_no = next_seq_no(block_seq_no);
+            let block_descendants = self
+                .repository
+                .list_blocks_with_seq_no(&next_block_seq_no, &self.thread_id)?
+                .into_iter()
+                .filter(|e| e.data().parent() == block_id)
+                .filter(|e| self.is_candidate_block_signed_by_this_node(e).expect("Check should not fail"))
+                .collect::<Vec<<Self as NodeAssociatedTypes>::CandidateBlock>>();
+            match block_descendants.len() {
+                0 => break,
+                1 => {
+                    let block = block_descendants[0].clone();
+                    block_id = block.data().identifier().clone();
+                    block_seq_no = block.data().seq_no();
+                    self.generate_and_send_block_attestation(&block, bp_id)?;
+                }
+                _ => {
+                    // TODO: this situation can be valid in case of fork
+                    panic!("Node has signed several blocks with the same seq no")
+                }
             }
         }
         Ok(())
@@ -217,5 +236,30 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             self.try_finalize_blocks()?;
         }
         Ok(BlockStatus::Ok)
+    }
+
+    pub(crate) fn generate_and_send_block_attestation(&mut self, block: &<Self as NodeAssociatedTypes>::CandidateBlock, destination_node_id: NodeIdentifier) -> anyhow::Result<()> {
+        let thread_id = self.thread_id;
+        let block_attestation = <Self as NodeAssociatedTypes>::BlockAttestation::create(
+            block.aggregated_signature().clone(),
+            block.clone_signature_occurrences(),
+            AttestationData {
+                block_id: block.data().identifier(),
+                block_seq_no: block.data().seq_no(),
+            }
+        );
+        self.send_block_attestation(destination_node_id, block_attestation.clone())?;
+        let sent_attestations_entry = self.sent_attestations
+            .entry(thread_id)
+            .or_default();
+        if sent_attestations_entry.iter().any(|(seq_no, attestation)| {
+            *seq_no == block.data().seq_no() && attestation.aggregated_signature() == block.aggregated_signature()
+        }) {
+            tracing::trace!("Insert to sent attestations: {:?} {:?}", block.data().seq_no(), block_attestation.data());
+            sent_attestations_entry
+                .push((block.data().seq_no(), block_attestation));
+            self.repository.dump_sent_attestations(self.sent_attestations.clone())?;
+        }
+        Ok(())
     }
 }

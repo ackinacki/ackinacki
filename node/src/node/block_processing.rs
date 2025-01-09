@@ -183,7 +183,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         if parent_block_id != BlockIdentifier::default() {
             let parent_block = self.repository.get_block_from_repo_or_archive(&parent_block_id)?;
             if candidate_block.data().get_common_section().producer_id != parent_block.data().get_common_section().producer_id {
-                self.resend_attestations_on_bp_change(block_seq_no, candidate_block.data().get_common_section().producer_id)?;
+                self.resend_attestations_on_bp_change(candidate_block.data().get_common_section().producer_id)?;
             }
         }
 

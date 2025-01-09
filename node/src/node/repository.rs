@@ -187,7 +187,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         Ok(None)
     }
 
-    pub(crate) fn _is_candidate_block_older_than_the_last_finalized_block(
+    pub(crate) fn is_candidate_block_older_than_the_last_finalized_block(
         &self,
         candidate_block: &<Self as NodeAssociatedTypes>::CandidateBlock,
     ) -> anyhow::Result<bool> {
@@ -415,7 +415,12 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             }
         }
         tracing::info!("on_block_finalized: {:?} {:?}", block_seq_no, block_id);
-        self.repository.mark_block_as_finalized(block, block_keeper_sets.clone(), Arc::clone(&self.nack_set_cache))?;
+        self.repository.mark_block_as_finalized(
+            block,
+            block_keeper_sets.clone(),
+            Arc::clone(&self.nack_set_cache),
+            self.blocks_states.get(block_id.clone())?
+        )?;
         tracing::info!("Block marked as finalized: {:?} {:?} {:?}", block_seq_no, block_id, thread_id);
         let block = self.repository.get_block(&block_id)?.expect("Just finalized");
         tracing::info!(

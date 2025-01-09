@@ -1,6 +1,5 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
-
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::path::PathBuf;
@@ -31,6 +30,7 @@ use node::helper::shutdown_tracing;
 use node::multithreading::routing::service::Command;
 use node::multithreading::routing::service::RoutingService;
 use node::node::attestation_processor::AttestationProcessorImpl;
+use node::node::block_state::repository::BlockStateRepository;
 use node::node::services::sync::ExternalFileSharesBased;
 use node::repository::Repository;
 use node::services::blob_sync;
@@ -141,6 +141,7 @@ async fn execute(args: Args) -> anyhow::Result<()> {
         { NetworkConfig::new(config.network.bind.try_to_socket_addr()?, gossip_handle.chitchat()) };
     let network = BasicNetwork::from(network_config.clone());
     let (incoming_messages_sender, incoming_messages_receiver) = std::sync::mpsc::channel();
+    let (ext_messages_sender, ext_messages_receiver) = std::sync::mpsc::channel();
     let (broadcast_sender, single_sender) =
         network.start(incoming_messages_sender.clone(), config.network.send_buffer_size).await?;
 
@@ -205,8 +206,8 @@ async fn execute(args: Args) -> anyhow::Result<()> {
     let config_clone = config.clone();
     // let mut node_execute_handlers = JoinSet::new();
     // TODO: check that inner_service_loop is active
-    let (routing, routing_rx, _inner_service_loop) =
-        RoutingService::new(incoming_messages_receiver);
+    let (routing, routing_rx, _inner_service_loop, _inner_ext_messages_loop) =
+        RoutingService::new(incoming_messages_receiver, ext_messages_receiver);
     let repo_path = PathBuf::from("./data");
 
     let mut node_shared_services =
@@ -218,6 +219,7 @@ async fn execute(args: Args) -> anyhow::Result<()> {
             .start()
             .expect("Blob sync service start");
     let nack_set_cache = Arc::new(Mutex::new(FixedSizeHashSet::new(DEFAULT_NACK_SIZE_CACHE)));
+    let blocks_states = BlockStateRepository::new(repo_path.clone().join("blocks-states"));
     let repository = RepositoryImpl::new(
         repo_path.clone(),
         zerostate_path.clone(),
@@ -225,23 +227,27 @@ async fn execute(args: Args) -> anyhow::Result<()> {
         node_shared_services.clone(),
         block_keeper_sets.clone(),
         Arc::clone(&nack_set_cache),
+        blocks_states.clone(),
     );
     let zerostate_threads: Vec<ThreadIdentifier> = zerostate.list_threads().cloned().collect();
 
     for thread_id in &zerostate_threads {
+        let (last_finalized_id, _) = repository.select_thread_last_finalized_block(thread_id)?;
+        tracing::trace!(
+            "init thread: thread_id={:?} last_finalized_id={:?}",
+            thread_id,
+            last_finalized_id
+        );
         node_shared_services.exec(|services| {
             // services.dependency_tracking.init_thread(*thread_id, BlockIdentifier::default());
             // TODO: check if we have to pass all threads in set
             services.threads_tracking.init_thread(
-                BlockIdentifier::default(),
+                last_finalized_id.clone(),
                 HashSet::from_iter(vec![*thread_id].into_iter()),
                 &mut (&mut services.router, &mut services.load_balancing),
             );
             // TODO: the same must happen after a node sync.
-            services
-                .thread_sync
-                .on_block_finalized(&BlockIdentifier::default(), thread_id)
-                .unwrap();
+            services.thread_sync.on_block_finalized(&last_finalized_id, thread_id).unwrap();
         });
     }
     let repository_clone = repository.clone();
@@ -252,7 +258,7 @@ async fn execute(args: Args) -> anyhow::Result<()> {
     );
     let (routing, _inner_service_thread) = RoutingService::start(
         (routing, routing_rx),
-        move |parent_block_id, thread_id, thread_receiver| {
+        move |parent_block_id, thread_id, thread_receiver, feedback_sender| {
             let blockchain_config_path = &config.local.blockchain_config_path;
             tracing::trace!("start node for thread: {thread_id:?}");
 
@@ -318,7 +324,6 @@ async fn execute(args: Args) -> anyhow::Result<()> {
                 config.network.shared_state_retry_download_timeout_millis,
             );
             sync_state_service.download_deadline_timeout = config.global.node_joining_timeout;
-
             let node = Node::new(
                 node_shared_services.clone(),
                 sync_state_service,
@@ -337,8 +342,10 @@ async fn execute(args: Args) -> anyhow::Result<()> {
                 block_keeper_rng.clone(),
                 producer_election_rng.clone(),
                 *thread_id,
+                feedback_sender,
                 parent_block_id.is_some(),
                 Arc::clone(&nack_set_cache),
+                blocks_states.clone(),
             );
 
             Ok(node)
@@ -374,13 +381,31 @@ async fn execute(args: Args) -> anyhow::Result<()> {
     };
 
     let config = config_clone;
+    let mut network_clone = network_config.clone();
+    let repo_clone = repository.clone();
     let http_server_handler: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
+        // Sync required by a bound in `salvo::Handler`
+        let repo = Arc::new(Mutex::new(repo_clone));
         let server = http_server::WebServer::new(
             config.network.api_addr,
             config.local.external_state_share_local_base_dir,
             Arc::new(get_block_fn),
-            incoming_messages_sender,
-            into_external_message,
+            ext_messages_sender,
+            |arg0: tvm_block::Message, arg1: [u8; 34]| into_external_message(arg0, arg1.into()),
+            move |thread_id| {
+                let fut_nodes = async { network_clone.alive_nodes(false).await };
+                let _ = futures::executor::block_on(fut_nodes)
+                    .expect("Failed to update nodes addresses");
+
+                let guarded_repo = repo.lock();
+                let bp_id_for_thread_map = guarded_repo.get_nodes_by_threads();
+                drop(guarded_repo);
+
+                match bp_id_for_thread_map.get(&thread_id.into()) {
+                    Some(Some(bp_id)) => network_clone.nodes.get(bp_id).map(|addr| addr.to_owned()),
+                    _ => None,
+                }
+            },
         );
         server.run().await.await;
         anyhow::bail!("HTTP server supposed to work forever");
@@ -413,18 +438,18 @@ async fn execute(args: Args) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn into_external_message<BLS, TAck, TNack, TAttestation, TNodeIdentifier>(
+fn into_external_message<BLS, TAck, TNack, TAttestation>(
     message: tvm_block::Message,
-) -> anyhow::Result<NetworkMessage<BLS, TAck, TNack, TAttestation, WrappedMessage, TNodeIdentifier>>
+    thread_id: ThreadIdentifier,
+) -> anyhow::Result<NetworkMessage<BLS, TAck, TNack, TAttestation, WrappedMessage>>
 where
     BLS: node::bls::BLSSignatureScheme,
     BLS::Signature: Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
     TAck: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TNack: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
     TAttestation: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TNodeIdentifier: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
 {
     anyhow::ensure!(!message.is_internal(), "An issue with the Message content");
     let message = WrappedMessage { message };
-    Ok(NetworkMessage::ExternalMessage(message))
+    Ok(NetworkMessage::ExternalMessage((message, thread_id)))
 }

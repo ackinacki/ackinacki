@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
 
+use actix_web::middleware;
 use actix_web::middleware::Logger;
 use actix_web::web;
 use actix_web::App;
@@ -57,6 +58,7 @@ impl MessageRouter {
         HttpServer::new(move || {
             let bp_resolver_clone = bp_resolver.clone();
             App::new()
+                .wrap(middleware::DefaultHeaders::new().add(("Content-type", "application/json")))
                 .configure(move |cfg| Self::config(cfg, bp_resolver_clone))
                 .wrap(Logger::default())
         })
@@ -91,25 +93,38 @@ impl MessageRouter {
     async fn process_ext_messages(
         node_requests: web::Json<serde_json::Value>,
         bp_resolver: Arc<Mutex<dyn BPResolver>>,
-    ) -> actix_web::Result<String> {
+    ) -> actix_web::Result<web::Json<serde_json::Value>> {
         tracing::trace!(target: "message_router", "Requests received: {}", node_requests);
         let recipients = bp_resolver.lock().resolve();
         tracing::trace!(target: "message_router", "Resolved BPs: {:?}", recipients);
-        let mut result = "Ok. Nothing to do";
+        let mut result = serde_json::json!({});
         for recipient in recipients {
             let url = construct_url(recipient);
             tracing::info!(target: "message_router", "Forwarding requests to: {url}");
             let client = awc::Client::default();
             result = match client.post(&url).send_json(&node_requests).await {
-                Ok(_) => "Ok",
+                Ok(mut response) => {
+                    let body = response.body().await;
+                    tracing::trace!(target: "message_router", "response body: {:?}", body);
+                    match body {
+                        Ok(b) => {
+                            let s = std::str::from_utf8(&b)?;
+                            let response = serde_json::from_str::<serde_json::Value>(s)?;
+                            return Ok(web::Json(response));
+                        }
+                        Err(_) => {
+                            serde_json::json!({"error": "Failed to parse response from the Block Producer"})
+                        }
+                    }
+                }
                 Err(err) => {
                     tracing::error!(target: "message_router", "redirect to {url} error: {err}");
-                    "Error"
+                    serde_json::json!({"error": "Redirection of the message to the Block Producer failed"})
                 }
             }
         }
 
-        Ok(result.to_string())
+        Ok(web::Json(result))
     }
 
     pub fn dump(&self) {

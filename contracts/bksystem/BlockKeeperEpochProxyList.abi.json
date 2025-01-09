@@ -23,6 +23,15 @@
 			]
 		},
 		{
+			"name": "setNewProxyList",
+			"inputs": [
+				{"name":"seqNoStart","type":"uint64"},
+				{"name":"ProxyList","type":"map(uint8,string)"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "toClose",
 			"inputs": [
 				{"name":"seqNoStart","type":"uint64"}

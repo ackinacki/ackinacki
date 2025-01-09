@@ -6,5 +6,4 @@ pub(crate) mod ext_messages;
 pub(crate) mod storage_latest;
 
 pub use blocks::BlocksBlockHandler;
-pub use ext_messages::ExtMessagesHandler;
 pub use storage_latest::StorageLatestHandler;

@@ -84,6 +84,10 @@ pub trait OptimisticState: Send + Clone {
         threads_table: &ThreadsTable,
     ) -> anyhow::Result<()>;
     fn get_account_routing(&mut self, account_id: &AccountId) -> anyhow::Result<AccountRouting>;
+    fn get_thread_for_account(
+        &mut self,
+        account_id: &AccountId,
+    ) -> anyhow::Result<ThreadIdentifier>;
     fn does_routing_belong_to_the_state(
         &mut self,
         account_routing: &AccountRouting,
@@ -237,7 +241,7 @@ impl OptimisticState for OptimisticStateImpl {
         &self,
         repository: &RepositoryImpl,
     ) -> anyhow::Result<Vec<Self::Message>> {
-        let ext_messages = repository.load_ext_messages_queue()?;
+        let ext_messages = repository.load_ext_messages_queue(&self.thread_id)?;
         if ext_messages.queue.is_empty() {
             return Ok(vec![]);
         }
@@ -490,6 +494,14 @@ impl OptimisticState for OptimisticStateImpl {
                 AccountRouting(DAppIdentifier(account_address.clone()), account_address)
             }
         })
+    }
+
+    fn get_thread_for_account(
+        &mut self,
+        account_id: &AccountId,
+    ) -> anyhow::Result<ThreadIdentifier> {
+        let account_routing = self.get_account_routing(account_id)?;
+        Ok(self.threads_table.find_match(&account_routing))
     }
 
     fn does_routing_belong_to_the_state(

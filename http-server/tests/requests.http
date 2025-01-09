@@ -1,0 +1,29 @@
+@port = 3000
+@host = http://localhost
+@v1 = bk/v1
+@v2 = bk/v2
+
+###
+POST {{host}}/{{v1}}/messages HTTP/1.1
+Content-Type: application/json
+
+{}
+
+###
+POST {{host}}/{{v2}}/messages HTTP/1.1
+Content-Type: application/json
+
+{}
+
+###########################################################
+### BAD REQUEST
+POST http://localhost/bm/v2/messages HTTP/1.1
+Content-Type: application/json
+
+[{"id":null,"boc":"te6ccgEBAwEArAAB5YgAIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIE0Ap1G32StJQY1wMVSS6H073lMAQuFickJ4oQkNhnO6gXnNy8Tc0DqyRwn3ID8GKZk5e+daUXkNHwQ/s0F/pwCAAABk/KVdrhnaRx9VWYlaoBAUyAFx8WyMjSLQ03fyvEHCcW980Kl2KbzetO6jSG7KGP+BModzWUAQIAFaAAAAACKF0h26AE","expire":null}]
+
+###
+POST http://localhost/bm/v2/messages HTTP/1.1
+Content-Type: application/json
+
+[{"id":"0pbhyFAfdD5fxNxFBFphbVdx4kvaa4YkLApUoHlFdSQ=","boc":"te6ccgEBAwEArAAB5YgAIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIE0Ap1G32StJQY1wMVSS6H073lMAQuFickJ4oQkNhnO6gXnNy8Tc0DqyRwn3ID8GKZk5e+daUXkNHwQ/s0F/pwCAAABk/KVdrhnaRx9VWYlaoBAUyAFx8WyMjSLQ03fyvEHCcW980Kl2KbzetO6jSG7KGP+BModzWUAQIAFaAAAAACKF0h26AE","expire":null}]

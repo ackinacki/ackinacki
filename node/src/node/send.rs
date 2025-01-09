@@ -78,6 +78,18 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         Ok(())
     }
 
+    pub(crate) fn broadcast_candidate_block_that_was_possibly_produced_by_another_node(
+        &self,
+        candidate_block: <Self as NodeAssociatedTypes>::CandidateBlock,
+    ) -> anyhow::Result<()> {
+        tracing::info!(
+            "rebroadcasting block: {}",
+            candidate_block,
+        );
+        self.tx.send(NetworkMessage::ResentCandidate((candidate_block, self.config.local.node_id)))?;
+        Ok(())
+    }
+
     pub(crate) fn send_candidate_block(
         &self,
         candidate_block: <Self as NodeAssociatedTypes>::CandidateBlock,

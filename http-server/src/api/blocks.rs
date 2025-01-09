@@ -1,3 +1,6 @@
+// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+//
+
 use std::sync::Arc;
 
 use salvo::prelude::*;
@@ -26,7 +29,7 @@ impl Handler for BlocksBlockHandler {
         let _v: Vec<u8> = Vec::new();
         let id = req.param::<Vec<u8>>("id").unwrap();
 
-        tracing::info!("id: {:?}", id);
+        tracing::info!(target: "http_server", "id: {:?}", id);
 
         let _ = (self.get_block_by_id)(id.clone()).unwrap();
         // res.write_body(v);

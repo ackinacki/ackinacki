@@ -7,11 +7,13 @@ license-file.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+hex.workspace = true
 rcgen.workspace = true
 salvo.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+serde_with.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 tvm_block.workspace = true
 tvm_types.workspace = true
-
-serde_with = "3.8.1"

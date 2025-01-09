@@ -380,7 +380,6 @@ impl BlockchainQuery<'_> {
                     if selection_set.field("in_message").exists() {
                         let in_message =
                             message_loader.load_many(vec![transaction.in_msg.clone()]).await?;
-                        eprintln!("in_message: {in_message:?}");
                         transaction.in_message =
                             in_message.get(&transaction.in_msg).map(ToOwned::to_owned);
                     }

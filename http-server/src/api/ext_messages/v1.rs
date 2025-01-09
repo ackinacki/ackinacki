@@ -1,3 +1,6 @@
+// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+//
+
 use std::marker::PhantomData;
 
 use salvo::prelude::*;
@@ -9,20 +12,33 @@ use tvm_block::Message;
 use tvm_types::base64_decode;
 use tvm_types::UInt256;
 
+use crate::api::ext_messages::ThreadIdentifier;
 use crate::WebServer;
-pub struct ExtMessagesHandler<T, F>(PhantomData<T>, PhantomData<F>);
+pub struct ExtMessagesHandler<TMessage, TMsgConverter, TBPResolver>(
+    PhantomData<TMessage>,
+    PhantomData<TMsgConverter>,
+    PhantomData<TBPResolver>,
+);
 
-impl<T, F> ExtMessagesHandler<T, F> {
+impl<TMessage, TMsgConverter, TBPResolver>
+    ExtMessagesHandler<TMessage, TMsgConverter, TBPResolver>
+{
     pub fn new() -> Self {
-        Self(PhantomData, PhantomData)
+        Self(PhantomData, PhantomData, PhantomData)
     }
 }
 
 #[async_trait]
-impl<T, F> Handler for ExtMessagesHandler<T, F>
+impl<TMessage, TMsgConverter, TBPResolver> Handler
+    for ExtMessagesHandler<TMessage, TMsgConverter, TBPResolver>
 where
-    T: Clone + Send + Sync + 'static + std::fmt::Debug,
-    F: Clone + Send + Sync + 'static + Fn(tvm_block::Message) -> anyhow::Result<T>,
+    TMessage: Clone + Send + Sync + 'static + std::fmt::Debug,
+    TMsgConverter: Clone
+        + Send
+        + Sync
+        + 'static
+        + Fn(tvm_block::Message, [u8; 34]) -> anyhow::Result<TMessage>,
+    TBPResolver: Clone + Send + Sync + 'static + FnMut([u8; 34]) -> Option<std::net::SocketAddr>,
 {
     async fn handle(
         &self,
@@ -31,9 +47,11 @@ where
         res: &mut Response,
         _ctrl: &mut FlowCtrl,
     ) {
-        tracing::info!(target: "node", "Rest service: request got!");
+        tracing::info!(target: "http_server", "Rest service: request got!");
 
-        let Ok(web_server_state) = depot.obtain::<WebServer<T, F>>() else {
+        let Ok(web_server_state) =
+            depot.obtain::<WebServer<TMessage, TMsgConverter, TBPResolver>>()
+        else {
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
             res.render("Web Server state is not found");
             return;
@@ -41,7 +59,7 @@ where
 
         if let Ok(body) = req.parse_json::<Value>().await {
             if let Some(records) = body.as_array() {
-                tracing::trace!(target: "node", "Process request records len: {}", records.len());
+                tracing::trace!(target: "http_server", "Process request records len: {}", records.len());
                 for record in records {
                     let msg_id = record
                         .as_object()
@@ -54,11 +72,11 @@ where
                         .and_then(|val| val.as_str());
                     if let Some(key) = msg_id {
                         if let Some(value) = boc {
-                            tracing::trace!(target: "node", "Process request record");
+                            tracing::trace!(target: "http_server", "Process request record");
                             let message = match parse_message(key, value) {
                                 Ok(m) => m,
                                 Err(err) => {
-                                    tracing::warn!(target: "node", "Error parsing message: {}", err);
+                                    tracing::warn!(target: "http_server", "Error parsing message: {}", err);
 
                                     res.status_code(StatusCode::BAD_REQUEST);
                                     res.render(format!("Error parsing message: {}", err));
@@ -66,23 +84,29 @@ where
                                 }
                             };
                             let convert = &web_server_state.into_external_message;
-                            let external_message: T = match convert(message) {
+                            let external_message: TMessage = match convert(
+                                message,
+                                ThreadIdentifier::default().into(),
+                            ) {
                                 Ok(e) => e,
                                 Err(e) => {
-                                    tracing::warn!(target: "node", "Error queue message. Message was not accepted: {}", e);
+                                    tracing::warn!(target: "http_server", "Error queue message. Message was not accepted: {}", e);
 
                                     res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
                                     res.render("Message was not accepted".to_owned());
                                     return;
                                 }
                             };
-                            tracing::trace!(target: "node", "Process request send message: {:?}", external_message);
-                            match web_server_state.incoming_message_sender.send(external_message) {
+                            tracing::trace!(target: "http_server", "Process request send message: {:?}", external_message);
+                            match web_server_state
+                                .incoming_message_sender
+                                .send((external_message, None))
+                            {
                                 Ok(()) => {
-                                    tracing::trace!(target: "node", "Process request send message result Ok(())");
+                                    tracing::trace!(target: "http_server", "Process request send message result Ok(())");
                                 }
                                 Err(e) => {
-                                    tracing::warn!(target: "node", "Error queue message: {}", e);
+                                    tracing::warn!(target: "http_server", "Error queue message: {}", e);
                                     res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
                                     res.render("Node does not accept messages".to_owned());
                                     return;
@@ -97,14 +121,14 @@ where
             }
         }
 
-        tracing::warn!(target: "node", "Error parsing request's body");
+        tracing::warn!(target: "http_server", "Error parsing request's body");
         res.status_code(StatusCode::BAD_REQUEST);
         res.render("Error parsing request's body");
     }
 }
 
 fn parse_message(id_b64: &str, message_b64: &str) -> Result<Message, String> {
-    tracing::trace!("parse_message {id_b64}");
+    tracing::trace!(target: "http_server", "parse_message {id_b64}");
     let message_bytes = base64_decode(message_b64)
         .map_err(|error| format!("Error decoding base64-encoded message: {}", error))?;
 
@@ -114,7 +138,7 @@ fn parse_message(id_b64: &str, message_b64: &str) -> Result<Message, String> {
     let id = UInt256::from_be_bytes(&id_bytes);
 
     let message_cell = tvm_types::boc::read_single_root_boc(message_bytes).map_err(|error| {
-        tracing::error!(target: "node", "Error deserializing message: {}", error);
+        tracing::error!(target: "http_server", "Error deserializing message: {}", error);
         format!("Error deserializing message: {}", error)
     })?;
 

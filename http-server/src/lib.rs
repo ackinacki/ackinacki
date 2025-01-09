@@ -1,37 +1,48 @@
+// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+//
+
 use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
 use api::blocks::GetBlockFn;
+pub use api::ext_messages::ExtMsgFeedback;
+pub use api::ext_messages::FeedbackError;
+pub use api::ext_messages::FeedbackErrorCode;
 use rcgen::CertifiedKey;
 use salvo::conn::rustls::Keycert;
 use salvo::conn::rustls::RustlsConfig;
 use salvo::prelude::*;
+use tokio::sync::oneshot;
 use tvm_block::Message;
 
 mod api;
 
 #[derive(Clone)]
-pub struct WebServer<T, F> {
+pub struct WebServer<TMessage, TMsgConverter, TBPResolver> {
     pub addr: String,
     pub local_storage_dir: PathBuf,
     pub get_block_by_id: GetBlockFn,
-    pub incoming_message_sender: Sender<T>,
-    pub into_external_message: F,
+    pub incoming_message_sender: Sender<(TMessage, Option<oneshot::Sender<ExtMsgFeedback>>)>,
+    pub into_external_message: TMsgConverter,
+    pub bp_resolver: TBPResolver,
 }
 
-impl<T, F> WebServer<T, F>
+impl<TMessage, TMsgConverter, TBPResolver> WebServer<TMessage, TMsgConverter, TBPResolver>
 where
-    T: Send + Sync + Clone + 'static + std::fmt::Debug,
-    F: Send + Sync + Clone + 'static + Fn(Message) -> anyhow::Result<T>,
+    TMessage: Send + Sync + Clone + 'static + std::fmt::Debug,
+    TMsgConverter:
+        Send + Sync + Clone + 'static + Fn(Message, [u8; 34]) -> anyhow::Result<TMessage>,
+    TBPResolver: Send + Sync + Clone + 'static + FnMut([u8; 34]) -> Option<std::net::SocketAddr>,
 {
     pub fn new(
         addr: impl AsRef<str>,
         local_storage_dir: impl AsRef<Path>,
         get_block_by_id: GetBlockFn,
-        incoming_message_sender: Sender<T>,
-        into_external_message: F,
+        incoming_message_sender: Sender<(TMessage, Option<oneshot::Sender<ExtMsgFeedback>>)>,
+        into_external_message: TMsgConverter,
+        bp_resolver: TBPResolver,
     ) -> Self {
         Self {
             addr: addr.as_ref().to_string(),
@@ -39,6 +50,7 @@ where
             get_block_by_id,
             incoming_message_sender,
             into_external_message,
+            bp_resolver,
         }
     }
 
@@ -57,22 +69,34 @@ where
         //         "boc": String,
         //         "expire"?: Int
         //       }]
-        let ext_messages_router =
-            Router::with_path("messages").post(api::ExtMessagesHandler::<T, F>::new());
+        let ext_messages_router = Router::with_path("messages").post(
+            api::ext_messages::v1::ExtMessagesHandler::<TMessage, TMsgConverter, TBPResolver>::new(
+            ),
+        );
+        let ext_messages_router_v2 = Router::with_path("messages").post(
+            api::ext_messages::v2::ExtMessagesHandler::<TMessage, TMsgConverter, TBPResolver>::new(
+            ),
+        );
 
         // TODO: not implemented yet
         // Returns block by id
         let blocks_router = Router::with_path("blocks/<id>")
             .get(api::BlocksBlockHandler::new(self.get_block_by_id.clone()));
 
-        Router::new() //
-            .hoop(Logger::new())
-            .hoop(affix_state::inject(self.clone()))
-            .path("bk/v1")
+        let router_v1 = Router::with_path("v1")
             .push(storage_latest_router)
             .push(storage_router)
             .push(ext_messages_router)
-            .push(blocks_router)
+            .push(blocks_router);
+
+        let router_v2 = Router::with_path("v2").push(ext_messages_router_v2);
+
+        Router::new() //
+            .hoop(salvo::logging::Logger::new())
+            .hoop(affix_state::inject(self.clone()))
+            .path("bk")
+            .push(router_v1)
+            .push(router_v2)
     }
 
     #[must_use = "server run must be awaited twice (first await is to prepare run call)"]

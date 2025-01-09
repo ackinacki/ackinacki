@@ -33,7 +33,8 @@
 				{"name":"epochDuration","type":"uint32"},
 				{"name":"waitStep","type":"uint64"},
 				{"name":"bls_pubkey","type":"bytes"},
-				{"name":"signerIndex","type":"uint16"}
+				{"name":"signerIndex","type":"uint16"},
+				{"name":"ProxyList","type":"map(uint8,string)"}
 			],
 			"outputs": [
 			]
@@ -90,7 +91,16 @@
 				{"name":"isContinue","type":"bool"},
 				{"name":"walletId","type":"uint256"},
 				{"name":"signerIndex","type":"uint16"},
-				{"name":"signerIndexContinue","type":"uint16"}
+				{"name":"signerIndexContinue","type":"uint16"},
+				{"name":"proxyListContinue","type":"map(uint8,string)"}
+			]
+		},
+		{
+			"name": "getProxyListContinue",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"proxyListContinue","type":"map(uint8,string)"}
 			]
 		},
 		{
@@ -140,6 +150,7 @@
 		{"init":false,"name":"_unixtimeStart","type":"uint32"},
 		{"init":false,"name":"_reputationTime","type":"uint32"},
 		{"init":false,"name":"_signerIndex","type":"uint16"},
-		{"init":false,"name":"_signerIndexContinue","type":"uint16"}
+		{"init":false,"name":"_signerIndexContinue","type":"uint16"},
+		{"init":false,"name":"_proxyListContinue","type":"map(uint8,string)"}
 	]
 }

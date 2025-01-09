@@ -179,8 +179,7 @@ impl BlockVerifier for TVMBlockVerifier {
             self.node_config.clone(),
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
-
-        let (verify_block, _) = producer.build_block(
+        let (verify_block, _, _) = producer.build_block(
             ext_messages,
             &self.blockchain_config,
             vec![],
