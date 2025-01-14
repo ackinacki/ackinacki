@@ -58,6 +58,10 @@ pub struct ExtMsgResponse {
 }
 
 impl ExtMsgResponse {
+    pub fn new_with_error(code: String, message: String, data: Option<ExtMsgErrorData>) -> Self {
+        Self { result: None, error: Some(ExtMsgError::new(code, message, data)) }
+    }
+
     fn set_producers(&mut self, producers: Vec<String>) {
         if let Some(mut result) = self.result.take() {
             result.producers = producers.clone();
@@ -98,6 +102,10 @@ pub struct ExtMsgError {
 }
 
 impl ExtMsgError {
+    fn new(code: String, message: String, data: Option<ExtMsgErrorData>) -> Self {
+        Self { code, message, data }
+    }
+
     fn set_producers(&mut self, producers: Vec<String>) {
         if let Some(mut data) = self.data.take() {
             data.producers = producers;

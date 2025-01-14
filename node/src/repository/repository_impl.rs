@@ -1250,11 +1250,12 @@ impl Repository for RepositoryImpl {
                 )?;
             }
         }
+        self.blocks_states.get(&block_id)?.lock().set_finalized()?;
         Ok(())
     }
 
     fn is_block_finalized(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>> {
-        let markers = self.blocks_states.get(block_id.clone())?;
+        let markers = self.blocks_states.get(block_id)?;
         let result = markers.lock().is_finalized();
         Ok(Some(result))
     }
@@ -1501,14 +1502,9 @@ impl Repository for RepositoryImpl {
         Ok(is_processed)
     }
 
-    // TODO: refactor callers
-    fn mark_block_as_verified(&self, block_id: &BlockIdentifier) -> anyhow::Result<()> {
-        self.blocks_states.get(block_id.clone())?.lock().set_verified()
-    }
-
-    fn is_block_verified(&self, block_id: &BlockIdentifier) -> anyhow::Result<bool> {
-        let result = self.blocks_states.get(block_id.clone())?.lock().is_verified();
-        tracing::trace!(?block_id, "is_block_verified: {result}");
+    fn is_block_already_applied(&self, block_id: &BlockIdentifier) -> anyhow::Result<bool> {
+        let result = self.blocks_states.get(block_id)?.lock().is_block_already_applied();
+        tracing::trace!(?block_id, "is_block_already_applied: {result}");
         Ok(result)
     }
 
@@ -1560,7 +1556,7 @@ impl Repository for RepositoryImpl {
     }
 
     fn is_block_suspicious(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>> {
-        let guarded = self.blocks_states.get(block_id.clone())?;
+        let guarded = self.blocks_states.get(block_id)?;
         let result = guarded.lock().has_unresolved_nacks();
         Ok(Some(result))
     }

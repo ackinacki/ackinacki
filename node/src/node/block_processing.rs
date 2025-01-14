@@ -71,17 +71,19 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
     ) -> anyhow::Result<BlockStatus> {
         let start = std::time::Instant::now();
         let block_id = candidate_block.data().identifier();
+        let block_seq_no = candidate_block.data().seq_no();
+        let thread_id = self.get_block_thread_id(candidate_block)?;
+
         tracing::info!(
             "Incoming block candidate: {}, signatures: {:?}, from_unprocessed: {loaded_from_unprocessed}",
             candidate_block.data(),
             candidate_block.clone_signature_occurrences(),
         );
 
-        let block_seq_no = candidate_block.data().seq_no();
 
-        let is_block_already_verified = self.repository.is_block_verified(&block_id)?;
-        if is_block_already_verified {
-            tracing::trace!("Block was already verified. Skip it.");
+        let is_block_already_applied = self.repository.is_block_already_applied(&block_id)?;
+        if is_block_already_applied {
+            tracing::trace!("Block was already applied. Skip it.");
             return Ok(BlockStatus::Skipped);
         }
 
@@ -90,7 +92,10 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             return Ok(BlockStatus::Skipped);
         }
 
-        if !loaded_from_unprocessed {
+        let is_signatures_verified = {
+            self.blocks_states.get(&block_id)?.lock().is_signatures_verified()
+        };
+        if !is_signatures_verified {
             // Check Wrapped block hash
             let candidate_block_clone = candidate_block.clone();
             let check_hash_thread = std::thread::Builder::new().name("Check wrapped block hash".to_string()).spawn(move || {
@@ -117,10 +122,10 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                 tracing::trace!("Block hash check failed: {}", candidate_block);
                 return Ok(BlockStatus::BadBlock);
             }
+            self.blocks_states.get(&block_id)?.lock().set_signatures_verified()?;
         } else {
-            tracing::trace!("Block was loaded from cache, skip checks");
+            tracing::trace!("Block signatures were already checked, skip checks");
         }
-        let thread_id = self.get_block_thread_id(candidate_block)?;
 
         // Check if this node has already signed block of the same height
         if self.does_this_node_have_signed_block_of_the_same_height(candidate_block)? {
@@ -163,6 +168,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             tracing::trace!("candidate block can't be processed because it's refs are missing: {missing_refs:?}");
             return Ok(BlockStatus::BlockCantBeApplied);
         }
+        self.blocks_states.get(&block_id)?.lock().set_has_all_cross_thread_ref_data_available()?;
 
         // Clear thread gap counter
         self.clear_block_gap(&thread_id);
@@ -212,6 +218,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             candidate_block.clone_signature_occurrences().len()
         );
 
+        // TODO: check if this code should be here,
         let mut merged_block = if stored_block_broadcast_signatures_count > 0 {
             let stored_block = self
                 .repository
@@ -400,7 +407,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             if &key <= last_finalized_seq_no {
                 let blocks = self.unprocessed_blocks_cache.remove(&key).unwrap();
                 for block_id in blocks {
-                    if !self.repository.is_block_verified(&block_id)?{
+                    if !self.repository.is_block_already_applied(&block_id)?{
                         self.repository.erase_block(&block_id, thread_id)?;
                     }
                 }

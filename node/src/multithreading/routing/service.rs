@@ -16,14 +16,9 @@ use super::dispatcher::Dispatcher;
 use super::poisoned_queue::PoisonedQueue as PQueue;
 use crate::block::keeper::process::TVMBlockKeeperProcess;
 use crate::block::producer::process::TVMBlockProducerProcess;
-use crate::bls::GoshBLS;
-use crate::message::WrappedMessage;
-use crate::node::associated_types::AckData;
-use crate::node::associated_types::AttestationData;
-use crate::node::associated_types::NackData;
 use crate::node::attestation_processor::AttestationProcessorImpl;
 use crate::node::services::sync::ExternalFileSharesBased;
-use crate::node::NetworkMessage as NodeNetworkMessage;
+use crate::node::NetworkMessage;
 use crate::node::Node as NodeImpl;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::BlockIdentifier;
@@ -32,9 +27,6 @@ use crate::types::ThreadIdentifier;
 // TODO: make into a config.
 // TODO: calculate an acceptable and balanced value.
 const MAX_POISONED_QUEUE_SIZE: usize = 10000;
-
-type NetworkMessage =
-    NodeNetworkMessage<GoshBLS, AckData, NackData, AttestationData, WrappedMessage>;
 
 type FeedbackMessage = (NetworkMessage, Option<oneshot::Sender<ExtMsgFeedback>>);
 type FeedbackRegistry = HashMap<String, oneshot::Sender<ExtMsgFeedback>>;

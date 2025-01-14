@@ -222,7 +222,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         // let res = self.repository.is_optimistic_state_present(&parent_id);
         let res = self.validation_process.is_candidate_block_can_be_applied(&parent_id)
             || self.repository.is_candidate_block_can_be_applied(candidate_block)
-            || self.repository.is_block_verified(&parent_id)?;
+            || self.repository.is_block_already_applied(&parent_id)?;
         tracing::trace!("is_candidate_block_can_be_applied {:?} parent:{parent_id:?} {res}", candidate_block.data().identifier());
         Ok(res)
     }
@@ -419,7 +419,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             block,
             block_keeper_sets.clone(),
             Arc::clone(&self.nack_set_cache),
-            self.blocks_states.get(block_id.clone())?
+            self.blocks_states.get(&block_id)?
         )?;
         tracing::info!("Block marked as finalized: {:?} {:?} {:?}", block_seq_no, block_id, thread_id);
         let block = self.repository.get_block(&block_id)?.expect("Just finalized");

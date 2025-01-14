@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.4] – 2024-01-13
+
+## New
+- Getter for Signer Index address
+
 ## [0.3.3] – 2024-01-08
 
 ## New

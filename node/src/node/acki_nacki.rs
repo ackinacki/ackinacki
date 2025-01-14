@@ -10,6 +10,7 @@ use tvm_executor::BlockchainConfig;
 
 use crate::block::keeper::process::verify_block;
 use crate::block::keeper::process::BlockKeeperProcess;
+use crate::block::keeper::process::BlockProcessResult;
 use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
 use crate::bls::envelope::BLSSignedEnvelope;
@@ -92,14 +93,23 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                 self.production_process.add_state_to_cache(thread_id, last_state);
             }
         }
-        for (block_id, block_seq_no, result) in verified_blocks {
-            tracing::trace!("block_seq_no: {:?}, result {:?}", block_seq_no, result);
+        for BlockProcessResult {block_id, block_seq_no, was_validated, validation_result} in verified_blocks {
+            let validation_result = if !was_validated {
+                self.blocks_states.get(&block_id)?.lock().set_applied()?;
+                continue;
+            } else if validation_result == Some(true) {
+                self.blocks_states.get(&block_id)?.lock().set_validated()?;
+                true
+            } else {
+                self.blocks_states.get(&block_id)?.lock().set_invalidated()?;
+                false
+            };
+
+            tracing::trace!("block_id: {block_id:?}, block_seq_no: {:?}, result {:?}", block_seq_no, validation_result);
             let candidate_block = self.repository.get_block_from_repo_or_archive(&block_id)?;
             if self.is_this_node_in_block_keeper_set(&block_seq_no, &thread_id) {
-                if result {
-                    // Note: mark block as verified to be sure it's cross thread refs were processed
-                    self.repository.mark_block_as_verified(&block_id)?;
-                    // If validation succeeded send Ack to BP and save it to cache
+                if validation_result {
+                    // If validation succeeded send Ack and attestation to BP and save it to cache
                     if let Some(block_ack) = self.generate_ack(block_id.clone(), block_seq_no)? {
                         let mut received_acks_in = self.received_acks.lock();
                         received_acks_in.push(block_ack.clone());
@@ -313,7 +323,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         }
 
         self.blocks_states
-            .get(block_id.clone())?
+            .get(block_id)?
             .lock()
             .add_suspicious()?;
 
@@ -335,7 +345,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         } else {
             tracing::trace!("invalid nack {:?}", nack);
             self.blocks_states
-                .get(block_id.clone())?
+                .get(block_id)?
                 .lock()
                 .resolve_suspicious()?;
             let block_seq_no = block.data().parent_seq_no();

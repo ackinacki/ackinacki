@@ -24,7 +24,7 @@ pub struct SharedServices {
 
 #[allow(dead_code, non_snake_case)]
 pub struct Container {
-    // Note: dependency_tracking is eplaced with ThreadReferencesState in optimistic states
+    // Note: dependency_tracking is replaced with ThreadReferencesState in optimistic states
     // pub dependency_tracking: DependenciesTrackingService,
     pub threads_tracking: ThreadsTrackingService,
     pub thread_sync: ThreadSyncService,

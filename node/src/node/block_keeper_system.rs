@@ -106,6 +106,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         Ok(())
     }
 
+    // TODO: this update should possibly happen after block finalization
     pub(crate) fn update_block_keeper_set_from_common_section(
         &mut self,
         block: &AckiNackiBlock,

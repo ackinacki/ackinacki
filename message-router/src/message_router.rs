@@ -5,6 +5,7 @@ use std::fmt::Display;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
+use std::time::Duration;
 
 use actix_web::middleware;
 use actix_web::middleware::Logger;
@@ -98,10 +99,10 @@ impl MessageRouter {
         let recipients = bp_resolver.lock().resolve();
         tracing::trace!(target: "message_router", "Resolved BPs: {:?}", recipients);
         let mut result = serde_json::json!({});
+        let client = awc::Client::builder().timeout(Duration::from_secs(5)).finish();
         for recipient in recipients {
             let url = construct_url(recipient);
             tracing::info!(target: "message_router", "Forwarding requests to: {url}");
-            let client = awc::Client::default();
             result = match client.post(&url).send_json(&node_requests).await {
                 Ok(mut response) => {
                     let body = response.body().await;
@@ -112,14 +113,23 @@ impl MessageRouter {
                             let response = serde_json::from_str::<serde_json::Value>(s)?;
                             return Ok(web::Json(response));
                         }
-                        Err(_) => {
-                            serde_json::json!({"error": "Failed to parse response from the Block Producer"})
+                        Err(err) => {
+                            tracing::error!(target: "message_router", "redirection to {url} failed: {err}");
+                            serde_json::json!(http_server::ExtMsgResponse::new_with_error(
+                                "INTERNAL_ERROR".into(),
+                                "Failed to parse the response from the Block Producer".into(),
+                                None,
+                            ))
                         }
                     }
                 }
                 Err(err) => {
-                    tracing::error!(target: "message_router", "redirect to {url} error: {err}");
-                    serde_json::json!({"error": "Redirection of the message to the Block Producer failed"})
+                    tracing::error!(target: "message_router", "redirection to {url} failed: {err}");
+                    serde_json::json!(http_server::ExtMsgResponse::new_with_error(
+                        "INTERNAL_ERROR".into(),
+                        "The message redirection to the Block Producer has failed".into(),
+                        None,
+                    ))
                 }
             }
         }

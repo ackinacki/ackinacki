@@ -40,6 +40,14 @@ use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 use crate::utilities::FixedSizeHashSet;
 
+#[derive(Clone, Debug)]
+pub struct BlockProcessResult {
+    pub block_id: BlockIdentifier,
+    pub block_seq_no: BlockSeqNo,
+    pub was_validated: bool,
+    pub validation_result: Option<bool>,
+}
+
 pub trait BlockKeeperProcess {
     type BLSSignatureScheme;
     type CandidateBlock;
@@ -49,14 +57,14 @@ pub trait BlockKeeperProcess {
     fn apply_block<T: Into<Self::CandidateBlock>>(&mut self, block: T) -> anyhow::Result<()>;
     // This is so wrong. Result of this function is a subject to raise condition!
     fn is_candidate_block_can_be_applied(&self, parent_block_id: &BlockIdentifier) -> bool;
-    fn get_verification_results(&self) -> anyhow::Result<Vec<(BlockIdentifier, BlockSeqNo, bool)>>;
+    fn get_verification_results(&self) -> anyhow::Result<Vec<BlockProcessResult>>;
     fn get_last_state(&self) -> Option<Self::OptimisticState>;
 }
 
 pub struct TVMBlockKeeperProcess {
     // queue_of_blocks_to_process (block, do_verification)
     blocks_queue: Arc<Mutex<VecDeque<(<Self as BlockKeeperProcess>::CandidateBlock, bool)>>>,
-    verified_blocks_with_result: Arc<Mutex<Vec<(BlockIdentifier, BlockSeqNo, bool)>>>,
+    verified_blocks_with_result: Arc<Mutex<Vec<BlockProcessResult>>>,
     handler: std::thread::JoinHandle<()>,
     last_state: Arc<Mutex<Option<OptimisticStateImpl>>>,
 }
@@ -189,7 +197,12 @@ impl TVMBlockKeeperProcess {
                             tracing::trace!("Block verification failed");
                         }
                         let mut dump = verified_blocks_with_result_clone.lock();
-                        dump.push((next_block.identifier(), next_block.seq_no(), verify_res));
+                        dump.push(BlockProcessResult {
+                            block_id: next_block.identifier(),
+                            block_seq_no: next_block.seq_no(),
+                            was_validated: true,
+                            validation_result: Some(verify_res)
+                        });
                         // }
                     } else {
                         // DEBUG!
@@ -210,6 +223,13 @@ impl TVMBlockKeeperProcess {
                             block_keeper_sets.clone(),
                             Arc::clone(&nack_set_cache)
                         ).expect("Failed to apply block");
+                        let mut dump = verified_blocks_with_result_clone.lock();
+                        dump.push(BlockProcessResult {
+                            block_id: next_block.identifier(),
+                            block_seq_no: next_block.seq_no(),
+                            was_validated: false,
+                            validation_result: None,
+                        });
                     }
 
                     let cross_thread_ref_data = CrossThreadRefData::from_ackinacki_block(&next_block, &mut prev_state).expect("Failed to create cross-thread ref data");
@@ -218,8 +238,6 @@ impl TVMBlockKeeperProcess {
                             .set_cross_thread_ref_data(cross_thread_ref_data)
                     }).expect("Failed to save cross-thread ref data");
 
-                    // Note: mark block as verified to be sure it's cross thread refs were processed
-                    // repository.mark_block_as_verified(&next_block.identifier()).expect("Failed to mark block as verified");
                     {
                         let mut saved_state = operational_state.lock();
                         *saved_state = Some(prev_state.clone());
@@ -303,7 +321,7 @@ impl BlockKeeperProcess for TVMBlockKeeperProcess {
         }
     }
 
-    fn get_verification_results(&self) -> anyhow::Result<Vec<(BlockIdentifier, BlockSeqNo, bool)>> {
+    fn get_verification_results(&self) -> anyhow::Result<Vec<BlockProcessResult>> {
         if self.handler.is_finished() {
             anyhow::bail!("Validation process should not stop");
         }

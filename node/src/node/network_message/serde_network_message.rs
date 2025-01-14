@@ -2,33 +2,20 @@
 //
 
 use std::fmt;
-use std::marker::PhantomData;
 
 use serde::de;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::Serializer;
 
-use crate::bls;
-use crate::bls::BLSSignatureScheme;
 use crate::node::NetworkMessage;
-use crate::types::AckiNackiBlock;
 // There is a strum cargo package exists that does similar thing
 // However their implementation and use makes code less readable.
 // Skipping that package with a direct implementation.
 
 const TYPE: &str = "NetworkMessage";
 
-impl<BLS, TAck, TNack, TAttestation, TExternalMessage> Serialize
-    for NetworkMessage<BLS, TAck, TNack, TAttestation, TExternalMessage>
-where
-    BLS: bls::BLSSignatureScheme,
-    BLS::Signature: Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
-    TAck: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TNack: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TAttestation: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TExternalMessage: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-{
+impl Serialize for NetworkMessage {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -55,16 +42,7 @@ where
     }
 }
 
-impl<'de, BLS, TAck, TNack, TAttestation, TExternalMessage> Deserialize<'de>
-    for NetworkMessage<BLS, TAck, TNack, TAttestation, TExternalMessage>
-where
-    BLS: bls::BLSSignatureScheme,
-    BLS::Signature: Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
-    TAck: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TNack: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TAttestation: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TExternalMessage: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-{
+impl<'de> Deserialize<'de> for NetworkMessage {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: de::Deserializer<'de>,
@@ -83,46 +61,21 @@ where
                 "SyncFinalized",
                 "ResentCandidate",
             ],
-            NetworkMessageVisitor::<BLS, TAck, TNack, TAttestation, TExternalMessage>::new(),
+            NetworkMessageVisitor::new(),
         )
     }
 }
 
-struct NetworkMessageVisitor<BLS: BLSSignatureScheme, TAck, TNack, TAttestation, TExternalMessage> {
-    _phantom_data_bls: PhantomData<BLS>,
-    _phantom_data_tblock: PhantomData<AckiNackiBlock>,
-    _phantom_data_tack: PhantomData<TAck>,
-    _phantom_data_tnack: PhantomData<TNack>,
-    _phantom_data_tattestation: PhantomData<TAttestation>,
-    _phantom_data_texternalmessage: PhantomData<TExternalMessage>,
-}
+struct NetworkMessageVisitor;
 
-impl<BLS: BLSSignatureScheme, TAck, TNack, TAttestation, TExternalMessage>
-    NetworkMessageVisitor<BLS, TAck, TNack, TAttestation, TExternalMessage>
-{
+impl NetworkMessageVisitor {
     pub fn new() -> Self {
-        Self {
-            _phantom_data_bls: PhantomData,
-            _phantom_data_tblock: PhantomData,
-            _phantom_data_tack: PhantomData,
-            _phantom_data_tnack: PhantomData,
-            _phantom_data_tattestation: PhantomData,
-            _phantom_data_texternalmessage: PhantomData,
-        }
+        Self {}
     }
 }
 
-impl<'de, BLS, TAck, TNack, TAttestation, TExternalMessage> de::Visitor<'de>
-    for NetworkMessageVisitor<BLS, TAck, TNack, TAttestation, TExternalMessage>
-where
-    BLS: bls::BLSSignatureScheme,
-    BLS::Signature: Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
-    TAck: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TNack: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TAttestation: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TExternalMessage: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-{
-    type Value = NetworkMessage<BLS, TAck, TNack, TAttestation, TExternalMessage>;
+impl<'de> de::Visitor<'de> for NetworkMessageVisitor {
+    type Value = NetworkMessage;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str("a NetworkMessage type.")

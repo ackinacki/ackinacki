@@ -76,7 +76,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
 {
     pub(crate) fn execute_synchronizing(
         &mut self,
-    ) -> anyhow::Result<SynchronizationResult<<Self as NodeAssociatedTypes>::NetworkMessage>> {
+    ) -> anyhow::Result<SynchronizationResult<NetworkMessage>> {
         tracing::trace!("Start synchronization");
         let (synchronization_tx, synchronization_rx) = std::sync::mpsc::channel();
         let mut initial_state: Option<(
@@ -458,7 +458,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             self.block_keeper_sets.clone(),
             Arc::clone(&self.nack_set_cache),
             self.blocks_states
-                .get(block_id)?
+                .get(&block_id)?
         )?;
         self.shared_services.on_block_finalized(
             block.data(),

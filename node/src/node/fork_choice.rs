@@ -24,7 +24,6 @@ use crate::node::Node;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
 use crate::repository::optimistic_state::OptimisticState;
-use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
 use crate::types::compare_hashes;
 use crate::types::AckiNackiBlock;
@@ -243,38 +242,42 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
 
     pub fn check_if_block_should_be_finalized(
         &mut self,
-        thread_id: &ThreadIdentifier,
-        block_seq_no: &BlockSeqNo
+        _thread_id: &ThreadIdentifier,
+        _block_seq_no: &BlockSeqNo
     ) -> anyhow::Result<bool> {
-        tracing::trace!("check_if_block_should_be_finalized start");
-        let mut distributed_votes_cnt = 0;
-        let blocks_with_the_same_seq_no = self.repository.list_blocks_with_seq_no(block_seq_no, &self.thread_id)?;
-        for candidate in &blocks_with_the_same_seq_no {
-            distributed_votes_cnt += candidate.clone_signature_occurrences().len();
-        }
-        let total_bk_cnt = self.get_block_keeper_set(block_seq_no, thread_id).len();
-        tracing::trace!("check_if_block_should_be_finalized distributed_votes_cnt: {distributed_votes_cnt}, total_bk_cnt: {total_bk_cnt}");
-        let (_last_signed_block_id, last_signed_block_seq_no) = self.find_thread_last_block_id_this_node_can_continue(thread_id)?;
-        let block_gap: <BlockSeqNo as std::ops::Sub>::Output = last_signed_block_seq_no - block_seq_no;
-        tracing::trace!("check_if_block_should_be_finalized block_gap: {block_gap}");
-        if distributed_votes_cnt >= total_bk_cnt || block_gap > self.config.global.attestation_validity_block_gap {
-            tracing::trace!("check_if_block_should_be_finalized choose block");
-            let chosen = self.fork_choice_rule(blocks_with_the_same_seq_no)?.expect("After all votes were distributed one block must be chosen");
-            let block_id = chosen.data().identifier().clone();
-            if !self.repository.is_block_processed(&block_id)? {
-                return Ok(false);
-            }
-            let block_ref_data_exists = self.shared_services.exec(|services| {
-                services.cross_thread_ref_data_service.get_cross_thread_ref_data(&block_id).is_ok()
-            });
-            if !block_ref_data_exists {
-                return Ok(false);
-            }
-            self.on_candidate_block_is_accepted_by_majority(chosen.data().clone())?;
-            self.on_block_finalized(&chosen, self.block_keeper_sets.clone())?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        // Note: this logic should be changed, skip for now
+        Ok(false)
+
+        //
+        // tracing::trace!("check_if_block_should_be_finalized start");
+        // let mut distributed_votes_cnt = 0;
+        // let blocks_with_the_same_seq_no = self.repository.list_blocks_with_seq_no(block_seq_no, &self.thread_id)?;
+        // for candidate in &blocks_with_the_same_seq_no {
+        //     distributed_votes_cnt += candidate.clone_signature_occurrences().len();
+        // }
+        // let total_bk_cnt = self.get_block_keeper_set(block_seq_no, thread_id).len();
+        // tracing::trace!("check_if_block_should_be_finalized distributed_votes_cnt: {distributed_votes_cnt}, total_bk_cnt: {total_bk_cnt}");
+        // let (_last_signed_block_id, last_signed_block_seq_no) = self.find_thread_last_block_id_this_node_can_continue(thread_id)?;
+        // let block_gap: <BlockSeqNo as std::ops::Sub>::Output = last_signed_block_seq_no - block_seq_no;
+        // tracing::trace!("check_if_block_should_be_finalized block_gap: {block_gap}");
+        // if distributed_votes_cnt >= total_bk_cnt || block_gap > self.config.global.attestation_validity_block_gap {
+        //     tracing::trace!("check_if_block_should_be_finalized choose block");
+        //     let chosen = self.fork_choice_rule(blocks_with_the_same_seq_no)?.expect("After all votes were distributed one block must be chosen");
+        //     let block_id = chosen.data().identifier().clone();
+        //     if !self.repository.is_block_processed(&block_id)? {
+        //         return Ok(false);
+        //     }
+        //     let block_ref_data_exists = self.shared_services.exec(|services| {
+        //         services.cross_thread_ref_data_service.get_cross_thread_ref_data(&block_id).is_ok()
+        //     });
+        //     if !block_ref_data_exists {
+        //         return Ok(false);
+        //     }
+        //     self.on_candidate_block_is_accepted_by_majority(chosen.data().clone())?;
+        //     self.on_block_finalized(&chosen, self.block_keeper_sets.clone())?;
+        //     Ok(true)
+        // } else {
+        //     Ok(false)
+        // }
     }
 }

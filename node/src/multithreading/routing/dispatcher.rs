@@ -2,15 +2,10 @@ use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 
 use crate::bls::envelope::BLSSignedEnvelope;
-use crate::bls::GoshBLS;
-use crate::message::WrappedMessage;
-use crate::node::associated_types::AckData;
-use crate::node::associated_types::AttestationData;
-use crate::node::associated_types::NackData;
 use crate::node::NetworkMessage;
 use crate::types::ThreadIdentifier;
 
-type Payload = NetworkMessage<GoshBLS, AckData, NackData, AttestationData, WrappedMessage>;
+type Payload = NetworkMessage;
 
 pub enum DispatchError {
     NoRoute(ThreadIdentifier, Payload),

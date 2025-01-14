@@ -17,6 +17,7 @@ use crate::node::associated_types::OptimisticStateFor;
 use crate::node::associated_types::SynchronizationResult;
 use crate::node::attestation_processor::AttestationProcessor;
 use crate::node::services::sync::StateSyncService;
+use crate::node::NetworkMessage;
 use crate::node::Node;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
@@ -141,7 +142,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
 
     pub(crate) fn execute_restarted_producer(
         &mut self,
-    ) -> anyhow::Result<SynchronizationResult<<Self as NodeAssociatedTypes>::NetworkMessage>> {
+    ) -> anyhow::Result<SynchronizationResult<NetworkMessage>> {
         tracing::info!("Restarted producer");
         let mut replay = VecDeque::new();
         for thread in self.list_threads()? {

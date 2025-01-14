@@ -18,6 +18,7 @@ use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 #[cfg(test)]
 use crate::message::message_stub::MessageStub;
+use crate::message::WrappedMessage;
 use crate::node::associated_types::AttestationData;
 use crate::node::block_state::repository::BlockState;
 use crate::node::shared_services::SharedServices;
@@ -396,16 +397,12 @@ impl Repository for RepositoryStub {
         _thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<()>
     where
-        T: Into<<Self::OptimisticState as OptimisticState>::Message>,
+        T: Into<WrappedMessage>,
     {
         todo!()
     }
 
-    fn mark_block_as_verified(&self, _block_id: &BlockIdentifier) -> anyhow::Result<()> {
-        todo!()
-    }
-
-    fn is_block_verified(&self, _block_id: &BlockIdentifier) -> anyhow::Result<bool> {
+    fn is_block_already_applied(&self, _block_id: &BlockIdentifier) -> anyhow::Result<bool> {
         todo!()
     }
 

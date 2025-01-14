@@ -66,7 +66,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         let thread_id = block.get_common_section().thread_id;
         tracing::info!("verify_and_apply_block: {:?} {:?}", block.seq_no(), &block_id);
         // Verify block
-        let is_block_already_verified = self.repository.is_block_verified(&block_id)?;
+        let is_block_already_verified = self.repository.is_block_already_applied(&block_id)?;
         if is_block_already_verified
             || block.get_common_section().producer_id == self.config.local.node_id
             || thread_id != self.thread_id

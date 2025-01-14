@@ -225,7 +225,9 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                 let block_seq_no = envelope.data().seq_no();
                 self.repository.store_block(envelope.clone())?;
                 self.repository.mark_block_as_processed(&block_id)?;
-                self.repository.mark_block_as_verified(&block_id)?;
+                self.blocks_states.get(&block_id)?.lock().set_signatures_verified()?;
+                self.blocks_states.get(&block_id)?.lock().set_validated()?;
+                self.blocks_states.get(&block_id)?.lock().set_has_all_cross_thread_ref_data_available()?;
 
                 self.production_process.write_block_to_db(
                     envelope.clone(),

@@ -1,0 +1,24 @@
+[package]
+name = "derive_setters"
+version = "0.1.6"
+authors = ["Lymia Aluysia <lymia@lymiahugs.com>"]
+edition = "2018"
+
+description = "Rust macro to automatically generates setter methods for a struct's fields."
+
+repository = "https://github.com/Lymia/derive_setters"
+readme = "README.md"
+
+license = "MIT/Apache-2.0"
+
+[lib]
+proc-macro = true
+
+[features]
+nightly = ["proc-macro2/nightly"]
+
+[dependencies]
+darling = "0.20"
+proc-macro2 = "1"
+quote = "1"
+syn = "2"

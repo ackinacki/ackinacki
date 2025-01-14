@@ -31,6 +31,7 @@ pub use cross_thread_ref_repository::CrossThreadRefDataRead;
 pub use cross_thread_ref_repository::CrossThreadRefDataRepository;
 use tvm_types::UInt256;
 
+use crate::message::WrappedMessage;
 use crate::node::block_state::repository::BlockState;
 use crate::repository::repository_impl::RepositoryMetadata;
 use crate::utilities::FixedSizeHashSet;
@@ -177,11 +178,9 @@ pub trait Repository {
         thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<()>
     where
-        T: Into<<Self::OptimisticState as OptimisticState>::Message>;
+        T: Into<WrappedMessage>;
 
-    fn mark_block_as_verified(&self, block_id: &BlockIdentifier) -> anyhow::Result<()>;
-
-    fn is_block_verified(&self, block_id: &BlockIdentifier) -> anyhow::Result<bool>;
+    fn is_block_already_applied(&self, block_id: &BlockIdentifier) -> anyhow::Result<bool>;
 
     fn mark_block_as_processed(&self, block_id: &BlockIdentifier) -> anyhow::Result<()>;
 

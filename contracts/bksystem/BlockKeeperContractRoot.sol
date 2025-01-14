@@ -257,6 +257,10 @@ contract BlockKeeperContractRoot is Modifiers {
         return gosh.calcminstake(uint128(_epochDuration), uint128(block.timestamp - _networkStart), _numberOfActiveBlockKeepers, _numberOfActiveBlockKeepers + 1);
     }   
 
+    function getSignerIndexAddress(uint16 index) external view returns(address) {
+        return BlockKeeperLib.calculateSignerIndexAddress(_code[m_SignerIndexCode], index, address(this));
+    }
+
     function getMinStakeOut(
         uint128 numberOfActiveBlockKeepers1,
         uint128 numberOfActiveBlockKeepers2,

@@ -309,6 +309,15 @@
 			]
 		},
 		{
+			"name": "getSignerIndexAddress",
+			"inputs": [
+				{"name":"index","type":"uint16"}
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
 			"name": "getMinStakeOut",
 			"inputs": [
 				{"name":"numberOfActiveBlockKeepers1","type":"uint128"},

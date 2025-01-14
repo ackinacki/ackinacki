@@ -42,8 +42,6 @@ use node::zerostate::ZeroState;
 use parking_lot::Mutex;
 use rand::prelude::SeedableRng;
 use rand::prelude::SmallRng;
-use serde::Deserialize;
-use serde::Serialize;
 use serde_json::json;
 use tokio::task::JoinHandle;
 
@@ -438,17 +436,10 @@ async fn execute(args: Args) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn into_external_message<BLS, TAck, TNack, TAttestation>(
+fn into_external_message(
     message: tvm_block::Message,
     thread_id: ThreadIdentifier,
-) -> anyhow::Result<NetworkMessage<BLS, TAck, TNack, TAttestation, WrappedMessage>>
-where
-    BLS: node::bls::BLSSignatureScheme,
-    BLS::Signature: Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
-    TAck: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TNack: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-    TAttestation: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
-{
+) -> anyhow::Result<NetworkMessage> {
     anyhow::ensure!(!message.is_internal(), "An issue with the Message content");
     let message = WrappedMessage { message };
     Ok(NetworkMessage::ExternalMessage((message, thread_id)))

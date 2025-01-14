@@ -4,10 +4,10 @@
 use std::marker::PhantomData;
 
 use crate::block::keeper::process::BlockKeeperProcess;
+use crate::block::keeper::process::BlockProcessResult;
 use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
 use crate::types::BlockIdentifier;
-use crate::types::BlockSeqNo;
 
 #[cfg(test)]
 pub struct StubValidationProcess<TBlockProducer: BlockProducer> {
@@ -46,7 +46,7 @@ impl<TBlockProducer: BlockProducer> BlockKeeperProcess for StubValidationProcess
         todo!()
     }
 
-    fn get_verification_results(&self) -> anyhow::Result<Vec<(BlockIdentifier, BlockSeqNo, bool)>> {
+    fn get_verification_results(&self) -> anyhow::Result<Vec<BlockProcessResult>> {
         todo!()
     }
 

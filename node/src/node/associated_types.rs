@@ -21,7 +21,6 @@ use crate::bls::gosh_bls::PubKey;
 use crate::bls::GoshBLS;
 use crate::node::attestation_processor::AttestationProcessor;
 use crate::node::services::sync::StateSyncService;
-use crate::node::NetworkMessage;
 use crate::node::Node;
 use crate::node::UInt256;
 use crate::repository::optimistic_state::OptimisticState;
@@ -142,7 +141,6 @@ pub(crate) trait NodeAssociatedTypes {
     type CandidateBlock: BLSSignedEnvelope;
     type Ack: BLSSignedEnvelope;
     type Nack: BLSSignedEnvelope;
-    type NetworkMessage;
     type BlockAttestation: BLSSignedEnvelope;
 }
 
@@ -193,13 +191,6 @@ for Node<
     type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>;
     type Ack = Envelope<GoshBLS, AckData>;
     type Nack = Envelope<GoshBLS, NackData>;
-    type NetworkMessage = NetworkMessage<
-        GoshBLS,
-        AckData,
-        NackData,
-        AttestationData,
-        <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-    >;
     type BlockAttestation = Envelope<GoshBLS, AttestationData>;
 }
 

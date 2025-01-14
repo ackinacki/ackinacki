@@ -15,6 +15,7 @@ clap.workspace = true
 database.workspace = true
 gosh_bls_lib.workspace = true
 hex.workspace = true
+http-server.workspace = true
 lazy_static.workspace = true
 lockfree.workspace = true
 message-router.workspace = true
@@ -44,10 +45,10 @@ url.workspace = true
 
 bitflags = "2.6.0"
 chrono = { version = "0.4.38", features = ["serde"] }
+derive_setters = { path = "./libs/derive-setters" }
 failure = "0.1.8"
 futures = { version = "0.3.30", default-features = false }
 gossip = { path = "../gossip/" }
-http-server = { path = "../http-server/" }
 itertools = "0.12.0"
 log = "0.4.20"
 lru = "0.12.3"

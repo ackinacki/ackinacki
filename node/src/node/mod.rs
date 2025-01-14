@@ -111,33 +111,11 @@ pub struct Node<
     validation_process: TValidationProcess,
     production_process: TBlockProducerProcess,
     // TODO: @AleksandrS Add priority rx
-    rx: Receiver<
-        NetworkMessage<
-            GoshBLS,
-            AckData,
-            NackData,
-            AttestationData,
-            <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-        >,
-    >,
-    tx: Sender<
-        NetworkMessage<
-            GoshBLS,
-            AckData,
-            NackData,
-            AttestationData,
-            <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-        >,
-    >,
+    rx: Receiver<NetworkMessage>,
+    tx: Sender<NetworkMessage>,
     single_tx: Sender<(
         NodeIdentifier,
-        NetworkMessage<
-            GoshBLS,
-            AckData,
-            NackData,
-            AttestationData,
-            <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-        >,
+        NetworkMessage,
     )>,
     raw_block_tx: Sender<Vec<u8>>,
     #[allow(dead_code)]
@@ -230,33 +208,11 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         production_process: TBlockProducerProcess,
         validation_process: TValidationProcess,
         repository: TRepository,
-        rx: Receiver<
-            NetworkMessage<
-                GoshBLS,
-                AckData,
-                NackData,
-                AttestationData,
-                <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-            >,
-        >,
-        tx: Sender<
-            NetworkMessage<
-                GoshBLS,
-                AckData,
-                NackData,
-                AttestationData,
-                <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-            >,
-        >,
+        rx: Receiver<NetworkMessage>,
+        tx: Sender<NetworkMessage>,
         single_tx: Sender<(
             NodeIdentifier,
-            NetworkMessage<
-                GoshBLS,
-                AckData,
-                NackData,
-                AttestationData,
-                <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message,
-            >,
+            NetworkMessage,
         )>,
         raw_block_tx: Sender<Vec<u8>>,
         pubkey: <GoshBLS as BLSSignatureScheme>::PubKey,

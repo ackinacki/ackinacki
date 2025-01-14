@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
 use api::blocks::GetBlockFn;
+pub use api::ext_messages::ExtMsgError;
 pub use api::ext_messages::ExtMsgFeedback;
+pub use api::ext_messages::ExtMsgResponse;
 pub use api::ext_messages::FeedbackError;
 pub use api::ext_messages::FeedbackErrorCode;
 use rcgen::CertifiedKey;

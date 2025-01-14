@@ -72,9 +72,9 @@ pub struct MutationRoot;
 #[Object]
 impl MutationRoot {
     /// Post external inbound messages to blockchain node.
-    async fn post_requests<'ctx>(
+    async fn post_requests(
         &self,
-        ctx: &Context<'ctx>,
+        ctx: &Context<'_>,
         #[graphql(desc = "List of message requests")] requests: Option<Vec<Option<Request>>>,
     ) -> FieldResult<Option<Vec<Option<String>>>> {
         tracing::trace!("Processing post request...");
@@ -112,9 +112,9 @@ impl MutationRoot {
     }
 
     /// Post external inbound message to blockchain node.
-    async fn send_message<'ctx>(
+    async fn send_message(
         &self,
-        ctx: &Context<'ctx>,
+        ctx: &Context<'_>,
         #[graphql(desc = "List of message requests")] message: Option<ExtMessage>,
     ) -> FieldResult<Option<SendMessageResponse>> {
         tracing::trace!("Processing post request...");
@@ -122,7 +122,9 @@ impl MutationRoot {
             return Ok(None);
         }
 
-        fwd_to_bk(ctx.data::<NodeUrl>()?, message.unwrap().into()).await
+        let response = fwd_to_bk(ctx.data::<NodeUrl>()?, message.unwrap().into()).await;
+        tracing::trace!("forwarding response: {response:?}");
+        response
     }
 }
 

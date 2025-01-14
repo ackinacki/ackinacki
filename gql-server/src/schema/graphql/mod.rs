@@ -72,7 +72,7 @@ pub struct QueryRoot;
 
 #[Object]
 impl QueryRoot {
-    async fn info<'ctx>(&self, ctx: &Context<'ctx>) -> FieldResult<Option<info::Info>> {
+    async fn info(&self, ctx: &Context<'_>) -> FieldResult<Option<info::Info>> {
         tracing::info!("info query");
         let pool = ctx.data::<SqlitePool>()?;
 
@@ -85,9 +85,9 @@ impl QueryRoot {
         Ok(Some(Info { last_block_time: Some(gen_utime.unwrap_or(0) as f64), ..Info::default() }))
     }
 
-    async fn blocks<'ctx>(
+    async fn blocks(
         &self,
-        ctx: &Context<'ctx>,
+        ctx: &Context<'_>,
         filter: Option<BlockFilter>,
         order_by: Option<Vec<Option<QueryOrderBy>>>,
         limit: Option<i32>,
@@ -128,9 +128,9 @@ impl QueryRoot {
         Ok(Some(blocks))
     }
 
-    async fn accounts<'ctx>(
+    async fn accounts(
         &self,
-        ctx: &Context<'ctx>,
+        ctx: &Context<'_>,
         filter: Option<AccountFilter>,
         order_by: Option<Vec<Option<QueryOrderBy>>>,
         limit: Option<i32>,
@@ -150,9 +150,9 @@ impl QueryRoot {
         Ok(Some(accounts))
     }
 
-    async fn messages<'ctx>(
+    async fn messages(
         &self,
-        ctx: &Context<'ctx>,
+        ctx: &Context<'_>,
         filter: Option<MessageFilter>,
         order_by: Option<Vec<Option<QueryOrderBy>>>,
         limit: Option<i32>,
@@ -206,9 +206,9 @@ impl QueryRoot {
         Ok(Some(messages))
     }
 
-    async fn transactions<'ctx>(
+    async fn transactions(
         &self,
-        ctx: &Context<'ctx>,
+        ctx: &Context<'_>,
         filter: Option<TransactionFilter>,
         order_by: Option<Vec<Option<QueryOrderBy>>>,
         limit: Option<i32>,

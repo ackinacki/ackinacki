@@ -126,7 +126,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
 
     fn execute_normal_forwarded(
         &mut self,
-        mut next_message: Option<<Self as NodeAssociatedTypes>::NetworkMessage>,
+        mut next_message: Option<NetworkMessage>,
     ) -> anyhow::Result<ExecutionResult> {
         tracing::trace!("Start execute_normal_forwarded: {next_message:?}");
         let mut is_stop_signal_received = false;
@@ -543,6 +543,8 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                 self.find_thread_earliest_non_finalized_block(&thread)?
             {
                 let block_seq_no = candidate_block.data().seq_no();
+                let block_id = candidate_block.data().identifier();
+                self.blocks_states.get(&block_id)?.lock().set_has_parent_finalized()?;
                 tracing::trace!("try_finalize_blocks check block_seq_no={block_seq_no:?} block_id={:?}", candidate_block.data().identifier());
                 let mut min_seq_no_to_finalize = block_seq_no;
                 // Note: Critical! This is no longer valid.
@@ -557,13 +559,18 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
                     todo!();
                 }
                 // TODO: Check if block has all required data.
-                let block_id = candidate_block.data().identifier().clone();
                 if self.repository.is_block_processed(&block_id)? {
                     let block_ref_data_exists = self.shared_services.exec(|services| {
                         services.cross_thread_ref_data_service.get_cross_thread_ref_data(&block_id).is_ok()
                     });
                     if block_ref_data_exists {
-                        self.on_block_finalized(&candidate_block, self.block_keeper_sets.clone())?;
+                        let block_state = self.blocks_states.get(&block_id)?;
+                        let mut guarded = block_state.lock();
+                        guarded.set_has_cross_thread_ref_data_prepared()?;
+                        if guarded.can_finalize() {
+                            drop(guarded);
+                            self.on_block_finalized(&candidate_block, self.block_keeper_sets.clone())?;
+                        }
                     } else {
                         tracing::trace!("try_finalize_blocks failed to load cross thread ref data for block");
                         break;

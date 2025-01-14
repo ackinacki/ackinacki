@@ -17,7 +17,7 @@ members = [
     "transport-layer",
 ]
 
-package.version = "0.3.3"
+package.version = "0.3.5"
 package.edition = "2021"
 package.rust-version = "1.83.0"
 package.license = "Acki Nacki Node License"
@@ -64,6 +64,7 @@ tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.3.3.an", fe
 
 
 database = { path = "database" }
+http-server = { path = "http-server" }
 message-router = { path = "message-router" }
 migration-tool = { path = "migration-tool" }
 network = { path = "network" }
