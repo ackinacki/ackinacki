@@ -5,27 +5,29 @@ use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::anyhow;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
-use tvm_types::Sha256;
+use serde::Serializer;
+use tvm_types::AccountId;
 
-use crate::block::keeper::process::BlockKeeperProcess;
 use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::gosh_bls::PubKey;
 use crate::bls::GoshBLS;
-use crate::node::attestation_processor::AttestationProcessor;
 use crate::node::services::sync::StateSyncService;
+use crate::node::BlockStateRepository;
 use crate::node::Node;
 use crate::node::UInt256;
 use crate::repository::optimistic_state::OptimisticState;
-use crate::repository::Repository;
-use crate::types::block_keeper_ring::BlockKeeperRing;
+use crate::repository::optimistic_state::OptimisticStateImpl;
+use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
@@ -33,35 +35,89 @@ use crate::types::BlockSeqNo;
 
 pub type SignerIndex = u16;
 
-// Note: making it compatible with the inner type of the TVM BlockProducer
-pub type NodeIdentifier = i32;
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub struct NodeIdentifier(AccountId);
+
+impl NodeIdentifier {
+    #[cfg(test)]
+    pub fn some_id() -> Self {
+        Self::from_str("0001020300010203000102030001020300010203000102030001020300010203").unwrap()
+    }
+}
+
+impl NodeIdentifier {
+    #[cfg(any(test, feature = "nack_test"))]
+    pub fn test(seed: usize) -> NodeIdentifier {
+        AccountId::from(UInt256::from_be_bytes(&seed.to_be_bytes())).into()
+    }
+}
+impl Serialize for NodeIdentifier {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.to_string().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for NodeIdentifier {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let str = String::deserialize(deserializer)?;
+        Self::from_str(&str).map_err(serde::de::Error::custom)
+    }
+}
+
+impl From<AccountId> for NodeIdentifier {
+    fn from(value: AccountId) -> Self {
+        Self(value)
+    }
+}
+
+impl From<NodeIdentifier> for AccountId {
+    fn from(value: NodeIdentifier) -> Self {
+        value.0
+    }
+}
+
+impl FromStr for NodeIdentifier {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> anyhow::Result<Self> {
+        Ok(Self(value.parse().map_err(|err| anyhow!("Invalid node identifier: {err}"))?))
+    }
+}
+
+impl Display for NodeIdentifier {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0.to_hex_string())
+    }
+}
 
 #[allow(clippy::large_enum_variant)]
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub enum NackReason {
-    SameHeightBlock {
-        first_envelope: Envelope<GoshBLS, AckiNackiBlock>,
-        second_envelope: Envelope<GoshBLS, AckiNackiBlock>,
-    },
-    BadBlock {
-        envelope: Envelope<GoshBLS, AckiNackiBlock>,
-    },
-    WrongNack {
-        nack_data_envelope: Arc<Envelope<GoshBLS, NackData>>,
-    },
+    // SameHeightBlock {
+    // first_envelope: Envelope<GoshBLS, AckiNackiBlock>,
+    // second_envelope: Envelope<GoshBLS, AckiNackiBlock>,
+    // },
+    BadBlock { envelope: Envelope<GoshBLS, AckiNackiBlock> },
+    WrongNack { nack_data_envelope: Arc<Envelope<GoshBLS, NackData>> },
 }
 
 impl NackReason {
     pub fn get_hash_nack(&self) -> anyhow::Result<UInt256> {
         match self {
-            NackReason::SameHeightBlock { first_envelope, second_envelope } => {
-                let mut hasher = Sha256::new();
-                hasher.update(first_envelope.data().get_hash());
-                hasher.update(second_envelope.data().get_hash());
-                let result_hash = hasher.finalize();
-                let combined_hash: [u8; 32] = result_hash;
-                Ok(combined_hash.into())
-            }
+            // NackReason::SameHeightBlock { first_envelope, second_envelope } => {
+            // let mut hasher = Sha256::new();
+            // hasher.update(first_envelope.data().get_hash());
+            // hasher.update(second_envelope.data().get_hash());
+            // let result_hash = hasher.finalize();
+            // let combined_hash: [u8; 32] = result_hash;
+            // Ok(combined_hash.into())
+            // }
             NackReason::BadBlock { envelope } => Ok(envelope.data().get_hash().into()),
             NackReason::WrongNack { nack_data_envelope: _ } => {
                 tracing::trace!("WrongNack nack");
@@ -72,29 +128,36 @@ impl NackReason {
 
     pub fn get_node_data(
         &self,
-        block_keeper_sets: BlockKeeperRing,
-    ) -> Option<(i32, PubKey, AccountAddress)> {
+        blocks_states: BlockStateRepository,
+    ) -> Option<(NodeIdentifier, PubKey, AccountAddress)> {
         let nack_target_node_id;
         let nack_key;
         let nack_wallet_addr;
         match self {
+            /*
             NackReason::SameHeightBlock { first_envelope, second_envelope: _ } => {
-                let block_seq_no = first_envelope.data().parent_seq_no();
-                nack_target_node_id = first_envelope.data().get_common_section().producer_id;
+                nack_target_node_id =
+                    first_envelope.data().get_common_section().producer_id.clone();
                 // TODO: think of possible attacks base on impossibility of finding BK key
-                let bk_set = block_keeper_sets.get_block_keeper_data(&block_seq_no);
-                if let Some(data) = bk_set.get(&(nack_target_node_id as u16)) {
+                let state = blocks_states.get(&first_envelope.data().parent()).unwrap();
+                let state_in = state.lock();
+                let bk_set = state_in.bk_set().clone().unwrap();
+                drop(state_in);
+                if let Some(data) = bk_set.get_by_node_id(&nack_target_node_id) {
                     nack_key = data.pubkey.clone();
                     nack_wallet_addr = data.owner_address.clone();
                     return Some((nack_target_node_id, nack_key, nack_wallet_addr));
                 }
             }
+            */
             NackReason::BadBlock { envelope } => {
-                nack_target_node_id = envelope.data().get_common_section().producer_id;
-                let block_seq_no = envelope.data().parent_seq_no();
+                nack_target_node_id = envelope.data().get_common_section().producer_id.clone();
                 // TODO: think of possible attacks base on impossibility of finding BK key
-                let bk_set = block_keeper_sets.get_block_keeper_data(&block_seq_no);
-                if let Some(data) = bk_set.get(&(nack_target_node_id as u16)) {
+                let state = blocks_states.get(&envelope.data().parent()).unwrap();
+                let state_in = state.lock();
+                let bk_set = state_in.bk_set().clone().unwrap();
+                drop(state_in);
+                if let Some(data) = bk_set.get_by_node_id(&nack_target_node_id) {
                     nack_key = data.pubkey.clone();
                     nack_wallet_addr = data.owner_address.clone();
                     return Some((nack_target_node_id, nack_key, nack_wallet_addr));
@@ -107,7 +170,7 @@ impl NackReason {
                     return None;
                 }
                 if let Some((nack_target_node_id, nack_key, nack_wallet_addr)) =
-                    nack_data_envelope.data().reason.get_node_data(block_keeper_sets)
+                    nack_data_envelope.data().reason.get_node_data(blocks_states)
                 {
                     return Some((nack_target_node_id, nack_key, nack_wallet_addr));
                 }
@@ -120,9 +183,9 @@ impl NackReason {
 impl Debug for NackReason {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let data = match self {
-            NackReason::SameHeightBlock { first_envelope: block1, second_envelope: block2 } => {
-                format!("SameHeightBlock, {:?}, {:?}", block1, block2)
-            }
+            // NackReason::SameHeightBlock { first_envelope: block1, second_envelope: block2 } => {
+            // format!("SameHeightBlock, {:?}, {:?}", block1, block2)
+            // }
             NackReason::BadBlock { envelope: block } => {
                 format!("BadBlock {:?}", block)
             }
@@ -144,47 +207,25 @@ pub(crate) trait NodeAssociatedTypes {
     type BlockAttestation: BLSSignedEnvelope;
 }
 
-impl<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+impl<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
 NodeAssociatedTypes
 for Node<
     TStateSyncService,
     TBlockProducerProcess,
-    TValidationProcess,
-    TRepository,
-    TAttestationProcessor,
     TRandomGenerator,
 >
     where
         TBlockProducerProcess: BlockProducerProcess,
-        TValidationProcess: BlockKeeperProcess<
-            BLSSignatureScheme = GoshBLS,
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-
-            OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
-        >,
         TBlockProducerProcess: BlockProducerProcess<
             BLSSignatureScheme = GoshBLS,
             CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-
-        >,
-        TRepository: Repository<
-            BLS = GoshBLS,
-            EnvelopeSignerIndex = SignerIndex,
-
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-            OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
-            NodeIdentifier = NodeIdentifier,
-            Attestation = Envelope<GoshBLS, AttestationData>,
+            OptimisticState = OptimisticStateImpl,
         >,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
             <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
         >,
         TStateSyncService: StateSyncService<
-            Repository = TRepository
-        >,
-        TAttestationProcessor: AttestationProcessor<
-            BlockAttestation = Envelope<GoshBLS, AttestationData>,
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
+            Repository = RepositoryImpl
         >,
         TRandomGenerator: rand::Rng,
 {
@@ -234,6 +275,7 @@ pub(crate) enum ExecutionResult {
 
 /// Block processing status
 #[derive(PartialEq, Debug)]
+#[allow(dead_code)]
 pub(crate) enum BlockStatus {
     /// Block was successfully processed.
     Ok,
@@ -253,7 +295,7 @@ pub struct AckData {
     pub block_seq_no: BlockSeqNo,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct NackData {
     pub block_id: BlockIdentifier,
     pub block_seq_no: BlockSeqNo,

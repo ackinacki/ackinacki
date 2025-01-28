@@ -2,63 +2,43 @@
 //
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use crate::block::keeper::process::BlockKeeperProcess;
 use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
-use crate::bls::BLSSignatureScheme;
+use crate::bls::gosh_bls::PubKey;
+use crate::bls::gosh_bls::Secret;
 use crate::bls::GoshBLS;
-use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NodeAssociatedTypes;
-use crate::node::associated_types::OptimisticStateFor;
-use crate::node::attestation_processor::AttestationProcessor;
 use crate::node::services::sync::StateSyncService;
 use crate::node::Node;
-use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
 use crate::repository::optimistic_state::OptimisticState;
-use crate::repository::Repository;
+use crate::repository::optimistic_state::OptimisticStateImpl;
+use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::AckiNackiBlock;
+use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
-use crate::types::ThreadIdentifier;
+use crate::utilities::guarded::Guarded;
 
-impl<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
-Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+impl<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
+Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
     where
         TBlockProducerProcess:
-        BlockProducerProcess< Repository = TRepository>,
-        TValidationProcess: BlockKeeperProcess<
-            BLSSignatureScheme = GoshBLS,
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-
-            OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
-        >,
+        BlockProducerProcess< Repository = RepositoryImpl>,
         TBlockProducerProcess: BlockProducerProcess<
             BLSSignatureScheme = GoshBLS,
             CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-
-        >,
-        TRepository: Repository<
-            BLS = GoshBLS,
-            EnvelopeSignerIndex = SignerIndex,
-
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-            OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
-            NodeIdentifier = NodeIdentifier,
-            Attestation = Envelope<GoshBLS, AttestationData>,
+            OptimisticState = OptimisticStateImpl,
         >,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
             <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
         >,
         TStateSyncService: StateSyncService<
-            Repository = TRepository
-        >,
-        TAttestationProcessor: AttestationProcessor<
-            BlockAttestation = Envelope<GoshBLS, AttestationData>,
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
+            Repository = RepositoryImpl
         >,
         TRandomGenerator: rand::Rng,
 {
@@ -66,10 +46,10 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         &self,
         candidate_block: &<Self as NodeAssociatedTypes>::CandidateBlock,
     ) -> anyhow::Result<bool> {
-        let block_seq_no = candidate_block.data().seq_no();
+        let block_id = candidate_block.data().identifier();
         let signature_occurrences = candidate_block.clone_signature_occurrences();
         if let Some(self_signer_index) =
-            self.get_node_signer_index_for_block_seq_no(&block_seq_no) {
+            self.get_node_signer_index_for_block_id(block_id) {
             return Ok( {
                 match signature_occurrences.get(&self_signer_index) {
                     None | Some(0) => false,
@@ -80,68 +60,69 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         Ok(false)
     }
 
-    pub(crate) fn sign_candidate_block_envelope(
+    pub(crate) fn get_node_signer_index_for_block_id(
         &self,
-        envelope: &mut <Self as NodeAssociatedTypes>::CandidateBlock,
-    ) -> anyhow::Result<()> {
-        let block_seq_no = envelope.data().seq_no();
-        if let Some(self_signer_index) =
-            self.get_node_signer_index_for_block_seq_no(&block_seq_no) {
-            envelope.add_signature(&self_signer_index, &self.secret)?;
-        }
-        Ok(())
+        block_id: BlockIdentifier,
+    ) -> Option<SignerIndex> {
+        let state = self.blocks_states.get(&block_id).unwrap();
+        let state_in = state.lock();
+        state_in.get_signer_index_for_node_id(&self.config.local.node_id)
     }
 
-    pub(crate) fn get_node_signer_index_for_block_seq_no(
+    pub(crate) fn get_signer_data_for_block_id(
         &self,
-        block_seq_no: &BlockSeqNo,
-    ) -> Option<SignerIndex> {
-        for (seq_no, signer_index) in self.signer_index_map.iter().rev() {
-            if seq_no > block_seq_no {
-                continue;
+        block_id: BlockIdentifier,
+    ) -> Option<(SignerIndex, Secret)> {
+        let state = self.blocks_states.get(&block_id).unwrap();
+        let state_in = state.lock();
+        if let Some(bk_data) = state_in.get_bk_data_for_node_id(&self.config.local.node_id) {
+            if let Some(secret) = self.bls_keys_map.guarded(|map| map.get(&bk_data.pubkey).cloned()) {
+                return Some((bk_data.signer_index, secret.0));
             }
-            return Some(*signer_index);
         }
-        tracing::trace!("Failed to get signer index for block seq no {}", block_seq_no);
         None
     }
 
-    pub(crate) fn block_keeper_ring_signatures_map_for(
+    pub fn get_block_keeper_set_for_block_id(
         &self,
-        seq_no: &BlockSeqNo,
-        _thread_id: &ThreadIdentifier,
-    ) -> HashMap<SignerIndex, <GoshBLS as BLSSignatureScheme>::PubKey> {
-        self.block_keeper_sets.get_block_keeper_pubkeys(seq_no)
+        block_id: BlockIdentifier,
+    ) -> Option<Arc<BlockKeeperSet>> {
+        let state = self.blocks_states.get(&block_id).unwrap();
+        let state_in = state.lock();
+        state_in.bk_set().clone()
     }
 
-    pub(crate) fn block_keeper_set_for(
+    pub fn get_block_keeper_pubkeys(
         &self,
-        block_seq_no: &BlockSeqNo,
-        thread_id: &ThreadIdentifier,
-    ) -> BlockKeeperSet {
-        self.get_block_keeper_set(block_seq_no, thread_id)
+        block_id: BlockIdentifier,
+    ) -> Option<HashMap<SignerIndex, PubKey>> {
+        self.get_block_keeper_set_for_block_id(block_id)
+            .as_ref().map(|set| set.get_pubkeys_by_signers())
     }
 
     pub(crate) fn is_this_node_in_block_keeper_set(
         &self,
-        seq_no: &BlockSeqNo,
-        thread_id: &ThreadIdentifier,
-    ) -> bool {
-        let block_keeper_set = self.block_keeper_ring_signatures_map_for(seq_no, thread_id);
-        let res = {
-            if let Some(signer_index) = self.get_node_signer_index_for_block_seq_no(seq_no) {
-                block_keeper_set.contains_key(&signer_index)
-            } else {
-                false
-            }
-        };
-        tracing::trace!("is_this_node_in_block_keeper_set {}",
-            res
-        );
-        res
+        block_id: BlockIdentifier
+    ) -> Option<bool> {
+        match self.get_block_keeper_set_for_block_id(block_id.clone()).as_ref() {
+            Some(block_keeper_set) => {
+                let res = {
+                    if let Some(signer_index) = self.get_node_signer_index_for_block_id(block_id.clone()) {
+                        block_keeper_set.contains_signer(&signer_index)
+                    } else {
+                        false
+                    }
+                };
+                tracing::trace!("is_this_node_in_block_keeper_set {}",
+                    res
+                );
+                Some(res)
+            },
+            None => None,
+        }
     }
 
-    pub(crate) fn min_signatures_count_to_accept_broadcasted_state(
+    pub(crate) fn _min_signatures_count_to_accept_broadcasted_state(
         &self,
         _block_seq_no: BlockSeqNo,
     ) -> usize {
@@ -152,15 +133,14 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
     pub(crate) fn check_block_signature(
         &self,
         candidate_block: &<Self as NodeAssociatedTypes>::CandidateBlock,
-    ) -> bool {
-        let signatures_map =
-            self.block_keeper_ring_signatures_map_for(&candidate_block.data().seq_no(), &self.get_block_thread_id(candidate_block).expect("Failed to get thread id for block"));
+    ) -> Option<bool> {
+        let signatures_map = self.get_block_keeper_pubkeys(candidate_block.data().parent())?;
         let is_valid = candidate_block
             .verify_signatures(&signatures_map)
             .expect("Signatures verification should not crash.");
         if !is_valid {
             tracing::trace!("Signature verification failed: {}", candidate_block);
         }
-        is_valid
+        Some(is_valid)
     }
 }

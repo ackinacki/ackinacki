@@ -7,47 +7,60 @@ pub mod key_handling;
 use std::str::FromStr;
 
 use opentelemetry::trace::TracerProvider;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::Layer;
 pub const TIMING_TARGET: &str = "timing";
 
+fn default_verbose_filter() -> tracing_subscriber::EnvFilter {
+    let (tvm_trace_level, builder_trace_level) =
+        if cfg!(feature = "tvm_tracing") { ("trace", "trace") } else { ("off", "info") };
+    tracing_subscriber::EnvFilter::new(format!(
+        "gossip=trace,\
+            http_server=trace,\
+            block_manager=trace,\
+            node=trace,\
+            executor={tvm_trace_level},\
+            network=trace,\
+            tvm={tvm_trace_level},\
+            builder={builder_trace_level},\
+            database=info,\
+            sqlite=trace,\
+            message_router=trace,\
+            transport_layer=trace"
+    ))
+}
+
+fn default_non_verbose_filter() -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::new(
+        "gossip=info,\
+            http_server=info,\
+            block_manager=trace,\
+            node=trace,\
+            executor=off,\
+            network=trace,\
+            tvm=off,\
+            builder=off,\
+            database=off,\
+            sqlite=warn,\
+            message_router=info,\
+            transport_layer=trace",
+    )
+}
+
+fn default_filter() -> tracing_subscriber::EnvFilter {
+    if std::env::var("NODE_VERBOSE").is_ok() {
+        default_verbose_filter()
+    } else {
+        default_non_verbose_filter()
+    }
+}
+
 pub fn init_tracing() {
-    // Init tracing
-    let (tvm_trace_level, builder_trace_level) = if cfg!(feature = "tvm_tracing") {
-        (LevelFilter::TRACE, LevelFilter::TRACE)
+    let filter = if std::env::var(tracing_subscriber::EnvFilter::DEFAULT_ENV).is_ok() {
+        tracing_subscriber::EnvFilter::from_default_env()
     } else {
-        (LevelFilter::OFF, LevelFilter::INFO)
-    };
-    let filter = if std::env::var("NODE_VERBOSE").is_ok() {
-        tracing_subscriber::filter::Targets::new()
-            .with_target("gossip", LevelFilter::TRACE)
-            .with_target("http_server", LevelFilter::TRACE)
-            .with_target("block_manager", LevelFilter::TRACE)
-            .with_target("node", LevelFilter::TRACE)
-            .with_target("executor", tvm_trace_level)
-            .with_target("network", LevelFilter::INFO)
-            .with_target("tvm", tvm_trace_level)
-            .with_target("builder", builder_trace_level)
-            .with_target("database", LevelFilter::INFO)
-            .with_target("sqlite", LevelFilter::TRACE)
-            .with_target("message_router", LevelFilter::TRACE)
-            .with_target("transport_layer", LevelFilter::TRACE)
-    } else {
-        tracing_subscriber::filter::Targets::new()
-            .with_target("gossip", LevelFilter::INFO)
-            .with_target("http_server", LevelFilter::INFO)
-            .with_target("block_manager", LevelFilter::TRACE)
-            .with_target("node", LevelFilter::TRACE)
-            .with_target("executor", LevelFilter::OFF)
-            .with_target("network", LevelFilter::TRACE)
-            .with_target("tvm", LevelFilter::OFF)
-            .with_target("builder", LevelFilter::OFF)
-            .with_target("database", LevelFilter::OFF)
-            .with_target("sqlite", LevelFilter::WARN)
-            .with_target("message_router", LevelFilter::INFO)
-            .with_target("transport_layer", LevelFilter::TRACE)
+        default_filter()
     };
 
     if let Ok(Ok(targets)) =

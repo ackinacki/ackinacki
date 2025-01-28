@@ -177,8 +177,8 @@ impl From<ExtMsgFeedback> for ExtMsgResponse {
             0 => {
                 response.result = Some(ExtMsgResult {
                     message_hash: feedback.message_hash,
-                    block_hash: feedback.block_hash.unwrap(),
-                    tx_hash: feedback.tx_hash.unwrap(),
+                    block_hash: feedback.block_hash.unwrap_or("None".to_string()),
+                    tx_hash: feedback.tx_hash.unwrap_or("None".to_string()),
                     aborted: false,
                     current_time,
                     tvm_exit_code: 0,

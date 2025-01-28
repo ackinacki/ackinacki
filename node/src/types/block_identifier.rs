@@ -1,27 +1,40 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::cmp::Ordering;
+
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::serde_as;
 use serde_with::Bytes;
 
 #[serde_as]
-#[derive(Deserialize, Serialize, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, Default)]
-pub struct BlockIdentifier(#[serde_as(as = "Bytes")] [u8; 32]);
+#[derive(Deserialize, Serialize, Clone, PartialEq, Eq, Hash, Default)]
+pub struct BlockIdentifier(#[serde_as(as = "Bytes")] pub(super) [u8; 32]);
 
 impl BlockIdentifier {
     pub fn is_zero(&self) -> bool {
         *self == Self::default()
     }
 
-    /// This is not a modulo operation.
-    /// It is some kind of a quick and dirty way to put blocks into a defined
-    /// number of buckets.
-    pub fn not_a_modulus(&self, divider: u32) -> u32 {
-        let mut bytes = [0_u8; 4];
-        bytes.clone_from_slice(&self.0[28..=31]);
-        u32::from_be_bytes(bytes) % divider
+    // Note: compare method is used in fork choice
+    pub fn compare(a: &BlockIdentifier, b: &BlockIdentifier) -> Ordering {
+        for i in 0..32 {
+            match a.0[i].cmp(&b.0[i]) {
+                Ordering::Less => {
+                    return Ordering::Less;
+                }
+                Ordering::Greater => {
+                    return Ordering::Greater;
+                }
+                _ => {}
+            }
+        }
+        Ordering::Equal
+    }
+
+    pub fn as_rng_seed(&self) -> [u8; 32] {
+        self.0
     }
 }
 

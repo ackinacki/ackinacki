@@ -21,7 +21,7 @@ use crate::types::BlockIdentifier;
 // be spawned simultaneously.
 
 #[serde_as]
-#[derive(Copy, Clone, Eq, Hash, PartialEq, Serialize, Deserialize, PartialOrd, Ord)]
+#[derive(Copy, Clone, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct ThreadIdentifier(#[serde_as(as = "Bytes")] [u8; 34]);
 
 impl Default for ThreadIdentifier {

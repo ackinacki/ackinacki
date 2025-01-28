@@ -131,7 +131,11 @@ where
                             tracing::trace!(target: "http_server", "Process request send message: {:?}", wrapped_message);
                             let (feedback_sender, feedback_receiver) = oneshot::channel();
                             let external_message = (wrapped_message, Some(feedback_sender));
-                            match web_server_state.incoming_message_sender.send(external_message) {
+                            match web_server_state
+                                .incoming_message_sender
+                                .clone()
+                                .send(external_message)
+                            {
                                 Ok(()) => match feedback_receiver.await {
                                     Ok(resp) => {
                                         tracing::trace!(target: "http_server", "Process request send message result Ok(): {:?}", resp);

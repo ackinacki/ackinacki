@@ -1,15 +1,14 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 
+use crate::block_keeper_system::BlockKeeperSet;
+use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
 use crate::node::services::sync::StateSyncService;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
-use crate::types::block_keeper_ring::BlockKeeperRing;
-use crate::types::ThreadIdentifier;
 
 pub struct StateSyncServiceStub {}
 
@@ -20,12 +19,9 @@ impl StateSyncService for StateSyncServiceStub {
     fn add_share_state_task(
         &mut self,
         _state: <Self::Repository as Repository>::OptimisticState,
-        _block_producer_groups: HashMap<
-            ThreadIdentifier,
-            Vec<<Self::Repository as Repository>::NodeIdentifier>,
-        >,
-        _block_keeper_set: BlockKeeperRing,
         _cross_thread_ref_data: Vec<CrossThreadRefData>,
+        _finalized_block_stats: BlockStatistics,
+        _bk_set: BlockKeeperSet,
     ) -> anyhow::Result<Self::ResourceAddress> {
         todo!()
     }

@@ -14,6 +14,7 @@ use serde::Serialize;
 use serde::Serializer;
 
 use crate::bls::BLSSignatureScheme;
+use crate::node::SignerIndex;
 
 pub trait BLSSignedEnvelope: Send + Sync + 'static {
     type BLS: BLSSignatureScheme;
@@ -40,7 +41,7 @@ pub trait BLSSignedEnvelope: Send + Sync + 'static {
     fn data(&self) -> &Self::Data;
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct Envelope<BLS, TData>
 where
     BLS: BLSSignatureScheme,
@@ -48,7 +49,7 @@ where
     TData: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
 {
     aggregated_signature: BLS::Signature,
-    signature_occurrences: HashMap<u16, u16>,
+    signature_occurrences: HashMap<SignerIndex, u16>,
     data: TData,
 }
 
@@ -60,7 +61,7 @@ where
 {
     type BLS = BLS;
     type Data = TData;
-    type SignerIndex = u16;
+    type SignerIndex = SignerIndex;
 
     fn create<T: Into<Self::Data>>(
         aggregated_signature: BLS::Signature,
@@ -97,6 +98,7 @@ where
         signers: &HashMap<Self::SignerIndex, BLS::PubKey>,
     ) -> anyhow::Result<bool> {
         let mut pubkeys_occurrences = Vec::<(BLS::PubKey, usize)>::new();
+        let mut is_any_signature_exists = false;
         for signer_index in self.signature_occurrences.keys() {
             let count = *self.signature_occurrences.get(signer_index).unwrap() as usize;
             if count == 0 {
@@ -117,6 +119,11 @@ where
                     pubkeys_occurrences.push((pubkey.clone(), count));
                 }
             }
+            is_any_signature_exists = true;
+        }
+
+        if !is_any_signature_exists {
+            return Ok(false);
         }
 
         let is_valid =
@@ -145,7 +152,7 @@ where
 #[derive(Serialize, Deserialize)]
 struct EnvelopeSerDe<TSignature, TData> {
     pub aggregated_signature: TSignature,
-    pub signature_occurrences: Vec<(u16, u16)>,
+    pub signature_occurrences: Vec<(SignerIndex, u16)>,
     pub data: TData,
 }
 
@@ -185,7 +192,7 @@ where
         S: Serializer,
     {
         // Sort signature occurrences to make serialization the same each time
-        let mut signature_occurrences: Vec<(u16, u16)> =
+        let mut signature_occurrences: Vec<(SignerIndex, u16)> =
             self.signature_occurrences.clone().into_iter().collect();
         signature_occurrences.sort_by(|(a, _), (b, _)| a.cmp(b));
         let envelope_serde = EnvelopeSerDe::<BLS::Signature, TData> {

@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::exit;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,11 +11,21 @@ use clap::Subcommand;
 use gosh_bls_lib::bls::gen_bls_key_pair;
 use gosh_bls_lib::serde_bls::BLSKeyPair;
 use network::socket_addr::StringSocketAddr;
+use node::bls::gosh_bls::PubKey;
+use node::bls::gosh_bls::Secret;
+use node::bls::GoshBLS;
 use node::config::load_config_from_file;
 use node::config::save_config_to_file;
+use node::config::GlobalConfig;
+use node::config::NetworkConfig;
+use node::config::NodeConfig;
+use node::helper::key_handling::key_pairs_from_file;
 use node::node::NodeIdentifier;
+use node::types::RndSeed;
+use serde_json::json;
 use tvm_client::ClientConfig;
 use tvm_client::ClientContext;
+use url::Url;
 
 const EPOCH_CODE_HASH_FILE_PATH: &str = "./contracts/bksystem/BlockKeeperEpochContract.code.hash";
 
@@ -40,6 +52,11 @@ struct Bls {
     /// Path where to store BLS key pair
     #[arg(long)]
     path: Option<PathBuf>,
+
+    /// Flag that indicates that helper should remove old file, before generating new BLS key pair
+    /// If not set, new key will be appended to file
+    #[clap(short, long, action=ArgAction::SetTrue, default_value = "false", requires("path"))]
+    remove_old: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -59,9 +76,9 @@ struct Config {
     #[clap(short, long, action=ArgAction::SetTrue, default_value = "false")]
     default: bool,
 
-    /// This node id
+    /// Node id should be specified as 64-len hex string with keeper wallet address.
     #[arg(long, env)]
-    node_id: Option<NodeIdentifier>,
+    node_id: Option<String>,
 
     /// Blockchain config path
     #[arg(long, env)]
@@ -144,6 +161,26 @@ struct Config {
     /// Retry timeout for shared state download
     #[arg(long)]
     pub shared_state_retry_download_timeout_millis: Option<u64>,
+
+    /// Comma separated files and directories with network TLS certificates
+    #[arg(long)]
+    pub network_peer_certs: Option<String>,
+
+    /// The name of the TLS cert file used for auth.
+    #[arg(long)]
+    pub network_my_cert: Option<PathBuf>,
+
+    /// The name of the TLS key file used for auth.
+    #[arg(long)]
+    pub network_my_key: Option<PathBuf>,
+
+    /// Predefined subscriptions to peers.
+    #[arg(long)]
+    pub network_subscribe: Option<String>,
+
+    /// Chitchat cluster id for gossip
+    #[arg(long)]
+    pub chitchat_cluster_id: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -155,7 +192,37 @@ fn main() -> anyhow::Result<()> {
                 Err(e) => {
                     if config_cmd.default {
                         println!("Failed to open config, create a default one");
-                        node::config::Config::default()
+                        let Some(node_id) = config_cmd.node_id.clone() else {
+                            eprintln!("node_id must be specified for default config");
+                            exit(2);
+                        };
+                        let Some(cluster_id) = config_cmd.chitchat_cluster_id.clone() else {
+                            eprintln!("chitchat_cluster_id must be specified for default config");
+                            exit(2);
+                        };
+                        let Some(node_advertise_addr) = config_cmd.node_advertise_addr.clone()
+                        else {
+                            eprintln!("node_advertise_addr must be specified for default config");
+                            exit(2);
+                        };
+                        let Some(api_addr) = config_cmd.api_addr.clone() else {
+                            eprintln!("api_addr must be specified for default config");
+                            exit(2);
+                        };
+                        let local = NodeConfig::builder()
+                            .node_id(NodeIdentifier::from_str(&node_id).expect("Invalid node ID"))
+                            .build();
+                        let network_config = NetworkConfig::builder()
+                            .chitchat_cluster_id(cluster_id)
+                            .node_advertise_addr(node_advertise_addr)
+                            .api_addr(api_addr)
+                            .build();
+
+                        node::config::Config {
+                            global: GlobalConfig::default(),
+                            network: network_config,
+                            local,
+                        }
                     } else {
                         eprint!("Error: {e}");
                         exit(1);
@@ -164,7 +231,8 @@ fn main() -> anyhow::Result<()> {
             };
 
             if let Some(node_id) = config_cmd.node_id {
-                config.local.node_id = node_id;
+                config.local.node_id = NodeIdentifier::from_str(&node_id)
+                    .map_err(|err| anyhow::anyhow!("Invalid node_id [{node_id}]: {err}"))?;
             }
 
             if let Some(blockchain_config) = config_cmd.blockchain_config {
@@ -273,12 +341,43 @@ fn main() -> anyhow::Result<()> {
                     shared_state_retry_download_timeout_millis;
             }
 
+            if let Some(certs) = config_cmd.network_peer_certs {
+                config.network.peer_certs = certs.split(',').map(PathBuf::from).collect();
+            }
+
+            if let Some(cert) = config_cmd.network_my_cert {
+                config.network.my_cert = cert;
+            }
+            if let Some(key) = config_cmd.network_my_key {
+                config.network.my_key = key;
+            }
+
+            if let Some(subscribe) = config_cmd.network_subscribe {
+                config.network.subscribe =
+                    subscribe.split(',').map(Url::parse).collect::<Result<_, _>>()?;
+            }
+
+            if let Some(cluster_id) = config_cmd.chitchat_cluster_id {
+                config.network.chitchat_cluster_id = cluster_id;
+            }
+
             save_config_to_file(&config, &config_cmd.config_file_path)
         }
         Commands::Bls(bls_cmd) => {
             let keypair = BLSKeyPair::from(gen_bls_key_pair()?);
+            let rng_seed = RndSeed::from(gen_bls_key_pair()?.1);
             if let Some(path) = bls_cmd.path {
-                keypair.save_to_file(&path)
+                let mut bls_keys_map = if bls_cmd.remove_old {
+                    let _ = std::fs::remove_file(&path);
+                    HashMap::new()
+                } else if std::fs::exists(&path)? {
+                    key_pairs_from_file::<GoshBLS>(path.to_str().unwrap())
+                } else {
+                    HashMap::new()
+                };
+                bls_keys_map
+                    .insert(PubKey::from(keypair.public), (Secret::from(keypair.secret), rng_seed));
+                save_keys_map_to_file(path, bls_keys_map)
             } else {
                 println!("{}", keypair.to_string()?);
                 Ok(())
@@ -303,4 +402,19 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+fn save_keys_map_to_file(
+    path: PathBuf,
+    keys_map: HashMap<PubKey, (Secret, RndSeed)>,
+) -> anyhow::Result<()> {
+    let mut keys_vec = vec![];
+    for (pubkey, (secret, rnd_seed)) in keys_map {
+        let mut json_map = serde_json::Map::new();
+        json_map.insert("public".to_string(), json!(hex::encode(pubkey.as_ref())));
+        json_map.insert("secret".to_string(), json!(hex::encode(secret.take_as_seed())));
+        json_map.insert("rnd".to_string(), json!(hex::encode(rnd_seed.as_ref())));
+        keys_vec.push(json_map);
+    }
+    Ok(std::fs::write(path, serde_json::to_string_pretty(&keys_vec)?)?)
 }

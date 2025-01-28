@@ -317,6 +317,17 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         return  (_owner_pubkey, _service_key, _root, address(this).currencies[CURRENCIES_ID], _activeStakes, _walletId, _locked, _indexLock, _stakesCnt, _lockmap);
     }
 
+    function getEpochAddress() external view returns(optional(address) epochAddress) {
+        optional(address) epochAddressOpt = null;
+        for ((, Stake stake) : _activeStakes) {
+            if (stake.status == 1) {
+                epochAddressOpt = BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, stake.seqNoStart);
+                break;
+            }
+        }
+        return epochAddressOpt;
+    }
+
     function getProxyListAddr() external view returns(address) {
         return BlockKeeperLib.calculateBlockKeeperEpochProxyListAddress(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], _owner_pubkey, _root);
     }

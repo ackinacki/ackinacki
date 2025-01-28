@@ -43,8 +43,10 @@ tvm_types.workspace = true
 tvm_vm.workspace = true
 url.workspace = true
 
+atomic-wait = "1.1.0"
 bitflags = "2.6.0"
 chrono = { version = "0.4.38", features = ["serde"] }
+derive-getters = "0.5.0"
 derive_setters = { path = "./libs/derive-setters" }
 failure = "0.1.8"
 futures = { version = "0.3.30", default-features = false }
@@ -65,14 +67,18 @@ typed-builder = "0.20.0"
 weak-table = "0.3.2"
 
 [dev-dependencies]
+migration-tool.workspace = true
 mockall = "0.11.4"
 tempfile = "3.14.0"
+testdir = "0.9.3"
 
 [features]
+default = ["fail-fast"]
 # Use automocks in binaries
 use_automocks = []
 allow-dappid-thread-split = []
 allow-threads-merge = []
+fail-fast = []
 
 # Record time of heavy operations
 timing = []
@@ -80,3 +86,6 @@ timing = []
 # Turn on TVM tracing
 tvm_tracing = []
 nack_test = []
+
+# Enable misbehaving
+misbehave = []

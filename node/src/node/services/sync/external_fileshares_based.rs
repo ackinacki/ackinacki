@@ -1,10 +1,11 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
+use crate::block_keeper_system::BlockKeeperSet;
+use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
 use crate::node::services::sync::StateSyncService;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
@@ -14,8 +15,6 @@ use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
 use crate::services::blob_sync::external_fileshares_based::ServiceInterface;
 use crate::services::blob_sync::BlobSyncService;
-use crate::types::block_keeper_ring::BlockKeeperRing;
-use crate::types::ThreadIdentifier;
 
 #[derive(Clone)]
 pub struct ExternalFileSharesBased {
@@ -52,12 +51,9 @@ impl StateSyncService for ExternalFileSharesBased {
     fn add_share_state_task(
         &mut self,
         mut state: <Self::Repository as Repository>::OptimisticState,
-        block_producer_groups: HashMap<
-            ThreadIdentifier,
-            Vec<<Self::Repository as Repository>::NodeIdentifier>,
-        >,
-        block_keeper_set: BlockKeeperRing,
         cross_thread_ref_data: Vec<CrossThreadRefData>,
+        finalized_block_stats: BlockStatistics,
+        bk_set: BlockKeeperSet,
     ) -> anyhow::Result<Self::ResourceAddress> {
         tracing::trace!("add_share_state_task");
         let cid = self.generate_resource_address(&state)?;
@@ -65,9 +61,9 @@ impl StateSyncService for ExternalFileSharesBased {
         let serialized_state = state.serialize_into_buf()?;
         let data = bincode::serialize(&WrappedStateSnapshot {
             optimistic_state: serialized_state,
-            producer_group: block_producer_groups,
-            block_keeper_set: block_keeper_set.clone_inner(),
             cross_thread_ref_data,
+            finalized_block_stats,
+            bk_set,
         })?;
 
         self.blob_sync.share_blob(cid.clone(), std::io::Cursor::new(data), |_| {

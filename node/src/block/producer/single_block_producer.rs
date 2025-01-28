@@ -30,12 +30,12 @@ use crate::message::WrappedMessage;
 use crate::multithreading::load_balancing_service::CheckError;
 use crate::multithreading::load_balancing_service::ThreadAction;
 use crate::node::associated_types::NackData;
+use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::node::SignerIndex;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
-use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AckiNackiBlock;
 use crate::types::ThreadIdentifier;
 
@@ -69,7 +69,7 @@ pub struct TVMBlockProducer {
     epoch_block_keeper_data: Vec<BlockKeeperData>,
     shared_services: SharedServices,
     block_nack: Vec<Envelope<GoshBLS, NackData>>,
-    block_keeper_sets: BlockKeeperRing,
+    blocks_states: BlockStateRepository,
 }
 
 impl TVMBlockProducer {
@@ -112,7 +112,7 @@ impl BlockProducer for TVMBlockProducer {
                     tracing::trace!("push nack into slash {:?}", nack);
                     let reason = nack.data().reason.clone();
                     if let Some((id, bls_key, addr)) =
-                        reason.get_node_data(self.block_keeper_sets.clone())
+                        reason.get_node_data(self.blocks_states.clone())
                     {
                         let epoch_nack_data = BlockKeeperSlashData {
                             node_id: id,
@@ -144,11 +144,11 @@ impl BlockProducer for TVMBlockProducer {
 
         let ref_ids =
             refs.into_iter().map(|ref_data| ref_data.block_identifier().clone()).collect();
-
         let active_threads = self.active_threads;
-
         let block_gas_limit = self.blockchain_config.get_gas_config(false).block_gas_limit;
+
         tracing::debug!(target: "node", "PARENT block: {:?}", initial_state.get_block_info());
+        tracing::trace!(target: "node", "ref_ids: {:?}", ref_ids);
 
         let now = std::time::SystemTime::now();
         let time = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as u32;
@@ -223,6 +223,10 @@ impl BlockProducer for TVMBlockProducer {
                 // let _active_threads = std::mem::take(&mut prepared_block.active_threads);
             }
 
+            // let producer_selector = self.blocks_states.get(&parent_block_id).expect("Must be set").guarded(|e| e.producer_selector_data().clone()).expect("Must be set");
+            // self.blocks_states.get(&produced_block_id).expect("Can't fail").guarded_mut(|e|
+            //     e.set_producer_selector_data(producer_selector.clone())
+            // ).expect("Must be able to set producer selector");
             let active_threads = std::mem::take(&mut prepared_block.active_threads);
             let res = (
                 AckiNackiBlock::new(

@@ -1,68 +1,69 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use crate::block::keeper::process::BlockKeeperProcess;
+use std::sync::mpsc::Sender;
+
 use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
-use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NodeAssociatedTypes;
-use crate::node::associated_types::OptimisticStateFor;
-use crate::node::attestation_processor::AttestationProcessor;
 use crate::node::services::sync::StateSyncService;
 use crate::node::GoshBLS;
 use crate::node::NetworkMessage;
 use crate::node::Node;
 use crate::node::NodeIdentifier;
-use crate::node::SignerIndex;
 use crate::repository::optimistic_state::OptimisticState;
-use crate::repository::Repository;
+use crate::repository::optimistic_state::OptimisticStateImpl;
+use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
+use crate::types::ThreadIdentifier;
 
-impl<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
-Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+pub fn send_blocks_range_request(
+    send_tx: &Sender<(NodeIdentifier, NetworkMessage)>,
+    destination_node_id: NodeIdentifier,
+    requesting_node_id: NodeIdentifier,
+    thread_id: ThreadIdentifier,
+    included_from: BlockSeqNo,
+    excluded_to: BlockSeqNo,
+) -> anyhow::Result<()> {
+    tracing::info!(
+        "sending block request to node {} [{:?}, {:?})",
+        destination_node_id,
+        included_from,
+        excluded_to,
+    );
+    send_tx.send((
+        destination_node_id,
+        NetworkMessage::BlockRequest((included_from, excluded_to, requesting_node_id, thread_id)),
+    ))?;
+    Ok(())
+}
+
+impl<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
+Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
     where
         TBlockProducerProcess:
-        BlockProducerProcess< Repository = TRepository>,
-        TValidationProcess: BlockKeeperProcess<
-            BLSSignatureScheme = GoshBLS,
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-
-            OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
-        >,
+        BlockProducerProcess< Repository = RepositoryImpl>,
         TBlockProducerProcess: BlockProducerProcess<
             BLSSignatureScheme = GoshBLS,
             CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-
-        >,
-        TRepository: Repository<
-            BLS = GoshBLS,
-            EnvelopeSignerIndex = SignerIndex,
-
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-            OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
-            NodeIdentifier = NodeIdentifier,
-            Attestation = Envelope<GoshBLS, AttestationData>,
+            OptimisticState = OptimisticStateImpl,
         >,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
             <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
         >,
         TStateSyncService: StateSyncService<
-            Repository = TRepository
-        >,
-        TAttestationProcessor: AttestationProcessor<
-            BlockAttestation = Envelope<GoshBLS, AttestationData>,
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
+            Repository = RepositoryImpl
         >,
         TRandomGenerator: rand::Rng,
 {
 
     pub(crate) fn broadcast_node_joining(&self) -> anyhow::Result<()> {
         tracing::trace!("Broadcast NetworkMessage::NodeJoining");
-        self.tx.send(NetworkMessage::NodeJoining((self.config.local.node_id, self.thread_id)))?;
+        self.tx.send(NetworkMessage::NodeJoining((self.config.local.node_id.clone(), self.thread_id)))?;
         Ok(())
     }
 
@@ -86,7 +87,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             "rebroadcasting block: {}",
             candidate_block,
         );
-        self.tx.send(NetworkMessage::ResentCandidate((candidate_block, self.config.local.node_id)))?;
+        self.tx.send(NetworkMessage::ResentCandidate((candidate_block, self.config.local.node_id.clone())))?;
         Ok(())
     }
 
@@ -100,34 +101,20 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         Ok(())
     }
 
-    pub(crate) fn send_block_attestation(
-        &self,
-        node_id: NodeIdentifier,
-        attestation: <Self as NodeAssociatedTypes>::BlockAttestation,
-    ) -> anyhow::Result<()> {
-        tracing::info!(
-            "sending attestation to node {}: {:?}",
-            node_id,
-            attestation,
-        );
-        self.single_tx.send((node_id, NetworkMessage::BlockAttestation((attestation, self.thread_id))))?;
-        Ok(())
-    }
-
     pub(crate) fn send_block_request(
         &self,
         node_id: NodeIdentifier,
         included_from: BlockSeqNo,
         excluded_to: BlockSeqNo,
     ) -> anyhow::Result<()> {
-        tracing::info!(
-            "sending block request to node {} [{:?}, {:?})",
+        send_blocks_range_request(
+            &self.single_tx,
             node_id,
+            self.config.local.node_id.clone(),
+            self.thread_id,
             included_from,
             excluded_to,
-        );
-        self.single_tx.send((node_id, NetworkMessage::BlockRequest((included_from, excluded_to, self.config.local.node_id, self.thread_id))))?;
-        Ok(())
+        )
     }
 
     pub(crate) fn broadcast_sync_finalized(
@@ -167,7 +154,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         Ok(())
     }
 
-    pub(crate) fn send_ack(
+    pub(crate) fn _send_ack(
         &self,
         node_id: NodeIdentifier,
         ack: <Self as NodeAssociatedTypes>::Ack
@@ -181,7 +168,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         Ok(())
     }
 
-    pub(crate) fn broadcast_nack(&self, nack: <Self as NodeAssociatedTypes>::Nack) -> anyhow::Result<()> {
+    pub(crate) fn _broadcast_nack(&self, nack: <Self as NodeAssociatedTypes>::Nack) -> anyhow::Result<()> {
         tracing::trace!("Broadcasting Nack: {:?}", nack.data().block_id);
         self.tx.send(NetworkMessage::Nack((nack, self.thread_id)))?;
         Ok(())

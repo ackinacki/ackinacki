@@ -8,6 +8,7 @@ license-file.workspace = true
 [dependencies]
 anyhow.workspace = true
 hex.workspace = true
+parking_lot.workspace = true
 rcgen.workspace = true
 salvo.workspace = true
 serde.workspace = true
@@ -17,3 +18,5 @@ tokio.workspace = true
 tracing.workspace = true
 tvm_block.workspace = true
 tvm_types.workspace = true
+
+httpdate = "1.0.3"

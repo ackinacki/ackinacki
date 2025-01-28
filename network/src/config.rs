@@ -2,76 +2,98 @@
 //
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::fmt::Debug;
+use std::fmt::Display;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use chitchat::Chitchat;
+use serde::Deserialize;
+use serde::Serialize;
 use tokio::sync::Mutex;
+use url::Url;
 
-use crate::socket_addr::StringSocketAddr;
-use crate::socket_addr::ToOneSocketAddr;
+use crate::gossip::get_live_peers;
+use crate::pub_sub::CertFile;
+use crate::pub_sub::CertStore;
+use crate::pub_sub::PrivateKeyFile;
+use crate::NetworkPeerId;
 
-pub type NodeIdentifier = i32;
-
-#[derive(Clone)]
-pub struct NetworkConfig {
-    pub bind: SocketAddr,
-    pub gossip: Arc<Mutex<Chitchat>>,
-    pub nodes: HashMap<NodeIdentifier, SocketAddr>,
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct TlsAuthConfig {
+    pub cert: PathBuf,
+    pub key: PathBuf,
 }
 
-impl Debug for NetworkConfig {
+#[derive(Clone)]
+pub struct NetworkConfig<PeerId: NetworkPeerId>
+where
+    <PeerId as FromStr>::Err: Display + Send + Sync + 'static,
+    anyhow::Error: From<<PeerId as FromStr>::Err>,
+{
+    pub bind: SocketAddr,
+    pub my_cert: CertFile,
+    pub my_key: PrivateKeyFile,
+    pub peer_certs: CertStore,
+    pub subscribe: Vec<Url>,
+    pub gossip: Arc<Mutex<Chitchat>>,
+    pub nodes: HashMap<PeerId, SocketAddr>,
+}
+
+impl<PeerId: NetworkPeerId> Debug for NetworkConfig<PeerId>
+where
+    <PeerId as FromStr>::Err: Display + Send + Sync + 'static,
+    anyhow::Error: From<<PeerId as FromStr>::Err>,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NetworkConfig").field("bind", &self.bind).finish()
     }
 }
 
-impl NetworkConfig {
-    pub fn new(bind: SocketAddr, gossip: Arc<Mutex<Chitchat>>) -> Self {
+impl<PeerId: NetworkPeerId> NetworkConfig<PeerId>
+where
+    <PeerId as FromStr>::Err: Display + Send + Sync + 'static,
+    anyhow::Error: From<<PeerId as FromStr>::Err>,
+{
+    pub fn new(
+        bind: SocketAddr,
+        my_cert: CertFile,
+        my_key: PrivateKeyFile,
+        peer_certs: CertStore,
+        subscribe: Vec<Url>,
+        gossip: Arc<Mutex<Chitchat>>,
+    ) -> Self {
         tracing::info!("Creating new network configuration with bind: {}", bind);
-        Self { bind, gossip, nodes: HashMap::new() }
+        Self { bind, my_cert, my_key, subscribe, gossip, peer_certs, nodes: HashMap::new() }
     }
 
-    pub async fn alive_nodes(&mut self, filter_self: bool) -> anyhow::Result<Vec<SocketAddr>> {
-        let chitchat_guard = self.gossip.lock().await;
-
-        let live_nodes_without_self = chitchat_guard
-            .live_nodes()
-            .map(|n| n.node_id.clone())
-            .filter(|node_id| {
-                if filter_self {
-                    *node_id != chitchat_guard.self_chitchat_id().node_id
-                } else {
-                    true
+    pub fn pub_sub_config(&self) -> crate::pub_sub::Config {
+        let mut subscribe = self.subscribe.clone();
+        if subscribe.is_empty() {
+            for addr in self.nodes.values() {
+                if let Ok(url) = Url::parse(&format!("https://{addr}")) {
+                    subscribe.push(url);
                 }
-            })
-            .collect::<HashSet<_>>();
+            }
+        }
+        crate::pub_sub::Config {
+            bind: self.bind,
+            my_cert: self.my_cert.clone(),
+            my_key: self.my_key.clone(),
+            peer_certs: self.peer_certs.clone(),
+            subscribe,
+        }
+    }
 
-        let node_addresses = chitchat_guard
-            .state_snapshot()
-            .node_state_snapshots
-            .iter()
-            .filter(|snapshot| live_nodes_without_self.contains(&snapshot.chitchat_id.node_id))
-            .filter_map(|snapshot| {
-                let address = snapshot.node_state.get("node_advertise_addr");
-                let node_id = snapshot.node_state.get("node_id");
-                address.map(|addr| (addr, node_id.unwrap()))
-            })
-            .map(|(node_advertise_addr, node_id)| {
-                let id = NodeIdentifier::from_str(node_id).expect("Failed to convert node id");
-                (id, StringSocketAddr::from(node_advertise_addr.to_string()).to_socket_addr())
-            })
-            .collect::<Vec<_>>();
-        let old_nodes_list = self.nodes.clone();
-        for (node_id, node_address) in node_addresses {
-            self.nodes.insert(node_id, node_address);
+    pub async fn refresh_alive_nodes(&mut self, filter_self: bool) {
+        let chitchat_guard = self.gossip.lock().await;
+        let peers = get_live_peers(&chitchat_guard, filter_self);
+        tracing::info!("Received gossip live peers: {:?}", peers);
+        for (id, address) in peers {
+            self.nodes.insert(id, address);
         }
-        if self.nodes != old_nodes_list {
-            tracing::info!(target: "network", "Final node list: {:?}", self.nodes);
-        }
-        Ok(Vec::from_iter(self.nodes.values().copied()))
+        tracing::info!("Final live peers: {:?}", self.nodes);
     }
 }

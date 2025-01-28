@@ -100,6 +100,7 @@ where
                             tracing::trace!(target: "http_server", "Process request send message: {:?}", external_message);
                             match web_server_state
                                 .incoming_message_sender
+                                .clone()
                                 .send((external_message, None))
                             {
                                 Ok(()) => {

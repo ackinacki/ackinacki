@@ -20,3 +20,6 @@ pub mod creditconfig;
 pub mod multithreading;
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "misbehave")]
+pub mod misbehavior;

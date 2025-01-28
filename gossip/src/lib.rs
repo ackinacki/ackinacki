@@ -25,6 +25,7 @@ use poem_openapi::OpenApiService;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
 static DEFAULT_GOSSIP_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -81,12 +82,13 @@ pub async fn run(
     listen_addr: SocketAddr,
     gossip_advertise_addr: SocketAddr,
     seeds: Vec<String>,
-) -> anyhow::Result<ChitchatHandle> {
+    cluster_id: String,
+) -> anyhow::Result<(ChitchatHandle, JoinHandle<Result<(), std::io::Error>>)> {
     let node_id = generate_server_id(gossip_advertise_addr);
     let generation = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
     let chitchat_id = ChitchatId::new(node_id, generation, gossip_advertise_addr);
     let config = ChitchatConfig {
-        cluster_id: "ackinacki".to_string(),
+        cluster_id,
         chitchat_id,
         gossip_interval: DEFAULT_GOSSIP_INTERVAL,
         listen_addr,
@@ -102,8 +104,11 @@ pub async fn run(
         .server(format!("http://{}/", gossip_advertise_addr));
     let docs = api_service.swagger_ui();
     let app = Route::new().nest("/", api_service).nest("/docs", docs);
-    tracing::info!("Starting REST server on {gossip_advertise_addr}");
-    tokio::spawn(Server::new(TcpListener::bind(gossip_advertise_addr)).run(app));
 
-    Ok(chitchat_handler)
+    tracing::info!("Starting REST server on advertise addr {gossip_advertise_addr}");
+    tracing::info!("Starting REST server on listen addr {listen_addr}");
+
+    let rest_server_handle = tokio::spawn(Server::new(TcpListener::bind(listen_addr)).run(app));
+
+    Ok((chitchat_handler, rest_server_handle))
 }

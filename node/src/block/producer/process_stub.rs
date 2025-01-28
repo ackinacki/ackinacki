@@ -19,11 +19,11 @@ use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::NackData;
+use crate::node::block_state::repository::BlockStateRepository;
 #[cfg(test)]
 use crate::repository::stub_repository::OptimisticStateStub;
 #[cfg(test)]
 use crate::repository::stub_repository::RepositoryStub;
-use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
@@ -49,7 +49,7 @@ impl BlockProducerProcess for BlockProducerProcessStub {
         _feedback_sender: Sender<Vec<ExtMsgFeedback>>,
         _received_acks: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, AckData>>>>,
         _received_nacks: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, NackData>>>>,
-        _block_keeper_sets: BlockKeeperRing,
+        _block_state: BlockStateRepository,
         _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<()> {
         todo!()

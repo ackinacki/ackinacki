@@ -151,6 +151,7 @@ CREATE TABLE blocks (
     seq_no INTEGER NOT NULL,
     parent TEXT NOT NULL,
     thread_id TEXT,
+    producer_id TEXT,
     aggregated_signature BLOB,
     signature_occurrences BLOB,
     share_state_resource_address TEXT,

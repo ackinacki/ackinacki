@@ -1,17 +1,17 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 
-use api::blocks::GetBlockFn;
 pub use api::ext_messages::ExtMsgError;
 pub use api::ext_messages::ExtMsgFeedback;
 pub use api::ext_messages::ExtMsgResponse;
 pub use api::ext_messages::FeedbackError;
 pub use api::ext_messages::FeedbackErrorCode;
+pub use api::BlockKeeperSetUpdate;
 use rcgen::CertifiedKey;
 use salvo::conn::rustls::Keycert;
 use salvo::conn::rustls::RustlsConfig;
@@ -19,14 +19,16 @@ use salvo::prelude::*;
 use tokio::sync::oneshot;
 use tvm_block::Message;
 
+use crate::api::BkSetSnapshot;
+
 mod api;
 
 #[derive(Clone)]
 pub struct WebServer<TMessage, TMsgConverter, TBPResolver> {
     pub addr: String,
     pub local_storage_dir: PathBuf,
-    pub get_block_by_id: GetBlockFn,
     pub incoming_message_sender: Sender<(TMessage, Option<oneshot::Sender<ExtMsgFeedback>>)>,
+    pub bk_set: Arc<parking_lot::RwLock<BkSetSnapshot>>,
     pub into_external_message: TMsgConverter,
     pub bp_resolver: TBPResolver,
 }
@@ -41,7 +43,6 @@ where
     pub fn new(
         addr: impl AsRef<str>,
         local_storage_dir: impl AsRef<Path>,
-        get_block_by_id: GetBlockFn,
         incoming_message_sender: Sender<(TMessage, Option<oneshot::Sender<ExtMsgFeedback>>)>,
         into_external_message: TMsgConverter,
         bp_resolver: TBPResolver,
@@ -49,10 +50,10 @@ where
         Self {
             addr: addr.as_ref().to_string(),
             local_storage_dir: local_storage_dir.as_ref().to_path_buf(),
-            get_block_by_id,
             incoming_message_sender,
             into_external_message,
             bp_resolver,
+            bk_set: Arc::new(parking_lot::RwLock::new(BkSetSnapshot::new())),
         }
     }
 
@@ -80,21 +81,23 @@ where
             ),
         );
 
-        // TODO: not implemented yet
-        // Returns block by id
-        let blocks_router = Router::with_path("blocks/<id>")
-            .get(api::BlocksBlockHandler::new(self.get_block_by_id.clone()));
+        // curl -v -H "If-Modified-Since: Wed, 22 Jan 2025 06:56:02 GMT" localhost:11001/bk/v1/bk_set
+        let bk_set_router = Router::with_path("bk_set").get(api::BkSetHandler::<
+            TMessage,
+            TMsgConverter,
+            TBPResolver,
+        >::new());
 
         let router_v1 = Router::with_path("v1")
             .push(storage_latest_router)
             .push(storage_router)
             .push(ext_messages_router)
-            .push(blocks_router);
+            .push(bk_set_router);
 
         let router_v2 = Router::with_path("v2").push(ext_messages_router_v2);
 
         Router::new() //
-            .hoop(salvo::logging::Logger::new())
+            .hoop(Logger::new())
             .hoop(affix_state::inject(self.clone()))
             .path("bk")
             .push(router_v1)
@@ -102,7 +105,7 @@ where
     }
 
     #[must_use = "server run must be awaited twice (first await is to prepare run call)"]
-    pub async fn run(self) -> impl Future<Output = ()> {
+    pub async fn run(self, bk_set_updates_rx: std::sync::mpsc::Receiver<BlockKeeperSetUpdate>) {
         let rustls_config = rustls_config();
 
         let quinn_listener = QuinnListener::new(
@@ -116,8 +119,24 @@ where
         // TODO: maybe use try_bind?
         let acceptor = tcp_listener.join(quinn_listener).bind().await;
 
+        let bk_set = self.bk_set.clone();
+        let bk_set_update_task = std::thread::Builder::new()
+            .name("BK set update handler".to_string())
+            .spawn(move || {
+                tracing::info!("BK set update handler started");
+                while let Ok(update) = bk_set_updates_rx.recv() {
+                    bk_set.write().update(update)
+                }
+                tracing::info!("BK set update handler stopped");
+            })
+            .expect("Failed to spawn BK set updates handler");
+
         tracing::info!("Start HTTP server on {}", &self.addr);
-        Server::new(acceptor).serve(Service::new(self.route()))
+        Server::new(acceptor).serve(Service::new(self.route())).await;
+        match bk_set_update_task.join() {
+            Ok(_) => tracing::info!("BK set update handler stopped"),
+            Err(_) => tracing::error!("BK set update handler stopped with error"),
+        }
     }
 }
 

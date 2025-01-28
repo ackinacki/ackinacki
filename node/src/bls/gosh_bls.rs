@@ -12,7 +12,7 @@ use serde_with::Bytes;
 
 use crate::bls::BLSSignatureScheme;
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq)]
 pub struct GoshBLS {}
 
 #[serde_as]
@@ -32,7 +32,7 @@ impl Signature {
 }
 
 #[serde_as]
-#[derive(Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Hash, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub struct PubKey(#[serde_as(as = "Bytes")] [u8; gosh_bls_lib::bls::BLS_PUBLIC_KEY_LEN]);
 
 impl Debug for PubKey {

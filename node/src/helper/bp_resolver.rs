@@ -8,18 +8,17 @@ use message_router::bp_resolver::BPResolver;
 use network::config::NetworkConfig;
 use parking_lot::Mutex;
 
+use crate::node::NodeIdentifier;
 use crate::repository::repository_impl::RepositoryImpl;
 
 pub struct BPResolverImpl {
-    network: NetworkConfig,
+    network: NetworkConfig<NodeIdentifier>,
     repository: Arc<Mutex<RepositoryImpl>>,
 }
 
 impl BPResolver for BPResolverImpl {
     fn resolve(&mut self) -> Vec<SocketAddr> {
-        let fut_nodes = async { self.network.alive_nodes(false).await };
-        let _alive_nodes =
-            futures::executor::block_on(fut_nodes).expect("Failed to update nodes addresses");
+        futures::executor::block_on(async { self.network.refresh_alive_nodes(false).await });
         let repository = self.repository.lock();
         let bp_id_for_thread_map = repository.get_nodes_by_threads();
         drop(repository);
@@ -42,7 +41,7 @@ impl BPResolver for BPResolverImpl {
 }
 
 impl BPResolverImpl {
-    pub fn new(network_config: NetworkConfig, repository: RepositoryImpl) -> Self {
+    pub fn new(network_config: NetworkConfig<NodeIdentifier>, repository: RepositoryImpl) -> Self {
         Self { network: network_config, repository: Arc::new(Mutex::new(repository)) }
     }
 }

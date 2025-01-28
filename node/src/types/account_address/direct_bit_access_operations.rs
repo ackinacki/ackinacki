@@ -24,7 +24,7 @@ impl DirectBitAccess for AccountAddress {
                 .expect("Account address must be an uint256 value");
             let hi = index / 8usize;
             let lo = 7 - index % 8usize;
-            buffer[hi] = buffer[lo] | 1 << lo;
+            buffer[hi] = buffer[lo] | (1 << lo);
             self.0 = tvm_types::AccountId::from(buffer);
         }
     }

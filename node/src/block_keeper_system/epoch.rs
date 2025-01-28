@@ -19,12 +19,10 @@ use crate::block_keeper_system::abi::EPOCH_ABI;
 use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperStatus;
 use crate::bls::gosh_bls::PubKey;
-use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
 use crate::types::AccountAddress;
 
 const BLS_PUBKEY_TOKEN_KEY: &str = "_bls_pubkey";
-const WALLET_ID_TOKEN_KEY: &str = "_walletId";
 const EPOCH_FINISH_TOKEN_KEY: &str = "_unixtimeFinish";
 const STAKE_TOKEN_KEY: &str = "_stake";
 const OWNER_TOKEN_KEY: &str = "_owner_address";
@@ -49,7 +47,6 @@ pub fn decode_epoch_data(
             )
             .map_err(|e| anyhow::format_err!("Failed to decode epoch storage: {e}"))?;
         let mut block_keeper_bls_key = None;
-        let mut block_keeper_wallet_id = None;
         let mut block_keeper_epoch_finish = None;
         let mut block_keeper_stake = None;
         let mut wallet_address = None;
@@ -58,16 +55,6 @@ pub fn decode_epoch_data(
             if token.name == BLS_PUBKEY_TOKEN_KEY {
                 if let TokenValue::Bytes(pubkey) = token.value {
                     block_keeper_bls_key = Some(PubKey::from(pubkey.as_slice()));
-                }
-            } else if token.name == WALLET_ID_TOKEN_KEY {
-                if let TokenValue::Uint(wallet_id) = token.value {
-                    // TODO: check that wallet id fits boundaries
-                    tracing::trace!("decoded epoch wallet id: {wallet_id:?}");
-                    block_keeper_wallet_id = Some(if wallet_id.number.is_zero() {
-                        0
-                    } else {
-                        wallet_id.number.to_u64_digits()[0] as NodeIdentifier
-                    });
                 }
             } else if token.name == EPOCH_FINISH_TOKEN_KEY {
                 if let TokenValue::Uint(epoch_finish) = token.value {
@@ -108,25 +95,30 @@ pub fn decode_epoch_data(
                 }
             }
         }
-        if block_keeper_bls_key.is_some()
-            && block_keeper_wallet_id.is_some()
-            && block_keeper_epoch_finish.is_some()
-            && block_keeper_stake.is_some()
-            && wallet_address.is_some()
-            && signer_index.is_some()
-        {
-            let signer_index = signer_index.unwrap();
+        if let (
+            Some(block_keeper_bls_key),
+            Some(block_keeper_epoch_finish),
+            Some(block_keeper_stake),
+            Some(wallet_address),
+            Some(signer_index),
+        ) = (
+            block_keeper_bls_key,
+            block_keeper_epoch_finish,
+            block_keeper_stake,
+            wallet_address,
+            signer_index,
+        ) {
+            let wallet_address = AccountId::from(wallet_address);
             return Ok(Some((
                 signer_index,
                 BlockKeeperData {
-                    wallet_index: block_keeper_wallet_id.unwrap(),
-                    pubkey: block_keeper_bls_key.unwrap(),
-                    epoch_finish_timestamp: block_keeper_epoch_finish.unwrap(),
+                    pubkey: block_keeper_bls_key,
+                    epoch_finish_timestamp: block_keeper_epoch_finish,
                     status: BlockKeeperStatus::Active,
                     // TODO: better fix pure unwrap for address
                     address: account.get_addr().unwrap().to_string(),
-                    stake: block_keeper_stake.unwrap(),
-                    owner_address: AccountAddress(AccountId::from(wallet_address.unwrap())),
+                    stake: block_keeper_stake,
+                    owner_address: AccountAddress(wallet_address),
                     signer_index,
                 },
             )));

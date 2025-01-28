@@ -41,7 +41,7 @@ impl Display for MessageRouter {
 
 impl MessageRouter {
     pub fn new(bind_to: String, bp_resolver: Arc<Mutex<dyn BPResolver>>) -> Self {
-        let bind = bind_to.to_socket_addrs().expect("Incorrect address: {bind_to}").next().unwrap();
+        let bind = bind_to.to_socket_addrs().expect("Incorrect address").next().unwrap();
 
         let bind_clone = bind;
         let _ = std::thread::Builder::new()

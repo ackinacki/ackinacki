@@ -46,6 +46,7 @@ pub struct Block {
     pub prev_ref_end_lt: Option<String>,
     pub prev_ref_file_hash: Option<String>,
     pub prev_ref_root_hash: Option<String>,
+    pub producer_id: Option<String>,
     pub root_hash: Option<String>,
     pub seq_no: i64,                                  // seq_no INTEGER NOT NULL,
     pub signature_occurrences: Option<Vec<u8>>,       // signature_occurrences BLOB,

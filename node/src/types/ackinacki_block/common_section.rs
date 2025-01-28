@@ -10,6 +10,7 @@ use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 
+use super::fork_resolution::ForkResolution;
 use crate::block_keeper_system::BlockKeeperSetChange;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
@@ -18,11 +19,12 @@ use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
+use crate::types::bp_selector::ProducerSelector;
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Directives {
     pub share_state_resource_address: Option<String>,
 }
@@ -35,7 +37,7 @@ impl Debug for Directives {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct CommonSection {
     pub directives: Directives,
     pub block_attestations: Vec<Envelope<GoshBLS, AttestationData>>,
@@ -54,17 +56,12 @@ pub struct CommonSection {
     pub verify_complexity: SignerIndex,
     pub acks: Vec<Envelope<GoshBLS, AckData>>,
     pub nacks: Vec<Envelope<GoshBLS, NackData>>,
-    // TODO: (andrew-k) check producer_group field neccessity
-    pub producer_group: Vec<NodeIdentifier>,
-    // This parameter tell us what was the number of blocks expected
-    // to gather minimum number of attestations for the block to be
-    // finalized. The same parameter was used to calculate Acki-Nacki
-    // value.
-    // TODO:
-    // pub network_dynamic_parameter_beta: u8,
+    // This field must be set, but it is option, because we can't set it up on block creation and update it later
+    pub producer_selector: Option<ProducerSelector>,
 
-    // The expected number of Acki-Nacki per block
-    // pub network_dynamic_parameter_v: Option<usize>,
+    // Each ForkResolution contains a resolution for a single fork.
+    // It can happen that a single block has to resolve several forks at once.
+    pub fork_resolutions: Vec<ForkResolution>,
 }
 
 impl CommonSection {
@@ -87,7 +84,8 @@ impl CommonSection {
             verify_complexity,
             acks: vec![],
             nacks: vec![],
-            producer_group: vec![],
+            producer_selector: None,
+            fork_resolutions: vec![],
         }
     }
 
@@ -101,15 +99,19 @@ impl CommonSection {
         WrappedCommonSection {
             directives: self.directives.clone(),
             block_attestations: block_attestations_data,
-            producer_id: self.producer_id,
+            producer_id: self.producer_id.clone(),
             block_keeper_set_changes: self.block_keeper_set_changes.clone(),
             verify_complexity: self.verify_complexity,
             acks: acks_data,
             nacks: nacks_data,
-            producer_group: self.producer_group.clone(),
+            producer_selector: self
+                .producer_selector
+                .clone()
+                .expect("Producer selector must be set before serialization"),
             thread_identifier: self.thread_id,
             refs: self.refs.clone(),
             threads_table: self.threads_table.clone(),
+            fork_resolutions: self.fork_resolutions.clone(),
         }
     }
 
@@ -129,10 +131,11 @@ impl CommonSection {
             verify_complexity: data.verify_complexity,
             acks,
             nacks,
-            producer_group: data.producer_group,
+            producer_selector: Some(data.producer_selector),
             refs: data.refs,
             thread_id: data.thread_identifier,
             threads_table: data.threads_table,
+            fork_resolutions: data.fork_resolutions,
         }
     }
 }
@@ -146,10 +149,11 @@ struct WrappedCommonSection {
     pub verify_complexity: SignerIndex,
     pub acks: Vec<u8>,
     pub nacks: Vec<u8>,
-    pub producer_group: Vec<NodeIdentifier>,
+    pub producer_selector: ProducerSelector,
     pub thread_identifier: ThreadIdentifier,
     pub refs: Vec<BlockIdentifier>,
     pub threads_table: Option<ThreadsTable>,
+    pub fork_resolutions: Vec<ForkResolution>,
 }
 
 impl Serialize for CommonSection {
@@ -182,7 +186,7 @@ impl Debug for CommonSection {
             .field("verify_complexity", &self.verify_complexity)
             .field("acks", &self.acks)
             .field("nacks", &self.nacks)
-            .field("producer_group", &self.producer_group)
+            .field("producer_selector", &self.producer_selector)
             .field("refs", &self.refs)
             .field("threads_table", &self.threads_table)
             .finish()

@@ -245,6 +245,14 @@
 			]
 		},
 		{
+			"name": "getEpochAddress",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"epochAddress","type":"optional(address)"}
+			]
+		},
+		{
 			"name": "getProxyListAddr",
 			"inputs": [
 			],

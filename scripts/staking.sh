@@ -4,6 +4,7 @@ set -eu
 
 MASTER_KEY_FILE=$1
 BLS_KEYS_FILE=$2
+PROXY=$3
 WALLET_ABI=../contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json
 ABI=../contracts/bksystem/BlockKeeperContractRoot.abi.json
 PRE_EPOCH_ABI=../contracts/bksystem/BlockKeeperPreEpochContract.abi.json
@@ -25,9 +26,14 @@ if [ ! -e $BLS_KEYS_FILE ]; then
   exit 1
 fi
 
+if [ -z $PROXY ]; then
+  echo Proxy has not been set.
+  exit 1
+fi
+
 MASTER_PUB_KEY_JSON=$(jq -r .public $MASTER_KEY_FILE)
 MASTER_PUB_KEY=$(echo '{"pubkey": "0x{public}"}' | sed -e "s/{public}/$MASTER_PUB_KEY_JSON/g")
-BLS_PUB_KEY=$(jq -r .public $BLS_KEYS_FILE)
+BLS_PUB_KEY=$(jq -r .[0].public $BLS_KEYS_FILE)
 WALLET_ADDR=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeperNodeWalletAddress "$MASTER_PUB_KEY" | jq -r '.value0')
 INIT_WALLET_STATE=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails)
 INIT_ACTIVE_STAKES=$(echo $INIT_WALLET_STATE | jq '.activeStakes | length')
@@ -35,8 +41,12 @@ INIT_WALLET_BALANCE=$(echo $INIT_WALLET_STATE | jq -r '.balance' | xargs printf 
 echo "Count of stake: $INIT_ACTIVE_STAKES"
 
 place_stake () {
+  local SIGN_INDEX_START=1
+  local SIGN_INDEX_END=20000
+  local SIGNER_INDEX=1
+
   WALLET_STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake' | xargs printf "%d * 1.1\n" | bc | cut -d'.' -f1)
-  
+
   echo "Current wallet $WALLET_ADDR balance: $INIT_WALLET_BALANCE"
   echo "Sending stake: $WALLET_STAKE"
 
@@ -45,13 +55,32 @@ place_stake () {
     echo "Not enough token's on the wallet"
     exit 1
   fi
-  PLACE_PARAMS="{\"bls_pubkey\": \"$BLS_PUB_KEY\", \"stake\": $WALLET_STAKE}"
+
+  # Get signer index
+  for i in `seq $SIGN_INDEX_START $SIGN_INDEX_END`; do
+    echo "Trying signer index: $i"
+    SIGNER_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getSignerIndexAddress "{\"index\": $i}" | jq -r '.value0')
+    ADDRESS_DETAILS=$(tvm-cli -j account $SIGNER_ADDRESS)
+    ADDRESS_DETAILS_LEN=$(echo $ADDRESS_DETAILS | jq '. | length')
+    ADDRESS_DETAILS_TYPE=$(echo $ADDRESS_DETAILS | jq -r '.acc_type')
+
+    compare=$(echo "$ADDRESS_DETAILS_LEN == 0" | bc)
+    if [ "$compare" -eq 1 ] || [ "$ADDRESS_DETAILS_TYPE" != "Active" ]; then
+      echo "Found proper signer index: $i"
+      SIGNER_INDEX=$i
+      break
+    fi
+  done
+
+  PLACE_PARAMS="{\"bls_pubkey\": \"$BLS_PUB_KEY\", \"stake\": $WALLET_STAKE, \"signerIndex\": $SIGNER_INDEX, \"ProxyList\": {\"1\": \"$PROXY\"}}"
   tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $MASTER_KEY_FILE --method sendBlockKeeperRequestWithStake "$PLACE_PARAMS" && echo Staking request has been sent.
   echo "Waiting active stakes..."
   sleep 5
 
   ACTIVE_STAKES=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '.activeStakes | length')
-  compare=$(echo "$ACTIVE_STAKES < $INIT_ACTIVE_STAKES" | bc)
+  echo $ACTIVE_STAKES
+
+  compare=$(echo "$ACTIVE_STAKES <= $INIT_ACTIVE_STAKES" | bc)
   if [ "$compare" -eq 1 ]; then
     echo "Stake request failed..."
     echo "Exiting"
@@ -61,6 +90,10 @@ place_stake () {
 }
 
 place_continue_stake () {
+  local SIGN_INDEX_START=1
+  local SIGN_INDEX_END=20000
+  local SIGNER_INDEX=1
+
   CONT_WALLET_STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake' | xargs printf "%d * 1.1\n" | bc | cut -d'.' -f1)
   compare=$(echo "$INIT_WALLET_BALANCE <= $CONT_WALLET_STAKE" | bc)
   if [ "$compare" -eq 1 ]; then
@@ -68,7 +101,23 @@ place_continue_stake () {
     exit 1
   fi
 
-  CONT_STAKING="{\"bls_pubkey\": \"$BLS_PUB_KEY\", \"stake\": $CONT_WALLET_STAKE, \"seqNoStartOld\": \"$1\"}"
+  # Get signer index
+  for i in `seq $SIGN_INDEX_START $SIGN_INDEX_END`; do
+    echo "Trying signer index: $i"
+    SIGNER_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getSignerIndexAddress "{\"index\": $i}" | jq -r '.value0')
+    ADDRESS_DETAILS=$(tvm-cli -j account $SIGNER_ADDRESS)
+    ADDRESS_DETAILS_LEN=$(echo $ADDRESS_DETAILS | jq '. | length')
+    ADDRESS_DETAILS_TYPE=$(echo $ADDRESS_DETAILS | jq -r '.acc_type')
+
+    compare=$(echo "$ADDRESS_DETAILS_LEN == 0" | bc)
+    if [ "$compare" -eq 1 ] || [ "$ADDRESS_DETAILS_TYPE" != "Active" ]; then
+      echo "Found proper signer index: $i"
+      SIGNER_INDEX=$i
+      break
+    fi
+  done
+
+  CONT_STAKING="{\"bls_pubkey\": \"$BLS_PUB_KEY\", \"stake\": $CONT_WALLET_STAKE, \"seqNoStartOld\": \"$1\", \"signerIndex\": $SIGNER_INDEX, \"ProxyList\": {\"1\": \"$PROXY\"}}"
   tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $MASTER_KEY_FILE --method sendBlockKeeperRequestWithStakeContinue "$CONT_STAKING" && echo Continue staking request has been sent.
 }
 
@@ -114,6 +163,7 @@ process_epoch () {
     esac
   done
 }
+
 
 if [ $INIT_ACTIVE_STAKES -le 0 ]; then
   place_stake

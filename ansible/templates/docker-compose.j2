@@ -43,7 +43,6 @@ services:
     restart: unless-stopped
     environment:
       RUST_LOG: debug
-      COLLATOR_NODE_ID: 0
       EXTERNAL_STATE_SHARE_LOCAL_BASE_DIR: /share
       NODE_VERBOSE: 1
       BIND: 0.0.0.0:8500
@@ -72,8 +71,9 @@ services:
         --block-keeper-seed-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
         --zerostate-path=/bk-configs/zerostate
         --parallelization-level 20
+        --chitchat-cluster-id "{{ NETWORK_NAME }}"
         --shared-state-max-download-tries 30
-        --static-storages={{ NODE_STORAGE_LIST | join(',') }} &> /dev/null
+        --static-storages={{ NODE_STORAGE_LIST | join(',') }}
         && migration-tool -p ./data -n -a --block-manager
         && node -c acki-nacki.conf.yaml >> /logsdir/node.log 2>&1
     ports:

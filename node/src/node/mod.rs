@@ -3,15 +3,15 @@
 
 mod acki_nacki;
 pub mod associated_types;
-pub mod attestation_processor;
 mod attestations;
 mod block_keeper_system;
 mod block_processing;
 pub mod block_state;
 mod crypto;
-pub mod events;
+use crate::node::services::send_attestations::AttestationSendService;
+use crate::repository::optimistic_state::OptimisticStateImpl;
 mod execution;
-mod fork_choice;
+pub use execution::LOOP_PAUSE_DURATION;
 pub mod leader_election;
 mod network_message;
 mod producer;
@@ -21,7 +21,6 @@ mod send;
 pub mod services;
 mod synchronization;
 mod threads;
-mod verifier;
 use std::sync::Arc;
 #[macro_use]
 pub mod impl_trait_macro;
@@ -40,31 +39,34 @@ use services::sync::StateSyncService;
 use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
 
-use crate::block::keeper::process::BlockKeeperProcess;
 use crate::block::producer::process::BlockProducerProcess;
 use crate::block::producer::BlockProducer;
 use crate::bls::envelope::Envelope;
-use crate::bls::BLSSignatureScheme;
 use crate::bls::GoshBLS;
 use crate::config::Config;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
 use crate::node::associated_types::OptimisticForwardState;
-use crate::node::associated_types::OptimisticStateFor;
-use crate::node::attestation_processor::AttestationProcessor;
+use crate::node::services::attestations_target::service::AttestationsTargetService;
 use crate::repository::optimistic_state::OptimisticState;
-use crate::repository::Repository;
-use crate::types::block_keeper_ring::BlockKeeperRing;
+use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
+use crate::types::RndSeed;
 use crate::utilities::FixedSizeHashSet;
 pub mod shared_services;
 use block_state::repository::BlockStateRepository;
 use parking_lot::Mutex;
 use shared_services::SharedServices;
 
+use crate::bls::gosh_bls::PubKey;
+use crate::bls::gosh_bls::Secret;
+use crate::node::block_state::repository::BlockState;
+use crate::node::services::block_processor::service::BlockProcessorService;
+use crate::node::services::fork_resolution::service::ForkResolutionService;
+use crate::node::services::validation::service::ValidationServiceInterface;
 use crate::types::ThreadIdentifier;
 
 pub(crate) const DEFAULT_PRODUCTION_TIME_MULTIPLIER: u64 = 1;
@@ -74,41 +76,20 @@ pub(crate) const DEFAULT_PRODUCTION_TIME_MULTIPLIER: u64 = 1;
 pub struct Node<
     TStateSyncService,
     TBlockProducerProcess,
-    TValidationProcess,
-    TRepository,
-    TAttestationProcessor,
     TRandomGenerator,
 > where
     TBlockProducerProcess: BlockProducerProcess,
     <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: 'static,
-    TValidationProcess: BlockKeeperProcess<
-            BLSSignatureScheme = GoshBLS,
-        CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-
-        OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
-    >,
-    TRepository: Repository<
-        BLS = GoshBLS,
-        EnvelopeSignerIndex = SignerIndex,
-
-        CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-        OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
-        NodeIdentifier = NodeIdentifier,
-    >,
     <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
         <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
     >,
     TStateSyncService: StateSyncService,
-    TAttestationProcessor: AttestationProcessor<
-        BlockAttestation = Envelope<GoshBLS, AttestationData>,
-        CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-    >,
     TRandomGenerator: rand::Rng,
 {
-    repository: TRepository,
+    repository: RepositoryImpl,
     shared_services: SharedServices,
     state_sync_service: TStateSyncService,
-    validation_process: TValidationProcess,
+    // validation_process: TValidationProcess,
     production_process: TBlockProducerProcess,
     // TODO: @AleksandrS Add priority rx
     rx: Receiver<NetworkMessage>,
@@ -118,18 +99,12 @@ pub struct Node<
         NetworkMessage,
     )>,
     raw_block_tx: Sender<Vec<u8>>,
-    #[allow(dead_code)]
-    pubkey: <GoshBLS as BLSSignatureScheme>::PubKey,
-    secret: <GoshBLS as BLSSignatureScheme>::Secret,
+    bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
     #[builder(default)]
-    cache_forward_optimistic: HashMap<
-        ThreadIdentifier,
-        OptimisticForwardState,
-    >,
+    cache_forward_optimistic: Option<OptimisticForwardState>,
 
     #[builder(default)]
-    unprocessed_blocks_cache:
-    BTreeMap<BlockSeqNo, HashSet<BlockIdentifier>>,
+    unprocessed_blocks_cache: Arc<Mutex<Vec<BlockState>>>,
 
     production_timeout_multiplier: u64,
     pub last_block_attestations: Vec<Envelope<GoshBLS, AttestationData>>,
@@ -137,18 +112,12 @@ pub struct Node<
     sent_acks: BTreeMap<BlockSeqNo, Envelope<GoshBLS, AckData>>,
     pub received_nacks: Arc<Mutex<Vec<Envelope<GoshBLS, NackData>>>>,
     config: Config,
-    block_keeper_sets: BlockKeeperRing,
-    block_producer_groups: HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, Vec<NodeIdentifier>>>,
-    block_gap_length: HashMap<ThreadIdentifier, usize>,
-    pub sent_attestations: HashMap<ThreadIdentifier,
-        Vec<(BlockSeqNo, Envelope<GoshBLS, AttestationData>)>>,
+    block_gap_length: Arc<Mutex<usize>>,
     pub received_attestations: BTreeMap<BlockSeqNo, HashMap<BlockIdentifier, HashSet<SignerIndex>>>,
-    attestation_processor: TAttestationProcessor,
     blocks_for_resync_broadcasting: VecDeque<Envelope<GoshBLS, AckiNackiBlock>>,
     block_keeper_rng: TRandomGenerator,
     producer_election_rng: TRandomGenerator,
     attestations_to_send: BTreeMap<BlockSeqNo, Vec<Envelope<GoshBLS, AttestationData>>>,
-    last_sent_attestation: Option<(BlockSeqNo, std::time::Instant)>,
     ack_cache: BTreeMap<BlockSeqNo, Vec<Envelope<GoshBLS, AckData>>>,
     nack_cache: BTreeMap<BlockSeqNo, Vec<Envelope<GoshBLS, NackData>>>,
     thread_id: ThreadIdentifier,
@@ -159,45 +128,30 @@ pub struct Node<
 
     // Note: signer index map is initially empty,
     // it is filled after BK epoch contract deploy or loaded from zerostate
-    signer_index_map: BTreeMap<BlockSeqNo, SignerIndex>,
-
     blocks_states: BlockStateRepository,
+    block_processor_service: BlockProcessorService,
+    attestations_target_service: AttestationsTargetService,
+    validation_service: ValidationServiceInterface,
+    skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
+    fork_resolution_service: ForkResolutionService,
+    attestation_sender_service: AttestationSendService,
 }
 
-impl<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
-Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, TAttestationProcessor, TRandomGenerator>
+impl<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
+Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
     where
         TBlockProducerProcess:
-        BlockProducerProcess< Repository = TRepository>,
-        TValidationProcess: BlockKeeperProcess<
-            BLSSignatureScheme = GoshBLS,
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-
-            OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
-        >,
+        BlockProducerProcess< Repository = RepositoryImpl>,
         TBlockProducerProcess: BlockProducerProcess<
             BLSSignatureScheme = GoshBLS,
             CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-
-        >,
-        TRepository: Repository<
-            BLS = GoshBLS,
-            EnvelopeSignerIndex = SignerIndex,
-
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-            OptimisticState = OptimisticStateFor<TBlockProducerProcess>,
-            NodeIdentifier = NodeIdentifier,
-            Attestation = Envelope<GoshBLS, AttestationData>,
+            OptimisticState = OptimisticStateImpl,
         >,
         <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
             <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
         >,
         TStateSyncService: StateSyncService<
-            Repository = TRepository
-        >,
-        TAttestationProcessor: AttestationProcessor<
-            BlockAttestation = Envelope<GoshBLS, AttestationData>,
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
+            Repository = RepositoryImpl
         >,
         TRandomGenerator: rand::Rng,
 {
@@ -206,8 +160,7 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
         shared_services: SharedServices,
         state_sync_service: TStateSyncService,
         production_process: TBlockProducerProcess,
-        validation_process: TValidationProcess,
-        repository: TRepository,
+        repository: RepositoryImpl,
         rx: Receiver<NetworkMessage>,
         tx: Sender<NetworkMessage>,
         single_tx: Sender<(
@@ -215,20 +168,24 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             NetworkMessage,
         )>,
         raw_block_tx: Sender<Vec<u8>>,
-        pubkey: <GoshBLS as BLSSignatureScheme>::PubKey,
-        secret: <GoshBLS as BLSSignatureScheme>::Secret,
+        bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
         config: Config,
-        attestation_processor: TAttestationProcessor,
-        mut block_keeper_sets: BlockKeeperRing,
         block_keeper_rng: TRandomGenerator,
         producer_election_rng: TRandomGenerator,
         thread_id: ThreadIdentifier,
         feedback_sender: Sender<Vec<ExtMsgFeedback>>,
-        update_producer_group: bool,
+        _update_producer_group: bool,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         blocks_states: BlockStateRepository,
+        unprocessed_blocks_cache: Arc<Mutex<Vec<BlockState>>>,
+        block_processor_service: BlockProcessorService,
+        attestations_target_service: AttestationsTargetService,
+        validation_service: ValidationServiceInterface,
+        skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
+        fork_resolution_service: ForkResolutionService,
+        block_gap: Arc<Mutex<usize>>,
     ) -> Self {
-        let signer_map = BTreeMap::from_iter({
+        /*let signer_map = BTreeMap::from_iter({
 
             let initial_bk_sets_guarded = block_keeper_sets.sets.lock();
             let (_, initial_bk_set) = initial_bk_sets_guarded.last_key_value().expect("Zerostate must contain initial BK set");
@@ -237,52 +194,56 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             } else {
                 vec![]
             }
-        });
-        if cfg!(test) {
-            if let Some((_, signer)) = signer_map.last_key_value() {
-                block_keeper_sets.with_last_entry(|e| {
-                    let block_keeper_sets = e.expect("must be there");
-                    tracing::trace!("Check that zerostate contains block keeper key");
-                    let bk_set = block_keeper_sets.get();
-                    assert_eq!(bk_set.get(signer).map(|data| &data.pubkey), Some(&pubkey));
-                });
-            }
-        }
-        tracing::trace!("Block keeper key ring: {:?}", block_keeper_sets);
+        });*/
 
-        let sent_attestations = repository.load_sent_attestations().expect("Failed to load sent attestations");
-        tracing::trace!("Block keeper loaded sent attestations len: {}", sent_attestations.len());
+        // TODO: skip load of sent attestations for now
+        // let sent_attestations = repository.load_sent_attestations().expect("Failed to load sent attestations");
+        // tracing::trace!("Block keeper loaded sent attestations len: {}", sent_attestations.len());
+
+
         tracing::trace!("Start node for thread: {thread_id:?}");
-        let mut res = Self {
+
+        // let (last_finalized_block_id, _last_finalized_block_seq_no) = res.repository.select_thread_last_finalized_block(&thread_id).expect("Failed to load last finalized block data");
+        // if last_finalized_block_id != BlockIdentifier::default() {
+        //     let finalized_block = res.repository.get_block_from_repo_or_archive(&last_finalized_block_id).expect("Failed to load finalized block");
+        //     // Start it from zero block to be able to process old blocks or attestations it the come
+        //     res.set_producer_groups_from_finalized_state(thread_id, BlockSeqNo::default(), finalized_block.data().get_common_section().producer_group.clone());
+        // } else {
+        //     if update_producer_group {
+                // res.update_producer_group(vec![]).expect("Failed to initialize producer group");
+            // }
+        // }
+        Self {
             shared_services,
             state_sync_service,
             repository,
             rx,
             tx,
-            single_tx,
+            single_tx: single_tx.clone(),
             raw_block_tx,
-            validation_process,
             production_process,
-            pubkey,
-            secret,
+            bls_keys_map: bls_keys_map.clone(),
             cache_forward_optimistic: Default::default(),
-            block_keeper_sets,
             production_timeout_multiplier: DEFAULT_PRODUCTION_TIME_MULTIPLIER,
             last_block_attestations: vec![],
-            config,
-            block_producer_groups: Default::default(),
-            unprocessed_blocks_cache: Default::default(),
-            block_gap_length: Default::default(),
-            sent_attestations,
+            config: config.clone(),
+            unprocessed_blocks_cache,
+            block_gap_length: block_gap,
+            attestation_sender_service: AttestationSendService::builder()
+                .pulse_timeout(std::time::Duration::from_millis(config.global.time_to_produce_block_millis))
+                .node_id(config.local.node_id.clone())
+                .thread_id(thread_id)
+                .bls_keys_map(bls_keys_map.clone())
+                .block_state_repository(blocks_states.clone())
+                .send_tx(single_tx.clone())
+                .build(),
             received_attestations: Default::default(),
-            attestation_processor,
             blocks_for_resync_broadcasting: Default::default(),
             block_keeper_rng,
             received_acks: Default::default(),
             received_nacks: Default::default(),
             sent_acks: Default::default(),
             attestations_to_send: Default::default(),
-            last_sent_attestation: None,
             producer_election_rng,
             ack_cache: Default::default(),
             nack_cache: Default::default(),
@@ -290,19 +251,12 @@ Node<TStateSyncService, TBlockProducerProcess, TValidationProcess, TRepository, 
             feedback_sender,
             is_spawned_from_node_sync: false,
             nack_set_cache: Arc::clone(&nack_set_cache),
-            signer_index_map: signer_map,
             blocks_states,
-        };
-        // let (last_finalized_block_id, _last_finalized_block_seq_no) = res.repository.select_thread_last_finalized_block(&thread_id).expect("Failed to load last finalized block data");
-        // if last_finalized_block_id != BlockIdentifier::default() {
-        //     let finalized_block = res.repository.get_block_from_repo_or_archive(&last_finalized_block_id).expect("Failed to load finalized block");
-        //     // Start it from zero block to be able to process old blocks or attestations it the come
-        //     res.set_producer_groups_from_finalized_state(thread_id, BlockSeqNo::default(), finalized_block.data().get_common_section().producer_group.clone());
-        // } else {
-            if update_producer_group {
-                res.update_producer_group(&thread_id, vec![]).expect("Failed to initialize producer group");
-            }
-        // }
-        res
+            block_processor_service,
+            attestations_target_service,
+            validation_service,
+            skipped_attestation_ids,
+            fork_resolution_service,
+        }
     }
 }

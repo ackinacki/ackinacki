@@ -5,4 +5,5 @@ Modifications:
 - postprocess attr added
 - result attr added
 - fixed warnings
+- completely removed nightly feature usage
 

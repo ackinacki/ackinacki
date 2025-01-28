@@ -18,16 +18,16 @@ pub struct DbInfo {
 }
 
 impl DbInfo {
-    pub const BLOCK_KEEPER: Self = Self {
-        name: "block-keeper",
-        migrations: include_dir!("$CARGO_MANIFEST_DIR/migrations/node-archive"),
-    };
-    pub const BLOCK_MANAGER: Self = Self {
-        name: "block-manager",
+    pub const BM_ARCHIVE: Self = Self {
+        name: "bm-archive",
         migrations: include_dir!("$CARGO_MANIFEST_DIR/migrations/bm-archive"),
     };
     pub const NODE: Self =
         Self { name: "node", migrations: include_dir!("$CARGO_MANIFEST_DIR/migrations/node") };
+    pub const NODE_ARCHIVE: Self = Self {
+        name: "node-archive",
+        migrations: include_dir!("$CARGO_MANIFEST_DIR/migrations/node-archive"),
+    };
 }
 
 pub struct DbMaintenance {
@@ -149,9 +149,9 @@ mod tests {
         static ref MIGRATIONS: Migrations<'static> =
             Migrations::from_directory(&DbInfo::NODE.migrations).unwrap();
         static ref MIGRATIONS_ARC: Migrations<'static> =
-            Migrations::from_directory(&DbInfo::BLOCK_KEEPER.migrations).unwrap();
+            Migrations::from_directory(&DbInfo::NODE_ARCHIVE.migrations).unwrap();
         static ref MIGRATIONS_BM: Migrations<'static> =
-            Migrations::from_directory(&DbInfo::BLOCK_MANAGER.migrations).unwrap();
+            Migrations::from_directory(&DbInfo::BM_ARCHIVE.migrations).unwrap();
     }
 
     #[test]

@@ -10,6 +10,7 @@ mod tests {
 
     use crate::config::Config;
     use crate::config::NetworkConfig;
+    use crate::node::NodeIdentifier;
 
     #[test]
     fn test_network_config() -> anyhow::Result<()> {
@@ -65,7 +66,7 @@ mod tests {
         );
         assert_eq!(config.network.send_buffer_size, 1000);
 
-        assert_eq!(config.local.node_id, 0);
+        assert_eq!(config.local.node_id, NodeIdentifier::some_id());
         assert_eq!(config.local.blockchain_config_path, PathBuf::from("../bc_config.json"));
         assert_eq!(config.local.key_path, "key1.json");
         assert_eq!(config.local.zerostate_path, PathBuf::from("./zerostate"));
@@ -77,7 +78,7 @@ mod tests {
         assert_eq!(config.global.finalization_delay_to_slow_down, 6);
         assert_eq!(config.global.slow_down_multiplier, 4);
         assert_eq!(config.global.finalization_delay_to_stop, 6);
-        assert_eq!(config.global.need_synchronization_block_diff, 6);
+        assert_eq!(config.global.need_synchronization_block_diff, 20);
         assert_eq!(
             config.global.min_time_between_state_publish_directives,
             Duration::from_secs(600)

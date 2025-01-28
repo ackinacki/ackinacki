@@ -24,6 +24,9 @@ use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
+mod fork_resolution;
+pub use fork_resolution::ForkResolution;
+pub mod as_signatures_map;
 mod common_section;
 pub mod hash;
 mod serialize;
@@ -32,7 +35,7 @@ pub use hash::compare_hashes;
 
 const BLOCK_SUFFIX_LEN: usize = 32;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct AckiNackiBlock {
     common_section: CommonSection,
     block: tvm_block::Block,
@@ -196,19 +199,26 @@ impl AckiNackiBlock {
         &self.common_section
     }
 
-    pub fn set_common_section(&mut self, common_section: CommonSection) -> anyhow::Result<()> {
+    pub fn set_common_section(
+        &mut self,
+        common_section: CommonSection,
+        update_hash: bool,
+    ) -> anyhow::Result<()> {
         self.common_section = common_section;
-        let mut raw_data = self.get_raw_data_without_hash()?;
-        self.hash = calculate_hash(&raw_data)?;
-        raw_data.extend_from_slice(&self.hash);
-        self.raw_data = Some(raw_data);
-        if cfg!(feature = "nack_test")
-            && self.seq_no() == BlockSeqNo::from(324)
-            && self.common_section.producer_id == 4
-        {
-            tracing::trace!(target: "node", "Skip common section to make fake block");
-            self.hash = Sha256Hash::default();
-            self.raw_data = None;
+        // To save resources and not serialize block several times, update hash only on the final change
+        if update_hash {
+            let mut raw_data = self.get_raw_data_without_hash()?;
+            self.hash = calculate_hash(&raw_data)?;
+            raw_data.extend_from_slice(&self.hash);
+            self.raw_data = Some(raw_data);
+            #[cfg(feature = "nack_test")]
+            if self.seq_no() == BlockSeqNo::from(324)
+                && self.common_section.producer_id == NodeIdentifier::test(4)
+            {
+                tracing::trace!(target: "node", "Skip common section to make fake block");
+                self.hash = Sha256Hash::default();
+                self.raw_data = None;
+            }
         }
         Ok(())
     }

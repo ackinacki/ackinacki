@@ -15,15 +15,13 @@ use tvm_block::ShardStateUnsplit;
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
-use crate::types::block_keeper_ring::BlockKeeperRing;
-use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ZeroState {
     states: HashMap<ThreadIdentifier, OptimisticStateImpl>,
-    block_keeper_sets: HashMap<ThreadIdentifier, BlockKeeperSet>,
+    block_keeper_set: HashMap<ThreadIdentifier, BlockKeeperSet>,
 }
 
 impl ZeroState {
@@ -39,18 +37,15 @@ impl ZeroState {
         &self.states.iter().next().expect("Zerostate doesn't contain states").1.threads_table
     }
 
-    pub fn get_block_keeper_sets(&self) -> anyhow::Result<BlockKeeperRing> {
+    pub fn get_block_keeper_set(&self) -> anyhow::Result<BlockKeeperSet> {
         // BK set organization changed gue to dynamic thread ID generation and we've decided to have
         // single common BK set and use thread ID salt in leader group generation.
-        assert!(self.block_keeper_sets.len() == 1);
-        Ok(BlockKeeperRing::new(
-            BlockSeqNo::from(0),
-            self.block_keeper_sets.values().next().unwrap().clone(),
-        ))
+        assert!(self.block_keeper_set.len() == 1);
+        Ok(self.block_keeper_set.values().next().unwrap().clone())
     }
 
     pub fn unwrapped_block_keeper_sets(&self) -> &HashMap<ThreadIdentifier, BlockKeeperSet> {
-        &self.block_keeper_sets
+        &self.block_keeper_set
     }
 
     pub fn states_mut(&mut self) -> &mut HashMap<ThreadIdentifier, OptimisticStateImpl> {

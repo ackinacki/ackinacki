@@ -1,14 +1,20 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::ops::AddAssign;
 
 use num_bigint::BigUint;
+use num_traits::Zero;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::Serializer;
 use tvm_types::AccountId;
 
 use crate::bls::gosh_bls::PubKey;
@@ -17,35 +23,155 @@ use crate::node::SignerIndex;
 use crate::types::AccountAddress;
 
 pub mod abi;
+pub mod bk_set;
 pub mod epoch;
 pub mod wallet_config;
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub enum BlockKeeperSetChange {
     BlockKeeperAdded((SignerIndex, BlockKeeperData)),
     BlockKeeperRemoved((SignerIndex, BlockKeeperData)),
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub enum BlockKeeperStatus {
     Active,
     CalledToFinish,
     Expired,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct BlockKeeperData {
-    pub wallet_index: NodeIdentifier,
     pub pubkey: PubKey,
     pub epoch_finish_timestamp: u32,
     pub status: BlockKeeperStatus,
     pub address: String,
     pub stake: BigUint,
+    /// Address of the block keeper wallet.
+    /// Also known as NodeIdentifier.
     pub owner_address: AccountAddress,
     pub signer_index: SignerIndex,
 }
 
-pub type BlockKeeperSet = HashMap<SignerIndex, BlockKeeperData>;
+#[cfg(test)]
+impl Default for BlockKeeperData {
+    fn default() -> Self {
+        BlockKeeperData {
+            pubkey: PubKey::default(),
+            epoch_finish_timestamp: 0,
+            status: BlockKeeperStatus::Active,
+            address: "".to_string(),
+            stake: BigUint::zero(),
+            owner_address: AccountAddress::default(),
+            signer_index: SignerIndex::default(),
+        }
+    }
+}
+
+impl BlockKeeperData {
+    pub fn node_id(&self) -> NodeIdentifier {
+        self.owner_address.0.clone().into()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockKeeperSet {
+    by_signer: HashMap<SignerIndex, BlockKeeperData>,
+    signer_by_node_id: BTreeMap<NodeIdentifier, SignerIndex>,
+}
+
+impl BlockKeeperSet {
+    pub fn into_values(self) -> impl Iterator<Item = BlockKeeperData> {
+        self.by_signer.into_values()
+    }
+}
+
+impl BlockKeeperSet {
+    pub fn new() -> Self {
+        Self { by_signer: HashMap::new(), signer_by_node_id: BTreeMap::new() }
+    }
+
+    pub fn len(&self) -> usize {
+        self.by_signer.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_signer.is_empty()
+    }
+
+    pub fn insert(&mut self, signer_index: SignerIndex, keeper: BlockKeeperData) {
+        let node_id = keeper.node_id();
+        self.by_signer.insert(signer_index, keeper);
+        self.signer_by_node_id.insert(node_id, signer_index);
+    }
+
+    pub fn contains_signer(&self, signer_index: &SignerIndex) -> bool {
+        self.by_signer.contains_key(signer_index)
+    }
+
+    pub fn get_by_signer(&self, signer_index: &SignerIndex) -> Option<&BlockKeeperData> {
+        self.by_signer.get(signer_index)
+    }
+
+    pub fn get_by_node_id(&self, node_id: &NodeIdentifier) -> Option<&BlockKeeperData> {
+        self.signer_by_node_id.get(node_id).and_then(|x| self.by_signer.get(x))
+    }
+
+    pub fn get_pubkeys_by_signers(&self) -> HashMap<SignerIndex, PubKey> {
+        self.by_signer.iter().map(|(signer, keeper)| (*signer, keeper.pubkey.clone())).collect()
+    }
+
+    pub fn get_undistributed_stake(&self, attested_signers: &HashSet<SignerIndex>) -> BigUint {
+        let mut undistributed_stake = BigUint::zero();
+        for (signer, keeper) in &self.by_signer {
+            if !attested_signers.contains(signer) {
+                undistributed_stake.add_assign(&keeper.stake);
+            }
+        }
+        undistributed_stake
+    }
+
+    pub fn iter_node_ids(&self) -> impl Iterator<Item = &NodeIdentifier> {
+        self.signer_by_node_id.keys()
+    }
+
+    pub fn remove_signer(&mut self, signer_index: &SignerIndex) -> Option<BlockKeeperData> {
+        let removed = self.by_signer.remove(signer_index);
+        if let Some(keeper) = &removed {
+            self.signer_by_node_id.remove(&keeper.node_id());
+        }
+        removed
+    }
+}
+
+impl Default for BlockKeeperSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Serialize for BlockKeeperSet {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.by_signer.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BlockKeeperSet {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let items = HashMap::<SignerIndex, BlockKeeperData>::deserialize(deserializer)?;
+        let mut by_node_id = BTreeMap::new();
+        for (signer, keeper) in &items {
+            by_node_id.insert(keeper.node_id(), *signer);
+        }
+        Ok(Self { by_signer: items, signer_by_node_id: by_node_id })
+    }
+}
 
 impl Debug for BlockKeeperData {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -56,7 +182,7 @@ impl Debug for BlockKeeperData {
 impl Display for BlockKeeperData {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BlockKeeperData")
-            .field("wallet_index", &self.wallet_index)
+            .field("node_id", &self.node_id())
             .field("pubkey", &self.pubkey)
             .field("epoch_finish_timestamp", &self.epoch_finish_timestamp)
             .field("address", &self.address)

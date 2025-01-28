@@ -7,8 +7,10 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
+use url::Url;
 
-use crate::config::store::ConfigStore;
+use crate::server::load_config;
+use crate::server::save_config;
 
 pub mod blockchain;
 pub mod cli;
@@ -46,33 +48,17 @@ pub async fn proxy_manager(args: cli::CliArgs) -> anyhow::Result<()> {
     tracing::info!("Starting proxy manager...");
 
     loop {
-        let config = ConfigStore::try_load(&args.proxy_config)?;
+        let config = load_config(&args.proxy_config)?;
 
-        let proxy_set: HashSet<String> = blockchain::get_proxy_list().await?.into_iter().collect();
+        let proxy_set: HashSet<Url> = blockchain::get_proxy_list().await?.into_iter().collect();
         tracing::debug!("proxy set: {proxy_set:?}");
 
-        let all_outers: HashSet<String> = config
-            .config
-            .connections
-            .iter()
-            .filter_map(|(_, connection)| connection.outer.as_ref().map(|outer| outer.url.clone()))
-            .collect();
-        tracing::debug!("all outers: {all_outers:?}");
+        let subscribes: HashSet<Url> = config.subscribe.iter().cloned().collect();
+        tracing::debug!("subscribes: {subscribes:?}");
 
-        let enabled_outers: HashSet<String> = config
-            .config
-            .connections
-            .iter()
-            .filter_map(|(_, connection)| match &connection.outer {
-                Some(outer) if outer.enabled => Some(outer.url.clone()),
-                _ => None,
-            })
-            .collect();
-        tracing::debug!("enabled outers: {enabled_outers:?}");
-
-        if proxy_set != enabled_outers {
+        if proxy_set != subscribes {
             let not_in_all: HashSet<&str> =
-                proxy_set.difference(&all_outers).map(|s| s.as_str()).collect();
+                proxy_set.difference(&subscribes).map(|s| s.as_str()).collect();
 
             if !not_in_all.is_empty() {
                 tracing::error!(
@@ -83,15 +69,8 @@ pub async fn proxy_manager(args: cli::CliArgs) -> anyhow::Result<()> {
 
             let mut config = config;
 
-            for connection in config.config.connections.values_mut() {
-                if let Some(outer) = &connection.outer {
-                    if proxy_set.contains(&outer.url) {
-                        connection.outer.as_mut().unwrap().enabled = true;
-                    }
-                }
-            }
-
-            config.save(&args.proxy_config)?;
+            config.subscribe.retain(|s| proxy_set.contains(s));
+            save_config(&config, &args.proxy_config)?;
             tracing::info!("Updated config");
 
             reload_proxy(&args.command).await?;

@@ -11,6 +11,8 @@ use parking_lot::Mutex;
 use serde_json::Value;
 use tvm_block::BlkPrevInfo;
 use tvm_block::ExtBlkRef;
+use tvm_block::GetRepresentationHash;
+use tvm_block::HashmapAugType;
 use tvm_executor::BlockchainConfig;
 use tvm_types::UInt256;
 
@@ -24,15 +26,15 @@ use crate::bls::GoshBLS;
 use crate::config::Config;
 use crate::database::write_to_db;
 use crate::node::associated_types::NackData;
-use crate::node::attestation_processor::LOOP_PAUSE_DURATION;
+use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
+use crate::node::LOOP_PAUSE_DURATION;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::CrossThreadRefData;
 use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
-use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockInfo;
@@ -73,13 +75,13 @@ impl TVMBlockKeeperProcess {
     #[allow(clippy::too_many_arguments)]
     pub fn new<P: AsRef<Path>>(
         blockchain_config_path: P,
-        mut repository: RepositoryImpl,
+        repository: RepositoryImpl,
         node_config: Config,
         archive: Option<Arc<dyn DocumentsDb>>,
         block_id: Option<BlockIdentifier>,
         thread_id: ThreadIdentifier,
         mut shared_services: SharedServices,
-        block_keeper_sets: BlockKeeperRing,
+        block_state_repo: BlockStateRepository,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<Self> {
         let blocks_queue =
@@ -107,11 +109,7 @@ impl TVMBlockKeeperProcess {
                         .expect("Failed to get optimistic state from zerostate")
                 } else {
                     repository
-                        .get_optimistic_state(
-                            &e,
-                            block_keeper_sets.clone(),
-                            Arc::clone(&nack_set_cache),
-                        )
+                        .get_optimistic_state(&e, Arc::clone(&nack_set_cache))
                         .expect("Failed to get optimistic state for a thread root block")
                         .expect("Failed to get optimistic state for a thread root block (option)")
                 }
@@ -158,7 +156,7 @@ impl TVMBlockKeeperProcess {
                             "last state is not valid for incoming block, load from repo"
                         );
                         repository
-                            .get_optimistic_state(&prev_block_id, block_keeper_sets.clone(), Arc::clone(&nack_set_cache))
+                            .get_optimistic_state(&prev_block_id, Arc::clone(&nack_set_cache))
                             .expect("Failed to get optimistic state of the previous block")
                             .unwrap_or_else(|| panic!("Failed to get optimistic state for a block: {prev_block_id:?}"))
                     });
@@ -190,9 +188,9 @@ impl TVMBlockKeeperProcess {
                             refs,
                             shared_services.clone(),
                             block_nack,
-                            block_keeper_sets.clone(),
+                            block_state_repo.clone(),
                         )
-                        .expect("Failed to verify block");
+                            .expect("Failed to verify block");
                         if !verify_res {
                             tracing::trace!("Block verification failed");
                         }
@@ -220,7 +218,7 @@ impl TVMBlockKeeperProcess {
                         prev_state.apply_block(
                             &next_block,
                             &shared_services,
-                            block_keeper_sets.clone(),
+                            block_state_repo.clone(),
                             Arc::clone(&nack_set_cache)
                         ).expect("Failed to apply block");
                         let mut dump = verified_blocks_with_result_clone.lock();
@@ -252,7 +250,7 @@ impl TVMBlockKeeperProcess {
                             prev_state.shard_state.shard_state_cell.clone(),
                             // repository.clone(),
                         )
-                        .expect("Failed to write block data to db");
+                            .expect("Failed to write block data to db");
                     }
                     let seq_no = next_block.seq_no();
                     let block_will_share_state = next_block
@@ -345,7 +343,7 @@ pub fn verify_block(
     refs: Vec<CrossThreadRefData>,
     shared_services: SharedServices,
     block_nack: Vec<Envelope<GoshBLS, NackData>>,
-    block_keeper_sets: BlockKeeperRing,
+    block_state_repo: BlockStateRepository,
 ) -> anyhow::Result<bool> {
     #[cfg(feature = "timing")]
     let start = std::time::Instant::now();
@@ -357,7 +355,7 @@ pub fn verify_block(
         .shared_services(shared_services)
         .epoch_block_keeper_data(vec![])
         .block_nack(block_nack)
-        .block_keeper_sets(block_keeper_sets)
+        .blocks_states(block_state_repo)
         .build();
 
     // TODO: need to refactor this point to reuse generated verify block
@@ -381,6 +379,7 @@ pub fn verify_block(
     }
 
     let (verify_block, mut verify_state) = verification_block_production_result?;
+    // TODO: validate common section
     let mut res = verify_block.tvm_block() == block_candidate.tvm_block();
     if !res {
         tracing::trace!("Verify block is not equal to the incoming, do the partial eq check");
@@ -457,6 +456,18 @@ pub fn verify_block(
             );
         }
 
+        if verify_block.tx_cnt() != block_candidate.tx_cnt() {
+            tracing::trace!(
+                "Unequal tx_cnt: verify: {:?} candidate: {:?}",
+                verify_block.tx_cnt(),
+                block_candidate.tx_cnt()
+            );
+            tracing::trace!("Candidate txns:");
+            display_block_transactions(block_candidate);
+            tracing::trace!("verify block txns:");
+            display_block_transactions(&verify_block);
+        }
+
         res = partial_compare_res;
         if !res {
             tracing::trace!("Verification failed");
@@ -494,4 +505,36 @@ pub fn prepare_prev_block_info(block_candidate: &AckiNackiBlock) -> BlockInfo {
         prev: ExtBlkRef { end_lt: info.end_lt(), seq_no: info.seq_no(), root_hash, file_hash },
     }
     .into()
+}
+
+fn display_block_transactions(block: &AckiNackiBlock) {
+    let Ok(extra) = block.tvm_block().read_extra() else {
+        tracing::trace!("failed to read block extra");
+        return;
+    };
+    let Ok(account_blocks) = extra.read_account_blocks() else {
+        tracing::trace!("failed to read account blocks");
+        return;
+    };
+    let Ok(_) = account_blocks.iterate_objects(|account_block| {
+        let account_id = account_block.account_id().clone().to_hex_string();
+        let Ok(_) = account_block.transactions().iterate_objects(|transaction| {
+            let Ok(in_msg) = transaction.read_in_msg() else {
+                tracing::trace!("failed to read in msg");
+                return Ok(true);
+            };
+            tracing::trace!(
+                "Acc: {account_id} message_hash: {:?} message: {in_msg:?} tx: {transaction:?}",
+                in_msg.as_ref().map(|msg| msg.hash().unwrap().to_hex_string())
+            );
+            Ok(true)
+        }) else {
+            tracing::trace!("failed to iterate block txns");
+            return Ok(true);
+        };
+        Ok(true)
+    }) else {
+        tracing::trace!("failed to iterate account blocks");
+        return;
+    };
 }

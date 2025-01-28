@@ -10,118 +10,123 @@ use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 
+#[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
+pub struct ReferencedBlock {
+    pub block_thread_identifier: ThreadIdentifier,
+    pub block_identifier: BlockIdentifier,
+    pub block_seq_no: BlockSeqNo,
+}
+
+impl From<(ThreadIdentifier, BlockIdentifier, BlockSeqNo)> for ReferencedBlock {
+    fn from(params: (ThreadIdentifier, BlockIdentifier, BlockSeqNo)) -> Self {
+        Self {
+            block_thread_identifier: params.0,
+            block_identifier: params.1,
+            block_seq_no: params.2,
+        }
+    }
+}
+
 #[derive(TypedBuilder, Clone, Serialize, Deserialize, Debug)]
 pub struct ThreadReferencesState {
     // Note that ThreadIdentifier is duplicated as a key and in the value.
     // It was intentionally done this way, since it is possible to have a thread
     // starting block (thread split) and no first block of the new thread produced
     // (or referenced) yet.
-    pub all_thread_refs: HashMap<ThreadIdentifier, (ThreadIdentifier, BlockIdentifier, BlockSeqNo)>,
+    // It DOES NOT keep references to dead threads
+    // TODO: convert it to a load on demand.
+    all_thread_refs: HashMap<ThreadIdentifier, ReferencedBlock>,
 }
 
+#[derive(Debug)]
 pub struct ResultingState {
-    pub implicitly_referenced_blocks: Vec<(ThreadIdentifier, BlockIdentifier, BlockSeqNo)>,
+    pub implicitly_referenced_blocks: Vec<BlockIdentifier>,
     // Note: it is a squashed state when a query
     // had several references to the same thread.
-    pub explicitly_referenced_blocks: Vec<(ThreadIdentifier, BlockIdentifier, BlockSeqNo)>,
+    pub explicitly_referenced_blocks: Vec<BlockIdentifier>,
 }
 
+#[derive(Debug)]
 pub enum CanRefQueryResult {
     No,
     Yes(ResultingState),
 }
 
 impl ThreadReferencesState {
+    pub fn update(
+        &mut self,
+        thread: ThreadIdentifier,
+        referenced_block: impl Into<ReferencedBlock>,
+    ) {
+        self.all_thread_refs.insert(thread, referenced_block.into());
+    }
+
     pub fn can_reference<F>(
         &self,
-        explicit_references: Vec<(ThreadIdentifier, BlockIdentifier, BlockSeqNo)>,
+        explicit_references: Vec<BlockIdentifier>,
         mut get_ref_data: F,
     ) -> anyhow::Result<CanRefQueryResult>
     where
         F: FnMut(&BlockIdentifier) -> anyhow::Result<CrossThreadRefData>,
     {
+        // Note:
+        // This implementation assumes referencing FINALIZED blocks only!
+        // AND no thread merges yet (requires modifications)
+        // It can work with nonfinalized blocks, but need to check whether block is spawning thread
+        tracing::trace!("can_reference: {:?} self: {:?}", explicit_references, self);
+
         if explicit_references.is_empty() {
             return Ok(CanRefQueryResult::Yes(ResultingState {
                 explicitly_referenced_blocks: vec![],
                 implicitly_referenced_blocks: vec![],
             }));
         }
-        let min_referenced_block_seq_no: BlockSeqNo = self
-            .all_thread_refs
+        let mut all_referenced_blocks = vec![];
+        let mut stack = explicit_references.clone();
+        let mut tails = self.all_thread_refs.clone();
+
+        while let Some(cursor) = stack.pop() {
+            let trail: Vec<CrossThreadRefData> =
+                walk_back_into_history(&cursor, &mut get_ref_data, &tails)?;
+            for block in trail.iter().rev() {
+                let referenced_block: ReferencedBlock = block.as_reference_state_data().into();
+                all_referenced_blocks.push(referenced_block.clone());
+                tails
+                    .entry(*block.block_thread_identifier())
+                    .and_modify(|e| {
+                        if block.block_seq_no() > &e.block_seq_no {
+                            *e = referenced_block.clone();
+                        }
+                    })
+                    .or_insert(referenced_block);
+                stack.extend(block.refs().clone());
+            }
+        }
+
+        let previously_referenced_blocks = HashSet::<BlockIdentifier>::from_iter(
+            self.all_thread_refs.values().map(|e| e.block_identifier.clone()),
+        );
+        let explicitly_referenced_blocks: Vec<BlockIdentifier> = tails
             .values()
-            .map(|e| {
-                let block_seq_no: BlockSeqNo = e.2;
-                block_seq_no
-            })
-            .min()
-            .expect("Impossible state reached. No references in the state");
-        let mut visited_blocks = HashSet::<BlockIdentifier>::new();
-        {
-            // It is easier to backfill thread blocks here and check visited later
-            // rather than do the same in the back tracking loop.
-            let mut backfilling: Vec<(ThreadIdentifier, BlockIdentifier, BlockSeqNo)> =
-                self.all_thread_refs.values().cloned().collect();
-            while let Some(cursor) = backfilling.pop() {
-                if visited_blocks.contains(&cursor.1) {
-                    continue;
-                }
-                visited_blocks.insert(cursor.1.clone());
-                if min_referenced_block_seq_no > cursor.2 {
-                    continue;
-                }
-                let ref_data = get_ref_data(&cursor.1)?;
-                backfilling.push(
-                    get_ref_data(ref_data.parent_block_identifier())?.as_reference_state_data(),
-                );
-                for referenced_block in ref_data.refs() {
-                    backfilling.push(get_ref_data(referenced_block)?.as_reference_state_data());
-                }
-            }
-        }
-
-        let mut implicitly_referenced_blocks = vec![];
-        let mut backtracking_to_any_known_thread = explicit_references.clone();
-        let explicitly_referenced_blocks = {
-            let mut e = explicit_references;
-            keep_tails(&mut e);
-            HashSet::<(ThreadIdentifier, BlockIdentifier, BlockSeqNo)>::from_iter(e)
+            .filter(|e| !previously_referenced_blocks.contains(&e.block_identifier))
+            .map(|e| e.block_identifier.clone())
+            .collect();
+        let explicitly_referenced_blocks_set =
+            HashSet::<BlockIdentifier>::from_iter(explicitly_referenced_blocks.iter().cloned());
+        let implicitly_referenced_blocks = {
+            all_referenced_blocks
+                .retain(|e| !explicitly_referenced_blocks_set.contains(&e.block_identifier));
+            all_referenced_blocks.into_iter().map(|e| e.block_identifier).collect()
         };
 
-        while let Some(cursor) = backtracking_to_any_known_thread.pop() {
-            let cursor_block_id: BlockIdentifier = cursor.1.clone();
-            if visited_blocks.contains(&cursor_block_id) {
-                continue;
-            }
-            visited_blocks.insert(cursor_block_id.clone());
-            if !explicitly_referenced_blocks.contains(&cursor) {
-                implicitly_referenced_blocks.push(cursor.clone());
-            }
-            let cursor_block_seq_no: &BlockSeqNo = &cursor.2;
-            if &min_referenced_block_seq_no > cursor_block_seq_no {
-                // Its a clear cut off for referenced threads.
-                // In case some chain goes below this limit we can clearly say that
-                // a particular thread can not be referenced by the given references
-                return Ok(CanRefQueryResult::No);
-            }
-            let ref_data = get_ref_data(&cursor_block_id)?;
-            backtracking_to_any_known_thread
-                .push(get_ref_data(ref_data.parent_block_identifier())?.as_reference_state_data());
-            for referenced_block in ref_data.refs() {
-                backtracking_to_any_known_thread
-                    .push(get_ref_data(referenced_block)?.as_reference_state_data());
-            }
-        }
-
-        let result = ResultingState {
-            implicitly_referenced_blocks,
-            explicitly_referenced_blocks: explicitly_referenced_blocks.into_iter().collect(),
-        };
+        let result = ResultingState { implicitly_referenced_blocks, explicitly_referenced_blocks };
+        tracing::trace!("can_reference: Yes({result:?})");
         Ok(CanRefQueryResult::Yes(result))
     }
 
     pub fn move_refs<F>(
         &mut self,
-        refs: Vec<(ThreadIdentifier, BlockIdentifier, BlockSeqNo)>,
+        refs: Vec<BlockIdentifier>,
         mut get_ref_data: F,
     ) -> anyhow::Result<Vec<CrossThreadRefData>>
     where
@@ -147,28 +152,35 @@ impl ThreadReferencesState {
                     e.append(&mut implicitly_referenced_blocks.clone());
                     e
                 };
-                let phantoms = {
-                    let mut e = vec![];
+                {
+                    // Add phantoms: blocks that spawn new threads must be placed into the new thread too
                     let get_ref_data = &mut get_ref_data;
-                    for referenced_block in all_refs.iter().map(|e| get_ref_data(&e.1)) {
+                    for referenced_block in all_refs.iter().map(get_ref_data) {
                         let referenced_block = referenced_block?;
                         let block_identifier = referenced_block.block_identifier().clone();
                         let block_seq_no = *referenced_block.block_seq_no();
+                        let block_thread_identifier = *referenced_block.block_thread_identifier();
                         for spawned_thread in referenced_block.spawned_threads() {
-                            e.push((spawned_thread, block_identifier.clone(), block_seq_no));
+                            self.all_thread_refs.insert(
+                                spawned_thread,
+                                (block_thread_identifier, block_identifier.clone(), block_seq_no)
+                                    .into(),
+                            );
                         }
                     }
-                    e
                 };
                 // Inserts all new key-values from the iterator and replaces values
                 // with existing keys with new values returned from the iterator.
                 self.all_thread_refs.extend({
-                    let mut e = all_refs.clone();
+                    let mut e = all_refs
+                        .clone()
+                        .into_iter()
+                        .map(|e| get_ref_data(&e).expect("must be here"))
+                        .map(|e| e.as_reference_state_data())
+                        .collect();
                     // ensures moved
-                    let mut phantoms = phantoms;
-                    e.append(&mut phantoms);
                     keep_tails(&mut e);
-                    e.into_iter().map(|e| (e.0, e))
+                    e.into_iter().map(|e| (e.0, e.into()))
                 });
                 if cfg!(feature = "allow-threads-merge") {
                     #[cfg(feature = "allow-threads-merge")]
@@ -178,21 +190,51 @@ impl ThreadReferencesState {
                 }
                 all_refs
                     .into_iter()
-                    .map(|e| get_ref_data(&e.1))
+                    .map(|e| get_ref_data(&e))
                     .collect::<anyhow::Result<Vec<CrossThreadRefData>>>()
             }
         }
     }
 }
 
-fn keep_tails(referenced_blocks: &mut Vec<(ThreadIdentifier, BlockIdentifier, BlockSeqNo)>) {
-    referenced_blocks.sort_by(|a, b| {
-        let thread_comparison = a.0.cmp(&b.0);
-        if thread_comparison != std::cmp::Ordering::Equal {
-            return thread_comparison;
+fn walk_back_into_history<F>(
+    cursor: &BlockIdentifier,
+    mut read: F,
+    cutoff: &HashMap<ThreadIdentifier, ReferencedBlock>,
+) -> anyhow::Result<Vec<CrossThreadRefData>>
+where
+    F: FnMut(&BlockIdentifier) -> anyhow::Result<CrossThreadRefData>,
+{
+    let mut cursor = read(cursor)?;
+    let mut trail = vec![];
+    loop {
+        if let Some(thread_last_block) = cutoff.get(cursor.block_thread_identifier()) {
+            if &thread_last_block.block_seq_no >= cursor.block_seq_no() {
+                if &thread_last_block.block_seq_no == cursor.block_seq_no() {
+                    // Sanity check.
+                    assert_eq!(&thread_last_block.block_identifier, cursor.block_identifier());
+                }
+                return Ok(trail);
+            }
         }
-        // Make it a descending order for the next dedup operation
-        b.1.cmp(&a.1)
-    });
-    referenced_blocks.dedup_by(|a, b| a.0 == b.0);
+        let parent_block_id = cursor.parent_block_identifier().clone();
+        trail.push(cursor);
+        cursor = read(&parent_block_id)?;
+    }
+}
+
+fn keep_tails(referenced_blocks: &mut Vec<(ThreadIdentifier, BlockIdentifier, BlockSeqNo)>) {
+    let mut tails =
+        HashMap::<ThreadIdentifier, (ThreadIdentifier, BlockIdentifier, BlockSeqNo)>::new();
+    for (thread, id, seq_no) in referenced_blocks.iter_mut() {
+        tails
+            .entry(*thread)
+            .and_modify(|e| {
+                if *seq_no > e.2 {
+                    *e = (*thread, id.clone(), *seq_no);
+                }
+            })
+            .or_insert((*thread, id.clone(), *seq_no));
+    }
+    *referenced_blocks = tails.values().cloned().collect();
 }

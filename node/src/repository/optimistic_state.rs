@@ -37,10 +37,10 @@ use crate::message::WrappedMessage;
 use crate::multithreading::account::get_account_routing_for_account;
 use crate::multithreading::cross_thread_messaging::thread_references_state::ThreadReferencesState;
 use crate::multithreading::shard_state_operations::crop_shard_state_based_on_threads_table;
+use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::repository::CrossThreadRefData;
 use crate::repository::CrossThreadRefDataRead;
-use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AccountAddress;
 use crate::types::AccountRouting;
 use crate::types::AckiNackiBlock;
@@ -72,7 +72,7 @@ pub trait OptimisticState: Send + Clone {
         &mut self,
         block_candidate: &AckiNackiBlock,
         shared_services: &SharedServices,
-        block_keeper_sets: BlockKeeperRing,
+        block_state_repo: BlockStateRepository,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<()>;
     fn get_thread_id(&self) -> &ThreadIdentifier;
@@ -201,7 +201,8 @@ impl OptimisticStateImpl {
                         ThreadIdentifier::default(),
                         BlockIdentifier::default(),
                         BlockSeqNo::default(),
-                    ),
+                    )
+                        .into(),
                 )]))
                 .build(),
             cropped: None,
@@ -289,7 +290,7 @@ impl OptimisticState for OptimisticStateImpl {
         &mut self,
         block_candidate: &AckiNackiBlock,
         shared_services: &SharedServices,
-        block_keeper_sets: BlockKeeperRing,
+        block_state_repo: BlockStateRepository,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<()> {
         self.cropped = None;
@@ -311,7 +312,7 @@ impl OptimisticState for OptimisticStateImpl {
         for nack in block_nack.iter() {
             tracing::trace!("push nack into slash {:?}", nack);
             let reason = nack.data().reason.clone();
-            if let Some((id, bls_key, addr)) = reason.get_node_data(block_keeper_sets.clone()) {
+            if let Some((id, bls_key, addr)) = reason.get_node_data(block_state_repo.clone()) {
                 let epoch_nack_data = BlockKeeperSlashData {
                     node_id: id,
                     bls_pubkey: bls_key,
@@ -401,13 +402,7 @@ impl OptimisticState for OptimisticStateImpl {
         let current_thread_id = *self.get_thread_id();
         let current_thread_last_block =
             (current_thread_id, block_candidate.identifier(), block_candidate.seq_no());
-        self.thread_refs_state
-            .all_thread_refs
-            .entry(current_thread_id)
-            .and_modify(|e| {
-                *e = current_thread_last_block.clone();
-            })
-            .or_insert(current_thread_last_block);
+        self.thread_refs_state.update(current_thread_id, current_thread_last_block.clone());
         let mut nack_set_cache_in = nack_set_cache.lock();
         for nack in nacks {
             if let Ok(nack_hash) = nack.data().clone().reason.get_hash_nack() {
@@ -594,6 +589,11 @@ impl OptimisticState for OptimisticStateImpl {
             )
             .expect("Failed to check message from cross-thread ref data")
         }) {
+            tracing::trace!(
+                "Add message from cross thread ref data ({:?}): {}",
+                cross_thread_ref.block_identifier(),
+                message.message.hash().unwrap().to_hex_string()
+            );
             let msg = message.message;
             let info = msg.int_header().unwrap();
             let fwd_fee = info.fwd_fee();

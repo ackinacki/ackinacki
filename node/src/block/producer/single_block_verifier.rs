@@ -25,11 +25,11 @@ use crate::config::Config;
 use crate::message::Message;
 use crate::message::WrappedMessage;
 use crate::node::associated_types::NackData;
+use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
-use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AckiNackiBlock;
 
 // Note: produces single verification block.
@@ -57,7 +57,7 @@ pub struct TVMBlockVerifier {
     epoch_block_keeper_data: Vec<BlockKeeperData>,
     block_nack: Vec<Envelope<GoshBLS, NackData>>,
     shared_services: SharedServices,
-    block_keeper_sets: BlockKeeperRing,
+    blocks_states: BlockStateRepository,
 }
 
 impl TVMBlockVerifier {
@@ -95,8 +95,7 @@ impl BlockVerifier for TVMBlockVerifier {
         for nack in self.block_nack.iter() {
             tracing::trace!("push nack into slash {:?}", nack);
             let reason = nack.data().reason.clone();
-            if let Some((id, bls_key, addr)) = reason.get_node_data(self.block_keeper_sets.clone())
-            {
+            if let Some((id, bls_key, addr)) = reason.get_node_data(self.blocks_states.clone()) {
                 let epoch_nack_data = BlockKeeperSlashData {
                     node_id: id,
                     bls_pubkey: bls_key,
@@ -203,7 +202,7 @@ impl BlockVerifier for TVMBlockVerifier {
                 //
                 verify_block.block,
                 0,
-                block.get_common_section().producer_id,
+                block.get_common_section().producer_id.clone(),
                 verify_block.tx_cnt,
                 verify_block.block_keeper_set_changes,
                 block.get_common_section().verify_complexity,

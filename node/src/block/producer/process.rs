@@ -35,6 +35,7 @@ use crate::config::Config;
 use crate::database::write_to_db;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::NackData;
+use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::repository::cross_thread_ref_repository::CrossThreadRefDataRead;
 use crate::repository::optimistic_state::OptimisticState;
@@ -42,7 +43,6 @@ use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
-use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
@@ -66,7 +66,7 @@ pub trait BlockProducerProcess {
         feedback_sender: Sender<Vec<ExtMsgFeedback>>,
         received_acks: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, AckData>>>>,
         received_nacks: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, NackData>>>>,
-        block_keeper_sets: BlockKeeperRing,
+        blocks_state: BlockStateRepository,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         //        last_block_attestations: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, AttestationData>>>>,
         //        sent_attestations: Arc<Mutex<HashMap<ThreadIdentifier,
@@ -181,9 +181,10 @@ impl TVMBlockProducerProcess {
         received_nacks: Arc<
             Mutex<Vec<Envelope<<Self as BlockProducerProcess>::BLSSignatureScheme, NackData>>>,
         >,
-        block_keeper_sets: BlockKeeperRing,
+        block_state_repo: BlockStateRepository,
         feedback_sender: Sender<Vec<ExtMsgFeedback>>,
-    ) {
+        external_control_rx: &Receiver<()>,
+    ) -> bool {
         tracing::trace!("Start block production process iteration");
 
         let (message_queue, epoch_block_keeper_data, block_nack, aggregated_acks, aggregated_nacks) =
@@ -229,7 +230,7 @@ impl TVMBlockProducerProcess {
             .epoch_block_keeper_data(epoch_block_keeper_data)
             .shared_services(shared_services.clone())
             .block_nack(block_nack.clone())
-            .block_keeper_sets(block_keeper_sets.clone())
+            .blocks_states(block_state_repo)
             .build();
 
         let (control_tx, control_rx) = std::sync::mpsc::channel();
@@ -238,6 +239,10 @@ impl TVMBlockProducerProcess {
             *iteration_start = std::time::Instant::now();
         }
         let initial_state_clone = initial_state.clone();
+        tracing::trace!(
+            "produce_block refs: initial state ThreadReferencesState: {:?}",
+            initial_state_clone.thread_refs_state
+        );
 
         let refs = trace_span!("read thread refs").in_scope(||{
         let mut refs = vec![];
@@ -257,21 +262,16 @@ impl TVMBlockProducerProcess {
                 use crate::multithreading::cross_thread_messaging::thread_references_state::CanRefQueryResult;
                 let can_ref_query_result = shared_services
                     .exec(|e| {
-                        let references = try_refs
-                            .iter()
-                            .map(|b| {
-                                e.cross_thread_ref_data_service
-                                    .get_cross_thread_ref_data(b)
-                                    .expect("Failed to load ref state")
-                                    .as_reference_state_data()
-                            })
-                            .collect::<Vec<_>>();
-                        initial_state_clone.thread_refs_state.can_reference(
+                        let references = try_refs.clone();
+                        tracing::trace!("produce_block refs: can_ref: refs: {references:?}");
+                        let can_ref = initial_state_clone.thread_refs_state.can_reference(
                             references,
                             |block_id| {
                                 e.cross_thread_ref_data_service.get_cross_thread_ref_data(block_id)
                             },
-                        )
+                        );
+                        tracing::trace!("produce_block refs: can_ref: res: {can_ref:?}");
+                        can_ref
                     })
                     .expect("Can query block must work");
                 match can_ref_query_result {
@@ -284,13 +284,14 @@ impl TVMBlockProducerProcess {
                 }
             }
         }
+        tracing::trace!("produce_block refs: try_refs: {try_refs:?}");
 
         // TODO: reuse previously loaded cross thread ref data
         let refs = shared_services.exec(|e| {
             refs.into_iter()
                 .map(|r| {
                     e.cross_thread_ref_data_service
-                        .get_cross_thread_ref_data(&r.1)
+                        .get_cross_thread_ref_data(&r)
                         .expect("Failed to load ref state")
                 })
                 .collect::<Vec<_>>()
@@ -339,11 +340,14 @@ impl TVMBlockProducerProcess {
         let (mut block, result_state, new_active_block_producer_threads) =
             thread.join().expect("Failed to join producer thread");
         tracing::trace!("Produced block: {}", block);
+        if let Ok(()) = external_control_rx.try_recv() {
+            return true;
+        }
         // Update common section
         let mut common_section = block.get_common_section().clone();
         common_section.acks = aggregated_acks;
         common_section.nacks = aggregated_nacks.clone();
-        block.set_common_section(common_section).expect("Failed to set common section");
+        block.set_common_section(common_section, false).expect("Failed to set common section");
 
         // if let Some(documents_db) = documents_db.clone() {
         //     write_to_db(
@@ -405,6 +409,7 @@ impl TVMBlockProducerProcess {
             saves.push(produced_data);
         });
         tracing::trace!("End block production process iteration");
+        false
     }
 }
 
@@ -424,7 +429,7 @@ impl BlockProducerProcess for TVMBlockProducerProcess {
         feedback_sender: Sender<Vec<ExtMsgFeedback>>,
         received_acks: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, AckData>>>>,
         received_nacks: Arc<Mutex<Vec<Envelope<Self::BLSSignatureScheme, NackData>>>>,
-        block_keeper_sets: BlockKeeperRing,
+        blocks_states: BlockStateRepository,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         // mut initial_state: Self::OptimisticState,
     ) -> anyhow::Result<()> {
@@ -453,11 +458,10 @@ impl BlockProducerProcess for TVMBlockProducerProcess {
                     tracing::trace!(
                         "start_thread_production: cached state block id is not appropriate. Load state from repo"
                     );
-                    if let Some(state) = self.repository.get_optimistic_state(
-                        prev_block_id,
-                        block_keeper_sets.clone(),
-                        Arc::clone(&nack_set_cache),
-                    )? {
+                    if let Some(state) = self
+                        .repository
+                        .get_optimistic_state(prev_block_id, Arc::clone(&nack_set_cache))?
+                    {
                         state
                     } else if prev_block_id == &BlockIdentifier::default() {
                         self.repository.get_zero_state_for_thread(thread_id)?
@@ -473,11 +477,10 @@ impl BlockProducerProcess for TVMBlockProducerProcess {
                 tracing::trace!(
                     "start_thread_production: cache does not contain state for this thread. Load state from repo"
                 );
-                if let Some(state) = self.repository.get_optimistic_state(
-                    prev_block_id,
-                    block_keeper_sets.clone(),
-                    Arc::clone(&nack_set_cache),
-                )? {
+                if let Some(state) = self
+                    .repository
+                    .get_optimistic_state(prev_block_id, Arc::clone(&nack_set_cache))?
+                {
                     state
                 } else if prev_block_id == &BlockIdentifier::default() {
                     self.repository.get_zero_state_for_thread(thread_id)?
@@ -511,7 +514,7 @@ impl BlockProducerProcess for TVMBlockProducerProcess {
                 // It is also possible to track blocks dependencies through repository.
                 // TODO: think if it is the best solution given all circumstances
                 loop {
-                    Self::produce_next(
+                    let stopped = Self::produce_next(
                         &mut initial_state,
                         blockchain_config.clone(),
                         &mut repo_clone,
@@ -525,10 +528,11 @@ impl BlockProducerProcess for TVMBlockProducerProcess {
                         &mut active_block_producer_threads,
                         received_acks.clone(),
                         received_nacks.clone(),
-                        block_keeper_sets.clone(),
+                        blocks_states.clone(),
                         feedback_sender.clone(),
+                        &external_control_rx,
                     );
-                    if let Ok(()) = external_control_rx.try_recv() {
+                    if stopped {
                         trace_span!("store optimistic").in_scope(|| {
                             repo_clone
                                 .store_optimistic(initial_state.clone())
@@ -729,9 +733,9 @@ mod tests {
     use crate::block::producer::process::TVMBlockProducerProcess;
     use crate::multithreading::routing::service::RoutingService;
     use crate::node::shared_services::SharedServices;
+    use crate::node::NodeIdentifier;
     use crate::repository::repository_impl::RepositoryImpl;
     use crate::repository::Repository;
-    use crate::types::block_keeper_ring::BlockKeeperRing;
     use crate::types::ThreadIdentifier;
     use crate::utilities::FixedSizeHashSet;
 
@@ -739,7 +743,7 @@ mod tests {
     #[ignore]
     fn test_producer() -> anyhow::Result<()> {
         crate::tests::init_db("./tmp/node-data-5").expect("Failed to init DB 1");
-        let config = crate::tests::default_config(1);
+        let config = crate::tests::default_config(NodeIdentifier::test(1));
         let blocks_states = crate::node::block_state::repository::BlockStateRepository::new(
             PathBuf::from("./tmp/node-data-5/block-state"),
         );
@@ -747,10 +751,10 @@ mod tests {
             PathBuf::from("./tmp/node-data-5"),
             Some(config.local.zerostate_path.clone()),
             1,
+            1,
             SharedServices::test_start(RoutingService::stub().0),
-            BlockKeeperRing::default(),
             Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
-            blocks_states,
+            blocks_states.clone(),
         );
         let (router, _router_rx) = crate::multithreading::routing::service::RoutingService::stub();
         let mut production_process = TVMBlockProducerProcess::new(
@@ -772,7 +776,7 @@ mod tests {
             feedback_sender,
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
-            BlockKeeperRing::default(),
+            blocks_states.clone(),
             Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
         )?;
 

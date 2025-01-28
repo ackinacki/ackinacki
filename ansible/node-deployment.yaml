@@ -93,9 +93,8 @@
 
   - name: Create BLS keys
     ansible.builtin.shell:
-      chdir: "{{ BK_DIR }}/bk-configs/"
-      cmd: "docker run --rm --entrypoint /usr/local/bin/node-helper {{ NODE_IMAGE }} bls > block_keeper{{ NODE_ID }}_bls.keys.json"
-      creates: "block_keeper{{ NODE_ID }}_bls.keys.json"
+      cmd: "docker run --rm --entrypoint /usr/local/bin/node-helper -v {{ BK_DIR }}/bk-configs:/workdir {{ NODE_IMAGE }} bls --path block_keeper{{ NODE_ID }}_bls.keys.json"
+      creates: "{{ BK_DIR }}/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json"
 
   - name: Compose up
     ansible.builtin.shell:

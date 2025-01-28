@@ -1,5 +1,3 @@
-#![cfg_attr(feature = "nightly", feature(proc_macro_diagnostic))]
-
 extern crate proc_macro;
 
 use std::result::Result;
@@ -13,13 +11,6 @@ use quote::*;
 use syn::spanned::Spanned;
 use syn::*;
 
-#[cfg(feature = "nightly")]
-fn error(span: Span, data: &str) -> SynTokenStream {
-    span.unstable().error(data).emit();
-    SynTokenStream::new()
-}
-
-#[cfg(not(feature = "nightly"))]
 fn error(_: Span, data: &str) -> SynTokenStream {
     quote! { compile_error!(#data); }
 }
@@ -65,6 +56,11 @@ struct ContainerAttrs {
     #[darling(default)]
     assert_none: bool,
 
+    /// Separate actions when setter is called with no change.
+    /// If assert_none is set with this option, this option takes precedence.
+    #[darling(default)]
+    no_change_action: Option<Expr>,
+
     /// Adds post process actions for setters.
     #[darling(default)]
     postprocess: Option<Expr>,
@@ -98,6 +94,10 @@ struct ContainerAttrs {
     /// generics.
     #[darling(multiple)]
     generate_delegates: Vec<ExternalDelegate>,
+
+    /// Whether to generate a trace.
+    #[darling(default)]
+    trace: Option<bool>,
 }
 
 #[derive(Debug, Clone, FromField)]
@@ -124,6 +124,11 @@ struct FieldAttrs {
     /// Whether to check if option is None for Option fields.
     assert_none: Option<bool>,
 
+    /// Separate actions when setter is called with no change.
+    /// If assert_none is set with this option, this option takes precedence.
+    #[darling(default)]
+    no_change_action: Option<Expr>,
+
     /// Adds post process actions for setters.
     #[darling(default)]
     postprocess: Option<Expr>,
@@ -147,6 +152,10 @@ struct FieldAttrs {
     /// The documentation used for this field's setter.
     #[darling(default)]
     doc: Option<String>,
+
+    /// Whether to generate a trace.
+    #[darling(default)]
+    trace: Option<bool>,
 }
 
 struct ContainerDef {
@@ -160,11 +169,13 @@ struct ContainerDef {
     strip_option: bool,
     borrow_self: bool,
     assert_none: bool,
+    no_change_action: Option<Expr>,
     postprocess: Option<Expr>,
     result: Option<Type>,
     bool: bool,
     generate_public: bool,
     generate_private: bool,
+    trace: bool,
 
     generate_delegates: Vec<ExternalDelegate>,
 }
@@ -178,9 +189,11 @@ struct FieldDef {
     strip_option: bool,
     borrow_self: bool,
     assert_none: bool,
+    no_change_action: Option<Expr>,
     postprocess: Option<Expr>,
     result: Option<Type>,
     bool: bool,
+    trace: bool,
 }
 
 fn init_container_def(input: &DeriveInput) -> Result<ContainerDef, SynTokenStream> {
@@ -204,6 +217,7 @@ fn init_container_def(input: &DeriveInput) -> Result<ContainerDef, SynTokenStrea
         },
         borrow_self: darling_attrs.borrow_self,
         assert_none: darling_attrs.assert_none,
+        no_change_action: darling_attrs.no_change_action,
         postprocess: darling_attrs.postprocess,
         result: darling_attrs.result,
         generics: darling_attrs.generics,
@@ -214,6 +228,7 @@ fn init_container_def(input: &DeriveInput) -> Result<ContainerDef, SynTokenStrea
         generate_public: generate && darling_attrs.generate_public.unwrap_or(true),
         generate_private: generate && darling_attrs.generate_private.unwrap_or(true),
         generate_delegates: darling_attrs.generate_delegates,
+        trace: darling_attrs.trace.unwrap_or(false),
     })
 }
 
@@ -264,13 +279,16 @@ fn init_field_def(
         strip_option: darling_attrs.strip_option.unwrap_or(container.strip_option),
         borrow_self: darling_attrs.borrow_self.unwrap_or(container.borrow_self),
         assert_none: darling_attrs.assert_none.unwrap_or(container.assert_none),
+        no_change_action: darling_attrs.no_change_action.or(container.no_change_action.clone()),
         postprocess: darling_attrs.postprocess.or(container.postprocess.clone()),
         result: darling_attrs.result.or(container.result.clone()),
         bool: darling_attrs.bool.unwrap_or(container.bool),
+        trace: darling_attrs.trace.unwrap_or(container.trace),
     }))
 }
 
 fn generate_setter_method(
+    input: &DeriveInput,
     container: &ContainerDef,
     def: FieldDef,
     additional_prefix: &Option<String>,
@@ -282,6 +300,21 @@ fn generate_setter_method(
         Ident::new(&format!("{additional_prefix}{}", setter_name), setter_name.span())
     } else {
         setter_name
+    };
+
+    let function_name = setter_name.to_token_stream().to_string();
+    let trace = if def.trace {
+        if def.bool {
+            quote! {
+                tracing::trace!("{} Call setter: {:?}, args: true", &self, #function_name);
+            }
+        } else {
+            quote! {
+                tracing::trace!("{} Call setter: {:?}, args: {:?}", &self, #function_name, &value);
+            }
+        }
+    } else {
+        quote! {}
     };
 
     // Checks if the field is Option.
@@ -317,7 +350,7 @@ fn generate_setter_method(
 
     // The type the setter accepts.
     let value_ty = if def.uses_into {
-        quote! { impl ::#std::convert::Into<#field_ty> }
+        quote! { impl ::#std::convert::Into<#field_ty> + std::fmt::Debug }
     } else {
         quote! { #field_ty }
     };
@@ -341,10 +374,40 @@ fn generate_setter_method(
         quote! { value: #value_ty }
     };
 
-    let precheck = if def.assert_none && is_option_field {
-        quote! { assert!(self.#field_name.is_none());  }
+    let _precheck = if def.assert_none && is_option_field {
+        if delegate_toks.is_some() {
+            return Err(error(
+                input.span(),
+                "Can not use delegate and assert_none at the same time.",
+            ));
+        }
+        quote! {
+            assert!(self.#field_name.is_none());
+        }
     } else {
         quote! {}
+    };
+    let precheck = if let Some(action) = def.no_change_action {
+        if delegate_toks.is_some() {
+            return Err(error(
+                input.span(),
+                "Can not use delegate and no_change_action at the same time.",
+            ));
+        }
+
+        let q = quote! {
+            let v = #expr;
+            if &self.#field_name == &v {
+                return #action;
+            }
+            #_precheck
+        };
+        expr = quote! { v };
+        q
+    } else {
+        quote! {
+            #_precheck
+        }
     };
 
     let _result = if let Some(result) = def.result {
@@ -373,6 +436,7 @@ fn generate_setter_method(
         Ok(quote! {
             #field_doc
             pub fn #setter_name (#_self, #params) -> #_result {
+                #trace
                 #precheck
                 self.#delegate.#field_name = #expr;
                 #return_result
@@ -382,6 +446,7 @@ fn generate_setter_method(
         Ok(quote! {
             #field_doc
             pub fn #setter_name (&mut self, #params) -> #_result {
+                #trace
                 #precheck
                 self.#field_name = #expr;
                 #return_result
@@ -391,6 +456,7 @@ fn generate_setter_method(
         Ok(quote! {
             #field_doc
             pub fn #setter_name (mut self, #params) -> #_result {
+                #trace
                 #precheck
                 self.#field_name = #expr;
                 #return_result
@@ -412,6 +478,7 @@ fn generate_setters_for(
     for field in &data.fields {
         if let Some(field_def) = init_field_def(&container_def, field)? {
             let method = generate_setter_method(
+                input,
                 &container_def,
                 field_def,
                 &additional_prefix,

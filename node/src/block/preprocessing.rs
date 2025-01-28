@@ -52,14 +52,15 @@ where
         if thread_id.is_spawning_block(&preprocessed_state.block_id) {
             preprocessed_state
                 .thread_refs_state
-                .all_thread_refs
-                .insert(*thread_id, current_thread_last_block.clone());
+                .update(*thread_id, current_thread_last_block.clone());
         }
     }
 
     let all_referenced_blocks = preprocessed_state
         .thread_refs_state
-        .move_refs(ref_data, |block_id| repository.get_cross_thread_ref_data(block_id))?;
+        .move_refs(ref_data.into_iter().map(|e| e.1).collect(), |block_id| {
+            repository.get_cross_thread_ref_data(block_id)
+        })?;
     let all_referenced_cross_thread_blocks: Vec<_> = all_referenced_blocks
         .into_iter()
         .filter(|e| e.block_thread_identifier() != descendant_thread_identifier)

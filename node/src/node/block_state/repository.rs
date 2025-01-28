@@ -1,7 +1,9 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use std::sync::Weak;
 
+use derive_getters::Getters;
 use parking_lot::Mutex;
 use weak_table::WeakValueHashMap;
 
@@ -9,17 +11,39 @@ use super::state::AckiNackiBlockState;
 use crate::types::BlockIdentifier;
 
 type BlockStateInner = Mutex<AckiNackiBlockState>;
-pub type BlockState = Arc<BlockStateInner>;
+
+#[derive(Clone, Debug, Getters)]
+pub struct BlockState {
+    block_identifier: BlockIdentifier,
+    inner: Arc<BlockStateInner>,
+}
+
+impl std::ops::Deref for BlockState {
+    type Target = Arc<BlockStateInner>;
+
+    fn deref(&self) -> &Arc<BlockStateInner> {
+        &self.inner
+    }
+}
 
 #[derive(Clone)]
 pub struct BlockStateRepository {
-    block_states_data_dir: PathBuf,
+    block_state_repo_data_dir: PathBuf,
     map: Arc<Mutex<WeakValueHashMap<BlockIdentifier, Weak<BlockStateInner>>>>,
+    notifications: Arc<AtomicU32>,
 }
 
 impl BlockStateRepository {
-    pub fn new(block_states_data_dir: PathBuf) -> Self {
-        Self { block_states_data_dir, map: Default::default() }
+    pub fn new(block_state_repo_data_dir: PathBuf) -> Self {
+        Self {
+            block_state_repo_data_dir,
+            map: Default::default(),
+            notifications: Default::default(),
+        }
+    }
+
+    pub fn block_state_repo_data_dir(&self) -> &PathBuf {
+        &self.block_state_repo_data_dir
     }
 
     pub fn get(&self, block_identifier: &BlockIdentifier) -> anyhow::Result<BlockState> {
@@ -27,10 +51,12 @@ impl BlockStateRepository {
         let result = match guarded.get(block_identifier) {
             Some(e) => e,
             None => {
-                let file_path = self.block_states_data_dir.join(format!("{:x}", block_identifier));
+                let file_path =
+                    self.block_state_repo_data_dir.join(format!("{:x}", block_identifier));
                 let state = super::private::load_state(file_path.clone())?.unwrap_or_else(|| {
                     let mut state = AckiNackiBlockState::new(block_identifier.clone());
                     state.file_path = file_path;
+                    state.notifications = Arc::clone(&self.notifications);
                     state
                 });
                 let state = Arc::new(Mutex::new(state));
@@ -40,7 +66,17 @@ impl BlockStateRepository {
         };
         guarded.remove_expired();
         drop(guarded);
-        Ok(result)
+        Ok(BlockState { block_identifier: block_identifier.clone(), inner: result })
+    }
+
+    pub fn notifications(&self) -> &AtomicU32 {
+        self.notifications.as_ref()
+    }
+
+    pub fn touch(&self) {
+        let notifications = self.notifications();
+        notifications.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        atomic_wait::wake_all(notifications);
     }
 }
 
@@ -49,6 +85,7 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
+    use crate::node::NodeIdentifier;
 
     #[test]
     fn ensure_repository_returns_same_ref_for_the_same_key() {
@@ -93,6 +130,7 @@ mod tests {
 
     #[test]
     fn ensure_repository_loads_saved_values() {
+        let some_node_id = NodeIdentifier::some_id();
         let some_block_id = BlockIdentifier::default();
         let tmp_dir = tempfile::tempdir().unwrap();
         let tmp_path = tmp_dir.path().to_owned();
@@ -100,11 +138,14 @@ mod tests {
         let repository = BlockStateRepository::new(tmp_path);
         let value_a = repository.get(&some_block_id).unwrap();
         assert!(!value_a.lock().is_finalized());
+        value_a.lock().try_add_attestations_interest(some_node_id.clone()).unwrap();
         value_a.lock().set_finalized().unwrap();
         assert!(value_a.lock().is_finalized());
         drop(value_a);
         // ensure durable
         let value = repository.get(&some_block_id).unwrap();
-        assert!(value.lock().is_finalized());
+        let value = value.lock();
+        assert!(value.known_attestation_interested_parties().contains(&some_node_id));
+        assert!(value.is_finalized());
     }
 }

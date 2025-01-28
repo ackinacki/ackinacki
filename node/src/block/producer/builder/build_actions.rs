@@ -619,7 +619,12 @@ impl BlockBuilder {
                 return true;
             }
         }
-        self.total_gas_used > self.block_gas_limit
+        if self.total_gas_used > self.block_gas_limit {
+            tracing::info!(target: "builder", "block builder gas limit reached");
+            true
+        } else {
+            false
+        }
     }
 
     #[instrument(skip_all)]
@@ -641,7 +646,7 @@ impl BlockBuilder {
         let msg_count = out_queue
             .len()
             .map_err(|e| anyhow::format_err!("Failed to get msgs queue length: {e}"))?;
-        tracing::info!(target: "builder", "out_queue.len={}, ext_messages_queue.len={}, active_threads.len={}", msg_count, ext_messages_queue.len(), active_threads.len());
+        tracing::info!(target: "builder", "out_queue.len={}, ext_messages_queue.len={}, active_threads.len={}, check_messages_map.len={:?}", msg_count, ext_messages_queue.len(), active_threads.len(), check_messages_map.as_ref().map(|map| map.len()));
         let (block_unixtime, block_lt) = self.at_and_lt();
 
         trace_span!("execute epoch messages").in_scope(|| {
@@ -891,7 +896,7 @@ impl BlockBuilder {
                             i += 1;
                         }
                     }
-                    if self.is_limits_reached() {
+                    if check_messages_map.is_none() && self.is_limits_reached() {
                         tracing::debug!(target: "builder", "Internal messages stop was set because block is full");
                         block_full = true;
                     }
@@ -1017,7 +1022,7 @@ impl BlockBuilder {
                         }
                     }
 
-                    if self.is_limits_reached() {
+                    if check_messages_map.is_none() && self.is_limits_reached() {
                         block_full = true;
                         tracing::debug!(target: "builder", "Ext messages stop because block is full");
                         break;
@@ -1056,6 +1061,7 @@ impl BlockBuilder {
                                 ));
                             }
                             if !msg_set.contains_key(&message.hash().unwrap()) {
+                                tracing::info!(target: "builder", "Skip new message for verify block: {} {:?}", message.hash().unwrap().to_hex_string(), message);
                                 continue;
                             }
                         }
@@ -1109,7 +1115,7 @@ impl BlockBuilder {
                     && there_are_no_new_messages_for_verify_block
                     && active_threads.is_empty()
                 {
-                    tracing::debug!(target: "builder", "Stop building verify block");
+                    tracing::info!(target: "builder", "Stop building verify block");
                     break;
                 }
 
@@ -1133,12 +1139,12 @@ impl BlockBuilder {
                     }
                 }
 
-                if self.is_limits_reached() {
-                    tracing::debug!(target: "builder", "New messages stop because block is full");
+                if check_messages_map.is_none() && self.is_limits_reached() {
+                    tracing::info!(target: "builder", "New messages stop because block is full");
                     break;
                 }
                 if self.new_messages.is_empty() && active_threads.is_empty() {
-                    tracing::debug!(target: "builder", "New messages stop");
+                    tracing::info!(target: "builder", "New messages stop");
                     break;
                 }
             }
@@ -1450,13 +1456,7 @@ Ok::<_, anyhow::Error>(())
         let current_thread_id = *self.initial_optimistic_state.get_thread_id();
         let current_thread_last_block =
             (current_thread_id, block_id.clone(), BlockSeqNo::from(block_info.seq_no()));
-        new_thread_refs
-            .all_thread_refs
-            .entry(current_thread_id)
-            .and_modify(|e| {
-                *e = current_thread_last_block.clone();
-            })
-            .or_insert(current_thread_last_block);
+        new_thread_refs.update(current_thread_id, current_thread_last_block.clone());
 
         let new_state = OptimisticStateImpl::builder()
             .block_seq_no(BlockSeqNo::from(block_info.seq_no()))
@@ -1473,6 +1473,8 @@ Ok::<_, anyhow::Error>(())
             .thread_refs_state(new_thread_refs)
             .cropped(None)
             .build();
+
+        tracing::info!(target: "builder", "new_state.last_processed_external_message_index={}", new_state.last_processed_external_message_index);
 
         tracing::info!(target: "builder", "Finish block: {:?}", block.hash().unwrap().to_hex_string());
         Ok((block, new_state))

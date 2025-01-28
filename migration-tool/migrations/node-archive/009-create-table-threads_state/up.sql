@@ -7,3 +7,4 @@ CREATE TABLE threads (
 CREATE INDEX index_threads_timestamp ON threads (timestamp);
 
 ALTER TABLE blocks ADD COLUMN thread_id TEXT;
+ALTER TABLE blocks ADD COLUMN producer_id TEXT;

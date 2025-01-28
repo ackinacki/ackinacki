@@ -196,6 +196,7 @@ pub struct Block {
     prev_vert_alt_ref: Option<ExtBlkRef>,
     /// External block reference for previous block in case of vertical blocks.
     prev_vert_ref: Option<ExtBlkRef>,
+    producer_id: Option<String>,
     rand_seed: String,
     seq_no: i64,
     shard: Option<String>,
@@ -283,6 +284,7 @@ impl From<db::Block> for Block {
             }),
             prev_vert_ref: None,
             prev_vert_alt_ref: None,
+            producer_id: block.producer_id,
             rand_seed: "".to_string(),
             seq_no: block.seq_no,
             shard: block.shard,

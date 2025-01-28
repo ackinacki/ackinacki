@@ -58,21 +58,22 @@ async fn execute(args: cli::CliArgs) -> anyhow::Result<()> {
         .expect("tls config");
 
     loop {
-        let config = ClientConfig::builder() //
-            .with_bind_default()
-            .with_custom_tls(tls_config.clone())
-            .build();
+        let config =
+            ClientConfig::builder().with_bind_default().with_custom_tls(tls_config.clone()).build();
 
         tracing::info!("Connecting to {}", args.endpoint.as_str());
 
-        let Ok(connection) = Endpoint::client(config) //
+        let connection = match Endpoint::client(config)
             .expect("endpoint client")
             .connect(&args.endpoint)
             .await
-        else {
-            tracing::error!("connection error");
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            continue;
+        {
+            Ok(connection) => connection,
+            Err(err) => {
+                tracing::error!("connection error: {err:#?}");
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                continue;
+            }
         };
 
         tracing::info!("Connection {:?} {:?}", connection.stable_id(), connection.session_id());

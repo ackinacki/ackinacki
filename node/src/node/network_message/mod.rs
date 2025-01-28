@@ -41,8 +41,6 @@ pub enum NetworkMessage {
 
     BlockAttestation((Envelope<GoshBLS, AttestationData>, ThreadIdentifier)),
 
-    // TODO need to remake not seq_no but identifier
-    // TODO: consider std::ops::Range<BlockSeqNo>
     BlockRequest((BlockSeqNo, BlockSeqNo, NodeIdentifier, ThreadIdentifier)),
 
     SyncFrom((BlockSeqNo, ThreadIdentifier)),

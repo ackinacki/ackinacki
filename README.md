@@ -115,14 +115,15 @@ all:
     BIND_MESSAGE_ROUTER_PORT: 8700
     BIND_GOSSIP_PORT: 10000
     BLOCK_MANAGER_PORT: 12000
-    NODE_IMAGE: teamgosh/ackinacki-node
-    GQL_IMAGE: teamgosh/ackinacki-gql-server
-    REVPROXY_IMAGE: teamgosh/ackinacki-live
+    NODE_IMAGE: teamgosh/ackinacki-node:<latest-release-tag> # i.e. teamgosh/ackinacki-node:v0.3.3
+    GQL_IMAGE: teamgosh/ackinacki-gql-server:<latest-release-tag> # i.e. teamgosh/ackinacki-gql-server:v0.3.3
+    REVPROXY_IMAGE: teamgosh/ackinacki-nginx
     BK_DIR: "{{ ROOT_DIR }}/block-keeper"
     BK_DATA_DIR: "{{ MNT_DATA }}/block-keeper"
     BK_LOGS_DIR: "{{ MNT_DATA }}/logs-block-keeper"
     LOG_ROTATE_AMOUNT: 30
     LOG_ROTATE_SIZE: 1G
+    NETWORK_NAME: shellnet
     GOSSIP_SEEDS:
       - shellnet0.ackinacki.org:10000
       - shellnet1.ackinacki.org:10000

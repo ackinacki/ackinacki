@@ -1,20 +1,18 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use database::documents_db::SerializedItem;
 use parking_lot::Mutex;
 use tvm_block::ShardStateUnsplit;
 
-use crate::block_keeper_system::BlockKeeperSet;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::BLSSignatureScheme;
 use crate::node::associated_types::AttestationData;
 use crate::repository::optimistic_state::OptimisticState;
-use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
@@ -99,7 +97,6 @@ pub trait Repository {
         &mut self,
         thread_id: &ThreadIdentifier,
         parent_block_id: &BlockIdentifier,
-        block_keeper_sets: BlockKeeperRing,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<()>;
 
@@ -129,7 +126,6 @@ pub trait Repository {
     fn mark_block_as_finalized(
         &mut self,
         block: &<Self as Repository>::CandidateBlock,
-        block_keeper_sets: BlockKeeperRing,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         block_state: BlockState,
     ) -> anyhow::Result<()>;
@@ -139,13 +135,8 @@ pub trait Repository {
     fn get_optimistic_state(
         &self,
         block_id: &BlockIdentifier,
-        block_keeper_sets: BlockKeeperRing,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<Option<Self::OptimisticState>>;
-
-    fn is_optimistic_state_present(&self, block_id: &BlockIdentifier) -> bool;
-
-    fn is_candidate_block_can_be_applied(&self, block: &Self::CandidateBlock) -> bool;
 
     fn store_block<T: Into<Self::CandidateBlock>>(&self, block: T) -> anyhow::Result<()>;
 
@@ -191,11 +182,8 @@ pub trait Repository {
         block_id: &BlockIdentifier,
         snapshot: Self::StateSnapshot,
         thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<(
-        HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
-        BTreeMap<BlockSeqNo, BlockKeeperSet>,
-        Vec<CrossThreadRefData>,
-    )>;
+        skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
+    ) -> anyhow::Result<Vec<CrossThreadRefData>>;
 
     fn sync_accounts_from_state(
         &mut self,
@@ -213,7 +201,7 @@ pub trait Repository {
         thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<BlockSeqNo>;
 
-    fn store_optimistic<T: Into<Self::OptimisticState>>(&mut self, state: T) -> anyhow::Result<()>;
+    fn store_optimistic<T: Into<Self::OptimisticState>>(&self, state: T) -> anyhow::Result<()>;
 
     fn get_block_id_by_seq_no(
         &self,
@@ -243,10 +231,6 @@ pub trait Repository {
     ) -> anyhow::Result<Self::OptimisticState>;
 
     fn add_thread_buffer(&self, thread_id: ThreadIdentifier) -> Arc<Mutex<Vec<BlockIdentifier>>>;
-
-    fn list_finalized_states(
-        &self,
-    ) -> impl Iterator<Item = (&'_ ThreadIdentifier, &'_ Self::OptimisticState)>;
 
     fn get_all_metadata(&self) -> RepositoryMetadata;
 }

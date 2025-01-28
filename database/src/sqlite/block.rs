@@ -75,6 +75,7 @@ pub struct ArchBlock {
     pub tr_count: Option<i64>,
     pub value_flow: Option<BlockValueFlow>,
     pub thread_id: Option<String>,
+    pub producer_id: Option<String>,
 }
 
 with_prefix!(prefix_prev_ref "prev_ref_");
@@ -133,6 +134,7 @@ impl From<&Row<'_>> for ArchBlock {
             boc: val.get(44).ok(),
             thread_id: val.get(45).ok(),
             value_flow: None,
+            producer_id: val.get(46).ok(),
         }
     }
 }

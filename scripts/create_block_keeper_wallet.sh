@@ -149,6 +149,7 @@ tvm-cli -j call $SPONSOR_WALLET_ADDRESS sendTransaction "$SPONSOR_PARAMS" --abi 
 echo "Checking wallet balance..."
 WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '{balance,walletId}')
 echo $WALLET_DETAILS | jq -r '.balance' | xargs printf "Current wallet balance: %d\n"
-echo $WALLET_DETAILS | jq -r '.walletId' | xargs printf "Node ID: %d\n"
+
+tvm-cli -j runx --addr $ROOT --abi $ABI --method getAckiNackiBlockKeeperNodeWalletAddress "$MASTER_PUB_KEY" | jq -r .value0 | cut -d ':' -f2 | xargs printf "Node ID: %s\n"
 
 printf "Initial steps have been done. Save your node id\n"

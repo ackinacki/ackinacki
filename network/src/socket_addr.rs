@@ -102,7 +102,6 @@ impl ToOneSocketAddr for str {
     /// println!("Converted to SocketAddr: {:?}", socket_addr);
     /// ```
     fn to_socket_addr(&self) -> SocketAddr {
-        tracing::trace!("to_socket_addr({self})");
         self.try_to_socket_addr().expect("socket address parsed")
     }
 }
@@ -174,6 +173,12 @@ impl Deref for StringSocketAddr {
 impl From<String> for StringSocketAddr {
     fn from(value: String) -> Self {
         Self(value)
+    }
+}
+
+impl From<&str> for StringSocketAddr {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
     }
 }
 

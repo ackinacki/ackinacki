@@ -1,6 +1,5 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
-mod default;
 mod network_config;
 mod serde_config;
 #[cfg(test)]
@@ -15,6 +14,7 @@ use serde::Deserialize;
 use serde::Serialize;
 pub use serde_config::load_config_from_file;
 pub use serde_config::save_config_to_file;
+use typed_builder::TypedBuilder;
 
 use crate::node::NodeIdentifier;
 use crate::types::BlockSeqNo;
@@ -49,7 +49,7 @@ pub struct GlobalConfig {
 
     /// Difference between the seq no of the incoming block and the seq no of
     /// the last saved block, which causes the node synchronization process
-    /// to start. Defaults to 6
+    /// to start. Defaults to 20
     pub need_synchronization_block_diff: <BlockSeqNo as std::ops::Sub>::Output,
 
     /// Minimal time between publishing state.
@@ -100,27 +100,33 @@ pub struct GlobalConfig {
 }
 
 /// Node interaction settings
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, TypedBuilder)]
 pub struct NodeConfig {
     /// Identifier of the current node.
     pub node_id: NodeIdentifier,
 
     /// Path to the file with blockchain config.
+    #[builder(default = PathBuf::from("blockchain_config.json"))]
     pub blockchain_config_path: PathBuf,
 
     /// Path to the file with BLS key pair.
+    #[builder(default = "block_keeper.keys.json".to_string())]
     pub key_path: String,
 
     /// Path to the file with block keeper seed key.
+    #[builder(default = "block_keeper.keys.json".to_string())]
     pub block_keeper_seed_path: String,
 
     /// Path to zerostate file.
+    #[builder(default = PathBuf::from("zerostate"))]
     pub zerostate_path: PathBuf,
 
     /// Local directory path which will be shared to other nodes.
+    #[builder(default = PathBuf::from("/tmp"))]
     pub external_state_share_local_base_dir: PathBuf,
 
     /// Level of block production parallelization.
+    #[builder(default = 20)]
     pub parallelization_level: usize,
 }
 
@@ -135,4 +141,47 @@ pub struct Config {
 
     /// Local config
     pub local: NodeConfig,
+}
+
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        Self {
+            require_minimum_blocks_to_finalize: 0,
+            require_minimum_time_milliseconds_to_finalize: 0,
+            time_to_produce_block_millis: 330,
+            finalization_delay_to_slow_down: 6,
+            slow_down_multiplier: 4,
+            finalization_delay_to_stop: 6,
+            need_synchronization_block_diff: 20,
+            min_time_between_state_publish_directives: Duration::from_secs(600),
+            producer_group_size: 5,
+            producer_change_gap_size: 6,
+            node_joining_timeout: Duration::from_secs(300),
+            min_signatures_cnt_for_acceptance: 3,
+            sync_gap: 32,
+            sync_delay_milliseconds: 500,
+            // TODO: Critical! Fix repo issue and revert the value back to 200
+            save_state_frequency: 200,
+            block_keeper_epoch_code_hash:
+                "88305d70a51fe7f281a5cd5a24136706b2f1b4ae1fa1d2fc69ff3db12deb3090".to_string(),
+            gas_limit_for_special_transaction: 10_000_000,
+            attestation_validity_block_gap: 5,
+            max_threads_count: 100,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Default for NodeConfig {
+    fn default() -> Self {
+        NodeConfig {
+            node_id: NodeIdentifier::some_id(),
+            blockchain_config_path: PathBuf::from("blockchain_config.json"),
+            key_path: "block_keeper.keys.json".to_string(),
+            zerostate_path: PathBuf::from("zerostate"),
+            external_state_share_local_base_dir: PathBuf::from("/tmp"),
+            parallelization_level: 20,
+            block_keeper_seed_path: "block_keeper.keys.json".to_string(),
+        }
+    }
 }

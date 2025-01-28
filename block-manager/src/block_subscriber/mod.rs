@@ -12,11 +12,11 @@ use std::thread;
 use anyhow::Context;
 use database::sqlite::sqlite_helper;
 use database::sqlite::sqlite_helper::SqliteHelper;
+use database::sqlite::sqlite_helper::SqliteHelperConfig;
 use node::bls::envelope::Envelope;
 use node::bls::GoshBLS;
 use node::types::AckiNackiBlock;
 use rusqlite::Connection;
-use serde_json::json;
 use tokio::io::AsyncReadExt;
 use tvm_block::ShardStateUnsplit;
 use url::Url;
@@ -78,13 +78,13 @@ fn worker(
     rx: mpsc::Receiver<Vec<u8>>,
     event_pub: mpsc::Sender<Event>,
 ) -> anyhow::Result<()> {
-    let sqlite_helper_config = json!({
-        "data_dir": std::env::var("SQLITE_PATH").unwrap_or(sqlite_helper::SQLITE_DATA_DIR.into()),
-        "db_file": "bm-archive.db".to_string(),
-    })
-    .to_string();
-    let sqlite_helper_raw = SqliteHelper::from_config(&sqlite_helper_config)?;
-    let sqlite_helper = Arc::new(sqlite_helper_raw.clone());
+    let data_dir =
+        std::env::var("SQLITE_PATH").unwrap_or(sqlite_helper::SQLITE_DATA_DIR.to_string());
+    let sqlite_helper_config =
+        SqliteHelperConfig::new(data_dir.into(), Some("bm-archive.db".into()));
+
+    let (sqlite_helper, _writer_join_handle) = SqliteHelper::from_config(sqlite_helper_config)?;
+    let sqlite_helper = Arc::new(sqlite_helper);
 
     let mut transaction_traces = HashMap::new();
     let shard_state = Arc::new(ShardStateUnsplit::default());
@@ -116,14 +116,11 @@ fn worker(
 
 async fn listener(stream_src_url: Url, tx: mpsc::Sender<Vec<u8>>) -> anyhow::Result<()> {
     loop {
-        let config = ClientConfig::builder() //
-            .with_bind_default()
-            .with_no_cert_validation()
-            .build();
+        let config = ClientConfig::builder().with_bind_default().with_no_cert_validation().build();
 
         tracing::info!("Connecting to {} {:?}", stream_src_url.as_str(), stream_src_url.port(),);
 
-        let Ok(connection) = Endpoint::client(config) //
+        let Ok(connection) = Endpoint::client(config)
             .expect("endpoint client")
             .connect(stream_src_url.as_str())
             .await

@@ -1,5 +1,8 @@
+pub mod load_unprocessed_blocks;
 pub mod repository;
 pub mod state;
+pub mod try_add_attestation;
+pub mod unfinalized_ancestor_blocks;
 
 // TODO: migrate to any embedded db.
 mod private {
@@ -10,7 +13,9 @@ mod private {
     use crate::repository::repository_impl::save_to_file;
 
     pub fn load_state(file_path: PathBuf) -> anyhow::Result<Option<AckiNackiBlockState>> {
-        if let Some(mut state) = load_from_file::<AckiNackiBlockState>(&file_path)? {
+        if let Some(mut state) = load_from_file::<AckiNackiBlockState>(&file_path).map_err(|e| {
+            anyhow::format_err!("Failed to load block state from file {file_path:?}: {e}")
+        })? {
             state.file_path = file_path;
             Ok(Some(state))
         } else {

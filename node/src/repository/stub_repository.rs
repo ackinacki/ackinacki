@@ -1,8 +1,8 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use database::documents_db::SerializedItem;
@@ -13,7 +13,6 @@ use tvm_types::UInt256;
 
 use super::repository_impl::RepositoryImpl;
 use super::repository_impl::RepositoryMetadata;
-use crate::block_keeper_system::BlockKeeperSet;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 #[cfg(test)]
@@ -21,13 +20,13 @@ use crate::message::message_stub::MessageStub;
 use crate::message::WrappedMessage;
 use crate::node::associated_types::AttestationData;
 use crate::node::block_state::repository::BlockState;
+use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::node::NodeIdentifier;
 use crate::repository::optimistic_state::DAppIdTable;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
-use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::AccountAddress;
 use crate::types::AccountRouting;
 use crate::types::AckiNackiBlock;
@@ -89,7 +88,7 @@ impl OptimisticState for OptimisticStateStub {
         &mut self,
         _block_candidate: &AckiNackiBlock,
         _shared_services: &SharedServices,
-        _block_keeper_sets: BlockKeeperRing,
+        _block_state_repo: BlockStateRepository,
         _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<()> {
         todo!()
@@ -182,7 +181,6 @@ impl OptimisticState for OptimisticStateStub {
 pub struct RepositoryStub {
     _storage: HashMap<BlockIdentifier, Envelope<GoshBLS, AckiNackiBlock>>,
     optimistic_state: HashMap<BlockIdentifier, <Self as Repository>::OptimisticState>,
-    finalized_states: HashMap<ThreadIdentifier, OptimisticStateStub>,
 }
 
 #[cfg(test)]
@@ -194,11 +192,7 @@ impl Default for RepositoryStub {
 
 impl RepositoryStub {
     pub fn new() -> Self {
-        Self {
-            _storage: HashMap::new(),
-            optimistic_state: HashMap::new(),
-            finalized_states: HashMap::new(),
-        }
+        Self { _storage: HashMap::new(), optimistic_state: HashMap::new() }
     }
 }
 
@@ -286,7 +280,6 @@ impl Repository for RepositoryStub {
         &mut self,
         _thread_id: &ThreadIdentifier,
         _parent_block_id: &BlockIdentifier,
-        _block_keeper_sets: BlockKeeperRing,
         _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<()> {
         todo!();
@@ -328,7 +321,6 @@ impl Repository for RepositoryStub {
     fn mark_block_as_finalized(
         &mut self,
         _block: &Self::CandidateBlock,
-        _block_keeper_sets: BlockKeeperRing,
         _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         _block_state: BlockState,
     ) -> anyhow::Result<()> {
@@ -342,14 +334,9 @@ impl Repository for RepositoryStub {
     fn get_optimistic_state(
         &self,
         block_id: &BlockIdentifier,
-        _block_keeper_sets: BlockKeeperRing,
         _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<Option<OptimisticStateStub>> {
         Ok(self.optimistic_state.get(block_id).map(|s| s.to_owned()))
-    }
-
-    fn is_optimistic_state_present(&self, _block_id: &BlockIdentifier) -> bool {
-        todo!()
     }
 
     fn store_block<T: Into<Self::CandidateBlock>>(&self, _block: T) -> anyhow::Result<()> {
@@ -419,11 +406,8 @@ impl Repository for RepositoryStub {
         _block_id: &BlockIdentifier,
         _snapshot: Self::StateSnapshot,
         _thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<(
-        HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
-        BTreeMap<BlockSeqNo, BlockKeeperSet>,
-        Vec<CrossThreadRefData>,
-    )> {
+        _skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
+    ) -> anyhow::Result<Vec<CrossThreadRefData>> {
         todo!()
     }
 
@@ -449,10 +433,7 @@ impl Repository for RepositoryStub {
         todo!()
     }
 
-    fn store_optimistic<T: Into<Self::OptimisticState>>(
-        &mut self,
-        _state: T,
-    ) -> anyhow::Result<()> {
+    fn store_optimistic<T: Into<Self::OptimisticState>>(&self, _state: T) -> anyhow::Result<()> {
         todo!()
     }
 
@@ -486,10 +467,6 @@ impl Repository for RepositoryStub {
         todo!()
     }
 
-    fn is_candidate_block_can_be_applied(&self, _block: &Self::CandidateBlock) -> bool {
-        todo!()
-    }
-
     fn get_zero_state_for_thread(
         &self,
         _thread_id: &ThreadIdentifier,
@@ -499,12 +476,6 @@ impl Repository for RepositoryStub {
 
     fn add_thread_buffer(&self, _thread_id: ThreadIdentifier) -> Arc<Mutex<Vec<BlockIdentifier>>> {
         todo!()
-    }
-
-    fn list_finalized_states(
-        &self,
-    ) -> impl Iterator<Item = (&'_ ThreadIdentifier, &'_ Self::OptimisticState)> {
-        self.finalized_states.iter()
     }
 
     fn get_all_metadata(&self) -> RepositoryMetadata {

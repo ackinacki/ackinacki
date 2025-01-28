@@ -4,6 +4,7 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
 use std::hash::Hash;
@@ -16,7 +17,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::thread;
 
 use anyhow::ensure;
 use chrono::DateTime;
@@ -25,6 +25,7 @@ use chrono::Utc;
 use database::documents_db::DocumentsDb;
 use database::documents_db::SerializedItem;
 use database::sqlite::sqlite_helper::SqliteHelper;
+use database::sqlite::sqlite_helper::SqliteHelperConfig;
 use database::sqlite::ArchAccount;
 use lru::LruCache;
 use parking_lot::Mutex;
@@ -32,7 +33,6 @@ use rusqlite::params;
 use rusqlite::Connection;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::json;
 use tvm_block::HashmapAugType;
 use tvm_block::ShardStateUnsplit;
 use tvm_types::UInt256;
@@ -47,6 +47,7 @@ use crate::message::WrappedMessage;
 use crate::node::associated_types::AttestationData;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
+use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
 use crate::node::shared_services::SharedServices;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
@@ -54,12 +55,13 @@ use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
-use crate::types::block_keeper_ring::BlockKeeperRing;
 use crate::types::next_seq_no as calc_next_seq_no;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
+use crate::utilities::guarded::Guarded;
+use crate::utilities::guarded::GuardedMut;
 use crate::utilities::FixedSizeHashSet;
 use crate::zerostate::ZeroState;
 
@@ -69,13 +71,15 @@ const _REQUIRED_SQLITE_ARC_SCHEMA_VERSION: u32 = 2;
 const DB_FILE: &str = "node.db";
 const DB_ARCHIVE_FILE: &str = "node-archive.db";
 pub const EXT_MESSAGE_STORE_TIMEOUT_SECONDS: i64 = 60;
-const MAX_BLOCK_SEQ_NO_THAT_CAN_BE_BUILT_FROM_ZEROSTATE: u32 = 200;
+const _MAX_BLOCK_SEQ_NO_THAT_CAN_BE_BUILT_FROM_ZEROSTATE: u32 = 200;
 const MAX_BLOCK_CNT_THAT_CAN_BE_LOADED_TO_PREPARE_STATE: usize = 400;
 
 pub type RepositoryMetadata =
     Arc<Mutex<HashMap<ThreadIdentifier, Arc<Mutex<Metadata<BlockIdentifier, BlockSeqNo>>>>>>;
 pub type RepositoryLastExtMessageIndex = Arc<Mutex<HashMap<ThreadIdentifier, u32>>>;
 
+// TODO: divide repository into 2 entities: one for blocks, one for states with weak refs (for not
+// to store optimistic states longer than necessary)
 pub struct RepositoryImpl {
     archive: Connection,
     data_dir: PathBuf,
@@ -86,12 +90,13 @@ pub struct RepositoryImpl {
     blocks_cache:
         Arc<Mutex<LruCache<BlockIdentifier, (Envelope<GoshBLS, AckiNackiBlock>, BlockMarkers)>>>,
     saved_states: Arc<Mutex<HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockIdentifier>>>>,
-    finalized_optimistic_states: HashMap<ThreadIdentifier, OptimisticStateImpl>,
+    finalized_optimistic_states: Arc<Mutex<HashMap<ThreadIdentifier, OptimisticStateImpl>>>,
     finalized_blocks_buffers:
         Arc<Mutex<HashMap<ThreadIdentifier, Arc<Mutex<Vec<BlockIdentifier>>>>>>,
     shared_services: SharedServices,
     nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     blocks_states: BlockStateRepository,
+    optimistic_states_cache: Arc<Mutex<LruCache<BlockIdentifier, OptimisticStateImpl>>>,
 }
 
 #[allow(clippy::upper_case_acronyms)]
@@ -144,9 +149,9 @@ pub struct ExtMessages<TMessage: Clone> {
 #[derive(Serialize, Deserialize)]
 pub struct WrappedStateSnapshot {
     pub optimistic_state: Vec<u8>,
-    pub producer_group: HashMap<ThreadIdentifier, Vec<NodeIdentifier>>,
-    pub block_keeper_set: BTreeMap<BlockSeqNo, BlockKeeperSet>,
     pub cross_thread_ref_data: Vec<CrossThreadRefData>,
+    pub finalized_block_stats: BlockStatistics,
+    pub bk_set: BlockKeeperSet,
 }
 
 impl<TMessage> Default for ExtMessages<TMessage>
@@ -206,6 +211,7 @@ impl Clone for RepositoryImpl {
             shared_services: self.shared_services.clone(),
             nack_set_cache: Arc::clone(&self.nack_set_cache),
             blocks_states: self.blocks_states.clone(),
+            optimistic_states_cache: self.optimistic_states_cache.clone(),
         }
     }
 }
@@ -216,8 +222,8 @@ impl RepositoryImpl {
         data_dir: PathBuf,
         zerostate_path: Option<PathBuf>,
         cache_size: usize,
+        states_cache_size: usize,
         shared_services: SharedServices,
-        block_keeper_sets: BlockKeeperRing,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         blocks_states: BlockStateRepository,
     ) -> Self {
@@ -229,8 +235,8 @@ impl RepositoryImpl {
             .unwrap_or_else(|_| panic!("Failed to open {db_path:?}"));
 
         let arch_path = data_dir.join(DB_ARCHIVE_FILE);
-        let archive = SqliteHelper::create_connection_ro(arch_path)
-            .expect("Failed to open an archive DB {arch_path}");
+        let archive = SqliteHelper::create_connection_ro(arch_path.clone())
+            .unwrap_or_else(|_| panic!("Failed to open an archive DB {}", arch_path.display()));
 
         let schema_version =
             conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap_or(0);
@@ -286,7 +292,7 @@ impl RepositoryImpl {
                 }
             };
         }
-        let mut repo_impl = Self {
+        let repo_impl = Self {
             archive,
             data_dir: data_dir.clone(),
             zerostate_path,
@@ -297,11 +303,14 @@ impl RepositoryImpl {
                 NonZeroUsize::new(cache_size).unwrap(),
             ))),
             saved_states: Default::default(),
-            finalized_optimistic_states,
+            finalized_optimistic_states: Arc::new(Mutex::new(finalized_optimistic_states)),
             finalized_blocks_buffers: Arc::new(Mutex::new(HashMap::new())),
             shared_services,
             nack_set_cache: Arc::clone(&nack_set_cache),
-            blocks_states,
+            blocks_states: blocks_states.clone(),
+            optimistic_states_cache: Arc::new(Mutex::new(LruCache::new(
+                NonZeroUsize::new(states_cache_size).unwrap(),
+            ))),
         };
 
         let optimistic_dir = format!(
@@ -349,12 +358,11 @@ impl RepositoryImpl {
                 let state = repo_impl
                     .get_optimistic_state(
                         &metadata.last_finalized_block_id,
-                        block_keeper_sets.clone(),
                         Arc::clone(&nack_set_cache),
                     )
                     .expect("Failed to get last finalized state")
                     .expect("Failed to load last finalized state");
-                repo_impl.finalized_optimistic_states.insert(*thread_id, state);
+                repo_impl.finalized_optimistic_states.guarded_mut(|e| e.insert(*thread_id, state));
             }
         }
 
@@ -501,6 +509,7 @@ impl RepositoryImpl {
         Ok(())
     }
 
+    #[cfg(test)]
     fn exists(&self, path: &str, oid: OID) -> bool {
         let oid = match oid {
             OID::ID(value) => value,
@@ -593,9 +602,7 @@ impl RepositoryImpl {
         tracing::trace!("save markers {block_id:?} {:?}", markers);
         let path = self.get_path("markers", format!("{block_id:?}"));
         let markers_clone = markers.clone();
-        let _ = thread::Builder::new().name("saving marker".to_string()).spawn(move || {
-            let _res = save_to_file(&path, &markers_clone);
-        })?;
+        save_to_file(&path, &markers_clone)?;
         let mut cache = self.blocks_cache.lock();
         if let Some(entry) = cache.get_mut(block_id) {
             entry.1 = markers.clone();
@@ -624,6 +631,7 @@ impl RepositoryImpl {
         let queue: ExtMessages<WrappedMessage> =
             self.load(path, OID::ID(thread_id.to_string())).map(|res| res.unwrap_or_default())?;
         drop(lock);
+        tracing::trace!("load_ext_messages_queue queue len {} {thread_id:?}", queue.queue.len());
         Ok(queue)
     }
 
@@ -648,9 +656,7 @@ impl RepositoryImpl {
         let path = self.get_path("blocks", format!("{block_id:?}"));
 
         let block_clone = block.clone();
-        let _ = thread::Builder::new().name("saving block".to_string()).spawn(move || {
-            let _res = save_to_file(&path, &block_clone);
-        })?;
+        save_to_file(&path, &block_clone)?;
 
         let mut cache = self.blocks_cache.lock();
         cache.push(block.data().identifier(), (block, candidate_marker));
@@ -764,16 +770,13 @@ impl RepositoryImpl {
         Ok(envelope)
     }
 
-    fn clear_optimistic_states(&mut self, thread_id: &ThreadIdentifier) -> anyhow::Result<()> {
-        let mut all_saved_states = self.saved_states.lock();
-        let saved_states = all_saved_states.entry(*thread_id).or_default();
+    fn clear_optimistic_states(&self, thread_id: &ThreadIdentifier) -> anyhow::Result<()> {
         let (_, last_finalized_seq_no) = self.select_thread_last_finalized_block(thread_id)?;
+        let saved_states =
+            self.saved_states.guarded(|e| e.get(thread_id).cloned().unwrap_or_default());
         let mut keys_to_remove = vec![];
         for (block_seq_no, block_id) in saved_states.iter() {
             if *block_seq_no > last_finalized_seq_no {
-                break;
-            }
-            if !self.is_optimistic_state_present(block_id) {
                 break;
             }
             if !self.is_block_present_in_archive(block_id).unwrap_or(false) {
@@ -786,12 +789,16 @@ impl RepositoryImpl {
         }
         // Leave only the latest state
         keys_to_remove.pop();
-        for k in keys_to_remove {
-            let block_id = saved_states.remove(&k).unwrap();
+        for k in &keys_to_remove {
+            let block_id = saved_states.get(k).unwrap();
             tracing::trace!("Clear optimistic state for {k} {block_id:?}");
             let optimistic_state_path = self.get_optimistic_state_path();
             self.remove(optimistic_state_path, OID::ID(block_id.to_string()))?;
         }
+        self.saved_states.guarded_mut(|e| {
+            let thread_states = e.entry(*thread_id).or_default();
+            thread_states.retain(|seq_no, _| !keys_to_remove.contains(seq_no));
+        });
         tracing::trace!("repo saved_states={:?}", saved_states);
         Ok(())
     }
@@ -799,49 +806,36 @@ impl RepositoryImpl {
     fn try_load_state_from_archive(
         &self,
         block_id: &BlockIdentifier,
-        block_keeper_sets: BlockKeeperRing,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<Option<<Self as Repository>::OptimisticState>> {
         tracing::trace!("try_load_state_from_archive: {block_id:?}");
         // Load last block
         let block = self.get_block_from_repo_or_archive(block_id)?;
         let thread_id = block.data().get_common_section().thread_id;
-        // Check that state for this block can be built
-        let block_seq_no = block.data().seq_no();
-        let mut saved_states =
-            { self.saved_states.lock().get(&thread_id).cloned().unwrap_or_default() };
-        // TODO: fix for absent finalized state
-        let finalized_state = self
-            .finalized_optimistic_states
-            .get(&thread_id)
-            .expect("Failed to load finalized state for thread")
-            .clone();
-        saved_states.insert(finalized_state.block_seq_no, finalized_state.block_id.clone());
-        tracing::trace!("try_load_state_from_archive: saved_state: {:?}", saved_states);
-        let mut max_less_or_equal_key = None;
-        for key in saved_states.keys() {
-            if *key > block_seq_no {
-                break;
+
+        let mut available_states: HashSet<BlockIdentifier> = {
+            let saved_states =
+                self.saved_states.guarded(|e| e.get(&thread_id).cloned().unwrap_or_default());
+            let ids: Vec<BlockIdentifier> = saved_states.values().cloned().collect();
+            HashSet::from_iter(ids)
+        };
+        let finalized_state =
+            self.finalized_optimistic_states.guarded(|map| map.get(&thread_id).cloned());
+        if let Some(finalized_state) = finalized_state.as_ref() {
+            available_states.insert(finalized_state.block_id.clone());
+        }
+        if let Some(path) = &self.zerostate_path {
+            let zerostate = ZeroState::load_from_file(path)?;
+            if let Ok(state) = zerostate.state(&thread_id) {
+                available_states.insert(state.block_id.clone());
             }
-            max_less_or_equal_key = Some(*key);
-        }
-        if max_less_or_equal_key.is_none()
-            && block_seq_no > BlockSeqNo::from(MAX_BLOCK_SEQ_NO_THAT_CAN_BE_BUILT_FROM_ZEROSTATE)
-        {
-            anyhow::bail!(
-                "Requested block is too old to be built from saved states and too late to be built from zerostate"
-            );
-        }
+        };
 
         let mut blocks = vec![];
         let mut block_id = block_id.clone();
 
-        let mut last_threads_table_update = None;
         let state_id = loop {
             let block = self.get_block_from_repo_or_archive(&block_id)?;
-            if last_threads_table_update.is_none() {
-                last_threads_table_update = block.data().get_common_section().threads_table.clone();
-            }
             tracing::trace!(
                 "try_load_state_from_archive: loaded block: {:?} {block_id:?}",
                 block.data().seq_no()
@@ -850,11 +844,11 @@ impl RepositoryImpl {
             if blocks.len() > MAX_BLOCK_CNT_THAT_CAN_BE_LOADED_TO_PREPARE_STATE {
                 anyhow::bail!("Failed to load optimistic state: no appropriate state was found during depth search");
             }
-
-            if saved_states.values().any(|id| id == &block.data().parent()) {
-                break block.data().parent();
+            let parent_id = block.data().parent();
+            if available_states.contains(&parent_id) {
+                break parent_id;
             }
-            block_id = block.data().parent();
+            block_id = parent_id;
         };
         blocks.reverse();
 
@@ -866,34 +860,21 @@ impl RepositoryImpl {
                 zero_block = zerostate.state(&thread_id)?.clone();
             };
             zero_block
-        } else if state_id == finalized_state.block_id {
-            finalized_state
+        } else if Some(&state_id) == finalized_state.as_ref().map(|s| &s.block_id) {
+            finalized_state.unwrap()
         } else {
-            self.get_optimistic_state(
-                &state_id,
-                block_keeper_sets.clone(),
-                Arc::clone(&nack_set_cache),
-            )?
-            .ok_or(anyhow::format_err!("Optimistic state must be present"))?
+            self.get_optimistic_state(&state_id, Arc::clone(&nack_set_cache))?
+                .ok_or(anyhow::format_err!("Optimistic state must be present"))?
         };
         tracing::trace!("try_load_state_from_archive start applying blocks");
         let mut last_processed_message_index = state.last_processed_external_message_index;
 
-        // let mut state_cell = state.get_shard_state_as_cell();
         for block in blocks {
             tracing::trace!("try_load_state_from_archive apply block {:?}", block.identifier());
-
-            // let state_update = block
-            //     .tvm_block()
-            //     .read_state_update()
-            //     .map_err(|e| anyhow::format_err!("Failed to read block state update: {e}"))?;
-            // state_cell = state_update
-            //     .apply_for(&state_cell)
-            //     .map_err(|e| anyhow::format_err!("Failed to apply state update: {e}"))?;
             state.apply_block(
                 &block,
                 &self.shared_services,
-                block_keeper_sets.clone(),
+                self.blocks_states.clone(),
                 Arc::clone(&nack_set_cache),
             )?;
             last_processed_message_index += block.processed_ext_messages_cnt() as u32;
@@ -912,7 +893,7 @@ impl RepositoryImpl {
                 .iter()
                 .map(|(k, v)| {
                     let thread_metadata = v.lock();
-                    (*k, thread_metadata.last_finalized_producer_id)
+                    (*k, thread_metadata.last_finalized_producer_id.clone())
                 })
                 .collect();
         drop(metadata_guarded);
@@ -936,12 +917,9 @@ impl Repository for RepositoryImpl {
     ) -> anyhow::Result<()> {
         let path = self.get_attestations_path();
         let path = self.get_path(path, DEFAULT_OID.to_owned());
-        let _ =
-            thread::Builder::new().name("saving attestations".to_string()).spawn(move || {
-                // let bytes = bincode::serialize(&data).expect("Failed to serialize receipts");
-                let res = save_to_file(&path, &data);
-                tracing::trace!("save attestations result: {res:?}");
-            })?;
+        let res = save_to_file(&path, &data);
+        tracing::trace!("save attestations result: {res:?}");
+        res?;
         Ok(())
     }
 
@@ -961,42 +939,42 @@ impl Repository for RepositoryImpl {
     // This function is used during sync process to enforce set methadata for a thread.
     fn prepare_thread_sync(
         &mut self,
-        thread_id: &ThreadIdentifier,
-        known_finalized_block_id: &BlockIdentifier,
-        known_finalized_block_seq_no: &BlockSeqNo,
+        _thread_id: &ThreadIdentifier,
+        _known_finalized_block_id: &BlockIdentifier,
+        _known_finalized_block_seq_no: &BlockSeqNo,
     ) -> anyhow::Result<()> {
-        tracing::trace!(
-            "Checking - {}. Markers - {:?}",
-            known_finalized_block_id,
-            self.load_markers(known_finalized_block_id)
-        );
-        let metadata = Metadata::<BlockIdentifier, BlockSeqNo> {
-            last_main_candidate_block_id: known_finalized_block_id.clone(),
-            last_main_candidate_block_seq_no: *known_finalized_block_seq_no,
-            last_finalized_block_id: known_finalized_block_id.clone(),
-            last_finalized_block_seq_no: *known_finalized_block_seq_no,
-            ..Default::default()
-        };
-        self.metadatas
-            .lock()
-            .entry(*thread_id)
-            .and_modify(|e| {
-                let mut guarded = e.lock();
-                guarded.last_main_candidate_block_id = known_finalized_block_id.clone();
-                guarded.last_main_candidate_block_seq_no = *known_finalized_block_seq_no;
-                guarded.last_finalized_block_id = known_finalized_block_id.clone();
-                guarded.last_finalized_block_seq_no = *known_finalized_block_seq_no;
-            })
-            .or_insert(Arc::new(Mutex::new(metadata)));
-        self.save_metadata()?;
         Ok(())
+        // tracing::trace!(
+        //     "Checking - {}. Markers - {:?}",
+        //     known_finalized_block_id,
+        //     self.load_markers(known_finalized_block_id)
+        // );
+        // let metadata = Metadata::<BlockIdentifier, BlockSeqNo> {
+        //     last_main_candidate_block_id: known_finalized_block_id.clone(),
+        //     last_main_candidate_block_seq_no: *known_finalized_block_seq_no,
+        //     last_finalized_block_id: known_finalized_block_id.clone(),
+        //     last_finalized_block_seq_no: *known_finalized_block_seq_no,
+        //     ..Default::default()
+        // };
+        // self.metadatas
+        //     .lock()
+        //     .entry(*thread_id)
+        //     .and_modify(|e| {
+        //         let mut guarded = e.lock();
+        //         guarded.last_main_candidate_block_id = known_finalized_block_id.clone();
+        //         guarded.last_main_candidate_block_seq_no = *known_finalized_block_seq_no;
+        //         guarded.last_finalized_block_id = known_finalized_block_id.clone();
+        //         guarded.last_finalized_block_seq_no = *known_finalized_block_seq_no;
+        //     })
+        //     .or_insert(Arc::new(Mutex::new(metadata)));
+        // self.save_metadata()?;
+        // Ok(())
     }
 
     fn init_thread(
         &mut self,
         thread_id: &ThreadIdentifier,
         parent_block_id: &BlockIdentifier,
-        block_keeper_sets: BlockKeeperRing,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<()> {
         let mut guarded = self.metadatas.lock();
@@ -1013,11 +991,8 @@ impl Repository for RepositoryImpl {
         );
         ensure!(self.is_block_finalized(parent_block_id)? == Some(true));
         let optimistic_state = {
-            let optimistic_state = self.get_optimistic_state(
-                parent_block_id,
-                block_keeper_sets.clone(),
-                Arc::clone(&nack_set_cache),
-            )?;
+            let optimistic_state =
+                self.get_optimistic_state(parent_block_id, Arc::clone(&nack_set_cache))?;
             ensure!(
                 optimistic_state.is_some(),
                 "thread parent block must have an optimistic state stored"
@@ -1025,7 +1000,15 @@ impl Repository for RepositoryImpl {
             optimistic_state.unwrap()
         };
         let parent_block_seq_no = { *optimistic_state.get_block_seq_no() };
-        self.finalized_optimistic_states.insert(*thread_id, optimistic_state);
+        self.finalized_optimistic_states.guarded_mut(|e| {
+            if let Some(cur_state_state_seq_no) = e.get(thread_id).map(|state| state.block_seq_no) {
+                if cur_state_state_seq_no <= optimistic_state.block_seq_no {
+                    e.insert(*thread_id, optimistic_state);
+                }
+            } else {
+                e.insert(*thread_id, optimistic_state);
+            }
+        });
         let metadata = Metadata::<BlockIdentifier, BlockSeqNo> {
             last_main_candidate_block_id: parent_block_id.clone(),
             last_main_candidate_block_seq_no: parent_block_seq_no,
@@ -1098,38 +1081,51 @@ impl Repository for RepositoryImpl {
         &self,
         thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<(BlockIdentifier, BlockSeqNo)> {
+        tracing::trace!("select_thread_last_finalized_block: start");
         // TODO: Critical: This "fast-forward" is already broken.
         // It will not survive thread merge operations.
         // TODO: self.finalized_states can be used here
         let metadata = self.get_metadata_for_thread(thread_id)?;
-        let mut guarded = metadata.lock();
+        let guarded = metadata.lock();
         let mut cursor_id = guarded.last_finalized_block_id.clone();
         let mut cursor_seq_no = guarded.last_finalized_block_seq_no;
-        let mut is_cursor_moved = true;
+        let block_id_to_seq_no = guarded.block_id_to_seq_no.clone();
+        drop(guarded);
+        // let mut is_cursor_moved = true;
         let mut is_metadata_update_needed = false;
 
-        while is_cursor_moved {
-            is_cursor_moved = false;
-            let next_seq_no = calc_next_seq_no(cursor_seq_no);
+        tracing::trace!(
+            "select_thread_last_finalized_block: start {cursor_seq_no:?} {cursor_id:?}"
+        );
+        // while is_cursor_moved {
+        //     is_cursor_moved = false;
+        let mut next_seq_no = calc_next_seq_no(cursor_seq_no);
 
-            for (block_id, block_seq_no) in guarded.block_id_to_seq_no.iter() {
-                if next_seq_no == *block_seq_no {
-                    if let Ok(Some(true)) = self.is_block_finalized(block_id) {
-                        is_metadata_update_needed = true;
-                        is_cursor_moved = true;
-                        cursor_seq_no = *block_seq_no;
-                        cursor_id = block_id.clone();
-                        break;
-                    }
+        for (block_id, block_seq_no) in block_id_to_seq_no.iter() {
+            if next_seq_no <= *block_seq_no {
+                if let Ok(Some(true)) = self.is_block_finalized(block_id) {
+                    tracing::trace!(
+                        "select_thread_last_finalized_block: move {cursor_seq_no:?} {cursor_id:?}"
+                    );
+                    is_metadata_update_needed = true;
+                    // is_cursor_moved = true;
+                    cursor_seq_no = *block_seq_no;
+                    cursor_id = block_id.clone();
+                    next_seq_no = cursor_seq_no;
                 }
             }
         }
+        // }
         if is_metadata_update_needed {
-            guarded.last_finalized_block_seq_no = cursor_seq_no;
-            guarded.last_finalized_block_id = cursor_id.clone();
+            let mut guarded = metadata.lock();
+            if cursor_seq_no > guarded.last_finalized_block_seq_no {
+                guarded.last_finalized_block_seq_no = cursor_seq_no;
+                guarded.last_finalized_block_id = cursor_id.clone();
+            }
             drop(guarded);
             self.save_metadata()?;
         }
+        tracing::trace!("select_thread_last_finalized_block: {cursor_seq_no:?} {cursor_id:?}");
         Ok((cursor_id, cursor_seq_no))
     }
 
@@ -1205,13 +1201,12 @@ impl Repository for RepositoryImpl {
     fn mark_block_as_finalized(
         &mut self,
         block: &<Self as Repository>::CandidateBlock,
-        block_keeper_sets: BlockKeeperRing,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
-        block_state: BlockState,
+        _block_state: BlockState,
     ) -> anyhow::Result<()> {
+        tracing::trace!("mark_block_as_finalized: {}", block);
         let block_id = block.data().identifier();
         let thread_id = block.data().get_common_section().thread_id;
-        let mut guarded_block_state = block_state.lock();
         {
             for (thread, buffer) in self.finalized_blocks_buffers.lock().iter() {
                 if *thread != thread_id {
@@ -1220,37 +1215,43 @@ impl Repository for RepositoryImpl {
                 }
             }
         }
-
+        let block_state = self.blocks_states.get(&block_id)?;
+        let mut block_state = block_state.lock();
+        if !block_state.is_finalized() {
+            block_state.set_finalized()?;
+        }
         let metadata = self.get_metadata_for_thread(&thread_id)?;
         let mut metadata = metadata.lock();
         let block_seq_no = *metadata.block_id_to_seq_no.get(&block_id).unwrap();
         metadata.stored_finalized_blocks.push((block_id.clone(), block_seq_no));
+
         if block_seq_no > metadata.last_finalized_block_seq_no {
             metadata.last_finalized_block_seq_no = block_seq_no;
             metadata.last_finalized_block_id = block_id.clone();
             metadata.last_finalized_producer_id =
-                Some(block.data().get_common_section().producer_id)
+                Some(block.data().get_common_section().producer_id.clone());
         }
         drop(metadata);
-        guarded_block_state.set_finalized()?;
-        drop(guarded_block_state);
+        drop(block_state);
         self.save_metadata()?;
 
-        if let Some(state_ref) = self.finalized_optimistic_states.get_mut(&thread_id) {
-            // After sync we mark the incoming block as finalized and this check works
-            if block_id != state_ref.block_id {
-                // TODO: ask why was it here
-                // TODO: self.finalized_optimistic_states is static without this apply block
-                // need to add preprocessing to make valid block apply
-                state_ref.apply_block(
-                    block.data(),
-                    &self.shared_services,
-                    block_keeper_sets.clone(),
-                    nack_set_cache,
-                )?;
-            }
+        let mut state = self
+            .finalized_optimistic_states
+            .guarded(|e| e.get(&thread_id).cloned())
+            .expect("Node should have finalized state for thread");
+        // After sync we mark the incoming block as finalized and this check works
+        if block_id != state.block_id && block_seq_no > state.block_seq_no {
+            // TODO: ask why was it here
+            // TODO: self.finalized_optimistic_states is static without this apply block
+            state.apply_block(
+                block.data(),
+                &self.shared_services,
+                self.blocks_states.clone(),
+                nack_set_cache,
+            )?;
+            self.finalized_optimistic_states.guarded_mut(|e| e.insert(thread_id, state));
         }
-        self.blocks_states.get(&block_id)?.lock().set_finalized()?;
+
         Ok(())
     }
 
@@ -1275,14 +1276,17 @@ impl Repository for RepositoryImpl {
     fn get_optimistic_state(
         &self,
         block_id: &BlockIdentifier,
-        block_keeper_sets: BlockKeeperRing,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<Option<Self::OptimisticState>> {
+        if let Some(cached) = self.optimistic_states_cache.guarded_mut(|e| e.get(block_id).cloned())
+        {
+            return Ok(Some(cached));
+        }
         let zero_block_id = <BlockIdentifier>::default();
         log::info!("RepositoryImpl: get_optimistic_state {:?}", block_id);
-        if let Some((_, state)) =
-            self.finalized_optimistic_states.iter().find(|(_, state)| state.block_id == *block_id)
-        {
+        if let Some(state) = self.finalized_optimistic_states.guarded(|e| {
+            e.iter().find(|(_, state)| state.block_id == *block_id).map(|(_, state)| state.clone())
+        }) {
             return Ok(Some(state.clone()));
         }
         if block_id == &zero_block_id {
@@ -1296,36 +1300,14 @@ impl Repository for RepositoryImpl {
                 let state = Self::OptimisticState::deserialize_from_buf(&buffer, block_id.clone())?;
                 Some(state)
             }
-            None => self.try_load_state_from_archive(
-                block_id,
-                block_keeper_sets.clone(),
-                Arc::clone(&nack_set_cache),
-            )?,
+            None => self.try_load_state_from_archive(block_id, Arc::clone(&nack_set_cache))?,
         };
         let marker = self.load_markers(block_id)?;
         Ok(state.map(|mut state| {
             state.last_processed_external_message_index = marker.last_processed_ext_message;
+            self.optimistic_states_cache.guarded_mut(|e| e.push(block_id.clone(), state.clone()));
             state
         }))
-    }
-
-    fn is_optimistic_state_present(&self, block_id: &BlockIdentifier) -> bool {
-        let zero_block_id = <BlockIdentifier>::default();
-        if block_id == &zero_block_id {
-            match &self.zerostate_path {
-                Some(path) => path.exists(),
-                None => false,
-            }
-        } else if self
-            .finalized_optimistic_states
-            .iter()
-            .any(|(_, state)| state.block_id == *block_id)
-        {
-            true
-        } else {
-            let path = self.get_optimistic_state_path();
-            self.exists(path, OID::ID(block_id.to_string()))
-        }
     }
 
     fn store_block<T: Into<Self::CandidateBlock>>(&self, block: T) -> anyhow::Result<()> {
@@ -1435,7 +1417,16 @@ impl Repository for RepositoryImpl {
             return Ok(());
         }
         let mut queue = self.load_ext_messages_queue(thread_id)?;
+        tracing::trace!(
+            "delete_external_messages: count: {count}, queue_len: {} {thread_id:?}",
+            queue.queue.len()
+        );
+        let count = count.min(queue.queue.len());
         queue.queue.drain(0..count);
+        tracing::trace!(
+            "delete_external_messages: final queue_len: {} {thread_id:?}",
+            queue.queue.len()
+        );
         self.save_ext_messages_queue(queue, thread_id)
     }
 
@@ -1447,7 +1438,12 @@ impl Repository for RepositoryImpl {
     where
         T: Into<<Self::OptimisticState as OptimisticState>::Message>,
     {
+        tracing::trace!("add_external_messages {:?} {thread_id:?}", messages.len());
         let mut queue = self.load_ext_messages_queue(thread_id)?;
+        tracing::trace!(
+            "add_external_messages saved queue len: {:?} {thread_id:?}",
+            queue.queue.len()
+        );
         let cur_last_index = queue.queue.last().map(|el| el.index).unwrap_or(0);
         let mut guarded_last_ext_message_index = self.last_ext_message_index.lock();
         let mut stored_last_index = *guarded_last_ext_message_index.get(thread_id).unwrap_or(&0);
@@ -1459,11 +1455,20 @@ impl Repository for RepositoryImpl {
         }
         let _ = guarded_last_ext_message_index.entry(*thread_id).insert_entry(stored_last_index);
         drop(guarded_last_ext_message_index);
+        tracing::trace!(
+            "add_external_messages save final queue len: {:?} {thread_id:?}",
+            queue.queue.len()
+        );
         self.save_ext_messages_queue(queue, thread_id)
     }
 
     fn clear_ext_messages_queue_by_time(&self, thread_id: &ThreadIdentifier) -> anyhow::Result<()> {
+        tracing::trace!("clear_ext_messages_queue_by_time {thread_id:?}");
         let mut queue = self.load_ext_messages_queue(thread_id)?;
+        tracing::trace!(
+            "clear_ext_messages_queue_by_time start queue len {} {thread_id:?}",
+            queue.queue.len()
+        );
         let mut i = 0;
         let now = Utc::now();
         while i < queue.queue.len() {
@@ -1474,6 +1479,10 @@ impl Repository for RepositoryImpl {
         }
         if i != 0 {
             queue.queue.drain(0..i);
+            tracing::trace!(
+                "clear_ext_messages_queue_by_time final queue len {} {thread_id:?}",
+                queue.queue.len()
+            );
             self.save_ext_messages_queue(queue, thread_id)?;
         }
         Ok(())
@@ -1513,16 +1522,13 @@ impl Repository for RepositoryImpl {
         block_id: &BlockIdentifier,
         snapshot: Self::StateSnapshot,
         thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<(
-        HashMap<ThreadIdentifier, Vec<Self::NodeIdentifier>>,
-        BTreeMap<BlockSeqNo, BlockKeeperSet>,
-        Vec<CrossThreadRefData>,
-    )> {
+        skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
+    ) -> anyhow::Result<Vec<CrossThreadRefData>> {
         tracing::debug!("set_state_from_snapshot()...");
-        let wrapper_snapshot: WrappedStateSnapshot = bincode::deserialize(&snapshot)?;
+        let wrapped_snapshot: WrappedStateSnapshot = bincode::deserialize(&snapshot)?;
         tracing::trace!("Set state from snapshot: {block_id:?}");
         let mut state = <Self as Repository>::OptimisticState::deserialize_from_buf(
-            &wrapper_snapshot.optimistic_state,
+            &wrapped_snapshot.optimistic_state,
             block_id.clone(),
         )?;
         self.store_optimistic(state.clone())?;
@@ -1533,26 +1539,67 @@ impl Repository for RepositoryImpl {
                 .map_err(|e| anyhow::format_err!("Failed to read block info: {e}"))?
                 .seq_no,
         );
-        if let Some(finalized_seq_no) =
-            self.finalized_optimistic_states.get(thread_id).map(|state| state.block_seq_no)
+        {
+            tracing::trace!(
+                "set_state_from_snapshot: fin stats: {:?}",
+                wrapped_snapshot.finalized_block_stats
+            );
+            let mut skipped_attestation_ids = skipped_attestation_ids.lock();
+            for block_id in &wrapped_snapshot.finalized_block_stats.attestations_watched() {
+                skipped_attestation_ids.insert(block_id.clone());
+            }
+        }
+
+        if let Some(finalized_seq_no) = self
+            .finalized_optimistic_states
+            .guarded(|e| e.get(thread_id).map(|state| state.block_seq_no))
         {
             if seq_no > finalized_seq_no {
                 let shard_state = state.get_shard_state();
-                self.finalized_optimistic_states.insert(*thread_id, state);
+                self.finalized_optimistic_states.guarded_mut(|e| e.insert(*thread_id, state));
                 self.sync_accounts_from_state(shard_state)?;
+
+                let block_state = self.blocks_states.get(block_id)?;
+                block_state.guarded_mut(|e| {
+                    if !e.is_block_already_applied() {
+                        e.set_applied()?;
+                    }
+                    if e.bk_set().is_none() {
+                        e.set_bk_set(Arc::new(wrapped_snapshot.bk_set))?;
+                    }
+                    if e.block_stats().is_none() {
+                        e.set_block_stats(wrapped_snapshot.finalized_block_stats)?;
+                    }
+                    Ok::<(), anyhow::Error>(())
+                })?;
+                crate::node::services::block_processor::rules::descendant_bk_set::set_descendant_bk_set(&block_state, self);
             }
         } else {
-            self.finalized_optimistic_states.insert(*thread_id, state);
+            self.finalized_optimistic_states.guarded_mut(|e| e.insert(*thread_id, state));
+
+            let block_state = self.blocks_states.get(block_id)?;
+            block_state.guarded_mut(|e| {
+                if !e.is_block_already_applied() {
+                    e.set_applied()?;
+                }
+                if e.bk_set().is_none() {
+                    e.set_bk_set(Arc::new(wrapped_snapshot.bk_set))?;
+                }
+                if e.block_stats().is_none() {
+                    e.set_block_stats(wrapped_snapshot.finalized_block_stats)?;
+                }
+                Ok::<(), anyhow::Error>(())
+            })?;
+            crate::node::services::block_processor::rules::descendant_bk_set::set_descendant_bk_set(
+                &block_state,
+                self,
+            );
         }
         let mut all_states = self.saved_states.lock();
         let saved_states = all_states.entry(*thread_id).or_default();
         saved_states.insert(seq_no, block_id.clone());
 
-        Ok((
-            wrapper_snapshot.producer_group,
-            wrapper_snapshot.block_keeper_set,
-            wrapper_snapshot.cross_thread_ref_data,
-        ))
+        Ok(wrapped_snapshot.cross_thread_ref_data)
     }
 
     fn is_block_suspicious(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>> {
@@ -1585,9 +1632,12 @@ impl Repository for RepositoryImpl {
             })
             .map_err(|e| anyhow::format_err!("{e}"))?;
 
-        let sqlite_helper_config = json!({ "data_dir": self.data_dir }).to_string();
-        let sqlite_helper: Arc<dyn DocumentsDb> =
-            Arc::new(SqliteHelper::from_config(&sqlite_helper_config)?);
+        let sqlite_helper_config = SqliteHelperConfig::new(self.data_dir.clone(), None);
+
+        // TODO: _writer_join_handle is not used here.
+        // Probably this crate needs to be deeply refactored.
+        let (sqlite_helper, _writer_join_handle) = SqliteHelper::from_config(sqlite_helper_config)?;
+        let sqlite_helper = Arc::new(sqlite_helper);
 
         let cnt_accounts = arch_accounts.len();
         sqlite_helper.put_accounts(arch_accounts).map_err(|e| anyhow::format_err!("{e}"))?;
@@ -1620,7 +1670,7 @@ impl Repository for RepositoryImpl {
         Ok(saved_seq_nos.last().map(|v| **v).unwrap_or_default())
     }
 
-    fn store_optimistic<T: Into<Self::OptimisticState>>(&mut self, state: T) -> anyhow::Result<()> {
+    fn store_optimistic<T: Into<Self::OptimisticState>>(&self, state: T) -> anyhow::Result<()> {
         let mut optimistic = state.into();
         let block_id = optimistic.get_block_id().clone();
         tracing::trace!("save optimistic {block_id:?}");
@@ -1635,27 +1685,21 @@ impl Repository for RepositoryImpl {
         let root_path = self.get_optimistic_state_path();
         let path = self.get_path(root_path, block_id.to_string());
         let saved_states_clone = self.saved_states.clone();
-        let _ = thread::Builder::new().name("saving optimistic state".to_string()).spawn(
-            move || {
-                let start_save = std::time::Instant::now();
-                let thread_id = optimistic.thread_id;
-                let state_bytes = OptimisticState::serialize_into_buf(&mut optimistic)
-                    .expect("Failed to serialize block");
-                let res = save_to_file(&path, &state_bytes);
-                tracing::trace!(
-                    "save optimistic {block_id:?} result: {res:?} {}",
-                    start_save.elapsed().as_millis()
-                );
-                {
-                    let mut saved_states = saved_states_clone.lock();
-                    saved_states
-                        .entry(thread_id)
-                        .or_default()
-                        .insert(block_seq_no, block_id.clone());
-                    tracing::trace!("repo saved_states={:?}", saved_states);
-                }
-            },
-        )?;
+        let start_save = std::time::Instant::now();
+        let thread_id = optimistic.thread_id;
+        let state_bytes = OptimisticState::serialize_into_buf(&mut optimistic)
+            .expect("Failed to serialize block");
+        let res = save_to_file(&path, &state_bytes);
+        tracing::trace!(
+            "save optimistic {block_id:?} result: {res:?} {}",
+            start_save.elapsed().as_millis()
+        );
+        res?;
+        {
+            let mut saved_states = saved_states_clone.lock();
+            saved_states.entry(thread_id).or_default().insert(block_seq_no, block_id.clone());
+            tracing::trace!("repo saved_states={:?}", saved_states);
+        }
         Ok(())
     }
 
@@ -1681,39 +1725,10 @@ impl Repository for RepositoryImpl {
         Ok(BlockIdentifier::default())
     }
 
-    fn is_candidate_block_can_be_applied(&self, block: &Self::CandidateBlock) -> bool {
-        let mut parent_block_id = block.data().parent();
-        let thread_id = block.data().get_common_section().thread_id;
-        if let Some(finalized_block_seq_no) =
-            self.finalized_optimistic_states.get(&thread_id).map(|state| state.block_seq_no)
-        {
-            while block.data().seq_no() > finalized_block_seq_no {
-                if self.is_optimistic_state_present(&parent_block_id) {
-                    return true;
-                }
-                if let Ok(parent_block) = self.get_block_from_repo_or_archive(&parent_block_id) {
-                    if !self.is_block_processed(&parent_block.data().identifier()).unwrap() {
-                        break;
-                    }
-                    parent_block_id = parent_block.data().parent();
-                } else {
-                    break;
-                }
-            }
-        }
-        false
-    }
-
     fn add_thread_buffer(&self, thread_id: ThreadIdentifier) -> Arc<Mutex<Vec<BlockIdentifier>>> {
         let buffer = Arc::new(Mutex::new(vec![]));
         self.finalized_blocks_buffers.lock().insert(thread_id, buffer.clone());
         buffer
-    }
-
-    fn list_finalized_states(
-        &self,
-    ) -> impl Iterator<Item = (&'_ ThreadIdentifier, &'_ Self::OptimisticState)> {
-        self.finalized_optimistic_states.iter()
     }
 
     fn get_all_metadata(&self) -> RepositoryMetadata {
@@ -1735,7 +1750,6 @@ mod tests {
     use crate::multithreading::routing::service::RoutingService;
     use crate::node::shared_services::SharedServices;
     use crate::repository::repository_impl::BlockStateRepository;
-    use crate::types::block_keeper_ring::BlockKeeperRing;
     use crate::utilities::FixedSizeHashSet;
 
     const ZEROSTATE: &str = "../config/zerostate";
@@ -1774,8 +1788,8 @@ mod tests {
             PathBuf::from("./tests-data/test_save_load"),
             Some(PathBuf::from(ZEROSTATE)),
             1,
+            1,
             SharedServices::test_start(RoutingService::stub().0),
-            BlockKeeperRing::default(),
             Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
             blocks_states,
         );
@@ -1800,8 +1814,8 @@ mod tests {
             PathBuf::from("/home/user/GOSH/acki-nacki/server_data/node1/"),
             Some(PathBuf::from(ZEROSTATE)),
             1,
+            1,
             SharedServices::test_start(RoutingService::stub().0),
-            BlockKeeperRing::default(),
             Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
             blocks_states,
         );
@@ -1819,8 +1833,8 @@ mod tests {
             PathBuf::from("./tests-data/test_exists"),
             Some(PathBuf::from(ZEROSTATE)),
             1,
+            1,
             SharedServices::test_start(RoutingService::stub().0),
-            BlockKeeperRing::default(),
             Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
             blocks_states,
         );
@@ -1844,8 +1858,8 @@ mod tests {
             PathBuf::from("./tests-data/test_remove"),
             Some(PathBuf::from(ZEROSTATE)),
             1,
+            1,
             SharedServices::test_start(RoutingService::stub().0),
-            BlockKeeperRing::default(),
             Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
             blocks_states,
         );
