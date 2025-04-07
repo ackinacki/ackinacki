@@ -9,8 +9,7 @@ use anyhow::Context;
 use clap::Parser;
 use url::Url;
 
-use crate::server::load_config;
-use crate::server::save_config;
+use crate::config::ProxyConfig;
 
 pub mod blockchain;
 pub mod cli;
@@ -48,17 +47,16 @@ pub async fn proxy_manager(args: cli::CliArgs) -> anyhow::Result<()> {
     tracing::info!("Starting proxy manager...");
 
     loop {
-        let config = load_config(&args.proxy_config)?;
+        let config = ProxyConfig::from_file(&args.proxy_config)?;
 
         let proxy_set: HashSet<Url> = blockchain::get_proxy_list().await?.into_iter().collect();
         tracing::debug!("proxy set: {proxy_set:?}");
 
-        let subscribes: HashSet<Url> = config.subscribe.iter().cloned().collect();
+        let subscribes: HashSet<Url> = config.subscribe.iter().map(|x| x[0].clone()).collect();
         tracing::debug!("subscribes: {subscribes:?}");
 
         if proxy_set != subscribes {
-            let not_in_all: HashSet<&str> =
-                proxy_set.difference(&subscribes).map(|s| s.as_str()).collect();
+            let not_in_all: HashSet<&Url> = proxy_set.difference(&subscribes).collect();
 
             if !not_in_all.is_empty() {
                 tracing::error!(
@@ -69,8 +67,8 @@ pub async fn proxy_manager(args: cli::CliArgs) -> anyhow::Result<()> {
 
             let mut config = config;
 
-            config.subscribe.retain(|s| proxy_set.contains(s));
-            save_config(&config, &args.proxy_config)?;
+            config.subscribe.retain(|s| proxy_set.contains(&s[0]));
+            config.save(&args.proxy_config)?;
             tracing::info!("Updated config");
 
             reload_proxy(&args.command).await?;

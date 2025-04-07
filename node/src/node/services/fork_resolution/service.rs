@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use derive_getters::Getters;
+use parking_lot::Mutex;
 use typed_builder::TypedBuilder;
 
 use crate::bls::envelope::BLSSignedEnvelope;
@@ -11,13 +13,20 @@ use crate::bls::GoshBLS;
 use crate::node::associated_types::AttestationData;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
+use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
 use crate::node::SignerIndex;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::ForkResolution;
+use crate::types::ThreadIdentifier;
+use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
+use crate::utilities::guarded::GuardedMut;
+
+impl AllowGuardedMut for HashMap<BlockIdentifier, ForkResolution> {}
+impl AllowGuardedMut for HashMap<BlockIdentifier, Fork> {}
 
 #[derive(TypedBuilder, Getters, Debug, Clone)]
 pub struct Fork {
@@ -31,23 +40,26 @@ pub struct Fork {
 }
 
 // Note: this service needs fixes to work with threads merge
-#[derive(TypedBuilder)]
+#[derive(TypedBuilder, Clone)]
 pub struct ForkResolutionService {
+    thread_identifier: ThreadIdentifier,
     block_state_repository: BlockStateRepository,
     repository: RepositoryImpl,
     // map of unresolved forks with fork parent block id as a key
     #[builder(default)]
-    unresolved_forks: HashMap<BlockIdentifier, Fork>,
+    unresolved_forks: Arc<Mutex<HashMap<BlockIdentifier, Fork>>>,
     // map of resolved forks with fork winner id as a key
     #[builder(default)]
-    resolved_forks: HashMap<BlockIdentifier, ForkResolution>,
+    resolved_forks: Arc<Mutex<HashMap<BlockIdentifier, ForkResolution>>>,
 }
 
 impl ForkResolutionService {
-    pub fn evaluate(&mut self, unprocessed_blocks: Vec<BlockState>) {
+    #[allow(clippy::mutable_key_type)]
+    pub fn evaluate(&mut self, unprocessed_blocks: &UnfinalizedBlocksSnapshot) {
         let mut updated_forks = HashSet::new();
-        for block_state in unprocessed_blocks {
-            for fork in self.unresolved_forks.values_mut() {
+        for (block_state, candidate_block) in unprocessed_blocks.values() {
+            let mut unresolved_forks = self.unresolved_forks.guarded(|e| e.clone());
+            for fork in unresolved_forks.values_mut() {
                 if fork.total_number_of_bks.is_none() {
                     fork.parent_block_state.guarded(|e| {
                         if e.bk_set().is_some() {
@@ -72,17 +84,12 @@ impl ForkResolutionService {
                         if cur_signers.len() != initial_len {
                             updated_forks
                                 .insert(fork.parent_block_state.block_identifier().clone());
-                            let candidate_block = self
-                                .repository
-                                .get_block(&block_state.guarded(|e| e.block_identifier().clone()))
-                                .expect("should be able to read block")
-                                .expect("block must exist");
                             let attestation = candidate_block
                                 .data()
                                 .get_common_section()
                                 .block_attestations
                                 .iter()
-                                .find(|att| &att.data().block_id == block_id)
+                                .find(|att| att.data().block_id() == block_id)
                                 .cloned()
                                 .expect("attestation must exist");
                             fork.fork_attestations
@@ -119,12 +126,19 @@ impl ForkResolutionService {
                     }
                 }
             }
+            self.unresolved_forks.guarded_mut(|e| {
+                for (k, v) in unresolved_forks {
+                    e.insert(k, v);
+                }
+            });
         }
         for parent_block_id in updated_forks {
-            let fork = self.unresolved_forks.get(&parent_block_id).cloned().expect("must exist");
+            let fork = self
+                .unresolved_forks
+                .guarded(|e| e.get(&parent_block_id).cloned().expect("must exist"));
             if let Some(fork_resolve) = check_fork(&fork, &self.repository) {
-                self.unresolved_forks.remove(&parent_block_id);
-                self.resolved_forks.insert(parent_block_id, fork_resolve);
+                self.unresolved_forks.guarded_mut(|e| e.remove(&parent_block_id));
+                self.resolved_forks.guarded_mut(|e| e.insert(parent_block_id, fork_resolve));
             }
         }
     }
@@ -136,22 +150,39 @@ impl ForkResolutionService {
         candidate_id: BlockIdentifier,
         assume_extra_attestations: &[Envelope<GoshBLS, AttestationData>],
     ) -> Option<ForkResolution> {
+        tracing::trace!(
+            "Trying to resolve fork: {}, assume_extra_attestations: {:?}",
+            candidate_id,
+            assume_extra_attestations
+        );
         let block_state = self.block_state_repository.get(&candidate_id).expect("must exist");
         let parent_id = block_state
             .guarded(|e| e.parent_block_identifier().clone())
             .expect("parent must be set");
-        if let Some(resolved_fork) = self.resolved_forks.get(&parent_id) {
+        tracing::trace!("Trying to resolve fork: {}, parent: {:?}", candidate_id, parent_id,);
+        if let Some(resolved_fork) = self.resolved_forks.guarded(|e| e.get(&parent_id).cloned()) {
             return if resolved_fork.winner() == &candidate_id {
+                tracing::trace!("Trying to resolve fork: {}, found resolved fork", candidate_id,);
                 Some(resolved_fork.clone())
             } else {
                 None
             };
         }
-        if let Some(fork) = self.unresolved_forks.get(&candidate_id) {
+        tracing::trace!(
+            "Trying to resolve fork: {}, unresolved forks: {:?}",
+            candidate_id,
+            self.unresolved_forks.guarded(|e| e.keys().cloned().collect::<HashSet<_>>()),
+        );
+        if let Some(fork) = self.unresolved_forks.guarded(|e| e.get(&parent_id).cloned()) {
+            tracing::trace!(
+                "Trying to resolve fork: {}, found unresolved fork: {:?}",
+                candidate_id,
+                fork,
+            );
             let mut fork = fork.clone();
             for block_id in fork.fork_block_ids.clone() {
                 if let Some(attestation) =
-                    assume_extra_attestations.iter().find(|e| e.data().block_id == block_id)
+                    assume_extra_attestations.iter().find(|e| e.data().block_id() == &block_id)
                 {
                     let cur_signers =
                         fork.fork_attestation_signers.entry(block_id.clone()).or_default();
@@ -199,11 +230,13 @@ impl ForkResolutionService {
     }
 
     pub fn found_fork(&mut self, parent_block_id: &BlockIdentifier) -> anyhow::Result<()> {
+        tracing::trace!("Found fork: parent: {:?}", parent_block_id);
+        self.repository.get_metrics().inspect(|m| m.report_forks_count(&self.thread_identifier));
         let parent_block_state = self.block_state_repository.get(parent_block_id)?;
         let block_children = self
             .block_state_repository
             .get(parent_block_id)?
-            .guarded(|e| e.known_children().clone());
+            .guarded(|e| e.known_children(&self.thread_identifier).cloned().unwrap_or_default());
         // TODO: on the moment of fork we can have parent block missing. need to save fork and wait for parent
         let total_number_of_bk = self.block_state_repository.get(parent_block_id)?.guarded(|e| {
             if e.bk_set().is_some() {
@@ -212,25 +245,26 @@ impl ForkResolutionService {
                 None
             }
         });
-        self.unresolved_forks
-            .entry(parent_block_id.clone())
-            .and_modify(|fork| fork.fork_block_ids.extend(block_children.clone()))
-            .or_insert({
-                Fork::builder()
-                    .parent_block_state(parent_block_state)
-                    .fork_block_ids(block_children)
-                    .fork_attestation_signers(HashMap::new())
-                    .total_number_of_bks(total_number_of_bk)
-                    .fork_attestations(HashMap::new())
-                    .build()
-            });
+        self.unresolved_forks.guarded_mut(|e| {
+            e.entry(parent_block_id.clone())
+                .and_modify(|fork| fork.fork_block_ids.extend(block_children.clone()))
+                .or_insert({
+                    Fork::builder()
+                        .parent_block_state(parent_block_state)
+                        .fork_block_ids(block_children)
+                        .fork_attestation_signers(HashMap::new())
+                        .total_number_of_bks(total_number_of_bk)
+                        .fork_attestations(HashMap::new())
+                        .build()
+                });
+        });
         Ok(())
     }
 }
 
 fn check_fork(fork: &Fork, repository_impl: &RepositoryImpl) -> Option<ForkResolution> {
     if let Some(leader) = find_fork_winner(fork) {
-        let other_forks: Vec<Envelope<GoshBLS, AckiNackiBlock>> = fork
+        let other_forks_block_envelopes: Vec<Envelope<GoshBLS, AckiNackiBlock>> = fork
             .fork_block_ids
             .clone()
             .into_iter()
@@ -259,7 +293,7 @@ fn check_fork(fork: &Fork, repository_impl: &RepositoryImpl) -> Option<ForkResol
                         .cloned()
                         .expect("leader must have attestations"),
                 )
-                .other_forks(other_forks)
+                .other_forks_block_envelopes(other_forks_block_envelopes)
                 .lost_attestations(lost_attestations)
                 .nacked_forks(vec![])
                 .build(),
@@ -284,6 +318,7 @@ fn find_fork_winner(fork: &Fork) -> Option<BlockIdentifier> {
     let mut misbehaving_check = HashMap::new();
     for (block_id, fork_signers) in &fork.fork_attestation_signers {
         let signers_cnt = fork_signers.len();
+        // TODO: Critical: this check must be moved and encorporate misbehaving_check
         if signers_cnt >= necessary_signers_cnt {
             tracing::trace!("Check fork: single leader {block_id:?}");
             return Some(block_id.clone());
@@ -326,11 +361,15 @@ fn find_fork_winner(fork: &Fork) -> Option<BlockIdentifier> {
         && top_score > lost_top_count + usize::max(potentially_misbehaving, unknown)
     {
         // easy choice
-        return Some(winners.remove(0));
+        let winner = winners.remove(0);
+        tracing::trace!("Check fork: winner by score {winner:?}");
+        return Some(winner);
     }
     // Critical last resort path
     if unknown > 0usize {
         return None;
     }
-    winners.into_iter().max_by(BlockIdentifier::compare)
+    let winner = winners.into_iter().max_by(BlockIdentifier::compare);
+    tracing::trace!("Check fork: all votes distributed winner {winner:?}");
+    winner
 }

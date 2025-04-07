@@ -24,25 +24,25 @@ contract BlockKeeperEpochProxyList is Modifiers {
 
     optional(address) _owner;
     uint256 static _owner_pubkey;
-    optional(uint256) _service_key;
     address _root;
 
-    uint256 _walletId;
     bool status = false;
     bool _is_closed = false;
 
     constructor (
-        mapping(uint8 => TvmCell) code,
+        TvmCell AckiNackiBlockKeeperNodeWalletCode,
+        TvmCell BlockKeeperPreEpochCode,
+        TvmCell BlockKeeperEpochCode,
         uint64 seqNoStart,
-        uint256 walletId,
         mapping(uint8 => string) ProxyList
-    ) {
-        _code = code;
+    ) accept {
+        _code[m_AckiNackiBlockKeeperNodeWalletCode] = AckiNackiBlockKeeperNodeWalletCode;
+        _code[m_BlockKeeperPreEpochCode] = BlockKeeperPreEpochCode;
+        _code[m_BlockKeeperEpochCode] = BlockKeeperEpochCode;
         TvmCell data = abi.codeSalt(tvm.code()).get();
         (string lib, uint256 hashwalletsalt, uint256 hashepochsalt, uint256 hashpreepochsalt, address root) = abi.decode(data, (string, uint256, uint256, uint256, address));
         require(BlockKeeperLib.versionLib == lib, ERR_SENDER_NO_ALLOWED);
         _root = root;
-        _walletId = walletId;
         TvmBuilder b;
         b.store(_code[m_AckiNackiBlockKeeperNodeWalletCode]);
         uint256 hashwallet = tvm.hash(b.toCell());
@@ -60,16 +60,11 @@ contract BlockKeeperEpochProxyList is Modifiers {
         require(msg.sender == BlockKeeperLib.calculateBlockKeeperPreEpochAddress(_code[m_BlockKeeperPreEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _root, _owner_pubkey, seqNoStart), ERR_SENDER_NO_ALLOWED);
     }
 
-    function setServiceKey(optional(uint256) service_key) public onlyOwnerCombine(_owner, _service_key, _owner_pubkey) accept {
-        getMoney();
-        _service_key = service_key;
-    }
-
     function setNewProxyList(uint64 seqNoStart, mapping(uint8 => string) ProxyList) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, seqNoStart)) accept {
         _ProxyList = ProxyList;
     }
 
-    function getMoney() private pure {
+    function ensureBalance() private pure {
         if (address(this).balance > FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST) { return; }
         gosh.mintshell(FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST);
     }
@@ -82,29 +77,29 @@ contract BlockKeeperEpochProxyList is Modifiers {
         selfdestruct(_root);
     }
 
-    function setOwner(optional(address) owner) public onlyOwnerCombine(_owner, _service_key, _owner_pubkey) accept {
-        getMoney();
+    function setOwner(optional(address) owner) public onlyOwnerWallet(_owner, _owner_pubkey) accept {
+        ensureBalance();
         _owner = owner;
     } 
 
-    function addProxyList(mapping(uint8 => string) data) public onlyOwnerCombine(_owner, _service_key, _owner_pubkey) accept {
+    function addProxyList(mapping(uint8 => string) data) public onlyOwnerWallet(_owner, _owner_pubkey) accept {
         require(_is_closed == false, ERR_NOT_READY);
         require(status == false, ERR_NOT_READY);
-        getMoney();
+        ensureBalance();
         status = true;
         this.iterateProxyList{value: 0.1 vmshell}(data, data.min(), true);
     }
 
-    function deleteProxyList(mapping(uint8 => string) data) public onlyOwnerCombine(_owner, _service_key, _owner_pubkey) {
+    function deleteProxyList(mapping(uint8 => string) data) public onlyOwnerWallet(_owner, _owner_pubkey) {
         require(_is_closed == false, ERR_NOT_READY);
         require(status == false, ERR_NOT_READY);
-        getMoney();
+        ensureBalance();
         status = true;
         this.iterateProxyList{value: 0.1 vmshell}(data, data.min(), false);   
     }
 
     function iterateProxyList(mapping(uint8 => string) data, optional(uint8, string) member, bool is_add) public senderIs(address(this)) accept {
-        getMoney();
+        ensureBalance();
         if (member.hasValue() == false) {
             status = false;
             return;
@@ -117,9 +112,7 @@ contract BlockKeeperEpochProxyList is Modifiers {
         }
         this.iterateProxyList{value: 0.1 vmshell}(data, data.next(key), is_add);   
     }
-
-
-    
+ 
     //Fallback/Receive
     receive() external {
     }
@@ -129,10 +122,9 @@ contract BlockKeeperEpochProxyList is Modifiers {
         uint256 pubkey,
         address root, 
         mapping(uint8 => string) ProxyList,
-        optional(address) owner,
-        optional(uint256) service_key) 
+        optional(address) owner) 
     {
-        return (_owner_pubkey, _root, _ProxyList, _owner, _service_key);
+        return (_owner_pubkey, _root, _ProxyList, _owner);
     }
 
     function getVersion() external pure returns(string, string) {

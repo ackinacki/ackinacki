@@ -10,11 +10,14 @@ license-file.workspace = true
 [dependencies]
 actix-web.workspace = true
 anyhow.workspace = true
+hex.workspace = true
 http-server.workspace = true
 lazy_static.workspace = true
 parking_lot.workspace = true
 serde_json.workspace = true
+telemetry_utils.workspace = true
 tracing.workspace = true
+tvm_types.workspace = true
 
 actix-rt = "2.10.0"
 awc = "3.5.1"

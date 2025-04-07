@@ -56,7 +56,7 @@ impl Api {
             cluster_id: chitchat_guard.cluster_id().to_string(),
             cluster_state: chitchat_guard.state_snapshot(),
             live_nodes: chitchat_guard.live_nodes().cloned().collect::<Vec<_>>(),
-            dead_nodes: chitchat_guard.dead_nodes().cloned().map(|node| node.0).collect::<Vec<_>>(),
+            dead_nodes: chitchat_guard.dead_nodes().cloned().collect::<Vec<_>>(),
         };
         Json(serde_json::to_value(&response).unwrap())
     }
@@ -83,7 +83,7 @@ pub async fn run(
     gossip_advertise_addr: SocketAddr,
     seeds: Vec<String>,
     cluster_id: String,
-) -> anyhow::Result<(ChitchatHandle, JoinHandle<Result<(), std::io::Error>>)> {
+) -> anyhow::Result<(ChitchatHandle, JoinHandle<anyhow::Result<()>>)> {
     let node_id = generate_server_id(gossip_advertise_addr);
     let generation = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
     let chitchat_id = ChitchatId::new(node_id, generation, gossip_advertise_addr);
@@ -94,7 +94,9 @@ pub async fn run(
         listen_addr,
         seed_nodes: seeds.clone(),
         failure_detector_config: FailureDetectorConfig::default(),
-        marked_for_deletion_grace_period: 10_000,
+        marked_for_deletion_grace_period: Duration::from_secs(10),
+        catchup_callback: None,
+        extra_liveness_predicate: None,
     };
     tracing::info!("Starting UDP gossip server on {gossip_advertise_addr}");
     let chitchat_handler = spawn_chitchat(config, Vec::new(), &UdpTransport).await?;
@@ -108,7 +110,9 @@ pub async fn run(
     tracing::info!("Starting REST server on advertise addr {gossip_advertise_addr}");
     tracing::info!("Starting REST server on listen addr {listen_addr}");
 
-    let rest_server_handle = tokio::spawn(Server::new(TcpListener::bind(listen_addr)).run(app));
+    let rest_server_handle = tokio::spawn(async move {
+        Server::new(TcpListener::bind(listen_addr)).run(app).await.map_err(|err| err.into())
+    });
 
     Ok((chitchat_handler, rest_server_handle))
 }

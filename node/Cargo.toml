@@ -26,9 +26,11 @@ opentelemetry.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
 parking_lot.workspace = true
+rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
+telemetry_utils.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
@@ -37,20 +39,24 @@ tvm_abi.workspace = true
 tvm_block.workspace = true
 tvm_block_json.workspace = true
 tvm_client.workspace = true
+tvm_contracts.workspace = true
 tvm_executor.workspace = true
 tvm_tl_codegen.workspace = true
 tvm_types.workspace = true
 tvm_vm.workspace = true
 url.workspace = true
 
+account-inbox = { path = "./libs/account-inbox" }
 atomic-wait = "1.1.0"
 bitflags = "2.6.0"
 chrono = { version = "0.4.38", features = ["serde"] }
+core_affinity = { version = "0.8.3" }
 derive-getters = "0.5.0"
 derive_setters = { path = "./libs/derive-setters" }
 failure = "0.1.8"
 futures = { version = "0.3.30", default-features = false }
-gossip = { path = "../gossip/" }
+gossip.workspace = true
+indexset = "0.10.3"
 itertools = "0.12.0"
 log = "0.4.20"
 lru = "0.12.3"
@@ -59,14 +65,22 @@ rand = { version = "0.8.5", features = ["small_rng"] }
 reqwest = { version = "0.11.22", default-features = false, features = ["rustls-tls", "gzip", "stream", "blocking"] }
 rusqlite.workspace = true
 serde_yaml = "0.9.33"
-sha2 = "0.10.8"
 signal-hook = "0.3.17"
 thiserror = "2.0.3"
 transport-layer = { path = "../transport-layer/" }
 typed-builder = "0.20.0"
 weak-table = "0.3.2"
 
+# Windows doesn't support assembly for compilation
+# will be fixed when sha2 0.11 released
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+sha2 = { version = "0.10.8", features = ["asm"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+sha2 = { version = "0.10.8" }
+
 [dev-dependencies]
+criterion = "0.5.1"
 migration-tool.workspace = true
 mockall = "0.11.4"
 tempfile = "3.14.0"
@@ -79,6 +93,8 @@ use_automocks = []
 allow-dappid-thread-split = []
 allow-threads-merge = []
 fail-fast = []
+nack-on-block-verification-fail = []
+messages_db = []
 
 # Record time of heavy operations
 timing = []
@@ -89,3 +105,12 @@ nack_test = []
 
 # Enable misbehaving
 misbehave = []
+
+rayon_affinity = []
+
+# Call sync while saving files that are also stored in memory cache
+sync_files = []
+
+[[bench]]
+name = "on_block_finalized"
+harness = false

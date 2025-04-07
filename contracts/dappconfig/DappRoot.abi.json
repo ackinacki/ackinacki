@@ -55,7 +55,6 @@
 		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
 		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
 		{"init":false,"name":"__value","type":"uint256"},
-		{"init":false,"name":"_code","type":"map(uint8,cell)"},
-		{"init":false,"name":"_owner","type":"address"}
+		{"init":false,"name":"_codeStorage","type":"map(uint8,cell)"}
 	]
 }

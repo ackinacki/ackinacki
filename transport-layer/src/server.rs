@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use telemetry_utils::mpsc::InstrumentedReceiver;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use wtransport::endpoint::IncomingSession;
@@ -28,7 +29,10 @@ impl LiteServer {
         Self { bind }
     }
 
-    pub async fn start(self, raw_block_receiver: Receiver<Vec<u8>>) -> anyhow::Result<()> {
+    pub async fn start(
+        self,
+        raw_block_receiver: InstrumentedReceiver<Vec<u8>>,
+    ) -> anyhow::Result<()> {
         let (tx, rx) = std::sync::mpsc::channel::<IncomingSession>();
         let (btx, _ /* we will subscribe() later */) =
             broadcast::channel(DEFAULT_BROADCAST_CAPACITY);
@@ -169,7 +173,7 @@ async fn handle(connection: &Connection, data: &[u8]) -> anyhow::Result<()> {
 }
 
 async fn message_multiplexor(
-    rx: Receiver<Vec<u8>>,
+    rx: InstrumentedReceiver<Vec<u8>>,
     btx: broadcast::Sender<Vec<u8>>,
 ) -> anyhow::Result<()> {
     tracing::info!("Message multiplexor started");

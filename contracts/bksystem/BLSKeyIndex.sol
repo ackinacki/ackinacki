@@ -23,13 +23,23 @@ contract BLSKeyIndex is Modifiers {
     uint16 _signerIndex;
     bool _ready;
 
+    /**
+     * @dev Initializes the contract with wallet, pubkey, stake, and signer index.
+     * @param wallet The wallet address linked to the BLS key.
+     * @param pubkey The public key associated with the wallet.
+     * @param stake The amount of stake allocated to this BLS key.
+     * @param signerIndex The index of the signer in the validator set.
+     * 
+     * Requirements:
+     * - Only callable by the `_root` address.
+     */
     constructor (
         address wallet,
         uint256 pubkey,
         uint256 stake,
         uint16 signerIndex
-    ) accept {
-        getMoney();
+    ) accept senderIs(_root) {
+        ensureBalance();
         _ready = false;
         _wallet = wallet;
         _wallet_pubkey = pubkey;
@@ -37,33 +47,85 @@ contract BLSKeyIndex is Modifiers {
         _signerIndex = signerIndex;
     }
 
-    function getMoney() private pure {
-        if (address(this).balance > FEE_DEPLOY_BLS_KEY) { return; }
+    /**
+     * @dev Ensures the contract has enough balance for operations.
+     *      If the balance is insufficient, mints additional funds.
+     */
+    function ensureBalance() private pure {
+        if (address(this).balance > FEE_DEPLOY_BLS_KEY) { 
+            return; 
+        }
         gosh.mintshell(FEE_DEPLOY_BLS_KEY);
     }
 
-    function isBLSKeyAccept(mapping(uint8 => string) ProxyList) public senderIs(_root) accept {
-        getMoney();
-        BlockKeeperContractRoot(_root).isBLSAccepted{value: 0.1 vmshell}(_wallet_pubkey, _bls, _stake, _ready, _signerIndex, ProxyList);
+    /**
+     * @dev Marks the BLS key as used by the system.
+     * @param rep_coef Reputation coefficient for the wallet.
+     * @param licenses Array of licenses tied to this wallet.
+     * @param virtualStake Optional virtual stake value.
+     * @param ProxyList A mapping of proxies associated with the wallet.
+     *
+     * Requirements:
+     * - Only callable by the `_root` address.
+     */
+    function isBLSKeyAccept(uint256 pubkey, uint128 rep_coef, LicenseStake[] licenses, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList) public senderIs(_root) accept {
+        ensureBalance();
+        BlockKeeperContractRoot(_root).isBLSAccepted{value: 0.1 vmshell, flag: 1}(pubkey, _bls, _stake, _ready, _signerIndex, rep_coef, licenses, virtualStake, ProxyList);
         _ready = true;
     }
 
-    function isBLSKeyAcceptContinue(uint64 seqNoStartOld, mapping(uint8 => string) ProxyList) public senderIs(_root) accept {
-        getMoney();
-        BlockKeeperContractRoot(_root).isBLSAcceptedContinue{value: 0.1 vmshell}(_wallet_pubkey, _bls, _stake, _ready, seqNoStartOld, _signerIndex, ProxyList);
+    /**
+     * @dev Marks the BLS key as used by the system with continue epoch process.
+     * @param seqNoStartOld Sequence number to resume from.
+     * @param rep_coef Reputation coefficient for the wallet.
+     * @param licenses Array of licenses tied to this wallet.
+     * @param virtualStake Optional virtual stake value.
+     * @param ProxyList A mapping of proxies associated with the wallet.
+     *
+     * Requirements:
+     * - Only callable by the `_root` address.
+     */
+    function isBLSKeyAcceptContinue(uint256 pubkey, uint64 seqNoStartOld, uint128 rep_coef, LicenseStake[] licenses, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList) public senderIs(_root) accept {
+        ensureBalance();
+        BlockKeeperContractRoot(_root).isBLSAcceptedContinue{value: 0.1 vmshell, flag: 1}(pubkey, _bls, _stake, _ready, seqNoStartOld, _signerIndex, rep_coef, licenses, virtualStake, ProxyList);
         _ready = true;
     }
 
+    /**
+     * @dev Destroys the contract by BlockKeeperContractRoot contract and transfers remaining funds to BlockKeeperContractRoot.
+     *
+     * Requirements:
+     * - Only callable by the `_root` address.
+     */
     function destroyRoot() public senderIs(_root) accept {
-        getMoney();
+        ensureBalance();
         selfdestruct(_root);
     }
 
+    /**
+     * @dev Destroys the contract by AckiNackiBlockKeeperNodeWallet and transfers remaining funds to the BlockKeeperContractRoot address.
+     *
+     * Requirements:
+     * - Only callable by the `_wallet` address.
+     */
     function destroy() public senderIs(_wallet) accept {
-        getMoney();
+        ensureBalance();
         selfdestruct(_root);
+    }
+
+    /**
+     * @dev Retrieves the readiness status of the BLS key.
+     * @return ready `true` if the BLS key is used; otherwise, `false`.
+     */
+    function getReadyStatus() external view returns(bool ready) {
+        return _ready;
     }
     
+    /**
+     * @dev Retrieves the version of the contract and its type.
+     * @return version The version of the contract.
+     * @return type A string identifying the contract type.
+     */
     function getVersion() external pure returns(string, string) {
         return (version, "BLSKey");
     }

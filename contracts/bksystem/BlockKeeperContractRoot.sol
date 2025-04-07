@@ -12,8 +12,6 @@ pragma AbiHeader pubkey;
 import "./modifiers/modifiers.sol";
 import "./libraries/BlockKeeperLib.sol";
 import "./AckiNackiBlockKeeperNodeWallet.sol";
-import "./AckiNackiBlockKeeperNodeWalletConfig.sol";
-import "./AckiNackiBlockKeeperNodeWalletConfig.sol";
 import "./BlockKeeperPreEpochContract.sol";
 import "./BlockKeeperEpochContract.sol";
 import "./BlockKeeperCoolerContract.sol";
@@ -29,87 +27,148 @@ contract BlockKeeperContractRoot is Modifiers {
     uint64 _waitStep = 1000;
     uint128 _minBlockKeepers = 10;
     address _giver;
-    uint128 _num_wallets = 0;
     uint256 _totalStake = 0;
+    address _licenseRoot;
 
     uint32 _networkStart;
     uint128 _numberOfActiveBlockKeepers = 0;
+    uint128 _needNumberOfActiveBlockKeepers = 10000;
 
     uint32 _block_seqno = 0;
     uint128 _numberOfActiveBlockKeepersAtBlockStart = 0;
 
+    uint128 _reward_adjustment = 0;
+    uint32 _reward_last_time = 0; 
+    uint32 _min_reward_period = 520000;
+    uint32 _reward_period = 520000;
+    uint32 _calc_reward_num = 0;
+
+    uint128 _reputationCoefAvg = 0;
+    uint128 _reward_sum = 0;
+    uint128 _slash_sum = 0;
+
     optional(address) _owner_wallet;
 
     constructor (
-        address giver
+        address giver,
+        address licenseRoot
     ) {
         _giver = giver;
         _networkStart = block.timestamp;
+        _licenseRoot = licenseRoot;
+        uint32 time = block.timestamp - _networkStart;
+        _reward_last_time = block.timestamp;
+        _reward_adjustment = gosh.calcbkrewardadj(_reward_sum, MIN_REP_COEF, _reward_period, 10400000000000000000, uint128(time));
     }
 
-    function getMoney() private {
+    function ensureBalance() private {
+        if ((_reward_last_time + _min_reward_period < block.timestamp) || (_calc_reward_num == 0)) {
+            calcRewardAdjustment();
+        }
         if (block.seqno != _block_seqno) {
             _block_seqno = block.seqno;
             _numberOfActiveBlockKeepersAtBlockStart = _numberOfActiveBlockKeepers;
         }
-        if (address(this).balance > 1000000 vmshell) { return; }
-        gosh.mintshell(1000000 vmshell);
+        if (address(this).balance > ROOT_BALANCE) { return; }
+        gosh.mintshell(ROOT_BALANCE);
+    }
+
+    function calcRewardAdjustment() private returns (uint128) {
+        uint32 time = block.timestamp - _networkStart;
+        if (_calc_reward_num == 0) {
+            _reward_period = block.timestamp - _reward_last_time;
+        } else {
+            _reward_period = (_reward_period * _calc_reward_num + block.timestamp - _reward_last_time) / (_calc_reward_num + 1);
+        }
+        _reward_last_time = block.timestamp;
+        _calc_reward_num += 1;
+        if (_reputationCoefAvg == 0) {
+            _reward_adjustment = gosh.calcbkrewardadj(_reward_sum, MIN_REP_COEF, _reward_period, _reward_adjustment, uint128(time));
+        } else {
+            _reward_adjustment = gosh.calcbkrewardadj(_reward_sum, _reputationCoefAvg, _reward_period, _reward_adjustment, uint128(time));
+        }
     }
 
     function setOwner(address wallet) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) {
+        ensureBalance();
         _owner_wallet = wallet;
     }
 
-    function setConfig(uint32 epochDuration, uint64 epochCliff, uint64 waitStep, uint128 minBlockKeepers) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept {
-        getMoney();
+    function setConfig(uint32 epochDuration, uint64 epochCliff, uint64 waitStep, uint128 minBlockKeepers, uint32 reward_period, uint128 needNumberOfActiveBlockKeepers) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept {
+        ensureBalance();
         _epochDuration = epochDuration;
         _epochCliff = epochCliff;
         _waitStep = waitStep;
         _minBlockKeepers = minBlockKeepers;
+        _reward_period = reward_period;
+        _needNumberOfActiveBlockKeepers = needNumberOfActiveBlockKeepers;
     }
 
-    function deployAckiNackiBlockKeeperNodeWallet(uint256 pubkey) public accept {
-        getMoney();
+    function deployAckiNackiBlockKeeperNodeWallet(uint256 pubkey, mapping(uint256 => bool) whiteListLicense) public accept {
+        ensureBalance();
         TvmCell data = BlockKeeperLib.composeBlockKeeperWalletStateInit(_code[m_AckiNackiBlockKeeperNodeWalletCode], address(this), pubkey);
-        new AckiNackiBlockKeeperNodeWallet {stateInit: data, value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_WALLET), wid: 0, flag: 1}(_code[m_BlockKeeperPreEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperEpochCoolerCode], _code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletConfigCode], _code[m_BLSKeyCode], _code[m_SignerIndexCode], _num_wallets);
-        _num_wallets += 1;
+        new AckiNackiBlockKeeperNodeWallet {stateInit: data, value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_WALLET), wid: 0, flag: 1}(_code[m_BlockKeeperPreEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperEpochCoolerCode], _code[m_BlockKeeperEpochProxyListCode], _code[m_BLSKeyCode], _code[m_SignerIndexCode], _code[m_LicenseCode], _epochDuration, _networkStart + UNLOCK_LICENSES, whiteListLicense, _licenseRoot, 0);
     }
 
-    function deployAckiNackiBlockKeeperNodeWalletConfig(uint256 pubkey, uint128 num) public view senderIs(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)) accept {
-        TvmCell data = BlockKeeperLib.composeBlockKeeperWalletConfigStateInit(_code[m_AckiNackiBlockKeeperNodeWalletConfigCode], num);
-        new AckiNackiBlockKeeperNodeWalletConfig {stateInit: data, value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_WALLET_CONFIG), wid: 0, flag: 1}(msg.sender);
-    }
-
-    function decreaseActiveBlockKeeperNumber(uint256 pubkey, uint64 seqNoStart, uint256 stake) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], address(this), pubkey, seqNoStart)) accept {
-        getMoney();
-        _totalStake -= stake;
+    function decreaseActiveBlockKeeperNumber(uint256 pubkey, uint64 seqNoStart, uint256 stake, uint128 rep_coef, bool is_slash, optional(uint128) virtualStake) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], address(this), pubkey, seqNoStart)) accept {
+        ensureBalance();
+        uint256 local_Stake = stake;
+        if (virtualStake.hasValue()) {
+            local_Stake = virtualStake.get();
+        }
+        if (_totalStake == local_Stake) {
+            _reputationCoefAvg = MIN_REP_COEF;
+        } else {
+            _reputationCoefAvg = uint128(_reputationCoefAvg - rep_coef * local_Stake / (_totalStake - local_Stake));
+        }
+        _totalStake -= local_Stake;
         _numberOfActiveBlockKeepers -= 1;
+        if (is_slash) {
+            _slash_sum += uint128(stake);
+        }
     }
 
     function decreaseStakes(uint256 pubkey, uint64 seqNoStart, uint256 stake) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], address(this), pubkey, seqNoStart)) accept {
-        getMoney();
+        ensureBalance();
         _totalStake -= stake;
     }
 
-    function increaseActiveBlockKeeperNumber(uint256 pubkey, uint64 seqNoStart, uint256 stake) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], address(this), pubkey, seqNoStart)) accept {
-        getMoney();
-        _totalStake += stake;
+    function increaseActiveBlockKeeperNumber(uint256 pubkey, uint64 seqNoStart, uint256 stake, uint128 rep_coef, optional(uint128) virtualStake) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], address(this), pubkey, seqNoStart)) accept {
+        ensureBalance();
+        uint256 local_stake = stake;
+        if (virtualStake.hasValue()) {
+            local_stake = virtualStake.get();
+        }
+        _totalStake += local_stake;
         _numberOfActiveBlockKeepers += 1;
+        if (_totalStake == 0) {
+            _reputationCoefAvg = MIN_REP_COEF;
+        } else {
+            _reputationCoefAvg = uint128(_reputationCoefAvg * (_totalStake - local_stake) / _totalStake + rep_coef * local_stake / _totalStake);
+        }
         BlockKeeperEpoch(msg.sender).setStake{value: 0.1 vmshell, flag: 1}(_totalStake, _numberOfActiveBlockKeepersAtBlockStart);
     }
 
-    function receiveBlockKeeperRequestWithStakeFromWallet(uint256 pubkey, bytes bls_pubkey, uint16 signerIndex, mapping(uint8 => string) ProxyList) public view senderIs(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)) accept {
-        if (msg.currencies[CURRENCIES_ID] < gosh.calcminstake(uint128(_epochDuration), uint128(block.timestamp - _networkStart), _numberOfActiveBlockKeepers, _numberOfActiveBlockKeepers + 1)) {
-            AckiNackiBlockKeeperNodeWallet(msg.sender).stakeNotAccepted{value: 0.1 vmshell, currencies: msg.currencies, flag: 1}();
-            return;
+    function receiveBlockKeeperRequestWithStakeFromWallet(uint256 pubkey, bytes bls_pubkey, uint16 signerIndex, uint128 rep_coef, LicenseStake[] licenses, bool is_min, mapping(uint8 => string) ProxyList) public senderIs(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)) accept {
+        ensureBalance();
+        optional(uint128) virtualStake;
+        uint128 minStake = gosh.calcminstake(_reward_sum - _slash_sum, block.timestamp - _networkStart + uint128(_waitStep / 3), _numberOfActiveBlockKeepersAtBlockStart, _needNumberOfActiveBlockKeepers);
+        if (msg.currencies[CURRENCIES_ID] < minStake) {
+            if (is_min == false) {
+                AckiNackiBlockKeeperNodeWallet(msg.sender).stakeNotAccepted{value: 0.1 vmshell, currencies: msg.currencies, flag: 1}();
+                return;
+            } else {
+                virtualStake = minStake;
+            }
         }
         uint256 stake = msg.currencies[CURRENCIES_ID];
         TvmCell data = BlockKeeperLib.composeBLSKeyStateInit(_code[m_BLSKeyCode], bls_pubkey, address(this));
         new BLSKeyIndex {stateInit: data, value: varuint16(FEE_DEPLOY_BLS_KEY), wid: 0, flag: 1}(msg.sender, pubkey, stake, signerIndex);
-        BLSKeyIndex(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_pubkey, address(this))).isBLSKeyAccept{value: 0.1 ton, flag: 1}(ProxyList);
+        BLSKeyIndex(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_pubkey, address(this))).isBLSKeyAccept{value: 0.1 vmshell, flag: 1}(pubkey,rep_coef, licenses, virtualStake, ProxyList);
     }
 
-    function isBLSAccepted(uint256 pubkey, bytes bls_pubkey, uint256 stake, bool isNotOk, uint16 signerIndex, mapping(uint8 => string) ProxyList) public view senderIs(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_pubkey, address(this))) accept {       
+    function isBLSAccepted(uint256 pubkey, bytes bls_pubkey, uint256 stake, bool isNotOk, uint16 signerIndex,uint128 rep_coef, LicenseStake[] licenses, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList) public senderIs(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_pubkey, address(this))) accept {  
+        ensureBalance();     
         mapping(uint32 => varuint32) data_cur;
         data_cur[CURRENCIES_ID] = varuint32(stake);
         if (isNotOk == true) {
@@ -118,62 +177,80 @@ contract BlockKeeperContractRoot is Modifiers {
         }
         TvmCell data = BlockKeeperLib.composeSignerIndexStateInit(_code[m_SignerIndexCode], signerIndex, address(this));
         new SignerIndex {stateInit: data, value: varuint16(FEE_DEPLOY_SIGNER_INDEX), wid: 0, flag: 1}(msg.sender, pubkey, stake, bls_pubkey);
-        SignerIndex(BlockKeeperLib.calculateSignerIndexAddress(_code[m_SignerIndexCode], signerIndex, address(this))).isSignerIndexAccept{value: 0.1 ton, flag: 1}(ProxyList);
+        SignerIndex(BlockKeeperLib.calculateSignerIndexAddress(_code[m_SignerIndexCode], signerIndex, address(this))).isSignerIndexAccept{value: 0.1 vmshell, flag: 1}(pubkey, rep_coef, licenses, virtualStake, ProxyList);
     }
 
-    function isSignerIndexAccepted(uint256 pubkey, bytes bls_pubkey, uint256 stake, bool isNotOk, uint16 signerIndex, mapping(uint8 => string) ProxyList) public view senderIs(BlockKeeperLib.calculateSignerIndexAddress(_code[m_SignerIndexCode], signerIndex, address(this))) accept {       
+    function isSignerIndexAccepted(uint256 pubkey, bytes bls_pubkey, uint256 stake, bool isNotOk, uint16 signerIndex, uint128 rep_coef, LicenseStake[] licenses, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList) public senderIs(BlockKeeperLib.calculateSignerIndexAddress(_code[m_SignerIndexCode], signerIndex, address(this))) accept {   
+        ensureBalance();    
         mapping(uint32 => varuint32) data_cur;
         data_cur[CURRENCIES_ID] = varuint32(stake);
         if (isNotOk == true) {
             AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)).stakeNotAccepted{value: 0.1 vmshell, currencies: data_cur, flag: 1}();
-            BLSKeyIndex(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_pubkey, address(this))).destroyRoot{value: 0.1 ton, flag: 1}();
+            BLSKeyIndex(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_pubkey, address(this))).destroyRoot{value: 0.1 vmshell, flag: 1}();
             return;
         }
-        AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)).deployPreEpochContract{value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET + 0.5 vmshell), currencies: data_cur, flag: 1}(_epochDuration, _epochCliff, _waitStep, bls_pubkey, signerIndex, ProxyList);
+        AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)).deployPreEpochContract{value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET + 0.5 vmshell), currencies: data_cur, flag: 1}(_epochDuration, _epochCliff, _waitStep, bls_pubkey, signerIndex, rep_coef, licenses, virtualStake, ProxyList);
     }
 
-    function receiveBlockKeeperRequestWithStakeFromWalletContinue(uint256 pubkey, bytes bls_pubkey, uint64 seqNoStartOld, uint16 signerIndex, mapping(uint8 => string) ProxyList) public view senderIs(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)) accept {
-        if (msg.currencies[CURRENCIES_ID] < gosh.calcminstake(uint128(_epochDuration), uint128(block.timestamp - _networkStart), _numberOfActiveBlockKeepers, _numberOfActiveBlockKeepers)) {
-            AckiNackiBlockKeeperNodeWallet(msg.sender).stakeNotAccepted{value: 0.1 vmshell, currencies: msg.currencies, flag: 1}();
-            return;
+    function receiveBlockKeeperRequestWithStakeFromWalletContinue(uint256 pubkey, bytes bls_pubkey, uint64 seqNoStartOld, uint16 signerIndex, uint128 rep_coef, LicenseStake[] licenses, bool is_min, mapping(uint8 => string) ProxyList) public senderIs(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)) accept {
+        ensureBalance();
+        uint128 minStake = gosh.calcminstake(_reward_sum - _slash_sum, block.timestamp - _networkStart + uint128(_waitStep / 3), _numberOfActiveBlockKeepersAtBlockStart, _needNumberOfActiveBlockKeepers);
+        optional(uint128) virtualStake;
+        if (msg.currencies[CURRENCIES_ID] < minStake) {
+            if (is_min == false) {
+                AckiNackiBlockKeeperNodeWallet(msg.sender).stakeNotAcceptedContinue{value: 0.1 vmshell, currencies: msg.currencies, flag: 1}();
+                return;
+            } else {
+                virtualStake = minStake;
+            }
         }
         uint256 stake = msg.currencies[CURRENCIES_ID];
         TvmCell data = BlockKeeperLib.composeBLSKeyStateInit(_code[m_BLSKeyCode], bls_pubkey, address(this));
         new BLSKeyIndex {stateInit: data, value: varuint16(FEE_DEPLOY_BLS_KEY), wid: 0, flag: 1}(msg.sender, pubkey, stake, signerIndex);
-        BLSKeyIndex(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_pubkey, address(this))).isBLSKeyAcceptContinue{value: 0.1 ton, flag: 1}(seqNoStartOld, ProxyList); 
+        BLSKeyIndex(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_pubkey, address(this))).isBLSKeyAcceptContinue{value: 0.1 vmshell, flag: 1}(pubkey, seqNoStartOld, rep_coef, licenses, virtualStake, ProxyList); 
     } 
 
-    function isBLSAcceptedContinue(uint256 pubkey, bytes bls_pubkey, uint256 stake, bool isNotOk, uint64 seqNoStartOld, uint16 signerIndex, mapping(uint8 => string) ProxyList) public view senderIs(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_pubkey, address(this))) accept {       
+    function isBLSAcceptedContinue(uint256 pubkey, bytes bls_pubkey, uint256 stake, bool isNotOk, uint64 seqNoStartOld, uint16 signerIndex, uint128 rep_coef, LicenseStake[] licenses, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList) public senderIs(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_pubkey, address(this))) accept {       
+        ensureBalance();
         mapping(uint32 => varuint32) data_cur;
         data_cur[CURRENCIES_ID] = varuint32(stake);
         if (isNotOk == true) {
-            AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)).stakeNotAccepted{value: 0.1 vmshell, currencies: data_cur, flag: 1}();
+            AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)).stakeNotAcceptedContinue{value: 0.1 vmshell, currencies: data_cur, flag: 1}();
             return;
         }
         TvmCell data = BlockKeeperLib.composeSignerIndexStateInit(_code[m_SignerIndexCode], signerIndex, address(this));
         new SignerIndex {stateInit: data, value: varuint16(FEE_DEPLOY_SIGNER_INDEX), wid: 0, flag: 1}(msg.sender, pubkey, stake, bls_pubkey);
-        SignerIndex(BlockKeeperLib.calculateSignerIndexAddress(_code[m_SignerIndexCode], signerIndex, address(this))).isSignerIndexAcceptContinue{value: 0.1 ton, flag: 1}(seqNoStartOld, ProxyList);
+        SignerIndex(BlockKeeperLib.calculateSignerIndexAddress(_code[m_SignerIndexCode], signerIndex, address(this))).isSignerIndexAcceptContinue{value: 0.1 vmshell, flag: 1}(pubkey, seqNoStartOld, rep_coef, licenses, virtualStake, ProxyList);
     }
 
-    function isSignerIndexContinue(uint256 pubkey, bytes bls_pubkey, uint256 stake, bool isNotOk, uint64 seqNoStartOld, uint16 signerIndex, mapping(uint8 => string) ProxyList) public view senderIs(BlockKeeperLib.calculateSignerIndexAddress(_code[m_SignerIndexCode], signerIndex, address(this))) accept {       
+    function isSignerIndexContinue(uint256 pubkey, bytes bls_pubkey, uint256 stake, bool isNotOk, uint64 seqNoStartOld, uint16 signerIndex, uint128 rep_coef, LicenseStake[] licenses, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList) public senderIs(BlockKeeperLib.calculateSignerIndexAddress(_code[m_SignerIndexCode], signerIndex, address(this))) accept {       
+        ensureBalance();
         mapping(uint32 => varuint32) data_cur;
         data_cur[CURRENCIES_ID] = varuint32(stake);
         if (isNotOk == true) {
-            AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)).stakeNotAccepted{value: 0.1 vmshell, currencies: data_cur, flag: 1}();
-            BLSKeyIndex(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_pubkey, address(this))).destroyRoot{value: 0.1 ton, flag: 1}();
+            AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)).stakeNotAcceptedContinue{value: 0.1 vmshell, currencies: data_cur, flag: 1}();
+            BLSKeyIndex(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_pubkey, address(this))).destroyRoot{value: 0.1 vmshell, flag: 1}();
             return;
         }
-        AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)).deployBlockKeeperContractContinue{value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET + 0.5 vmshell), currencies: data_cur, flag: 1}(_epochDuration, _waitStep, seqNoStartOld, bls_pubkey, signerIndex, ProxyList);
+        AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)).deployBlockKeeperContractContinue{value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET + 0.5 vmshell), currencies: data_cur, flag: 1}(_epochDuration, _waitStep, seqNoStartOld, bls_pubkey, signerIndex, rep_coef, licenses, virtualStake, ProxyList);
     }
 
     function setNewCode(uint8 id, TvmCell code) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept saveMsg { 
+        ensureBalance();
         _code[id] = code;
     }
 
-    function canDeleteEpoch(uint256 pubkey, uint64 seqNoStart, uint256 stake, uint32 epochDuration, uint32 reputationTime, uint256 totalStakeOld, uint128 numberOfActiveBlockKeepers, uint128 time)  public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], address(this), pubkey, seqNoStart)) accept {
+    function canDeleteEpoch(uint256 pubkey, uint64 seqNoStart, uint256 stake, uint128 reputationTime, uint256 totalStakeOld, uint128 numberOfActiveBlockKeepers, uint128 time, optional(uint128) virtualStake)  public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], address(this), pubkey, seqNoStart)) accept {
+        ensureBalance();
         if (_numberOfActiveBlockKeepers - 1 >= _minBlockKeepers) {
-            uint256 reward = 0;
-            reward = gosh.calcbkreward(numberOfActiveBlockKeepers, uint128(epochDuration), time, uint128(totalStakeOld), uint128(stake), uint128(reputationTime));
+            uint128 reward = 0;
+            uint128 reward_adjustment = _reward_adjustment;
+            if (virtualStake.hasValue()) {
+                reward = gosh.calcbkreward(reward_adjustment, numberOfActiveBlockKeepers, _reward_sum, block.timestamp - time, uint128(totalStakeOld), uint128(virtualStake.get()), reputationTime);
+            } else {
+                reward = gosh.calcbkreward(reward_adjustment, numberOfActiveBlockKeepers, _reward_sum, block.timestamp - time, uint128(totalStakeOld), uint128(stake), reputationTime);
+            }
+            _reward_sum += reward;
             _numberOfActiveBlockKeepers = _numberOfActiveBlockKeepers - 1;
             mapping(uint32 => varuint32) data_cur;
             data_cur[CURRENCIES_ID] = varuint32(reward);
@@ -201,24 +278,28 @@ contract BlockKeeperContractRoot is Modifiers {
         return BlockKeeperLib.calculateBlockKeeperCoolerEpochAddress(_code[m_BlockKeeperEpochCoolerCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _code[m_BlockKeeperEpochCode], address(this), pubkey, seqNoStart);
     }
 
-    function getAckiNackiBlockKeeperNodeWalletAddress(uint256 pubkey) external view returns(address){
+    function getAckiNackiBlockKeeperNodeWalletAddress(uint256 pubkey) external view returns(address wallet){
         return BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey);
     }
 
-    function getAckiNackiBlockKeeperNodeWalletConfigAddress(uint128 num) external view returns(address){
-        return BlockKeeperLib.calculateBlockKeeperWalletConfigAddress(_code[m_AckiNackiBlockKeeperNodeWalletConfigCode] , num);
+    function getAckiNackiBlockKeeperNodeWalletCode () external view returns(TvmCell data){
+        return BlockKeeperLib.buildBlockKeeperWalletCode(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this));
+    }
+
+    function getBlockKeeperEpochCode() external view returns(TvmCell epochCode){
+        return BlockKeeperLib.buildBlockKeeperEpochCode(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], address(this));
     }
     
-    function getBlockKeeperEpochAddress(uint256 pubkey, uint64 seqNoStart) external view returns(address){
+    function getBlockKeeperEpochAddress(uint256 pubkey, uint64 seqNoStart) external view returns(address epochAddress){
         return BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], address(this), pubkey, seqNoStart);
     }
 
-    function getBlockKeeperPreEpochAddress(uint256 pubkey, uint64 seqNoStart) external view returns(address) {
+    function getBlockKeeperPreEpochAddress(uint256 pubkey, uint64 seqNoStart) external view returns(address preEpochAddress) {
         return BlockKeeperLib.calculateBlockKeeperPreEpochAddress(_code[m_BlockKeeperPreEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], address(this), pubkey, seqNoStart);
     }
 
-    function getDetails() external view returns(uint128 minStake, uint128 numberOfActiveBlockKeepers, uint256 numWallets) {
-        return (gosh.calcminstake(uint128(_epochDuration), uint128(block.timestamp - _networkStart), _numberOfActiveBlockKeepers, _numberOfActiveBlockKeepers + 1), _numberOfActiveBlockKeepers, _num_wallets);
+    function getDetails() external view returns(uint128 minStake, uint128 numberOfActiveBlockKeepers) {
+        return (gosh.calcminstake(_reward_sum - _slash_sum, block.timestamp - _networkStart + uint128(_waitStep / 3), _numberOfActiveBlockKeepersAtBlockStart, _needNumberOfActiveBlockKeepers), _numberOfActiveBlockKeepers);
     }
 
     function getEpochCodeHash() external view returns(uint256 epochCodeHash) {
@@ -230,44 +311,53 @@ contract BlockKeeperContractRoot is Modifiers {
     }
 
     function getRewardOut(
+        uint128 reward_adjustment,
         uint128 numberOfActiveBlockKeepers,
         uint128 stake,
         uint128 totalStake,
-        uint128 reputationTime,
-        uint128 timenetwork,
-        uint128 epochDuration
+        uint128 reward_sum,
+        uint128 timeepoch,
+        uint128 reputationTime
         ) external pure returns(uint128 reward) {
-        return gosh.calcbkreward(numberOfActiveBlockKeepers, epochDuration, timenetwork, totalStake, stake, reputationTime);
+        return gosh.calcbkreward(reward_adjustment, numberOfActiveBlockKeepers, reward_sum, timeepoch, totalStake, stake, reputationTime);
     }     
 
-    function getProxyListCode() external view returns(TvmCell) {
+    function getProxyListCode() external view returns(TvmCell code) {
         return BlockKeeperLib.buildBlockKeeperEpochProxyListCode(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], address(this));
     }
 
-    function getProxyListAddress(uint256 pubkey) external view returns(address) {
+    function getProxyListAddress(uint256 pubkey) external view returns(address proxyAddress) {
         return BlockKeeperLib.calculateBlockKeeperEpochProxyListAddress(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], pubkey, address(this));
     }
 
     function getRewardNow(
         ) external view returns(uint128 reward) {
-        return gosh.calcbkreward(_numberOfActiveBlockKeepers, _epochDuration, uint128(block.timestamp - _networkStart), uint128(_totalStake), uint128(_totalStake), uint128(0));
+        return gosh.calcbkreward(_reward_adjustment, _numberOfActiveBlockKeepers, _reward_sum, uint128(block.timestamp - _networkStart), uint128(_totalStake), uint128(_totalStake), uint128(0));
     }     
 
     function getMinStakeNow() external view returns(uint128 minstake) {
-        return gosh.calcminstake(uint128(_epochDuration), uint128(block.timestamp - _networkStart), _numberOfActiveBlockKeepers, _numberOfActiveBlockKeepers + 1);
-    }   
+        return gosh.calcminstake(_reward_sum - _slash_sum, block.timestamp - _networkStart + uint128(_waitStep / 3), _numberOfActiveBlockKeepersAtBlockStart, _needNumberOfActiveBlockKeepers);
+    }
 
-    function getSignerIndexAddress(uint16 index) external view returns(address) {
+    function getSignerIndexAddress(uint16 index) external view returns(address signerIndex) {
         return BlockKeeperLib.calculateSignerIndexAddress(_code[m_SignerIndexCode], index, address(this));
     }
 
     function getMinStakeOut(
-        uint128 numberOfActiveBlockKeepers1,
-        uint128 numberOfActiveBlockKeepers2,
-        uint128 timenetwork,
-        uint128 epochDuration) external pure returns(uint128 minstake) {
-        return gosh.calcminstake(epochDuration, timenetwork, numberOfActiveBlockKeepers1, numberOfActiveBlockKeepers2);
-    }       
+        uint128 reward_sum,
+        uint128 timeEpochStart,
+        uint128 numberOfActiveBlockKeepersAtBlockStart,
+        uint128 needNumberOfActiveBlockKeepers) external pure returns(uint128 minstake) {
+        return gosh.calcminstake(reward_sum, timeEpochStart, numberOfActiveBlockKeepersAtBlockStart, needNumberOfActiveBlockKeepers);
+    }
+
+    function getBLSIndexAddress(bytes bls_key) external view returns(address blsAddress) {
+        return BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_key, address(this));
+    }
+
+    function getCodes() external view returns(mapping(uint8 => TvmCell) code) {
+        return _code;
+    }
 
     function getVersion() external pure returns(string, string) {
         return (version, "BlockKeeperContractRoot");

@@ -4,20 +4,32 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::sync::Arc;
 
+use tvm_block::Augmentation;
+use tvm_block::EnqueuedMsg;
 use tvm_block::GetRepresentationHash;
+use tvm_block::HashmapAugType;
 use tvm_block::Message;
+use tvm_block::MsgEnvelope;
+use tvm_block::OutMsg;
+use tvm_block::Serializable;
 use tvm_executor::BlockchainConfig;
 use tvm_types::UInt256;
 
 use super::BlockBuilder;
+use crate::block::producer::execution_time::ExecutionTimeLimits;
 use crate::block_keeper_system::epoch::create_epoch_touch_message;
 use crate::block_keeper_system::BlockKeeperData;
 use crate::creditconfig::dappconfig::calculate_dapp_config_address;
 use crate::creditconfig::dappconfig::create_config_touch_message;
+use crate::message::identifier::MessageIdentifier;
+use crate::message::WrappedMessage;
 use crate::repository::optimistic_state::OptimisticState;
+use crate::types::AccountAddress;
 
 impl BlockBuilder {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn execute_epoch_messages(
         &mut self,
         epoch_block_keeper_data: &mut Vec<BlockKeeperData>,
@@ -64,6 +76,7 @@ impl BlockBuilder {
                                 block_unixtime,
                                 block_lt,
                                 check_messages_map,
+                                &ExecutionTimeLimits::NO_LIMITS,
                             )?;
                             active_ext_threads.push_back(thread);
                             active_destinations.insert(acc_id);
@@ -82,11 +95,12 @@ impl BlockBuilder {
             }
 
             while !active_ext_threads.is_empty() {
-                if active_ext_threads.front().unwrap().thread.is_finished() {
-                    let thread = active_ext_threads.pop_front().unwrap();
-                    let thread_result = thread.thread.join().map_err(|_| {
+                if let Ok(thread_result) = active_ext_threads.front().unwrap().result_rx.try_recv()
+                {
+                    let _ = active_ext_threads.pop_front().unwrap();
+                    let thread_result = thread_result.map_err(|_| {
                         anyhow::format_err!("Failed to execute transaction in parallel")
-                    })??;
+                    })?;
                     let acc_id = thread_result.account_id.clone();
                     tracing::trace!(target: "builder", "parallel epoch message finished dest: {}", acc_id.to_hex_string());
                     self.after_transaction(thread_result)?;
@@ -133,6 +147,44 @@ impl BlockBuilder {
                         .map_err(|e| {
                             anyhow::format_err!("Failed to create config touch message: {e}")
                         })?;
+
+                let wrapped_message = WrappedMessage { message: message.clone() };
+                tracing::debug!(
+                    "Add config message to produced_internal_messages_to_the_current_thread: {}",
+                    wrapped_message.message.hash().unwrap().to_hex_string()
+                );
+                let entry = self
+                    .produced_internal_messages_to_the_current_thread
+                    .entry(AccountAddress(message.dst().expect("must be set").address().clone()))
+                    .or_default();
+                entry.push((MessageIdentifier::from(&wrapped_message), Arc::new(wrapped_message)));
+
+                let info = message.int_header().unwrap();
+                let fwd_fee = info.fwd_fee();
+                let msg_cell = message.serialize().map_err(|e| {
+                    anyhow::format_err!("Failed to serialize dapp config message: {e}")
+                })?;
+                let env = MsgEnvelope::with_message_and_fee(&message, *fwd_fee).map_err(|e| {
+                    anyhow::format_err!("Failed to generate dapp config message envelope: {e}")
+                })?;
+                let enq = EnqueuedMsg::with_param(info.created_lt, &env).map_err(|e| {
+                    anyhow::format_err!("Failed to enqueue dapp config message: {e}")
+                })?;
+                // Note: this message was generate by node and has no parent transaction, use default tx instead
+                let default_tx = tvm_block::Transaction::default().serialize().map_err(|e| {
+                    anyhow::format_err!("Failed to serialize default transaction: {e}")
+                })?;
+                let out_msg = OutMsg::new(enq.out_msg_cell(), default_tx);
+
+                self.out_msg_descr
+                    .set(
+                        &msg_cell.repr_hash(),
+                        &out_msg,
+                        &out_msg
+                            .aug()
+                            .map_err(|e| anyhow::format_err!("Failed to get msg aug: {e}"))?,
+                    )
+                    .map_err(|e| anyhow::format_err!("Failed to add msg to out msg descr: {e}"))?;
                 config_messages.push(message);
             }
         }
@@ -155,6 +207,7 @@ impl BlockBuilder {
                                 block_unixtime,
                                 block_lt,
                                 check_messages_map,
+                                &ExecutionTimeLimits::NO_LIMITS,
                             )?;
                             active_ext_threads.push_back(thread);
                             active_destinations.insert(acc_id);
@@ -172,11 +225,12 @@ impl BlockBuilder {
             }
 
             while !active_ext_threads.is_empty() {
-                if active_ext_threads.front().unwrap().thread.is_finished() {
-                    let thread = active_ext_threads.pop_front().unwrap();
-                    let thread_result = thread.thread.join().map_err(|_| {
+                if let Ok(thread_result) = active_ext_threads.front().unwrap().result_rx.try_recv()
+                {
+                    let _ = active_ext_threads.pop_front().unwrap();
+                    let thread_result = thread_result.map_err(|_| {
                         anyhow::format_err!("Failed to execute transaction in parallel")
-                    })??;
+                    })?;
                     let acc_id = thread_result.account_id.clone();
                     tracing::trace!(target: "builder", "parallel epoch message finished dest: {}", acc_id.to_hex_string());
                     self.after_transaction(thread_result)?;

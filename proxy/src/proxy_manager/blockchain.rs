@@ -1,5 +1,6 @@
 use std::io::Read;
 
+use network::parse_publisher_url;
 use url::Url;
 
 /// how to get proxy list from proxy list contract
@@ -19,7 +20,7 @@ pub async fn get_proxy_list() -> anyhow::Result<Vec<Url>> {
     let mut file = std::fs::File::open("proxy_list.txt")?;
     let mut buf = String::new();
     file.read_to_string(&mut buf)?;
-    let v: Vec<Url> = buf.lines().map(Url::parse).collect::<Result<_, _>>()?;
+    let v: Vec<Url> = buf.lines().map(parse_publisher_url).collect::<Result<_, _>>()?;
 
     Ok(v)
 }

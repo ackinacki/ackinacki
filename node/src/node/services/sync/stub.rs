@@ -1,9 +1,10 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::sync::mpsc::Sender;
+use telemetry_utils::mpsc::InstrumentedSender;
 
 use crate::block_keeper_system::BlockKeeperSet;
+use crate::message_storage::MessageDurableStorage;
 use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
 use crate::node::services::sync::StateSyncService;
 use crate::repository::repository_impl::RepositoryImpl;
@@ -22,6 +23,7 @@ impl StateSyncService for StateSyncServiceStub {
         _cross_thread_ref_data: Vec<CrossThreadRefData>,
         _finalized_block_stats: BlockStatistics,
         _bk_set: BlockKeeperSet,
+        _message_db: &MessageDurableStorage,
     ) -> anyhow::Result<Self::ResourceAddress> {
         todo!()
     }
@@ -29,7 +31,7 @@ impl StateSyncService for StateSyncServiceStub {
     fn add_load_state_task(
         &mut self,
         _resource_address: Self::ResourceAddress,
-        _output: Sender<anyhow::Result<(Self::ResourceAddress, Vec<u8>)>>,
+        _output: InstrumentedSender<anyhow::Result<(Self::ResourceAddress, Vec<u8>)>>,
     ) -> anyhow::Result<()> {
         Ok(())
     }

@@ -2,19 +2,14 @@
 //
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use serde_json::Value;
-use tvm_executor::BlockchainConfig;
-
-use crate::block::keeper::process::verify_block;
-use crate::block::producer::process::BlockProducerProcess;
-use crate::block::producer::BlockProducer;
+use crate::block::verify::verify_block;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::BLSSignatureScheme;
 use crate::bls::GoshBLS;
+use crate::config::load_blockchain_config;
 use crate::node::associated_types::BlockStatus;
 use crate::node::associated_types::NackData;
 use crate::node::associated_types::NackReason;
@@ -22,8 +17,6 @@ use crate::node::associated_types::NodeAssociatedTypes;
 use crate::node::services::sync::StateSyncService;
 use crate::node::Node;
 use crate::repository::cross_thread_ref_repository::CrossThreadRefDataRead;
-use crate::repository::optimistic_state::OptimisticState;
-use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::AckiNackiBlock;
@@ -33,34 +26,20 @@ use crate::types::ThreadIdentifier;
 
 // const BROADCAST_ACK_BLOCK_DIFF: u32 = 10;
 
-impl<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
-Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
-    where
-        TBlockProducerProcess:
-        BlockProducerProcess< Repository = RepositoryImpl>,
-        TBlockProducerProcess: BlockProducerProcess<
-            BLSSignatureScheme = GoshBLS,
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-            OptimisticState = OptimisticStateImpl,
-        >,
-        <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
-            <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
-        >,
-        TStateSyncService: StateSyncService<
-            Repository = RepositoryImpl
-        >,
-        TRandomGenerator: rand::Rng,
+impl<TStateSyncService, TRandomGenerator> Node<TStateSyncService, TRandomGenerator>
+where
+    TStateSyncService: StateSyncService<Repository = RepositoryImpl>,
+    TRandomGenerator: rand::Rng,
 {
     pub(crate) fn generate_nack(
         &self,
         block_id: BlockIdentifier,
         block_seq_no: BlockSeqNo,
-        reason:  NackReason,
+        reason: NackReason,
     ) -> anyhow::Result<Option<<Self as NodeAssociatedTypes>::Nack>> {
         if let Some((signer_index, secret)) = self.get_signer_data_for_block_id(block_id.clone()) {
             let nack_data = NackData { block_id, block_seq_no, reason };
-            let signature =
-                <GoshBLS as BLSSignatureScheme>::sign(&secret, &nack_data)?;
+            let signature = <GoshBLS as BLSSignatureScheme>::sign(&secret, &nack_data)?;
             let mut signature_occurrences = HashMap::new();
             signature_occurrences.insert(signer_index, 1);
 
@@ -82,8 +61,7 @@ Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
         tracing::trace!("sent_acks len: {}", self.sent_acks.len());
         let received_acks = &candidate_block.data().get_common_section().acks;
         tracing::trace!("received_acks len: {}", received_acks.len());
-        let keys_ring =
-            self.get_block_keeper_pubkeys(candidate_block.data().parent()).unwrap();
+        let keys_ring = self.get_block_keeper_pubkeys(candidate_block.data().parent()).unwrap();
 
         // clear received acks from sent acks
         for ack in received_acks {
@@ -91,7 +69,9 @@ Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
                 return Ok(BlockStatus::BadBlock);
             }
             let sigs = ack.clone_signature_occurrences();
-            if let Some(signer_index) = self.get_node_signer_index_for_block_id(ack.data().block_id.clone()) {
+            if let Some(signer_index) =
+                self.get_node_signer_index_for_block_id(ack.data().block_id.clone())
+            {
                 if sigs.contains_key(&signer_index) {
                     tracing::trace!("remove ack from cache: {:?}", ack.data());
                     self.sent_acks.remove(&ack.data().block_seq_no);
@@ -120,12 +100,14 @@ Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
         Ok(BlockStatus::Ok)
     }
 
-    pub(crate) fn on_ack(&mut self, ack: &<Self as NodeAssociatedTypes>::Ack) -> anyhow::Result<()> {
+    pub(crate) fn on_ack(
+        &mut self,
+        ack: &<Self as NodeAssociatedTypes>::Ack,
+    ) -> anyhow::Result<()> {
         tracing::trace!("on_ack {:?}", ack);
         let block_id: &BlockIdentifier = &ack.data().block_id;
         let block_seq_no = ack.data().block_seq_no;
-        let Some(signatures_map) = self.get_block_keeper_pubkeys(block_id.clone())
-        else {
+        let Some(signatures_map) = self.get_block_keeper_pubkeys(block_id.clone()) else {
             tracing::trace!("ack can't be processed now, save to cache.");
             let acks = self.ack_cache.entry(block_seq_no).or_default();
             acks.push(ack.clone());
@@ -142,7 +124,10 @@ Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
         Ok(())
     }
 
-    pub(crate) fn on_nack(&mut self, nack: &<Self as NodeAssociatedTypes>::Nack) -> anyhow::Result<()> {
+    pub(crate) fn on_nack(
+        &mut self,
+        nack: &<Self as NodeAssociatedTypes>::Nack,
+    ) -> anyhow::Result<()> {
         // TODO: self.repository.mark_block_as_suspicious
         // suspicious blocks must be verified despite the BK status
         // if nack was invalid remove the suspicious marker and resend the first nack to BP
@@ -177,36 +162,30 @@ Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
             Ok((_, seq_no)) => {
                 if seq_no >= block_seq_no {
                     tracing::warn!("Received nack target block is older than the last finalized block for this thread");
-                    return Ok(())
+                    return Ok(());
                 }
-            },
+            }
             Err(_) => return Ok(()),
         }
-        let signatures_map =
-            self.get_block_keeper_pubkeys(block.data().identifier()).unwrap();
+        let signatures_map = self.get_block_keeper_pubkeys(block.data().identifier()).unwrap();
 
-        let is_valid_signatute= match nack
-            .verify_signatures(&signatures_map) {
+        let is_valid_signatute = match nack.verify_signatures(&signatures_map) {
             Ok(res) => res,
             Err(e) => {
                 tracing::warn!("Failed to check Nack signatures: {e:?}");
                 return Ok(());
-            },
+            }
         };
         if !is_valid_signatute {
             tracing::warn!("Invalid Nack signature");
             return Ok(());
         }
 
-        self.blocks_states
-            .get(block_id)?
-            .lock()
-            .add_suspicious()?;
+        self.block_state_repository.get(block_id)?.lock().add_suspicious()?;
 
-         let Ok(is_valid_nack) = self.is_valid_nack(nack, thread_id, block.clone())
-         else {
+        let Ok(is_valid_nack) = self.is_valid_nack(nack, thread_id, block.clone()) else {
             tracing::warn!("Failed to validate Nack");
-            return Ok(())
+            return Ok(());
         };
 
         if is_valid_nack {
@@ -220,21 +199,17 @@ Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
             // }
         } else {
             tracing::trace!("invalid nack {:?}", nack);
-            self.blocks_states
-                .get(block_id)?
-                .lock()
-                .resolve_suspicious()?;
+            self.block_state_repository.get(block_id)?.lock().resolve_suspicious()?;
             let parent_block_id = block.data().parent();
-            let bk_set = self.blocks_states
-                .get(&block_id.clone())?
-                .lock()
-                .clone();
-            let bk_set = bk_set
-                .bk_set().clone().unwrap();
-            if let Some(signer_index) = self.get_node_signer_index_for_block_id(parent_block_id.clone()) {
+            let bk_set = self.block_state_repository.get(&block_id.clone())?.lock().clone();
+            let bk_set = bk_set.bk_set().clone().unwrap();
+            if let Some(signer_index) =
+                self.get_node_signer_index_for_block_id(parent_block_id.clone())
+            {
                 if bk_set.contains_signer(&signer_index) {
                     tracing::trace!("Forward nack");
-                    let new_nack_data = NackReason::WrongNack { nack_data_envelope: Arc::new(nack.clone()) };
+                    let new_nack_data =
+                        NackReason::WrongNack { nack_data_envelope: Arc::new(nack.clone()) };
                     let new_nack = self.generate_nack(
                         nack.data().block_id.clone(),
                         nack.data().block_seq_no,
@@ -253,26 +228,34 @@ Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
         Ok(())
     }
 
-    pub(crate) fn is_valid_nack(&mut self, nack: &<Self as NodeAssociatedTypes>::Nack, thread_id: &ThreadIdentifier, block: Envelope<GoshBLS, AckiNackiBlock>) -> anyhow::Result<bool> {
+    pub(crate) fn is_valid_nack(
+        &mut self,
+        nack: &<Self as NodeAssociatedTypes>::Nack,
+        thread_id: &ThreadIdentifier,
+        block: Envelope<GoshBLS, AckiNackiBlock>,
+    ) -> anyhow::Result<bool> {
         match nack.data().clone().reason {
-        /*
-            NackReason::SameHeightBlock{first_envelope, second_envelope} => {
-                self.is_valid_same_height_nack(block, first_envelope, second_envelope, thread_id)
-            },
-        */
-            NackReason::BadBlock{envelope} => {
+            // NackReason::SameHeightBlock{first_envelope, second_envelope} => {
+            // self.is_valid_same_height_nack(block, first_envelope, second_envelope, thread_id)
+            // },
+            NackReason::BadBlock { envelope } => {
                 self.is_valid_bad_block_nack(block, envelope, thread_id)
-            },
-            NackReason::WrongNack{nack_data_envelope: _} => {
+            }
+            NackReason::WrongNack { nack_data_envelope: _ } => {
                 tracing::trace!("WrongNack nack");
                 Ok(false)
             }
         }
     }
 
-
     // TODO: rework to check that blocks have the same parent id, were produced by the same node and have different hashes
-    fn _is_valid_same_height_nack(&mut self, block: Envelope<GoshBLS, AckiNackiBlock>, nack_first_envelope: Envelope<GoshBLS, AckiNackiBlock>, nack_second_envelope: Envelope<GoshBLS, AckiNackiBlock>, thread_id: &ThreadIdentifier) -> anyhow::Result<bool> {
+    fn _is_valid_same_height_nack(
+        &mut self,
+        block: Envelope<GoshBLS, AckiNackiBlock>,
+        nack_first_envelope: Envelope<GoshBLS, AckiNackiBlock>,
+        nack_second_envelope: Envelope<GoshBLS, AckiNackiBlock>,
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<bool> {
         tracing::trace!("SameHeightBlock nack");
         let nack_target_node_id = &nack_first_envelope.data().get_common_section().producer_id;
         let bk_set = match self.get_block_keeper_set_for_block_id(block.data().parent()).clone() {
@@ -299,12 +282,14 @@ Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
         sign_producer_map.insert(data.signer_index, nack_key.clone());
         if !nack_first_envelope
             .verify_signatures(&sign_producer_map)
-            .expect("Signatures verification should not crash.") {
+            .expect("Signatures verification should not crash.")
+        {
             return Ok(false);
         }
         if !nack_second_envelope
             .verify_signatures(&sign_producer_map)
-            .expect("Signatures verification should not crash.") {
+            .expect("Signatures verification should not crash.")
+        {
             return Ok(false);
         }
         if let Ok(res) = nack_first_envelope.data().check_hash() {
@@ -327,14 +312,18 @@ Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
         Ok(true)
     }
 
-
-    fn is_valid_bad_block_nack(&mut self, block: Envelope<GoshBLS, AckiNackiBlock>, nack_envelope: Envelope<GoshBLS, AckiNackiBlock>, thread_id: &ThreadIdentifier) -> anyhow::Result<bool> {
+    fn is_valid_bad_block_nack(
+        &mut self,
+        block: Envelope<GoshBLS, AckiNackiBlock>,
+        nack_envelope: Envelope<GoshBLS, AckiNackiBlock>,
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<bool> {
         tracing::trace!("BadBlock nack");
         let nack_target_node_id = &nack_envelope.data().get_common_section().producer_id;
         let block_nack = block.data().get_common_section().nacks.clone();
         let block_id = block.data().identifier();
         // TODO: check if black was already validated.
-        //if self.blocks_state.get(block_id)?.
+        // if self.blocks_state.get(block_id)?.
         let bk_set = match self.get_block_keeper_set_for_block_id(block.data().parent()).clone() {
             Some(value) => value,
             None => return Ok(false),
@@ -359,36 +348,18 @@ Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
         if (block.data().get_hash() == nack_envelope.data().get_hash()) || (!is_valid_sig_bloc) {
             return Ok(false);
         }
-        let blockchain_config_path = &self.config.local.blockchain_config_path;
-        let json = std::fs::read_to_string(blockchain_config_path)?;
-        let map = serde_json::from_str::<serde_json::Map<String, Value>>(&json)?;
-        let config_params = tvm_block_json::parse_config(&map).map_err(|e| {
-            anyhow::format_err!(
-                "Failed to load config params from file {blockchain_config_path:?}: {e}"
-            )
-        })?;
-        let blockchain_config = BlockchainConfig::with_config(config_params)
-            .map_err(|e| anyhow::format_err!("Failed to create blockchain config: {e}"))?;
-        let zerostate_path = Some(self.config.local.zerostate_path.clone());
-        // TODO: check why we create repo here
-        let repository = RepositoryImpl::new(
-            PathBuf::from("./data"),
-            zerostate_path,
-            (self.config.global.finalization_delay_to_stop * 2) as usize,
-            1,
-            self.shared_services.clone(),
-            Arc::clone(&self.nack_set_cache),
-            self.blocks_states.clone(),
-        );
-        match repository
-            .get_optimistic_state(&block_id, Arc::clone(&self.nack_set_cache))
+        let blockchain_config = load_blockchain_config(&self.config.local.blockchain_config_path)?;
+        match self
+            .repository
+            .get_optimistic_state(&block_id, thread_id, Arc::clone(&self.nack_set_cache), None)
             .expect("Failed to get optimistic state of the previous block")
         {
             Some(mut state) => {
                 let refs = self.shared_services.exec(|service| {
                     let mut refs = vec![];
                     for block_id in &nack_envelope.data().get_common_section().refs {
-                        let state = service.cross_thread_ref_data_service
+                        let state = service
+                            .cross_thread_ref_data_service
                             .get_cross_thread_ref_data(block_id)
                             .expect("Failed to load ref state");
                         refs.push(state);
@@ -403,19 +374,27 @@ Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
                     refs,
                     self.shared_services.clone(),
                     block_nack,
-                    self.blocks_states.clone()
+                    self.block_state_repository.clone(),
+                    self.repository.accounts_repository().clone(),
+                    self.metrics.clone(),
+                    self.message_db.clone(),
                 ) {
                     if res {
                         return Ok(false);
                     }
                 }
-            },
-            None => { return Ok(false); }
+            }
+            None => {
+                return Ok(false);
+            }
         }
         Ok(true)
     }
 
-    pub(crate) fn _check_cached_acks_and_nacks(&mut self, last_processed_block: &<Self as NodeAssociatedTypes>::CandidateBlock) -> anyhow::Result<()> {
+    pub(crate) fn _check_cached_acks_and_nacks(
+        &mut self,
+        last_processed_block: &<Self as NodeAssociatedTypes>::CandidateBlock,
+    ) -> anyhow::Result<()> {
         // TODO: need to track thread id of the finalized block
         let block_seq_no = last_processed_block.data().seq_no();
         let block_id = last_processed_block.data().identifier();
@@ -436,7 +415,10 @@ Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
         Ok(())
     }
 
-    pub(crate) fn clear_old_acks_and_nacks(&mut self, finalized_block_seq_no: &BlockSeqNo) -> anyhow::Result<()> {
+    pub(crate) fn _clear_old_acks_and_nacks(
+        &mut self,
+        finalized_block_seq_no: &BlockSeqNo,
+    ) -> anyhow::Result<()> {
         let ack_keys: Vec<BlockSeqNo> = self.ack_cache.keys().cloned().collect();
         for key in ack_keys {
             if key <= *finalized_block_seq_no {

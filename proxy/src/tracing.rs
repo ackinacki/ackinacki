@@ -2,9 +2,9 @@
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+// Initialize tracing preventing panic if it is already initialized
 pub fn init_tracing() {
-    // Init tracing
-    tracing_subscriber::registry()
+    let _ = tracing_subscriber::registry()
         .with(
             tracing_subscriber::fmt::layer()
                 .compact()
@@ -16,5 +16,5 @@ pub fn init_tracing() {
                 .with_writer(std::io::stderr),
         )
         .with(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+        .try_init();
 }

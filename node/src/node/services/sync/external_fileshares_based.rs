@@ -1,10 +1,12 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::sync::mpsc::Sender;
 use std::time::Duration;
 
+use telemetry_utils::mpsc::InstrumentedSender;
+
 use crate::block_keeper_system::BlockKeeperSet;
+use crate::message_storage::MessageDurableStorage;
 use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
 use crate::node::services::sync::StateSyncService;
 use crate::repository::optimistic_state::OptimisticState;
@@ -15,6 +17,7 @@ use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
 use crate::services::blob_sync::external_fileshares_based::ServiceInterface;
 use crate::services::blob_sync::BlobSyncService;
+use crate::types::thread_message_queue::account_messages_iterator::AccountMessagesIterator;
 
 #[derive(Clone)]
 pub struct ExternalFileSharesBased {
@@ -50,21 +53,30 @@ impl StateSyncService for ExternalFileSharesBased {
 
     fn add_share_state_task(
         &mut self,
-        mut state: <Self::Repository as Repository>::OptimisticState,
+        state: <Self::Repository as Repository>::OptimisticState,
         cross_thread_ref_data: Vec<CrossThreadRefData>,
         finalized_block_stats: BlockStatistics,
         bk_set: BlockKeeperSet,
+        message_db: &MessageDurableStorage,
     ) -> anyhow::Result<Self::ResourceAddress> {
         tracing::trace!("add_share_state_task");
         let cid = self.generate_resource_address(&state)?;
         // TODO: fix. do not load entire state into memory.
-        let serialized_state = state.serialize_into_buf()?;
-        let data = bincode::serialize(&WrappedStateSnapshot {
-            optimistic_state: serialized_state,
-            cross_thread_ref_data,
-            finalized_block_stats,
-            bk_set,
-        })?;
+        let db_messages = state
+            .messages
+            .iter(message_db)
+            .map(|range| range.remaining_messages_from_db().unwrap_or_default())
+            .collect();
+        let serialized_state = state.serialize_into_buf(false)?;
+        let data = bincode::serialize(
+            &WrappedStateSnapshot::builder()
+                .optimistic_state(serialized_state)
+                .cross_thread_ref_data(cross_thread_ref_data)
+                .finalized_block_stats(finalized_block_stats)
+                .bk_set(bk_set)
+                .db_messages(db_messages)
+                .build(),
+        )?;
 
         self.blob_sync.share_blob(cid.clone(), std::io::Cursor::new(data), |_| {
             // Refactoring from an old code. It didn't care about results :(
@@ -76,7 +88,7 @@ impl StateSyncService for ExternalFileSharesBased {
     fn add_load_state_task(
         &mut self,
         resource_address: Self::ResourceAddress,
-        output: Sender<anyhow::Result<(Self::ResourceAddress, Vec<u8>)>>,
+        output: InstrumentedSender<anyhow::Result<(Self::ResourceAddress, Vec<u8>)>>,
     ) -> anyhow::Result<()> {
         self.blob_sync.load_blob(
             resource_address.clone(),
@@ -90,19 +102,17 @@ impl StateSyncService for ExternalFileSharesBased {
                 let output = output.clone();
                 move |e| {
                     let mut buffer: Vec<u8> = vec![];
-                    match e.read_to_end(&mut buffer) {
-                        Ok(_size) => {
-                            output.send(Ok((resource_address, buffer))).ok();
-                        }
-                        Err(e) => {
-                            output.send(Err(e.into())).ok();
-                        }
-                    }
+                    let _ = output.send(match e.read_to_end(&mut buffer) {
+                        Ok(_size) => Ok((resource_address, buffer)),
+                        Err(e) => Err(e.into()),
+                    });
                 }
             },
-            move |e| {
-                // Handle error
-                output.send(Err(e)).ok();
+            {
+                move |e| {
+                    // Handle error
+                    let _ = output.send(Err(e));
+                }
             },
         )?;
         Ok(())

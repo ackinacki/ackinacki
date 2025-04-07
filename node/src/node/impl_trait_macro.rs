@@ -15,7 +15,7 @@ $crate::node::Node<TBLSSignatureScheme, TStateSyncService, TBlockProducerProcess
         TBLSSignatureScheme: $crate::bls::BLSSignatureScheme<PubKey = $crate::bls::gosh_bls::PubKey> + Clone,
         <TBLSSignatureScheme as $crate::bls::BLSSignatureScheme>::PubKey: PartialEq,
         TBlockProducerProcess:
-        $crate::block::producer::process::BlockProducerProcess< Repository = RepositoryImpl>,
+        $crate::block::producer::process::BlockProducerProcess<Repository = RepositoryImpl>,
         TBlockProducerProcess: $crate::block::producer::process::BlockProducerProcess<
             BLSSignatureScheme = TBLSSignatureScheme,
             CandidateBlock = $crate::bls::envelope::Envelope<TBLSSignatureScheme, $crate::types::AckiNackiBlock<TBLSSignatureScheme>>,

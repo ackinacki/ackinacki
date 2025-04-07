@@ -5,7 +5,7 @@ set -eu
 SPONSOR_WALLET_ADDRESS=""
 SPONSOR_WALLET_KEY_FILE=""
 MASTER_KEY_FILE_OUTPUT_PATH=""
-SERVICE_KEY_FILE_OUTPUT_PATH=""
+LICENSE_NUMBERS=""
 
 print_usage () {
   cat << EOF
@@ -17,10 +17,10 @@ To craete wallet see: https://dev.ackinacki.com/how-to-deploy-a-sponsor-wallet#c
 
 REQUIRED OPTIONS:
 
-    -w|--wallet        specify wallet address from where send tokens
-    -wk|--wallet-keys  give wallet keys file
-    -m|--master-keys   provide path to file with master keys
-    -s|--service-keys  specify path to service keys file
+    -w|--wallet          specify wallet address from where send tokens
+    -wk|--wallet-keys    give wallet keys file
+    -m|--master-keys     provide path to file with master keys
+    -l|--license-numbers provide license numbers for wallet. Use ',' as a delimiter for numbers without any whitespaces. For example "-l 1,2,3"
 
 EOF
 }
@@ -44,9 +44,9 @@ get_options () {
             MASTER_KEY_FILE_OUTPUT_PATH="$1"
             shift
             ;;
-        -s|--service-keys)
+        -l|--license-numbers)
             shift
-            SERVICE_KEY_FILE_OUTPUT_PATH="$1"
+            LICENSE_NUMBERS="$1"
             shift
             ;;
         -h|--help)
@@ -79,7 +79,10 @@ fi
 ABI=../contracts/bksystem/BlockKeeperContractRoot.abi.json
 WALLET_ABI=../contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json
 ROOT=0:7777777777777777777777777777777777777777777777777777777777777777
-SPONSOR_WALLET_ABI="../contracts/multisig/multisig.abi.json"
+SPONSOR_WALLET_ABI=../contracts/multisig/multisig.abi.json
+LICENSE_ROOT_ABI=../contracts/bksystem/LicenseRoot.abi.json
+LICENSE_ROOT_ADDR=0:4444444444444444444444444444444444444444444444444444444444444444
+LICENSE_ABI=../contracts/bksystem/License.abi.json
 
 WALLET_INIT=1000000000
 ECC_KEY="1"
@@ -89,19 +92,16 @@ gen_key () {
     echo File $MASTER_KEY_FILE_OUTPUT_PATH not found. Generating master keys...
     tvm-cli -j genphrase --dump $MASTER_KEY_FILE_OUTPUT_PATH > $MASTER_KEY_FILE_OUTPUT_PATH.phrase
   fi
-
-  if [ ! -e $SERVICE_KEY_FILE_OUTPUT_PATH ]; then
-    echo File $SERVICE_KEY_FILE_OUTPUT_PATH not found. Generating service keys...
-    tvm-cli -j genphrase --dump $SERVICE_KEY_FILE_OUTPUT_PATH > $SERVICE_KEY_FILE_OUTPUT_PATH.phrase
-  fi
 }
 
 read_key () {
   local MASTER_PUB_KEY_JSON=$(jq -r .public $MASTER_KEY_FILE_OUTPUT_PATH)
-  MASTER_PUB_KEY=$(echo '{"pubkey": "0x{public}"}' | sed -e "s/{public}/$MASTER_PUB_KEY_JSON/g")
+  local WHITELISTPARAMS=$(echo "$LICENSE_NUMBERS" | jq -R 'split(",") | map({(.): true}) | add')
+  
+  [ "$(echo $WHITELISTPARAMS | jq -r '. | length')" -gt 5 ] && { echo "License numbers couldn't be greater than 5" ; exit 1 ; }
 
-  SERVICE_PUB_KEY_JSON=$(jq -r .public $SERVICE_KEY_FILE_OUTPUT_PATH)
-  SERVICE_PUB_KEY=$(echo '{"key": "0x{public}"}' | sed -e "s/{public}/$SERVICE_PUB_KEY_JSON/g")
+  MASTER_PUB_KEY=$(echo '{"pubkey": "0x{public}"}' | sed -e "s/{public}/$MASTER_PUB_KEY_JSON/g")
+  MASTER_PUB_KEY_LICENSE=$(echo "{\"pubkey\": \"0x{public}\", \"whiteListLicense\": $WHITELISTPARAMS}" | sed -e "s/{public}/$MASTER_PUB_KEY_JSON/g")
 }
 
 TVM_ACCOUNT_STATUS=$(tvm-cli -j account $SPONSOR_WALLET_ADDRESS | jq -r '.acc_type')
@@ -115,23 +115,18 @@ fi
 gen_key
 read_key
 
-tvm-cli -j callx --addr $ROOT --abi $ABI --method deployAckiNackiBlockKeeperNodeWallet "$MASTER_PUB_KEY"
+echo Deploying wallet...
 
-WALLET_ADDR=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeperNodeWalletAddress "$MASTER_PUB_KEY" | jq -r '.value0')
+tvm-cli -j callx --addr $ROOT --abi $ABI --method deployAckiNackiBlockKeeperNodeWallet "$MASTER_PUB_KEY_LICENSE"
+
+WALLET_ADDR=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeperNodeWalletAddress "$MASTER_PUB_KEY" | jq -r '.wallet')
 
 echo Wallet $WALLET_ADDR is deployed.
 
-tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $MASTER_KEY_FILE_OUTPUT_PATH --method setServiceKey "$SERVICE_PUB_KEY" && echo Wallet service key has been added.
-
-SERVICE_WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r '.service_key')
-
-if [ "0x$SERVICE_PUB_KEY_JSON" = "$SERVICE_WALLET_DETAILS" ]
-then
-  echo "Service wallet key match local key."
-else
-  echo "Key doesn't match. Exiting..."
-  exit 1
-fi
+IFS="," ; for license in $LICENSE_NUMBERS; do
+  LICENSE_ADDR=$(tvm-cli -j runx --abi $LICENSE_ROOT_ABI --addr $LICENSE_ROOT_ADDR -m getLicenseAddress "{\"num\": $license}" | jq -r '.license_address')
+  echo License number $license and license address is $LICENSE_ADDR
+done
 
 ROOT_MIN_STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake' | xargs printf "%d / 1000000000\n" | bc -l)
 ROOT_MIN_STAKE=$((${ROOT_MIN_STAKE%.*} + 1))
@@ -147,9 +142,9 @@ SPONSOR_PARAMS="{\"dest\": \"$WALLET_ADDR\", \"value\": $WALLET_INIT, \"cc\": {\
 tvm-cli -j call $SPONSOR_WALLET_ADDRESS sendTransaction "$SPONSOR_PARAMS" --abi $SPONSOR_WALLET_ABI --sign $SPONSOR_WALLET_KEY_FILE
 
 echo "Checking wallet balance..."
-WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '{balance,walletId}')
-echo $WALLET_DETAILS | jq -r '.balance' | xargs printf "Current wallet balance: %d\n"
+WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r '.balance')
+echo $WALLET_DETAILS | xargs printf "Current wallet balance: %d\n"
 
-tvm-cli -j runx --addr $ROOT --abi $ABI --method getAckiNackiBlockKeeperNodeWalletAddress "$MASTER_PUB_KEY" | jq -r .value0 | cut -d ':' -f2 | xargs printf "Node ID: %s\n"
+tvm-cli -j runx --addr $ROOT --abi $ABI --method getAckiNackiBlockKeeperNodeWalletAddress "$MASTER_PUB_KEY" | jq -r .wallet | cut -d ':' -f2 | xargs printf "Node ID: %s\n"
 
 printf "Initial steps have been done. Save your node id\n"

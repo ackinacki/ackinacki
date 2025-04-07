@@ -6,18 +6,11 @@
 		{
 			"name": "constructor",
 			"inputs": [
-				{"name":"code","type":"map(uint8,cell)"},
+				{"name":"AckiNackiBlockKeeperNodeWalletCode","type":"cell"},
+				{"name":"BlockKeeperPreEpochCode","type":"cell"},
+				{"name":"BlockKeeperEpochCode","type":"cell"},
 				{"name":"seqNoStart","type":"uint64"},
-				{"name":"walletId","type":"uint256"},
 				{"name":"ProxyList","type":"map(uint8,string)"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "setServiceKey",
-			"inputs": [
-				{"name":"service_key","type":"optional(uint256)"}
 			],
 			"outputs": [
 			]
@@ -89,8 +82,7 @@
 				{"name":"pubkey","type":"uint256"},
 				{"name":"root","type":"address"},
 				{"name":"ProxyList","type":"map(uint8,string)"},
-				{"name":"owner","type":"optional(address)"},
-				{"name":"service_key","type":"optional(uint256)"}
+				{"name":"owner","type":"optional(address)"}
 			]
 		},
 		{
@@ -115,9 +107,7 @@
 		{"init":false,"name":"_ProxyList","type":"map(uint8,string)"},
 		{"init":false,"name":"_owner","type":"optional(address)"},
 		{"init":true,"name":"_owner_pubkey","type":"uint256"},
-		{"init":false,"name":"_service_key","type":"optional(uint256)"},
 		{"init":false,"name":"_root","type":"address"},
-		{"init":false,"name":"_walletId","type":"uint256"},
 		{"init":false,"name":"status","type":"bool"},
 		{"init":false,"name":"_is_closed","type":"bool"}
 	]

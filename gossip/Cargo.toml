@@ -21,8 +21,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 cool-id-generator = "1.0.1"
-poem = "2.0.0"
-poem-openapi = { version = "4.0.0", features = ["swagger-ui"] }
+poem = "3.1.8"
+poem-openapi = { version = "5.1.12", features = ["swagger-ui"] }
 structopt = "0.3.26"
 
 [dev-dependencies]

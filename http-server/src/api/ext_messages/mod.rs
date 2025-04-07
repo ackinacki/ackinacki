@@ -2,11 +2,16 @@
 //
 
 use std::borrow::Cow;
+use std::fmt::Display;
+use std::fmt::Formatter;
+use std::net::SocketAddr;
 
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::serde_as;
 use serde_with::Bytes;
+use tvm_types::write_boc;
+use tvm_types::SliceData;
 
 pub mod v1;
 pub mod v2;
@@ -74,13 +79,61 @@ impl ExtMsgResponse {
     }
 }
 
+impl From<ExtMsgFeedback> for ExtMsgResponse {
+    fn from(feedback: ExtMsgFeedback) -> Self {
+        tracing::trace!(target: "http_server", "Converting feedback to response...");
+
+        let current_time = current_time_millis();
+        let block_hash = feedback.block_hash.unwrap_or("None".to_string());
+        let tx_hash = feedback.tx_hash.unwrap_or("None".to_string());
+
+        if feedback.error.is_none() && feedback.exit_code == 0 {
+            let ext_out_msgs = feedback
+                .ext_out_msgs
+                .into_iter()
+                .filter_map(|body| write_boc(&body.cell()).ok().map(tvm_types::base64_encode))
+                .collect();
+
+            ExtMsgResponse {
+                result: Some(ExtMsgResult {
+                    message_hash: feedback.message_hash,
+                    block_hash,
+                    tx_hash,
+                    ext_out_msgs,
+                    aborted: feedback.aborted,
+                    current_time,
+                    exit_code: 0,
+                    producers: vec![],
+                }),
+                ..Default::default()
+            }
+        } else {
+            let feedback_error: FeedbackError = feedback.error.unwrap();
+            ExtMsgResponse {
+                error: Some(ExtMsgError {
+                    code: feedback_error.code.to_string().into(),
+                    message: feedback_error.message.unwrap_or_else(|| "Unknown error".to_string()),
+                    data: Some(ExtMsgErrorData::new(
+                        vec![],
+                        feedback.message_hash,
+                        Some(feedback.exit_code),
+                        feedback.thread_id.map(hex::encode),
+                    )),
+                }),
+                ..Default::default()
+            }
+        }
+    }
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct ExtMsgResult {
     message_hash: String,
     block_hash: String,
     tx_hash: String,
+    ext_out_msgs: Vec<String>,
     aborted: bool, /* We still need this field as some aborted transactions from ExtInMsg are still included into block */
-    tvm_exit_code: i32, /* To see the exit code of aborted transaction included into block. 0 for success */
+    exit_code: i32, /* To see the exit code of aborted transaction included into block. 0 for success */
     producers: Vec<String>, // ip of block producers, [0] - active one
     current_time: String,
 }
@@ -89,9 +142,20 @@ pub struct ExtMsgResult {
 pub struct ExtMsgErrorData {
     producers: Vec<String>,
     message_hash: String,
-    tvm_exit_code: Option<i32>,
+    exit_code: Option<i32>,
     current_time: String,
     thread_id: Option<String>,
+}
+
+impl ExtMsgErrorData {
+    pub fn new(
+        producers: Vec<String>,
+        message_hash: String,
+        exit_code: Option<i32>,
+        thread_id: Option<String>,
+    ) -> Self {
+        Self { producers, message_hash, exit_code, current_time: current_time_millis(), thread_id }
+    }
 }
 
 #[derive(Serialize, Clone, Debug, Default)]
@@ -124,6 +188,7 @@ pub enum FeedbackErrorCode {
     DuplicateMessage,
     ThreadMismatch,
     InternalError,
+    ComputeSkipped,
 }
 
 impl FeedbackErrorCode {
@@ -139,6 +204,7 @@ impl FeedbackErrorCode {
             FeedbackErrorCode::DuplicateMessage => Cow::Borrowed("DUPLICATE_MESSAGE"),
             FeedbackErrorCode::ThreadMismatch => Cow::Borrowed("THREAD_MISMATCH"),
             FeedbackErrorCode::InternalError => Cow::Borrowed("INTERNAL_ERROR"),
+            FeedbackErrorCode::ComputeSkipped => Cow::Borrowed("COMPUTE_SKIPPED"),
         }
     }
 }
@@ -149,66 +215,111 @@ pub struct FeedbackError {
     pub message: Option<String>,
 }
 
-#[derive(Clone, Debug, Default)]
+impl Display for FeedbackError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("FeedbackError");
+
+        debug.field("code", &self.code);
+
+        if let Some(message) = &self.message {
+            debug.field("message", message);
+        }
+
+        debug.finish()
+    }
+}
+
+#[derive(Clone, Default)]
 pub struct ExtMsgFeedback {
     pub message_hash: String,
     pub tx_hash: Option<String>,
     pub block_hash: Option<String>,
     pub aborted: bool,
-    pub tvm_exit_code: i32,
+    pub exit_code: i32,
     pub thread_id: Option<[u8; 34]>,
     pub error: Option<FeedbackError>,
+    pub ext_out_msgs: Vec<SliceData>,
 }
 
-impl From<ExtMsgFeedback> for ExtMsgResponse {
-    fn from(feedback: ExtMsgFeedback) -> Self {
-        tracing::trace!(target: "http_server", "Converting feedback to response...");
-        let mut response = ExtMsgResponse { ..Default::default() };
-        tracing::trace!(target: "http_server", "Dummy response ok");
+impl Display for ExtMsgFeedback {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("ExtMsgFeedback");
 
-        let current_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-            .to_string();
-        tracing::trace!(target: "http_server", "Current time: {current_time}");
-        tracing::trace!(target: "http_server", "Processing by exit code: {}", feedback.tvm_exit_code);
-        match feedback.tvm_exit_code {
-            0 => {
-                response.result = Some(ExtMsgResult {
-                    message_hash: feedback.message_hash,
-                    block_hash: feedback.block_hash.unwrap_or("None".to_string()),
-                    tx_hash: feedback.tx_hash.unwrap_or("None".to_string()),
-                    aborted: false,
-                    current_time,
-                    tvm_exit_code: 0,
-                    producers: vec![],
-                });
-            }
-            _ => {
-                let feedback_error = feedback.error.unwrap();
-                // let (code, message) = match feedback.error {
-                //     Some(_) => (),
-                //     None => ("INTERNAL_ERROR".to_string(), "")
-                // };
-                let error = ExtMsgError {
-                    code: feedback_error.code.to_string().into(),
-                    message: match feedback_error.message {
-                        Some(msg) => msg,
-                        None => "Unknown error".to_string(),
-                    },
-                    data: Some(ExtMsgErrorData {
-                        message_hash: feedback.message_hash,
-                        current_time,
-                        tvm_exit_code: Some(feedback.tvm_exit_code),
-                        producers: vec![],
-                        thread_id: feedback.thread_id.map(hex::encode),
-                    }),
-                };
-                response.error = Some(error);
-            }
+        debug.field("message_hash", &self.message_hash);
+
+        if let Some(tx_hash) = &self.tx_hash {
+            debug.field("tx_hash", tx_hash);
         }
 
-        response
+        if let Some(block_hash) = &self.block_hash {
+            debug.field("block_hash", block_hash);
+        }
+
+        debug.field("aborted", &self.aborted);
+        debug.field("exit_code", &self.exit_code);
+
+        if let Some(thread_id) = &self.thread_id {
+            debug.field("thread_id", &hex::encode(thread_id));
+        }
+
+        if !self.ext_out_msgs.is_empty() {
+            debug.field("ext_out_msgs", &self.ext_out_msgs.len());
+        }
+
+        if let Some(error) = &self.error {
+            debug.field("error", error);
+        }
+
+        debug.finish()
     }
+}
+
+#[derive(Clone)]
+pub struct ExtMsgFeedbackList(pub Vec<ExtMsgFeedback>);
+
+impl Default for ExtMsgFeedbackList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ExtMsgFeedbackList {
+    pub fn new() -> Self {
+        Self(vec![])
+    }
+
+    pub fn push(&mut self, feedback: ExtMsgFeedback) {
+        self.0.push(feedback);
+    }
+}
+
+impl Display for ExtMsgFeedbackList {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        let mut list = f.debug_list();
+        for feedback in &self.0 {
+            list.entry(&format_args!("{}", feedback));
+        }
+        list.finish()
+    }
+}
+
+#[derive(Debug)]
+pub struct ResolvingResult {
+    i_am_bp: bool,
+    active_bp: Vec<String>,
+}
+
+impl ResolvingResult {
+    pub fn new(i_am_bp: bool, active_bp: Vec<SocketAddr>) -> Self {
+        let active_bp = active_bp.into_iter().map(|addr| addr.ip().to_string()).collect();
+        Self { i_am_bp, active_bp }
+    }
+}
+
+fn current_time_millis() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .to_string()
 }

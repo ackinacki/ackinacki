@@ -35,12 +35,31 @@ pub struct DbMaintenance {
     pub info: &'static DbInfo,
 }
 
+#[derive(Default, Clone)]
+pub struct DbMaintenanceOptions {
+    pub silent: bool,
+}
+
 impl DbMaintenance {
+    pub fn migrate_all_to_latest(
+        db_dir: impl AsRef<Path>,
+        options: DbMaintenanceOptions,
+    ) -> anyhow::Result<()> {
+        for db in &[DbInfo::NODE, DbInfo::NODE_ARCHIVE, DbInfo::BM_ARCHIVE] {
+            DbMaintenance::new(db, &db_dir).migrate(MigrateTo::Latest, options.clone())?;
+        }
+        Ok(())
+    }
+
     pub fn new(info: &'static DbInfo, db_dir: impl AsRef<Path>) -> Self {
         Self { path: db_dir.as_ref().join(format!("{}.db", info.name)), info }
     }
 
-    pub fn migrate(&self, migrate_to: MigrateTo) -> anyhow::Result<()> {
+    pub fn migrate(
+        &self,
+        migrate_to: MigrateTo,
+        options: DbMaintenanceOptions,
+    ) -> anyhow::Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).with_context(|| format!("db path {:?}", self.path))?;
         }
@@ -53,35 +72,40 @@ impl DbMaintenance {
         migrations.validate()?;
         let latest_migrations_version = get_latest_migration_version(&self.info.migrations)?;
 
-        let info = formatdoc!(
-            r"
-            {}
-                db path: {}
-                schema version: {current_version}
-                latest migration version: {latest_migrations_version}
-            ",
-            self.info.name,
-            self.path.canonicalize()?.display()
-        );
-        println!("{info}");
+        if !options.silent {
+            let info = formatdoc!(
+                r"
+                {} db migration
+                    path: {}
+                    current version: {current_version}
+                    latest version: {latest_migrations_version}
+                ",
+                self.info.name,
+                self.path.canonicalize()?.display()
+            );
+            print!("{info}");
+        }
 
         let migrate_to_number = resolve_version(&migrate_to, latest_migrations_version)?;
         if current_version == migrate_to_number {
-            println!("`{}.db` is up to date", self.info.name);
+            if !options.silent {
+                println!("    up to date");
+            }
         } else if !matches!(migrate_to, MigrateTo::None) {
-            if current_version < migrate_to_number {
-                print!(
-                    "Upgrading `{}.db` to the schema version {:?}... ",
-                    migrate_to_number, self.info.name
-                );
-            } else {
-                print!(
-                    "Downgrading `{}.db` to the schema version {:?}... ",
-                    migrate_to_number, self.info.name
-                );
+            if !options.silent {
+                if current_version < migrate_to_number {
+                    print!("    upgrading to {migrate_to_number}... ",);
+                } else {
+                    print!("    downgrading to {migrate_to_number}... ",);
+                }
             }
             migrations.to_version(&mut conn, migrate_to_number as usize)?;
-            println!("done.");
+            if !options.silent {
+                println!("done.");
+            }
+        }
+        if !options.silent {
+            println!();
         }
 
         Ok(())

@@ -41,7 +41,13 @@ pub enum NetworkMessage {
 
     BlockAttestation((Envelope<GoshBLS, AttestationData>, ThreadIdentifier)),
 
-    BlockRequest((BlockSeqNo, BlockSeqNo, NodeIdentifier, ThreadIdentifier)),
+    BlockRequest {
+        inclusive_from: BlockSeqNo,
+        exclusive_to: BlockSeqNo,
+        requester: NodeIdentifier,
+        thread_id: ThreadIdentifier,
+        at_least_n_blocks: Option<usize>,
+    },
 
     SyncFrom((BlockSeqNo, ThreadIdentifier)),
 
@@ -53,24 +59,41 @@ pub enum NetworkMessage {
 impl Debug for NetworkMessage {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         use NetworkMessage::*;
-        let enum_type = match self {
-            Candidate(block) => {
-                &format!("Candidate ({:?}, {:?})", block.data().seq_no(), block.data().identifier())
+        if f.alternate() {
+            match self {
+                Candidate(_) => f.write_str("Candidate"),
+                ResentCandidate(_) => f.write_str("ResentCandidate"),
+                Ack(_) => f.write_str("Ack"),
+                Nack(_) => f.write_str("Nack"),
+                ExternalMessage(_) => f.write_str("ExternalMessage"),
+                NodeJoining(_) => f.write_str("NodeJoining"),
+                BlockAttestation(_) => f.write_str("BlockAttestation"),
+                BlockRequest { .. } => f.write_str("BlockRequest"),
+                SyncFinalized(_) => f.write_str("SyncFinalized"),
+                SyncFrom(_) => f.write_str("SyncFrom"),
             }
-            ResentCandidate((block, node_id)) => &format!(
-                "ResentCandidate from {node_id:?} ({:?}, {:?})",
-                block.data().seq_no(),
-                block.data().identifier()
-            ),
-            Ack(_) => "Ack",
-            Nack(_) => "Nack",
-            ExternalMessage((msg, _)) => &format!("ExternalMessage: {:?}", msg),
-            NodeJoining(_) => "NodeJoining",
-            BlockAttestation(_) => "BlockAttestation",
-            BlockRequest(_) => "BlockRequest",
-            SyncFinalized(_) => "SyncFinalized",
-            SyncFrom(_) => "SyncFrom",
-        };
-        write!(f, "NetworkMessage::{}", enum_type)
+        } else {
+            let enum_type = match self {
+                Candidate(block) => &format!(
+                    "Candidate ({:?}, {:?})",
+                    block.data().seq_no(),
+                    block.data().identifier()
+                ),
+                ResentCandidate((block, node_id)) => &format!(
+                    "ResentCandidate from {node_id:?} ({:?}, {:?})",
+                    block.data().seq_no(),
+                    block.data().identifier()
+                ),
+                Ack(_) => "Ack",
+                Nack(_) => "Nack",
+                ExternalMessage((msg, _)) => &format!("ExternalMessage: {:?}", msg),
+                NodeJoining(_) => "NodeJoining",
+                BlockAttestation(_) => "BlockAttestation",
+                BlockRequest { .. } => "BlockRequest",
+                SyncFinalized(_) => "SyncFinalized",
+                SyncFrom(_) => "SyncFrom",
+            };
+            write!(f, "NetworkMessage::{}", enum_type)
+        }
     }
 }

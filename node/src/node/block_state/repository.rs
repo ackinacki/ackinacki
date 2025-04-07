@@ -1,3 +1,6 @@
+use std::fmt::Debug;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
@@ -10,12 +13,18 @@ use weak_table::WeakValueHashMap;
 use super::state::AckiNackiBlockState;
 use crate::types::BlockIdentifier;
 
-type BlockStateInner = Mutex<AckiNackiBlockState>;
+pub type BlockStateInner = Mutex<AckiNackiBlockState>;
 
-#[derive(Clone, Debug, Getters)]
+#[derive(Clone, Getters)]
 pub struct BlockState {
     block_identifier: BlockIdentifier,
     inner: Arc<BlockStateInner>,
+}
+
+impl Debug for BlockState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BlockState({:?})", self.block_identifier)
+    }
 }
 
 impl std::ops::Deref for BlockState {
@@ -31,6 +40,23 @@ pub struct BlockStateRepository {
     block_state_repo_data_dir: PathBuf,
     map: Arc<Mutex<WeakValueHashMap<BlockIdentifier, Weak<BlockStateInner>>>>,
     notifications: Arc<AtomicU32>,
+}
+
+impl PartialEq for BlockState {
+    fn eq(&self, other: &Self) -> bool {
+        self.block_identifier == other.block_identifier
+    }
+}
+
+impl Eq for BlockState {}
+
+impl Hash for BlockState {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: Hasher,
+    {
+        self.block_identifier.hash(state)
+    }
 }
 
 impl BlockStateRepository {
@@ -77,6 +103,10 @@ impl BlockStateRepository {
         let notifications = self.notifications();
         notifications.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         atomic_wait::wake_all(notifications);
+    }
+
+    pub fn clone_notifications_arc(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.notifications)
     }
 }
 

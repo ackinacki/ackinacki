@@ -2,18 +2,20 @@
 //
 
 use std::path::Path;
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-// use std::thread::sleep;
 use parking_lot::Mutex;
-use serde_json::Value;
-use tvm_executor::BlockchainConfig;
+use telemetry_utils::mpsc::instrumented_channel;
+use telemetry_utils::mpsc::InstrumentedSender;
 use tvm_types::UInt256;
 
+// use std::thread::sleep;
 use super::feedback::AckiNackiSend;
 use super::inner_loop;
+use crate::config::load_blockchain_config;
 use crate::config::Config;
+use crate::helper::metrics::BlockProductionMetrics;
+use crate::message_storage::MessageDurableStorage;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::node::BlockState;
@@ -23,7 +25,7 @@ use crate::utilities::FixedSizeHashSet;
 
 #[derive(Clone)]
 pub struct ValidationServiceInterface {
-    send_tx: Sender<BlockState>,
+    send_tx: InstrumentedSender<BlockState>,
 }
 
 impl ValidationServiceInterface {
@@ -43,6 +45,7 @@ impl ValidationService {
         self.interface.clone()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new<P: AsRef<Path>>(
         blockchain_config_path: P,
         repository: RepositoryImpl,
@@ -51,20 +54,13 @@ impl ValidationService {
         block_state_repo: BlockStateRepository,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         send: AckiNackiSend,
+        metrics: Option<BlockProductionMetrics>,
+        message_db: MessageDurableStorage,
     ) -> anyhow::Result<Self> {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) =
+            instrumented_channel(metrics.clone(), crate::helper::metrics::BLOCK_STATE_CHANNEL);
         let interface = ValidationServiceInterface { send_tx: tx };
-        let blockchain_config_path = blockchain_config_path.as_ref();
-        let json = std::fs::read_to_string(blockchain_config_path)?;
-        let map = serde_json::from_str::<serde_json::Map<String, Value>>(&json)?;
-        let config_params = tvm_block_json::parse_config(&map).map_err(|e| {
-            anyhow::format_err!(
-                "Failed to load config params from file {blockchain_config_path:?}: {e}"
-            )
-        })?;
-
-        let blockchain_config = BlockchainConfig::with_config(config_params)
-            .map_err(|e| anyhow::format_err!("Failed to create blockchain config: {e}"))?;
+        let blockchain_config = load_blockchain_config(&blockchain_config_path.as_ref().into())?;
 
         let handler: std::thread::JoinHandle<()> = std::thread::Builder::new()
             .name("Block validation service".to_string())
@@ -78,6 +74,8 @@ impl ValidationService {
                     shared_services,
                     nack_set_cache,
                     send,
+                    metrics,
+                    message_db,
                 );
                 Ok(())
             })?;

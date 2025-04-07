@@ -91,7 +91,7 @@ impl Block {
     }
 
     pub async fn latest_block(pool: &SqlitePool) -> anyhow::Result<Option<Block>> {
-        let block = sqlx::query_as!(Block, "SELECT * FROM blocks ORDER BY gen_utime DESC LIMIT 1")
+        let block = sqlx::query_as("SELECT * FROM blocks ORDER BY chain_order DESC LIMIT 1")
             .fetch_optional(pool)
             .await?;
 

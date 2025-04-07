@@ -1,0 +1,15 @@
+[package]
+name = "account-inbox"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[lib]
+
+[dependencies]
+derive-getters = "0.5.0"
+derive_setters = { path = "../derive-setters" }
+serde.workspace = true
+
+[features]

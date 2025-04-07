@@ -4,5 +4,3 @@ mod chain_pulse;
 mod chain_tracker;
 pub mod rules;
 pub mod service;
-
-// mod interface;

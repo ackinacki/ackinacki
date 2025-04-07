@@ -17,6 +17,10 @@
 		{
 			"name": "isBLSKeyAccept",
 			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"rep_coef","type":"uint128"},
+				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
+				{"name":"virtualStake","type":"optional(uint128)"},
 				{"name":"ProxyList","type":"map(uint8,string)"}
 			],
 			"outputs": [
@@ -25,7 +29,11 @@
 		{
 			"name": "isBLSKeyAcceptContinue",
 			"inputs": [
+				{"name":"pubkey","type":"uint256"},
 				{"name":"seqNoStartOld","type":"uint64"},
+				{"name":"rep_coef","type":"uint128"},
+				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
+				{"name":"virtualStake","type":"optional(uint128)"},
 				{"name":"ProxyList","type":"map(uint8,string)"}
 			],
 			"outputs": [
@@ -43,6 +51,14 @@
 			"inputs": [
 			],
 			"outputs": [
+			]
+		},
+		{
+			"name": "getReadyStatus",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"ready","type":"bool"}
 			]
 		},
 		{

@@ -42,13 +42,17 @@ mod tests {
         "gossip_seeds": []
     },
     "local": {
-        "node_id": 0,
+        "node_id": "0001020300010203000102030001020300010203000102030001020300010203",
         "blockchain_config_path": "../bc_config.json",
         "key_path": "key1.json",
         "zerostate_path": "./zerostate",
         "external_state_share_local_base_dir": "/tmp",
         "parallelization_level": 20,
-        "block_keeper_seed_path": "block_keeper.keys.json"
+        "split_state": false,
+        "block_keeper_seed_path": "block_keeper.keys.json",
+        "block_cache_size": 20,
+        "state_cache_size": 10,
+        "message_storage_path": "message_strage"
     }
 }"#;
         let config: Config = serde_json::from_str(config_str)?;
@@ -72,12 +76,7 @@ mod tests {
         assert_eq!(config.local.zerostate_path, PathBuf::from("./zerostate"));
         assert_eq!(config.local.external_state_share_local_base_dir, PathBuf::from("/tmp"));
 
-        assert_eq!(config.global.require_minimum_blocks_to_finalize, 0);
-        assert_eq!(config.global.require_minimum_time_milliseconds_to_finalize, 0);
         assert_eq!(config.global.time_to_produce_block_millis, 330);
-        assert_eq!(config.global.finalization_delay_to_slow_down, 6);
-        assert_eq!(config.global.slow_down_multiplier, 4);
-        assert_eq!(config.global.finalization_delay_to_stop, 6);
         assert_eq!(config.global.need_synchronization_block_diff, 20);
         assert_eq!(
             config.global.min_time_between_state_publish_directives,

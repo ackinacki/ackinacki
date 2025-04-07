@@ -9,14 +9,14 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::anyhow;
+use derive_getters::Getters;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 use tvm_types::AccountId;
+use typed_builder::TypedBuilder;
 
-use crate::block::producer::process::BlockProducerProcess;
-use crate::block::producer::BlockProducer;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::gosh_bls::PubKey;
@@ -25,8 +25,6 @@ use crate::node::services::sync::StateSyncService;
 use crate::node::BlockStateRepository;
 use crate::node::Node;
 use crate::node::UInt256;
-use crate::repository::optimistic_state::OptimisticState;
-use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
@@ -39,7 +37,7 @@ pub type SignerIndex = u16;
 pub struct NodeIdentifier(AccountId);
 
 impl NodeIdentifier {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "nack_test"))]
     pub fn some_id() -> Self {
         Self::from_str("0001020300010203000102030001020300010203000102030001020300010203").unwrap()
     }
@@ -51,6 +49,7 @@ impl NodeIdentifier {
         AccountId::from(UInt256::from_be_bytes(&seed.to_be_bytes())).into()
     }
 }
+
 impl Serialize for NodeIdentifier {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -128,7 +127,7 @@ impl NackReason {
 
     pub fn get_node_data(
         &self,
-        blocks_states: BlockStateRepository,
+        block_state_repository: BlockStateRepository,
     ) -> Option<(NodeIdentifier, PubKey, AccountAddress)> {
         let nack_target_node_id;
         let nack_key;
@@ -139,7 +138,7 @@ impl NackReason {
                 nack_target_node_id =
                     first_envelope.data().get_common_section().producer_id.clone();
                 // TODO: think of possible attacks base on impossibility of finding BK key
-                let state = blocks_states.get(&first_envelope.data().parent()).unwrap();
+                let state = block_state_repository.get(&first_envelope.data().parent()).unwrap();
                 let state_in = state.lock();
                 let bk_set = state_in.bk_set().clone().unwrap();
                 drop(state_in);
@@ -153,7 +152,7 @@ impl NackReason {
             NackReason::BadBlock { envelope } => {
                 nack_target_node_id = envelope.data().get_common_section().producer_id.clone();
                 // TODO: think of possible attacks base on impossibility of finding BK key
-                let state = blocks_states.get(&envelope.data().parent()).unwrap();
+                let state = block_state_repository.get(&envelope.data().parent()).unwrap();
                 let state_in = state.lock();
                 let bk_set = state_in.bk_set().clone().unwrap();
                 drop(state_in);
@@ -170,7 +169,7 @@ impl NackReason {
                     return None;
                 }
                 if let Some((nack_target_node_id, nack_key, nack_wallet_addr)) =
-                    nack_data_envelope.data().reason.get_node_data(blocks_states)
+                    nack_data_envelope.data().reason.get_node_data(block_state_repository)
                 {
                     return Some((nack_target_node_id, nack_key, nack_wallet_addr));
                 }
@@ -197,9 +196,6 @@ impl Debug for NackReason {
     }
 }
 
-pub(crate) type OptimisticStateFor<TBlockProducerProcess> =
-    <TBlockProducerProcess as BlockProducerProcess>::OptimisticState;
-
 pub(crate) trait NodeAssociatedTypes {
     type CandidateBlock: BLSSignedEnvelope;
     type Ack: BLSSignedEnvelope;
@@ -207,36 +203,19 @@ pub(crate) trait NodeAssociatedTypes {
     type BlockAttestation: BLSSignedEnvelope;
 }
 
-impl<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
-NodeAssociatedTypes
-for Node<
-    TStateSyncService,
-    TBlockProducerProcess,
-    TRandomGenerator,
->
-    where
-        TBlockProducerProcess: BlockProducerProcess,
-        TBlockProducerProcess: BlockProducerProcess<
-            BLSSignatureScheme = GoshBLS,
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-            OptimisticState = OptimisticStateImpl,
-        >,
-        <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
-            <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
-        >,
-        TStateSyncService: StateSyncService<
-            Repository = RepositoryImpl
-        >,
-        TRandomGenerator: rand::Rng,
+impl<TStateSyncService, TRandomGenerator> NodeAssociatedTypes
+    for Node<TStateSyncService, TRandomGenerator>
+where
+    TStateSyncService: StateSyncService<Repository = RepositoryImpl>,
+    TRandomGenerator: rand::Rng,
 {
-    type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>;
     type Ack = Envelope<GoshBLS, AckData>;
-    type Nack = Envelope<GoshBLS, NackData>;
     type BlockAttestation = Envelope<GoshBLS, AttestationData>;
+    type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>;
+    type Nack = Envelope<GoshBLS, NackData>;
 }
 
 pub(crate) enum OptimisticForwardState {
-    ProducingNextBlock(BlockIdentifier, BlockSeqNo),
     ProducedBlock(BlockIdentifier, BlockSeqNo),
     None,
 }
@@ -302,8 +281,9 @@ pub struct NackData {
     pub reason: NackReason,
 }
 
-#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
+#[derive(TypedBuilder, PartialEq, Debug, Clone, Serialize, Deserialize, Getters)]
 pub struct AttestationData {
-    pub block_id: BlockIdentifier,
-    pub block_seq_no: BlockSeqNo,
+    block_id: BlockIdentifier,
+    block_seq_no: BlockSeqNo,
+    parent_block_id: BlockIdentifier,
 }

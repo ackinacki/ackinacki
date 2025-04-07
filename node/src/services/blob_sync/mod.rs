@@ -135,7 +135,7 @@ mod tests {
         let service = external_fileshares_based::ExternalFileSharesBased::builder()
             .local_storage_share_base_path("./tmp".into())
             .build()
-            .start()
+            .start(None)
             .expect("should be able to start");
         example_usecase(service.interface());
     }

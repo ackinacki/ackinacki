@@ -41,7 +41,7 @@ impl Api {
             cluster_id: chitchat_guard.cluster_id().to_string(),
             cluster_state: chitchat_guard.state_snapshot(),
             live_nodes: chitchat_guard.live_nodes().cloned().collect::<Vec<_>>(),
-            dead_nodes: chitchat_guard.dead_nodes().cloned().map(|node| node.0).collect::<Vec<_>>(),
+            dead_nodes: chitchat_guard.dead_nodes().cloned().collect::<Vec<_>>(),
         };
         Json(serde_json::to_value(&response).unwrap())
     }
@@ -104,7 +104,9 @@ async fn main() -> anyhow::Result<()> {
         listen_addr: opt.listen_addr,
         seed_nodes: opt.seeds.clone(),
         failure_detector_config: FailureDetectorConfig::default(),
-        marked_for_deletion_grace_period: 10_000,
+        marked_for_deletion_grace_period: Duration::from_secs(10),
+        catchup_callback: None,
+        extra_liveness_predicate: None,
     };
     let chitchat_handler = spawn_chitchat(config, Vec::new(), &UdpTransport).await?;
     let chitchat = chitchat_handler.chitchat();
@@ -131,10 +133,10 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!("Live nodes: {live_nodes:?}");
             let binds = chitchat_guard
                 .state_snapshot()
-                .node_state_snapshots
+                .node_states
                 .iter()
-                .filter(|snapshot| live_nodes.contains(&snapshot.chitchat_id.node_id))
-                .filter_map(|snapshot| snapshot.node_state.get("bind"))
+                .filter(|snapshot| live_nodes.contains(&snapshot.chitchat_id().node_id))
+                .filter_map(|snapshot| snapshot.get("bind"))
                 .filter_map(|bind| SocketAddr::from_str(bind).ok())
                 .collect::<Vec<_>>();
             tracing::info!("Binds: {binds:?}");

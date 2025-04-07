@@ -17,6 +17,8 @@ abstract contract Modifiers is ReplayProtection {
     
     //Deploy constants
     uint128 constant FEE_DEPLOY_CONFIG = 15 vmshell;
+    uint64 constant MIN_BALANCE = 100000 vmshell;
+
 
     uint32 constant CURRENCIES_ID = 1;
     uint32 constant CURRENCIES_ID_SHELL = 2;

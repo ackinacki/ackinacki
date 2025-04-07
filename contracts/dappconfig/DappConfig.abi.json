@@ -6,7 +6,6 @@
 		{
 			"name": "constructor",
 			"inputs": [
-				{"name":"dapp_id","type":"uint256"},
 				{"components":[{"name":"is_unlimit","type":"bool"},{"name":"available_balance","type":"int128"}],"name":"data","type":"tuple"}
 			],
 			"outputs": [

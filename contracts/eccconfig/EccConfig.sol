@@ -20,16 +20,25 @@ contract EccConfig is Modifiers {
     constructor (
     ) {
         _owner = address.makeAddrStd(0, 0);
-        gosh.mintshell(100000 vmshell);
+        gosh.mintshell(MIN_BALANCE);
     }
 
-    function getMoney() private pure {
-        if (address(this).balance > 100000 vmshell) { return; }
-        gosh.mintshell(100000 vmshell);
+    /**
+     * @dev Ensures the contract has sufficient balance.
+     *      If the balance is less than the required minimum, mints additional funds.
+     */
+    function ensureBalance() private pure {
+        if (address(this).balance > MIN_BALANCE) { return; }
+        gosh.mintshell(MIN_BALANCE);
     }
 
+    /**
+     * @dev Sets a new token and mints the corresponding amount.
+     * @param token The EccToken structure containing token details.
+     * @param to Optional recipient address for token transfer.
+    */
     function setNewToken(EccToken token, optional(address) to) public internalMsg senderIs(_owner) {
-        getMoney();
+        ensureBalance();
         require(_data.exists(token.key) == false, ERR_WRONG_KEY);
         EccData data;
         data.data = token;

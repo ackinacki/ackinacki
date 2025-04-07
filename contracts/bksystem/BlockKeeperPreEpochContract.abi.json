@@ -10,9 +10,20 @@
 				{"name":"epochDuration","type":"uint32"},
 				{"name":"bls_pubkey","type":"bytes"},
 				{"name":"code","type":"map(uint8,cell)"},
-				{"name":"walletId","type":"uint256"},
 				{"name":"signerIndex","type":"uint16"},
+				{"name":"rep_coef","type":"uint128"},
+				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
+				{"name":"virtualStake","type":"optional(uint128)"},
 				{"name":"ProxyList","type":"map(uint8,string)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "changeReputation",
+			"inputs": [
+				{"name":"is_inc","type":"bool"},
+				{"name":"value","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -32,8 +43,7 @@
 				{"name":"pubkey","type":"uint256"},
 				{"name":"root","type":"address"},
 				{"name":"seqNoStart","type":"uint64"},
-				{"name":"owner","type":"address"},
-				{"name":"walletId","type":"uint256"}
+				{"name":"owner","type":"address"}
 			]
 		},
 		{
@@ -58,12 +68,16 @@
 		{"init":true,"name":"_owner_pubkey","type":"uint256"},
 		{"init":false,"name":"_root","type":"address"},
 		{"init":true,"name":"_seqNoStart","type":"uint64"},
+		{"init":false,"name":"_seqNoDestruct","type":"uint64"},
 		{"init":false,"name":"_epochDuration","type":"uint32"},
 		{"init":false,"name":"_waitStep","type":"uint64"},
 		{"init":false,"name":"_owner","type":"address"},
 		{"init":false,"name":"_bls_pubkey","type":"bytes"},
 		{"init":false,"name":"_stake","type":"varuint32"},
-		{"init":false,"name":"_walletId","type":"uint256"},
-		{"init":false,"name":"_signerIndex","type":"uint16"}
+		{"init":false,"name":"_signerIndex","type":"uint16"},
+		{"init":false,"name":"_sumReputationCoef","type":"uint128"},
+		{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"init":false,"name":"_licenses","type":"tuple[]"},
+		{"init":false,"name":"_wallet","type":"address"},
+		{"init":false,"name":"_virtualStake","type":"optional(uint128)"}
 	]
 }

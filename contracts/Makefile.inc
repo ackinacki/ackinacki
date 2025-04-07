@@ -3,6 +3,8 @@
 
 # Compiler and options
 SOLD ?= $(shell command -v sold || echo ../compiler/sold)
+TVM_CLI ?= $(shell command -v tvm-cli || echo ../compiler/tvm-cli)
+TVM_DEBUGGER ?= $(shell command -v tvm-debugger || echo ../compiler/tvm-debugger)
 TVM_VERSION ?= gosh
 
 # Default variables for customization
@@ -41,4 +43,3 @@ build-contracts: $(TVC_FILES)
 	$(SOLD) --tvm-version $(TVM_VERSION) $< -o . || { echo "Compilation failed for $<"; exit 1; }
 	rm -f ./$*.debug.json ./$*.code
 	@echo "Compiled $< successfully."
-

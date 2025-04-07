@@ -8,15 +8,18 @@ license-file.workspace = true
 [dependencies]
 anyhow.workspace = true
 hex.workspace = true
+httpdate = "1.0.3"
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
 parking_lot.workspace = true
 rcgen.workspace = true
 salvo.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
+telemetry_utils.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tvm_block.workspace = true
 tvm_types.workspace = true
-
-httpdate = "1.0.3"

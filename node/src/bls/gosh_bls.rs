@@ -16,7 +16,7 @@ use crate::bls::BLSSignatureScheme;
 pub struct GoshBLS {}
 
 #[serde_as]
-#[derive(Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Deserialize, Serialize, Clone, PartialEq, Hash, Eq)]
 pub struct Signature(#[serde_as(as = "Bytes")] [u8; gosh_bls_lib::bls::BLS_SIG_LEN]);
 
 impl Default for Signature {

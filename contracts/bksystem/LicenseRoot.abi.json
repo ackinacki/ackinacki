@@ -1,0 +1,109 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"timeUnlock","type":"uint32"},
+				{"name":"license_number","type":"uint256"},
+				{"name":"rootElection","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployLicense",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployLicenseOwner",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setNewCode",
+			"inputs": [
+				{"name":"id","type":"uint8"},
+				{"name":"code","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setOwner",
+			"inputs": [
+				{"name":"wallet","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"},
+				{"name":"cell","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getLastAddress",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"lastAddress","type":"address"},
+				{"name":"num","type":"uint256"}
+			]
+		},
+		{
+			"name": "getLastLicenseNum",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"num","type":"uint256"}
+			]
+		},
+		{
+			"name": "getLicenseAddress",
+			"inputs": [
+				{"name":"num","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"license_address","type":"address"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
+		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
+		{"init":false,"name":"__value","type":"uint256"},
+		{"init":false,"name":"_owner_wallet","type":"optional(address)"},
+		{"init":false,"name":"_code","type":"map(uint8,cell)"},
+		{"init":false,"name":"_timeUnlock","type":"uint32"},
+		{"init":false,"name":"_license_number","type":"uint256"},
+		{"init":false,"name":"_rootElection","type":"address"},
+		{"init":false,"name":"_lastAddress","type":"address"}
+	]
+}

@@ -70,9 +70,8 @@ impl ZeroState {
             .ok_or(anyhow::format_err!("Zerostate does not contain state for requested thread"))
     }
 
-    pub fn add_thread_state(&mut self, thread_identifier: ThreadIdentifier) {
-        let mut state = OptimisticStateImpl::default();
-        state.thread_id = thread_identifier;
+    pub fn init_thread(&mut self, thread_identifier: ThreadIdentifier) {
+        let state = OptimisticStateImpl { thread_id: thread_identifier, ..Default::default() };
         self.states.insert(thread_identifier, state);
     }
 

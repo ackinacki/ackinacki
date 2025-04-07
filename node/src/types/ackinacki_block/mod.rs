@@ -1,6 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -19,8 +20,11 @@ use crate::types::ackinacki_block::common_section::Directives;
 use crate::types::ackinacki_block::hash::calculate_hash;
 use crate::types::ackinacki_block::hash::debug_hash;
 use crate::types::ackinacki_block::hash::Sha256Hash;
+use crate::types::AccountAddress;
+use crate::types::BlockEndLT;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
+use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
@@ -29,6 +33,7 @@ pub use fork_resolution::ForkResolution;
 pub mod as_signatures_map;
 mod common_section;
 pub mod hash;
+mod parse_block_accounts_and_messages;
 mod serialize;
 
 pub use hash::compare_hashes;
@@ -39,7 +44,6 @@ const BLOCK_SUFFIX_LEN: usize = 32;
 pub struct AckiNackiBlock {
     common_section: CommonSection,
     block: tvm_block::Block,
-    processed_ext_messages_cnt: usize,
     tx_cnt: usize,
     hash: Sha256Hash,
     raw_data: Option<Vec<u8>>,
@@ -50,11 +54,10 @@ impl Display for AckiNackiBlock {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "seq_no: {:?}, id: {:?}, tx_cnt: {}, ext_messages_cnt: {}, hash: {}, common_section: {:?}, parent: {:?}",
+            "seq_no: {:?}, id: {:?}, tx_cnt: {}, hash: {}, common_section: {:?}, parent: {:?}",
             self.seq_no(),
             self.identifier(),
             self.tx_cnt,
-            self.processed_ext_messages_cnt(),
             debug_hash(&self.hash),
             self.common_section,
             self.parent(),
@@ -73,13 +76,13 @@ impl AckiNackiBlock {
     pub fn new(
         thread_id: ThreadIdentifier,
         block: tvm_block::Block,
-        processed_ext_messages_cnt: usize,
         producer_id: NodeIdentifier,
         tx_cnt: usize,
         block_keeper_set_changes: Vec<BlockKeeperSetChange>,
         verify_complexity: SignerIndex,
         refs: Vec<BlockIdentifier>,
         threads_table: Option<ThreadsTable>,
+        changed_dapp_ids: HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>,
     ) -> Self {
         // Note: according to the node logic we will update common section of every
         // block so there is no need to calculate hash here
@@ -93,10 +96,10 @@ impl AckiNackiBlock {
                 verify_complexity,
                 refs,
                 threads_table,
+                changed_dapp_ids,
             ),
             block,
             tx_cnt,
-            processed_ext_messages_cnt,
             hash: [0; 32],
             raw_data: None,
             block_cell: None,
@@ -213,7 +216,7 @@ impl AckiNackiBlock {
             self.raw_data = Some(raw_data);
             #[cfg(feature = "nack_test")]
             if self.seq_no() == BlockSeqNo::from(324)
-                && self.common_section.producer_id == NodeIdentifier::test(4)
+                && self.common_section.producer_id == NodeIdentifier::some_id()
             {
                 tracing::trace!(target: "node", "Skip common section to make fake block");
                 self.hash = Sha256Hash::default();
@@ -243,7 +246,12 @@ impl AckiNackiBlock {
         self.tx_cnt
     }
 
-    pub fn processed_ext_messages_cnt(&self) -> usize {
-        self.processed_ext_messages_cnt
+    pub fn time(&self) -> anyhow::Result<u64> {
+        Ok(self
+            .tvm_block()
+            .info
+            .read_struct()
+            .map_err(|e| anyhow::format_err!("Failed to read block info: {e}"))?
+            .gen_utime_ms())
     }
 }

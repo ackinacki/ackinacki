@@ -1,6 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
@@ -14,8 +15,11 @@ use actix_web::App;
 use actix_web::HttpResponse;
 use actix_web::HttpServer;
 use parking_lot::Mutex;
+use telemetry_utils::now_ms;
 
+use crate::base64_id_decode;
 use crate::bp_resolver::BPResolver;
+use crate::defaults::DEFAULT_BK_API_TIMEOUT;
 use crate::defaults::DEFAULT_NODE_URL_PATH;
 use crate::defaults::DEFAULT_NODE_URL_PORT;
 use crate::defaults::DEFAULT_NODE_URL_PROTO;
@@ -79,8 +83,9 @@ impl MessageRouter {
             //
             // JSON: [{
             //         "id": String,
-            //         "boc": String,
-            //         "expire"?: Int
+            //         "body": String,
+            //         "expireAt"?: Int,
+            //         "threadId"?: String
             //       }]
             web::resource(ROUTER_URL_PATH.to_string())
                 .route(web::post().to(move |node_requests| {
@@ -95,18 +100,58 @@ impl MessageRouter {
         node_requests: web::Json<serde_json::Value>,
         bp_resolver: Arc<Mutex<dyn BPResolver>>,
     ) -> actix_web::Result<web::Json<serde_json::Value>> {
-        tracing::trace!(target: "message_router", "Requests received: {}", node_requests);
-        let recipients = bp_resolver.lock().resolve();
-        tracing::trace!(target: "message_router", "Resolved BPs: {:?}", recipients);
+        let Some(nrs) = node_requests.as_array() else {
+            tracing::error!(target: "message_router", "bad request: {node_requests}");
+            let error = serde_json::json!(http_server::ExtMsgResponse::new_with_error(
+                "BAD_REQUEST".into(),
+                "Incorrect request".into(),
+                None,
+            ));
+            return Ok(web::Json(error));
+        };
+
+        let thread_id = nrs
+            .first()
+            .and_then(|f| f.get("thread_id"))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or(String::from(
+                "00000000000000000000000000000000000000000000000000000000000000000000",
+            ));
+
+        let ids: HashMap<serde_json::Value, String> = nrs
+            .iter()
+            .filter_map(|nr| base64_id_decode(&nr["id"]).ok().map(|id| (nr["id"].clone(), id)))
+            .collect();
+
+        tracing::info!(target: "message_router", "Ext messages received: {:?}", ids.iter().map(|(k, v)| format!("{v} ({k})")));
+
+        let recipients = bp_resolver.lock().resolve(Some(thread_id.clone()));
+        tracing::trace!(target: "message_router", "Resolved BPs (thread={:?}): {:?}", thread_id, recipients);
         let mut result = serde_json::json!({});
-        let client = awc::Client::builder().timeout(Duration::from_secs(5)).finish();
+        if recipients.is_empty() {
+            let error = serde_json::json!(http_server::ExtMsgResponse::new_with_error(
+                "INTERNAL_ERROR".into(),
+                "Failed to obtain any Block Producer addresses".into(),
+                None,
+            ));
+            return Ok(web::Json(error));
+        }
+        let client =
+            awc::Client::builder().timeout(Duration::from_secs(DEFAULT_BK_API_TIMEOUT)).finish();
         for recipient in recipients {
             let url = construct_url(recipient);
             tracing::info!(target: "message_router", "Forwarding requests to: {url}");
-            result = match client.post(&url).send_json(&node_requests).await {
+            result = match client
+                .post(&url)
+                .insert_header(("X-EXT-MSG-SENT", now_ms().to_string()))
+                .send_json(&node_requests)
+                .await
+            {
                 Ok(mut response) => {
                     let body = response.body().await;
-                    tracing::trace!(target: "message_router", "response body: {:?}", body);
+                    let recipient = recipient.ip().to_string();
+                    tracing::info!(target: "message_router", "response body (src={}): {:?}", recipient, body);
                     match body {
                         Ok(b) => {
                             let s = std::str::from_utf8(&b)?;
@@ -115,20 +160,34 @@ impl MessageRouter {
                         }
                         Err(err) => {
                             tracing::error!(target: "message_router", "redirection to {url} failed: {err}");
+                            let err_data = http_server::ExtMsgErrorData::new(
+                                vec![recipient],
+                                ids.get(&nrs[0]["id"]).unwrap().to_string(),
+                                None,
+                                Some(thread_id.clone()),
+                            );
                             serde_json::json!(http_server::ExtMsgResponse::new_with_error(
                                 "INTERNAL_ERROR".into(),
-                                "Failed to parse the response from the Block Producer".into(),
-                                None,
+                                format!(
+                                    "Failed to parse the response from the Block Producer: {err}"
+                                ),
+                                Some(err_data),
                             ))
                         }
                     }
                 }
                 Err(err) => {
                     tracing::error!(target: "message_router", "redirection to {url} failed: {err}");
+                    let err_data = http_server::ExtMsgErrorData::new(
+                        vec![recipient.ip().to_string()],
+                        ids.get(&nrs[0]["id"]).unwrap().to_string(),
+                        None,
+                        Some(thread_id.clone()),
+                    );
                     serde_json::json!(http_server::ExtMsgResponse::new_with_error(
                         "INTERNAL_ERROR".into(),
-                        "The message redirection to the Block Producer has failed".into(),
-                        None,
+                        format!("The message redirection to the Block Producer has failed: {err}"),
+                        Some(err_data),
                     ))
                 }
             }
@@ -158,7 +217,7 @@ pub mod tests {
     struct BPResolverHelper;
 
     impl BPResolver for BPResolverHelper {
-        fn resolve(&mut self) -> Vec<std::net::SocketAddr> {
+        fn resolve(&mut self, _thread_id: Option<String>) -> Vec<std::net::SocketAddr> {
             vec!["0.0.0.0:8600".parse().unwrap()]
         }
     }
@@ -180,7 +239,7 @@ pub mod tests {
     #[test]
     fn test_bp_resolver() {
         let mut bp_resolver = BPResolverHelper;
-        let bp_socket_addr = bp_resolver.resolve();
+        let bp_socket_addr = bp_resolver.resolve(None);
 
         assert_eq!(bp_socket_addr, vec!["0.0.0.0:8600".parse().unwrap()]);
     }

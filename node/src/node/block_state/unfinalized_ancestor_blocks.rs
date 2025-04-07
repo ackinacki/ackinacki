@@ -41,7 +41,7 @@ impl Debug for UnfinalizedAncestorBlocksSelectError {
 pub trait UnfinalizedAncestorBlocks {
     fn select_unfinalized_ancestor_blocks(
         &self,
-        tail: BlockState,
+        tail: &BlockState,
         cutoff: BlockSeqNo,
     ) -> anyhow::Result<Vec<BlockState>, UnfinalizedAncestorBlocksSelectError>;
 }
@@ -49,31 +49,34 @@ pub trait UnfinalizedAncestorBlocks {
 impl UnfinalizedAncestorBlocks for BlockStateRepository {
     fn select_unfinalized_ancestor_blocks(
         &self,
-        tail: BlockState,
+        tail: &BlockState,
         cutoff: BlockSeqNo,
     ) -> anyhow::Result<Vec<BlockState>, UnfinalizedAncestorBlocksSelectError> {
         use UnfinalizedAncestorBlocksSelectError::*;
         let mut chain = vec![];
-        let mut cursor = tail;
+        let mut cursor = tail.clone();
         loop {
-            let (is_finalized, parent) = cursor.guarded(
-                |e| -> Result<(bool, BlockIdentifier), UnfinalizedAncestorBlocksSelectError> {
+            let (is_finalized, parent, block_seq_no) = cursor.guarded(
+                |e| -> Result<
+                    (bool, BlockIdentifier, BlockSeqNo),
+                    UnfinalizedAncestorBlocksSelectError,
+                > {
                     if e.is_invalidated() && !e.is_finalized() {
                         chain.push(cursor.clone());
                         return Err(InvalidatedParent(chain.clone()));
                     }
                     let block_seq_no = e.block_seq_no().ok_or(IncompleteHistory)?;
-                    if block_seq_no < cutoff {
-                        chain.push(cursor.clone());
-                        return Err(BlockSeqNoCutoff(chain.clone()));
-                    }
                     let parent_block_identifier =
                         e.parent_block_identifier().clone().ok_or(IncompleteHistory)?;
-                    Ok((e.is_finalized(), parent_block_identifier.clone()))
+                    Ok((e.is_finalized(), parent_block_identifier.clone(), block_seq_no))
                 },
             )?;
             if is_finalized {
                 return Ok(chain.into_iter().rev().collect());
+            }
+            if block_seq_no < cutoff {
+                chain.push(cursor.clone());
+                return Err(BlockSeqNoCutoff(chain.clone()));
             }
             chain.push(cursor);
             cursor = self.get(&parent).map_err(|_e| FailedToLoadBlockState)?;
@@ -109,7 +112,7 @@ mod test {
         tail.guarded_mut(|e| -> anyhow::Result<()> {
             e.set_thread_identifier(zero_thread)?;
             e.set_parent_block_identifier(finalized_really_old.clone())?;
-            e.set_block_seq_no(30283)?;
+            e.set_block_seq_no(30283.into())?;
             Ok(())
         })
         .unwrap();
@@ -121,7 +124,7 @@ mod test {
                 Ok(())
             })
             .unwrap();
-        match repo.select_unfinalized_ancestor_blocks(tail, cutoff) {
+        match repo.select_unfinalized_ancestor_blocks(&tail, cutoff) {
             Err(UnfinalizedAncestorBlocksSelectError::BlockSeqNoCutoff(chain)) => {
                 let id_chain: Vec<_> = chain.iter().map(|e| e.block_identifier().clone()).collect();
                 assert_eq!(&id_chain, &(vec![tail_block_id]), "Unexpected chain: {:?}", chain);

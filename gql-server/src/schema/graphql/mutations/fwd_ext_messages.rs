@@ -1,14 +1,18 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::time::Duration;
+
 use async_graphql::ErrorExtensions;
 use async_graphql::Value;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
+use reqwest::StatusCode;
 use serde::Deserialize;
 
-use super::NodeRequest;
+use super::ExtMessage;
 use super::SendMessageResponse;
+use crate::defaults::BK_API_TIMEOUT;
 
 #[derive(Debug, Default, Deserialize)]
 struct SendMessageError {
@@ -38,7 +42,7 @@ impl ErrorExtensions for SendMessageError {
 
 pub(crate) async fn fwd_to_bk(
     url: &str,
-    message: NodeRequest,
+    message: ExtMessage,
 ) -> async_graphql::Result<Option<SendMessageResponse>> {
     let mut headers = HeaderMap::new();
     headers.insert(reqwest::header::CACHE_CONTROL, HeaderValue::from_str("no-cache").unwrap());
@@ -47,13 +51,27 @@ pub(crate) async fn fwd_to_bk(
         .insert(reqwest::header::CONTENT_TYPE, HeaderValue::from_str("application/json").unwrap());
     headers.insert(reqwest::header::ACCEPT, HeaderValue::from_str("application/json").unwrap());
 
-    let client = reqwest::Client::builder().default_headers(headers).build()?;
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .timeout(Duration::from_secs(BK_API_TIMEOUT))
+        .build()?;
 
-    tracing::debug!("fwd_to_bk(): Forwarding to: {url}");
+    tracing::debug!("fwd_to_bk(): Forwarding (id: {:?}) to: {url}", message.id);
 
     match client.post(url).json(&serde_json::json!(vec![&message])).send().await {
         Ok(response) => {
             tracing::debug!("Forward response code: {}", response.status());
+            if response.status() != StatusCode::OK {
+                let error = SendMessageError {
+                    code: "INTERNAL_ERROR".into(),
+                    message: format!(
+                        "The message redirection to the BM API has failed: {}",
+                        response.status()
+                    ),
+                    ..Default::default()
+                };
+                return Err(error.extend());
+            }
             let body = response.bytes().await;
             tracing::trace!("response body: {:?}", body);
             match body {
@@ -61,8 +79,10 @@ pub(crate) async fn fwd_to_bk(
                     let s = std::str::from_utf8(&b)?;
                     let value = serde_json::from_str::<serde_json::Value>(s)?;
                     if value["result"].is_object() {
-                        let result =
+                        let mut result =
                             serde_json::from_value::<SendMessageResponse>(value["result"].clone())?;
+                        // support deprecated field `tvm_exit_code`
+                        result.tvm_exit_code = result.exit_code;
                         Ok(Some(result))
                     } else {
                         let error =

@@ -24,7 +24,7 @@ pub struct Request {
     expire_at: Option<f64>,
 }
 
-#[derive(InputObject)]
+#[derive(InputObject, serde::Serialize)]
 /// Request with external inbound message.
 pub struct ExtMessage {
     id: Option<String>,
@@ -59,10 +59,13 @@ pub struct SendMessageResponse {
     block_hash: Option<String>,
     tx_hash: Option<String>,
     aborted: Option<bool>,
+    #[graphql(deprecation = "Use exit_code instead")]
     tvm_exit_code: Option<i32>,
+    exit_code: Option<i32>,
     producers: Vec<String>,
     current_time: Option<String>,
     thread_id: Option<String>,
+    ext_out_msgs: Option<Vec<String>>,
 }
 
 pub type NodeUrl = String;
@@ -117,12 +120,13 @@ impl MutationRoot {
         ctx: &Context<'_>,
         #[graphql(desc = "List of message requests")] message: Option<ExtMessage>,
     ) -> FieldResult<Option<SendMessageResponse>> {
-        tracing::trace!("Processing post request...");
-        if message.is_none() {
+        let Some(message) = message else {
+            tracing::trace!("empty message received");
             return Ok(None);
-        }
+        };
 
-        let response = fwd_to_bk(ctx.data::<NodeUrl>()?, message.unwrap().into()).await;
+        tracing::trace!("Processing post request (id: {:?})...", message.id);
+        let response = fwd_to_bk(ctx.data::<NodeUrl>()?, message).await;
         tracing::trace!("forwarding response: {response:?}");
         response
     }

@@ -2,9 +2,10 @@
 //
 
 use std::collections::HashMap;
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
+use network::channel::NetBroadcastSender;
+use network::channel::NetDirectSender;
 use parking_lot::Mutex;
 use typed_builder::TypedBuilder;
 
@@ -29,8 +30,8 @@ use crate::utilities::guarded::Guarded;
 pub struct AckiNackiSend {
     node_id: NodeIdentifier,
     bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
-    ack_tx: Sender<(NodeIdentifier, NetworkMessage)>,
-    nack_tx: Sender<NetworkMessage>,
+    ack_network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
+    nack_network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
 }
 
 impl AckiNackiSend {
@@ -77,7 +78,7 @@ impl AckiNackiSend {
                 block_seq_no,
                 block_id
             );
-            self.ack_tx
+            self.ack_network_direct_tx
                 .send((destination_node_id, message.clone()))
                 .expect("Send channel may not be closed");
         }
@@ -110,7 +111,7 @@ impl AckiNackiSend {
             Envelope::<GoshBLS, NackData>::create(signature, signature_occurrences, nack_data);
         let message = NetworkMessage::Nack((nack, thread_id));
         tracing::trace!("Broadcasting nack for block_id: {block_id:?}");
-        self.nack_tx.send(message)?;
+        self.nack_network_broadcast_tx.send(message)?;
         Ok(())
     }
 

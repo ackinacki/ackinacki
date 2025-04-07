@@ -39,6 +39,7 @@ pub trait BLSSignedEnvelope: Send + Sync + 'static {
     ) -> anyhow::Result<bool>;
     fn aggregated_signature(&self) -> &<Self::BLS as BLSSignatureScheme>::Signature;
     fn data(&self) -> &Self::Data;
+    fn has_signer_index(&self, index: Self::SignerIndex) -> bool;
 }
 
 #[derive(Clone, PartialEq)]
@@ -91,6 +92,13 @@ where
 
     fn clone_signature_occurrences(&self) -> HashMap<Self::SignerIndex, u16> {
         self.signature_occurrences.clone()
+    }
+
+    fn has_signer_index(&self, index: Self::SignerIndex) -> bool {
+        let Some(count) = self.signature_occurrences.get(&index) else {
+            return false;
+        };
+        *count > 0
     }
 
     fn verify_signatures(

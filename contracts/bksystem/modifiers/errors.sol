@@ -95,4 +95,11 @@ abstract contract Errors {
     uint16 constant ERR_LOCK_EXIST = 284;
     uint16 constant ERR_LOCK_NOT_EXIST = 285;
     uint16 constant ERR_LOCK_NOT_READY = 286;
+    uint16 constant ERR_LICENSE_FULL = 287;
+    uint16 constant ERR_LICENSE_NOT_EXIST = 288;
+    uint16 constant ERR_LICENSE_EXIST = 289;
+    uint16 constant ERR_TOO_LOW_LICENSES = 290;
+    uint16 constant ERR_LICENSE_BUSY = 291;
+    uint16 constant ERR_WAIT_STAKE = 292;
+    uint16 constant ERR_NOT_SUPPORT = 293;
 }

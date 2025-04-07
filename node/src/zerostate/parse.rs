@@ -37,8 +37,8 @@ impl ZeroState {
         let accounts = self.get_shard_state(thread_identifier)?.read_accounts();
         if let Ok(accounts) = accounts {
             accounts
-                .iterate_with_keys(|_k, v| {
-                    let account = v.read_account().unwrap();
+                .iterate_accounts(|_, v, _| {
+                    let account = v.read_account().unwrap().as_struct()?;
                     zs_accounts.push(ZeroStateAccount {
                         address: account
                             .get_id()
@@ -49,13 +49,9 @@ impl ZeroState {
                             .map(|code| code.to_hex_string())
                             .unwrap_or("None".to_string()),
                         balance: account.balance().map(|cc| cc.grams.inner()).unwrap_or(0),
-                        dapp_id: account
+                        dapp_id: v
                             .get_dapp_id()
-                            .map(|val| {
-                                val.clone()
-                                    .map(|dapp_id| dapp_id.to_hex_string())
-                                    .unwrap_or("None".to_string())
-                            })
+                            .map(|val| val.to_hex_string())
                             .unwrap_or("None".to_string()),
                     });
                     Ok(true)

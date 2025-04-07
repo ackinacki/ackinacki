@@ -1,40 +1,18 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 
-use crate::block::producer::process::BlockProducerProcess;
-use crate::block::producer::BlockProducer;
-use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
 use crate::node::services::sync::StateSyncService;
 use crate::node::Node;
-use crate::repository::optimistic_state::OptimisticState;
-use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
-use crate::types::AckiNackiBlock;
 
 const _EPOCH_TOUCH_RETRY_TIME_DELTA: u32 = 5;
 
-impl<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
-Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
-    where
-        TBlockProducerProcess:
-        BlockProducerProcess< Repository = RepositoryImpl>,
-        TBlockProducerProcess: BlockProducerProcess<
-            BLSSignatureScheme = GoshBLS,
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-            OptimisticState = OptimisticStateImpl,
-        >,
-        <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
-            <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
-        >,
-        TStateSyncService: StateSyncService<
-            Repository = RepositoryImpl
-        >,
-        TRandomGenerator: rand::Rng,
+impl<TStateSyncService, TRandomGenerator> Node<TStateSyncService, TRandomGenerator>
+where
+    TStateSyncService: StateSyncService<Repository = RepositoryImpl>,
+    TRandomGenerator: rand::Rng,
 {
     // BP node checks current epoch contracts and sends touch message to finish them
-    pub(crate) fn _check_and_touch_block_keeper_epochs(
-        &mut self,
-    ) -> anyhow::Result<()> {
+    pub(crate) fn _check_and_touch_block_keeper_epochs(&mut self) -> anyhow::Result<()> {
         // TODO: change this mechanism it will not work after moving bk set to block state
         // let now = chrono::Utc::now().timestamp() as u32;
         // let thread_id = self.thread_id.clone();

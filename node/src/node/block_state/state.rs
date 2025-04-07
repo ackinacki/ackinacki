@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt::Formatter;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
@@ -27,9 +28,13 @@ use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ForkResolution;
 use crate::types::ThreadIdentifier;
+use crate::utilities::guarded::AllowGuardedMut;
 
-pub type AttestationsCount = usize;
-pub type DescendantsChainLength = usize;
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Copy)]
+pub struct AttestationsTarget {
+    pub descendant_generations: usize,
+    pub count: usize,
+}
 
 // The main point of this structure is to collect signals from
 // various places in the system.
@@ -46,22 +51,34 @@ pub type DescendantsChainLength = usize;
 // are stored in fields prexied with was_*
 // It is important:
 // All fields must be able to set once and only once.
-#[derive(Serialize, Deserialize, Default, Clone, Debug, Getters, Setters)]
-#[setters(strip_option, into, borrow_self, assert_none, prefix = "set_", trace)]
+#[derive(Serialize, Deserialize, Default, Clone, Getters, Setters)]
+#[setters(strip_option, borrow_self, assert_none, prefix = "set_", trace)]
 #[setters(postprocess = "self.save()", result = "anyhow::Result<()>", no_change_action = "Ok(())")]
 pub struct AckiNackiBlockState {
+    #[setters(skip)]
+    #[getter(skip)]
+    bulk_change: bool,
+
+    #[setters(skip)]
+    #[getter(skip)]
+    save_requested: bool,
+
     #[setters(skip)]
     block_identifier: BlockIdentifier,
 
     thread_identifier: Option<ThreadIdentifier>,
     parent_block_identifier: Option<BlockIdentifier>,
     block_seq_no: Option<BlockSeqNo>,
-
     producer: Option<NodeIdentifier>,
+    block_time_ms: Option<u64>,
 
     // Flag indicates it has signatures checked.
     #[setters(bool)]
     signatures_verified: Option<bool>,
+
+    // Flag indicates that block time, seq_no and hash were checked
+    #[setters(bool)]
+    common_checks_passed: Option<bool>,
 
     envelope_block_producer_signature_verified: Option<bool>,
 
@@ -152,7 +169,7 @@ pub struct AckiNackiBlockState {
     // The DescendantsChainLength is the exact descendant when it will be checked
     // if this chain has collected the required number of attestations.
     #[setters(postprocess = "self.assert_initial_attestations_target_and_save()")]
-    initial_attestations_target: Option<(DescendantsChainLength, AttestationsCount)>,
+    initial_attestations_target: Option<AttestationsTarget>,
 
     #[setters(skip)]
     verified_attestations: HashMap<BlockIdentifier, HashSet<SignerIndex>>,
@@ -160,7 +177,8 @@ pub struct AckiNackiBlockState {
     block_stats: Option<BlockStatistics>,
 
     #[setters(skip)]
-    known_children: HashSet<BlockIdentifier>,
+    #[getter(skip)]
+    known_children: HashMap<ThreadIdentifier, HashSet<BlockIdentifier>>,
 
     // This must be set with a helper method.
     // It is intentionally made this way since it requires syncronization between other
@@ -183,6 +201,55 @@ pub struct AckiNackiBlockState {
     #[getter(skip)]
     #[setters(skip)]
     pub(super) notifications: Arc<AtomicU32>,
+
+    #[getter(skip)]
+    #[setters(skip)]
+    pub event_timestamps: EventTimestamps,
+}
+
+impl std::fmt::Debug for AckiNackiBlockState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlockState")
+            .field("block_identifier", &self.block_identifier)
+            .field("thread_id", &self.thread_identifier)
+            .field("parent_block_identifier", &self.parent_block_identifier)
+            .field("block_seq_no", &self.block_seq_no)
+            .field("signatures_verified", &self.signatures_verified)
+            .field(
+                "envelope_block_producer_signature_verified",
+                &self.envelope_block_producer_signature_verified,
+            )
+            .field("applied", &self.applied)
+            .field("validated", &self.validated)
+            .field("resolves_forks", &self.resolves_forks)
+            .field("must_be_validated", &self.must_be_validated)
+            .field("finalized", &self.finalized)
+            .field("stored", &self.stored)
+            .field("invalidated", &self.invalidated)
+            .field("has_parent_finalized", &self.has_parent_finalized)
+            .field(
+                "has_all_cross_thread_ref_data_available",
+                &self.has_all_cross_thread_ref_data_available,
+            )
+            .field("has_cross_thread_ref_data_prepared", &self.has_cross_thread_ref_data_prepared)
+            .field("has_initial_attestations_target_met", &self.has_initial_attestations_target_met)
+            .field(
+                "has_attestations_target_met_in_a_resolved_fork_case",
+                &self.has_attestations_target_met_in_a_resolved_fork_case,
+            )
+            .field("initial_attestations_target", &self.initial_attestations_target)
+            .field("verified_attestations", &self.verified_attestations)
+            .field("block_stats", &self.block_stats)
+            .field("known_children", &self.known_children)
+            .field("attestation", &self.attestation)
+            .field("retracted_attestation", &self.retracted_attestation)
+            .field(
+                "known_attestation_interested_parties",
+                &self.known_attestation_interested_parties,
+            )
+            .field("event_timestamps", &self.event_timestamps)
+            .finish()
+    }
 }
 
 impl std::fmt::Display for AckiNackiBlockState {
@@ -192,6 +259,22 @@ impl std::fmt::Display for AckiNackiBlockState {
             "BlockState (block_id: {:?}, block_seq_no: {:?})",
             self.block_identifier, self.block_seq_no
         )
+    }
+}
+
+impl AllowGuardedMut for AckiNackiBlockState {
+    fn inner_guarded_mut<F, T>(&mut self, action: F) -> T
+    where
+        F: FnOnce(&mut Self) -> T,
+    {
+        if !self.bulk_change {
+            self.set_bulk_change(true).expect("Should not fail");
+            let res = action(self);
+            self.set_bulk_change(false).expect("failed to save AckiNackiBlockState");
+            res
+        } else {
+            action(self)
+        }
     }
 }
 
@@ -305,13 +388,27 @@ impl AckiNackiBlockState {
         self.save()
     }
 
-    pub fn add_child(&mut self, child_block_identifier: BlockIdentifier) -> anyhow::Result<()> {
+    pub fn add_child(
+        &mut self,
+        child_block_thread_identifier: ThreadIdentifier,
+        child_block_identifier: BlockIdentifier,
+    ) -> anyhow::Result<()> {
         tracing::trace!(
-            "add child for {:?} child: {child_block_identifier:?}",
+            "add child for {:?} child: {child_block_identifier:?}, {child_block_thread_identifier}",
             self.block_identifier
         );
-        self.known_children.insert(child_block_identifier);
+        self.known_children
+            .entry(child_block_thread_identifier)
+            .or_default()
+            .insert(child_block_identifier);
         self.save()
+    }
+
+    pub fn known_children(
+        &self,
+        child_block_thread_identifier: &ThreadIdentifier,
+    ) -> Option<&HashSet<BlockIdentifier>> {
+        self.known_children.get(child_block_thread_identifier)
     }
 
     pub fn get_signer_index_for_node_id(&self, node_id: &NodeIdentifier) -> Option<SignerIndex> {
@@ -336,15 +433,38 @@ impl AckiNackiBlockState {
     }
 
     // It is made pub super to allow helper methods to explicitly call it.
-    pub(super) fn save(&self) -> anyhow::Result<()> {
+    pub(super) fn save(&mut self) -> anyhow::Result<()> {
+        if self.bulk_change {
+            self.save_requested = true;
+            return Ok(());
+        }
         super::private::save(self)?;
         self.notifications.fetch_add(1, Ordering::Relaxed);
         atomic_wait::wake_all(self.notifications.as_ref());
         Ok(())
     }
 
-    fn assert_initial_attestations_target_and_save(&self) -> anyhow::Result<()> {
-        assert!(self.initial_attestations_target.unwrap().0 > 0);
+    fn assert_initial_attestations_target_and_save(&mut self) -> anyhow::Result<()> {
+        assert!(self.initial_attestations_target.unwrap().descendant_generations > 0);
         self.save()
     }
+
+    pub fn set_bulk_change(&mut self, bulk_change: bool) -> anyhow::Result<()> {
+        self.bulk_change = bulk_change;
+        if !self.bulk_change && self.save_requested {
+            self.save()
+        } else {
+            self.save_requested = false;
+            Ok(())
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, Default)]
+pub struct EventTimestamps {
+    pub received_ms: Option<u64>,
+    pub attestation_sent_ms: Option<u64>,
+    pub verify_all_block_signatures_ms_total: Option<u128>,
+    pub block_process_timestamp_was_reported: bool,
+    pub block_applied_timestamp_ms: Option<u64>,
 }

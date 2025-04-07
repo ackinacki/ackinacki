@@ -24,7 +24,7 @@ impl DirectBitAccess for AccountAddress {
                 .expect("Account address must be an uint256 value");
             let hi = index / 8usize;
             let lo = 7 - index % 8usize;
-            buffer[hi] = buffer[lo] | (1 << lo);
+            buffer[hi] |= 1 << lo;
             self.0 = tvm_types::AccountId::from(buffer);
         }
     }
@@ -56,5 +56,15 @@ mod tests {
     fn it_must_panic_when_read_out_of_bounds() {
         let addr = AccountAddress::default();
         let _ = addr.get_bit_value(256);
+    }
+
+    #[test]
+    fn test_set_bit_value() {
+        let mut address = AccountAddress::default();
+        address.set_bit_value(255, true);
+        assert!(address.get_bit_value(255));
+        address.set_bit_value(254, true);
+        assert!(address.get_bit_value(254));
+        assert!(address.get_bit_value(255));
     }
 }

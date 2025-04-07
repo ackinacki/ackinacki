@@ -21,6 +21,22 @@ struct Stake {
         uint8 status;
         uint16 signerIndex;
 }
+struct LicenseData {
+        uint128 reputationTime;
+        uint8 status;
+        optional(address) stakeController;
+        uint32 license_start;
+        uint128 balance;
+        uint128 lockStake;
+        uint128 lockContinue;
+        uint128 lockCooler;
+        bool isLockToStake;
+}
+
+struct LicenseStake {
+        uint256 num;
+        uint128 stake;
+}
 
 struct LockStake {
         uint256 value;

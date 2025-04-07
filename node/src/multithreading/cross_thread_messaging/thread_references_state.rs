@@ -1,8 +1,9 @@
 use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::VecDeque;
 
 use serde::Deserialize;
 use serde::Serialize;
+use tracing::instrument;
 use typed_builder::TypedBuilder;
 
 use crate::repository::CrossThreadRefData;
@@ -61,6 +62,7 @@ impl ThreadReferencesState {
         self.all_thread_refs.insert(thread, referenced_block.into());
     }
 
+    #[instrument(skip_all)]
     pub fn can_reference<F>(
         &self,
         explicit_references: Vec<BlockIdentifier>,
@@ -69,57 +71,55 @@ impl ThreadReferencesState {
     where
         F: FnMut(&BlockIdentifier) -> anyhow::Result<CrossThreadRefData>,
     {
-        // Note:
-        // This implementation assumes referencing FINALIZED blocks only!
-        // AND no thread merges yet (requires modifications)
-        // It can work with nonfinalized blocks, but need to check whether block is spawning thread
         tracing::trace!("can_reference: {:?} self: {:?}", explicit_references, self);
-
         if explicit_references.is_empty() {
             return Ok(CanRefQueryResult::Yes(ResultingState {
                 explicitly_referenced_blocks: vec![],
                 implicitly_referenced_blocks: vec![],
             }));
         }
-        let mut all_referenced_blocks = vec![];
-        let mut stack = explicit_references.clone();
         let mut tails = self.all_thread_refs.clone();
+        let mut all_referenced_blocks = vec![];
+        let mut stack: VecDeque<BlockIdentifier> = explicit_references.into();
 
-        while let Some(cursor) = stack.pop() {
-            let trail: Vec<CrossThreadRefData> =
-                walk_back_into_history(&cursor, &mut get_ref_data, &tails)?;
-            for block in trail.iter().rev() {
+        while let Some(cursor) = stack.pop_front() {
+            let trail = walk_back_into_history(&cursor, &mut get_ref_data, &tails)?;
+
+            for block in trail.into_iter().rev() {
                 let referenced_block: ReferencedBlock = block.as_reference_state_data().into();
-                all_referenced_blocks.push(referenced_block.clone());
-                tails
-                    .entry(*block.block_thread_identifier())
-                    .and_modify(|e| {
-                        if block.block_seq_no() > &e.block_seq_no {
-                            *e = referenced_block.clone();
-                        }
-                    })
-                    .or_insert(referenced_block);
-                stack.extend(block.refs().clone());
+                let thread_id = *block.block_thread_identifier();
+                match tails.get(&thread_id) {
+                    Some(existing) if *block.block_seq_no() > existing.block_seq_no => {
+                        tails.insert(thread_id, referenced_block.clone());
+                    }
+                    None => {
+                        tails.insert(thread_id, referenced_block.clone());
+                    }
+                    _ => {}
+                }
+
+                all_referenced_blocks.push(referenced_block);
+                stack.extend(block.refs().iter().cloned());
             }
         }
 
-        let previously_referenced_blocks = HashSet::<BlockIdentifier>::from_iter(
-            self.all_thread_refs.values().map(|e| e.block_identifier.clone()),
-        );
-        let explicitly_referenced_blocks: Vec<BlockIdentifier> = tails
+        let previously_referenced_blocks: Vec<_> =
+            self.all_thread_refs.values().map(|e| e.block_identifier.clone()).collect();
+
+        let explicitly_referenced_blocks: Vec<_> = tails
             .values()
             .filter(|e| !previously_referenced_blocks.contains(&e.block_identifier))
             .map(|e| e.block_identifier.clone())
             .collect();
-        let explicitly_referenced_blocks_set =
-            HashSet::<BlockIdentifier>::from_iter(explicitly_referenced_blocks.iter().cloned());
-        let implicitly_referenced_blocks = {
-            all_referenced_blocks
-                .retain(|e| !explicitly_referenced_blocks_set.contains(&e.block_identifier));
-            all_referenced_blocks.into_iter().map(|e| e.block_identifier).collect()
-        };
 
-        let result = ResultingState { implicitly_referenced_blocks, explicitly_referenced_blocks };
+        let implicitly_referenced_blocks: Vec<BlockIdentifier> = all_referenced_blocks
+            .into_iter()
+            .filter(|e| !explicitly_referenced_blocks.contains(&e.block_identifier))
+            .map(|e| e.block_identifier)
+            .collect();
+
+        let result = ResultingState { explicitly_referenced_blocks, implicitly_referenced_blocks };
+
         tracing::trace!("can_reference: Yes({result:?})");
         Ok(CanRefQueryResult::Yes(result))
     }

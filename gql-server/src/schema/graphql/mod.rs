@@ -76,12 +76,15 @@ impl QueryRoot {
         tracing::info!("info query");
         let pool = ctx.data::<SqlitePool>()?;
 
-        let block = db::Block::latest_block(pool).await?;
-        let gen_utime = match block {
-            Some(db::Block { gen_utime, .. }) => gen_utime,
-            None => None,
+        let gen_utime = if ctx.look_ahead().field("last_block_time").exists() {
+            let block = db::Block::latest_block(pool).await?;
+            match block {
+                Some(db::Block { gen_utime, .. }) => gen_utime,
+                None => None,
+            }
+        } else {
+            None
         };
-
         Ok(Some(Info { last_block_time: Some(gen_utime.unwrap_or(0) as f64), ..Info::default() }))
     }
 

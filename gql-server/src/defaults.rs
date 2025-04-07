@@ -5,3 +5,4 @@ pub const LISTEN: &str = "127.0.0.1:3000";
 pub const NODE_URL: &str = "http://127.0.0.1/bk/v2/messages";
 
 pub const QUERY_BATCH_SIZE: u16 = 50;
+pub const BK_API_TIMEOUT: u64 = 6; // in seconds

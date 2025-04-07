@@ -49,7 +49,7 @@ impl Dispatcher {
             NetworkMessage::Nack((_, thread_id)) => *thread_id,
             NetworkMessage::BlockAttestation((_, thread_id)) => *thread_id,
             NetworkMessage::NodeJoining((_, thread_id)) => *thread_id,
-            NetworkMessage::BlockRequest((_, _, _, thread_id)) => *thread_id,
+            NetworkMessage::BlockRequest { thread_id, .. } => *thread_id,
             NetworkMessage::SyncFinalized((_, _, _, thread_id)) => *thread_id,
             NetworkMessage::SyncFrom((_, thread_id)) => *thread_id,
         };

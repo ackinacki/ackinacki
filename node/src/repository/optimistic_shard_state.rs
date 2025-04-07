@@ -56,6 +56,13 @@ impl From<(ShardStateUnsplit, Cell)> for OptimisticShardState {
     }
 }
 
+impl From<(Arc<ShardStateUnsplit>, Cell)> for OptimisticShardState {
+    fn from(value: (Arc<ShardStateUnsplit>, Cell)) -> Self {
+        let (shard_state, shard_state_root_cell) = value;
+        Self { shard_state: Some(shard_state), shard_state_cell: Some(shard_state_root_cell) }
+    }
+}
+
 impl From<Cell> for OptimisticShardState {
     fn from(value: Cell) -> Self {
         Self { shard_state: None, shard_state_cell: Some(value) }

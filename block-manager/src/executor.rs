@@ -2,8 +2,13 @@
 //
 
 use std::sync::mpsc::channel;
+use std::sync::Arc;
+
+use message_router::message_router::MessageRouter;
+use parking_lot::Mutex;
 
 use crate::block_subscriber;
+use crate::bp_resolver::BPResolverImpl;
 use crate::cli::Args;
 use crate::events;
 // use crate::state;
@@ -11,6 +16,12 @@ use crate::events;
 pub async fn execute(args: Args) -> anyhow::Result<()> {
     // event bus
     let (event_pub, _event_sub) = channel::<events::Event>();
+
+    // message router
+    if let Ok(bind_to) = std::env::var("BLOCK_MANAGER_API") {
+        let bp_resolver = Arc::new(Mutex::new(BPResolverImpl::new()));
+        let _ = MessageRouter::new(bind_to, bp_resolver);
+    }
 
     // block subscriber
     let block_subscriber = block_subscriber::BlockSubscriber::new(

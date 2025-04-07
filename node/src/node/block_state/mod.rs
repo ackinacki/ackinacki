@@ -1,3 +1,4 @@
+pub mod dependent_ancestor_blocks;
 pub mod load_unprocessed_blocks;
 pub mod repository;
 pub mod state;
@@ -25,6 +26,6 @@ mod private {
 
     pub fn save(state: &AckiNackiBlockState) -> anyhow::Result<()> {
         let file_path = state.file_path.clone();
-        save_to_file(&file_path, state)
+        save_to_file(&file_path, state, false)
     }
 }

@@ -13,13 +13,12 @@ use tvm_block::GetRepresentationHash;
 use tvm_block::Serializable;
 use tvm_types::UInt256;
 
-use crate::types::BlockIdentifier;
+// TODO: remove later
+// pub mod inbox_message_ref;
 
-mod filter_messages;
+pub mod identifier;
 #[cfg(test)]
 pub mod message_stub;
-
-pub type MessageIdentifier = BlockIdentifier;
 
 pub trait Message: Debug + Clone + Sync + Send + Serialize + for<'b> Deserialize<'b> {
     type AccountId;
@@ -32,6 +31,40 @@ pub trait Message: Debug + Clone + Sync + Send + Serialize + for<'b> Deserialize
 #[derive(Clone)]
 pub struct WrappedMessage {
     pub message: tvm_block::Message,
+}
+
+impl PartialEq for WrappedMessage {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for WrappedMessage {}
+
+impl PartialOrd for WrappedMessage {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for WrappedMessage {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self.message.lt(), other.message.lt()) {
+            (Some(a_lt), Some(b_lt)) => match a_lt.cmp(&b_lt) {
+                std::cmp::Ordering::Equal => self
+                    .message
+                    .hash()
+                    .expect("Message hash must be set")
+                    .cmp(&other.message.hash().expect("Message hash must be set")),
+                other => other,
+            },
+            _ => self
+                .message
+                .hash()
+                .expect("Message hash must be set")
+                .cmp(&other.message.hash().expect("Message hash must be set")),
+        }
+    }
 }
 
 impl Debug for WrappedMessage {

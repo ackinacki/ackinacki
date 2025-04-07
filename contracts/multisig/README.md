@@ -1,6 +1,6 @@
 **Multisig** – A multisignature wallet with support for upgrade and SHELL exchange features.
 
-- **Code Hash**: `f40a266df7336124e93775054eeb8cd6311a3e51433e071c35e50e7c5e50ec99` (compiled with `sold` v0.76.0)
+- **Code Hash**: `fd4a27165a071c289c0db32d30026d17bd4cfa8a504d6d43a8cf20c21b9283f8` (compiled with `sold` v0.77.0)
 
 ### Building Multisig with `sold`
 

@@ -1,15 +1,14 @@
-use std::sync::mpsc::Sender;
 use std::time::Duration;
 use std::time::Instant;
 
+use network::channel::NetBroadcastSender;
 use typed_builder::TypedBuilder;
 
 use crate::node::associated_types::NodeIdentifier;
-use crate::node::BlockState;
+use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
 use crate::node::NetworkMessage;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
-use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
@@ -19,7 +18,7 @@ pub struct PulseCandidateBlocks {
     node_id: NodeIdentifier,
     thread_identifier: ThreadIdentifier,
 
-    broadcast_tx: Sender<NetworkMessage>,
+    broadcast_tx: NetBroadcastSender<NetworkMessage>,
 
     #[builder(setter(skip), default=None)]
     last_finalized_block: Option<BlockSeqNo>,
@@ -39,7 +38,12 @@ pub struct PulseCandidateBlocks {
 
 impl PulseCandidateBlocks {
     pub fn pulse(&mut self, last_finalized_block: BlockSeqNo) -> anyhow::Result<()> {
-        anyhow::ensure!(Some(last_finalized_block) != self.last_finalized_block);
+        if let Some(ref prev) = self.last_finalized_block {
+            if &last_finalized_block == prev {
+                return Ok(());
+            }
+            anyhow::ensure!(last_finalized_block > prev);
+        }
         self.last_finalized_block = Some(last_finalized_block);
         self.last_pulse = Instant::now();
         // drop timers and ranges
@@ -47,9 +51,10 @@ impl PulseCandidateBlocks {
         Ok(())
     }
 
+    #[allow(clippy::mutable_key_type)]
     pub fn evaluate(
         &mut self,
-        candidates: &[BlockState],
+        candidates: &UnfinalizedBlocksSnapshot,
         blocks_repository: &RepositoryImpl,
     ) -> anyhow::Result<()> {
         let is_triggering = {
@@ -76,20 +81,27 @@ impl PulseCandidateBlocks {
         self.last_broadcast_timestamp = Instant::now();
         let (finalized_block_id, _) =
             blocks_repository.select_thread_last_finalized_block(&self.thread_identifier)?;
-        let mut to_send: Vec<BlockIdentifier> = vec![finalized_block_id];
-        to_send.extend(candidates.iter().filter_map(|x| {
-            x.guarded(|e| if e.is_stored() { Some(e.block_identifier().clone()) } else { None })
-        }));
-        for id in to_send.iter() {
-            let Some(block) = blocks_repository.get_block(id)? else {
-                continue;
-            };
-            tracing::info!("rebroadcasting block: {}", block,);
-            let message = NetworkMessage::ResentCandidate((block, self.node_id.clone()));
-            let _ = self.broadcast_tx.send(message);
+        let Some(finalized_block) = blocks_repository.get_block(&finalized_block_id)? else {
+            tracing::error!("Failed to load finalized block");
+            return Ok(());
+        };
+        let mut sent_cnt = 1;
+        tracing::info!("rebroadcasting block: {}", finalized_block,);
+        let message = NetworkMessage::ResentCandidate((finalized_block, self.node_id.clone()));
+        let _ = self.broadcast_tx.send(message);
+        for (x, block) in candidates.values() {
+            x.guarded(|e| {
+                if e.is_stored() && !e.is_invalidated() {
+                    sent_cnt += 1;
+                    tracing::info!("rebroadcasting block: {}", block,);
+                    let message =
+                        NetworkMessage::ResentCandidate((block.clone(), self.node_id.clone()));
+                    let _ = self.broadcast_tx.send(message);
+                }
+            })
         }
-        self.last_broadcast_timestamp = Instant::now()
-            + self.resend_extra_timeout_per_candidate.saturating_mul(to_send.len() as u32);
+        self.last_broadcast_timestamp =
+            Instant::now() + self.resend_extra_timeout_per_candidate.saturating_mul(sent_cnt);
         //
         Ok(())
     }

@@ -1,14 +1,15 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
+mod blockchain_config;
 mod network_config;
 mod serde_config;
 #[cfg(test)]
 mod test;
 mod validations;
-
 use std::path::PathBuf;
 use std::time::Duration;
 
+pub use blockchain_config::*;
 pub use network_config::NetworkConfig;
 use serde::Deserialize;
 use serde::Serialize;
@@ -23,29 +24,29 @@ use crate::types::BlockSeqNo;
 /// Global node config, including block producer and synchronization settings.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GlobalConfig {
-    /// Number of child blocks that has to be accepted as main candidate before
-    /// finalizing the block. 0 to disable, defaults to 4
-    pub require_minimum_blocks_to_finalize: usize,
-
-    /// Time in milliseconds that is required to pass after block creation
-    /// before finalization. 0 to disable, defaults to 0
-    pub require_minimum_time_milliseconds_to_finalize: u64,
-
     /// Duration of one iteration of producing cycle in milliseconds.
     /// Defaults to 330
     pub time_to_produce_block_millis: u64,
 
-    /// Number of non-finalized blocks, after which the block producer slows
-    /// down. Defaults to 32
-    pub finalization_delay_to_slow_down: <BlockSeqNo as std::ops::Sub>::Output,
+    /// Maximum verification duration for one block.
+    /// Defaults to 440 (330 * 4 / 3)
+    pub time_to_verify_block_millis: u64,
 
-    /// Block producer slow down multiplier.
-    /// Defaults to 4
-    pub slow_down_multiplier: u64,
+    /// Maximum execution duration of one transaction production in milliseconds.
+    /// Defaults to None
+    pub time_to_produce_transaction_millis: Option<u64>,
 
-    /// Number of non-finalized blocks, after which the block producer stops.
-    /// Defaults to 128
-    pub finalization_delay_to_stop: <BlockSeqNo as std::ops::Sub>::Output,
+    /// Maximum execution duration of one transaction verification in milliseconds.
+    /// Defaults to None
+    pub time_to_verify_transaction_millis: Option<u64>,
+
+    /// Maximum execution duration of one transaction verification in milliseconds.
+    /// Applied to transactions that was aborted with ExceptionCode::ExecutionTimeout.
+    /// Defaults to None
+    pub time_to_verify_transaction_aborted_with_execution_timeout_millis: Option<u64>,
+
+    /// Timeout between attestation resend.
+    pub attestation_resend_timeout: Duration,
 
     /// Difference between the seq no of the incoming block and the seq no of
     /// the last saved block, which causes the node synchronization process
@@ -56,10 +57,6 @@ pub struct GlobalConfig {
     /// Defaults to 600 seconds
     pub min_time_between_state_publish_directives: Duration,
 
-    /// Number of nodes in producer group.
-    /// Defaults to 5
-    pub producer_group_size: usize,
-
     /// Block gap size that causes block producer rotation.
     /// Defaults to 6
     pub producer_change_gap_size: usize,
@@ -67,10 +64,6 @@ pub struct GlobalConfig {
     /// Timeout between consecutive NodeJoining messages sending.
     /// Defaults to 60 seconds
     pub node_joining_timeout: Duration,
-
-    /// Number of signatures, required for block acceptance.
-    /// Defaults to 2
-    pub min_signatures_cnt_for_acceptance: usize,
 
     /// Block gap before sharing the state on sync.
     /// Defaults to 32
@@ -88,15 +81,18 @@ pub struct GlobalConfig {
     /// Block keeper epoch code hash
     pub block_keeper_epoch_code_hash: String,
 
-    /// Send special transaction gas limit
-    pub gas_limit_for_special_transaction: u64,
-
     /// Expected maximum number of threads.
     /// Note: it can grow over this value for some time on the running network.
-    pub max_threads_count: usize,
+    pub thread_count_soft_limit: usize,
 
-    /// Number of block gap after which block attestation become invalid
-    pub attestation_validity_block_gap: <BlockSeqNo as std::ops::Sub>::Output,
+    /// Thread load (aggregated number of messages in a queue to start splitting a thread) threshold for split
+    pub thread_load_threshold: usize,
+
+    /// Thread load window size, which is used to calculate thread load
+    pub thread_load_window_size: usize,
+
+    /// Change for a successfull attack
+    pub chance_of_successful_attack: f64,
 }
 
 /// Node interaction settings
@@ -128,6 +124,22 @@ pub struct NodeConfig {
     /// Level of block production parallelization.
     #[builder(default = 20)]
     pub parallelization_level: usize,
+
+    /// Store shard state and account BOCs separately.
+    #[builder(default = false)]
+    pub split_state: bool,
+
+    /// Block cache size in local repository
+    #[builder(default = 20)]
+    pub block_cache_size: usize,
+
+    /// State cache size in local repository
+    #[builder(default = 10)]
+    pub state_cache_size: usize,
+
+    /// Path for message durable storage.
+    #[builder(default = PathBuf::from("./message_storage/db"))]
+    pub message_storage_path: PathBuf,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -146,27 +158,26 @@ pub struct Config {
 impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
-            require_minimum_blocks_to_finalize: 0,
-            require_minimum_time_milliseconds_to_finalize: 0,
             time_to_produce_block_millis: 330,
-            finalization_delay_to_slow_down: 6,
-            slow_down_multiplier: 4,
-            finalization_delay_to_stop: 6,
+            time_to_verify_block_millis: 330 * 4 / 3,
+            time_to_produce_transaction_millis: None,
+            time_to_verify_transaction_millis: None,
+            time_to_verify_transaction_aborted_with_execution_timeout_millis: None,
             need_synchronization_block_diff: 20,
             min_time_between_state_publish_directives: Duration::from_secs(600),
-            producer_group_size: 5,
+            attestation_resend_timeout: Duration::from_secs(3),
             producer_change_gap_size: 6,
             node_joining_timeout: Duration::from_secs(300),
-            min_signatures_cnt_for_acceptance: 3,
             sync_gap: 32,
             sync_delay_milliseconds: 500,
             // TODO: Critical! Fix repo issue and revert the value back to 200
             save_state_frequency: 200,
             block_keeper_epoch_code_hash:
-                "88305d70a51fe7f281a5cd5a24136706b2f1b4ae1fa1d2fc69ff3db12deb3090".to_string(),
-            gas_limit_for_special_transaction: 10_000_000,
-            attestation_validity_block_gap: 5,
-            max_threads_count: 100,
+                "8246c7bdd8f2559b5f00e4334dba4612c2f48f52f0e3a5390298543d51a1ff1e".to_string(),
+            thread_count_soft_limit: 100,
+            thread_load_window_size: 100,
+            thread_load_threshold: 5000,
+            chance_of_successful_attack: 0.000000001_f64,
         }
     }
 }
@@ -182,6 +193,23 @@ impl Default for NodeConfig {
             external_state_share_local_base_dir: PathBuf::from("/tmp"),
             parallelization_level: 20,
             block_keeper_seed_path: "block_keeper.keys.json".to_string(),
+            split_state: false,
+            block_cache_size: 20,
+            state_cache_size: 10,
+            message_storage_path: PathBuf::from("./message_storage/db"),
         }
+    }
+}
+
+pub fn must_save_state_on_seq_no(
+    seq_no: BlockSeqNo,
+    parent_seq_no: Option<BlockSeqNo>,
+    save_state_frequency: u32,
+) -> bool {
+    let seq_no = u32::from(seq_no);
+    if let Some(parent_seq_no) = parent_seq_no {
+        (u32::from(parent_seq_no) / save_state_frequency) != (seq_no / save_state_frequency)
+    } else {
+        seq_no % save_state_frequency == 0
     }
 }

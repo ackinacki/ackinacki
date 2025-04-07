@@ -1,5 +1,6 @@
 TVCS := SignerIndex BLSKeyIndex BlockKeeperContractRoot AckiNackiBlockKeeperNodeWallet \
-		AckiNackiBlockKeeperNodeWalletConfig BlockKeeperEpochContract BlockKeeperCoolerContract \
-		BlockKeeperPreEpochContract BlockKeeperEpochProxyList
+		BlockKeeperEpochContract BlockKeeperCoolerContract \
+		BlockKeeperPreEpochContract BlockKeeperEpochProxyList \
+		License LicenseRoot
 
 include ../Makefile.inc

@@ -4,7 +4,7 @@ set -eu
 
 MASTER_KEY_FILE=$1
 BLS_KEYS_FILE=$2
-PROXY=$3
+
 WALLET_ABI=../contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json
 ABI=../contracts/bksystem/BlockKeeperContractRoot.abi.json
 PRE_EPOCH_ABI=../contracts/bksystem/BlockKeeperPreEpochContract.abi.json
@@ -26,15 +26,10 @@ if [ ! -e $BLS_KEYS_FILE ]; then
   exit 1
 fi
 
-if [ -z $PROXY ]; then
-  echo Proxy has not been set.
-  exit 1
-fi
-
 MASTER_PUB_KEY_JSON=$(jq -r .public $MASTER_KEY_FILE)
 MASTER_PUB_KEY=$(echo '{"pubkey": "0x{public}"}' | sed -e "s/{public}/$MASTER_PUB_KEY_JSON/g")
 BLS_PUB_KEY=$(jq -r .[0].public $BLS_KEYS_FILE)
-WALLET_ADDR=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeperNodeWalletAddress "$MASTER_PUB_KEY" | jq -r '.value0')
+WALLET_ADDR=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeperNodeWalletAddress "$MASTER_PUB_KEY" | jq -r '.wallet')
 INIT_WALLET_STATE=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails)
 INIT_ACTIVE_STAKES=$(echo $INIT_WALLET_STATE | jq '.activeStakes | length')
 INIT_WALLET_BALANCE=$(echo $INIT_WALLET_STATE | jq -r '.balance' | xargs printf "%d")
@@ -59,7 +54,7 @@ place_stake () {
   # Get signer index
   for i in `seq $SIGN_INDEX_START $SIGN_INDEX_END`; do
     echo "Trying signer index: $i"
-    SIGNER_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getSignerIndexAddress "{\"index\": $i}" | jq -r '.value0')
+    SIGNER_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getSignerIndexAddress "{\"index\": $i}" | jq -r '.signerIndex')
     ADDRESS_DETAILS=$(tvm-cli -j account $SIGNER_ADDRESS)
     ADDRESS_DETAILS_LEN=$(echo $ADDRESS_DETAILS | jq '. | length')
     ADDRESS_DETAILS_TYPE=$(echo $ADDRESS_DETAILS | jq -r '.acc_type')
@@ -72,7 +67,7 @@ place_stake () {
     fi
   done
 
-  PLACE_PARAMS="{\"bls_pubkey\": \"$BLS_PUB_KEY\", \"stake\": $WALLET_STAKE, \"signerIndex\": $SIGNER_INDEX, \"ProxyList\": {\"1\": \"$PROXY\"}}"
+  PLACE_PARAMS="{\"bls_pubkey\": \"$BLS_PUB_KEY\", \"stake\": $WALLET_STAKE, \"signerIndex\": $SIGNER_INDEX, \"ProxyList\": {}}"
   tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $MASTER_KEY_FILE --method sendBlockKeeperRequestWithStake "$PLACE_PARAMS" && echo Staking request has been sent.
   echo "Waiting active stakes..."
   sleep 5
@@ -104,7 +99,7 @@ place_continue_stake () {
   # Get signer index
   for i in `seq $SIGN_INDEX_START $SIGN_INDEX_END`; do
     echo "Trying signer index: $i"
-    SIGNER_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getSignerIndexAddress "{\"index\": $i}" | jq -r '.value0')
+    SIGNER_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getSignerIndexAddress "{\"index\": $i}" | jq -r '.signerIndex')
     ADDRESS_DETAILS=$(tvm-cli -j account $SIGNER_ADDRESS)
     ADDRESS_DETAILS_LEN=$(echo $ADDRESS_DETAILS | jq '. | length')
     ADDRESS_DETAILS_TYPE=$(echo $ADDRESS_DETAILS | jq -r '.acc_type')
@@ -117,7 +112,7 @@ place_continue_stake () {
     fi
   done
 
-  CONT_STAKING="{\"bls_pubkey\": \"$BLS_PUB_KEY\", \"stake\": $CONT_WALLET_STAKE, \"seqNoStartOld\": \"$1\", \"signerIndex\": $SIGNER_INDEX, \"ProxyList\": {\"1\": \"$PROXY\"}}"
+  CONT_STAKING="{\"bls_pubkey\": \"$BLS_PUB_KEY\", \"stake\": $CONT_WALLET_STAKE, \"seqNoStartOld\": \"$1\", \"signerIndex\": $SIGNER_INDEX, \"ProxyList\": {}}"
   tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $MASTER_KEY_FILE --method sendBlockKeeperRequestWithStakeContinue "$CONT_STAKING" && echo Continue staking request has been sent.
 }
 
@@ -129,7 +124,7 @@ process_epoch () {
       0)
         echo "Pre Epoch - $k"
         CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no')
-        PRE_EPOCH_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperPreEpochAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$ACTIVE_STAKES_SEQ\"}" | jq -r '.value0')
+        PRE_EPOCH_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperPreEpochAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$ACTIVE_STAKES_SEQ\"}" | jq -r '.preEpochAddress')
         echo "PreEpoch contract address \"$PRE_EPOCH_ADDRESS\" and sequence start is \"$ACTIVE_STAKES_SEQ\" and current sequence is \"$CUR_BLOCK_SEQ\""
         IS_EPOCH_ACTIVE=false
         IS_EPOCH_CONTINUE=true
@@ -141,7 +136,7 @@ process_epoch () {
         ;;
       1)
         echo "Epoch in progress - $k"
-        EPOCH_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperEpochAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$ACTIVE_STAKES_SEQ\"}" | jq -r '.value0')
+        EPOCH_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperEpochAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$ACTIVE_STAKES_SEQ\"}" | jq -r '.epochAddress')
         EPOCH_DETAILS=$(tvm-cli -j runx --abi $EPOCH_ABI --addr $EPOCH_ADDRESS -m getDetails)
         echo "There is active stake with epoch address \"$EPOCH_ADDRESS\""
         IS_EPOCH_ACTIVE=true

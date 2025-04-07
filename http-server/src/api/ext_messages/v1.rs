@@ -12,6 +12,7 @@ use tvm_block::Message;
 use tvm_types::base64_decode;
 use tvm_types::UInt256;
 
+use super::ResolvingResult;
 use crate::api::ext_messages::ThreadIdentifier;
 use crate::WebServer;
 pub struct ExtMessagesHandler<TMessage, TMsgConverter, TBPResolver>(
@@ -38,7 +39,7 @@ where
         + Sync
         + 'static
         + Fn(tvm_block::Message, [u8; 34]) -> anyhow::Result<TMessage>,
-    TBPResolver: Clone + Send + Sync + 'static + FnMut([u8; 34]) -> Option<std::net::SocketAddr>,
+    TBPResolver: Clone + Send + Sync + 'static + FnMut([u8; 34]) -> ResolvingResult,
 {
     async fn handle(
         &self,

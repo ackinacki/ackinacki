@@ -19,7 +19,7 @@ pub struct ForkResolution {
     winner: BlockIdentifier,
     winner_attestations: Envelope<GoshBLS, AttestationData>,
     // lost candidates
-    other_forks: Vec<Envelope<GoshBLS, AckiNackiBlock>>,
+    other_forks_block_envelopes: Vec<Envelope<GoshBLS, AckiNackiBlock>>,
     // attestations for the lost candidates
     lost_attestations: Vec<Envelope<GoshBLS, AttestationData>>,
     // nacks for lost candidates

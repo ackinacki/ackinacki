@@ -7,28 +7,38 @@ license-file.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 bincode.workspace = true
 chitchat.workspace = true
 clap.workspace = true
+gossip.workspace = true
+itertools.workspace = true
 network.workspace = true
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
+quinn.workspace = true
+rusqlite.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+telemetry_utils.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tvm_block.workspace = true
+tvm_contracts.workspace = true
+tvm_types.workspace = true
+wtransport.workspace = true
 
 docker-api = "0.14"
 dotenvy = "0.15.7"
 futures = "0.3.31"
-quinn = { version = "0.11.6", features = ["rustls"] }
 rcgen = "0.13.1"
 rustls = { version = "0.23.19", default-features = false, features = ["ring", "std", "logging"] }
-rustls-cert-gen = "0.1.0"
 rustls-pemfile = "2.2.0"
 serde_yaml = "0.9.34"
 tempfile = "3.14.0"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 url = "2.5.4"
-wtransport = { version = "0.5.0", features = ["dangerous-configuration", "quinn"] }
-x509-parser = "0.16.0"
 
 [dev-dependencies]
 assert_fs = "1.1.2"

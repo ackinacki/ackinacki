@@ -14,10 +14,26 @@ use rustls::version::TLS13;
 use rustls::DigitallySignedStruct;
 use rustls::Error;
 use rustls::SignatureScheme;
+use serde::Deserialize;
+use serde::Serialize;
 use wtransport::ServerConfig;
 
+use crate::pub_sub::CertFile;
 use crate::pub_sub::CertStore;
-use crate::pub_sub::Config;
+use crate::pub_sub::PrivateKeyFile;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TlsConfig {
+    pub my_cert: CertFile,
+    pub my_key: PrivateKeyFile,
+    pub peer_certs: CertStore,
+}
+
+impl TlsConfig {
+    pub fn is_debug(&self) -> bool {
+        self.my_cert.is_debug()
+    }
+}
 
 #[derive(Debug, Default)]
 struct NoCertVerification;
@@ -70,7 +86,7 @@ impl ServerCertVerifier for NoCertVerification {
         ]
     }
 }
-pub fn create_client_config(config: &Config) -> Result<wtransport::ClientConfig, anyhow::Error> {
+pub fn create_client_config(config: &TlsConfig) -> Result<wtransport::ClientConfig, anyhow::Error> {
     let root_certs = CertStore::build_root_cert_store(&config.peer_certs)?;
     let mut tls_config = if config.peer_certs.is_debug() {
         rustls::ClientConfig::builder_with_protocol_versions(&[&TLS13])
@@ -94,7 +110,7 @@ pub fn create_client_config(config: &Config) -> Result<wtransport::ClientConfig,
 
 const PROXY_CONNECTION_ALIVE_TIMEOUT: Duration = Duration::from_millis(300);
 
-pub fn server_tls_config(config: &Config) -> anyhow::Result<rustls::ServerConfig> {
+pub fn server_tls_config(config: &TlsConfig) -> anyhow::Result<rustls::ServerConfig> {
     let server_cert = config.my_cert.cert.clone();
     let private_key = PrivateKeyDer::try_from(config.my_key.key.secret_der().to_vec())
         .map_err(|err| anyhow::anyhow!("{err}"))?;
@@ -108,7 +124,10 @@ pub fn server_tls_config(config: &Config) -> anyhow::Result<rustls::ServerConfig
     Ok(tls_config)
 }
 
-pub fn generate_server_config(bind: SocketAddr, config: &Config) -> anyhow::Result<ServerConfig> {
+pub fn generate_server_config(
+    bind: SocketAddr,
+    config: &TlsConfig,
+) -> anyhow::Result<ServerConfig> {
     Ok(ServerConfig::builder()
         .with_bind_address(bind)
         .with_custom_tls(server_tls_config(config)?)

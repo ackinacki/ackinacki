@@ -19,7 +19,7 @@ RUN \
     rm -rf /usr/local/bin/*
 
     for binary in `cargo build --bin 2>&1 | sed -e '1,2d' | xargs`; do
-        cp /target/release/"$binary" /usr/local/bin/
+        cp /target/release-with-debug/"$binary" /usr/local/bin/
     done
 
     # debug

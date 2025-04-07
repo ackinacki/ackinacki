@@ -1,17 +1,20 @@
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Duration;
 
+use network::channel::NetBroadcastSender;
+use network::channel::NetDirectSender;
 use typed_builder::TypedBuilder;
 
 use crate::node::associated_types::NodeIdentifier;
+use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
 use crate::node::BlockState;
 use crate::node::BlockStateRepository;
 use crate::node::NetworkMessage;
 use crate::repository::repository_impl::RepositoryImpl;
-use crate::types::BlockSeqNo;
+use crate::types::bp_selector::BlockGap;
 use crate::types::ThreadIdentifier;
+use crate::utilities::guarded::Guarded;
 
 mod pulse_attestations;
 mod pulse_candidates;
@@ -27,9 +30,9 @@ struct ChainPulseSettings {
 
     thread_identifier: ThreadIdentifier,
 
-    direct_send_tx: Sender<(NodeIdentifier, NetworkMessage)>,
+    direct_send_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
 
-    broadcast_send_tx: Sender<NetworkMessage>,
+    broadcast_send_tx: NetBroadcastSender<NetworkMessage>,
 
     #[builder(setter(strip_option), default=None)]
     trigger_attestation_resend_by_time: Option<Duration>,
@@ -50,12 +53,15 @@ struct ChainPulseSettings {
     finalization_stopped_time_trigger: Duration,
     finalization_has_not_started_time_trigger: Duration,
 
-    block_gap: Arc<parking_lot::Mutex<usize>>,
+    block_gap: BlockGap,
+
+    last_finalized_block: Option<BlockState>,
 }
 
 pub struct ChainPulse {
     attestations: pulse_attestations::PulseAttestations,
     candidates: pulse_candidates::PulseCandidateBlocks,
+    last_finalized_block: Option<BlockState>,
 }
 
 impl From<ChainPulseSettings> for ChainPulse {
@@ -85,6 +91,7 @@ impl From<ChainPulseSettings> for ChainPulse {
                     settings.finalization_has_not_started_time_trigger,
                 )
                 .build(),
+            last_finalized_block: settings.last_finalized_block,
         }
     }
 }
@@ -94,23 +101,34 @@ impl ChainPulse {
         ChainPulseSettings::builder()
     }
 
-    pub fn pulse(&mut self, last_finalized_block: BlockSeqNo) -> anyhow::Result<()> {
+    pub fn pulse(&mut self, last_finalized_block: &BlockState) -> anyhow::Result<()> {
+        let next_seq_no = last_finalized_block.guarded(|e| e.block_seq_no().unwrap());
+        if let Some(ref prev) = self.last_finalized_block {
+            if prev == last_finalized_block {
+                return Ok(());
+            }
+            let prev_seq_no = prev.guarded(|e| e.block_seq_no().unwrap());
+            anyhow::ensure!(next_seq_no > prev_seq_no);
+        }
         let r1 = self.attestations.pulse(last_finalized_block);
-        let r2 = self.candidates.pulse(last_finalized_block);
+        let r2 = self.candidates.pulse(next_seq_no);
         // Don't care if one fails. Make sure both had a chance to execute.
         // In case of an error return one.
         r1?;
         r2?;
+        self.last_finalized_block = Some(last_finalized_block.clone());
         Ok(())
     }
 
+    #[allow(clippy::mutable_key_type)]
     pub fn evaluate(
         &mut self,
-        candidates: &[BlockState],
-        blocks_states: &BlockStateRepository,
+        candidates: &UnfinalizedBlocksSnapshot,
+        block_state_repository: &BlockStateRepository,
         block_repository: &RepositoryImpl,
     ) -> anyhow::Result<()> {
-        let r1 = self.attestations.evaluate(candidates, blocks_states);
+        let metrics = block_repository.get_metrics();
+        let r1 = self.attestations.evaluate(candidates, block_state_repository, metrics);
         let r2 = self.candidates.evaluate(candidates, block_repository);
         r1?;
         r2?;

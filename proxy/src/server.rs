@@ -1,19 +1,28 @@
-use std::io::Write;
-use std::path::Path;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::path::PathBuf;
-use std::process::exit;
+use std::str::FromStr;
 use std::sync::LazyLock;
-use std::thread;
+use std::time::Instant;
 
 use anyhow::Context;
 use clap::Parser;
-use network::pub_sub::Config;
-use network::pub_sub::IncomingMessage;
-use network::pub_sub::MessageDelivery;
-use network::pub_sub::OutgoingMessage;
-use tokio::signal::unix::signal;
-use tokio::signal::unix::SignalKind;
+use network::metrics::NetMetrics;
+use network::pub_sub::connection::IncomingMessage;
+use network::pub_sub::connection::MessageDelivery;
+use network::pub_sub::connection::OutgoingMessage;
+use network::pub_sub::spawn_critical_task;
+use network::pub_sub::IncomingSender;
+use network::resolver::watch_gossip;
+use network::resolver::SubscribeStrategy;
+use network::socket_addr::ToOneSocketAddr;
+use network::DeliveryPhase;
+use network::SendMode;
+use opentelemetry::global;
 use tokio::task::JoinHandle;
+
+use crate::config::config_reload_handler;
+use crate::config::ProxyConfig;
 
 pub static LONG_VERSION: LazyLock<String> = LazyLock::new(|| {
     format!(
@@ -42,67 +51,132 @@ pub struct CliArgs {
     pub max_connections: usize,
 }
 
-pub fn run() -> Result<(), std::io::Error> {
+pub fn run() -> anyhow::Result<()> {
     eprintln!("Starting server...");
     dotenvy::dotenv().ok(); // ignore all errors and load what we can
-    crate::tracing::init_tracing();
+
     tracing::info!("Starting...");
 
     tracing::debug!("Installing default crypto provider...");
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("failed to install default crypto provider");
-
-    if let Err(err) = thread::Builder::new().name("tokio_main".into()).spawn(tokio_main)?.join() {
-        tracing::error!("tokio main thread panicked: {:#?}", err);
-        exit(1);
+    if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
+        anyhow::bail!("Failed to install default crypto provider: {:?}", err);
     }
 
-    exit(0);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("Failed to create Tokio runtime")?;
+
+    runtime.block_on(tokio_main())?;
+
+    Ok(())
 }
 
-#[tokio::main]
 async fn tokio_main() -> anyhow::Result<()> {
     let args = CliArgs::parse();
-
     tracing::info!("Config path: {}", args.config.as_path().display());
 
-    if let Err(err) = args.run().await {
-        tracing::error!("{:#?}", err);
-        exit(1);
-    }
+    // Initialize the meter provider for OpenTelemetry
+    let meter_provider = telemetry_utils::init_meter_provider();
+    opentelemetry::global::set_meter_provider(meter_provider.clone());
 
-    exit(0);
+    // Create NetMetrics instance using the meter provider
+    let net_metrics = NetMetrics::new(&global::meter("proxy"));
+
+    let result = args.run(net_metrics).await;
+
+    // Shutdown the meter provider gracefully
+    meter_provider.shutdown().ok();
+    result
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct NodeId(String);
+
+impl Display for NodeId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for NodeId {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_string()))
+    }
 }
 
 impl CliArgs {
-    async fn run(self) -> anyhow::Result<()> {
-        let config = load_config(&self.config)?;
-        let (config_updates_sender, config_updates_receiver) = tokio::sync::watch::channel(config);
+    async fn run(self, net_metrics: NetMetrics) -> anyhow::Result<()> {
+        let config = ProxyConfig::from_file(&self.config)?;
+        tracing::info!("Loaded configuration: {}", serde_json::to_string_pretty(&config)?);
 
-        let (outgoing_messages_sender, _ /* we will subscribe() later */) =
+        let (subscribe_tx, _) = tokio::sync::watch::channel(Vec::new());
+
+        let (gossip_handle, gossip_rest_handle) = if !config.subscribe.is_empty() {
+            let _ = subscribe_tx.send_replace(config.subscribe.clone());
+            (None, tokio::spawn(std::future::pending::<anyhow::Result<()>>()))
+        } else if let (Some(gossip_config), Some(my_url)) = (&config.gossip, &config.my_url) {
+            let seeds = gossip_config.get_seeds();
+            tracing::info!("Gossip seeds expanded: {:?}", seeds);
+
+            let listen_addr = gossip_config.listen_addr.clone();
+            let advertise_addr = gossip_config.advertise_addr.clone().unwrap_or(listen_addr);
+            let (gossip_handle, gossip_rest_handle) = gossip::run(
+                gossip_config.listen_addr.try_to_socket_addr()?,
+                advertise_addr.try_to_socket_addr()?,
+                seeds,
+                gossip_config.cluster_id.clone(),
+            )
+            .await?;
+
+            spawn_critical_task(
+                "Gossip",
+                watch_gossip(
+                    SubscribeStrategy::<NodeId>::Proxy(my_url.clone()),
+                    gossip_handle.chitchat(),
+                    Some(subscribe_tx.clone()),
+                    None,
+                ),
+            );
+            (Some(gossip_handle), gossip_rest_handle)
+        } else {
+            (None, tokio::spawn(std::future::pending::<anyhow::Result<()>>()))
+        };
+
+        let (outgoing_messages_tx, _ /* we will subscribe() later */) =
             tokio::sync::broadcast::channel(100);
-        let (incoming_messages_sender, incoming_messages_receiver) =
-            tokio::sync::mpsc::channel(100);
+        let (incoming_messages_tx, incoming_messages_rx) = tokio::sync::mpsc::unbounded_channel();
 
+        let (config_tx, _config_rx) = tokio::sync::watch::channel(config.clone());
         let config_reload_handle: JoinHandle<anyhow::Result<()>> = tokio::spawn({
             let config_path = self.config.clone();
-            async move { config_reload_handler(config_updates_sender, config_path).await }
+            async move { config_reload_handler(config_tx, config_path).await }
         });
 
         let multiplexer_handle = tokio::spawn({
-            let outgoing_messages_sender = outgoing_messages_sender.clone();
+            let outgoing_messages_sender = outgoing_messages_tx.clone();
+            let net_metrics = net_metrics.clone();
             async move {
-                message_multiplexor(incoming_messages_receiver, outgoing_messages_sender).await
+                message_multiplexor(
+                    Some(net_metrics),
+                    incoming_messages_rx,
+                    outgoing_messages_sender,
+                )
+                .await
             }
         });
 
         let pub_sub_task = tokio::spawn(async move {
             network::pub_sub::run(
+                Some(net_metrics),
                 self.max_connections,
-                config_updates_receiver,
-                outgoing_messages_sender,
-                incoming_messages_sender,
+                config.bind,
+                config.tls_config(),
+                subscribe_tx,
+                outgoing_messages_tx,
+                IncomingSender::AsyncUnbounded(incoming_messages_tx),
             )
             .await
         });
@@ -110,85 +184,73 @@ impl CliArgs {
         tokio::select! {
             v = pub_sub_task => {
                 if let Err(err) = v {
-                    tracing::error!("PubSub task stopped with error: {}", err);
+                    tracing::error!("Critical: PubSub task stopped with error: {}", err);
                 }
                 anyhow::bail!("PubSub task stopped");
             }
             v = multiplexer_handle => {
                 if let Err(err) = v {
-                    tracing::error!("Multiplexer task stopped with error: {}", err);
+                    tracing::error!("Critical: Multiplexer task stopped with error: {}", err);
                 }
                 anyhow::bail!("Multiplexer task stopped");
             }
             v = config_reload_handle => {
                 if let Err(err) = v {
-                    tracing::error!("Config reload task stopped with error: {}", err);
+                    tracing::error!("Critical: Config reload task stopped with error: {}", err);
                 }
                 anyhow::bail!("Config reload task stopped");
+            }
+            v = gossip_rest_handle => {
+                if let Err(err) = v {
+                    tracing::error!("Critical: Gossip REST task stopped with error: {}", err);
+                }
+                drop(gossip_handle);
+                anyhow::bail!("Gossip REST task stopped");
             }
         }
     }
 }
 
 async fn message_multiplexor(
-    mut incoming_messages: tokio::sync::mpsc::Receiver<IncomingMessage>,
+    metrics: Option<NetMetrics>,
+    mut incoming_messages: tokio::sync::mpsc::UnboundedReceiver<IncomingMessage>,
     outgoing_messages: tokio::sync::broadcast::Sender<OutgoingMessage>,
 ) -> anyhow::Result<()> {
-    tracing::info!("Message multiplexor started");
+    tracing::info!("Proxy multiplexor bridge started");
     loop {
         match incoming_messages.recv().await {
-            Some(message) => {
-                tracing::debug!("Message received: {:?}", message);
-                let outgoing_message = OutgoingMessage {
-                    delivery: MessageDelivery::BroadcastExcluding(message.peer),
-                    data: message.data,
-                };
-                let _ = outgoing_messages.send(outgoing_message);
+            Some(incoming) => {
+                let label = incoming.message.label.clone();
+                tracing::debug!("Proxy multiplexor forwarded incoming {}", label);
+                metrics.as_ref().inspect(|x| {
+                    x.finish_delivery_phase(
+                        DeliveryPhase::IncomingBuffer,
+                        1,
+                        &label,
+                        SendMode::Broadcast,
+                        incoming.duration_after_transfer.elapsed(),
+                    )
+                });
+                if let Ok(sent_count) = outgoing_messages.send(OutgoingMessage {
+                    delivery: MessageDelivery::BroadcastExcluding(incoming.peer),
+                    message: incoming.message,
+                    duration_before_transfer: Instant::now(),
+                }) {
+                    metrics.as_ref().inspect(|x| {
+                        x.start_delivery_phase(
+                            DeliveryPhase::OutgoingBuffer,
+                            sent_count,
+                            &label,
+                            SendMode::Broadcast,
+                        )
+                    });
+                }
             }
             None => {
-                tracing::info!("Message multiplexor stopped");
+                tracing::info!("Proxy multiplexor bridge stopped");
                 break;
             }
         }
     }
-    Ok(())
-}
-
-async fn config_reload_handler(
-    config_updates: tokio::sync::watch::Sender<Config>,
-    config_path: PathBuf,
-) -> anyhow::Result<()> {
-    // 1. config error shouldn't be an error
-    // 2. every other error should panic
-    let mut sig_hup = signal(SignalKind::hangup())?;
-    loop {
-        sig_hup.recv().await;
-        tracing::info!("Received SIGHUP, reloading configuration...");
-
-        match load_config(&config_path) {
-            Ok(new_config_state) => {
-                config_updates.send(new_config_state).expect("failed to send config")
-            }
-            Err(err) => {
-                tracing::error!(
-                    "Failed to load new configuration at {}: {:?}",
-                    config_path.display(),
-                    err
-                );
-            }
-        };
-    }
-}
-
-pub fn load_config(path: impl AsRef<Path>) -> anyhow::Result<Config> {
-    let file = std::fs::File::open(path.as_ref())?;
-    serde_yaml::from_reader(file).context("Failed to load config")
-}
-
-pub fn save_config(config: &Config, path: impl AsRef<Path>) -> anyhow::Result<()> {
-    let file = std::fs::File::create(path.as_ref())?;
-    let mut writer = std::io::BufWriter::new(file);
-    serde_yaml::to_writer(&mut writer, config).context("Failed to save config")?;
-    writer.flush()?;
     Ok(())
 }

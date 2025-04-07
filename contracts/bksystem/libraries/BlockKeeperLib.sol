@@ -7,13 +7,12 @@
 pragma gosh-solidity >=0.76.1;
 
 import "../AckiNackiBlockKeeperNodeWallet.sol";
-import "../AckiNackiBlockKeeperNodeWalletConfig.sol";
-import "../AckiNackiBlockKeeperNodeWalletConfig.sol";
 import "../BlockKeeperEpochContract.sol";
 import "../BlockKeeperPreEpochContract.sol";
 import "../BlockKeeperEpochProxyList.sol";
 import "../BLSKeyIndex.sol";
 import "../SignerIndex.sol";
+import "../License.sol";
 
 library BlockKeeperLib {
     string constant versionLib = "1.0.0";
@@ -25,19 +24,18 @@ library BlockKeeperLib {
 
     function composeBlockKeeperWalletStateInit(TvmCell code, address root, uint256 pubkey) public returns(TvmCell) {
         return abi.encodeStateInit({
-            code: buildBlockKeeperWalletCode(code, root, pubkey),
+            code: buildBlockKeeperWalletCode(code, root),
             contr: AckiNackiBlockKeeperNodeWallet,
-            varInit: {}
+            varInit: {_owner_pubkey: pubkey}
         });
     }
 
     function buildBlockKeeperWalletCode(
         TvmCell originalCode,
-        address root, 
-        uint256 pubkey
+        address root
     ) public returns (TvmCell) {
         TvmCell finalcell;
-        finalcell = abi.encode(versionLib, root, pubkey);
+        finalcell = abi.encode(versionLib, root);
         return abi.setCodeSalt(originalCode, finalcell);
     }
 
@@ -156,28 +154,6 @@ library BlockKeeperLib {
         return abi.setCodeSalt(originalCode, finalcell);
     }
 
-    function calculateBlockKeeperWalletConfigAddress(TvmCell code, uint128 node_id) public returns(address) {
-        TvmCell s1 = composeBlockKeeperWalletConfigStateInit(code, node_id);
-        return address.makeAddrStd(0, tvm.hash(s1));
-    }
-
-    function composeBlockKeeperWalletConfigStateInit(TvmCell code, uint128 node_id) public returns(TvmCell) {
-        return abi.encodeStateInit({
-            code: buildBlockKeeperWalletConfigCode(code, node_id),
-            contr: AckiNackiBlockKeeperNodeWalletConfig,
-            varInit: {}
-        });
-    }
-
-    function buildBlockKeeperWalletConfigCode(
-        TvmCell originalCode,
-        uint128 node_id
-    ) public returns (TvmCell) {
-        TvmCell finalcell;
-        finalcell = abi.encode(node_id);
-        return abi.setCodeSalt(originalCode, finalcell);
-    }
-
     function calculateBLSKeyAddress(TvmCell code, bytes bls_key, address root) public returns(address) {
         TvmCell s1 = composeBLSKeyStateInit(code, bls_key, root);
         return address.makeAddrStd(0, tvm.hash(s1));
@@ -192,6 +168,25 @@ library BlockKeeperLib {
     }
 
     function buildBLSKeyCode(
+        TvmCell originalCode
+    ) public returns (TvmCell) {
+        return originalCode;
+    }
+
+    function calculateLicenseAddress(TvmCell code, uint256 license_number, address root) public returns(address) {
+        TvmCell s1 = composeLicenseStateInit(code, license_number, root);
+        return address.makeAddrStd(0, tvm.hash(s1));
+    }
+
+    function composeLicenseStateInit(TvmCell code, uint256 license_number, address root) public returns(TvmCell) {
+        return abi.encodeStateInit({
+            code: buildLicenseCode(code),
+            contr: LicenseContract,
+            varInit: {_license_number: license_number, _root: root}
+        });
+    }
+
+    function buildLicenseCode(
         TvmCell originalCode
     ) public returns (TvmCell) {
         return originalCode;

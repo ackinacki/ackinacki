@@ -16,6 +16,12 @@ pub mod direct_bit_access_operations;
 #[derive(Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct AccountAddress(pub tvm_types::AccountId);
 
+impl From<tvm_types::AccountId> for AccountAddress {
+    fn from(id: tvm_types::AccountId) -> Self {
+        Self(id)
+    }
+}
+
 impl Default for AccountAddress {
     fn default() -> Self {
         AccountAddress(AccountId::from(UInt256::default()))

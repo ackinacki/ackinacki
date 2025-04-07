@@ -11,9 +11,9 @@ pub use single_block_verifier::TVMBlockVerifier;
 pub mod builder;
 pub mod process;
 
-#[cfg(test)]
-pub mod process_stub;
-
 pub mod errors;
+pub(crate) mod execution_time;
+mod producer_service;
 #[cfg(test)]
 pub mod producer_stub;
+pub use producer_service::ProducerService;

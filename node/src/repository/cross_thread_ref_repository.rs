@@ -8,6 +8,8 @@ use std::sync::Arc;
 use anyhow::bail;
 use lru::LruCache;
 use parking_lot::Mutex;
+use tracing::instrument;
+use tracing::trace_span;
 
 use super::repository_impl::load_from_file;
 use super::repository_impl::save_to_file;
@@ -32,7 +34,7 @@ pub trait CrossThreadRefDataHistory {
     ) -> anyhow::Result<Vec<CrossThreadRefData>>;
 }
 
-const CROSS_THREAD_REF_DATA_CACHE_SIZE: usize = 100;
+const CROSS_THREAD_REF_DATA_CACHE_SIZE: usize = 1000;
 
 #[derive(Clone)]
 pub struct CrossThreadRefDataRepository {
@@ -103,14 +105,30 @@ impl CrossThreadRefDataRepository {
         self.data_dir.join("cross-thread-ref-data").join(oid)
     }
 
+    #[instrument(skip_all)]
     pub fn set_cross_thread_ref_data(
         &mut self,
         cross_thread_ref_data: CrossThreadRefData,
     ) -> anyhow::Result<()> {
         let id = cross_thread_ref_data.block_identifier().clone();
         let path = self.get_cross_thread_ref_data_path(&id);
-        save_to_file(&path, &cross_thread_ref_data)?;
-        self.cross_thread_ref_data_cache.lock().put(id, cross_thread_ref_data);
+        let total_outbound_messages_count =
+            cross_thread_ref_data.outbound_messages().iter().fold(0, |s, (_, e)| s + e.len());
+        trace_span!("cross_thread_ref_data_cache.lock").in_scope(|| -> anyhow::Result<()> {
+            let mut cache = self.cross_thread_ref_data_cache.lock();
+            trace_span!(
+                "save to file",
+                outbound_message_groups_count = cross_thread_ref_data.outbound_messages().len(),
+                outbound_messages_count = total_outbound_messages_count,
+                outbound_accounts_len = cross_thread_ref_data.outbound_accounts().len(),
+                block_identifier = format!("{:?}", cross_thread_ref_data.block_identifier()),
+                block_seq_no = format!("{}", cross_thread_ref_data.block_seq_no()),
+                dapp_id_table_diff_len = cross_thread_ref_data.dapp_id_table_diff().len(),
+            )
+            .in_scope(|| save_to_file(&path, &cross_thread_ref_data, false))?;
+            cache.put(id, cross_thread_ref_data);
+            Ok(())
+        })?;
         Ok(())
     }
 }

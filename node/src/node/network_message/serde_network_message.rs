@@ -32,7 +32,18 @@ impl Serialize for NetworkMessage {
             BlockAttestation(e) => {
                 serializer.serialize_newtype_variant(TYPE, 5, "BlockAttestation", &e)
             }
-            BlockRequest(e) => serializer.serialize_newtype_variant(TYPE, 6, "BlockRequest", &e),
+            BlockRequest {
+                inclusive_from,
+                exclusive_to,
+                requester,
+                thread_id,
+                at_least_n_blocks,
+            } => serializer.serialize_newtype_variant(
+                TYPE,
+                6,
+                "BlockRequest",
+                &(inclusive_from, exclusive_to, requester, thread_id, at_least_n_blocks),
+            ),
             SyncFrom(e) => serializer.serialize_newtype_variant(TYPE, 7, "SyncFrom", &e),
             SyncFinalized(e) => serializer.serialize_newtype_variant(TYPE, 8, "SyncFinalized", &e),
             ResentCandidate(e) => {
@@ -94,7 +105,16 @@ impl<'de> de::Visitor<'de> for NetworkMessageVisitor {
             (3, v) => v.newtype_variant().map(ExternalMessage),
             (4, v) => v.newtype_variant().map(NodeJoining),
             (5, v) => v.newtype_variant().map(BlockAttestation),
-            (6, v) => v.newtype_variant().map(BlockRequest),
+            (6, v) => v.newtype_variant().map(|e| {
+                let (inclusive_from, exclusive_to, requester, thread_id, at_least_n_blocks) = e;
+                BlockRequest {
+                    inclusive_from,
+                    exclusive_to,
+                    requester,
+                    thread_id,
+                    at_least_n_blocks,
+                }
+            }),
             (7, v) => v.newtype_variant().map(SyncFrom),
             (8, v) => v.newtype_variant().map(SyncFinalized),
             (9, v) => v.newtype_variant().map(ResentCandidate),

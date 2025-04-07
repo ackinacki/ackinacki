@@ -2,9 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] – 2024-04-05
+
+### Improvements
+- Stability and performance optimizations
+
 ## [0.3.8] – 2024-01-28
 
-## Fixed
+### Fixed
 - Performance improvements and fixes 
 
 ## [0.3.7] – 2024-01-23

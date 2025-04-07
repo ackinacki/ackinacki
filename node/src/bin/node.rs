@@ -5,7 +5,10 @@ use std::collections::HashSet;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::process::exit;
+use std::sync::atomic::AtomicI32;
+use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
+use std::time::Duration;
 
 use ::node::block::producer::process::TVMBlockProducerProcess;
 use ::node::bls::GoshBLS;
@@ -20,16 +23,23 @@ use database::documents_db::DocumentsDb;
 use database::sqlite::sqlite_helper;
 use database::sqlite::sqlite_helper::SqliteHelper;
 use database::sqlite::sqlite_helper::SqliteHelperConfig;
+use http_server::ResolvingResult;
 use message_router::message_router::MessageRouter;
 use network::config::NetworkConfig;
 use network::network::BasicNetwork;
 use network::pub_sub::CertFile;
 use network::pub_sub::CertStore;
 use network::pub_sub::PrivateKeyFile;
+use network::resolver::GossipPeer;
 use network::socket_addr::ToOneSocketAddr;
+use network::try_socket_addr_from_url;
+use node::config::load_blockchain_config;
 use node::config::load_config_from_file;
+use node::external_messages::ExternalMessagesThreadState;
 use node::helper::bp_resolver::BPResolverImpl;
+use node::helper::metrics::Metrics;
 use node::helper::shutdown_tracing;
+use node::message_storage::MessageDurableStorage;
 use node::multithreading::routing::service::Command;
 use node::multithreading::routing::service::RoutingService;
 use node::node::block_state::load_unprocessed_blocks::UnprocessedBlocksLoader;
@@ -37,17 +47,22 @@ use node::node::block_state::repository::BlockStateRepository;
 use node::node::block_state::unfinalized_ancestor_blocks::UnfinalizedAncestorBlocks;
 use node::node::services::attestations_target::service::AttestationsTargetService;
 use node::node::services::block_processor::service::BlockProcessorService;
+use node::node::services::block_processor::service::SecurityGuarantee;
+use node::node::services::db_serializer::DBSerializeService;
 use node::node::services::fork_resolution::service::ForkResolutionService;
+use node::node::services::send_attestations::AttestationSendService;
 use node::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
 use node::node::services::sync::ExternalFileSharesBased;
 use node::node::services::validation::feedback::AckiNackiSend;
 use node::node::services::validation::service::ValidationService;
+use node::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use node::repository::Repository;
 use node::services::blob_sync;
 use node::types::bp_selector::ProducerSelector;
 use node::types::calculate_hash;
 use node::types::BlockIdentifier;
 use node::types::BlockSeqNo;
+use node::types::CollectedAttestations;
 use node::types::ThreadIdentifier;
 use node::utilities::guarded::Guarded;
 use node::utilities::guarded::GuardedMut;
@@ -57,7 +72,9 @@ use parking_lot::Mutex;
 use rand::prelude::SeedableRng;
 use rand::prelude::SmallRng;
 use signal_hook::consts::SIGINT;
+use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
+use telemetry_utils::mpsc::instrumented_channel;
 use tokio::task::JoinHandle;
 
 // const ALIVE_NODES_WAIT_TIMEOUT_MILLIS: u64 = 100;
@@ -82,12 +99,30 @@ struct Args {
     config_path: PathBuf,
 }
 
+#[cfg(feature = "rayon_affinity")]
+fn init_rayon() {
+    let cores = core_affinity::get_core_ids().expect("Unable to get core IDs");
+    // Build Rayon thread pool and set affinity for each thread
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(cores.len())
+        .thread_name(|thread_index| format!("rayon{}", thread_index))
+        .start_handler(move |thread_index| {
+            let core_id = cores[thread_index % cores.len()];
+            core_affinity::set_for_current(core_id);
+        })
+        .build_global()
+        .unwrap();
+}
+
 fn main() -> Result<(), std::io::Error> {
     eprintln!("Starting Acki-Nacki Node version: {}", *LONG_VERSION);
     debug_used_features();
     if cfg!(debug_assertions) {
         std::env::set_var("RUST_BACKTRACE", "1");
     }
+
+    #[cfg(feature = "rayon_affinity")]
+    init_rayon();
 
     // unsafe { backtrace_on_stack_overflow::enable() };
 
@@ -103,13 +138,13 @@ fn main() -> Result<(), std::io::Error> {
 
 async fn tokio_main() {
     let args = Args::parse();
-    init_tracing();
-    tracing::info!("Tracing initialized");
+    let metrics = init_tracing();
+    tracing::info!("Tracing and metrics initialized");
 
     #[cfg(feature = "misbehave")]
     tracing::warn!("Node run with --feature misbehave set");
 
-    let exit_code = match execute(args).await {
+    let exit_code = match execute(args, metrics).await {
         Ok(_) => 0,
         Err(err) => {
             tracing::error!("{err:?}");
@@ -121,7 +156,7 @@ async fn tokio_main() {
 }
 
 #[allow(clippy::await_holding_lock)]
-async fn execute(args: Args) -> anyhow::Result<()> {
+async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     tracing::info!("Starting network");
     let config = load_config_from_file(&args.config_path)?.ensure_min_cpu(MINIMUM_NUMBER_OF_CORES);
     tracing::info!("Node config: {}", serde_json::to_string_pretty(&config)?);
@@ -142,17 +177,15 @@ async fn execute(args: Args) -> anyhow::Result<()> {
     )
     .await?;
 
-    let node_advertise_addr = config.network.node_advertise_addr.to_socket_addr();
-    let node_id = &config.local.node_id;
-    let public_endpoint = config.network.public_endpoint.clone();
-
+    let gossip_node = GossipPeer::new(
+        config.local.node_id.clone(),
+        config.network.node_advertise_addr.to_socket_addr(),
+        config.network.proxies.clone(),
+        config.network.public_endpoint.clone(),
+    );
     gossip_handle
         .with_chitchat(|c| {
-            c.self_node_state().set("node_advertise_addr", node_advertise_addr);
-            c.self_node_state().set("node_id", node_id.to_string());
-            if let Some(endpoint) = &public_endpoint {
-                c.self_node_state().set("public_endpoint", endpoint);
-            }
+            gossip_node.set_to(c.self_node_state());
         })
         .await;
 
@@ -164,22 +197,25 @@ async fn execute(args: Args) -> anyhow::Result<()> {
             PrivateKeyFile::try_new(&config.network.my_key)?,
             CertStore::try_new(&config.network.peer_certs)?,
             config.network.subscribe.clone(),
-            gossip_handle.chitchat(),
+            config.network.proxies.clone(),
         )
     };
     tracing::info!("Loaded config");
     let network = BasicNetwork::from(network_config.clone());
-    let (incoming_messages_sender, incoming_messages_receiver) = std::sync::mpsc::channel();
-    let (ext_messages_sender, ext_messages_receiver) = std::sync::mpsc::channel();
-    let (broadcast_sender, single_sender) = network
-        .start(
-            config.local.node_id.clone(),
-            incoming_messages_sender.clone(),
-            config.network.send_buffer_size,
-        )
+    let chitchat = gossip_handle.chitchat();
+
+    let (ext_messages_sender, ext_messages_receiver) = instrumented_channel(
+        metrics.as_ref().map(|x| x.node.clone()),
+        node::helper::metrics::INBOUND_EXT_CHANNEL,
+    );
+    let (direct_tx, broadcast_tx, incoming_rx, nodes_rx) = network
+        .start(metrics.as_ref().map(|m| m.net.clone()), config.local.node_id.clone(), chitchat)
         .await?;
 
-    let (raw_block_sender, raw_block_receiver) = std::sync::mpsc::channel();
+    let bp_thread_count = Arc::<AtomicI32>::default();
+    let node_metrics = metrics.as_ref().map(|m| m.node.clone());
+    let (raw_block_sender, raw_block_receiver) =
+        instrumented_channel(node_metrics.clone(), node::helper::metrics::RAW_BLOCK_CHANNEL);
 
     let block_manager_listen_addr =
         config.network.block_manager_listen_addr.try_to_socket_addr()?;
@@ -210,7 +246,7 @@ async fn execute(args: Args) -> anyhow::Result<()> {
     let (sqlite_helper, writer_join_handle) = SqliteHelper::from_config(sqlite_helper_config)
         .map_err(|e| anyhow::format_err!("Failed to create sqlite helper: {e}"))?;
 
-    let sqlite_helper: Option<Arc<dyn DocumentsDb>> = Some(Arc::new(sqlite_helper));
+    let sqlite_helper: Arc<dyn DocumentsDb> = Arc::new(sqlite_helper);
 
     let zerostate_path = Some(config.local.zerostate_path.clone());
 
@@ -255,18 +291,26 @@ async fn execute(args: Args) -> anyhow::Result<()> {
     let config_clone = config.clone();
     // let mut node_execute_handlers = JoinSet::new();
     // TODO: check that inner_service_loop is active
-    let (routing, routing_rx, _inner_service_loop, _inner_ext_messages_loop) =
-        RoutingService::new(incoming_messages_receiver, ext_messages_receiver);
+    let (routing, routing_rx, _inner_service_loop, _inner_ext_messages_loop) = RoutingService::new(
+        incoming_rx,
+        ext_messages_receiver,
+        metrics.as_ref().map(|x| x.node.clone()),
+    );
 
     let repo_path = PathBuf::from("./data");
 
-    let mut node_shared_services =
-        node::node::shared_services::SharedServices::start(routing.clone(), repo_path.clone());
+    let mut node_shared_services = node::node::shared_services::SharedServices::start(
+        routing.clone(),
+        repo_path.clone(),
+        metrics.as_ref().map(|m| m.node.clone()),
+        config.global.thread_load_threshold,
+        config.global.thread_load_window_size,
+    );
     let blob_sync_service =
         blob_sync::external_fileshares_based::ExternalFileSharesBased::builder()
             .local_storage_share_base_path(config.local.external_state_share_local_base_dir.clone())
             .build()
-            .start()
+            .start(metrics.as_ref().map(|m| m.node.clone()))
             .expect("Blob sync service start");
     let nack_set_cache = Arc::new(Mutex::new(FixedSizeHashSet::new(DEFAULT_NACK_SIZE_CACHE)));
     let block_state_repo = BlockStateRepository::new(repo_path.clone().join("blocks-states"));
@@ -279,6 +323,8 @@ async fn execute(args: Args) -> anyhow::Result<()> {
         let first_node_id = bk_set.iter_node_ids().next().unwrap().clone();
         state_in.set_producer(first_node_id)?;
         state_in.set_block_seq_no(BlockSeqNo::default())?;
+        state_in.set_block_time_ms(0)?;
+        state_in.set_common_checks_passed()?;
         state_in.set_finalized()?;
         state_in.set_applied()?;
         state_in.set_signatures_verified()?;
@@ -295,17 +341,19 @@ async fn execute(args: Args) -> anyhow::Result<()> {
         )?;
     }
     drop(state_in);
+    let message_db: MessageDurableStorage =
+        MessageDurableStorage::new(config.local.message_storage_path.clone())?;
     let repository = RepositoryImpl::new(
         repo_path.clone(),
         zerostate_path.clone(),
-        // cache size for block
-        (config.global.finalization_delay_to_stop * 2) as usize,
-        // cache size for states
-        // TODO: make configurable
-        10,
+        config.local.block_cache_size,
+        config.local.state_cache_size,
         node_shared_services.clone(),
         Arc::clone(&nack_set_cache),
+        config.local.split_state,
         block_state_repo.clone(),
+        metrics.as_ref().map(|m| m.node.clone()),
+        message_db.clone(),
     );
     let zerostate_threads: Vec<ThreadIdentifier> = zerostate.list_threads().cloned().collect();
 
@@ -339,9 +387,11 @@ async fn execute(args: Args) -> anyhow::Result<()> {
         AckiNackiSend::builder()
             .node_id(config.local.node_id.clone())
             .bls_keys_map(bls_keys_map.clone())
-            .ack_tx(single_sender.clone())
-            .nack_tx(broadcast_sender.clone())
+            .ack_network_direct_tx(direct_tx.clone())
+            .nack_network_broadcast_tx(broadcast_tx.clone())
             .build(),
+        metrics.as_ref().map(|m| m.node.clone()),
+        message_db.clone(),
     )
     .expect("Failed to create validation process");
 
@@ -364,7 +414,8 @@ async fn execute(args: Args) -> anyhow::Result<()> {
         })?
     };
 
-    let (bk_set_updates_tx, bk_set_updates_rx) = std::sync::mpsc::channel();
+    let (bk_set_updates_tx, bk_set_updates_rx) =
+        instrumented_channel(node_metrics.clone(), node::helper::metrics::BK_SET_UPDATE_CHANNEL);
 
     let mut unprocessed_blocks = block_state_repo.load_unprocessed_blocks()?;
     let threads: Vec<ThreadIdentifier> = unprocessed_blocks.keys().cloned().collect();
@@ -376,7 +427,7 @@ async fn execute(args: Args) -> anyhow::Result<()> {
         for block_state in unprocessed_blocks_filtered.iter() {
             use node::node::block_state::unfinalized_ancestor_blocks::UnfinalizedAncestorBlocksSelectError::*;
             match block_state_repo
-                .select_unfinalized_ancestor_blocks(block_state.clone(), last_finalized_seq_no)
+                .select_unfinalized_ancestor_blocks(block_state, last_finalized_seq_no)
             {
                 Err(InvalidatedParent(ref mut chain)) | Err(BlockSeqNoCutoff(ref mut chain)) => {
                     for block in chain {
@@ -396,12 +447,18 @@ async fn execute(args: Args) -> anyhow::Result<()> {
             .retain(|block_state| block_state.guarded(|e| !e.is_invalidated()));
     }
 
+    let node_metrics = metrics.as_ref().map(|m| m.node.clone());
+    let node_metrics_clone = node_metrics.clone();
     let (routing, _inner_service_thread) = RoutingService::start(
         (routing, routing_rx),
         bk_set_updates_tx,
-        move |parent_block_id, thread_id, thread_receiver, feedback_sender, bk_set_updates_tx| {
+        move |parent_block_id,
+              thread_id,
+              thread_receiver,
+              thread_sender,
+              feedback_sender,
+              bk_set_updates_tx| {
             tracing::trace!("start node for thread: {thread_id:?}");
-
             let mut repository = repository_clone.clone();
             // HACK!
             if parent_block_id.is_some()
@@ -426,16 +483,46 @@ async fn execute(args: Args) -> anyhow::Result<()> {
                 let seed = calculate_hash(&seed_bytes)?;
                 SmallRng::from_seed(seed)
             };
-            // TODO: seems we have a problem here
-            let new_blocks_from_other_threads = repository.add_thread_buffer(*thread_id);
-            let production_process = TVMBlockProducerProcess::new(
-                config.clone(),
-                repository.clone(),
-                sqlite_helper.clone(),
-                new_blocks_from_other_threads,
-                node_shared_services.clone(),
-            )
-            .expect("Failed to create production process");
+
+            let external_messages = ExternalMessagesThreadState::builder()
+                .with_external_messages_file_path(
+                    repo_path
+                        .join("external-messages")
+                        .join(format!("thread-{:x}", thread_id))
+                        .join("data"),
+                )
+                .with_block_progress_data_dir(
+                    repo_path
+                        .join("external-messages")
+                        .join(format!("thread-{:x}", thread_id))
+                        .join("progress"),
+                )
+                .with_thread_id(*thread_id)
+                .with_report_metrics(node_metrics.clone())
+                .build()?;
+            external_messages
+                .set_progress_to_last_known(&parent_block_id.clone().unwrap_or_default())?;
+
+            let (db_sender, db_receiver) = std::sync::mpsc::channel();
+            let db_service = DBSerializeService::new(sqlite_helper.clone(), db_receiver)?;
+
+            let production_process = TVMBlockProducerProcess::builder()
+                .metrics(node_metrics.clone())
+                .node_config(config.clone())
+                .repository(repository.clone())
+                .block_keeper_epoch_code_hash(config.global.block_keeper_epoch_code_hash.clone())
+                .producer_node_id(config.local.node_id.clone())
+                .blockchain_config(Arc::new(load_blockchain_config(
+                    &config.local.blockchain_config_path,
+                )?))
+                .parallelization_level(config.local.parallelization_level)
+                .archive_sender(db_sender.clone())
+                .shared_services(node_shared_services.clone())
+                .block_produce_timeout(Arc::new(Mutex::new(Duration::from_millis(
+                    config.global.time_to_produce_block_millis,
+                ))))
+                .thread_count_soft_limit(config.global.thread_count_soft_limit)
+                .build();
 
             let mut sync_state_service =
                 ExternalFileSharesBased::new(blob_sync_service.interface());
@@ -445,15 +532,40 @@ async fn execute(args: Args) -> anyhow::Result<()> {
                 config.network.shared_state_retry_download_timeout_millis,
             );
             sync_state_service.download_deadline_timeout = config.global.node_joining_timeout;
-
-            let unprocessed_blocks_cache =
-                Arc::new(Mutex::new(unprocessed_blocks.remove(thread_id).unwrap_or_default()));
+            let block_states = unprocessed_blocks.remove(thread_id).unwrap_or_default();
+            let unprocessed_blocks = block_states.into_iter().filter_map(|state| match repository
+                .get_block(state.block_identifier())
+            {
+                Ok(Some(envelope)) => Some((state, envelope)),
+                _ => None,
+            });
+            let unprocessed_blocks_cache = UnfinalizedCandidateBlockCollection::new(
+                unprocessed_blocks,
+                block_state_repo.clone_notifications_arc(),
+            );
+            let attestation_sender_service = AttestationSendService::builder()
+                .pulse_timeout(std::time::Duration::from_millis(
+                    config.global.time_to_produce_block_millis,
+                ))
+                .resend_attestation_timeout(config.global.attestation_resend_timeout)
+                .node_id(config.local.node_id.clone())
+                .thread_id(*thread_id)
+                .bls_keys_map(bls_keys_map.clone())
+                .block_state_repository(block_state_repo.clone())
+                .network_direct_tx(direct_tx.clone())
+                .metrics(node_metrics.clone())
+                .build();
+            let last_block_attestations = Arc::new(Mutex::new(CollectedAttestations::default()));
 
             let skipped_attestation_ids = Arc::new(Mutex::new(HashSet::new()));
-            let block_gap = Arc::new(Mutex::new(0));
+            let block_gap = Arc::new(AtomicU32::new(0));
             let block_processing_service = BlockProcessorService::new(
+                SecurityGuarantee::from_chance_of_successful_attack(
+                    config.global.chance_of_successful_attack,
+                ),
                 config.local.node_id.clone(),
                 std::time::Duration::from_millis(config.global.time_to_produce_block_millis),
+                config.global.save_state_frequency,
                 bls_keys_map.clone(),
                 *thread_id,
                 unprocessed_blocks_cache.clone(),
@@ -461,15 +573,20 @@ async fn execute(args: Args) -> anyhow::Result<()> {
                 repository.clone(),
                 node_shared_services.clone(),
                 nack_set_cache.clone(),
-                single_sender.clone(),
-                broadcast_sender.clone(),
-                sqlite_helper.clone(),
+                direct_tx.clone(),
+                broadcast_tx.clone(),
+                db_sender,
                 skipped_attestation_ids.clone(),
                 bk_set_updates_tx,
                 block_gap.clone(),
+                external_messages.clone(),
+                last_block_attestations.clone(),
+                attestation_sender_service,
+                validation_service.interface(),
             );
 
             let fork_resolution_service = ForkResolutionService::builder()
+                .thread_identifier(*thread_id)
                 .block_state_repository(block_state_repo.clone())
                 .repository(repository_clone.clone())
                 .build();
@@ -480,8 +597,8 @@ async fn execute(args: Args) -> anyhow::Result<()> {
                 production_process,
                 repository.clone(),
                 thread_receiver,
-                broadcast_sender.clone(),
-                single_sender.clone(),
+                broadcast_tx.clone(),
+                direct_tx.clone(),
                 raw_block_sender.clone(),
                 bls_keys_map.clone(),
                 config.clone(),
@@ -497,12 +614,19 @@ async fn execute(args: Args) -> anyhow::Result<()> {
                 // attestations_target_service:
                 AttestationsTargetService::builder()
                     .repository(repository.clone())
-                    .blocks_states(block_state_repo.clone())
+                    .block_state_repository(block_state_repo.clone())
                     .build(),
                 validation_service.interface(),
                 skipped_attestation_ids,
                 fork_resolution_service,
                 block_gap,
+                node_metrics_clone.clone(),
+                thread_sender,
+                external_messages,
+                message_db.clone(),
+                last_block_attestations,
+                bp_thread_count.clone(),
+                db_service,
             );
 
             Ok(node)
@@ -522,25 +646,34 @@ async fn execute(args: Args) -> anyhow::Result<()> {
     tracing::info!("Adding routes");
 
     let sigint_join_handle = {
-        let mut signals = Signals::new([SIGINT])?;
+        let mut signals = Signals::new([SIGINT, SIGTERM])?;
         let blk_key_path = config_clone.local.key_path.clone();
         std::thread::Builder::new().name("signal handler".to_string()).spawn(move || {
             for sig in signals.forever() {
                 println!("Received signal {:?}", sig);
-                let new_key_map = key_pairs_from_file::<GoshBLS>(&blk_key_path);
-                tracing::trace!(
-                    "Insert key pair, pubkeys: {:?}",
-                    new_key_map.keys().collect::<Vec<_>>()
-                );
-                let mut keys_map = bls_keys_map_clone.lock();
-                *keys_map = new_key_map;
+                eprintln!("Received signal {:?}", sig);
+                match sig {
+                    SIGINT => {
+                        let new_key_map = key_pairs_from_file::<GoshBLS>(&blk_key_path);
+                        tracing::trace!(
+                            "Insert key pair, pubkeys: {:?}",
+                            new_key_map.keys().collect::<Vec<_>>()
+                        );
+                        let mut keys_map = bls_keys_map_clone.lock();
+                        *keys_map = new_key_map;
+                    }
+                    SIGTERM => {
+                        break;
+                    }
+                    _ => {}
+                }
             }
         })?
     };
 
     let config = config_clone;
-    let mut network_clone = network_config.clone();
     let repo_clone = repository.clone();
+    let mut nodes_rx_clone = nodes_rx.clone();
     let http_server_handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
         // Sync required by a bound in `salvo::Handler`
         let repo = Arc::new(Mutex::new(repo_clone));
@@ -548,21 +681,27 @@ async fn execute(args: Args) -> anyhow::Result<()> {
             config.network.api_addr,
             config.local.external_state_share_local_base_dir,
             ext_messages_sender,
-            |arg0: tvm_block::Message, arg1: [u8; 34]| into_external_message(arg0, arg1.into()),
+            |msg: tvm_block::Message, thread: [u8; 34]| into_external_message(msg, thread.into()),
             move |thread_id| {
-                futures::executor::block_on(async {
-                    network_clone.refresh_alive_nodes(false).await
-                });
+                let bp_id_for_thread_map = {
+                    let guarded_repo = repo.lock();
+                    guarded_repo.get_nodes_by_threads()
+                };
+                tracing::debug!(target: "http_server", "bp resolver: map={:?}", bp_id_for_thread_map);
 
-                let guarded_repo = repo.lock();
-                let bp_id_for_thread_map = guarded_repo.get_nodes_by_threads();
-                drop(guarded_repo);
+                let Some(Some(bp_id)) = bp_id_for_thread_map.get(&thread_id.into()) else {
+                    return ResolvingResult::new(false, vec![]);
+                };
+                tracing::debug!(target: "http_server", "resolver: bp_id={:?}", bp_id);
+                let list = nodes_rx_clone
+                    .borrow_and_update()
+                    .get(bp_id)
+                    .and_then(try_socket_addr_from_url)
+                    .map_or_else(Vec::new, |bp| vec![bp]);
 
-                match bp_id_for_thread_map.get(&thread_id.into()) {
-                    Some(Some(bp_id)) => network_clone.nodes.get(bp_id).map(|addr| addr.to_owned()),
-                    _ => None,
-                }
+                ResolvingResult::new(config.local.node_id == *bp_id, list)
             },
+            metrics.as_ref().map(|x| x.routing.clone()),
         );
         let _ = server.run(bk_set_updates_rx).await;
         anyhow::bail!("HTTP server supposed to work forever");
@@ -570,7 +709,7 @@ async fn execute(args: Args) -> anyhow::Result<()> {
 
     if let Ok(bind_to) = std::env::var("MESSAGE_ROUTER") {
         tracing::trace!("start message router");
-        let bp_resolver = BPResolverImpl::new(network_config, repository);
+        let bp_resolver = BPResolverImpl::new(nodes_rx.clone(), Arc::new(Mutex::new(repository)));
         let _ = MessageRouter::new(bind_to, Arc::new(Mutex::new(bp_resolver)));
     }
 
@@ -582,7 +721,9 @@ async fn execute(args: Args) -> anyhow::Result<()> {
     tokio::select! {
         res = wrapped_writer_join_handle => {
             match res {
-                Ok(_) =>{ unreachable!("record writer thread never returns")}
+                Ok(_) =>{
+                    unreachable!("record writer thread never returns")
+                }
                 Err(error) => {
                     anyhow::bail!("record writer thread failed with error: {error}");
                 }
@@ -590,7 +731,12 @@ async fn execute(args: Args) -> anyhow::Result<()> {
         },
         res = wrapped_sigint_join_handle => {
              match res {
-                Ok(_) =>{ unreachable!("sigint handler thread never returns")}
+                Ok(_) => {
+                    // unreachable!("sigint handler thread never returns")
+
+                    tracing::trace!("Start shutdown");
+                    Ok(())
+                }
                 Err(error) => {
                     anyhow::bail!("sigint handler thread failed with error: {error}");
                 }
@@ -615,7 +761,7 @@ async fn execute(args: Args) -> anyhow::Result<()> {
         }
     }
 
-    // should be unreachable
+    // Note: reachable on SIGTERM
 }
 
 fn into_external_message(
@@ -641,7 +787,16 @@ fn debug_used_features() {
     if cfg!(feature = "allow-threads-merge") {
         eprintln!("  allow-threads-merge");
     }
+    if cfg!(feature = "nack-on-block-verification-fail") {
+        eprintln!("  nack-on-block-verification-fail");
+    }
     if std::env::var("NODE_VERBOSE").is_ok() {
         eprintln!("  NODE_VERBOSE");
+    }
+    if let Ok(otel_endpoint) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+        eprintln!("  OTEL_EXPORTER_OTLP_ENDPOINT={otel_endpoint}");
+    }
+    if let Ok(otel_service_name) = std::env::var("OTEL_SERVICE_NAME") {
+        eprintln!("  OTEL_SERVICE_NAME={otel_service_name}");
     }
 }

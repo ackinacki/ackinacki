@@ -1,6 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Formatter;
@@ -20,7 +21,10 @@ use crate::node::associated_types::NackData;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
 use crate::types::bp_selector::ProducerSelector;
+use crate::types::AccountAddress;
+use crate::types::BlockEndLT;
 use crate::types::BlockIdentifier;
+use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
@@ -62,6 +66,8 @@ pub struct CommonSection {
     // Each ForkResolution contains a resolution for a single fork.
     // It can happen that a single block has to resolve several forks at once.
     pub fork_resolutions: Vec<ForkResolution>,
+
+    pub changed_dapp_ids: HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>,
 }
 
 impl CommonSection {
@@ -72,6 +78,7 @@ impl CommonSection {
         verify_complexity: SignerIndex,
         refs: Vec<BlockIdentifier>,
         threads_table: Option<ThreadsTable>,
+        changed_dapp_ids: HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>,
     ) -> Self {
         CommonSection {
             block_attestations: vec![],
@@ -86,6 +93,7 @@ impl CommonSection {
             nacks: vec![],
             producer_selector: None,
             fork_resolutions: vec![],
+            changed_dapp_ids,
         }
     }
 
@@ -112,6 +120,7 @@ impl CommonSection {
             refs: self.refs.clone(),
             threads_table: self.threads_table.clone(),
             fork_resolutions: self.fork_resolutions.clone(),
+            changed_dapp_ids: self.changed_dapp_ids.clone(),
         }
     }
 
@@ -136,6 +145,7 @@ impl CommonSection {
             thread_id: data.thread_identifier,
             threads_table: data.threads_table,
             fork_resolutions: data.fork_resolutions,
+            changed_dapp_ids: data.changed_dapp_ids,
         }
     }
 }
@@ -154,6 +164,7 @@ struct WrappedCommonSection {
     pub refs: Vec<BlockIdentifier>,
     pub threads_table: Option<ThreadsTable>,
     pub fork_resolutions: Vec<ForkResolution>,
+    pub changed_dapp_ids: HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>,
 }
 
 impl Serialize for CommonSection {
@@ -189,6 +200,8 @@ impl Debug for CommonSection {
             .field("producer_selector", &self.producer_selector)
             .field("refs", &self.refs)
             .field("threads_table", &self.threads_table)
+            .field("changed_dapp_ids.len", &self.changed_dapp_ids.len())
+            .field("fork_resolutions", &self.fork_resolutions)
             .finish()
     }
 }

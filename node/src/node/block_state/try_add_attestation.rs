@@ -25,7 +25,7 @@ impl TryAddAttestation for BlockStateRepository {
         attestation: Envelope<GoshBLS, AttestationData>,
     ) -> anyhow::Result<bool> {
         let guard = ADD_ATTN_MUTEX.get_or_init(|| Mutex::new(0));
-        let block_identifier = attestation.data().block_id.clone();
+        let block_identifier = attestation.data().block_id().clone();
         let block_state = self.get(&block_identifier)?;
         let (parent_block_identifier, thread_identifier) =
             block_state.guarded(|e| (e.parent_block_identifier().clone(), *e.thread_identifier()));
@@ -39,21 +39,16 @@ impl TryAddAttestation for BlockStateRepository {
         }
         let parent_state = self.get(&parent_block_identifier)?;
         let children = parent_state.guarded(|e| {
-            anyhow::ensure!(e.known_children().contains(&block_identifier));
-            Ok(e.known_children().clone())
+            let same_thread_children = e.known_children(&thread_identifier);
+            anyhow::ensure!(same_thread_children.is_some());
+            let same_thread_children = same_thread_children.cloned().unwrap();
+            anyhow::ensure!(same_thread_children.contains(&block_identifier));
+            Ok(same_thread_children)
         })?;
         for child_block_identifier in children.iter() {
             let child = self.get(child_block_identifier)?;
-            let (attestation, retracted, is_same_thread) = child.guarded(|e| {
-                (
-                    e.attestation().clone(),
-                    e.retracted_attestation().clone(),
-                    e.thread_identifier() == &Some(thread_identifier),
-                )
-            });
-            if !is_same_thread {
-                continue;
-            }
+            let (attestation, retracted) =
+                child.guarded(|e| (e.attestation().clone(), e.retracted_attestation().clone()));
             if attestation.is_some() && retracted.is_none() {
                 return Ok(false);
             }

@@ -23,21 +23,27 @@ contract BlockKeeperPreEpoch is Modifiers {
     uint256 static _owner_pubkey;
     address _root; 
     uint64 static _seqNoStart;
+    uint64 _seqNoDestruct;
     uint32 _epochDuration;
     uint64 _waitStep;
     address _owner;
     bytes _bls_pubkey;
     varuint32 _stake;
-    uint256 _walletId;
     uint16 _signerIndex;
+    uint128 _sumReputationCoef;
+    LicenseStake[] _licenses;
+    address _wallet;
+    optional(uint128) _virtualStake;
 
     constructor (
         uint64 waitStep,
         uint32 epochDuration,
         bytes bls_pubkey,
         mapping(uint8 => TvmCell) code,
-        uint256 walletId,
-        uint16 signerIndex,
+        uint16 signerIndex, 
+        uint128 rep_coef,
+        LicenseStake[] licenses,
+        optional(uint128) virtualStake,
         mapping(uint8 => string) ProxyList
     ) {
         _code = code;
@@ -56,27 +62,44 @@ contract BlockKeeperPreEpoch is Modifiers {
         _bls_pubkey = bls_pubkey;
         _epochDuration = epochDuration;
         _stake = msg.currencies[CURRENCIES_ID];
-        _walletId = walletId;
         _signerIndex = signerIndex;
-        getMoney();
-        AckiNackiBlockKeeperNodeWallet(msg.sender).setLockStake{value: 0.1 vmshell, flag: 1}(_seqNoStart, _stake, _bls_pubkey, _signerIndex);
+        _sumReputationCoef = rep_coef;
+        _licenses = licenses;
+        _virtualStake = virtualStake;
+        _seqNoDestruct = _seqNoStart * 2 - block.seqno + 1;
+        ensureBalance();
+        _wallet = msg.sender;
+        AckiNackiBlockKeeperNodeWallet(_wallet).setLockStake{value: 0.1 vmshell, flag: 1}(_seqNoStart, _stake, _bls_pubkey, _signerIndex, licenses);
         new BlockKeeperEpochProxyList {
                 stateInit: BlockKeeperLib.composeBlockKeeperEpochProxyListStateInit(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], _owner_pubkey, _root), 
                 value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST),
                 wid: 0, 
                 flag: 1
-        } (_code, _seqNoStart, _walletId, ProxyList);
+        } (_code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _code[m_BlockKeeperEpochCode], _seqNoStart, ProxyList);
     }
 
-    function getMoney() private pure {
+    function ensureBalance() private pure {
         if (address(this).balance > FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET + FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST + 1 vmshell) { return; }
         gosh.mintshell(FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET + FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST + 1 vmshell);
+    }
+
+    function changeReputation(bool is_inc, uint128 value) public senderIs(_wallet) {
+        if (is_inc) {
+            _sumReputationCoef += value;
+        } else {
+            _sumReputationCoef -= value;
+        }
     }
 
     function touch() public saveMsg {       
         if (_seqNoStart <= block.seqno) { tvm.accept(); }
         else { return; } 
-        getMoney();
+        if (_seqNoDestruct < block.seqno) { 
+            AckiNackiBlockKeeperNodeWallet(_wallet).deleteLockStake{value: 0.1 vmshell, flag: 1}(_seqNoStart, _bls_pubkey, _signerIndex, _licenses);
+            selfdestruct(_wallet);
+            return;
+        }
+        ensureBalance();
         mapping(uint32 => varuint32) data_cur;
         data_cur[CURRENCIES_ID] = _stake;
         
@@ -87,7 +110,7 @@ contract BlockKeeperPreEpoch is Modifiers {
             currencies: data_cur,
             wid: 0, 
             flag: 1
-        } (_waitStep, _epochDuration, _bls_pubkey, _code, false, _walletId, 0, _signerIndex);
+        } (_waitStep, _epochDuration, _bls_pubkey, _code, false, _sumReputationCoef, _signerIndex, _licenses, _virtualStake);
         selfdestruct(epoch);
     }
     
@@ -100,10 +123,9 @@ contract BlockKeeperPreEpoch is Modifiers {
         uint256 pubkey,
         address root, 
         uint64 seqNoStart,
-        address owner,
-        uint256 walletId) 
+        address owner) 
     {
-        return  (_owner_pubkey, _root, _seqNoStart, _owner, _walletId);
+        return  (_owner_pubkey, _root, _seqNoStart, _owner);
     }
 
     function getVersion() external pure returns(string, string) {

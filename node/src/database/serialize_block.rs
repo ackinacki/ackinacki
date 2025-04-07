@@ -212,10 +212,13 @@ pub fn reflect_block_in_db(
             continue;
         }
 
-        let acc = acc.unwrap();
-        let last_trans_hash = acc.last_trans_hash().clone();
-        let acc =
-            acc.read_account().map_err(|e| anyhow::format_err!("Failed to read account: {e}"))?;
+        let shard_acc = acc.unwrap();
+        let last_trans_hash = shard_acc.last_trans_hash().clone();
+        let acc = shard_acc
+            .read_account()
+            .map_err(|e| anyhow::format_err!("Failed to read account: {e}"))?
+            .as_struct()
+            .map_err(|e| anyhow::format_err!("Failed to read account struct: {e}"))?;
 
         if acc.get_addr().is_some() {
             let prepared_account = prepare_account_archive_struct(
@@ -223,6 +226,7 @@ pub fn reflect_block_in_db(
                 None,
                 acc_last_trans_chain_order.remove(account_id),
                 last_trans_hash,
+                shard_acc.get_dapp_id().cloned(),
             )?;
             account_docs.push(prepared_account);
         } else {
@@ -415,6 +419,7 @@ pub(crate) fn prepare_account_archive_struct(
     prev_account_state: Option<Account>,
     last_trans_chain_order: Option<String>,
     last_trans_hash: UInt256,
+    dapp_id: Option<UInt256>,
 ) -> anyhow::Result<ArchAccount> {
     let boc = account.write_to_bytes().map_err(|e| anyhow::format_err!("{e}"))?;
 
@@ -425,6 +430,7 @@ pub(crate) fn prepare_account_archive_struct(
         proof: None,
         boc,
         boc1: None,
+        dapp_id,
     };
     let mut set: ArchAccount = set.into();
     if let Some(last_trans_chain_order) = last_trans_chain_order {

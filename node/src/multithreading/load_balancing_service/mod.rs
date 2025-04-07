@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::helper::metrics::BlockProductionMetrics;
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
@@ -20,8 +21,6 @@ use crate::types::AckiNackiBlock;
 // Otherwise it may create infinite splits and collapses on threads table.
 // TODO: write an example here.
 const MAX_LOAD_DISPROPORTION: Load = 2;
-// number of messages in a queue to start splitting a thread
-const LOAD_SPLIT_THRESHOLD: Load = 5000;
 
 #[derive(Debug)]
 pub struct Proposal {
@@ -49,16 +48,23 @@ pub enum CheckError {
 //   a new mask for an approximate balance split.
 pub struct LoadBalancingService {
     thread_load_map: HashMap<ThreadIdentifier, AggregatedLoad>,
+    metrics: Option<BlockProductionMetrics>,
+    window_size: usize,
+    load_threshold: Load,
 }
 
 impl LoadBalancingService {
-    pub fn start() -> Self {
-        Self { thread_load_map: HashMap::default() }
+    pub fn start(
+        metrics: Option<BlockProductionMetrics>,
+        window_size: usize,
+        load_threshold: usize,
+    ) -> Self {
+        Self { thread_load_map: HashMap::default(), metrics, window_size, load_threshold }
     }
 
     #[allow(clippy::explicit_counter_loop)]
     pub fn check(
-        &self,
+        &mut self,
         block_identifier: &BlockIdentifier,
         thread_identifier: &ThreadIdentifier,
         threads_table: &ThreadsTable,
@@ -76,7 +82,10 @@ impl LoadBalancingService {
         let mut this_thread_bitmask: Option<Bitmask<AccountRouting>> = None;
         let mut i: usize = 0;
         for (bitmask, thread) in threads_table.rows() {
-            let thread_load = self.read_load(thread)?;
+            let Ok(thread_load) = self.read_load(thread) else {
+                i += 1;
+                continue;
+            };
             if thread_load > max_load {
                 max_load = thread_load;
                 max_load_thread_id = *thread;
@@ -95,6 +104,9 @@ impl LoadBalancingService {
             last_thread_id = Some(*thread);
             i += 1;
         }
+
+        self.metrics.as_ref().inspect(|m| m.report_thread_load(current_load, thread_identifier));
+
         let this_thread_row_index =
             this_thread_row_index.ok_or(CheckError::ThreadIsNotInTheTable)?;
         // Checked at the statement above
@@ -119,14 +131,16 @@ impl LoadBalancingService {
                 &last_thread_id,
                 threads_table,
             )
-        } else if max_load >= LOAD_SPLIT_THRESHOLD {
-            threads_split::try_threads_split(
+        } else if max_load >= self.load_threshold {
+            let load = self
+                .thread_load_map
+                .get_mut(thread_identifier)
+                .ok_or(CheckError::ThreadIsNotInTheTable)?;
+            let res = threads_split::try_threads_split(
                 block_identifier,
                 thread_identifier,
                 this_thread_row_index,
-                self.thread_load_map
-                    .get(thread_identifier)
-                    .ok_or(CheckError::ThreadIsNotInTheTable)?,
+                load,
                 &this_thread_bitmask,
                 max_load,
                 min_load,
@@ -134,7 +148,9 @@ impl LoadBalancingService {
                 &max_load_thread_id,
                 threads_table,
                 max_table_size,
-            )
+            );
+            load.reset();
+            res
         } else {
             Ok(ThreadAction::ContinueAsIs)
         }
@@ -147,13 +163,30 @@ impl LoadBalancingService {
     ) where
         TOptimisticState: OptimisticState,
     {
+        tracing::trace!("LoadBalancingService::handle_block_finalized: {}", block);
+        // Note: thread that has split, should reset its load, but after split block finalization,
+        // that's why, check and reset here.
+        if let Some(threads_table) = &block.get_common_section().threads_table {
+            if threads_table
+                .list_threads()
+                .any(|thread_id| thread_id.is_spawning_block(&block.identifier()))
+            {
+                if let Some(load) =
+                    self.thread_load_map.get_mut(&block.get_common_section().thread_id)
+                {
+                    load.reset();
+                    return;
+                }
+            }
+        }
+
         // Note: It does not create unprepared threads.
         // Reason: It must be managed from outside to decide if thread is no longer in use.
         // And since the cleanup is managed from outside it makes sense to prepare threads
         // from the outside control as well.
         let thread_identifier: ThreadIdentifier = block.get_common_section().thread_id;
         if let Some(e) = self.thread_load_map.get_mut(&thread_identifier) {
-            e.append_from(block, block_state);
+            e.append_from(block, block_state, &self.metrics);
         } else {
             // TODO: This must be a serious error, yet the node can continue in a release build
             panic!("DEBUG: thread must be ready: {:?}", &self.thread_load_map);
@@ -164,7 +197,6 @@ impl LoadBalancingService {
         tracing::trace!("read_load: {:?}", thread_identifier);
         let load =
             self.thread_load_map.get(thread_identifier).ok_or(CheckError::StatsAreNotReady)?;
-        // tracing::trace!("read_load: load: {:?}", load);
         if !load.is_ready() {
             return Err(CheckError::StatsAreNotReady);
         }
@@ -178,7 +210,7 @@ impl crate::multithreading::threads_tracking_service::Subscriber for LoadBalanci
         thread_identifier: &ThreadIdentifier,
     ) {
         tracing::trace!("load balancing handle_start_thread called");
-        self.thread_load_map.insert(*thread_identifier, AggregatedLoad::new());
+        self.thread_load_map.insert(*thread_identifier, AggregatedLoad::new(self.window_size));
     }
 
     fn handle_stop_thread(

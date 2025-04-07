@@ -6,16 +6,21 @@ use std::sync::Arc;
 
 use http_server::BlockKeeperSetUpdate;
 use http_server::ExtMsgFeedback;
+use http_server::ExtMsgFeedbackList;
 use http_server::FeedbackError;
 use http_server::FeedbackErrorCode;
+use network::channel::NetReceiver;
 use parking_lot::Mutex;
+use telemetry_utils::mpsc::instrumented_channel;
+use telemetry_utils::mpsc::InstrumentedReceiver;
+use telemetry_utils::mpsc::InstrumentedSender;
 use tokio::sync::oneshot;
 use tvm_block::GetRepresentationHash;
 
 use super::dispatcher::DispatchError;
 use super::dispatcher::Dispatcher;
 use super::poisoned_queue::PoisonedQueue as PQueue;
-use crate::block::producer::process::TVMBlockProducerProcess;
+use crate::helper::metrics::BlockProductionMetrics;
 use crate::node::services::sync::ExternalFileSharesBased;
 use crate::node::NetworkMessage;
 use crate::node::Node as NodeImpl;
@@ -32,7 +37,7 @@ type FeedbackRegistry = HashMap<String, oneshot::Sender<ExtMsgFeedback>>;
 
 type PoisonedQueue = PQueue<NetworkMessage>;
 
-type Node = NodeImpl<ExternalFileSharesBased, TVMBlockProducerProcess, rand::prelude::SmallRng>;
+type Node = NodeImpl<ExternalFileSharesBased, rand::prelude::SmallRng>;
 
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -50,17 +55,23 @@ pub enum Command {
 
 #[derive(Clone)]
 pub struct RoutingService {
-    pub cmd_sender: Sender<Command>,
-    pub feedback_sender: Sender<Vec<ExtMsgFeedback>>,
+    pub cmd_sender: InstrumentedSender<Command>,
+    pub feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
 }
 
 impl RoutingService {
     pub fn new(
-        inbound_network_receiver: Receiver<NetworkMessage>,
-        inbound_ext_messages_receiver: Receiver<FeedbackMessage>,
-    ) -> (RoutingService, Receiver<Command>, std::thread::JoinHandle<()>, std::thread::JoinHandle<()>)
-    {
-        let (cmd_sender, cmd_receiver) = std::sync::mpsc::channel();
+        inbound_network_receiver: NetReceiver<NetworkMessage>,
+        inbound_ext_messages_receiver: InstrumentedReceiver<FeedbackMessage>,
+        metrics: Option<BlockProductionMetrics>,
+    ) -> (
+        RoutingService,
+        InstrumentedReceiver<Command>,
+        std::thread::JoinHandle<()>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let (cmd_sender, cmd_receiver) =
+            instrumented_channel(metrics.clone(), crate::helper::metrics::ROUTING_COMMAND_CHANNEL);
         let forwarding_thread = {
             let cmd_sender_clone = cmd_sender.clone();
             std::thread::Builder::new()
@@ -73,7 +84,8 @@ impl RoutingService {
                 })
                 .unwrap()
         };
-        let (feedback_sender, feedback_receiver) = std::sync::mpsc::channel();
+        let (feedback_sender, feedback_receiver) =
+            instrumented_channel(metrics.clone(), crate::helper::metrics::INBOUND_EXT_CHANNEL);
         let forwarding_ext_messages_thread = {
             let cmd_sender_clone = cmd_sender.clone();
             std::thread::Builder::new()
@@ -96,8 +108,8 @@ impl RoutingService {
     }
 
     pub fn start<F>(
-        channel: (RoutingService, Receiver<Command>),
-        bk_set_updates_tx: Sender<BlockKeeperSetUpdate>,
+        channel: (RoutingService, InstrumentedReceiver<Command>),
+        bk_set_updates_tx: InstrumentedSender<BlockKeeperSetUpdate>,
         node_factory: F,
     ) -> (Self, std::thread::JoinHandle<()>)
     where
@@ -105,8 +117,9 @@ impl RoutingService {
                 Option<BlockIdentifier>,
                 &ThreadIdentifier,
                 Receiver<NetworkMessage>,
-                Sender<Vec<ExtMsgFeedback>>,
-                Sender<BlockKeeperSetUpdate>,
+                Sender<NetworkMessage>,
+                InstrumentedSender<ExtMsgFeedbackList>,
+                InstrumentedSender<BlockKeeperSetUpdate>,
             ) -> anyhow::Result<Node>
             + std::marker::Send
             + 'static,
@@ -137,18 +150,24 @@ impl RoutingService {
     }
 
     #[cfg(test)]
-    pub fn stub() -> (Self, Receiver<Command>) {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let (feedback_sender, _feedback_receiver) = std::sync::mpsc::channel();
+    pub fn stub() -> (Self, InstrumentedReceiver<Command>) {
+        let (tx, rx) = instrumented_channel(
+            Option::<BlockProductionMetrics>::None,
+            crate::helper::metrics::ROUTING_COMMAND_CHANNEL,
+        );
+        let (feedback_sender, _feedback_receiver) = instrumented_channel(
+            Option::<BlockProductionMetrics>::None,
+            crate::helper::metrics::INBOUND_EXT_CHANNEL,
+        );
         (Self { cmd_sender: tx, feedback_sender }, rx)
     }
 
     fn create_node_thread<F>(
         dispatcher: &mut Dispatcher,
-        feedback_sender: Sender<Vec<ExtMsgFeedback>>,
+        feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
         thread_identifier: ThreadIdentifier,
         parent_block_id: Option<BlockIdentifier>,
-        bk_set_updates_tx: Sender<BlockKeeperSetUpdate>,
+        bk_set_updates_tx: InstrumentedSender<BlockKeeperSetUpdate>,
         node_factory: &mut F,
     ) -> anyhow::Result<Node>
     where
@@ -156,18 +175,20 @@ impl RoutingService {
                 Option<BlockIdentifier>,
                 &ThreadIdentifier,
                 Receiver<NetworkMessage>,
-                Sender<Vec<ExtMsgFeedback>>,
-                Sender<BlockKeeperSetUpdate>,
+                Sender<NetworkMessage>,
+                InstrumentedSender<ExtMsgFeedbackList>,
+                InstrumentedSender<BlockKeeperSetUpdate>,
             ) -> anyhow::Result<Node>
             + std::marker::Send,
     {
         tracing::trace!("NetworkMessageRouter: add sender for thread: {thread_identifier:?}");
         let (incoming_messages_sender, incoming_messages_receiver) = std::sync::mpsc::channel();
-        dispatcher.add_route(thread_identifier, incoming_messages_sender);
+        dispatcher.add_route(thread_identifier, incoming_messages_sender.clone());
         node_factory(
             parent_block_id,
             &thread_identifier,
             incoming_messages_receiver,
+            incoming_messages_sender,
             feedback_sender,
             bk_set_updates_tx,
         )
@@ -193,9 +214,9 @@ impl RoutingService {
     }
 
     fn inner_main_loop<F>(
-        control: Receiver<Command>,
-        feedback_sender: Sender<Vec<ExtMsgFeedback>>,
-        bk_set_updates_tx: Sender<BlockKeeperSetUpdate>,
+        control: InstrumentedReceiver<Command>,
+        feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
+        bk_set_updates_tx: InstrumentedSender<BlockKeeperSetUpdate>,
         mut dispatcher: Dispatcher,
         mut node_factory: F,
     ) -> anyhow::Result<()>
@@ -204,8 +225,9 @@ impl RoutingService {
                 Option<BlockIdentifier>,
                 &ThreadIdentifier,
                 Receiver<NetworkMessage>,
-                Sender<Vec<ExtMsgFeedback>>,
-                Sender<BlockKeeperSetUpdate>,
+                Sender<NetworkMessage>,
+                InstrumentedSender<ExtMsgFeedbackList>,
+                InstrumentedSender<BlockKeeperSetUpdate>,
             ) -> anyhow::Result<Node>
             + std::marker::Send,
     {
@@ -220,57 +242,63 @@ impl RoutingService {
                         );
                         anyhow::bail!(e)
                     }
-                    Ok(command) => match command {
-                        //                    Stop => break,
-                        Route(message) => Self::route(&dispatcher, message, &mut poisoned_queue),
-                        StartThread((thread_identifier, parent_block_identifier)) => {
-                            if dispatcher.has_route(&thread_identifier) {
-                                continue;
+                    Ok(command) => {
+                        match command {
+                            //                    Stop => break,
+                            Route(message) => {
+                                Self::route(&dispatcher, message, &mut poisoned_queue)
                             }
-                            let mut node = Self::create_node_thread(
-                                &mut dispatcher,
-                                feedback_sender.clone(),
-                                thread_identifier,
-                                Some(parent_block_identifier),
-                                bk_set_updates_tx.clone(),
-                                &mut node_factory,
-                            )
-                            .expect("Must be able to create node instances");
-                            std::thread::Builder::new()
-                                .name(format!("{}", &thread_identifier))
-                                .spawn_scoped_critical(s, move || {
-                                    tracing::trace!("Starting thread: {}", &thread_identifier);
-                                    node.execute()
-                                })
-                                .unwrap();
-                            poisoned_queue
-                                .retain(|message| dispatcher.dispatch(message.clone()).is_err());
-                        }
-                        JoinThread(thread_identifier) => {
-                            if dispatcher.has_route(&thread_identifier) {
-                                continue;
+                            StartThread((thread_identifier, parent_block_identifier)) => {
+                                if dispatcher.has_route(&thread_identifier) {
+                                    continue;
+                                }
+                                let mut node = Self::create_node_thread(
+                                    &mut dispatcher,
+                                    feedback_sender.clone(),
+                                    thread_identifier,
+                                    Some(parent_block_identifier),
+                                    bk_set_updates_tx.clone(),
+                                    &mut node_factory,
+                                )
+                                .expect("Must be able to create node instances");
+                                std::thread::Builder::new()
+                                    .name(format!("{}", &thread_identifier))
+                                    .spawn_scoped_critical(s, move || {
+                                        tracing::trace!("Starting thread: {}", &thread_identifier);
+                                        node.execute()
+                                    })
+                                    .unwrap();
+                                poisoned_queue.retain(|message| {
+                                    dispatcher.dispatch(message.clone()).is_err()
+                                });
                             }
-                            let mut node = Self::create_node_thread(
-                                &mut dispatcher,
-                                feedback_sender.clone(),
-                                thread_identifier,
-                                None,
-                                bk_set_updates_tx.clone(),
-                                &mut node_factory,
-                            )
-                            .expect("Must be able to create node instances");
-                            node.is_spawned_from_node_sync = true;
-                            std::thread::Builder::new()
-                                .name(format!("{}", &thread_identifier))
-                                .spawn_scoped_critical(s, move || {
-                                    tracing::trace!("Starting thread: {}", &thread_identifier);
-                                    node.execute()
-                                })
-                                .unwrap();
-                            poisoned_queue
-                                .retain(|message| dispatcher.dispatch(message.clone()).is_err());
+                            JoinThread(thread_identifier) => {
+                                if dispatcher.has_route(&thread_identifier) {
+                                    continue;
+                                }
+                                let mut node = Self::create_node_thread(
+                                    &mut dispatcher,
+                                    feedback_sender.clone(),
+                                    thread_identifier,
+                                    None,
+                                    bk_set_updates_tx.clone(),
+                                    &mut node_factory,
+                                )
+                                .expect("Must be able to create node instances");
+                                node.is_spawned_from_node_sync = true;
+                                std::thread::Builder::new()
+                                    .name(format!("{}", &thread_identifier))
+                                    .spawn_scoped_critical(s, move || {
+                                        tracing::trace!("Starting thread: {}", &thread_identifier);
+                                        node.execute()
+                                    })
+                                    .unwrap();
+                                poisoned_queue.retain(|message| {
+                                    dispatcher.dispatch(message.clone()).is_err()
+                                });
+                            }
                         }
-                    },
+                    }
                 }
             }
             // Ok(())
@@ -278,8 +306,8 @@ impl RoutingService {
     }
 
     fn inner_network_messages_forwarding_loop(
-        inbound_network: Receiver<NetworkMessage>,
-        cmd_sender: Sender<Command>,
+        inbound_network: NetReceiver<NetworkMessage>,
+        cmd_sender: InstrumentedSender<Command>,
     ) -> anyhow::Result<()> {
         loop {
             match inbound_network.recv() {
@@ -287,15 +315,17 @@ impl RoutingService {
                     tracing::error!("NetworkMessageRouter: common receiver was disconnected: {e}");
                     anyhow::bail!(e)
                 }
-                Ok(message) => cmd_sender.send(Command::Route(message))?,
+                Ok(message) => {
+                    cmd_sender.send(Command::Route(message.clone()))?;
+                }
             }
         }
     }
 
     fn inner_external_messages_forwarding_loop(
-        inbound_ext_messages: Receiver<FeedbackMessage>,
-        feedback_receiver: Receiver<Vec<ExtMsgFeedback>>,
-        cmd_sender: Sender<Command>,
+        inbound_ext_messages: InstrumentedReceiver<FeedbackMessage>,
+        feedback_receiver: InstrumentedReceiver<ExtMsgFeedbackList>,
+        cmd_sender: InstrumentedSender<Command>,
     ) -> anyhow::Result<()> {
         // let queue_limit =
         let queue_size = Arc::new(AtomicUsize::new(0));
@@ -345,7 +375,7 @@ impl RoutingService {
                         } else {
                             feedback_registry.lock().insert(message_hash, sender.unwrap());
                         }
-                        cmd_sender.send(Command::Route(message))?
+                        cmd_sender.send(Command::Route(message))?;
                     }
                 }
             }
@@ -353,7 +383,7 @@ impl RoutingService {
     }
 
     fn inner_feedback_loop(
-        feedback_receiver: Receiver<Vec<ExtMsgFeedback>>,
+        feedback_receiver: InstrumentedReceiver<ExtMsgFeedbackList>,
         feedback_registry: Arc<Mutex<FeedbackRegistry>>,
         queue_size: Arc<AtomicUsize>,
     ) -> anyhow::Result<()> {
@@ -365,8 +395,8 @@ impl RoutingService {
                     );
                 }
                 Ok(feedbacks) => {
-                    tracing::debug!("NetworkMessageRouter: received feedback: {:?}", feedbacks);
-                    for feedback in feedbacks {
+                    tracing::debug!("NetworkMessageRouter: received feedback: {}", feedbacks);
+                    for feedback in feedbacks.0 {
                         if let Some(sender) =
                             feedback_registry.lock().remove(&feedback.message_hash)
                         {

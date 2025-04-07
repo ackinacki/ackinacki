@@ -3,34 +3,42 @@
 
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 pub use api::ext_messages::ExtMsgError;
+pub use api::ext_messages::ExtMsgErrorData;
 pub use api::ext_messages::ExtMsgFeedback;
+pub use api::ext_messages::ExtMsgFeedbackList;
 pub use api::ext_messages::ExtMsgResponse;
 pub use api::ext_messages::FeedbackError;
 pub use api::ext_messages::FeedbackErrorCode;
+pub use api::ext_messages::ResolvingResult;
 pub use api::BlockKeeperSetUpdate;
+use metrics::RoutingMetrics;
 use rcgen::CertifiedKey;
 use salvo::conn::rustls::Keycert;
 use salvo::conn::rustls::RustlsConfig;
 use salvo::prelude::*;
+use telemetry_utils::mpsc::InstrumentedReceiver;
+use telemetry_utils::mpsc::InstrumentedSender;
 use tokio::sync::oneshot;
 use tvm_block::Message;
 
 use crate::api::BkSetSnapshot;
 
 mod api;
+pub mod metrics;
 
 #[derive(Clone)]
 pub struct WebServer<TMessage, TMsgConverter, TBPResolver> {
     pub addr: String,
     pub local_storage_dir: PathBuf,
-    pub incoming_message_sender: Sender<(TMessage, Option<oneshot::Sender<ExtMsgFeedback>>)>,
+    pub incoming_message_sender:
+        InstrumentedSender<(TMessage, Option<oneshot::Sender<ExtMsgFeedback>>)>,
     pub bk_set: Arc<parking_lot::RwLock<BkSetSnapshot>>,
     pub into_external_message: TMsgConverter,
     pub bp_resolver: TBPResolver,
+    pub metrics: Option<RoutingMetrics>,
 }
 
 impl<TMessage, TMsgConverter, TBPResolver> WebServer<TMessage, TMsgConverter, TBPResolver>
@@ -38,14 +46,18 @@ where
     TMessage: Send + Sync + Clone + 'static + std::fmt::Debug,
     TMsgConverter:
         Send + Sync + Clone + 'static + Fn(Message, [u8; 34]) -> anyhow::Result<TMessage>,
-    TBPResolver: Send + Sync + Clone + 'static + FnMut([u8; 34]) -> Option<std::net::SocketAddr>,
+    TBPResolver: Send + Sync + Clone + 'static + FnMut([u8; 34]) -> ResolvingResult,
 {
     pub fn new(
         addr: impl AsRef<str>,
         local_storage_dir: impl AsRef<Path>,
-        incoming_message_sender: Sender<(TMessage, Option<oneshot::Sender<ExtMsgFeedback>>)>,
+        incoming_message_sender: InstrumentedSender<(
+            TMessage,
+            Option<oneshot::Sender<ExtMsgFeedback>>,
+        )>,
         into_external_message: TMsgConverter,
         bp_resolver: TBPResolver,
+        metrics: Option<RoutingMetrics>,
     ) -> Self {
         Self {
             addr: addr.as_ref().to_string(),
@@ -54,6 +66,7 @@ where
             into_external_message,
             bp_resolver,
             bk_set: Arc::new(parking_lot::RwLock::new(BkSetSnapshot::new())),
+            metrics,
         }
     }
 
@@ -105,7 +118,7 @@ where
     }
 
     #[must_use = "server run must be awaited twice (first await is to prepare run call)"]
-    pub async fn run(self, bk_set_updates_rx: std::sync::mpsc::Receiver<BlockKeeperSetUpdate>) {
+    pub async fn run(self, bk_set_updates_rx: InstrumentedReceiver<BlockKeeperSetUpdate>) {
         let rustls_config = rustls_config();
 
         let quinn_listener = QuinnListener::new(

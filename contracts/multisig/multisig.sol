@@ -267,12 +267,13 @@ contract MultisigWallet is IAccept {
         mapping(uint32 => varuint32) cc,
         bool bounce,
         uint8 flags,
-        TvmCell payload) public view
+        TvmCell payload) public view returns(address)
     {
         require(m_custodianCount == 1, 108);
         require(msg.pubkey() == m_ownerKey, 100);
         tvm.accept();
         dest.transfer(varuint16(value), bounce, flags, payload, cc);
+        return dest;
     }
 
     /// @dev Allows custodian to submit and confirm new transaction.

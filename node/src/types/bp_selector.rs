@@ -1,3 +1,6 @@
+use std::sync::atomic::AtomicU32;
+use std::sync::Arc;
+
 use itertools::Itertools;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
@@ -9,6 +12,8 @@ use typed_builder::TypedBuilder;
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::node::NodeIdentifier;
 use crate::types::BlockIdentifier;
+
+pub type BlockGap = Arc<AtomicU32>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TypedBuilder, PartialEq)]
 pub struct ProducerSelector {

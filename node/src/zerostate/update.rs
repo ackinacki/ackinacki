@@ -1,8 +1,11 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::Path;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -10,19 +13,14 @@ use std::time::SystemTime;
 use num_bigint::BigUint;
 use tvm_block::Account;
 use tvm_block::AccountStorage;
-use tvm_block::Augmentation;
 use tvm_block::CurrencyCollection;
 use tvm_block::Deserializable;
-use tvm_block::EnqueuedMsg;
 use tvm_block::ExtraCurrencyCollection;
 use tvm_block::GetRepresentationHash;
 use tvm_block::Grams;
-use tvm_block::HashmapAugType;
 use tvm_block::InternalMessageHeader;
 use tvm_block::Message;
 use tvm_block::MsgAddressInt;
-use tvm_block::MsgEnvelope;
-use tvm_block::OutMsgQueueKey;
 use tvm_block::Serializable;
 use tvm_block::ShardAccount;
 use tvm_block::StateInit;
@@ -36,7 +34,11 @@ use tvm_types::UInt256;
 use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperStatus;
 use crate::bls::gosh_bls::PubKey;
+use crate::message::identifier::MessageIdentifier;
+use crate::message::WrappedMessage;
+use crate::message_storage::MessageDurableStorage;
 use crate::node::SignerIndex;
+use crate::types::thread_message_queue::ThreadMessageQueueState;
 use crate::types::AccountAddress;
 use crate::types::BlockEndLT;
 use crate::types::DAppIdentifier;
@@ -86,7 +88,7 @@ impl ZeroState {
         );
         let last_paid = SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as u32;
         let storage_stat = StorageInfo::with_values(last_paid, None);
-        let mut account = Account::with_storage(&address, dapp_id.clone(), &storage_stat, &storage);
+        let mut account = Account::with_storage(&address, &storage_stat, &storage);
         // We can't create valid storage stat, it should be updated internally
         account
             .update_storage_stat()
@@ -95,8 +97,9 @@ impl ZeroState {
             account.set_balance(balance);
         }
 
-        let shard_account = ShardAccount::with_params(&account, UInt256::default(), 0)
-            .map_err(|e| anyhow::format_err!("Failed to create shard account: {e}"))?;
+        let shard_account =
+            ShardAccount::with_params(&account, UInt256::default(), 0, dapp_id.clone())
+                .map_err(|e| anyhow::format_err!("Failed to create shard account: {e}"))?;
         // Add account to zerostate
         let mut shard_state = self.get_shard_state(thread_identifier)?.deref().clone();
         shard_state
@@ -168,38 +171,63 @@ impl ZeroState {
     ) -> anyhow::Result<()> {
         assert!(message.is_internal());
         // Add message to message queue
-        let info = message.int_header().unwrap();
-        let dest_acc_id = message.int_header().unwrap().dst.address();
-        let fwd_fee = *info.fwd_fee();
-        let msg_cell = message
-            .serialize()
-            .map_err(|e| anyhow::format_err!("Failed to serialize message: {e}"))?;
-        let envelope = MsgEnvelope::with_message_and_fee(&message, fwd_fee)
-            .map_err(|e| anyhow::format_err!("Failed to envelope message: {e}"))?;
-        let enq = EnqueuedMsg::with_param(info.created_lt, &envelope)
-            .map_err(|e| anyhow::format_err!("Failed to enqueue message: {e}"))?;
-        let prefix = dest_acc_id
-            .clone()
-            .get_next_u64()
-            .map_err(|e| anyhow::format_err!("Failed to get acc prefix: {e}"))?;
-        let key = OutMsgQueueKey::with_workchain_id_and_prefix(0, prefix, msg_cell.repr_hash());
+        // let info = message.int_header().unwrap();
+        // let dest_acc_id = message.int_header().unwrap().dst.address();
+        // let fwd_fee = *info.fwd_fee();
+        // let msg_cell = message
+        //     .serialize()
+        //     .map_err(|e| anyhow::format_err!("Failed to serialize message: {e}"))?;
+        // let envelope = MsgEnvelope::with_message_and_fee(&message, fwd_fee)
+        //     .map_err(|e| anyhow::format_err!("Failed to envelope message: {e}"))?;
+        // let enq = EnqueuedMsg::with_param(info.created_lt, &envelope)
+        //     .map_err(|e| anyhow::format_err!("Failed to enqueue message: {e}"))?;
+        // let prefix = dest_acc_id
+        //     .clone()
+        //     .get_next_u64()
+        //     .map_err(|e| anyhow::format_err!("Failed to get acc prefix: {e}"))?;
+        // let key = OutMsgQueueKey::with_workchain_id_and_prefix(0, prefix, msg_cell.repr_hash());
 
-        let mut shard_state = self.get_shard_state(thread_identifier)?.deref().clone();
+        {
+            let optimistic_state = self.state_mut(thread_identifier)?;
+            let dest = AccountAddress(message.int_dst_account_id().unwrap());
+            let message = WrappedMessage { message };
+            let message_key = MessageIdentifier::from(&message);
+            let db_path = PathBuf::from("/tmp/zs_storage");
+            if db_path.exists() {
+                std::fs::remove_file(&db_path).expect("Failed to remove existing database file");
+            }
+            std::fs::File::create(&db_path).expect("Failed to create database file");
+            let message_db = MessageDurableStorage::new(db_path)?;
+            optimistic_state.messages = ThreadMessageQueueState::build_next()
+                .with_initial_state(optimistic_state.messages.clone())
+                .with_consumed_messages(HashMap::new())
+                .with_produced_messages(HashMap::from([(
+                    dest,
+                    vec![(message_key, Arc::new(message))],
+                )]))
+                .with_removed_accounts(vec![])
+                .with_added_accounts(BTreeMap::new())
+                .with_db(message_db.clone())
+                .build()
+                .unwrap();
+        }
 
-        let mut message_queue = shard_state
-            .read_out_msg_queue_info()
-            .map_err(|e| anyhow::format_err!("Failed to read out msg queue info: {e}"))?;
-        message_queue
-            .out_queue_mut()
-            .set(&key, &enq, &enq.aug().map_err(|e| anyhow::format_err!("Failed to get aug: {e}"))?)
-            .map_err(|e| anyhow::format_err!("Failed to put msg to queue: {e}"))?;
+        // let mut shard_state = self.get_shard_state(thread_identifier)?.deref().clone();
 
-        // Update zerostate
-        shard_state
-            .write_out_msg_queue_info(&message_queue)
-            .map_err(|e| anyhow::format_err!("Failed to write out msg queue info: {e}"))?;
-
-        self.state_mut(thread_identifier)?.set_shard_state(Arc::new(shard_state));
+        // let mut message_queue = shard_state
+        //     .read_out_msg_queue_info()
+        //     .map_err(|e| anyhow::format_err!("Failed to read out msg queue info: {e}"))?;
+        // message_queue
+        //     .out_queue_mut()
+        //     .set(&key, &enq, &enq.aug().map_err(|e| anyhow::format_err!("Failed to get aug: {e}"))?)
+        //     .map_err(|e| anyhow::format_err!("Failed to put msg to queue: {e}"))?;
+        //
+        // // Update zerostate
+        // shard_state
+        //     .write_out_msg_queue_info(&message_queue)
+        //     .map_err(|e| anyhow::format_err!("Failed to write out msg queue info: {e}"))?;
+        //
+        // self.state_mut(thread_identifier)?.set_shard_state(Arc::new(shard_state));
         Ok(())
     }
 

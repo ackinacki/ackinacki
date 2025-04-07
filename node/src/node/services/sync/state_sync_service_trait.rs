@@ -2,12 +2,13 @@
 //
 
 use core::fmt::Display;
-use std::sync::mpsc::Sender;
 
 use serde::Deserialize;
 use serde::Serialize;
+use telemetry_utils::mpsc::InstrumentedSender;
 
 use crate::block_keeper_system::BlockKeeperSet;
+use crate::message_storage::MessageDurableStorage;
 use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
 use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
@@ -30,12 +31,13 @@ pub trait StateSyncService {
         cross_thread_ref_data: Vec<CrossThreadRefData>,
         finalized_block_stats: BlockStatistics,
         bk_set: BlockKeeperSet,
+        message_db: &MessageDurableStorage,
     ) -> anyhow::Result<Self::ResourceAddress>;
 
     fn add_load_state_task(
         &mut self,
         resource_address: Self::ResourceAddress,
-        output: Sender<anyhow::Result<(Self::ResourceAddress, Vec<u8>)>>,
+        output: InstrumentedSender<anyhow::Result<(Self::ResourceAddress, Vec<u8>)>>,
     ) -> anyhow::Result<()>;
 
     fn generate_resource_address(

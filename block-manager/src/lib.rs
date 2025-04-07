@@ -2,6 +2,7 @@
 //
 
 pub mod block_subscriber;
+mod bp_resolver;
 pub mod cli;
 pub mod events;
 pub mod executor;

@@ -10,6 +10,7 @@ use clap::Parser;
 use clap::Subcommand;
 use gosh_bls_lib::bls::gen_bls_key_pair;
 use gosh_bls_lib::serde_bls::BLSKeyPair;
+use network::parse_publisher_url;
 use network::socket_addr::StringSocketAddr;
 use node::bls::gosh_bls::PubKey;
 use node::bls::gosh_bls::Secret;
@@ -25,7 +26,6 @@ use node::types::RndSeed;
 use serde_json::json;
 use tvm_client::ClientConfig;
 use tvm_client::ClientContext;
-use url::Url;
 
 const EPOCH_CODE_HASH_FILE_PATH: &str = "./contracts/bksystem/BlockKeeperEpochContract.code.hash";
 
@@ -150,10 +150,6 @@ struct Config {
     #[arg(long)]
     pub producer_change_gap_size: Option<usize>,
 
-    /// Number of signatures, required for block acceptance.
-    #[arg(long)]
-    pub min_signatures_cnt_for_acceptance: Option<usize>,
-
     /// Number of max tries to download shared state
     #[arg(long)]
     pub shared_state_max_download_tries: Option<u8>,
@@ -178,9 +174,37 @@ struct Config {
     #[arg(long)]
     pub network_subscribe: Option<String>,
 
+    /// Proxy list to propagate via gossip.
+    #[arg(long)]
+    pub network_proxies: Option<String>,
+
     /// Chitchat cluster id for gossip
     #[arg(long)]
     pub chitchat_cluster_id: Option<String>,
+
+    /// Store shard state and account BOCs separately.
+    #[arg(long)]
+    pub split_state: Option<bool>,
+
+    /// Thread load (aggregated number of messages in a queue to start splitting a thread) threshold for split
+    #[arg(long)]
+    pub thread_load_threshold: Option<usize>,
+
+    /// Thread load window size, which is used to calculate thread load
+    #[arg(long)]
+    pub thread_load_window_size: Option<usize>,
+
+    /// Maximum of threads
+    #[arg(long)]
+    pub thread_count_soft_limit: Option<usize>,
+
+    /// State cache size in local repository
+    #[arg(long)]
+    pub state_cache_size: Option<usize>,
+
+    /// Path to the local message durable storage
+    #[arg(long)]
+    pub message_storage_path: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -322,12 +346,6 @@ fn main() -> anyhow::Result<()> {
                 config.global.producer_change_gap_size = producer_change_gap_size;
             }
 
-            if let Some(min_signatures_cnt_for_acceptance) =
-                config_cmd.min_signatures_cnt_for_acceptance
-            {
-                config.global.min_signatures_cnt_for_acceptance = min_signatures_cnt_for_acceptance;
-            }
-
             if let Some(shared_state_max_download_tries) =
                 config_cmd.shared_state_max_download_tries
             {
@@ -353,12 +371,46 @@ fn main() -> anyhow::Result<()> {
             }
 
             if let Some(subscribe) = config_cmd.network_subscribe {
-                config.network.subscribe =
-                    subscribe.split(',').map(Url::parse).collect::<Result<_, _>>()?;
+                config.network.subscribe = subscribe
+                    .split(',')
+                    .filter_map(|x| if !x.is_empty() { Some(parse_publisher_url(x)) } else { None })
+                    .map(|x| x.map(|x| vec![x]))
+                    .collect::<Result<_, _>>()?;
+            }
+
+            if let Some(proxies) = config_cmd.network_proxies {
+                config.network.proxies = proxies
+                    .split(',')
+                    .filter_map(|x| if !x.is_empty() { Some(parse_publisher_url(x)) } else { None })
+                    .collect::<Result<_, _>>()?;
             }
 
             if let Some(cluster_id) = config_cmd.chitchat_cluster_id {
                 config.network.chitchat_cluster_id = cluster_id;
+            }
+
+            if let Some(split_state) = config_cmd.split_state {
+                config.local.split_state = split_state;
+            }
+
+            if let Some(thread_load_threshold) = config_cmd.thread_load_threshold {
+                config.global.thread_load_threshold = thread_load_threshold;
+            }
+
+            if let Some(thread_load_window_size) = config_cmd.thread_load_window_size {
+                config.global.thread_load_window_size = thread_load_window_size;
+            }
+
+            if let Some(thread_count_soft_limit) = config_cmd.thread_count_soft_limit {
+                config.global.thread_count_soft_limit = thread_count_soft_limit;
+            }
+
+            if let Some(state_cache_size) = config_cmd.state_cache_size {
+                config.local.state_cache_size = state_cache_size;
+            }
+
+            if let Some(message_storage_path) = config_cmd.message_storage_path {
+                config.local.message_storage_path = message_storage_path;
             }
 
             save_config_to_file(&config, &config_cmd.config_file_path)

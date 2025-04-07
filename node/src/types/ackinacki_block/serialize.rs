@@ -31,8 +31,7 @@ impl AckiNackiBlock {
             .map_err(|e| anyhow::format_err!("Failed to serialize tvm block cell: {e}"))?;
         data.extend_from_slice(&block_data.len().to_be_bytes()); // 8 bytes of block data len
         data.extend_from_slice(&block_data);
-        data.extend_from_slice(&self.processed_ext_messages_cnt.to_be_bytes()); // 8 bytes of.processed_ext_messages_cnt()        data.extend_from_slice(&self.tx_cnt.to_be_bytes()); // 8 bytes of processed_ext_messages_cnt
-        data.extend_from_slice(&self.tx_cnt.to_be_bytes()); // 8 bytes of.processed_ext_messages_cnt()        data.extend_from_slice(&self.tx_cnt.to_be_bytes()); // 8 bytes of tx_cnt
+        data.extend_from_slice(&self.tx_cnt.to_be_bytes()); // 8 bytes of tx_cnt
         Ok(data)
     }
 }
@@ -82,12 +81,6 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
         let block = tvm_block::Block::construct_from_cell(block_cell.clone())
             .map_err(|_| D::Error::custom("Failed to deserialize tvm block"))?;
 
-        let (processed_ext_messages_cnt_data, rest) = rest.split_at(8);
-        let processed_ext_messages_cnt =
-            usize::from_be_bytes(processed_ext_messages_cnt_data.try_into().map_err(|_| {
-                D::Error::custom("Failed to decode block field: processed_ext_messages_cnt")
-            })?);
-
         let (tx_cnt_data, rest) = rest.split_at(8);
         let tx_cnt = usize::from_be_bytes(
             tx_cnt_data
@@ -101,7 +94,6 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
             common_section,
             block,
             tx_cnt,
-            processed_ext_messages_cnt,
             hash,
             raw_data: Some(raw_data),
             block_cell: Some(block_cell),

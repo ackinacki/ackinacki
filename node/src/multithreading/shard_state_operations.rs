@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tvm_block::HashmapAugType;
 use tvm_block::OutMsgQueue;
 use tvm_block::ShardStateUnsplit;
+use tvm_types::AccountId;
 use tvm_types::HashmapRemover;
 use tvm_types::HashmapType;
 
@@ -27,7 +28,8 @@ use crate::types::ThreadsTable;
 // To filter accounts we calculate current account routing (<DApp_id>,<Account_id>) and check
 // whether it matches the given thread id with the given threads table. If it does not match,
 // remove it from the state.
-pub(crate) fn crop_shard_state_based_on_threads_table(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn crop_shard_state_based_on_threads_table<F>(
     shard_state: Arc<ShardStateUnsplit>,
     threads_table: &ThreadsTable,
     thread_id: ThreadIdentifier,
@@ -35,7 +37,12 @@ pub(crate) fn crop_shard_state_based_on_threads_table(
     // TODO: remove
     _block_id: BlockIdentifier,
     optimization_skip_shard_accounts_crop: bool,
-) -> anyhow::Result<Arc<ShardStateUnsplit>> {
+    removed_accounts_buffer: &mut Vec<AccountAddress>,
+    mut on_account_callback: F,
+) -> anyhow::Result<Arc<ShardStateUnsplit>>
+where
+    F: FnMut(&AccountId),
+{
     let mut shard_state = shard_state.deref().clone();
     // Get accounts from the shard state
     let mut shard_accounts = shard_state
@@ -84,7 +91,6 @@ pub(crate) fn crop_shard_state_based_on_threads_table(
             Ok(true)
         })
         .map_err(|e| anyhow::format_err!("Failed to iterate and crop out messages: {e}"))?;
-
     // Clear removed messages from the state
     for key in message_keys_to_remove_from_state {
         out_messages_queue_info
@@ -100,24 +106,28 @@ pub(crate) fn crop_shard_state_based_on_threads_table(
         // Prepare buffer for account keys that will be removed from the shard state
         let mut keys_to_remove_from_state = vec![];
         shard_accounts
-            .iterate_objects(|shard_account| {
-                let account = shard_account.read_account()?;
-
-                assert!(!account.is_none(), "Account in shard state must not be None");
+            .iterate_accounts(|address, shard_account, _| {
+                let address_id = AccountId::from(&address);
                 // Calculate current account routing
-                let account_routing = get_account_routing_for_account(&account);
+                let account_routing = get_account_routing_for_account(
+                    address_id.clone(),
+                    shard_account.get_dapp_id().cloned(),
+                );
+                on_account_callback(&address_id);
 
                 // If account routing matches thread leave it in the state
                 if !threads_table.is_match(&account_routing, thread_id) {
-                    keys_to_remove_from_state.push(account.get_id().unwrap());
+                    keys_to_remove_from_state.push(address);
                 }
                 Ok(true)
             })
             .map_err(|e| anyhow::format_err!("Failed to iterate and split accounts: {e}"))?;
 
+        removed_accounts_buffer
+            .extend(keys_to_remove_from_state.iter().map(|addr| AccountAddress(addr.into())));
         // Clear removed accounts from the state
         for key in keys_to_remove_from_state {
-            shard_accounts.remove(key).map_err(|e| {
+            shard_accounts.remove(&key).map_err(|e| {
                 anyhow::format_err!("Failed to remove account from shard state: {e}")
             })?;
         }

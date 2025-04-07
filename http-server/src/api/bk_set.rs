@@ -14,6 +14,7 @@ use salvo::Request;
 use salvo::Response;
 use serde::Serialize;
 
+use crate::ResolvingResult;
 use crate::WebServer;
 
 #[derive(Clone, Debug)]
@@ -100,7 +101,7 @@ where
         + Sync
         + 'static
         + Fn(tvm_block::Message, [u8; 34]) -> anyhow::Result<TMessage>,
-    TBPResolver: Clone + Send + Sync + 'static + FnMut([u8; 34]) -> Option<std::net::SocketAddr>,
+    TBPResolver: Clone + Send + Sync + 'static + FnMut([u8; 34]) -> ResolvingResult,
 {
     async fn handle(
         &self,

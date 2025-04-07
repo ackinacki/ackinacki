@@ -6,10 +6,10 @@ TVCS := GiverV3
 include ../Makefile.inc
 
 add_key:
-	../compiler/tvm-cli -j genaddr --abi GiverV3.abi.json --setkey $(KEY_PATH) --save GiverV3.tvc
+	$(TVM_CLI) -j genaddr --abi GiverV3.abi.json --setkey $(KEY_PATH) --save GiverV3.tvc
 
 call_constructor_offchain:
-	../compiler/tvm-debugger -a GiverV3.abi.json -m constructor -i GiverV3.tvc --sign $(KEY_PATH) --address $(GIVER_ADDRESS)
+	$(TVM_DEBUGGER) run -a GiverV3.abi.json -m constructor -i GiverV3.tvc --sign $(KEY_PATH) --address $(GIVER_ADDRESS)
 
 .DEFAULT_GOAL := build-giver
 

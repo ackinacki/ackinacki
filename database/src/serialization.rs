@@ -21,6 +21,7 @@ pub struct AccountSerializationSet {
     pub boc: Vec<u8>,
     pub boc1: Option<Vec<u8>>,
     pub proof: Option<Vec<u8>>,
+    pub dapp_id: Option<UInt256>,
 }
 
 pub struct BlockSerializationSetFH {

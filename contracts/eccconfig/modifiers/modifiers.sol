@@ -11,6 +11,8 @@ import "./structs/structs.sol";
 
 abstract contract Modifiers is ReplayProtection {   
     string constant versionModifiers = "1.0.0";
+    uint64 constant MIN_BALANCE = 100000 vmshell;
+
             
     modifier onlyOwnerPubkeyOptional(optional(uint256) rootpubkey) {
         require(rootpubkey.hasValue() == true, ERR_NOT_OWNER);

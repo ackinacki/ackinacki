@@ -1,117 +1,40 @@
-mod config;
+pub mod config;
+pub mod connection;
 mod executor;
 mod receiver;
 mod sender;
 mod server;
 mod subscribe;
-mod sync_bridge;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::future::Future;
+use std::hash::Hash;
 use std::sync::Arc;
 
 pub use config::CertFile;
 pub use config::CertStore;
-pub use config::Config;
 pub use config::PrivateKeyFile;
+use connection::ConnectionWrapper;
+use connection::OutgoingMessage;
 pub use executor::run;
-pub use sync_bridge::incoming_bridge;
-pub use sync_bridge::outgoing_bridge;
+pub use executor::IncomingSender;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
-use tokio::sync::watch;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use url::Url;
 use wtransport::endpoint::ConnectOptions;
 use wtransport::error::ConnectionError;
-use wtransport::tls::Sha256Digest;
 use wtransport::Connection;
 use wtransport::Endpoint;
 
 use crate::detailed;
+use crate::metrics::NetMetrics;
 use crate::tls::create_client_config;
+use crate::tls::TlsConfig;
 
 pub const ACKI_NACKI_SUBSCRIBE_HEADER: &str = "AckiNacki-Subscribe";
-
-pub struct ConnectionWrapper {
-    pub url: Option<Url>,
-    pub peer_id: Sha256Digest,
-    pub connection: Connection,
-    pub self_is_subscriber: bool,
-    pub peer_is_subscriber: bool,
-}
-
-impl ConnectionWrapper {
-    pub fn new(
-        is_debug: bool,
-        url: Option<Url>,
-        peer_id: Sha256Digest,
-        connection: Connection,
-        self_is_subscriber: bool,
-        peer_is_subscriber: bool,
-    ) -> Self {
-        let peer_id = if is_debug {
-            let mut bytes = [0u8; 32];
-            let addr = connection.remote_address().to_string();
-            let addr_bytes = addr.as_bytes();
-            let len = 32.min(addr_bytes.len());
-            bytes[0..len].copy_from_slice(&addr_bytes[0..len]);
-            Sha256Digest::new(bytes)
-        } else {
-            peer_id
-        };
-        Self { url, peer_id, connection, self_is_subscriber, peer_is_subscriber }
-    }
-
-    pub fn addr(&self) -> String {
-        if let Some(url) = &self.url {
-            url.to_string()
-        } else {
-            self.connection.remote_address().to_string()
-        }
-    }
-
-    pub fn peer_info(&self) -> String {
-        let mut info = self.addr();
-        if self.self_is_subscriber {
-            info.push_str(" (publisher)");
-        }
-        if self.peer_is_subscriber {
-            info.push_str(" (subscriber)");
-        }
-        info
-    }
-
-    pub fn allow_sending(&self, message: &OutgoingMessage) -> bool {
-        match &message.delivery {
-            MessageDelivery::Broadcast => self.peer_is_subscriber,
-            MessageDelivery::BroadcastExcluding(excluding) => {
-                self.peer_is_subscriber && self.peer_id != *excluding
-            }
-            MessageDelivery::Url(url) => self.url.as_ref().map(|x| x == url).unwrap_or_default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct IncomingMessage {
-    pub peer: Sha256Digest,
-    pub data: Arc<Vec<u8>>,
-}
-
-#[derive(Debug, Clone)]
-pub enum MessageDelivery {
-    Broadcast,
-    BroadcastExcluding(Sha256Digest),
-    Url(Url),
-}
-
-#[derive(Debug, Clone)]
-pub struct OutgoingMessage {
-    pub delivery: MessageDelivery,
-    pub data: Arc<Vec<u8>>,
-}
 
 #[derive(Clone)]
 pub struct PubSub(Arc<parking_lot::RwLock<PubSubInner>>);
@@ -137,42 +60,61 @@ impl PubSub {
 
     pub fn schedule_subscriptions(
         &self,
-        config: &Config,
-    ) -> (Vec<Url>, Vec<Arc<ConnectionWrapper>>) {
+        subscribe: &Vec<Vec<Url>>,
+    ) -> (Vec<Vec<Url>>, Vec<Arc<ConnectionWrapper>>) {
         let inner = self.0.read();
-        let mut should_be_unsubscribed = Vec::new();
-        let mut should_be_subscribed = config.subscribe.iter().cloned().collect::<HashSet<_>>();
-        for connection in inner.connections.values() {
-            if let (true, Some(url)) = (connection.self_is_subscriber, &connection.url) {
-                if !should_be_subscribed.remove(url) {
-                    should_be_unsubscribed.push(connection.clone());
-                }
+        let subscribed = inner.connections.values().filter_map(|connection| {
+            if let (Some(url), true) = (&connection.url, connection.self_is_subscriber) {
+                Some((url.clone(), connection.clone()))
+            } else {
+                None
             }
-        }
-        (should_be_subscribed.into_iter().collect(), should_be_unsubscribed)
+        });
+        diff(subscribed, subscribe)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn connect_to_peer(
         &self,
-        incoming_messages: &mpsc::Sender<IncomingMessage>,
+        metrics: Option<NetMetrics>,
+        incoming_messages: &IncomingSender,
         outgoing_messages: &broadcast::Sender<OutgoingMessage>,
         connection_closed: &mpsc::Sender<Arc<ConnectionWrapper>>,
-        config: &Config,
-        url: &Url,
+        config: &TlsConfig,
+        urls: &[Url],
         subscribe: bool,
     ) -> anyhow::Result<()> {
         let client_config = create_client_config(config)?;
-        let mut connect_options = ConnectOptions::builder(url.clone());
-        if subscribe {
-            connect_options = connect_options.add_header(ACKI_NACKI_SUBSCRIBE_HEADER, "true");
-        }
+        let endpoint = Endpoint::client(client_config)?;
+        let (connection, url) = 'connect: {
+            for url in urls {
+                let mut connect_options = ConnectOptions::builder(urls[0].as_ref());
+                if subscribe {
+                    connect_options =
+                        connect_options.add_header(ACKI_NACKI_SUBSCRIBE_HEADER, "true");
+                }
+                match endpoint.connect(connect_options.build()).await {
+                    Ok(connection) => {
+                        break 'connect (connection, url);
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            url = url.as_ref().to_string(),
+                            "Failed to connect to peer: {err}"
+                        )
+                    }
+                };
+            }
+            return Err(anyhow::anyhow!("Failed to connect to peer"));
+        };
 
         self.add_connection_handler(
+            metrics.clone(),
             config.my_cert.is_debug(),
             incoming_messages,
             outgoing_messages,
             connection_closed,
-            Endpoint::client(client_config)?.connect(connect_options.build()).await?,
+            connection,
             Some(url.clone()),
             subscribe,
             false,
@@ -182,9 +124,10 @@ impl PubSub {
     #[allow(clippy::too_many_arguments)]
     pub fn add_connection_handler(
         &self,
+        metrics: Option<NetMetrics>,
         is_debug: bool,
-        incoming_messages: &mpsc::Sender<IncomingMessage>,
-        outgoing_messages: &broadcast::Sender<OutgoingMessage>,
+        incoming_messages_tx: &IncomingSender,
+        outgoing_messages_tx: &broadcast::Sender<OutgoingMessage>,
         connection_closed_tx: &mpsc::Sender<Arc<ConnectionWrapper>>,
         connection: Connection,
         url: Option<Url>,
@@ -202,17 +145,23 @@ impl PubSub {
         let connection = Arc::new(ConnectionWrapper::new(
             is_debug,
             url,
-            first_cert.hash(),
+            first_cert.hash().to_string(),
             connection,
             self_is_subscriber,
             peer_is_subscriber,
         ));
 
-        let task = tokio::spawn(connection_supervisor(
+        let (outgoing_messages_tx, incoming_messages_tx) = if peer_is_subscriber {
+            (Some(outgoing_messages_tx.subscribe()), None)
+        } else {
+            (None, Some(incoming_messages_tx.clone()))
+        };
+        let task = tokio::spawn(connection::connection_supervisor(
             self.clone(),
+            metrics.clone(),
             connection.clone(),
-            incoming_messages.clone(),
-            outgoing_messages.subscribe(),
+            incoming_messages_tx,
+            outgoing_messages_tx,
             connection_closed_tx.clone(),
         ));
 
@@ -246,56 +195,70 @@ impl PubSub {
     }
 }
 
-async fn connection_supervisor(
-    pub_sub: PubSub,
-    connection: Arc<ConnectionWrapper>,
-    incoming_messages_tx: mpsc::Sender<IncomingMessage>,
-    outgoing_messages_rx: broadcast::Receiver<OutgoingMessage>,
-    connection_closed_tx: mpsc::Sender<Arc<ConnectionWrapper>>,
-) -> anyhow::Result<()> {
-    let (stop_sender_tx, stop_sender_rx) = watch::channel(false);
-    let (stop_receiver_tx, stop_receiver_rx) = watch::channel(false);
-    let result = tokio::select! {
-        result = tokio::spawn(sender::sender(connection.clone(), stop_sender_rx, outgoing_messages_rx)) =>
-            trace_task_result(result, "Sender", &connection),
-        result = tokio::spawn(receiver::receiver(connection.clone(), stop_receiver_rx, incoming_messages_tx)) =>
-            trace_task_result(result, "Receiver", &connection)
-    };
-    pub_sub.remove_connection(&connection);
-    tracing::trace!(peer = connection.peer_info(), "Connection supervisor finished");
-    let _ = stop_sender_tx.send(true);
-    let _ = stop_receiver_tx.send(true);
-    let _ = connection_closed_tx.send(connection).await;
-    result?
-}
-
-fn trace_task_result(
+pub fn trace_task_result(
     result: Result<anyhow::Result<()>, JoinError>,
     name: &str,
-    connection: &ConnectionWrapper,
 ) -> Result<anyhow::Result<()>, JoinError> {
     match &result {
         Ok(result) => match result {
             Ok(_) => {
-                tracing::info!(peer = connection.peer_info(), "{name} task finished");
+                tracing::info!("{name} task finished");
             }
             Err(err) => {
-                tracing::error!(
-                    peer = connection.peer_info(),
-                    "{name} task error: {}",
-                    detailed(err)
-                );
+                tracing::error!("{name} task failed: {}", detailed(err));
             }
         },
         Err(err) => {
-            tracing::error!(
-                peer = connection.peer_info(),
-                "{name} task panicked: {}",
-                detailed(err)
-            )
+            tracing::error!("{name} task panicked: {}", detailed(err))
         }
     }
     result
+}
+
+pub fn spawn_critical_task(name: &'static str, task: impl Future<Output = ()> + Send + 'static) {
+    monitor_critical_task(name, tokio::spawn(task));
+}
+
+pub fn monitor_critical_task(name: &'static str, task: JoinHandle<()>) {
+    tokio::spawn(async move {
+        match &task.await {
+            Ok(_) => tracing::info!("{name} task finished"),
+            Err(err) => {
+                tracing::error!("Critical: {name} task panicked: {}", detailed(err))
+            }
+        }
+    });
+}
+
+pub fn start_critical_task_ex<Key: Send + 'static>(
+    name: &'static str,
+    key: Key,
+    stopped_tx: mpsc::UnboundedSender<Key>,
+    task: impl Future<Output = anyhow::Result<()>> + Send + 'static,
+) {
+    monitor_critical_task_ex(name, key, stopped_tx, tokio::spawn(task))
+}
+
+pub fn monitor_critical_task_ex<Key: Send + 'static>(
+    name: &'static str,
+    key: Key,
+    stopped_tx: mpsc::UnboundedSender<Key>,
+    task: JoinHandle<anyhow::Result<()>>,
+) {
+    tokio::spawn(async move {
+        match &task.await {
+            Ok(result) => match result {
+                Ok(_) => tracing::info!("{name} task finished"),
+                Err(err) => {
+                    tracing::error!("Critical: {name} task failed: {}", detailed(err))
+                }
+            },
+            Err(err) => {
+                tracing::error!("Critical: {name} task panicked: {}", detailed(err))
+            }
+        }
+        let _ = stopped_tx.send(key);
+    });
 }
 
 pub fn is_safely_closed(err: &ConnectionError) -> bool {
@@ -307,4 +270,60 @@ pub fn is_safely_closed(err: &ConnectionError) -> bool {
         ConnectionError::LocalH3Error(_) => true,
         _ => false,
     }
+}
+
+fn diff<Key: Hash + Eq + Clone, Value: Clone>(
+    original: impl Iterator<Item = (Key, Value)>,
+    target: &Vec<Vec<Key>>,
+) -> (Vec<Vec<Key>>, Vec<Value>) {
+    let mut preserve_original = HashMap::new();
+    for (key, value) in original {
+        preserve_original.insert(key, (value, false));
+    }
+    let mut included_keys = HashSet::new();
+    let mut should_be_included = Vec::<Vec<Key>>::new();
+    for keys in target {
+        let mut all_keys_are_new = true;
+        for key in keys {
+            if let Some((_, preserve)) = preserve_original.get_mut(key) {
+                all_keys_are_new = false;
+                *preserve = true;
+            } else if included_keys.contains(key) {
+                all_keys_are_new = false;
+            }
+        }
+        if all_keys_are_new {
+            for key in keys {
+                included_keys.insert(key.clone());
+            }
+            should_be_included.push(keys.to_vec());
+        }
+    }
+    let should_be_excluded = preserve_original
+        .values()
+        .filter_map(|x| (!x.1).then_some(x.0.clone()))
+        .collect::<Vec<_>>();
+    (should_be_included, should_be_excluded)
+}
+
+#[test]
+fn test_diff() {
+    let (include, exclude) =
+        diff(vec![("url1", 1), ("url2", 2)].into_iter(), &vec![vec!["url1"], vec!["url2"]]);
+    assert_eq!(include, Vec::<Vec<&str>>::new());
+    assert_eq!(exclude, Vec::<usize>::new());
+
+    let (included, exclude) = diff(
+        vec![("url1", 1), ("url2", 2), ("url4", 4)].into_iter(),
+        &vec![vec!["url1", "url2"], vec!["url3", "url5"], vec!["url2", "url3"]],
+    );
+    assert_eq!(included, vec![vec!["url3", "url5"]]);
+    assert_eq!(exclude, vec![4]);
+
+    let (included, exclude) = diff(
+        vec![("url1", 1)].into_iter(),
+        &vec![vec!["url2", "url3"], vec!["url3", "url4"], vec!["url4", "url5"]],
+    );
+    assert_eq!(included, vec![vec!["url2", "url3"], vec!["url4", "url5"]]);
+    assert_eq!(exclude, vec![1]);
 }

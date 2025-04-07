@@ -58,7 +58,7 @@ contract GiverV3 is Upgradable {
         if (address(this).balance <= value + 1000 vmshell) {
             gosh.mintshell(uint64(value + 1000 vmshell - address(this).balance));
         }
-        dest.transfer({value: value, bounce: false, flag: 3, currencies: ecc});
+        dest.transfer({value: value, bounce: false, flag: 1, currencies: ecc});
         gc();
     }
 
@@ -71,7 +71,7 @@ contract GiverV3 is Upgradable {
         if (address(this).balance <= value + 1000 vmshell) {
             gosh.mintshell(uint64(value + 1000 vmshell - address(this).balance));
         }
-        dest.transfer({value: value, bounce: false, flag: 3, currencies: data_cur});
+        dest.transfer({value: value, bounce: false, flag: 1, currencies: data_cur});
     }
 
     /*

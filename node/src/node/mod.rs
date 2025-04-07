@@ -3,19 +3,16 @@
 
 mod acki_nacki;
 pub mod associated_types;
-mod attestations;
 mod block_keeper_system;
 mod block_processing;
 pub mod block_state;
 mod crypto;
-use crate::node::services::send_attestations::AttestationSendService;
-use crate::repository::optimistic_state::OptimisticStateImpl;
+use crate::helper::metrics::BlockProductionMetrics;
 mod execution;
 pub use execution::LOOP_PAUSE_DURATION;
-pub mod leader_election;
+use http_server::ExtMsgFeedbackList;
 mod network_message;
-mod producer;
-mod repository;
+
 mod restart;
 mod send;
 pub mod services;
@@ -27,236 +24,255 @@ pub mod impl_trait_macro;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
+use std::sync::atomic::AtomicI32;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
+use std::time::Duration;
 
-pub use associated_types::NodeIdentifier;
 pub use associated_types::SignerIndex;
-use http_server::ExtMsgFeedback;
 pub use network_message::NetworkMessage;
 use services::sync::StateSyncService;
 use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
 
-use crate::block::producer::process::BlockProducerProcess;
-use crate::block::producer::BlockProducer;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::config::Config;
+use crate::message_storage::MessageDurableStorage;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
-use crate::node::associated_types::OptimisticForwardState;
 use crate::node::services::attestations_target::service::AttestationsTargetService;
-use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::repository_impl::RepositoryImpl;
-use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
+use crate::types::CollectedAttestations;
 use crate::types::RndSeed;
+use crate::utilities::thread_spawn_critical::SpawnCritical;
 use crate::utilities::FixedSizeHashSet;
 pub mod shared_services;
+pub mod unprocessed_blocks_collection;
 use block_state::repository::BlockStateRepository;
+use network::channel::NetBroadcastSender;
+use network::channel::NetDirectSender;
 use parking_lot::Mutex;
 use shared_services::SharedServices;
+use telemetry_utils::mpsc::InstrumentedSender;
+use unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 
+use crate::block::producer::process::TVMBlockProducerProcess;
+use crate::block::producer::ProducerService;
 use crate::bls::gosh_bls::PubKey;
 use crate::bls::gosh_bls::Secret;
+use crate::external_messages::ExternalMessagesThreadState;
+pub use crate::node::associated_types::NodeIdentifier;
 use crate::node::block_state::repository::BlockState;
 use crate::node::services::block_processor::service::BlockProcessorService;
+use crate::node::services::db_serializer::DBSerializeService;
 use crate::node::services::fork_resolution::service::ForkResolutionService;
 use crate::node::services::validation::service::ValidationServiceInterface;
+use crate::types::bp_selector::BlockGap;
 use crate::types::ThreadIdentifier;
 
 pub(crate) const DEFAULT_PRODUCTION_TIME_MULTIPLIER: u64 = 1;
 
 #[allow(dead_code)]
 #[derive(TypedBuilder)]
-pub struct Node<
-    TStateSyncService,
-    TBlockProducerProcess,
-    TRandomGenerator,
-> where
-    TBlockProducerProcess: BlockProducerProcess,
-    <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: 'static,
-    <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
-        <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
-    >,
+pub struct Node<TStateSyncService, TRandomGenerator>
+where
     TStateSyncService: StateSyncService,
     TRandomGenerator: rand::Rng,
 {
     repository: RepositoryImpl,
     shared_services: SharedServices,
     state_sync_service: TStateSyncService,
-    // validation_process: TValidationProcess,
-    production_process: TBlockProducerProcess,
     // TODO: @AleksandrS Add priority rx
-    rx: Receiver<NetworkMessage>,
-    tx: Sender<NetworkMessage>,
-    single_tx: Sender<(
-        NodeIdentifier,
-        NetworkMessage,
-    )>,
-    raw_block_tx: Sender<Vec<u8>>,
+    network_rx: Receiver<NetworkMessage>,
+    network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
+    network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
+    raw_block_tx: InstrumentedSender<Vec<u8>>,
     bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
-    #[builder(default)]
-    cache_forward_optimistic: Option<OptimisticForwardState>,
 
-    #[builder(default)]
-    unprocessed_blocks_cache: Arc<Mutex<Vec<BlockState>>>,
+    unprocessed_blocks_cache: unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection,
 
     production_timeout_multiplier: u64,
-    pub last_block_attestations: Vec<Envelope<GoshBLS, AttestationData>>,
+    last_block_attestations: Arc<Mutex<CollectedAttestations>>,
     pub received_acks: Arc<Mutex<Vec<Envelope<GoshBLS, AckData>>>>,
     sent_acks: BTreeMap<BlockSeqNo, Envelope<GoshBLS, AckData>>,
     pub received_nacks: Arc<Mutex<Vec<Envelope<GoshBLS, NackData>>>>,
     config: Config,
-    block_gap_length: Arc<Mutex<usize>>,
+    block_gap_length: BlockGap,
     pub received_attestations: BTreeMap<BlockSeqNo, HashMap<BlockIdentifier, HashSet<SignerIndex>>>,
-    blocks_for_resync_broadcasting: VecDeque<Envelope<GoshBLS, AckiNackiBlock>>,
     block_keeper_rng: TRandomGenerator,
     producer_election_rng: TRandomGenerator,
     attestations_to_send: BTreeMap<BlockSeqNo, Vec<Envelope<GoshBLS, AttestationData>>>,
     ack_cache: BTreeMap<BlockSeqNo, Vec<Envelope<GoshBLS, AckData>>>,
     nack_cache: BTreeMap<BlockSeqNo, Vec<Envelope<GoshBLS, NackData>>>,
     thread_id: ThreadIdentifier,
-    feedback_sender: Sender<Vec<ExtMsgFeedback>>,
     // Note: hack. check usage
     pub is_spawned_from_node_sync: bool,
     nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
 
     // Note: signer index map is initially empty,
     // it is filled after BK epoch contract deploy or loaded from zerostate
-    blocks_states: BlockStateRepository,
+    block_state_repository: BlockStateRepository,
     block_processor_service: BlockProcessorService,
-    attestations_target_service: AttestationsTargetService,
     validation_service: ValidationServiceInterface,
     skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
+    pub message_db: MessageDurableStorage,
+
+    last_broadcasted_produced_candidate_block_time: std::time::Instant,
+    finalization_loop: std::thread::JoinHandle<()>,
+    producer_service: ProducerService,
     fork_resolution_service: ForkResolutionService,
-    attestation_sender_service: AttestationSendService,
+    metrics: Option<BlockProductionMetrics>,
+    external_messages: ExternalMessagesThreadState,
+
+    is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
+    db_service: DBSerializeService,
 }
 
-impl<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
-Node<TStateSyncService, TBlockProducerProcess, TRandomGenerator>
-    where
-        TBlockProducerProcess:
-        BlockProducerProcess< Repository = RepositoryImpl>,
-        TBlockProducerProcess: BlockProducerProcess<
-            BLSSignatureScheme = GoshBLS,
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-            OptimisticState = OptimisticStateImpl,
-        >,
-        <<TBlockProducerProcess as BlockProducerProcess>::BlockProducer as BlockProducer>::Message: Into<
-            <<TBlockProducerProcess as BlockProducerProcess>::OptimisticState as OptimisticState>::Message,
-        >,
-        TStateSyncService: StateSyncService<
-            Repository = RepositoryImpl
-        >,
-        TRandomGenerator: rand::Rng,
+impl<TStateSyncService, TRandomGenerator> Node<TStateSyncService, TRandomGenerator>
+where
+    TStateSyncService: StateSyncService<Repository = RepositoryImpl> + Clone + Send + 'static,
+    TRandomGenerator: rand::Rng,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         shared_services: SharedServices,
         state_sync_service: TStateSyncService,
-        production_process: TBlockProducerProcess,
+        production_process: TVMBlockProducerProcess,
         repository: RepositoryImpl,
-        rx: Receiver<NetworkMessage>,
-        tx: Sender<NetworkMessage>,
-        single_tx: Sender<(
-            NodeIdentifier,
-            NetworkMessage,
-        )>,
-        raw_block_tx: Sender<Vec<u8>>,
+        network_rx: Receiver<NetworkMessage>,
+        network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
+        network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
+        raw_block_tx: InstrumentedSender<Vec<u8>>,
         bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
         config: Config,
         block_keeper_rng: TRandomGenerator,
         producer_election_rng: TRandomGenerator,
         thread_id: ThreadIdentifier,
-        feedback_sender: Sender<Vec<ExtMsgFeedback>>,
+        feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
         _update_producer_group: bool,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
-        blocks_states: BlockStateRepository,
-        unprocessed_blocks_cache: Arc<Mutex<Vec<BlockState>>>,
+        block_state_repository: BlockStateRepository,
+        unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
         block_processor_service: BlockProcessorService,
         attestations_target_service: AttestationsTargetService,
         validation_service: ValidationServiceInterface,
         skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
         fork_resolution_service: ForkResolutionService,
-        block_gap: Arc<Mutex<usize>>,
+        block_gap: BlockGap,
+        metrics: Option<BlockProductionMetrics>,
+        self_tx: Sender<NetworkMessage>,
+        external_messages: ExternalMessagesThreadState,
+        message_db: MessageDurableStorage,
+        last_block_attestations: Arc<Mutex<CollectedAttestations>>,
+        bp_production_count: Arc<AtomicI32>,
+        db_service: DBSerializeService,
     ) -> Self {
-        /*let signer_map = BTreeMap::from_iter({
-
-            let initial_bk_sets_guarded = block_keeper_sets.sets.lock();
-            let (_, initial_bk_set) = initial_bk_sets_guarded.last_key_value().expect("Zerostate must contain initial BK set");
-            if let Some(signer_index) = initial_bk_set.values().find(|data| data.wallet_index == config.local.node_id).map(|data| data.signer_index) {
-                vec![(BlockSeqNo::default(), signer_index)]
-            } else {
-                vec![]
-            }
-        });*/
-
-        // TODO: skip load of sent attestations for now
-        // let sent_attestations = repository.load_sent_attestations().expect("Failed to load sent attestations");
-        // tracing::trace!("Block keeper loaded sent attestations len: {}", sent_attestations.len());
-
-
         tracing::trace!("Start node for thread: {thread_id:?}");
+        if let Some(metrics) = &metrics {
+            metrics.report_thread_count();
+        }
 
-        // let (last_finalized_block_id, _last_finalized_block_seq_no) = res.repository.select_thread_last_finalized_block(&thread_id).expect("Failed to load last finalized block data");
-        // if last_finalized_block_id != BlockIdentifier::default() {
-        //     let finalized_block = res.repository.get_block_from_repo_or_archive(&last_finalized_block_id).expect("Failed to load finalized block");
-        //     // Start it from zero block to be able to process old blocks or attestations it the come
-        //     res.set_producer_groups_from_finalized_state(thread_id, BlockSeqNo::default(), finalized_block.data().get_common_section().producer_group.clone());
-        // } else {
-        //     if update_producer_group {
-                // res.update_producer_group(vec![]).expect("Failed to initialize producer group");
-            // }
-        // }
+        let received_acks = Arc::new(Mutex::new(Vec::new()));
+        let received_nacks = Arc::new(Mutex::new(Vec::new()));
+        let metrics_clone = metrics.clone();
+        let is_state_sync_requested = Arc::new(Mutex::new(None));
         Self {
-            shared_services,
-            state_sync_service,
-            repository,
-            rx,
-            tx,
-            single_tx: single_tx.clone(),
-            raw_block_tx,
-            production_process,
+            shared_services: shared_services.clone(),
+            state_sync_service: state_sync_service.clone(),
+            repository: repository.clone(),
+            network_rx,
+            network_broadcast_tx: network_broadcast_tx.clone(),
+            network_direct_tx: network_direct_tx.clone(),
+            raw_block_tx: raw_block_tx.clone(),
             bls_keys_map: bls_keys_map.clone(),
-            cache_forward_optimistic: Default::default(),
             production_timeout_multiplier: DEFAULT_PRODUCTION_TIME_MULTIPLIER,
-            last_block_attestations: vec![],
+            last_block_attestations: last_block_attestations.clone(),
             config: config.clone(),
-            unprocessed_blocks_cache,
-            block_gap_length: block_gap,
-            attestation_sender_service: AttestationSendService::builder()
-                .pulse_timeout(std::time::Duration::from_millis(config.global.time_to_produce_block_millis))
-                .node_id(config.local.node_id.clone())
-                .thread_id(thread_id)
-                .bls_keys_map(bls_keys_map.clone())
-                .block_state_repository(blocks_states.clone())
-                .send_tx(single_tx.clone())
-                .build(),
+            unprocessed_blocks_cache: unprocessed_blocks_cache.clone(),
+            block_gap_length: block_gap.clone(),
             received_attestations: Default::default(),
-            blocks_for_resync_broadcasting: Default::default(),
             block_keeper_rng,
-            received_acks: Default::default(),
-            received_nacks: Default::default(),
+            received_acks: received_acks.clone(),
+            received_nacks: received_nacks.clone(),
             sent_acks: Default::default(),
             attestations_to_send: Default::default(),
             producer_election_rng,
             ack_cache: Default::default(),
             nack_cache: Default::default(),
             thread_id,
-            feedback_sender,
             is_spawned_from_node_sync: false,
             nack_set_cache: Arc::clone(&nack_set_cache),
-            blocks_states,
+            block_state_repository: block_state_repository.clone(),
             block_processor_service,
-            attestations_target_service,
             validation_service,
             skipped_attestation_ids,
-            fork_resolution_service,
+            message_db: message_db.clone(),
+            last_broadcasted_produced_candidate_block_time: std::time::Instant::now(),
+            finalization_loop: std::thread::Builder::new()
+                .name(format!("Block finalization loop {}", thread_id))
+                .spawn_critical({
+                    let unprocessed_blocks_buffer = unprocessed_blocks_cache.clone();
+                    let repository_clone = repository.clone();
+                    let block_state_repository_clone = block_state_repository.clone();
+                    let block_gap_clone = block_gap.clone();
+                    let shared_services_clone = shared_services.clone();
+                    let external_messages = external_messages.clone();
+                    let message_db_clone = message_db.clone();
+                    let node_id = config.local.node_id.clone();
+                    move || {
+                        crate::node::services::finalization::finalization_loop(
+                            unprocessed_blocks_buffer,
+                            repository_clone,
+                            block_state_repository_clone,
+                            shared_services_clone,
+                            raw_block_tx,
+                            Arc::clone(&nack_set_cache),
+                            state_sync_service,
+                            block_gap_clone,
+                            metrics_clone,
+                            external_messages,
+                            message_db_clone,
+                            &node_id,
+                        );
+                        Ok(())
+                    }
+                })
+                .expect("Failed to start finalization inner loop"),
+            fork_resolution_service: fork_resolution_service.clone(),
+            producer_service: ProducerService::start(
+                thread_id,
+                repository.clone(),
+                block_state_repository.clone(),
+                unprocessed_blocks_cache.clone(),
+                block_gap.clone(),
+                production_process,
+                feedback_sender.clone(),
+                received_acks.clone(),
+                received_nacks.clone(),
+                shared_services.clone(),
+                bls_keys_map.clone(),
+                last_block_attestations.clone(),
+                attestations_target_service,
+                fork_resolution_service.clone(),
+                self_tx,
+                network_broadcast_tx,
+                config.local.node_id.clone(),
+                config.global.producer_change_gap_size,
+                Duration::from_millis(config.global.time_to_produce_block_millis),
+                config.global.save_state_frequency,
+                external_messages.clone(),
+                is_state_sync_requested.clone(),
+                bp_production_count,
+            )
+            .expect("Failed to start producer service"),
+            metrics,
+            external_messages,
+            is_state_sync_requested,
+            db_service,
         }
     }
 }

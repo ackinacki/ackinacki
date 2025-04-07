@@ -2,7 +2,6 @@
 //
 
 use std::collections::VecDeque;
-use std::sync::mpsc::Receiver;
 use std::sync::mpsc::RecvError;
 use std::sync::mpsc::TryRecvError;
 use std::sync::Arc;
@@ -10,12 +9,15 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use parking_lot::Mutex;
+use telemetry_utils::mpsc::InstrumentedReceiver;
 use tvm_executor::BlockchainConfig;
 use tvm_types::UInt256;
 
-use crate::block::keeper::process::verify_block;
+use crate::block::verify::verify_block;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::config::Config;
+use crate::helper::metrics::BlockProductionMetrics;
+use crate::message_storage::MessageDurableStorage;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::services::validation::feedback::AckiNackiSend;
 use crate::node::shared_services::SharedServices;
@@ -28,8 +30,13 @@ use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 use crate::utilities::FixedSizeHashSet;
 
-fn read_into_buffer(rx: &mut Receiver<BlockState>, buffer: &mut VecDeque<BlockState>) -> bool {
-    buffer.extend(rx.try_iter());
+fn read_into_buffer(
+    rx: &mut InstrumentedReceiver<BlockState>,
+    buffer: &mut VecDeque<BlockState>,
+) -> bool {
+    while let Ok(v) = rx.try_recv() {
+        buffer.push_back(v);
+    }
     match rx.try_recv() {
         Ok(next) => buffer.push_back(next),
         Err(TryRecvError::Empty) => {}
@@ -50,7 +57,7 @@ fn read_into_buffer(rx: &mut Receiver<BlockState>, buffer: &mut VecDeque<BlockSt
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn inner_loop(
-    mut rx: Receiver<BlockState>,
+    mut rx: InstrumentedReceiver<BlockState>,
     block_state_repo: BlockStateRepository,
     repository: RepositoryImpl,
     blockchain_config: Arc<BlockchainConfig>,
@@ -59,6 +66,8 @@ pub(super) fn inner_loop(
     // TODO: !!! THIS MUST BE KILLED
     nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     send: AckiNackiSend,
+    metrics: Option<BlockProductionMetrics>,
+    message_db: MessageDurableStorage,
 ) {
     let mut buffer = VecDeque::<BlockState>::new();
     loop {
@@ -84,7 +93,9 @@ pub(super) fn inner_loop(
         }
 
         for state in buffer.iter() {
-            if state.guarded(|e| e.must_be_validated() != &Some(true)) {
+            if state.guarded(|e| {
+                e.must_be_validated() != &Some(true) || e.is_invalidated() || e.is_finalized()
+            }) {
                 continue;
             }
             let block_identifier = state.guarded(|e| e.block_identifier().clone());
@@ -115,12 +126,14 @@ pub(super) fn inner_loop(
                 next_block.seq_no(),
             );
             let prev_block_id = next_block.parent();
-            let mut prev_state = repository
-                .get_optimistic_state(&prev_block_id, Arc::clone(&nack_set_cache))
-                .expect("Failed to get optimistic state of the previous block")
-                .unwrap_or_else(|| {
-                    panic!("Failed to get optimistic state for a block: {prev_block_id:?}")
-                });
+            let Ok(Some(mut prev_state)) = repository.get_optimistic_state(
+                &prev_block_id,
+                &next_block.get_common_section().thread_id,
+                Arc::clone(&nack_set_cache),
+                None,
+            ) else {
+                continue;
+            };
             let refs = shared_services.exec(|service| {
                 let mut refs = vec![];
                 for block_id in &next_block.get_common_section().refs {
@@ -143,6 +156,9 @@ pub(super) fn inner_loop(
                 shared_services.clone(),
                 block_nack,
                 block_state_repo.clone(),
+                repository.accounts_repository().clone(),
+                metrics.clone(),
+                message_db.clone(),
             )
             .expect("Failed to verify block");
             if !verify_res {
@@ -150,12 +166,16 @@ pub(super) fn inner_loop(
             }
             state.guarded_mut(|e| {
                 if e.validated().is_none() {
-                    let _ = e.set_validated(verify_res);
+                    if cfg!(feature = "nack-on-block-verification-fail") {
+                        let _ = e.set_validated(verify_res);
+                    } else {
+                        let _ = e.set_validated(true);
+                    }
                 }
             });
             if verify_res {
                 let _ = send.send_ack(state.clone());
-            } else {
+            } else if cfg!(feature = "nack-on-block-verification-fail") {
                 let _ = send.send_nack_bad_block(state.clone(), next_envelope);
             }
         }

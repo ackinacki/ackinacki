@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -10,15 +9,6 @@ use rustls::pki_types::PrivateKeyDer;
 use wtransport::tls::Certificate;
 use wtransport::tls::PrivateKey;
 use wtransport::tls::Sha256Digest;
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Config {
-    pub bind: SocketAddr,
-    pub my_cert: CertFile,
-    pub my_key: PrivateKeyFile,
-    pub peer_certs: CertStore,
-    pub subscribe: Vec<url::Url>,
-}
 
 pub static DEBUG_CERTIFICATE: &[u8] = include_bytes!("../../certs/debug.ca.pem");
 pub static DEBUG_PRIVATE_KEY: &[u8] = include_bytes!("../../certs/debug.key.pem");

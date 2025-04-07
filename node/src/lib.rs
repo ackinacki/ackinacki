@@ -6,6 +6,7 @@ pub mod block;
 pub mod bls;
 pub mod config;
 pub mod database;
+pub mod external_messages;
 pub mod helper;
 pub mod message;
 pub mod node;
@@ -21,5 +22,6 @@ pub mod multithreading;
 #[cfg(test)]
 mod tests;
 
+pub mod message_storage;
 #[cfg(feature = "misbehave")]
 pub mod misbehavior;

@@ -22,39 +22,29 @@ pub fn write_to_db(
     envelope: Envelope<GoshBLS, AckiNackiBlock>,
     shard_state: Option<Arc<ShardStateUnsplit>>,
     shard_state_cell: Option<Cell>,
-    // repository: RepositoryImpl,
 ) -> anyhow::Result<()> {
     let block = envelope.data().clone();
     let sqlite_clone = archive.clone();
-    // let repository_clone = repository.clone();
 
-    std::thread::Builder::new().name("Write block".into()).spawn(move || {
-        let shard_state = if let Some(shard_state) = shard_state {
-            shard_state
-        } else {
-            assert!(shard_state_cell.is_some());
-            let cell = shard_state_cell.unwrap();
-            Arc::new(
-                ShardStateUnsplit::construct_from_cell(cell)
-                    .expect("Failed to deserialize shard state"),
-            )
-        };
-        tracing::trace!("start reflect_block_in_db in a separate thread");
+    let shard_state = if let Some(shard_state) = shard_state {
+        shard_state
+    } else {
+        assert!(shard_state_cell.is_some());
+        let cell = shard_state_cell.unwrap();
+        Arc::new(
+            ShardStateUnsplit::construct_from_cell(cell)
+                .expect("Failed to deserialize shard state"),
+        )
+    };
 
-        // let block_id = block.identifier();
-        tracing::trace!(
-            "Write to archive: seq_no={:?}, id={:?}",
-            block.seq_no(),
-            block.identifier()
-        );
+    tracing::trace!("Write to archive: seq_no={:?}, id={:?}", block.seq_no(), block.identifier());
 
-        let mut transaction_traces = HashMap::new();
-        reflect_block_in_db(sqlite_clone, envelope, shard_state, &mut transaction_traces)
-            .map_err(|e| anyhow::format_err!("Failed to archive block data: {e}"))
-            .expect("Failed to archive block data");
+    let mut transaction_traces = HashMap::new();
+    reflect_block_in_db(sqlite_clone, envelope, shard_state, &mut transaction_traces)
+        .map_err(|e| anyhow::format_err!("Failed to archive block data: {e}"))
+        .expect("Failed to archive block data");
 
-        tracing::trace!("reflect_block_in_db finished");
-    })?;
+    tracing::trace!("reflect_block_in_db finished");
 
     Ok(())
 }

@@ -2,13 +2,15 @@
 //
 
 use std::path::PathBuf;
-use std::sync::mpsc::Sender;
 
+use telemetry_utils::mpsc::instrumented_channel;
+use telemetry_utils::mpsc::InstrumentedSender;
 use typed_builder::TypedBuilder;
 
 use super::Blob;
 use super::BlobSyncService;
 use super::ResourceId;
+use crate::helper::metrics::BlockProductionMetrics;
 
 mod download_blob;
 mod service_inner_loop;
@@ -26,14 +28,17 @@ pub struct Service {
 
 #[derive(Clone)]
 pub struct ServiceInterface {
-    control: Sender<service_inner_loop::Command>,
+    control: InstrumentedSender<service_inner_loop::Command>,
 }
 
 impl ExternalFileSharesBased {
-    pub fn start(self) -> anyhow::Result<Service> {
-        let (tx, rx) = std::sync::mpsc::channel();
+    pub fn start(self, metrics: Option<BlockProductionMetrics>) -> anyhow::Result<Service> {
+        let (tx, rx) = instrumented_channel(
+            metrics.clone(),
+            crate::helper::metrics::BLOB_SYNC_COMMAND_CHANNEL,
+        );
         let inner_loop = std::thread::Builder::new()
-            .name("Externalfile share service inner loop".to_string())
+            .name("External file share service inner loop".to_string())
             .spawn(move || {
                 service_inner_loop::service_inner_loop(self.local_storage_share_base_path, rx);
             })?;

@@ -22,6 +22,7 @@ use tvm_types::UInt256;
 
 use crate::creditconfig::abi::DAPP_CONFIG_ABI;
 use crate::creditconfig::DappConfig;
+use crate::types::DAppIdentifier;
 
 const DAPP_DATA: &str = "dapp_id";
 const CONFIG_DATA: &str = "_data";
@@ -33,7 +34,7 @@ fn get_dapp_config_abi() -> tvm_client::abi::Abi {
 }
 
 pub fn calculate_dapp_config_address(
-    dapp_id: UInt256,
+    dapp_id: DAppIdentifier,
     mut data: StateInit,
 ) -> anyhow::Result<UInt256> {
     let code = data.code().unwrap();
@@ -155,6 +156,9 @@ pub fn create_config_touch_message(
 pub fn get_available_balance_from_config(config: DappConfig) -> i128 {
     if config.is_unlimit {
         return -1;
+    }
+    if config.available_balance < 0 {
+        return 0;
     }
     config.available_balance
 }

@@ -34,7 +34,7 @@ pub struct ArchAccount {
     pub data_hash: Option<String>,
     pub acc_type: u8,
     pub last_trans_chain_order: Option<String>,
-    pub dapp_id: Option<String>,
+    pub dapp_id: String,
     pub due_payment: Option<String>,
     pub proof: Option<Vec<u8>>,
     pub prev_code_hash: Option<String>,
@@ -48,10 +48,10 @@ impl From<AccountSerializationSet> for ArchAccount {
             id: acc.account.get_addr().unwrap().to_string(),
             acc_type: serialize_account_status(&acc.account.status()),
             boc: Some(acc.boc),
-            dapp_id: acc.account.get_dapp_id().map(|dapp_id| match dapp_id {
+            dapp_id: match acc.dapp_id {
                 Some(dapp_id_in) => dapp_id_in.to_hex_string(),
                 None => "None".to_string(),
-            }),
+            },
             init_code_hash: acc.account.init_code_hash().map(|h| h.to_hex_string()),
             last_trans_lt: Some(u64_to_string(acc.account.last_tr_time().unwrap_or_default())),
             prev_code_hash: acc.prev_code_hash.map(|h| h.as_hex_string()),

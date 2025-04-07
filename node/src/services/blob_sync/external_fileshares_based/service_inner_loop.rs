@@ -2,10 +2,10 @@
 //
 
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
 
 use rand::seq::SliceRandom;
 use rand::thread_rng;
+use telemetry_utils::mpsc::InstrumentedReceiver;
 
 use super::download_blob::download_blob;
 use super::share_blob::share_blob;
@@ -35,7 +35,7 @@ pub(super) enum Command {
 
 pub(super) fn service_inner_loop(
     local_storage_share_base_path: PathBuf,
-    control: Receiver<Command>,
+    control: InstrumentedReceiver<Command>,
 ) {
     let local_storage_share_base_path = &local_storage_share_base_path;
     std::thread::scope(|s| loop {

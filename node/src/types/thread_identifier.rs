@@ -4,6 +4,7 @@
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::fmt::LowerHex;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -56,6 +57,30 @@ impl From<[u8; 34]> for ThreadIdentifier {
 impl From<ThreadIdentifier> for [u8; 34] {
     fn from(val: ThreadIdentifier) -> Self {
         val.0
+    }
+}
+
+impl TryFrom<std::string::String> for ThreadIdentifier {
+    type Error = anyhow::Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match hex::decode(value) {
+            Ok(array) => {
+                let boxed_slice = array.into_boxed_slice();
+                let boxed_array: Box<[u8; 34]> = match boxed_slice.try_into() {
+                    Ok(array) => array,
+                    Err(e) => anyhow::bail!("Expected a Vec of length 34 but it was {}", e.len()),
+                };
+                Ok(Self(*boxed_array))
+            }
+            Err(_) => anyhow::bail!("Failed to convert to ThreadIdentifier"),
+        }
+    }
+}
+
+impl LowerHex for ThreadIdentifier {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", hex::encode(self.0))
     }
 }
 

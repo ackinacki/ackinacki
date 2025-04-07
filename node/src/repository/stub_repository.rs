@@ -11,13 +11,16 @@ use tvm_block::ShardStateUnsplit;
 use tvm_types::AccountId;
 use tvm_types::UInt256;
 
-use super::repository_impl::RepositoryImpl;
+use super::accounts::AccountsRepository;
 use super::repository_impl::RepositoryMetadata;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
+use crate::external_messages::ExternalMessagesThreadState;
+use crate::message::identifier::MessageIdentifier;
 #[cfg(test)]
 use crate::message::message_stub::MessageStub;
 use crate::message::WrappedMessage;
+use crate::message_storage::MessageDurableStorage;
 use crate::node::associated_types::AttestationData;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
@@ -53,13 +56,6 @@ impl OptimisticState for OptimisticStateStub {
     type Message = MessageStub;
     type ShardState = ShardStateUnsplit;
 
-    fn get_remaining_ext_messages(
-        &self,
-        _repository: &RepositoryImpl,
-    ) -> anyhow::Result<Vec<Self::Message>> {
-        todo!()
-    }
-
     fn get_block_seq_no(&self) -> &BlockSeqNo {
         todo!()
     }
@@ -68,7 +64,7 @@ impl OptimisticState for OptimisticStateStub {
         todo!()
     }
 
-    fn serialize_into_buf(&mut self) -> anyhow::Result<Vec<u8>> {
+    fn serialize_into_buf(self, _external_accounts: bool) -> anyhow::Result<Vec<u8>> {
         todo!()
     }
 
@@ -90,7 +86,12 @@ impl OptimisticState for OptimisticStateStub {
         _shared_services: &SharedServices,
         _block_state_repo: BlockStateRepository,
         _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
-    ) -> anyhow::Result<()> {
+        _accounts_repo: AccountsRepository,
+        _message_db: MessageDurableStorage,
+    ) -> anyhow::Result<(
+        CrossThreadRefData,
+        HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+    )> {
         todo!()
     }
 
@@ -110,11 +111,15 @@ impl OptimisticState for OptimisticStateStub {
         &mut self,
         _thread_identifier: &ThreadIdentifier,
         _threads_table: &ThreadsTable,
+        _message_db: MessageDurableStorage,
     ) -> anyhow::Result<()> {
         todo!()
     }
 
-    fn get_account_routing(&mut self, _account_id: &AccountId) -> anyhow::Result<AccountRouting> {
+    fn get_account_routing<T: Into<AccountAddress> + Clone>(
+        &mut self,
+        _account_id: &T,
+    ) -> anyhow::Result<AccountRouting> {
         todo!()
     }
 
@@ -155,26 +160,24 @@ impl OptimisticState for OptimisticStateStub {
         todo!()
     }
 
-    fn add_messages_from_ref(
-        &mut self,
-        _cross_thread_ref: &CrossThreadRefData,
-    ) -> anyhow::Result<()> {
-        todo!()
-    }
-
+    // fn add_messages_from_ref(
+    // &mut self,
+    // _cross_thread_ref: &CrossThreadRefData,
+    // ) -> anyhow::Result<()> {
+    // todo!()
+    // }
     fn add_slashing_messages(
         &mut self,
-        _slashing_messages: Vec<Self::Message>,
+        _slashing_messages: Vec<Arc<Self::Message>>,
     ) -> anyhow::Result<()> {
         todo!()
     }
-
-    fn add_accounts_from_ref(
-        &mut self,
-        _cross_thread_ref: &CrossThreadRefData,
-    ) -> anyhow::Result<()> {
-        todo!()
-    }
+    // fn add_accounts_from_ref(
+    // &mut self,
+    // _cross_thread_ref: &CrossThreadRefData,
+    // ) -> anyhow::Result<()> {
+    // todo!()
+    // }
 }
 
 #[cfg(test)]
@@ -220,10 +223,7 @@ impl Repository for RepositoryStub {
     type OptimisticState = OptimisticStateStub;
     type StateSnapshot = OptimisticStateStub;
 
-    fn dump_sent_attestations(
-        &self,
-        _data: HashMap<ThreadIdentifier, Vec<(BlockSeqNo, Self::Attestation)>>,
-    ) -> anyhow::Result<()> {
+    fn get_message_db(&self) -> MessageDurableStorage {
         todo!()
     }
 
@@ -259,23 +259,6 @@ impl Repository for RepositoryStub {
         todo!()
     }
 
-    fn list_blocks_with_seq_no(
-        &self,
-        _seq_no: &BlockSeqNo,
-        _thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<Vec<Envelope<GoshBLS, AckiNackiBlock>>> {
-        Ok(vec![])
-    }
-
-    fn prepare_thread_sync(
-        &mut self,
-        _thread_id: &ThreadIdentifier,
-        _known_finalized_block_id: &BlockIdentifier,
-        _known_finalized_block_seq_no: &BlockSeqNo,
-    ) -> anyhow::Result<()> {
-        todo!();
-    }
-
     fn init_thread(
         &mut self,
         _thread_id: &ThreadIdentifier,
@@ -290,28 +273,6 @@ impl Repository for RepositoryStub {
         _thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<(BlockIdentifier, BlockSeqNo)> {
         todo!();
-    }
-
-    fn select_thread_last_main_candidate_block(
-        &self,
-        _thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<(BlockIdentifier, BlockSeqNo)> {
-        todo!();
-    }
-
-    fn mark_block_as_accepted_as_main_candidate(
-        &self,
-        _block_id: &BlockIdentifier,
-        _thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn is_block_accepted_as_main_candidate(
-        &self,
-        _block_id: &BlockIdentifier,
-    ) -> anyhow::Result<Option<bool>> {
-        Ok(None)
     }
 
     fn is_block_suspicious(&self, _block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>> {
@@ -334,7 +295,9 @@ impl Repository for RepositoryStub {
     fn get_optimistic_state(
         &self,
         block_id: &BlockIdentifier,
+        _thread_id: &ThreadIdentifier,
         _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
+        _min_seq_no: Option<OptimisticStateStub>,
     ) -> anyhow::Result<Option<OptimisticStateStub>> {
         Ok(self.optimistic_state.get(block_id).map(|s| s.to_owned()))
     }
@@ -363,32 +326,6 @@ impl Repository for RepositoryStub {
     // anyhow::Result<()> { todo!()
     // }
 
-    fn list_stored_thread_finalized_blocks(
-        &self,
-        _thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<Vec<(BlockIdentifier, BlockSeqNo)>> {
-        todo!();
-    }
-
-    fn delete_external_messages(
-        &self,
-        _count: usize,
-        _thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<()> {
-        todo!()
-    }
-
-    fn add_external_message<T>(
-        &mut self,
-        _messages: Vec<T>,
-        _thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<()>
-    where
-        T: Into<WrappedMessage>,
-    {
-        todo!()
-    }
-
     fn is_block_already_applied(&self, _block_id: &BlockIdentifier) -> anyhow::Result<bool> {
         todo!()
     }
@@ -407,6 +344,7 @@ impl Repository for RepositoryStub {
         _snapshot: Self::StateSnapshot,
         _thread_id: &ThreadIdentifier,
         _skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
+        _external_messages: ExternalMessagesThreadState,
     ) -> anyhow::Result<Vec<CrossThreadRefData>> {
         todo!()
     }
@@ -426,22 +364,14 @@ impl Repository for RepositoryStub {
         todo!()
     }
 
-    fn last_stored_block_by_seq_no(
-        &self,
-        _thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<BlockSeqNo> {
-        todo!()
-    }
-
     fn store_optimistic<T: Into<Self::OptimisticState>>(&self, _state: T) -> anyhow::Result<()> {
         todo!()
     }
 
-    fn get_block_id_by_seq_no(
+    fn store_optimistic_in_cache<T: Into<Self::OptimisticState>>(
         &self,
-        _block_seq_no: &BlockSeqNo,
-        _thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<Vec<BlockIdentifier>> {
+        _state: T,
+    ) -> anyhow::Result<()> {
         todo!()
     }
 
@@ -449,13 +379,6 @@ impl Repository for RepositoryStub {
         &self,
         _thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<BlockIdentifier> {
-        todo!()
-    }
-
-    fn clear_ext_messages_queue_by_time(
-        &self,
-        _thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<()> {
         todo!()
     }
 
@@ -479,6 +402,13 @@ impl Repository for RepositoryStub {
     }
 
     fn get_all_metadata(&self) -> RepositoryMetadata {
+        todo!()
+    }
+
+    fn last_finalized_optimistic_state(
+        &self,
+        _thread_id: &ThreadIdentifier,
+    ) -> Option<Self::OptimisticState> {
         todo!()
     }
 }

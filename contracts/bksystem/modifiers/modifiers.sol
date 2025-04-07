@@ -18,20 +18,24 @@ abstract contract Modifiers is ReplayProtection {
     uint8 constant m_BlockKeeperEpochCoolerCode = 3;
     uint8 constant m_BlockKeeperPreEpochCode = 4;
     uint8 constant m_BlockKeeperEpochProxyListCode = 5;
-    uint8 constant m_AckiNackiBlockKeeperNodeWalletConfigCode = 6;
-    uint8 constant m_BLSKeyCode = 7;
-    uint8 constant m_SignerIndexCode = 8;
+    uint8 constant m_BLSKeyCode = 6;
+    uint8 constant m_SignerIndexCode = 7;
+    uint8 constant m_LicenseCode = 8;
     
     //Deploy constants
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_WALLET = 20 vmshell;
-    uint64 constant FEE_DEPLOY_BLOCK_KEEPER_WALLET_CONFIG = 5 vmshell;
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET = 30 vmshell;
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_WALLET = 10 vmshell;
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_COOLER_WALLET = 2 vmshell;
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_SLASH = 4 vmshell;
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST = 10 vmshell;
     uint64 constant FEE_DEPLOY_BLS_KEY = 3 vmshell;
+    uint64 constant FEE_DEPLOY_LICENSE = 6 vmshell;
     uint64 constant FEE_DEPLOY_SIGNER_INDEX = 7 vmshell;
+    uint64 constant FEE_DEPLOY_NAME_INDEX = 8 vmshell;
+    uint64 constant ROOT_BALANCE = 1000000 vmshell;
+
+    uint128 constant MIN_REP_COEF = 1000000000;
 
     uint8 constant PRE_EPOCH_DEPLOYED = 0;
     uint8 constant EPOCH_DEPLOYED = 1;
@@ -42,26 +46,15 @@ abstract contract Modifiers is ReplayProtection {
 
     uint8 constant FULL_STAKE_SLASH = 0;
     uint8 constant FULL_STAKE_PERCENT = 100;
-    uint8 constant PART_STAKE_0 = 1;
-    uint8 constant PART_STAKE_PERCENT_0 = 50;
+
+    uint8 constant LICENSE_REST = 0;
+    uint8 constant LICENSE_PRE_EPOCH = 1;
+    uint8 constant LICENSE_EPOCH = 2;
+    uint8 constant LICENSE_CONTINUE = 3;
 
     uint128 constant MAX_LOCK_NUMBER = 1000000000;
-            
-    modifier onlyOwnerPubkeyArray(uint256[] rootpubkeys) {
-        uint256 zero;
-        bool res = false;
-        for (uint256 val : rootpubkeys) {
-            if (val == zero) {
-                continue;
-            }
-            if (msg.pubkey() == val) {
-                res = true;
-                break;
-            }
-        }
-        require(res == true, ERR_NOT_OWNER);
-        _;
-    }
+
+    uint32 constant UNLOCK_LICENSES = 63072000;
 
     modifier onlyOwnerPubkey(uint256 rootpubkey) {
         require(msg.pubkey() == rootpubkey, ERR_NOT_OWNER);
@@ -69,31 +62,25 @@ abstract contract Modifiers is ReplayProtection {
     }
 
     modifier onlyOwnerWallet(optional(address) owner_wallet, uint256 rootpubkey) {
-        if (owner_wallet.hasValue()) {
+        if (msg.pubkey() != rootpubkey) {
+            require(owner_wallet.hasValue(), ERR_NOT_OWNER);
             require(msg.sender == owner_wallet.get(), ERR_NOT_OWNER);
         }
-        require(msg.pubkey() == rootpubkey, ERR_NOT_OWNER);
         _;
-    }
-    
+    }    
+
+    modifier onlyOwnerWalletOpt(optional(address) owner_wallet, optional(uint256) rootpubkey) {
+        if (rootpubkey.hasValue()) {
+            require(msg.pubkey() == rootpubkey.get(), ERR_NOT_OWNER);
+        } else {
+            require(owner_wallet.hasValue(), ERR_NOT_OWNER);
+            require(msg.sender == owner_wallet.get(), ERR_NOT_OWNER);
+        }
+        _;
+    }  
     
     modifier onlyOwnerAddress(address addr) {
         require(msg.sender == addr, ERR_NOT_OWNER);
-        _;
-    }
-
-    modifier onlyOwnerCombine(optional(address) addr, optional(uint256) service_pubkey, uint256 rootpubkey) {
-        if (msg.pubkey() != rootpubkey) {
-            if (service_pubkey.hasValue()) {
-                if (msg.pubkey() != service_pubkey.get()) {
-                    require(addr.hasValue(), ERR_NOT_OWNER);
-                    require(msg.sender == addr.get(), ERR_NOT_OWNER);  
-                }
-            } else {
-                require(addr.hasValue(), ERR_NOT_OWNER);
-                require(msg.sender == addr.get(), ERR_NOT_OWNER);  
-            }
-        }
         _;
     }
     

@@ -6,6 +6,8 @@ use std::fmt::Formatter;
 
 use serde::Deserialize;
 use serde::Serialize;
+use tvm_block::Serializable;
+use tvm_types::BuilderData;
 
 use crate::types::AccountAddress;
 
@@ -23,5 +25,11 @@ impl std::ops::BitAnd for &'_ DAppIdentifier {
 
     fn bitand(self, rhs: Self) -> Self::Output {
         DAppIdentifier(&self.0 & &rhs.0)
+    }
+}
+
+impl Serializable for DAppIdentifier {
+    fn write_to(&self, cell: &mut BuilderData) -> tvm_types::Result<()> {
+        self.0 .0.write_to(cell)
     }
 }

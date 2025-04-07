@@ -303,19 +303,38 @@ fn generate_setter_method(
     };
 
     let function_name = setter_name.to_token_stream().to_string();
-    let trace = if def.trace {
-        if def.bool {
+    let trace1;
+    let trace2;
+    if def.trace {
+        trace1 = if def.assert_none {
+            if def.bool {
+                quote! {
+                    tracing::trace!("{:?} Call setter: {:?}, args: true", &self, #function_name);
+                }
+            } else {
+                quote! {
+                    tracing::trace!("{:?} Call setter: {:?}, args: {:?}", &self, #function_name, &value);
+                }
+            }
+        } else {
+            quote! {}
+        };
+
+        trace2 = if def.assert_none {
+            quote! {}
+        } else if def.bool {
             quote! {
-                tracing::trace!("{} Call setter: {:?}, args: true", &self, #function_name);
+                tracing::trace!("{:?} Call setter: {:?}, args: true", &self, #function_name);
             }
         } else {
             quote! {
-                tracing::trace!("{} Call setter: {:?}, args: {:?}", &self, #function_name, &value);
+                tracing::trace!("{:?} Call setter: {:?}, args: {:?}", &self, #function_name, &vvv);
             }
-        }
+        };
     } else {
-        quote! {}
-    };
+        trace1 = quote! {};
+        trace2 = quote! {};
+    }
 
     // Checks if the field is Option.
     let mut is_option_field = false;
@@ -396,18 +415,21 @@ fn generate_setter_method(
         }
 
         let q = quote! {
-            let v = #expr;
-            if &self.#field_name == &v {
+            let vvv = #expr;
+            if &self.#field_name == &vvv {
                 return #action;
             }
             #_precheck
         };
-        expr = quote! { v };
+        expr = quote! { vvv };
         q
     } else {
-        quote! {
+        let q = quote! {
+            let vvv = #expr;
             #_precheck
-        }
+        };
+        expr = quote! { vvv };
+        q
     };
 
     let _result = if let Some(result) = def.result {
@@ -436,8 +458,9 @@ fn generate_setter_method(
         Ok(quote! {
             #field_doc
             pub fn #setter_name (#_self, #params) -> #_result {
-                #trace
+                #trace1
                 #precheck
+                #trace2
                 self.#delegate.#field_name = #expr;
                 #return_result
             }
@@ -446,8 +469,9 @@ fn generate_setter_method(
         Ok(quote! {
             #field_doc
             pub fn #setter_name (&mut self, #params) -> #_result {
-                #trace
+                #trace1
                 #precheck
+                #trace2
                 self.#field_name = #expr;
                 #return_result
             }
@@ -456,8 +480,9 @@ fn generate_setter_method(
         Ok(quote! {
             #field_doc
             pub fn #setter_name (mut self, #params) -> #_result {
-                #trace
+                #trace1
                 #precheck
+                #trace2
                 self.#field_name = #expr;
                 #return_result
             }

@@ -1,3 +1,5 @@
+use crate::helper::metrics::BlockProductionMetrics;
+use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
 use crate::node::BlockState;
 use crate::node::BlockStateRepository;
 use crate::types::BlockSeqNo;
@@ -14,13 +16,16 @@ use crate::utilities::guarded::Guarded;
 /// It also worth moving this cutoff (min_seq_no) forward once some range was
 /// requested as it is possible that the actual missing gap is later than
 /// the initially requested range.
+#[allow(clippy::mutable_key_type)]
 pub fn find_shortest_gap(
     thread_identifier: &ThreadIdentifier,
-    unprocessed_blocks_cache: &[BlockState],
-    blocks_states: &BlockStateRepository,
+    unprocessed_blocks_cache: &UnfinalizedBlocksSnapshot,
+    block_state_repository: &BlockStateRepository,
     min_seq_no: BlockSeqNo,
+    metrics: Option<BlockProductionMetrics>,
 ) -> Option<BlockSeqNo> {
-    let gaps = find_all_gaps(thread_identifier, unprocessed_blocks_cache, blocks_states);
+    let gaps =
+        find_all_gaps(thread_identifier, unprocessed_blocks_cache, block_state_repository, metrics);
     let mut shortest = Option::<BlockSeqNo>::None;
     for last in gaps {
         let Some(seq_no) = last.guarded(|e| *e.block_seq_no()) else {
@@ -40,14 +45,18 @@ pub fn find_shortest_gap(
 
 /// Identifies gaps
 /// Returns a list of block states that have missing parents.
+#[allow(clippy::mutable_key_type)]
 pub fn find_all_gaps(
     thread_identifier: &ThreadIdentifier,
-    unprocessed_blocks_cache: &[BlockState],
-    blocks_states: &BlockStateRepository,
+    unprocessed_blocks_cache: &UnfinalizedBlocksSnapshot,
+    block_state_repository: &BlockStateRepository,
+    metrics: Option<BlockProductionMetrics>,
 ) -> Vec<BlockState> {
+    metrics.as_ref().inspect(|m| m.report_query_gaps(thread_identifier));
     let this_thread = &Some(*thread_identifier);
     unprocessed_blocks_cache
         .iter()
+        .map(|(_, (state, _))| state.clone())
         .filter(|b| {
             if b.guarded(|e| e.thread_identifier() != this_thread) {
                 return false;
@@ -55,8 +64,7 @@ pub fn find_all_gaps(
             let Some(parent_block_id) = b.guarded(|e| e.parent_block_identifier().clone()) else {
                 return false;
             };
-            blocks_states.get(&parent_block_id).is_ok_and(|e| !e.lock().is_stored())
+            block_state_repository.get(&parent_block_id).is_ok_and(|e| !e.lock().is_stored())
         })
-        .cloned()
         .collect()
 }

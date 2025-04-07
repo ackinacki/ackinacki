@@ -1,22 +1,12 @@
-server:
-  cert: certs/server.ca.pem
-  key: certs/server.key.pem
+my_cert: ""
+my_key: ""
 
-connections:
-  connection1:
-    subscriber: true
-    publisher: true
-    tags:
-      - tag1
-    cert: certs/client.ca.pem
-    outer:
-      enabled: true
-      url: https://localhost:4433
+peer_certs: []
 
-  connection2:
-    subscriber: true
-    publisher: true
-    tags:
-      - tag1
-    cert: certs/client.ca.pem
-    outer: null
+bind: 0.0.0.0:8085
+
+subscribe:
+  - https://40.160.10.33:8500
+  - https://40.160.9.71:8500
+  - https://40.160.15.99:8500
+  - https://40.160.14.141:8500

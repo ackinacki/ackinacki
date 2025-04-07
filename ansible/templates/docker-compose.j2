@@ -40,7 +40,7 @@ services:
 
   node{{ NODE_ID }}:
     image: {{ NODE_IMAGE }}
-    restart: unless-stopped
+    restart: no
     environment:
       RUST_LOG: debug
       EXTERNAL_STATE_SHARE_LOCAL_BASE_DIR: /share
@@ -74,6 +74,7 @@ services:
         --chitchat-cluster-id "{{ NETWORK_NAME }}"
         --shared-state-max-download-tries 30
         --static-storages={{ NODE_STORAGE_LIST | join(',') }}
+        --thread-count-soft-limit {{ THREAD_COUNT_SOFT_LIMIT }}
         && migration-tool -p ./data -n -a --block-manager
         && node -c acki-nacki.conf.yaml >> /logsdir/node.log 2>&1
     ports:

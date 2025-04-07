@@ -25,9 +25,9 @@ contract BlockKeeperCooler is Modifiers {
     uint64 _seqNoFinish;
     address _owner;
     bytes _bls_pubkey;
-    uint256 _walletId;
     uint256 _stake;
     uint16 _signerIndex;
+    LicenseStake[] _licenses;
 
     constructor (
         uint64 waitStep,
@@ -35,8 +35,10 @@ contract BlockKeeperCooler is Modifiers {
         address root,
         bytes bls_pubkey,
         mapping(uint8 => TvmCell) code,
-        uint256 walletId,
-        uint16 signerIndex
+        uint16 signerIndex,
+        LicenseStake[] licenses,
+        uint128 epochDuration,
+        bool is_continue
     ) {
         TvmCell data = abi.codeSalt(tvm.code()).get();
         (string lib, address epoch) = abi.decode(data, (string, address));
@@ -47,37 +49,39 @@ contract BlockKeeperCooler is Modifiers {
         _owner = owner;
         _bls_pubkey = bls_pubkey;
         _code = code;
-        _walletId = walletId;
         _stake = msg.currencies[CURRENCIES_ID];
         _signerIndex = signerIndex;
-        AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _root, _owner_pubkey)).updateLockStakeCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, block.timestamp);
+        _licenses = licenses;
+        AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _root, _owner_pubkey)).updateLockStakeCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, block.timestamp, _licenses, epochDuration, is_continue);
     }
 
-    function getMoney() private pure {
+    function ensureBalance() private pure {
         if (address(this).balance > FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_COOLER_WALLET) { return; }
         gosh.mintshell(FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_COOLER_WALLET);
     }
 
     function slash(uint8 slash_type) public senderIs(_owner) accept {  
-        getMoney();
+        ensureBalance();
         if (slash_type == FULL_STAKE_SLASH) {
-            AckiNackiBlockKeeperNodeWallet(_owner).slashCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, slash_type, 0);
+            AckiNackiBlockKeeperNodeWallet(_owner).slashCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, slash_type, 0, _licenses);
             selfdestruct(_root);
             return;
         }                
-        uint256 slash_stake = _stake * PART_STAKE_PERCENT_0 / 100;
+        uint256 slash_stake = _stake * slash_type / 100;
         mapping(uint32 => varuint32) data_cur;
         data_cur[CURRENCIES_ID] = varuint32(slash_stake);
-        _root.transfer({value: 0.1 ton, currencies: data_cur, flag: 1});
+        _root.transfer({value: 0.1 vmshell, currencies: data_cur, flag: 1});
         _stake -= slash_stake;
-        AckiNackiBlockKeeperNodeWallet(_owner).slashCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, slash_type, slash_stake);
+        AckiNackiBlockKeeperNodeWallet(_owner).slashCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, slash_type, slash_stake, _licenses);            
     }
 
     function touch() public saveMsg {       
         if (_seqNoFinish <= block.seqno) { tvm.accept(); }
         else { return; }    
-        getMoney();
-        AckiNackiBlockKeeperNodeWallet(_owner).unlockStakeCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart);
+        ensureBalance();
+        mapping(uint32 => varuint32) data_cur;
+        data_cur[CURRENCIES_ID] = address(this).currencies[CURRENCIES_ID];
+        AckiNackiBlockKeeperNodeWallet(_owner).unlockStakeCooler{value: 0.1 vmshell, flag: 1, currencies: data_cur}(_seqNoStart, _licenses);
         selfdestruct(_owner);
     }
     
@@ -92,10 +96,9 @@ contract BlockKeeperCooler is Modifiers {
         uint64 seqNoStart,
         uint64 seqNoFinish,
         address owner,
-        uint256 walletId,
         uint16 signerIndex) 
     {
-        return (_owner_pubkey, _root, _seqNoStart, _seqNoFinish, _owner, _walletId, _signerIndex);
+        return (_owner_pubkey, _root, _seqNoStart, _seqNoFinish, _owner, _signerIndex);
     }
 
     function getVersion() external pure returns(string, string) {

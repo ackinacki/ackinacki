@@ -16,7 +16,7 @@ impl AsSignaturesMap for Vec<Envelope<GoshBLS, AttestationData>> {
     fn as_signatures_map(&self) -> HashMap<BlockIdentifier, HashSet<SignerIndex>> {
         let mut attestations_map = HashMap::<BlockIdentifier, HashSet<SignerIndex>>::new();
         for attestation in self.iter() {
-            let attestation_target = attestation.data().block_id.clone();
+            let attestation_target = attestation.data().block_id().clone();
             let attestation_signers =
                 HashSet::from_iter(attestation.clone_signature_occurrences().keys().cloned());
             attestations_map

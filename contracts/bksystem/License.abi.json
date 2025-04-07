@@ -1,0 +1,149 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"walletCode","type":"cell"},
+				{"name":"rootElection","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setOwnerAddress",
+			"inputs": [
+				{"name":"owner","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setOwnerPubkey",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setLockToStake",
+			"inputs": [
+				{"name":"lock","type":"bool"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "removeBKWallet",
+			"inputs": [
+				{"name":"to","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteLicense",
+			"inputs": [
+				{"name":"reputationTime","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "addBKWallet",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "notAcceptLicense",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "acceptLicense",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"license_start","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "toWithdrawToken",
+			"inputs": [
+				{"name":"to","type":"address"},
+				{"name":"value","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"license_number","type":"uint256"},
+				{"name":"bkwallet","type":"optional(address)"},
+				{"name":"owner_pubkey","type":"optional(uint256)"},
+				{"name":"owner_address","type":"optional(address)"},
+				{"name":"reputationTime","type":"uint128"}
+			]
+		},
+		{
+			"name": "getBK",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"bkwallet","type":"optional(address)"}
+			]
+		},
+		{
+			"name": "getOwner",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"owner_pubkey","type":"optional(uint256)"},
+				{"name":"owner_address","type":"optional(address)"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
+		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
+		{"init":false,"name":"__value","type":"uint256"},
+		{"init":true,"name":"_license_number","type":"uint256"},
+		{"init":true,"name":"_root","type":"address"},
+		{"init":false,"name":"_owner_pubkey","type":"optional(uint256)"},
+		{"init":false,"name":"_owner_address","type":"optional(address)"},
+		{"init":false,"name":"_rootElection","type":"address"},
+		{"init":false,"name":"_bkwallet","type":"optional(address)"},
+		{"init":false,"name":"_reputationTime","type":"uint128"},
+		{"init":false,"name":"_code","type":"map(uint8,cell)"},
+		{"init":false,"name":"_license_start","type":"uint32"},
+		{"init":false,"name":"is_ready","type":"bool"},
+		{"init":false,"name":"_lock_seqno","type":"uint128"}
+	]
+}
