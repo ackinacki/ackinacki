@@ -2,17 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.4.0] – 2024-04-05
+## [0.4.1] - 2025-05-13
+
+### New
+- Block Manager contracts
+- BK wallet licenses limit is increased to 10
+- Propagate BK's public  IP/port over gossip
+
+### Improvements
+- Multisig: Refactored the `_getSendFlags` function
+  Added `reqConfirms` validation in `submitUpdate`
+  Updated the expired transactions cleanup mechanism
+  Added a check to ensure owner public keys is not zero
+- Stability and performance improvements
+
+## [0.4.0] – 2025-04-05
 
 ### Improvements
 - Stability and performance optimizations
 
-## [0.3.8] – 2024-01-28
+## [0.3.8] – 2025-01-28
 
 ### Fixed
 - Performance improvements and fixes 
 
-## [0.3.7] – 2024-01-23
+## [0.3.7] – 2025-01-23
 ### New 
 - Added `http://node/bk/v1/bk_set` endpoint
 
@@ -20,7 +34,7 @@ All notable changes to this project will be documented in this file.
 - Resend attestations on a fork
 - producer selector with seed
 
-## [0.3.6] – 2024-01-13
+## [0.3.6] – 2025-01-13
 ### New 
 Feature: BLS key set adjustment
 Feature: adjustable finalization parameters
@@ -70,12 +84,12 @@ Proxy-direct-integration-without-contracts (#383)
 ### Breaking changes
 bls keys file format has changed to allow key set changes
 
-## [0.3.4] – 2024-01-13
+## [0.3.4] – 2025-01-13
 
 ### New
 - Getter for Signer Index address
 
-## [0.3.3] – 2024-01-08
+## [0.3.3] – 2025-01-08
 
 ### New
 - `bm/v2/messages` api with synchronous message processing

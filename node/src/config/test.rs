@@ -52,7 +52,8 @@ mod tests {
         "block_keeper_seed_path": "block_keeper.keys.json",
         "block_cache_size": 20,
         "state_cache_size": 10,
-        "message_storage_path": "message_strage"
+        "message_storage_path": "message_strage",
+        "rate_limit_on_incoming_block_req": 1000
     }
 }"#;
         let config: Config = serde_json::from_str(config_str)?;

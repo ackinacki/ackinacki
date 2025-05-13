@@ -75,6 +75,7 @@ pub struct MutationRoot;
 #[Object]
 impl MutationRoot {
     /// Post external inbound messages to blockchain node.
+    #[graphql(deprecation = "To send external messages, use the BM/BK APIs")]
     async fn post_requests(
         &self,
         ctx: &Context<'_>,
@@ -115,6 +116,7 @@ impl MutationRoot {
     }
 
     /// Post external inbound message to blockchain node.
+    #[graphql(deprecation = "To send external messages, use the BM/BK APIs")]
     async fn send_message(
         &self,
         ctx: &Context<'_>,

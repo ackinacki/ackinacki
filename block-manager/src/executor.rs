@@ -16,18 +16,24 @@ use crate::events;
 pub async fn execute(args: Args) -> anyhow::Result<()> {
     // event bus
     let (event_pub, _event_sub) = channel::<events::Event>();
+    // pass BP data (thread => IP addresses)
+    let (bp_data_tx, bp_data_rx) = channel::<(String, Vec<String>)>();
 
     // message router
-    if let Ok(bind_to) = std::env::var("BLOCK_MANAGER_API") {
-        let bp_resolver = Arc::new(Mutex::new(BPResolverImpl::new()));
-        let _ = MessageRouter::new(bind_to, bp_resolver);
-    }
+    let Ok(bind_to) = std::env::var("BLOCK_MANAGER_API") else {
+        anyhow::bail!("BLOCK_MANAGER_API environment variable must be set");
+    };
+
+    let bp_resolver = Arc::new(Mutex::new(BPResolverImpl::new()));
+    BPResolverImpl::start_listener(Arc::clone(&bp_resolver), bp_data_rx)?;
+    let _ = MessageRouter::new(bind_to, bp_resolver);
 
     // block subscriber
     let block_subscriber = block_subscriber::BlockSubscriber::new(
         args.sqlite_path,
         args.stream_src_url,
         event_pub.clone(),
+        bp_data_tx,
     );
     let block_subscriber_handler = block_subscriber.run();
 

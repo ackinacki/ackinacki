@@ -128,6 +128,7 @@ impl BlockVerifier for TVMBlockVerifier {
                 &thread_identifier,
                 &container.cross_thread_ref_data_service,
                 wrapped_slash_messages,
+                Vec::new(),
                 message_db.clone(),
             )
         })?;
@@ -201,7 +202,6 @@ impl BlockVerifier for TVMBlockVerifier {
         let (verify_block, _, _) = producer.build_block(
             ext_messages,
             &self.blockchain_config,
-            vec![],
             vec![],
             Some(check_messages_map),
             white_list_of_slashing_messages_hashes,

@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -10,47 +10,48 @@ use url::Url;
 use wtransport::Connection;
 
 use crate::detailed;
+use crate::host_id_prefix;
 use crate::message::NetMessage;
 use crate::metrics::NetMetrics;
 use crate::pub_sub::receiver;
 use crate::pub_sub::sender;
 use crate::pub_sub::IncomingSender;
 use crate::pub_sub::PubSub;
+use crate::DeliveryPhase;
 use crate::SendMode;
 
 #[derive(Debug)]
 pub struct ConnectionWrapper {
     pub url: Option<Url>,
-    pub peer_id: String,
+    pub host_id: String,
+    pub host_id_prefix: String,
     pub connection: Connection,
     pub self_is_subscriber: bool,
     pub peer_is_subscriber: bool,
 }
 
+pub fn connection_host_id(connection: &Connection) -> anyhow::Result<String> {
+    let Some(identity) = connection.peer_identity() else {
+        anyhow::bail!("Connection peer has no certificate chain");
+    };
+
+    let Some(first_cert) = identity.as_slice().first() else {
+        anyhow::bail!("Connection peer has no certificates");
+    };
+
+    Ok(hex::encode(first_cert.hash().as_ref()))
+}
+
 impl ConnectionWrapper {
     pub fn new(
-        is_debug: bool,
         url: Option<Url>,
-        peer_id: String,
+        host_id: String,
         connection: Connection,
         self_is_subscriber: bool,
         peer_is_subscriber: bool,
     ) -> Self {
-        let peer_id = if is_debug {
-            match connection.remote_address() {
-                SocketAddr::V4(addr) => format!("{}:{}", addr.ip(), addr.port()),
-                SocketAddr::V6(ipv6) => {
-                    if let Some(ipv4_mapped) = ipv6.ip().to_ipv4() {
-                        format!("{}:{}", ipv4_mapped, ipv6.port())
-                    } else {
-                        format!("{}:{}", ipv6.ip(), ipv6.port())
-                    }
-                }
-            }
-        } else {
-            peer_id
-        };
-        Self { url, peer_id, connection, self_is_subscriber, peer_is_subscriber }
+        let host_id_prefix = host_id_prefix(&host_id).to_string();
+        Self { url, host_id, host_id_prefix, connection, self_is_subscriber, peer_is_subscriber }
     }
 
     pub fn addr(&self) -> String {
@@ -84,7 +85,7 @@ impl ConnectionWrapper {
         match &message.delivery {
             MessageDelivery::Broadcast => self.peer_is_subscriber,
             MessageDelivery::BroadcastExcluding(excluding) => {
-                self.peer_is_subscriber && self.peer_id != excluding.peer_id
+                self.peer_is_subscriber && self.host_id != excluding.host_id
             }
             MessageDelivery::Url(url) => self.url.as_ref().map(|x| x == url).unwrap_or_default(),
         }
@@ -172,6 +173,78 @@ pub struct IncomingMessage {
     pub peer: Arc<ConnectionWrapper>,
     pub message: NetMessage,
     pub duration_after_transfer: Instant,
+}
+
+impl IncomingMessage {
+    pub fn finish<Message>(&self, metrics: &Option<NetMetrics>) -> Option<Message>
+    where
+        Message: Debug + for<'de> serde::Deserialize<'de> + Send + Sync + Clone + 'static,
+    {
+        let _ = metrics.as_ref().inspect(|m| {
+            m.finish_delivery_phase(
+                DeliveryPhase::IncomingBuffer,
+                1,
+                &self.message.label,
+                self.peer.peer_send_mode(),
+                self.duration_after_transfer.elapsed(),
+            );
+        });
+        tracing::debug!(
+            host_id = self.peer.host_id_prefix,
+            msg_id = self.message.id,
+            msg_type = self.message.label,
+            broadcast = self.peer.self_is_subscriber,
+            "Message delivery: decode"
+        );
+        let (message, decompress_ms, deserialize_ms) = match self.message.decode() {
+            Ok(message) => message,
+            Err(err) => {
+                tracing::error!("Failed decoding incoming message: {}", err);
+                tracing::debug!(
+                    host_id = self.peer.host_id_prefix,
+                    msg_id = self.message.id,
+                    msg_type = self.message.label,
+                    broadcast = self.peer.self_is_subscriber,
+                    "Message delivery: decoding failed"
+                );
+                return None;
+            }
+        };
+        match self.message.delivery_duration_ms() {
+            Ok(delivery_duration_ms) => {
+                tracing::info!(
+                    "Received incoming {}, peer {}, duration {}",
+                    self.message.label,
+                    self.peer.peer_info(),
+                    delivery_duration_ms
+                );
+                let _ = metrics.as_ref().inspect(|m| {
+                    m.report_incoming_message_delivery_duration(
+                        delivery_duration_ms,
+                        &self.message.label,
+                    );
+                });
+            }
+            Err(reason) => {
+                tracing::error!("{}", reason);
+                tracing::info!(
+                    "Received incoming {}, peer {}, duration N/A",
+                    self.message.label,
+                    self.peer.peer_info(),
+                );
+            }
+        }
+        tracing::debug!(
+            host_id = self.peer.host_id_prefix,
+            msg_id = self.message.id,
+            msg_type = self.message.label,
+            broadcast = self.peer.self_is_subscriber,
+            decompress_ms,
+            deserialize_ms,
+            "Message delivery: finished"
+        );
+        Some(message)
+    }
 }
 
 #[derive(Debug, Clone)]

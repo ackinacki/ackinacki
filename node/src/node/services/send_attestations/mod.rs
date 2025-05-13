@@ -19,6 +19,7 @@ use crate::bls::BLSSignatureScheme;
 use crate::helper::block_flow_trace;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::node::block_state::try_add_attestation::TryAddAttestation;
+use crate::node::services::PULSE_IDLE_TIMEOUT;
 use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
 use crate::node::AttestationData;
 use crate::node::BlockState;
@@ -109,11 +110,16 @@ impl AttestationSendService {
         candidates: &UnfinalizedBlocksSnapshot,
         loopback_attestations: Arc<Mutex<CollectedAttestations>>,
         candidate_block_repository: &impl Repository<CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>>,
-    ) {
+        deadline: std::time::Instant,
+    ) -> std::time::Instant {
         let last_modified =
             self.block_state_repository.notifications().load(std::sync::atomic::Ordering::Relaxed);
-        if last_modified == self.block_state_repository_last_modified {
-            return;
+        if last_modified == self.block_state_repository_last_modified
+            && deadline > std::time::Instant::now()
+        {
+            // If repository was not modified and next pulse deadline is not reached
+            // do nothing and return next deadline that equal to twice pulse idle time
+            return std::time::Instant::now() + PULSE_IDLE_TIMEOUT * 2;
         }
         self.block_state_repository_last_modified = last_modified;
         self.append_for_tracking(candidates);
@@ -122,7 +128,7 @@ impl AttestationSendService {
         self.prepare_attestations();
         self.update_interested_parties_received_blocks(candidates);
         self.timestamp_forks();
-        self.pulse(loopback_attestations, candidate_block_repository);
+        self.pulse(loopback_attestations, candidate_block_repository)
     }
 
     fn timestamp_applied(&mut self) {
@@ -172,7 +178,7 @@ impl AttestationSendService {
         &mut self,
         loopback_attestations: Arc<Mutex<CollectedAttestations>>,
         candidate_block_repository: &impl Repository<CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>>,
-    ) {
+    ) -> std::time::Instant {
         let mut to_send: Vec<(HashSet<NodeIdentifier>, AttestationAction)> = vec![];
         // TODO: fix. it's a dirty hack for the borrow on tracking
         let first_sent = self
@@ -190,6 +196,7 @@ impl AttestationSendService {
             })
             .collect::<HashMap<BlockIdentifier, std::time::Instant>>();
         let trace_node_id = self.node_id.clone();
+        let mut next_deadline = std::time::Instant::now() + PULSE_IDLE_TIMEOUT * 2;
         for (_block_id, state) in self.tracking.iter_mut() {
             let trace_skip = |reason: &str| {
                 block_flow_trace(
@@ -278,6 +285,10 @@ impl AttestationSendService {
             };
             let now = std::time::Instant::now();
             if earliest_to_send_attestation > now {
+                tracing::trace!(
+                    "AttestationSendService: pulse: earliest_to_send_attestation - now = {}",
+                    earliest_to_send_attestation.duration_since(now).as_millis()
+                );
                 let delay = self.pulse_timeout.mul_f32(0.9_f32 + distance_to_producer as f32);
                 let time_info = |time: Option<std::time::Instant>| match time {
                     Some(time) => format!("{}", (time + delay).duration_since(now).as_millis()),
@@ -301,6 +312,7 @@ impl AttestationSendService {
                         ("fork_resolution", &fork_resolution),
                     ],
                 );
+                next_deadline = next_deadline.min(earliest_to_send_attestation);
                 continue;
             }
             let last_sent_time = state.last_send_timestamp().unwrap_or_else(|| self.start_time);
@@ -351,6 +363,7 @@ impl AttestationSendService {
                     .guarded(|e| e.known_children(&self.thread_id).cloned().unwrap_or_default());
                 let mut attestated_child = None;
                 let mut attestation = None;
+
                 for child_id in children.into_iter() {
                     let Ok(child) = self.block_state_repository.get(&child_id) else {
                         continue;
@@ -391,6 +404,7 @@ impl AttestationSendService {
                     candidate_block_repository.get_block(attestation.data().block_id())
                 else {
                     tracing::trace!("Failed to get a block");
+                    trace_skip("failed to get a block");
                     continue;
                 };
                 let resend_candidate = 0 == self.rng.next_u32() % (bk_set.len() as u32);
@@ -400,7 +414,11 @@ impl AttestationSendService {
                 );
                 to_send.push((
                     awaiting_destinations,
-                    AttestationAction::Fork { candidate_block, attestation, resend_candidate },
+                    AttestationAction::Fork {
+                        candidate_block: candidate_block.as_ref().clone(),
+                        attestation,
+                        resend_candidate,
+                    },
                 ));
             }
             if state.first_send_timestamp().is_none() {
@@ -464,6 +482,7 @@ impl AttestationSendService {
                 }
             }
         }
+        next_deadline
     }
 
     fn send_block_attestation(
@@ -502,7 +521,7 @@ impl AttestationSendService {
                 if resend_candidate {
                     self.network_direct_tx.send((
                         destination_node_id.clone(),
-                        NetworkMessage::Candidate(candidate_block),
+                        NetworkMessage::candidate(&candidate_block)?,
                     ))?;
                 }
                 self.network_direct_tx.send((

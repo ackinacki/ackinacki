@@ -208,7 +208,7 @@ contract BlockKeeperEpoch is Modifiers {
     function changeReputation(bool is_inc, uint128 value, uint256 num) public senderIs(_owner_address) {
         _sumReputationCoef -= value;
         if (_isContinue) {
-            require(_licensesContinue.length <= 5, ERR_NOT_SUPPORT);
+            require(_licensesContinue.length <= MAX_LICENSE_NUMBER, ERR_NOT_SUPPORT);
             uint8 i = 0;
             if (i + 1 >= _licensesContinue.length) {
                 changeReputationHelper(i, is_inc, value, num);
@@ -225,6 +225,26 @@ contract BlockKeeperEpoch is Modifiers {
             if (i + 1 >= _licensesContinue.length) {
                 changeReputationHelper(i, is_inc, value, num);
             }
+            i += 1;
+            if (i + 1 >= _licensesContinue.length) {
+                changeReputationHelper(i, is_inc, value, num);
+            }  
+            i += 1;
+            if (i + 1 >= _licensesContinue.length) {
+                changeReputationHelper(i, is_inc, value, num);
+            }  
+            i += 1;
+            if (i + 1 >= _licensesContinue.length) {
+                changeReputationHelper(i, is_inc, value, num);
+            }  
+            i += 1;
+            if (i + 1 >= _licensesContinue.length) {
+                changeReputationHelper(i, is_inc, value, num);
+            }  
+            i += 1;
+            if (i + 1 >= _licensesContinue.length) {
+                changeReputationHelper(i, is_inc, value, num);
+            }  
             i += 1;
             if (i + 1 >= _licensesContinue.length) {
                 changeReputationHelper(i, is_inc, value, num);

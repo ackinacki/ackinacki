@@ -15,12 +15,12 @@ use super::accounts::AccountsRepository;
 use super::repository_impl::RepositoryMetadata;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
-use crate::external_messages::ExternalMessagesThreadState;
 use crate::message::identifier::MessageIdentifier;
 #[cfg(test)]
 use crate::message::message_stub::MessageStub;
 use crate::message::WrappedMessage;
 use crate::message_storage::MessageDurableStorage;
+use crate::multithreading::cross_thread_messaging::thread_references_state::ThreadReferencesState;
 use crate::node::associated_types::AttestationData;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
@@ -172,12 +172,17 @@ impl OptimisticState for OptimisticStateStub {
     ) -> anyhow::Result<()> {
         todo!()
     }
+
     // fn add_accounts_from_ref(
     // &mut self,
     // _cross_thread_ref: &CrossThreadRefData,
     // ) -> anyhow::Result<()> {
     // todo!()
     // }
+
+    fn get_thread_refs(&self) -> &ThreadReferencesState {
+        todo!()
+    }
 }
 
 #[cfg(test)]
@@ -240,14 +245,14 @@ impl Repository for RepositoryStub {
     fn get_block(
         &self,
         _identifier: &BlockIdentifier,
-    ) -> anyhow::Result<Option<Self::CandidateBlock>> {
+    ) -> anyhow::Result<Option<Arc<Self::CandidateBlock>>> {
         todo!();
     }
 
     fn get_block_from_repo_or_archive(
         &self,
         _block_id: &BlockIdentifier,
-    ) -> anyhow::Result<<Self as Repository>::CandidateBlock> {
+    ) -> anyhow::Result<Arc<<Self as Repository>::CandidateBlock>> {
         todo!()
     }
 
@@ -263,7 +268,6 @@ impl Repository for RepositoryStub {
         &mut self,
         _thread_id: &ThreadIdentifier,
         _parent_block_id: &BlockIdentifier,
-        _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<()> {
         todo!();
     }
@@ -271,7 +275,7 @@ impl Repository for RepositoryStub {
     fn select_thread_last_finalized_block(
         &self,
         _thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<(BlockIdentifier, BlockSeqNo)> {
+    ) -> anyhow::Result<Option<(BlockIdentifier, BlockSeqNo)>> {
         todo!();
     }
 
@@ -282,7 +286,6 @@ impl Repository for RepositoryStub {
     fn mark_block_as_finalized(
         &mut self,
         _block: &Self::CandidateBlock,
-        _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         _block_state: BlockState,
     ) -> anyhow::Result<()> {
         Ok(())
@@ -296,14 +299,9 @@ impl Repository for RepositoryStub {
         &self,
         block_id: &BlockIdentifier,
         _thread_id: &ThreadIdentifier,
-        _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         _min_seq_no: Option<OptimisticStateStub>,
     ) -> anyhow::Result<Option<OptimisticStateStub>> {
         Ok(self.optimistic_state.get(block_id).map(|s| s.to_owned()))
-    }
-
-    fn store_block<T: Into<Self::CandidateBlock>>(&self, _block: T) -> anyhow::Result<()> {
-        Ok(())
     }
 
     fn erase_block_and_optimistic_state(
@@ -330,22 +328,12 @@ impl Repository for RepositoryStub {
         todo!()
     }
 
-    fn mark_block_as_processed(&self, _block_id: &BlockIdentifier) -> anyhow::Result<()> {
-        todo!()
-    }
-
-    fn is_block_processed(&self, _block_id: &BlockIdentifier) -> anyhow::Result<bool> {
-        todo!()
-    }
-
     fn set_state_from_snapshot(
         &mut self,
-        _block_id: &BlockIdentifier,
         _snapshot: Self::StateSnapshot,
         _thread_id: &ThreadIdentifier,
         _skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
-        _external_messages: ExternalMessagesThreadState,
-    ) -> anyhow::Result<Vec<CrossThreadRefData>> {
+    ) -> anyhow::Result<()> {
         todo!()
     }
 

@@ -24,8 +24,8 @@ pub mod pub_sub;
 pub mod resolver;
 pub mod socket_addr;
 mod tls;
+pub mod transfer;
 pub mod unix_signals;
-
 pub use tls::TlsConfig;
 
 const DEFAULT_PUBLISHER_PORT: u16 = 8500;
@@ -65,15 +65,10 @@ impl Display for SendMode {
     }
 }
 
-pub trait NetworkMessage:
-    Debug + serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + Clone
-{
+pub fn host_id_prefix(s: &str) -> &str {
+    s.split_at_checked(6).map(|(first, _)| first).unwrap_or(s)
 }
 
-impl<T> NetworkMessage for T where
-    T: Debug + serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + Clone
-{
-}
 pub(crate) fn detailed(err: &impl Debug) -> String {
     format!("{:#?}", err).replace("\n", "").replace("\r", "")
 }

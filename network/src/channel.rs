@@ -1,7 +1,5 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::sync::mpsc::RecvError;
-use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -9,7 +7,6 @@ use serde::Serialize;
 
 use crate::message::NetMessage;
 use crate::metrics::NetMetrics;
-use crate::pub_sub::connection::IncomingMessage;
 use crate::pub_sub::connection::MessageDelivery;
 use crate::pub_sub::connection::OutgoingMessage;
 use crate::DeliveryPhase;
@@ -19,7 +16,7 @@ use crate::SendMode;
 pub struct NetDirectSender<PeerId, Message> {
     inner: tokio::sync::mpsc::UnboundedSender<(PeerId, NetMessage, Instant)>,
     metrics: Option<NetMetrics>,
-    self_id: PeerId,
+    self_peer_id: PeerId,
     _message_type: PhantomData<Message>,
 }
 
@@ -29,38 +26,33 @@ pub enum NetSendError<Message> {
 }
 
 impl<T> NetSendError<T> {
-    pub fn message(&self) -> &str {
+    pub fn message(&self) -> String {
         match self {
-            NetSendError::Disconnected(_) => "sending on a closed channel",
-            NetSendError::EncodeFailed(_, _) => "encoding failed",
+            NetSendError::Disconnected(_) => "Sending on a closed channel".to_string(),
+            NetSendError::EncodeFailed(_, err) => format!("Encoding failed: {err}"),
         }
     }
 }
 
 impl<T> Debug for NetSendError<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.message())
+        f.write_str(&self.message())
     }
 }
 
 impl<Message> std::fmt::Display for NetSendError<Message> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.message())
+        f.write_str(&self.message())
     }
 }
 
-impl<Message> std::error::Error for NetSendError<Message> {
-    #[allow(deprecated)]
-    fn description(&self) -> &str {
-        self.message()
-    }
-}
+impl<Message> std::error::Error for NetSendError<Message> {}
 
 fn encode_outgoing<Message: Debug + Serialize>(
     message: Message,
-) -> Result<(Message, NetMessage), NetSendError<Message>> {
+) -> Result<(Message, NetMessage, usize), NetSendError<Message>> {
     match NetMessage::encode(&message) {
-        Ok(wrapped) => Ok((message, wrapped)),
+        Ok((wrapped, uncompressed_size)) => Ok((message, wrapped, uncompressed_size)),
         Err(err) => {
             tracing::error!("Error serializing outgoing {message:#?}: {}", err);
             Err(NetSendError::EncodeFailed(message, err))
@@ -76,29 +68,33 @@ where
     pub(crate) fn new(
         inner: tokio::sync::mpsc::UnboundedSender<(PeerId, NetMessage, Instant)>,
         metrics: Option<NetMetrics>,
-        self_id: PeerId,
+        self_peer_id: PeerId,
     ) -> Self {
-        Self { inner, metrics, self_id, _message_type: PhantomData }
+        Self { inner, metrics, self_peer_id, _message_type: PhantomData }
     }
 
     pub fn send(&self, args: (PeerId, Message)) -> Result<(), NetSendError<Message>> {
         let (peer_id, outgoing) = args;
-        if peer_id == self.self_id {
+        if peer_id == self.self_peer_id {
             tracing::trace!("Skip message to self");
             return Ok(());
         }
 
-        let (original, net_message) = encode_outgoing(outgoing)?;
-        self.metrics.as_ref().inspect(|x| {
-            x.start_delivery_phase(
+        let (original, net_message, orig_size) = encode_outgoing(outgoing)?;
+
+        let id = net_message.id.clone();
+        let label = net_message.label.clone();
+
+        self.metrics.as_ref().inspect(|metrics| {
+            metrics.report_message_size(orig_size, net_message.data.len(), &label);
+            metrics.start_delivery_phase(
                 DeliveryPhase::OutgoingBuffer,
                 1,
                 &net_message.label,
                 SendMode::Direct,
             );
         });
-        let id = net_message.id.clone();
-        let label = net_message.label.clone();
+
         tracing::debug!(
             peer_id = peer_id.to_string(),
             msg_id = net_message.id,
@@ -150,8 +146,13 @@ where
     }
 
     pub fn send(&self, message: Message) -> Result<(), NetSendError<Message>> {
-        let (_, net_message) = encode_outgoing(message)?;
+        let (_, net_message, orig_size) = encode_outgoing(message)?;
         let label = net_message.label.clone();
+
+        if let Some(metrics) = self.metrics.as_ref() {
+            metrics.report_message_size(orig_size, net_message.data.len(), &label);
+        }
+
         tracing::debug!(
             msg_id = net_message.id,
             msg_type = label,
@@ -187,150 +188,5 @@ where
             }
         }
         Ok(())
-    }
-}
-
-pub enum NetRecvError {
-    Disconnected,
-    DecodingFailed(anyhow::Error),
-}
-
-impl From<RecvError> for NetRecvError {
-    fn from(_: RecvError) -> Self {
-        NetRecvError::Disconnected
-    }
-}
-
-pub enum NetTryRecvError {
-    Empty,
-    Disconnected,
-    DecodingFailed(anyhow::Error),
-}
-
-impl NetRecvError {
-    fn message(&self) -> &str {
-        match self {
-            Self::Disconnected => "disconnected",
-            Self::DecodingFailed(_) => "decoding failed",
-        }
-    }
-}
-
-impl From<TryRecvError> for NetTryRecvError {
-    fn from(e: TryRecvError) -> Self {
-        match e {
-            TryRecvError::Empty => NetTryRecvError::Empty,
-            TryRecvError::Disconnected => NetTryRecvError::Disconnected,
-        }
-    }
-}
-
-impl Debug for NetRecvError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.message())
-    }
-}
-
-impl std::fmt::Display for NetRecvError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.message())
-    }
-}
-
-impl std::error::Error for NetRecvError {
-    #[allow(deprecated)]
-    fn description(&self) -> &str {
-        self.message()
-    }
-}
-
-pub struct NetReceiver<Message> {
-    inner: std::sync::mpsc::Receiver<IncomingMessage>,
-    metrics: Option<NetMetrics>,
-    _message_type: PhantomData<Message>,
-}
-
-impl<Message> NetReceiver<Message>
-where
-    Message: Debug + for<'de> serde::Deserialize<'de> + Send + Sync + Clone + 'static,
-{
-    pub(crate) fn new(
-        inner: std::sync::mpsc::Receiver<IncomingMessage>,
-        metrics: Option<NetMetrics>,
-    ) -> Self {
-        Self { inner, metrics, _message_type: PhantomData }
-    }
-
-    pub fn recv(&self) -> Result<Message, NetRecvError> {
-        self.inner
-            .recv()
-            .map_err(From::from)
-            .and_then(|incoming| self.decode_incoming(incoming, NetRecvError::DecodingFailed))
-    }
-
-    pub fn try_recv(&self) -> Result<Message, NetTryRecvError> {
-        self.inner
-            .try_recv()
-            .map_err(From::from)
-            .and_then(|incoming| self.decode_incoming(incoming, NetTryRecvError::DecodingFailed))
-    }
-
-    fn decode_incoming<E>(
-        &self,
-        incoming: IncomingMessage,
-        e: impl FnOnce(anyhow::Error) -> E,
-    ) -> Result<Message, E> {
-        tracing::debug!(
-            peer_id = incoming.peer.peer_id,
-            msg_id = incoming.message.id,
-            msg_type = incoming.message.label,
-            broadcast = incoming.peer.self_is_subscriber,
-            "Message delivery: decode"
-        );
-        let message = match incoming.message.decode() {
-            Ok(message) => message,
-            Err(reason) => return Err(e(reason)),
-        };
-        let _ = self.metrics.as_ref().inspect(|m| {
-            m.finish_delivery_phase(
-                DeliveryPhase::IncomingBuffer,
-                1,
-                &incoming.message.label,
-                incoming.peer.peer_send_mode(),
-                incoming.duration_after_transfer.elapsed(),
-            );
-        });
-        match incoming.message.delivery_duration_ms() {
-            Ok(delivery_duration_ms) => {
-                tracing::info!(
-                    "Received incoming {}, peer {}, duration {}",
-                    incoming.message.label,
-                    incoming.peer.peer_info(),
-                    delivery_duration_ms
-                );
-                let _ = self.metrics.as_ref().inspect(|m| {
-                    m.report_incoming_message_delivery_duration(
-                        delivery_duration_ms,
-                        &incoming.message.label,
-                    );
-                });
-            }
-            Err(reason) => {
-                tracing::error!("{}", reason);
-                tracing::info!(
-                    "Received incoming {}, peer {}, duration N/A",
-                    incoming.message.label,
-                    incoming.peer.peer_info(),
-                );
-            }
-        }
-        tracing::debug!(
-            peer_id = incoming.peer.peer_id,
-            msg_id = incoming.message.id,
-            msg_type = incoming.message.label,
-            broadcast = incoming.peer.self_is_subscriber,
-            "Message delivery: finished"
-        );
-        Ok(message)
     }
 }

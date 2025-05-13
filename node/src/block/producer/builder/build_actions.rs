@@ -75,7 +75,6 @@ use crate::block::producer::errors::verify_error;
 use crate::block::producer::errors::BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK;
 use crate::block::producer::execution_time::ExecutionTimeLimits;
 use crate::block_keeper_system::epoch::decode_epoch_data;
-use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperSetChange;
 use crate::creditconfig::abi::DAPP_CONFIG_TVC;
 use crate::creditconfig::abi::DAPP_ROOT_ADDR;
@@ -93,6 +92,7 @@ use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::types::account::WrappedAccount;
 use crate::types::thread_message_queue::account_messages_iterator::AccountMessagesIterator;
+use crate::types::thread_message_queue::ThreadMessageQueueState;
 use crate::types::AccountAddress;
 use crate::types::AccountRouting;
 use crate::types::BlockEndLT;
@@ -730,6 +730,7 @@ impl BlockBuilder {
         blockchain_config: &BlockchainConfig,
         check_messages_map: &Option<HashMap<UInt256, u64>>,
         _white_list_of_slashing_messages_hashes: HashSet<UInt256>, // TODO: check usage
+        message_queue: ThreadMessageQueueState,
         message_db: MessageDurableStorage,
         time_limits: &ExecutionTimeLimits,
     ) -> anyhow::Result<bool> {
@@ -863,8 +864,11 @@ impl BlockBuilder {
                 let mut active_threads = vec![];
                 let mut executed_int_messages_cnt = 0;
                 // if there are any internal messages start parallel execution
-                let queue = self.initial_optimistic_state.messages.clone();
-                let mut internal_messages_iter = queue.iter(&message_db);
+               /* let queue: crate::types::thread_message_queue::ThreadMessageQueueState = match is_high_priority {
+                    false => self.initial_optimistic_state.messages.clone(),
+                    true => self.initial_optimistic_state.high_priority_messages.clone(),
+                };*/
+                let mut internal_messages_iter = message_queue.iter(&message_db);
 
                 let active_int_destinations = parking_lot::Mutex::new(HashSet::new());
                 let mut started_accounts: HashMap<AccountId, MessagesRangeIterator<MessageIdentifier, Arc<WrappedMessage>, MessageDurableStorage>> = HashMap::new();
@@ -1120,7 +1124,6 @@ impl BlockBuilder {
         mut ext_messages_queue: VecDeque<Message>,
         blockchain_config: &BlockchainConfig,
         mut active_threads: Vec<(Cell, ActiveThread)>,
-        mut epoch_block_keeper_data: Vec<BlockKeeperData>,
         check_messages_map: Option<HashMap<UInt256, u64>>,
         white_list_of_slashing_messages_hashes: HashSet<UInt256>,
         message_db: MessageDurableStorage,
@@ -1139,29 +1142,28 @@ impl BlockBuilder {
         // TODO: this flag is unused, fix it
         let verify_block_contains_missing_messages_from_prev_state = false;
 
-        trace_span!("execute epoch messages").in_scope(|| {
-            // TODO: Need to check epoch messages execution for multithreaded implementation
-            // First step: execute epoch messages
-            self.execute_epoch_messages(
-                &mut epoch_block_keeper_data,
-                blockchain_config,
-                block_unixtime,
-                block_lt,
-                &check_messages_map,
-            )
-            .map_err(|e| anyhow::format_err!("Failed to execute epoch messages: {e}"))
-        })?;
-
         // Second step: Take outbound internal messages from previous state, execute internal
         // messages that have destination in the current state and remove others from state.
 
         block_full = self.execute_internal_messages(
             blockchain_config,
             &check_messages_map,
-            white_list_of_slashing_messages_hashes,
+            white_list_of_slashing_messages_hashes.clone(),
+            self.initial_optimistic_state.messages.clone(),
             message_db.clone(),
             time_limits,
         )?;
+
+        if !block_full {
+            block_full = self.execute_internal_messages(
+                blockchain_config,
+                &check_messages_map,
+                white_list_of_slashing_messages_hashes,
+                self.initial_optimistic_state.high_priority_messages.clone(),
+                message_db.clone(),
+                time_limits,
+            )?;
+        }
 
         let mut ext_message_feedbacks = ExtMsgFeedbackList::new();
         trace_span!("external messages execution").in_scope(|| {

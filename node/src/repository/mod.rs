@@ -29,13 +29,10 @@ mod tvm_cell_serde;
 pub use cross_thread_ref_data::CrossThreadRefData;
 pub use cross_thread_ref_repository::CrossThreadRefDataRead;
 pub use cross_thread_ref_repository::CrossThreadRefDataRepository;
-use tvm_types::UInt256;
 
-use crate::external_messages::ExternalMessagesThreadState;
 use crate::message::WrappedMessage;
 use crate::node::block_state::repository::BlockState;
 use crate::repository::repository_impl::RepositoryMetadata;
-use crate::utilities::FixedSizeHashSet;
 
 #[cfg(test)]
 pub mod stub_repository;
@@ -70,12 +67,12 @@ pub trait Repository {
     fn get_block(
         &self,
         identifier: &BlockIdentifier,
-    ) -> anyhow::Result<Option<Self::CandidateBlock>>;
+    ) -> anyhow::Result<Option<Arc<Self::CandidateBlock>>>;
 
     fn get_block_from_repo_or_archive(
         &self,
         block_id: &BlockIdentifier,
-    ) -> anyhow::Result<<Self as Repository>::CandidateBlock>;
+    ) -> anyhow::Result<Arc<<Self as Repository>::CandidateBlock>>;
 
     fn get_block_from_repo_or_archive_by_seq_no(
         &self,
@@ -100,20 +97,18 @@ pub trait Repository {
         &mut self,
         thread_id: &ThreadIdentifier,
         parent_block_id: &BlockIdentifier,
-        nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     ) -> anyhow::Result<()>;
 
     fn select_thread_last_finalized_block(
         &self,
         thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<(BlockIdentifier, BlockSeqNo)>;
+    ) -> anyhow::Result<Option<(BlockIdentifier, BlockSeqNo)>>;
 
     fn is_block_suspicious(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>>;
 
     fn mark_block_as_finalized(
         &mut self,
         block: &<Self as Repository>::CandidateBlock,
-        nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         block_state: BlockState,
     ) -> anyhow::Result<()>;
 
@@ -123,11 +118,8 @@ pub trait Repository {
         &self,
         block_id: &BlockIdentifier,
         thread_id: &ThreadIdentifier,
-        nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         min_state: Option<Self::OptimisticState>,
     ) -> anyhow::Result<Option<Self::OptimisticState>>;
-
-    fn store_block<T: Into<Self::CandidateBlock>>(&self, block: T) -> anyhow::Result<()>;
 
     fn erase_block_and_optimistic_state(
         &self,
@@ -143,18 +135,12 @@ pub trait Repository {
 
     fn is_block_already_applied(&self, block_id: &BlockIdentifier) -> anyhow::Result<bool>;
 
-    fn mark_block_as_processed(&self, block_id: &BlockIdentifier) -> anyhow::Result<()>;
-
-    fn is_block_processed(&self, block_id: &BlockIdentifier) -> anyhow::Result<bool>;
-
     fn set_state_from_snapshot(
         &mut self,
-        block_id: &BlockIdentifier,
         snapshot: Self::StateSnapshot,
         thread_id: &ThreadIdentifier,
         skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
-        external_messages: ExternalMessagesThreadState,
-    ) -> anyhow::Result<Vec<CrossThreadRefData>>;
+    ) -> anyhow::Result<()>;
 
     fn sync_accounts_from_state(
         &mut self,

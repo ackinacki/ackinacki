@@ -26,7 +26,7 @@ pub trait AccountProvider {
 pub async fn watch_blockchain<PeerId, B, A>(
     bk_set_provider: B,
     account_provider: A,
-    self_id: PeerId,
+    self_peer_id: PeerId,
     subscribe_tx: tokio::sync::watch::Sender<Vec<Vec<Url>>>,
     peers_tx: tokio::sync::watch::Sender<HashMap<PeerId, Url>>,
 ) where
@@ -38,7 +38,7 @@ pub async fn watch_blockchain<PeerId, B, A>(
     let mut peers = HashMap::new();
     loop {
         (subscribe, peers) =
-            refresh(&self_id, &bk_set_provider, &account_provider, subscribe, peers).await;
+            refresh(&self_peer_id, &bk_set_provider, &account_provider, subscribe, peers).await;
         let _ = subscribe_tx.send_replace(subscribe.clone());
         let _ = peers_tx.send_replace(peers.clone());
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -47,7 +47,7 @@ pub async fn watch_blockchain<PeerId, B, A>(
 }
 
 async fn refresh<PeerId, B, A>(
-    self_id: &PeerId,
+    self_peer_id: &PeerId,
     bk_set_provider: &B,
     account_provider: &A,
     _old_subscribe: Vec<Vec<Url>>,
@@ -75,19 +75,17 @@ where
 
     let peers = bk_set
         .iter()
-        .filter_map(|(id, (url, _))| url.as_ref().map(|x| (id.clone(), x.clone())))
+        .filter_map(|(peer_id, (url, _))| url.as_ref().map(|x| (peer_id.clone(), x.clone())))
         .collect();
     let subscribe = bk_set
         .into_iter()
-        .filter_map(
-            |(id, (peer_url, proxies))| {
-                if id != *self_id {
-                    Some(peer_subscribe(peer_url, proxies))
-                } else {
-                    None
-                }
-            },
-        )
+        .filter_map(|(peer_id, (peer_url, proxies))| {
+            if peer_id != *self_peer_id {
+                Some(peer_subscribe(peer_url, proxies))
+            } else {
+                None
+            }
+        })
         .collect();
     if peers != old_peers {
         let new_info = peers_info(&peers);

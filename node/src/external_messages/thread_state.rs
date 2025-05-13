@@ -84,6 +84,7 @@ impl ExternalMessagesThreadState {
         block_identifier: &BlockIdentifier,
         progress: Progress,
     ) -> anyhow::Result<()> {
+        tracing::trace!("set_progress {:?}", block_identifier);
         self.block_progress_access_mutex.guarded(|_| {
             let file_path = self.progress_file_path(block_identifier);
             if let Some(saved_progress) = load_from_file::<Progress>(&file_path)? {
@@ -108,6 +109,7 @@ impl ExternalMessagesThreadState {
         &self,
         block_identifier: &BlockIdentifier,
     ) -> anyhow::Result<()> {
+        tracing::trace!("set_progress_to_last_known {:?}", block_identifier);
         self.queue.guarded(|e| {
             let offset = e.last_index();
             let progress = Progress::zero().next(*offset as usize);

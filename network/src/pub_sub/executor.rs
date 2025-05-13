@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use telemetry_utils::mpsc::InstrumentedSender;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use url::Url;
@@ -16,7 +17,7 @@ use crate::tls::TlsConfig;
 #[derive(Clone)]
 pub enum IncomingSender {
     AsyncUnbounded(mpsc::UnboundedSender<IncomingMessage>),
-    SyncUnbounded(std::sync::mpsc::Sender<IncomingMessage>),
+    SyncUnbounded(InstrumentedSender<IncomingMessage>),
 }
 
 impl IncomingSender {

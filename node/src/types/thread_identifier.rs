@@ -46,6 +46,10 @@ impl ThreadIdentifier {
     pub fn is_spawning_block(&self, block_id: &BlockIdentifier) -> bool {
         (&self.0[2..34]) == block_id.as_ref()
     }
+
+    pub fn spawning_block_id(&self) -> BlockIdentifier {
+        BlockIdentifier::from(<[u8; 32]>::try_from(&self.0[2..34]).unwrap())
+    }
 }
 
 impl From<[u8; 34]> for ThreadIdentifier {

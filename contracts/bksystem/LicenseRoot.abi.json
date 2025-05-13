@@ -8,7 +8,9 @@
 			"inputs": [
 				{"name":"timeUnlock","type":"uint32"},
 				{"name":"license_number","type":"uint256"},
-				{"name":"rootElection","type":"address"}
+				{"name":"license_number_bm","type":"uint256"},
+				{"name":"rootElection","type":"address"},
+				{"name":"rootBM","type":"address"}
 			],
 			"outputs": [
 			]
@@ -23,6 +25,22 @@
 		},
 		{
 			"name": "deployLicenseOwner",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployLicenseBM",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployLicenseBMOwner",
 			"inputs": [
 				{"name":"pubkey","type":"uint256"}
 			],
@@ -61,6 +79,7 @@
 			],
 			"outputs": [
 				{"name":"lastAddress","type":"address"},
+				{"name":"lastAddressBM","type":"address"},
 				{"name":"num","type":"uint256"}
 			]
 		},
@@ -69,11 +88,21 @@
 			"inputs": [
 			],
 			"outputs": [
-				{"name":"num","type":"uint256"}
+				{"name":"num","type":"uint256"},
+				{"name":"numbm","type":"uint256"}
 			]
 		},
 		{
 			"name": "getLicenseAddress",
+			"inputs": [
+				{"name":"num","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"license_address","type":"address"}
+			]
+		},
+		{
+			"name": "getLicenseBMAddress",
 			"inputs": [
 				{"name":"num","type":"uint256"}
 			],
@@ -103,7 +132,10 @@
 		{"init":false,"name":"_code","type":"map(uint8,cell)"},
 		{"init":false,"name":"_timeUnlock","type":"uint32"},
 		{"init":false,"name":"_license_number","type":"uint256"},
+		{"init":false,"name":"_license_number_bm","type":"uint256"},
 		{"init":false,"name":"_rootElection","type":"address"},
-		{"init":false,"name":"_lastAddress","type":"address"}
+		{"init":false,"name":"_rootBM","type":"address"},
+		{"init":false,"name":"_lastAddress","type":"address"},
+		{"init":false,"name":"_lastAddressBM","type":"address"}
 	]
 }

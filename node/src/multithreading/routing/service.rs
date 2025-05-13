@@ -9,11 +9,13 @@ use http_server::ExtMsgFeedback;
 use http_server::ExtMsgFeedbackList;
 use http_server::FeedbackError;
 use http_server::FeedbackErrorCode;
-use network::channel::NetReceiver;
+use network::metrics::NetMetrics;
+use network::pub_sub::connection::IncomingMessage;
 use parking_lot::Mutex;
 use telemetry_utils::mpsc::instrumented_channel;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use telemetry_utils::mpsc::InstrumentedSender;
+use telemetry_utils::now_ms;
 use tokio::sync::oneshot;
 use tvm_block::GetRepresentationHash;
 
@@ -61,9 +63,10 @@ pub struct RoutingService {
 
 impl RoutingService {
     pub fn new(
-        inbound_network_receiver: NetReceiver<NetworkMessage>,
+        inbound_network_receiver: InstrumentedReceiver<IncomingMessage>,
         inbound_ext_messages_receiver: InstrumentedReceiver<FeedbackMessage>,
         metrics: Option<BlockProductionMetrics>,
+        net_metrics: Option<NetMetrics>,
     ) -> (
         RoutingService,
         InstrumentedReceiver<Command>,
@@ -72,6 +75,7 @@ impl RoutingService {
     ) {
         let (cmd_sender, cmd_receiver) =
             instrumented_channel(metrics.clone(), crate::helper::metrics::ROUTING_COMMAND_CHANNEL);
+        let metrics_clone = metrics.clone();
         let forwarding_thread = {
             let cmd_sender_clone = cmd_sender.clone();
             std::thread::Builder::new()
@@ -80,6 +84,8 @@ impl RoutingService {
                     Self::inner_network_messages_forwarding_loop(
                         inbound_network_receiver,
                         cmd_sender_clone,
+                        net_metrics,
+                        metrics_clone,
                     )
                 })
                 .unwrap()
@@ -306,17 +312,31 @@ impl RoutingService {
     }
 
     fn inner_network_messages_forwarding_loop(
-        inbound_network: NetReceiver<NetworkMessage>,
+        inbound_network: InstrumentedReceiver<IncomingMessage>,
         cmd_sender: InstrumentedSender<Command>,
+        net_metrics: Option<NetMetrics>,
+        metrics: Option<BlockProductionMetrics>,
     ) -> anyhow::Result<()> {
         loop {
             match inbound_network.recv() {
-                Err(e) => {
-                    tracing::error!("NetworkMessageRouter: common receiver was disconnected: {e}");
-                    anyhow::bail!(e)
+                Ok(incoming) => {
+                    let message_received_ms = incoming.message.received_at;
+                    if let Some(message) = incoming.finish(&net_metrics) {
+                        metrics.as_ref().inspect(|m| {
+                            // duration between block received as bytes and received by node as block
+                            m.report_rcv_as_bytes_to_rcv_by_node(
+                                now_ms().saturating_sub(message_received_ms),
+                                incoming.message.label,
+                            )
+                        });
+                        cmd_sender.send(Command::Route(message))?
+                    }
                 }
-                Ok(message) => {
-                    cmd_sender.send(Command::Route(message.clone()))?;
+                Err(err) => {
+                    tracing::error!(
+                        "NetworkMessageRouter: common receiver was disconnected: {err}"
+                    );
+                    anyhow::bail!(err)
                 }
             }
         }

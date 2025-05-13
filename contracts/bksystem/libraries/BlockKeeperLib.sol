@@ -7,6 +7,7 @@
 pragma gosh-solidity >=0.76.1;
 
 import "../AckiNackiBlockKeeperNodeWallet.sol";
+import "../AckiNackiBlockManagerNodeWallet.sol";
 import "../BlockKeeperEpochContract.sol";
 import "../BlockKeeperPreEpochContract.sol";
 import "../BlockKeeperEpochProxyList.sol";
@@ -31,6 +32,28 @@ library BlockKeeperLib {
     }
 
     function buildBlockKeeperWalletCode(
+        TvmCell originalCode,
+        address root
+    ) public returns (TvmCell) {
+        TvmCell finalcell;
+        finalcell = abi.encode(versionLib, root);
+        return abi.setCodeSalt(originalCode, finalcell);
+    }
+
+    function calculateBlockManagerWalletAddress(TvmCell code, address root, uint256 pubkey) public returns(address) {
+        TvmCell s1 = composeBlockManagerWalletStateInit(code, root, pubkey);
+        return address.makeAddrStd(0, tvm.hash(s1));
+    }
+
+    function composeBlockManagerWalletStateInit(TvmCell code, address root, uint256 pubkey) public returns(TvmCell) {
+        return abi.encodeStateInit({
+            code: buildBlockManagerWalletCode(code, root),
+            contr: AckiNackiBlockManagerNodeWallet,
+            varInit: {_owner_pubkey: pubkey}
+        });
+    }
+
+    function buildBlockManagerWalletCode(
         TvmCell originalCode,
         address root
     ) public returns (TvmCell) {
@@ -187,6 +210,25 @@ library BlockKeeperLib {
     }
 
     function buildLicenseCode(
+        TvmCell originalCode
+    ) public returns (TvmCell) {
+        return originalCode;
+    }
+
+    function calculateLicenseBMAddress(TvmCell code, uint256 license_number, address root) public returns(address) {
+        TvmCell s1 = composeLicenseBMStateInit(code, license_number, root);
+        return address.makeAddrStd(0, tvm.hash(s1));
+    }
+
+    function composeLicenseBMStateInit(TvmCell code, uint256 license_number, address root) public returns(TvmCell) {
+        return abi.encodeStateInit({
+            code: buildLicenseBMCode(code),
+            contr: LicenseBMContract,
+            varInit: {_license_number: license_number, _root: root}
+        });
+    }
+
+    function buildLicenseBMCode(
         TvmCell originalCode
     ) public returns (TvmCell) {
         return originalCode;

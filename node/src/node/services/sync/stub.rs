@@ -3,13 +3,15 @@
 
 use telemetry_utils::mpsc::InstrumentedSender;
 
-use crate::block_keeper_system::BlockKeeperSet;
+use crate::bls::envelope::Envelope;
+use crate::bls::GoshBLS;
 use crate::message_storage::MessageDurableStorage;
-use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
+use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::services::sync::StateSyncService;
+use crate::node::shared_services::SharedServices;
 use crate::repository::repository_impl::RepositoryImpl;
-use crate::repository::CrossThreadRefData;
-use crate::repository::Repository;
+use crate::types::AckiNackiBlock;
+use crate::types::BlockIdentifier;
 
 pub struct StateSyncServiceStub {}
 
@@ -19,11 +21,11 @@ impl StateSyncService for StateSyncServiceStub {
 
     fn add_share_state_task(
         &mut self,
-        _state: <Self::Repository as Repository>::OptimisticState,
-        _cross_thread_ref_data: Vec<CrossThreadRefData>,
-        _finalized_block_stats: BlockStatistics,
-        _bk_set: BlockKeeperSet,
+        _finalized_block: &Envelope<GoshBLS, AckiNackiBlock>,
         _message_db: &MessageDurableStorage,
+        _repository: &RepositoryImpl,
+        _block_state_repository: &BlockStateRepository,
+        _shared_services: &SharedServices,
     ) -> anyhow::Result<Self::ResourceAddress> {
         todo!()
     }
@@ -38,7 +40,7 @@ impl StateSyncService for StateSyncServiceStub {
 
     fn generate_resource_address(
         &self,
-        _state: &<Self::Repository as Repository>::OptimisticState,
+        _block_id: &BlockIdentifier,
     ) -> anyhow::Result<Self::ResourceAddress> {
         todo!()
     }

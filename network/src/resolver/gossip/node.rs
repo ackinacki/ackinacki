@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::fmt;
 use std::net::SocketAddr;
 use std::str::FromStr;
 
@@ -12,25 +12,28 @@ pub struct GossipPeer<PeerId> {
     pub id: PeerId,
     pub advertise_addr: SocketAddr,
     pub proxies: Vec<Url>,
-    pub public_endpoint: Option<String>,
+    pub bm_api_socket: Option<StringSocketAddr>,
+    pub bk_api_socket: Option<StringSocketAddr>,
 }
 
 impl<PeerId> GossipPeer<PeerId>
 where
-    PeerId: FromStr<Err = anyhow::Error> + Display,
+    PeerId: FromStr<Err = anyhow::Error> + fmt::Display,
 {
     const ADVERTISE_ADDR_KEY: &'static str = "node_advertise_addr";
+    const BK_API_SOCKET_KEY: &'static str = "bk_api_socket";
+    const BM_API_SOCKET_KEY: &'static str = "bm_api_socket";
     const ID_KEY: &'static str = "node_id";
     const PROXIES_KEY: &'static str = "node_proxies";
-    const PUBLIC_ENDPOINT_KEY: &'static str = "public_endpoint";
 
     pub fn new(
         id: PeerId,
         advertise_addr: SocketAddr,
         proxies: Vec<Url>,
-        public_endpoint: Option<String>,
+        bm_api_socket: Option<StringSocketAddr>,
+        bk_api_socket: Option<StringSocketAddr>,
     ) -> Self {
-        Self { id, advertise_addr, proxies, public_endpoint }
+        Self { id, advertise_addr, proxies, bm_api_socket, bk_api_socket }
     }
 
     pub fn try_get_from(node_state: &NodeState) -> Option<Self> {
@@ -50,7 +53,8 @@ where
                 tracing::warn!(addr, "Invalid gossip {}: {err}", Self::ADVERTISE_ADDR_KEY);
             })
             .ok()?;
-        let public_endpoint = node_state.get(Self::PUBLIC_ENDPOINT_KEY).map(String::from);
+        let bm_api_socket = node_state.get(Self::BM_API_SOCKET_KEY).map(StringSocketAddr::from);
+        let bk_api_socket = node_state.get(Self::BK_API_SOCKET_KEY).map(StringSocketAddr::from);
         let proxies = node_state
             .get(Self::PROXIES_KEY)
             .map(|x| {
@@ -61,7 +65,7 @@ where
                     .unwrap_or_default()
             })
             .unwrap_or_default();
-        Some(Self { id, advertise_addr, proxies, public_endpoint })
+        Some(Self { id, advertise_addr, proxies, bm_api_socket, bk_api_socket })
     }
 
     pub fn set_to(&self, node_state: &mut NodeState) {
@@ -72,8 +76,25 @@ where
             }
         }
         node_state.set(Self::ID_KEY, self.id.to_string());
-        if let Some(endpoint) = &self.public_endpoint {
-            node_state.set(Self::PUBLIC_ENDPOINT_KEY, endpoint);
+        if let Some(endpoint) = &self.bm_api_socket {
+            node_state.set(Self::BM_API_SOCKET_KEY, endpoint);
         }
+        if let Some(endpoint) = &self.bk_api_socket {
+            node_state.set(Self::BK_API_SOCKET_KEY, endpoint);
+        }
+    }
+}
+
+impl<PeerId: fmt::Display> fmt::Display for GossipPeer<PeerId> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "GossipPeer {{ id: {}, advertise_addr: {}, proxies: [{}], bm_api_socket: {}, bk_api_socket: {} }}",
+            self.id,
+            self.advertise_addr,
+            self.proxies.iter().map(|url| url.to_string()).collect::<Vec<_>>().join(", "),
+            self.bm_api_socket.as_ref().map_or("None".to_string(), |s| s.to_string()),
+            self.bk_api_socket.as_ref().map_or("None".to_string(), |s| s.to_string()),
+        )
     }
 }

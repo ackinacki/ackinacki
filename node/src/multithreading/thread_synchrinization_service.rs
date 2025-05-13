@@ -47,11 +47,11 @@ impl ThreadSyncService {
     pub fn list_blocks_sending_messages_to_thread(
         &mut self,
         thread_identifier: &ThreadIdentifier,
-    ) -> anyhow::Result<Vec<BlockIdentifier>> {
+    ) -> anyhow::Result<Vec<(ThreadIdentifier, BlockIdentifier)>> {
         let other_threads_last_blocks = self
             .last_finalized_blocks
             .iter()
-            .filter_map(|(k, v)| if k != thread_identifier { Some(v.clone()) } else { None })
+            .filter_map(|(k, v)| if k != thread_identifier { Some((*k, v.clone())) } else { None })
             .collect();
         Ok(other_threads_last_blocks)
     }

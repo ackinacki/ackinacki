@@ -2,12 +2,9 @@
 //
 
 use std::path::Path;
-use std::sync::Arc;
 
-use parking_lot::Mutex;
 use telemetry_utils::mpsc::instrumented_channel;
 use telemetry_utils::mpsc::InstrumentedSender;
-use tvm_types::UInt256;
 
 // use std::thread::sleep;
 use super::feedback::AckiNackiSend;
@@ -21,7 +18,6 @@ use crate::node::shared_services::SharedServices;
 use crate::node::BlockState;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
-use crate::utilities::FixedSizeHashSet;
 
 #[derive(Clone)]
 pub struct ValidationServiceInterface {
@@ -52,7 +48,6 @@ impl ValidationService {
         node_config: Config,
         shared_services: SharedServices,
         block_state_repo: BlockStateRepository,
-        nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         send: AckiNackiSend,
         metrics: Option<BlockProductionMetrics>,
         message_db: MessageDurableStorage,
@@ -72,7 +67,6 @@ impl ValidationService {
                     blockchain_config.into(),
                     node_config,
                     shared_services,
-                    nack_set_cache,
                     send,
                     metrics,
                     message_db,

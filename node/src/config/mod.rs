@@ -140,6 +140,10 @@ pub struct NodeConfig {
     /// Path for message durable storage.
     #[builder(default = PathBuf::from("./message_storage/db"))]
     pub message_storage_path: PathBuf,
+
+    /// Limit of calls to the on_incoming_block_request function per second
+    #[builder(default = u32::MAX)]
+    pub rate_limit_on_incoming_block_req: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -170,7 +174,6 @@ impl Default for GlobalConfig {
             node_joining_timeout: Duration::from_secs(300),
             sync_gap: 32,
             sync_delay_milliseconds: 500,
-            // TODO: Critical! Fix repo issue and revert the value back to 200
             save_state_frequency: 200,
             block_keeper_epoch_code_hash:
                 "8246c7bdd8f2559b5f00e4334dba4612c2f48f52f0e3a5390298543d51a1ff1e".to_string(),
@@ -197,6 +200,7 @@ impl Default for NodeConfig {
             block_cache_size: 20,
             state_cache_size: 10,
             message_storage_path: PathBuf::from("./message_storage/db"),
+            rate_limit_on_incoming_block_req: u32::MAX,
         }
     }
 }

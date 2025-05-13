@@ -7,11 +7,15 @@ use serde::Deserialize;
 use serde::Serialize;
 use telemetry_utils::mpsc::InstrumentedSender;
 
-use crate::block_keeper_system::BlockKeeperSet;
+use crate::bls::envelope::Envelope;
+use crate::bls::GoshBLS;
 use crate::message_storage::MessageDurableStorage;
-use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
-use crate::repository::CrossThreadRefData;
+use crate::node::block_state::repository::BlockStateRepository;
+use crate::node::shared_services::SharedServices;
+use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
+use crate::types::AckiNackiBlock;
+use crate::types::BlockIdentifier;
 
 pub trait StateSyncService {
     type ResourceAddress: Serialize + for<'a> Deserialize<'a> + Clone + PartialEq + Display;
@@ -27,11 +31,11 @@ pub trait StateSyncService {
     // - use data storage to snapshot state and then publish it on ipfs.
     fn add_share_state_task(
         &mut self,
-        state: <Self::Repository as Repository>::OptimisticState,
-        cross_thread_ref_data: Vec<CrossThreadRefData>,
-        finalized_block_stats: BlockStatistics,
-        bk_set: BlockKeeperSet,
+        finalized_block: &Envelope<GoshBLS, AckiNackiBlock>,
         message_db: &MessageDurableStorage,
+        repository: &RepositoryImpl,
+        block_state_repository: &BlockStateRepository,
+        shared_services: &SharedServices,
     ) -> anyhow::Result<Self::ResourceAddress>;
 
     fn add_load_state_task(
@@ -42,6 +46,6 @@ pub trait StateSyncService {
 
     fn generate_resource_address(
         &self,
-        state: &<Self::Repository as Repository>::OptimisticState,
+        block_id: &BlockIdentifier,
     ) -> anyhow::Result<Self::ResourceAddress>;
 }

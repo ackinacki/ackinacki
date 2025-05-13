@@ -9,7 +9,7 @@ use serde_with::serde_as;
 use serde_with::Bytes;
 
 #[serde_as]
-#[derive(Deserialize, Serialize, Clone, PartialEq, Eq, Hash, Default)]
+#[derive(Deserialize, Serialize, Clone, PartialEq, Eq, Hash, Default, Ord, PartialOrd)]
 pub struct BlockIdentifier(#[serde_as(as = "Bytes")] pub(super) [u8; 32]);
 
 impl BlockIdentifier {
@@ -41,6 +41,12 @@ impl BlockIdentifier {
 impl AsRef<[u8]> for BlockIdentifier {
     fn as_ref(&self) -> &[u8] {
         &self.0
+    }
+}
+
+impl From<[u8; 32]> for BlockIdentifier {
+    fn from(bytes: [u8; 32]) -> BlockIdentifier {
+        Self(bytes)
     }
 }
 

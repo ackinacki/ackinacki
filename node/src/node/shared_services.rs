@@ -1,7 +1,13 @@
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use governor::DefaultKeyedRateLimiter;
+use governor::Quota;
+use governor::RateLimiter;
+
+use super::NodeIdentifier;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::multithreading::load_balancing_service::LoadBalancingService;
 use crate::multithreading::routing::service::RoutingService;
@@ -20,6 +26,7 @@ const DIRTY_HACK__CACHE_SIZE: usize = 10000; // 100 blocks for 100 threads.
 pub struct SharedServices {
     container: Arc<Mutex<Container>>,
     pub metrics: Option<BlockProductionMetrics>,
+    limiter: Arc<DefaultKeyedRateLimiter<NodeIdentifier>>,
 }
 
 #[allow(dead_code, non_snake_case)]
@@ -45,9 +52,9 @@ pub struct Container {
 
 impl SharedServices {
     #[cfg(test)]
-    pub fn test_start(router: RoutingService) -> Self {
+    pub fn test_start(router: RoutingService, rate: u32) -> Self {
         // An alias to make a little easier code navidation
-        Self::start(router, PathBuf::from("./data-dir-test"), None, 5000, 100)
+        Self::start(router, PathBuf::from("./data-dir-test"), None, 5000, 100, rate)
     }
 
     pub fn start(
@@ -56,6 +63,7 @@ impl SharedServices {
         metrics: Option<BlockProductionMetrics>,
         thread_load_threshold: usize,
         thread_load_window_size: usize,
+        rate_limit_on_incoming_block_req: u32,
     ) -> Self {
         Self {
             container: Arc::new(Mutex::new(Container {
@@ -73,6 +81,12 @@ impl SharedServices {
                 dirty_hack__invalidated_blocks: FixedSizeHashSet::new(DIRTY_HACK__CACHE_SIZE),
             })),
             metrics,
+            // Arc is enough for the rate limiter, since its state lives in AtomicU64
+            // https://docs.rs/governor/latest/governor/_guide/index.html#wrapping-the-limiter-in-an-arc
+            limiter: Arc::new(RateLimiter::keyed(Quota::per_second(
+                NonZeroU32::new(rate_limit_on_incoming_block_req.max(1))
+                    .expect("Rate limit is non-zero"),
+            ))),
         }
     }
 
@@ -125,5 +139,74 @@ impl SharedServices {
             }
             services.load_balancing.handle_block_finalized(block, state);
         });
+    }
+
+    pub fn throttle(&self, node_id: &NodeIdentifier) -> anyhow::Result<()> {
+        self.limiter.check_key(node_id).map_err(|error| {
+            anyhow::anyhow!("Rate limit exceeded for node {}, until {}", node_id, error)
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+    #[test]
+    fn throttling_one_thread_no_limits() -> anyhow::Result<()> {
+        let shared_services = SharedServices::test_start(RoutingService::stub().0, u32::MAX);
+
+        let node_id_0 = NodeIdentifier::from_str("a".repeat(64).as_str())?;
+        let node_id_1 = NodeIdentifier::from_str("b".repeat(64).as_str())?;
+
+        for _ in 1..1000 {
+            assert!(shared_services.throttle(&node_id_0).is_ok());
+            assert!(shared_services.throttle(&node_id_1).is_ok());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn throttling_two_threads_gt_then_limit() -> anyhow::Result<()> {
+        let shared_services = SharedServices::test_start(RoutingService::stub().0, 100);
+
+        let node_id_0 = NodeIdentifier::from_str(&"a".repeat(64))?;
+        let node_id_1 = NodeIdentifier::from_str(&"b".repeat(64))?;
+
+        // These requests must be throttled
+        let shared_services_0 = shared_services.clone();
+        let node_id_0_cloned = node_id_0.clone();
+
+        let handle_0 = std::thread::Builder::new()
+            .name("t_0".to_string())
+            .spawn(move || {
+                (0..200).map(|_| shared_services_0.throttle(&node_id_0_cloned)).collect::<Vec<_>>()
+            })
+            .unwrap();
+
+        // These requests must be all OK
+        let shared_services_1 = shared_services.clone();
+        let node_id_1_cloned = node_id_1.clone();
+        let handle_1 = std::thread::Builder::new()
+            .name("t_1".to_string())
+            .spawn(move || {
+                (0..100).map(|_| shared_services_1.throttle(&node_id_1_cloned)).collect::<Vec<_>>()
+            })
+            .unwrap();
+
+        let results_0 = handle_0.join().expect("Thread 0 panicked");
+        let results_1 = handle_1.join().expect("Thread 1 panicked");
+
+        assert!(results_0.iter().any(|r| r.is_err()));
+        assert!(results_1.iter().all(|r| r.is_ok()));
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // Now all requests must be OK
+        for _ in 1..200 {
+            assert!(shared_services.throttle(&node_id_0).is_ok());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        Ok(())
     }
 }

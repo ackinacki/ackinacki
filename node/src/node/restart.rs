@@ -15,7 +15,9 @@ where
     pub(crate) fn restart_bk(&mut self) -> anyhow::Result<()> {
         tracing::trace!("Restart BK");
 
-        for (block_state, candidate_block) in self.unprocessed_blocks_cache.clone_queue().values() {
+        for (block_state, candidate_block) in
+            self.repository.unprocessed_blocks_cache().clone_queue().values()
+        {
             // If block was applied, perform on_block_appended
             if block_state.guarded(|e| e.is_block_already_applied()) {
                 self.shared_services.on_block_appended(candidate_block.data());

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 
 use serde::Deserialize;
@@ -54,6 +55,10 @@ pub enum CanRefQueryResult {
 }
 
 impl ThreadReferencesState {
+    pub fn all_thread_refs(&self) -> &HashMap<ThreadIdentifier, ReferencedBlock> {
+        &self.all_thread_refs
+    }
+
     pub fn update(
         &mut self,
         thread: ThreadIdentifier,
@@ -79,42 +84,36 @@ impl ThreadReferencesState {
             }));
         }
         let mut tails = self.all_thread_refs.clone();
-        let mut all_referenced_blocks = vec![];
         let mut stack: VecDeque<BlockIdentifier> = explicit_references.into();
+        let mut all_referenced_blocks = vec![];
+        let previously_referenced_set: HashSet<_> =
+            self.all_thread_refs.values().map(|e| e.block_identifier.clone()).collect();
 
+        let mut explicitly_referenced_set = HashSet::new();
         while let Some(cursor) = stack.pop_front() {
             let trail = walk_back_into_history(&cursor, &mut get_ref_data, &tails)?;
-
             for block in trail.into_iter().rev() {
                 let referenced_block: ReferencedBlock = block.as_reference_state_data().into();
                 let thread_id = *block.block_thread_identifier();
-                match tails.get(&thread_id) {
-                    Some(existing) if *block.block_seq_no() > existing.block_seq_no => {
-                        tails.insert(thread_id, referenced_block.clone());
+                let should_update = match tails.get(&thread_id) {
+                    Some(existing) => *block.block_seq_no() > existing.block_seq_no,
+                    None => true,
+                };
+                if should_update {
+                    tails.insert(thread_id, referenced_block.clone());
+                    if !previously_referenced_set.contains(&referenced_block.block_identifier) {
+                        explicitly_referenced_set.insert(referenced_block.block_identifier.clone());
                     }
-                    None => {
-                        tails.insert(thread_id, referenced_block.clone());
-                    }
-                    _ => {}
                 }
-
                 all_referenced_blocks.push(referenced_block);
                 stack.extend(block.refs().iter().cloned());
             }
         }
-
-        let previously_referenced_blocks: Vec<_> =
-            self.all_thread_refs.values().map(|e| e.block_identifier.clone()).collect();
-
-        let explicitly_referenced_blocks: Vec<_> = tails
-            .values()
-            .filter(|e| !previously_referenced_blocks.contains(&e.block_identifier))
-            .map(|e| e.block_identifier.clone())
-            .collect();
-
-        let implicitly_referenced_blocks: Vec<BlockIdentifier> = all_referenced_blocks
+        let explicitly_referenced_blocks: Vec<_> = explicitly_referenced_set.into_iter().collect();
+        let explicit_set: HashSet<_> = explicitly_referenced_blocks.iter().cloned().collect();
+        let implicitly_referenced_blocks: Vec<_> = all_referenced_blocks
             .into_iter()
-            .filter(|e| !explicitly_referenced_blocks.contains(&e.block_identifier))
+            .filter(|e| !explicit_set.contains(&e.block_identifier))
             .map(|e| e.block_identifier)
             .collect();
 
@@ -212,7 +211,13 @@ where
             if &thread_last_block.block_seq_no >= cursor.block_seq_no() {
                 if &thread_last_block.block_seq_no == cursor.block_seq_no() {
                     // Sanity check.
-                    assert_eq!(&thread_last_block.block_identifier, cursor.block_identifier());
+                    // Note: Changed panic to error. This can happen when this node has produced a block, and fork was finalized.
+                    // Production process was triggered to stop, but it can race to start new block production and produce block (after the one that has lost the fork choice).
+                    // In this case producing block will be based on the invalid state.
+                    anyhow::ensure!(
+                        &thread_last_block.block_identifier == cursor.block_identifier(),
+                        "Wrong state refs"
+                    );
                 }
                 return Ok(trail);
             }

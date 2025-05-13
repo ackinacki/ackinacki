@@ -2,17 +2,21 @@
 //
 
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use chitchat::Chitchat;
+use serde::Serialize;
+use telemetry_utils::mpsc::instrumented_channel;
+use telemetry_utils::mpsc::InstrumentedChannelMetrics;
+use telemetry_utils::mpsc::InstrumentedReceiver;
 use url::Url;
 
 use crate::channel::NetBroadcastSender;
 use crate::channel::NetDirectSender;
-use crate::channel::NetReceiver;
 use crate::config::NetworkConfig;
 use crate::detailed;
 use crate::direct_sender;
@@ -24,10 +28,16 @@ use crate::pub_sub::spawn_critical_task;
 use crate::pub_sub::IncomingSender;
 use crate::resolver::watch_gossip;
 use crate::resolver::SubscribeStrategy;
-use crate::NetworkMessage;
+use crate::socket_addr::StringSocketAddr;
 
 pub const BROADCAST_RETENTION_CAPACITY: usize = 100;
 const DEFAULT_MAX_CONNECTIONS: usize = 200;
+
+#[derive(Clone, Debug)]
+pub struct PeerData {
+    pub peer_url: Url,
+    pub bk_api_socket: Option<StringSocketAddr>,
+}
 
 pub struct BasicNetwork {
     config: NetworkConfig,
@@ -38,26 +48,30 @@ impl BasicNetwork {
         Self { config }
     }
 
-    pub async fn start<PeerId, Message>(
+    pub async fn start<PeerId, Message, ChannelMetrics>(
         &self,
         metrics: Option<NetMetrics>,
-        self_id: PeerId,
+        channel_metrics: Option<ChannelMetrics>,
+        self_peer_id: PeerId,
         chitchat: Arc<tokio::sync::Mutex<Chitchat>>,
     ) -> anyhow::Result<(
         NetDirectSender<PeerId, Message>,
         NetBroadcastSender<Message>,
-        NetReceiver<Message>,
-        tokio::sync::watch::Receiver<HashMap<PeerId, Url>>,
+        InstrumentedReceiver<IncomingMessage>,
+        tokio::sync::watch::Receiver<HashMap<PeerId, PeerData>>,
     )>
     where
-        Message: NetworkMessage + 'static,
+        Message:
+            Debug + for<'de> serde::Deserialize<'de> + Serialize + Send + Sync + Clone + 'static,
         PeerId: Clone + Display + Send + Sync + Hash + Eq + FromStr<Err = anyhow::Error> + 'static,
+        ChannelMetrics: InstrumentedChannelMetrics + Send + Sync + 'static,
     {
         tracing::info!("Starting network with configuration: {:?}", self.config);
 
         let tls_config = self.config.tls_config();
 
-        let (incoming_tx, incoming_rx) = std::sync::mpsc::channel::<IncomingMessage>();
+        let (incoming_tx, incoming_rx) =
+            instrumented_channel::<IncomingMessage>(channel_metrics, "network_incoming");
         let (outgoing_broadcast_tx, _) = tokio::sync::broadcast::channel::<OutgoingMessage>(1000);
         let (outgoing_direct_tx, outgoing_direct_rx) =
             tokio::sync::mpsc::unbounded_channel::<(PeerId, NetMessage, std::time::Instant)>();
@@ -79,7 +93,7 @@ impl BasicNetwork {
         spawn_critical_task(
             "Gossip",
             watch_gossip(
-                SubscribeStrategy::Peer(self_id.clone()),
+                SubscribeStrategy::Peer(self_peer_id.clone()),
                 chitchat.clone(),
                 gossip_subscribe_tx,
                 gossip_peers_tx,
@@ -121,9 +135,13 @@ impl BasicNetwork {
         });
 
         Ok((
-            NetDirectSender::<PeerId, Message>::new(outgoing_direct_tx, metrics.clone(), self_id),
+            NetDirectSender::<PeerId, Message>::new(
+                outgoing_direct_tx,
+                metrics.clone(),
+                self_peer_id,
+            ),
             NetBroadcastSender::<Message>::new(outgoing_broadcast_tx, metrics.clone()),
-            NetReceiver::<Message>::new(incoming_rx, metrics.clone()),
+            incoming_rx,
             peers_rx,
         ))
     }

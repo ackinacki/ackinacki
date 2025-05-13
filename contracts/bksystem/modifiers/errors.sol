@@ -102,4 +102,5 @@ abstract contract Errors {
     uint16 constant ERR_LICENSE_BUSY = 291;
     uint16 constant ERR_WAIT_STAKE = 292;
     uint16 constant ERR_NOT_SUPPORT = 293;
+    uint16 constant ERR_WRONG_LICENSE = 294;
 }

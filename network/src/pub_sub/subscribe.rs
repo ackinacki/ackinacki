@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use url::Url;
 
 use crate::detailed;
@@ -12,6 +14,14 @@ use crate::pub_sub::connection::OutgoingMessage;
 use crate::pub_sub::IncomingSender;
 use crate::pub_sub::PubSub;
 use crate::tls::TlsConfig;
+
+fn join_urls(urls: &[Url]) -> String {
+    urls.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
+}
+
+fn task_urls(urls: &HashMap<tokio::task::Id, Vec<Url>>, id: tokio::task::Id) -> String {
+    urls.get(&id).map(|x| join_urls(x)).unwrap_or_default()
+}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_subscriptions(
@@ -43,27 +53,47 @@ pub async fn handle_subscriptions(
 
         let mut successfully_subscribed = 0;
         let should_be_subscribed_len = should_be_subscribed.len();
-        for urls in should_be_subscribed {
-            match pub_sub
-                .connect_to_peer(
-                    metrics.clone(),
-                    &incoming_messages,
-                    &outgoing_messages,
-                    &connection_closed_tx,
-                    &tls_config,
-                    &urls,
-                    true,
-                )
-                .await
-            {
-                Ok(_) => successfully_subscribed += 1,
-                Err(err) => {
+        let mut connect_tasks = JoinSet::new();
+        let mut urls_by_task_id = HashMap::<tokio::task::Id, Vec<Url>>::new();
+        for urls in should_be_subscribed.clone() {
+            let pub_sub = pub_sub.clone();
+            let metrics = metrics.clone();
+            let incoming_messages = incoming_messages.clone();
+            let outgoing_messages = outgoing_messages.clone();
+            let connection_closed_tx = connection_closed_tx.clone();
+            let tls_config = tls_config.clone();
+            let urls_clone = urls.clone();
+            let abort_handle = connect_tasks.spawn(async move {
+                pub_sub
+                    .connect_to_peer(
+                        metrics,
+                        &incoming_messages,
+                        &outgoing_messages,
+                        &connection_closed_tx,
+                        &tls_config,
+                        &urls_clone,
+                        true,
+                    )
+                    .await
+            });
+            urls_by_task_id.insert(abort_handle.id(), urls);
+        }
+        while let Some(task) = connect_tasks.join_next_with_id().await {
+            match task {
+                Ok((_task_id, Ok(()))) => successfully_subscribed += 1,
+                Ok((task_id, Err(err))) => {
                     tracing::error!(
-                        urls = urls.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","),
+                        urls = task_urls(&urls_by_task_id, task_id),
                         "Subscribe to peer failed: {}",
                         detailed(&err)
                     );
-                    continue;
+                }
+                Err(err) => {
+                    tracing::error!(
+                        urls = task_urls(&urls_by_task_id, err.id()),
+                        "Subscribe to peer panic: {}",
+                        detailed(&err)
+                    );
                 }
             }
         }
@@ -74,10 +104,16 @@ pub async fn handle_subscriptions(
             // Infinite sleep
             Duration::from_secs(60 * 60)
         };
+
+        // Waiting for one of:
+        // - subscribe list was changed
+        // - 100 ms timeout after failed subscriptions
+        // - our subscription connection was closed
         loop {
             tokio::select! {
                 result = subscribe_rx.changed() => {
                     if result.is_err() {
+                        // if subscribe sender was dropped, exit subscriptions loop
                         break 'handler;
                     }
                     reason = "subscribe changed".to_string();
@@ -87,6 +123,7 @@ pub async fn handle_subscriptions(
                 }
                 connection = connection_closed_rx.recv() => {
                     if let Some(connection) = connection {
+                        // if closed connection is not our subscription, continue waiting
                         if !connection.self_is_subscriber {
                             continue;
                         }

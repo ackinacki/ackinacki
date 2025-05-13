@@ -3,13 +3,12 @@ use std::time::Instant;
 
 use tokio::sync::mpsc;
 use tokio::sync::watch;
-use wtransport::Connection;
 
 use crate::detailed;
-use crate::message::NetMessage;
 use crate::metrics::NetMetrics;
 use crate::pub_sub::connection::ConnectionWrapper;
 use crate::pub_sub::connection::OutgoingMessage;
+use crate::transfer::transfer;
 use crate::DeliveryPhase;
 use crate::SendMode;
 
@@ -45,12 +44,12 @@ pub async fn sender(
                 };
                 if connection.allow_sending(&outgoing) {
                     outgoing.message.id.push(':');
-                    outgoing.message.id.push_str(&connection.peer_id.to_string());
+                    outgoing.message.id.push_str(&connection.host_id_prefix);
                     let metrics = metrics.clone();
                     let connection = connection.clone();
                     let transfer_result_tx = transfer_result_tx.clone();
                     tracing::debug!(
-                        peer_id = connection.peer_id.to_string(),
+                        host_id = connection.host_id_prefix,
                         msg_id = outgoing.message.id,
                         msg_type = outgoing.message.label,
                         broadcast = true,
@@ -76,14 +75,14 @@ pub async fn sender(
                             );
                         });
                         tracing::debug!(
-                            peer_id = connection.peer_id.to_string(),
+                            host_id = connection.host_id_prefix,
                             msg_id = outgoing.message.id,
                             msg_type = outgoing.message.label,
                             broadcast = true,
                             "Message delivery: outgoing transfer started"
                         );
                         let transfer_duration = Instant::now();
-                        let transfer_result = transfer(&connection.connection, &mut outgoing.message).await;
+                        let transfer_result = transfer(&connection.connection, &outgoing.message,  &metrics).await;
                         metrics.as_ref().inspect(|x| {
                             x.finish_delivery_phase(
                                 DeliveryPhase::OutgoingTransfer,
@@ -93,7 +92,9 @@ pub async fn sender(
                                 transfer_duration.elapsed(),
                             );
                         });
-                        let _ = transfer_result_tx.send((transfer_result, outgoing.message)).await;
+                        if let Err(err) = transfer_result_tx.send((transfer_result, outgoing.message)).await {
+                            tracing::error!("Can not report message delivery result: {}",err);
+                        }
                     });
                 }
             },
@@ -101,7 +102,7 @@ pub async fn sender(
                 match transfer_result.unwrap() {
                     (Ok(()), net_message) => {
                         tracing::debug!(
-                            peer_id = connection.peer_id.to_string(),
+                            host_id = connection.host_id_prefix,
                             msg_id = net_message.id,
                             msg_type = net_message.label,
                             broadcast = true,
@@ -110,7 +111,7 @@ pub async fn sender(
                     },
                     (Err(err), net_message) => {
                         tracing::error!(
-                            peer_id = connection.peer_id.to_string(),
+                            host_id = connection.host_id_prefix,
                             msg_id = net_message.id,
                             msg_type = net_message.label,
                             broadcast = true,
@@ -118,7 +119,7 @@ pub async fn sender(
                             detailed(&err),
                         );
                         metrics.as_ref().inspect(|x| {
-                            x.report_outgoing_transfer_error(&net_message.label, SendMode::Broadcast);
+                            x.report_outgoing_transfer_error(&net_message.label, SendMode::Broadcast, err);
                         });
                         break;
                     },
@@ -132,26 +133,5 @@ pub async fn sender(
         }
     }
     tracing::trace!(peer = connection.peer_info(), "Sender loop finished");
-    Ok(())
-}
-
-async fn transfer(connection: &Connection, wrapped: &mut NetMessage) -> anyhow::Result<()> {
-    let data = bincode::serialize(wrapped)?;
-    let mut send_stream = connection
-        .open_uni()
-        .await
-        .inspect_err(|err| {
-            tracing::error!("Failed to opening outgoing stream: {}", detailed(err));
-        })?
-        .await
-        .inspect_err(|err| {
-            tracing::error!("Failed to open outgoing stream: {}", detailed(err));
-        })?;
-    send_stream.write_all(&data).await.inspect_err(|err| {
-        tracing::error!("Failed to write to outgoing stream: {}", detailed(err));
-    })?;
-    send_stream.finish().await.inspect_err(|err| {
-        tracing::error!("Failed to close outgoing stream: {}", detailed(err));
-    })?;
     Ok(())
 }

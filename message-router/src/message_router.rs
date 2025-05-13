@@ -21,7 +21,6 @@ use crate::base64_id_decode;
 use crate::bp_resolver::BPResolver;
 use crate::defaults::DEFAULT_BK_API_TIMEOUT;
 use crate::defaults::DEFAULT_NODE_URL_PATH;
-use crate::defaults::DEFAULT_NODE_URL_PORT;
 use crate::defaults::DEFAULT_NODE_URL_PROTO;
 use crate::defaults::DEFAULT_URL_PATH;
 
@@ -124,7 +123,7 @@ impl MessageRouter {
             .filter_map(|nr| base64_id_decode(&nr["id"]).ok().map(|id| (nr["id"].clone(), id)))
             .collect();
 
-        tracing::info!(target: "message_router", "Ext messages received: {:?}", ids.iter().map(|(k, v)| format!("{v} ({k})")));
+        tracing::info!(target: "message_router", "Ext messages received: {:?}", nrs.iter().map(|nr| format!("{}", nr["id"])));
 
         let recipients = bp_resolver.lock().resolve(Some(thread_id.clone()));
         tracing::trace!(target: "message_router", "Resolved BPs (thread={:?}): {:?}", thread_id, recipients);
@@ -202,7 +201,7 @@ impl MessageRouter {
 }
 
 fn construct_url(host: SocketAddr) -> String {
-    format!("{DEFAULT_NODE_URL_PROTO}://{}:{}{}", host.ip(), DEFAULT_NODE_URL_PORT, *NODE_URL_PATH)
+    format!("{DEFAULT_NODE_URL_PROTO}://{}:{}{}", host.ip(), host.port(), *NODE_URL_PATH)
 }
 
 #[cfg(test)]

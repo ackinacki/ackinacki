@@ -48,7 +48,8 @@ pub fn download_blob(
                     is_downloaded = true;
                     break;
                 }
-                Err(_) => {
+                Err(e) => {
+                    tracing::error!("Download failed: {}", e);
                     file.set_len(0)?;
                     file.sync_all()?;
                 }

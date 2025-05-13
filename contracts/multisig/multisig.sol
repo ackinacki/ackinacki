@@ -73,8 +73,6 @@ contract MultisigWallet is IAccept {
     // Send flags.
     // Forward fees for message will be paid from contract balance.
     uint8 constant FLAG_PAY_FWD_FEE_FROM_BALANCE = 1;
-    // Tells node to ignore errors in action phase while outbound messages are sent.
-    uint8 constant FLAG_IGNORE_ERRORS = 2;
     // Tells node to send all remaining balance.
     uint8 constant FLAG_SEND_ALL_REMAINING = 128;
 
@@ -104,6 +102,7 @@ contract MultisigWallet is IAccept {
     /*
     Exception codes:
     100 - message sender is not a custodian;
+    101 - zero owner
     102 - transaction does not exist;
     103 - operation is already confirmed by this custodian;
     107 - input value is too low;
@@ -139,10 +138,12 @@ contract MultisigWallet is IAccept {
     function _initialize(uint256[] owners, uint8 reqConfirms) inline private {
         uint8 ownerCount = 0;
         m_ownerKey = owners[0];
+        require(m_ownerKey != 0, 101);
 
         uint256 len = owners.length;
         for (uint256 i = 0; (i < len && ownerCount < MAX_CUSTODIAN_COUNT); i++) {
             uint256 key = owners[i];
+            require(key != 0, 101);
             if (!m_custodians.exists(key)) {
                 m_custodians[key] = ownerCount++;
             }
@@ -232,14 +233,12 @@ contract MultisigWallet is IAccept {
     }
 
     /// @dev Returns transfer flags according to input value and `allBalance` flag.
-    function _getSendFlags(uint128 value, bool allBalance, mapping(uint32 => varuint32) cc) inline private pure returns (uint8, uint128, mapping(uint32 => varuint32)) {        
-        uint8 flags = FLAG_IGNORE_ERRORS | FLAG_PAY_FWD_FEE_FROM_BALANCE;
+    function _getSendFlags(bool allBalance) inline private pure returns (uint8) {        
+        uint8 flags = FLAG_PAY_FWD_FEE_FROM_BALANCE;
         if (allBalance) {
-            flags = FLAG_IGNORE_ERRORS | FLAG_SEND_ALL_REMAINING;
-            value = uint128(address(this).balance);
-            cc = address(this).currencies;
+            flags = FLAG_SEND_ALL_REMAINING;
         }
-        return (flags, value, cc);
+        return flags;
     }
 
     /*
@@ -301,17 +300,17 @@ contract MultisigWallet is IAccept {
         require(_getMaskValue(m_requestsMask, index) < MAX_QUEUED_REQUESTS, 113);
         tvm.accept();
 
-        (uint8 flags, uint128 realValue, mapping(uint32 => varuint32) realcc) = _getSendFlags(value, allBalance, cc);        
+        uint8 flags = _getSendFlags(allBalance);        
         uint8 requiredSigns = m_defaultRequiredConfirmations;
 
         if (requiredSigns == 1) {
-            dest.transfer(varuint16(realValue), bounce, flags, payload, realcc);
+            dest.transfer(varuint16(value), bounce, flags, payload, cc);
             return 0;
         } else {
             m_requestsMask = _incMaskValue(m_requestsMask, index);
             uint64 trId = _generateId();
             Transaction txn = Transaction(trId, 0/*mask*/, requiredSigns, 0/*signsReceived*/,
-                senderKey, index, dest, realValue, realcc, flags, payload, bounce);
+                senderKey, index, dest, value, cc, flags, payload, bounce);
 
             _confirmTransaction(trId, txn, index);
             return trId;
@@ -328,8 +327,13 @@ contract MultisigWallet is IAccept {
         Transaction txn = otxn.get();
         require(!_isConfirmed(txn.confirmationsMask, index), 103);
         tvm.accept();
-
-        _confirmTransaction(transactionId, txn, index);
+        uint64 marker = _getExpirationBound();
+        bool needCleanup = transactionId <= marker;
+        if (needCleanup) {
+            delete m_transactions[transactionId];   
+        } else {
+            _confirmTransaction(transactionId, txn, index);
+        }
     }
 
     /*
@@ -485,6 +489,7 @@ contract MultisigWallet is IAccept {
         require(owners.length > 0 && owners.length <= MAX_CUSTODIAN_COUNT, 117);
         _removeExpiredUpdateRequests();
         require(!_isSubmitted(m_updateRequestsMask, index), 113);
+        require(reqConfirms > 0, 123);
         tvm.accept();
 
         m_updateRequestsMask = _setSubmitted(m_updateRequestsMask, index);

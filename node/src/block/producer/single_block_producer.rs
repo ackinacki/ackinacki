@@ -165,6 +165,7 @@ impl BlockProducer for TVMBlockProducer {
                     &thread_identifier,
                     &cross_thread_ref_data_service,
                     wrapped_slash_messages,
+                    self.epoch_block_keeper_data.clone(),
                     message_db.clone(),
                 )?;
                 Ok::<_, anyhow::Error>((
@@ -204,7 +205,6 @@ impl BlockProducer for TVMBlockProducer {
                 self.message_queue.clone(),
                 &self.blockchain_config,
                 active_threads,
-                self.epoch_block_keeper_data.clone(),
                 None,
                 white_list_of_slashing_messages_hashes,
                 message_db.clone(),

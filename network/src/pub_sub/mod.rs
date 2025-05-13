@@ -31,6 +31,7 @@ use wtransport::Endpoint;
 
 use crate::detailed;
 use crate::metrics::NetMetrics;
+use crate::pub_sub::connection::connection_host_id;
 use crate::tls::create_client_config;
 use crate::tls::TlsConfig;
 
@@ -86,7 +87,7 @@ impl PubSub {
     ) -> anyhow::Result<()> {
         let client_config = create_client_config(config)?;
         let endpoint = Endpoint::client(client_config)?;
-        let (connection, url) = 'connect: {
+        let (connection, host_id, url) = 'connect: {
             for url in urls {
                 let mut connect_options = ConnectOptions::builder(urls[0].as_ref());
                 if subscribe {
@@ -94,9 +95,17 @@ impl PubSub {
                         connect_options.add_header(ACKI_NACKI_SUBSCRIBE_HEADER, "true");
                 }
                 match endpoint.connect(connect_options.build()).await {
-                    Ok(connection) => {
-                        break 'connect (connection, url);
-                    }
+                    Ok(connection) => match connection_host_id(&connection) {
+                        Ok(host_id) => {
+                            break 'connect (connection, host_id, url);
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                url = url.as_ref().to_string(),
+                                "Failed to get host id: {err}"
+                            );
+                        }
+                    },
                     Err(err) => {
                         tracing::error!(
                             url = url.as_ref().to_string(),
@@ -110,11 +119,11 @@ impl PubSub {
 
         self.add_connection_handler(
             metrics.clone(),
-            config.my_cert.is_debug(),
             incoming_messages,
             outgoing_messages,
             connection_closed,
             connection,
+            host_id,
             Some(url.clone()),
             subscribe,
             false,
@@ -125,27 +134,18 @@ impl PubSub {
     pub fn add_connection_handler(
         &self,
         metrics: Option<NetMetrics>,
-        is_debug: bool,
         incoming_messages_tx: &IncomingSender,
         outgoing_messages_tx: &broadcast::Sender<OutgoingMessage>,
         connection_closed_tx: &mpsc::Sender<Arc<ConnectionWrapper>>,
         connection: Connection,
+        host_id: String,
         url: Option<Url>,
         self_is_subscriber: bool,
         peer_is_subscriber: bool,
     ) -> anyhow::Result<()> {
-        let Some(identity) = connection.peer_identity() else {
-            anyhow::bail!("Connection peer has no certificate chain");
-        };
-
-        let Some(first_cert) = identity.as_slice().first() else {
-            anyhow::bail!("Connection peer has no certificates");
-        };
-
         let connection = Arc::new(ConnectionWrapper::new(
-            is_debug,
             url,
-            first_cert.hash().to_string(),
+            host_id,
             connection,
             self_is_subscriber,
             peer_is_subscriber,
@@ -172,6 +172,7 @@ impl PubSub {
         tracing::info!(
             connection_count = inner.connections.len(),
             peer = connection.peer_info(),
+            host_id = connection.host_id_prefix,
             "Added new connection"
         );
         Ok(())
@@ -184,6 +185,7 @@ impl PubSub {
         tracing::info!(
             connection_count = inner.connections.len(),
             peer = connection.peer_info(),
+            host_id = connection.host_id_prefix,
             "Removed connection"
         );
         if connection.self_is_subscriber {

@@ -17,6 +17,7 @@ use serde::Serializer;
 use tvm_types::AccountId;
 use typed_builder::TypedBuilder;
 
+use super::block_request_service::BlockRequestService;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::gosh_bls::PubKey;
@@ -209,6 +210,13 @@ where
     TStateSyncService: StateSyncService<Repository = RepositoryImpl>,
     TRandomGenerator: rand::Rng,
 {
+    type Ack = Envelope<GoshBLS, AckData>;
+    type BlockAttestation = Envelope<GoshBLS, AttestationData>;
+    type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>;
+    type Nack = Envelope<GoshBLS, NackData>;
+}
+
+impl NodeAssociatedTypes for BlockRequestService {
     type Ack = Envelope<GoshBLS, AckData>;
     type BlockAttestation = Envelope<GoshBLS, AttestationData>;
     type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>;

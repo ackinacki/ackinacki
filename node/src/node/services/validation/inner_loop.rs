@@ -8,10 +8,8 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
-use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use tvm_executor::BlockchainConfig;
-use tvm_types::UInt256;
 
 use crate::block::verify::verify_block;
 use crate::bls::envelope::BLSSignedEnvelope;
@@ -28,7 +26,6 @@ use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
-use crate::utilities::FixedSizeHashSet;
 
 fn read_into_buffer(
     rx: &mut InstrumentedReceiver<BlockState>,
@@ -63,8 +60,6 @@ pub(super) fn inner_loop(
     blockchain_config: Arc<BlockchainConfig>,
     node_config: Config,
     mut shared_services: SharedServices,
-    // TODO: !!! THIS MUST BE KILLED
-    nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     send: AckiNackiSend,
     metrics: Option<BlockProductionMetrics>,
     message_db: MessageDurableStorage,
@@ -129,7 +124,6 @@ pub(super) fn inner_loop(
             let Ok(Some(mut prev_state)) = repository.get_optimistic_state(
                 &prev_block_id,
                 &next_block.get_common_section().thread_id,
-                Arc::clone(&nack_set_cache),
                 None,
             ) else {
                 continue;
@@ -176,7 +170,7 @@ pub(super) fn inner_loop(
             if verify_res {
                 let _ = send.send_ack(state.clone());
             } else if cfg!(feature = "nack-on-block-verification-fail") {
-                let _ = send.send_nack_bad_block(state.clone(), next_envelope);
+                let _ = send.send_nack_bad_block(state.clone(), next_envelope.as_ref().clone());
             }
         }
     }

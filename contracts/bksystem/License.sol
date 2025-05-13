@@ -213,6 +213,6 @@ contract LicenseContract is Modifiers {
      * @return type The type of the contract.
      */
     function getVersion() external pure returns(string, string) {
-        return (version, "BlockKeeperContractRoot");
+        return (version, "LicenseBlockKeeper");
     }   
 }

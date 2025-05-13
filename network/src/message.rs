@@ -18,6 +18,8 @@ pub struct NetMessage {
     pub label: String,
     pub compressed: bool,
     pub data: Arc<Vec<u8>>,
+    #[serde(skip)]
+    pub received_at: u64,
 }
 
 impl NetMessage {
@@ -26,14 +28,14 @@ impl NetMessage {
         if now >= self.delivery_start_timestamp_ms {
             Ok(now - self.delivery_start_timestamp_ms)
         } else if self.delivery_start_timestamp_ms - now < 5 {
-            // we think that a 5ms difference in clock synchronization is acceptable
+            // 5ms difference in clock synchronization is acceptable
             Ok(0)
         } else {
             Err("System clock out of sync. Please check NTP or system time settings.".to_string())
         }
     }
 
-    pub fn encode<Message: Debug + Serialize>(message: &Message) -> anyhow::Result<Self> {
+    pub fn encode<Message: Debug + Serialize>(message: &Message) -> anyhow::Result<(Self, usize)> {
         let label = format!("{:#?}", message);
         let start = Instant::now();
         let mut data = match bincode::serialize(message) {
@@ -72,16 +74,20 @@ impl NetMessage {
                 compress_time + serialize_time
             );
         }
-        Ok(Self {
-            delivery_start_timestamp_ms: now.as_millis() as u64,
-            id,
-            data: Arc::new(data),
-            label,
-            compressed,
-        })
+        Ok((
+            Self {
+                delivery_start_timestamp_ms: now.as_millis() as u64,
+                id,
+                data: Arc::new(data),
+                label,
+                compressed,
+                received_at: u64::default(),
+            },
+            uncompressed_size,
+        ))
     }
 
-    pub fn decode<Message: DeserializeOwned>(&self) -> anyhow::Result<Message> {
+    pub fn decode<Message: DeserializeOwned>(&self) -> anyhow::Result<(Message, usize, usize)> {
         let start = Instant::now();
         let hold_decompressed: Vec<u8>;
         let compressed_size = self.data.len();
@@ -99,7 +105,7 @@ impl NetMessage {
             self.data.as_slice()
         };
         let decompressed_size = data.len();
-        let decompress_time = start.elapsed().as_millis();
+        let decompress_time = start.elapsed().as_millis() as usize;
         let start = Instant::now();
         let message = match bincode::deserialize::<Message>(data) {
             Ok(message) => message,
@@ -107,7 +113,7 @@ impl NetMessage {
                 anyhow::bail!("Error deserializing {}: {}", self.label, err);
             }
         };
-        let deserialize_time = start.elapsed().as_millis();
+        let deserialize_time = start.elapsed().as_millis() as usize;
         if decompress_time + deserialize_time > 100 {
             tracing::warn!(
                 msg_id = self.id,
@@ -121,6 +127,6 @@ impl NetMessage {
                 decompress_time + deserialize_time
             );
         }
-        Ok(message)
+        Ok((message, decompress_time, deserialize_time))
     }
 }

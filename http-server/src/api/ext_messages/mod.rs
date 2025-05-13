@@ -4,7 +4,6 @@
 use std::borrow::Cow;
 use std::fmt::Display;
 use std::fmt::Formatter;
-use std::net::SocketAddr;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -310,8 +309,7 @@ pub struct ResolvingResult {
 }
 
 impl ResolvingResult {
-    pub fn new(i_am_bp: bool, active_bp: Vec<SocketAddr>) -> Self {
-        let active_bp = active_bp.into_iter().map(|addr| addr.ip().to_string()).collect();
+    pub fn new(i_am_bp: bool, active_bp: Vec<String>) -> Self {
         Self { i_am_bp, active_bp }
     }
 }

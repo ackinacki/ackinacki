@@ -6,6 +6,8 @@ use tracing::instrument;
 use tracing::trace_span;
 use tvm_block::ShardStateUnsplit;
 
+use crate::block_keeper_system::epoch::create_epoch_touch_message;
+use crate::block_keeper_system::BlockKeeperData;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::message_storage::MessageDurableStorage;
@@ -38,6 +40,7 @@ pub fn preprocess<'a, I, TRepo>(
     descendant_thread_identifier: &ThreadIdentifier,
     repository: &TRepo,
     slashing_messages: Vec<Arc<WrappedMessage>>,
+    epoch_block_keeper_data: Vec<BlockKeeperData>,
     message_db: MessageDurableStorage,
 ) -> anyhow::Result<PreprocessingResult>
 where
@@ -185,7 +188,23 @@ where
         .build()?;
     preprocessed_state.messages = y;
 
-    preprocessed_state.add_slashing_messages(slashing_messages)?;
+    let high_priority_messages = preprocessed_state.high_priority_messages;
+    let mut high_priority_messages_map = convert_slashing_messages(slashing_messages)?;
+    convert_epoch_messages(&mut high_priority_messages_map, epoch_block_keeper_data)?;
+    tracing::trace!(
+        "preprocessing: ThreadMessageQueueState::build_next: slashing_messages.len()={} ",
+        high_priority_messages_map.len()
+    );
+    let queue_message_state = ThreadMessageQueueState::build_next()
+        .with_initial_state(high_priority_messages)
+        .with_consumed_messages(HashMap::new())
+        .with_removed_accounts(vec![])
+        .with_added_accounts(BTreeMap::new())
+        .with_produced_messages(high_priority_messages_map)
+        .with_db(message_db.clone())
+        .build()?;
+    //    preprocessed_state.add_slashing_messages(slashing_messages)?;
+    preprocessed_state.high_priority_messages = queue_message_state;
 
     Ok(PreprocessingResult {
         state: preprocessed_state,
@@ -193,6 +212,47 @@ where
         redirected_messages,
         settled_messages,
     })
+}
+
+pub fn convert_slashing_messages(
+    slashing_messages: Vec<Arc<WrappedMessage>>,
+) -> anyhow::Result<HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>> {
+    let mut slashing_messages_map: HashMap<
+        AccountAddress,
+        Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
+    > = HashMap::new();
+    for message in slashing_messages.into_iter() {
+        let msg = message.message.clone();
+        let info = msg.int_header().unwrap();
+        let dst = info.dst.address();
+        slashing_messages_map
+            .entry(AccountAddress(dst))
+            .or_default()
+            .push((MessageIdentifier::from(&*message), message));
+    }
+    Ok(slashing_messages_map)
+}
+
+pub fn convert_epoch_messages(
+    high_priority_map: &mut HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+    epoch_message: Vec<BlockKeeperData>,
+) -> anyhow::Result<()> {
+    let now = std::time::SystemTime::now();
+    let time = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as u32;
+    for data in epoch_message.into_iter() {
+        let msg = create_epoch_touch_message(&data, time).map_err(|e| {
+            anyhow::Error::msg(format!("Failed to create epoch touch message: {}", e))
+        })?;
+        let wrapped_message = WrappedMessage { message: msg.clone() };
+        let info =
+            msg.int_header().ok_or_else(|| anyhow::Error::msg("Failed to get message header"))?;
+        let dst = info.dst.address();
+        high_priority_map
+            .entry(AccountAddress(dst))
+            .or_default()
+            .push((MessageIdentifier::from(&wrapped_message), Arc::new(wrapped_message)));
+    }
+    Ok(())
 }
 
 fn import_migrating_accounts_with_their_inboxes(

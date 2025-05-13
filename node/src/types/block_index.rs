@@ -15,6 +15,12 @@ pub struct BlockIndex {
     block_identifier: BlockIdentifier,
 }
 
+impl BlockIndex {
+    pub fn new(seq_no: BlockSeqNo, identifier: BlockIdentifier) -> Self {
+        Self { block_seq_no: seq_no, block_identifier: identifier }
+    }
+}
+
 impl From<&Envelope<GoshBLS, AckiNackiBlock>> for BlockIndex {
     fn from(acki_block: &Envelope<GoshBLS, AckiNackiBlock>) -> Self {
         Self {

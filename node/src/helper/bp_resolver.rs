@@ -6,21 +6,21 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use message_router::bp_resolver::BPResolver;
+use network::network::PeerData;
 use network::try_socket_addr_from_url;
 use parking_lot::Mutex;
-use url::Url;
 
 use crate::node::NodeIdentifier;
 use crate::repository::repository_impl::RepositoryImpl;
 
 pub struct BPResolverImpl {
-    peers_rx: tokio::sync::watch::Receiver<HashMap<NodeIdentifier, Url>>,
+    peers_rx: tokio::sync::watch::Receiver<HashMap<NodeIdentifier, PeerData>>,
     repository: Arc<Mutex<RepositoryImpl>>,
 }
 
 impl BPResolverImpl {
     pub fn new(
-        peers_rx: tokio::sync::watch::Receiver<HashMap<NodeIdentifier, Url>>,
+        peers_rx: tokio::sync::watch::Receiver<HashMap<NodeIdentifier, PeerData>>,
         repository: Arc<Mutex<RepositoryImpl>>,
     ) -> Self {
         Self { peers_rx, repository }
@@ -43,10 +43,12 @@ impl BPResolver for BPResolverImpl {
             .filter_map(|(thread, bp_id)| {
                 if target_thread.as_ref().is_none_or(|t| &thread == t) {
                     bp_id.and_then(|bp_node_id| {
-                        self.peers_rx
-                            .borrow_and_update()
-                            .get(&bp_node_id)
-                            .and_then(try_socket_addr_from_url)
+                        self.peers_rx.borrow_and_update().get(&bp_node_id).and_then(|peer_data| {
+                            try_socket_addr_from_url(&peer_data.peer_url).map(|mut socket_addr| {
+                                socket_addr.set_port(message_router::DEFAULT_NODE_URL_PORT);
+                                socket_addr
+                            })
+                        })
                     })
                 } else {
                     None

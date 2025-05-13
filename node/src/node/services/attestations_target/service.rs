@@ -8,6 +8,7 @@ use std::vec::Vec;
 
 use typed_builder::TypedBuilder;
 
+use crate::node::block_state::dependent_ancestor_blocks::DependentAncestorBlocks;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::state::AttestationsTarget;
 use crate::node::block_state::unfinalized_ancestor_blocks::UnfinalizedAncestorBlocks;
@@ -166,12 +167,12 @@ impl AttestationsTargetService {
             let Some(thread_id) = block_state.guarded(|e| *e.thread_identifier()) else {
                 continue;
             };
-            let Ok((_, thread_last_finalized_block_seq_no)) =
-                self.repository.select_thread_last_finalized_block(&thread_id)
-            else {
-                continue;
-            };
-            let _ = self.evaluate_chain(block_state, thread_last_finalized_block_seq_no);
+            if let Ok(data) = self.repository.select_thread_last_finalized_block(&thread_id) {
+                let Some((_, thread_last_finalized_block_seq_no)) = data else {
+                    continue;
+                };
+                let _ = self.evaluate_chain(block_state, thread_last_finalized_block_seq_no);
+            }
         }
     }
 
@@ -187,15 +188,10 @@ impl AttestationsTargetService {
         let Ok(tail) = self.block_state_repository.get(&parent_block_identifier) else {
             return Ok(false);
         };
-        let Ok((_, thread_last_finalized_block_seq_no)) =
-            self.repository.select_thread_last_finalized_block(&thread_identifier)
-        else {
-            return Ok(false);
-        };
-        let cutoff = thread_last_finalized_block_seq_no;
-        let chain =
-            self.block_state_repository.select_unfinalized_ancestor_blocks(&tail, cutoff)?;
+        let chain = self.block_state_repository.select_dependent_ancestor_blocks(&tail)?;
         use AttestationsFailure::*;
+        let mut chain = chain.dependent_ancestor_chain().clone();
+        chain.reverse();
         match self.evaluate_attestations(
             (
                 VecDeque::<BlockState>::from(chain),
@@ -436,8 +432,11 @@ impl AttestationsTargetService {
         if is_parent_finalized {
             return Ok(vec![]);
         }
-        let (_, thread_last_finalized_block_seq_no) =
-            self.repository.select_thread_last_finalized_block(&thread_id)?;
+        let Some((_, thread_last_finalized_block_seq_no)) =
+            self.repository.select_thread_last_finalized_block(&thread_id)?
+        else {
+            return Err(anyhow::format_err!("Thread was not initialized"));
+        };
         let mut chain = vec![];
         let mut cursor = parent_state;
         loop {

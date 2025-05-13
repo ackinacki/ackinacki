@@ -8,25 +8,26 @@ use chitchat::Chitchat;
 use itertools::Itertools;
 use url::Url;
 
+use crate::network::PeerData;
 use crate::resolver::GossipPeer;
 use crate::try_url_from_socket_addr;
 
-pub enum SubscribeStrategy<P> {
-    Peer(P),
+pub enum SubscribeStrategy<PeerId> {
+    Peer(PeerId),
     Proxy(Url),
 }
 
-pub async fn watch_gossip<P>(
-    strategy: SubscribeStrategy<P>,
+pub async fn watch_gossip<PeerId>(
+    strategy: SubscribeStrategy<PeerId>,
     chitchat: Arc<tokio::sync::Mutex<Chitchat>>,
     subscribe_tx: Option<tokio::sync::watch::Sender<Vec<Vec<Url>>>>,
-    peers_tx: Option<tokio::sync::watch::Sender<HashMap<P, Url>>>,
+    peers_tx: Option<tokio::sync::watch::Sender<HashMap<PeerId, PeerData>>>,
 ) where
-    P: Clone + Display + Send + Sync + Hash + Eq + FromStr<Err = anyhow::Error> + 'static,
+    PeerId: Clone + Display + Send + Sync + Hash + Eq + FromStr<Err = anyhow::Error> + 'static,
 {
     let mut live_nodes_rx = chitchat.lock().await.live_nodes_watcher();
     let mut subscribe = Vec::new();
-    let mut peers = HashMap::new();
+    let mut peers: HashMap<PeerId, PeerData> = HashMap::new();
     loop {
         (subscribe, peers) = refresh(&strategy, &chitchat, subscribe, peers).await;
         tracing::trace!(
@@ -52,8 +53,8 @@ async fn refresh<PeerId>(
     strategy: &SubscribeStrategy<PeerId>,
     chitchat: &Arc<tokio::sync::Mutex<Chitchat>>,
     _old_subscribe: Vec<Vec<Url>>,
-    _old_peers: HashMap<PeerId, Url>,
-) -> (Vec<Vec<Url>>, HashMap<PeerId, Url>)
+    _old_peers: HashMap<PeerId, PeerData>,
+) -> (Vec<Vec<Url>>, HashMap<PeerId, PeerData>)
 where
     PeerId: Clone + Display + FromStr<Err = anyhow::Error> + Send + Sync + Hash + Eq + 'static,
 {
@@ -79,7 +80,10 @@ where
                         }
                     }
                 }
-                peers.insert(peer.id.clone(), peer_url);
+                peers.insert(
+                    peer.id.clone(),
+                    PeerData { peer_url, bk_api_socket: peer.bk_api_socket },
+                );
             }
         }
     }
@@ -104,9 +108,14 @@ fn subscribe_info(subscribe: &[Vec<Url>]) -> String {
     subscribe.iter().map(|urls| format!("[{}]", urls.iter().join(","))).join(",")
 }
 
-fn peers_info<P>(peers: &HashMap<P, Url>) -> String
+fn peers_info<P>(peers: &HashMap<P, PeerData>) -> String
 where
     P: Display,
 {
-    peers.iter().map(|(id, url)| format!("{}: {}", &id.to_string().as_str()[0..4], url)).join(",")
+    peers
+        .iter()
+        .map(|(id, peer_data)| {
+            format!("{}: {}", &id.to_string().as_str()[0..4], peer_data.peer_url)
+        })
+        .join(",")
 }

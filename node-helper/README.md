@@ -46,7 +46,8 @@ network:
     - http://host.docker.internal/storage/node-4/
   api_addr: 0.0.0.0:8600
   send_buffer_size: 1000
-  public_endpoint: http://127.0.0.1:81
+  bm_api_socket: http://127.0.0.1:81
+  bk_api_socket: http://127.0.0.1:82
 local:
   node_id: 1
   blockchain_config_path: config/blockchain.conf.json
@@ -100,7 +101,8 @@ network:                                                                        
   - http://host.docker.internal/storage/node-4/
   api_addr: 0.0.0.0:8600                                                                            # Socket address for SDK API.
   send_buffer_size: 1000                                                                            # Network send buffer size Defaults to 1000
-  public_endpoint: http://127.0.0.1:81                                                              # Public endpoint for this node
+  bm_api_socket: http://127.0.0.1:81                                                                # Public address for Block Manager API of this node
+  bk_api_socket: http://127.0.0.1:82                                                                # Public endpoint for Block Keeper API of this node
 local:                                                                                              # Node interaction settings
   node_id: 1                                                                                        # Identifier of the current node.
   blockchain_config_path: config/blockchain.conf.json                                               # Path to the file with blockchain config.
@@ -182,8 +184,10 @@ Options:
           [env: NETWORK_SEND_BUFFER_SIZE=]
       --min-time-between-state-publish-directives <MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES>
           [env: MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES=]
-      --public-endpoint <PUBLIC_ENDPOINT>
-          [env: PUBLIC_ENDPOINT=]
+      --bm_api_socket <BM_API_SOCKET>
+          Public address of the Block Manager API [env: BM_API_SOCKET=]
+      --bk_api_socket <BK_API_SOCKET>
+          Public address of the Block Keeper API [env: BK_API_SOCKET=]
       --parallelization-level <PARALLELIZATION_LEVEL>
           [env: PARALLELIZATION_LEVEL=]
       --node-joining-timeout <NODE_JOINING_TIMEOUT>
@@ -191,7 +195,7 @@ Options:
       --block-keeper-seed-path <BLOCK_KEEPER_SEED_PATH>
           [env: BLOCK_KEEPER_SEED_PATH=]
       --producer-change-gap-size <PRODUCER_CHANGE_GAP_SIZE>
-          
+
   -h, --help
           Print help
 

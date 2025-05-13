@@ -110,6 +110,7 @@ pub trait OptimisticState: Send + Clone {
         &mut self,
         slashing_messages: Vec<Arc<Self::Message>>,
     ) -> anyhow::Result<()>;
+    fn get_thread_refs(&self) -> &ThreadReferencesState;
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -132,6 +133,7 @@ pub struct OptimisticStateImpl {
     #[builder(setter(into))]
     pub(crate) shard_state: OptimisticShardState,
     pub(crate) messages: ThreadMessageQueueState,
+    pub(crate) high_priority_messages: ThreadMessageQueueState,
 
     #[builder(setter(into))]
     pub block_info: BlockInfo,
@@ -172,14 +174,8 @@ impl Default for OptimisticStateImpl {
 }
 
 impl OptimisticStateImpl {
-    pub fn deserialize_from_buf(
-        data: &[u8],
-        block_id: BlockIdentifier,
-        // block_seq_no: BlockSeqNo,
-    ) -> anyhow::Result<Self> {
-        let mut state: Self = bincode::deserialize(data)?;
-        // TODO: why?
-        state.block_id = block_id;
+    pub fn deserialize_from_buf(data: &[u8]) -> anyhow::Result<Self> {
+        let state: Self = bincode::deserialize(data)?;
         Ok(state)
     }
 
@@ -205,6 +201,7 @@ impl OptimisticStateImpl {
                 .build(),
             cropped: None,
             messages: ThreadMessageQueueState::empty(),
+            high_priority_messages: ThreadMessageQueueState::empty(),
             changed_accounts: Default::default(),
         }
     }
@@ -393,6 +390,7 @@ impl OptimisticState for OptimisticStateImpl {
             &block_candidate.get_common_section().thread_id,
             &cross_thread_ref_data_repo,
             wrapped_slash_messages,
+            Vec::new(),
             message_db.clone(),
         )?;
         // todo!("Use this to init outbox {:?}", forwarded_messages);
@@ -717,5 +715,9 @@ impl OptimisticState for OptimisticStateImpl {
             .map_err(|e| anyhow::format_err!("Failed to put message to out queue: {e}"))?;
         self.set_shard_state(Arc::new(shard_state));
         Ok(())
+    }
+
+    fn get_thread_refs(&self) -> &ThreadReferencesState {
+        &self.thread_refs_state
     }
 }

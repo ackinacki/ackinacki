@@ -7,7 +7,17 @@
 			"name": "constructor",
 			"inputs": [
 				{"name":"giver","type":"address"},
-				{"name":"licenseRoot","type":"address"}
+				{"name":"licenseRoot","type":"address"},
+				{"name":"bmroot","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "sendReward",
+			"inputs": [
+				{"name":"to","type":"address"},
+				{"name":"value","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -397,6 +407,7 @@
 		{"init":false,"name":"_giver","type":"address"},
 		{"init":false,"name":"_totalStake","type":"uint256"},
 		{"init":false,"name":"_licenseRoot","type":"address"},
+		{"init":false,"name":"_bmroot","type":"address"},
 		{"init":false,"name":"_networkStart","type":"uint32"},
 		{"init":false,"name":"_numberOfActiveBlockKeepers","type":"uint128"},
 		{"init":false,"name":"_needNumberOfActiveBlockKeepers","type":"uint128"},

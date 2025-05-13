@@ -21,9 +21,12 @@ abstract contract Modifiers is ReplayProtection {
     uint8 constant m_BLSKeyCode = 6;
     uint8 constant m_SignerIndexCode = 7;
     uint8 constant m_LicenseCode = 8;
+    uint8 constant m_LicenseBMCode = 9;
+    uint8 constant m_AckiNackiBlockManagerNodeWalletCode = 10;
     
     //Deploy constants
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_WALLET = 20 vmshell;
+    uint64 constant FEE_DEPLOY_BLOCK_MANAGER_WALLET = 21 vmshell;
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET = 30 vmshell;
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_WALLET = 10 vmshell;
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_COOLER_WALLET = 2 vmshell;
@@ -31,11 +34,14 @@ abstract contract Modifiers is ReplayProtection {
     uint64 constant FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST = 10 vmshell;
     uint64 constant FEE_DEPLOY_BLS_KEY = 3 vmshell;
     uint64 constant FEE_DEPLOY_LICENSE = 6 vmshell;
+    uint64 constant FEE_DEPLOY_LICENSE_BM = 5 vmshell;
     uint64 constant FEE_DEPLOY_SIGNER_INDEX = 7 vmshell;
     uint64 constant FEE_DEPLOY_NAME_INDEX = 8 vmshell;
     uint64 constant ROOT_BALANCE = 1000000 vmshell;
 
     uint128 constant MIN_REP_COEF = 1000000000;
+    
+    uint8 constant MAX_LICENSE_NUMBER = 10;
 
     uint8 constant PRE_EPOCH_DEPLOYED = 0;
     uint8 constant EPOCH_DEPLOYED = 1;

@@ -29,6 +29,7 @@ contract BlockKeeperContractRoot is Modifiers {
     address _giver;
     uint256 _totalStake = 0;
     address _licenseRoot;
+    address _bmroot;
 
     uint32 _networkStart;
     uint128 _numberOfActiveBlockKeepers = 0;
@@ -51,7 +52,8 @@ contract BlockKeeperContractRoot is Modifiers {
 
     constructor (
         address giver,
-        address licenseRoot
+        address licenseRoot,
+        address bmroot
     ) {
         _giver = giver;
         _networkStart = block.timestamp;
@@ -59,6 +61,16 @@ contract BlockKeeperContractRoot is Modifiers {
         uint32 time = block.timestamp - _networkStart;
         _reward_last_time = block.timestamp;
         _reward_adjustment = gosh.calcbkrewardadj(_reward_sum, MIN_REP_COEF, _reward_period, 10400000000000000000, uint128(time));
+        _bmroot = bmroot;
+    }
+
+    function sendReward(address to, uint128 value) public senderIs(_bmroot) accept {
+        ensureBalance();
+        mapping(uint32 => varuint32) data_cur;
+        data_cur[CURRENCIES_ID] = varuint32(value);
+        gosh.mintecc(uint64(value), CURRENCIES_ID);
+        to.transfer({value: 0.1 ton, currencies: data_cur, flag: 1});   
+        _reward_sum += value;
     }
 
     function ensureBalance() private {

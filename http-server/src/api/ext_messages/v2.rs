@@ -13,7 +13,6 @@ use tvm_block::Deserializable;
 use tvm_block::GetRepresentationHash;
 use tvm_block::Message;
 use tvm_types::base64_decode;
-use tvm_types::UInt256;
 
 use super::ExtMsgErrorData;
 use super::ResolvingResult;
@@ -125,17 +124,12 @@ where
                 res,
                 "WRONG_PRODUCER",
                 Some("Resend message to the active Block Producer"),
-                Some(ExtMsgErrorData {
-                    producers: resolving_result.active_bp,
+                Some(ExtMsgErrorData::new(
+                    resolving_result.active_bp,
                     message_hash,
-                    exit_code: None,
-                    current_time: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis()
-                        .to_string(),
-                    thread_id: thread_id_str.map(|s| s.to_string()),
-                }),
+                    None,
+                    thread_id_str.map(|s| s.to_string()),
+                )),
             );
             return;
         };
@@ -192,11 +186,7 @@ where
                 let mut result: ExtMsgResponse = feedback.into();
                 result.set_producers(producers);
                 tracing::trace!(target: "http_server", "Response message: {:?}", result);
-                if result.result.is_some() {
-                    res.status_code(StatusCode::OK);
-                } else {
-                    res.status_code(StatusCode::BAD_REQUEST);
-                }
+                res.status_code(StatusCode::OK);
                 res.render(Json(result));
                 return;
             }
@@ -212,24 +202,15 @@ where
     }
 }
 
-fn parse_message(id_b64: &str, message_b64: &str) -> Result<Message, String> {
-    tracing::trace!(target: "http_server", "parse_message {id_b64}");
+fn parse_message(id: &str, message_b64: &str) -> Result<Message, String> {
+    tracing::trace!(target: "http_server", "parse_message {id}");
     let message_bytes = base64_decode(message_b64)
         .map_err(|e| format!("Error decoding base64-encoded message: {}", e))?;
-
-    let id_bytes = base64_decode(id_b64)
-        .map_err(|e| format!("Error decoding base64-encoded message's id: {}", e))?;
-
-    let id = UInt256::from_be_bytes(&id_bytes);
 
     let message_cell = tvm_types::boc::read_single_root_boc(message_bytes).map_err(|e| {
         tracing::error!(target: "http_server", "Error deserializing message: {}", e);
         format!("Error deserializing message: {}", e)
     })?;
-
-    if message_cell.repr_hash() != id {
-        return Err("Error: calculated message's hash doesn't correspond given key".to_string());
-    }
 
     Message::construct_from_cell(message_cell)
         .map_err(|e| format!("Error parsing message's cells tree: {}", e))

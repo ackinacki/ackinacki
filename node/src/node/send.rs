@@ -4,7 +4,6 @@
 use network::channel::NetDirectSender;
 
 use crate::bls::envelope::BLSSignedEnvelope;
-use crate::helper::block_flow_trace;
 use crate::node::associated_types::NodeAssociatedTypes;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
@@ -63,23 +62,7 @@ where
         candidate_block: <Self as NodeAssociatedTypes>::CandidateBlock,
     ) -> anyhow::Result<()> {
         tracing::info!("broadcasting block: {}", candidate_block,);
-        self.network_broadcast_tx.send(NetworkMessage::Candidate(candidate_block))?;
-        Ok(())
-    }
-
-    pub(crate) fn send_candidate_block(
-        &self,
-        candidate_block: <Self as NodeAssociatedTypes>::CandidateBlock,
-        node_id: NodeIdentifier,
-    ) -> anyhow::Result<()> {
-        tracing::info!("sending block to node {node_id}:{}", candidate_block.data());
-        block_flow_trace(
-            "direct sending candidate",
-            &candidate_block.data().identifier(),
-            &self.config.local.node_id,
-            [("to", &node_id.to_string())],
-        );
-        self.network_direct_tx.send((node_id, NetworkMessage::Candidate(candidate_block)))?;
+        self.network_broadcast_tx.send(NetworkMessage::candidate(&candidate_block)?)?;
         Ok(())
     }
 

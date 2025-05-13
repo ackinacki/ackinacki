@@ -6,6 +6,8 @@ use opentelemetry::metrics::Counter;
 use opentelemetry::metrics::Gauge;
 use opentelemetry::metrics::Histogram;
 use opentelemetry::metrics::Meter;
+use opentelemetry::metrics::ObservableCounter;
+use opentelemetry::metrics::ObservableGauge;
 use opentelemetry::metrics::UpDownCounter;
 use opentelemetry::KeyValue;
 use telemetry_utils::mpsc::InstrumentedChannelMetrics;
@@ -50,6 +52,13 @@ struct BlockProductionMetricsInner {
     common_block_checks: Histogram<u64>,
     processing_delay: Histogram<u64>,
     attestation_after_apply_delay: Histogram<u64>,
+    attn_target_descendant_generations: Histogram<u64>,
+    rcv_as_bytes_to_rcv_by_node: Histogram<u64>,
+
+    // Tokio runtime metrics: https://docs.rs/tokio/latest/tokio/runtime/struct.RuntimeMetrics.html
+    _tokio_num_alive_tasks: ObservableGauge<u64>,
+    _tokio_global_queue_depth: ObservableGauge<u64>,
+    _tokio_spawned_tasks_count: ObservableCounter<u64>,
 }
 
 pub const BK_SET_UPDATE_CHANNEL: &str = "bk_set_update";
@@ -186,12 +195,51 @@ impl BlockProductionMetrics {
                     700.0, 1000.0,
                 ])
                 .build(),
+
             attestation_after_apply_delay: meter
                 .u64_histogram("node_attestation_after_apply_delay")
                 .with_boundaries(vec![
                     0.0, 10.0, 30.0, 50.0, 80.0, 110.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0,
                     700.0, 1000.0,
                 ])
+                .build(),
+
+            attn_target_descendant_generations: meter
+                .u64_histogram("node_attn_target_descendant_generations")
+                .with_boundaries((0..=20).map(|x| x as f64).collect())
+                .build(),
+            rcv_as_bytes_to_rcv_by_node: meter
+                .u64_histogram("node_rcv_as_bytes_to_rcv_by_node")
+                .with_boundaries(vec![2.0, 5.0, 10.0, 15.0, 20.0, 40.0, 80.0, 200.0, 1000.0])
+                .build(),
+            _tokio_num_alive_tasks: meter
+                .u64_observable_gauge("node_tokio_num_alive_tasks")
+                .with_callback(move |observer| {
+                    observer.observe(
+                        tokio::runtime::Handle::current().metrics().num_alive_tasks() as u64,
+                        &[],
+                    )
+                })
+                .build(),
+
+            _tokio_global_queue_depth: meter
+                .u64_observable_gauge("node_tokio_global_queue_depth")
+                .with_callback(move |observer| {
+                    observer.observe(
+                        tokio::runtime::Handle::current().metrics().global_queue_depth() as u64,
+                        &[],
+                    )
+                })
+                .build(),
+
+            _tokio_spawned_tasks_count: meter
+                .u64_observable_counter("node_tokio_spawned_tasks_count")
+                .with_callback(move |observer| {
+                    observer.observe(
+                        tokio::runtime::Handle::current().metrics().spawned_tasks_count(),
+                        &[],
+                    );
+                })
                 .build(),
         }))
     }
@@ -336,6 +384,20 @@ impl BlockProductionMetrics {
     pub fn report_attestation_after_apply_delay(&self, value: u64, thread_id: &ThreadIdentifier) {
         self.0.attestation_after_apply_delay.record(value, &[thread_id_attr(thread_id)]);
     }
+
+    pub fn report_attn_target_descendant_generations(
+        &self,
+        value: usize,
+        thread_id: &ThreadIdentifier,
+    ) {
+        self.0
+            .attn_target_descendant_generations
+            .record(value as u64, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_rcv_as_bytes_to_rcv_by_node(&self, value: u64, msg_type: String) {
+        self.0.rcv_as_bytes_to_rcv_by_node.record(value, &[msg_type_attr(msg_type)]);
+    }
 }
 
 impl InstrumentedChannelMetrics for BlockProductionMetrics {
@@ -346,4 +408,8 @@ impl InstrumentedChannelMetrics for BlockProductionMetrics {
 
 fn thread_id_attr(thread_id: &ThreadIdentifier) -> KeyValue {
     KeyValue::new("thread", BlockProductionMetrics::thread_label(thread_id))
+}
+
+fn msg_type_attr(msg_type: String) -> KeyValue {
+    KeyValue::new("msg_type", msg_type)
 }

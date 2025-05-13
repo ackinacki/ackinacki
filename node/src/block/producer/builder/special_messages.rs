@@ -19,8 +19,6 @@ use tvm_types::UInt256;
 
 use super::BlockBuilder;
 use crate::block::producer::execution_time::ExecutionTimeLimits;
-use crate::block_keeper_system::epoch::create_epoch_touch_message;
-use crate::block_keeper_system::BlockKeeperData;
 use crate::creditconfig::dappconfig::calculate_dapp_config_address;
 use crate::creditconfig::dappconfig::create_config_touch_message;
 use crate::message::identifier::MessageIdentifier;
@@ -29,95 +27,6 @@ use crate::repository::optimistic_state::OptimisticState;
 use crate::types::AccountAddress;
 
 impl BlockBuilder {
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn execute_epoch_messages(
-        &mut self,
-        epoch_block_keeper_data: &mut Vec<BlockKeeperData>,
-        blockchain_config: &BlockchainConfig,
-        block_unixtime: u32,
-        block_lt: u64,
-        check_messages_map: &Option<HashMap<UInt256, u64>>,
-    ) -> anyhow::Result<()> {
-        // execute epoch messages
-        tracing::trace!(
-            "execute_epoch_messages: epoch_block_keeper_data={epoch_block_keeper_data:?}"
-        );
-        let mut active_destinations = HashSet::new();
-        let mut active_ext_threads = VecDeque::new();
-        loop {
-            // If active pool is not full add threads
-            if active_ext_threads.len() < self.parallelization_level {
-                while !epoch_block_keeper_data.is_empty() {
-                    if active_ext_threads.len() == self.parallelization_level {
-                        break;
-                    }
-                    let msg = create_epoch_touch_message(
-                        &epoch_block_keeper_data[0],
-                        self.block_info.gen_utime().as_u32(),
-                    )?;
-                    if let Some(acc_id) = msg.int_dst_account_id() {
-                        if !self
-                            .initial_optimistic_state
-                            .does_account_belong_to_the_state(&acc_id)?
-                        {
-                            epoch_block_keeper_data.remove(0);
-                            tracing::warn!(
-                                target: "builder",
-                                "Epoch msg destination does not belong to the current thread: {:?}",
-                                msg
-                            );
-                        } else if !active_destinations.contains(&acc_id) {
-                            epoch_block_keeper_data.remove(0);
-                            tracing::trace!(target: "builder", "Parallel epoch message: {:?} to {:?}", msg.hash().unwrap(), acc_id.to_hex_string());
-                            let thread = self.execute(
-                                msg,
-                                blockchain_config,
-                                &acc_id,
-                                block_unixtime,
-                                block_lt,
-                                check_messages_map,
-                                &ExecutionTimeLimits::NO_LIMITS,
-                            )?;
-                            active_ext_threads.push_back(thread);
-                            active_destinations.insert(acc_id);
-                        } else {
-                            break;
-                        }
-                    } else {
-                        epoch_block_keeper_data.remove(0);
-                        tracing::warn!(
-                            target: "builder",
-                            "Found epoch msg with not valid internal destination: {:?}",
-                            msg
-                        );
-                    }
-                }
-            }
-
-            while !active_ext_threads.is_empty() {
-                if let Ok(thread_result) = active_ext_threads.front().unwrap().result_rx.try_recv()
-                {
-                    let _ = active_ext_threads.pop_front().unwrap();
-                    let thread_result = thread_result.map_err(|_| {
-                        anyhow::format_err!("Failed to execute transaction in parallel")
-                    })?;
-                    let acc_id = thread_result.account_id.clone();
-                    tracing::trace!(target: "builder", "parallel epoch message finished dest: {}", acc_id.to_hex_string());
-                    self.after_transaction(thread_result)?;
-                    active_destinations.remove(&acc_id);
-                } else {
-                    break;
-                }
-            }
-
-            if epoch_block_keeper_data.is_empty() && active_ext_threads.is_empty() {
-                tracing::debug!(target: "builder", "Epoch messages stop");
-                break;
-            }
-        }
-        Ok(())
-    }
-
     pub(super) fn execute_dapp_config_messages(
         &mut self,
         blockchain_config: &BlockchainConfig,
@@ -148,17 +57,51 @@ impl BlockBuilder {
                             anyhow::format_err!("Failed to create config touch message: {e}")
                         })?;
 
-                let wrapped_message = WrappedMessage { message: message.clone() };
-                tracing::debug!(
-                    "Add config message to produced_internal_messages_to_the_current_thread: {}",
-                    wrapped_message.message.hash().unwrap().to_hex_string()
-                );
-                let entry = self
-                    .produced_internal_messages_to_the_current_thread
-                    .entry(AccountAddress(message.dst().expect("must be set").address().clone()))
-                    .or_default();
-                entry.push((MessageIdentifier::from(&wrapped_message), Arc::new(wrapped_message)));
+                let dst_addr =
+                    AccountAddress(message.dst().expect("must be set").address().clone());
+                let destination_routing =
+                    self.initial_optimistic_state.get_account_routing(&dst_addr).map_err(|e| {
+                        anyhow::anyhow!(
+                            "Failed to check account routing for new message destination: {}",
+                            e
+                        )
+                    })?;
 
+                let wrapped_message = WrappedMessage { message: message.clone() };
+                if self
+                    .initial_optimistic_state
+                    .does_routing_belong_to_the_state(&destination_routing)
+                    .map_err(|_e| {
+                        anyhow::format_err!(
+                            "Failed to check account routing for new message destination"
+                        )
+                    })?
+                {
+                    // If message destination matches current thread, save it in cache to possibly execute in the current block
+                    let entry = self
+                        .produced_internal_messages_to_the_current_thread
+                        .entry(dst_addr)
+                        .or_default();
+                    entry.push((
+                        MessageIdentifier::from(&wrapped_message),
+                        Arc::new(wrapped_message.clone()),
+                    ));
+                    config_messages.push(message.clone());
+                } else {
+                    // If message destination matches current thread, save it in cache to possibly execute in the current block
+                    tracing::trace!(target: "builder",
+                        "New message for another thread: {}",
+                        message.hash().unwrap().to_hex_string()
+                    );
+                    let entry = self
+                        .produced_internal_messages_to_other_threads
+                        .entry(destination_routing)
+                        .or_default();
+                    entry.push((
+                        MessageIdentifier::from(&wrapped_message),
+                        Arc::new(wrapped_message),
+                    ));
+                }
                 let info = message.int_header().unwrap();
                 let fwd_fee = info.fwd_fee();
                 let msg_cell = message.serialize().map_err(|e| {
@@ -185,7 +128,6 @@ impl BlockBuilder {
                             .map_err(|e| anyhow::format_err!("Failed to get msg aug: {e}"))?,
                     )
                     .map_err(|e| anyhow::format_err!("Failed to add msg to out msg descr: {e}"))?;
-                config_messages.push(message);
             }
         }
         let mut active_destinations = HashSet::new();

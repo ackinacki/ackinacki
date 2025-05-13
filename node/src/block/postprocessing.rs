@@ -126,6 +126,7 @@ pub fn postprocess(
         .block_id(block_id.clone())
         .shard_state(new_state)
         .messages(initial_optimistic_state.messages)
+        .high_priority_messages(initial_optimistic_state.high_priority_messages)
         .threads_table(threads_table.clone())
         .thread_id(thread_id)
         .block_info(block_info)

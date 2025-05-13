@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 
-use crate::bls::envelope::BLSSignedEnvelope;
 use crate::node::NetworkMessage;
 use crate::types::ThreadIdentifier;
 
@@ -39,10 +38,8 @@ impl Dispatcher {
     #[allow(clippy::result_large_err)]
     pub fn dispatch(&self, message: Payload) -> anyhow::Result<(), DispatchError> {
         let thread_id = match &message {
-            NetworkMessage::Candidate(candidate_block)
-            | NetworkMessage::ResentCandidate((candidate_block, _)) => {
-                candidate_block.data().get_common_section().thread_id
-            }
+            NetworkMessage::Candidate(net_block)
+            | NetworkMessage::ResentCandidate((net_block, _)) => net_block.thread_id,
             // Node entities share one repository, so send ext message only to one node for not to duplicate messages in repo
             NetworkMessage::ExternalMessage((_, thread_id)) => *thread_id,
             NetworkMessage::Ack((_, thread_id)) => *thread_id,

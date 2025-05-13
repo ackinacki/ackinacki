@@ -104,7 +104,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
 
     function addLicense(uint256 license_number, uint128 reputationTime, uint32 license_start) public senderIs(BlockKeeperLib.calculateLicenseAddress(_code[m_LicenseCode], license_number, _licenseRoot)) accept {
         ensureBalance();
-        if ((_licenses_count >= 5) || (_whiteListLicense[license_number] != true)) {
+        if ((_licenses_count >= MAX_LICENSE_NUMBER) || (_whiteListLicense[license_number] != true)) {
             LicenseContract(msg.sender).notAcceptLicense{value: 0.1 vmshell, flag: 1}(_owner_pubkey);
             return;
         }
@@ -138,9 +138,29 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         b.store(seqNoStart);
         uint256 stakeHash = tvm.hash(b.toCell());
         delete b;
-        require(licenses.length <= 5, ERR_NOT_SUPPORT);
+        require(licenses.length <= MAX_LICENSE_NUMBER, ERR_NOT_SUPPORT);
         require(licenses.length > 0, ERR_NOT_SUPPORT);
         uint8 i = 0;
+        if (i + 1 <= licenses.length) {
+            setLockStakeHelper(i, licenses);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            setLockStakeHelper(i, licenses);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            setLockStakeHelper(i, licenses);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            setLockStakeHelper(i, licenses);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            setLockStakeHelper(i, licenses);
+        }
+        i += 1;
         if (i + 1 <= licenses.length) {
             setLockStakeHelper(i, licenses);
         }
@@ -179,9 +199,29 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         b.store(seqNoStart);
         uint256 stakeHash = tvm.hash(b.toCell());
         delete b;
-       require(licenses.length <= 5, ERR_NOT_SUPPORT);
+       require(licenses.length <= MAX_LICENSE_NUMBER, ERR_NOT_SUPPORT);
         require(licenses.length > 0, ERR_NOT_SUPPORT);
         uint8 i = 0;
+        if (i + 1 <= licenses.length) {
+            deleteLockStakeHelper(i, licenses);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            deleteLockStakeHelper(i, licenses);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            deleteLockStakeHelper(i, licenses);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            deleteLockStakeHelper(i, licenses);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            deleteLockStakeHelper(i, licenses);
+        }
+        i += 1;
         if (i + 1 <= licenses.length) {
             deleteLockStakeHelper(i, licenses);
         }
@@ -246,9 +286,29 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         b.store(seqNoStart);
         uint256 stakeHash = tvm.hash(b.toCell());
         delete b;
-        require(licenses.length <= 5, ERR_NOT_SUPPORT);
+        require(licenses.length <= MAX_LICENSE_NUMBER, ERR_NOT_SUPPORT);
         require(licenses.length > 0, ERR_NOT_SUPPORT);
         uint8 i = 0;
+        if (i + 1 <= licenses.length) {
+            updateLockStakeHelper(i, licenses, is_continue);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            updateLockStakeHelper(i, licenses, is_continue);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            updateLockStakeHelper(i, licenses, is_continue);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            updateLockStakeHelper(i, licenses, is_continue);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            updateLockStakeHelper(i, licenses, is_continue);
+        }
+        i += 1;
         if (i + 1 <= licenses.length) {
             updateLockStakeHelper(i, licenses, is_continue);
         }
@@ -342,9 +402,49 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         if (data.hasValue()) {
             (data, sumBalance, is_ok, sumreputationCoef) = sendBlockKeeperRequestWithStakeHelperFirst(data, sumBalance, is_ok, sumreputationCoef);
         }
+        i += 1;
+        if (data.hasValue()) {
+            (data, sumBalance, is_ok, sumreputationCoef) = sendBlockKeeperRequestWithStakeHelperFirst(data, sumBalance, is_ok, sumreputationCoef);
+        }
+        i += 1;
+        if (data.hasValue()) {
+            (data, sumBalance, is_ok, sumreputationCoef) = sendBlockKeeperRequestWithStakeHelperFirst(data, sumBalance, is_ok, sumreputationCoef);
+        }
+        i += 1;
+        if (data.hasValue()) {
+            (data, sumBalance, is_ok, sumreputationCoef) = sendBlockKeeperRequestWithStakeHelperFirst(data, sumBalance, is_ok, sumreputationCoef);
+        }
+        i += 1;
+        if (data.hasValue()) {
+            (data, sumBalance, is_ok, sumreputationCoef) = sendBlockKeeperRequestWithStakeHelperFirst(data, sumBalance, is_ok, sumreputationCoef);
+        }
+        i += 1;
+        if (data.hasValue()) {
+            (data, sumBalance, is_ok, sumreputationCoef) = sendBlockKeeperRequestWithStakeHelperFirst(data, sumBalance, is_ok, sumreputationCoef);
+        }
         require(data.hasValue() == false, ERR_NOT_SUPPORT); 
         data = _licenses.min();
         i = 0;
+        if (data.hasValue()) {
+            (data, licenses) = sendBlockKeeperRequestWithStakeHelperSecond(data, sumBalance, licenses, stake);
+        }
+        i += 1;
+        if (data.hasValue()) {
+            (data, licenses) = sendBlockKeeperRequestWithStakeHelperSecond(data, sumBalance, licenses, stake);
+        }
+        i += 1;
+        if (data.hasValue()) {
+            (data, licenses) = sendBlockKeeperRequestWithStakeHelperSecond(data, sumBalance, licenses, stake);
+        }
+        i += 1;
+        if (data.hasValue()) {
+            (data, licenses) = sendBlockKeeperRequestWithStakeHelperSecond(data, sumBalance, licenses, stake);
+        }
+        i += 1;
+        if (data.hasValue()) {
+            (data, licenses) = sendBlockKeeperRequestWithStakeHelperSecond(data, sumBalance, licenses, stake);
+        }
+        i += 1;
         if (data.hasValue()) {
             (data, licenses) = sendBlockKeeperRequestWithStakeHelperSecond(data, sumBalance, licenses, stake);
         }
@@ -394,9 +494,29 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
     }
 
     function cancelContinueStake(uint64 seqNoStartOld, bytes bls_key, uint16 signerIndex, LicenseStake[] licenses) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, seqNoStartOld)) accept {
-        require(licenses.length <= 5, ERR_NOT_SUPPORT);
+        require(licenses.length <= MAX_LICENSE_NUMBER, ERR_NOT_SUPPORT);
         require(licenses.length > 0, ERR_NOT_SUPPORT);
         uint8 i = 0;
+        if (i + 1 <= licenses.length) {
+            cancelContinueStakeHelper(i, licenses);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            cancelContinueStakeHelper(i, licenses);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            cancelContinueStakeHelper(i, licenses);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            cancelContinueStakeHelper(i, licenses);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            cancelContinueStakeHelper(i, licenses);
+        }
+        i += 1;
         if (i + 1 <= licenses.length) {
             cancelContinueStakeHelper(i, licenses);
         }
@@ -486,9 +606,49 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         if (data.hasValue()) {
             (data, sumBalance, is_ok, sumreputationCoef) = sendBlockKeeperRequestWithStakeContinueFirstHelper(data, sumBalance, is_ok, sumreputationCoef);
         }
+        i += 1;
+        if (data.hasValue()) {
+            (data, sumBalance, is_ok, sumreputationCoef) = sendBlockKeeperRequestWithStakeContinueFirstHelper(data, sumBalance, is_ok, sumreputationCoef);
+        }
+        i += 1;
+        if (data.hasValue()) {
+            (data, sumBalance, is_ok, sumreputationCoef) = sendBlockKeeperRequestWithStakeContinueFirstHelper(data, sumBalance, is_ok, sumreputationCoef);
+        }
+        i += 1;
+        if (data.hasValue()) {
+            (data, sumBalance, is_ok, sumreputationCoef) = sendBlockKeeperRequestWithStakeContinueFirstHelper(data, sumBalance, is_ok, sumreputationCoef);
+        }
+        i += 1;
+        if (data.hasValue()) {
+            (data, sumBalance, is_ok, sumreputationCoef) = sendBlockKeeperRequestWithStakeContinueFirstHelper(data, sumBalance, is_ok, sumreputationCoef);
+        }
+        i += 1;
+        if (data.hasValue()) {
+            (data, sumBalance, is_ok, sumreputationCoef) = sendBlockKeeperRequestWithStakeContinueFirstHelper(data, sumBalance, is_ok, sumreputationCoef);
+        }
         require(data.hasValue() == false, ERR_NOT_SUPPORT); 
         data = _licenses.min();
         i = 0;
+        if (data.hasValue()) {
+            (data, licenses) = sendBlockKeeperRequestWithStakeContinueSecondHelper(data, licenses, sumBalance, stake);
+        }
+        i += 1;
+        if (data.hasValue()) {
+            (data, licenses) = sendBlockKeeperRequestWithStakeContinueSecondHelper(data, licenses, sumBalance, stake);
+        }
+        i += 1;
+        if (data.hasValue()) {
+            (data, licenses) = sendBlockKeeperRequestWithStakeContinueSecondHelper(data, licenses, sumBalance, stake);
+        }
+        i += 1;
+        if (data.hasValue()) {
+            (data, licenses) = sendBlockKeeperRequestWithStakeContinueSecondHelper(data, licenses, sumBalance, stake);
+        }
+        i += 1;
+        if (data.hasValue()) {
+            (data, licenses) = sendBlockKeeperRequestWithStakeContinueSecondHelper(data, licenses, sumBalance, stake);
+        }
+        i += 1;
         if (data.hasValue()) {
             (data, licenses) = sendBlockKeeperRequestWithStakeContinueSecondHelper(data, licenses, sumBalance, stake);
         }
@@ -567,9 +727,29 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
             return;
         }
         address epoch_addr = BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, seqNoStartold);
-        require(licenses.length <= 5, ERR_NOT_SUPPORT);
+        require(licenses.length <= MAX_LICENSE_NUMBER, ERR_NOT_SUPPORT);
         require(licenses.length > 0, ERR_NOT_SUPPORT);
         uint8 i = 0;
+        if (i + 1 <= licenses.length) {
+            deployBlockKeeperContractContinueHelper(i, licenses, epoch_addr);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            deployBlockKeeperContractContinueHelper(i, licenses, epoch_addr);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            deployBlockKeeperContractContinueHelper(i, licenses, epoch_addr);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            deployBlockKeeperContractContinueHelper(i, licenses, epoch_addr);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            deployBlockKeeperContractContinueHelper(i, licenses, epoch_addr);
+        }
+        i += 1;
         if (i + 1 <= licenses.length) {
             deployBlockKeeperContractContinueHelper(i, licenses, epoch_addr);
         }
@@ -634,12 +814,47 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         if (i + 1 <= licenses_continue.length) {
             licensesMap[licenses_continue[i].num] = true;
         }
+        i += 1;
+        if (i + 1 <= licenses_continue.length) {
+            licensesMap[licenses_continue[i].num] = true;
+        }
+        i += 1;
+        if (i + 1 <= licenses_continue.length) {
+            licensesMap[licenses_continue[i].num] = true;
+        }
+        i += 1;
+        if (i + 1 <= licenses_continue.length) {
+            licensesMap[licenses_continue[i].num] = true;
+        }
+        i += 1;
+        if (i + 1 <= licenses_continue.length) {
+            licensesMap[licenses_continue[i].num] = true;
+        }
+        i += 1;
+        if (i + 1 <= licenses_continue.length) {
+            licensesMap[licenses_continue[i].num] = true;
+        }
         i = 0;
         if (i + 1 <= licenses.length) {
             reputationCoef = deployBlockKeeperContractContinueAfterDestroyHelper(i, licenses, licensesMap, addReputationTime, reputationCoef);
         }
         i += 1;
         if (i + 1 <= licenses.length) {
+            reputationCoef = deployBlockKeeperContractContinueAfterDestroyHelper(i, licenses, licensesMap, addReputationTime, reputationCoef);
+        }
+        i += 1;if (i + 1 <= licenses.length) {
+            reputationCoef = deployBlockKeeperContractContinueAfterDestroyHelper(i, licenses, licensesMap, addReputationTime, reputationCoef);
+        }
+        i += 1;if (i + 1 <= licenses.length) {
+            reputationCoef = deployBlockKeeperContractContinueAfterDestroyHelper(i, licenses, licensesMap, addReputationTime, reputationCoef);
+        }
+        i += 1;if (i + 1 <= licenses.length) {
+            reputationCoef = deployBlockKeeperContractContinueAfterDestroyHelper(i, licenses, licensesMap, addReputationTime, reputationCoef);
+        }
+        i += 1;if (i + 1 <= licenses.length) {
+            reputationCoef = deployBlockKeeperContractContinueAfterDestroyHelper(i, licenses, licensesMap, addReputationTime, reputationCoef);
+        }
+        i += 1;if (i + 1 <= licenses.length) {
             reputationCoef = deployBlockKeeperContractContinueAfterDestroyHelper(i, licenses, licensesMap, addReputationTime, reputationCoef);
         }
         i += 1;if (i + 1 <= licenses.length) {
@@ -679,7 +894,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         uint256 hash = tvm.hash(b.toCell());
         delete b;
         _epochDuration = epochDuration;
-        require(licenses.length <= 5, ERR_NOT_SUPPORT);
+        require(licenses.length <= MAX_LICENSE_NUMBER, ERR_NOT_SUPPORT);
         require(licenses.length > 0, ERR_NOT_SUPPORT);
         uint8 i = 0;
         if (i + 1 <= licenses.length) {
@@ -697,6 +912,26 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         if (i + 1 <= licenses.length) {
             updateLockStakeCoolerHelper(i, licenses, isContinue);
         }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            updateLockStakeCoolerHelper(i, licenses, isContinue);
+        } 
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            updateLockStakeCoolerHelper(i, licenses, isContinue);
+        } 
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            updateLockStakeCoolerHelper(i, licenses, isContinue);
+        } 
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            updateLockStakeCoolerHelper(i, licenses, isContinue);
+        } 
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            updateLockStakeCoolerHelper(i, licenses, isContinue);
+        } 
         i += 1;
         if (i + 1 <= licenses.length) {
             updateLockStakeCoolerHelper(i, licenses, isContinue);
@@ -734,9 +969,29 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         }
         _last_stake = uint128(msg.currencies[CURRENCIES_ID]);
         uint128 sum = 0;
-       require(licenses.length <= 5, ERR_NOT_SUPPORT);
+       require(licenses.length <= MAX_LICENSE_NUMBER, ERR_NOT_SUPPORT);
         require(licenses.length > 0, ERR_NOT_SUPPORT);
         uint8 i = 0;
+        if (i + 1 <= licenses.length) {
+            sum += licenses[i].stake;
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            sum += licenses[i].stake;
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            sum += licenses[i].stake;
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            sum += licenses[i].stake;
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            sum += licenses[i].stake;
+        }
+        i += 1;
         if (i + 1 <= licenses.length) {
             sum += licenses[i].stake;
         }
@@ -771,6 +1026,26 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         i += 1;
         if (i + 1 <= licenses.length) {
             unlockStakeCoolerHelper(i, licenses, sum, reward);
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            unlockStakeCoolerHelper(i, licenses, sum, reward);      
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            unlockStakeCoolerHelper(i, licenses, sum, reward);      
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            unlockStakeCoolerHelper(i, licenses, sum, reward);      
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            unlockStakeCoolerHelper(i, licenses, sum, reward);      
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            unlockStakeCoolerHelper(i, licenses, sum, reward);      
         }
         i += 1;
         if (i + 1 <= licenses.length) {
@@ -817,7 +1092,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         BLSKeyIndex(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], _activeStakes[stakeHash].bls_key, _root)).destroy{value: 0.1 vmshell, flag: 1}();
         SignerIndex(BlockKeeperLib.calculateSignerIndexAddress(_code[m_SignerIndexCode], _activeStakes[stakeHash].signerIndex, _root)).destroy{value: 0.1 vmshell, flag: 1}();
         delete _activeStakes[stakeHash];
-        require(licenses.length <= 5, ERR_NOT_SUPPORT);
+        require(licenses.length <= MAX_LICENSE_NUMBER, ERR_NOT_SUPPORT);
         require(licenses.length > 0, ERR_NOT_SUPPORT);
         uint8 i = 0;
         if (i + 1 <= licenses.length) {
@@ -839,6 +1114,26 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         if (i + 1 <= licenses.length) {
             slashCoolerFirstHelper(i, licenses);          
         }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashCoolerFirstHelper(i, licenses);          
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashCoolerFirstHelper(i, licenses);          
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashCoolerFirstHelper(i, licenses);          
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashCoolerFirstHelper(i, licenses);          
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashCoolerFirstHelper(i, licenses);          
+        }
         _last_stake = 0;
     }
 
@@ -846,7 +1141,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         TvmBuilder b;
         b.store(seqNoStart);
         uint256 stakeHash = tvm.hash(b.toCell());
-        require(licenses.length <= 5, ERR_NOT_SUPPORT);
+        require(licenses.length <= MAX_LICENSE_NUMBER, ERR_NOT_SUPPORT);
         require(licenses.length > 0, ERR_NOT_SUPPORT);
         uint8 i = 0;
         if (i + 1 <= licenses.length) {     
@@ -863,6 +1158,26 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         i += 1;
         if (i + 1 <= licenses.length) {
             slashCoolerSecondHelper(i, licenses, slash_type);           
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashCoolerSecondHelper(i, licenses, slash_type);         
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashCoolerSecondHelper(i, licenses, slash_type);         
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashCoolerSecondHelper(i, licenses, slash_type);         
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashCoolerSecondHelper(i, licenses, slash_type);         
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashCoolerSecondHelper(i, licenses, slash_type);         
         }
         i += 1;
         if (i + 1 <= licenses.length) {
@@ -909,7 +1224,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         BLSKeyIndex(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], _activeStakes[hash].bls_key, _root)).destroy{value: 0.1 vmshell, flag: 1}();
         SignerIndex(BlockKeeperLib.calculateSignerIndexAddress(_code[m_SignerIndexCode], _activeStakes[hash].signerIndex, _root)).destroy{value: 0.1 vmshell, flag: 1}();
         delete _activeStakes[hash];
-        require(licenses.length <= 5, ERR_NOT_SUPPORT);
+        require(licenses.length <= MAX_LICENSE_NUMBER, ERR_NOT_SUPPORT);
         require(licenses.length > 0, ERR_NOT_SUPPORT);
         uint8 i = 0;
         if (i + 1 <= licenses.length) {  
@@ -931,6 +1246,26 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         if (i + 1 <= licenses.length) {
             slashStakeFirstHelper(i, licenses);         
         }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashStakeFirstHelper(i, licenses);         
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashStakeFirstHelper(i, licenses);         
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashStakeFirstHelper(i, licenses);         
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashStakeFirstHelper(i, licenses);         
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashStakeFirstHelper(i, licenses);         
+        }
         _last_stake = 0;
     }
 
@@ -939,7 +1274,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         b.store(seqNoStart);
         uint256 hash = tvm.hash(b.toCell());
         delete b;
-        require(licenses.length <= 5, ERR_NOT_SUPPORT);
+        require(licenses.length <= MAX_LICENSE_NUMBER, ERR_NOT_SUPPORT);
         require(licenses.length > 0, ERR_NOT_SUPPORT);
         uint8 i = 0;
         if (i + 1 <= licenses.length) {        
@@ -956,6 +1291,26 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         i += 1;
         if (i + 1 <= licenses.length) {
             slashStakeSecondHelper(i, licenses, slash_type);     
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashStakeSecondHelper(i, licenses, slash_type);           
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashStakeSecondHelper(i, licenses, slash_type);           
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashStakeSecondHelper(i, licenses, slash_type);           
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashStakeSecondHelper(i, licenses, slash_type);           
+        }
+        i += 1;
+        if (i + 1 <= licenses.length) {
+            slashStakeSecondHelper(i, licenses, slash_type);           
         }
         i += 1;
         if (i + 1 <= licenses.length) {
@@ -1001,6 +1356,26 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         uint128 sumBalance = 0;
         optional(uint256, LicenseData) data = _licenses.min();
         uint8 i = 0; 
+        if (data.hasValue()) {
+            (data, sumBalance) = withdrawWalletTokenHelper(data, sumBalance);
+        }
+        i += 1; 
+        if (data.hasValue()) {
+            (data, sumBalance) = withdrawWalletTokenHelper(data, sumBalance);
+        }
+        i += 1; 
+        if (data.hasValue()) {
+            (data, sumBalance) = withdrawWalletTokenHelper(data, sumBalance);
+        }
+        i += 1; 
+        if (data.hasValue()) {
+            (data, sumBalance) = withdrawWalletTokenHelper(data, sumBalance);
+        }
+        i += 1; 
+        if (data.hasValue()) {
+            (data, sumBalance) = withdrawWalletTokenHelper(data, sumBalance);
+        }
+        i += 1; 
         if (data.hasValue()) {
             (data, sumBalance) = withdrawWalletTokenHelper(data, sumBalance);
         }

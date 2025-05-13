@@ -11,6 +11,7 @@ use futures::StreamExt;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
+use tvm_types::AccountId;
 use wtransport::endpoint::IncomingSession;
 use wtransport::Connection;
 use wtransport::Endpoint;
@@ -29,10 +30,14 @@ impl LiteServer {
         Self { bind }
     }
 
-    pub async fn start(
+    pub async fn start<TBPResolver>(
         self,
-        raw_block_receiver: InstrumentedReceiver<Vec<u8>>,
-    ) -> anyhow::Result<()> {
+        raw_block_receiver: InstrumentedReceiver<(AccountId, Vec<u8>)>,
+        bp_resolver: TBPResolver,
+    ) -> anyhow::Result<()>
+    where
+        TBPResolver: Send + Sync + Clone + 'static + FnMut(AccountId) -> Option<String>,
+    {
         let (tx, rx) = std::sync::mpsc::channel::<IncomingSession>();
         let (btx, _ /* we will subscribe() later */) =
             broadcast::channel(DEFAULT_BROADCAST_CAPACITY);
@@ -53,7 +58,7 @@ impl LiteServer {
         let multiplexer_handler: JoinHandle<anyhow::Result<()>> = {
             let btx = btx.clone();
             tokio::spawn(async move {
-                message_multiplexor(raw_block_receiver, btx).await?;
+                message_multiplexor(raw_block_receiver, btx, bp_resolver).await?;
                 Ok(())
             })
         };
@@ -172,13 +177,19 @@ async fn handle(connection: &Connection, data: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn message_multiplexor(
-    rx: InstrumentedReceiver<Vec<u8>>,
+async fn message_multiplexor<TBKAddrResolver>(
+    rx: InstrumentedReceiver<(AccountId, Vec<u8>)>,
     btx: broadcast::Sender<Vec<u8>>,
-) -> anyhow::Result<()> {
+    mut bp_resolver: TBKAddrResolver,
+) -> anyhow::Result<()>
+where
+    TBKAddrResolver: Send + Sync + Clone + 'static + FnMut(AccountId) -> Option<String>,
+{
     tracing::info!("Message multiplexor started");
     loop {
-        match btx.send(rx.recv()?) {
+        let (node_id, raw_block) = rx.recv()?;
+        let node_addr = bp_resolver(node_id);
+        match btx.send(bincode::serialize(&(node_addr, raw_block))?) {
             Ok(number_subscribers) => {
                 tracing::info!("Message received by {} subs", number_subscribers);
             }

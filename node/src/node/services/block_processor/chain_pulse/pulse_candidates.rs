@@ -79,24 +79,27 @@ impl PulseCandidateBlocks {
         // setting last_broadcast_timestamp twice. Once before messages sent
         // and at the end with an extra buffer (offset by the number of messages).
         self.last_broadcast_timestamp = Instant::now();
-        let (finalized_block_id, _) =
-            blocks_repository.select_thread_last_finalized_block(&self.thread_identifier)?;
+        let (finalized_block_id, _) = blocks_repository
+            .select_thread_last_finalized_block(&self.thread_identifier)?
+            .expect("Must be known here");
         let Some(finalized_block) = blocks_repository.get_block(&finalized_block_id)? else {
             tracing::error!("Failed to load finalized block");
             return Ok(());
         };
         let mut sent_cnt = 1;
         tracing::info!("rebroadcasting block: {}", finalized_block,);
-        let message = NetworkMessage::ResentCandidate((finalized_block, self.node_id.clone()));
+        let message = NetworkMessage::resent_candidate(&finalized_block, self.node_id.clone())?;
         let _ = self.broadcast_tx.send(message);
         for (x, block) in candidates.values() {
             x.guarded(|e| {
                 if e.is_stored() && !e.is_invalidated() {
                     sent_cnt += 1;
                     tracing::info!("rebroadcasting block: {}", block,);
-                    let message =
-                        NetworkMessage::ResentCandidate((block.clone(), self.node_id.clone()));
-                    let _ = self.broadcast_tx.send(message);
+                    if let Ok(message) =
+                        NetworkMessage::resent_candidate(block, self.node_id.clone())
+                    {
+                        let _ = self.broadcast_tx.send(message);
+                    }
                 }
             })
         }

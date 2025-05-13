@@ -9,8 +9,11 @@ pub mod block_state;
 mod crypto;
 use crate::helper::metrics::BlockProductionMetrics;
 mod execution;
+use block_request_service::BlockRequestParams;
 pub use execution::LOOP_PAUSE_DURATION;
 use http_server::ExtMsgFeedbackList;
+pub mod block_request_service;
+use tvm_types::AccountId;
 mod network_message;
 
 mod restart;
@@ -30,6 +33,7 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 pub use associated_types::SignerIndex;
+pub use network_message::NetBlock;
 pub use network_message::NetworkMessage;
 use services::sync::StateSyncService;
 use tvm_types::UInt256;
@@ -49,7 +53,6 @@ use crate::types::BlockSeqNo;
 use crate::types::CollectedAttestations;
 use crate::types::RndSeed;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
-use crate::utilities::FixedSizeHashSet;
 pub mod shared_services;
 pub mod unprocessed_blocks_collection;
 use block_state::repository::BlockStateRepository;
@@ -58,7 +61,6 @@ use network::channel::NetDirectSender;
 use parking_lot::Mutex;
 use shared_services::SharedServices;
 use telemetry_utils::mpsc::InstrumentedSender;
-use unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 
 use crate::block::producer::process::TVMBlockProducerProcess;
 use crate::block::producer::ProducerService;
@@ -90,10 +92,8 @@ where
     network_rx: Receiver<NetworkMessage>,
     network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
     network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
-    raw_block_tx: InstrumentedSender<Vec<u8>>,
+    raw_block_tx: InstrumentedSender<(AccountId, Vec<u8>)>,
     bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
-
-    unprocessed_blocks_cache: unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection,
 
     production_timeout_multiplier: u64,
     last_block_attestations: Arc<Mutex<CollectedAttestations>>,
@@ -111,7 +111,6 @@ where
     thread_id: ThreadIdentifier,
     // Note: hack. check usage
     pub is_spawned_from_node_sync: bool,
-    nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
 
     // Note: signer index map is initially empty,
     // it is filled after BK epoch contract deploy or loaded from zerostate
@@ -130,6 +129,8 @@ where
 
     is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
     db_service: DBSerializeService,
+    // Channel (sender) for block requests
+    blk_req_tx: Sender<BlockRequestParams>,
 }
 
 impl<TStateSyncService, TRandomGenerator> Node<TStateSyncService, TRandomGenerator>
@@ -146,7 +147,7 @@ where
         network_rx: Receiver<NetworkMessage>,
         network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
         network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
-        raw_block_tx: InstrumentedSender<Vec<u8>>,
+        raw_block_tx: InstrumentedSender<(AccountId, Vec<u8>)>,
         bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
         config: Config,
         block_keeper_rng: TRandomGenerator,
@@ -154,9 +155,7 @@ where
         thread_id: ThreadIdentifier,
         feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
         _update_producer_group: bool,
-        nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         block_state_repository: BlockStateRepository,
-        unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
         block_processor_service: BlockProcessorService,
         attestations_target_service: AttestationsTargetService,
         validation_service: ValidationServiceInterface,
@@ -170,6 +169,7 @@ where
         last_block_attestations: Arc<Mutex<CollectedAttestations>>,
         bp_production_count: Arc<AtomicI32>,
         db_service: DBSerializeService,
+        blk_req_tx: Sender<BlockRequestParams>,
     ) -> Self {
         tracing::trace!("Start node for thread: {thread_id:?}");
         if let Some(metrics) = &metrics {
@@ -192,7 +192,6 @@ where
             production_timeout_multiplier: DEFAULT_PRODUCTION_TIME_MULTIPLIER,
             last_block_attestations: last_block_attestations.clone(),
             config: config.clone(),
-            unprocessed_blocks_cache: unprocessed_blocks_cache.clone(),
             block_gap_length: block_gap.clone(),
             received_attestations: Default::default(),
             block_keeper_rng,
@@ -205,7 +204,6 @@ where
             nack_cache: Default::default(),
             thread_id,
             is_spawned_from_node_sync: false,
-            nack_set_cache: Arc::clone(&nack_set_cache),
             block_state_repository: block_state_repository.clone(),
             block_processor_service,
             validation_service,
@@ -215,7 +213,6 @@ where
             finalization_loop: std::thread::Builder::new()
                 .name(format!("Block finalization loop {}", thread_id))
                 .spawn_critical({
-                    let unprocessed_blocks_buffer = unprocessed_blocks_cache.clone();
                     let repository_clone = repository.clone();
                     let block_state_repository_clone = block_state_repository.clone();
                     let block_gap_clone = block_gap.clone();
@@ -225,12 +222,10 @@ where
                     let node_id = config.local.node_id.clone();
                     move || {
                         crate::node::services::finalization::finalization_loop(
-                            unprocessed_blocks_buffer,
                             repository_clone,
                             block_state_repository_clone,
                             shared_services_clone,
                             raw_block_tx,
-                            Arc::clone(&nack_set_cache),
                             state_sync_service,
                             block_gap_clone,
                             metrics_clone,
@@ -247,7 +242,6 @@ where
                 thread_id,
                 repository.clone(),
                 block_state_repository.clone(),
-                unprocessed_blocks_cache.clone(),
                 block_gap.clone(),
                 production_process,
                 feedback_sender.clone(),
@@ -273,6 +267,7 @@ where
             external_messages,
             is_state_sync_requested,
             db_service,
+            blk_req_tx,
         }
     }
 }

@@ -110,19 +110,23 @@ pub struct NetworkConfig {
     #[serde(default = "default_send_buffer_size")]
     pub send_buffer_size: usize,
 
-    /// Public endpoint for this node
+    /// Public address for Block Manager API of this node
     #[builder(default)]
-    pub public_endpoint: Option<String>,
+    pub bm_api_socket: Option<StringSocketAddr>,
+
+    /// Public address for Block Keeper API this node
+    #[builder(default)]
+    pub bk_api_socket: Option<StringSocketAddr>,
 
     /// Number of max tries to download shared state
     /// Defaults to 3
-    #[builder(default = 30)]
+    #[builder(default = 50)]
     #[serde(default = "default_shared_state_max_download_tries")]
     pub shared_state_max_download_tries: u8,
 
     /// Retry timeout for shared state download
     /// Defaults to 2000
-    #[builder(default = 200)]
+    #[builder(default = 500)]
     #[serde(default = "default_shared_state_retry_download_timeout_millis")]
     pub shared_state_retry_download_timeout_millis: u64,
 

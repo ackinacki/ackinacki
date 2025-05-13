@@ -1,3 +1,6 @@
 [alias]
 lint = "clippy --workspace --tests --examples --bins -- -Dclippy::todo"
 lint-all = "clippy --workspace --all-features --tests --examples --bins -- -Dclippy::todo"
+
+[build]
+rustflags = ["--cfg", "tokio_unstable"]

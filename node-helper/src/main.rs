@@ -57,6 +57,10 @@ struct Bls {
     /// If not set, new key will be appended to file
     #[clap(short, long, action=ArgAction::SetTrue, default_value = "false", requires("path"))]
     remove_old: bool,
+
+    /// Quiet execution. Do not print new pubkey
+    #[clap(short, long, action=ArgAction::SetTrue, default_value = "false", requires("path"))]
+    quiet: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -135,7 +139,10 @@ struct Config {
     pub min_time_between_state_publish_directives: Option<Duration>,
 
     #[arg(long, env)]
-    pub public_endpoint: Option<String>,
+    pub bm_api_socket: Option<StringSocketAddr>,
+
+    #[arg(long, env)]
+    pub bk_api_socket: Option<StringSocketAddr>,
 
     #[arg(long, env)]
     pub parallelization_level: Option<usize>,
@@ -325,8 +332,12 @@ fn main() -> anyhow::Result<()> {
                 config.global.node_joining_timeout = node_joining_timeout;
             }
 
-            if let Some(public_endpoint) = config_cmd.public_endpoint {
-                config.network.public_endpoint = Some(public_endpoint);
+            if let Some(bm_api_socket) = config_cmd.bm_api_socket {
+                config.network.bm_api_socket = Some(bm_api_socket);
+            }
+
+            if let Some(bk_api_socket) = config_cmd.bk_api_socket {
+                config.network.bk_api_socket = Some(bk_api_socket);
             }
 
             if let Some(parallelization_level) = config_cmd.parallelization_level {
@@ -419,6 +430,10 @@ fn main() -> anyhow::Result<()> {
             let keypair = BLSKeyPair::from(gen_bls_key_pair()?);
             let rng_seed = RndSeed::from(gen_bls_key_pair()?.1);
             if let Some(path) = bls_cmd.path {
+                if !bls_cmd.quiet {
+                    let pubkey = json!({"pubkey": format!("{}", hex::encode(keypair.public))});
+                    println!("{}", serde_json::to_string_pretty(&pubkey)?);
+                }
                 let mut bls_keys_map = if bls_cmd.remove_old {
                     let _ = std::fs::remove_file(&path);
                     HashMap::new()

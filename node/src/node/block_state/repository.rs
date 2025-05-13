@@ -21,6 +21,16 @@ pub struct BlockState {
     inner: Arc<BlockStateInner>,
 }
 
+#[cfg(test)]
+impl BlockState {
+    pub fn test() -> Self {
+        BlockState {
+            block_identifier: BlockIdentifier::default(),
+            inner: Arc::new(Mutex::new(AckiNackiBlockState::default())),
+        }
+    }
+}
+
 impl Debug for BlockState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "BlockState({:?})", self.block_identifier)

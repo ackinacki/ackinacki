@@ -27,7 +27,6 @@ use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::services::attestations_target::service::AttestationsTargetService;
 use crate::node::services::fork_resolution::service::ForkResolutionService;
 use crate::node::shared_services::SharedServices;
-use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::NetworkMessage;
 use crate::node::NodeIdentifier;
 use crate::repository::repository_impl::RepositoryImpl;
@@ -52,7 +51,6 @@ impl ProducerService {
         thread_id: ThreadIdentifier,
         repository: RepositoryImpl,
         block_state_repository: BlockStateRepository,
-        unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
         block_gap: BlockGap,
         production_process: TVMBlockProducerProcess,
         feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
@@ -92,7 +90,6 @@ impl ProducerService {
             .fork_resolution_service(fork_resolution_service)
             .bls_keys_map(bls_keys_map)
             .production_process(production_process)
-            .unprocessed_blocks_cache(unprocessed_blocks_cache)
             .received_nacks(received_nacks)
             .received_acks(received_acks)
             .feedback_sender(feedback_sender)

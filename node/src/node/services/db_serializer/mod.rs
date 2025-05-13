@@ -26,7 +26,9 @@ impl DBSerializeService {
         let handler =
             std::thread::Builder::new().name("db_serializer".to_string()).spawn(move || loop {
                 let (envelope, state, state_cell) = receiver.recv()?;
-                write_to_db(archive.clone(), envelope, state, state_cell)?;
+                if !cfg!(feature = "disable_db_write") {
+                    write_to_db(archive.clone(), envelope, state, state_cell)?;
+                }
             })?;
         Ok(Self { handler })
     }

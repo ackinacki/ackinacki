@@ -7,9 +7,11 @@ build = "build.rs"
 
 [dependencies]
 anyhow.workspace = true
+bincode.workspace = true
 futures.workspace = true
 telemetry_utils.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tvm_types.workspace = true
 wtransport.workspace = true

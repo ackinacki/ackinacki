@@ -4,12 +4,14 @@
 use std::ops::Sub;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::RecvTimeoutError;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::helper::block_flow_trace;
 use crate::node::associated_types::ExecutionResult;
 use crate::node::associated_types::SynchronizationResult;
+use crate::node::block_request_service::BlockRequestParams;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
 use crate::node::Node;
@@ -100,11 +102,11 @@ where
         let mut is_stop_signal_received = false;
         // let mut in_flight_productions = self.start_block_production()?;
 
-        let mut last_state_sync_executed = std::time::Instant::now();
+        let last_state_sync_executed = Arc::new(parking_lot::Mutex::new(std::time::Instant::now()));
         if self.is_this_node_a_producer() {
             // Allow producer sync its state from the very beginning
-            last_state_sync_executed = last_state_sync_executed
-                .sub(self.config.global.min_time_between_state_publish_directives);
+            let mut guard = last_state_sync_executed.lock();
+            *guard = guard.sub(self.config.global.min_time_between_state_publish_directives);
         }
 
         let iteration_start = std::time::Instant::now();
@@ -183,13 +185,21 @@ where
                 Ok(msg) => match msg {
                     NetworkMessage::NodeJoining((node_id, _)) => {
                         tracing::info!("Received NodeJoining message({node_id})");
+
+                        let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
                         if self.is_this_node_a_producer()
-                            && last_state_sync_executed.elapsed()
+                            && elapsed
                                 > self.config.global.min_time_between_state_publish_directives
                         {
-                            last_state_sync_executed = std::time::Instant::now();
-                            let (last_finalized_id, last_finalized_seq_no) =
-                                self.repository.select_thread_last_finalized_block(&thread_id)?;
+                            {
+                                let mut guard = last_state_sync_executed.lock();
+                                *guard = std::time::Instant::now();
+                            }
+
+                            let (last_finalized_id, last_finalized_seq_no) = self
+                                .repository
+                                .select_thread_last_finalized_block(&thread_id)?
+                                .expect("Must be known here");
                             if self.production_timeout_multiplier == 0
                                 || last_finalized_seq_no == BlockSeqNo::default()
                             {
@@ -205,7 +215,8 @@ where
                                     // TODO check that we need to take finalized block, not stored
                                     let (_, mut block_seq_no_with_sync) = self
                                         .repository
-                                        .select_thread_last_finalized_block(&thread_id)?;
+                                        .select_thread_last_finalized_block(&thread_id)?
+                                        .expect("Must be known here");
                                     for _i in 0..self.config.global.sync_gap {
                                         block_seq_no_with_sync =
                                             next_seq_no(block_seq_no_with_sync);
@@ -219,8 +230,8 @@ where
                         }
                     }
 
-                    NetworkMessage::ResentCandidate((ref candidate_block, _))
-                    | NetworkMessage::Candidate(ref candidate_block) => {
+                    NetworkMessage::ResentCandidate((ref net_block, _))
+                    | NetworkMessage::Candidate(ref net_block) => {
                         tracing::info!("Incoming candidate block");
                         let resend_node_id =
                             if let NetworkMessage::ResentCandidate((_, node_id)) = msg {
@@ -230,12 +241,11 @@ where
                             };
                         block_flow_trace(
                             "received candidate",
-                            &candidate_block.data().identifier(),
+                            &net_block.identifier,
                             &self.config.local.node_id,
                             [],
                         );
-
-                        self.on_incoming_candidate_block(candidate_block, resend_node_id)?;
+                        self.on_incoming_candidate_block(net_block, resend_node_id)?;
                     }
                     NetworkMessage::Ack((ack, _)) => {
                         tracing::info!(
@@ -341,44 +351,21 @@ where
                             end,
                             at_least_n_blocks,
                         );
-                        match self.on_incoming_block_request(
+
+                        // Note: Isn't it better to throttle right here?
+
+                        let request_params = BlockRequestParams {
                             start,
                             end,
-                            node_id.clone(),
+                            node_id,
                             at_least_n_blocks,
-                        ) {
-                            Ok(()) => {}
-                            Err(e) => {
-                                tracing::info!("Request from {node_id} for blocks range [{:?},{:?}) failed with: {e:?}", start, end);
-                                if self.is_this_node_a_producer()
-                                    && last_state_sync_executed.elapsed()
-                                        > self
-                                            .config
-                                            .global
-                                            .min_time_between_state_publish_directives
-                                {
-                                    last_state_sync_executed = std::time::Instant::now();
-
-                                    // Otherwise share state in one of the next blocks if we have not marked one block yet
-                                    if let Some(block_seq_no) =
-                                        self.is_state_sync_requested.guarded(|e| *e)
-                                    {
-                                        self.send_sync_from(node_id, block_seq_no)?;
-                                    } else {
-                                        let (_, mut block_seq_no_with_sync) = self
-                                            .repository
-                                            .select_thread_last_finalized_block(&thread_id)?;
-                                        for _i in 0..self.config.global.sync_gap {
-                                            block_seq_no_with_sync =
-                                                next_seq_no(block_seq_no_with_sync);
-                                        }
-                                        tracing::trace!("Mark next block to share state: {block_seq_no_with_sync:?}");
-                                        self.send_sync_from(node_id, block_seq_no_with_sync)?;
-                                        self.is_state_sync_requested
-                                            .guarded_mut(|e| *e = Some(block_seq_no_with_sync));
-                                    }
-                                }
-                            }
+                            is_this_node_a_producer: self.is_this_node_a_producer(),
+                            last_state_sync_executed: last_state_sync_executed.clone(),
+                            is_state_sync_requested: self.is_state_sync_requested.clone(),
+                            thread_id: self.thread_id,
+                        };
+                        if self.blk_req_tx.send(request_params).is_err() {
+                            tracing::error!("BlockRequestService (receiver) has gone")
                         }
                     }
                     NetworkMessage::SyncFrom((seq_no_from, _)) => {

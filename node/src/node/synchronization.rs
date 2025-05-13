@@ -1,20 +1,14 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::HashSet;
-use std::ops::Deref;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::TryRecvError;
-use std::sync::Arc;
 use std::time::Duration;
 
-use parking_lot::Mutex;
 use telemetry_utils::mpsc::instrumented_channel;
 use tokio::time::Instant;
 
 use crate::bls::envelope::BLSSignedEnvelope;
-use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
 use crate::helper::block_flow_trace;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NodeAssociatedTypes;
@@ -22,18 +16,13 @@ use crate::node::associated_types::SynchronizationResult;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
 use crate::node::Node;
-use crate::repository::cross_thread_ref_repository::CrossThreadRefDataHistory;
-use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::repository_impl::RepositoryImpl;
-use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
 use crate::types::next_seq_no;
-use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
-use crate::utilities::FixedSizeHashSet;
 
 impl<TStateSyncService, TRandomGenerator> Node<TStateSyncService, TRandomGenerator>
 where
@@ -84,27 +73,11 @@ where
                             tracing::trace!(
                                 "[synchronization] set state from shared resource: {block_id:?}"
                             );
-                            let loaded_cross_thread_ref_data =
-                                self.repository.set_state_from_snapshot(
-                                    &block_id,
-                                    <RepositoryImpl as Repository>::StateSnapshot::from(
-                                        state_buffer,
-                                    ),
-                                    &current_thread_id,
-                                    self.skipped_attestation_ids.clone(),
-                                    self.external_messages.clone(),
-                                )?;
-                            //
-                            self.shared_services.exec(|services| {
-                                for ref_data in loaded_cross_thread_ref_data.into_iter() {
-                                    services
-                                        .cross_thread_ref_data_service
-                                        .set_cross_thread_ref_data(ref_data)
-                                        .expect("Failed to load cross-thread-ref-data");
-                                }
-                            });
-
-                            // self.set_producer_groups_from_finalized_state(seq_no, new_groups);
+                            self.repository.set_state_from_snapshot(
+                                <RepositoryImpl as Repository>::StateSnapshot::from(state_buffer),
+                                &current_thread_id,
+                                self.skipped_attestation_ids.clone(),
+                            )?;
 
                             initial_state_shared_resource_address = None;
 
@@ -113,7 +86,7 @@ where
                                 // let mut signs = block.clone_signature_occurrences();
                                 // signs.retain(|_k, count| *count > 0);
                                 // if signs.len() >= self.min_signatures_count_to_accept_broadcasted_state(seq_no) {
-                                self.finalize_synced_block(&block)?;
+                                // self.finalize_synced_block(&block)?;
                                 // return match self.take_next_unprocessed_block(block_id, seq_no)? {
                                 //     Some(next_block) => {
                                 //         tracing::trace!(
@@ -168,17 +141,13 @@ where
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Ok(msg) => match msg {
-                    NetworkMessage::Candidate(ref candidate_block)
-                    | NetworkMessage::ResentCandidate((ref candidate_block, _)) => {
+                    NetworkMessage::Candidate(ref net_block)
+                    | NetworkMessage::ResentCandidate((ref net_block, _)) => {
                         tracing::info!("[synchronizing] Incoming candidate block");
-                        tracing::info!(
-                            "[synchronizing] Incoming block candidate: {}, signatures: {:?}",
-                            candidate_block.data(),
-                            candidate_block.clone_signature_occurrences(),
-                        );
+                        tracing::info!("[synchronizing] Incoming block candidate: {}", net_block,);
                         block_flow_trace(
                             "received candidate [synchronizing]",
-                            &candidate_block.data().identifier(),
+                            &net_block.identifier,
                             &self.config.local.node_id,
                             [],
                         );
@@ -188,20 +157,26 @@ where
                             } else {
                                 None
                             };
-                        self.on_incoming_candidate_block(candidate_block, resend_node_id)?;
+                        let mut envelope =
+                            self.on_incoming_candidate_block(net_block, resend_node_id)?;
+
                         if let Some((block_id, seq_no)) = initial_state.clone() {
                             tracing::info!(
                                 "[synchronizing] initial_state block: {}, seqno: {}",
                                 block_id.clone(),
                                 seq_no.clone(),
                             );
-                            if candidate_block.data().seq_no() < seq_no {
+                            if net_block.seq_no < seq_no {
                                 continue;
                             }
                             // We have received finalized block from stopped BP
                             // It can be older than our last finalized, so process here
-                            if block_id == candidate_block.data().identifier() {
-                                if self.check_block_signature(candidate_block) != Some(true) {
+                            if block_id == net_block.identifier {
+                                if envelope.is_none() {
+                                    envelope = Some(net_block.get_envelope()?);
+                                }
+                                let envelope = envelope.as_ref().unwrap();
+                                if self.check_block_signature(envelope) != Some(true) {
                                     continue;
                                 }
                                 if initial_state_shared_resource_address.is_none() {
@@ -212,8 +187,8 @@ where
                                     // send their attestation to BP again and BP will not finalize block.
                                     // So we set finalized block force with possible downgrade.
                                     // But this should be fixed with attestation resending mechanism.
-                                    self.repository.store_block(candidate_block.clone())?;
-                                    self.finalize_synced_block(candidate_block)?;
+                                    // self.repository.store_block(candidate_block.clone())?;
+                                    // self.finalize_synced_block(candidate_block)?;
                                     // return match self.take_next_unprocessed_block(block_id, seq_no)? {
                                     //     Some(next_block) => {
                                     //         tracing::trace!(
@@ -240,14 +215,18 @@ where
                             }
                         }
                         if let Some(seq_no) = recieved_sync_from.as_ref() {
-                            if &candidate_block.data().seq_no() < seq_no {
+                            if &net_block.seq_no < seq_no {
                                 continue;
                             }
                         }
 
+                        if envelope.is_none() {
+                            envelope = Some(net_block.get_envelope()?);
+                        }
+                        let envelope = envelope.as_ref().unwrap();
                         // if self.is_candidate_block_can_be_applied(candidate_block)
                         //         .unwrap_or(false)
-                        let parent_id = candidate_block.data().parent();
+                        let parent_id = envelope.data().parent();
                         if self
                             .block_state_repository
                             .get(&parent_id)?
@@ -278,14 +257,14 @@ where
                             };
                             let first_missed_block_seq_no = next_seq_no(last_block_seq_no);
                             tracing::trace!("[synchronizing] first_missed_block_seq_no: {first_missed_block_seq_no:?}");
-                            let incoming_block_seq_no = candidate_block.data().seq_no();
+                            let incoming_block_seq_no = net_block.seq_no;
                             let seq_no_diff = incoming_block_seq_no - first_missed_block_seq_no;
                             if seq_no_diff < self.config.global.need_synchronization_block_diff
                                 && !block_request_was_sent
                             {
                                 block_request_was_sent = true;
                                 self.send_block_request(
-                                    candidate_block.data().get_common_section().producer_id.clone(),
+                                    net_block.producer_id.clone(),
                                     first_missed_block_seq_no,
                                     incoming_block_seq_no,
                                     None,
@@ -295,7 +274,7 @@ where
 
                         if initial_state_shared_resource_address.is_none() {
                             if let Some(resource_address) =
-                                candidate_block.data().directives().share_state_resource_address
+                                envelope.data().directives().share_state_resource_address
                             {
                                 tracing::trace!(
                                     "[synchronizing] Incoming block contains directives: {resource_address}"
@@ -304,10 +283,8 @@ where
                                     serde_json::from_str(&resource_address)?;
                                 initial_state_shared_resource_address =
                                     Some(resource_address.clone());
-                                initial_state = Some((
-                                    candidate_block.data().identifier(),
-                                    candidate_block.data().seq_no(),
-                                ));
+                                initial_state =
+                                    Some((net_block.identifier.clone(), net_block.seq_no));
 
                                 self.state_sync_service.add_load_state_task(
                                     resource_address,
@@ -366,73 +343,6 @@ where
                 },
             }
         }
-    }
-
-    fn finalize_synced_block(
-        &mut self,
-        block: &Envelope<GoshBLS, AckiNackiBlock>,
-    ) -> anyhow::Result<()> {
-        tracing::trace!("[synchronization] Marked synced block as finalized: {:?}", block);
-        let block_id = block.data().identifier();
-        let seq_no = block.data().seq_no();
-        let current_thread_id = self.thread_id;
-        // We have already received the last finalized block end sync
-        let parent_block_id = block.data().parent();
-        self.shared_services.exec(|services| {
-            services.threads_tracking.init_thread(
-                parent_block_id.clone(),
-                HashSet::from_iter(vec![current_thread_id]),
-                &mut (&mut services.load_balancing,),
-            );
-            let threads: Vec<ThreadIdentifier> = {
-                if let Some(threads_table) =
-                    block.data().get_common_section().threads_table.as_ref()
-                {
-                    threads_table.list_threads().copied().collect()
-                } else {
-                    let state = self
-                        .repository
-                        .get_optimistic_state(
-                            &block_id,
-                            &current_thread_id,
-                            Arc::new(Mutex::new(FixedSizeHashSet::new(0))),
-                            None,
-                        )
-                        .expect("Failed to load finalized state")
-                        .expect("Repo must have finalized state on this point");
-                    state.get_produced_threads_table().list_threads().copied().collect()
-                }
-            };
-            for thread_identifier in threads {
-                services.router.join_thread(thread_identifier);
-            }
-        });
-        self.shared_services.on_block_appended(block.data());
-        self.repository.mark_block_as_finalized(
-            block,
-            Arc::clone(&self.nack_set_cache),
-            self.block_state_repository.get(&block_id)?,
-        )?;
-        self.shared_services.on_block_finalized(
-            block.data(),
-            &mut self
-                .repository
-                .get_optimistic_state(
-                    &block.data().identifier(),
-                    &current_thread_id,
-                    Arc::clone(&self.nack_set_cache),
-                    None,
-                )?
-                .expect("set above"),
-        );
-        // self.clear_unprocessed_till(&seq_no, &current_thread_id)?;
-        self.repository.clear_verification_markers(&seq_no, &current_thread_id)?;
-
-        tracing::trace!("[synchronization] clear unprocessed block cache");
-        self.unprocessed_blocks_cache.retain(|block_state| {
-            block_state.guarded(|e| *e.block_seq_no()).map(|e| e > seq_no).unwrap_or(false)
-        });
-        Ok(())
     }
 
     pub(crate) fn on_sync_finalized(
@@ -500,33 +410,14 @@ where
                 last_finalized_block_id,
                 last_finalized_seq_no
             );
-            let (finalized_block_stats, bk_set, thread_id) =
-                self.block_state_repository.get(&last_finalized_block_id)?.guarded(|e| {
-                    (
-                        e.block_stats().clone().expect("Must be set"),
-                        e.bk_set().clone().expect("Must be set").deref().clone(),
-                        (*e.thread_identifier()).expect("Must be set"),
-                    )
-                });
-            let state = self
-                .repository
-                .get_optimistic_state(
-                    &last_finalized_block_id,
-                    &thread_id,
-                    Arc::clone(&self.nack_set_cache),
-                    None,
-                )?
-                .expect("Failed to load finalized state");
-            let cross_thread_ref_data_history =
-                self.shared_services.exec(|e| -> anyhow::Result<Vec<CrossThreadRefData>> {
-                    e.cross_thread_ref_data_service.get_history_tail(&last_finalized_block_id)
-                })?;
+            let finalized_block =
+                self.repository.get_block(&last_finalized_block_id)?.expect("missing block");
             let resource_address = self.state_sync_service.add_share_state_task(
-                state,
-                cross_thread_ref_data_history,
-                finalized_block_stats,
-                bk_set,
+                &finalized_block,
                 &self.message_db,
+                &self.repository,
+                &self.block_state_repository,
+                &self.shared_services,
             )?;
             let resource_address = serde_json::to_string(&resource_address)?;
             self.broadcast_sync_finalized(

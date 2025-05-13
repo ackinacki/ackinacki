@@ -37,7 +37,6 @@ use crate::node::NodeIdentifier;
 use crate::node::PubKey;
 use crate::node::Secret;
 use crate::node::SignerIndex;
-use crate::node::UnfinalizedCandidateBlockCollection;
 use crate::node::ValidationServiceInterface;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::repository_impl::RepositoryImpl;
@@ -55,6 +54,8 @@ use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
 use crate::utilities::FixedSizeHashSet;
+
+const MAX_ATTESTATION_TARGET_BETA: usize = 100;
 
 #[derive(Error, Debug)]
 pub enum ForkResolutionVerificationError {
@@ -74,6 +75,8 @@ use network::channel::NetBroadcastSender;
 use network::channel::NetDirectSender;
 use telemetry_utils::now_ms;
 use ForkResolutionVerificationError::*;
+
+use crate::node::services::PULSE_IDLE_TIMEOUT;
 
 pub struct BlockProcessorService {
     pub service_handler: std::thread::JoinHandle<()>,
@@ -104,7 +107,6 @@ impl BlockProcessorService {
         save_state_frequency: u32,
         bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
         thread_identifier: ThreadIdentifier,
-        unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
         block_state_repository: BlockStateRepository,
         repository: RepositoryImpl,
         mut shared_services: SharedServices,
@@ -124,8 +126,11 @@ impl BlockProcessorService {
         mut attestation_sender_service: AttestationSendService,
         validation_service: ValidationServiceInterface,
     ) -> Self {
-        let chain_pulse_last_finalized_block_id: BlockIdentifier =
-            repository.select_thread_last_finalized_block(&thread_identifier).unwrap().0;
+        let chain_pulse_last_finalized_block_id: BlockIdentifier = repository
+            .select_thread_last_finalized_block(&thread_identifier)
+            .unwrap_or_default()
+            .unwrap_or_default()
+            .0;
         let chain_pulse_last_finalized_block =
             block_state_repository.get(&chain_pulse_last_finalized_block_id).unwrap();
         let missing_blocks_were_requested = Arc::new(AtomicBool::new(false));
@@ -153,7 +158,7 @@ impl BlockProcessorService {
                     .block_gap(block_gap)
                     .last_finalized_block(Some(
                         block_state_repository.get(
-                            &repository.select_thread_last_finalized_block(&thread_identifier)?.0
+                            &chain_pulse_last_finalized_block_id
                         )?
                     ))
                     .build();
@@ -162,74 +167,79 @@ impl BlockProcessorService {
                     .repository(repository.clone())
                     .block_state_repository(block_state_repository.clone())
                     .build();
+                let mut attestation_deadline = Instant::now() + PULSE_IDLE_TIMEOUT * 2;
                 loop {
                     let notifications =
                         block_state_repository.notifications().load(Ordering::Relaxed);
-                    unprocessed_blocks_cache.remove_finalized_and_invalidated_blocks();
+                    repository.unprocessed_blocks_cache().remove_finalized_and_invalidated_blocks();
                     // Await for signal that smth has changes and blocks can be checked again
-                    let last_finalized_block_id: BlockIdentifier = repository.select_thread_last_finalized_block(&thread_identifier)?.0;
-                    let last_finalized_block = block_state_repository.get(&last_finalized_block_id)?;
-                    chain_pulse.pulse(&last_finalized_block)?;
+                    if let Some(last_finalized_block_id) = repository.select_thread_last_finalized_block(&thread_identifier)?.map(|t| t.0) {
+                        let last_finalized_block = block_state_repository.get(&last_finalized_block_id)?;
+                        chain_pulse.pulse(&last_finalized_block)?;
 
-                    #[allow(clippy::mutable_key_type)]
-                    let blocks_to_process: UnfinalizedBlocksSnapshot =
-                        unprocessed_blocks_cache.clone_queue();
+                        #[allow(clippy::mutable_key_type)]
+                        let blocks_to_process: UnfinalizedBlocksSnapshot =
+                            repository.unprocessed_blocks_cache().clone_queue();
 
-                    let _ = chain_pulse.evaluate(&blocks_to_process, &block_state_repository, &repository);
-                    for (block_state, block) in blocks_to_process.values() {
-                        {
-                            let mut lock = block_state.lock();
-                            lock.set_bulk_change(true)?;
-                            if !lock.event_timestamps.block_process_timestamp_was_reported {
-                                lock.event_timestamps.block_process_timestamp_was_reported = true;
-                                shared_services.metrics.as_ref().inspect(|m| {
-                                    if let Some(thread_id) = lock.thread_identifier() {
-                                        if let Some(received) = &lock.event_timestamps.received_ms {
-                                            m.report_processing_delay(
-                                                now_ms().saturating_sub(*received),
-                                                thread_id,
-                                            );
+                        let _ = chain_pulse.evaluate(&blocks_to_process, &block_state_repository, &repository);
+                        for (block_state, block) in blocks_to_process.values() {
+                            {
+                                let mut lock = block_state.lock();
+                                lock.set_bulk_change(true)?;
+                                if !lock.event_timestamps.block_process_timestamp_was_reported {
+                                    lock.event_timestamps.block_process_timestamp_was_reported = true;
+                                    shared_services.metrics.as_ref().inspect(|m| {
+                                        if let Some(thread_id) = lock.thread_identifier() {
+                                            if let Some(received) = &lock.event_timestamps.received_ms {
+                                                m.report_processing_delay(
+                                                    now_ms().saturating_sub(*received),
+                                                    thread_id,
+                                                );
+                                            }
                                         }
-                                    }
-                                });
+                                    });
+                                }
+                            }
+                            process_candidate_block(
+                                security_guarantee,
+                                node_id.clone(),
+                                save_state_frequency,
+                                bls_keys_map.clone(),
+                                block_state,
+                                &block_state_repository,
+                                &repository,
+                                &bk_state_update_tx,
+                                &mut shared_services,
+                                nack_set_cache.clone(),
+                                &archive,
+                                &skipped_attestation_ids,
+                                &external_messages,
+                                block,
+                                &validation_service,
+                                &time_to_produce_block,
+                            )?;
+                            {
+                                let mut lock = block_state.lock();
+                                lock.set_bulk_change(false)?;
                             }
                         }
-                        process_candidate_block(
-                            security_guarantee,
-                            node_id.clone(),
-                            save_state_frequency,
-                            bls_keys_map.clone(),
-                            block_state,
-                            &block_state_repository,
-                            &repository,
-                            &bk_state_update_tx,
-                            &mut shared_services,
-                            nack_set_cache.clone(),
-                            &archive,
-                            &skipped_attestation_ids,
-                            &external_messages,
-                            block,
-                            &validation_service,
-                            &time_to_produce_block,
-                        )?;
-                        {
-                            let mut lock = block_state.lock();
-                            lock.set_bulk_change(false)?;
-                        }
-                    }
-                    attestations_target_service.evaluate(&blocks_to_process);
+                        attestations_target_service.evaluate(&blocks_to_process);
 
+                        attestation_deadline = attestation_sender_service.evaluate(
+                            &blocks_to_process,
+                            last_block_attestations.clone(),
+                            &repository,
+                            attestation_deadline,
+                        );
+                    }
                     let new_notifications =
                         block_state_repository.notifications().load(Ordering::Relaxed);
                     if new_notifications == notifications {
-                        std::thread::sleep(Duration::from_millis(50));
+                        if let Some(idle_time) = attestation_deadline.checked_duration_since(Instant::now()) {
+                            std::thread::sleep(idle_time.min(PULSE_IDLE_TIMEOUT));
+                        }
                     }
                     // atomic_wait::wait(block_state_repository.notifications(), notifications);
-                    attestation_sender_service.evaluate(
-                        &blocks_to_process,
-                        last_block_attestations.clone(),
-                        &repository,
-                    );
                 }
             })
             .expect("Failed to spawn block_processor thread");
@@ -426,22 +436,38 @@ fn process_candidate_block(
 
                     let this_block = rnd.not_a_modulus(1 << 16) as SignerIndex;
                     tracing::trace!("this_block: {this_block}");
-                    if (this_block as f64) * N <= (v * (SignerIndex::MAX as f64))  {
+                    if (this_block as f64) * N <= (v * (SignerIndex::MAX as f64)) {
                         tracing::trace!("set_must_be_validated");
                         e.set_must_be_validated()?;
                     }
                 }
                 if e.initial_attestations_target().is_none() {
+                    let parent_attestation_target = parent_block_state.guarded(|e| *e.initial_attestations_target()).expect("Parent attestation target must be set");
+                    let descendant_generations = if (1 + median_descendants_chain_length_to_meet_threshold) < parent_attestation_target.descendant_generations {
+                        parent_attestation_target.descendant_generations - 1
+                    } else if median_descendants_chain_length_to_meet_threshold < MAX_ATTESTATION_TARGET_BETA {
+                        1 + median_descendants_chain_length_to_meet_threshold
+                    } else {
+                        median_descendants_chain_length_to_meet_threshold
+                    };
+
+                    shared_services.metrics.as_ref().inspect(|m| {
+                        if let Some(thread_id) = e.thread_identifier() {
+                            m.report_attn_target_descendant_generations(descendant_generations, thread_id);
+                        } else {
+                            tracing::error!("Thread id not set for block {}", block_id);
+                        }
+                    });
                     e.set_initial_attestations_target(AttestationsTarget {
                         // Note: spec.
-                        descendant_generations: 1 + median_descendants_chain_length_to_meet_threshold,
+                        descendant_generations,
                         count: attestation_target,
                     })?;
                 }
                 e.set_block_stats(cur_block_stats.clone())?;
 
                 shared_services.metrics.as_ref().inspect(|m| {
-                    if let Some(thread_id) =  e.thread_identifier() {
+                    if let Some(thread_id) = e.thread_identifier() {
                         m.report_calc_consencus_params(moment.elapsed().as_millis() as u64, thread_id);
                     } else {
                         tracing::error!("Thread id not set for block {}", block_id);
@@ -550,8 +576,9 @@ fn process_candidate_block(
                 validation_service.send(block_state.clone());
             }
 
-            let (_, last_finalized_seq_no) =
-                repository.select_thread_last_finalized_block(&thread_id)?;
+            let (_, last_finalized_seq_no) = repository
+                .select_thread_last_finalized_block(&thread_id)?
+                .expect("Must be known here");
             // On the moment of block apply and block append block must have valid chain to the last finalized
             if let Err(e) = block_state_repository
                 .select_unfinalized_ancestor_blocks(block_state, last_finalized_seq_no)
@@ -566,7 +593,6 @@ fn process_candidate_block(
             let mut optimistic_state = match repository.get_optimistic_state(
                 &parent_id,
                 &thread_id,
-                nack_set_cache.clone(),
                 repository.last_finalized_optimistic_state(&thread_id),
             ) {
                 Ok(Some(optimistic_state)) => optimistic_state,
@@ -631,6 +657,7 @@ fn process_candidate_block(
             shared_services.exec(|e| {
                 e.cross_thread_ref_data_service.set_cross_thread_ref_data(cross_thread_ref_data)
             })?;
+            block_state.guarded_mut(|e| e.set_has_cross_thread_ref_data_prepared())?;
             shared_services.metrics.as_ref().inspect(|m| {
                 m.report_apply_block_total(moment.elapsed().as_millis() as u64, &thread_id);
             });

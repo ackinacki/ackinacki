@@ -21,7 +21,6 @@ use tvm_block::Message;
 use tvm_block::ShardStateUnsplit;
 use tvm_executor::BlockchainConfig;
 use tvm_types::Cell;
-use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
 
 use crate::block::producer::builder::ActiveThread;
@@ -39,7 +38,6 @@ use crate::external_messages::ExternalMessagesThreadState;
 use crate::helper::block_flow_trace;
 use crate::helper::block_flow_trace_with_time;
 use crate::helper::metrics::BlockProductionMetrics;
-use crate::multithreading::cross_thread_messaging::thread_references_state::CanRefQueryResult;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::NackData;
 use crate::node::block_state::repository::BlockStateRepository;
@@ -50,11 +48,11 @@ use crate::repository::cross_thread_ref_repository::CrossThreadRefDataRead;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
+use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
-use crate::utilities::FixedSizeHashSet;
 
 #[derive(TypedBuilder)]
 pub struct TVMBlockProducerProcess {
@@ -187,7 +185,7 @@ impl TVMBlockProducerProcess {
         );
 
         let refs = trace_span!("read thread refs").in_scope(|| {
-            let buffer: Vec<BlockIdentifier> =
+            let buffer: Vec<(ThreadIdentifier, BlockIdentifier)> =
                 trace_span!("guarded list_blocks_sending_messages_to_thread").in_scope(|| {
                     shared_services
                         .exec(|services| {
@@ -195,43 +193,44 @@ impl TVMBlockProducerProcess {
                                 .thread_sync
                                 .list_blocks_sending_messages_to_thread(&thread_id_clone)
                         })
-                        .expect("Failed to list potential ref block")
+                        .expect("Failed to list potential ref blocks")
                 });
 
-            let can_ref_query_result = trace_span!("bulk can_reference query").in_scope(|| {
-                shared_services
-                    .exec(|e| {
-                        initial_state_clone.thread_refs_state.can_reference(
-                            buffer.clone(),
-                            |block_id| {
-                                e.cross_thread_ref_data_service.get_cross_thread_ref_data(block_id)
-                            },
-                        )
+            let refs: Vec<CrossThreadRefData> =
+                trace_span!("filter and load cross_thread_ref_data").in_scope(|| {
+                    // Only for finalized blocks
+                    shared_services.exec(|e| {
+                        buffer
+                            .into_iter()
+                            .filter_map(|(thread_id, block_id)| {
+                                let data = e
+                                    .cross_thread_ref_data_service
+                                    .get_cross_thread_ref_data(&block_id)
+                                    .ok()?;
+                                let seq_no = data.block_seq_no();
+                                let should_include = match initial_state_clone
+                                    .thread_refs_state
+                                    .all_thread_refs()
+                                    .get(&thread_id)
+                                {
+                                    Some(existing_ref) => *seq_no > existing_ref.block_seq_no,
+                                    None => true,
+                                };
+                                if should_include {
+                                    Some(data)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<CrossThreadRefData>>()
                     })
-                    .expect("Can query block must work")
-            });
-
-            let mut refs = vec![];
-            if let CanRefQueryResult::Yes(result_state) = can_ref_query_result {
-                refs.extend(result_state.explicitly_referenced_blocks);
-            }
-            // TODO: reuse previously loaded cross thread ref data
-            let refs = trace_span!("get_cross_thread_ref_data for refs").in_scope(|| {
-                shared_services.exec(|e| {
-                    refs.into_iter()
-                        .map(|r| {
-                            e.cross_thread_ref_data_service
-                                .get_cross_thread_ref_data(&r)
-                                .expect("Failed to load ref state")
-                        })
-                        .collect::<Vec<_>>()
-                })
-            });
+                });
 
             if tracing::level_filters::STATIC_MAX_LEVEL >= tracing::Level::TRACE {
                 let span = tracing::Span::current();
                 span.record("refs.len", refs.len() as i64);
             }
+
             refs
         });
 
@@ -388,7 +387,6 @@ impl TVMBlockProducerProcess {
         received_acks: Arc<Mutex<Vec<Envelope<GoshBLS, AckData>>>>,
         received_nacks: Arc<Mutex<Vec<Envelope<GoshBLS, NackData>>>>,
         block_state_repository: BlockStateRepository,
-        nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         external_messages: ExternalMessagesThreadState,
     ) -> anyhow::Result<()> {
         tracing::trace!(
@@ -424,12 +422,9 @@ impl TVMBlockProducerProcess {
                 tracing::trace!(
                     "start_thread_production: cached state block id is not appropriate. Load state from repo"
                 );
-                if let Some(state) = self.repository.get_optimistic_state(
-                    prev_block_id,
-                    thread_id,
-                    Arc::clone(&nack_set_cache),
-                    None,
-                )? {
+                if let Some(state) =
+                    self.repository.get_optimistic_state(prev_block_id, thread_id, None)?
+                {
                     state
                 } else if prev_block_id == &BlockIdentifier::default() {
                     self.repository.get_zero_state_for_thread(thread_id)?
@@ -658,7 +653,9 @@ fn aggregate_nacks(
 
 #[cfg(test)]
 mod tests {
+
     use std::path::PathBuf;
+    use std::sync::atomic::AtomicU32;
     use std::sync::Arc;
     use std::thread::sleep;
     use std::time::Duration;
@@ -675,6 +672,7 @@ mod tests {
     use crate::multithreading::routing::service::RoutingService;
     use crate::node::associated_types::NodeIdentifier;
     use crate::node::shared_services::SharedServices;
+    use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
     use crate::repository::repository_impl::RepositoryImpl;
     use crate::tests::project_root;
     use crate::types::BlockIdentifier;
@@ -700,10 +698,16 @@ mod tests {
                 root_dir.join("block-state"),
             );
         let message_db = MessageDurableStorage::new(PathBuf::from("./tmp/message_storage5"))?;
+        let finalized_blocks =
+            crate::repository::repository_impl::tests::finalized_blocks_storage();
+        let block_collection = UnfinalizedCandidateBlockCollection::new(
+            Vec::new().into_iter(),
+            Arc::new(AtomicU32::new(0)),
+        );
+
         let repository = RepositoryImpl::new(
             root_dir.clone(),
             Some(config.local.zerostate_path.clone()),
-            1,
             1,
             SharedServices::start(
                 RoutingService::stub().0,
@@ -711,12 +715,15 @@ mod tests {
                 None,
                 config.global.thread_load_threshold,
                 config.global.thread_load_window_size,
+                u32::MAX,
             ),
             Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
             true,
             block_state_repository.clone(),
             None,
             message_db.clone(),
+            block_collection,
+            finalized_blocks,
         );
         let (router, _router_rx) = RoutingService::stub();
         let (sender, _) = std::sync::mpsc::channel();
@@ -737,6 +744,7 @@ mod tests {
                 None,
                 config.global.thread_load_threshold,
                 config.global.thread_load_window_size,
+                config.local.rate_limit_on_incoming_block_req,
             ))
             .block_produce_timeout(Arc::new(Mutex::new(Duration::from_millis(
                 config.global.time_to_produce_block_millis,
@@ -752,7 +760,6 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
             block_state_repository.clone(),
-            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
             ExternalMessagesThreadState::builder()
                 .with_external_messages_file_path(root_dir.join("ext-messages.data"))
                 .with_block_progress_data_dir(root_dir.join("external-messages-progress"))

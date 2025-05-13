@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use telemetry_utils::now_ms;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
@@ -41,7 +42,7 @@ pub async fn receiver(
                                 "Incoming transfer start",
                             );
                             let transfer_duration = Instant::now();
-                            let transfer_result = transfer(stream).await;
+                            let transfer_result = transfer(stream, &metrics).await;
                             metrics.as_ref().inspect(|x| {
                                 x.finish_delivery_phase(
                                     DeliveryPhase::IncomingTransfer,
@@ -71,12 +72,13 @@ pub async fn receiver(
                 // It is impossible to recv None, because we holds transfer_result_tx
                 match transfer_result.unwrap() {
                     Ok(net_message) => {
+                        let msg_type = net_message.label.clone();
                         tracing::debug!(
                             broadcast = connection.peer_send_mode().is_broadcast(),
-                            msg_type = net_message.label,
+                            msg_type,
                             msg_id = net_message.id,
                             peer = connection.peer_info(),
-                            peer_id = connection.peer_id,
+                            host_id = connection.host_id_prefix,
                             size = net_message.data.len(),
                             "Message delivery: incoming transfer finished",
                         );
@@ -84,17 +86,27 @@ pub async fn receiver(
                             x.start_delivery_phase(
                                 DeliveryPhase::IncomingBuffer,
                                 1,
-                                &net_message.label,
+                                &msg_type,
                                 connection.peer_send_mode(),
                             );
                         });
+                        let duration_after_transfer = Instant::now();
                         let incoming = IncomingMessage {
                             peer: connection.clone(),
                             message: net_message,
-                            duration_after_transfer: Instant::now(),
+                            duration_after_transfer,
                         };
                         // finish receiver loop if incoming consumer was detached
                         if incoming_tx.send(incoming).await.is_err() {
+                            metrics.as_ref().inspect(|x| {
+                                x.finish_delivery_phase(
+                                    DeliveryPhase::IncomingBuffer,
+                                    1,
+                                    &msg_type,
+                                    connection.peer_send_mode(),
+                                    duration_after_transfer.elapsed(),
+                                );
+                            });
                             break;
                         }
                     }
@@ -119,8 +131,19 @@ pub async fn receiver(
     Ok(())
 }
 
-async fn transfer(mut stream: wtransport::RecvStream) -> anyhow::Result<NetMessage> {
+async fn transfer(
+    mut stream: wtransport::RecvStream,
+    metrics: &Option<NetMetrics>,
+) -> anyhow::Result<NetMessage> {
     let mut data = Vec::with_capacity(1024);
+    let moment = Instant::now();
     stream.read_to_end(&mut data).await?;
-    Ok(bincode::deserialize::<NetMessage>(&data)?)
+
+    metrics.as_ref().inspect(|m| {
+        m.report_receive_before_deser(moment.elapsed().as_millis());
+    });
+    let received_ms = now_ms(); // remember the moment when a message was received as bytes
+    let mut net_message = bincode::deserialize::<NetMessage>(&data)?;
+    net_message.received_at = received_ms;
+    Ok(net_message)
 }

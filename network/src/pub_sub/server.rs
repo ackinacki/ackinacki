@@ -8,6 +8,7 @@ use wtransport::Endpoint;
 
 use crate::detailed;
 use crate::metrics::NetMetrics;
+use crate::pub_sub::connection::connection_host_id;
 use crate::pub_sub::connection::ConnectionWrapper;
 use crate::pub_sub::connection::OutgoingMessage;
 use crate::pub_sub::executor::IncomingSender;
@@ -29,9 +30,9 @@ pub async fn listen_incoming_connections(
 ) -> anyhow::Result<()> {
     tracing::info!("Start listening for incoming connections on {}", bind.to_string());
     let config = generate_server_config(bind, &tls_config)?;
+    tracing::info!("Pub sub started with host id {}", tls_config.my_host_id_prefix());
     let server = Endpoint::server(config)?;
     tracing::info!("Proxy subscribers started on port {}", bind.port());
-    let is_debug = tls_config.is_debug();
     loop {
         let session = server.accept().await;
         tracing::info!("New session incoming");
@@ -40,7 +41,6 @@ pub async fn listen_incoming_connections(
             tokio::spawn(handle_incoming_connection(
                 pub_sub.clone(),
                 metrics.clone(),
-                is_debug,
                 incoming_tx.clone(),
                 outgoing_messages.clone(),
                 connection_closed_tx.clone(),
@@ -59,7 +59,6 @@ pub async fn listen_incoming_connections(
 pub async fn handle_incoming_connection(
     pub_sub: PubSub,
     metrics: Option<NetMetrics>,
-    is_debug: bool,
     incoming_tx: IncomingSender,
     outgoing_messages: broadcast::Sender<OutgoingMessage>,
     connection_closed_tx: mpsc::Sender<Arc<ConnectionWrapper>>,
@@ -91,15 +90,23 @@ pub async fn handle_incoming_connection(
         }
     };
 
+    let host_id = match connection_host_id(&connection) {
+        Ok(host_id) => host_id,
+        Err(err) => {
+            tracing::error!("Failed to identify incoming connection: {}", detailed(&err));
+            return;
+        }
+    };
+
     tracing::trace!("Incoming request accepted");
 
     if let Err(err) = pub_sub.add_connection_handler(
         metrics.clone(),
-        is_debug,
         &incoming_tx,
         &outgoing_messages,
         &connection_closed_tx,
         connection,
+        host_id,
         None,
         false,
         peer_is_subscriber,

@@ -42,7 +42,6 @@ use crate::node::services::attestations_target::service::AttestationsTargetServi
 use crate::node::services::block_processor::rules;
 use crate::node::services::fork_resolution::service::ForkResolutionService;
 use crate::node::shared_services::SharedServices;
-use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::NetworkMessage;
 use crate::node::NodeIdentifier;
 use crate::node::LOOP_PAUSE_DURATION;
@@ -62,7 +61,6 @@ use crate::types::RndSeed;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
-use crate::utilities::FixedSizeHashSet;
 
 #[derive(TypedBuilder)]
 pub struct BlockProducer {
@@ -71,7 +69,6 @@ pub struct BlockProducer {
     block_state_repository: BlockStateRepository,
     #[builder(default)]
     cache_forward_optimistic: Option<OptimisticForwardState>,
-    unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
     block_gap: BlockGap,
     production_process: TVMBlockProducerProcess,
     feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
@@ -200,8 +197,6 @@ impl BlockProducer {
                 self.received_acks.clone(),
                 self.received_nacks.clone(),
                 self.block_state_repository.clone(),
-                // TODO: Fix nack_set_cache
-                Arc::new(Mutex::new(FixedSizeHashSet::new(0))),
                 self.external_messages.clone(),
             ) {
                 Ok(()) => {
@@ -227,8 +222,11 @@ impl BlockProducer {
             "find_thread_last_block_id_this_node_can_continue start {:?}",
             self.thread_id
         );
-        let (finalized_block_id, finalized_block_seq_no) =
-            self.repository.select_thread_last_finalized_block(&self.thread_id)?;
+        let Some((finalized_block_id, finalized_block_seq_no)) =
+            self.repository.select_thread_last_finalized_block(&self.thread_id)?
+        else {
+            return Ok(None);
+        };
         if let Some(OptimisticForwardState::ProducedBlock(
             ref block_id_to_continue,
             block_seq_no_to_continue,
@@ -247,7 +245,7 @@ impl BlockProducer {
         self.cache_forward_optimistic = None;
 
         #[allow(clippy::mutable_key_type)]
-        let mut unprocessed_blocks = self.unprocessed_blocks_cache.clone_queue();
+        let mut unprocessed_blocks = self.repository.unprocessed_blocks_cache().clone_queue();
         unprocessed_blocks.retain(|_, (block_state, _)| {
             block_state.guarded(|e| {
                 if !e.is_invalidated()
@@ -273,7 +271,8 @@ impl BlockProducer {
         let mut applied_unprocessed_tails: HashSet<BlockIdentifier> = HashSet::from_iter(
             unprocessed_blocks
                 .keys()
-                .map(|index| index.block_identifier().clone())
+                .map(|block_index| block_index.block_identifier())
+                .cloned()
                 .collect::<Vec<_>>(),
         );
         for (_, (block_state, _)) in unprocessed_blocks.iter() {
@@ -446,8 +445,11 @@ impl BlockProducer {
         // While producer process was generating blocks, the node could receive valid
         // blocks, and the generated blocks could be discarded.
         // Get minimal block seq no that can be accepted from producer process.
-        let minimal_seq_no_that_can_be_accepted_from_producer_process =
-            self.repository.select_thread_last_finalized_block(&self.thread_id)?.1;
+        let minimal_seq_no_that_can_be_accepted_from_producer_process = self
+            .repository
+            .select_thread_last_finalized_block(&self.thread_id)?
+            .unwrap_or_default()
+            .1;
         tracing::trace!("on_production_timeout: minimal_seq_no_that_can_be_accepted_from_producer_process = {minimal_seq_no_that_can_be_accepted_from_producer_process:?}");
         while !produced_data.is_empty() {
             let (mut block, optimistic_state, ext_msg_feedbacks, produced_instant) =
@@ -586,7 +588,7 @@ impl BlockProducer {
                 e.set_producer_selector_data(producer_selector.clone())
             })?;
 
-            self.self_tx.send(NetworkMessage::Candidate(envelope.clone()))?;
+            self.self_tx.send(NetworkMessage::candidate(&envelope)?)?;
 
             self.shared_services.metrics.as_ref().inspect(|m| {
                 m.report_memento_duration(produced_instant.elapsed().as_millis(), &self.thread_id)
@@ -734,7 +736,7 @@ impl BlockProducer {
             }
 
             #[allow(clippy::mutable_key_type)]
-            let unprocessed_blocks_cache = self.unprocessed_blocks_cache.clone_queue();
+            let unprocessed_blocks_cache = self.repository.unprocessed_blocks_cache().clone_queue();
             self.fork_resolution_service.evaluate(&unprocessed_blocks_cache);
             let dependants_and_siblings =
                 dependants.iter().fold(HashSet::new(), |aggregated, e| {
@@ -912,7 +914,7 @@ impl BlockProducer {
         tracing::info!("broadcasting block: {block_id}");
 
         block_flow_trace("broadcasting candidate", &block_id, &self.node_identifier, []);
-        self.broadcast_tx.send(NetworkMessage::Candidate(candidate_block))?;
+        self.broadcast_tx.send(NetworkMessage::candidate(&candidate_block)?)?;
 
         if !ext_msg_feedbacks.0.is_empty() {
             ext_msg_feedbacks.0.iter_mut().for_each(|feedback| {
@@ -929,10 +931,10 @@ impl BlockProducer {
         candidate_block: Envelope<GoshBLS, AckiNackiBlock>,
     ) -> anyhow::Result<()> {
         tracing::info!("rebroadcasting block: {}", candidate_block,);
-        self.broadcast_tx.send(NetworkMessage::ResentCandidate((
-            candidate_block,
+        self.broadcast_tx.send(NetworkMessage::resent_candidate(
+            &candidate_block,
             self.node_identifier.clone(),
-        )))?;
+        )?)?;
         Ok(())
     }
 
@@ -955,8 +957,10 @@ impl BlockProducer {
 
         // Continue BP from the latest applied block
         // Resend blocks from the chosen chain
-        let (finalized_block_id, finalized_block_seq_no) =
-            self.repository.select_thread_last_finalized_block(&self.thread_id)?;
+        let (finalized_block_id, finalized_block_seq_no) = self
+            .repository
+            .select_thread_last_finalized_block(&self.thread_id)?
+            .ok_or(anyhow::format_err!("Thread was not initialized"))?;
 
         let block_state_to_continue = self.block_state_repository.get(&block_id_to_continue)?;
         let mut chain = self
@@ -966,7 +970,7 @@ impl BlockProducer {
         let finalized_block_state = self.block_state_repository.get(&finalized_block_id)?;
         chain.insert(0, finalized_block_state);
 
-        let unprocessed_blocks = self.unprocessed_blocks_cache.clone_queue();
+        let unprocessed_blocks = self.repository.unprocessed_blocks_cache().clone_queue();
         for block in chain.iter() {
             block.guarded_mut(|e| e.try_add_attestations_interest(self.node_identifier.clone()))?;
             let block_id = block.block_identifier();
@@ -974,14 +978,14 @@ impl BlockProducer {
                 unprocessed_blocks.iter().find(|(index, _)| index.block_identifier() == block_id)
             {
                 self.broadcast_candidate_block_that_was_possibly_produced_by_another_node(
-                    block.clone(),
+                    block.as_ref().clone(),
                 )?;
             } else {
                 // For default block id there is no block to broadcast, so skip it
                 if block_id != &BlockIdentifier::default() {
                     let block = self.repository.get_block(block_id)?.expect("block must exist");
                     self.broadcast_candidate_block_that_was_possibly_produced_by_another_node(
-                        block.clone(),
+                        block.as_ref().clone(),
                     )?;
                 }
             }

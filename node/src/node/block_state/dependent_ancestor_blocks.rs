@@ -8,7 +8,7 @@ use crate::node::BlockState;
 use crate::types::BlockIdentifier;
 use crate::utilities::guarded::Guarded;
 
-const MAX_ALLOWED_DESTINATION: usize = 100;
+const MAX_ALLOWED_DESTINATION: usize = 110;
 
 pub trait DependentAncestorBlocks {
     fn select_dependent_ancestor_blocks(

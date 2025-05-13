@@ -132,12 +132,11 @@ where
         // suspicious blocks must be verified despite the BK status
         // if nack was invalid remove the suspicious marker and resend the first nack to BP
         if let Ok(nack_hash) = nack.data().clone().reason.get_hash_nack() {
-            let mut nack_set_cache_in = self.nack_set_cache.lock();
+            let nack_cache_arc = self.repository.nack_set_cache().clone();
+            let mut nack_set_cache_in = nack_cache_arc.lock();
             if !nack_set_cache_in.contains(&nack_hash) {
                 nack_set_cache_in.insert(nack_hash.clone());
-                drop(nack_set_cache_in);
             } else {
-                drop(nack_set_cache_in);
                 return Ok(());
             }
         } else {
@@ -159,13 +158,13 @@ where
         let last_fin_block = self.repository.select_thread_last_finalized_block(thread_id);
         tracing::trace!("on_nack: last finalized block, {:?}", last_fin_block);
         match last_fin_block {
-            Ok((_, seq_no)) => {
+            Ok(Some((_, seq_no))) => {
                 if seq_no >= block_seq_no {
                     tracing::warn!("Received nack target block is older than the last finalized block for this thread");
                     return Ok(());
                 }
             }
-            Err(_) => return Ok(()),
+            _ => return Ok(()),
         }
         let signatures_map = self.get_block_keeper_pubkeys(block.data().identifier()).unwrap();
 
@@ -232,7 +231,7 @@ where
         &mut self,
         nack: &<Self as NodeAssociatedTypes>::Nack,
         thread_id: &ThreadIdentifier,
-        block: Envelope<GoshBLS, AckiNackiBlock>,
+        block: Arc<Envelope<GoshBLS, AckiNackiBlock>>,
     ) -> anyhow::Result<bool> {
         match nack.data().clone().reason {
             // NackReason::SameHeightBlock{first_envelope, second_envelope} => {
@@ -314,7 +313,7 @@ where
 
     fn is_valid_bad_block_nack(
         &mut self,
-        block: Envelope<GoshBLS, AckiNackiBlock>,
+        block: Arc<Envelope<GoshBLS, AckiNackiBlock>>,
         nack_envelope: Envelope<GoshBLS, AckiNackiBlock>,
         thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<bool> {
@@ -351,7 +350,7 @@ where
         let blockchain_config = load_blockchain_config(&self.config.local.blockchain_config_path)?;
         match self
             .repository
-            .get_optimistic_state(&block_id, thread_id, Arc::clone(&self.nack_set_cache), None)
+            .get_optimistic_state(&block_id, thread_id, None)
             .expect("Failed to get optimistic state of the previous block")
         {
             Some(mut state) => {

@@ -8,6 +8,7 @@ use opentelemetry::metrics::Meter;
 use opentelemetry::metrics::ObservableGauge;
 use opentelemetry::KeyValue;
 
+use crate::transfer::TransportError;
 use crate::DeliveryPhase;
 use crate::SendMode;
 
@@ -23,6 +24,10 @@ pub struct NetMetrics {
     outgoing_transfer_duration: Histogram<u64>,
     outgoing_transfer_error: Counter<u64>,
     subscriber_count: Gauge<u64>,
+    transfer_after_ser: Histogram<u64>,
+    receive_before_deser: Histogram<u64>,
+    original_message_size: Histogram<u64>,
+    compressed_message_size: Histogram<u64>,
     // It's usual for observable instruments to be prefixed with underscore
     _incoming_buffer_size: ObservableGauge<u64>,
     _outgoing_buffer_size: ObservableGauge<u64>,
@@ -79,29 +84,60 @@ impl NetMetrics {
             })
             .build();
 
-        let boundaries = vec![
+        let boundaries_ms = vec![
             0.0, 10.0, 25.0, 50.0, 150.0, 500.0, 1000.0, 5000.0, 10000.0, 30000.0, 60000.0,
             600000.0,
         ];
-
+        let boundaries_bytes = vec![
+            100.0,
+            500.0,
+            1_000.0,
+            2_000.0,
+            5_000.0,
+            10_000.0,
+            50_000.0,
+            100_000.0,
+            200_000.0,
+            400_000.0,
+            800_000.0,
+            1_200_000.0,
+            2_000_000.0,
+            5_000_000.0,
+        ];
         NetMetrics {
             incoming_message: meter.u64_counter("node_network_incoming_message").build(),
             incoming_buffer_duration: meter
                 .u64_histogram("node_network_incoming_buffer_duration")
-                .with_boundaries(boundaries.clone())
+                .with_boundaries(boundaries_ms.clone())
                 .build(),
             incoming_message_delivery_duration: meter
                 .u64_histogram("node_network_incoming_message_delivery_duration")
-                .with_boundaries(boundaries.clone())
+                .with_boundaries(boundaries_ms.clone())
                 .build(),
             outgoing_message: meter.u64_counter("node_network_outgoing_message").build(),
             outgoing_buffer_duration: meter
                 .u64_histogram("node_network_outgoing_buffer_duration")
-                .with_boundaries(boundaries.clone())
+                .with_boundaries(boundaries_ms.clone())
                 .build(),
             outgoing_transfer_duration: meter
                 .u64_histogram("node_network_outgoing_transfer_duration")
-                .with_boundaries(boundaries)
+                .with_boundaries(boundaries_ms.clone())
+                .build(),
+            transfer_after_ser: meter
+                .u64_histogram("node_network_transfer_after_ser")
+                .with_boundaries(boundaries_ms.clone())
+                .build(),
+            receive_before_deser: meter
+                .u64_histogram("node_network_receive_before_deser")
+                .with_boundaries(boundaries_ms)
+                .build(),
+            original_message_size: meter
+                .u64_histogram("node_network_original_message_size")
+                .with_boundaries(boundaries_bytes.clone())
+                .build(),
+            compressed_message_size: meter
+                .u64_histogram("node_network_compressed_message_size")
+                .with_boundaries(boundaries_bytes)
                 .build(),
             outgoing_transfer_error: meter
                 .u64_counter("node_network_outgoing_transfer_error")
@@ -130,12 +166,31 @@ impl NetMetrics {
         self.incoming_message_delivery_duration.record(value, &[msg_type_attr(msg_type)]);
     }
 
-    pub fn report_outgoing_transfer_error(&self, msg_type: &str, send_mode: SendMode) {
-        self.outgoing_transfer_error.add(1, &attrs(msg_type, send_mode));
+    pub fn report_outgoing_transfer_error(
+        &self,
+        msg_type: &str,
+        send_mode: SendMode,
+        error: TransportError,
+    ) {
+        let attrs = [msg_type_attr(msg_type), send_mode_attr(send_mode), transfer_err_attr(error)];
+        self.outgoing_transfer_error.add(1, &attrs);
     }
 
     pub fn report_subscribers_count(&self, value: usize) {
         self.subscriber_count.record(value as u64, &[]);
+    }
+
+    pub fn report_transfer_after_ser(&self, value: u128) {
+        self.transfer_after_ser.record(value as u64, &[]);
+    }
+
+    pub fn report_receive_before_deser(&self, value: u128) {
+        self.receive_before_deser.record(value as u64, &[]);
+    }
+
+    pub fn report_message_size(&self, orig_size: usize, compressed_size: usize, msg_type: &str) {
+        self.original_message_size.record(orig_size as u64, &[msg_type_attr(msg_type)]);
+        self.compressed_message_size.record(compressed_size as u64, &[msg_type_attr(msg_type)]);
     }
 
     pub fn start_delivery_phase(
@@ -184,6 +239,9 @@ fn send_mode_attr(send_mode: SendMode) -> KeyValue {
     KeyValue::new("broadcast", send_mode.is_broadcast())
 }
 
+fn transfer_err_attr(error: TransportError) -> KeyValue {
+    KeyValue::new("transfer", error.kind_str())
+}
 fn attrs(msg_type: &str, send_mode: SendMode) -> [KeyValue; 2] {
     [msg_type_attr(msg_type), send_mode_attr(send_mode)]
 }

@@ -13,6 +13,7 @@ use anyhow::Context;
 use database::sqlite::sqlite_helper;
 use database::sqlite::sqlite_helper::SqliteHelper;
 use database::sqlite::sqlite_helper::SqliteHelperConfig;
+use node::bls::envelope::BLSSignedEnvelope;
 use node::bls::envelope::Envelope;
 use node::bls::GoshBLS;
 use node::types::AckiNackiBlock;
@@ -29,6 +30,7 @@ pub struct BlockSubscriber {
     db_file: PathBuf,
     stream_src_url: Url,
     event_pub: Sender<Event>,
+    bp_data_tx: Sender<(String, Vec<String>)>,
     // archive: Arc<dyn DocumentsDb>,
     // TODO: more fields related to cache of blocks
 }
@@ -41,9 +43,10 @@ impl BlockSubscriber {
         db_file: PathBuf,
         stream_src_url: Url,
         event_pub: Sender<Event>,
+        bp_data_tx: Sender<(String, Vec<String>)>,
         // archive: Arc<dyn DocumentsDb>,
     ) -> Self {
-        Self { db_file, stream_src_url, event_pub /* , archive */ }
+        Self { db_file, stream_src_url, event_pub, bp_data_tx /* , archive */ }
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {
@@ -53,11 +56,12 @@ impl BlockSubscriber {
 
         let db_file = self.db_file.clone();
         let events_pub = self.event_pub.clone();
+        let bp_data_tx = self.bp_data_tx.clone();
         let block_sub_handle = tokio::spawn(async move {
             thread::scope(|s| {
                 thread::Builder::new()
                     .name("block-subscriber".to_string())
-                    .spawn_scoped(s, || worker(db_file, stream_sub, events_pub))
+                    .spawn_scoped(s, || worker(db_file, stream_sub, events_pub, bp_data_tx))
                     .expect("spawn block-subscriber worker");
             });
         });
@@ -77,6 +81,7 @@ fn worker(
     _db_file: impl AsRef<Path>,
     rx: mpsc::Receiver<Vec<u8>>,
     event_pub: mpsc::Sender<Event>,
+    bp_data_tx: mpsc::Sender<(String, Vec<String>)>,
 ) -> anyhow::Result<()> {
     let data_dir =
         std::env::var("SQLITE_PATH").unwrap_or(sqlite_helper::SQLITE_DATA_DIR.to_string());
@@ -89,11 +94,19 @@ fn worker(
     let mut transaction_traces = HashMap::new();
     let shard_state = Arc::new(ShardStateUnsplit::default());
 
+    tracing::debug!("worker() starting loop...");
     loop {
         match rx.recv() {
             Ok(v) => {
                 tracing::debug!("Data received");
-                let envelope: Envelope<GoshBLS, AckiNackiBlock> = bincode::deserialize(&v)?;
+                let (node_addr, raw_block) = bincode::deserialize::<(Option<String>, Vec<u8>)>(&v)?;
+                let envelope: Envelope<GoshBLS, AckiNackiBlock> = bincode::deserialize(&raw_block)?;
+                let thread_id = envelope.data().get_common_section().thread_id;
+                if let Some(node_addr) = node_addr {
+                    if let Err(err) = bp_data_tx.send((thread_id.to_string(), vec![node_addr])) {
+                        tracing::error!("Failed to send data to the BPresolver: {err}");
+                    }
+                }
 
                 let result = node::database::serialize_block::reflect_block_in_db(
                     sqlite_helper.clone(),

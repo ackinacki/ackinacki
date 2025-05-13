@@ -1,0 +1,124 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"LicenseBMCode","type":"cell"},
+				{"name":"whiteListLicense","type":"map(uint256,bool)"},
+				{"name":"licenseBMRoot","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "removeLicense",
+			"inputs": [
+				{"name":"license_number","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setLicenseWhiteList",
+			"inputs": [
+				{"name":"whiteListLicense","type":"map(uint256,bool)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "addLicense",
+			"inputs": [
+				{"name":"license_number","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "withdrawToken",
+			"inputs": [
+				{"name":"license_number","type":"uint256"},
+				{"name":"to","type":"address"},
+				{"name":"value","type":"varuint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "startBM",
+			"inputs": [
+				{"name":"key","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "stopBM",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "tryUpdateCode",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"},
+				{"name":"cell","type":"cell"},
+				{"name":"new_hash","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"root","type":"address"},
+				{"name":"balance","type":"uint256"},
+				{"name":"license_num","type":"optional(uint256)"},
+				{"name":"work_key","type":"optional(uint256)"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
+		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
+		{"init":false,"name":"__value","type":"uint256"},
+		{"init":false,"name":"_code","type":"map(uint8,cell)"},
+		{"init":true,"name":"_owner_pubkey","type":"uint256"},
+		{"init":false,"name":"_root","type":"address"},
+		{"init":false,"name":"_bm_root","type":"address"},
+		{"init":false,"name":"_license_num","type":"optional(uint256)"},
+		{"init":false,"name":"_whiteListLicense","type":"map(uint256,bool)"},
+		{"init":false,"name":"_licenseBMRoot","type":"address"},
+		{"init":false,"name":"_start_bm","type":"optional(uint32)"},
+		{"init":false,"name":"_stop_bm","type":"uint32"},
+		{"init":false,"name":"_work_key","type":"optional(uint256)"},
+		{"init":false,"name":"_hash_wallet","type":"uint256"}
+	]
+}
