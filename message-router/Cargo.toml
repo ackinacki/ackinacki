@@ -10,15 +10,20 @@ license-file.workspace = true
 [dependencies]
 actix-web.workspace = true
 anyhow.workspace = true
+ed25519-dalek.workspace = true
 hex.workspace = true
 http-server.workspace = true
 lazy_static.workspace = true
 parking_lot.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 telemetry_utils.workspace = true
 tracing.workspace = true
 tvm_types.workspace = true
 
-actix-rt = "2.10.0"
 awc = "3.5.1"
 env_logger = "0.11.5"
+mockall = "0.13.1"
+
+[dev-dependencies]
+actix-rt = "2.10.0"

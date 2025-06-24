@@ -56,6 +56,10 @@ impl OptimisticState for OptimisticStateStub {
     type Message = MessageStub;
     type ShardState = ShardStateUnsplit;
 
+    fn get_share_stare_refs(&self) -> HashMap<ThreadIdentifier, BlockIdentifier> {
+        todo!()
+    }
+
     fn get_block_seq_no(&self) -> &BlockSeqNo {
         todo!()
     }
@@ -64,7 +68,7 @@ impl OptimisticState for OptimisticStateStub {
         todo!()
     }
 
-    fn serialize_into_buf(self, _external_accounts: bool) -> anyhow::Result<Vec<u8>> {
+    fn serialize_into_buf(self) -> anyhow::Result<Vec<u8>> {
         todo!()
     }
 
@@ -301,6 +305,15 @@ impl Repository for RepositoryStub {
         _thread_id: &ThreadIdentifier,
         _min_seq_no: Option<OptimisticStateStub>,
     ) -> anyhow::Result<Option<OptimisticStateStub>> {
+        Ok(self.optimistic_state.get(block_id).map(|s| s.to_owned()))
+    }
+
+    fn get_full_optimistic_state(
+        &self,
+        block_id: &BlockIdentifier,
+        _thread_id: &ThreadIdentifier,
+        _min_state: Option<Self::OptimisticState>,
+    ) -> anyhow::Result<Option<Self::OptimisticState>> {
         Ok(self.optimistic_state.get(block_id).map(|s| s.to_owned()))
     }
 

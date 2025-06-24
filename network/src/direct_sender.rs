@@ -1,25 +1,27 @@
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::hash::Hash;
+use std::net::SocketAddr;
 use std::time::Duration;
 use std::time::Instant;
 
 use futures::future::Either;
 use itertools::Itertools;
-use url::Url;
+use transport_layer::NetConnection;
+use transport_layer::NetTransport;
 
 use crate::detailed;
 use crate::host_id_prefix;
 use crate::message::NetMessage;
 use crate::metrics::NetMetrics;
 use crate::network::PeerData;
-use crate::pub_sub::connection::connection_host_id;
+use crate::pub_sub::connection::connection_remote_host_id;
 use crate::pub_sub::start_critical_task_ex;
-use crate::tls::create_client_config;
 use crate::tls::TlsConfig;
 use crate::transfer::transfer;
 use crate::DeliveryPhase;
 use crate::SendMode;
+use crate::ACKI_NACKI_DIRECT_PROTOCOL;
 
 const RESOLVE_RETRY_TIMEOUT: Duration = Duration::from_secs(1);
 const CONNECT_RETRY_TIMEOUT: Duration = Duration::from_secs(1);
@@ -34,12 +36,14 @@ impl DirectPeer {
     }
 }
 
-pub async fn run_direct_sender<PeerId>(
+pub async fn run_direct_sender<Transport, PeerId>(
+    transport: Transport,
     metrics: Option<NetMetrics>,
     mut messages_rx: tokio::sync::mpsc::UnboundedReceiver<(PeerId, NetMessage, Instant)>,
     peers_rx: tokio::sync::watch::Receiver<HashMap<PeerId, PeerData>>,
     config: TlsConfig,
 ) where
+    Transport: NetTransport + 'static,
     PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
 {
     tracing::info!("Direct sender started with host id {}", config.my_host_id_prefix());
@@ -70,6 +74,7 @@ pub async fn run_direct_sender<PeerId>(
                         peer_id.clone(),
                         peer_sender_stopped_tx.clone(),
                         peer_sender(
+                            transport.clone(),
                             metrics.clone(),
                             peer_id.clone(),
                             peer_messages_rx,
@@ -110,7 +115,8 @@ pub async fn run_direct_sender<PeerId>(
     }
 }
 
-async fn peer_sender<PeerId>(
+async fn peer_sender<Transport, PeerId>(
+    transport: Transport,
     metrics: Option<NetMetrics>,
     peer_id: PeerId,
     mut messages_rx: tokio::sync::mpsc::Receiver<(NetMessage, Instant)>,
@@ -119,20 +125,23 @@ async fn peer_sender<PeerId>(
 ) -> anyhow::Result<()>
 where
     PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
+    Transport: NetTransport,
+    Transport::Connection: 'static,
 {
     loop {
-        let urls = resolve_peer_urls(&mut peers_rx, &peer_id).await;
-        let (connection, host_id, url) = match connect_to_peer(&config, &peer_id, &urls).await {
-            Ok(connection) => connection,
-            Err(err) => {
-                tracing::error!(
-                    peer_id = peer_id.to_string(),
-                    urls = urls.iter().map(|x| x.to_string()).join(","),
-                    "Failed to connect to peer: {err}"
-                );
-                continue;
-            }
-        };
+        let addrs = resolve_peer_addrs(&mut peers_rx, &peer_id).await;
+        let (connection, host_id, addr) =
+            match connect_to_peer(&transport, &config, &peer_id, &addrs).await {
+                Ok(connection) => connection,
+                Err(err) => {
+                    tracing::error!(
+                        peer_id = peer_id.to_string(),
+                        addrs = addrs.iter().map(|x| x.to_string()).join(","),
+                        "Failed to connect to peer: {err}"
+                    );
+                    continue;
+                }
+            };
         let (transfer_result_tx, mut transfer_result_rx) = tokio::sync::mpsc::channel(10);
         loop {
             tokio::select! {
@@ -177,7 +186,7 @@ where
                                 SendMode::Direct,
                                 transfer_duration.elapsed(),
                             ));
-                            if let Err(err) = transfer_result_tx.send((transfer_result, net_message)).await {
+                            if let Err(err) = transfer_result_tx.send((transfer_result, net_message, transfer_duration)).await {
                                 tracing::error!("Can not report message delivery result: {}",err);
                             }
                         });
@@ -187,30 +196,34 @@ where
                 },
                 transfer_result = transfer_result_rx.recv() => {
                     match transfer_result.unwrap() {
-                        (Ok(_), message) => {
+                        (Ok(bytes_sent), message, transfer_duration) => {
                             tracing::debug!(
                                 host_id = host_id_prefix(&host_id),
                                 msg_id = message.id,
                                 msg_type = message.label,
                                 broadcast = false,
-                                url = url.to_string(),
+                                addr = addr.to_string(),
+                                duration = transfer_duration.elapsed().as_millis(),
                                 "Message delivery: outgoing transfer finished"
                             );
+                            metrics.as_ref().inspect(|m| {
+                                m.report_sent_bytes(bytes_sent, &message.label, SendMode::Direct);
+                            });
                         }
-                        (Err(err), net_message) => {
+                        (Err(err), net_message, _) => {
                             tracing::error!(
                                 broadcast = false,
                                 msg_type = net_message.label,
                                 msg_id = net_message.id,
                                 host_id = host_id_prefix(&host_id),
-                                url = url.to_string(),
+                                addr = addr.to_string(),
                                 "Message delivery: outgoing transfer failed: {}",
                                 detailed(&err)
                             );
                             metrics.as_ref().inspect(|x| {
                                 x.report_outgoing_transfer_error(&net_message.label, SendMode::Direct, err);
                             });
-                            connection.close(1u8.into(), b"Outgoing transfer failed");
+                            connection.close(0).await;
                             break;
                         }
                     }
@@ -220,10 +233,10 @@ where
     }
 }
 
-async fn resolve_peer_urls<PeerId>(
+async fn resolve_peer_addrs<PeerId>(
     peers_rx: &mut tokio::sync::watch::Receiver<HashMap<PeerId, PeerData>>,
     peer_id: &PeerId,
-) -> Vec<Url>
+) -> Vec<SocketAddr>
 where
     PeerId: Display + Hash + Eq,
 {
@@ -231,57 +244,46 @@ where
     let mut attempt = 0;
     loop {
         if let Some(peer_data) = peers_rx.borrow_and_update().get(peer_id) {
-            return vec![peer_data.peer_url.clone()];
+            return vec![peer_data.peer_addr];
         }
-        tracing::warn!(peer_id = peer_id.to_string(), attempt, "Failed to resolve peer url");
+        tracing::warn!(peer_id = peer_id.to_string(), attempt, "Failed to resolve peer addr");
         tokio::time::sleep(RESOLVE_RETRY_TIMEOUT).await;
         attempt += 1;
     }
 }
 
-async fn connect_to_peer<'u, PeerId>(
+async fn connect_to_peer<Transport, PeerId>(
+    transport: &Transport,
     config: &TlsConfig,
     peer_id: &PeerId,
-    urls: &'u [Url],
-) -> anyhow::Result<(wtransport::Connection, String, &'u Url)>
+    addrs: &[SocketAddr],
+) -> anyhow::Result<(Transport::Connection, String, SocketAddr)>
 where
+    Transport: NetTransport,
     PeerId: Display,
 {
-    let client_config = create_client_config(config)?;
-    let endpoint = wtransport::Endpoint::client(client_config)?;
+    let credential = config.credential();
     // track attempt counter for tracing
     let mut attempt = 0;
     loop {
-        for url in urls {
-            match endpoint.connect(&url).await {
+        for addr in addrs {
+            match transport.connect(*addr, &[ACKI_NACKI_DIRECT_PROTOCOL], credential.clone()).await
+            {
                 Ok(connection) => {
-                    match connection_host_id(&connection) {
-                        Ok(host_id) => {
-                            tracing::trace!(
-                                broadcast = false,
-                                host_id = host_id_prefix(&host_id),
-                                url = url.to_string(),
-                                "Outgoing connection established"
-                            );
-                            return Ok((connection, host_id, url));
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                broadcast = false,
-                                peer_id = peer_id.to_string(),
-                                url = url.to_string(),
-                                attempt,
-                                "Failed to establish outgoing connection: {}",
-                                detailed(&e)
-                            );
-                        }
-                    };
+                    let host_id = connection_remote_host_id(&connection);
+                    tracing::trace!(
+                        broadcast = false,
+                        host_id = host_id_prefix(&host_id),
+                        addr = addr.to_string(),
+                        "Outgoing connection established"
+                    );
+                    return Ok((connection, host_id, *addr));
                 }
                 Err(e) => {
                     tracing::warn!(
                         broadcast = false,
                         peer_id = peer_id.to_string(),
-                        url = url.to_string(),
+                        addr = addr.to_string(),
                         attempt,
                         "Failed to establish outgoing connection: {}",
                         detailed(&e)

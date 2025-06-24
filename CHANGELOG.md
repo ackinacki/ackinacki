@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.1] - 2025-06-24
+
+### New
+- `bk\v2\account` and `bm\v2\account`  APIs to get account BOC from the BK/BM node
+- `runwasm` instruction
+- epoch length is now measured in seqno range
+- proxy deployment scripts
+- Node, Proxy, Block Manager log level set to Error
+
+### Improvements
+- Disable data retranslation between proxies
+- Account storage improvements
+- Gossip protocol improvements
+- Network layer improvements
+
+### Fixed
+- Verification failures
+- Possible deadlocks
+
+## [0.5.0] - 2025-06-02
+
+### New
+- Staking scripts support continuous staking
+- BM authorization on BK
+- BK node uses `SIGHUB` to update its config
+- Migrate BK,BM's network layer to `msquic` library
+- Append only mode for the data retrieved from gossip
+- Epoch hash argument in `node-helper`
+
+### Improvements
+- Multisig updates
+- New metrics: `node_bk_set_size_gauge`, `node_unfinalized_blocks_queue` 
+
+### Fixed
+- Node sync fixes
+
+
 ## [0.4.1] - 2025-05-13
 
 ### New

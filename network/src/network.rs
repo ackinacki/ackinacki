@@ -5,15 +5,15 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::hash::Hash;
+use std::net::SocketAddr;
 use std::str::FromStr;
-use std::sync::Arc;
 
-use chitchat::Chitchat;
+use chitchat::ChitchatRef;
 use serde::Serialize;
 use telemetry_utils::mpsc::instrumented_channel;
 use telemetry_utils::mpsc::InstrumentedChannelMetrics;
 use telemetry_utils::mpsc::InstrumentedReceiver;
-use url::Url;
+use transport_layer::NetTransport;
 
 use crate::channel::NetBroadcastSender;
 use crate::channel::NetDirectSender;
@@ -28,24 +28,24 @@ use crate::pub_sub::spawn_critical_task;
 use crate::pub_sub::IncomingSender;
 use crate::resolver::watch_gossip;
 use crate::resolver::SubscribeStrategy;
-use crate::socket_addr::StringSocketAddr;
 
 pub const BROADCAST_RETENTION_CAPACITY: usize = 100;
-const DEFAULT_MAX_CONNECTIONS: usize = 200;
+const DEFAULT_MAX_CONNECTIONS: usize = 1000;
 
 #[derive(Clone, Debug)]
 pub struct PeerData {
-    pub peer_url: Url,
-    pub bk_api_socket: Option<StringSocketAddr>,
+    pub peer_addr: SocketAddr,
+    pub bk_api_socket: Option<SocketAddr>,
 }
 
-pub struct BasicNetwork {
+pub struct BasicNetwork<Transport: NetTransport + 'static> {
+    transport: Transport,
     config: NetworkConfig,
 }
 
-impl BasicNetwork {
-    pub fn from(config: NetworkConfig) -> Self {
-        Self { config }
+impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
+    pub fn from(transport: Transport, config: NetworkConfig) -> Self {
+        Self { transport, config }
     }
 
     pub async fn start<PeerId, Message, ChannelMetrics>(
@@ -53,7 +53,8 @@ impl BasicNetwork {
         metrics: Option<NetMetrics>,
         channel_metrics: Option<ChannelMetrics>,
         self_peer_id: PeerId,
-        chitchat: Arc<tokio::sync::Mutex<Chitchat>>,
+        is_proxy: bool,
+        chitchat: ChitchatRef,
     ) -> anyhow::Result<(
         NetDirectSender<PeerId, Message>,
         NetBroadcastSender<Message>,
@@ -63,7 +64,7 @@ impl BasicNetwork {
     where
         Message:
             Debug + for<'de> serde::Deserialize<'de> + Serialize + Send + Sync + Clone + 'static,
-        PeerId: Clone + Display + Send + Sync + Hash + Eq + FromStr<Err = anyhow::Error> + 'static,
+        PeerId: Clone + Display + Send + Sync + Hash + Eq + FromStr<Err: Display> + 'static,
         ChannelMetrics: InstrumentedChannelMetrics + Send + Sync + 'static,
     {
         tracing::info!("Starting network with configuration: {:?}", self.config);
@@ -82,9 +83,7 @@ impl BasicNetwork {
             let _ = subscribe_tx.send_replace(self.config.subscribe.clone());
             (None, Some(peers_tx))
         } else if !self.config.proxies.is_empty() {
-            let _ = subscribe_tx.send_replace(
-                self.config.proxies.clone().into_iter().map(|url| vec![url]).collect(),
-            );
+            let _ = subscribe_tx.send_replace(vec![self.config.proxies.clone()]);
             (None, Some(peers_tx))
         } else {
             (Some(subscribe_tx.clone()), Some(peers_tx))
@@ -97,6 +96,7 @@ impl BasicNetwork {
                 chitchat.clone(),
                 gossip_subscribe_tx,
                 gossip_peers_tx,
+                metrics.clone(),
             ),
         );
 
@@ -104,8 +104,11 @@ impl BasicNetwork {
         let bind = self.config.bind;
         let metrics_clone = metrics.clone();
         let outgoing_broadcast_tx_clone = outgoing_broadcast_tx.clone();
+        let transport_clone = self.transport.clone();
         spawn_critical_task("Pub/Sub", async move {
             if let Err(e) = crate::pub_sub::run(
+                transport_clone,
+                is_proxy,
                 metrics_clone,
                 DEFAULT_MAX_CONNECTIONS,
                 bind,
@@ -124,8 +127,10 @@ impl BasicNetwork {
         let config = self.config.tls_config();
         let peers_rx_clone = peers_rx.clone();
         let metrics_clone = metrics.clone();
+        let transport_clone = self.transport.clone();
         spawn_critical_task("Direct sender", async move {
             direct_sender::run_direct_sender(
+                transport_clone,
                 metrics_clone,
                 outgoing_direct_rx,
                 peers_rx_clone,

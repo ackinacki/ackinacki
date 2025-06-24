@@ -15,23 +15,43 @@ use tvm_types::UInt256;
 use super::ResolvingResult;
 use crate::api::ext_messages::ThreadIdentifier;
 use crate::WebServer;
-pub struct ExtMessagesHandler<TMessage, TMsgConverter, TBPResolver>(
+pub struct ExtMessagesHandler<
+    TMessage,
+    TMsgConverter,
+    TBPResolver,
+    TBMLicensePubkeyLoader,
+    TBocByAddrGetter,
+>(
     PhantomData<TMessage>,
     PhantomData<TMsgConverter>,
     PhantomData<TBPResolver>,
+    PhantomData<TBMLicensePubkeyLoader>,
+    PhantomData<TBocByAddrGetter>,
 );
 
-impl<TMessage, TMsgConverter, TBPResolver>
-    ExtMessagesHandler<TMessage, TMsgConverter, TBPResolver>
+impl<TMessage, TMsgConverter, TBPResolver, TBMLicensePubkeyLoader, TBocByAddrGetter>
+    ExtMessagesHandler<
+        TMessage,
+        TMsgConverter,
+        TBPResolver,
+        TBMLicensePubkeyLoader,
+        TBocByAddrGetter,
+    >
 {
     pub fn new() -> Self {
-        Self(PhantomData, PhantomData, PhantomData)
+        Self(PhantomData, PhantomData, PhantomData, PhantomData, PhantomData)
     }
 }
 
 #[async_trait]
-impl<TMessage, TMsgConverter, TBPResolver> Handler
-    for ExtMessagesHandler<TMessage, TMsgConverter, TBPResolver>
+impl<TMessage, TMsgConverter, TBPResolver, TBMLicensePubkeyLoader, TBocByAddrGetter> Handler
+    for ExtMessagesHandler<
+        TMessage,
+        TMsgConverter,
+        TBPResolver,
+        TBMLicensePubkeyLoader,
+        TBocByAddrGetter,
+    >
 where
     TMessage: Clone + Send + Sync + 'static + std::fmt::Debug,
     TMsgConverter: Clone
@@ -39,7 +59,9 @@ where
         + Sync
         + 'static
         + Fn(tvm_block::Message, [u8; 34]) -> anyhow::Result<TMessage>,
+    TBocByAddrGetter: Clone + Send + Sync + 'static + Fn(String) -> anyhow::Result<String>,
     TBPResolver: Clone + Send + Sync + 'static + FnMut([u8; 34]) -> ResolvingResult,
+    TBMLicensePubkeyLoader: Send + Sync + Clone + 'static + Fn(String) -> Option<String>,
 {
     async fn handle(
         &self,
@@ -50,9 +72,13 @@ where
     ) {
         tracing::info!(target: "http_server", "Rest service: request got!");
 
-        let Ok(web_server_state) =
-            depot.obtain::<WebServer<TMessage, TMsgConverter, TBPResolver>>()
-        else {
+        let Ok(web_server_state) = depot.obtain::<WebServer<
+            TMessage,
+            TMsgConverter,
+            TBPResolver,
+            TBMLicensePubkeyLoader,
+            TBocByAddrGetter,
+        >>() else {
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
             res.render("Web Server state is not found");
             return;

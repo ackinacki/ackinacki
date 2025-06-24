@@ -29,7 +29,6 @@ use crate::node::block_state::state::AttestationsTarget;
 use crate::node::block_state::unfinalized_ancestor_blocks::UnfinalizedAncestorBlocks;
 use crate::node::services::attestations_target::service::AttestationsTargetService;
 use crate::node::services::block_processor::chain_pulse::ChainPulse;
-use crate::node::services::send_attestations::AttestationSendService;
 use crate::node::shared_services::SharedServices;
 use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
 use crate::node::NetworkMessage;
@@ -46,7 +45,6 @@ use crate::repository::RepositoryError;
 use crate::types::bp_selector::BlockGap;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
-use crate::types::CollectedAttestations;
 use crate::types::ForkResolution;
 use crate::types::RndSeed;
 use crate::types::ThreadIdentifier;
@@ -56,6 +54,7 @@ use crate::utilities::thread_spawn_critical::SpawnCritical;
 use crate::utilities::FixedSizeHashSet;
 
 const MAX_ATTESTATION_TARGET_BETA: usize = 100;
+// const ALLOWED_BLOCK_PRODUCTION_TIME_LAG_MS: u64 = 50;
 
 #[derive(Error, Debug)]
 pub enum ForkResolutionVerificationError {
@@ -76,6 +75,8 @@ use network::channel::NetDirectSender;
 use telemetry_utils::now_ms;
 use ForkResolutionVerificationError::*;
 
+use crate::node::services::sync::ExternalFileSharesBased;
+use crate::node::services::sync::StateSyncService;
 use crate::node::services::PULSE_IDLE_TIMEOUT;
 
 pub struct BlockProcessorService {
@@ -113,18 +114,19 @@ impl BlockProcessorService {
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         send_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
         broadcast_tx: NetBroadcastSender<NetworkMessage>,
-        archive: std::sync::mpsc::Sender<(
-            Envelope<GoshBLS, AckiNackiBlock>,
-            Option<Arc<ShardStateUnsplit>>,
-            Option<Cell>,
-        )>,
+        archive: Option<
+            std::sync::mpsc::Sender<(
+                Envelope<GoshBLS, AckiNackiBlock>,
+                Option<Arc<ShardStateUnsplit>>,
+                Option<Cell>,
+            )>,
+        >,
         skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
         bk_state_update_tx: InstrumentedSender<BlockKeeperSetUpdate>,
         block_gap: BlockGap,
         external_messages: ExternalMessagesThreadState,
-        last_block_attestations: Arc<Mutex<CollectedAttestations>>,
-        mut attestation_sender_service: AttestationSendService,
         validation_service: ValidationServiceInterface,
+        share_service: ExternalFileSharesBased,
     ) -> Self {
         let chain_pulse_last_finalized_block_id: BlockIdentifier = repository
             .select_thread_last_finalized_block(&thread_identifier)
@@ -167,7 +169,6 @@ impl BlockProcessorService {
                     .repository(repository.clone())
                     .block_state_repository(block_state_repository.clone())
                     .build();
-                let mut attestation_deadline = Instant::now() + PULSE_IDLE_TIMEOUT * 2;
                 loop {
                     let notifications =
                         block_state_repository.notifications().load(Ordering::Relaxed);
@@ -180,6 +181,10 @@ impl BlockProcessorService {
                         #[allow(clippy::mutable_key_type)]
                         let blocks_to_process: UnfinalizedBlocksSnapshot =
                             repository.unprocessed_blocks_cache().clone_queue();
+
+                        shared_services.metrics.as_ref().inspect(|m| {
+                            m.report_unfinalized_blocks_queue(blocks_to_process.len() as u64, &thread_identifier);
+                        });
 
                         let _ = chain_pulse.evaluate(&blocks_to_process, &block_state_repository, &repository);
                         for (block_state, block) in blocks_to_process.values() {
@@ -217,6 +222,7 @@ impl BlockProcessorService {
                                 block,
                                 &validation_service,
                                 &time_to_produce_block,
+                                share_service.clone(),
                             )?;
                             {
                                 let mut lock = block_state.lock();
@@ -224,20 +230,11 @@ impl BlockProcessorService {
                             }
                         }
                         attestations_target_service.evaluate(&blocks_to_process);
-
-                        attestation_deadline = attestation_sender_service.evaluate(
-                            &blocks_to_process,
-                            last_block_attestations.clone(),
-                            &repository,
-                            attestation_deadline,
-                        );
                     }
                     let new_notifications =
                         block_state_repository.notifications().load(Ordering::Relaxed);
                     if new_notifications == notifications {
-                        if let Some(idle_time) = attestation_deadline.checked_duration_since(Instant::now()) {
-                            std::thread::sleep(idle_time.min(PULSE_IDLE_TIMEOUT));
-                        }
+                        std::thread::sleep(PULSE_IDLE_TIMEOUT);
                     }
                     // atomic_wait::wait(block_state_repository.notifications(), notifications);
                 }
@@ -259,16 +256,19 @@ fn process_candidate_block(
     bk_set_update_tx: &InstrumentedSender<BlockKeeperSetUpdate>,
     shared_services: &mut SharedServices,
     nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
-    archive: &std::sync::mpsc::Sender<(
-        Envelope<GoshBLS, AckiNackiBlock>,
-        Option<Arc<ShardStateUnsplit>>,
-        Option<Cell>,
-    )>,
+    archive: &Option<
+        std::sync::mpsc::Sender<(
+            Envelope<GoshBLS, AckiNackiBlock>,
+            Option<Arc<ShardStateUnsplit>>,
+            Option<Cell>,
+        )>,
+    >,
     skipped_attestation_ids: &Arc<Mutex<HashSet<BlockIdentifier>>>,
     external_messages: &ExternalMessagesThreadState,
     candidate_block: &Envelope<GoshBLS, AckiNackiBlock>,
     validation_service: &ValidationServiceInterface,
     time_to_produce_block: &Duration,
+    share_service: ExternalFileSharesBased,
 ) -> anyhow::Result<()> {
     if block_state.guarded(|e| e.is_block_already_applied()) {
         // This is the last flag this method sets. Skip this block checks if it is already set.
@@ -303,7 +303,8 @@ fn process_candidate_block(
             rules::descendant_bk_set::set_descendant_bk_set(&parent_block_state, repository);
         }
         if parent_block_state.guarded(|e| e.descendant_bk_set().is_some()) {
-            rules::bk_set::set_bk_set(block_state, block_state_repository);
+            let metrics = shared_services.metrics.as_ref();
+            rules::bk_set::set_bk_set(block_state, block_state_repository, metrics);
         } else {
             tracing::trace!("BK set is not set. Skip block");
             return Ok(());
@@ -321,7 +322,12 @@ fn process_candidate_block(
             tracing::trace!("Parent block has not passed common checks");
             return Ok(());
         };
-        if check_common_block_params(candidate_block, &parent_block_state, time_to_produce_block)? {
+        if check_common_block_params(
+            candidate_block,
+            &parent_block_state,
+            time_to_produce_block,
+            block_state,
+        )? {
             block_state.guarded_mut(|e| {
                 shared_services.metrics.as_ref().inspect(|m| {
                     if let Some(thread_id) = e.thread_identifier() {
@@ -334,6 +340,7 @@ fn process_candidate_block(
             })?;
         } else {
             block_state.guarded_mut(|e| e.set_invalidated())?;
+            return Ok(());
         }
     }
 
@@ -626,21 +633,34 @@ fn process_candidate_block(
                     return Ok(());
                 }
             };
-
-            archive.send((
-                candidate_block.clone(),
-                optimistic_state.shard_state.shard_state.clone(),
-                optimistic_state.shard_state.shard_state_cell.clone(),
-            ))?;
+            if let Some(archive) = archive.as_ref() {
+                archive.send((
+                    candidate_block.clone(),
+                    optimistic_state.shard_state.shard_state.clone(),
+                    optimistic_state.shard_state.shard_state_cell.clone(),
+                ))?;
+            }
             let common_section = candidate_block.data().get_common_section().clone();
             let parent_seq_no = parent_block_state.guarded(|e| *e.block_seq_no());
-            let must_save_state = common_section.directives.share_state_resource_address.is_some()
+            let must_save_state = common_section.directives.share_state_resources().is_some()
                 || candidate_block.data().is_thread_splitting()
                 || must_save_state_on_seq_no(block_seq_no, parent_seq_no, save_state_frequency);
             if must_save_state {
                 repository.store_optimistic(optimistic_state)?;
             } else {
                 repository.store_optimistic_in_cache(optimistic_state)?;
+            }
+
+            if let Some(share_state) =
+                candidate_block.data().get_common_section().directives.share_state_resources()
+            {
+                for (thread_id, block_id) in share_state {
+                    if let Some(state) =
+                        repository.get_full_optimistic_state(block_id, thread_id, None)?
+                    {
+                        share_service.save_state_for_sharing(Arc::new(state))?;
+                    }
+                }
             }
 
             let bk_set_update = block_state.guarded_mut(|e| {
@@ -888,9 +908,10 @@ pub(crate) fn verify_all_block_signatures(
 fn check_common_block_params(
     candidate_block: &Envelope<GoshBLS, AckiNackiBlock>,
     parent_block_state: &BlockState,
-    time_to_produce_block: &Duration,
+    _time_to_produce_block: &Duration,
+    block_state: &BlockState,
 ) -> anyhow::Result<bool> {
-    let (Some(parent_time), Some(parent_seq_no)) =
+    let (Some(_parent_time), Some(parent_seq_no)) =
         parent_block_state.guarded(|e| (*e.block_time_ms(), *e.block_seq_no()))
     else {
         anyhow::bail!("Failed to get block data to perform common check");
@@ -904,12 +925,24 @@ fn check_common_block_params(
         return Ok(false);
     }
 
-    let minimal_block_time = parent_time + time_to_produce_block.as_millis() as u64;
-    let block_time = candidate_block.data().time()?;
-    let now = now_ms();
+    // TODO: block time can be seriously affected by block production correction and time diff between neighbor blocks can be much less than 330 ms
+    // let minimal_block_time = parent_time + time_to_produce_block.as_millis() as u64
+    //     - ALLOWED_BLOCK_PRODUCTION_TIME_LAG_MS;
+    // let block_time = candidate_block.data().time()?;
+    // if block_time < minimal_block_time {
+    //     tracing::trace!("Invalid block time: block_time: {block_time}, minimal_block_time: {minimal_block_time}");
+    //     return Ok(false);
+    // }
 
-    if block_time < minimal_block_time && block_time > now {
-        tracing::trace!("Invalid block time: block_time: {block_time}, minimal_block_time: {minimal_block_time}, now: {now}");
+    let (Some(bk_set), Some(producer_selector)) =
+        block_state.guarded(|e| (e.bk_set().clone(), e.producer_selector_data().clone()))
+    else {
+        anyhow::bail!("Failed to get selector data to perform common check");
+    };
+    let is_producer_correct = producer_selector
+        .is_node_bp(&bk_set, &candidate_block.data().get_common_section().producer_id);
+    if is_producer_correct.is_err() || !is_producer_correct? {
+        tracing::trace!("Invalid producer selector");
         return Ok(false);
     }
 

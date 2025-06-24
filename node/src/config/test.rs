@@ -3,10 +3,9 @@
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
     use std::path::PathBuf;
     use std::time::Duration;
-
-    use network::socket_addr::StringSocketAddr;
 
     use crate::config::Config;
     use crate::config::NetworkConfig;
@@ -20,15 +19,12 @@ mod tests {
     "gossip_seeds": []
 }"#;
         let config: NetworkConfig = serde_json::from_str(config_str)?;
-        assert_eq!(config.bind, StringSocketAddr::from("127.0.0.1:8500".to_string()));
-        assert_eq!(config.node_advertise_addr, StringSocketAddr::from("0.0.0.0:8500".to_string()));
+        assert_eq!(config.bind, SocketAddr::from(([127, 0, 0, 1], 8500)));
+        assert_eq!(config.node_advertise_addr, SocketAddr::from(([0, 0, 0, 0], 8500)));
         assert_eq!(config.api_addr, "127.0.0.1:8600".to_string());
         assert!(config.gossip_seeds.is_empty());
         assert!(config.static_storages.is_empty());
-        assert_eq!(
-            config.gossip_listen_addr,
-            StringSocketAddr::from("127.0.0.1:10000".to_string())
-        );
+        assert_eq!(config.gossip_listen_addr, SocketAddr::from(([127, 0, 0, 1], 10000)));
         assert_eq!(config.send_buffer_size, 1000);
         Ok(())
     }
@@ -53,22 +49,17 @@ mod tests {
         "block_cache_size": 20,
         "state_cache_size": 10,
         "message_storage_path": "message_strage",
-        "rate_limit_on_incoming_block_req": 1000
+        "rate_limit_on_incoming_block_req": 1000,
+        "ext_messages_cache_size": 10
     }
 }"#;
         let config: Config = serde_json::from_str(config_str)?;
-        assert_eq!(config.network.bind, StringSocketAddr::from("127.0.0.1:8500".to_string()));
-        assert_eq!(
-            config.network.node_advertise_addr,
-            StringSocketAddr::from("0.0.0.0:8500".to_string())
-        );
+        assert_eq!(config.network.bind, SocketAddr::from(([127, 0, 0, 1], 8500)));
+        assert_eq!(config.network.node_advertise_addr, SocketAddr::from(([0, 0, 0, 0], 8500)));
         assert_eq!(config.network.api_addr, "127.0.0.1:8600".to_string());
         assert!(config.network.gossip_seeds.is_empty());
         assert!(config.network.static_storages.is_empty());
-        assert_eq!(
-            config.network.gossip_listen_addr,
-            StringSocketAddr::from("127.0.0.1:10000".to_string())
-        );
+        assert_eq!(config.network.gossip_listen_addr, SocketAddr::from(([127, 0, 0, 1], 10000)));
         assert_eq!(config.network.send_buffer_size, 1000);
 
         assert_eq!(config.local.node_id, NodeIdentifier::some_id());

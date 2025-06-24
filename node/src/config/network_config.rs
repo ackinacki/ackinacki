@@ -1,14 +1,12 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use itertools::Itertools;
-use network::socket_addr::StringSocketAddr;
-use network::socket_addr::ToOneSocketAddr;
 use serde::Deserialize;
 use serde::Serialize;
 use typed_builder::TypedBuilder;
-use url::Url;
 
 // TODO: need to rework gossip arguments, now it has some advertised parameters
 // that are not used (e.g. ["node_state"]["node_id"] section)
@@ -17,9 +15,9 @@ use url::Url;
 pub struct NetworkConfig {
     /// Socket to listen other nodes messages (QUIC UDP).
     /// Defaults to "127.0.0.1:8500"
-    #[builder(default = StringSocketAddr::from("127.0.0.1:8500".to_string()))]
+    #[builder(default = SocketAddr::from(([127,0,0,1], 8500)))]
     #[serde(default = "default_bind")]
-    pub bind: StringSocketAddr,
+    pub bind: SocketAddr,
 
     /// TLS auth cert.
     ///
@@ -53,7 +51,7 @@ pub struct NetworkConfig {
         deserialize_with = "network::deserialize_subscribe"
     )]
     #[builder(default)]
-    pub subscribe: Vec<Vec<Url>>,
+    pub subscribe: Vec<Vec<SocketAddr>>,
 
     /// Proxies.
     ///
@@ -61,10 +59,10 @@ pub struct NetworkConfig {
     #[serde(
         default,
         skip_serializing_if = "Vec::is_empty",
-        deserialize_with = "network::deserialize_publisher_urls"
+        deserialize_with = "network::deserialize_publisher_addrs"
     )]
     #[builder(default)]
-    pub proxies: Vec<Url>,
+    pub proxies: Vec<SocketAddr>,
 
     /// Files and directories with TLS certificates (*.ca.pem), required to verify
     /// server certificate when node establish client connection to other node or proxy.
@@ -74,27 +72,27 @@ pub struct NetworkConfig {
 
     /// Public node socket address that will be advertised with gossip (QUIC
     /// UDP).
-    pub node_advertise_addr: StringSocketAddr,
+    pub node_advertise_addr: SocketAddr,
 
     /// UDP socket address to listen gossip.
     /// Defaults to "127.0.0.1:10000"
-    #[builder(default = StringSocketAddr::from("127.0.0.1:10000".to_string()))]
+    #[builder(default = SocketAddr::from(([127,0,0,1],10000)))]
     #[serde(default = "default_gossip_listen_addr")]
-    pub gossip_listen_addr: StringSocketAddr,
+    pub gossip_listen_addr: SocketAddr,
 
     /// Gossip advertise socket address.
     /// Defaults to `bind` address
     #[builder(default)]
-    pub gossip_advertise_addr: Option<StringSocketAddr>,
+    pub gossip_advertise_addr: Option<SocketAddr>,
 
     /// Gossip seed nodes socket addresses.
     #[builder(default)]
-    pub gossip_seeds: Vec<StringSocketAddr>,
+    pub gossip_seeds: Vec<SocketAddr>,
 
     /// Socket to listen for lite node requests (QUIC UDP).
-    #[builder(default = StringSocketAddr::from("127.0.0.1:12000".to_string()))]
+    #[builder(default = SocketAddr::from(([127,0,0,1],12000)))]
     #[serde(default = "default_block_manager_listen_addr")]
-    pub block_manager_listen_addr: StringSocketAddr,
+    pub block_manager_listen_addr: SocketAddr,
 
     /// Static storages urls (e.g. <https://example.com/storage/>)
     #[builder(default)]
@@ -112,11 +110,11 @@ pub struct NetworkConfig {
 
     /// Public address for Block Manager API of this node
     #[builder(default)]
-    pub bm_api_socket: Option<StringSocketAddr>,
+    pub bm_api_socket: Option<SocketAddr>,
 
     /// Public address for Block Keeper API this node
     #[builder(default)]
-    pub bk_api_socket: Option<StringSocketAddr>,
+    pub bk_api_socket: Option<SocketAddr>,
 
     /// Number of max tries to download shared state
     /// Defaults to 3
@@ -135,16 +133,16 @@ pub struct NetworkConfig {
     pub chitchat_cluster_id: String,
 }
 
-fn default_bind() -> StringSocketAddr {
-    StringSocketAddr::from("127.0.0.1:8500")
+fn default_bind() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], 8500))
 }
 
-fn default_gossip_listen_addr() -> StringSocketAddr {
-    StringSocketAddr::from("127.0.0.1:10000")
+fn default_gossip_listen_addr() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], 10000))
 }
 
-fn default_block_manager_listen_addr() -> StringSocketAddr {
-    StringSocketAddr::from("127.0.0.1:12000")
+fn default_block_manager_listen_addr() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], 12000))
 }
 
 fn default_send_buffer_size() -> usize {
@@ -165,19 +163,6 @@ fn default_chitchat_cluster_id() -> String {
 
 impl NetworkConfig {
     pub fn get_gossip_seeds(&self) -> Vec<String> {
-        self.gossip_seeds
-            .iter()
-            .map(|s| {
-                s.try_to_socket_addr().map_err(|e| {
-                    tracing::error!(
-                        "Failed to convert gossip seed {} to SocketAddr, skip it ({})",
-                        s,
-                        e
-                    );
-                    e
-                })
-            })
-            .filter_map(|res| res.map(|socket| socket.to_string()).ok())
-            .collect_vec()
+        self.gossip_seeds.iter().map(|s| s.to_string()).collect_vec()
     }
 }

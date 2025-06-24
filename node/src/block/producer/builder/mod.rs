@@ -139,7 +139,7 @@ pub struct BlockBuilder {
     // part to create cross thread ref data
     pub(crate) produced_internal_messages_to_other_threads:
         HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
-    // key is updated account routing
-    pub(crate) accounts_that_changed_their_dapp_id: HashMap<AccountRouting, Option<WrappedAccount>>,
+    pub(crate) accounts_that_changed_their_dapp_id:
+        HashMap<AccountId, Vec<(AccountRouting, Option<WrappedAccount>)>>,
     metrics: Option<BlockProductionMetrics>,
 }

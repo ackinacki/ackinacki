@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr;
@@ -10,8 +11,8 @@ use clap::Parser;
 use clap::Subcommand;
 use gosh_bls_lib::bls::gen_bls_key_pair;
 use gosh_bls_lib::serde_bls::BLSKeyPair;
-use network::parse_publisher_url;
-use network::socket_addr::StringSocketAddr;
+use network::parse_publisher_addr;
+use network::try_parse_socket_addr;
 use node::bls::gosh_bls::PubKey;
 use node::bls::gosh_bls::Secret;
 use node::bls::GoshBLS;
@@ -94,26 +95,29 @@ struct Config {
 
     /// Node socket to listen on (QUIC UDP)
     #[arg(long, env)]
-    pub bind: Option<StringSocketAddr>,
+    pub bind: Option<SocketAddr>,
 
     /// Node address to advertise (QUIC UDP)
     #[arg(long, env)]
-    pub node_advertise_addr: Option<StringSocketAddr>,
+    #[arg(value_parser = parse_node_addr)]
+    pub node_advertise_addr: Option<SocketAddr>,
 
     /// Gossip UDP socket (e.g., 127.0.0.1:10000)
     #[arg(long, env)]
-    pub gossip_listen_addr: Option<StringSocketAddr>,
+    pub gossip_listen_addr: Option<SocketAddr>,
 
     /// Gossip advertise address (e.g., hostname:port or ip:port)
     #[arg(long, env)]
-    pub gossip_advertise_addr: Option<StringSocketAddr>,
+    #[arg(value_parser = parse_gossip_addr)]
+    pub gossip_advertise_addr: Option<SocketAddr>,
 
     /// Gossip seed nodes addresses (e.g., hostname:port or ip:port)
-    #[arg(long, env, value_delimiter = ',')]
-    pub gossip_seeds: Option<Vec<StringSocketAddr>>,
+    #[arg(long, env)]
+    #[arg(long, env, value_delimiter = ',', value_parser = parse_gossip_addr)]
+    pub gossip_seeds: Option<Vec<SocketAddr>>,
 
     #[arg(long, env)]
-    pub block_manager_listen_addr: Option<StringSocketAddr>,
+    pub block_manager_listen_addr: Option<SocketAddr>,
 
     /// All static stores urls-bases (e.g. "https://example.com/storage/")
     #[arg(long, env, value_delimiter = ',')]
@@ -139,10 +143,10 @@ struct Config {
     pub min_time_between_state_publish_directives: Option<Duration>,
 
     #[arg(long, env)]
-    pub bm_api_socket: Option<StringSocketAddr>,
+    pub bm_api_socket: Option<SocketAddr>,
 
     #[arg(long, env)]
-    pub bk_api_socket: Option<StringSocketAddr>,
+    pub bk_api_socket: Option<SocketAddr>,
 
     #[arg(long, env)]
     pub parallelization_level: Option<usize>,
@@ -189,9 +193,9 @@ struct Config {
     #[arg(long)]
     pub chitchat_cluster_id: Option<String>,
 
-    /// Store shard state and account BOCs separately.
+    /// Number of blocks after which the account is unloaded from shard state.
     #[arg(long)]
-    pub split_state: Option<bool>,
+    pub unload_after: Option<u32>,
 
     /// Thread load (aggregated number of messages in a queue to start splitting a thread) threshold for split
     #[arg(long)]
@@ -212,6 +216,20 @@ struct Config {
     /// Path to the local message durable storage
     #[arg(long)]
     pub message_storage_path: Option<PathBuf>,
+
+    /// Epoch contract code hash
+    #[arg(long, env)]
+    pub block_keeper_epoch_code_hash: Option<String>,
+}
+
+const DEFAULT_NODE_PORT: u16 = 8500;
+const DEFAULT_GOSSIP_PORT: u16 = 10000;
+fn parse_node_addr(s: &str) -> Result<SocketAddr, String> {
+    try_parse_socket_addr(s, DEFAULT_NODE_PORT).map_err(|err| err.to_string())
+}
+
+fn parse_gossip_addr(s: &str) -> Result<SocketAddr, String> {
+    try_parse_socket_addr(s, DEFAULT_GOSSIP_PORT).map_err(|err| err.to_string())
 }
 
 fn main() -> anyhow::Result<()> {
@@ -231,8 +249,7 @@ fn main() -> anyhow::Result<()> {
                             eprintln!("chitchat_cluster_id must be specified for default config");
                             exit(2);
                         };
-                        let Some(node_advertise_addr) = config_cmd.node_advertise_addr.clone()
-                        else {
+                        let Some(node_advertise_addr) = config_cmd.node_advertise_addr else {
                             eprintln!("node_advertise_addr must be specified for default config");
                             exit(2);
                         };
@@ -344,7 +361,10 @@ fn main() -> anyhow::Result<()> {
                 config.local.parallelization_level = parallelization_level;
             }
 
-            if let Ok(code_hash) = std::fs::read_to_string(EPOCH_CODE_HASH_FILE_PATH) {
+            if let Some(block_keeper_epoch_code_hash) = config_cmd.block_keeper_epoch_code_hash {
+                config.global.block_keeper_epoch_code_hash =
+                    block_keeper_epoch_code_hash.trim_start_matches("0x").to_string();
+            } else if let Ok(code_hash) = std::fs::read_to_string(EPOCH_CODE_HASH_FILE_PATH) {
                 config.global.block_keeper_epoch_code_hash =
                     code_hash.trim_start_matches("0x").to_string();
             }
@@ -384,7 +404,9 @@ fn main() -> anyhow::Result<()> {
             if let Some(subscribe) = config_cmd.network_subscribe {
                 config.network.subscribe = subscribe
                     .split(',')
-                    .filter_map(|x| if !x.is_empty() { Some(parse_publisher_url(x)) } else { None })
+                    .filter_map(
+                        |x| if !x.is_empty() { Some(parse_publisher_addr(x)) } else { None },
+                    )
                     .map(|x| x.map(|x| vec![x]))
                     .collect::<Result<_, _>>()?;
             }
@@ -392,7 +414,9 @@ fn main() -> anyhow::Result<()> {
             if let Some(proxies) = config_cmd.network_proxies {
                 config.network.proxies = proxies
                     .split(',')
-                    .filter_map(|x| if !x.is_empty() { Some(parse_publisher_url(x)) } else { None })
+                    .filter_map(
+                        |x| if !x.is_empty() { Some(parse_publisher_addr(x)) } else { None },
+                    )
                     .collect::<Result<_, _>>()?;
             }
 
@@ -400,8 +424,8 @@ fn main() -> anyhow::Result<()> {
                 config.network.chitchat_cluster_id = cluster_id;
             }
 
-            if let Some(split_state) = config_cmd.split_state {
-                config.local.split_state = split_state;
+            if let Some(unload_after) = config_cmd.unload_after {
+                config.local.unload_after = Some(unload_after);
             }
 
             if let Some(thread_load_threshold) = config_cmd.thread_load_threshold {

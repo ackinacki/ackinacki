@@ -24,20 +24,27 @@ pub struct ProducerSelector {
 }
 
 impl ProducerSelector {
-    pub fn get_producer_node_id(&self, bk_set: &BlockKeeperSet) -> NodeIdentifier {
+    pub fn get_producer_node_id(&self, bk_set: &BlockKeeperSet) -> anyhow::Result<NodeIdentifier> {
         let mut sorted_node_id_list = bk_set.iter_node_ids().collect::<Vec<_>>();
         let mut rng = SmallRng::from_seed(self.rng_seed_block_id.clone().as_rng_seed());
         sorted_node_id_list.shuffle(&mut rng);
-        assert!(self.index < sorted_node_id_list.len(), "Producer selector index out of bounds");
-        sorted_node_id_list
+        anyhow::ensure!(
+            self.index < sorted_node_id_list.len(),
+            "Producer selector index out of bounds"
+        );
+        Ok(sorted_node_id_list
             .get(self.index)
             .expect("Producer index out of bounds")
             .to_owned()
-            .clone()
+            .clone())
     }
 
-    pub fn is_node_bp(&self, bk_set: &BlockKeeperSet, node_id: &NodeIdentifier) -> bool {
-        &self.get_producer_node_id(bk_set) == node_id
+    pub fn is_node_bp(
+        &self,
+        bk_set: &BlockKeeperSet,
+        node_id: &NodeIdentifier,
+    ) -> anyhow::Result<bool> {
+        Ok(&self.get_producer_node_id(bk_set)? == node_id)
     }
 
     pub fn check_whether_this_node_is_bp_based_on_bk_set_and_index_offset(
@@ -59,6 +66,9 @@ impl ProducerSelector {
     ) -> Option<usize> {
         let mut sorted_node_id_list = bk_set.iter_node_ids().collect::<Vec<_>>();
         let total_bk_cnt = sorted_node_id_list.len();
+        if self.index >= total_bk_cnt {
+            return None;
+        }
         let mut rng = SmallRng::from_seed(self.rng_seed_block_id.clone().as_rng_seed());
         sorted_node_id_list.shuffle(&mut rng);
         if let Some((position, _)) =
@@ -88,6 +98,7 @@ mod tests {
 
     use crate::block_keeper_system::BlockKeeperData;
     use crate::block_keeper_system::BlockKeeperSet;
+    use crate::node::NodeIdentifier;
     use crate::node::SignerIndex;
     use crate::types::bp_selector::ProducerSelector;
     use crate::types::AccountAddress;
@@ -109,7 +120,9 @@ mod tests {
         }
         let producer_selector =
             ProducerSelector { rng_seed_block_id: BlockIdentifier::default(), index: 0 };
-        let producer_node_id = producer_selector.get_producer_node_id(&bk_set);
+        let producer_node_id = producer_selector
+            .get_producer_node_id(&bk_set)
+            .expect("Producer node id out of bounds");
         println!("Producer node ID: {}", producer_node_id);
         let mut distances_set: HashSet<usize> = HashSet::from_iter(0..100usize);
         for node_id in bk_set.iter_node_ids() {
@@ -136,10 +149,14 @@ mod tests {
         }
         let mut producer_selector =
             ProducerSelector { rng_seed_block_id: BlockIdentifier::default(), index: 0 };
-        let mut producer_node_id = producer_selector.get_producer_node_id(&bk_set);
+        let mut producer_node_id = producer_selector
+            .get_producer_node_id(&bk_set)
+            .expect("Producer node id out of bounds");
         for _i in 0..1000 {
             producer_selector = producer_selector.move_index(1, 100);
-            let new_producer_node_id = producer_selector.get_producer_node_id(&bk_set);
+            let new_producer_node_id = producer_selector
+                .get_producer_node_id(&bk_set)
+                .expect("Producer node id out of bounds");
             assert_ne!(new_producer_node_id, producer_node_id);
             producer_node_id = new_producer_node_id;
         }
@@ -172,5 +189,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_move_after_node_removed() {
+        let mut bk_set = BlockKeeperSet::new();
+        for i in 0..10 {
+            let acc_id_str =
+                format!("00000000000000000000000000000000000000000000000000000000{:08x}", i);
+            bk_set.insert(
+                i as SignerIndex,
+                BlockKeeperData {
+                    owner_address: AccountAddress(AccountId::from_str(&acc_id_str).unwrap()),
+                    ..Default::default()
+                },
+            )
+        }
+        let producer_selector =
+            ProducerSelector { rng_seed_block_id: BlockIdentifier::default(), index: 11 };
+        let res = producer_selector.get_producer_node_id(&bk_set);
+        assert!(res.is_err());
+        let producer_selector_clone = producer_selector.clone();
+        let test_acc_id_str =
+            format!("00000000000000000000000000000000000000000000000000000000{:08x}", 0);
+        let test_node_id = NodeIdentifier::from(AccountId::from_str(&test_acc_id_str).unwrap());
+        let bp_distance_for_this_node =
+            producer_selector_clone.get_distance_from_bp(&bk_set, &test_node_id);
+        assert!(bp_distance_for_this_node.is_none());
     }
 }

@@ -1,6 +1,8 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::HashMap;
+
 use network::channel::NetDirectSender;
 
 use crate::bls::envelope::BLSSignedEnvelope;
@@ -73,6 +75,12 @@ where
         excluded_to: BlockSeqNo,
         at_least_n_blocks: Option<usize>,
     ) -> anyhow::Result<()> {
+        if excluded_to > included_from {
+            if let Some(metrics) = &self.metrics {
+                let gap_len = excluded_to - included_from;
+                metrics.report_blocks_requested(gap_len as u64, &self.thread_id);
+            }
+        }
         send_blocks_range_request(
             &self.network_direct_tx,
             node_id,
@@ -88,10 +96,10 @@ where
         &self,
         block_identifier: BlockIdentifier,
         block_seq_no: BlockSeqNo,
-        shared_res_address: String,
+        shared_res_address: HashMap<ThreadIdentifier, BlockIdentifier>,
     ) -> anyhow::Result<()> {
         tracing::info!(
-            "broadcasting SyncFinalized {:?} {:?} {}",
+            "broadcasting SyncFinalized {:?} {:?} {:?}",
             block_seq_no,
             block_identifier,
             shared_res_address

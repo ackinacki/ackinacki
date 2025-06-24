@@ -54,7 +54,8 @@
 			"inputs": [
 				{"name":"license_number","type":"uint256"},
 				{"name":"reputationTime","type":"uint128"},
-				{"name":"license_start","type":"uint32"}
+				{"name":"last_touch","type":"uint32"},
+				{"name":"isPriority","type":"bool"}
 			],
 			"outputs": [
 			]
@@ -104,7 +105,7 @@
 			"inputs": [
 				{"name":"slash_type","type":"uint8"},
 				{"name":"bls_key","type":"bytes"},
-				{"components":[{"name":"value0","type":"uint256"},{"components":[{"name":"stake","type":"uint256"},{"name":"seqNoStart","type":"uint64"},{"name":"timeStampFinish","type":"uint32"},{"name":"timeStampFinishCooler","type":"uint32"},{"name":"bls_key","type":"bytes"},{"name":"status","type":"uint8"},{"name":"signerIndex","type":"uint16"}],"name":"value1","type":"tuple"}],"name":"data","type":"optional(tuple)"}
+				{"components":[{"name":"value0","type":"uint256"},{"components":[{"name":"stake","type":"uint256"},{"name":"seqNoStart","type":"uint64"},{"name":"seqNoFinish","type":"uint64"},{"name":"bls_key","type":"bytes"},{"name":"status","type":"uint8"},{"name":"signerIndex","type":"uint16"}],"name":"value1","type":"tuple"}],"name":"data","type":"optional(tuple)"}
 			],
 			"outputs": [
 			]
@@ -113,7 +114,7 @@
 			"name": "updateLockStake",
 			"inputs": [
 				{"name":"seqNoStart","type":"uint64"},
-				{"name":"timeStampFinish","type":"uint32"},
+				{"name":"seqNoFinish","type":"uint64"},
 				{"name":"stake","type":"uint256"},
 				{"name":"bls_key","type":"bytes"},
 				{"name":"signerIndex","type":"uint16"},
@@ -126,6 +127,7 @@
 		{
 			"name": "stakeNotAccepted",
 			"inputs": [
+				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"}
 			],
 			"outputs": [
 			]
@@ -133,6 +135,7 @@
 		{
 			"name": "stakeNotAcceptedContinue",
 			"inputs": [
+				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"}
 			],
 			"outputs": [
 			]
@@ -143,7 +146,8 @@
 				{"name":"bls_pubkey","type":"bytes"},
 				{"name":"stake","type":"varuint32"},
 				{"name":"signerIndex","type":"uint16"},
-				{"name":"ProxyList","type":"map(uint8,string)"}
+				{"name":"ProxyList","type":"map(uint8,string)"},
+				{"name":"myIp","type":"string"}
 			],
 			"outputs": [
 			]
@@ -182,7 +186,7 @@
 		{
 			"name": "deployPreEpochContract",
 			"inputs": [
-				{"name":"epochDuration","type":"uint32"},
+				{"name":"epochDuration","type":"uint64"},
 				{"name":"epochCliff","type":"uint64"},
 				{"name":"waitStep","type":"uint64"},
 				{"name":"bls_pubkey","type":"bytes"},
@@ -190,7 +194,9 @@
 				{"name":"rep_coef","type":"uint128"},
 				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"virtualStake","type":"optional(uint128)"},
-				{"name":"ProxyList","type":"map(uint8,string)"}
+				{"name":"ProxyList","type":"map(uint8,string)"},
+				{"name":"reward_sum","type":"uint128"},
+				{"name":"myIp","type":"string"}
 			],
 			"outputs": [
 			]
@@ -198,7 +204,7 @@
 		{
 			"name": "deployBlockKeeperContractContinue",
 			"inputs": [
-				{"name":"epochDuration","type":"uint32"},
+				{"name":"epochDuration","type":"uint64"},
 				{"name":"waitStep","type":"uint64"},
 				{"name":"seqNoStartold","type":"uint64"},
 				{"name":"bls_pubkey","type":"bytes"},
@@ -206,7 +212,8 @@
 				{"name":"rep_coef","type":"uint128"},
 				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"virtualStake","type":"optional(uint128)"},
-				{"name":"ProxyList","type":"map(uint8,string)"}
+				{"name":"ProxyList","type":"map(uint8,string)"},
+				{"name":"reward_sum","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -216,7 +223,8 @@
 			"inputs": [
 				{"name":"seqNoStartOld","type":"uint64"},
 				{"name":"bls_key","type":"bytes"},
-				{"name":"signerIndex","type":"uint16"}
+				{"name":"signerIndex","type":"uint16"},
+				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"}
 			],
 			"outputs": [
 			]
@@ -224,7 +232,7 @@
 		{
 			"name": "deployBlockKeeperContractContinueAfterDestroy",
 			"inputs": [
-				{"name":"epochDuration","type":"uint32"},
+				{"name":"epochDuration","type":"uint64"},
 				{"name":"waitStep","type":"uint64"},
 				{"name":"bls_pubkey","type":"bytes"},
 				{"name":"seqNoStartOld","type":"uint64"},
@@ -233,7 +241,9 @@
 				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses_continue","type":"tuple[]"},
 				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"virtualStake","type":"optional(uint128)"},
-				{"name":"addReputationTime","type":"uint128"}
+				{"name":"addReputationTime","type":"uint128"},
+				{"name":"reward_sum","type":"uint128"},
+				{"name":"myIp","type":"string"}
 			],
 			"outputs": [
 			]
@@ -242,7 +252,7 @@
 			"name": "updateLockStakeCooler",
 			"inputs": [
 				{"name":"seqNoStart","type":"uint64"},
-				{"name":"time","type":"uint32"},
+				{"name":"seqNoFinish","type":"uint64"},
 				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"epochDuration","type":"uint128"},
 				{"name":"isContinue","type":"bool"}
@@ -319,9 +329,9 @@
 				{"name":"pubkey","type":"uint256"},
 				{"name":"root","type":"address"},
 				{"name":"balance","type":"uint256"},
-				{"components":[{"name":"stake","type":"uint256"},{"name":"seqNoStart","type":"uint64"},{"name":"timeStampFinish","type":"uint32"},{"name":"timeStampFinishCooler","type":"uint32"},{"name":"bls_key","type":"bytes"},{"name":"status","type":"uint8"},{"name":"signerIndex","type":"uint16"}],"name":"activeStakes","type":"map(uint256,tuple)"},
+				{"components":[{"name":"stake","type":"uint256"},{"name":"seqNoStart","type":"uint64"},{"name":"seqNoFinish","type":"uint64"},{"name":"bls_key","type":"bytes"},{"name":"status","type":"uint8"},{"name":"signerIndex","type":"uint16"}],"name":"activeStakes","type":"map(uint256,tuple)"},
 				{"name":"stakesCnt","type":"uint8"},
-				{"components":[{"name":"reputationTime","type":"uint128"},{"name":"status","type":"uint8"},{"name":"stakeController","type":"optional(address)"},{"name":"license_start","type":"uint32"},{"name":"balance","type":"uint128"},{"name":"lockStake","type":"uint128"},{"name":"lockContinue","type":"uint128"},{"name":"lockCooler","type":"uint128"},{"name":"isLockToStake","type":"bool"}],"name":"licenses","type":"map(uint256,tuple)"}
+				{"components":[{"name":"reputationTime","type":"uint128"},{"name":"status","type":"uint8"},{"name":"isPriority","type":"bool"},{"name":"stakeController","type":"optional(address)"},{"name":"last_touch","type":"uint32"},{"name":"balance","type":"uint128"},{"name":"lockStake","type":"uint128"},{"name":"lockContinue","type":"uint128"},{"name":"lockCooler","type":"uint128"},{"name":"isLockToStake","type":"bool"}],"name":"licenses","type":"map(uint256,tuple)"}
 			]
 		},
 		{
@@ -377,12 +387,12 @@
 		{"init":false,"name":"_code","type":"map(uint8,cell)"},
 		{"init":true,"name":"_owner_pubkey","type":"uint256"},
 		{"init":false,"name":"_root","type":"address"},
-		{"components":[{"name":"stake","type":"uint256"},{"name":"seqNoStart","type":"uint64"},{"name":"timeStampFinish","type":"uint32"},{"name":"timeStampFinishCooler","type":"uint32"},{"name":"bls_key","type":"bytes"},{"name":"status","type":"uint8"},{"name":"signerIndex","type":"uint16"}],"init":false,"name":"_activeStakes","type":"map(uint256,tuple)"},
+		{"components":[{"name":"stake","type":"uint256"},{"name":"seqNoStart","type":"uint64"},{"name":"seqNoFinish","type":"uint64"},{"name":"bls_key","type":"bytes"},{"name":"status","type":"uint8"},{"name":"signerIndex","type":"uint16"}],"init":false,"name":"_activeStakes","type":"map(uint256,tuple)"},
 		{"init":false,"name":"_stakesCnt","type":"uint8"},
 		{"init":false,"name":"_bk_root","type":"address"},
 		{"components":[{"name":"value","type":"uint256"},{"name":"timeStampFinish","type":"uint32"}],"init":false,"name":"_lockmap","type":"map(uint128,tuple)"},
 		{"init":false,"name":"_bls_keys","type":"optional(cell)"},
-		{"components":[{"name":"reputationTime","type":"uint128"},{"name":"status","type":"uint8"},{"name":"stakeController","type":"optional(address)"},{"name":"license_start","type":"uint32"},{"name":"balance","type":"uint128"},{"name":"lockStake","type":"uint128"},{"name":"lockContinue","type":"uint128"},{"name":"lockCooler","type":"uint128"},{"name":"isLockToStake","type":"bool"}],"init":false,"name":"_licenses","type":"map(uint256,tuple)"},
+		{"components":[{"name":"reputationTime","type":"uint128"},{"name":"status","type":"uint8"},{"name":"isPriority","type":"bool"},{"name":"stakeController","type":"optional(address)"},{"name":"last_touch","type":"uint32"},{"name":"balance","type":"uint128"},{"name":"lockStake","type":"uint128"},{"name":"lockContinue","type":"uint128"},{"name":"lockCooler","type":"uint128"},{"name":"isLockToStake","type":"bool"}],"init":false,"name":"_licenses","type":"map(uint256,tuple)"},
 		{"init":false,"name":"_licenses_count","type":"uint128"},
 		{"init":false,"name":"_epochDuration","type":"uint128"},
 		{"init":false,"name":"_last_stake","type":"uint128"},

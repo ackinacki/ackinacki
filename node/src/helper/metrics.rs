@@ -54,6 +54,9 @@ struct BlockProductionMetricsInner {
     attestation_after_apply_delay: Histogram<u64>,
     attn_target_descendant_generations: Histogram<u64>,
     rcv_as_bytes_to_rcv_by_node: Histogram<u64>,
+    blocks_requested: Counter<u64>,
+    unfinalized_blocks_queue: Gauge<u64>,
+    bk_set_size: Gauge<u64>,
 
     // Tokio runtime metrics: https://docs.rs/tokio/latest/tokio/runtime/struct.RuntimeMetrics.html
     _tokio_num_alive_tasks: ObservableGauge<u64>,
@@ -163,6 +166,11 @@ impl BlockProductionMetrics {
                 .build(),
             resend: meter.u64_counter("node_resend").build(),
             query_gaps: meter.u64_counter("node_query_gaps").build(),
+            blocks_requested: meter.u64_counter("node_blocks_requested").build(),
+
+            unfinalized_blocks_queue: meter.u64_gauge("node_unfinalized_blocks_queue").build(),
+
+            bk_set_size: meter.u64_gauge("node_bk_set_size").build(),
             store_block_on_disk: meter
                 .u64_histogram("node_store_block_on_disk")
                 .with_boundaries(vec![5.0, 10.0, 15.0, 20.0, 50.0, 100.0, 200.0, 500.0])
@@ -341,6 +349,18 @@ impl BlockProductionMetrics {
 
     pub fn report_query_gaps(&self, thread_id: &ThreadIdentifier) {
         self.0.query_gaps.add(1, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_blocks_requested(&self, value: u64, thread_id: &ThreadIdentifier) {
+        self.0.blocks_requested.add(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_unfinalized_blocks_queue(&self, value: u64, thread_id: &ThreadIdentifier) {
+        self.0.unfinalized_blocks_queue.record(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_bk_set_size(&self, value: u64, thread_id: &ThreadIdentifier) {
+        self.0.bk_set_size.record(value, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_store_block_on_disk(&self, value: u64, thread_id: &ThreadIdentifier) {

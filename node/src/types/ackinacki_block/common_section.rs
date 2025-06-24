@@ -6,10 +6,12 @@ use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Formatter;
 
+use derive_getters::Getters;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
+use typed_builder::TypedBuilder;
 
 use super::fork_resolution::ForkResolution;
 use crate::block_keeper_system::BlockKeeperSetChange;
@@ -28,16 +30,14 @@ use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, TypedBuilder, Getters)]
 pub struct Directives {
-    pub share_state_resource_address: Option<String>,
+    share_state_resources: Option<HashMap<ThreadIdentifier, BlockIdentifier>>,
 }
 
 impl Debug for Directives {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("")
-            .field("share_state_resource_address", &self.share_state_resource_address)
-            .finish()
+        f.debug_struct("").field("share_state_resources", &self.share_state_resources).finish()
     }
 }
 

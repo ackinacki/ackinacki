@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hash::Hash;
+use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
@@ -11,9 +12,8 @@ use tvm_block::Account;
 use tvm_contracts::TvmContract;
 use tvm_types::AccountId;
 use tvm_types::UInt256;
-use url::Url;
 
-use crate::parse_publisher_url;
+use crate::parse_publisher_addr;
 use crate::resolver::blockchain::AccountProvider;
 
 fn get_u256(v: &Value, name: &str) -> anyhow::Result<UInt256> {
@@ -98,30 +98,30 @@ pub struct ProxyList(pub Account);
 
 #[derive(Deserialize)]
 struct ProxyListEntry {
-    #[serde(deserialize_with = "crate::deserialize_publisher_url")]
-    pub url: Url,
+    #[serde(deserialize_with = "crate::deserialize_publisher_addr")]
+    pub addr: SocketAddr,
 }
 
 impl ProxyList {
-    pub fn get_proxy_list(&self) -> anyhow::Result<(Option<Url>, HashSet<Url>)> {
+    pub fn get_proxy_list(&self) -> anyhow::Result<(Option<SocketAddr>, HashSet<SocketAddr>)> {
         let details = PROXY_LIST.run_get(&self.0, "getDetails", None)?;
         let mut proxy_list = get_map::<u8, String>(&details, "ProxyList")?;
         if proxy_list.is_empty() {
             anyhow::bail!("Proxy list is empty");
         }
-        let node_url = proxy_list.remove(&0).map(parse_publisher_url).transpose()?;
+        let node_addr = proxy_list.remove(&0).map(parse_publisher_addr).transpose()?;
         let proxies = proxy_list
             .into_values()
             .map(|x| serde_json::from_str::<ProxyListEntry>(&x))
-            .map(|x| x.map(|x| x.url))
+            .map(|x| x.map(|x| x.addr))
             .collect::<Result<_, _>>()?;
-        Ok((node_url, proxies))
+        Ok((node_addr, proxies))
     }
 }
 pub fn collect_bk_set<PeerId>(
     accounts: &impl AccountProvider,
     bk: &Bk,
-    nodes: &mut HashMap<PeerId, (Option<Url>, HashSet<Url>)>,
+    nodes: &mut HashMap<PeerId, (Option<SocketAddr>, HashSet<SocketAddr>)>,
 ) -> anyhow::Result<()>
 where
     PeerId: Eq + Hash + From<AccountId>,

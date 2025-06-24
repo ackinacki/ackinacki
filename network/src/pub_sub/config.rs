@@ -6,9 +6,8 @@ use ::serde::Serialize;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::PrivateKeyDer;
-use wtransport::tls::Certificate;
-use wtransport::tls::PrivateKey;
-use wtransport::tls::Sha256Digest;
+use rustls::pki_types::PrivatePkcs8KeyDer;
+use transport_layer::cert_hash;
 
 pub static DEBUG_CERTIFICATE: &[u8] = include_bytes!("../../certs/debug.ca.pem");
 pub static DEBUG_PRIVATE_KEY: &[u8] = include_bytes!("../../certs/debug.key.pem");
@@ -16,7 +15,7 @@ pub static DEBUG_PRIVATE_KEY: &[u8] = include_bytes!("../../certs/debug.key.pem"
 #[derive(Debug, Clone)]
 pub struct CertFile {
     pub path: PathBuf,
-    cert: Certificate,
+    cert: CertificateDer<'static>,
     is_debug: bool,
 }
 
@@ -30,21 +29,19 @@ impl CertFile {
             return Self::debug();
         }
 
-        let cert_der = CertificateDer::from_pem_file(&path).inspect_err(|err| {
+        let cert = CertificateDer::from_pem_file(&path).inspect_err(|err| {
             tracing::error!(
                 "Failed to load TLS certificate from {}: {err}",
                 path.as_ref().display()
             );
         })?;
-        let cert = Certificate::from_der(cert_der.to_vec())?;
         let path = path.as_ref().to_path_buf();
         tracing::trace!("Loaded TLS certificate from {:?}", path);
         Ok(Self { path, cert, is_debug: false })
     }
 
     pub fn debug() -> anyhow::Result<Self> {
-        let cert_der = CertificateDer::from_pem_slice(DEBUG_CERTIFICATE)?;
-        let cert = Certificate::from_der(cert_der.to_vec())?;
+        let cert = CertificateDer::from_pem_slice(DEBUG_CERTIFICATE)?;
 
         tracing::warn!("Loaded TLS debug cert");
         Ok(Self { path: PathBuf::default(), cert, is_debug: true })
@@ -54,14 +51,16 @@ impl CertFile {
         &self,
         key: &PrivateKeyFile,
     ) -> anyhow::Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
-        Ok((vec![From::from(self.resolve_cert_ref(key).der().to_vec())], TryFrom::try_from(key)?))
+        let cert = From::from(self.resolve_cert_ref(key).to_vec());
+        let key = TryFrom::try_from(key)?;
+        Ok((vec![cert], key))
     }
 
     pub(crate) fn resolve_host_id(&self, key: &PrivateKeyFile) -> String {
-        hex::encode(self.resolve_cert_ref(key).hash().as_ref())
+        hex::encode(cert_hash(self.resolve_cert_ref(key)).as_ref())
     }
 
-    fn resolve_cert_ref<'a>(&'a self, key: &'a PrivateKeyFile) -> &'a Certificate {
+    fn resolve_cert_ref<'a>(&'a self, key: &'a PrivateKeyFile) -> &'a CertificateDer<'static> {
         match &key.debug_cert {
             Some(debug_cert) if self.is_debug => &debug_cert.cert,
             _ => &self.cert,
@@ -72,8 +71,8 @@ impl CertFile {
         self.is_debug
     }
 
-    pub fn hash(&self) -> Sha256Digest {
-        self.cert.hash()
+    pub fn hash(&self) -> [u8; 32] {
+        cert_hash(&self.cert)
     }
 
     pub fn try_load_certs(paths: &[PathBuf]) -> anyhow::Result<Vec<Self>> {
@@ -102,7 +101,7 @@ impl CertFile {
 #[derive(Debug, Clone)]
 pub struct CertStore {
     pub paths: Vec<PathBuf>,
-    certs: Vec<Certificate>,
+    certs: Vec<CertificateDer<'static>>,
     is_debug: bool,
 }
 
@@ -133,8 +132,7 @@ impl CertStore {
     }
 
     pub fn debug() -> anyhow::Result<Self> {
-        let cert_der = CertificateDer::from_pem_slice(DEBUG_CERTIFICATE)?;
-        let cert = Certificate::from_der(cert_der.to_vec())?;
+        let cert = CertificateDer::from_pem_slice(DEBUG_CERTIFICATE)?;
         tracing::warn!("Loaded TLS debug cert store");
         Ok(Self { paths: vec![], certs: vec![cert], is_debug: true })
     }
@@ -146,7 +144,7 @@ impl CertStore {
     pub fn build_root_cert_store(&self) -> anyhow::Result<rustls::RootCertStore> {
         let mut root_store = rustls::RootCertStore::empty();
         for cert in &self.certs {
-            root_store.add(cert.der().into())?;
+            root_store.add(cert.clone())?;
         }
         Ok(root_store)
     }
@@ -193,7 +191,7 @@ impl<'de> Deserialize<'de> for CertStore {
 #[derive(Debug)]
 pub struct PrivateKeyFile {
     pub path: PathBuf,
-    pub key: PrivateKey,
+    pub key: PrivateKeyDer<'static>,
     debug_cert: Option<CertFile>,
 }
 
@@ -203,21 +201,17 @@ impl PrivateKeyFile {
             return Self::debug();
         }
 
-        let key_der = PrivateKeyDer::from_pem_file(&path)?;
-        let key = PrivateKey::from_der_pkcs8(key_der.secret_der().to_vec());
+        let key = PrivateKeyDer::from_pem_file(&path)?;
         let path = path.as_ref().to_path_buf();
 
         Ok(Self { path, key, debug_cert: None })
     }
 
     pub fn debug() -> anyhow::Result<Self> {
-        let cert_key = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])?;
-        let key = PrivateKey::from_der_pkcs8(cert_key.key_pair.serialize_der());
-        let cert = CertFile {
-            path: PathBuf::default(),
-            cert: Certificate::from_der(cert_key.cert.der().to_vec())?,
-            is_debug: true,
-        };
+        let key = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])?;
+        let cert =
+            CertFile { path: PathBuf::default(), cert: key.cert.der().clone(), is_debug: true };
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.key_pair.serialize_der()));
         tracing::warn!("Loaded TLS debug private key");
         Ok(Self { path: PathBuf::default(), key, debug_cert: Some(cert) })
     }

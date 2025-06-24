@@ -39,6 +39,8 @@ abstract contract Modifiers is ReplayProtection {
     uint64 constant FEE_DEPLOY_NAME_INDEX = 8 vmshell;
     uint64 constant ROOT_BALANCE = 1000000 vmshell;
 
+    uint16 constant MAX_SIGNER_INDEX = 60000;
+
     uint128 constant MIN_REP_COEF = 1000000000;
     
     uint8 constant MAX_LICENSE_NUMBER = 10;

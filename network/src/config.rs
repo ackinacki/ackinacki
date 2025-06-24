@@ -4,8 +4,6 @@
 use std::fmt::Debug;
 use std::net::SocketAddr;
 
-use url::Url;
-
 use crate::pub_sub::CertFile;
 use crate::pub_sub::CertStore;
 use crate::pub_sub::PrivateKeyFile;
@@ -17,8 +15,8 @@ pub struct NetworkConfig {
     pub my_cert: CertFile,
     pub my_key: PrivateKeyFile,
     pub peer_certs: CertStore,
-    pub subscribe: Vec<Vec<Url>>,
-    pub proxies: Vec<Url>,
+    pub subscribe: Vec<Vec<SocketAddr>>,
+    pub proxies: Vec<SocketAddr>,
 }
 
 impl Debug for NetworkConfig {
@@ -33,8 +31,8 @@ impl NetworkConfig {
         my_cert: CertFile,
         my_key: PrivateKeyFile,
         peer_certs: CertStore,
-        subscribe: Vec<Vec<Url>>,
-        proxies: Vec<Url>,
+        subscribe: Vec<Vec<SocketAddr>>,
+        proxies: Vec<SocketAddr>,
     ) -> Self {
         tracing::info!("Creating new network configuration with bind: {}", bind);
         Self { bind, my_cert, my_key, subscribe, peer_certs, proxies }

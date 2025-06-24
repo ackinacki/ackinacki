@@ -2,21 +2,18 @@
 //
 
 use std::net::SocketAddr;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::sync::Arc;
 
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
 use telemetry_utils::mpsc::InstrumentedReceiver;
-use tokio::sync::broadcast;
-use tokio::task::JoinHandle;
 use tvm_types::AccountId;
-use wtransport::endpoint::IncomingSession;
-use wtransport::Connection;
-use wtransport::Endpoint;
-use wtransport::Identity;
-use wtransport::ServerConfig;
+
+use crate::msquic::MsQuicNetIncomingRequest;
+use crate::msquic::MsQuicTransport;
+use crate::NetConnection;
+use crate::NetCredential;
+use crate::NetIncomingRequest;
+use crate::NetListener;
+use crate::NetTransport;
 
 const DEFAULT_BROADCAST_CAPACITY: usize = 10;
 
@@ -38,148 +35,122 @@ impl LiteServer {
     where
         TBPResolver: Send + Sync + Clone + 'static + FnMut(AccountId) -> Option<String>,
     {
-        let (tx, rx) = std::sync::mpsc::channel::<IncomingSession>();
-        let (btx, _ /* we will subscribe() later */) =
-            broadcast::channel(DEFAULT_BROADCAST_CAPACITY);
+        let (incoming_request_tx, incoming_request_rx) =
+            tokio::sync::mpsc::unbounded_channel::<MsQuicNetIncomingRequest>();
+        let (outgoing_message_tx, _ /* we will subscribe() later */) =
+            tokio::sync::broadcast::channel(DEFAULT_BROADCAST_CAPACITY);
 
-        let server_handler: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
-            self.server(tx).await?;
-            Ok(())
+        let listener_task = tokio::spawn(listener_handler(self.bind, incoming_request_tx));
+
+        let incoming_requests_task = tokio::spawn(incoming_requests_handler(
+            incoming_request_rx,
+            outgoing_message_tx.clone(),
+        ));
+
+        let multiplexer_task = tokio::task::spawn_blocking(move || {
+            message_multiplexor_handler(
+                raw_block_receiver,
+                outgoing_message_tx.clone(),
+                bp_resolver,
+            )
         });
 
-        let session_handler: JoinHandle<anyhow::Result<()>> = {
-            let btx = btx.clone();
-            tokio::spawn(async move {
-                sessions_handler(rx, btx).await?;
-                Ok(())
-            })
-        };
-
-        let multiplexer_handler: JoinHandle<anyhow::Result<()>> = {
-            let btx = btx.clone();
-            tokio::spawn(async move {
-                message_multiplexor(raw_block_receiver, btx, bp_resolver).await?;
-                Ok(())
-            })
-        };
-
         tokio::select! {
-            v = server_handler => v??,
-            v = multiplexer_handler => v??,
-            v = session_handler => v??,
+            v = listener_task => v??,
+            v = multiplexer_task => v??,
+            v = incoming_requests_task => v??,
         }
 
         Ok(())
     }
-
-    async fn server(&self, session_sender: Sender<IncomingSession>) -> anyhow::Result<()> {
-        let identity = Identity::self_signed(["0.0.0.0", "localhost", "127.0.0.1", "::1"])
-            .expect("Fail identity generation");
-
-        let config = ServerConfig::builder() //
-            .with_bind_address(self.bind)
-            .with_identity(identity)
-            .keep_alive_interval(Some(Duration::from_secs(3)))
-            .build();
-
-        let server = Endpoint::server(config)?;
-        tracing::info!("LiteServer started on port {}", self.bind.port());
-
-        loop {
-            let incoming_session: IncomingSession = server.accept().await;
-            tracing::info!("New session incoming");
-            session_sender.send(incoming_session)?;
-        }
-    }
 }
 
-async fn sessions_handler(
-    session_recv: Receiver<IncomingSession>,
-    btx: broadcast::Sender<Vec<u8>>,
+async fn listener_handler(
+    bind: SocketAddr,
+    incoming_request_tx: tokio::sync::mpsc::UnboundedSender<MsQuicNetIncomingRequest>,
 ) -> anyhow::Result<()> {
-    let logger_handle: JoinHandle<anyhow::Result<()>> = {
-        let btx = btx.clone();
-
-        tracing::info!("Prepare Starting broadcaster logger");
-        tokio::spawn(async move {
-            tracing::info!("Starting broadcaster logger");
-            let mut brx = btx.subscribe();
-            loop {
-                match brx.recv().await {
-                    Ok(msg) => {
-                        tracing::info!("Received message from broadcast: {:?}", &msg[..10]);
-                        tracing::info!("brx len {:?}", brx.len());
-                    }
-                    Err(err) => {
-                        tracing::error!("Error receiving from broadcast: {}", err);
-                        anyhow::bail!(err);
-                    }
-                }
-            }
-        })
-    };
-
-    let mut pool = FuturesUnordered::<JoinHandle<anyhow::Result<()>>>::new();
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<JoinHandle<anyhow::Result<()>>>(20);
-
-    pool.push(logger_handle);
-    pool.push(tokio::spawn(async {
-        // note: here we guarantie that pool won't stop if no errors accured
-        loop {
-            tokio::time::sleep(Duration::from_secs(100)).await;
-        }
-    }));
-
-    pool.push(tokio::spawn(async move {
-        loop {
-            let incoming_session = session_recv.recv()?;
-            tracing::info!("New session incoming received");
-            let btx = btx.clone();
-            tx.send(tokio::spawn(async move {
-                tracing::info!("Starting session handler for incoming session");
-                let incoming_request = incoming_session.await?;
-                tracing::info!("Incoming request received");
-                let connection = incoming_request.accept().await?;
-                tracing::info!(
-                    "Connection accepted {:?} {:?}",
-                    connection.stable_id(),
-                    connection.session_id(),
-                );
-
-                let mut brx = btx.subscribe();
-
-                loop {
-                    let data = brx.recv().await.map_err(|err| {
-                        tracing::error!("brx err: {}", err);
-                        err
-                    })?;
-                    tracing::info!("Received data len {:?}", data.len());
-                    handle(&connection, &data).await?;
-                }
-            }))
-            .await?;
-        }
-    }));
-
+    let transport = MsQuicTransport::new();
+    let listener =
+        transport.create_listener(bind, &["ALPN"], NetCredential::generate_self_signed()).await?;
+    tracing::info!("LiteServer started on port {}", bind.port());
     loop {
-        tokio::select! {
-            v = rx.recv() => pool.push(v.ok_or_else(|| anyhow::anyhow!("channel was closed"))?),
-            v = pool.select_next_some() => v??,
+        match listener.accept().await {
+            Ok(incoming_request) => {
+                tracing::info!("New incoming request");
+                incoming_request_tx.send(incoming_request)?;
+            }
+            Err(error) => tracing::error!("LiteServer can't accept request: {error}"),
+        }
+    }
+}
+async fn incoming_requests_handler(
+    mut incoming_request_rx: tokio::sync::mpsc::UnboundedReceiver<MsQuicNetIncomingRequest>,
+    outgoing_message_tx: tokio::sync::broadcast::Sender<Arc<Vec<u8>>>,
+) -> anyhow::Result<()> {
+    loop {
+        match incoming_request_rx.recv().await {
+            Some(incoming_request) => {
+                tokio::spawn(connection_supervisor(
+                    incoming_request,
+                    outgoing_message_tx.subscribe(),
+                ));
+            }
+            None => {
+                anyhow::bail!("Connections handler failed: incoming request receiver was closed");
+            }
         }
     }
 }
 
-async fn handle(connection: &Connection, data: &[u8]) -> anyhow::Result<()> {
-    tracing::trace!("Handling data len {:?}", data.len());
-    let mut stream = connection.open_uni().await?.await?;
-    stream.write_all(data).await?;
-    stream.finish().await?;
-    Ok(())
+async fn connection_supervisor(
+    incoming_request: MsQuicNetIncomingRequest,
+    outgoing_message_rx: tokio::sync::broadcast::Receiver<Arc<Vec<u8>>>,
+) {
+    match connection_handler(incoming_request, outgoing_message_rx).await {
+        Ok(_) => {}
+        Err(err) => {
+            tracing::error!("Connection handler failed: {err}");
+        }
+    }
 }
 
-async fn message_multiplexor<TBKAddrResolver>(
-    rx: InstrumentedReceiver<(AccountId, Vec<u8>)>,
-    btx: broadcast::Sender<Vec<u8>>,
+async fn connection_handler(
+    incoming_request: MsQuicNetIncomingRequest,
+    mut outgoing_message_rx: tokio::sync::broadcast::Receiver<Arc<Vec<u8>>>,
+) -> anyhow::Result<()> {
+    tracing::info!("Establishing connection");
+    let connection = incoming_request.accept().await?;
+    tracing::info!(remote_addr = connection.remote_addr().to_string(), "Connection established");
+    loop {
+        let data = match outgoing_message_rx.recv().await {
+            Ok(data) => data,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(lagged)) => {
+                anyhow::bail!(
+                    "Connection handler failed: outgoing message receiver lagged by {} messages",
+                    lagged
+                );
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                anyhow::bail!("Connection handler failed: outgoing message receiver was closed");
+            }
+        };
+        let peer = connection.remote_addr().to_string();
+        tracing::trace!("Received {} bytes for {peer}", data.len());
+        match connection.send(&data).await {
+            Ok(_) => {
+                tracing::info!("Sent {} bytes to {peer}", data.len())
+            }
+            Err(err) => {
+                tracing::error!("Can't {} bytes to {peer}: {err}", data.len());
+                anyhow::bail!(err);
+            }
+        }
+    }
+}
+
+fn message_multiplexor_handler<TBKAddrResolver>(
+    incoming_message_rx: InstrumentedReceiver<(AccountId, Vec<u8>)>,
+    outgoing_message_tx: tokio::sync::broadcast::Sender<Arc<Vec<u8>>>,
     mut bp_resolver: TBKAddrResolver,
 ) -> anyhow::Result<()>
 where
@@ -187,14 +158,21 @@ where
 {
     tracing::info!("Message multiplexor started");
     loop {
-        let (node_id, raw_block) = rx.recv()?;
+        let Ok((node_id, message)) = incoming_message_rx.recv() else {
+            anyhow::bail!("Message multiplexor failed: incoming message sender was closed");
+        };
+        tracing::trace!(
+            broadcast_channel_len = message.len(),
+            message = format!("{:?}", &message[..10]),
+            "Received message for broadcast"
+        );
         let node_addr = bp_resolver(node_id);
-        match btx.send(bincode::serialize(&(node_addr, raw_block))?) {
+        match outgoing_message_tx.send(Arc::new(bincode::serialize(&(node_addr, message))?)) {
             Ok(number_subscribers) => {
-                tracing::info!("Message received by {} subs", number_subscribers);
+                tracing::info!("Message forwarded to {} broadcast senders", number_subscribers);
             }
             Err(_err) => {
-                // NOTE: this is not a real error: e.g. if there're no receivers
+                tracing::warn!("Message not forwarded: no broadcast senders");
             }
         }
     }

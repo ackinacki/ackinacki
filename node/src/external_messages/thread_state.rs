@@ -23,10 +23,10 @@ use crate::utilities::guarded::GuardedMut;
     field_defaults(setter(prefix="with_")),
 )]
 struct ExternalMessagesThreadStateConfig {
-    external_messages_file_path: PathBuf,
     block_progress_data_dir: PathBuf,
     report_metrics: Option<BlockProductionMetrics>,
     thread_id: ThreadIdentifier,
+    cache_size: usize,
 }
 
 impl std::convert::From<ExternalMessagesThreadStateConfig>
@@ -36,20 +36,19 @@ impl std::convert::From<ExternalMessagesThreadStateConfig>
         config: ExternalMessagesThreadStateConfig,
     ) -> anyhow::Result<ExternalMessagesThreadState> {
         let ExternalMessagesThreadStateConfig {
-            external_messages_file_path,
             block_progress_data_dir,
             report_metrics,
             thread_id,
+            cache_size,
         } = config;
-        let queue: ExternalMessagesQueue =
-            load_from_file(&external_messages_file_path)?.unwrap_or(ExternalMessagesQueue::empty());
+        let queue: ExternalMessagesQueue = ExternalMessagesQueue::empty();
         Ok(ExternalMessagesThreadState {
-            external_messages_file_path,
             block_progress_data_dir,
             queue: Arc::new(Mutex::new(queue)),
             block_progress_access_mutex: Arc::new(Mutex::new(())),
             report_metrics,
             thread_id,
+            cache_size,
         })
     }
 }
@@ -64,7 +63,6 @@ impl std::convert::From<ExternalMessagesThreadStateConfig>
 // simultaneously (thread starting block).
 #[derive(Clone)]
 pub struct ExternalMessagesThreadState {
-    external_messages_file_path: PathBuf,
     block_progress_access_mutex: Arc<Mutex<()>>,
     block_progress_data_dir: PathBuf,
 
@@ -72,6 +70,7 @@ pub struct ExternalMessagesThreadState {
     report_metrics: Option<BlockProductionMetrics>,
     // For reporting only.
     thread_id: ThreadIdentifier,
+    cache_size: usize,
 }
 
 impl ExternalMessagesThreadState {
@@ -120,8 +119,11 @@ impl ExternalMessagesThreadState {
     pub fn push_external_messages(&self, messages: &[WrappedMessage]) -> anyhow::Result<()> {
         tracing::trace!("add_external_messages {:?}", messages.len());
         let report_len = self.queue.guarded_mut(|e| -> anyhow::Result<usize> {
-            e.push_external_messages(messages);
-            save_to_file(&self.external_messages_file_path, &e, false)?;
+            let rest = self.cache_size.saturating_sub(e.messages().len()).min(messages.len());
+            if rest > 0 {
+                e.push_external_messages(messages.split_at(rest).0);
+                tracing::trace!("cur cache_size len {:?}", e.messages().len());
+            }
             Ok(e.messages().len())
         })?;
         self.report_metrics
@@ -134,7 +136,6 @@ impl ExternalMessagesThreadState {
         let report_len = self.queue.guarded_mut(|e| -> anyhow::Result<usize> {
             e.erase_till(current_progress);
             let report = e.messages().len();
-            save_to_file(&self.external_messages_file_path, &e, false)?;
             Ok(report)
         })?;
         self.report_metrics

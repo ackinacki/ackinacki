@@ -2,16 +2,14 @@
 //
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
 
 use chitchat::spawn_chitchat;
-use chitchat::transport::UdpTransport;
-use chitchat::Chitchat;
 use chitchat::ChitchatConfig;
 use chitchat::ChitchatHandle;
 use chitchat::ChitchatId;
+use chitchat::ChitchatRef;
 use chitchat::ClusterStateSnapshot;
 use chitchat::FailureDetectorConfig;
 use cool_id_generator::Size;
@@ -24,7 +22,6 @@ use poem_openapi::OpenApi;
 use poem_openapi::OpenApiService;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 static DEFAULT_GOSSIP_INTERVAL: Duration = Duration::from_millis(500);
@@ -43,7 +40,7 @@ pub struct SetKeyValueResponse {
 }
 
 struct Api {
-    chitchat: Arc<Mutex<Chitchat>>,
+    chitchat: ChitchatRef,
 }
 
 #[OpenApi]
@@ -51,7 +48,7 @@ impl Api {
     /// Chitchat state
     #[oai(path = "/", method = "get")]
     async fn index(&self) -> Json<serde_json::Value> {
-        let chitchat_guard = self.chitchat.lock().await;
+        let chitchat_guard = self.chitchat.lock();
         let response = ApiResponse {
             cluster_id: chitchat_guard.cluster_id().to_string(),
             cluster_state: chitchat_guard.state_snapshot(),
@@ -64,7 +61,7 @@ impl Api {
     /// Sets a key-value pair on this node (without validation).
     #[oai(path = "/set_kv/", method = "get")]
     async fn set_kv(&self, key: Query<String>, value: Query<String>) -> Json<serde_json::Value> {
-        let mut chitchat_guard = self.chitchat.lock().await;
+        let mut chitchat_guard = self.chitchat.lock();
 
         let cc_state = chitchat_guard.self_node_state();
         cc_state.set(key.as_str(), value.as_str());
@@ -80,6 +77,7 @@ fn generate_server_id(public_addr: SocketAddr) -> String {
 
 pub async fn run(
     listen_addr: SocketAddr,
+    transport: impl chitchat::transport::Transport,
     gossip_advertise_addr: SocketAddr,
     seeds: Vec<String>,
     cluster_id: String,
@@ -94,13 +92,18 @@ pub async fn run(
         listen_addr,
         seed_nodes: seeds.clone(),
         failure_detector_config: FailureDetectorConfig::default(),
-        marked_for_deletion_grace_period: Duration::from_secs(10),
+        marked_for_deletion_grace_period: Duration::from_secs(600),
         catchup_callback: None,
         extra_liveness_predicate: None,
     };
-    tracing::info!("Starting UDP gossip server on {gossip_advertise_addr}");
-    let chitchat_handler = spawn_chitchat(config, Vec::new(), &UdpTransport).await?;
-    let chitchat = chitchat_handler.chitchat();
+
+    // tracing::info!("Starting UDP gossip server on {gossip_advertise_addr}");
+    // let transport = UdpTransport;
+
+    tracing::info!("Starting gossip server on {gossip_advertise_addr}");
+
+    let chitchat_handle = spawn_chitchat(config, Vec::new(), &transport).await?;
+    let chitchat = chitchat_handle.chitchat();
     let api = Api { chitchat: chitchat.clone() };
     let api_service = OpenApiService::new(api, "Acki Nacki", "1.0")
         .server(format!("http://{}/", gossip_advertise_addr));
@@ -114,5 +117,5 @@ pub async fn run(
         Server::new(TcpListener::bind(listen_addr)).run(app).await.map_err(|err| err.into())
     });
 
-    Ok((chitchat_handler, rest_server_handle))
+    Ok((chitchat_handle, rest_server_handle))
 }

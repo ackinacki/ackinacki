@@ -125,10 +125,6 @@ pub struct NodeConfig {
     #[builder(default = 20)]
     pub parallelization_level: usize,
 
-    /// Store shard state and account BOCs separately.
-    #[builder(default = false)]
-    pub split_state: bool,
-
     /// Block cache size in local repository
     #[builder(default = 20)]
     pub block_cache_size: usize,
@@ -137,6 +133,9 @@ pub struct NodeConfig {
     #[builder(default = 10)]
     pub state_cache_size: usize,
 
+    /// Number of blocks after which the account is unloaded from shard state.
+    #[builder(default = None)]
+    pub unload_after: Option<u32>,
     /// Path for message durable storage.
     #[builder(default = PathBuf::from("./message_storage/db"))]
     pub message_storage_path: PathBuf,
@@ -144,6 +143,10 @@ pub struct NodeConfig {
     /// Limit of calls to the on_incoming_block_request function per second
     #[builder(default = u32::MAX)]
     pub rate_limit_on_incoming_block_req: u32,
+
+    /// Ext messages cache size
+    #[builder(default = 100)]
+    pub ext_messages_cache_size: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -176,7 +179,7 @@ impl Default for GlobalConfig {
             sync_delay_milliseconds: 500,
             save_state_frequency: 200,
             block_keeper_epoch_code_hash:
-                "8246c7bdd8f2559b5f00e4334dba4612c2f48f52f0e3a5390298543d51a1ff1e".to_string(),
+                "dd64101229a2508a8b67fdea7c4462a975553c0fbf68895fe12d95baef6ad85a".to_string(),
             thread_count_soft_limit: 100,
             thread_load_window_size: 100,
             thread_load_threshold: 5000,
@@ -196,11 +199,12 @@ impl Default for NodeConfig {
             external_state_share_local_base_dir: PathBuf::from("/tmp"),
             parallelization_level: 20,
             block_keeper_seed_path: "block_keeper.keys.json".to_string(),
-            split_state: false,
             block_cache_size: 20,
             state_cache_size: 10,
+            unload_after: None,
             message_storage_path: PathBuf::from("./message_storage/db"),
             rate_limit_on_incoming_block_req: u32::MAX,
+            ext_messages_cache_size: 100,
         }
     }
 }

@@ -5,12 +5,12 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::hash::Hash;
+use std::net::SocketAddr;
 
 use itertools::Itertools;
 pub use node_db::NodeDb;
 use tvm_block::Account;
 use tvm_types::AccountId;
-use url::Url;
 
 use crate::resolver::blockchain::accounts::collect_bk_set;
 use crate::resolver::blockchain::accounts::Bk;
@@ -27,8 +27,8 @@ pub async fn watch_blockchain<PeerId, B, A>(
     bk_set_provider: B,
     account_provider: A,
     self_peer_id: PeerId,
-    subscribe_tx: tokio::sync::watch::Sender<Vec<Vec<Url>>>,
-    peers_tx: tokio::sync::watch::Sender<HashMap<PeerId, Url>>,
+    subscribe_tx: tokio::sync::watch::Sender<Vec<Vec<SocketAddr>>>,
+    peers_tx: tokio::sync::watch::Sender<HashMap<PeerId, SocketAddr>>,
 ) where
     B: BkSetProvider + Send + Sync + 'static,
     A: AccountProvider + Send + Sync + 'static,
@@ -50,9 +50,9 @@ async fn refresh<PeerId, B, A>(
     self_peer_id: &PeerId,
     bk_set_provider: &B,
     account_provider: &A,
-    _old_subscribe: Vec<Vec<Url>>,
-    old_peers: HashMap<PeerId, Url>,
-) -> (Vec<Vec<Url>>, HashMap<PeerId, Url>)
+    _old_subscribe: Vec<Vec<SocketAddr>>,
+    old_peers: HashMap<PeerId, SocketAddr>,
+) -> (Vec<Vec<SocketAddr>>, HashMap<PeerId, SocketAddr>)
 where
     B: BkSetProvider + Send + Sync + 'static,
     A: AccountProvider + Send + Sync + 'static,
@@ -75,13 +75,13 @@ where
 
     let peers = bk_set
         .iter()
-        .filter_map(|(peer_id, (url, _))| url.as_ref().map(|x| (peer_id.clone(), x.clone())))
+        .filter_map(|(peer_id, (addr, _))| addr.as_ref().map(|x| (peer_id.clone(), *x)))
         .collect();
     let subscribe = bk_set
         .into_iter()
-        .filter_map(|(peer_id, (peer_url, proxies))| {
+        .filter_map(|(peer_id, (peer_addr, proxies))| {
             if peer_id != *self_peer_id {
-                Some(peer_subscribe(peer_url, proxies))
+                Some(peer_subscribe(peer_addr, proxies))
             } else {
                 None
             }
@@ -97,19 +97,19 @@ where
     (subscribe, peers)
 }
 
-fn peer_subscribe(peer_url: Option<Url>, proxies: HashSet<Url>) -> Vec<Url> {
+fn peer_subscribe(peer_addr: Option<SocketAddr>, proxies: HashSet<SocketAddr>) -> Vec<SocketAddr> {
     if !proxies.is_empty() {
         proxies.into_iter().collect()
-    } else if let Some(url) = peer_url {
-        vec![url]
+    } else if let Some(addr) = peer_addr {
+        vec![addr]
     } else {
         Vec::default()
     }
 }
 
-fn peers_info<PeerId>(nodes: &HashMap<PeerId, Url>) -> String
+fn peers_info<PeerId>(nodes: &HashMap<PeerId, SocketAddr>) -> String
 where
     PeerId: Display,
 {
-    nodes.iter().map(|(id, url)| format!("{}: {}", &id.to_string().as_str()[0..4], url)).join(",")
+    nodes.iter().map(|(id, addr)| format!("{}: {}", &id.to_string().as_str()[0..4], addr)).join(",")
 }

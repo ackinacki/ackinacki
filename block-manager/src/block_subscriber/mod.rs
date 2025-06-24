@@ -2,6 +2,7 @@
 //
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -18,17 +19,18 @@ use node::bls::envelope::Envelope;
 use node::bls::GoshBLS;
 use node::types::AckiNackiBlock;
 use rusqlite::Connection;
-use tokio::io::AsyncReadExt;
+use transport_layer::msquic::MsQuicTransport;
+use transport_layer::NetConnection;
+use transport_layer::NetCredential;
+use transport_layer::NetRecvRequest;
+use transport_layer::NetTransport;
 use tvm_block::ShardStateUnsplit;
-use url::Url;
-use wtransport::ClientConfig;
-use wtransport::Endpoint;
 
 use crate::events::Event;
 
 pub struct BlockSubscriber {
     db_file: PathBuf,
-    stream_src_url: Url,
+    socket_addr: SocketAddr,
     event_pub: Sender<Event>,
     bp_data_tx: Sender<(String, Vec<String>)>,
     // archive: Arc<dyn DocumentsDb>,
@@ -41,18 +43,18 @@ impl BlockSubscriber {
     /// Panics if the database file cannot be opened or created.
     pub fn new(
         db_file: PathBuf,
-        stream_src_url: Url,
+        socket_addr: SocketAddr,
         event_pub: Sender<Event>,
         bp_data_tx: Sender<(String, Vec<String>)>,
         // archive: Arc<dyn DocumentsDb>,
     ) -> Self {
-        Self { db_file, stream_src_url, event_pub, bp_data_tx /* , archive */ }
+        Self { db_file, socket_addr, event_pub, bp_data_tx /* , archive */ }
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {
         let (stream_pub, stream_sub) = mpsc::channel();
 
-        let listener_handle = listener(self.stream_src_url.clone(), stream_pub);
+        let listener_handle = listener(self.socket_addr, stream_pub);
 
         let db_file = self.db_file.clone();
         let events_pub = self.event_pub.clone();
@@ -127,41 +129,36 @@ fn worker(
     }
 }
 
-async fn listener(stream_src_url: Url, tx: mpsc::Sender<Vec<u8>>) -> anyhow::Result<()> {
+async fn listener(socket_addr: SocketAddr, tx: mpsc::Sender<Vec<u8>>) -> anyhow::Result<()> {
     loop {
-        let config = ClientConfig::builder().with_bind_default().with_no_cert_validation().build();
-
-        tracing::info!("Connecting to {} {:?}", stream_src_url.as_str(), stream_src_url.port(),);
-
-        let Ok(connection) = Endpoint::client(config)
-            .expect("endpoint client")
-            .connect(stream_src_url.as_str())
-            .await
-        else {
-            tracing::error!("connection error");
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            continue;
-        };
-
-        tracing::info!("Connection {:?} {:?}", connection.stable_id(), connection.session_id());
-
-        loop {
-            tracing::info!("Wait for incoming stream...");
-
-            let Ok(mut stream) = connection.accept_uni().await else {
-                tracing::warn!("Connection is closed");
-                break;
-            };
-            let tx_clone = tx.clone();
-            tokio::spawn(async move {
-                let mut buf = Vec::with_capacity(1024);
-                stream.read_to_end(&mut buf).await.expect("stream read_to_end successful");
-
-                tracing::info!("Received: {} bytes", buf.len());
-                tx_clone.send(buf).unwrap();
-            })
-            .await
-            .ok();
+        let transport = MsQuicTransport::new();
+        match transport.connect(socket_addr, &["ALPN"], NetCredential::generate_self_signed()).await
+        {
+            Ok(conn) => loop {
+                tracing::info!("Wait for incoming stream...");
+                match conn.accept_recv().await {
+                    Ok(stream) => {
+                        match stream.recv().await {
+                            Ok(message) => {
+                                tracing::info!("Received: {} bytes", message.len());
+                                tx.send(message).expect("Receiver always exists");
+                            }
+                            Err(error) => {
+                                tracing::error!("Error receiving a message: {error}");
+                                break;
+                            }
+                        };
+                    }
+                    Err(error) => {
+                        tracing::warn!("Connection closed: {error}");
+                        break;
+                    }
+                }
+            },
+            Err(error) => {
+                tracing::error!("Can't connect to  {socket_addr}: {error}");
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
         }
     }
 }

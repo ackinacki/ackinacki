@@ -18,11 +18,17 @@ pub struct NetMessage {
     pub label: String,
     pub compressed: bool,
     pub data: Arc<Vec<u8>>,
+    pub last_sender_is_proxy: bool,
     #[serde(skip)]
     pub received_at: u64,
 }
 
 impl NetMessage {
+    pub fn transfer_size(msg: &NetMessage) -> u64 {
+        bincode::serialized_size(msg)
+            .unwrap_or_else(|_| (8 + msg.id.len() + msg.label.len() + msg.data.len() + 1) as u64)
+    }
+
     pub fn delivery_duration_ms(&self) -> Result<u64, String> {
         let now = now_ms();
         if now >= self.delivery_start_timestamp_ms {
@@ -60,7 +66,7 @@ impl NetMessage {
         let compressed_size = data.len();
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
         let id = now.as_nanos().to_string();
-        if compress_time + serialize_time > 50 || compress_time > 5 {
+        if compress_time + serialize_time > 50 || compress_time > 10 {
             tracing::warn!(
                 msg_id = id,
                 msg_type = label,
@@ -81,6 +87,7 @@ impl NetMessage {
                 data: Arc::new(data),
                 label,
                 compressed,
+                last_sender_is_proxy: false,
                 received_at: u64::default(),
             },
             uncompressed_size,

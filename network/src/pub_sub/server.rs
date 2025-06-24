@@ -3,40 +3,56 @@ use std::sync::Arc;
 
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
-use wtransport::endpoint::IncomingSession;
-use wtransport::Endpoint;
+use transport_layer::NetConnection;
+use transport_layer::NetIncomingRequest;
+use transport_layer::NetListener;
+use transport_layer::NetTransport;
 
 use crate::detailed;
 use crate::metrics::NetMetrics;
-use crate::pub_sub::connection::connection_host_id;
-use crate::pub_sub::connection::ConnectionWrapper;
+use crate::pub_sub::connection::connection_remote_host_id;
+use crate::pub_sub::connection::ConnectionInfo;
+use crate::pub_sub::connection::ConnectionRoles;
 use crate::pub_sub::connection::OutgoingMessage;
 use crate::pub_sub::executor::IncomingSender;
 use crate::pub_sub::PubSub;
-use crate::pub_sub::ACKI_NACKI_SUBSCRIBE_HEADER;
-use crate::tls::generate_server_config;
 use crate::tls::TlsConfig;
+use crate::ACKI_NACKI_DIRECT_PROTOCOL;
+use crate::ACKI_NACKI_SUBSCRIPTION_FROM_NODE_PROTOCOL;
+use crate::ACKI_NACKI_SUBSCRIPTION_FROM_PROXY_PROTOCOL;
 
 #[allow(clippy::too_many_arguments)]
-pub async fn listen_incoming_connections(
-    pub_sub: PubSub,
+pub async fn listen_incoming_connections<Transport>(
+    pub_sub: PubSub<Transport>,
     metrics: Option<NetMetrics>,
     max_connections: usize,
     bind: SocketAddr,
     incoming_tx: IncomingSender,
     outgoing_messages: broadcast::Sender<OutgoingMessage>,
-    connection_closed_tx: mpsc::Sender<Arc<ConnectionWrapper>>,
+    connection_closed_tx: mpsc::Sender<Arc<ConnectionInfo>>,
     tls_config: TlsConfig,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    Transport: NetTransport + 'static,
+{
     tracing::info!("Start listening for incoming connections on {}", bind.to_string());
-    let config = generate_server_config(bind, &tls_config)?;
     tracing::info!("Pub sub started with host id {}", tls_config.my_host_id_prefix());
-    let server = Endpoint::server(config)?;
-    tracing::info!("Proxy subscribers started on port {}", bind.port());
+    let listener = pub_sub
+        .transport
+        .create_listener(
+            bind,
+            &[
+                ACKI_NACKI_SUBSCRIPTION_FROM_PROXY_PROTOCOL,
+                ACKI_NACKI_SUBSCRIPTION_FROM_NODE_PROTOCOL,
+                ACKI_NACKI_DIRECT_PROTOCOL,
+            ],
+            tls_config.credential(),
+        )
+        .await?;
     loop {
-        let session = server.accept().await;
+        let request = listener.accept().await?;
         tracing::info!("New session incoming");
-        if server.open_connections() < max_connections {
+        if pub_sub.open_connections() < max_connections {
             // It is not critical task because it serves single incoming connection request
             tokio::spawn(handle_incoming_connection(
                 pub_sub.clone(),
@@ -44,45 +60,29 @@ pub async fn listen_incoming_connections(
                 incoming_tx.clone(),
                 outgoing_messages.clone(),
                 connection_closed_tx.clone(),
-                session,
+                request,
             ));
         } else {
             tracing::error!(
                 "Max connections reached {} of {}",
-                server.open_connections(),
+                pub_sub.open_connections(),
                 max_connections
             );
         }
     }
 }
 
-pub async fn handle_incoming_connection(
-    pub_sub: PubSub,
+pub async fn handle_incoming_connection<Transport: NetTransport>(
+    pub_sub: PubSub<Transport>,
     metrics: Option<NetMetrics>,
     incoming_tx: IncomingSender,
     outgoing_messages: broadcast::Sender<OutgoingMessage>,
-    connection_closed_tx: mpsc::Sender<Arc<ConnectionWrapper>>,
-    incoming_session: IncomingSession,
+    connection_closed_tx: mpsc::Sender<Arc<ConnectionInfo>>,
+    incoming_request: impl NetIncomingRequest<Connection = Transport::Connection>,
 ) {
-    tracing::trace!("Incoming session received");
+    tracing::trace!("Incoming request received");
 
-    let session_request = match incoming_session.await {
-        Ok(request) => request,
-        Err(err) => {
-            tracing::error!("Incoming session request failed: {}", detailed(&err));
-            return;
-        }
-    };
-
-    tracing::trace!("Incoming session accepted");
-
-    let peer_is_subscriber = session_request
-        .headers()
-        .get(ACKI_NACKI_SUBSCRIBE_HEADER)
-        .map(|x| x == "true")
-        .unwrap_or_default();
-
-    let connection = match session_request.accept().await {
+    let connection = match incoming_request.accept().await {
         Ok(connection) => connection,
         Err(err) => {
             tracing::error!("Failed to accept incoming connection: {}", detailed(&err));
@@ -90,15 +90,21 @@ pub async fn handle_incoming_connection(
         }
     };
 
-    let host_id = match connection_host_id(&connection) {
-        Ok(host_id) => host_id,
-        Err(err) => {
-            tracing::error!("Failed to identify incoming connection: {}", detailed(&err));
-            return;
-        }
-    };
+    tracing::trace!(
+        alpn = connection.alpn_negotiated().unwrap_or_else(|| "-".to_string()),
+        remote_addr = %connection.remote_addr(),
+        "Incoming request accepted",
+    );
 
-    tracing::trace!("Incoming request accepted");
+    let (role, remote_is_proxy) =
+        if connection.alpn_negotiated_is(ACKI_NACKI_SUBSCRIPTION_FROM_PROXY_PROTOCOL) {
+            (ConnectionRoles::publisher(), true)
+        } else if connection.alpn_negotiated_is(ACKI_NACKI_SUBSCRIPTION_FROM_NODE_PROTOCOL) {
+            (ConnectionRoles::publisher(), false)
+        } else {
+            (ConnectionRoles::direct_sender(), false)
+        };
+    let host_id = connection_remote_host_id(&connection);
 
     if let Err(err) = pub_sub.add_connection_handler(
         metrics.clone(),
@@ -108,8 +114,8 @@ pub async fn handle_incoming_connection(
         connection,
         host_id,
         None,
-        false,
-        peer_is_subscriber,
+        remote_is_proxy,
+        role,
     ) {
         tracing::error!("Error adding connection: {}", detailed(&err));
     }

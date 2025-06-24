@@ -5,7 +5,6 @@
  * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
  */
 pragma gosh-solidity >=0.76.1;
-pragma ignoreIntOverflow;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
 
@@ -24,7 +23,7 @@ contract BlockKeeperPreEpoch is Modifiers {
     address _root; 
     uint64 static _seqNoStart;
     uint64 _seqNoDestruct;
-    uint32 _epochDuration;
+    uint64 _epochDuration;
     uint64 _waitStep;
     address _owner;
     bytes _bls_pubkey;
@@ -34,17 +33,21 @@ contract BlockKeeperPreEpoch is Modifiers {
     LicenseStake[] _licenses;
     address _wallet;
     optional(uint128) _virtualStake;
+    uint128 _reward_sum;
+    string _myIp;
 
     constructor (
         uint64 waitStep,
-        uint32 epochDuration,
+        uint64 epochDuration,
         bytes bls_pubkey,
         mapping(uint8 => TvmCell) code,
         uint16 signerIndex, 
         uint128 rep_coef,
         LicenseStake[] licenses,
         optional(uint128) virtualStake,
-        mapping(uint8 => string) ProxyList
+        mapping(uint8 => string) ProxyList,
+        uint128 reward_sum,
+        string myIp
     ) {
         _code = code;
         TvmBuilder b;
@@ -67,8 +70,10 @@ contract BlockKeeperPreEpoch is Modifiers {
         _licenses = licenses;
         _virtualStake = virtualStake;
         _seqNoDestruct = _seqNoStart * 2 - block.seqno + 1;
+        _reward_sum = reward_sum;
         ensureBalance();
         _wallet = msg.sender;
+        _myIp = myIp;
         AckiNackiBlockKeeperNodeWallet(_wallet).setLockStake{value: 0.1 vmshell, flag: 1}(_seqNoStart, _stake, _bls_pubkey, _signerIndex, licenses);
         new BlockKeeperEpochProxyList {
                 stateInit: BlockKeeperLib.composeBlockKeeperEpochProxyListStateInit(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], _owner_pubkey, _root), 
@@ -110,7 +115,7 @@ contract BlockKeeperPreEpoch is Modifiers {
             currencies: data_cur,
             wid: 0, 
             flag: 1
-        } (_waitStep, _epochDuration, _bls_pubkey, _code, false, _sumReputationCoef, _signerIndex, _licenses, _virtualStake);
+        } (_waitStep, _epochDuration, _bls_pubkey, _code, false, _sumReputationCoef, _signerIndex, _licenses, _virtualStake, _reward_sum, _myIp);
         selfdestruct(epoch);
     }
     

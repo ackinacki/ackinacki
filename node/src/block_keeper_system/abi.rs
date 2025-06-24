@@ -7,3 +7,5 @@ pub static BLOCK_KEEPER_WALLET_ABI: &str =
     include_str!("../../../contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json");
 pub static BLOCK_KEEPER_WALLET_TVC: &[u8] =
     include_bytes!("../../../contracts/bksystem/AckiNackiBlockKeeperNodeWallet.tvc");
+pub static BLOCK_MANAGER_LICENSE_ABI: &str =
+    include_str!("../../../contracts/bksystem/LicenseBM.abi.json");

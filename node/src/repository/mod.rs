@@ -121,6 +121,13 @@ pub trait Repository {
         min_state: Option<Self::OptimisticState>,
     ) -> anyhow::Result<Option<Self::OptimisticState>>;
 
+    fn get_full_optimistic_state(
+        &self,
+        block_id: &BlockIdentifier,
+        thread_id: &ThreadIdentifier,
+        min_state: Option<Self::OptimisticState>,
+    ) -> anyhow::Result<Option<Self::OptimisticState>>;
+
     fn erase_block_and_optimistic_state(
         &self,
         block_id: &BlockIdentifier,

@@ -75,7 +75,7 @@ fn download_file(
     file: &mut std::fs::File,
     deadline: Option<std::time::Instant>,
 ) -> anyhow::Result<()> {
-    tracing::trace!("Downloading {}...", url);
+    tracing::trace!("Downloading {} ...", url);
     let client: reqwest::blocking::Client = reqwest::blocking::Client::builder()
         .timeout(
             deadline.map(|deadline| deadline.saturating_duration_since(std::time::Instant::now())),

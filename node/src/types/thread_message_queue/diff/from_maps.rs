@@ -190,7 +190,7 @@ mod tests {
         let mut added_accounts = BTreeMap::new();
         let account_inbox: AccountInbox = MessagesRange::empty();
         added_accounts.insert(account_address.clone(), account_inbox);
-        let db_path = tempfile::tempdir().unwrap().into_path().join("test_simple_1.db");
+        let db_path = tempfile::tempdir().unwrap().path().join("test_simple_1.db");
         let storage = MessageDurableStorage::new(db_path).expect("Failed to create DB");
         let state_diff = ThreadMessageQueueStateDiff {
             initial_state,
@@ -210,7 +210,7 @@ mod tests {
         let account_address = AccountAddress::default();
         let mut initial_state = create_empty_state();
         initial_state.messages.insert(account_address.clone(), MessagesRange::empty());
-        let db_path = tempfile::tempdir().unwrap().into_path().join("test_simple_2.db");
+        let db_path = tempfile::tempdir().unwrap().path().join("test_simple_2.db");
         let storage = MessageDurableStorage::new(db_path).expect("Failed to create DB");
         let state_diff = ThreadMessageQueueStateDiff {
             initial_state,
@@ -234,7 +234,7 @@ mod tests {
         let mut produced_messages = HashMap::new();
         produced_messages
             .insert(account_address.clone(), vec![(message_id.clone(), wrapped_message.clone())]);
-        let db_path = tempfile::tempdir().unwrap().into_path().join("test_simple_3.db");
+        let db_path = tempfile::tempdir().unwrap().path().join("test_simple_3.db");
         let storage = MessageDurableStorage::new(db_path.clone()).expect("Failed to create DB");
         let message_blob =
             bincode::serialize(&wrapped_message).expect("Failed to serialize message");
@@ -280,7 +280,7 @@ mod tests {
 
         let mut consumed_messages = HashMap::new();
         consumed_messages.insert(account_address.clone(), HashSet::from([message_id]));
-        let db_path = tempfile::tempdir().unwrap().into_path().join("test_simple_2.db");
+        let db_path = tempfile::tempdir().unwrap().path().join("test_simple_2.db");
         let storage = MessageDurableStorage::new(db_path).expect("Failed to create DB");
         let state_diff = ThreadMessageQueueStateDiff {
             initial_state,
@@ -325,7 +325,7 @@ mod tests {
             account_address.clone(),
             messages.iter().take(4).map(|(id, _)| id.clone()).collect::<HashSet<_>>(),
         );
-        let db_path = tempfile::tempdir().unwrap().into_path().join("test_simple_3.db");
+        let db_path = tempfile::tempdir().unwrap().path().join("test_simple_3.db");
         let storage = MessageDurableStorage::new(db_path).expect("Failed to create DB");
         let state_diff = ThreadMessageQueueStateDiff {
             initial_state,

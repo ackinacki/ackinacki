@@ -34,11 +34,11 @@ pub fn finalization_loop(
     block_state_repository: BlockStateRepository,
     mut shared_services: SharedServices,
     mut raw_block_tx: InstrumentedSender<(AccountId, Vec<u8>)>,
-    mut state_sync_service: impl StateSyncService<Repository = RepositoryImpl>,
+    _state_sync_service: impl StateSyncService<Repository = RepositoryImpl>,
     block_gap: BlockGap,
     metrics: Option<BlockProductionMetrics>,
     external_messages: ExternalMessagesThreadState,
-    message_db: MessageDurableStorage,
+    _message_db: MessageDurableStorage,
     node_id: &NodeIdentifier,
 ) {
     tracing::trace!("try_finalize_blocks start");
@@ -57,12 +57,10 @@ pub fn finalization_loop(
                 &block_state_repository,
                 &mut shared_services,
                 &mut raw_block_tx,
-                &mut state_sync_service,
                 &block_gap,
                 &metrics,
                 &external_messages,
                 candidate_block,
-                &message_db,
                 node_id,
             )
             .expect("try_finalize iteration failed");
@@ -84,12 +82,10 @@ fn try_finalize(
     block_state_repository: &BlockStateRepository,
     shared_services: &mut SharedServices,
     raw_block_tx: &mut InstrumentedSender<(AccountId, Vec<u8>)>,
-    state_sync_service: &mut impl StateSyncService<Repository = RepositoryImpl>,
     block_gap: &BlockGap,
     metrics: &Option<BlockProductionMetrics>,
     external_messages: &ExternalMessagesThreadState,
     candidate_block: Arc<Envelope<GoshBLS, AckiNackiBlock>>,
-    message_db: &MessageDurableStorage,
     node_id: &NodeIdentifier,
 ) -> anyhow::Result<()> {
     tracing::trace!(
@@ -126,10 +122,8 @@ fn try_finalize(
             repository,
             block_state_repository,
             raw_block_tx,
-            state_sync_service,
             block_gap,
             external_messages,
-            message_db,
         )?;
         let block_seq_no = candidate_block.data().seq_no();
         let block_id = candidate_block.data().identifier();
@@ -153,10 +147,8 @@ pub fn on_block_finalized(
     repository: &mut RepositoryImpl,
     block_state_repository: &BlockStateRepository,
     raw_block_tx: &mut InstrumentedSender<(AccountId, Vec<u8>)>,
-    state_sync_service: &mut impl StateSyncService<Repository = RepositoryImpl>,
     block_gap: &BlockGap,
     external_messages: &ExternalMessagesThreadState,
-    message_db: &MessageDurableStorage,
 ) -> anyhow::Result<()> {
     trace_span!("on_block_finalized").in_scope(|| {
         let block_seq_no = block.data().seq_no();
@@ -185,16 +177,16 @@ pub fn on_block_finalized(
         let bm_bcast_set = (producer_id.into(), serialized_block.clone());
         raw_block_tx.send(bm_bcast_set)?;
         // Share finalized state, producer of this block has already shared this state after block production
-        if block.data().directives().share_state_resource_address.is_some() {
-            let _resource_address = state_sync_service.add_share_state_task(
-                &block,
-                message_db,
-                repository,
-                block_state_repository,
-                shared_services,
-            )?;
-            // broadcast_candidate_block(block.clone())?;
-        }
+        // if block.data().directives().share_state_resources().is_some() {
+        //     let _resource_address = state_sync_service.add_share_state_task(
+        //         &block,
+        //         message_db,
+        //         repository,
+        //         block_state_repository,
+        //         shared_services,
+        //     )?;
+        //     // broadcast_candidate_block(block.clone())?;
+        // }
         shared_services.on_block_finalized(
             block.data(),
             &mut repository.get_optimistic_state(&block.data().identifier(), &thread_id, None)?

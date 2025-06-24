@@ -1,0 +1,103 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"value","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "exchangeToken",
+			"inputs": [
+				{"name":"value","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "renderHelloWorld",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"}
+			]
+		},
+		{
+			"name": "runWasm",
+			"inputs": [
+				{"name":"wasmBinary","type":"bytes"},
+				{"name":"wasmModule","type":"string"},
+				{"name":"wasmFunction","type":"string"},
+				{"name":"wasmArgs","type":"bytes"}
+			],
+			"outputs": [
+				{"name":"value0","type":"bytes"}
+			]
+		},
+		{
+			"name": "touch",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "callExtTouch",
+			"inputs": [
+				{"name":"addr","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "sendVMShell",
+			"inputs": [
+				{"name":"dest","type":"address"},
+				{"name":"amount","type":"uint128"},
+				{"name":"bounce","type":"bool"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "sendShell",
+			"inputs": [
+				{"name":"dest","type":"address"},
+				{"name":"value","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployNewContract",
+			"inputs": [
+				{"name":"stateInit","type":"cell"},
+				{"name":"initialBalance","type":"uint128"},
+				{"name":"payload","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "timestamp",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"timestamp","type":"uint32"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"timestamp","type":"uint32"}
+	]
+}

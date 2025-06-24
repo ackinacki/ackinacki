@@ -7,14 +7,17 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use anyhow::ensure;
+use indexset::BTreeMap;
 use tracing::instrument;
 use tvm_block::GetRepresentationHash;
 use tvm_block::HashmapAugType;
 use tvm_block::TrComputePhase;
 use tvm_block::TransactionDescr;
 use tvm_executor::BlockchainConfig;
+use tvm_types::AccountId;
 use tvm_types::ExceptionCode;
 use tvm_types::HashmapType;
+use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
 
 use crate::block::producer::builder::BlockBuilder;
@@ -146,7 +149,7 @@ impl BlockVerifier for TVMBlockVerifier {
         let rand_seed = block_extra.rand_seed.clone();
 
         let mut ext_messages = Vec::new();
-        let mut check_messages_map = HashMap::new();
+        let mut check_messages_map: HashMap<AccountId, BTreeMap<u64, UInt256>> = HashMap::new();
         let block_parse_result = block
             .tvm_block()
             .read_extra()
@@ -154,14 +157,26 @@ impl BlockVerifier for TVMBlockVerifier {
             .read_in_msg_descr()
             .unwrap_or_default()
             .iterate_objects(|in_msg| {
-                let trans = in_msg.read_transaction()?.expect("Failed to read in_msg transaction");
+                let Some(trans) = in_msg.read_transaction()? else {
+                    tracing::trace!("InMsg does not contain transaction");
+                    return Ok(false);
+                };
                 let in_msg = in_msg.read_message()?;
                 let msg_hash = in_msg.hash().unwrap();
-                assert_eq!(
-                    check_messages_map.insert(msg_hash.clone(), trans.logical_time()),
-                    None,
-                    "Incoming block has non unique messages"
-                );
+                let Some(dest_account_address) = in_msg.int_dst_account_id() else {
+                    tracing::trace!("InMsg does not contain internal destination");
+                    return Ok(false);
+                };
+
+                if check_messages_map
+                    .entry(dest_account_address)
+                    .or_default()
+                    .insert(trans.logical_time(), msg_hash.clone())
+                    .is_some()
+                {
+                    tvm_types::fail!("Incoming block has non unique messages");
+                }
+
                 if in_msg.is_inbound_external() {
                     ext_messages.push((trans.logical_time(), in_msg));
                 }

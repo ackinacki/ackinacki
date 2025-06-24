@@ -1,7 +1,8 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::marker::PhantomData;
+use std::time::Instant;
 
 use salvo::prelude::*;
 use salvo::Depot;
@@ -9,35 +10,60 @@ use salvo::Response;
 use serde_json::Value;
 use telemetry_utils::millis_from_now;
 use tokio::sync::oneshot;
+use tvm_block::CommonMsgInfo;
 use tvm_block::Deserializable;
 use tvm_block::GetRepresentationHash;
 use tvm_block::Message;
+use tvm_block::MsgAddressExt;
 use tvm_types::base64_decode;
 
 use super::ExtMsgErrorData;
 use super::ResolvingResult;
-use crate::api::ext_messages::ExtMsgError;
+use crate::api::ext_messages::render_error;
+use crate::api::ext_messages::render_error_response;
+use crate::api::ext_messages::token::verify_bm_token;
+use crate::api::ext_messages::token::TokenVerificationResult;
 use crate::api::ext_messages::ExtMsgResponse;
 use crate::api::ext_messages::ThreadIdentifier;
 use crate::WebServer;
 
-pub struct ExtMessagesHandler<TMesssage, TMsgConverter, TBPResolver>(
+pub struct ExtMessagesHandler<
+    TMesssage,
+    TMsgConverter,
+    TBPResolver,
+    TBMLicensePubkeyLoader,
+    TBocByAddrGetter,
+>(
     PhantomData<TMesssage>,
     PhantomData<TMsgConverter>,
     PhantomData<TBPResolver>,
+    PhantomData<TBMLicensePubkeyLoader>,
+    PhantomData<TBocByAddrGetter>,
 );
 
-impl<TMessage, TMsgConverter, TBPResolver>
-    ExtMessagesHandler<TMessage, TMsgConverter, TBPResolver>
+impl<TMessage, TMsgConverter, TBPResolver, TBMLicensePubkeyLoader, TBocByAddrGetter>
+    ExtMessagesHandler<
+        TMessage,
+        TMsgConverter,
+        TBPResolver,
+        TBMLicensePubkeyLoader,
+        TBocByAddrGetter,
+    >
 {
     pub fn new() -> Self {
-        Self(PhantomData, PhantomData, PhantomData)
+        Self(PhantomData, PhantomData, PhantomData, PhantomData, PhantomData)
     }
 }
 
 #[async_trait]
-impl<TMessage, TMsgConverter, TBPResolver> Handler
-    for ExtMessagesHandler<TMessage, TMsgConverter, TBPResolver>
+impl<TMessage, TMsgConverter, TBPResolver, TBMLicensePubkeyLoader, TBocByAddrGetter> Handler
+    for ExtMessagesHandler<
+        TMessage,
+        TMsgConverter,
+        TBPResolver,
+        TBMLicensePubkeyLoader,
+        TBocByAddrGetter,
+    >
 where
     TMessage: Clone + Send + Sync + 'static + std::fmt::Debug,
     TMsgConverter: Clone
@@ -46,6 +72,8 @@ where
         + 'static
         + Fn(tvm_block::Message, [u8; 34]) -> anyhow::Result<TMessage>,
     TBPResolver: Clone + Send + Sync + 'static + FnMut([u8; 34]) -> ResolvingResult,
+    TBMLicensePubkeyLoader: Send + Sync + Clone + 'static + Fn(String) -> Option<String>,
+    TBocByAddrGetter: Clone + Send + Sync + 'static + Fn(String) -> anyhow::Result<String>,
 {
     async fn handle(
         &self,
@@ -55,9 +83,14 @@ where
         _ctrl: &mut FlowCtrl,
     ) {
         tracing::info!(target: "http_server", "Rest service: request got!");
-
-        let Ok(mut web_server) = depot.obtain::<WebServer<TMessage, TMsgConverter, TBPResolver>>()
-        else {
+        let moment = Instant::now();
+        let Ok(mut web_server) = depot.obtain::<WebServer<
+            TMessage,
+            TMsgConverter,
+            TBPResolver,
+            TBMLicensePubkeyLoader,
+            TBocByAddrGetter,
+        >>() else {
             return render_error(
                 res,
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -102,6 +135,58 @@ where
             }
         };
 
+        let bm_license_addr = match message.header() {
+            CommonMsgInfo::ExtInMsgInfo(header) => match &header.src {
+                MsgAddressExt::AddrExtern(addr) => Some(addr.to_string()),
+                MsgAddressExt::AddrNone => None,
+            },
+            _ => None,
+        }
+        .or_else(|| record.get("bm_license").and_then(|v| v.as_str()).map(|s| s.to_string()));
+
+        let expected_pubkey = bm_license_addr.as_ref().and_then(|addr| {
+            let pubkey_loader = &web_server.bm_license_pubkey_loader;
+            pubkey_loader(addr.to_string())
+        });
+
+        tracing::debug!(target: "http_server", "Incomming ext message: {record:?}");
+        match verify_bm_token(record, expected_pubkey) {
+            TokenVerificationResult::Ok => {
+                tracing::debug!("Token verification passed");
+            }
+            TokenVerificationResult::TokenMalformed => {
+                tracing::debug!("Token verification failed: malformed");
+                return render_error_response(
+                    res,
+                    "BAD_TOKEN",
+                    Some("BM token is malformed"),
+                    None,
+                );
+            }
+            TokenVerificationResult::InvalidSignature => {
+                tracing::debug!("Token verification failed: invalid signature");
+                return render_error_response(
+                    res,
+                    "INVALID_SIGNATURE",
+                    Some("BM signature validation failed"),
+                    None,
+                );
+            }
+            TokenVerificationResult::Expired => {
+                tracing::debug!("Token verification failed: expired");
+                return render_error_response(res, "TOKEN_EXPIRED", Some("BM token expired"), None);
+            }
+            TokenVerificationResult::UnknownLicense => {
+                tracing::debug!("Token verification failed: unknown license contract");
+                tracing::debug!("Unprocessed ext message: {record}");
+                let resp_message = match bm_license_addr {
+                    Some(addr) => &format!("BM License contract not found: {addr:?}"),
+                    None => "License data not provided",
+                };
+                return render_error_response(res, "UNKNOWN_LICENSE", Some(resp_message), None);
+            }
+        }
+
         let convert = &web_server.into_external_message;
         let thread_id_str = record.get("thread_id").and_then(Value::as_str);
         let thread_id = thread_id_str
@@ -119,7 +204,6 @@ where
         );
         if !resolving_result.i_am_bp {
             let message_hash = message.hash().map(|h| h.to_hex_string()).unwrap_or("".to_string());
-            res.status_code(StatusCode::BAD_REQUEST);
             render_error_response(
                 res,
                 "WRONG_PRODUCER",
@@ -170,6 +254,12 @@ where
             .send((wrapped_message, Some(feedback_sender)))
         {
             tracing::warn!(target: "http_server", "Error queue message: {}", e);
+            web_server.metrics.as_ref().inspect(|m| {
+                m.report_ext_msg_processing_duration(
+                    moment.elapsed().as_millis() as u64,
+                    StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                )
+            });
             return render_error(
                 res,
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -188,10 +278,22 @@ where
                 tracing::trace!(target: "http_server", "Response message: {:?}", result);
                 res.status_code(StatusCode::OK);
                 res.render(Json(result));
+                web_server.metrics.as_ref().inspect(|m| {
+                    m.report_ext_msg_processing_duration(
+                        moment.elapsed().as_millis() as u64,
+                        StatusCode::OK.as_u16(),
+                    )
+                });
                 return;
             }
             Err(e) => {
                 tracing::warn!(target: "http_server", "Error queue message: {}", e);
+                web_server.metrics.as_ref().inspect(|m| {
+                    m.report_ext_msg_processing_duration(
+                        moment.elapsed().as_millis() as u64,
+                        StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                    )
+                });
                 return render_error(
                     res,
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -214,34 +316,6 @@ fn parse_message(id: &str, message_b64: &str) -> Result<Message, String> {
 
     Message::construct_from_cell(message_cell)
         .map_err(|e| format!("Error parsing message's cells tree: {}", e))
-}
-
-fn render_error_response(
-    res: &mut Response,
-    code: &str,
-    message: Option<&str>,
-    data: Option<ExtMsgErrorData>,
-) {
-    res.render(Json(ExtMsgResponse {
-        result: None,
-        error: Some(ExtMsgError {
-            code: code.to_string(),
-            message: message.unwrap_or(code).to_string(),
-            data,
-        }),
-    }));
-}
-
-fn render_error(res: &mut Response, status: StatusCode, message: &str) {
-    res.status_code(status);
-    res.render(Json(ExtMsgResponse {
-        result: None,
-        error: Some(ExtMsgError {
-            code: status.to_string(),
-            message: message.to_string(),
-            data: None,
-        }),
-    }));
 }
 
 fn extract_ext_msg_sent_time(headers: &salvo::http::HeaderMap) -> Option<u64> {

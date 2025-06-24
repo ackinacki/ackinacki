@@ -2,8 +2,8 @@
 
 set -eu
 
-SPONSOR_WALLET_ADDRESS=""
-SPONSOR_WALLET_KEY_FILE=""
+# SPONSOR_WALLET_ADDRESS=""
+# SPONSOR_WALLET_KEY_FILE=""
 MASTER_KEY_FILE_OUTPUT_PATH=""
 LICENSE_NUMBERS=""
 
@@ -29,16 +29,6 @@ get_options () {
   while [ $# -gt 0 ]; do
     key="$1"
     case $key in
-        -w|--wallet)
-            shift
-            SPONSOR_WALLET_ADDRESS="$1"
-            shift
-            ;;
-        -wk|--wallet-keys)
-            shift
-            SPONSOR_WALLET_KEY_FILE="$1"
-            shift
-            ;; 
         -m|--master-keys)
             shift
             MASTER_KEY_FILE_OUTPUT_PATH="$1"
@@ -63,7 +53,7 @@ get_options () {
 
 get_options $*
 
-if [ $# -gt 8 ] || [ $# -lt 1 ]; then
+if [ $# -gt 4 ] || [ $# -lt 1 ]; then
   print_usage
   exit 1
 fi
@@ -71,7 +61,7 @@ fi
 if ! type tvm-cli > /dev/null 2>&1
 then
   echo "tvm-cli: command not found"
-  echo "To build and install tvm-cli see: https://dev.ackinacki.com/how-to-deploy-a-sponsor-wallet#create-a-wallet" ; echo
+  echo "To build and install tvm-cli see: https://dev.ackinacki.com/how-to-deploy-a-multisig-wallet#create-a-wallet-1" ; echo
   print_usage
   exit 1
 fi
@@ -104,13 +94,13 @@ read_key () {
   MASTER_PUB_KEY_LICENSE=$(echo "{\"pubkey\": \"0x{public}\", \"whiteListLicense\": $WHITELISTPARAMS}" | sed -e "s/{public}/$MASTER_PUB_KEY_JSON/g")
 }
 
-TVM_ACCOUNT_STATUS=$(tvm-cli -j account $SPONSOR_WALLET_ADDRESS | jq -r '.acc_type')
+# TVM_ACCOUNT_STATUS=$(tvm-cli -j account $SPONSOR_WALLET_ADDRESS | jq -r '.acc_type')
 
-if [ "$TVM_ACCOUNT_STATUS" != "Active" ]
-then
-  echo "Account status - $TVM_ACCOUNT_STATUS. It's not 'Active'."
-  exit 1
-fi
+# if [ "$TVM_ACCOUNT_STATUS" != "Active" ]
+# then
+#   echo "Account status - $TVM_ACCOUNT_STATUS. It's not 'Active'."
+#   exit 1
+# fi
 
 gen_key
 read_key
@@ -128,18 +118,19 @@ IFS="," ; for license in $LICENSE_NUMBERS; do
   echo License number $license and license address is $LICENSE_ADDR
 done
 
-ROOT_MIN_STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake' | xargs printf "%d / 1000000000\n" | bc -l)
-ROOT_MIN_STAKE=$((${ROOT_MIN_STAKE%.*} + 1))
+# Not needed for now
+# ROOT_MIN_STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake' | xargs printf "%d / 1000000000\n" | bc -l)
+# ROOT_MIN_STAKE=$((${ROOT_MIN_STAKE%.*} + 1))
 
-echo "Current minimum stake is $ROOT_MIN_STAKE NACKLs"
+# echo "Current minimum stake is $ROOT_MIN_STAKE NACKLs"
 
-STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake' | xargs printf "%d * 2 / 1000000000\n" | bc -l)
-STAKE=$((${STAKE%.*} + 1))
+# STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake' | xargs printf "%d * 2 * 1.1 / 1000000000\n" | bc -l)
+# STAKE=$((${STAKE%.*} + 1))
 
-echo "Sending $STAKE NACKLs"
-SPONSOR_PARAMS="{\"dest\": \"$WALLET_ADDR\", \"value\": $WALLET_INIT, \"cc\": {\"$ECC_KEY\": $STAKE}, \"payload\": \"\", \"flags\": 0, \"bounce\": false}"
+# echo "Sending $STAKE NACKLs"
+# SPONSOR_PARAMS="{\"dest\": \"$WALLET_ADDR\", \"value\": $WALLET_INIT, \"cc\": {\"$ECC_KEY\": $STAKE}, \"payload\": \"\", \"flags\": 0, \"bounce\": false}"
 
-tvm-cli -j call $SPONSOR_WALLET_ADDRESS sendTransaction "$SPONSOR_PARAMS" --abi $SPONSOR_WALLET_ABI --sign $SPONSOR_WALLET_KEY_FILE
+# tvm-cli -j call $SPONSOR_WALLET_ADDRESS sendTransaction "$SPONSOR_PARAMS" --abi $SPONSOR_WALLET_ABI --sign $SPONSOR_WALLET_KEY_FILE
 
 echo "Checking wallet balance..."
 WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r '.balance')

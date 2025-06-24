@@ -79,21 +79,31 @@ pub struct BkSetError {
     message: String,
 }
 
-pub struct BkSetHandler<TMessage, TMsgConverter, TBPResolver>(
+pub struct BkSetHandler<
+    TMessage,
+    TMsgConverter,
+    TBPResolver,
+    TBMLicensePubkeyLoader,
+    TBocByAddrGetter,
+>(
     PhantomData<TMessage>,
     PhantomData<TMsgConverter>,
     PhantomData<TBPResolver>,
+    PhantomData<TBMLicensePubkeyLoader>,
+    PhantomData<TBocByAddrGetter>,
 );
 
-impl<TMessage, TMsgConverter, TBPResolver> BkSetHandler<TMessage, TMsgConverter, TBPResolver> {
+impl<TMessage, TMsgConverter, TBPResolver, TBMLicensePubkeyLoader, TBocByAddrGetter>
+    BkSetHandler<TMessage, TMsgConverter, TBPResolver, TBMLicensePubkeyLoader, TBocByAddrGetter>
+{
     pub fn new() -> Self {
-        Self(PhantomData, PhantomData, PhantomData)
+        Self(PhantomData, PhantomData, PhantomData, PhantomData, PhantomData)
     }
 }
 
 #[async_trait]
-impl<TMessage, TMsgConverter, TBPResolver> Handler
-    for BkSetHandler<TMessage, TMsgConverter, TBPResolver>
+impl<TMessage, TMsgConverter, TBPResolver, TBMLicensePubkeyLoader, TBocByAddrGetter> Handler
+    for BkSetHandler<TMessage, TMsgConverter, TBPResolver, TBMLicensePubkeyLoader, TBocByAddrGetter>
 where
     TMessage: Clone + Send + Sync + 'static + std::fmt::Debug,
     TMsgConverter: Clone
@@ -102,6 +112,8 @@ where
         + 'static
         + Fn(tvm_block::Message, [u8; 34]) -> anyhow::Result<TMessage>,
     TBPResolver: Clone + Send + Sync + 'static + FnMut([u8; 34]) -> ResolvingResult,
+    TBMLicensePubkeyLoader: Send + Sync + Clone + 'static + Fn(String) -> Option<String>,
+    TBocByAddrGetter: Clone + Send + Sync + 'static + Fn(String) -> anyhow::Result<String>,
 {
     async fn handle(
         &self,
@@ -112,9 +124,13 @@ where
     ) {
         tracing::info!(target: "http_server", "Rest service: request got!");
 
-        let Ok(web_server_state) =
-            depot.obtain::<WebServer<TMessage, TMsgConverter, TBPResolver>>()
-        else {
+        let Ok(web_server_state) = depot.obtain::<WebServer<
+            TMessage,
+            TMsgConverter,
+            TBPResolver,
+            TBMLicensePubkeyLoader,
+            TBocByAddrGetter,
+        >>() else {
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
             render_error_response(
                 res,

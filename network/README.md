@@ -1,23 +1,30 @@
 
 # Gossip/blockchain propagation
 
-## Configs
+## Gossip
 
-Node (node.config.network.proxies):
+Each node register node with:
+- `node_id` node id
+- `node_proxies` comma separated socket addrs of proxies
+- `node_advertise_addr` socket addr of node protocol
+- `bk_api_socket`
+- `bm_api_socket`
 
-node0 -> proxy0
-node1 -> proxy0
-node2 -> proxy1
-node3 -> proxy1
-node4 ->
+Proxy has no this key/values.
 
-## Subscribes
+## Node Subscriptions
 
-node0 -> proxy0
-node1 -> proxy0
-node2 -> proxy1
-node3 -> proxy1
-node4 -> proxy0, proxy1
+- If config contains `subscribe`: subscribe to each address from this list.
+- If config contains `proxies`: subscribe to each address from this list.
+- Otherwise scan gossip nodes:
+  - If the node has no proxies: subscribe to the node's `node_advertise_addr`.
+  - If the node has proxies: subscribe to the first accessible proxy.
 
-proxy0 -> node0, node1, node4, proxy1
-proxy1 -> node2, node3, node4, proxy0
+## Proxy subscriptions
+
+- If config contains `subscribe`: subscribes to each address from this list.
+- Otherwise scan gossip nodes:
+  - If the node has no proxies: subscribe to the node's `node_advertise_addr`.
+  - If the node's proxies contain this proxy: subscribe to the peer's `node_advertise_addr`.
+  - If the node's proxies do not contain this proxy: subscribe to the first accessible address from this list.
+

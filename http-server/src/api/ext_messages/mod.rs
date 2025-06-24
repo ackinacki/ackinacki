@@ -1,10 +1,13 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::borrow::Cow;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
+use salvo::http::StatusCode;
+use salvo::writing::Json;
+use salvo::Response;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::serde_as;
@@ -12,6 +15,7 @@ use serde_with::Bytes;
 use tvm_types::write_boc;
 use tvm_types::SliceData;
 
+pub(crate) mod token;
 pub mod v1;
 pub mod v2;
 
@@ -82,7 +86,7 @@ impl From<ExtMsgFeedback> for ExtMsgResponse {
     fn from(feedback: ExtMsgFeedback) -> Self {
         tracing::trace!(target: "http_server", "Converting feedback to response...");
 
-        let current_time = current_time_millis();
+        let current_time = current_time_millis(None).to_string();
         let block_hash = feedback.block_hash.unwrap_or("None".to_string());
         let tx_hash = feedback.tx_hash.unwrap_or("None".to_string());
 
@@ -103,6 +107,7 @@ impl From<ExtMsgFeedback> for ExtMsgResponse {
                     current_time,
                     exit_code: 0,
                     producers: vec![],
+                    thread_id: feedback.thread_id.map(hex::encode),
                 }),
                 ..Default::default()
             }
@@ -135,6 +140,7 @@ pub struct ExtMsgResult {
     exit_code: i32, /* To see the exit code of aborted transaction included into block. 0 for success */
     producers: Vec<String>, // ip of block producers, [0] - active one
     current_time: String,
+    thread_id: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -153,7 +159,13 @@ impl ExtMsgErrorData {
         exit_code: Option<i32>,
         thread_id: Option<String>,
     ) -> Self {
-        Self { producers, message_hash, exit_code, current_time: current_time_millis(), thread_id }
+        Self {
+            producers,
+            message_hash,
+            exit_code,
+            current_time: current_time_millis(None).to_string(),
+            thread_id,
+        }
     }
 }
 
@@ -314,10 +326,38 @@ impl ResolvingResult {
     }
 }
 
-fn current_time_millis() -> String {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis()
-        .to_string()
+fn current_time_millis(ttl: Option<u64>) -> u128 {
+    let now = std::time::SystemTime::now();
+    let ttl = ttl.unwrap_or_default();
+    let future = now + std::time::Duration::from_secs(ttl);
+    future.duration_since(std::time::UNIX_EPOCH).expect("Time went backwards").as_millis()
+}
+
+pub(crate) fn render_error_response(
+    res: &mut Response,
+    code: &str,
+    message: Option<&str>,
+    data: Option<ExtMsgErrorData>,
+) {
+    res.status_code(StatusCode::BAD_REQUEST);
+    res.render(Json(ExtMsgResponse {
+        result: None,
+        error: Some(ExtMsgError {
+            code: code.to_string(),
+            message: message.unwrap_or(code).to_string(),
+            data,
+        }),
+    }));
+}
+
+pub(crate) fn render_error(res: &mut Response, status: StatusCode, message: &str) {
+    res.status_code(status);
+    res.render(Json(ExtMsgResponse {
+        result: None,
+        error: Some(ExtMsgError {
+            code: status.to_string(),
+            message: message.to_string(),
+            data: None,
+        }),
+    }));
 }

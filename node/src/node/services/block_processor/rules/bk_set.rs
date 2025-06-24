@@ -1,9 +1,14 @@
+use crate::helper::metrics::BlockProductionMetrics;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::BlockState;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
-pub fn set_bk_set(block_state: &BlockState, repo: &BlockStateRepository) {
+pub fn set_bk_set(
+    block_state: &BlockState,
+    repo: &BlockStateRepository,
+    metrics: Option<&BlockProductionMetrics>,
+) {
     if block_state.guarded(|e| e.bk_set().is_some()) {
         // Already set
         return;
@@ -23,6 +28,10 @@ pub fn set_bk_set(block_state: &BlockState, repo: &BlockStateRepository) {
 
     block_state.guarded_mut(|e| {
         if e.bk_set().is_none() {
+            if let Some(thread_id) = e.thread_identifier() {
+                metrics.inspect(|m| m.report_bk_set_size(bk_set.len() as u64, thread_id));
+            }
+
             let _ = e.set_bk_set(bk_set);
         }
     });

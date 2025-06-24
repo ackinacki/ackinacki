@@ -23,6 +23,7 @@ use super::dispatcher::DispatchError;
 use super::dispatcher::Dispatcher;
 use super::poisoned_queue::PoisonedQueue as PQueue;
 use crate::helper::metrics::BlockProductionMetrics;
+use crate::message::WrappedMessage;
 use crate::node::services::sync::ExternalFileSharesBased;
 use crate::node::NetworkMessage;
 use crate::node::Node as NodeImpl;
@@ -45,6 +46,7 @@ type Node = NodeImpl<ExternalFileSharesBased, rand::prelude::SmallRng>;
 #[allow(clippy::large_enum_variant)]
 pub enum Command {
     //    Stop,
+    ExtMessage(NetworkMessage),
     Route(NetworkMessage),
     StartThread(
         (
@@ -126,6 +128,7 @@ impl RoutingService {
                 Sender<NetworkMessage>,
                 InstrumentedSender<ExtMsgFeedbackList>,
                 InstrumentedSender<BlockKeeperSetUpdate>,
+                Receiver<WrappedMessage>,
             ) -> anyhow::Result<Node>
             + std::marker::Send
             + 'static,
@@ -175,6 +178,7 @@ impl RoutingService {
         parent_block_id: Option<BlockIdentifier>,
         bk_set_updates_tx: InstrumentedSender<BlockKeeperSetUpdate>,
         node_factory: &mut F,
+        ext_message_receiver: Receiver<WrappedMessage>,
     ) -> anyhow::Result<Node>
     where
         F: FnMut(
@@ -184,6 +188,7 @@ impl RoutingService {
                 Sender<NetworkMessage>,
                 InstrumentedSender<ExtMsgFeedbackList>,
                 InstrumentedSender<BlockKeeperSetUpdate>,
+                Receiver<WrappedMessage>,
             ) -> anyhow::Result<Node>
             + std::marker::Send,
     {
@@ -197,6 +202,7 @@ impl RoutingService {
             incoming_messages_sender,
             feedback_sender,
             bk_set_updates_tx,
+            ext_message_receiver,
         )
     }
 
@@ -234,12 +240,16 @@ impl RoutingService {
                 Sender<NetworkMessage>,
                 InstrumentedSender<ExtMsgFeedbackList>,
                 InstrumentedSender<BlockKeeperSetUpdate>,
+                Receiver<WrappedMessage>,
             ) -> anyhow::Result<Node>
             + std::marker::Send,
     {
         use Command::*;
         let mut poisoned_queue = PoisonedQueue::new(MAX_POISONED_QUEUE_SIZE);
         std::thread::scope(|s| -> anyhow::Result<()> {
+            let mut ext_message_router: HashMap<ThreadIdentifier, Sender<WrappedMessage>> =
+                HashMap::new();
+            let mut node_handlers = vec![];
             loop {
                 match control.recv() {
                     Err(e) => {
@@ -251,6 +261,14 @@ impl RoutingService {
                     Ok(command) => {
                         match command {
                             //                    Stop => break,
+                            ExtMessage(message) => {
+                                if let NetworkMessage::ExternalMessage((message, thread)) = message
+                                {
+                                    if let Some(tx) = ext_message_router.get_mut(&thread) {
+                                        tx.send(message)?;
+                                    }
+                                }
+                            }
                             Route(message) => {
                                 Self::route(&dispatcher, message, &mut poisoned_queue)
                             }
@@ -258,6 +276,8 @@ impl RoutingService {
                                 if dispatcher.has_route(&thread_identifier) {
                                     continue;
                                 }
+                                let (ext_messages_tx, ext_messages_rx) = std::sync::mpsc::channel();
+                                ext_message_router.insert(thread_identifier, ext_messages_tx);
                                 let mut node = Self::create_node_thread(
                                     &mut dispatcher,
                                     feedback_sender.clone(),
@@ -265,15 +285,17 @@ impl RoutingService {
                                     Some(parent_block_identifier),
                                     bk_set_updates_tx.clone(),
                                     &mut node_factory,
+                                    ext_messages_rx,
                                 )
                                 .expect("Must be able to create node instances");
-                                std::thread::Builder::new()
-                                    .name(format!("{}", &thread_identifier))
+                                let node_thread = std::thread::Builder::new()
+                                    .name(format!("node_{}", &thread_identifier))
                                     .spawn_scoped_critical(s, move || {
                                         tracing::trace!("Starting thread: {}", &thread_identifier);
                                         node.execute()
                                     })
                                     .unwrap();
+                                node_handlers.push(node_thread);
                                 poisoned_queue.retain(|message| {
                                     dispatcher.dispatch(message.clone()).is_err()
                                 });
@@ -282,6 +304,8 @@ impl RoutingService {
                                 if dispatcher.has_route(&thread_identifier) {
                                     continue;
                                 }
+                                let (ext_messages_tx, ext_messages_rx) = std::sync::mpsc::channel();
+                                ext_message_router.insert(thread_identifier, ext_messages_tx);
                                 let mut node = Self::create_node_thread(
                                     &mut dispatcher,
                                     feedback_sender.clone(),
@@ -289,16 +313,18 @@ impl RoutingService {
                                     None,
                                     bk_set_updates_tx.clone(),
                                     &mut node_factory,
+                                    ext_messages_rx,
                                 )
                                 .expect("Must be able to create node instances");
                                 node.is_spawned_from_node_sync = true;
-                                std::thread::Builder::new()
-                                    .name(format!("{}", &thread_identifier))
+                                let node_thread = std::thread::Builder::new()
+                                    .name(format!("node_{}", &thread_identifier))
                                     .spawn_scoped_critical(s, move || {
                                         tracing::trace!("Starting thread: {}", &thread_identifier);
                                         node.execute()
                                     })
                                     .unwrap();
+                                node_handlers.push(node_thread);
                                 poisoned_queue.retain(|message| {
                                     dispatcher.dispatch(message.clone()).is_err()
                                 });
@@ -395,7 +421,7 @@ impl RoutingService {
                         } else {
                             feedback_registry.lock().insert(message_hash, sender.unwrap());
                         }
-                        cmd_sender.send(Command::Route(message))?;
+                        cmd_sender.send(Command::ExtMessage(message))?;
                     }
                 }
             }

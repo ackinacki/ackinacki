@@ -1,7 +1,7 @@
 use std::io::Read;
+use std::net::SocketAddr;
 
-use network::parse_publisher_url;
-use url::Url;
+use network::parse_publisher_addr;
 
 /// how to get proxy list from proxy list contract
 /// Run getter getDetails in BlockKeeperEpochProxyList
@@ -14,13 +14,13 @@ use url::Url;
 /// https://github.com/gosh-sh/acki-nacki/blob/dev/contracts/bksystem/BlockKeeperEpochProxyList.abi.json
 /// https://github.com/gosh-sh/acki-nacki/blob/dev/contracts/bksystem/BlockKeeperContractRoot.abi.json
 /// Fetches the list of proxy servers from the blockchain
-pub async fn get_proxy_list() -> anyhow::Result<Vec<Url>> {
+pub async fn get_proxy_list() -> anyhow::Result<Vec<SocketAddr>> {
     // TODO: Implement actual blockchain interaction
 
     let mut file = std::fs::File::open("proxy_list.txt")?;
     let mut buf = String::new();
     file.read_to_string(&mut buf)?;
-    let v: Vec<Url> = buf.lines().map(parse_publisher_url).collect::<Result<_, _>>()?;
+    let v: Vec<SocketAddr> = buf.lines().map(parse_publisher_addr).collect::<Result<_, _>>()?;
 
     Ok(v)
 }

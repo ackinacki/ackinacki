@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use telemetry_utils::mpsc::InstrumentedSender;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
-use url::Url;
+use transport_layer::NetTransport;
 
 use super::trace_task_result;
 use super::PubSub;
@@ -33,12 +33,15 @@ impl IncomingSender {
     }
 }
 
-pub async fn run(
+#[allow(clippy::too_many_arguments)]
+pub async fn run<Transport: NetTransport + 'static>(
+    transport: Transport,
+    is_proxy: bool,
     metrics: Option<NetMetrics>,
     max_connections: usize,
     bind: SocketAddr,
     tls_config: TlsConfig,
-    subscribe_tx: tokio::sync::watch::Sender<Vec<Vec<Url>>>,
+    subscribe_tx: tokio::sync::watch::Sender<Vec<Vec<SocketAddr>>>,
     // pub sub subscribes to this sender and forward received messages to all network subscribers
     outgoing_tx: broadcast::Sender<OutgoingMessage>,
     // pub sub forwards all received network messages to this sender
@@ -46,7 +49,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     tracing::info!("Starting server");
 
-    let pub_sub = PubSub::new();
+    let pub_sub = PubSub::new(transport, is_proxy);
 
     let (connection_closed_tx, connection_closed_rx) = mpsc::channel(100);
     let listen_incoming_connections_task = tokio::spawn(listen_incoming_connections(

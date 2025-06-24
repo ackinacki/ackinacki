@@ -247,6 +247,30 @@ impl ForkResolutionService {
                 None
             }
         });
+        let mut has_finalized_sibling = false;
+        let block_children = block_children
+            .into_iter()
+            .filter(|block_id| {
+                self.block_state_repository.get(block_id).unwrap().guarded(|e| {
+                    if !e.is_invalidated() && e.is_finalized() {
+                        has_finalized_sibling = true;
+                    }
+                    !e.is_invalidated()
+                })
+            })
+            .collect::<HashSet<_>>();
+        if has_finalized_sibling {
+            for block_id in block_children {
+                self.block_state_repository.get(&block_id)?.guarded_mut(|e| {
+                    if !e.is_finalized() {
+                        tracing::trace!("Forked block has finalized sibling: {:?}", block_id);
+                        e.set_invalidated()?;
+                    }
+                    Ok::<_, anyhow::Error>(())
+                })?
+            }
+            return Ok(());
+        }
         let fork_blocks = block_children
             .into_iter()
             .map(|block_id| {

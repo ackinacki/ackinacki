@@ -24,6 +24,7 @@ use crate::types::AccountAddress;
 
 pub mod abi;
 pub mod bk_set;
+pub mod bm_license;
 pub mod epoch;
 pub mod wallet_config;
 

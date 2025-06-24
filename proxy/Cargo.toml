@@ -24,6 +24,7 @@ serde_json.workspace = true
 telemetry_utils.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+transport-layer.workspace = true
 tvm_block.workspace = true
 tvm_contracts.workspace = true
 tvm_types.workspace = true

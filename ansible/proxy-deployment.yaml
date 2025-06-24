@@ -1,0 +1,7 @@
+- name: Deploy proxy service
+  gather_facts: no
+  hosts: proxy
+  become: yes
+  any_errors_fatal: true
+  roles:
+    - proxy

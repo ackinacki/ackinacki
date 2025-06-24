@@ -5,7 +5,6 @@
  * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
  */
 pragma gosh-solidity >=0.76.1;
-pragma ignoreIntOverflow;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
 
@@ -24,7 +23,7 @@ contract BlockKeeperEpoch is Modifiers {
     uint256 static _owner_pubkey;
     address _root; 
     uint64 static _seqNoStart;
-    uint32 _unixtimeFinish;
+    uint64 _seqNoFinish;
     bytes _bls_pubkey;
     bool _isContinue = false;
     uint64 _waitStep;
@@ -32,11 +31,11 @@ contract BlockKeeperEpoch is Modifiers {
     uint256 _totalStake;
     address _owner_address;
 
-    uint32 _epochDurationContinue;
+    uint64 _epochDurationContinue;
     uint64 _waitStepContinue;
     bytes _bls_pubkeyContinue;
     uint256 _stakeContinue;
-    uint128 _epochDuration;
+    uint64 _epochDuration;
     uint128 _numberOfActiveBlockKeepers;
     uint32 _unixtimeStart;
 
@@ -45,22 +44,28 @@ contract BlockKeeperEpoch is Modifiers {
     uint16 _signerIndex;
     uint16 _signerIndexContinue;
     mapping(uint8 => string) _proxyListContinue;
+    string _myIp;
 
     LicenseStake[] _licenses;
     LicenseStake[] _licensesContinue;
 
     optional(uint128) _virtualStake;
     optional(uint128) _virtualStakeContinue;
+
+    uint128 _reward_sum;
+    uint128 _reward_sum_continue;
     constructor (
         uint64 waitStep,
-        uint32 epochDuration,
+        uint64 epochDuration,
         bytes bls_pubkey,
         mapping(uint8 => TvmCell) code,
         bool isContinue,
         uint128 sumReputationCoef,
         uint16 signerIndex,
         LicenseStake[] licenses,
-        optional(uint128) virtualStake
+        optional(uint128) virtualStake,
+        uint128 reward_sum,
+        string myIp
     ) {
         _code = code;
         TvmCell data = abi.codeSalt(tvm.code()).get();
@@ -87,15 +92,17 @@ contract BlockKeeperEpoch is Modifiers {
             BlockKeeperEpochProxyList(BlockKeeperLib.calculateBlockKeeperEpochProxyListAddress(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], _owner_pubkey, _root)).toClose{value: 0.1 vmshell, flag: 1}(_seqNoStart); 
         }
         _waitStep = waitStep;
-        _unixtimeFinish = block.timestamp + epochDuration;
+        _seqNoFinish = block.seqno + epochDuration;
         _unixtimeStart = block.timestamp;
         _bls_pubkey = bls_pubkey;
         _stake = msg.currencies[CURRENCIES_ID];
         _signerIndex = signerIndex;
         _licenses = licenses;
         _virtualStake = virtualStake;
+        _reward_sum = reward_sum;
+        _myIp = myIp;
         BlockKeeperContractRoot(_root).increaseActiveBlockKeeperNumber{value: 0.1 vmshell, flag: 1}(_owner_pubkey, _seqNoStart, _stake, uint128(_sumReputationCoef / licenses.length), _virtualStake);
-        AckiNackiBlockKeeperNodeWallet(_owner_address).updateLockStake{value: 0.1 vmshell, flag: 1}(_seqNoStart, _unixtimeFinish, msg.currencies[CURRENCIES_ID], _bls_pubkey, _signerIndex, _licenses, isContinue);
+        AckiNackiBlockKeeperNodeWallet(_owner_address).updateLockStake{value: 0.1 vmshell, flag: 1}(_seqNoStart, _seqNoFinish, msg.currencies[CURRENCIES_ID], _bls_pubkey, _signerIndex, _licenses, isContinue);
     }
 
     function setStake(uint256 totalStake, uint128 numberOfActiveBlockKeepers) public senderIs(_root) accept {
@@ -108,10 +115,10 @@ contract BlockKeeperEpoch is Modifiers {
         gosh.mintshell(FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_WALLET);
     }
 
-    function continueStake(uint32 epochDuration, uint64 waitStep, bytes bls_pubkey, uint16 signerIndex, uint128 rep_coef, LicenseStake[] licenses, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList) public senderIs(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _root, _owner_pubkey)) accept {
+    function continueStake(uint64 epochDuration, uint64 waitStep, bytes bls_pubkey, uint16 signerIndex, uint128 rep_coef, LicenseStake[] licenses, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, uint128 reward_sum) public senderIs(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _root, _owner_pubkey)) accept {
         ensureBalance();
         if (_isContinue == true) {
-            AckiNackiBlockKeeperNodeWallet(msg.sender).continueStakeNotAccept{value: 0.1 vmshell, flag: 1}(_seqNoStart, bls_pubkey, signerIndex);
+            AckiNackiBlockKeeperNodeWallet(msg.sender).continueStakeNotAccept{value: 0.1 vmshell, flag: 1}(_seqNoStart, bls_pubkey, signerIndex, licenses);
             return;
         }
         _epochDurationContinue = epochDuration;
@@ -124,6 +131,7 @@ contract BlockKeeperEpoch is Modifiers {
         _stakeContinue = msg.currencies[CURRENCIES_ID];
         _virtualStakeContinue = virtualStake;
         _proxyListContinue = ProxyList;
+        _reward_sum_continue = reward_sum;
     }
 
     function cancelContinueStake() public senderIs(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _root, _owner_pubkey)) accept {
@@ -142,10 +150,10 @@ contract BlockKeeperEpoch is Modifiers {
     }
 
     function touch() public saveMsg {       
-        if (_unixtimeFinish < block.timestamp) { tvm.accept(); }
+        if (_seqNoFinish <= block.seqno) { tvm.accept(); }
         else { return; } 
         ensureBalance();
-        BlockKeeperContractRoot(_root).canDeleteEpoch{value: 0.1 vmshell, flag: 1}(_owner_pubkey, _seqNoStart, _stake, _sumReputationCoef / uint128(_licenses.length) + _epochDuration + block.timestamp - _unixtimeFinish, _totalStake, _numberOfActiveBlockKeepers, _unixtimeStart, _virtualStake);
+        BlockKeeperContractRoot(_root).canDeleteEpoch{value: 0.1 vmshell, flag: 1}(_owner_pubkey, _seqNoStart, _stake, _sumReputationCoef / uint128(_licenses.length) + block.timestamp - _unixtimeStart, _totalStake, _numberOfActiveBlockKeepers, _unixtimeStart, _virtualStake, _reward_sum);
     }
 
     function canDelete(uint256 reward) public senderIs(_root) saveMsg {  
@@ -161,7 +169,7 @@ contract BlockKeeperEpoch is Modifiers {
         if (_isContinue){
             mapping(uint32 => varuint32) data_curr;
             data_curr[CURRENCIES_ID] = varuint32(_stakeContinue);
-            AckiNackiBlockKeeperNodeWallet(wallet).deployBlockKeeperContractContinueAfterDestroy{value: 0.1 vmshell, flag: 1, currencies: data_curr}(_epochDurationContinue, _waitStepContinue, _bls_pubkeyContinue, _seqNoStart, _sumReputationCoefContinue, _signerIndexContinue, _licensesContinue, _licenses, _virtualStakeContinue, block.timestamp - _unixtimeStart);
+            AckiNackiBlockKeeperNodeWallet(wallet).deployBlockKeeperContractContinueAfterDestroy{value: 0.1 vmshell, flag: 1, currencies: data_curr}(_epochDurationContinue, _waitStepContinue, _bls_pubkeyContinue, _seqNoStart, _sumReputationCoefContinue, _signerIndexContinue, _licensesContinue, _licenses, _virtualStakeContinue, block.timestamp - _unixtimeStart, _reward_sum_continue, _myIp);
             BlockKeeperEpochProxyList(BlockKeeperLib.calculateBlockKeeperEpochProxyListAddress(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], _owner_pubkey, _root)).setNewProxyList{value: 0.1 vmshell, flag: 1}(_seqNoStart, _proxyListContinue); 
         }
         if (!_isContinue) {
@@ -265,15 +273,16 @@ contract BlockKeeperEpoch is Modifiers {
         uint256 pubkey,
         address root, 
         uint64 seqNoStart,
-        uint32 unixtimeFinish,
+        uint64 seqNoFinish,
         address owner,
         uint256 continueStakes,
         bool isContinue,
         uint16 signerIndex,
         uint16 signerIndexContinue,
-        mapping(uint8 => string) proxyListContinue) 
+        mapping(uint8 => string) proxyListContinue,
+        string myIp) 
     {
-        return (_owner_pubkey, _root, _seqNoStart, _unixtimeFinish, BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _root, _owner_pubkey), _stakeContinue, _isContinue, _signerIndex, _signerIndexContinue, _proxyListContinue);
+        return (_owner_pubkey, _root, _seqNoStart, _seqNoFinish, BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _root, _owner_pubkey), _stakeContinue, _isContinue, _signerIndex, _signerIndexContinue, _proxyListContinue, _myIp);
     }
 
     function getProxyListContinue() external view returns(mapping(uint8 => string) proxyListContinue) 

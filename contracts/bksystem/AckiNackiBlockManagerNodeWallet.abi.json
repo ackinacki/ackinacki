@@ -8,7 +8,8 @@
 			"inputs": [
 				{"name":"LicenseBMCode","type":"cell"},
 				{"name":"whiteListLicense","type":"map(uint256,bool)"},
-				{"name":"licenseBMRoot","type":"address"}
+				{"name":"licenseBMRoot","type":"address"},
+				{"name":"start_time","type":"uint32"}
 			],
 			"outputs": [
 			]
@@ -56,25 +57,15 @@
 			]
 		},
 		{
+			"name": "getReward",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "stopBM",
 			"inputs": [
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "tryUpdateCode",
-			"inputs": [
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "updateCode",
-			"inputs": [
-				{"name":"newcode","type":"cell"},
-				{"name":"cell","type":"cell"},
-				{"name":"new_hash","type":"uint256"}
 			],
 			"outputs": [
 			]
@@ -117,8 +108,10 @@
 		{"init":false,"name":"_whiteListLicense","type":"map(uint256,bool)"},
 		{"init":false,"name":"_licenseBMRoot","type":"address"},
 		{"init":false,"name":"_start_bm","type":"optional(uint32)"},
-		{"init":false,"name":"_stop_bm","type":"uint32"},
 		{"init":false,"name":"_work_key","type":"optional(uint256)"},
-		{"init":false,"name":"_hash_wallet","type":"uint256"}
+		{"init":false,"name":"_hash_wallet","type":"uint256"},
+		{"init":false,"name":"_wallet_reward","type":"uint128"},
+		{"init":false,"name":"_start_time","type":"uint32"},
+		{"init":false,"name":"_rewarded","type":"uint32"}
 	]
 }

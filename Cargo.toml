@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     #
     "block-manager",
+    "chitchat",
     "database",
     "gossip",
     "gql-server",
@@ -11,6 +12,7 @@ members = [
     "message-router",
     "migration-tool",
     "network",
+    "nock",
     "node",
     "node-helper",
     "node/libs/account-inbox",
@@ -20,9 +22,9 @@ members = [
     "tvm_contracts",
 ]
 
-package.version = "0.4.1"
+package.version = "0.5.1"
 package.edition = "2021"
-package.rust-version = "1.83.0"
+package.rust-version = "1.85.1"
 package.license = "Acki Nacki Node License"
 package.license-file = "LICENSE.md"
 
@@ -31,14 +33,18 @@ package.license-file = "LICENSE.md"
 inherits = "dev"
 debug = true
 inline = "never"
+overflow-checks = true
+
+[profile.release]
+overflow-checks = true
 
 [workspace.dependencies]
 actix-web = { version = "4.8.0" }
 anyhow = "1.0.97"
 async-trait = { version = "0.1.85" }
 bincode = "1.3.3"
-chitchat = { version = "0.9.0" }
 clap = { version = "4.5.2", features = ["derive", "env"] }
+ed25519-dalek = { version = "2.1.1", features = ["rand_core", "serde"] }
 enum_dispatch = { version = "0.3.13" }
 faster-hex = { version = "0.10.0", features = ["serde"] }
 futures = "0.3"
@@ -54,7 +60,7 @@ num-traits = "0.2.19"
 opentelemetry = { version = "0.27", features = ["metrics"] }
 opentelemetry-otlp = { version = "0.27", features = ["metrics"] }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
-parking_lot = '0.12'
+parking_lot = { version = "0.12", features = ["deadlock_detection"] }
 quinn = { version = "0.11", features = ["rustls"] }
 rand = "0.8.5"
 rayon = { version = "1.10.0" }
@@ -75,15 +81,16 @@ url = { version = "2.5.0", features = ["serde"] }
 wtransport = { version = "0.6.0", features = ["dangerous-configuration", "quinn"] }
 zstd = { version = "0.13.3" }
 
-tvm_abi = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.13.0.an" }
-tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.13.0.an" }
-tvm_block_json = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.13.0.an" }
-tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.13.0.an", default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
-tvm_executor = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.13.0.an", features = ['signature_with_id'] }
-tvm_tl_codegen = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.13.0.an", default-features = false }
-tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.13.0.an" }
-tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.13.0.an", features = ['gosh'] }
+tvm_abi = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.17.0.an" }
+tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.17.0.an" }
+tvm_block_json = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.17.0.an" }
+tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.17.0.an", default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
+tvm_executor = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.17.0.an", features = ['signature_with_id'] }
+tvm_tl_codegen = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.17.0.an", default-features = false }
+tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.17.0.an" }
+tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.17.0.an", features = ['gosh'] }
 
+chitchat = { path = "chitchat" }
 database = { path = "database" }
 gossip = { path = "gossip" }
 http-server = { path = "http-server" }
@@ -92,4 +99,5 @@ migration-tool = { path = "migration-tool" }
 network = { path = "network" }
 node = { path = "node" }
 telemetry_utils = { path = "telemetry_utils" }
+transport-layer = { path = "transport-layer" }
 tvm_contracts = { path = "tvm_contracts" }

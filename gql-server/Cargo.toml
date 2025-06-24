@@ -7,8 +7,9 @@ license-file.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-async-graphql = { version = "7.0.9", features = ["dataloader"] }
-async-graphql-warp = "7.0.9"
+async-graphql = { version = "=7.0.17", features = ["dataloader"] }
+async-graphql-derive = { version = "=7.0.17" }
+async-graphql-warp = "=7.0.17"
 base64 = "0.21.7"
 chrono = "0.4.38"
 clap.workspace = true

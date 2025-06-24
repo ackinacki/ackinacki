@@ -1,0 +1,31 @@
+# HTTP_SRC_URL
+bk_api_endpoint: http://127.0.0.1:11000
+
+# STREAM_SRC_URL
+bk_stream_blocks_endpoint: https://node0:12000
+
+# SQLITE_PATH
+db_path: ./data
+
+# BLOCK_MANAGER_API
+api_listen_addr: 0.0.0.0:8700
+
+# BM_LICENSE_NUMBER
+license_number: 0
+
+# BM_KEYS_FILE
+keys: config/block_manager.keys.json
+
+# DEFAULT_BP
+default_bp: node0:8600
+
+# TOKEN_TTL (in secs)
+token_ttl: 30
+
+contracts:
+  bm_root:
+    address: 0:6666666666666666666666666666666666666666666666666666666666666666
+    abi: ../contracts/bksystem/BlockManagerContractRoot.abi.json
+
+  license:
+    abi: ../contracts/bksystem/LicenseBM.abi.json

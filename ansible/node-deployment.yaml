@@ -3,6 +3,10 @@
   gather_facts: no
   become: yes
   tasks:
+  - name: "Get Epoch code hash"
+    ansible.builtin.set_fact:
+      CODE_HASH: "{{ lookup('ansible.builtin.file', '../contracts/bksystem/BlockKeeperEpochContract.code.hash') }}"
+
   - name: "Ensures dir exists: {{ BK_DIR }}"
     ansible.builtin.file:
       path: "{{ BK_DIR | mandatory }}/"
@@ -26,6 +30,18 @@
       path: "{{ BK_DIR }}/bk-configs"
       state: directory
       mode: u=rwx,g=,o=
+
+  - name: "Ensures contracts dir exists: {{ BK_DIR }}/contracts"
+    ansible.builtin.file:
+      path: "{{ BK_DIR }}/contracts"
+      state: directory
+      mode: u=rwx,g=rx,o=rx
+
+  - name: "Ensures sctipts dir exists: {{ BK_DIR }}/bk-scripts"
+    ansible.builtin.file:
+      path: "{{ BK_DIR }}/bk-scripts"
+      state: directory
+      mode: u=rwx,g=rwx,o=rwx
 
   - name: adjust limits
     lineinfile:
@@ -93,7 +109,7 @@
 
   - name: Create BLS keys
     ansible.builtin.shell:
-      cmd: "docker run --rm --entrypoint /usr/local/bin/node-helper -v {{ BK_DIR }}/bk-configs:/workdir {{ NODE_IMAGE }} bls --path block_keeper{{ NODE_ID }}_bls.keys.json"
+      cmd: "docker run --rm --entrypoint /usr/local/bin/node-helper -v {{ BK_DIR }}/bk-configs:/staking {{ STAKING_IMAGE }} bls --path block_keeper{{ NODE_ID }}_bls.keys.json"
       creates: "{{ BK_DIR }}/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json"
 
   - name: Compose up

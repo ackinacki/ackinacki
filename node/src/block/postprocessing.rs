@@ -4,10 +4,13 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use tracing::instrument;
+use tvm_block::Augmentation;
+use tvm_types::UInt256;
 
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::message_storage::MessageDurableStorage;
+use crate::repository::accounts::AccountsRepository;
 use crate::repository::optimistic_shard_state::OptimisticShardState;
 use crate::repository::optimistic_state::DAppIdTable;
 use crate::repository::optimistic_state::OptimisticState;
@@ -38,7 +41,7 @@ pub fn postprocess(
     accounts_that_changed_their_dapp_id: HashMap<AccountRouting, Option<WrappedAccount>>,
     block_id: BlockIdentifier,
     block_seq_no: BlockSeqNo,
-    new_state: OptimisticShardState,
+    mut new_state: OptimisticShardState,
     mut produced_internal_messages_to_other_threads: HashMap<
         AccountRouting,
         Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
@@ -48,6 +51,8 @@ pub fn postprocess(
     thread_id: ThreadIdentifier,
     threads_table: ThreadsTable,
     changed_dapp_ids: DAppIdTable,
+    block_accounts: HashSet<UInt256>,
+    accounts_repo: AccountsRepository,
     db: MessageDurableStorage,
 ) -> anyhow::Result<(OptimisticStateImpl, CrossThreadRefData)> {
     // Prepare produced_internal_messages_to_the_current_thread
@@ -121,6 +126,61 @@ pub fn postprocess(
         .build()?;
     initial_optimistic_state.messages = messages;
 
+    let mut changed_accounts = initial_optimistic_state.changed_accounts;
+    changed_accounts.extend(block_accounts.into_iter().map(|acc| (acc, block_seq_no)));
+    let mut cached_accounts = initial_optimistic_state.cached_accounts;
+    cached_accounts.retain(|account_id, (seq_no, _)| {
+        if *seq_no + accounts_repo.get_store_after() >= block_seq_no
+            && !changed_accounts.contains_key(account_id)
+        {
+            true
+        } else {
+            tracing::trace!(account_id = account_id.to_hex_string(), "Removing account from cache");
+            false
+        }
+    });
+    if let Some(unload_after) = accounts_repo.get_unload_after() {
+        let mut shard_state = new_state.into_shard_state().as_ref().clone();
+        let mut shard_accounts = shard_state
+            .read_accounts()
+            .map_err(|e| anyhow::format_err!("Failed to read accounts from shard state: {e}"))?;
+        let mut deleted = Vec::new();
+        for (account_id, seq_no) in std::mem::take(&mut changed_accounts) {
+            if seq_no + unload_after <= block_seq_no {
+                if let Some(mut account) =
+                    shard_accounts.account(&(&account_id).into()).map_err(|e| {
+                        anyhow::format_err!("Failed to read account from shard state: {e}")
+                    })?
+                {
+                    tracing::trace!(
+                        account_id = account_id.to_hex_string(),
+                        "Unloading account from state"
+                    );
+                    let aug =
+                        account.aug().map_err(|e| anyhow::format_err!("Failed to get aug: {e}"))?;
+                    let cell = account
+                        .replace_with_external()
+                        .map_err(|e| anyhow::format_err!("Failed to set account external: {e}"))?;
+                    cached_accounts.insert(account_id.clone(), (block_seq_no, cell));
+                    shard_accounts.insert_with_aug(&account_id, &account, &aug).map_err(|e| {
+                        anyhow::format_err!("Failed to insert account into shard state: {e}")
+                    })?;
+                } else {
+                    deleted.push(account_id);
+                }
+            } else {
+                changed_accounts.insert(account_id, seq_no);
+            }
+        }
+        if !deleted.is_empty() {
+            accounts_repo.accounts_deleted(&thread_id, deleted, block_info.prev1().unwrap().end_lt);
+        }
+        shard_state
+            .write_accounts(&shard_accounts)
+            .map_err(|e| anyhow::format_err!("Failed to write accounts: {e}"))?;
+        new_state = shard_state.into();
+    }
+
     let new_state = OptimisticStateImpl::builder()
         .block_seq_no(block_seq_no)
         .block_id(block_id.clone())
@@ -133,7 +193,8 @@ pub fn postprocess(
         .dapp_id_table(new_dapp_id_table.clone())
         .thread_refs_state(new_thread_refs)
         .cropped(initial_optimistic_state.cropped)
-        .changed_accounts(initial_optimistic_state.changed_accounts)
+        .changed_accounts(changed_accounts)
+        .cached_accounts(cached_accounts)
         .build();
 
     let cross_thread_ref_data = CrossThreadRefData::builder()

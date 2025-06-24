@@ -44,7 +44,8 @@
 				{"name":"seqNoStart","type":"uint64"},
 				{"name":"seqNoFinish","type":"uint64"},
 				{"name":"owner","type":"address"},
-				{"name":"signerIndex","type":"uint16"}
+				{"name":"signerIndex","type":"uint16"},
+				{"name":"NACKLBalance","type":"varuint32"}
 			]
 		},
 		{

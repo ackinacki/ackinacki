@@ -1,0 +1,46 @@
+---
+
+- name: "Ensures proxy dirs exist"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: u=rwx,g=rwx,o=rwx
+  with_items:
+    - "{{ PROXY_DIR }}"
+    - "{{ PROXY_CERTS_DIR }}"
+
+- name: Production compose
+  ansible.builtin.template:
+    src: templates/compose.j2
+    dest: "{{ PROXY_DIR }}/compose.yaml"
+    mode: "0644"
+
+- name: Proxy config
+  ansible.builtin.template:
+    src: templates/config.j2
+    dest: "{{ PROXY_DIR }}/config.yaml"
+    mode: "0655"
+
+- name: Log rotate configuration
+  ansible.builtin.template:
+    src: templates/logrotate.j2
+    dest: "{{ PROXY_DIR }}/logrotate.sh"
+    mode: "0755"
+  register: logrotate
+
+- name: Compose pull
+  ansible.builtin.shell:
+    chdir: "{{ PROXY_DIR }}"
+    cmd: docker compose pull
+
+- name: Compose up
+  ansible.builtin.shell:
+    chdir: "{{ PROXY_DIR }}"
+    cmd: docker compose up -d
+
+- name: Compose restart logrotate
+  ansible.builtin.shell:
+    chdir: "{{ PROXY_DIR }}"
+    cmd: docker compose restart logrotate
+  when:
+    - logrotate.changed

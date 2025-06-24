@@ -44,7 +44,7 @@ pub struct Container {
 
     // This is a dirty solution to fix code that calls the same event
     // multiple times. Since it is not an expected behavior for
-    // the inner serivces these hacks will solve it to some extend.
+    // the inner services these hacks will solve it to some extend.
     dirty_hack__appended_blocks: FixedSizeHashSet<BlockIdentifier>,
     dirty_hack__finalized_blocks: FixedSizeHashSet<BlockIdentifier>,
     dirty_hack__invalidated_blocks: FixedSizeHashSet<BlockIdentifier>,
@@ -53,8 +53,8 @@ pub struct Container {
 impl SharedServices {
     #[cfg(test)]
     pub fn test_start(router: RoutingService, rate: u32) -> Self {
-        // An alias to make a little easier code navidation
-        Self::start(router, PathBuf::from("./data-dir-test"), None, 5000, 100, rate)
+        // An alias to make a little easier code navigation
+        Self::start(router, PathBuf::from("./data-dir-test"), None, 5000, 100, rate, 1)
     }
 
     pub fn start(
@@ -64,6 +64,7 @@ impl SharedServices {
         thread_load_threshold: usize,
         thread_load_window_size: usize,
         rate_limit_on_incoming_block_req: u32,
+        thread_cnt_soft_limit: usize,
     ) -> Self {
         Self {
             container: Arc::new(Mutex::new(Container {
@@ -75,7 +76,10 @@ impl SharedServices {
                     thread_load_window_size,
                     thread_load_threshold,
                 ),
-                cross_thread_ref_data_service: CrossThreadRefDataRepository::new(data_dir),
+                cross_thread_ref_data_service: CrossThreadRefDataRepository::new(
+                    data_dir,
+                    thread_cnt_soft_limit,
+                ),
                 dirty_hack__appended_blocks: FixedSizeHashSet::new(DIRTY_HACK__CACHE_SIZE),
                 dirty_hack__finalized_blocks: FixedSizeHashSet::new(DIRTY_HACK__CACHE_SIZE),
                 dirty_hack__invalidated_blocks: FixedSizeHashSet::new(DIRTY_HACK__CACHE_SIZE),

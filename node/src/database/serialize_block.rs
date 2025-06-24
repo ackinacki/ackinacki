@@ -481,7 +481,8 @@ pub(crate) fn prepare_block_archive_struct(
     set.parent = envelope.data().parent().to_string();
     set.aggregated_signature = Some(bincode::serialize(envelope.aggregated_signature())?);
     set.signature_occurrences = Some(bincode::serialize(&envelope.clone_signature_occurrences())?);
-    set.share_state_resource_address = envelope.data().directives().share_state_resource_address;
+    set.share_state_resource_address =
+        envelope.data().directives().share_state_resources().clone().map(|v| format!("{:?}", v));
     let common_section = envelope.data().get_common_section();
     set.producer_id = Some(common_section.producer_id.to_string());
     set.thread_id = Some(hex::encode(common_section.thread_id));

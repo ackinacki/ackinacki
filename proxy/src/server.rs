@@ -6,6 +6,7 @@ use std::sync::LazyLock;
 use std::time::Instant;
 
 use anyhow::Context;
+use chitchat::transport::UdpTransport;
 use clap::Parser;
 use network::metrics::NetMetrics;
 use network::pub_sub::connection::IncomingMessage;
@@ -15,19 +16,18 @@ use network::pub_sub::spawn_critical_task;
 use network::pub_sub::IncomingSender;
 use network::resolver::watch_gossip;
 use network::resolver::SubscribeStrategy;
-use network::socket_addr::ToOneSocketAddr;
 use network::DeliveryPhase;
 use network::SendMode;
 use opentelemetry::global;
 use tokio::task::JoinHandle;
+use transport_layer::msquic::MsQuicTransport;
 
 use crate::config::config_reload_handler;
 use crate::config::ProxyConfig;
 
 pub static LONG_VERSION: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "
-{}
+        "{}
 BUILD_GIT_BRANCH={}
 BUILD_GIT_COMMIT={}
 BUILD_GIT_DATE={}
@@ -47,11 +47,12 @@ pub struct CliArgs {
     #[arg(short, long, default_value = "config.yaml")]
     pub config: PathBuf,
 
-    #[arg(long, env, default_value_t = 200)]
+    #[arg(long, env, default_value_t = 1000)]
     pub max_connections: usize,
 }
 
 pub fn run() -> anyhow::Result<()> {
+    println!("{}", LONG_VERSION.as_str());
     eprintln!("Starting server...");
     dotenvy::dotenv().ok(); // ignore all errors and load what we can
 
@@ -78,9 +79,9 @@ async fn tokio_main() -> anyhow::Result<()> {
 
     // Initialize the meter provider for OpenTelemetry
     let meter_provider = telemetry_utils::init_meter_provider();
-    opentelemetry::global::set_meter_provider(meter_provider.clone());
+    global::set_meter_provider(meter_provider.clone());
 
-    // Create NetMetrics instance using the meter provider
+    // Create a NetMetrics instance using the meter provider
     let net_metrics = NetMetrics::new(&global::meter("proxy"));
 
     let result = args.run(net_metrics).await;
@@ -111,21 +112,25 @@ impl CliArgs {
     async fn run(self, net_metrics: NetMetrics) -> anyhow::Result<()> {
         let config = ProxyConfig::from_file(&self.config)?;
         tracing::info!("Loaded configuration: {}", serde_json::to_string_pretty(&config)?);
+        let tls_config = config.tls_config();
+        let transport = MsQuicTransport::new();
 
         let (subscribe_tx, _) = tokio::sync::watch::channel(Vec::new());
 
         let (gossip_handle, gossip_rest_handle) = if !config.subscribe.is_empty() {
             let _ = subscribe_tx.send_replace(config.subscribe.clone());
             (None, tokio::spawn(std::future::pending::<anyhow::Result<()>>()))
-        } else if let (Some(gossip_config), Some(my_url)) = (&config.gossip, &config.my_url) {
+        } else if let (Some(gossip_config), Some(my_addr)) = (&config.gossip, &config.my_addr) {
             let seeds = gossip_config.get_seeds();
             tracing::info!("Gossip seeds expanded: {:?}", seeds);
 
-            let listen_addr = gossip_config.listen_addr.clone();
-            let advertise_addr = gossip_config.advertise_addr.clone().unwrap_or(listen_addr);
+            let listen_addr = gossip_config.listen_addr;
+            let advertise_addr = gossip_config.advertise_addr.unwrap_or(listen_addr);
+
             let (gossip_handle, gossip_rest_handle) = gossip::run(
-                gossip_config.listen_addr.try_to_socket_addr()?,
-                advertise_addr.try_to_socket_addr()?,
+                gossip_config.listen_addr,
+                UdpTransport,
+                advertise_addr,
                 seeds,
                 gossip_config.cluster_id.clone(),
             )
@@ -134,9 +139,10 @@ impl CliArgs {
             spawn_critical_task(
                 "Gossip",
                 watch_gossip(
-                    SubscribeStrategy::<NodeId>::Proxy(my_url.clone()),
+                    SubscribeStrategy::<NodeId>::Proxy(*my_addr),
                     gossip_handle.chitchat(),
                     Some(subscribe_tx.clone()),
+                    None,
                     None,
                 ),
             );
@@ -170,10 +176,12 @@ impl CliArgs {
 
         let pub_sub_task = tokio::spawn(async move {
             network::pub_sub::run(
+                transport,
+                true,
                 Some(net_metrics),
                 self.max_connections,
                 config.bind,
-                config.tls_config(),
+                tls_config,
                 subscribe_tx,
                 outgoing_messages_tx,
                 IncomingSender::AsyncUnbounded(incoming_messages_tx),
@@ -232,7 +240,7 @@ async fn message_multiplexor(
                     )
                 });
                 if let Ok(sent_count) = outgoing_messages.send(OutgoingMessage {
-                    delivery: MessageDelivery::BroadcastExcluding(incoming.peer),
+                    delivery: MessageDelivery::BroadcastExcluding(incoming.connection_info),
                     message: incoming.message,
                     duration_before_transfer: Instant::now(),
                 }) {

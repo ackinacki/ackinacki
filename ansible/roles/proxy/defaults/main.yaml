@@ -1,0 +1,8 @@
+---
+PROXY_DIR: "{{ ROOT_DIR }}/proxy"
+PROXY_LOGS: "{{ PROXY_DIR }}/logs-proxy"
+PROXY_CERTS_DIR: "{{ PROXY_DIR }}/certs"
+LOG_ROTATE_AMOUNT: 50
+LOG_ROTATE_SIZE: 1G
+LOG_ROTATE_SPEC: "0 *"
+PROXY_LOG_LEVEL: error

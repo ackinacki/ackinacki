@@ -5,7 +5,6 @@
  * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
  */
 pragma gosh-solidity >=0.76.1;
-pragma ignoreIntOverflow;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
 
@@ -66,9 +65,9 @@ contract SignerIndex is Modifiers {
      * Requirements:
      * - Only callable by the `_root` address.
      */
-    function isSignerIndexAccept(uint256 pubkey, uint128 rep_coef, LicenseStake[] licenses, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList) public senderIs(_root) accept {
+    function isSignerIndexAccept(uint256 pubkey, uint128 rep_coef, LicenseStake[] licenses, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, string myIp) public senderIs(_root) accept {
         ensureBalance();
-        BlockKeeperContractRoot(_root).isSignerIndexAccepted{value: 0.1 vmshell, flag: 1}(pubkey, _bls, _stake, _ready, _signerIndex, rep_coef, licenses, virtualStake, ProxyList);
+        BlockKeeperContractRoot(_root).isSignerIndexAccepted{value: 0.1 vmshell, flag: 1}(pubkey, _bls, _stake, _ready, _signerIndex, rep_coef, licenses, virtualStake, ProxyList, myIp);
         _ready = true;
     }
 

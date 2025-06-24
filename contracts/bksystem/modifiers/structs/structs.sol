@@ -15,8 +15,7 @@ struct MessageInfo {
 struct Stake {
         uint256 stake;
         uint64 seqNoStart;
-        uint32 timeStampFinish;
-        uint32 timeStampFinishCooler;
+        uint64 seqNoFinish;       
         bytes bls_key;
         uint8 status;
         uint16 signerIndex;
@@ -24,8 +23,9 @@ struct Stake {
 struct LicenseData {
         uint128 reputationTime;
         uint8 status;
+        bool isPriority;
         optional(address) stakeController;
-        uint32 license_start;
+        uint32 last_touch;
         uint128 balance;
         uint128 lockStake;
         uint128 lockContinue;

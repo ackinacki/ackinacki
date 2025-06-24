@@ -42,9 +42,8 @@ services:
     image: {{ NODE_IMAGE }}
     restart: no
     environment:
-      RUST_LOG: debug
+      RUST_LOG: error
       EXTERNAL_STATE_SHARE_LOCAL_BASE_DIR: /share
-      NODE_VERBOSE: 1
       BIND: 0.0.0.0:8500
       API_ADDR: 0.0.0.0:8600
       MESSAGE_ROUTER: 0.0.0.0:8700
@@ -75,6 +74,8 @@ services:
         --shared-state-max-download-tries 30
         --static-storages={{ NODE_STORAGE_LIST | join(',') }}
         --thread-count-soft-limit {{ THREAD_COUNT_SOFT_LIMIT }}
+        --block-keeper-epoch-code-hash {{ CODE_HASH }}
+        && cat acki-nacki.conf.yaml
         && migration-tool -p ./data -n -a --block-manager
         && node -c acki-nacki.conf.yaml >> /logsdir/node.log 2>&1
     ports:
@@ -91,6 +92,23 @@ services:
       - {{ BK_LOGS_DIR }}:/logsdir
     networks:
       - ackinacki-net
+
+  staking{{ NODE_ID }}:
+    image: {{ STAKING_IMAGE }}
+    restart: unless-stopped
+    entrypoint: []
+    pid: service:node{{ NODE_ID }}
+    command:
+      - /bin/bash 
+      - -c
+      - >
+        tvm-cli config -g --url {{ TVM_ENDPOINT }}
+        && exec /staking/staking.sh -l /staking/logs/staking.log -d {{ STAKING_TIME }} /staking/configs/{{ MASTER_KEY | basename }} /staking/configs/block_keeper{{ NODE_ID }}_bls.keys.json {{ HOST_PUBLIC_IP }}
+    volumes:
+      - {{ BK_LOGS_DIR }}:/staking/logs
+      - {{ BK_DIR }}/bk-configs:/staking/configs
+    depends_on:
+      - node{{ NODE_ID }}
 
   logrotate{{ NODE_ID }}:
     image: stakater/logrotate:3.13.0

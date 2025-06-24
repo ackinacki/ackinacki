@@ -49,6 +49,7 @@ url.workspace = true
 account-inbox = { path = "./libs/account-inbox" }
 atomic-wait = "1.1.0"
 bitflags = "2.6.0"
+chitchat.workspace = true
 chrono = { version = "0.4.38", features = ["serde"] }
 core_affinity = { version = "0.8.3" }
 derive-getters = "0.5.0"
@@ -69,7 +70,7 @@ rusqlite.workspace = true
 serde_yaml = "0.9.33"
 signal-hook = "0.3.17"
 thiserror = "2.0.3"
-transport-layer = { path = "../transport-layer/" }
+transport-layer.workspace = true
 typed-builder = "0.20.0"
 weak-table = "0.3.2"
 
@@ -89,11 +90,12 @@ tempfile = "3.14.0"
 testdir = "0.9.3"
 
 [features]
-default = ["fail-fast"]
+default = ["fail-fast", "deadlock-detection"]
 # Use automocks in binaries
 use_automocks = []
 allow-dappid-thread-split = []
 allow-threads-merge = []
+deadlock-detection = []
 fail-fast = []
 nack-on-block-verification-fail = []
 messages_db = []

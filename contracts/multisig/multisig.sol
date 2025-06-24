@@ -41,34 +41,12 @@ contract MultisigWallet is IAccept {
         bool bounce;
     }
 
-    /// Request for code update
-    struct UpdateRequest {
-        // request id
-        uint64 id;
-        // index of custodian submitted request
-        uint8 index;
-        // number of confirmations from custodians
-        uint8 signs;
-        // confirmation binary mask
-        uint32 confirmationsMask;
-        // public key of custodian submitted request
-        uint256 creator;
-        // hash from code's tree of cells
-        uint256 codeHash;
-        // array with new wallet custodians
-        uint256[] custodians;
-        // Default number of confirmations required to execute transaction
-        uint8 reqConfirms;
-    }
-
     /*
      *  Constants
      */
     uint8   constant MAX_QUEUED_REQUESTS = 5;
     uint64  constant EXPIRATION_TIME = 3601; // lifetime is 1 hour
     uint8   constant MAX_CUSTODIAN_COUNT = 32;
-    uint128 constant MIN_VALUE = 1e6;
-    uint    constant MAX_CLEANUP_TXNS = 40;
 
     // Send flags.
     // Forward fees for message will be paid from contract balance.
@@ -89,15 +67,11 @@ contract MultisigWallet is IAccept {
     mapping(uint256 => uint8) m_custodians; // pub_key -> custodian_index
     // Read-only custodian count, initiated in constructor.
     uint8 m_custodianCount;
-    // Set of update requests.
-    mapping (uint64 => UpdateRequest) m_updateRequests;
-    // Binary mask for storing update request counts from custodians.
-    // Every custodian can submit only one request.
-    uint32 m_updateRequestsMask;
-    // Number of custodian confirmations for updating code
-    uint8 m_requiredVotes;
     // Default number of confirmations needed to execute transaction.
     uint8 m_defaultRequiredConfirmations;
+
+    uint128 _min_value = 0;
+    uint _max_cleanup_txns = 40;
 
     /*
     Exception codes:
@@ -125,12 +99,6 @@ contract MultisigWallet is IAccept {
     event TransferAccepted(bytes payload);
 
     /*
-     * Runtime functions
-     */
-    function tvm_ctos(TvmCell cell) private pure returns (uint /* slice */) {}
-    function tvm_tree_cell_size(uint slice) private pure returns (uint, uint) {}
-
-    /*
      * Constructor
      */
 
@@ -139,9 +107,10 @@ contract MultisigWallet is IAccept {
         uint8 ownerCount = 0;
         m_ownerKey = owners[0];
         require(m_ownerKey != 0, 101);
+        m_custodians[m_ownerKey] = ownerCount++;
 
         uint256 len = owners.length;
-        for (uint256 i = 0; (i < len && ownerCount < MAX_CUSTODIAN_COUNT); i++) {
+        for (uint256 i = 1; i < len; i++) {
             uint256 key = owners[i];
             require(key != 0, 101);
             if (!m_custodians.exists(key)) {
@@ -149,7 +118,6 @@ contract MultisigWallet is IAccept {
             }
         }
         m_defaultRequiredConfirmations = ownerCount <= reqConfirms ? ownerCount : reqConfirms;
-        m_requiredVotes = (ownerCount <= 2) ? ownerCount : ((ownerCount * 2 + 1) / 3);
         m_custodianCount = ownerCount;
     }
 
@@ -163,6 +131,20 @@ contract MultisigWallet is IAccept {
         require(reqConfirms > 0, 123);
         tvm.accept();
         _initialize(owners, reqConfirms);
+    }
+
+    function setMaxCleanupTxns(uint value) public {
+        uint8 index = _findCustodian(msg.pubkey());
+        index;
+        tvm.accept();
+        _max_cleanup_txns = value;
+    }
+
+    function setMinValue(uint128 value) public {
+        uint8 index = _findCustodian(msg.pubkey());
+        index;
+        tvm.accept();
+        _min_value = value;
     }
 
     function exchangeToken(uint64 value) public view {
@@ -270,6 +252,7 @@ contract MultisigWallet is IAccept {
     {
         require(m_custodianCount == 1, 108);
         require(msg.pubkey() == m_ownerKey, 100);
+        require(value >= _min_value, 107);
         tvm.accept();
         dest.transfer(varuint16(value), bounce, flags, payload, cc);
         return dest;
@@ -293,9 +276,7 @@ contract MultisigWallet is IAccept {
     {
         uint256 senderKey = msg.pubkey();
         uint8 index = _findCustodian(senderKey);
-        require(value >= MIN_VALUE, 107);
-        (uint bits, uint cells) = tvm_tree_cell_size(tvm_ctos(payload));
-        require(bits < 8192 && cells < 8, 121);
+        require(value >= _min_value, 107);
         _removeExpiredTransactions();
         require(_getMaskValue(m_requestsMask, index) < MAX_QUEUED_REQUESTS, 113);
         tvm.accept();
@@ -367,7 +348,7 @@ contract MultisigWallet is IAccept {
 
         tvm.accept();
         uint i = 0;
-        while (needCleanup && i < MAX_CLEANUP_TXNS) {
+        while (needCleanup && i < _max_cleanup_txns) {
             // transaction is expired, remove it
             i++;
             m_requestsMask = _decMaskValue(m_requestsMask, txn.index);
@@ -386,9 +367,6 @@ contract MultisigWallet is IAccept {
     /*
      * Get methods
      */
-    
-    /// @dev Helper get-method for checking if custodian confirmation bit is set.
-    /// @return confirmed True if confirmation bit is set.
     function isConfirmed(uint32 mask, uint8 index) public pure returns (bool confirmed) {
         confirmed = _isConfirmed(mask, index);
     }
@@ -399,21 +377,19 @@ contract MultisigWallet is IAccept {
     /// @return expirationTime Transaction lifetime in seconds.
     /// @return minValue The minimum value allowed to transfer in one transaction.
     /// @return requiredTxnConfirms The minimum number of confirmations required to execute transaction.
-    /// @return requiredUpdConfirms The minimum number of confirmations required to update wallet code.
     function getParameters() public view
         returns (uint8 maxQueuedTransactions,
                 uint8 maxCustodianCount,
                 uint64 expirationTime,
                 uint128 minValue,
-                uint8 requiredTxnConfirms,
-                uint8 requiredUpdConfirms) {
+                uint8 requiredTxnConfirms
+                ) {
 
         maxQueuedTransactions = MAX_QUEUED_REQUESTS;
         maxCustodianCount = MAX_CUSTODIAN_COUNT;
         expirationTime = EXPIRATION_TIME;
-        minValue = MIN_VALUE;
+        minValue = _min_value;
         requiredTxnConfirms = m_defaultRequiredConfirmations;
-        requiredUpdConfirms = m_requiredVotes;
     }
 
     /// @dev Get-method that returns transaction info by id.
@@ -470,129 +446,7 @@ contract MultisigWallet is IAccept {
             custodians.push(CustodianInfo(index, key));
             oind = m_custodians.next(key);
         }
-    }    
-
-    /*
-        SETCODE public functions
-     */
-    
-    /// @dev Allows to submit update request. New custodians can be supplied.
-    /// @param codeHash Representation hash of code's tree of cells.
-    /// @param owners Array with new custodians.
-    /// @param reqConfirms Default number of confirmations required for executing transaction.
-    /// @return updateId Id of submitted update request.
-    function submitUpdate(uint256 codeHash, uint256[] owners, uint8 reqConfirms) public 
-        returns (uint64 updateId) 
-    {
-        uint256 sender = msg.pubkey();
-        uint8 index = _findCustodian(sender);
-        require(owners.length > 0 && owners.length <= MAX_CUSTODIAN_COUNT, 117);
-        _removeExpiredUpdateRequests();
-        require(!_isSubmitted(m_updateRequestsMask, index), 113);
-        require(reqConfirms > 0, 123);
-        tvm.accept();
-
-        m_updateRequestsMask = _setSubmitted(m_updateRequestsMask, index);
-        updateId = _generateId();
-        m_updateRequests[updateId] = UpdateRequest(updateId, index, 0/*signs*/, 0/*mask*/, 
-            sender, codeHash, owners, reqConfirms);
-        _confirmUpdate(updateId, index);
-    }
-
-    /// @dev Allow to confirm submitted update request. Call executeUpdate to do `setcode`
-    /// after necessary confirmation count.
-    /// @param updateId Id of submitted update request.
-    function confirmUpdate(uint64 updateId) public {
-        uint8 index = _findCustodian(msg.pubkey());
-        _removeExpiredUpdateRequests();
-        optional(UpdateRequest) oreq = m_updateRequests.fetch(updateId);
-        require(oreq.hasValue(), 115);
-        UpdateRequest request = oreq.get();
-        require(!_isConfirmed(request.confirmationsMask, index), 116);
-        tvm.accept();
-
-        _confirmUpdate(updateId, index);
-    }
-
-    /// @dev Allows to execute confirmed update request.
-    /// @param updateId Id of update request.
-    /// @param code Root cell of tree of cells with contract code.
-    function executeUpdate(uint64 updateId, TvmCell code) public {
-        require(m_custodians.exists(msg.pubkey()), 100);
-        _removeExpiredUpdateRequests();
-        optional(UpdateRequest) oreq = m_updateRequests.fetch(updateId);
-        require(oreq.hasValue(), 115);
-        UpdateRequest request = oreq.get();
-        require(tvm.hash(code) == request.codeHash, 119);
-        require(request.signs >= m_requiredVotes, 120);
-        tvm.accept();
-
-        _deleteUpdateRequest(updateId, request.index);
-
-        tvm.setcode(code);
-        tvm.setCurrentCode(code);
-        onCodeUpgrade(request.custodians, request.reqConfirms);
-    }
-
-    /// @dev Get-method to query all pending update requests.
-    function getUpdateRequests() public view returns (UpdateRequest[] updates) {
-        uint64 bound = _getExpirationBound();
-        optional(uint64, UpdateRequest) oreq = m_updateRequests.min();
-        while (oreq.hasValue()) {
-            (uint64 updateId, UpdateRequest req) = oreq.get();
-            if (updateId > bound) {
-                updates.push(req);
-            }
-            oreq = m_updateRequests.next(updateId);
-        }
-    }
-
-    /// @dev Worker function after code update.
-    function onCodeUpgrade(uint256[] newOwners, uint8 reqConfirms) private {
-        tvm.resetStorage();
-        _initialize(newOwners, reqConfirms);
-    }
-    
-    /*
-     * Internal functions
-     */
-
-    /// @dev Internal function for update confirmation.
-    function _confirmUpdate(uint64 updateId, uint8 custodianIndex) inline private {
-        UpdateRequest request = m_updateRequests[updateId];
-        request.signs++;
-        request.confirmationsMask = _setConfirmed(request.confirmationsMask, custodianIndex);
-        m_updateRequests[updateId] = request;
-    }
-
-    /// @dev Removes expired update requests.
-    function _removeExpiredUpdateRequests() inline private {
-        uint64 marker = _getExpirationBound();
-        optional(uint64, UpdateRequest) oreq = m_updateRequests.min();
-        if (!oreq.hasValue()) { return; }
-        (uint64 updateId, UpdateRequest req) = oreq.get();
-        bool needCleanup = updateId <= marker;
-        if (!needCleanup) { return; }
-
-        tvm.accept();
-        while (needCleanup) {
-            // transaction is expired, remove it
-            _deleteUpdateRequest(updateId, req.index);
-            oreq = m_updateRequests.next(updateId);
-            needCleanup = oreq.hasValue();
-            if (needCleanup) {
-                (updateId, req) = oreq.get();
-                needCleanup = updateId <= marker;
-            }
-        }
-        tvm.commit();
-    }
-
-    /// @dev Helper function to correctly delete request.
-    function _deleteUpdateRequest(uint64 updateId, uint8 index) inline private {
-        m_updateRequestsMask &= ~(uint32(1) << index);
-        delete m_updateRequests[updateId];
-    }
+    }  
 
     /*
      * Fallback function to receive simple transfers

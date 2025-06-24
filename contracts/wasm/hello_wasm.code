@@ -1,0 +1,779 @@
+.fragment c4_to_c7, {
+	PUSHROOT
+	CTOS
+	LDU 256 ; pubkey c4
+	LDU 64 ; pubkey timestamp c4
+	LDU 1 ; ctor flag
+	LDU 32
+	ENDS
+	SETGLOB 10
+	SETGLOB 6
+	SETGLOB 3
+	SETGLOB 2
+}
+
+.fragment c7_to_c4, {
+	GETGLOB 10
+	GETGLOB 3
+	GETGLOB 2
+	NEWC
+	STU 256
+	STU 64
+	STONE
+	STU 32
+	ENDC
+	POPROOT
+}
+
+.fragment getTokens_aa6ca808_internal, {
+	.loc helloWorld.sol, 169
+	GETPARAM 7
+	FIRST
+	PUSHINT 100000000000
+	GREATER
+	IFRET
+	.loc helloWorld.sol, 172
+	PUSHINT 100000000000
+	MINTSHELL
+	.loc helloWorld.sol, 0
+}
+
+.fragment callExtTouch_347a50dc_internal, {
+	.loc helloWorld.sol, 110
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 2
+	EQUAL
+	THROWIFNOT 102
+	.loc helloWorld.sol, 111
+	ACCEPT
+	.loc helloWorld.sol, 112
+	CALLREF {
+		.inline getTokens_aa6ca808_internal
+	}
+	.loc helloWorld.sol, 113
+	NEWC
+	STSLICECONST x62_
+	STSLICE
+	PUSHSLICE x398968000000000000000000000000000037312e45
+	STSLICER
+	ENDC
+	PUSHINT 0
+	SENDRAWMSG
+	.loc helloWorld.sol, 0
+}
+
+.fragment callExtTouch, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc helloWorld.sol, 107
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDMSGADDR
+	ENDS
+	.loc helloWorld.sol, 0
+	CALLREF {
+		.inline callExtTouch_347a50dc_internal
+	}
+	IFREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment constructor, {
+	DROP
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 6
+	THROWIF 51
+	LDU 64
+	ENDS
+	.loc helloWorld.sol, 22
+	CNVRTSHELLQ
+	.loc helloWorld.sol, 25
+	GETGLOB 2
+	THROWIFNOT 101
+	.loc helloWorld.sol, 30
+	ACCEPT
+	.loc helloWorld.sol, 33
+	NOW
+	SETGLOB 10
+	.loc helloWorld.sol, 0
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment deployNewContract_e6e22826_internal, {
+	.loc helloWorld.sol, 158
+	ACCEPT
+	.loc helloWorld.sol, 159
+	CALLREF {
+		.inline getTokens_aa6ca808_internal
+	}
+	.loc helloWorld.sol, 160
+	PUSH S2
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc helloWorld.sol, 161
+	ROT
+	UFITS 120
+	SWAP
+	NEWC
+	STSLICECONST x62_
+	STSLICE
+	SWAP
+	STGRAMS
+	PUSHINT 3
+	STUR 108
+	XC2PU S0, S2, S0
+	CALLREF {
+		CTOS
+		LDI 1
+		SWAP
+		PUSHCONT {
+			LDI 5
+			NIP
+		}
+		IF
+		LDI 1
+		SWAP
+		PUSHCONT {
+			LDI 2
+			NIP
+		}
+		IF
+		LDDICT
+		LDDICT
+		LDDICT
+		ENDS
+		BLKDROP 3
+	}
+	STREFR
+	STONE
+	STREF
+	ENDC
+	PUSHINT 0
+	SENDRAWMSG
+	.loc helloWorld.sol, 0
+}
+
+.fragment deployNewContract, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	.loc helloWorld.sol, 150
+	LDREF
+	LDU 128
+	LDREF
+	ENDS
+	.loc helloWorld.sol, 0
+	CALLREF {
+		.inline deployNewContract_e6e22826_internal
+	}
+	IFREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment exchangeToken_53d168e3_internal, {
+	.loc helloWorld.sol, 39
+	ACCEPT
+	.loc helloWorld.sol, 40
+	CALLREF {
+		.inline getTokens_aa6ca808_internal
+	}
+	.loc helloWorld.sol, 41
+	CNVRTSHELLQ
+	.loc helloWorld.sol, 0
+}
+
+.fragment exchangeToken, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	.loc helloWorld.sol, 38
+	LDU 64
+	ENDS
+	.loc helloWorld.sol, 0
+	CALLREF {
+		.inline exchangeToken_53d168e3_internal
+	}
+	IFREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment renderHelloWorld_942ae0a7_internal, {
+	.loc helloWorld.sol, 47
+	PUSHREF {
+		.blob x68656c6c6f576f726c64
+	}
+	.loc helloWorld.sol, 0
+}
+
+.fragment renderHelloWorld, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	.loc helloWorld.sol, 46
+	ENDS
+	.loc helloWorld.sol, 0
+	CALLREF {
+		.inline renderHelloWorld_942ae0a7_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 2268343370
+		STUR 130
+		STREF
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment runWasm_c6596f46_internal, {
+	.loc helloWorld.sol, 54
+	ACCEPT
+	.loc helloWorld.sol, 55
+	CALLREF {
+		.inline getTokens_aa6ca808_internal
+	}
+	.loc helloWorld.sol, 60
+	NEWC
+	STREF
+	ENDC
+	SWAP
+	NEWC
+	STREF
+	ENDC
+	ROT
+	NEWC
+	STREF
+	ENDC
+	ROLL 3
+	NEWC
+	STREF
+	ENDC
+	RUNWASM
+	.loc helloWorld.sol, 61
+	CALLREF {
+		.inline c7_to_c4
+	}
+	COMMIT
+	.loc helloWorld.sol, 62
+	PRINTSTR x726573756c74206163717569726564
+	.loc helloWorld.sol, 65
+	CTOS
+	LDREF
+	ENDS
+	.loc helloWorld.sol, 0
+}
+
+.fragment runWasm, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc helloWorld.sol, 52
+	LDREF
+	LDREF
+	LDREF
+	LDREF
+	ENDS
+	.loc helloWorld.sol, 0
+	CALLREF {
+		.inline runWasm_c6596f46_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 3629407716
+		STUR 130
+		STREF
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment sendShell_77e2a3b5_internal, {
+	.loc helloWorld.sol, 133
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 2
+	EQUAL
+	THROWIFNOT 102
+	.loc helloWorld.sol, 134
+	ACCEPT
+	.loc helloWorld.sol, 135
+	CALLREF {
+		.inline getTokens_aa6ca808_internal
+	}
+	.loc helloWorld.sol, 139
+	PUSHINT 2
+	NULL
+	NEWC
+	ROLL 3
+	STVARUINT32
+	ROTREV
+	PUSHINT 32
+	DICTUSETB
+	.loc helloWorld.sol, 141
+	SWAP
+	NEWC
+	STSLICECONST x62_
+	STSLICE
+	STSLICECONST x0
+	STDICT
+	PUSHINT 1
+	STUR 107
+	PUSHREF {
+	}
+	STREFR
+	ENDC
+	PUSHINT 1
+	SENDRAWMSG
+	.loc helloWorld.sol, 0
+}
+
+.fragment sendShell, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc helloWorld.sol, 132
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDMSGADDR
+	LDU 128
+	ENDS
+	.loc helloWorld.sol, 0
+	CALLREF {
+		.inline sendShell_77e2a3b5_internal
+	}
+	IFREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment sendVMShell_e1519e7b_internal, {
+	.loc helloWorld.sol, 122
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 2
+	EQUAL
+	THROWIFNOT 102
+	.loc helloWorld.sol, 123
+	ACCEPT
+	.loc helloWorld.sol, 124
+	CALLREF {
+		.inline getTokens_aa6ca808_internal
+	}
+	.loc helloWorld.sol, 126
+	SWAP
+	UFITS 120
+	ROTREV
+	NEWC
+	STSLICECONST x6_
+	STI 1
+	STSLICECONST x1_
+	STSLICE
+	SWAP
+	STGRAMS
+	PUSHINT 108
+	STZEROES
+	ENDC
+	PUSHINT 0
+	SENDRAWMSG
+	.loc helloWorld.sol, 0
+}
+
+.fragment sendVMShell, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc helloWorld.sol, 121
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDMSGADDR
+	LDU 128
+	LDI 1
+	ENDS
+	.loc helloWorld.sol, 0
+	CALLREF {
+		.inline sendVMShell_e1519e7b_internal
+	}
+	IFREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment timestamp, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 10
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000e817e535
+		NEWC
+		STSLICE
+		STU 32
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment touch_a55526db_internal, {
+	.loc helloWorld.sol, 99
+	ACCEPT
+	.loc helloWorld.sol, 100
+	CALLREF {
+		.inline getTokens_aa6ca808_internal
+	}
+	.loc helloWorld.sol, 102
+	NOW
+	SETGLOB 10
+	.loc helloWorld.sol, 0
+}
+
+.fragment touch, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc helloWorld.sol, 97
+	ENDS
+	.loc helloWorld.sol, 0
+	CALLREF {
+		.inline touch_a55526db_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment public_function_selector, {
+	DUP
+	PUSHINT 925969989
+	LEQ
+	IFJMPREF {
+		DUP
+		PUSHINT 120859722
+		EQUAL
+		IFJMPREF {
+			.inline renderHelloWorld
+		}
+		DUP
+		PUSHINT 508100433
+		EQUAL
+		IFJMPREF {
+			.inline sendShell
+		}
+		DUP
+		PUSHINT 658004325
+		EQUAL
+		IFJMPREF {
+			.inline deployNewContract
+		}
+		DUP
+		PUSHINT 925969989
+		EQUAL
+		IFJMPREF {
+			.inline touch
+		}
+	}
+	DUP
+	PUSHINT 1799946329
+	LEQ
+	IFJMPREF {
+		DUP
+		PUSHINT 1481924068
+		EQUAL
+		IFJMPREF {
+			.inline runWasm
+		}
+		DUP
+		PUSHINT 1746396469
+		EQUAL
+		IFJMPREF {
+			.inline timestamp
+		}
+		DUP
+		PUSHINT 1799946329
+		EQUAL
+		IFJMPREF {
+			.inline sendVMShell
+		}
+	}
+	DUP
+	PUSHINT 1993511324
+	LEQ
+	IFJMPREF {
+		DUP
+		PUSHINT 1883103951
+		EQUAL
+		IFJMPREF {
+			.inline constructor
+		}
+		DUP
+		PUSHINT 1993511324
+		EQUAL
+		IFJMPREF {
+			.inline callExtTouch
+		}
+	}
+	DUP
+	PUSHINT 2090498174
+	EQUAL
+	IFJMPREF {
+		.inline exchangeToken
+	}
+}
+
+.fragment main_external, {
+	OVER
+	CALLREF {
+		.inline c4_to_c7
+	}
+	LDU 1 ; haveSign msgSlice
+	SWAP
+	PUSHCONT {
+		PUSHPOW2 9
+		LDSLICEX
+		DUP
+		MYADDR
+		NEWC
+		STSLICE
+		STSLICE
+		ENDC
+		HASHCU
+		ROT
+		GETGLOB 2
+		DUP
+		SETGLOB 5
+		CHKSIGNU
+		THROWIFNOT 40
+	}
+	IF
+	LDU 64 ; timestamp msgSlice
+	SWAP
+	.inline __replayProtection
+	LDU 32 ; expireAt msgSlice
+	SWAP
+	NOW ; msgSlice expireAt now
+	GREATER ; msgSlice expireAt>now
+	THROWIFNOT 57
+	LDU 32 ; funcId body
+	SWAP
+	CALLREF {
+		.inline public_function_selector
+	}
+	THROW 60
+}
+
+.fragment main_internal, {
+	PUSHROOT
+	CTOS
+	PUSHINT 320
+	SDSKIPFIRST
+	PLDI 1
+	SETGLOB 6
+	PUSH S2
+	CTOS
+	PLDU 4
+	MODPOW2 1
+	IFRET
+	OVER
+	SEMPTY ; isEmpty
+	IFJMPREF {
+		GETGLOB 6
+		THROWIFNOT 76
+	}
+	OVER
+	LDUQ 32  ; [funcId] body' ok
+	THROWIFNOT 60
+	OVER
+	IFNOTJMPREF {
+		GETGLOB 6
+		THROWIFNOT 76
+	}
+	SWAP
+	CALLREF {
+		.inline public_function_selector
+	}
+	THROW 60
+}
+
+.fragment default_data_cell, {
+	PUSHREF {
+		.blob x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000004_
+	}
+}
+
+.fragment upd_only_time_in_c4, {
+	PUSHROOT
+	CTOS
+	LDU 256
+	LDU 64
+	NIP
+	GETGLOB 3
+	ROT
+	NEWC
+	STU 256
+	STU 64
+	STSLICE
+	ENDC
+	POPROOT
+}
+
+.fragment onTickTock, {
+}
+
+; The code below forms a value of the StateInit type.
+.blob x4_ ; split_depth = nothing
+.blob x4_ ; special = nothing
+.blob xc_ ; code = just
+.cell { ; code cell
+	PUSHREFCONT {
+		DICTPUSHCONST 32
+		DICTUGETJMPZ
+		THROW 78
+		.code-dict-cell 32, {
+		}
+		.cell { ; version
+			.blob x736f6c20302e37372e32 ; sol 0.77.2
+		}
+	}
+	POPCTR c3
+	DUP
+	IFNOTJMPREF {
+		.inline main_internal
+	}
+	DUP
+	EQINT -1
+	IFJMPREF {
+		.inline main_external
+	}
+	DUP
+	EQINT -2
+	IFJMPREF {
+		.inline onTickTock
+	}
+	THROW 11
+}
+.blob xc_ ; data = just
+.cell { 
+	.inline-computed-cell default_data_cell, 0
+}
+.blob x4_ ; library = hme_empty

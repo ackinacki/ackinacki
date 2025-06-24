@@ -4,15 +4,14 @@
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
 
 use chitchat::spawn_chitchat;
 use chitchat::transport::UdpTransport;
-use chitchat::Chitchat;
 use chitchat::ChitchatConfig;
 use chitchat::ChitchatId;
+use chitchat::ChitchatRef;
 use chitchat::FailureDetectorConfig;
 use cool_id_generator::Size;
 use gossip::ApiResponse;
@@ -24,11 +23,10 @@ use poem_openapi::payload::Json;
 use poem_openapi::OpenApi;
 use poem_openapi::OpenApiService;
 use structopt::StructOpt;
-use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 struct Api {
-    chitchat: Arc<Mutex<Chitchat>>,
+    chitchat: ChitchatRef,
 }
 
 #[OpenApi]
@@ -36,7 +34,7 @@ impl Api {
     /// Chitchat state
     #[oai(path = "/", method = "get")]
     async fn index(&self) -> Json<serde_json::Value> {
-        let chitchat_guard = self.chitchat.lock().await;
+        let chitchat_guard = self.chitchat.lock();
         let response = ApiResponse {
             cluster_id: chitchat_guard.cluster_id().to_string(),
             cluster_state: chitchat_guard.state_snapshot(),
@@ -49,7 +47,7 @@ impl Api {
     /// Sets a key-value pair on this node (without validation).
     #[oai(path = "/set_kv/", method = "get")]
     async fn set_kv(&self, key: Query<String>, value: Query<String>) -> Json<serde_json::Value> {
-        let mut chitchat_guard = self.chitchat.lock().await;
+        let mut chitchat_guard = self.chitchat.lock();
 
         let cc_state = chitchat_guard.self_node_state();
         cc_state.set(key.as_str(), value.as_str());
@@ -113,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
     let api = Api { chitchat: chitchat.clone() };
 
     {
-        let mut chitchat_guard = chitchat.lock().await;
+        let mut chitchat_guard = chitchat.lock();
         let cc_state = chitchat_guard.self_node_state();
         cc_state.set("bind", public_addr);
     }
@@ -124,22 +122,24 @@ async fn main() -> anyhow::Result<()> {
     let app = Route::new().nest("/", api_service).nest("/docs", docs);
     let _thread = tokio::spawn(async move {
         loop {
-            let chitchat_guard = chitchat.lock().await;
-            let live_nodes = chitchat_guard
-                .live_nodes()
-                .map(|n| n.node_id.clone())
-                .filter(|node_id| *node_id != chitchat_guard.self_chitchat_id().node_id)
-                .collect::<HashSet<_>>();
-            tracing::info!("Live nodes: {live_nodes:?}");
-            let binds = chitchat_guard
-                .state_snapshot()
-                .node_states
-                .iter()
-                .filter(|snapshot| live_nodes.contains(&snapshot.chitchat_id().node_id))
-                .filter_map(|snapshot| snapshot.get("bind"))
-                .filter_map(|bind| SocketAddr::from_str(bind).ok())
-                .collect::<Vec<_>>();
-            tracing::info!("Binds: {binds:?}");
+            {
+                let chitchat_guard = chitchat.lock();
+                let live_nodes = chitchat_guard
+                    .live_nodes()
+                    .map(|n| n.node_id.clone())
+                    .filter(|node_id| *node_id != chitchat_guard.self_chitchat_id().node_id)
+                    .collect::<HashSet<_>>();
+                tracing::info!("Live nodes: {live_nodes:?}");
+                let binds = chitchat_guard
+                    .state_snapshot()
+                    .node_states
+                    .iter()
+                    .filter(|snapshot| live_nodes.contains(&snapshot.chitchat_id().node_id))
+                    .filter_map(|snapshot| snapshot.get("bind"))
+                    .filter_map(|bind| SocketAddr::from_str(bind).ok())
+                    .collect::<Vec<_>>();
+                tracing::info!("Binds: {binds:?}");
+            }
             sleep(Duration::from_secs(1)).await;
         }
     });

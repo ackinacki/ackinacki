@@ -1,48 +1,37 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use telemetry_utils::mpsc::InstrumentedSender;
 
-use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
-use crate::message_storage::MessageDurableStorage;
-use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::services::sync::StateSyncService;
-use crate::node::shared_services::SharedServices;
+use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
-use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
+use crate::types::ThreadIdentifier;
 
 pub struct StateSyncServiceStub {}
 
 impl StateSyncService for StateSyncServiceStub {
     type Repository = RepositoryImpl;
-    type ResourceAddress = String;
 
-    fn add_share_state_task(
-        &mut self,
-        _finalized_block: &Envelope<GoshBLS, AckiNackiBlock>,
-        _message_db: &MessageDurableStorage,
-        _repository: &RepositoryImpl,
-        _block_state_repository: &BlockStateRepository,
-        _shared_services: &SharedServices,
-    ) -> anyhow::Result<Self::ResourceAddress> {
+    fn reset_sync(&self) {
+        todo!()
+    }
+
+    fn save_state_for_sharing(&self, _state: Arc<OptimisticStateImpl>) -> anyhow::Result<()> {
         todo!()
     }
 
     fn add_load_state_task(
         &mut self,
-        _resource_address: Self::ResourceAddress,
-        _output: InstrumentedSender<anyhow::Result<(Self::ResourceAddress, Vec<u8>)>>,
+        _resource_address: HashMap<ThreadIdentifier, BlockIdentifier>,
+        _repository: RepositoryImpl,
+        _output: InstrumentedSender<anyhow::Result<()>>,
     ) -> anyhow::Result<()> {
         Ok(())
-    }
-
-    fn generate_resource_address(
-        &self,
-        _block_id: &BlockIdentifier,
-    ) -> anyhow::Result<Self::ResourceAddress> {
-        todo!()
     }
 }
 impl Default for StateSyncServiceStub {

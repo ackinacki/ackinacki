@@ -7,7 +7,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 
 use message_router::bp_resolver::BPResolver;
-use network::socket_addr::ToOneSocketAddr;
+use network::try_parse_socket_addr;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
 
@@ -17,18 +17,17 @@ pub struct BPResolverImpl {
 }
 
 impl BPResolverImpl {
-    pub fn new() -> Self {
-        let default_bp = std::env::var("DEFAULT_BP")
-            .expect("DEFAULT_BP environment variable must be set")
-            .to_socket_addr();
+    pub fn new(default_bp: SocketAddr) -> Self {
         let map_thread_addr = Arc::new(RwLock::new(HashMap::new()));
 
         Self { default_bp, map_thread_addr }
     }
 
     pub fn upsert(&mut self, thread_id: String, bp_list: Vec<String>) -> anyhow::Result<()> {
-        let new_addrs: Vec<SocketAddr> =
-            bp_list.into_iter().map(|addr_str| addr_str.to_socket_addr()).collect();
+        let new_addrs: Vec<SocketAddr> = bp_list
+            .into_iter()
+            .map(|addr_str| try_parse_socket_addr(addr_str, crate::DEFAULT_BP_PORT))
+            .collect::<Result<_, _>>()?;
 
         let mut map = self.map_thread_addr.write();
         if map.get(&thread_id) != Some(&new_addrs) {

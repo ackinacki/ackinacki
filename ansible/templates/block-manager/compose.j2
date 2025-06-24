@@ -6,8 +6,7 @@ services:
     init: true
     environment:
       RUST_BACKTRACE: 1
-      RUST_LOG: debug
-      NODE_VERBOSE: 1
+      RUST_LOG: error
       HTTP_SRC_URL: http://{{ HTTP_URL }}
       SQLITE_PATH: ./data
       STREAM_SRC_URL: https://{{ NODE_IP }}:12000

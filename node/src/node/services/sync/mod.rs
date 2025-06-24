@@ -8,3 +8,6 @@ pub use external_fileshares_based::ExternalFileSharesBased;
 
 mod stub;
 pub use stub::StateSyncServiceStub;
+
+mod file_saving_service;
+pub use file_saving_service::FileSavingService;

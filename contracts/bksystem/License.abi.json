@@ -48,7 +48,9 @@
 		{
 			"name": "deleteLicense",
 			"inputs": [
-				{"name":"reputationTime","type":"uint128"}
+				{"name":"reputationTime","type":"uint128"},
+				{"name":"isPriority","type":"bool"},
+				{"name":"last_touch","type":"uint32"}
 			],
 			"outputs": [
 			]
@@ -73,7 +75,7 @@
 			"name": "acceptLicense",
 			"inputs": [
 				{"name":"pubkey","type":"uint256"},
-				{"name":"license_start","type":"uint32"}
+				{"name":"last_touch","type":"uint32"}
 			],
 			"outputs": [
 			]
@@ -141,9 +143,11 @@
 		{"init":false,"name":"_rootElection","type":"address"},
 		{"init":false,"name":"_bkwallet","type":"optional(address)"},
 		{"init":false,"name":"_reputationTime","type":"uint128"},
+		{"init":false,"name":"_isPriority","type":"bool"},
 		{"init":false,"name":"_code","type":"map(uint8,cell)"},
 		{"init":false,"name":"_license_start","type":"uint32"},
 		{"init":false,"name":"is_ready","type":"bool"},
-		{"init":false,"name":"_lock_seqno","type":"uint128"}
+		{"init":false,"name":"_lock_seqno","type":"uint128"},
+		{"init":false,"name":"_last_touch","type":"uint32"}
 	]
 }

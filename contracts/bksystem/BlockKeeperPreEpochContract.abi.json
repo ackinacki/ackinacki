@@ -7,14 +7,16 @@
 			"name": "constructor",
 			"inputs": [
 				{"name":"waitStep","type":"uint64"},
-				{"name":"epochDuration","type":"uint32"},
+				{"name":"epochDuration","type":"uint64"},
 				{"name":"bls_pubkey","type":"bytes"},
 				{"name":"code","type":"map(uint8,cell)"},
 				{"name":"signerIndex","type":"uint16"},
 				{"name":"rep_coef","type":"uint128"},
 				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"virtualStake","type":"optional(uint128)"},
-				{"name":"ProxyList","type":"map(uint8,string)"}
+				{"name":"ProxyList","type":"map(uint8,string)"},
+				{"name":"reward_sum","type":"uint128"},
+				{"name":"myIp","type":"string"}
 			],
 			"outputs": [
 			]
@@ -69,7 +71,7 @@
 		{"init":false,"name":"_root","type":"address"},
 		{"init":true,"name":"_seqNoStart","type":"uint64"},
 		{"init":false,"name":"_seqNoDestruct","type":"uint64"},
-		{"init":false,"name":"_epochDuration","type":"uint32"},
+		{"init":false,"name":"_epochDuration","type":"uint64"},
 		{"init":false,"name":"_waitStep","type":"uint64"},
 		{"init":false,"name":"_owner","type":"address"},
 		{"init":false,"name":"_bls_pubkey","type":"bytes"},
@@ -78,6 +80,8 @@
 		{"init":false,"name":"_sumReputationCoef","type":"uint128"},
 		{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"init":false,"name":"_licenses","type":"tuple[]"},
 		{"init":false,"name":"_wallet","type":"address"},
-		{"init":false,"name":"_virtualStake","type":"optional(uint128)"}
+		{"init":false,"name":"_virtualStake","type":"optional(uint128)"},
+		{"init":false,"name":"_reward_sum","type":"uint128"},
+		{"init":false,"name":"_myIp","type":"string"}
 	]
 }

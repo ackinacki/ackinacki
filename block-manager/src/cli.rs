@@ -37,6 +37,10 @@ pub struct Args {
     #[arg(long, env)]
     pub http_src_url: Url,
 
+    /// REST API endpoint
+    #[arg(long, env, default_value = "0.0.0.0:8001")]
+    pub rest_api: std::net::SocketAddr,
+
     /// File path for sqlite
     #[arg(long, env)]
     pub sqlite_path: PathBuf,

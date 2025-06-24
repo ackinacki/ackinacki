@@ -133,6 +133,14 @@ impl BlockProducer for TVMBlockProducer {
         let (initial_state, in_table, white_list_of_slashing_messages_hashes, forwarded_messages) =
             trace_span!("pre processing").in_scope(|| {
                 tracing::trace!("Start production");
+                tracing::trace!(
+                    "Producing block for {}, parent_seq_no: {}, refs: {:?}",
+                    thread_identifier,
+                    parent_block_state.block_seq_no,
+                    refs.clone()
+                        .map(|e| (*e.block_thread_identifier(), *e.block_seq_no()))
+                        .collect::<Vec<_>>()
+                );
                 let mut wrapped_slash_messages = vec![];
                 let mut white_list_of_slashing_messages_hashes = HashSet::new();
                 trace_span!("nacks").in_scope(|| {

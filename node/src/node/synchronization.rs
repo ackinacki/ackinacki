@@ -1,8 +1,10 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::HashMap;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::TryRecvError;
+use std::sync::Arc;
 use std::time::Duration;
 
 use telemetry_utils::mpsc::instrumented_channel;
@@ -16,6 +18,7 @@ use crate::node::associated_types::SynchronizationResult;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
 use crate::node::Node;
+use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::next_seq_no;
@@ -33,13 +36,14 @@ where
         &mut self,
     ) -> anyhow::Result<SynchronizationResult<NetworkMessage>> {
         tracing::trace!("Start synchronization");
+        self.state_sync_service.reset_sync();
         let (synchronization_tx, synchronization_rx) = instrumented_channel(
             self.metrics.clone(),
             crate::helper::metrics::STATE_LOAD_RESULT_CHANNEL,
         );
         let mut initial_state: Option<(BlockIdentifier, BlockSeqNo)> = None;
         let mut initial_state_shared_resource_address: Option<
-            <TStateSyncService as StateSyncService>::ResourceAddress,
+            HashMap<ThreadIdentifier, BlockIdentifier>,
         > = None;
         let mut last_node_join_message_time = Instant::now();
         // Broadcast NodeJoining only the first start of the node, do not broadcast it on split
@@ -48,7 +52,6 @@ where
         }
         let mut block_request_was_sent = false;
         let mut recieved_sync_from = None;
-        let current_thread_id = self.thread_id;
 
         loop {
             // We have already synced with some nodes before launching the execution, but we
@@ -60,65 +63,67 @@ where
                 // If we have to broadcast NodeJoining, we definitely did not get state from previous
                 initial_state = None;
                 initial_state_shared_resource_address = None;
+                self.state_sync_service.reset_sync();
             }
-            if let Some(ref resource_address) = initial_state_shared_resource_address {
+            if let Some(ref _resource_address) = initial_state_shared_resource_address {
+                initial_state_shared_resource_address = None;
                 match synchronization_rx.try_recv() {
-                    Ok(Ok((task_resource_address, state_buffer))) => {
-                        tracing::trace!(
-                            "Consensus received sync: task_resource_address={task_resource_address} resource_address={resource_address}"
-                        );
-                        if &task_resource_address == resource_address {
-                            // Save
-                            let (block_id, _seq_no) = initial_state.clone().unwrap();
-                            tracing::trace!(
-                                "[synchronization] set state from shared resource: {block_id:?}"
-                            );
-                            self.repository.set_state_from_snapshot(
-                                <RepositoryImpl as Repository>::StateSnapshot::from(state_buffer),
-                                &current_thread_id,
-                                self.skipped_attestation_ids.clone(),
-                            )?;
+                    Ok(Ok(())) => {
+                        // tracing::trace!(
+                        //     "Consensus received sync: task_resource_address={task_resource_address} resource_address={resource_address}"
+                        // );
+                        // if &task_resource_address == resource_address {
+                        // Save
+                        // let (block_id, _seq_no) = initial_state.clone().unwrap();
+                        // tracing::trace!(
+                        //     "[synchronization] set state from shared resource: {block_id:?}"
+                        // );
+                        // self.repository.set_state_from_snapshot(
+                        //     <RepositoryImpl as Repository>::StateSnapshot::from(state_buffer),
+                        //     &current_thread_id,
+                        //     self.skipped_attestation_ids.clone(),
+                        // )?;
 
-                            initial_state_shared_resource_address = None;
+                        // initial_state_shared_resource_address = None;
 
-                            if let Some(block) = self.repository.get_block(&block_id)? {
-                                tracing::trace!("loaded synced finalized block: {block}");
-                                // let mut signs = block.clone_signature_occurrences();
-                                // signs.retain(|_k, count| *count > 0);
-                                // if signs.len() >= self.min_signatures_count_to_accept_broadcasted_state(seq_no) {
-                                // self.finalize_synced_block(&block)?;
-                                // return match self.take_next_unprocessed_block(block_id, seq_no)? {
-                                //     Some(next_block) => {
-                                //         tracing::trace!(
-                                //             "Next unprocessed block after sync: {:?} {:?}",
-                                //             next_block.data().seq_no(),
-                                //             next_block.data().identifier()
-                                //         );
-                                //         Ok(SynchronizationResult::Forward(
-                                //             NetworkMessage::Candidate(next_block),
-                                //         ))
-                                //     }
-                                //     None => {
-                                //         tracing::trace!(
-                                //             "Next unprocessed block after sync was not found"
-                                //         );
-                                return Ok(SynchronizationResult::Ok);
-                                // }
-                                // };
-                                // } else {
-                                //     tracing::trace!("Loaded block does not have enough signatures");
-                                // }
-                                // } else {
-                                //     tracing::trace!("Synced finalized block was not found");
-                            }
-                            // otherwise wait for the block
-                            continue;
-                        }
+                        // if let Some(block) = self.repository.get_block(&block_id)? {
+                        //     tracing::trace!("loaded synced finalized block: {block}");
+                        // let mut signs = block.clone_signature_occurrences();
+                        // signs.retain(|_k, count| *count > 0);
+                        // if signs.len() >= self.min_signatures_count_to_accept_broadcasted_state(seq_no) {
+                        // self.finalize_synced_block(&block)?;
+                        // return match self.take_next_unprocessed_block(block_id, seq_no)? {
+                        //     Some(next_block) => {
+                        //         tracing::trace!(
+                        //             "Next unprocessed block after sync: {:?} {:?}",
+                        //             next_block.data().seq_no(),
+                        //             next_block.data().identifier()
+                        //         );
+                        //         Ok(SynchronizationResult::Forward(
+                        //             NetworkMessage::Candidate(next_block),
+                        //         ))
+                        //     }
+                        //     None => {
+                        //         tracing::trace!(
+                        //             "Next unprocessed block after sync was not found"
+                        //         );
+                        return Ok(SynchronizationResult::Ok);
+                        // }
+                        // };
+                        // } else {
+                        //     tracing::trace!("Loaded block does not have enough signatures");
+                        // }
+                        // } else {
+                        //     tracing::trace!("Synced finalized block was not found");
+                        // }
+                        // otherwise wait for the block
+                        // continue;
+                        // }
                     }
                     Ok(Err(e)) => {
                         // Note: State download failed.
                         // Nothing can be done at this moment. Should be investigated.
-                        panic!("{}", e);
+                        tracing::error!("Synchronization error: {}", e);
                     }
                     Err(TryRecvError::Disconnected) => {
                         // TODO: we have to fix channel and move it entirely so this event may
@@ -274,20 +279,16 @@ where
 
                         if initial_state_shared_resource_address.is_none() {
                             if let Some(resource_address) =
-                                envelope.data().directives().share_state_resource_address
+                                envelope.data().directives().share_state_resources()
                             {
-                                tracing::trace!(
-                                    "[synchronizing] Incoming block contains directives: {resource_address}"
-                                );
-                                let resource_address: TStateSyncService::ResourceAddress =
-                                    serde_json::from_str(&resource_address)?;
                                 initial_state_shared_resource_address =
                                     Some(resource_address.clone());
                                 initial_state =
                                     Some((net_block.identifier.clone(), net_block.seq_no));
 
                                 self.state_sync_service.add_load_state_task(
-                                    resource_address,
+                                    resource_address.clone(),
+                                    self.repository.clone(),
                                     synchronization_tx.clone(),
                                 )?;
                             }
@@ -322,19 +323,18 @@ where
                     }
                     NetworkMessage::SyncFinalized((identifier, seq_no, address, _)) => {
                         tracing::info!(
-                            "[synchronizing] Received SyncFinalized: {:?} {:?} {}",
+                            "[synchronizing] Received SyncFinalized: {:?} {:?} {:?}",
                             seq_no,
                             identifier,
                             address
                         );
                         if initial_state_shared_resource_address.is_none() {
                             tracing::trace!("[synchronizing] start loading shared state");
-                            let resource_address: TStateSyncService::ResourceAddress =
-                                serde_json::from_str(&address)?;
-                            initial_state_shared_resource_address = Some(resource_address.clone());
+                            initial_state_shared_resource_address = Some(address.clone());
                             initial_state = Some((identifier.clone(), seq_no));
                             self.state_sync_service.add_load_state_task(
-                                resource_address,
+                                address,
+                                self.repository.clone(),
                                 synchronization_tx.clone(),
                             )?;
                         }
@@ -410,20 +410,31 @@ where
                 last_finalized_block_id,
                 last_finalized_seq_no
             );
-            let finalized_block =
-                self.repository.get_block(&last_finalized_block_id)?.expect("missing block");
-            let resource_address = self.state_sync_service.add_share_state_task(
-                &finalized_block,
-                &self.message_db,
-                &self.repository,
-                &self.block_state_repository,
-                &self.shared_services,
-            )?;
-            let resource_address = serde_json::to_string(&resource_address)?;
+            let finalized_block = self
+                .repository
+                .get_block(&last_finalized_block_id)?
+                .ok_or(anyhow::format_err!("missing last finalized block"))?;
+            let finalized_state = self
+                .repository
+                .get_optimistic_state(
+                    &last_finalized_block_id,
+                    &finalized_block.data().get_common_section().thread_id,
+                    None,
+                )?
+                .ok_or(anyhow::format_err!("Failed to load finalized state"))?;
+            let share_state_hint = finalized_state.get_share_stare_refs();
+            for (thread_id, block_id) in &share_state_hint {
+                if let Some(state) =
+                    self.repository.get_full_optimistic_state(block_id, thread_id, None)?
+                {
+                    self.state_sync_service.save_state_for_sharing(Arc::new(state))?;
+                }
+            }
+
             self.broadcast_sync_finalized(
                 last_finalized_block_id,
                 last_finalized_seq_no,
-                resource_address,
+                share_state_hint,
             )?;
         }
         Ok(())

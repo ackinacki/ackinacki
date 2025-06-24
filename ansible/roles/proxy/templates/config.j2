@@ -1,0 +1,18 @@
+my_cert: ""
+my_key: ""
+
+peer_certs: []
+
+bind: {{ ansible_host }}:8085
+my_addr: {{ ansible_host }}:8085
+
+subscribe: []
+
+gossip:
+  listen_addr: 0.0.0.0:10000
+  advertise_addr: {{ ansible_host }}:10000
+  seeds:
+  {% for seed in SEEDS -%}
+  - {{ seed }}
+  {% endfor -%}
+  cluster_id: {{ NETWORK_NAME }}

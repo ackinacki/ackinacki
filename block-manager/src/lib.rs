@@ -2,14 +2,20 @@
 //
 
 pub mod block_subscriber;
+mod blockchain;
 mod bp_resolver;
 pub mod cli;
 pub mod events;
 pub mod executor;
+mod helpers;
+pub mod license_root;
 pub mod message_types;
+mod rest_api_routes;
 pub mod signals;
 pub mod state;
 pub mod tracing;
+
+pub const DEFAULT_BP_PORT: u16 = 8500;
 
 // 1 process: reads raw_blocks, has seq_no of all threads and for all blocks since start of reading
 //  - send event each block processed

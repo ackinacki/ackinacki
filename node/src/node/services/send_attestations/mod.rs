@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 
 use derive_getters::Getters;
 use derive_setters::Setters;
@@ -28,6 +30,7 @@ use crate::node::Envelope;
 use crate::node::GoshBLS;
 use crate::node::NetworkMessage;
 use crate::node::NodeIdentifier;
+use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
@@ -37,6 +40,7 @@ use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 use crate::utilities::guarded::TryGuardedMut;
+use crate::utilities::thread_spawn_critical::SpawnCritical;
 
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -119,7 +123,7 @@ impl AttestationSendService {
         {
             // If repository was not modified and next pulse deadline is not reached
             // do nothing and return next deadline that equal to twice pulse idle time
-            return std::time::Instant::now() + PULSE_IDLE_TIMEOUT * 2;
+            return deadline;
         }
         self.block_state_repository_last_modified = last_modified;
         self.append_for_tracking(candidates);
@@ -213,9 +217,14 @@ impl AttestationSendService {
                 trace_skip("missing block applied timestamp");
                 continue;
             };
-            let (Some(bk_set), Some(parent_block_identifier), Some(producer)) =
+            let (Some(bk_set), Some(parent_block_identifier), Some(producer), Some(thread_id)) =
                 state.block_state().guarded(|e| {
-                    (e.bk_set().clone(), e.parent_block_identifier().clone(), e.producer().clone())
+                    (
+                        e.bk_set().clone(),
+                        e.parent_block_identifier().clone(),
+                        e.producer().clone(),
+                        *e.thread_identifier(),
+                    )
                 })
             else {
                 trace_skip("missing bk_set or parent block id or producer");
@@ -233,11 +242,19 @@ impl AttestationSendService {
                 continue;
             };
 
-            let Some(distance_to_producer) =
-                parent_block_producer_selector.get_distance_from_bp(&bk_set, &producer)
-            else {
-                trace_skip("missing distance to bp");
-                continue;
+            // Note: random node was chosen as BP for a default block, so no need to take this distance into account
+            let distance_to_producer = if parent_block_identifier == BlockIdentifier::default()
+                || thread_id.is_spawning_block(&parent_block_identifier)
+            {
+                0
+            } else {
+                let Some(distance_to_producer) =
+                    parent_block_producer_selector.get_distance_from_bp(&bk_set, &producer)
+                else {
+                    trace_skip("missing distance to bp");
+                    continue;
+                };
+                distance_to_producer
             };
 
             let earliest_to_send_attestation = {
@@ -651,7 +668,7 @@ impl AttestationSendService {
         candidates: &UnfinalizedBlocksSnapshot,
     ) {
         for (_, (candidate, _)) in candidates.iter() {
-            let attested_block_to_producer = self.collect_attested_blocks_to_recevier(candidate);
+            let attested_block_to_producer = self.collect_attested_blocks_to_receiver(candidate);
 
             if !attested_block_to_producer.is_empty() {
                 self.update_tracking(attested_block_to_producer);
@@ -659,28 +676,29 @@ impl AttestationSendService {
         }
     }
 
-    fn collect_attested_blocks_to_recevier(
+    fn collect_attested_blocks_to_receiver(
         &mut self,
         candidate: &BlockState,
     ) -> HashMap<BlockIdentifier, NodeIdentifier> {
         let mut blocks_to_parties = HashMap::new();
 
-        let Some(producer) = candidate.inner().lock().producer().clone() else {
+        let Some(producer) = candidate.guarded(|e| e.producer().clone()) else {
             return blocks_to_parties;
         };
+        let verified_attestations = candidate.guarded(|e| e.verified_attestations().clone());
 
-        for (attested_blk_id, signer_ids) in candidate.inner().lock().verified_attestations() {
+        for (attested_blk_id, signer_ids) in verified_attestations {
             // Find out in old blocks what my "signer id" was at that time, then collect "known_attestation_interested_parties"
-            if let Some((_, state)) = self.tracking.get_key_value(attested_blk_id) {
-                let inner = state.block_state().inner().lock();
-
-                if let Some(my_idx) = inner.get_signer_index_for_node_id(&self.node_id) {
-                    if signer_ids.contains(&my_idx)
-                        && inner.known_attestation_interested_parties().contains(&producer)
-                    {
-                        blocks_to_parties.insert(attested_blk_id.clone(), producer.clone());
+            if let Some((_, state)) = self.tracking.get_key_value(&attested_blk_id) {
+                state.block_state().guarded(|inner| {
+                    if let Some(my_idx) = inner.get_signer_index_for_node_id(&self.node_id) {
+                        if signer_ids.contains(&my_idx)
+                            && inner.known_attestation_interested_parties().contains(&producer)
+                        {
+                            blocks_to_parties.insert(attested_blk_id.clone(), producer.clone());
+                        }
                     }
-                }
+                });
             }
         }
         blocks_to_parties
@@ -723,6 +741,13 @@ impl AttestationSendService {
                 if e.event_timestamps.attestation_sent_ms.is_none() {
                     let current_millis = now_ms();
                     e.event_timestamps.attestation_sent_ms = Some(current_millis);
+                    if let Some(received) = e.event_timestamps.received_ms {
+                        tracing::trace!(
+                            "AttestationSendService: block_id: {:?}, attestation_delay: {} ms",
+                            block_id,
+                            current_millis.saturating_sub(received)
+                        );
+                    }
 
                     if let Some(metrics) = self.metrics.as_ref() {
                         // Report the duration from the moment the block is received until the attestation is sent
@@ -814,5 +839,51 @@ impl AttestationSendService {
             );
         }
         Ok(())
+    }
+}
+
+pub struct AttestationSendServiceHandler {
+    _service_handler: std::thread::JoinHandle<()>,
+}
+
+impl AttestationSendServiceHandler {
+    pub fn new(
+        mut attestation_sender_service: AttestationSendService,
+        repository: RepositoryImpl,
+        last_block_attestations: Arc<Mutex<CollectedAttestations>>,
+        block_state_repository: BlockStateRepository,
+    ) -> Self {
+        let service_handler = std::thread::Builder::new()
+            .name("Attestation send service".to_string())
+            .spawn_critical(move || {
+                let mut attestation_deadline = Instant::now() + PULSE_IDLE_TIMEOUT * 2;
+                loop {
+                    let notifications =
+                        block_state_repository.notifications().load(Ordering::Relaxed);
+                    #[allow(clippy::mutable_key_type)]
+                    let blocks_to_process: UnfinalizedBlocksSnapshot =
+                        repository.unprocessed_blocks_cache().clone_queue();
+                    attestation_deadline = attestation_sender_service.evaluate(
+                        &blocks_to_process,
+                        last_block_attestations.clone(),
+                        &repository,
+                        attestation_deadline,
+                    );
+
+                    let new_notifications =
+                        block_state_repository.notifications().load(Ordering::Relaxed);
+                    if new_notifications == notifications {
+                        if let Some(idle_time) =
+                            attestation_deadline.checked_duration_since(Instant::now())
+                        {
+                            let delay = idle_time.min(PULSE_IDLE_TIMEOUT);
+                            tracing::trace!("AttestationSendService: wait: {}", delay.as_millis());
+                            std::thread::sleep(delay);
+                        }
+                    }
+                }
+            })
+            .expect("Failed to create thread for attestation send service");
+        Self { _service_handler: service_handler }
     }
 }

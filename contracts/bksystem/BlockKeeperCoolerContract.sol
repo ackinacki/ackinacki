@@ -5,7 +5,6 @@
  * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
  */
 pragma gosh-solidity >=0.76.1;
-pragma ignoreIntOverflow;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
 
@@ -52,7 +51,7 @@ contract BlockKeeperCooler is Modifiers {
         _stake = msg.currencies[CURRENCIES_ID];
         _signerIndex = signerIndex;
         _licenses = licenses;
-        AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _root, _owner_pubkey)).updateLockStakeCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, block.timestamp, _licenses, epochDuration, is_continue);
+        AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _root, _owner_pubkey)).updateLockStakeCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, _seqNoFinish, _licenses, epochDuration, is_continue);
     }
 
     function ensureBalance() private pure {
@@ -96,9 +95,10 @@ contract BlockKeeperCooler is Modifiers {
         uint64 seqNoStart,
         uint64 seqNoFinish,
         address owner,
-        uint16 signerIndex) 
+        uint16 signerIndex,
+        varuint32 NACKLBalance) 
     {
-        return (_owner_pubkey, _root, _seqNoStart, _seqNoFinish, _owner, _signerIndex);
+        return (_owner_pubkey, _root, _seqNoStart, _seqNoFinish, _owner, _signerIndex, address(this).currencies[CURRENCIES_ID]);
     }
 
     function getVersion() external pure returns(string, string) {

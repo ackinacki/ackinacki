@@ -7,17 +7,7 @@
 			"name": "constructor",
 			"inputs": [
 				{"name":"giver","type":"address"},
-				{"name":"licenseRoot","type":"address"},
-				{"name":"bmroot","type":"address"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "sendReward",
-			"inputs": [
-				{"name":"to","type":"address"},
-				{"name":"value","type":"uint128"}
+				{"name":"licenseRoot","type":"address"}
 			],
 			"outputs": [
 			]
@@ -33,7 +23,7 @@
 		{
 			"name": "setConfig",
 			"inputs": [
-				{"name":"epochDuration","type":"uint32"},
+				{"name":"epochDuration","type":"uint64"},
 				{"name":"epochCliff","type":"uint64"},
 				{"name":"waitStep","type":"uint64"},
 				{"name":"minBlockKeepers","type":"uint128"},
@@ -96,7 +86,8 @@
 				{"name":"rep_coef","type":"uint128"},
 				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"is_min","type":"bool"},
-				{"name":"ProxyList","type":"map(uint8,string)"}
+				{"name":"ProxyList","type":"map(uint8,string)"},
+				{"name":"myIp","type":"string"}
 			],
 			"outputs": [
 			]
@@ -112,7 +103,8 @@
 				{"name":"rep_coef","type":"uint128"},
 				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"virtualStake","type":"optional(uint128)"},
-				{"name":"ProxyList","type":"map(uint8,string)"}
+				{"name":"ProxyList","type":"map(uint8,string)"},
+				{"name":"myIp","type":"string"}
 			],
 			"outputs": [
 			]
@@ -128,7 +120,8 @@
 				{"name":"rep_coef","type":"uint128"},
 				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"virtualStake","type":"optional(uint128)"},
-				{"name":"ProxyList","type":"map(uint8,string)"}
+				{"name":"ProxyList","type":"map(uint8,string)"},
+				{"name":"myIp","type":"string"}
 			],
 			"outputs": [
 			]
@@ -201,7 +194,8 @@
 				{"name":"totalStakeOld","type":"uint256"},
 				{"name":"numberOfActiveBlockKeepers","type":"uint128"},
 				{"name":"time","type":"uint128"},
-				{"name":"virtualStake","type":"optional(uint128)"}
+				{"name":"virtualStake","type":"optional(uint128)"},
+				{"name":"reward_sum","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -344,6 +338,16 @@
 			]
 		},
 		{
+			"name": "getConfig",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"epochDuration","type":"uint64"},
+				{"name":"epochCliff","type":"uint64"},
+				{"name":"waitStep","type":"uint64"}
+			]
+		},
+		{
 			"name": "getSignerIndexAddress",
 			"inputs": [
 				{"name":"index","type":"uint16"}
@@ -400,14 +404,13 @@
 		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
 		{"init":false,"name":"__value","type":"uint256"},
 		{"init":false,"name":"_code","type":"map(uint8,cell)"},
-		{"init":false,"name":"_epochDuration","type":"uint32"},
+		{"init":false,"name":"_epochDuration","type":"uint64"},
 		{"init":false,"name":"_epochCliff","type":"uint64"},
 		{"init":false,"name":"_waitStep","type":"uint64"},
 		{"init":false,"name":"_minBlockKeepers","type":"uint128"},
 		{"init":false,"name":"_giver","type":"address"},
 		{"init":false,"name":"_totalStake","type":"uint256"},
 		{"init":false,"name":"_licenseRoot","type":"address"},
-		{"init":false,"name":"_bmroot","type":"address"},
 		{"init":false,"name":"_networkStart","type":"uint32"},
 		{"init":false,"name":"_numberOfActiveBlockKeepers","type":"uint128"},
 		{"init":false,"name":"_needNumberOfActiveBlockKeepers","type":"uint128"},

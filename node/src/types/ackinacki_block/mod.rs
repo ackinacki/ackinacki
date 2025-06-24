@@ -31,7 +31,7 @@ use crate::types::ThreadsTable;
 mod fork_resolution;
 pub use fork_resolution::ForkResolution;
 pub mod as_signatures_map;
-mod common_section;
+pub mod common_section;
 pub mod hash;
 mod parse_block_accounts_and_messages;
 mod serialize;
@@ -54,11 +54,12 @@ impl Display for AckiNackiBlock {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "seq_no: {:?}, id: {:?}, tx_cnt: {}, hash: {}, common_section: {:?}, parent: {:?}",
+            "seq_no: {:?}, id: {:?}, tx_cnt: {}, hash: {}, time: {}, common_section: {:?}, parent: {:?}",
             self.seq_no(),
             self.identifier(),
             self.tx_cnt,
             debug_hash(&self.hash),
+            self.time().unwrap_or(0),
             self.common_section,
             self.parent(),
         )

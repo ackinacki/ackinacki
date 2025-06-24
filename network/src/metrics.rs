@@ -6,6 +6,7 @@ use opentelemetry::metrics::Gauge;
 use opentelemetry::metrics::Histogram;
 use opentelemetry::metrics::Meter;
 use opentelemetry::metrics::ObservableGauge;
+use opentelemetry::metrics::UpDownCounter;
 use opentelemetry::KeyValue;
 
 use crate::transfer::TransportError;
@@ -20,6 +21,7 @@ pub struct NetMetrics {
     incoming_buffer_duration: Histogram<u64>,
     incoming_message_delivery_duration: Histogram<u64>,
     outgoing_message: Counter<u64>,
+    outgoing_buffer_counter: UpDownCounter<i64>,
     outgoing_buffer_duration: Histogram<u64>,
     outgoing_transfer_duration: Histogram<u64>,
     outgoing_transfer_error: Counter<u64>,
@@ -28,6 +30,12 @@ pub struct NetMetrics {
     receive_before_deser: Histogram<u64>,
     original_message_size: Histogram<u64>,
     compressed_message_size: Histogram<u64>,
+    gossip_peers: Gauge<u64>,      // Nodes only
+    gossip_live_nodes: Gauge<u64>, // Nodes + Proxies
+    sent_to_outgoing_buffer_bytes: Counter<u64>,
+    sent_bytes: Counter<u64>,
+    received_bytes: Counter<u64>,
+
     // It's usual for observable instruments to be prefixed with underscore
     _incoming_buffer_size: ObservableGauge<u64>,
     _outgoing_buffer_size: ObservableGauge<u64>,
@@ -84,10 +92,14 @@ impl NetMetrics {
             })
             .build();
 
-        let boundaries_ms = vec![
-            0.0, 10.0, 25.0, 50.0, 150.0, 500.0, 1000.0, 5000.0, 10000.0, 30000.0, 60000.0,
-            600000.0,
-        ];
+        // buckets with 50ms interval: from 0 to 1s, 100ms interval from 1s to 2s, 500ms up to 5s
+        let mut boundaries_ms = gen_boundaries(0, 50, 5);
+        boundaries_ms.extend(gen_boundaries(50, 150, 10));
+        boundaries_ms.extend(gen_boundaries(150, 1000, 50));
+        boundaries_ms.extend(gen_boundaries(1000, 2000, 100));
+        boundaries_ms.extend(gen_boundaries(2000, 5000, 500));
+        boundaries_ms.extend(gen_boundaries(5000, 10000, 1000));
+
         let boundaries_bytes = vec![
             100.0,
             500.0,
@@ -115,6 +127,9 @@ impl NetMetrics {
                 .with_boundaries(boundaries_ms.clone())
                 .build(),
             outgoing_message: meter.u64_counter("node_network_outgoing_message").build(),
+            outgoing_buffer_counter: meter
+                .i64_up_down_counter("node_network_outgoing_buffer_counter")
+                .build(),
             outgoing_buffer_duration: meter
                 .u64_histogram("node_network_outgoing_buffer_duration")
                 .with_boundaries(boundaries_ms.clone())
@@ -139,6 +154,13 @@ impl NetMetrics {
                 .u64_histogram("node_network_compressed_message_size")
                 .with_boundaries(boundaries_bytes)
                 .build(),
+            gossip_peers: meter.u64_gauge("node_network_gossip_peers").build(),
+            gossip_live_nodes: meter.u64_gauge("node_network_gossip_live_nodes").build(),
+            sent_to_outgoing_buffer_bytes: meter
+                .u64_counter("node_network_sent_to_outbuf_bytes")
+                .build(),
+            sent_bytes: meter.u64_counter("node_network_sent_bytes").build(),
+            received_bytes: meter.u64_counter("node_network_received_bytes").build(),
             outgoing_transfer_error: meter
                 .u64_counter("node_network_outgoing_transfer_error")
                 .build(),
@@ -193,14 +215,43 @@ impl NetMetrics {
         self.compressed_message_size.record(compressed_size as u64, &[msg_type_attr(msg_type)]);
     }
 
+    pub fn report_gossip_peers(&self, peers: usize, live_nodes_total: u64) {
+        // The terminology here is the opposite of natural, but this is how it's called in our code
+        // Only Nodes
+        self.gossip_peers.record(peers as u64, &[]);
+        // Nodes + Proxies
+        self.gossip_live_nodes.record(live_nodes_total, &[]);
+    }
+
+    // TBD: This metric could potentially introduce some overhead, after debugging it can be removed
+    pub fn report_sent_to_outgoing_buffer_bytes(
+        &self,
+        bytes: u64,
+        msg_type: &str,
+        send_mode: SendMode,
+    ) {
+        self.sent_to_outgoing_buffer_bytes.add(bytes, &attrs(msg_type, send_mode));
+    }
+
+    pub fn report_sent_bytes(&self, bytes: usize, msg_type: &str, send_mode: SendMode) {
+        self.sent_bytes.add(bytes as u64, &attrs(msg_type, send_mode));
+    }
+
+    pub fn report_received_bytes(&self, bytes: usize, msg_type: &str, send_mode: SendMode) {
+        self.received_bytes.add(bytes as u64, &attrs(msg_type, send_mode));
+    }
+
     pub fn start_delivery_phase(
         &self,
         phase: DeliveryPhase,
         msg_count: usize,
-        _msg_type: &str,
-        _send_mode: SendMode,
+        msg_type: &str,
+        send_mode: SendMode,
     ) {
         self.update_delivery_phase_counter(phase, msg_count as isize);
+        if matches!(phase, DeliveryPhase::OutgoingBuffer) {
+            self.outgoing_buffer_counter.add(msg_count as i64, &attrs(msg_type, send_mode));
+        }
     }
 
     pub fn finish_delivery_phase(
@@ -216,6 +267,7 @@ impl NetMetrics {
         let attrs = attrs(msg_type, send_mode);
         match phase {
             DeliveryPhase::OutgoingBuffer => {
+                self.outgoing_buffer_counter.add(-(msg_count as i64), &attrs);
                 self.outgoing_buffer_duration.record(duration, &attrs);
             }
             DeliveryPhase::OutgoingTransfer => {
@@ -244,4 +296,57 @@ fn transfer_err_attr(error: TransportError) -> KeyValue {
 }
 fn attrs(msg_type: &str, send_mode: SendMode) -> [KeyValue; 2] {
     [msg_type_attr(msg_type), send_mode_attr(send_mode)]
+}
+
+fn gen_boundaries(low: u32, high: u32, step: u32) -> Vec<f64> {
+    let mut result = Vec::new();
+    if step > 0 {
+        let mut current = low;
+        while current < high {
+            result.push(current as f64);
+            current += step;
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_range_f64_basic() {
+        let result = gen_boundaries(0, 20, 5);
+        let expected = [0.0, 5.0, 10.0, 15.0];
+        assert_eq!(result.len(), expected.len());
+
+        for (a, b) in result.iter().zip(expected.iter()) {
+            assert!((a - b).abs() < 1e-10, "expected {}, got {}", b, a);
+        }
+    }
+
+    #[test]
+    fn test_empty_result_when_low_ge_high() {
+        let result = gen_boundaries(5, 2, 5);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_empty_result_when_step_is_not_positive() {
+        let result = gen_boundaries(5, 20, 0);
+        assert!(result.is_empty());
+    }
+    #[test]
+    fn test_complex_boundaries() {
+        let mut boundaries_ms = gen_boundaries(0, 1000, 50);
+        boundaries_ms.extend(gen_boundaries(1000, 2000, 100));
+        boundaries_ms.extend(gen_boundaries(2000, 5500, 500));
+        let expected = [
+            0.0, 50.0, 100.0, 150.0, 200.0, 250.0, 300.0, 350.0, 400.0, 450.0, 500.0, 550.0, 600.0,
+            650.0, 700.0, 750.0, 800.0, 850.0, 900.0, 950.0, 1000.0, 1100.0, 1200.0, 1300.0,
+            1400.0, 1500.0, 1600.0, 1700.0, 1800.0, 1900.0, 2000.0, 2500.0, 3000.0, 3500.0, 4000.0,
+            4500.0, 5000.0,
+        ];
+        assert_eq!(boundaries_ms, expected);
+    }
 }

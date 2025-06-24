@@ -1,6 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -109,7 +110,9 @@ pub enum NetworkMessage {
 
     // SyncFinalized is broadcasted when network is not running to restart
     // it from the same state.
-    SyncFinalized((BlockIdentifier, BlockSeqNo, String, ThreadIdentifier)),
+    SyncFinalized(
+        (BlockIdentifier, BlockSeqNo, HashMap<ThreadIdentifier, BlockIdentifier>, ThreadIdentifier),
+    ),
 }
 
 impl NetworkMessage {

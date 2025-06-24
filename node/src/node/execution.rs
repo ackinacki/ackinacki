@@ -172,7 +172,9 @@ where
                 }
             };
             tracing::trace!("Node message receive result: {:?}", next);
-            self.db_service.check();
+            if let Some(db_service) = self.db_service.as_ref() {
+                db_service.check();
+            }
             match next {
                 Err(RecvTimeoutError::Disconnected) => {
                     tracing::info!("Disconnect signal received");
@@ -371,10 +373,12 @@ where
                     NetworkMessage::SyncFrom((seq_no_from, _)) => {
                         // while normal execution we ignore sync messages
                         log::info!("Received SyncFrom: {:?}", seq_no_from);
-                        if self
-                            .block_processor_service
-                            .missing_blocks_were_requested
-                            .load(Ordering::Relaxed)
+                        let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
+                        if elapsed > self.config.global.min_time_between_state_publish_directives
+                            && self
+                                .block_processor_service
+                                .missing_blocks_were_requested
+                                .load(Ordering::Relaxed)
                         {
                             return Ok(ExecutionResult::SynchronizationRequired);
                         }
@@ -382,12 +386,12 @@ where
                     NetworkMessage::SyncFinalized((identifier, seq_no, address, _)) => {
                         // TODO: we'd better check that this node is up to date and does not need to sync
                         tracing::info!(
-                            "Received SyncFinalized: {:?} {:?} {}",
+                            "Received SyncFinalized: {:?} {:?} {:?}",
                             seq_no,
                             identifier,
                             address
                         );
-                        // self.on_sync_finalized(seq_no, identifier)?;
+                        self.on_sync_finalized(seq_no, identifier)?;
                     }
                 },
             }

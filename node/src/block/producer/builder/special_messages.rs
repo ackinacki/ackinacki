@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use indexset::BTreeMap;
 use tvm_block::Augmentation;
 use tvm_block::EnqueuedMsg;
 use tvm_block::GetRepresentationHash;
@@ -15,6 +16,7 @@ use tvm_block::MsgEnvelope;
 use tvm_block::OutMsg;
 use tvm_block::Serializable;
 use tvm_executor::BlockchainConfig;
+use tvm_types::AccountId;
 use tvm_types::UInt256;
 
 use super::BlockBuilder;
@@ -32,7 +34,7 @@ impl BlockBuilder {
         blockchain_config: &BlockchainConfig,
         block_unixtime: u32,
         block_lt: u64,
-        check_messages_map: &Option<HashMap<UInt256, u64>>,
+        check_messages_map: &mut Option<HashMap<AccountId, BTreeMap<u64, UInt256>>>,
     ) -> anyhow::Result<()> {
         tracing::trace!(target: "builder", "map of minted shell {:?}", self.dapp_minted_map);
         let mut config_messages: Vec<Message> = Vec::new();

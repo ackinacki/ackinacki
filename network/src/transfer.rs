@@ -1,10 +1,10 @@
 use std::time::Instant;
 
 use thiserror::Error;
+use transport_layer::NetConnection;
 use wtransport::error::ConnectionError;
 use wtransport::error::StreamOpeningError;
 use wtransport::error::StreamWriteError;
-use wtransport::Connection;
 
 use crate::detailed;
 use crate::message::NetMessage;
@@ -20,6 +20,9 @@ pub enum TransportError {
 
     #[error("stream write error: {0}")]
     StreamWrite(#[from] StreamWriteError),
+
+    #[error("send error: {0}")]
+    Send(String),
 
     #[error("serialization error: {0}")]
     BincodeSerialization(String),
@@ -47,38 +50,31 @@ impl TransportError {
                 StreamWriteError::QuicProto => "quic_proto",
             },
             TransportError::BincodeSerialization(_) => "bincode",
+            TransportError::Send(_) => "send",
         }
     }
 }
+
+// This function returns the number of bytes sent
 pub async fn transfer(
-    connection: &Connection,
+    connection: &impl NetConnection,
     net_message: &NetMessage,
     metrics: &Option<NetMetrics>,
-) -> Result<(), TransportError> {
+) -> Result<usize, TransportError> {
     let data = bincode::serialize(net_message)
         .map_err(|err| TransportError::BincodeSerialization(err.to_string()))?;
 
     let moment = Instant::now();
-
-    let mut send_stream = connection
-        .open_uni()
+    connection
+        .send(&data)
         .await
         .inspect_err(|err| {
-            tracing::error!("Failed to opening outgoing stream: {}", detailed(err));
-        })?
-        .await
-        .inspect_err(|err| {
-            tracing::error!("Failed to open outgoing stream: {}", detailed(err));
-        })?;
-    send_stream.write_all(&data).await.inspect_err(|err| {
-        tracing::error!("Failed to write to outgoing stream: {}", detailed(err));
-    })?;
-    send_stream.finish().await.inspect_err(|err| {
-        tracing::error!("Failed to close outgoing stream: {}", detailed(err));
-    })?;
+            tracing::error!("Failed to send outgoing data: {}", detailed(err));
+        })
+        .map_err(|err| TransportError::Send(err.to_string()))?;
 
     metrics.as_ref().inspect(|m| {
         m.report_transfer_after_ser(moment.elapsed().as_millis());
     });
-    Ok(())
+    Ok(data.len())
 }

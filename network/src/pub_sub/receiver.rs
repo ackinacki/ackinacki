@@ -1,149 +1,128 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use telemetry_utils::now_ms;
-use tokio::io::AsyncReadExt;
-use tokio::sync::mpsc;
 use tokio::sync::watch;
+use transport_layer::NetConnection;
+use transport_layer::NetRecvRequest;
 
 use crate::detailed;
 use crate::message::NetMessage;
 use crate::metrics::NetMetrics;
+use crate::pub_sub::connection::ConnectionInfo;
 use crate::pub_sub::connection::ConnectionWrapper;
 use crate::pub_sub::connection::IncomingMessage;
-use crate::pub_sub::is_safely_closed;
 use crate::pub_sub::IncomingSender;
 use crate::DeliveryPhase;
 
-pub async fn receiver(
+pub async fn receiver<Connection: NetConnection + 'static>(
     metrics: Option<NetMetrics>,
-    connection: Arc<ConnectionWrapper>,
-    mut stop_rx: watch::Receiver<bool>,
+    connection: Arc<ConnectionWrapper<Connection>>,
+    receiver_stop_tx: watch::Sender<bool>,
+    mut receiver_stop_rx: watch::Receiver<bool>,
     incoming_tx: IncomingSender,
 ) -> anyhow::Result<()> {
-    let (transfer_result_tx, mut transfer_result_rx) = mpsc::channel(10);
     loop {
         tokio::select! {
-            accept_result = connection.connection.accept_uni() => {
-                match accept_result {
-                    Ok(stream) => {
-                        let metrics = metrics.clone();
-                        let transfer_result_tx = transfer_result_tx.clone();
-                        let connection = connection.clone();
-
-                        // It is not critical task because it handles single income message
-                        tokio::spawn(async move {
-                            metrics.as_ref().inspect(|x|
-                                x.start_delivery_phase(DeliveryPhase::IncomingTransfer, 1, "", connection.peer_send_mode())
-                            );
-                            tracing::trace!(
-                                broadcast = connection.peer_send_mode().is_broadcast(),
-                                peer = connection.peer_info(),
-                                "Incoming transfer start",
-                            );
-                            let transfer_duration = Instant::now();
-                            let transfer_result = transfer(stream, &metrics).await;
-                            metrics.as_ref().inspect(|x| {
-                                x.finish_delivery_phase(
-                                    DeliveryPhase::IncomingTransfer,
-                                    1,
-                                    "",
-                                    connection.peer_send_mode(),
-                                    transfer_duration.elapsed(),
-                                );
-                            });
-                            transfer_result_tx.send(transfer_result).await
-                        });
-                    }
-                    Err(err) => {
-                        if !is_safely_closed(&err) {
-                            tracing::error!(
-                                peer = connection.peer_info(),
-                                "Failed to accept incoming stream: {}",
-                                detailed(&err)
-                            );
-                        }
-                        // finish receiver loop because we have problem with this connection
-                        break;
-                    }
-                }
+            _ = receive_message(metrics.clone(), connection.clone(), incoming_tx.clone(), receiver_stop_tx.clone()) => {
             },
-            transfer_result = transfer_result_rx.recv() => {
-                // It is impossible to recv None, because we holds transfer_result_tx
-                match transfer_result.unwrap() {
-                    Ok(net_message) => {
-                        let msg_type = net_message.label.clone();
-                        tracing::debug!(
-                            broadcast = connection.peer_send_mode().is_broadcast(),
-                            msg_type,
-                            msg_id = net_message.id,
-                            peer = connection.peer_info(),
-                            host_id = connection.host_id_prefix,
-                            size = net_message.data.len(),
-                            "Message delivery: incoming transfer finished",
-                        );
-                        metrics.as_ref().inspect(|x| {
-                            x.start_delivery_phase(
-                                DeliveryPhase::IncomingBuffer,
-                                1,
-                                &msg_type,
-                                connection.peer_send_mode(),
-                            );
-                        });
-                        let duration_after_transfer = Instant::now();
-                        let incoming = IncomingMessage {
-                            peer: connection.clone(),
-                            message: net_message,
-                            duration_after_transfer,
-                        };
-                        // finish receiver loop if incoming consumer was detached
-                        if incoming_tx.send(incoming).await.is_err() {
-                            metrics.as_ref().inspect(|x| {
-                                x.finish_delivery_phase(
-                                    DeliveryPhase::IncomingBuffer,
-                                    1,
-                                    &msg_type,
-                                    connection.peer_send_mode(),
-                                    duration_after_transfer.elapsed(),
-                                );
-                            });
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            broadcast = connection.peer_send_mode().is_broadcast(),
-                            peer = connection.peer_info(),
-                            "Incoming transfer failed: {}",
-                            detailed(&err)
-                        );
-                        // finish receiver loop because we have problem with this connection
-                        break;
-                    }
-                }
-            },
-            _ = stop_rx.changed() => if *stop_rx.borrow() {
+            _ = receiver_stop_rx.changed() => if *receiver_stop_rx.borrow() {
                 break;
             }
         }
     }
-    tracing::trace!(peer = connection.peer_info(), "Receiver loop finished");
+    tracing::trace!(peer = connection.info.remote_info(), "Receiver loop finished");
     Ok(())
 }
 
-async fn transfer(
-    mut stream: wtransport::RecvStream,
-    metrics: &Option<NetMetrics>,
-) -> anyhow::Result<NetMessage> {
-    let mut data = Vec::with_capacity(1024);
-    let moment = Instant::now();
-    stream.read_to_end(&mut data).await?;
+async fn receive_message<Connection: NetConnection + 'static>(
+    metrics: Option<NetMetrics>,
+    connection: Arc<ConnectionWrapper<Connection>>,
+    incoming_tx: IncomingSender,
+    receiver_stop_tx: watch::Sender<bool>,
+) {
+    let info = connection.info.clone();
+    match connection.connection.accept_recv().await {
+        Ok(request) => {
+            tokio::spawn(transfer_message(metrics, info, request, incoming_tx, receiver_stop_tx));
+        }
+        Err(err) => {
+            tracing::error!(
+                broadcast = info.roles.is_broadcast(),
+                peer = info.remote_info(),
+                "Incoming transfer failed: {}",
+                detailed(&err)
+            );
+            // finish the receiver loop because we have a problem with this connection
+            receiver_stop_tx.send_replace(true);
+        }
+    }
+}
 
-    metrics.as_ref().inspect(|m| {
-        m.report_receive_before_deser(moment.elapsed().as_millis());
+async fn transfer_message(
+    metrics: Option<NetMetrics>,
+    info: Arc<ConnectionInfo>,
+    request: impl NetRecvRequest,
+    incoming_tx: IncomingSender,
+    receiver_stop_tx: watch::Sender<bool>,
+) {
+    let start_time = Instant::now();
+    let data = match request.recv().await {
+        Ok(data) => data,
+        Err(err) => {
+            tracing::error!(
+                broadcast = info.roles.send_mode().is_broadcast(),
+                peer = info.remote_info(),
+                "Incoming transfer failed: {}",
+                detailed(&err)
+            );
+            // finish the receiver loop because we have a problem with this connection
+            receiver_stop_tx.send_replace(true);
+            return;
+        }
+    };
+
+    let net_message = match bincode::deserialize::<NetMessage>(&data) {
+        Ok(msg) => msg,
+        Err(err) => {
+            tracing::error!("Failed to deserialize net message: {}", err);
+            receiver_stop_tx.send_replace(true);
+            return;
+        }
+    };
+
+    let msg_type = net_message.label.clone();
+    tracing::debug!(
+        broadcast = info.roles.is_broadcast(),
+        msg_type,
+        msg_id = net_message.id,
+        peer = info.remote_info(),
+        host_id = info.remote_host_id_prefix,
+        size = net_message.data.len(),
+        duration = start_time.elapsed().as_millis(),
+        "Message delivery: incoming transfer finished",
+    );
+    metrics.as_ref().inspect(|x| {
+        x.report_received_bytes(data.len(), &msg_type, info.roles.send_mode());
+        x.start_delivery_phase(DeliveryPhase::IncomingBuffer, 1, &msg_type, info.roles.send_mode());
     });
-    let received_ms = now_ms(); // remember the moment when a message was received as bytes
-    let mut net_message = bincode::deserialize::<NetMessage>(&data)?;
-    net_message.received_at = received_ms;
-    Ok(net_message)
+    let duration_after_transfer = Instant::now();
+    let incoming = IncomingMessage {
+        connection_info: info.clone(),
+        message: net_message,
+        duration_after_transfer,
+    };
+
+    // finish receiver loop if incoming consumer was detached
+    if incoming_tx.send(incoming).await.is_err() {
+        metrics.as_ref().inspect(|x| {
+            x.finish_delivery_phase(
+                DeliveryPhase::IncomingBuffer,
+                1,
+                &msg_type,
+                info.roles.send_mode(),
+                duration_after_transfer.elapsed(),
+            );
+        });
+        receiver_stop_tx.send_replace(true);
+    }
 }

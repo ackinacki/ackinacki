@@ -1,0 +1,29 @@
+services:
+  proxy:
+    image: {{ PROXY_IMAGE }}
+    environment:
+      RUST_LOG: {{ PROXY_LOG_LEVEL }}
+{# Adding service section #}
+{% include 'proxy/proxy_otel.j2' ignore missing +%}
+    network_mode: host
+    entrypoint: []
+    command:
+      - bash
+      - -c
+      - >
+        proxy > /logsdir/proxy.log 2>&1
+    volumes:
+      - {{ PROXY_DIR }}/config.yaml:/workdir/config.yaml
+      - {{ PROXY_CERTS_DIR }}:/workdir/certs
+      - {{ PROXY_LOGS }}:/logsdir
+
+  logrotate:
+    image: stakater/logrotate:3.13.0
+    restart: unless-stopped
+    environment:
+      - CRON_SCHEDULE="58 * * * *"
+    volumes:
+      - {{ PROXY_LOGS }}:/logsdir
+      - ./logrotate.sh:/logrotate.sh
+    command: [ "/bin/bash", "/logrotate.sh" ]
+    init: true

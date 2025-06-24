@@ -1,13 +1,13 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::process::exit;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
-use url::Url;
 
 use crate::config::ProxyConfig;
 
@@ -49,14 +49,15 @@ pub async fn proxy_manager(args: cli::CliArgs) -> anyhow::Result<()> {
     loop {
         let config = ProxyConfig::from_file(&args.proxy_config)?;
 
-        let proxy_set: HashSet<Url> = blockchain::get_proxy_list().await?.into_iter().collect();
+        let proxy_set: HashSet<SocketAddr> =
+            blockchain::get_proxy_list().await?.into_iter().collect();
         tracing::debug!("proxy set: {proxy_set:?}");
 
-        let subscribes: HashSet<Url> = config.subscribe.iter().map(|x| x[0].clone()).collect();
+        let subscribes: HashSet<SocketAddr> = config.subscribe.iter().map(|x| x[0]).collect();
         tracing::debug!("subscribes: {subscribes:?}");
 
         if proxy_set != subscribes {
-            let not_in_all: HashSet<&Url> = proxy_set.difference(&subscribes).collect();
+            let not_in_all: HashSet<&SocketAddr> = proxy_set.difference(&subscribes).collect();
 
             if !not_in_all.is_empty() {
                 tracing::error!(

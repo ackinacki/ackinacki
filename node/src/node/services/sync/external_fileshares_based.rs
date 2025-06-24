@@ -3,32 +3,24 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
-use std::ops::Deref;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedSender;
 
-use crate::bls::envelope::BLSSignedEnvelope;
-use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
-use crate::message_storage::MessageDurableStorage;
-use crate::node::block_state::repository::BlockStateRepository;
+use crate::node::services::sync::FileSavingService;
 use crate::node::services::sync::StateSyncService;
-use crate::node::shared_services::SharedServices;
-use crate::repository::cross_thread_ref_repository::CrossThreadRefDataHistory;
-use crate::repository::optimistic_state::OptimisticState;
+use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
-use crate::repository::repository_impl::ThreadSnapshot;
-use crate::repository::repository_impl::WrappedStateSnapshot;
-use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
 use crate::services::blob_sync::external_fileshares_based::ServiceInterface;
 use crate::services::blob_sync::BlobSyncService;
-use crate::types::thread_message_queue::account_messages_iterator::AccountMessagesIterator;
-use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
-use crate::utilities::guarded::Guarded;
+use crate::types::ThreadIdentifier;
+use crate::utilities::thread_spawn_critical::SpawnCritical;
 
 #[derive(Clone)]
 pub struct ExternalFileSharesBased {
@@ -37,10 +29,12 @@ pub struct ExternalFileSharesBased {
     pub retry_download_timeout: std::time::Duration,
     pub download_deadline_timeout: std::time::Duration,
     blob_sync: ServiceInterface,
+    file_saving_service: FileSavingService,
+    state_load_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl ExternalFileSharesBased {
-    pub fn new(blob_sync: ServiceInterface) -> Self {
+    pub fn new(blob_sync: ServiceInterface, file_saving_service: FileSavingService) -> Self {
         // TODO: move to config
         Self {
             static_storages: vec![],
@@ -48,139 +42,91 @@ impl ExternalFileSharesBased {
             retry_download_timeout: Duration::from_secs(2),
             download_deadline_timeout: Duration::from_secs(120),
             blob_sync,
+            file_saving_service,
+            state_load_thread: Arc::new(Mutex::new(None)),
         }
     }
 }
 
 impl StateSyncService for ExternalFileSharesBased {
     type Repository = RepositoryImpl;
-    type ResourceAddress = String;
 
-    fn generate_resource_address(
-        &self,
-        block_id: &BlockIdentifier,
-    ) -> anyhow::Result<Self::ResourceAddress> {
-        Ok(block_id.to_string())
+    fn save_state_for_sharing(&self, state: Arc<OptimisticStateImpl>) -> anyhow::Result<()> {
+        let block_id = state.block_id.clone();
+        tracing::trace!("save_state_for_sharing: {:?}", block_id);
+        let file_name = PathBuf::from(block_id.to_string());
+        self.file_saving_service.save_object(state, file_name.clone())
     }
 
-    fn add_share_state_task(
-        &mut self,
-        finalized_block: &Envelope<GoshBLS, AckiNackiBlock>,
-        message_db: &MessageDurableStorage,
-        repository: &RepositoryImpl,
-        block_state_repository: &BlockStateRepository,
-        shared_services: &SharedServices,
-    ) -> anyhow::Result<Self::ResourceAddress> {
-        let mut shared_services = shared_services.clone();
-        let cur_thread = finalized_block.data().get_common_section().thread_id;
-        let cur_block_id = finalized_block.data().identifier();
-        tracing::trace!("add_share_state_task: {:?} {:?}", cur_thread, cur_block_id);
-        let mut threads = VecDeque::new();
-        threads.push_back((cur_thread, cur_block_id.clone()));
-        let mut all_threads_set = HashSet::new();
-
-        let cid = self.generate_resource_address(&cur_block_id)?;
-        // TODO: fix. do not load entire state into memory.
-        let mut thread_states = HashMap::new();
-
-        // Add refs
-        while let Some((thread_id, block_id)) = threads.pop_front() {
-            let state = repository
-                .get_optimistic_state(&block_id, &thread_id, None)?
-                .expect("missing optimistic state");
-            if all_threads_set.is_empty() {
-                all_threads_set.insert(thread_id);
-                let thread_ref_state = state.get_thread_refs().clone();
-                all_threads_set.extend(thread_ref_state.all_thread_refs().keys().cloned());
-                threads.extend(thread_ref_state.all_thread_refs().iter().map(
-                    |(thread_id, ref_block)| (*thread_id, ref_block.block_identifier.clone()),
-                ));
-            }
-            let db_messages = state
-                .messages
-                .iter(message_db)
-                .map(|range| range.remaining_messages_from_db().unwrap_or_default())
-                .collect();
-            let serialized_state = state.serialize_into_buf(false)?;
-            let cross_thread_ref_data_history =
-                shared_services.exec(|e| -> anyhow::Result<Vec<CrossThreadRefData>> {
-                    e.cross_thread_ref_data_service.get_history_tail(&block_id)
-                })?;
-            let bk_set = block_state_repository
-                .get(&block_id)?
-                .guarded(|e| e.bk_set().clone().expect("Must be set"));
-            let finalized_block_stats = block_state_repository
-                .get(&block_id)?
-                .guarded(|e| e.block_stats().clone().expect("Must be set"));
-            let attestation_target = block_state_repository
-                .get(&block_id)?
-                .guarded(|e| (*e.initial_attestations_target()).expect("Must be set"));
-            let producer_selector = block_state_repository
-                .get(&block_id)?
-                .guarded(|e| e.producer_selector_data().clone().expect("Must be set"));
-            let finalized_block = repository.get_block(&block_id)?.expect("missing block");
-
-            tracing::trace!(
-                "add_share_state_task: add state for {:?} {:?}",
-                finalized_block.data().get_common_section().thread_id,
-                finalized_block.data().identifier()
-            );
-
-            let shared_thread_state = ThreadSnapshot::builder()
-                .optimistic_state(serialized_state)
-                .cross_thread_ref_data(cross_thread_ref_data_history)
-                .db_messages(db_messages)
-                .finalized_block(finalized_block.deref().clone())
-                .bk_set(bk_set.deref().clone())
-                .finalized_block_stats(finalized_block_stats)
-                .attestation_target(attestation_target)
-                .producer_selector(producer_selector)
-                .build();
-            thread_states.insert(thread_id, shared_thread_state);
-            // TODO: check ref refs
-        }
-
-        let data = bincode::serialize(
-            &WrappedStateSnapshot::builder().thread_states(thread_states).build(),
-        )?;
-
-        self.blob_sync.share_blob(cid.clone(), std::io::Cursor::new(data), |_| {
-            // Refactoring from an old code. It didn't care about results :(
-        })?;
-
-        Ok(cid)
+    fn reset_sync(&self) {
+        self.state_load_thread.lock().take();
     }
 
     fn add_load_state_task(
         &mut self,
-        resource_address: Self::ResourceAddress,
-        output: InstrumentedSender<anyhow::Result<(Self::ResourceAddress, Vec<u8>)>>,
+        resource_address: HashMap<ThreadIdentifier, BlockIdentifier>,
+        repository: RepositoryImpl,
+        output: InstrumentedSender<anyhow::Result<()>>,
     ) -> anyhow::Result<()> {
-        self.blob_sync.load_blob(
-            resource_address.clone(),
-            self.static_storages.clone(),
-            self.max_download_tries,
-            Some(self.retry_download_timeout),
-            Some(std::time::Instant::now() + self.download_deadline_timeout),
-            {
-                // Handle success
-                let resource_address = resource_address.clone();
-                let output = output.clone();
-                move |e| {
-                    let mut buffer: Vec<u8> = vec![];
-                    let _ = output.send(match e.read_to_end(&mut buffer) {
-                        Ok(_size) => Ok((resource_address, buffer)),
-                        Err(e) => Err(e.into()),
-                    });
+        let mut thread = self.state_load_thread.lock();
+        if let Some(thread) = thread.as_ref() {
+            if !thread.is_finished() {
+                tracing::trace!("add_load_state_task: skip. state is already downloading");
+                return Ok(());
+            }
+        }
+        let repo = Arc::new(Mutex::new(repository.clone()));
+
+        let checker = Arc::new(Mutex::new(resource_address.clone()));
+        for (thread_id, block_id) in resource_address {
+            let output_clone = output.clone();
+            let checker_clone = checker.clone();
+            let repo_clone = repo.clone();
+            self.blob_sync.load_blob(
+                block_id.to_string(),
+                self.static_storages.clone(),
+                self.max_download_tries,
+                Some(self.retry_download_timeout),
+                Some(std::time::Instant::now() + self.download_deadline_timeout),
+                {
+                    move |e| {
+                        let mut buffer: Vec<u8> = vec![];
+                        match e.read_to_end(&mut buffer) {
+                            Ok(_size) => {
+                                let _ = repo_clone.lock().set_state_from_snapshot(
+                                    buffer,
+                                    &ThreadIdentifier::default(),
+                                    Arc::new(Mutex::new(HashSet::new())),
+                                );
+                                checker_clone.lock().remove(&thread_id);
+                            }
+                            Err(e) => {
+                                output_clone.send(Err(e.into())).expect("Callback error");
+                            }
+                        }
+                    }
+                },
+                {
+                    let output_clone = output.clone();
+                    move |e| {
+                        // Handle error
+                        let _ = output_clone.send(Err(e));
+                    }
+                },
+            )?;
+        }
+        let spawned = std::thread::Builder::new().name("State load".to_string()).spawn_critical(
+            move || loop {
+                let checker = checker.lock();
+                if checker.is_empty() {
+                    output.send(Ok(()))?;
+                    return Ok(());
                 }
-            },
-            {
-                move |e| {
-                    // Handle error
-                    let _ = output.send(Err(e));
-                }
+                drop(checker);
+                std::thread::sleep(Duration::from_millis(50));
             },
         )?;
+        *thread = Some(spawned);
         Ok(())
     }
 }

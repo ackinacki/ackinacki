@@ -5,7 +5,6 @@
  * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
  */
 pragma gosh-solidity >=0.76.1;
-pragma ignoreIntOverflow;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
 
@@ -25,11 +24,13 @@ contract LicenseContract is Modifiers {
 
     optional(address) _bkwallet;
     uint128 _reputationTime;
+    bool _isPriority = true;
 
     mapping(uint8 => TvmCell) _code;
     uint32 _license_start;
     bool is_ready = false;
     uint128 _lock_seqno;
+    uint32 _last_touch;
 
     /**
      * @dev Initializes the License contract with the public key of the owner, wallet code, and the root election address.
@@ -118,11 +119,13 @@ contract LicenseContract is Modifiers {
      * Requirements:
      * - Only callable by the BlockKeeper wallet.
      */
-    function deleteLicense(uint128 reputationTime) public senderIs(_bkwallet.get()) accept {
+    function deleteLicense(uint128 reputationTime, bool isPriority, uint32 last_touch) public senderIs(_bkwallet.get()) accept {
         require(_bkwallet.hasValue(), ERR_WALLET_NOT_EXIST);
         ensureBalance();
         _bkwallet = null;
         _reputationTime = reputationTime;
+        _isPriority = isPriority;
+        _last_touch = last_touch;
     }
 
     /**
@@ -139,9 +142,9 @@ contract LicenseContract is Modifiers {
         ensureBalance();
         _lock_seqno = block.seqno;
         if (is_ready == false) {
-            AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, pubkey)).addLicense{value: 0.1 vmshell, flag: 1}(_license_number, _reputationTime, block.timestamp);
+            AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, pubkey)).addLicense{value: 0.1 vmshell, flag: 1}(_license_number, _reputationTime, block.timestamp, _isPriority);
         } else {
-            AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, pubkey)).addLicense{value: 0.1 vmshell, flag: 1}(_license_number, _reputationTime, _license_start);
+            AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, pubkey)).addLicense{value: 0.1 vmshell, flag: 1}(_license_number, _reputationTime, _last_touch, _isPriority);
         }
     }
 
@@ -159,17 +162,18 @@ contract LicenseContract is Modifiers {
     /**
      * @dev Accepts a license for a BlockKeeperWallet with given public key and starts the license from a specified time if it first time.
      * @param pubkey The public key of the BlockKeeper wallet.
-     * @param license_start The actual time of the license connect.
+     * @param last_touch The actual time of the license connect.
      *
      * Requirements:
      * - Only callable by the associated BlockKeeper wallet.
      */
-    function acceptLicense(uint256 pubkey, uint32 license_start) public senderIs(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, pubkey)) accept {
+    function acceptLicense(uint256 pubkey, uint32 last_touch) public senderIs(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, pubkey)) accept {
         ensureBalance();
         if (is_ready == false) {
             is_ready = true;
-            _license_start = license_start;
+            _license_start = last_touch;
         }
+        _last_touch = last_touch;
         _bkwallet = msg.sender;
     }
 

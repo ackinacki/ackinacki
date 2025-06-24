@@ -1,14 +1,31 @@
+use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
+
+use tvm_block::ShardAccounts;
+use tvm_types::UInt256;
+
+use crate::types::ThreadIdentifier;
 
 #[derive(Debug, Clone)]
 pub struct AccountsRepository {
     data_dir: PathBuf,
+    unload_after: Option<u32>,
+    store_after: u32,
+    deleted_accounts: Arc<Mutex<HashMap<ThreadIdentifier, BTreeMap<u64, Vec<UInt256>>>>>,
 }
 
 impl AccountsRepository {
-    pub fn new(data_dir: PathBuf) -> Self {
-        Self { data_dir: data_dir.join("accounts") }
+    pub fn new(data_dir: PathBuf, unload_after: Option<u32>, store_after: u32) -> Self {
+        Self {
+            data_dir: data_dir.join("accounts"),
+            unload_after,
+            store_after,
+            deleted_accounts: Default::default(),
+        }
     }
 
     fn account_path(
@@ -62,5 +79,84 @@ impl AccountsRepository {
         file.sync_all()?;
         tracing::trace!("File saved: {:?}", path);
         Ok(())
+    }
+
+    pub fn clear_old_accounts(
+        &self,
+        thread_id: &ThreadIdentifier,
+        relevant_state: &ShardAccounts,
+        cut_lt: u64,
+    ) {
+        relevant_state
+            .iterate_accounts(|account_id, account, _| {
+                let path = self.data_dir.join(account_id.to_hex_string());
+                if let Ok(states) = std::fs::read_dir(path) {
+                    for state in states.flatten() {
+                        if let Some(state_name) = state.file_name().to_str() {
+                            if let Some(Ok(state_lt)) =
+                                state_name.split('_').next().map(|name| name.parse::<u64>())
+                            {
+                                if state_lt < account.last_trans_lt() {
+                                    tracing::trace!(
+                                        "Remove old account state: {}",
+                                        state.path().display()
+                                    );
+                                    if let Err(err) = std::fs::remove_file(state.path()) {
+                                        tracing::warn!(
+                                            "Failed to remove old account state {}: {err}",
+                                            state.path().display()
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(true)
+            })
+            .unwrap();
+
+        let to_delete =
+            if let Some(deleted) = self.deleted_accounts.lock().unwrap().get_mut(thread_id) {
+                let remaining = deleted.split_off(&cut_lt);
+                std::mem::replace(deleted, remaining)
+            } else {
+                BTreeMap::new()
+            };
+        for account_id in to_delete.values().flatten() {
+            let mut remove_dir = true;
+            let path = self.data_dir.join(account_id.to_hex_string());
+            if let Ok(states) = std::fs::read_dir(&path) {
+                for state in states.flatten() {
+                    if let Some(state_name) = state.file_name().to_str() {
+                        if let Some(Ok(state_lt)) =
+                            state_name.split('_').next().map(|name| name.parse::<u64>())
+                        {
+                            if state_lt >= cut_lt {
+                                remove_dir = false;
+                            }
+                        }
+                    }
+                }
+                if remove_dir {
+                    tracing::trace!("Remove account directory: {}", path.display());
+                    std::fs::remove_dir(&path).ok();
+                }
+            }
+        }
+    }
+
+    pub fn accounts_deleted(&self, thread_id: &ThreadIdentifier, accounts: Vec<UInt256>, lt: u64) {
+        let mut deleted = self.deleted_accounts.lock().unwrap();
+        let thread_deleted = deleted.entry(*thread_id).or_default();
+        thread_deleted.insert(lt, accounts);
+    }
+
+    pub fn get_unload_after(&self) -> Option<u32> {
+        self.unload_after
+    }
+
+    pub fn get_store_after(&self) -> u32 {
+        self.store_after
     }
 }

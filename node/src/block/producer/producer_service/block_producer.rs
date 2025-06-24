@@ -52,6 +52,7 @@ use crate::repository::Repository;
 use crate::types::as_signatures_map::AsSignaturesMap;
 use crate::types::bp_selector::BlockGap;
 use crate::types::bp_selector::ProducerSelector;
+use crate::types::common_section::Directives;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
@@ -198,6 +199,7 @@ impl BlockProducer {
                 self.received_nacks.clone(),
                 self.block_state_repository.clone(),
                 self.external_messages.clone(),
+                self.is_state_sync_requested.clone(),
             ) {
                 Ok(()) => {
                     tracing::info!("Producer started successfully");
@@ -470,20 +472,20 @@ impl BlockProducer {
             }
             self.shared_services.on_block_appended(&block);
             let share_resulting_state = self.is_state_sync_requested.guarded(|e| *e);
-            let share_state_address = if let Some(seq_no) = &share_resulting_state {
+            let share_state_ids = if let Some(seq_no) = &share_resulting_state {
                 if seq_no == &block.seq_no() {
                     tracing::trace!("Node should share state for last block");
-                    Some(optimistic_state.get_block_id().to_string())
+                    Some(optimistic_state.get_share_stare_refs())
                 } else {
                     None
                 }
             } else {
                 None
             };
-            let block_will_share_state = share_state_address.is_some();
+            let block_will_share_state = share_state_ids.is_some();
             let update_result = self.update_candidate_common_section(
                 &mut block,
-                share_state_address,
+                share_state_ids,
                 &optimistic_state,
                 dependent_blocks.take(),
             );
@@ -642,13 +644,13 @@ impl BlockProducer {
     fn update_candidate_common_section(
         &mut self,
         candidate_block: &mut AckiNackiBlock,
-        share_state_address: Option<String>,
+        share_state_ids: Option<HashMap<ThreadIdentifier, BlockIdentifier>>,
         optimistic_state: &OptimisticStateImpl,
         dependent_ancestor_blocks: Option<DependentBlocks>,
     ) -> anyhow::Result<(UpdateCommonSectionResult, Option<DependentBlocks>)> {
         tracing::trace!(
             "update_candidate_common_section: share_state {} block_seq_no: {:?}, id: {:?}",
-            share_state_address.is_some(),
+            share_state_ids.is_some(),
             candidate_block.seq_no(),
             candidate_block.identifier()
         );
@@ -785,24 +787,38 @@ impl BlockProducer {
         let mut producer_selector = self.get_producer_selector(&candidate_block.parent())?;
 
         // 2 step: update index if we have rotated BP:
-        if producer_selector.get_producer_node_id(&bk_set) != self.node_identifier {
-            let bp_distance_for_this_node = producer_selector
-                .get_distance_from_bp(&bk_set, &self.node_identifier)
-                .expect("Node must present in BK set");
-            // move index
-            producer_selector =
-                producer_selector.move_index(bp_distance_for_this_node, bk_set.len());
+        let find_bp = producer_selector.get_producer_node_id(&bk_set);
+        if find_bp.is_err() || find_bp.unwrap() != self.node_identifier {
+            if let Some(bp_distance_for_this_node) =
+                producer_selector.get_distance_from_bp(&bk_set, &self.node_identifier)
+            {
+                // move index
+                producer_selector =
+                    producer_selector.move_index(bp_distance_for_this_node, bk_set.len());
+            } else {
+                // If previous selector was invalid (due to bk removal) generate a new one
+                producer_selector = ProducerSelector::builder()
+                    .rng_seed_block_id(candidate_block.identifier().clone())
+                    .index(0)
+                    .build();
+                let bp_distance_for_this_node = producer_selector
+                    .get_distance_from_bp(&bk_set, &self.node_identifier)
+                    .expect("Must be able to find bp_distance_for_this_node");
+                producer_selector =
+                    producer_selector.move_index(bp_distance_for_this_node, bk_set.len());
+            }
         }
         common_section.producer_selector = Some(producer_selector);
 
-        if let Some(resource_address) = share_state_address {
-            let directive = serde_json::to_string(&resource_address)?;
+        if let Some(resource_address) = share_state_ids {
+            let directive = resource_address;
             tracing::trace!(
-                "Set share state directive for block {:?} {:?}: {directive}",
+                "Set share state directive for block {:?} {:?}: {directive:?}",
                 candidate_block.seq_no(),
                 candidate_block.identifier()
             );
-            common_section.directives.share_state_resource_address = Some(directive);
+            common_section.directives =
+                Directives::builder().share_state_resources(Some(directive)).build();
             common_section.threads_table =
                 Some(optimistic_state.get_produced_threads_table().clone());
         }

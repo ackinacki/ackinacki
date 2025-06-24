@@ -63,12 +63,13 @@ pub trait OptimisticState: Send + Clone {
     type Message: Message;
     type ShardState;
 
+    fn get_share_stare_refs(&self) -> HashMap<ThreadIdentifier, BlockIdentifier>;
     fn get_block_seq_no(&self) -> &BlockSeqNo;
     fn get_block_id(&self) -> &BlockIdentifier;
     fn get_shard_state(&mut self) -> Self::ShardState;
     fn get_shard_state_as_cell(&mut self) -> Self::Cell;
     fn get_block_info(&self) -> &BlockInfo;
-    fn serialize_into_buf(self, external_accounts: bool) -> anyhow::Result<Vec<u8>>;
+    fn serialize_into_buf(self) -> anyhow::Result<Vec<u8>>;
     fn apply_block(
         &mut self,
         block_candidate: &AckiNackiBlock,
@@ -148,7 +149,9 @@ pub struct OptimisticStateImpl {
     pub cropped: Option<(ThreadIdentifier, ThreadsTable)>,
 
     #[serde(skip)]
-    pub changed_accounts: HashSet<UInt256>,
+    pub changed_accounts: HashMap<UInt256, BlockSeqNo>,
+    #[serde(skip)]
+    pub cached_accounts: HashMap<UInt256, (BlockSeqNo, Cell)>,
 }
 
 impl Debug for OptimisticStateImpl {
@@ -203,6 +206,7 @@ impl OptimisticStateImpl {
             messages: ThreadMessageQueueState::empty(),
             high_priority_messages: ThreadMessageQueueState::empty(),
             changed_accounts: Default::default(),
+            cached_accounts: Default::default(),
         }
     }
 
@@ -234,7 +238,10 @@ impl OptimisticStateImpl {
         block_accounts.iterate_slices_with_keys(|account_id, _| {
             if let Some(mut shard_acc) = accounts.account(&(&account_id).into())? {
                 if shard_acc.is_external() {
-                    let acc_root = accounts_repo.load_account(&account_id, shard_acc.last_trans_hash(), shard_acc.last_trans_lt()).map_err(|err| tvm_types::error!("{}", err))?;
+                    let acc_root = match self.cached_accounts.get(&account_id) {
+                        Some((_, cell)) => cell.clone(),
+                        None => accounts_repo.load_account(&account_id, shard_acc.last_trans_hash(), shard_acc.last_trans_lt()).map_err(|err| tvm_types::error!("{}", err))?
+                    };
                     if acc_root.repr_hash() != shard_acc.account_cell().repr_hash() {
                         return Err(tvm_types::error!("External account {account_id} cell hash mismatch: required: {}, actual: {}", acc_root.repr_hash(), shard_acc.account_cell().repr_hash()));
                     }
@@ -256,6 +263,17 @@ impl OptimisticState for OptimisticStateImpl {
     type Cell = Cell;
     type Message = WrappedMessage;
     type ShardState = Arc<ShardStateUnsplit>;
+
+    fn get_share_stare_refs(&self) -> HashMap<ThreadIdentifier, BlockIdentifier> {
+        let mut thread_refs: HashMap<ThreadIdentifier, BlockIdentifier> = self
+            .thread_refs_state
+            .all_thread_refs()
+            .iter()
+            .map(|(thread_id, ref_block)| (*thread_id, ref_block.block_identifier.clone()))
+            .collect();
+        thread_refs.insert(self.thread_id, self.block_id.clone());
+        thread_refs
+    }
 
     fn get_dapp_id_table(&self) -> &HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)> {
         &self.dapp_id_table
@@ -285,20 +303,7 @@ impl OptimisticState for OptimisticStateImpl {
         &self.block_info
     }
 
-    fn serialize_into_buf(mut self, external_accounts: bool) -> anyhow::Result<Vec<u8>> {
-        if external_accounts {
-            let mut shard_state = self.get_shard_state().as_ref().clone();
-            let mut accounts = shard_state
-                .read_accounts()
-                .map_err(|e| anyhow::format_err!("Failed to read shard state accounts: {e}"))?;
-            accounts
-                .replace_all_with_external()
-                .map_err(|e| anyhow::format_err!("Failed to set external accounts: {e}"))?;
-            shard_state
-                .write_accounts(&accounts)
-                .map_err(|e| anyhow::format_err!("Failed to write shard state accounts: {e}"))?;
-            self.shard_state = OptimisticShardState::from(shard_state);
-        }
+    fn serialize_into_buf(self) -> anyhow::Result<Vec<u8>> {
         let buffer: Vec<u8> = bincode::serialize(&self)?;
         Ok(buffer)
     }
@@ -399,9 +404,8 @@ impl OptimisticState for OptimisticStateImpl {
         let changed = self.load_changed_accounts(
             &mut prev_state,
             block_candidate.tvm_block(),
-            accounts_repo,
+            accounts_repo.clone(),
         )?;
-        self.changed_accounts.extend(changed);
         let prev_state = prev_state
             .serialize()
             .map_err(|e| anyhow::format_err!("Failed to serialize state: {e}"))?;
@@ -467,6 +471,8 @@ impl OptimisticState for OptimisticStateImpl {
             block_candidate.get_common_section().thread_id,
             threads_table,
             block_candidate.get_common_section().changed_dapp_ids.clone(),
+            changed,
+            accounts_repo,
             message_db.clone(),
         )?;
         // merge with update from block

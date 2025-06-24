@@ -30,10 +30,12 @@ rustls-pemfile.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
+sha2 = "0.10.9"
 telemetry_utils.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+transport-layer.workspace = true
 tvm_block.workspace = true
 tvm_contracts.workspace = true
 tvm_types.workspace = true
@@ -42,7 +44,10 @@ wtransport.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
+gossip.workspace = true
+once_cell = "1.21.3"
 rand.workspace = true
+tracing-subscriber.workspace = true
 
 [features]
 # Use automocks in binaries

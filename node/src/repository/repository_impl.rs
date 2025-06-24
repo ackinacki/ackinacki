@@ -35,6 +35,7 @@ use rusqlite::Connection;
 use serde::Deserialize;
 use serde::Serialize;
 use telemetry_utils::now_ms;
+use tvm_block::Augmentation;
 use tvm_block::ShardStateUnsplit;
 use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
@@ -167,7 +168,7 @@ impl FinalizedBlockStorage {
 // TODO: divide repository into 2 entities: one for blocks, one for states with weak refs (for not
 // to store optimistic states longer than necessary)
 pub struct RepositoryImpl {
-    archive: Connection,
+    archive: Option<Connection>,
     data_dir: PathBuf,
     zerostate_path: Option<PathBuf>,
     metadatas: RepositoryMetadata,
@@ -239,11 +240,6 @@ pub struct ThreadSnapshot {
     producer_selector: ProducerSelector,
 }
 
-#[derive(TypedBuilder, Serialize, Deserialize, Getters)]
-pub struct WrappedStateSnapshot {
-    thread_states: HashMap<ThreadIdentifier, ThreadSnapshot>,
-}
-
 impl<TMessage> Default for ExtMessages<TMessage>
 where
     TMessage: Clone,
@@ -288,8 +284,14 @@ impl Clone for RepositoryImpl {
     // TODO: Repository object can consume great amount of memory, so it's better not to copy it
     fn clone(&self) -> Self {
         let db_path = self.data_dir.join(DB_ARCHIVE_FILE);
-        let arc_conn = SqliteHelper::create_connection_ro(db_path.clone())
-            .unwrap_or_else(|_| panic!("Failed to open {db_path:?}"));
+        let arc_conn = if !cfg!(feature = "disable_db_write") {
+            Some(
+                SqliteHelper::create_connection_ro(db_path.clone())
+                    .unwrap_or_else(|_| panic!("Failed to open {db_path:?}")),
+            )
+        } else {
+            None
+        };
 
         Self {
             archive: arc_conn,
@@ -327,6 +329,7 @@ impl RepositoryImpl {
         split_state: bool,
         block_state_repository: BlockStateRepository,
         metrics: Option<BlockProductionMetrics>,
+        accounts_repository: AccountsRepository,
         message_db: MessageDurableStorage,
         unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
         finalized_blocks: Arc<Mutex<FinalizedBlockStorage>>,
@@ -334,37 +337,45 @@ impl RepositoryImpl {
         if let Err(err) = fs::create_dir_all(data_dir.clone()) {
             tracing::error!("Failed to create data dir {:?}: {}", data_dir, err);
         }
-        let db_path = data_dir.join(DB_FILE);
-        let conn = SqliteHelper::create_connection_ro(db_path.clone())
-            .unwrap_or_else(|_| panic!("Failed to open {db_path:?}"));
 
-        let arch_path = data_dir.join(DB_ARCHIVE_FILE);
-        let archive = SqliteHelper::create_connection_ro(arch_path.clone())
-            .unwrap_or_else(|_| panic!("Failed to open an archive DB {}", arch_path.display()));
-
-        let schema_version =
-            conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap_or(0);
-        match schema_version.cmp(&REQUIRED_SQLITE_SCHEMA_VERSION) {
-            Ordering::Less => {
-                tracing::trace!(
-                    r"Error: DB schema must be uprgaded. Current version = {}, required version = {}
+        let archive = if !cfg!(feature = "disable_db_write") {
+            let db_path = data_dir.join(DB_FILE);
+            let arch_path = data_dir.join(DB_ARCHIVE_FILE);
+            let conn = SqliteHelper::create_connection_ro(db_path.clone())
+                .unwrap_or_else(|_| panic!("Failed to open {db_path:?}"));
+            let schema_version =
+                conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap_or(0);
+            match schema_version.cmp(&REQUIRED_SQLITE_SCHEMA_VERSION) {
+                Ordering::Less => {
+                    tracing::trace!(
+                        r"Error: DB schema must be uprgaded. Current version = {}, required version = {}
                     For migrate DB schema to required version, please use 'migration_tool':
                     $ migration-tool -p {} -n {REQUIRED_SQLITE_SCHEMA_VERSION} -a",
-                    schema_version,
-                    REQUIRED_SQLITE_SCHEMA_VERSION,
-                    data_dir.display()
-                );
-                std::process::exit(2);
-            }
-            Ordering::Greater => {
-                tracing::trace!(
-                    r"The schema of the database version is higher than that required by
+                        schema_version,
+                        REQUIRED_SQLITE_SCHEMA_VERSION,
+                        data_dir.display()
+                    );
+                    std::process::exit(2);
+                }
+                Ordering::Greater => {
+                    tracing::trace!(
+                        r"The schema of the database version is higher than that required by
                     this instance of the Acki-Nacki node. Please update the app version.",
-                );
-                std::process::exit(3);
+                    );
+                    std::process::exit(3);
+                }
+                _ => {}
             }
-            _ => {}
-        }
+
+            Some(
+                SqliteHelper::create_connection_ro(arch_path.clone()).unwrap_or_else(|_| {
+                    panic!("Failed to open an archive DB {}", arch_path.display())
+                }),
+            )
+        } else {
+            None
+        };
+
         let metadata = Arc::new(Mutex::new({
             let metadata = Self::load_metadata(&data_dir)
                 .expect("Must be able to create or load repository metadata");
@@ -412,7 +423,7 @@ impl RepositoryImpl {
             nack_set_cache: Arc::clone(&nack_set_cache),
             block_state_repository: block_state_repository.clone(),
             optimistic_states_cache: Arc::new(Mutex::new(HashMap::new())),
-            accounts: AccountsRepository::new(data_dir.clone()),
+            accounts: accounts_repository,
             split_state,
             metrics,
             message_db: message_db.clone(),
@@ -715,7 +726,13 @@ impl RepositoryImpl {
         tracing::trace!("Loading an archived block (seq_no: {seq_no:?})...");
         let sql = r"SELECT aggregated_signature, signature_occurrences, data
             FROM blocks WHERE seq_no=?1 AND thread_id=?2";
-        let mut stmt = self.archive.prepare(sql)?;
+
+        let mut stmt = self
+            .archive
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Internal error: archive is None"))?
+            .prepare(sql)?;
+
         let mut rows = stmt.query(params![seq_no.to_string(), thread_id.to_string()])?;
         let mut envelopes = vec![];
 
@@ -743,7 +760,11 @@ impl RepositoryImpl {
     fn is_block_present_in_archive(&self, identifier: &BlockIdentifier) -> anyhow::Result<bool> {
         let sql = r"SELECT aggregated_signature, signature_occurrences, data, id
             FROM blocks WHERE id=?1";
-        let mut stmt = self.archive.prepare(sql)?;
+        let mut stmt = self
+            .archive
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Internal error: archive is None"))?
+            .prepare(sql)?;
         let mut rows = stmt.query(params![identifier.to_string()])?;
         let res = rows.next()?.is_some();
         Ok(res)
@@ -769,7 +790,12 @@ impl RepositoryImpl {
             "SELECT aggregated_signature, signature_occurrences, data, id FROM blocks {}",
             add_clause,
         );
-        let mut stmt = self.archive.prepare(&sql)?;
+        let mut stmt = self
+            .archive
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Internal error: archive is None"))?
+            .prepare(&sql)?;
+
         let mut rows = stmt.query([])?;
         let envelope = match rows.next()? {
             Some(row) => {
@@ -831,13 +857,36 @@ impl RepositoryImpl {
             return Ok(());
         }
         // Leave only the latest state
-        keys_to_remove.pop();
+        let last = keys_to_remove.pop();
         // for k in &keys_to_remove {
         //     let block_id = saved_states.get(k).unwrap();
         //     tracing::trace!("Clear optimistic state for {k} {block_id:?}");
         //     let optimistic_state_path = self.get_optimistic_state_path();
         //     self.remove(optimistic_state_path, OID::ID(block_id.to_string()))?;
         // }
+        if self.split_state && !keys_to_remove.is_empty() {
+            if let Some(block_id) = saved_states.get(&last.unwrap()) {
+                let mut last = self
+                    .get_optimistic_state(block_id, thread_id, None)?
+                    .ok_or_else(|| anyhow::format_err!("Optimistic state must be present"))?;
+                let block_lt = self
+                    .get_block_from_repo_or_archive(block_id)?
+                    .data()
+                    .tvm_block()
+                    .read_info()
+                    .map_err(|err| anyhow::format_err!("Failed to read block info: {err}"))?
+                    .end_lt();
+                let accounts = self.accounts.clone();
+                let last = last.get_shard_state().read_accounts().map_err(|err| {
+                    anyhow::format_err!("Failed to read last shard accounts: {}", err)
+                })?;
+                let thread_id = *thread_id;
+                // TODO: save handler
+                std::thread::Builder::new()
+                    .name("Clear old accounts".to_owned())
+                    .spawn(move || accounts.clear_old_accounts(&thread_id, &last, block_lt))?;
+            }
+        }
         self.saved_states.guarded_mut(|e| {
             let thread_states = e.entry(*thread_id).or_default();
             thread_states.retain(|seq_no, _| !keys_to_remove.contains(seq_no));
@@ -982,7 +1031,12 @@ impl RepositoryImpl {
         if !tmp_path.exists() {
             File::create(tmp_path.clone()).unwrap();
         }
-        let archive = SqliteHelper::create_connection_ro(tmp_path.clone()).unwrap();
+        let archive = if !cfg!(feature = "disable_db_write") {
+            Some(SqliteHelper::create_connection_ro(tmp_path.clone()).unwrap())
+        } else {
+            None
+        };
+
         let data_dir = PathBuf::default();
         let message_db = MessageDurableStorage::new(tmp_path).unwrap();
         let message_service =
@@ -997,7 +1051,7 @@ impl RepositoryImpl {
 
         Self {
             archive,
-            accounts: AccountsRepository::new(data_dir.clone()),
+            accounts: AccountsRepository::new(data_dir.clone(), None, 1),
             data_dir,
             zerostate_path: None,
             metadatas: Arc::new(Mutex::new(metadatas)),
@@ -1377,6 +1431,43 @@ impl Repository for RepositoryImpl {
         }))
     }
 
+    fn get_full_optimistic_state(
+        &self,
+        block_id: &BlockIdentifier,
+        thread_id: &ThreadIdentifier,
+        min_state: Option<Self::OptimisticState>,
+    ) -> anyhow::Result<Option<Self::OptimisticState>> {
+        let mut state = self.get_optimistic_state(block_id, thread_id, min_state)?;
+        if let Some(Some(state)) = self.split_state.then_some(&mut state) {
+            let mut shard_state = state.get_shard_state().as_ref().clone();
+            let mut shard_accounts = shard_state
+                .read_accounts()
+                .map_err(|e| anyhow::format_err!("Failed to read shard accounts: {e}"))?;
+            shard_accounts.clone().iterate_accounts(|account_id, mut shard_acc, aug| {
+                    if shard_acc.is_external() {
+                        let acc_root = match state.cached_accounts.get(&account_id) {
+                            Some((_, acc_root)) => acc_root.clone(),
+                            None => {
+                                self.accounts.load_account(&account_id, shard_acc.last_trans_hash(), shard_acc.last_trans_lt()).map_err(|err| tvm_types::error!("{}", err))?
+                            }
+                        };
+                        if acc_root.repr_hash() != shard_acc.account_cell().repr_hash() {
+                            return Err(tvm_types::error!("External account {account_id} cell hash mismatch: required: {}, actual: {}", acc_root.repr_hash(), shard_acc.account_cell().repr_hash()));
+                        }
+                        shard_acc.set_account_cell(acc_root);
+                        shard_accounts.insert_with_aug(&account_id, &shard_acc, &aug)?;
+                    }
+                    Ok(true)
+                })
+                .map_err(|e| anyhow::format_err!("Failed to load accounts: {e}"))?;
+            shard_state
+                .write_accounts(&shard_accounts)
+                .map_err(|e| anyhow::format_err!("Failed to write shard accounts: {e}"))?;
+            state.set_shard_state(Arc::new(shard_state));
+        }
+        Ok(state)
+    }
+
     fn erase_block_and_optimistic_state(
         &self,
         block_id: &BlockIdentifier,
@@ -1435,148 +1526,136 @@ impl Repository for RepositoryImpl {
         skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
     ) -> anyhow::Result<()> {
         tracing::debug!("set_state_from_snapshot");
-        let wrapped_snapshot: WrappedStateSnapshot = bincode::deserialize(&snapshot)?;
-        for (thread_id, thread_snapshot) in wrapped_snapshot.thread_states {
-            let mut state = <Self as Repository>::OptimisticState::deserialize_from_buf(
-                thread_snapshot.optimistic_state(),
-            )?;
-            tracing::debug!("set_state_from_snapshot: {:?} {:?}", state.thread_id, state.block_id);
-            self.store_optimistic(state.clone())?;
-            let seq_no = thread_snapshot.finalized_block.data().seq_no();
-            if &thread_id == cur_thread_id {
-                // TODO: need to store for other threads
-                tracing::trace!(
-                    "set_state_from_snapshot: fin stats: {:?}",
-                    thread_snapshot.finalized_block_stats()
-                );
-                let mut skipped_attestation_ids = skipped_attestation_ids.lock();
-                for block_id in &thread_snapshot.finalized_block_stats().attestations_watched() {
-                    skipped_attestation_ids.insert(block_id.clone());
-                }
+        let thread_snapshot: ThreadSnapshot = bincode::deserialize(&snapshot)?;
+        let mut state = <Self as Repository>::OptimisticState::deserialize_from_buf(
+            thread_snapshot.optimistic_state(),
+        )?;
+        let thread_id = state.thread_id;
+        tracing::debug!("set_state_from_snapshot: {:?} {:?}", state.thread_id, state.block_id);
+        self.store_optimistic(state.clone())?;
+        let seq_no = thread_snapshot.finalized_block.data().seq_no();
+        if &thread_id == cur_thread_id {
+            // TODO: need to store for other threads
+            tracing::trace!(
+                "set_state_from_snapshot: fin stats: {:?}",
+                thread_snapshot.finalized_block_stats()
+            );
+            let mut skipped_attestation_ids = skipped_attestation_ids.lock();
+            for block_id in &thread_snapshot.finalized_block_stats().attestations_watched() {
+                skipped_attestation_ids.insert(block_id.clone());
             }
+        }
 
-            let repo_clone = self.clone();
-            let block_state_repo_clone = self.block_state_repository.clone();
-            let update_block_state = || {
-                let block_state = block_state_repo_clone
-                    .get(&thread_snapshot.finalized_block.data().identifier())?;
-                block_state.guarded_mut(|state| {
-                    state.set_initial_attestations_target(thread_snapshot.attestation_target)?;
-                    state.set_thread_identifier(
-                        thread_snapshot.finalized_block.data().get_common_section().thread_id,
-                    )?;
-                    state.set_parent_block_identifier(
-                        thread_snapshot.finalized_block.data().parent(),
-                    )?;
-                    state.set_producer(
-                        thread_snapshot
-                            .finalized_block
-                            .data()
-                            .get_common_section()
-                            .producer_id
-                            .clone(),
-                    )?;
-                    state.set_block_seq_no(thread_snapshot.finalized_block.data().seq_no())?;
-                    state.set_block_time_ms(
-                        thread_snapshot.finalized_block.data().time().unwrap(),
-                    )?;
-                    state.set_common_checks_passed()?;
-                    state.set_finalized()?;
-                    state.set_applied()?;
-                    state.set_signatures_verified()?;
-                    state.set_stored()?;
-                    let bk_set = Arc::new(thread_snapshot.bk_set.clone());
-                    state.set_bk_set(bk_set.clone())?;
-                    state.set_descendant_bk_set(bk_set)?;
-                    state.set_block_stats(thread_snapshot.finalized_block_stats.clone())?;
-                    state.set_initial_attestations_target(thread_snapshot.attestation_target)?;
-                    state.set_producer_selector_data(thread_snapshot.producer_selector.clone())?;
-                    Ok::<(), anyhow::Error>(())
-                })?;
-                crate::node::services::block_processor::rules::descendant_bk_set::set_descendant_bk_set(&block_state, &repo_clone);
+        let repo_clone = self.clone();
+        let block_state_repo_clone = self.block_state_repository.clone();
+        let update_block_state = || {
+            let block_state =
+                block_state_repo_clone.get(&thread_snapshot.finalized_block.data().identifier())?;
+            block_state.guarded_mut(|state| {
+                state.set_initial_attestations_target(thread_snapshot.attestation_target)?;
+                state.set_thread_identifier(
+                    thread_snapshot.finalized_block.data().get_common_section().thread_id,
+                )?;
+                state
+                    .set_parent_block_identifier(thread_snapshot.finalized_block.data().parent())?;
+                state.set_producer(
+                    thread_snapshot.finalized_block.data().get_common_section().producer_id.clone(),
+                )?;
+                state.set_block_seq_no(thread_snapshot.finalized_block.data().seq_no())?;
+                state.set_block_time_ms(thread_snapshot.finalized_block.data().time().unwrap())?;
+                state.set_common_checks_passed()?;
+                state.set_finalized()?;
+                state.set_applied()?;
+                state.set_signatures_verified()?;
+                state.set_stored()?;
+                let bk_set = Arc::new(thread_snapshot.bk_set.clone());
+                state.set_bk_set(bk_set.clone())?;
+                state.set_descendant_bk_set(bk_set)?;
+                state.set_block_stats(thread_snapshot.finalized_block_stats.clone())?;
+                state.set_initial_attestations_target(thread_snapshot.attestation_target)?;
+                state.set_producer_selector_data(thread_snapshot.producer_selector.clone())?;
                 Ok::<(), anyhow::Error>(())
-            };
+            })?;
+            crate::node::services::block_processor::rules::descendant_bk_set::set_descendant_bk_set(
+                &block_state,
+                &repo_clone,
+            );
+            Ok::<(), anyhow::Error>(())
+        };
 
-            let external_messages = ExternalMessagesThreadState::builder()
-                .with_external_messages_file_path(
-                    self.data_dir
-                        .join("external-messages")
-                        .join(format!("thread-{:x}", thread_id))
-                        .join("data"),
-                )
-                .with_block_progress_data_dir(
-                    self.data_dir
-                        .join("external-messages")
-                        .join(format!("thread-{:x}", thread_id))
-                        .join("progress"),
-                )
-                .with_thread_id(thread_id)
-                .with_report_metrics(self.metrics.clone())
-                .build()?;
+        let external_messages = ExternalMessagesThreadState::builder()
+            .with_block_progress_data_dir(
+                self.data_dir
+                    .join("external-messages")
+                    .join(format!("thread-{:x}", thread_id))
+                    .join("progress"),
+            )
+            .with_thread_id(thread_id)
+            .with_report_metrics(self.metrics.clone())
+            .with_cache_size(100) // TODO: take from node config
+            .build()?;
 
-            if let Some(finalized_seq_no) = self
-                .finalized_optimistic_states
-                .guarded(|e| e.get(&thread_id).map(|state| state.block_seq_no))
-            {
-                if seq_no > finalized_seq_no {
-                    let shard_state = state.get_shard_state();
-                    self.finalized_optimistic_states
-                        .guarded_mut(|e| e.insert(thread_id, state.clone()));
-                    self.sync_accounts_from_state(shard_state)?;
-                    external_messages.set_progress_to_last_known(
-                        &thread_snapshot.finalized_block.data().identifier(),
-                    )?;
-                    update_block_state()?;
-                }
-            } else {
+        if let Some(finalized_seq_no) = self
+            .finalized_optimistic_states
+            .guarded(|e| e.get(&thread_id).map(|state| state.block_seq_no))
+        {
+            if seq_no > finalized_seq_no {
+                let shard_state = state.get_shard_state();
                 self.finalized_optimistic_states
                     .guarded_mut(|e| e.insert(thread_id, state.clone()));
-
+                self.sync_accounts_from_state(shard_state)?;
                 external_messages.set_progress_to_last_known(
                     &thread_snapshot.finalized_block.data().identifier(),
                 )?;
                 update_block_state()?;
             }
-            {
-                let mut all_states = self.saved_states.lock();
-                let saved_states = all_states.entry(thread_id).or_default();
-                saved_states
-                    .insert(seq_no, thread_snapshot.finalized_block.data().identifier().clone());
-            }
-            let db_messages = thread_snapshot
-                .db_messages
-                .clone()
-                .into_iter()
-                .filter_map(|v| {
-                    if v.is_empty() {
-                        None
-                    } else {
-                        v[0].message.int_dst_account_id().map(|addr| {
-                            (
-                                AccountAddress(addr),
-                                v.into_iter()
-                                    .map(|msg| {
-                                        let id = MessageIdentifier::from(msg.deref());
-                                        (id, msg)
-                                    })
-                                    .collect(),
-                            )
-                        })
-                    }
-                })
-                .collect();
-            self.message_storage_service.write(db_messages)?;
+        } else {
+            self.finalized_optimistic_states.guarded_mut(|e| e.insert(thread_id, state.clone()));
 
-            self.shared_services.exec(|services| {
-                for ref_data in thread_snapshot.cross_thread_ref_data.clone().into_iter() {
-                    services
-                        .cross_thread_ref_data_service
-                        .set_cross_thread_ref_data(ref_data)
-                        .expect("Failed to load cross-thread-ref-data");
-                }
-            });
-            self.finalize_synced_block(&thread_snapshot, &state)?;
+            external_messages
+                .set_progress_to_last_known(&thread_snapshot.finalized_block.data().identifier())?;
+            update_block_state()?;
         }
+        {
+            let mut all_states = self.saved_states.lock();
+            let saved_states = all_states.entry(thread_id).or_default();
+            saved_states
+                .insert(seq_no, thread_snapshot.finalized_block.data().identifier().clone());
+        }
+        let db_messages = thread_snapshot
+            .db_messages
+            .clone()
+            .into_iter()
+            .filter_map(|v| {
+                if v.is_empty() {
+                    None
+                } else {
+                    v[0].message.int_dst_account_id().map(|addr| {
+                        (
+                            AccountAddress(addr),
+                            v.into_iter()
+                                .map(|msg| {
+                                    let id = MessageIdentifier::from(msg.deref());
+                                    (id, msg)
+                                })
+                                .collect(),
+                        )
+                    })
+                }
+            })
+            .collect();
+        self.message_storage_service.write(db_messages)?;
+
+        self.shared_services.exec(|services| {
+            for ref_data in thread_snapshot.cross_thread_ref_data.clone().into_iter() {
+                services
+                    .cross_thread_ref_data_service
+                    .set_cross_thread_ref_data(ref_data)
+                    .expect("Failed to load cross-thread-ref-data");
+            }
+        });
+        self.finalize_synced_block(&thread_snapshot, &state)?;
+
         Ok(())
     }
 
@@ -1674,44 +1753,62 @@ impl Repository for RepositoryImpl {
         self.store_optimistic_in_cache(optimistic.clone())?;
         let block_id = optimistic.get_block_id().clone();
         tracing::trace!("save optimistic {block_id:?}");
-        self.clear_optimistic_states(&optimistic.thread_id)?;
-        let block_seq_no = BlockSeqNo::from(
-            optimistic
-                .get_block_info()
-                .prev1()
-                .map_err(|e| anyhow::format_err!("Failed to read block info: {e}"))?
-                .seq_no,
-        );
+        let block_seq_no = optimistic.block_seq_no;
         let root_path = self.get_optimistic_state_path();
         let path = self.get_path(root_path, block_id.to_string());
+        if path.exists() {
+            return Ok(());
+        }
         let saved_states_clone = self.saved_states.clone();
         let start_save = std::time::Instant::now();
         let thread_id = optimistic.thread_id;
+        self.clear_optimistic_states(&optimistic.thread_id)?;
 
-        if self.split_state && !optimistic.changed_accounts.is_empty() {
+        if !optimistic.changed_accounts.is_empty() || !optimistic.cached_accounts.is_empty() {
             let changed_accounts = std::mem::take(&mut optimistic.changed_accounts);
-            let shard_state = optimistic.get_shard_state();
-            let accounts = shard_state.read_accounts().map_err(|e| anyhow::format_err!("{e}"))?;
-            for account_id in changed_accounts {
-                if let Some(account) = accounts
+            let mut shard_state = optimistic.get_shard_state().as_ref().clone();
+            let mut accounts =
+                shard_state.read_accounts().map_err(|e| anyhow::format_err!("{e}"))?;
+            for account_id in changed_accounts.into_keys() {
+                if let Some(mut account) = accounts
                     .account(&(&account_id).into())
                     .map_err(|e| anyhow::format_err!("Failed to read account: {e}"))?
                 {
-                    if account.is_external() {
-                        return Err(anyhow::format_err!("External account in changed_accounts"));
-                    }
+                    let aug =
+                        account.aug().map_err(|e| anyhow::format_err!("Failed to get aug: {e}"))?;
+                    let account_root = account
+                        .replace_with_external()
+                        .map_err(|e| anyhow::format_err!("Failed to set account external: {e}"))?;
                     self.accounts.store_account(
                         &account_id,
                         account.last_trans_hash(),
                         account.last_trans_lt(),
-                        account.account_cell(),
+                        account_root,
+                    )?;
+                    accounts
+                        .insert_with_aug(&account_id, &account, &aug)
+                        .map_err(|e| anyhow::format_err!("Failed to insert account: {e}"))?;
+                }
+            }
+            for (account_id, (_, account_root)) in &optimistic.cached_accounts {
+                if let Some(account) = accounts
+                    .account(&account_id.into())
+                    .map_err(|e| anyhow::format_err!("Failed to read account: {e}"))?
+                {
+                    self.accounts.store_account(
+                        account_id,
+                        account.last_trans_hash(),
+                        account.last_trans_lt(),
+                        account_root.clone(),
                     )?;
                 }
             }
+            shard_state.write_accounts(&accounts).map_err(|e| anyhow::format_err!("{e}"))?;
+            optimistic.set_shard_state(Arc::new(shard_state));
         }
 
-        let state_bytes = OptimisticState::serialize_into_buf(optimistic, self.split_state)
-            .expect("Failed to serialize block");
+        let state_bytes =
+            OptimisticState::serialize_into_buf(optimistic).expect("Failed to serialize block");
         let res = save_to_file(&path, &state_bytes, false);
         tracing::trace!(
             "save optimistic {block_id:?} result: {res:?} {}",
@@ -1765,6 +1862,7 @@ pub mod tests {
     use crate::multithreading::routing::service::RoutingService;
     use crate::node::shared_services::SharedServices;
     use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
+    use crate::repository::accounts::AccountsRepository;
     use crate::repository::repository_impl::BlockStateRepository;
     use crate::repository::repository_impl::FinalizedBlockStorage;
     use crate::utilities::FixedSizeHashSet;
@@ -1805,6 +1903,8 @@ pub mod tests {
 
         let block_state_repository =
             BlockStateRepository::new(PathBuf::from("./tests-data/test_save_load/block-state"));
+        let accounts_repository =
+            AccountsRepository::new(PathBuf::from("./tests-data/test_save_load"), Some(0), 1);
         let message_db = MessageDurableStorage::new(PathBuf::from("./tmp/message_storage1"))?;
         let finalized_blocks = finalized_blocks_storage();
         let block_collection = UnfinalizedCandidateBlockCollection::new(
@@ -1820,6 +1920,7 @@ pub mod tests {
             true,
             block_state_repository,
             None,
+            accounts_repository,
             message_db.clone(),
             block_collection,
             finalized_blocks,
@@ -1841,6 +1942,11 @@ pub mod tests {
         let block_state_repository = BlockStateRepository::new(PathBuf::from(
             "/home/user/GOSH/acki-nacki/server_data/node1/block-state/",
         ));
+        let accounts_repository = AccountsRepository::new(
+            PathBuf::from("/home/user/GOSH/acki-nacki/server_data/node1/"),
+            Some(0),
+            1,
+        );
         let message_db = MessageDurableStorage::new(PathBuf::from("./tmp/message_storage2"))?;
         let finalized_blocks = finalized_blocks_storage();
         let block_collection = UnfinalizedCandidateBlockCollection::new(
@@ -1856,6 +1962,7 @@ pub mod tests {
             true,
             block_state_repository,
             None,
+            accounts_repository,
             message_db.clone(),
             block_collection,
             finalized_blocks,
@@ -1869,6 +1976,8 @@ pub mod tests {
         START.call_once(init_tests);
         let block_state_repository =
             BlockStateRepository::new(PathBuf::from("./tests-data/test_exists/block-state"));
+        let accounts_repository =
+            AccountsRepository::new(PathBuf::from("./tests-data/test_exists"), Some(0), 1);
         let message_db = MessageDurableStorage::new(PathBuf::from("./tmp/message_storage3"))?;
         let finalized_blocks = finalized_blocks_storage();
         let block_collection = UnfinalizedCandidateBlockCollection::new(
@@ -1885,6 +1994,7 @@ pub mod tests {
             true,
             block_state_repository,
             None,
+            accounts_repository,
             message_db.clone(),
             block_collection,
             finalized_blocks,
@@ -1905,6 +2015,8 @@ pub mod tests {
         START.call_once(init_tests);
         let block_state_repository =
             BlockStateRepository::new(PathBuf::from("./tests-data/test_remove/block-state"));
+        let accounts_repository =
+            AccountsRepository::new(PathBuf::from("./tests-data/test_remove"), Some(0), 1);
         let message_db = MessageDurableStorage::new(PathBuf::from("./tmp/message_storage4"))?;
         let finalized_blocks = finalized_blocks_storage();
         let block_collection = UnfinalizedCandidateBlockCollection::new(
@@ -1921,6 +2033,7 @@ pub mod tests {
             true,
             block_state_repository,
             None,
+            accounts_repository,
             message_db.clone(),
             block_collection,
             finalized_blocks,

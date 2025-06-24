@@ -80,6 +80,10 @@ impl ThreadsTable {
     pub fn list_threads(&self) -> impl Iterator<Item = &'_ ThreadIdentifier> {
         self.rows().map(|(_, thread)| thread).collect::<HashSet<_>>().into_iter()
     }
+
+    pub fn length(&self) -> usize {
+        self.rows().count()
+    }
 }
 
 impl std::ops::BitAnd for &'_ AccountRouting {

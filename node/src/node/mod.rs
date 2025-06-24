@@ -30,6 +30,7 @@ use std::collections::HashSet;
 use std::sync::atomic::AtomicI32;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 pub use associated_types::SignerIndex;
@@ -72,6 +73,7 @@ use crate::node::block_state::repository::BlockState;
 use crate::node::services::block_processor::service::BlockProcessorService;
 use crate::node::services::db_serializer::DBSerializeService;
 use crate::node::services::fork_resolution::service::ForkResolutionService;
+use crate::node::services::send_attestations::AttestationSendServiceHandler;
 use crate::node::services::validation::service::ValidationServiceInterface;
 use crate::types::bp_selector::BlockGap;
 use crate::types::ThreadIdentifier;
@@ -116,6 +118,7 @@ where
     // it is filled after BK epoch contract deploy or loaded from zerostate
     block_state_repository: BlockStateRepository,
     block_processor_service: BlockProcessorService,
+    attestation_send_service: AttestationSendServiceHandler,
     validation_service: ValidationServiceInterface,
     skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
     pub message_db: MessageDurableStorage,
@@ -128,9 +131,10 @@ where
     external_messages: ExternalMessagesThreadState,
 
     is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
-    db_service: DBSerializeService,
+    db_service: Option<DBSerializeService>,
     // Channel (sender) for block requests
     blk_req_tx: Sender<BlockRequestParams>,
+    ext_msg_receiver: JoinHandle<()>,
 }
 
 impl<TStateSyncService, TRandomGenerator> Node<TStateSyncService, TRandomGenerator>
@@ -168,8 +172,10 @@ where
         message_db: MessageDurableStorage,
         last_block_attestations: Arc<Mutex<CollectedAttestations>>,
         bp_production_count: Arc<AtomicI32>,
-        db_service: DBSerializeService,
+        db_service: Option<DBSerializeService>,
         blk_req_tx: Sender<BlockRequestParams>,
+        attestation_send_service: AttestationSendServiceHandler,
+        ext_msg_receiver: JoinHandle<()>,
     ) -> Self {
         tracing::trace!("Start node for thread: {thread_id:?}");
         if let Some(metrics) = &metrics {
@@ -268,6 +274,8 @@ where
             is_state_sync_requested,
             db_service,
             blk_req_tx,
+            attestation_send_service,
+            ext_msg_receiver,
         }
     }
 }

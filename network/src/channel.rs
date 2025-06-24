@@ -87,6 +87,7 @@ where
 
         self.metrics.as_ref().inspect(|metrics| {
             metrics.report_message_size(orig_size, net_message.data.len(), &label);
+
             metrics.start_delivery_phase(
                 DeliveryPhase::OutgoingBuffer,
                 1,
@@ -102,8 +103,20 @@ where
             broadcast = false,
             "Message delivery: started"
         );
+
+        let message_aprox_size = NetMessage::transfer_size(&net_message);
+
         match self.inner.send((peer_id.clone(), net_message, Instant::now())) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.metrics.as_ref().inspect(|metrics| {
+                    metrics.report_sent_to_outgoing_buffer_bytes(
+                        message_aprox_size,
+                        &label,
+                        SendMode::Direct,
+                    );
+                });
+                Ok(())
+            }
             Err(_) => {
                 tracing::error!(
                     peer_id = peer_id.to_string(),
@@ -145,7 +158,7 @@ where
         Self { inner, metrics, _message_type: PhantomData }
     }
 
-    pub fn send(&self, message: Message) -> Result<(), NetSendError<Message>> {
+    pub fn send(&self, message: Message) -> Result<usize, NetSendError<Message>> {
         let (_, net_message, orig_size) = encode_outgoing(message)?;
         let label = net_message.label.clone();
 
@@ -161,7 +174,9 @@ where
         );
 
         let label = net_message.label.clone();
-        match self.inner.send(OutgoingMessage {
+        let message_aprox_size = NetMessage::transfer_size(&net_message);
+
+        let received_count = match self.inner.send(OutgoingMessage {
             message: net_message,
             delivery: MessageDelivery::Broadcast,
             duration_before_transfer: Instant::now(),
@@ -174,7 +189,13 @@ where
                             receiver_count,
                             &label,
                             SendMode::Broadcast,
-                        )
+                        );
+
+                        x.report_sent_to_outgoing_buffer_bytes(
+                            message_aprox_size * receiver_count as u64,
+                            &label,
+                            SendMode::Broadcast,
+                        );
                     });
                     tracing::trace!(
                         receiver_count = receiver_count,
@@ -182,11 +203,13 @@ where
                         label
                     );
                 }
+                receiver_count
             }
             Err(_) => {
                 tracing::warn!("There are no broadcast senders. {} was not forwarded.", label);
+                0
             }
-        }
-        Ok(())
+        };
+        Ok(received_count)
     }
 }

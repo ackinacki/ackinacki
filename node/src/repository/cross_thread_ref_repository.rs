@@ -90,11 +90,12 @@ impl CrossThreadRefDataHistory for CrossThreadRefDataRepository {
 }
 
 impl CrossThreadRefDataRepository {
-    pub fn new(data_dir: PathBuf) -> Self {
+    pub fn new(data_dir: PathBuf, thread_cnt_soft_limit: usize) -> Self {
         Self {
             data_dir,
             cross_thread_ref_data_cache: Arc::new(Mutex::new(LruCache::new(
-                NonZeroUsize::new(CROSS_THREAD_REF_DATA_CACHE_SIZE).unwrap(),
+                NonZeroUsize::new(CROSS_THREAD_REF_DATA_CACHE_SIZE * thread_cnt_soft_limit)
+                    .unwrap(),
             ))),
         }
     }

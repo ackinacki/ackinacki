@@ -6,8 +6,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use message_router::bp_resolver::BPResolver;
+use message_router::DEFAULT_NODE_URL_PORT;
 use network::network::PeerData;
-use network::try_socket_addr_from_url;
 use parking_lot::Mutex;
 
 use crate::node::NodeIdentifier;
@@ -38,17 +38,15 @@ impl BPResolver for BPResolverImpl {
         tracing::debug!(target: "message_router", "bp_id_for_thread_map: {:?}", bp_id_for_thread_map);
 
         // TODO: this list of threads can change in runtime need to take smth like shared services
+        let peers = self.peers_rx.borrow_and_update();
         let mut nodes_vec: Vec<SocketAddr> = bp_id_for_thread_map
             .into_iter()
             .filter_map(|(thread, bp_id)| {
                 if target_thread.as_ref().is_none_or(|t| &thread == t) {
-                    bp_id.and_then(|bp_node_id| {
-                        self.peers_rx.borrow_and_update().get(&bp_node_id).and_then(|peer_data| {
-                            try_socket_addr_from_url(&peer_data.peer_url).map(|mut socket_addr| {
-                                socket_addr.set_port(message_router::DEFAULT_NODE_URL_PORT);
-                                socket_addr
-                            })
-                        })
+                    bp_id.and_then(|bp_node_id| peers.get(&bp_node_id)).map(|peer_data| {
+                        let mut addr = peer_data.peer_addr;
+                        addr.set_port(DEFAULT_NODE_URL_PORT);
+                        addr
                     })
                 } else {
                     None

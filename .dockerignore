@@ -4,3 +4,4 @@
 venv
 Cargo.lock
 **/Cargo.lock
+tests

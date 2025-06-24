@@ -8,7 +8,7 @@
 			"inputs": [
 				{"name":"giver","type":"address"},
 				{"name":"licenseBMRoot","type":"address"},
-				{"name":"bkroot","type":"address"}
+				{"name":"epochDuration","type":"uint32"}
 			],
 			"outputs": [
 			]
@@ -43,26 +43,9 @@
 			"name": "getReward",
 			"inputs": [
 				{"name":"pubkey","type":"uint256"},
+				{"name":"rewarded","type":"uint32"},
 				{"name":"startBM","type":"uint32"},
-				{"name":"stopBM","type":"uint32"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "tryUpdateCode",
-			"inputs": [
-				{"name":"pubkey","type":"uint256"},
-				{"name":"old_hash","type":"uint256"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "updateCode",
-			"inputs": [
-				{"name":"newcode","type":"cell"},
-				{"name":"cell","type":"cell"}
+				{"name":"isEnd","type":"bool"}
 			],
 			"outputs": [
 			]
@@ -104,11 +87,23 @@
 		{"init":false,"name":"__value","type":"uint256"},
 		{"init":false,"name":"_code","type":"map(uint8,cell)"},
 		{"init":false,"name":"_licenseBMRoot","type":"address"},
-		{"init":false,"name":"_BKRoot","type":"address"},
 		{"init":false,"name":"_numberOfActiveBlockManagers","type":"uint128"},
 		{"init":false,"name":"_owner_wallet","type":"optional(address)"},
-		{"init":false,"name":"_bm_start","type":"optional(uint32)"},
-		{"init":false,"name":"_bm_end","type":"uint32"},
-		{"init":false,"name":"_giver","type":"address"}
+		{"init":false,"name":"_giver","type":"address"},
+		{"init":false,"name":"_networkStart","type":"uint32"},
+		{"init":false,"name":"_epochDuration","type":"uint32"},
+		{"init":false,"name":"_prevEpochDuration","type":"uint32"},
+		{"init":false,"name":"_epochStart","type":"uint32"},
+		{"init":false,"name":"_epochEnd","type":"uint32"},
+		{"init":false,"name":"_numberOfActiveBlockManagersAtEpochStart","type":"uint128"},
+		{"init":false,"name":"_numberOfActiveBlockManagersAtPrevEpochStart","type":"uint128"},
+		{"init":false,"name":"_reward_adjustment","type":"uint128"},
+		{"init":false,"name":"_reward_adjustment_prev_epoch","type":"uint128"},
+		{"init":false,"name":"_reward_last_time","type":"uint32"},
+		{"init":false,"name":"_min_reward_period","type":"uint32"},
+		{"init":false,"name":"_reward_period","type":"uint32"},
+		{"init":false,"name":"_calc_reward_num","type":"uint32"},
+		{"init":false,"name":"_reward_sum","type":"uint128"},
+		{"init":false,"name":"_reward_sum_prev_epoch","type":"uint128"}
 	]
 }

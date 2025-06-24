@@ -160,6 +160,7 @@ impl PulseAttestations {
                     request_range_start,
                     request_range_end,
                     self.min_generations_to_request,
+                    metrics.clone(),
                 );
             }
         }
@@ -180,6 +181,7 @@ impl PulseAttestations {
             request_range_start,
             request_range_end,
             self.min_generations_to_request,
+            metrics.clone(),
         )
     }
 
@@ -189,7 +191,14 @@ impl PulseAttestations {
         request_range_start: BlockSeqNo,
         request_range_end: BlockSeqNo,
         request_at_least_this_number_of_blocks: Option<usize>,
+        metrics: Option<BlockProductionMetrics>,
     ) -> anyhow::Result<()> {
+        if request_range_end > request_range_start {
+            if let Some(metrics) = &metrics {
+                let gap_len = request_range_end - request_range_start;
+                metrics.report_blocks_requested(gap_len as u64, &self.thread_identifier);
+            }
+        }
         for remote in attestation_interested_parties.into_iter() {
             crate::node::send::send_blocks_range_request(
                 &self.send_tx,
