@@ -29,12 +29,12 @@ impl Handler for StorageLatestHandler {
             Ok(file) => file,
             Err(e) => {
                 res.status_code(StatusCode::NOT_FOUND);
-                res.body(format!("Error: {}", e));
+                res.body(format!("Error: {e}"));
                 return;
             }
         };
 
-        res.render(Redirect::temporary(format!("/storage/{}", file_name)));
+        res.render(Redirect::temporary(format!("/bk/v1/storage/{file_name}")));
     }
 }
 

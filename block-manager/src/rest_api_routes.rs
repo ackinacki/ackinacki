@@ -1,6 +1,5 @@
 use std::net::SocketAddr;
 
-use http_server::auth;
 use salvo::prelude::*;
 use tvm_types::AccountId;
 
@@ -14,8 +13,9 @@ pub struct AppState {
 pub fn rest_api_router(default_bp: SocketAddr) -> Router {
     let app_state = AppState { default_bp };
     Router::new()
-        .path("bm")
-        .hoop(auth)
+        .path("v2")
+        // No auth required
+        // .hoop(auth)
         .hoop(affix_state::inject(app_state))
         .push(Router::with_path("account").get(boc_by_address))
 }

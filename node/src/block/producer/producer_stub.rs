@@ -8,6 +8,7 @@ use tvm_types::Cell;
 use crate::block::producer::builder::ActiveThread;
 use crate::block::producer::execution_time::ExecutionTimeLimits;
 use crate::block::producer::BlockProducer;
+use crate::external_messages::Stamp;
 use crate::message::message_stub::MessageStub;
 use crate::message_storage::MessageDurableStorage;
 use crate::repository::stub_repository::OptimisticStateStub;
@@ -31,12 +32,13 @@ impl BlockProducer for BlockProducerStub {
         _control_rx_stop: InstrumentedReceiver<()>,
         _db: MessageDurableStorage,
         _time_limits: &ExecutionTimeLimits,
+        _block_round: u16,
     ) -> anyhow::Result<(
         AckiNackiBlock,
         Self::OptimisticState,
         Vec<(Cell, ActiveThread)>,
         CrossThreadRefData,
-        usize,
+        Vec<Stamp>,
         ExtMsgFeedbackList,
     )>
     where

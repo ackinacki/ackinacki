@@ -75,6 +75,7 @@ impl PulseAttestations {
         // drop timers and ranges
         self.last_requested_time = None;
         self.last_requested_range = None;
+        tracing::trace!("clear blocks_were_requested");
         self.missing_blocks_were_requested.store(false, atomic::Ordering::Relaxed);
         Ok(())
     }
@@ -175,6 +176,7 @@ impl PulseAttestations {
         ) else {
             return Ok(());
         };
+        tracing::trace!("set blocks_were_requested");
         self.missing_blocks_were_requested.store(true, atomic::Ordering::Relaxed);
         self.make_request(
             attestation_interested_parties,

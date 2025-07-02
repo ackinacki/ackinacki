@@ -43,7 +43,8 @@ fn default_verbose_filter() -> tracing_subscriber::EnvFilter {
             database=info,\
             sqlite=trace,\
             message_router=trace,\
-            transport_layer=trace"
+            transport_layer=trace,\
+            ext_messages=trace"
     ))
     // tracing_subscriber::EnvFilter::new(format!(""))
 }
@@ -61,7 +62,8 @@ fn default_non_verbose_filter() -> tracing_subscriber::EnvFilter {
             database=off,\
             sqlite=warn,\
             message_router=info,\
-            transport_layer=trace",
+            transport_layer=trace,\
+            ext_messages=info",
     )
 }
 

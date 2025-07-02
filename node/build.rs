@@ -27,8 +27,8 @@ fn main() {
     let commit_date = cmd!["git", "log", "-1", "--date=iso", "--pretty=format:%cd"].get_stdout();
     let build_time = cmd!["date", "+%Y-%m-%d %T %z"].get_stdout();
 
-    println!("cargo:rustc-env=BUILD_GIT_BRANCH={}", git_branch);
-    println!("cargo:rustc-env=BUILD_GIT_COMMIT={}", git_commit);
-    println!("cargo:rustc-env=BUILD_GIT_DATE={}", commit_date);
-    println!("cargo:rustc-env=BUILD_TIME={}", build_time);
+    println!("cargo:rustc-env=BUILD_GIT_BRANCH={git_branch}");
+    println!("cargo:rustc-env=BUILD_GIT_COMMIT={git_commit}");
+    println!("cargo:rustc-env=BUILD_GIT_DATE={commit_date}");
+    println!("cargo:rustc-env=BUILD_TIME={build_time}");
 }

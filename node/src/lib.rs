@@ -10,6 +10,7 @@ pub mod external_messages;
 pub mod helper;
 pub mod message;
 pub mod node;
+pub mod protocol;
 pub mod repository;
 pub mod services;
 pub mod types;

@@ -60,6 +60,10 @@ where
     {
         self.blocks.get(k)
     }
+
+    pub fn blocks(&self) -> &HashMap<K, V> {
+        &self.blocks
+    }
 }
 
 impl<K, V> std::fmt::Debug for FixedSizeHashMap<K, V>

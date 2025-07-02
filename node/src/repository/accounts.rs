@@ -36,7 +36,7 @@ impl AccountsRepository {
     ) -> PathBuf {
         self.data_dir
             .join(account_id.to_hex_string())
-            .join(format!("{}_{:x}", last_trans_lt, last_trans_hash))
+            .join(format!("{last_trans_lt}_{last_trans_hash:x}"))
     }
 
     pub fn load_account(

@@ -8,11 +8,14 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use tvm_executor::BlockchainConfig;
 
 use crate::block::verify::verify_block;
 use crate::bls::envelope::BLSSignedEnvelope;
+use crate::bls::envelope::Envelope;
+use crate::bls::GoshBLS;
 use crate::config::Config;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message_storage::MessageDurableStorage;
@@ -21,15 +24,17 @@ use crate::node::services::validation::feedback::AckiNackiSend;
 use crate::node::shared_services::SharedServices;
 // use std::thread::sleep;
 use crate::node::BlockState;
+use crate::protocol::authority_switch::action_lock::Authority;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
+use crate::types::AckiNackiBlock;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
 fn read_into_buffer(
-    rx: &mut InstrumentedReceiver<BlockState>,
-    buffer: &mut VecDeque<BlockState>,
+    rx: &mut InstrumentedReceiver<(BlockState, Envelope<GoshBLS, AckiNackiBlock>)>,
+    buffer: &mut VecDeque<(BlockState, Envelope<GoshBLS, AckiNackiBlock>)>,
 ) -> bool {
     while let Ok(v) = rx.try_recv() {
         buffer.push_back(v);
@@ -54,7 +59,7 @@ fn read_into_buffer(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn inner_loop(
-    mut rx: InstrumentedReceiver<BlockState>,
+    mut rx: InstrumentedReceiver<(BlockState, Envelope<GoshBLS, AckiNackiBlock>)>,
     block_state_repo: BlockStateRepository,
     repository: RepositoryImpl,
     blockchain_config: Arc<BlockchainConfig>,
@@ -63,8 +68,9 @@ pub(super) fn inner_loop(
     send: AckiNackiSend,
     metrics: Option<BlockProductionMetrics>,
     message_db: MessageDurableStorage,
+    authority: Arc<Mutex<Authority>>,
 ) {
-    let mut buffer = VecDeque::<BlockState>::new();
+    let mut buffer = VecDeque::<(BlockState, Envelope<GoshBLS, AckiNackiBlock>)>::new();
     loop {
         if !read_into_buffer(&mut rx, &mut buffer) {
             return;
@@ -76,7 +82,7 @@ pub(super) fn inner_loop(
         // - are not finalized
         // - haven't failed producer signature check
         buffer.retain(|e| {
-            e.guarded(|x| {
+            e.0.guarded(|x| {
                 !x.is_finalized()
                     && !x.is_invalidated()
                     && x.validated().is_none()
@@ -87,9 +93,14 @@ pub(super) fn inner_loop(
             sleep(Duration::from_millis(10));
         }
 
-        for state in buffer.iter() {
+        for (state, next_envelope) in buffer.iter() {
+            if state.guarded(|e| e.is_finalized() || e.is_invalidated()) {
+                continue;
+            }
             if state.guarded(|e| {
-                e.must_be_validated() != &Some(true) || e.is_invalidated() || e.is_finalized()
+                e.must_be_validated() != &Some(true)
+                    && e.validated().is_none()
+                    && e.has_bad_block_nacks_resolved()
             }) {
                 continue;
             }
@@ -110,10 +121,6 @@ pub(super) fn inner_loop(
             if !parent_block_state.guarded(|e| e.is_block_already_applied()) {
                 continue;
             }
-
-            let Some(next_envelope) = repository.get_block(&block_identifier).ok().flatten() else {
-                continue;
-            };
             let next_block = next_envelope.data().clone();
             tracing::trace!(
                 "Block validation process: verify block: {:?}, seq_no: {}",
@@ -160,17 +167,14 @@ pub(super) fn inner_loop(
             }
             state.guarded_mut(|e| {
                 if e.validated().is_none() {
-                    if cfg!(feature = "nack-on-block-verification-fail") {
-                        let _ = e.set_validated(verify_res);
-                    } else {
-                        let _ = e.set_validated(true);
-                    }
+                    let _ = e.set_validated(verify_res);
                 }
             });
             if verify_res {
                 let _ = send.send_ack(state.clone());
-            } else if cfg!(feature = "nack-on-block-verification-fail") {
-                let _ = send.send_nack_bad_block(state.clone(), next_envelope.as_ref().clone());
+            } else {
+                authority.guarded_mut(|e| e.on_bad_block_nack_confirmed(state.clone()));
+                let _ = send.send_nack_bad_block(state.clone(), next_envelope.clone());
             }
         }
     }

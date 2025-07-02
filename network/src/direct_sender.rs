@@ -24,7 +24,6 @@ use crate::SendMode;
 use crate::ACKI_NACKI_DIRECT_PROTOCOL;
 
 const RESOLVE_RETRY_TIMEOUT: Duration = Duration::from_secs(1);
-const CONNECT_RETRY_TIMEOUT: Duration = Duration::from_secs(1);
 
 struct DirectPeer {
     messages_tx: tokio::sync::mpsc::Sender<(NetMessage, Instant)>,
@@ -68,7 +67,7 @@ pub async fn run_direct_sender<Transport, PeerId>(
                 let messages_tx = if let Some(peer) = peers.get(&peer_id) {
                     &peer.messages_tx
                 } else {
-                    let (peer_messages_tx, peer_messages_rx) = tokio::sync::mpsc::channel(10);
+                    let (peer_messages_tx, peer_messages_rx) = tokio::sync::mpsc::channel(100);
                     start_critical_task_ex(
                         "Direct peer sender",
                         peer_id.clone(),
@@ -86,13 +85,24 @@ pub async fn run_direct_sender<Transport, PeerId>(
                     &peers.get(&peer_id).unwrap().messages_tx
                 };
                 let label = net_message.label.clone();
-                if messages_tx.send((net_message, buffer_duration)).await.is_err() {
-                    tracing::error!(
-                        peer_id = peer_id.to_string(),
-                        msg_type = label,
-                        broadcast = false,
-                        "Message delivery: forwarding to peer sender failed"
-                    );
+                let is_sent = match messages_tx.try_send((net_message, buffer_duration)) {
+                    Ok(()) => true,
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        tracing::error!(
+                            peer_id = peer_id.to_string(),
+                            msg_type = label,
+                            broadcast = false,
+                            "Message delivery: forwarding to peer sender failed, sender is lagged"
+                        );
+                        false
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        tracing::trace!(peer_id = peer_id.to_string(), "Peer sender stopped");
+                        peers.remove(&peer_id);
+                        false
+                    }
+                };
+                if !is_sent {
                     metrics.as_ref().inspect(|x| {
                         x.finish_delivery_phase(
                             DeliveryPhase::OutgoingBuffer,
@@ -265,6 +275,8 @@ where
     let credential = config.credential();
     // track attempt counter for tracing
     let mut attempt = 0;
+    let mut retry_timeout = tokio_retry::strategy::FibonacciBackoff::from_millis(100)
+        .max_delay(Duration::from_secs(60 * 60));
     loop {
         for addr in addrs {
             match transport.connect(*addr, &[ACKI_NACKI_DIRECT_PROTOCOL], credential.clone()).await
@@ -291,7 +303,7 @@ where
                 }
             }
         }
-        tokio::time::sleep(CONNECT_RETRY_TIMEOUT).await;
+        tokio::time::sleep(retry_timeout.next().unwrap()).await;
         attempt += 1;
     }
 }

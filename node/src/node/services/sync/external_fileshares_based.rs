@@ -8,11 +8,14 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use chitchat::ChitchatRef;
 use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedSender;
+use url::Url;
 
 use crate::node::services::sync::FileSavingService;
 use crate::node::services::sync::StateSyncService;
+use crate::node::services::sync::GOSSIP_API_ADVERTISE_ADDR_KEY;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
@@ -31,10 +34,15 @@ pub struct ExternalFileSharesBased {
     blob_sync: ServiceInterface,
     file_saving_service: FileSavingService,
     state_load_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
+    chitchat: ChitchatRef,
 }
 
 impl ExternalFileSharesBased {
-    pub fn new(blob_sync: ServiceInterface, file_saving_service: FileSavingService) -> Self {
+    pub fn new(
+        blob_sync: ServiceInterface,
+        file_saving_service: FileSavingService,
+        chitchat: ChitchatRef,
+    ) -> Self {
         // TODO: move to config
         Self {
             static_storages: vec![],
@@ -44,6 +52,7 @@ impl ExternalFileSharesBased {
             blob_sync,
             file_saving_service,
             state_load_thread: Arc::new(Mutex::new(None)),
+            chitchat,
         }
     }
 }
@@ -76,15 +85,31 @@ impl StateSyncService for ExternalFileSharesBased {
             }
         }
         let repo = Arc::new(Mutex::new(repository.clone()));
-
+        tracing::trace!("add_load_state_task: adding {resource_address:?}");
         let checker = Arc::new(Mutex::new(resource_address.clone()));
         for (thread_id, block_id) in resource_address {
             let output_clone = output.clone();
             let checker_clone = checker.clone();
             let repo_clone = repo.clone();
+            let external_blob_share_services = {
+                let mut services = HashSet::<Url>::from_iter(self.static_storages.iter().cloned());
+                Extend::extend(
+                    &mut services,
+                    self.chitchat
+                    .lock()
+                    .state_snapshot()
+                    .node_states
+                    .iter()
+                    .flat_map(|node| node.get(GOSSIP_API_ADVERTISE_ADDR_KEY))
+                    .flat_map(|raw_url| Url::parse(raw_url).ok())
+                    // TODO: make it connected to http-server settings so that it's not hardcoded
+                    .flat_map(|url| url.join("bk/v1/storage/").ok()),
+                );
+                services.drain().collect()
+            };
             self.blob_sync.load_blob(
                 block_id.to_string(),
-                self.static_storages.clone(),
+                external_blob_share_services,
                 self.max_download_tries,
                 Some(self.retry_download_timeout),
                 Some(std::time::Instant::now() + self.download_deadline_timeout),
@@ -93,11 +118,16 @@ impl StateSyncService for ExternalFileSharesBased {
                         let mut buffer: Vec<u8> = vec![];
                         match e.read_to_end(&mut buffer) {
                             Ok(_size) => {
-                                let _ = repo_clone.lock().set_state_from_snapshot(
+                                let res = repo_clone.lock().set_state_from_snapshot(
                                     buffer,
                                     &ThreadIdentifier::default(),
                                     Arc::new(Mutex::new(HashSet::new())),
                                 );
+                                tracing::trace!(
+                                    "add_load_state_task: for {thread_id:?} res={res:?}"
+                                );
+                                res.expect("Failed to set state from snapshot");
+                                tracing::trace!("add_load_state_task: done for {thread_id:?}");
                                 checker_clone.lock().remove(&thread_id);
                             }
                             Err(e) => {

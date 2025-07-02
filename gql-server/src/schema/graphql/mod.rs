@@ -52,7 +52,7 @@ enum QueryOrderByDirection {
 
 impl fmt::Display for QueryOrderByDirection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -279,6 +279,6 @@ fn query_order_by_str(order_by: Option<Vec<Option<QueryOrderBy>>>) -> String {
 
     match order_str.len() {
         0 => "".to_string(),
-        _ => format!(" ORDER BY {} ", order_str),
+        _ => format!(" ORDER BY {order_str} "),
     }
 }

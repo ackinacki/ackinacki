@@ -9,7 +9,6 @@ use derive_setters::Setters;
 use network::channel::NetDirectSender;
 use parking_lot::Mutex;
 use rand::rngs::SmallRng;
-use rand::RngCore;
 use rand::SeedableRng;
 use telemetry_utils::now_ms;
 use typed_builder::TypedBuilder;
@@ -20,16 +19,19 @@ use crate::bls::gosh_bls::Secret;
 use crate::bls::BLSSignatureScheme;
 use crate::helper::block_flow_trace;
 use crate::helper::metrics::BlockProductionMetrics;
-use crate::node::block_state::try_add_attestation::TryAddAttestation;
 use crate::node::services::PULSE_IDLE_TIMEOUT;
 use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
+use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::AttestationData;
+use crate::node::Authority;
 use crate::node::BlockState;
 use crate::node::BlockStateRepository;
 use crate::node::Envelope;
 use crate::node::GoshBLS;
 use crate::node::NetworkMessage;
 use crate::node::NodeIdentifier;
+use crate::protocol::authority_switch::action_lock::ActionLockResult;
+use crate::protocol::authority_switch::action_lock::BlockRef;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::AckiNackiBlock;
@@ -46,11 +48,11 @@ use crate::utilities::thread_spawn_critical::SpawnCritical;
 #[allow(clippy::large_enum_variant)]
 enum AttestationAction {
     ThisBlock(Envelope<GoshBLS, AttestationData>),
-    Fork {
-        candidate_block: Envelope<GoshBLS, AckiNackiBlock>,
-        attestation: Envelope<GoshBLS, AttestationData>,
-        resend_candidate: bool,
-    },
+    // Fork {
+    //     candidate_block: Envelope<GoshBLS, AckiNackiBlock>,
+    //     attestation: Envelope<GoshBLS, AttestationData>,
+    //     resend_candidate: bool,
+    // },
 }
 
 #[derive(Getters, Setters, TypedBuilder)]
@@ -69,9 +71,6 @@ struct TrackedState {
     last_send_destinations: Option<HashSet<NodeIdentifier>>,
     #[builder(default)]
     attestation: Option<Envelope<GoshBLS, AttestationData>>,
-
-    #[builder(default)]
-    received_fork_resolution_for_any_of_previous_blocks_timestamp: Option<std::time::Instant>,
 }
 
 #[derive(TypedBuilder)]
@@ -102,9 +101,10 @@ pub struct AttestationSendService {
     // This random IS NOT a part of any security feature.
     // It's only purpose to randomly attach a candidate block to an attestation of a fork
     #[builder(default=SmallRng::from_entropy())]
-    rng: SmallRng,
+    _rng: SmallRng,
 
     metrics: Option<BlockProductionMetrics>,
+    authority: Arc<Mutex<Authority>>,
 }
 
 impl AttestationSendService {
@@ -131,7 +131,6 @@ impl AttestationSendService {
         self.timestamp_applied();
         self.prepare_attestations();
         self.update_interested_parties_received_blocks(candidates);
-        self.timestamp_forks();
         self.pulse(loopback_attestations, candidate_block_repository)
     }
 
@@ -151,37 +150,12 @@ impl AttestationSendService {
         }
     }
 
-    fn timestamp_forks(&mut self) {
-        let mut parents_to_stamp = vec![];
-        for (_block_id, ref state) in self.tracking.iter_mut() {
-            if state.block_state().guarded(|e| e.resolves_forks().is_some()) {
-                parents_to_stamp.push(state.block_state().clone());
-            }
-        }
-        for state in parents_to_stamp.into_iter() {
-            self.tracking
-                .entry(state.block_identifier().clone())
-                .and_modify(|e| {
-                    if e.received_fork_resolution_for_any_of_previous_blocks_timestamp.is_none() {
-                        e.received_fork_resolution_for_any_of_previous_blocks_timestamp =
-                            Some(std::time::Instant::now());
-                    }
-                })
-                .or_insert_with(|| {
-                    TrackedState::builder()
-                        .block_state(state)
-                        .received_fork_resolution_for_any_of_previous_blocks_timestamp(Some(
-                            std::time::Instant::now(),
-                        ))
-                        .build()
-                });
-        }
-    }
-
     fn pulse(
         &mut self,
         loopback_attestations: Arc<Mutex<CollectedAttestations>>,
-        candidate_block_repository: &impl Repository<CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>>,
+        _candidate_block_repository: &impl Repository<
+            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
+        >,
     ) -> std::time::Instant {
         let mut to_send: Vec<(HashSet<NodeIdentifier>, AttestationAction)> = vec![];
         // TODO: fix. it's a dirty hack for the borrow on tracking
@@ -190,19 +164,12 @@ impl AttestationSendService {
             .iter()
             .filter_map(|(k, v)| v.first_send_timestamp().as_ref().map(|time| (k.clone(), *time)))
             .collect::<HashMap<BlockIdentifier, std::time::Instant>>();
-        let fork_timestamps = self
-            .tracking
-            .iter()
-            .filter_map(|(k, v)| {
-                v.received_fork_resolution_for_any_of_previous_blocks_timestamp()
-                    .as_ref()
-                    .map(|t| (k.clone(), *t))
-            })
-            .collect::<HashMap<BlockIdentifier, std::time::Instant>>();
         let trace_node_id = self.node_id.clone();
         let mut next_deadline = std::time::Instant::now() + PULSE_IDLE_TIMEOUT * 2;
         for (_block_id, state) in self.tracking.iter_mut() {
+            tracing::trace!("AttestationSendService: process: {_block_id:?}");
             let trace_skip = |reason: &str| {
+                tracing::trace!("skip send attestation: {reason}");
                 block_flow_trace(
                     format!("skip send attestation: {reason}"),
                     _block_id,
@@ -211,6 +178,7 @@ impl AttestationSendService {
                 );
             };
             let Some(attestation) = state.attestation() else {
+                trace_skip("has already sent attn");
                 continue;
             };
             let Some(block_applied_timestamp) = state.block_applied_timestamp() else {
@@ -290,13 +258,7 @@ impl AttestationSendService {
                         continue;
                     };
 
-                    if let Some(fork_resolution_time) =
-                        fork_timestamps.get(parent_block_state.block_identifier())
-                    {
-                        regular_case.max(*fork_resolution_time)
-                    } else {
-                        regular_case
-                    }
+                    regular_case
                 };
                 timestamp + delay
             };
@@ -314,8 +276,6 @@ impl AttestationSendService {
                 let block_applied = time_info(Some(*block_applied_timestamp));
                 let parent_sent_first_attestation =
                     time_info(first_sent.get(parent_block_state.block_identifier()).copied());
-                let fork_resolution =
-                    time_info(fork_timestamps.get(parent_block_state.block_identifier()).copied());
                 let distance_to_producer = distance_to_producer.to_string();
                 block_flow_trace(
                     "skip send attestation: earliest_to_send_attestation > now",
@@ -326,12 +286,12 @@ impl AttestationSendService {
                         ("block_applied", &block_applied),
                         ("distance_to_producer", &distance_to_producer),
                         ("parent_sent_first_attestation", &parent_sent_first_attestation),
-                        ("fork_resolution", &fork_resolution),
                     ],
                 );
                 next_deadline = next_deadline.min(earliest_to_send_attestation);
                 continue;
             }
+            tracing::trace!("AttestationSendService: time to send attn: {_block_id:?}");
             let last_sent_time = state.last_send_timestamp().unwrap_or_else(|| self.start_time);
             let last_destinations = state.last_send_destinations().clone().unwrap_or_default();
             let attestation_interested_parties: HashSet<NodeIdentifier> =
@@ -350,6 +310,7 @@ impl AttestationSendService {
                 }
             };
             if awaiting_destinations.is_empty() {
+                trace_skip("no destinations were found");
                 continue;
             }
             if state.block_state().guarded(|e| e.retracted_attestation().is_some()) {
@@ -360,20 +321,42 @@ impl AttestationSendService {
                 trace_skip("has retracted attestation");
                 continue;
             }
-            if state.block_state().guarded(|e| e.attestation().is_none()) {
-                match self.block_state_repository.try_add_attestation(attestation.clone()) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::trace!(
-                            "AttestationSendService: pulse: Try add attestation failed: {}",
-                            e
-                        );
-                        trace_skip("failed add");
-                        continue;
-                    }
+            let block_ref = BlockRef::try_from(state.block_state()).unwrap();
+            // let block_height = state.block_state().guarded(|e| e.block_height().unwrap());
+            // let block_round = state.block_state().guarded(|e| e.round().unwrap());
+            // let parent_block_ref = BlockRef::try_from(&parent_block_state).unwrap();
+            // let (
+            //     parent_block_node_producer_selector_data,
+            //     parent_prefinalization_proof,
+            //     parent_block_height,
+            // ) = parent_block_state.guarded(|e| {
+            //     (
+            //         e.producer_selector_data().clone().unwrap(),
+            //         e.prefinalization_proof().clone().unwrap(),
+            //         e.block_height().clone().unwrap(),
+            //     )
+            // });
+            match self
+                .authority
+                .guarded_mut(|e| e.try_lock_send_attestation_action(block_ref.block_identifier()))
+            {
+                ActionLockResult::OkSendAttestation => {
+                    // TODO:
+                    // Due to the protocol changes remove try_add_attestation
+                    // and set attestation directly.
+                    state.block_state().guarded_mut(|e| {
+                        if e.attestation().is_none() {
+                            e.set_attestation(attestation.clone())
+                                .expect("Failed to set attestation");
+                        }
+                    });
+                }
+                ActionLockResult::Rejected => {
+                    trace_skip("some other block locked");
+                    continue;
                 }
             }
-            let _ = attestation;
+
             // Find child that was attestated and attestation was not revoked
             let (attestated_sibling, attestation) = {
                 let children = parent_block_state
@@ -417,26 +400,26 @@ impl AttestationSendService {
                 );
                 to_send.push((awaiting_destinations, AttestationAction::ThisBlock(attestation)));
             } else {
-                let Ok(Some(candidate_block)) =
-                    candidate_block_repository.get_block(attestation.data().block_id())
-                else {
-                    tracing::trace!("Failed to get a block");
-                    trace_skip("failed to get a block");
-                    continue;
-                };
-                let resend_candidate = 0 == self.rng.next_u32() % (bk_set.len() as u32);
-                tracing::trace!(
-                    "AttestationSendService: pulse: add attestation to send as fork: {:?}",
-                    attestation
-                );
-                to_send.push((
-                    awaiting_destinations,
-                    AttestationAction::Fork {
-                        candidate_block: candidate_block.as_ref().clone(),
-                        attestation,
-                        resend_candidate,
-                    },
-                ));
+                // let Ok(Some(candidate_block)) =
+                //     candidate_block_repository.get_block(attestation.data().block_id())
+                // else {
+                tracing::trace!("Failed to get a block");
+                trace_skip("failed to get a block");
+                continue;
+                // };
+                // let resend_candidate = 0 == self.rng.next_u32() % (bk_set.len() as u32);
+                // tracing::trace!(
+                //     "AttestationSendService: pulse: add attestation to send as fork: {:?}",
+                //     attestation
+                // );
+                // to_send.push((
+                //     awaiting_destinations,
+                //     AttestationAction::Fork {
+                //         candidate_block: candidate_block.as_ref().clone(),
+                //         attestation,
+                //         resend_candidate,
+                //     },
+                // ));
             }
             if state.first_send_timestamp().is_none() {
                 state.set_first_send_timestamp(std::time::Instant::now());
@@ -462,39 +445,49 @@ impl AttestationSendService {
                             );
                             loopback_attestations
                                 .guarded_mut(|e| {
-                                    e.add(attestation.clone(), |block_id| {
-                                        let Ok(block_state) =
-                                            self.block_state_repository.get(block_id)
-                                        else {
-                                            return None;
-                                        };
-                                        block_state.guarded(|e| e.bk_set().clone())
-                                    })
+                                    e.add(
+                                        attestation.clone(),
+                                        |block_id| {
+                                            let Ok(block_state) =
+                                                self.block_state_repository.get(block_id)
+                                            else {
+                                                return None;
+                                            };
+                                            block_state.guarded(|e| e.bk_set().clone())
+                                        },
+                                        |block_id| {
+                                            let Ok(block_state) =
+                                                self.block_state_repository.get(block_id)
+                                            else {
+                                                return None;
+                                            };
+                                            block_state.guarded(|e| e.envelope_hash().clone())
+                                        },
+                                    )
                                 })
                                 .expect("Failed to add attestation");
-                        }
-                        AttestationAction::Fork {
-                            candidate_block: _,
-                            ref attestation,
-                            resend_candidate: _,
-                        } => {
-                            tracing::trace!(
-                                "AttestationSendService: pulse: add loopback: {:?}",
-                                attestation
-                            );
-                            loopback_attestations
-                                .guarded_mut(|e| {
-                                    e.add(attestation.clone(), |block_id| {
-                                        let Ok(block_state) =
-                                            self.block_state_repository.get(block_id)
-                                        else {
-                                            return None;
-                                        };
-                                        block_state.guarded(|e| e.bk_set().clone())
-                                    })
-                                })
-                                .expect("Failed to add attestation");
-                        }
+                        } /*     AttestationAction::Fork {
+                           *         candidate_block: _,
+                           *         ref attestation,
+                           *         resend_candidate: _,
+                           *     } => {
+                           *         tracing::trace!(
+                           *             "AttestationSendService: pulse: add loopback: {:?}",
+                           *             attestation
+                           *         );
+                           *         loopback_attestations
+                           *             .guarded_mut(|e| {
+                           *                 e.add(attestation.clone(), |block_id| {
+                           *                     let Ok(block_state) =
+                           *                         self.block_state_repository.get(block_id)
+                           *                     else {
+                           *                         return None;
+                           *                     };
+                           *                     block_state.guarded(|e| e.bk_set().clone())
+                           *                 })
+                           *             })
+                           *             .expect("Failed to add attestation");
+                           *     } */
                     }
                 }
             }
@@ -527,25 +520,24 @@ impl AttestationSendService {
                     NetworkMessage::BlockAttestation((attestation, self.thread_id)),
                 ))?;
                 self.handle_attestation_metrics(&block_id);
-            }
-            AttestationAction::Fork { candidate_block, attestation, resend_candidate } => {
-                tracing::trace!(
-                    "Sending an attestation to a fork. Destination: {}, attestation: {:?}, re-send candidate block: {}",
-                    destination_node_id,
-                    attestation,
-                    resend_candidate,
-                );
-                if resend_candidate {
-                    self.network_direct_tx.send((
-                        destination_node_id.clone(),
-                        NetworkMessage::candidate(&candidate_block)?,
-                    ))?;
-                }
-                self.network_direct_tx.send((
-                    destination_node_id,
-                    NetworkMessage::BlockAttestation((attestation, self.thread_id)),
-                ))?;
-            }
+            } /* AttestationAction::Fork { candidate_block, attestation, resend_candidate } => {
+               *     tracing::trace!(
+               *         "Sending an attestation to a fork. Destination: {}, attestation: {:?}, re-send candidate block: {}",
+               *         destination_node_id,
+               *         attestation,
+               *         resend_candidate,
+               *     );
+               *     if resend_candidate {
+               *         self.network_direct_tx.send((
+               *             destination_node_id.clone(),
+               *             NetworkMessage::candidate(&candidate_block)?,
+               *         ))?;
+               *     }
+               *     self.network_direct_tx.send((
+               *         destination_node_id,
+               *         NetworkMessage::BlockAttestation((attestation, self.thread_id)),
+               *     ))?;
+               * } */
         }
         Ok(())
     }
@@ -611,10 +603,14 @@ impl AttestationSendService {
         };
         let (signer_index, secret) = (bk_data.signer_index, secret.0);
 
+        let Some(envelope_hash) = block_state.guarded(|e| e.envelope_hash().clone()) else {
+            anyhow::bail!("Failed to access envelope_hash");
+        };
         let attestation_data = AttestationData::builder()
             .block_id(block_state.block_identifier().clone())
             .block_seq_no(block_seq_no)
             .parent_block_id(parent_id)
+            .envelope_hash(envelope_hash)
             .build();
         tracing::trace!("Generate attestation: {:?}", attestation_data);
 
@@ -852,6 +848,7 @@ impl AttestationSendServiceHandler {
         repository: RepositoryImpl,
         last_block_attestations: Arc<Mutex<CollectedAttestations>>,
         block_state_repository: BlockStateRepository,
+        unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
     ) -> Self {
         let service_handler = std::thread::Builder::new()
             .name("Attestation send service".to_string())
@@ -862,7 +859,7 @@ impl AttestationSendServiceHandler {
                         block_state_repository.notifications().load(Ordering::Relaxed);
                     #[allow(clippy::mutable_key_type)]
                     let blocks_to_process: UnfinalizedBlocksSnapshot =
-                        repository.unprocessed_blocks_cache().clone_queue();
+                        unprocessed_blocks_cache.clone_queue();
                     attestation_deadline = attestation_sender_service.evaluate(
                         &blocks_to_process,
                         last_block_attestations.clone(),

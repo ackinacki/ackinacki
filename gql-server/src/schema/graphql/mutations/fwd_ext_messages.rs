@@ -31,7 +31,7 @@ impl std::error::Error for SendMessageError {}
 
 impl ErrorExtensions for SendMessageError {
     fn extend(&self) -> async_graphql::Error {
-        async_graphql::Error::new(format!("{}", self)).extend_with(|_, e| {
+        async_graphql::Error::new(format!("{self}")).extend_with(|_, e| {
             e.set("code", self.code.clone());
             if let Some(data) = &self.data {
                 e.set("details", (*data).clone());

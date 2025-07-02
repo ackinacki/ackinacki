@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 
 use crate::node::NetworkMessage;
+use crate::protocol::authority_switch;
 use crate::types::ThreadIdentifier;
 
 type Payload = NetworkMessage;
@@ -38,6 +39,7 @@ impl Dispatcher {
     #[allow(clippy::result_large_err)]
     pub fn dispatch(&self, message: Payload) -> anyhow::Result<(), DispatchError> {
         let thread_id = match &message {
+            NetworkMessage::AuthoritySwitchProtocol(e) => authority_switch::routing::route(e),
             NetworkMessage::Candidate(net_block)
             | NetworkMessage::ResentCandidate((net_block, _)) => net_block.thread_id,
             // Node entities share one repository, so send ext message only to one node for not to duplicate messages in repo

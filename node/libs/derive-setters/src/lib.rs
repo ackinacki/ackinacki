@@ -264,7 +264,7 @@ fn init_field_def(
         field_ty: field.ty.clone(),
         field_doc: if let Visibility::Public(_) = field.vis {
             let doc_str =
-                format!("Sets the [`{}`](#structfield.{}) field of this struct.", ident, ident);
+                format!("Sets the [`{ident}`](#structfield.{ident}) field of this struct.");
             quote! { #[doc = #doc_str] }
         } else if let Some(x) = darling_attrs.doc {
             quote! { #[doc = #x] }
@@ -297,7 +297,7 @@ fn generate_setter_method(
     let FieldDef { field_name, mut field_ty, field_doc, setter_name, .. } = def;
     let std = &container.std;
     let setter_name = if let Some(additional_prefix) = additional_prefix {
-        Ident::new(&format!("{additional_prefix}{}", setter_name), setter_name.span())
+        Ident::new(&format!("{additional_prefix}{setter_name}"), setter_name.span())
     } else {
         setter_name
     };

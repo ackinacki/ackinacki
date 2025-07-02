@@ -321,7 +321,7 @@ mod tests {
         assert_eq!(result.len(), expected.len());
 
         for (a, b) in result.iter().zip(expected.iter()) {
-            assert!((a - b).abs() < 1e-10, "expected {}, got {}", b, a);
+            assert!((a - b).abs() < 1e-10, "expected {b}, got {a}");
         }
     }
 

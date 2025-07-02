@@ -12,7 +12,7 @@ impl serde_with::SerializeAs<tvm_types::Cell> for CellFormat {
         S: serde::Serializer,
     {
         let buffer: Vec<u8> = tvm_types::write_boc(value)
-            .map_err(|e| <S as serde::Serializer>::Error::custom(format!("{}, ", e)))?;
+            .map_err(|e| <S as serde::Serializer>::Error::custom(format!("{e}, ")))?;
         <Vec<u8> as serde::Serialize>::serialize(&buffer, serializer)
     }
 }
@@ -24,7 +24,7 @@ impl<'de> serde_with::DeserializeAs<'de, tvm_types::Cell> for CellFormat {
     {
         let buffer: Vec<u8> = <Vec<u8> as serde::Deserialize>::deserialize(deserializer)?;
         let cell = tvm_types::read_single_root_boc(&buffer)
-            .map_err(|e| <D as serde::Deserializer>::Error::custom(format!("{}", e)))?;
+            .map_err(|e| <D as serde::Deserializer>::Error::custom(format!("{e}")))?;
         Ok(cell)
     }
 }

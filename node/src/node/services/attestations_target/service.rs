@@ -11,19 +11,14 @@ use typed_builder::TypedBuilder;
 use crate::node::block_state::dependent_ancestor_blocks::DependentAncestorBlocks;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::state::AttestationsTarget;
-use crate::node::block_state::unfinalized_ancestor_blocks::UnfinalizedAncestorBlocks;
 use crate::node::block_state::unfinalized_ancestor_blocks::UnfinalizedAncestorBlocksSelectError;
-use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
 use crate::node::BlockStateRepository;
 use crate::node::SignerIndex;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::BlockIdentifier;
-use crate::types::BlockSeqNo;
-use crate::types::ForkResolution;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
-use crate::utilities::guarded::GuardedMut;
 
 #[derive(TypedBuilder, Clone)]
 pub struct AttestationsTargetService {
@@ -38,11 +33,9 @@ pub enum AttestationsSuccess {
 
 pub enum AttestationsFailure {
     ChainIsTooShort,
-    InitialAttestationsTargetIsNotMetResolvesFork,
     NotAllInitialAttestationTargetsSet,
     ThreadIdentifierIsNotSet,
     AttestationsAreNotVerifiedYet,
-    ForkResolutionsAreNotSet,
     FailedToSaveBlockState,
     #[allow(non_camel_case_types)]
     InvalidBlock_TailDoesNotMeetCriteria,
@@ -78,7 +71,6 @@ impl AsChain for (VecDeque<BlockState>, Target) {
 
 trait TargetBlock {
     fn thread_identifier(&self) -> Option<ThreadIdentifier>;
-    fn fork_resolutions(&self) -> Option<Vec<ForkResolution>>;
     fn attestations_for(&self, block_id: &BlockIdentifier) -> Option<HashSet<SignerIndex>>;
     fn has_attestations_target_met(&self) -> bool;
 }
@@ -86,19 +78,13 @@ trait TargetBlock {
 #[derive(Clone)]
 enum Target {
     // Note: intentionally made tuple. It is easier to pass later in the code.
-    Phantom(
-        (ThreadIdentifier, HashMap<BlockIdentifier, HashSet<SignerIndex>>, Vec<ForkResolution>),
-    ),
+    Phantom((ThreadIdentifier, HashMap<BlockIdentifier, HashSet<SignerIndex>>)),
     Candidate(BlockState),
 }
 
 impl TargetBlock for BlockState {
     fn thread_identifier(&self) -> Option<ThreadIdentifier> {
         self.guarded(|e| *e.thread_identifier())
-    }
-
-    fn fork_resolutions(&self) -> Option<Vec<ForkResolution>> {
-        self.guarded(|e| e.resolves_forks().clone())
     }
 
     fn attestations_for(&self, block_id: &BlockIdentifier) -> Option<HashSet<SignerIndex>> {
@@ -110,15 +96,9 @@ impl TargetBlock for BlockState {
     }
 }
 
-impl TargetBlock
-    for &(ThreadIdentifier, HashMap<BlockIdentifier, HashSet<SignerIndex>>, Vec<ForkResolution>)
-{
+impl TargetBlock for &(ThreadIdentifier, HashMap<BlockIdentifier, HashSet<SignerIndex>>) {
     fn thread_identifier(&self) -> Option<ThreadIdentifier> {
         Some(self.0)
-    }
-
-    fn fork_resolutions(&self) -> Option<Vec<ForkResolution>> {
-        Some(self.2.clone())
     }
 
     fn attestations_for(&self, block_id: &BlockIdentifier) -> Option<HashSet<SignerIndex>> {
@@ -138,13 +118,6 @@ impl TargetBlock for Target {
         }
     }
 
-    fn fork_resolutions(&self) -> Option<Vec<ForkResolution>> {
-        match self {
-            Target::Candidate(e) => e.fork_resolutions(),
-            Target::Phantom(e) => e.fork_resolutions(),
-        }
-    }
-
     fn attestations_for(&self, block_id: &BlockIdentifier) -> Option<HashSet<SignerIndex>> {
         match self {
             Target::Candidate(e) => e.attestations_for(block_id),
@@ -161,28 +134,12 @@ impl TargetBlock for Target {
 }
 
 impl AttestationsTargetService {
-    #[allow(clippy::mutable_key_type)]
-    pub fn evaluate(&mut self, blocks: &UnfinalizedBlocksSnapshot) {
-        for (block_state, _) in blocks.values() {
-            let Some(thread_id) = block_state.guarded(|e| *e.thread_identifier()) else {
-                continue;
-            };
-            if let Ok(data) = self.repository.select_thread_last_finalized_block(&thread_id) {
-                let Some((_, thread_last_finalized_block_seq_no)) = data else {
-                    continue;
-                };
-                let _ = self.evaluate_chain(block_state, thread_last_finalized_block_seq_no);
-            }
-        }
-    }
-
     // TODO: expand errors set. Return actual errors instead of Ok(false)
     pub fn evaluate_if_next_block_ancestors_required_attestations_will_be_met(
         &self,
         thread_identifier: ThreadIdentifier,
         parent_block_identifier: BlockIdentifier,
         next_block_attestations: HashMap<BlockIdentifier, HashSet<SignerIndex>>,
-        fork_resolutions: Vec<ForkResolution>,
     ) -> anyhow::Result<bool, UnfinalizedAncestorBlocksSelectError> {
         tracing::trace!("evaluate_if_next_block_ancestors_required_attestations_will_be_met: parent_block_identifier: {parent_block_identifier:?}, next_block_attestations: {next_block_attestations:?}");
         let Ok(tail) = self.block_state_repository.get(&parent_block_identifier) else {
@@ -195,94 +152,19 @@ impl AttestationsTargetService {
         match self.evaluate_attestations(
             (
                 VecDeque::<BlockState>::from(chain),
-                Target::Phantom((thread_identifier, next_block_attestations, fork_resolutions)),
+                Target::Phantom((thread_identifier, next_block_attestations)),
             ),
             |_| Ok(()),
             |_| Ok(()),
         ) {
-            Ok(()) | Err(ChainIsTooShort) | Err(InitialAttestationsTargetIsNotMetResolvesFork) => {
-                Ok(true)
-            }
+            Ok(()) | Err(ChainIsTooShort) => Ok(true),
 
             Err(NotAllInitialAttestationTargetsSet)
             | Err(ThreadIdentifierIsNotSet)
-            | Err(ForkResolutionsAreNotSet)
             | Err(InvalidBlock_TailDoesNotMeetCriteria)
             | Err(FailedToSaveBlockState)
             | Err(AttestationsAreNotVerifiedYet) => Ok(false),
         }
-    }
-
-    // Evaluate blocks.
-    // Cutoff is set to the last finalized block in the **thread**
-    // In case of a chain goes earlier than the cut off we can consider this chain
-    // to be invalid.
-    fn evaluate_chain(&mut self, tail: &BlockState, cutoff: BlockSeqNo) -> anyhow::Result<()> {
-        use UnfinalizedAncestorBlocksSelectError::*;
-        match self.block_state_repository.select_unfinalized_ancestor_blocks(tail, cutoff) {
-            Ok(chain) => {
-                use AttestationsFailure::*;
-                match self.evaluate_attestations(
-                    VecDeque::<BlockState>::from(chain),
-                    |block| {
-                        block
-                            .guarded_mut(|e| -> anyhow::Result<()> {
-                                e.set_has_initial_attestations_target_met()
-                            })
-                            .map_err(|_e| FailedToSaveBlockState)?;
-                        Ok(())
-                    },
-                    |block| {
-                        block
-                            .guarded_mut(|e| -> anyhow::Result<()> {
-                                e.set_has_attestations_target_met_in_a_resolved_fork_case()
-                            })
-                            .map_err(|_e| FailedToSaveBlockState)?;
-                        Ok(())
-                    },
-                ) {
-                    Ok(()) => Ok(()),
-                    Err(ChainIsTooShort) => Ok(()),
-                    Err(NotAllInitialAttestationTargetsSet) => Ok(()),
-                    Err(ForkResolutionsAreNotSet) => Ok(()),
-                    Err(ThreadIdentifierIsNotSet) => Ok(()),
-
-                    Err(InvalidBlock_TailDoesNotMeetCriteria) => {
-                        tail.guarded_mut(|e| e.set_invalidated())
-                    }
-                    Err(FailedToSaveBlockState) => Ok(()),
-                    Err(AttestationsAreNotVerifiedYet) => Ok(()),
-                    Err(InitialAttestationsTargetIsNotMetResolvesFork) => Ok(()),
-                }
-            }
-            Err(IncompleteHistory) => Ok(()),
-
-            // The block is earlier than the cutoff for the thread.
-            //
-            // We didn't hit any finalized block
-            // AND this chain is referencing something earlier than the last finalized.
-            // This means that this chain CAN NOT be finalized (it means invalid).
-            Err(BlockSeqNoCutoff(chain)) => {
-                tracing::error!("evaluate_chain: BlockSeqNoCutoff: {chain:?}");
-                self.invalidate_blocks(chain)
-            }
-            Err(InvalidatedParent(chain)) => {
-                tracing::error!("evaluate_chain: InvalidatedParent: {chain:?}");
-                self.invalidate_blocks(chain)
-            }
-
-            // No worries we will try again in a few.
-            // May be shoud touch repository though
-            Err(FailedToLoadBlockState) => Ok(()),
-        }
-    }
-
-    fn invalidate_blocks(&mut self, blocks: Vec<BlockState>) -> anyhow::Result<()> {
-        for block in blocks {
-            tracing::trace!("invalidate blocks {:?}", block.lock().block_identifier());
-            block.lock().set_invalidated()?;
-        }
-        Ok(())
     }
 
     fn evaluate_attestations<FPrimary, FSecordary>(
@@ -309,7 +191,8 @@ impl AttestationsTargetService {
             };
             let Some(AttestationsTarget {
                 descendant_generations: descendants_chain_length_required,
-                count: attestations_target,
+                attestations_target,
+                min_attestations_target: _,
             }) = initial_attestations_target
             else {
                 return Err(AttestationsFailure::NotAllInitialAttestationTargetsSet);
@@ -347,10 +230,8 @@ impl AttestationsTargetService {
                 Err(ChainIsTooShort)
                 | Err(NotAllInitialAttestationTargetsSet)
                 | Err(AttestationsAreNotVerifiedYet)
-                | Err(ForkResolutionsAreNotSet)
                 | Err(FailedToSaveBlockState)
-                | Err(ThreadIdentifierIsNotSet)
-                | Err(InitialAttestationsTargetIsNotMetResolvesFork) => continue,
+                | Err(ThreadIdentifierIsNotSet) => continue,
                 Err(InvalidBlock_TailDoesNotMeetCriteria) => {
                     Err(InvalidBlock_TailDoesNotMeetCriteria)?
                 }
@@ -364,11 +245,6 @@ impl AttestationsTargetService {
         initial_target: impl TargetBlock,
         min_attestations_count_required: usize,
     ) -> std::result::Result<AttestationsSuccess, AttestationsFailure> {
-        let Some(fork_resolutions) = initial_target.fork_resolutions() else {
-            // Must be set before proceeding
-            return Err(AttestationsFailure::ForkResolutionsAreNotSet);
-        };
-
         // Optimization assumptions:
         // - It is assumed that all attestations are folded in the last block,
         //   therefore it is possible to skip checking prev block and go straight
@@ -385,13 +261,6 @@ impl AttestationsTargetService {
 
         if is_target_met {
             return Ok(AttestationsSuccess::InitialAttestationsTargetMet);
-        }
-        if fork_resolutions.iter().any(|e| e.winner() == block_id) {
-            // Fork resolution scenario
-            if initial_target.has_attestations_target_met() {
-                return Ok(AttestationsSuccess::SecondaryAttestationsTargetMet);
-            }
-            return Err(AttestationsFailure::InitialAttestationsTargetIsNotMetResolvesFork);
         }
         Err(AttestationsFailure::InvalidBlock_TailDoesNotMeetCriteria)
     }

@@ -27,6 +27,7 @@ use crate::node::BlockStateRepository;
 use crate::node::Node;
 use crate::node::UInt256;
 use crate::repository::repository_impl::RepositoryImpl;
+use crate::types::envelope_hash::AckiNackiEnvelopeHash;
 use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
@@ -40,7 +41,7 @@ pub struct NodeIdentifier(AccountId);
 impl NodeIdentifier {
     #[cfg(any(test, feature = "nack_test"))]
     pub fn some_id() -> Self {
-        Self::from_str("0001020300010203000102030001020300010203000102030001020300010203").unwrap()
+        Self::from_str("81a6bea128f5e03843362e55fd574c42a8e457dd553498cbc8ec7e14966d20a3").unwrap()
     }
 }
 
@@ -97,7 +98,7 @@ impl Display for NodeIdentifier {
 }
 
 #[allow(clippy::large_enum_variant)]
-#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub enum NackReason {
     // SameHeightBlock {
     // first_envelope: Envelope<GoshBLS, AckiNackiBlock>,
@@ -187,10 +188,10 @@ impl Debug for NackReason {
             // format!("SameHeightBlock, {:?}, {:?}", block1, block2)
             // }
             NackReason::BadBlock { envelope: block } => {
-                format!("BadBlock {:?}", block)
+                format!("BadBlock {block:?}")
             }
             NackReason::WrongNack { nack_data_envelope: nack } => {
-                format!("nack {:?}", nack)
+                format!("nack {nack:?}")
             }
         };
         Display::fmt(&data, f)
@@ -221,17 +222,6 @@ impl NodeAssociatedTypes for BlockRequestService {
     type BlockAttestation = Envelope<GoshBLS, AttestationData>;
     type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>;
     type Nack = Envelope<GoshBLS, NackData>;
-}
-
-pub(crate) enum OptimisticForwardState {
-    ProducedBlock(BlockIdentifier, BlockSeqNo),
-    None,
-}
-
-impl Default for OptimisticForwardState {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// Result of node synchronization process
@@ -276,22 +266,23 @@ pub(crate) enum BlockStatus {
     SynchronizationRequired,
 }
 
-#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct AckData {
     pub block_id: BlockIdentifier,
     pub block_seq_no: BlockSeqNo,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct NackData {
     pub block_id: BlockIdentifier,
     pub block_seq_no: BlockSeqNo,
     pub reason: NackReason,
 }
 
-#[derive(TypedBuilder, PartialEq, Debug, Clone, Serialize, Deserialize, Getters)]
+#[derive(TypedBuilder, Eq, PartialEq, Debug, Clone, Serialize, Deserialize, Getters)]
 pub struct AttestationData {
+    parent_block_id: BlockIdentifier,
     block_id: BlockIdentifier,
     block_seq_no: BlockSeqNo,
-    parent_block_id: BlockIdentifier,
+    envelope_hash: AckiNackiEnvelopeHash,
 }

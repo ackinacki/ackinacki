@@ -88,7 +88,7 @@ impl BlockStateRepository {
             Some(e) => e,
             None => {
                 let file_path =
-                    self.block_state_repo_data_dir.join(format!("{:x}", block_identifier));
+                    self.block_state_repo_data_dir.join(format!("{block_identifier:x}"));
                 let state = super::private::load_state(file_path.clone())?.unwrap_or_else(|| {
                     let mut state = AckiNackiBlockState::new(block_identifier.clone());
                     state.file_path = file_path;

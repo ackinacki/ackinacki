@@ -45,7 +45,7 @@ pub struct BlockchainQuery<'a> {
 impl BlockchainQuery<'_> {
     #[graphql(name = "account")]
     /// Account-related information.
-    async fn account(&self, address: String) -> Option<BlockchainAccountQuery> {
+    async fn account(&self, address: String) -> Option<BlockchainAccountQuery<'_>> {
         Some(BlockchainAccountQuery { ctx: self.ctx, address, preloaded: None })
     }
 
@@ -65,7 +65,7 @@ impl BlockchainQuery<'_> {
     ) -> Option<
         Connection<
             String,
-            BlockchainAccountQuery,
+            BlockchainAccountQuery<'_>,
             EmptyFields,
             EmptyFields,
             BlockchainAccountsConnection,

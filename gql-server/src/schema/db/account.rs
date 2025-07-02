@@ -58,7 +58,7 @@ impl Account {
             None => defaults::QUERY_BATCH_SIZE,
         };
 
-        let sql = format!("SELECT * FROM accounts {} {} LIMIT {}", where_clause, order_by, limit);
+        let sql = format!("SELECT * FROM accounts {where_clause} {order_by} LIMIT {limit}");
         tracing::debug!("SQL: {sql}");
         let accounts =
             sqlx::query_as(&sql).fetch(pool).map_ok(|b| b).try_collect::<Vec<Account>>().await?;

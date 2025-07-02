@@ -3,7 +3,7 @@ use std::fmt::Debug;
 #[allow(dead_code)]
 pub(crate) fn detailed(err: &impl Debug) -> String {
     repl(
-        format!("{:#?}", err),
+        format!("{err:#?}"),
         [
             ("\n", " "),
             ("  ", " "),

@@ -12,8 +12,6 @@ use tokio::time::Instant;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::helper::block_flow_trace;
-use crate::node::associated_types::AttestationData;
-use crate::node::associated_types::NodeAssociatedTypes;
 use crate::node::associated_types::SynchronizationResult;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
@@ -65,13 +63,27 @@ where
                 initial_state_shared_resource_address = None;
                 self.state_sync_service.reset_sync();
             }
-            if let Some(ref _resource_address) = initial_state_shared_resource_address {
-                initial_state_shared_resource_address = None;
+            if let Some(ref resource_address) = initial_state_shared_resource_address {
                 match synchronization_rx.try_recv() {
                     Ok(Ok(())) => {
-                        // tracing::trace!(
-                        //     "Consensus received sync: task_resource_address={task_resource_address} resource_address={resource_address}"
-                        // );
+                        let synced_block_id = resource_address
+                            .get(&self.thread_id)
+                            .cloned()
+                            .expect("We sync this thread, it must exist in the resources map");
+                        let synced_block_seq_no = self
+                            .block_state_repository
+                            .get(&synced_block_id)
+                            .expect("We have just synced this block")
+                            .guarded(|e| *e.block_seq_no())
+                            .expect("We have just synced this block");
+                        self.unprocessed_blocks_cache.retain(|e| {
+                            e.guarded(|e| *e.block_seq_no())
+                                .map(|seq_no| seq_no >= synced_block_seq_no)
+                                .unwrap_or(false)
+                        });
+                        tracing::trace!(
+                            "Consensus received sync: {synced_block_seq_no} {synced_block_id:?}"
+                        );
                         // if &task_resource_address == resource_address {
                         // Save
                         // let (block_id, _seq_no) = initial_state.clone().unwrap();
@@ -121,6 +133,7 @@ where
                         // }
                     }
                     Ok(Err(e)) => {
+                        initial_state_shared_resource_address = None;
                         // Note: State download failed.
                         // Nothing can be done at this moment. Should be investigated.
                         tracing::error!("Synchronization error: {}", e);
@@ -146,6 +159,11 @@ where
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Ok(msg) => match msg {
+                    NetworkMessage::AuthoritySwitchProtocol(_) => {
+                        // todo!("monitor authority switch accepts");
+                        // Authority switch is processed in execute_normal
+                        continue;
+                    }
                     NetworkMessage::Candidate(ref net_block)
                     | NetworkMessage::ResentCandidate((ref net_block, _)) => {
                         tracing::info!("[synchronizing] Incoming candidate block");
@@ -281,6 +299,7 @@ where
                             if let Some(resource_address) =
                                 envelope.data().directives().share_state_resources()
                             {
+                                last_node_join_message_time = Instant::now();
                                 initial_state_shared_resource_address =
                                     Some(resource_address.clone());
                                 initial_state =
@@ -369,16 +388,18 @@ where
                     && block.data().parent() == parent_block_id
                 {
                     found_attestation_to_send = true;
-                    let _block_attestation =
-                        <Self as NodeAssociatedTypes>::BlockAttestation::create(
-                            block.aggregated_signature().clone(),
-                            block.clone_signature_occurrences(),
-                            AttestationData::builder()
-                                .block_id(block.data().identifier())
-                                .block_seq_no(block.data().seq_no())
-                                .parent_block_id(block.data().parent())
-                                .build(),
-                        );
+                    // let envelope_hash = crate::types::ackinacki_block::envelope_hash::envelope_hash(block)
+                    // let _block_attestation =
+                    // <Self as NodeAssociatedTypes>::BlockAttestation::create(
+                    // block.aggregated_signature().clone(),
+                    // block.clone_signature_occurrences(),
+                    // AttestationData::builder()
+                    // .block_id(block.data().identifier())
+                    // .block_seq_no(block.data().seq_no())
+                    // .parent_block_id(block.data().parent())
+                    // .envelope_hash(envelope_hash)
+                    // .build(),
+                    // );
                     tracing::trace!(
                         "on_sync_finalized sending attestation: {:?} {:?}",
                         block.data().seq_no(),
@@ -412,7 +433,7 @@ where
             );
             let finalized_block = self
                 .repository
-                .get_block(&last_finalized_block_id)?
+                .get_finalized_block(&last_finalized_block_id)?
                 .ok_or(anyhow::format_err!("missing last finalized block"))?;
             let finalized_state = self
                 .repository

@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.3] - 2025-07-01
+
+### Fixed
+- Multiple blocks finalizing the same block
+
+## [0.5.2] - 2025-07-01
+
+### New
+- Storage access URLs are advertised via Gossip
+- A new parameter has been added to the WASM instruction to specify the path to the compiled Rust program.
+- Updated staking scripts: gracefull shutdown added
+  
+### Improvements  
+- External messages are processed in parallel
+- Backpressure implemented for QUIC streams
+
 ## [0.5.1] - 2025-06-24
 
 ### New

@@ -32,7 +32,7 @@ impl From<&Envelope<GoshBLS, AckiNackiBlock>> for BlockIndex {
 
 impl PartialOrd for BlockIndex {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.block_seq_no.cmp(&other.block_seq_no))
+        Some(self.cmp(other))
     }
 }
 

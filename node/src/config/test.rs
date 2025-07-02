@@ -16,6 +16,7 @@ mod tests {
         let config_str = r#"{
     "node_advertise_addr": "0.0.0.0:8500",
     "api_addr": "127.0.0.1:8600",
+    "api_advertise_addr": "http://node0:8600",
     "gossip_seeds": []
 }"#;
         let config: NetworkConfig = serde_json::from_str(config_str)?;
@@ -35,10 +36,11 @@ mod tests {
     "network": {
         "node_advertise_addr": "0.0.0.0:8500",
         "api_addr": "127.0.0.1:8600",
+        "api_advertise_addr": "https://node0:8600",
         "gossip_seeds": []
     },
     "local": {
-        "node_id": "0001020300010203000102030001020300010203000102030001020300010203",
+        "node_id": "81a6bea128f5e03843362e55fd574c42a8e457dd553498cbc8ec7e14966d20a3",
         "blockchain_config_path": "../bc_config.json",
         "key_path": "key1.json",
         "zerostate_path": "./zerostate",
@@ -50,7 +52,8 @@ mod tests {
         "state_cache_size": 10,
         "message_storage_path": "message_strage",
         "rate_limit_on_incoming_block_req": 1000,
-        "ext_messages_cache_size": 10
+        "ext_messages_cache_size": 10,
+        "unload_after": 10
     }
 }"#;
         let config: Config = serde_json::from_str(config_str)?;

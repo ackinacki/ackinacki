@@ -9,6 +9,7 @@ use crate::bls::envelope::Envelope;
 use crate::bls::BLSSignatureScheme;
 use crate::bls::GoshBLS;
 use crate::node::associated_types::AttestationData;
+use crate::types::envelope_hash::AckiNackiEnvelopeHash;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 
@@ -28,6 +29,12 @@ pub struct CollectedAttestations {
     cutoff: BlockSeqNo,
 }
 
+impl std::fmt::Debug for CollectedAttestations {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CollectedAttestations(cutoff={})", self.cutoff)
+    }
+}
+
 impl AllowGuardedMut for CollectedAttestations {}
 
 impl CollectedAttestations {
@@ -35,6 +42,7 @@ impl CollectedAttestations {
         &mut self,
         attestation: Envelope<GoshBLS, AttestationData>,
         get_bk_set: impl Fn(&BlockIdentifier) -> Option<Arc<BlockKeeperSet>>,
+        get_envelope_hash: impl Fn(&BlockIdentifier) -> Option<AckiNackiEnvelopeHash>,
     ) -> anyhow::Result<bool> {
         if &self.cutoff >= attestation.data().block_seq_no() {
             return Ok(false);
@@ -63,6 +71,7 @@ impl CollectedAttestations {
         self.aggregate(
             HashSet::from_iter([attestation.data().block_id().clone()].into_iter()),
             get_bk_set,
+            get_envelope_hash,
         )?;
         Ok(true)
     }
@@ -86,6 +95,7 @@ impl CollectedAttestations {
         &mut self,
         required: HashSet<BlockIdentifier>,
         get_bk_set: impl Fn(&BlockIdentifier) -> Option<Arc<BlockKeeperSet>>,
+        get_envelope_hash: impl Fn(&BlockIdentifier) -> Option<AckiNackiEnvelopeHash>,
     ) -> anyhow::Result<Vec<Envelope<GoshBLS, AttestationData>>> {
         let mut result = vec![];
 
@@ -107,6 +117,10 @@ impl CollectedAttestations {
                     tracing::trace!("CollectedAttestations: aggregate: Can't verify block attestations, skip it {block_id}");
                     continue;
                 };
+                let Some(envelope_hash) = get_envelope_hash(block_id) else {
+                    tracing::trace!("CollectedAttestations: aggregate: failed to get an envelope hash, skipping {block_id}");
+                    continue;
+                };
 
                 let attestations = self
                     .compacted_unverified_attestations
@@ -115,10 +129,17 @@ impl CollectedAttestations {
                 for compacted_attestation in attestations {
                     let attestation: Envelope<GoshBLS, AttestationData> =
                         (compacted_attestation, &key).into();
-                    if !attestation.verify_signatures(&bk_set.get_pubkeys_by_signers())? {
+                    if !attestation.verify_signatures(bk_set.get_pubkeys_by_signers())? {
                         tracing::trace!("CollectedAttestations: aggregate: attestation verification failed: {attestation:?}");
                         continue;
                     }
+
+                    if attestation.data().envelope_hash() != &envelope_hash {
+                        tracing::warn!("CollectedAttestations: double signatures detected. Two envelopes for the same block id");
+                        // TODO: send Nack.
+                        continue;
+                    }
+
                     tracing::trace!("Aggregate attestations block id: {:?}", block_id);
                     self.folded_attestations
                         .entry(key.clone())

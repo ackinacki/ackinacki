@@ -13,7 +13,6 @@ use serde::Serialize;
 use serde::Serializer;
 use typed_builder::TypedBuilder;
 
-use super::fork_resolution::ForkResolution;
 use crate::block_keeper_system::BlockKeeperSetChange;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
@@ -25,12 +24,13 @@ use crate::node::SignerIndex;
 use crate::types::bp_selector::ProducerSelector;
 use crate::types::AccountAddress;
 use crate::types::BlockEndLT;
+use crate::types::BlockHeight;
 use crate::types::BlockIdentifier;
 use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, TypedBuilder, Getters)]
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq, TypedBuilder, Getters)]
 pub struct Directives {
     share_state_resources: Option<HashMap<ThreadIdentifier, BlockIdentifier>>,
 }
@@ -41,10 +41,12 @@ impl Debug for Directives {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CommonSection {
+    pub block_height: BlockHeight,
     pub directives: Directives,
     pub block_attestations: Vec<Envelope<GoshBLS, AttestationData>>,
+    pub round: u16,
     pub producer_id: NodeIdentifier,
     pub thread_id: ThreadIdentifier,
     pub threads_table: Option<ThreadsTable>,
@@ -63,24 +65,25 @@ pub struct CommonSection {
     // This field must be set, but it is option, because we can't set it up on block creation and update it later
     pub producer_selector: Option<ProducerSelector>,
 
-    // Each ForkResolution contains a resolution for a single fork.
-    // It can happen that a single block has to resolve several forks at once.
-    pub fork_resolutions: Vec<ForkResolution>,
-
     pub changed_dapp_ids: HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>,
 }
 
 impl CommonSection {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         thread_id: ThreadIdentifier,
+        round: u16,
         producer_id: NodeIdentifier,
         block_keeper_set_changes: Vec<BlockKeeperSetChange>,
         verify_complexity: SignerIndex,
         refs: Vec<BlockIdentifier>,
         threads_table: Option<ThreadsTable>,
         changed_dapp_ids: HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>,
+        block_height: BlockHeight,
     ) -> Self {
         CommonSection {
+            block_height,
+            round,
             block_attestations: vec![],
             directives: Directives::default(),
             thread_id,
@@ -92,7 +95,6 @@ impl CommonSection {
             acks: vec![],
             nacks: vec![],
             producer_selector: None,
-            fork_resolutions: vec![],
             changed_dapp_ids,
         }
     }
@@ -105,6 +107,7 @@ impl CommonSection {
         let nacks_data =
             bincode::serialize(&self.nacks).expect("Failed to serialize last finalized blocks");
         WrappedCommonSection {
+            round: self.round,
             directives: self.directives.clone(),
             block_attestations: block_attestations_data,
             producer_id: self.producer_id.clone(),
@@ -119,8 +122,8 @@ impl CommonSection {
             thread_identifier: self.thread_id,
             refs: self.refs.clone(),
             threads_table: self.threads_table.clone(),
-            fork_resolutions: self.fork_resolutions.clone(),
             changed_dapp_ids: self.changed_dapp_ids.clone(),
+            block_height: self.block_height,
         }
     }
 
@@ -133,6 +136,7 @@ impl CommonSection {
         let nacks: Vec<Envelope<GoshBLS, NackData>> =
             bincode::deserialize(&data.nacks).expect("Failed to deserialize nacks");
         Self {
+            round: data.round,
             directives: data.directives,
             block_attestations,
             producer_id: data.producer_id,
@@ -144,14 +148,15 @@ impl CommonSection {
             refs: data.refs,
             thread_id: data.thread_identifier,
             threads_table: data.threads_table,
-            fork_resolutions: data.fork_resolutions,
             changed_dapp_ids: data.changed_dapp_ids,
+            block_height: data.block_height,
         }
     }
 }
 
 #[derive(Serialize, Deserialize)]
 struct WrappedCommonSection {
+    pub round: u16,
     pub directives: Directives,
     pub block_attestations: Vec<u8>,
     pub producer_id: NodeIdentifier,
@@ -163,8 +168,8 @@ struct WrappedCommonSection {
     pub thread_identifier: ThreadIdentifier,
     pub refs: Vec<BlockIdentifier>,
     pub threads_table: Option<ThreadsTable>,
-    pub fork_resolutions: Vec<ForkResolution>,
     pub changed_dapp_ids: HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>,
+    pub block_height: BlockHeight,
 }
 
 impl Serialize for CommonSection {
@@ -190,6 +195,7 @@ impl Debug for CommonSection {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("")
             .field("thread_id", &self.thread_id)
+            .field("round", &self.round)
             .field("producer_id", &self.producer_id)
             .field("directives", &self.directives)
             .field("block_attestations", &self.block_attestations)
@@ -201,7 +207,6 @@ impl Debug for CommonSection {
             .field("refs", &self.refs)
             .field("threads_table", &self.threads_table)
             .field("changed_dapp_ids.len", &self.changed_dapp_ids.len())
-            .field("fork_resolutions", &self.fork_resolutions)
             .finish()
     }
 }

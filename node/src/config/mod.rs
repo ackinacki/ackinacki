@@ -81,6 +81,9 @@ pub struct GlobalConfig {
     /// Block keeper epoch code hash
     pub block_keeper_epoch_code_hash: String,
 
+    /// Block keeper preepoch code hash
+    pub block_keeper_preepoch_code_hash: String,
+
     /// Expected maximum number of threads.
     /// Note: it can grow over this value for some time on the running network.
     pub thread_count_soft_limit: usize,
@@ -134,8 +137,8 @@ pub struct NodeConfig {
     pub state_cache_size: usize,
 
     /// Number of blocks after which the account is unloaded from shard state.
-    #[builder(default = None)]
-    pub unload_after: Option<u32>,
+    #[builder(default = 10)]
+    pub unload_after: u32,
     /// Path for message durable storage.
     #[builder(default = PathBuf::from("./message_storage/db"))]
     pub message_storage_path: PathBuf,
@@ -179,7 +182,9 @@ impl Default for GlobalConfig {
             sync_delay_milliseconds: 500,
             save_state_frequency: 200,
             block_keeper_epoch_code_hash:
-                "dd64101229a2508a8b67fdea7c4462a975553c0fbf68895fe12d95baef6ad85a".to_string(),
+                "7929933699d89b37b22b4c35632408197d3ba3f54e95af8f8ef04fc1962f203b".to_string(),
+            block_keeper_preepoch_code_hash:
+                "e3ae3234925316215a2310cb687ec65ed4a68aae285d038c73aa851c216ec894".to_string(),
             thread_count_soft_limit: 100,
             thread_load_window_size: 100,
             thread_load_threshold: 5000,
@@ -201,10 +206,10 @@ impl Default for NodeConfig {
             block_keeper_seed_path: "block_keeper.keys.json".to_string(),
             block_cache_size: 20,
             state_cache_size: 10,
-            unload_after: None,
+            unload_after: 10,
             message_storage_path: PathBuf::from("./message_storage/db"),
             rate_limit_on_incoming_block_req: u32::MAX,
-            ext_messages_cache_size: 100,
+            ext_messages_cache_size: 200,
         }
     }
 }

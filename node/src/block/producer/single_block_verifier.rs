@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use anyhow::ensure;
+use chrono::Utc;
 use indexset::BTreeMap;
 use tracing::instrument;
 use tvm_block::GetRepresentationHash;
@@ -29,6 +30,7 @@ use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::config::Config;
+use crate::external_messages::Stamp;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::Message;
 use crate::message::WrappedMessage;
@@ -194,7 +196,12 @@ impl BlockVerifier for TVMBlockVerifier {
             .map_err(|e| anyhow::format_err!("Failed to parse incoming block messages: {e}"));
         ensure!(block_parse_result?, "Failed to parse incoming block messages");
         ext_messages.sort_by(|(lt_a, _), (lt_b, _)| lt_a.cmp(lt_b));
-        let ext_messages = VecDeque::from_iter(ext_messages.into_iter().map(|(_lt, msg)| msg));
+        let timestamp = Utc::now();
+        let ext_msg_iter = ext_messages
+            .into_iter()
+            .enumerate()
+            .map(|(i, (_, msg))| (Stamp { index: i as u32, timestamp }, msg));
+        let ext_messages = VecDeque::from_iter(ext_msg_iter);
 
         let block_gas_limit = self.blockchain_config.get_gas_config(false).block_gas_limit;
 
@@ -209,6 +216,7 @@ impl BlockVerifier for TVMBlockVerifier {
             None,
             self.accounts_repository.clone(),
             self.node_config.global.block_keeper_epoch_code_hash.clone(),
+            self.node_config.global.block_keeper_preepoch_code_hash.clone(),
             self.node_config.local.parallelization_level,
             preprocessing_result.redirected_messages,
             self.metrics,
@@ -246,6 +254,8 @@ impl BlockVerifier for TVMBlockVerifier {
                 // Skip checking load balancer actions.
                 block.get_common_section().threads_table.clone(),
                 block.get_common_section().changed_dapp_ids.clone(),
+                block.get_common_section().round,
+                block.get_common_section().block_height,
             ),
             new_state,
         );

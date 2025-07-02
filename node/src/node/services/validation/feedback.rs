@@ -26,7 +26,7 @@ use crate::types::AckiNackiBlock;
 use crate::types::RndSeed;
 use crate::utilities::guarded::Guarded;
 
-#[derive(TypedBuilder)]
+#[derive(TypedBuilder, Clone)]
 pub struct AckiNackiSend {
     node_id: NodeIdentifier,
     bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,

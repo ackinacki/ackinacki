@@ -192,7 +192,7 @@ struct WriteBufferInner {
 unsafe impl Sync for WriteBufferInner {}
 unsafe impl Send for WriteBufferInner {}
 
-impl WriteBuffer {
+impl crate::msquic::msquic_async::buffer::WriteBuffer {
     pub(crate) fn new() -> Self {
         Self(Box::new(WriteBufferInner {
             internal: Vec::new(),

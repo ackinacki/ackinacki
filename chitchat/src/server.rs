@@ -174,7 +174,7 @@ pub async fn spawn_chitchat(
 pub struct ChitchatRef(Arc<parking_lot::Mutex<Chitchat>>);
 
 impl ChitchatRef {
-    fn new(chitchat: Chitchat) -> Self {
+    pub fn new(chitchat: Chitchat) -> Self {
         Self(Arc::new(parking_lot::Mutex::new(chitchat)))
     }
 

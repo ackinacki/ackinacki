@@ -9,15 +9,18 @@ use serde::Serialize;
 
 use super::mask::Bitmask;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct BitmasksTable<TBitsSource, TTarget> {
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BitmasksTable<TBitsSource, TTarget>
+where
+    TBitsSource: PartialEq + Eq,
+{
     masks: Vec<(Bitmask<TBitsSource>, TTarget)>,
 }
 
 impl<TBitsSource, TTarget> Default for BitmasksTable<TBitsSource, TTarget>
 where
     TTarget: Default + Clone + std::fmt::Debug + PartialEq,
-    TBitsSource: Clone + PartialEq<TBitsSource> + std::default::Default + std::fmt::Debug,
+    TBitsSource: Clone + Eq + PartialEq<TBitsSource> + std::default::Default + std::fmt::Debug,
     for<'a> &'a TBitsSource: std::ops::BitAnd<Output = TBitsSource>,
     for<'a> <&'a TBitsSource as BitAnd>::Output: PartialEq<<&'a TBitsSource as BitAnd>::Output>,
 {
@@ -30,7 +33,7 @@ where
 impl<TBitsSource, TTarget> BitmasksTable<TBitsSource, TTarget>
 where
     TTarget: Default + Clone + std::fmt::Debug + PartialEq,
-    TBitsSource: Clone + PartialEq<TBitsSource> + std::default::Default + std::fmt::Debug,
+    TBitsSource: Clone + Eq + PartialEq<TBitsSource> + std::default::Default + std::fmt::Debug,
     for<'a> &'a TBitsSource: std::ops::BitAnd<Output = TBitsSource>,
     for<'a> <&'a TBitsSource as BitAnd>::Output: PartialEq<<&'a TBitsSource as BitAnd>::Output>,
 {

@@ -22,16 +22,16 @@ use crate::types::ackinacki_block::hash::debug_hash;
 use crate::types::ackinacki_block::hash::Sha256Hash;
 use crate::types::AccountAddress;
 use crate::types::BlockEndLT;
+use crate::types::BlockHeight;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
-mod fork_resolution;
-pub use fork_resolution::ForkResolution;
 pub mod as_signatures_map;
 pub mod common_section;
+pub mod envelope_hash;
 pub mod hash;
 mod parse_block_accounts_and_messages;
 mod serialize;
@@ -40,7 +40,7 @@ pub use hash::compare_hashes;
 
 const BLOCK_SUFFIX_LEN: usize = 32;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AckiNackiBlock {
     common_section: CommonSection,
     block: tvm_block::Block,
@@ -84,6 +84,8 @@ impl AckiNackiBlock {
         refs: Vec<BlockIdentifier>,
         threads_table: Option<ThreadsTable>,
         changed_dapp_ids: HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>,
+        round: u16,
+        block_height: BlockHeight,
     ) -> Self {
         // Note: according to the node logic we will update common section of every
         // block so there is no need to calculate hash here
@@ -92,12 +94,14 @@ impl AckiNackiBlock {
         Self {
             common_section: CommonSection::new(
                 thread_id,
+                round,
                 producer_id,
                 block_keeper_set_changes,
                 verify_complexity,
                 refs,
                 threads_table,
                 changed_dapp_ids,
+                block_height,
             ),
             block,
             tx_cnt,

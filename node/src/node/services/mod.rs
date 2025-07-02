@@ -6,7 +6,6 @@ pub mod attestations_target;
 pub mod block_processor;
 pub mod db_serializer;
 pub mod finalization;
-pub mod fork_resolution;
 pub mod send_attestations;
 pub mod statistics;
 pub mod sync;

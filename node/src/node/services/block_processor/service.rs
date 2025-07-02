@@ -12,7 +12,6 @@ use std::time::Instant;
 use http_server::BlockKeeperSetUpdate;
 use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedSender;
-use thiserror::Error;
 use tvm_block::ShardStateUnsplit;
 use tvm_types::Cell;
 use tvm_types::UInt256;
@@ -22,15 +21,16 @@ use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::config::must_save_state_on_seq_no;
-use crate::external_messages::ExternalMessagesThreadState;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::block_state::state::AttestationsTarget;
 use crate::node::block_state::unfinalized_ancestor_blocks::UnfinalizedAncestorBlocks;
-use crate::node::services::attestations_target::service::AttestationsTargetService;
+use crate::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
 use crate::node::services::block_processor::chain_pulse::ChainPulse;
+use crate::node::services::validation::feedback::AckiNackiSend;
 use crate::node::shared_services::SharedServices;
 use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
+use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::NetworkMessage;
 use crate::node::NodeIdentifier;
 use crate::node::PubKey;
@@ -45,7 +45,6 @@ use crate::repository::RepositoryError;
 use crate::types::bp_selector::BlockGap;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
-use crate::types::ForkResolution;
 use crate::types::RndSeed;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
@@ -56,24 +55,9 @@ use crate::utilities::FixedSizeHashSet;
 const MAX_ATTESTATION_TARGET_BETA: usize = 100;
 // const ALLOWED_BLOCK_PRODUCTION_TIME_LAG_MS: u64 = 50;
 
-#[derive(Error, Debug)]
-pub enum ForkResolutionVerificationError {
-    #[error("Failed to load parent block state, original error {0}")]
-    StateLoad(String),
-
-    #[error("Block state doesn't have descendant_bk_set, block_id {0}")]
-    BkSetAbsent(String),
-
-    #[error("Winner attestation signatures verification failure: {0}")]
-    WinnerAttestationsFailure(String),
-
-    #[error("Lost attestation signatures verification failure: {0}")]
-    LostAttestationsFailure(String),
-}
 use network::channel::NetBroadcastSender;
 use network::channel::NetDirectSender;
 use telemetry_utils::now_ms;
-use ForkResolutionVerificationError::*;
 
 use crate::node::services::sync::ExternalFileSharesBased;
 use crate::node::services::sync::StateSyncService;
@@ -124,9 +108,11 @@ impl BlockProcessorService {
         skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
         bk_state_update_tx: InstrumentedSender<BlockKeeperSetUpdate>,
         block_gap: BlockGap,
-        external_messages: ExternalMessagesThreadState,
         validation_service: ValidationServiceInterface,
         share_service: ExternalFileSharesBased,
+        send: AckiNackiSend,
+        chain_pulse_monitor: std::sync::mpsc::Sender<ChainPulseEvent>,
+        unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
     ) -> Self {
         let chain_pulse_last_finalized_block_id: BlockIdentifier = repository
             .select_thread_last_finalized_block(&thread_identifier)
@@ -163,16 +149,13 @@ impl BlockProcessorService {
                             &chain_pulse_last_finalized_block_id
                         )?
                     ))
+                    .chain_pulse_monitor(chain_pulse_monitor)
                     .build();
                 let _ = chain_pulse.pulse(&chain_pulse_last_finalized_block);
-                let mut attestations_target_service = AttestationsTargetService::builder()
-                    .repository(repository.clone())
-                    .block_state_repository(block_state_repository.clone())
-                    .build();
                 loop {
                     let notifications =
                         block_state_repository.notifications().load(Ordering::Relaxed);
-                    repository.unprocessed_blocks_cache().remove_finalized_and_invalidated_blocks();
+                    unprocessed_blocks_cache.remove_finalized_and_invalidated_blocks();
                     // Await for signal that smth has changes and blocks can be checked again
                     if let Some(last_finalized_block_id) = repository.select_thread_last_finalized_block(&thread_identifier)?.map(|t| t.0) {
                         let last_finalized_block = block_state_repository.get(&last_finalized_block_id)?;
@@ -180,7 +163,7 @@ impl BlockProcessorService {
 
                         #[allow(clippy::mutable_key_type)]
                         let blocks_to_process: UnfinalizedBlocksSnapshot =
-                            repository.unprocessed_blocks_cache().clone_queue();
+                            unprocessed_blocks_cache.clone_queue();
 
                         shared_services.metrics.as_ref().inspect(|m| {
                             m.report_unfinalized_blocks_queue(blocks_to_process.len() as u64, &thread_identifier);
@@ -218,18 +201,17 @@ impl BlockProcessorService {
                                 nack_set_cache.clone(),
                                 &archive,
                                 &skipped_attestation_ids,
-                                &external_messages,
                                 block,
                                 &validation_service,
                                 &time_to_produce_block,
                                 share_service.clone(),
+                                send.clone(),
                             )?;
                             {
                                 let mut lock = block_state.lock();
                                 lock.set_bulk_change(false)?;
                             }
                         }
-                        attestations_target_service.evaluate(&blocks_to_process);
                     }
                     let new_notifications =
                         block_state_repository.notifications().load(Ordering::Relaxed);
@@ -264,11 +246,11 @@ fn process_candidate_block(
         )>,
     >,
     skipped_attestation_ids: &Arc<Mutex<HashSet<BlockIdentifier>>>,
-    external_messages: &ExternalMessagesThreadState,
     candidate_block: &Envelope<GoshBLS, AckiNackiBlock>,
     validation_service: &ValidationServiceInterface,
     time_to_produce_block: &Duration,
     share_service: ExternalFileSharesBased,
+    send: AckiNackiSend,
 ) -> anyhow::Result<()> {
     if block_state.guarded(|e| e.is_block_already_applied()) {
         // This is the last flag this method sets. Skip this block checks if it is already set.
@@ -299,17 +281,18 @@ fn process_candidate_block(
         return Ok(());
     };
     if block_state.guarded(|e| e.bk_set().is_none()) {
-        if parent_block_state.guarded(|e| e.bk_set().is_some() && e.is_signatures_verified()) {
-            rules::descendant_bk_set::set_descendant_bk_set(&parent_block_state, repository);
-        }
         if parent_block_state.guarded(|e| e.descendant_bk_set().is_some()) {
             let metrics = shared_services.metrics.as_ref();
-            rules::bk_set::set_bk_set(block_state, block_state_repository, metrics);
+            if !rules::bk_set::set_bk_set(block_state, block_state_repository, metrics) {
+                tracing::trace!("Failed to set BK set. Skip block");
+                return Ok(());
+            }
         } else {
             tracing::trace!("BK set is not set. Skip block");
             return Ok(());
         }
     }
+
     tracing::trace!("Process block candidate: check block signature");
 
     if !block_state.guarded(|e| e.is_stored()) {
@@ -340,6 +323,7 @@ fn process_candidate_block(
             })?;
         } else {
             block_state.guarded_mut(|e| e.set_invalidated())?;
+            let _ = send.send_nack_bad_block(block_state.clone(), candidate_block.clone());
             return Ok(());
         }
     }
@@ -372,20 +356,22 @@ fn process_candidate_block(
         tracing::trace!("Process block candidate: can't check block signature, skip it");
         return Ok(());
     }
+
     if block_state.guarded(|e| e.descendant_bk_set().is_none() && e.is_signatures_verified()) {
-        rules::descendant_bk_set::set_descendant_bk_set(block_state, repository);
+        rules::descendant_bk_set::set_descendant_bk_set(block_state, candidate_block);
     }
 
     if block_state.guarded(|e| e.block_stats().is_none() && e.bk_set().is_some()) {
-        let parent_block_state = block_state_repository.get(&parent_id)?;
         if let Some(parent_stats) = parent_block_state.guarded(|e| e.block_stats().clone()) {
             let moment = Instant::now();
 
             // TODO: need to recalculate attestation target
-            let attestation_target = block_state
+            let bk_set_len = block_state
                 .guarded(|e| e.bk_set().clone())
-                .map(|map| 2 * map.len() / 3)
+                .map(|map| map.len())
                 .expect("BK set must be set on this stage");
+            let attestations_target = (2 * bk_set_len).div_ceil(3);
+            let min_attestations_target = (bk_set_len >> 1) + 1;
 
             let attestations = candidate_block
                 .data()
@@ -405,7 +391,7 @@ fn process_candidate_block(
             let cur_block_stats = parent_stats.clone().next(
                 // TODO: parent id was here check what is the right one
                 block_id.clone(),
-                attestation_target,
+                attestations_target,
                 attestations,
                 None,
             );
@@ -416,7 +402,7 @@ fn process_candidate_block(
                     cur_block_stats.median_descendants_chain_length_to_meet_threshold();
                 tracing::trace!("median_descendants_chain_length_to_meet_threshold: {median_descendants_chain_length_to_meet_threshold}");
                 // from the spec:
-                let A = attestation_target as f64;
+                let A = attestations_target as f64;
                 tracing::trace!("A: {A}");
                 let N = e.bk_set().as_ref().map(|x| x.len()).unwrap() as f64;
                 tracing::trace!("N: {N}");
@@ -450,12 +436,12 @@ fn process_candidate_block(
                 }
                 if e.initial_attestations_target().is_none() {
                     let parent_attestation_target = parent_block_state.guarded(|e| *e.initial_attestations_target()).expect("Parent attestation target must be set");
-                    let descendant_generations = if (1 + median_descendants_chain_length_to_meet_threshold) < parent_attestation_target.descendant_generations {
+                    let descendant_generations = if median_descendants_chain_length_to_meet_threshold < parent_attestation_target.descendant_generations {
                         parent_attestation_target.descendant_generations - 1
                     } else if median_descendants_chain_length_to_meet_threshold < MAX_ATTESTATION_TARGET_BETA {
-                        1 + median_descendants_chain_length_to_meet_threshold
-                    } else {
                         median_descendants_chain_length_to_meet_threshold
+                    } else {
+                        MAX_ATTESTATION_TARGET_BETA
                     };
 
                     shared_services.metrics.as_ref().inspect(|m| {
@@ -465,10 +451,12 @@ fn process_candidate_block(
                             tracing::error!("Thread id not set for block {}", block_id);
                         }
                     });
+                    // TODO: add second attestation target check
                     e.set_initial_attestations_target(AttestationsTarget {
                         // Note: spec.
                         descendant_generations,
-                        count: attestation_target,
+                        attestations_target,
+                        min_attestations_target,
                     })?;
                 }
                 e.set_block_stats(cur_block_stats.clone())?;
@@ -485,12 +473,15 @@ fn process_candidate_block(
         }
     }
 
-    verify_fork_resolutions(
+    if !parse_verified_attestations(
         block_state,
+        &parent_block_state,
         block_state_repository,
         candidate_block,
-        &shared_services.metrics,
-    )?;
+    )? {
+        tracing::trace!("Process block candidate: can't parse_verified_attestations, skip it");
+        return Ok(());
+    }
 
     // TODO: need to check attestations from common section and pass them to the attestation processor or attestation target service
     // TODO: need to check acks and nacks from common section
@@ -551,22 +542,7 @@ fn process_candidate_block(
                     e.producer().clone().expect("Must be set"),
                 )
             });
-            if producer != node_id {
-                let parent_block_external_messages_progress = external_messages
-                    .get_progress(parent_block_state.block_identifier())
-                    .expect("Must not fail")
-                    .expect("Must be set");
-                external_messages.set_progress(
-                    block_state.block_identifier(),
-                    parent_block_external_messages_progress,
-                )?;
-            } else {
-                // Ensure consistency: blocks produced by node must have progress set.
-                assert!(external_messages
-                    .get_progress(block_state.block_identifier())
-                    .unwrap()
-                    .is_some());
-
+            if producer == node_id {
                 let bk_set_update = block_state.guarded_mut(|e| {
                     e.set_applied()?;
                     e.event_timestamps.block_applied_timestamp_ms = Some(now_ms());
@@ -579,8 +555,10 @@ fn process_candidate_block(
                 }
                 return Ok(());
             }
-            if block_state.guarded(|e| *e.must_be_validated() == Some(true)) {
-                validation_service.send(block_state.clone());
+            if block_state.guarded(|e| {
+                *e.must_be_validated() == Some(true) || !e.has_bad_block_nacks_resolved()
+            }) {
+                validation_service.send((block_state.clone(), candidate_block.clone()));
             }
 
             let (_, last_finalized_seq_no) = repository
@@ -687,105 +665,6 @@ fn process_candidate_block(
     Ok(())
 }
 
-fn verify_fork_resolutions(
-    block_state: &BlockState,
-    block_state_repository: &BlockStateRepository,
-    candidate_block: &Envelope<GoshBLS, AckiNackiBlock>,
-    metrics: &Option<crate::helper::metrics::BlockProductionMetrics>,
-) -> anyhow::Result<()> {
-    if block_state.guarded(|e| e.resolves_forks().is_some()) {
-        return Ok(());
-    }
-    let moment = Instant::now();
-    let fork_resolutions = candidate_block.data().get_common_section().fork_resolutions.clone();
-
-    for fork_resolution in fork_resolutions.iter() {
-        match check_attestation_signatures(fork_resolution, block_state_repository) {
-            Ok(true) => {
-                continue;
-            }
-            Ok(false) => {
-                tracing::error!(
-                    "Attestation signatures are not valid for block {}",
-                    candidate_block
-                );
-                block_state.guarded_mut(|e| e.set_invalidated())?;
-            }
-            Err(error) if matches!(error, StateLoad(_) | BkSetAbsent(_)) => {
-                tracing::error!(
-                    "Skip attestation signatures check on this iteration for block {}, reason: {}",
-                    candidate_block,
-                    error
-                );
-            }
-            Err(error) => {
-                tracing::error!(
-                    "Attestation signatures not valid for block {}, reason: {}",
-                    candidate_block,
-                    error
-                );
-                block_state.guarded_mut(|e| e.set_invalidated())?;
-            }
-        };
-        break;
-
-        // TODO: Add fork resolution verification in the next PR
-        // set block invalid if any single resolution is invalid.
-        // send Nack for the block (invalid fork resolution)
-    }
-
-    block_state.guarded_mut(|e| {
-        metrics.as_ref().inspect(|m| {
-            if let Some(thread_id) = e.thread_identifier() {
-                m.report_verify_fork_resolution(moment.elapsed().as_millis() as u64, thread_id);
-            } else {
-                tracing::error!("Thread id not set for block {}", e.block_identifier());
-            }
-        });
-
-        if e.resolves_forks().is_none() {
-            e.set_resolves_forks(fork_resolutions)
-        } else {
-            Ok(())
-        }
-    })
-}
-
-fn check_attestation_signatures(
-    fork_resolution: &ForkResolution,
-    block_state_repository: &BlockStateRepository,
-) -> Result<bool, ForkResolutionVerificationError> {
-    let parent_block_id = fork_resolution.parent_block_identifier();
-
-    let parent_block_state =
-        block_state_repository.get(parent_block_id).map_err(|err| StateLoad(err.to_string()))?;
-
-    let attestation_signers_map = parent_block_state
-        .guarded(|e| e.descendant_bk_set().clone())
-        .ok_or(BkSetAbsent(parent_block_id.to_string()))?
-        .get_pubkeys_by_signers();
-
-    let winner_attestations_are_valid = fork_resolution
-        .winner_attestations()
-        .verify_signatures(&attestation_signers_map)
-        .map_err(|err| WinnerAttestationsFailure(err.to_string()))?;
-
-    // Check lost attestations too
-    let lost_attestations_are_valid = fork_resolution
-        .lost_attestations()
-        .iter()
-        .map(|attestation| {
-            attestation
-                .verify_signatures(&attestation_signers_map)
-                .map_err(|err| LostAttestationsFailure(err.to_string()))
-        })
-        .collect::<Result<Vec<bool>, ForkResolutionVerificationError>>()?
-        .iter()
-        .all(|result| *result);
-
-    Ok(winner_attestations_are_valid && lost_attestations_are_valid)
-}
-
 // Function verifies block signatures and attestation signatures from common section
 pub(crate) fn verify_all_block_signatures(
     block_state_repository: &BlockStateRepository,
@@ -812,7 +691,7 @@ pub(crate) fn verify_all_block_signatures(
             signers_map
         );
         let is_valid = candidate_block
-            .verify_signatures(&signers_map)
+            .verify_signatures(signers_map)
             .expect("Signatures verification should not crash.");
         let stated_producer_id = candidate_block.data().get_common_section().producer_id.clone();
         let Some(stated_producer_data) = bk_set.get_by_node_id(&stated_producer_id) else {
@@ -865,11 +744,20 @@ pub(crate) fn verify_all_block_signatures(
             if is_parent_invalidated {
                 continue;
             }
+            let Some(envelope_hash) = ancestor_block_state.guarded(|e| e.envelope_hash().clone())
+            else {
+                tracing::trace!("Ancestor block does not have envelope hash set, skip attestation");
+                continue;
+            };
+            if &envelope_hash != attestation.data().envelope_hash() {
+                tracing::trace!("Attestation envelope hash verification failed: {:?}", attestation);
+                return Some(false);
+            }
             let Some(attestation_signers_map) = attestation_signers_map else { continue };
 
             let attestation_signers_map = attestation_signers_map.get_pubkeys_by_signers();
             let is_attestation_signatures_valid = attestation
-                .verify_signatures(&attestation_signers_map)
+                .verify_signatures(attestation_signers_map)
                 .expect("Attestation signatures verification should not crash.");
             if !is_attestation_signatures_valid {
                 tracing::trace!("Attestations signature verification failed: {}", candidate_block);
@@ -911,8 +799,8 @@ fn check_common_block_params(
     _time_to_produce_block: &Duration,
     block_state: &BlockState,
 ) -> anyhow::Result<bool> {
-    let (Some(_parent_time), Some(parent_seq_no)) =
-        parent_block_state.guarded(|e| (*e.block_time_ms(), *e.block_seq_no()))
+    let (Some(_parent_time), Some(parent_seq_no), Some(parent_height)) =
+        parent_block_state.guarded(|e| (*e.block_time_ms(), *e.block_seq_no(), *e.block_height()))
     else {
         anyhow::bail!("Failed to get block data to perform common check");
     };
@@ -921,6 +809,16 @@ fn check_common_block_params(
         tracing::trace!(
             "Invalid block seq_no: candidate_seq_no: {} <= parent_seq_no: {parent_seq_no}",
             candidate_block.data().seq_no()
+        );
+        return Ok(false);
+    }
+
+    if candidate_block.data().get_common_section().block_height
+        != parent_height.next(&candidate_block.data().get_common_section().thread_id)
+    {
+        tracing::trace!(
+            "Invalid block height: candidate_height: {:?}, parent_height: {parent_height:?}",
+            candidate_block.data().get_common_section().block_height
         );
         return Ok(false);
     }
@@ -947,4 +845,97 @@ fn check_common_block_params(
     }
 
     candidate_block.data().check_hash()
+}
+
+fn parse_verified_attestations(
+    block_state: &BlockState,
+    parent_block_state: &BlockState,
+    block_state_repository: &BlockStateRepository,
+    candidate_block: &Envelope<GoshBLS, AckiNackiBlock>,
+) -> anyhow::Result<bool> {
+    let Some(mut parent_distances) =
+        parent_block_state.guarded(|e| e.ancestor_blocks_finalization_distances().clone())
+    else {
+        tracing::trace!("parse_verified_attestations: parent block ancestor_distances not found, skip the block");
+        return Ok(false);
+    };
+    tracing::trace!(
+        "parse_verified_attestations: parent block ancestor_distances: {parent_distances:?}"
+    );
+
+    if parent_block_state.guarded(|e| e.thread_identifier().expect("Must be set"))
+        != block_state.guarded(|e| e.thread_identifier().expect("Must be set"))
+    {
+        parent_distances = HashMap::new();
+    }
+    let verified_attestations = block_state.guarded(|e| e.verified_attestations().clone());
+    tracing::trace!(
+        "parse_verified_attestations: verified_attestations: {verified_attestations:?}"
+    );
+    for (block_id, signers) in verified_attestations {
+        let ancestor_block_state = block_state_repository.get(&block_id)?;
+        let Some(attestations_target) =
+            ancestor_block_state.guarded(|e| *e.initial_attestations_target())
+        else {
+            tracing::trace!("parse_verified_attestations: attested block {block_id:?} attestations_target not found, skip the block");
+            return Ok(false);
+        };
+        if signers.len() >= attestations_target.min_attestations_target {
+            tracing::trace!("parse_verified_attestations: block {block_id:?} min_attestations_target was reached");
+            ancestor_block_state.guarded_mut(|e| {
+                if !e.is_prefinalized() {
+                    e.set_prefinalized().expect("Failed to set prefinalized");
+                    // TODO: this moment can be optimized be storing attestation in BlockState
+                    let attestation = candidate_block
+                        .data()
+                        .get_common_section()
+                        .block_attestations
+                        .iter()
+                        .find(|attestation| attestation.data().block_id() == &block_id)
+                        .cloned()
+                        .expect("Attestation must be here, it is present in the verified list");
+                    e.set_prefinalization_proof(attestation)
+                        .expect("Failed to set prefinalizaton proof");
+                }
+            });
+        }
+        if signers.len() >= attestations_target.attestations_target {
+            tracing::trace!(
+                "parse_verified_attestations: block {block_id:?} attestations_target was reached"
+            );
+            ancestor_block_state.guarded_mut(|e| {
+                if e.has_initial_attestations_target_met().is_none() {
+                    e.set_has_initial_attestations_target_met()
+                        .expect("Failed to  set_has_initial_attestations_target_met");
+                }
+                block_state.guarded_mut(|e| e.update_finalizes_blocks(block_id.clone()));
+            });
+            if parent_distances.contains_key(&block_id) {
+                parent_distances.remove(&block_id);
+            }
+        }
+    }
+    for (block_id, value) in parent_distances.iter_mut() {
+        *value -= 1;
+        if *value == 0 {
+            tracing::trace!("parse_verified_attestations: block {block_id:?} attestations_target was not reached, block is considered as invalid {:?}", block_state.block_identifier());
+            block_state.guarded_mut(|e| e.set_invalidated())?;
+            return Ok(false);
+        }
+    }
+    parent_distances.insert(
+        block_state.block_identifier().clone(),
+        block_state.guarded(|e| {
+            // e.block_stats()
+            //     .clone()
+            //     .expect("Block stats must be set here")
+            //     .median_descendants_chain_length_to_meet_threshold()
+            e.initial_attestations_target().expect("Must be set").descendant_generations
+        }),
+    );
+    tracing::trace!(
+        "parse_verified_attestations: current block ancestor_distances: {parent_distances:?}"
+    );
+    block_state.guarded_mut(|e| e.set_ancestor_blocks_finalization_distances(parent_distances))?;
+    Ok(true)
 }

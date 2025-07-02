@@ -112,7 +112,7 @@ impl Deserializable for DeltaOp {
 }
 
 impl DeltaOp {
-    fn as_ref(&self) -> DeltaOpRef {
+    fn as_ref(&self) -> DeltaOpRef<'_> {
         match self {
             DeltaOp::Node { chitchat_id, last_gc_version, from_version_excluded } => {
                 DeltaOpRef::Node {

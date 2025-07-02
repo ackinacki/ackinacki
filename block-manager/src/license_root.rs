@@ -29,8 +29,8 @@ struct AddressResponse {
 }
 
 pub fn build_fetch_boc_request(host: SocketAddr, address: &str) -> RequestBuilder {
-    let base_url = format!("http://{}/bk/account", host);
-    let url = format!("{}?address={}", base_url, address);
+    let base_url = format!("http://{host}/v2/account");
+    let url = format!("{base_url}?address={address}");
     let client = Client::new();
     client.get(&url).bearer_auth(BK_ACCOUNT_API_TOKEN.to_string())
 }

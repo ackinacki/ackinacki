@@ -25,6 +25,7 @@ use crate::block_keeper_system::BlockKeeperSlashData;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
+use crate::external_messages::Stamp;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::Message;
 use crate::message::WrappedMessage;
@@ -43,6 +44,8 @@ use crate::repository::CrossThreadRefData;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
+use crate::utilities::guarded::Guarded;
+use crate::utilities::guarded::GuardedMut;
 
 pub const DEFAULT_VERIFY_COMPLEXITY: SignerIndex = (u16::MAX >> 5) + 1;
 
@@ -61,12 +64,13 @@ pub trait BlockProducer {
         control_rx_stop: InstrumentedReceiver<()>,
         message_db: MessageDurableStorage,
         time_limits: &ExecutionTimeLimits,
+        block_round: u16,
     ) -> anyhow::Result<(
         AckiNackiBlock,
         Self::OptimisticState,
         Vec<(Cell, ActiveThread)>,
         CrossThreadRefData,
-        usize,
+        Vec<Stamp>,
         ExtMsgFeedbackList,
     )>
     where
@@ -78,11 +82,12 @@ pub trait BlockProducer {
 pub struct TVMBlockProducer {
     active_threads: Vec<(Cell, ActiveThread)>,
     blockchain_config: Arc<BlockchainConfig>,
-    message_queue: VecDeque<tvm_block::Message>,
+    message_queue: VecDeque<(Stamp, tvm_block::Message)>,
     producer_node_id: NodeIdentifier,
     thread_count_soft_limit: usize,
     parallelization_level: usize,
     block_keeper_epoch_code_hash: String,
+    block_keeper_preepoch_code_hash: String,
     epoch_block_keeper_data: Vec<BlockKeeperData>,
     shared_services: SharedServices,
     block_nack: Vec<Envelope<GoshBLS, NackData>>,
@@ -117,12 +122,13 @@ impl BlockProducer for TVMBlockProducer {
         control_rx_stop: InstrumentedReceiver<()>,
         message_db: MessageDurableStorage,
         time_limits: &ExecutionTimeLimits,
+        block_round: u16,
     ) -> anyhow::Result<(
         AckiNackiBlock,
         Self::OptimisticState,
         Vec<(Cell, ActiveThread)>,
         CrossThreadRefData,
-        usize,
+        Vec<Stamp>,
         ExtMsgFeedbackList,
     )>
     where
@@ -130,6 +136,7 @@ impl BlockProducer for TVMBlockProducer {
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
         CrossThreadRefData: 'a,
     {
+        let parent_block_id = parent_block_state.block_id.clone();
         let (initial_state, in_table, white_list_of_slashing_messages_hashes, forwarded_messages) =
             trace_span!("pre processing").in_scope(|| {
                 tracing::trace!("Start production");
@@ -203,26 +210,27 @@ impl BlockProducer for TVMBlockProducer {
             Some(control_rx_stop),
             self.accounts,
             self.block_keeper_epoch_code_hash.clone(),
+            self.block_keeper_preepoch_code_hash.clone(),
             self.parallelization_level,
             forwarded_messages,
             self.metrics.clone(),
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
-        let (mut prepared_block, processed_ext_msgs_cnt, ext_message_feedbacks) = producer
-            .build_block(
-                self.message_queue.clone(),
-                &self.blockchain_config,
-                active_threads,
-                None,
-                white_list_of_slashing_messages_hashes,
-                message_db.clone(),
-                time_limits,
-            )?;
+        let (mut prepared_block, processed_stamps, ext_message_feedbacks) = producer.build_block(
+            self.message_queue.clone(),
+            &self.blockchain_config,
+            active_threads,
+            None,
+            white_list_of_slashing_messages_hashes,
+            message_db.clone(),
+            time_limits,
+        )?;
         tracing::trace!(target: "node", "block generated successfully");
         Self::print_block_info(&prepared_block.block);
 
         tracing::trace!(
-            "Block generation finished, processed_ext_msgs_cnt={processed_ext_msgs_cnt}"
+            "Block generation finished, processed_ext_msgs_cnt={}",
+            processed_stamps.len()
         );
 
         let res = trace_span!("post production").in_scope(|| {
@@ -272,6 +280,23 @@ impl BlockProducer for TVMBlockProducer {
             // ).expect("Must be able to set producer selector");
             let active_threads = std::mem::take(&mut prepared_block.active_threads);
             cross_thread_ref_data.set_block_refs(ref_ids.clone());
+            let processed_ext_msg_cnt = processed_stamps.len();
+
+            let parent_state =
+                self.block_state_repository.get(&parent_block_id).expect("Can't fail");
+            let block_height = parent_state
+                .guarded(|e| *e.block_height())
+                .expect("Parent block does not have block height set")
+                .next(&thread_identifier);
+
+            self.block_state_repository.get(&produced_block_id).expect("Can't fail").guarded_mut(
+                |e| {
+                    e.set_block_height(block_height).expect("Failed to set block_height");
+                    e.add_proposed_in_round(block_round)
+                        .expect("Failed to set round for block state")
+                },
+            );
+
             let res = (
                 AckiNackiBlock::new(
                     thread_identifier,
@@ -283,11 +308,13 @@ impl BlockProducer for TVMBlockProducer {
                     ref_ids,
                     forward_table,
                     prepared_block.changed_dapp_ids,
+                    block_round,
+                    block_height,
                 ),
                 new_state,
                 active_threads,
                 cross_thread_ref_data,
-                processed_ext_msgs_cnt,
+                processed_stamps,
                 ext_message_feedbacks,
             );
 
@@ -295,7 +322,7 @@ impl BlockProducer for TVMBlockProducer {
                 "Finish block production: {} {} {}",
                 res.0.seq_no(),
                 res.0.identifier(),
-                processed_ext_msgs_cnt,
+                processed_ext_msg_cnt,
             );
             res
         });

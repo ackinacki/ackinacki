@@ -176,13 +176,13 @@ mod tests {
         let mut threads_table2 = threads_table.clone();
         add_mask(&mut threads_table, &[254], 1, 2);
         add_mask(&mut threads_table2, &[254, 255], 0, 3);
-        println!("{:?}", threads_table);
-        println!("{:?}", threads_table2);
+        println!("{threads_table:?}");
+        println!("{threads_table2:?}");
         threads_table.merge(&threads_table2)?;
-        println!("{:?}", threads_table);
+        println!("{threads_table:?}");
         let mut etalon = threads_table2.clone();
         add_mask(&mut etalon, &[254], 2, 2);
-        println!("{:?}", etalon);
+        println!("{etalon:?}");
         assert_eq!(threads_table, etalon);
         Ok(())
     }

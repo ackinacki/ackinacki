@@ -47,7 +47,7 @@ where
         state_in.get_signer_index_for_node_id(&self.config.local.node_id)
     }
 
-    pub(crate) fn get_signer_data_for_block_id(
+    pub(crate) fn _get_signer_data_for_block_id(
         &self,
         block_id: BlockIdentifier,
     ) -> Option<(SignerIndex, Secret)> {
@@ -77,7 +77,7 @@ where
     ) -> Option<HashMap<SignerIndex, PubKey>> {
         self.get_block_keeper_set_for_block_id(block_id)
             .as_ref()
-            .map(|set| set.get_pubkeys_by_signers())
+            .map(|set| set.get_pubkeys_by_signers().clone())
     }
 
     pub(crate) fn _is_this_node_in_block_keeper_set(

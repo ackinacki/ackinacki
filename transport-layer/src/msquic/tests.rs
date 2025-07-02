@@ -85,22 +85,30 @@ mod unit_tests {
 
     use super::*;
     use crate::msquic::msquic_async;
+    use crate::msquic::msquic_async::stream::StreamType::Unidirectional;
     use crate::msquic::quic_settings::ConfigFactory;
     use crate::msquic::read_message_from_stream;
     use crate::msquic::MsQuicTransport;
+    use crate::CertValidation;
     use crate::NetConnection;
     use crate::NetCredential;
     use crate::NetIncomingRequest;
     use crate::NetListener;
-    use crate::NetRecvRequest;
     use crate::NetTransport;
 
     #[tokio::test]
     #[ignore]
     async fn test_msquic_transport() {
         init_logs();
-        let server_cred = NetCredential::generate_self_signed();
-        let client_cred = NetCredential::generate_self_signed();
+        let mut server_cred = NetCredential::generate_self_signed();
+        let client_ed_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+        let mut client_cred =
+            NetCredential::generate_self_signed_with_ed_signature(&client_ed_key).unwrap();
+        server_cred
+            .cert_validation
+            .trusted_ed_pubkeys
+            .push(client_ed_key.verifying_key().to_bytes());
+        client_cred.cert_validation.root_certs.push(server_cred.my_certs[0].clone());
         let server_cred_clone = server_cred.clone();
         let client_cred_clone = client_cred.clone();
         let mut tasks = JoinSet::new();
@@ -114,10 +122,10 @@ mod unit_tests {
 
             let incoming_request = listener.accept().await.unwrap();
             let connection = incoming_request.accept().await.unwrap();
-            let message = connection.accept_recv().await.unwrap().recv().await.unwrap();
+            let message = connection.recv().await.unwrap().0;
             assert_eq!(client_cred_clone.identity(), connection.remote_identity());
             assert_eq!(message.len(), 5);
-            println!("{:?}", message);
+            println!("{message:?}");
         });
 
         let server_cred_clone = server_cred.clone();
@@ -154,7 +162,7 @@ mod unit_tests {
 
         let address = "127.0.0.1";
         let port = 4444;
-        let l = msquic_async::Listener::new(&reg, config).unwrap();
+        let l = msquic_async::Listener::new(&reg, config, CertValidation::default()).unwrap();
         let local_address = SocketAddr::new(address.parse().unwrap(), port);
 
         l.start(&alpn, Some(local_address)).unwrap();
@@ -174,15 +182,12 @@ mod unit_tests {
 
             let host = "127.0.0.1";
             let port = 4444;
-            let conn = msquic_async::Connection::new(&reg).unwrap();
+            let conn = msquic_async::Connection::new(&reg, CertValidation::default()).unwrap();
             let rt = tokio::runtime::Runtime::new().unwrap();
 
             rt.block_on(async {
                 conn.start(&configuration, host, port).await.unwrap();
-                let mut stream = conn
-                    .open_outbound_stream(msquic_async::StreamType::Unidirectional, false)
-                    .await
-                    .unwrap();
+                let mut stream = conn.open_outbound_stream(Unidirectional, false).await.unwrap();
                 stream.write_all("hello".as_bytes()).await.unwrap();
                 stream.flush().await.unwrap();
                 stream.close().await.unwrap();
@@ -194,7 +199,7 @@ mod unit_tests {
         let mut buf = [0u8; 5];
         let len = stream.read_exact(&mut buf).await.unwrap();
         let received_str = String::from_utf8_lossy(&buf[0..len]);
-        println!("Received: {}", received_str);
+        println!("Received: {received_str}");
         assert_eq!(received_str, "hello");
     }
 
@@ -250,7 +255,7 @@ mod unit_tests {
         let message = create_transport_message(payload);
         let mut reader = MockAsyncReader::new(vec![Bytes::from(message.clone())]);
 
-        let result = read_message_from_stream(&mut reader).await?;
+        let (result, _) = read_message_from_stream(&mut reader).await?;
 
         assert_eq!(result, payload);
         Ok(())
@@ -267,7 +272,7 @@ mod unit_tests {
 
         let mut reader = MockAsyncReader::new(vec![chunk1, chunk2, chunk3]);
 
-        let result = read_message_from_stream(&mut reader).await?;
+        let (result, _) = read_message_from_stream(&mut reader).await?;
 
         assert_eq!(result, payload);
         Ok(())
@@ -280,7 +285,7 @@ mod unit_tests {
         let message = create_transport_message(payload);
 
         let mut reader = MockAsyncReader::new(vec![Bytes::from(message.clone())]);
-        let result = read_message_from_stream(&mut reader).await?;
+        let (result, _) = read_message_from_stream(&mut reader).await?;
 
         assert_eq!(result, payload);
         Ok(())
@@ -331,7 +336,7 @@ mod unit_tests {
             zero_read_counter: 1, // Start with a zero read
         };
 
-        let result = read_message_from_stream(&mut reader).await?;
+        let (result, _) = read_message_from_stream(&mut reader).await?;
 
         assert_eq!(result, payload);
         Ok(())
@@ -342,7 +347,11 @@ mod unit_tests {
         let key = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
         let cert = key.cert.der().clone();
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.key_pair.serialize_der()));
-        let creds = NetCredential { my_key: key, my_certs: vec![cert], root_certs: vec![] };
+        let creds = NetCredential {
+            my_key: key,
+            my_certs: vec![cert],
+            cert_validation: CertValidation::default(),
+        };
         let reg = Registration::new(&RegistrationConfig::default()).unwrap();
         let alpn = ["qtest"];
         let _cred_config = ConfigFactory::Server.build(&reg, &alpn, &creds).unwrap();

@@ -52,6 +52,7 @@ bitflags = "2.6.0"
 chitchat.workspace = true
 chrono = { version = "0.4.38", features = ["serde"] }
 core_affinity = { version = "0.8.3" }
+derive-debug = "0.1.2"
 derive-getters = "0.5.0"
 derive_setters = { path = "./libs/derive-setters" }
 failure = "0.1.8"
@@ -97,7 +98,6 @@ allow-dappid-thread-split = []
 allow-threads-merge = []
 deadlock-detection = []
 fail-fast = []
-nack-on-block-verification-fail = []
 messages_db = []
 
 # Record time of heavy operations

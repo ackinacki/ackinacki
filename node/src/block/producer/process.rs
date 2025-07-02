@@ -35,6 +35,7 @@ use crate::bls::BLSSignatureScheme;
 use crate::bls::GoshBLS;
 use crate::config::Config;
 use crate::external_messages::ExternalMessagesThreadState;
+use crate::external_messages::Stamp;
 use crate::helper::block_flow_trace;
 use crate::helper::block_flow_trace_with_time;
 use crate::helper::metrics::BlockProductionMetrics;
@@ -86,8 +87,15 @@ pub struct TVMBlockProducerProcess {
     thread_count_soft_limit: usize,
     parallelization_level: usize,
     block_keeper_epoch_code_hash: String,
+    block_keeper_preepoch_code_hash: String,
     metrics: Option<BlockProductionMetrics>,
     share_service: Option<ExternalFileSharesBased>,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone)]
+pub enum ProcudeNextResult {
+    Stopped,
+    Continues,
 }
 
 impl TVMBlockProducerProcess {
@@ -101,6 +109,7 @@ impl TVMBlockProducerProcess {
         thread_count_soft_limit: usize,
         parallelization_level: usize,
         block_keeper_epoch_code_hash: String,
+        block_keeper_preepoch_code_hash: String,
         produced_blocks: Arc<Mutex<Vec<(AckiNackiBlock, OptimisticStateImpl, ExtMsgFeedbackList)>>>,
         timeout: Arc<Mutex<Duration>>,
         timeout_correction: &mut ProductionTimeoutCorrection,
@@ -114,58 +123,47 @@ impl TVMBlockProducerProcess {
         accounts_repo: AccountsRepository,
         external_control_rx: &InstrumentedReceiver<()>,
         metrics: Option<BlockProductionMetrics>,
-        external_messages_queue: &ExternalMessagesThreadState,
+        external_messages_queue: &mut ExternalMessagesThreadState,
         repository: &RepositoryImpl,
         is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
         share_service: Option<ExternalFileSharesBased>,
-    ) -> anyhow::Result<bool> {
+        round: u16,
+    ) -> anyhow::Result<ProcudeNextResult> {
         tracing::trace!("Start block production process iteration");
         let start_time = std::time::SystemTime::now();
         let production_time = Instant::now();
-        let (
-            message_queue,
-            epoch_block_keeper_data,
-            block_nack,
-            aggregated_acks,
-            aggregated_nacks,
-            initial_external_messages_progress,
-        ) = trace_span!("read messages").in_scope(|| {
-            let messages =
-                external_messages_queue.get_remaining_external_messages(&initial_state.block_id)?;
-            let message_queue: VecDeque<Message> =
-                messages.clone().into_iter().map(|wrap| wrap.message).collect();
-            let mut received_acks_in = received_acks.lock();
-            let received_acks_copy = received_acks_in.clone();
-            received_acks_in.clear();
-            drop(received_acks_in);
-            // TODO: filter that nacks are not older than last finalized block
-            let mut received_nacks_in = received_nacks.lock();
-            let received_nacks_copy = received_nacks_in.clone();
-            received_nacks_in.clear();
-            drop(received_nacks_in);
-            let aggregated_acks = aggregate_acks(received_acks_copy)?;
-            let aggregated_nacks = aggregate_nacks(received_nacks_copy)?;
-            let block_nack = aggregated_nacks.clone();
-            let mut epoch_block_keeper_data = vec![];
-            while let Ok(data) = epoch_block_keeper_data_rx.try_recv() {
-                tracing::trace!("Received data for epoch: {data:?}");
-                epoch_block_keeper_data.push(data);
-            }
+        let (message_queue, epoch_block_keeper_data, block_nack, aggregated_acks, aggregated_nacks) =
+            trace_span!("read messages").in_scope(|| {
+                let message_queue: VecDeque<(Stamp, Message)> =
+                    external_messages_queue.get_remaining_external_messages()?.into();
 
-            tracing::Span::current().record("messages.len", messages.len());
-            Ok::<_, anyhow::Error>((
-                message_queue,
-                epoch_block_keeper_data,
-                block_nack,
-                aggregated_acks,
-                aggregated_nacks,
-                external_messages_queue.get_progress(&initial_state.block_id)?.ok_or(
-                    anyhow::format_err!(
-                        "Parent block external messages processing progress must be stored"
-                    ),
-                )?,
-            ))
-        })?;
+                let mut received_acks_in = received_acks.lock();
+                let received_acks_copy = received_acks_in.clone();
+                received_acks_in.clear();
+                drop(received_acks_in);
+                // TODO: filter that nacks are not older than last finalized block
+                let mut received_nacks_in = received_nacks.lock();
+                let received_nacks_copy = received_nacks_in.clone();
+                received_nacks_in.clear();
+                drop(received_nacks_in);
+                let aggregated_acks = aggregate_acks(received_acks_copy)?;
+                let aggregated_nacks = aggregate_nacks(received_nacks_copy)?;
+                let block_nack = aggregated_nacks.clone();
+                let mut epoch_block_keeper_data = vec![];
+                while let Ok(data) = epoch_block_keeper_data_rx.try_recv() {
+                    tracing::trace!("Received data for epoch: {data:?}");
+                    epoch_block_keeper_data.push(data);
+                }
+
+                tracing::Span::current().record("messages.len", message_queue.len());
+                Ok::<_, anyhow::Error>((
+                    message_queue,
+                    epoch_block_keeper_data,
+                    block_nack,
+                    aggregated_acks,
+                    aggregated_nacks,
+                ))
+            })?;
 
         let producer = TVMBlockProducer::builder()
             .active_threads(mem::take(active_block_producer_threads))
@@ -175,6 +173,7 @@ impl TVMBlockProducerProcess {
             .thread_count_soft_limit(thread_count_soft_limit)
             .parallelization_level(parallelization_level)
             .block_keeper_epoch_code_hash(block_keeper_epoch_code_hash)
+            .block_keeper_preepoch_code_hash(block_keeper_preepoch_code_hash)
             .epoch_block_keeper_data(epoch_block_keeper_data)
             .shared_services(shared_services.clone())
             .block_nack(block_nack.clone())
@@ -277,7 +276,7 @@ impl TVMBlockProducerProcess {
             if state_share_was_requested {
                 for block_ref in &refs {
                     let state = repository
-                        .get_optimistic_state(
+                        .get_full_optimistic_state(
                             block_ref.block_identifier(),
                             block_ref.block_thread_identifier(),
                             None,
@@ -304,7 +303,7 @@ impl TVMBlockProducerProcess {
                     result_state,
                     active_block_producer_threads,
                     cross_thread_ref_data,
-                    external_messages_processed_count,
+                    processed_stamps,
                     ext_msg_feedbacks,
                 ) = producer
                     // TODO: add refs to other thread states in case of sync
@@ -315,6 +314,7 @@ impl TVMBlockProducerProcess {
                         control_rx,
                         db.clone(),
                         &time_limits,
+                        round,
                     )?;
 
                 Ok::<_, anyhow::Error>((
@@ -322,8 +322,7 @@ impl TVMBlockProducerProcess {
                     result_state,
                     active_block_producer_threads,
                     cross_thread_ref_data,
-                    // Offset processed external messages
-                    initial_external_messages_progress.next(external_messages_processed_count),
+                    processed_stamps,
                     ext_msg_feedbacks,
                 ))
             })?;
@@ -342,19 +341,10 @@ impl TVMBlockProducerProcess {
             result_state,
             new_active_block_producer_threads,
             cross_thread_ref_data,
-            progress,
+            processed_stamps,
             ext_msg_feedbacks,
         ) = thread.join().map_err(|_| anyhow::format_err!("Failed to join producer thread"))??;
         tracing::trace!("Produced block: {}", block);
-        if let Some(share_service) = &share_service {
-            let state_share_was_requested = {
-                let flag = is_state_sync_requested.lock();
-                *flag == Some(next_seq_no(initial_state.block_seq_no))
-            };
-            if state_share_was_requested {
-                share_service.save_state_for_sharing(Arc::new(result_state.clone()))?;
-            }
-        }
         block_flow_trace_with_time(
             Some(start_time),
             "production",
@@ -363,14 +353,14 @@ impl TVMBlockProducerProcess {
             [],
         );
         if let Ok(()) = external_control_rx.try_recv() {
-            return Ok(true);
+            return Ok(ProcudeNextResult::Stopped);
         }
         // Update common section
         let mut common_section = block.get_common_section().clone();
         common_section.acks = aggregated_acks;
         common_section.nacks = aggregated_nacks.clone();
         block.set_common_section(common_section, false)?;
-        external_messages_queue.set_progress(&block.identifier(), progress)?;
+        external_messages_queue.erase_processed(&processed_stamps)?;
 
         if tracing::level_filters::STATIC_MAX_LEVEL >= tracing::Level::TRACE {
             if let Ok(info) = block.tvm_block().info.read_struct() {
@@ -397,6 +387,21 @@ impl TVMBlockProducerProcess {
         *active_block_producer_threads = new_active_block_producer_threads;
         *initial_state = result_state;
         repository.store_optimistic_in_cache(initial_state.clone())?;
+
+        if let Some(share_service) = &share_service {
+            let state_share_was_requested = {
+                let flag = is_state_sync_requested.lock();
+                *flag == Some(initial_state.block_seq_no)
+            };
+            if state_share_was_requested {
+                let block_id = initial_state.block_id.clone();
+                let thread_id = initial_state.thread_id;
+                let state = repository
+                    .get_full_optimistic_state(&block_id, &thread_id, Some(initial_state.clone()))?
+                    .expect("Must be accessible");
+                share_service.save_state_for_sharing(Arc::new(state.clone()))?;
+            }
+        }
 
         let span_save_cross_thread_refs =
             trace_span!("save cross thread refs", refs_len = cross_thread_ref_data.refs().len());
@@ -430,7 +435,7 @@ impl TVMBlockProducerProcess {
             sleep(desired_timeout - production_time);
         }
         block_flow_trace("finish production", &block_id, &producer_node_id, []);
-        Ok(false)
+        Ok(ProcudeNextResult::Continues)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -441,8 +446,9 @@ impl TVMBlockProducerProcess {
         received_acks: Arc<Mutex<Vec<Envelope<GoshBLS, AckData>>>>,
         received_nacks: Arc<Mutex<Vec<Envelope<GoshBLS, NackData>>>>,
         block_state_repository: BlockStateRepository,
-        external_messages: ExternalMessagesThreadState,
+        mut external_messages: ExternalMessagesThreadState,
         is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
+        initial_round: u16,
     ) -> anyhow::Result<()> {
         tracing::trace!(
             "BlockProducerProcess start production for thread: {:?}, initial_block_id:{:?}",
@@ -508,6 +514,7 @@ impl TVMBlockProducerProcess {
         let thread_count_soft_limit = self.thread_count_soft_limit;
         let parallelization_level = self.parallelization_level;
         let block_keeper_epoch_code_hash = self.block_keeper_epoch_code_hash.clone();
+        let block_keeper_preepoch_code_hash = self.block_keeper_preepoch_code_hash.clone();
         let metrics = self.repository.get_metrics();
         let accounts_repo = self.repository.accounts_repository().clone();
         let node_config = self.node_config.clone();
@@ -525,6 +532,7 @@ impl TVMBlockProducerProcess {
                 // It is also possible to track blocks dependencies through repository.
                 // TODO: think if it is the best solution given all circumstances
                 let mut timeout_correction = ProductionTimeoutCorrection::default();
+                let mut round = initial_round;
                 loop {
                     let stopped = Self::produce_next(
                         node_config.clone(),
@@ -534,6 +542,7 @@ impl TVMBlockProducerProcess {
                         thread_count_soft_limit,
                         parallelization_level,
                         block_keeper_epoch_code_hash.clone(),
+                        block_keeper_preepoch_code_hash.clone(),
                         produced_blocks.clone(),
                         timeout.clone(),
                         &mut timeout_correction,
@@ -547,12 +556,15 @@ impl TVMBlockProducerProcess {
                         accounts_repo.clone(),
                         &external_control_rx,
                         metrics.clone(),
-                        &external_messages,
+                        &mut external_messages,
                         &repo_clone,
                         is_state_sync_requested.clone(),
                         share_service.clone(),
+                        round,
                     );
-                    if stopped.is_err() || stopped.unwrap() {
+                    round = 0;
+                    tracing::trace!("produce_next result: {:?}", stopped);
+                    if stopped.is_err() || stopped.unwrap() == ProcudeNextResult::Stopped {
                         trace_span!("store optimistic").in_scope(|| {
                             repo_clone
                                 .store_optimistic(initial_state.clone())
@@ -714,7 +726,6 @@ fn aggregate_nacks(
 mod tests {
 
     use std::path::PathBuf;
-    use std::sync::atomic::AtomicU32;
     use std::sync::Arc;
     use std::thread::sleep;
     use std::time::Duration;
@@ -731,7 +742,6 @@ mod tests {
     use crate::multithreading::routing::service::RoutingService;
     use crate::node::associated_types::NodeIdentifier;
     use crate::node::shared_services::SharedServices;
-    use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
     use crate::repository::accounts::AccountsRepository;
     use crate::repository::repository_impl::RepositoryImpl;
     use crate::tests::project_root;
@@ -760,10 +770,6 @@ mod tests {
         let message_db = MessageDurableStorage::new(PathBuf::from("./tmp/message_storage5"))?;
         let finalized_blocks =
             crate::repository::repository_impl::tests::finalized_blocks_storage();
-        let block_collection = UnfinalizedCandidateBlockCollection::new(
-            Vec::new().into_iter(),
-            Arc::new(AtomicU32::new(0)),
-        );
 
         let repository = RepositoryImpl::new(
             root_dir.clone(),
@@ -784,7 +790,6 @@ mod tests {
             None,
             AccountsRepository::new(root_dir.clone(), None, 1),
             message_db.clone(),
-            block_collection,
             finalized_blocks,
         );
         let (router, _router_rx) = RoutingService::stub();
@@ -793,6 +798,7 @@ mod tests {
             .node_config(config.clone())
             .repository(repository.clone())
             .block_keeper_epoch_code_hash(config.global.block_keeper_epoch_code_hash.clone())
+            .block_keeper_preepoch_code_hash(config.global.block_keeper_preepoch_code_hash.clone())
             .producer_node_id(config.local.node_id.clone())
             .blockchain_config(Arc::new(load_blockchain_config(
                 &config.local.blockchain_config_path,
@@ -824,12 +830,12 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             block_state_repository.clone(),
             ExternalMessagesThreadState::builder()
-                .with_block_progress_data_dir(root_dir.join("external-messages-progress"))
                 .with_report_metrics(None)
                 .with_thread_id(thread_id)
                 .with_cache_size(1)
                 .build()?,
             Arc::new(Mutex::new(None)),
+            0,
         )?;
 
         let running_time = Instant::now();
@@ -852,7 +858,7 @@ mod tests {
         }
 
         let avg_time = sum / count;
-        println!("Average time: {} ms", avg_time);
+        println!("Average time: {avg_time} ms");
         production_process.stop_thread_production(&thread_id)?;
         assert!(avg_time > 320 && avg_time < 340);
         Ok(())

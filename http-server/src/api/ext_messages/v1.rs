@@ -106,7 +106,7 @@ where
                                     tracing::warn!(target: "http_server", "Error parsing message: {}", err);
 
                                     res.status_code(StatusCode::BAD_REQUEST);
-                                    res.render(format!("Error parsing message: {}", err));
+                                    res.render(format!("Error parsing message: {err}"));
                                     return;
                                 }
                             };
@@ -158,16 +158,16 @@ where
 fn parse_message(id_b64: &str, message_b64: &str) -> Result<Message, String> {
     tracing::trace!(target: "http_server", "parse_message {id_b64}");
     let message_bytes = base64_decode(message_b64)
-        .map_err(|error| format!("Error decoding base64-encoded message: {}", error))?;
+        .map_err(|error| format!("Error decoding base64-encoded message: {error}"))?;
 
     let id_bytes = base64_decode(id_b64)
-        .map_err(|error| format!("Error decoding base64-encoded message's id: {}", error))?;
+        .map_err(|error| format!("Error decoding base64-encoded message's id: {error}"))?;
 
     let id = UInt256::from_be_bytes(&id_bytes);
 
     let message_cell = tvm_types::boc::read_single_root_boc(message_bytes).map_err(|error| {
         tracing::error!(target: "http_server", "Error deserializing message: {}", error);
-        format!("Error deserializing message: {}", error)
+        format!("Error deserializing message: {error}")
     })?;
 
     if message_cell.repr_hash() != id {
@@ -175,5 +175,5 @@ fn parse_message(id_b64: &str, message_b64: &str) -> Result<Message, String> {
     }
 
     Message::construct_from_cell(message_cell)
-        .map_err(|error| format!("Error parsing message's cells tree: {}", error))
+        .map_err(|error| format!("Error parsing message's cells tree: {error}"))
 }

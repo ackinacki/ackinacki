@@ -1,5 +1,4 @@
 pub mod dependent_ancestor_blocks;
-pub mod load_unprocessed_blocks;
 pub mod repository;
 pub mod state;
 pub mod try_add_attestation;

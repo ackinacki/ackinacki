@@ -19,6 +19,7 @@ use network::resolver::SubscribeStrategy;
 use network::DeliveryPhase;
 use network::SendMode;
 use opentelemetry::global;
+use telemetry_utils::TokioMetrics;
 use tokio::task::JoinHandle;
 use transport_layer::msquic::MsQuicTransport;
 
@@ -82,7 +83,8 @@ async fn tokio_main() -> anyhow::Result<()> {
     global::set_meter_provider(meter_provider.clone());
 
     // Create a NetMetrics instance using the meter provider
-    let net_metrics = NetMetrics::new(&global::meter("proxy"));
+    let net_metrics = NetMetrics::new(&global::meter("node"));
+    let _tokio_metrics = TokioMetrics::new(&global::meter("node"));
 
     let result = args.run(net_metrics).await;
 
@@ -229,7 +231,11 @@ async fn message_multiplexor(
         match incoming_messages.recv().await {
             Some(incoming) => {
                 let label = incoming.message.label.clone();
-                tracing::debug!("Proxy multiplexor forwarded incoming {}", label);
+                tracing::debug!(
+                    msg_type = label,
+                    msg_id = incoming.message.id,
+                    "Proxy multiplexor forwarded incoming"
+                );
                 metrics.as_ref().inspect(|x| {
                     x.finish_delivery_phase(
                         DeliveryPhase::IncomingBuffer,

@@ -102,6 +102,9 @@ pub struct NetworkConfig {
     /// Socket address for SDK API
     pub api_addr: String,
 
+    /// Advertise url for SDK API
+    pub api_advertise_addr: url::Url,
+
     /// Network send buffer size
     /// Defaults to 1000
     #[builder(default = 1000)]

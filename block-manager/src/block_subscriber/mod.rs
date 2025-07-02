@@ -22,7 +22,6 @@ use rusqlite::Connection;
 use transport_layer::msquic::MsQuicTransport;
 use transport_layer::NetConnection;
 use transport_layer::NetCredential;
-use transport_layer::NetRecvRequest;
 use transport_layer::NetTransport;
 use tvm_block::ShardStateUnsplit;
 
@@ -136,21 +135,17 @@ async fn listener(socket_addr: SocketAddr, tx: mpsc::Sender<Vec<u8>>) -> anyhow:
         {
             Ok(conn) => loop {
                 tracing::info!("Wait for incoming stream...");
-                match conn.accept_recv().await {
-                    Ok(stream) => {
-                        match stream.recv().await {
-                            Ok(message) => {
-                                tracing::info!("Received: {} bytes", message.len());
-                                tx.send(message).expect("Receiver always exists");
-                            }
-                            Err(error) => {
-                                tracing::error!("Error receiving a message: {error}");
-                                break;
-                            }
-                        };
+                match conn.recv().await {
+                    Ok((message, duration)) => {
+                        tracing::info!(
+                            duration = duration.as_millis(),
+                            "Received: {} bytes",
+                            message.len()
+                        );
+                        tx.send(message).expect("Receiver always exists");
                     }
                     Err(error) => {
-                        tracing::warn!("Connection closed: {error}");
+                        tracing::error!("Error receiving a message: {error}");
                         break;
                     }
                 }

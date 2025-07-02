@@ -49,6 +49,9 @@ impl Serialize for NetworkMessage {
             ResentCandidate(e) => {
                 serializer.serialize_newtype_variant(TYPE, 9, "ResentCandidate", &e)
             }
+            AuthoritySwitchProtocol(e) => {
+                serializer.serialize_newtype_variant(TYPE, 10, "AuthoritySwitchProtocol", &e)
+            }
         }
     }
 }
@@ -71,6 +74,7 @@ impl<'de> Deserialize<'de> for NetworkMessage {
                 "SyncFrom",
                 "SyncFinalized",
                 "ResentCandidate",
+                "AuthoritySwitchProtocol",
             ],
             NetworkMessageVisitor::new(),
         )
@@ -118,6 +122,7 @@ impl<'de> de::Visitor<'de> for NetworkMessageVisitor {
             (7, v) => v.newtype_variant().map(SyncFrom),
             (8, v) => v.newtype_variant().map(SyncFinalized),
             (9, v) => v.newtype_variant().map(ResentCandidate),
+            (10, v) => v.newtype_variant().map(AuthoritySwitchProtocol),
             _ => unreachable!(),
         }
     }

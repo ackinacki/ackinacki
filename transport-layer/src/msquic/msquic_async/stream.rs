@@ -84,10 +84,6 @@ impl Stream {
         stream
     }
 
-    pub(crate) fn debug_id(&self) -> String {
-        format!("Stream(Inner: {:p}, id: {:?})", self.0.inner, self.id())
-    }
-
     pub(crate) fn poll_start(
         &mut self,
         cx: &mut Context,

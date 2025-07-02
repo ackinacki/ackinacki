@@ -143,9 +143,8 @@ impl Message {
         let sql = format!(
             "SELECT t.id AS transaction_id, m.id AS msg_id
             FROM blocks b, transactions t, messages m
-            WHERE b.id={:?} AND t.block_id=b.id AND m.id=t.in_msg
-        ",
-            block_id
+            WHERE b.id={block_id:?} AND t.block_id=b.id AND m.id=t.in_msg
+        "
         );
 
         let messages = sqlx::query_as(&sql)
@@ -177,11 +176,11 @@ impl Message {
         {
             let mut ops = vec![];
             if has_inbound {
-                ops.push(format!("dst={:?}", account));
+                ops.push(format!("dst={account:?}"));
                 cursor_field = "dst_chain_order";
             }
             if has_outbound {
-                ops.push(format!("src={:?}", account));
+                ops.push(format!("src={account:?}"));
                 cursor_field = "src_chain_order";
             }
             if has_inbound && has_outbound {
@@ -204,12 +203,12 @@ impl Message {
 
         if let Some(after) = &args.pagination.after {
             if !after.is_empty() {
-                where_ops.push(format!("{cursor_field} > {:?}", after));
+                where_ops.push(format!("{cursor_field} > {after:?}"));
             }
         }
         if let Some(before) = &args.pagination.before {
             if !before.is_empty() {
-                where_ops.push(format!("{cursor_field} < {:?}", before));
+                where_ops.push(format!("{cursor_field} < {before:?}"));
             }
         }
 

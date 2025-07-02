@@ -12,11 +12,11 @@ use serde_with::Bytes;
 
 use crate::bls::BLSSignatureScheme;
 
-#[derive(Default, Clone, PartialEq)]
+#[derive(Default, Clone, PartialEq, Eq)]
 pub struct GoshBLS {}
 
 #[serde_as]
-#[derive(Deserialize, Serialize, Clone, PartialEq, Hash, Eq)]
+#[derive(Deserialize, Serialize, Clone, PartialEq, Hash, Eq, Debug)]
 pub struct Signature(#[serde_as(as = "Bytes")] [u8; gosh_bls_lib::bls::BLS_SIG_LEN]);
 
 impl Default for Signature {
@@ -40,7 +40,7 @@ impl Debug for PubKey {
         let hexed_key = hex::encode(self.0);
         let (prefix, data) = hexed_key.split_at(4);
         let (_, postfix) = data.split_at(88);
-        write!(f, "{}...{}", prefix, postfix)
+        write!(f, "{prefix}...{postfix}")
     }
 }
 

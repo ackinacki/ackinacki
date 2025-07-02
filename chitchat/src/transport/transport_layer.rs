@@ -16,7 +16,6 @@ use transport_layer::NetConnection;
 use transport_layer::NetCredential;
 use transport_layer::NetIncomingRequest;
 use transport_layer::NetListener;
-use transport_layer::NetRecvRequest;
 use transport_layer::NetTransport;
 
 use crate::transport::Socket;
@@ -219,9 +218,7 @@ async fn handle_incoming_connection<IncomingRequest: NetIncomingRequest + 'stati
     let from_addr = connection.remote_addr();
     info!("new connection from {from_addr}");
     loop {
-        let recv_request = connection.accept_recv().await?;
-        let start = Instant::now();
-        let message = recv_request.recv().await?;
+        let (message, duration) = connection.recv().await?;
         let len = message.len();
         let message = ChitchatMessage::deserialize(&mut message.as_slice())?;
 
@@ -229,7 +226,7 @@ async fn handle_incoming_connection<IncomingRequest: NetIncomingRequest + 'stati
 
         tracing::trace!(
             "sending for processing {:?} sender_count {} sender_len {}",
-            start.elapsed(),
+            duration,
             incoming_tx.sender_count(),
             incoming_tx.len(),
         );

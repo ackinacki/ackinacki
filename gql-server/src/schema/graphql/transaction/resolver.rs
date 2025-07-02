@@ -23,7 +23,7 @@ impl Loader<String> for TransactionLoader {
         keys: &[String],
     ) -> anyhow::Result<HashMap<String, Self::Value>, Self::Error> {
         let ids = keys.iter().map(|m| format!("{m:?}")).collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT * FROM transactions WHERE id IN ({})", ids);
+        let sql = format!("SELECT * FROM transactions WHERE id IN ({ids})");
         tracing::trace!(target: "data_loader",  "SQL: {sql}");
         let messages = sqlx::query_as(&sql)
             .fetch(&self.pool)

@@ -19,6 +19,14 @@
     - [Graceful Shutdown](#graceful-shutdown)
     - [Debug](#debug)
   - [Check node status](#check-node-status)
+  - [Changing the IP Address of a BK Node](#changing-the-ip-address-of-a-bk-node)
+    - [1. Calculate the Time You Have for Migration](#1-calculate-the-time-you-have-for-migration)
+      - [1.1  Get the Current Epoch Contract Address](#11get-the-current-epoch-contract-address)
+      - [1.2  Determine the Epoch Length](#12determine-the-epoch-length)
+    - [2. Stop Staking (Graceful Shutdown)](#2-stop-staking-graceful-shutdown)
+    - [3. Deploy BK Software on the New Node](#3-deploy-bk-software-on-the-new-node)
+    - [4. Start Staking on the New IP Address](#4-start-staking-on-the-new-ip-address)
+    - [5. Check node status](#5-check-node-status)
 - [Block Manager](#block-manager)
   - [System requirements](#system-requirements-1)
   - [Deployment with Ansible](#deployment-with-ansible)
@@ -54,10 +62,10 @@
 ## Block Keeper Wallet Deployment
 
 ### Prerequisites
-- The **`tvm-cli`** and **`node-helper`** command-line tools must be installed.  
+- The **`tvm-cli`** and **`node-helper`** command-line tools must be installed.
   Check out [this guide for installing CLI](https://dev.ackinacki.com/how-to-deploy-a-multisig-wallet#create-a-wallet-1), and [download node-helper](https://github.com/ackinacki/ackinacki/releases).
 
-- A deployed license contract with obtained license numbers.  
+- A deployed license contract with obtained license numbers.
   Refer to the [Working with Licenses](https://docs.ackinacki.com//protocol-participation/license/working-with-licenses) section for details.
 
 ### Configure tvm-cli
@@ -95,11 +103,11 @@ These will be required later when running the Ansible playbook.
 ## Delegating License
 
 Before starting staking, a node must have at least one delegated license.
-However, no more than ten licenses can be delegated to a single node.
+However, no more than 20 (twenty) licenses can be delegated to a single node.
 
 Learn more about [working with licenses](https://docs.ackinacki.com//protocol-participation/license/working-with-licenses).
 
-If the BK Node Owner is also a License Owner, they must use the `addBKWallet(uint256 pubkey)` method in the [`License`](https://github.com/ackinacki/ackinacki/blob/main/contracts/bksystem/License.sol) contract to delegate their licenses to their node. 
+If the BK Node Owner is also a License Owner, they must use the `addBKWallet(uint256 pubkey)` method in the [`License`](https://github.com/ackinacki/ackinacki/blob/main/contracts/bksystem/License.sol) contract to delegate their licenses to their node.
 (This must be done for each license contract).
 
 Where:
@@ -125,7 +133,7 @@ tvm-cli -j callx --addr 0:7f2f945faaae4cce286299afe74dac9460893dd5cba1ac273b9e91
 
 ### Key Variables
 
-`Node ID`: The unique identifier of the Block Keeper within the network. This is required to create a new Block Keeper.  
+`Node ID`: The unique identifier of the Block Keeper within the network. This is required to create a new Block Keeper.
 Use the value provided by the BK wallet deployment script.
 
 `HOST_PRIVATE_IP`: Specify the private IP address of the host, for example, `127.0.0.1`.
@@ -135,8 +143,8 @@ Ensure that the ports do not overlap.
 **If the Block Keeper will operate without a Proxy, this variable is not required.**
 
 **Note**:  
-**If you want to deploy a Proxy, refer to the [Proxy deployment guide](#proxy) or use an existing Proxy service.**
-To use an existing Proxy, please contact the corresponding Proxy provider representative for details.
+  **If you want to deploy a Proxy, refer to the [Proxy deployment guide](#proxy) or use an existing Proxy service.**
+  To use an existing Proxy, please contact the corresponding Proxy provider representative for details.
 
 ### Prepare Your Inventory
 
@@ -175,13 +183,6 @@ all:
       - shellnet3.ackinacki.org:10000
       - shellnet4.ackinacki.org:10000
       - YOUR-NODE-ADDRESS:10000
-    NODE_STORAGE_LIST:
-      - http://shellnet0.ackinacki.org/storage/node/
-      - http://shellnet1.ackinacki.org/storage/node/
-      - http://shellnet2.ackinacki.org/storage/node/
-      - http://shellnet3.ackinacki.org/storage/node/
-      - http://shellnet4.ackinacki.org/storage/node/
-      - http://YOUR-NODE-ADDRESS/storage/node/
     MASTER_KEY: PATH_TO_MASTER_KEY
     NODE_CONFIGS:
       - "zerostate"
@@ -233,7 +234,7 @@ Check node logs
 tail -f $MNT_DATA/logs-block-keeper/node.log
 ```
 
-## Staking
+## Staking  
 Staking is deployed as a Docker container using Docker Compose. Docker Compose, in turn, is deployed via Ansible using the `node-deployment.yaml` playbook.
 
 The staking script performs the following tasks:
@@ -244,18 +245,25 @@ The staking script performs the following tasks:
 Staking runs as a background daemon inside a container, and its output is redirected to the `BK_LOGS_DIR`.
 The staking container is part of the Docker Compose setup and runs alongside the Block Keeper node.
 
-**Note:**  
-Stakes and rewards are denominated in [NACKL](https://docs.ackinacki.com/glossary#nack) tokens.  
-Rewards are distributed proportionally to the stake amount — the higher your stake, the greater your share of the rewards.  
-As a Block Keeper with an active license, you can participate in staking under special conditions: if your BK wallet balance is below the [minimum stake](https://docs.ackinacki.com/glossary#minimal-stake), you can still place a stake as long as it is not less than your previous one.
+**Note:**  
+  Stakes and rewards are denominated in [NACKL](https://docs.ackinacki.com/glossary#nack) tokens.  
+  Node receives rewards per each License delegated to it. Maximum number of licenses delegated per node is 20. 
 
-To check the current minimum stake in the network, run the `getMinStakeNow` method of the system contract [BlockKeeperContractRoot](https://github.com/ackinacki/ackinacki/blob/main/contracts/bksystem/BlockKeeperContractRoot.sol) as follows:
+  As a Block Keeper with an active license, you can participate in staking under special conditions: if your BK wallet balance is below the [minimum stake](https://docs.ackinacki.com/glossary#minimal-stake), you can still place a stake as long as you continue staking without interruptions and do not withdraw the received rewards.
+
+  If your stake exceeds the [maximum stake](https://docs.ackinacki.com/glossary#maximum-stake), the excess amount will be automatically returned to your wallet.
+
+  To check the current minimum and maximum stake in the network, run the following commands:
 
   ```bash
   tvm-cli -j run 0:7777777777777777777777777777777777777777777777777777777777777777 getMinStakeNow {} --abi acki-nacki/contracts/bksystem/BlockKeeperContractRoot.abi.json
   ```
 
-  The ABI file [BlockKeeperContractRoot.abi.json](https://raw.githubusercontent.com/ackinacki/ackinacki/fa3c2685c5efaaded16aa370066a39ea12d0f899/contracts/bksystem/BlockKeeperContractRoot.abi.json) is required to run this command.
+  ```bash
+  tvm-cli -j run 0:7777777777777777777777777777777777777777777777777777777777777777 getMaxStakeNow {} --abi acki-nacki/contracts/bksystem/BlockKeeperContractRoot.abi.json
+  ```
+
+  You will need the ABI file [BlockKeeperContractRoot.abi.json](https://raw.githubusercontent.com/ackinacki/ackinacki/fa3c2685c5efaaded16aa370066a39ea12d0f899/contracts/bksystem/BlockKeeperContractRoot.abi.json) to run these commands.
 
 
 ### Prerequisites
@@ -265,43 +273,139 @@ To check the current minimum stake in the network, run the `getMinStakeNow` meth
 The BLS keys file can be found in the `{{ BK_DIR }}/bk-configs/` directory, where `BK_DIR` is a variable defined in the Ansible inventory.
 The BLS keys file format - `block_keeper{{ NODE_ID }}_bls.keys.json`
 
-The staking script requires two parameters:
+The staking script requires the following parameters:
 - **STAKING_IMAGE** – the Docker image used to run the staking script
-- **STAKING_TIME (in seconds)** – defines the interval between staking script executions. Specify 120s for Shellnet. 
-- **TVM_ENDPOINT** – TVM endpoint for connecting to enable staking
+- **STAKING_TIME (in seconds)** – defines the interval between staking script executions. Use 120 seconds for Shellnet. 
+- **TVM_ENDPOINT** – the TVM endpoint for connecting to enable staking
 
-Specify above parameters in the inventory file.
+Specify these parameters in the inventory file.
 
 **Note:**  
-Make sure the BLS keys file has read and write permissions.
+  Ensure that the BLS keys file has both read and write permissions.
 
 ### Run the script
-All neccessary keys are passed to staking container iside Docker compose file. 
+All neccessary keys are passed to staking container iside Docker compose file.
 
 ```bash
 docker compose up -d staking
 ```
 
 ### Graceful Shutdown
-Staking supports a graceful shutdown process. During shutdown, any ongoing “continue staking” request will be canceled, and tokens will be returned to your wallet.
+The staking process supports a graceful shutdown.
 
-**Important:**
-Before stopping staking, ensure there are no active operations such as processing Epoch or processing Cooler in log.
-You can check this using the `tail` command:
+During shutdown:
+* The continue staking option will be disabled;
+* Any ongoing continue staking requests will be automatically canceled;
+* The staked tokens from these canceled requests will be returned to your wallet.
 
+1. **Disable upcoming stakes**
+
+Disabling upcoming stakes ensures that no new Epoch will start while you shut down.
+
+* Change to the Block Keeper directory:
 ```bash
-tail -n 100 -f {{ BK_LOGS_DIR }}/staking.log
+cd {{ ROOT_DIR }}/block-keeper
 ```
 
-To gracefully stop staking, run:
+* Send `SIGHUP` to the staking process:
+```bash
+sudo docker compose exec staking /bin/bash -c 'pkill --signal 1 -f staking.sh'
+```
 
+You should see log entries similar to:
+```
+[2025-01-01T00:00:00+00:00] SIGHUP signal has been recieved. Disabling continue staking
+[2025-01-01T00:00:00+00:00] Active Stakes - "0xe5651dad30f31448443a894b81260d49caa13879ab9aee2dbe648fea3c85565c"
+[2025-01-01T00:00:00+00:00] Stakes count - 1
+[2025-01-01T00:00:00+00:00] Epoch in progress - "0xe5651dad30f31448443a894b81260d49caa13879ab9aee2dbe648fea3c85565c"
+```
+
+After that script will not send continue staking and you can shutdown staking service. During shutdown the script touches the active Epoch (if any) and returns any excess tokens.
+
+**Note:**  
+  **Do not worry** if the log reports that an Epoch **“is being continued”**—this means it had already started before you sent the `SIGHUP` signal. There is **no need to send** `SIGHUP` again. Simply wait for the active epoch to complete, as described in the next step.
+
+  Example:
+  ```
+  [2025-01-01T00:00:00+00:00] Epoch with address "0:4744f0af70056f31183c24c980fa624ef33ed031fbab51c2d20bb20000615c98" is being continued: true
+  ```
+
+2. **Pick the right moment to stop**
+
+To avoid losing rewards and your reputation score when stopping staking, you must wait for the current epoch to end before stopping the staking service. Therefore, before shutting down the container, make sure the current Epoch is ready to be finished.
+
+* Find `seqNoFinish` for the Epoch that is still active:
+
+```bash
+tvm-cli -j runx --abi acki-nacki/contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json --addr BK_NODE_WALLET_ADDR -m getDetails| jq -r '.activeStakes[] | select(.status == "1") | .seqNoFinish'
+```
+
+You will need the ABI file [AckiNackiBlockKeeperNodeWallet.abi.json](https://raw.githubusercontent.com/gosh-sh/acki-nacki/refs/heads/refactor/fee/contracts/bksystem/AckiNackiBlockKeeperNodeWallet.sol?token=GHSAT0AAAAAADCMNSQIMA3ZIFGSUAMDQGQY2DDV64Q) to run these commands.
+
+**Note:**  
+  The address of the BK node wallet can be retrieved from the logs,  
+  or by calling the `getAckiNackiBlockKeeperNodeWalletAddress(uint256 pubkey)` method in the `BlockKeeperContractRoot` system contract,  where  
+  `pubkey` - the public key of your BK node wallet.
+
+  Example:  
+  ```bash
+  tvm-cli -j runx --abi ../contracts/bksystem/BlockKeeperContractRoot.abi.json --addr 0:7777777777777777777777777777777777777777777777777777777777777777 -m getAckiNackiBlockKeeperNodeWalletAddress '{"pubkey": "0x1093c528ac2976c6b7536ef25e1c126db9dc225f77cd596d2234613eb9cad9b9"}'
+  ```
+
+* Get the current network `seq_no`:
+```bash
+tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no'
+```
+**Important:**  
+  **When the current `seq_no` is greater than `seqNoFinish`, the active Epoch is already complete and you can stop the container safely.**
+
+3. **Additional method to check readiness for Shutdown**
+
+You can also verify whether it's safe to stop staking by calling the `getDetails()` method on the Block Keeper wallet contract and inspecting the `activeStakes` field.
+
+* If any stakes have status `0` or `1`, do not stop the staking process. 
+These statuses indicate that the stake is either in the Pre-Epoch phase (0) or the active Epoch (1).
+
+* You can proceed with the shutdown only when all stakes have status `2` (i.e., the `Cooler` phase has started) or when the `activeStakes` list is empty.
+
+To check the current state:
+```bash
+tvm-cli -j runx --abi acki-nacki/contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json --addr BK_NODE_WALLET_ADDR -m getDetails
+```
+
+Example output when there are no active stakes:
+```bash
+{
+  "pubkey": "0x15538499c83886367c07b0d30a8446bd6487da6c8a1da9bf5658ec01864a6fb3",
+  "root": "0:7777777777777777777777777777777777777777777777777777777777777777",
+  "balance": "0x000000000000000000000000000000000000000000000000000003fcd6cf278b",
+  "activeStakes": {},
+  "stakesCnt": "0",
+  "licenses": {
+    "0x0000000000000000000000000000000000000000000000000000000000000000": {
+      "reputationTime": "129",
+      "status": "0",
+      "isPriority": false,
+      "stakeController": null,
+      "last_touch": "1751275067",
+      "balance": "0",
+      "lockStake": "0",
+      "lockContinue": "0",
+      "lockCooler": "0",
+      "isLockToStake": false
+}
+```
+4. **Stop the staking container**
+
+To gracefully stop the staking container, run:
 ```bash
 docker compose down staking --timeout 60
 ```
 
-After the shutdown, the log will contain the result of the “continue staking” request cancellation.
+Where:  
+* `timeout` sets the graceful shutdown timeout in seconds.
 
-Example:
+Example shutdown log excerpt:
 ```
 [2025-01-01T10:00:00+00:00] Signal has been recieved. Trying to shutdown gracefully
 [2025-01-01T10:00:00+00:00] Current wallet balance - 843303030953
@@ -323,7 +427,7 @@ Example:
 ```
 
 ### Debug
-To debug the staking script, enable command tracing by adding the `-x` flag:  
+To debug the staking script, enable command tracing by adding the `-x` flag:
 
 ```bash
 set -xeEuo pipefail
@@ -332,6 +436,71 @@ This will print each command as it executes, helping to identify issues during s
 
 ## Check node status
 To get the node's status by blocks, use the `node_sync_status.sh` script:
+
+```bash
+node_sync_status.sh path/to/log
+```
+
+## Changing the IP Address of a BK Node
+To move a Block Keeper (BK) node to a new IP address without losing your reputation score,  
+follow these rules:  
+* Wait until the current Epoch ends and do not apply for the next one.
+* Start staking on the new node within half an Epoch after the current Epoch finishes.
+
+Step‑by‑Step Guide:
+
+### 1. Calculate the Time You Have for Migration
+#### 1.1  Get the Current Epoch Contract Address
+
+* Find the address of the currently Epoch:
+```bash
+tvm-cli -j runx --abi acki-nacki/contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json --addr BK_NODE_WALLET_ADDR -m getEpochAddress| jq -r -e '.epochAddress'
+```
+
+**Note:**  
+  The address of the BK node wallet can be retrieved from the logs,  
+  or by calling the `getAckiNackiBlockKeeperNodeWalletAddress(uint256 pubkey)` method in the `BlockKeeperContractRoot` system contract,  where:  
+  * `pubkey` - the public key of your BK node wallet.
+
+  Example:  
+  ```bash
+  tvm-cli -j runx --abi ../contracts/bksystem/BlockKeeperContractRoot.abi.json --addr 0:7777777777777777777777777777777777777777777777777777777777777777 -m getAckiNackiBlockKeeperNodeWalletAddress '{"pubkey": "0x1093c528ac2976c6b7536ef25e1c126db9dc225f77cd596d2234613eb9cad9b9"}'
+  ```
+
+#### 1.2  Determine the Epoch Length
+Query `getDetails` on the Epoch contract to obtain its approximate duration in seconds:  
+```bash
+tvm-cli -j run 0:6338d20a991247617c6beb9e22b0c36fa8f40d290c0e73f543e94f2ee43025fb \
+--abi acki-nacki/contracts/bksystem/BlockKeeperEpochContract.abi.json \
+getDetails {} \
+| jq -r '((.seqNoFinish - .seqNoStart) * 3 / 10 | tostring) + " seconds"'
+```
+
+**Important:**  
+  **You must launch staking on the new node in less than half of this time.**
+
+### 2. Stop Staking (Graceful Shutdown)
+To avoid losing rewards and reputation, wait for the current Epoch to end before stopping staking.
+Use the procedure described in the [Graceful Shutdown](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#graceful-shutdown) section.
+
+### 3. Deploy BK Software on the New Node
+
+**Note:**  
+You must reuse your existing key files (`BK Node Owner keys`, `BLS keys`) and the same `BK Wallet`.
+
+Update the node’s IP address in your Ansible inventory.  
+Follow the instructions in [BK Deployment with Ansible](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#block-keeper-deployment-with-ansible).
+
+Run the playbook:
+```bash
+ansible-playbook -i test-inventory.yaml ansible/node-deployment.yaml
+```
+
+### 4. Start Staking on the New IP Address
+Follow the [staking launch guide](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#staking)
+
+### 5. Check node status
+Your BK node should now be operating on the new IP address. To get the node's status by blocks, use the `node_sync_status.sh` script:
 
 ```bash
 node_sync_status.sh path/to/log
@@ -427,8 +596,8 @@ tail -f $MNT_DATA/logs-block-manager/block-manager.log
 | ------------- | ----------- | --------- | ------------ | -------------------------------------------------- |
 | Recommended   | 8c/16t      | 32        | 500 GB NVMe  | 100 Gbit synchronous unmetered Internet connection |
 
-**Important:**
-To ensure stable operation, proxy servers must be deployed in pairs (one master and one failover).
+**Important:**  
+  To ensure stable operation, proxy servers must be deployed in pairs (one master and one failover).
 
 ## Deployment with Ansible
 
@@ -440,9 +609,9 @@ The deployment uses Ansible roles and a playbook. There's no need to manually co
 
 ### Key Variables
 
-`SEEDS:` A list of seed addresses for the Gossip protocol between the Proxy and Block Keeper nodes. This list must include at least three addresses.  
+`SEEDS:` A list of seed addresses for the Gossip protocol between the Proxy and Block Keeper nodes. This list must include at least three addresses.
 
-For example:  
+For example:
 ```yaml
 SEEDS:
   - BK_IP:10002
@@ -450,9 +619,9 @@ SEEDS:
   - BK_IP:10001
 ```
 
-`NETWORK_NAME`: A string that defines the cluster ID in the Gossip network. It must match the NETWORK_NAME used by both the Proxy and Block Keeper nodes.  
+`NETWORK_NAME`: A string that defines the cluster ID in the Gossip network. It must match the NETWORK_NAME used by both the Proxy and Block Keeper nodes.
 
-For example:  
+For example:
 ```yaml
 NETWORK_NAME: shellnet
 ```
@@ -462,12 +631,12 @@ NETWORK_NAME: shellnet
 `PROXY_ADDR`: The address used by the Gossip protocol and Block Keepers to communicate with the Proxy.
 
 **Note:**  
-`PROXY_BIND` and `PROXY_ADDR` must be set to the same IP address.  
+  `PROXY_BIND` and `PROXY_ADDR` must be set to the same IP address.
 
 **Important:**  
 You must add Proxy addresses to the Block Keeper configuration. Otherwise, the Block Keeper will not be able to connect to the Proxy.
 
-Example Block Keeper host configuration:  
+Example Block Keeper host configuration:
 ```yaml
 block_keeper_host:
   NODE_ID: 99999
@@ -477,7 +646,7 @@ block_keeper_host:
 
 ### Prepare Your Inventory
 
-Below is an example of a basic Ansible inventory for deploying a Proxy:  
+Below is an example of a basic Ansible inventory for deploying a Proxy:
 
 ```yaml
 all:
@@ -498,7 +667,7 @@ proxy:
       - shellnet4.ackinacki.org:10000
 ```
 
-To test the deployment with a dry run:  
+To test the deployment with a dry run:
 
 ```bash
 ansible-playbook -i test-inventory.yaml ansible/deploy-proxy.yml --check --diff
@@ -506,14 +675,15 @@ ansible-playbook -i test-inventory.yaml ansible/deploy-proxy.yml --check --diff
 
 ### Run Ansible Playbook
 
-If everything looks correct, proceed with the actual deployment:  
+If everything looks correct, proceed with the actual deployment:
 
 ```bash
 ansible-playbook -i test-inventory.yaml ansible/deploy-proxy.yml
 ```
 
-To view the Proxy logs:  
+To view the Proxy logs:
 
 ```bash
 tail -f $PROXY_DIR/logs-proxy/proxy.log
 ```
+

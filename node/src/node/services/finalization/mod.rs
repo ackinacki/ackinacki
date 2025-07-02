@@ -1,9 +1,9 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedSender;
 use tracing::trace_span;
 use tvm_types::AccountId;
@@ -15,16 +15,17 @@ use crate::helper::block_flow_trace;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message_storage::MessageDurableStorage;
 use crate::node::services::sync::StateSyncService;
+use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::BlockState;
 use crate::node::BlockStateRepository;
-use crate::node::ExternalMessagesThreadState;
 use crate::node::NodeIdentifier;
 use crate::node::SharedServices;
+use crate::protocol::authority_switch::action_lock::Authority;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
-use crate::types::bp_selector::BlockGap;
 use crate::types::AckiNackiBlock;
+use crate::types::BlockIdentifier;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
@@ -34,22 +35,21 @@ pub fn finalization_loop(
     block_state_repository: BlockStateRepository,
     mut shared_services: SharedServices,
     mut raw_block_tx: InstrumentedSender<(AccountId, Vec<u8>)>,
-    _state_sync_service: impl StateSyncService<Repository = RepositoryImpl>,
-    block_gap: BlockGap,
+    state_sync_service: impl StateSyncService<Repository = RepositoryImpl>,
     metrics: Option<BlockProductionMetrics>,
-    external_messages: ExternalMessagesThreadState,
     _message_db: MessageDurableStorage,
     node_id: &NodeIdentifier,
+    authority: Arc<Mutex<Authority>>,
+    unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
 ) {
     tracing::trace!("try_finalize_blocks start");
+    let state_sync_service = Arc::new(state_sync_service);
     loop {
-        let before = repository
-            .unprocessed_blocks_cache()
-            .notifications()
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let before =
+            unprocessed_blocks_cache.notifications().load(std::sync::atomic::Ordering::Relaxed);
 
         #[allow(clippy::mutable_key_type)]
-        let unprocessed_blocks = { repository.unprocessed_blocks_cache().clone_queue() };
+        let unprocessed_blocks = { unprocessed_blocks_cache.clone_queue() };
         for (_, (block_state, candidate_block)) in unprocessed_blocks {
             try_finalize(
                 &block_state,
@@ -57,18 +57,16 @@ pub fn finalization_loop(
                 &block_state_repository,
                 &mut shared_services,
                 &mut raw_block_tx,
-                &block_gap,
                 &metrics,
-                &external_messages,
                 candidate_block,
                 node_id,
+                authority.clone(),
+                state_sync_service.clone(),
             )
             .expect("try_finalize iteration failed");
         }
-        let after = repository
-            .unprocessed_blocks_cache()
-            .notifications()
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let after =
+            unprocessed_blocks_cache.notifications().load(std::sync::atomic::Ordering::Relaxed);
         if after == before {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
@@ -82,11 +80,11 @@ fn try_finalize(
     block_state_repository: &BlockStateRepository,
     shared_services: &mut SharedServices,
     raw_block_tx: &mut InstrumentedSender<(AccountId, Vec<u8>)>,
-    block_gap: &BlockGap,
     metrics: &Option<BlockProductionMetrics>,
-    external_messages: &ExternalMessagesThreadState,
     candidate_block: Arc<Envelope<GoshBLS, AckiNackiBlock>>,
     node_id: &NodeIdentifier,
+    authority: Arc<Mutex<Authority>>,
+    state_sync_service: Arc<impl StateSyncService<Repository = RepositoryImpl>>,
 ) -> anyhow::Result<()> {
     tracing::trace!(
         "try_finalize_blocks: process: {:?}",
@@ -94,6 +92,7 @@ fn try_finalize(
     );
     let block_id = candidate_block.data().identifier();
     let parent_id = candidate_block.data().parent();
+    let thread_id = candidate_block.data().get_common_section().thread_id;
     let parent_state = block_state_repository.get(&parent_id)?;
     if parent_state.guarded(|e| !e.is_finalized()) {
         tracing::trace!("try_finalize_blocks parent is not finalized {parent_id:?}");
@@ -115,16 +114,45 @@ fn try_finalize(
             )?;
         }
     }
-    if block_state.guarded(|e| e.can_finalize()) {
+    let mut blocks_to_parse = vec![block_id.clone()];
+    let mut block_has_valid_descendant = false;
+    while !blocks_to_parse.is_empty() {
+        let mut next_level: Vec<BlockIdentifier> = vec![];
+        for cur_block_id in &blocks_to_parse {
+            let block_state = block_state_repository.get(cur_block_id)?;
+            if let (Some(list), Some(children)) = block_state
+                .guarded(|e| (e.finalizes_blocks().clone(), e.known_children(&thread_id).cloned()))
+            {
+                if list.contains(&block_id) && !children.is_empty() {
+                    block_has_valid_descendant = true;
+                    break;
+                }
+            }
+            next_level.extend(
+                block_state.guarded(|e| e.known_children(&thread_id).cloned().unwrap_or_default()),
+            );
+        }
+        if block_has_valid_descendant {
+            break;
+        }
+        blocks_to_parse = next_level;
+    }
+    tracing::trace!(
+        "try_finalize_blocks: block_has_valid_descendant: {block_has_valid_descendant}"
+    );
+    if block_state.guarded(|e| e.can_be_finalized()) && block_has_valid_descendant {
+        let block_height = block_state.guarded(|e| *e.block_height()).unwrap();
         on_block_finalized(
             shared_services,
             &candidate_block,
             repository,
             block_state_repository,
             raw_block_tx,
-            block_gap,
-            external_messages,
+            state_sync_service,
         )?;
+        authority.guarded_mut(|e| {
+            e.on_block_finalized(&block_height);
+        });
         let block_seq_no = candidate_block.data().seq_no();
         let block_id = candidate_block.data().identifier();
 
@@ -147,8 +175,7 @@ pub fn on_block_finalized(
     repository: &mut RepositoryImpl,
     block_state_repository: &BlockStateRepository,
     raw_block_tx: &mut InstrumentedSender<(AccountId, Vec<u8>)>,
-    block_gap: &BlockGap,
-    external_messages: &ExternalMessagesThreadState,
+    state_sync_service: Arc<impl StateSyncService<Repository = RepositoryImpl>>,
 ) -> anyhow::Result<()> {
     trace_span!("on_block_finalized").in_scope(|| {
         let block_seq_no = block.data().seq_no();
@@ -157,11 +184,10 @@ pub fn on_block_finalized(
         tracing::info!("on_block_finalized: {:?} {:?}", block_seq_no, block_id);
         repository.mark_block_as_finalized(
             block,
-            block_state_repository.get(&block_id)?
+            block_state_repository.get(&block_id)?,
+            Some(state_sync_service),
         )?;
-        block_gap.store(0, Ordering::Relaxed);
         tracing::info!("Block marked as finalized: {:?} {:?} {:?}", block_seq_no, block_id, thread_id);
-        let block = repository.get_block(&block_id)?.expect("Just finalized");
         let producer_id = block.data().get_common_section().producer_id.clone();
         tracing::info!(
             "Last finalized block data: seq_no: {:?}, block_id: {:?}, producer_id: {}, signatures: {:?}, thread_id: {:?}, tx_cnt: {}, time: {}",
@@ -192,9 +218,7 @@ pub fn on_block_finalized(
             &mut repository.get_optimistic_state(&block.data().identifier(), &thread_id, None)?
                 .ok_or(anyhow::anyhow!("Block must be in the repo"))?
         );
-        let finalized_progress = external_messages.get_progress(&block_id)?
-            .expect("Progress must be stored");
-        external_messages.erase_outdated(&finalized_progress)?;
+
         Ok(())
     })
 }

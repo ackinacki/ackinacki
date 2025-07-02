@@ -1,6 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -32,8 +33,11 @@ pub use cross_thread_ref_repository::CrossThreadRefDataRepository;
 
 use crate::message::WrappedMessage;
 use crate::node::block_state::repository::BlockState;
+use crate::node::services::sync::StateSyncService;
+use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::repository_impl::RepositoryMetadata;
 
+pub mod load_saved_blocks;
 #[cfg(test)]
 pub mod stub_repository;
 
@@ -64,7 +68,7 @@ pub trait Repository {
     >;
     type StateSnapshot: From<Vec<u8>> + Into<Vec<u8>>;
 
-    fn get_block(
+    fn get_finalized_block(
         &self,
         identifier: &BlockIdentifier,
     ) -> anyhow::Result<Option<Arc<Self::CandidateBlock>>>;
@@ -108,11 +112,12 @@ pub trait Repository {
 
     fn mark_block_as_finalized(
         &mut self,
-        block: &<Self as Repository>::CandidateBlock,
+        block: impl Borrow<<Self as Repository>::CandidateBlock>,
         block_state: BlockState,
+        state_sync_service: Option<Arc<impl StateSyncService<Repository = RepositoryImpl>>>,
     ) -> anyhow::Result<()>;
 
-    fn is_block_finalized(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>>;
+    //    fn is_block_finalized(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>>;
 
     fn get_optimistic_state(
         &self,
@@ -180,8 +185,6 @@ pub trait Repository {
         &self,
         thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<Self::OptimisticState>;
-
-    fn add_thread_buffer(&self, thread_id: ThreadIdentifier) -> Arc<Mutex<Vec<BlockIdentifier>>>;
 
     fn get_all_metadata(&self) -> RepositoryMetadata;
 

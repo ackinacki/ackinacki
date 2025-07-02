@@ -100,7 +100,7 @@ fn dump_stack_result(stack: &Stack) -> String {
             StackItem::Integer(data) => match data.bitsize() {
                 Ok(0..=230) => data.to_string(),
                 Ok(l) if l > 230 => format!("0x{}", data.to_str_radix(16)),
-                Ok(bitsize) => format!("I{}", bitsize),
+                Ok(bitsize) => format!("I{bitsize}"),
                 Err(err) => err.to_string(),
             },
             StackItem::Cell(data) => {
@@ -115,7 +115,7 @@ fn dump_stack_result(stack: &Stack) -> String {
             }
             StackItem::Tuple(data) => match data.len() {
                 0 => "[]".to_string(),
-                len => format!("[@{}]", len),
+                len => format!("[@{len}]"),
             },
         };
         result += &string;

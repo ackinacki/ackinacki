@@ -123,12 +123,12 @@ pub fn create_config_touch_message(
 ) -> anyhow::Result<Message> {
     tracing::trace!("create_Dapp_Config message: {addr:?}");
     let expire = block_time + 5;
-    let parameters = format!(r#"{{"minted": {}}}"#, minted,);
+    let parameters = format!(r#"{{"minted": {minted}}}"#,);
     tracing::trace!(target: "builder", "parameters {:?}", parameters);
     let msg_body = tvm_abi::encode_function_call(
         DAPP_CONFIG_ABI,
         "setNewConfig",
-        Some(&format!(r#"{{"expire":{}}}"#, expire)),
+        Some(&format!(r#"{{"expire":{expire}}}"#)),
         &parameters,
         true,
         None,

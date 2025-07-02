@@ -8,7 +8,7 @@ use msquic::Registration;
 use msquic::ServerResumptionLevel;
 use msquic::Settings;
 
-use crate::msquic::pkcs12;
+use crate::tls::build_pkcs12;
 use crate::NetCredential;
 
 pub enum ConfigFactory {
@@ -35,21 +35,16 @@ impl ConfigFactory {
         Settings::new()
             .set_ServerResumptionLevel(ServerResumptionLevel::ResumeAndZerortt)
             .set_PeerBidiStreamCount(0)
-            .set_PeerUnidiStreamCount(1300)
+            .set_PeerUnidiStreamCount(1024)
             .set_InitialRttMs(2)
             .set_IdleTimeoutMs(0)
             .set_KeepAliveIntervalMs(500)
             .set_MaxAckDelayMs(1)
-
-        // .set_DatagramReceiveEnabled()
-        // .set_StreamMultiReceiveEnabled()
-        // .set_StreamRecvWindowDefault(500 * 1024)
-        // .set_PacingEnabled()
-        // .set_MaxWorkerQueueDelayUs(1000)
-        // .set_StreamRecvBufferDefault(330 * 1024)
-        // .set_MaxStatelessOperations(1000)
-        // .set_InitialWindowPackets(10000)
-        // set_StreamRecvWindowUnidiDefault(500 * 1024)
+            .set_SendIdleTimeoutMs(0)
+            .set_InitialWindowPackets(100)
+            .set_StreamRecvWindowDefault(268_435_456)
+            .set_ConnFlowControlWindow(2_147_483_648)
+        // .set_SendBufferingEnabled()
     }
 
     pub(crate) fn build_credential(
@@ -58,34 +53,13 @@ impl ConfigFactory {
     ) -> anyhow::Result<CredentialConfig> {
         let pkcs12 = build_pkcs12(credential)?;
         let cred = Credential::CertificatePkcs12(CertificatePkcs12::new(pkcs12, None));
-
-        let cred_flags = match self {
-            Self::Client => {
-                CredentialFlags::NO_CERTIFICATE_VALIDATION
-                    | CredentialFlags::CLIENT
-                    | CredentialFlags::INDICATE_CERTIFICATE_RECEIVED
-                    | CredentialFlags::USE_PORTABLE_CERTIFICATES
-            }
-            Self::Server => {
-                CredentialFlags::REQUIRE_CLIENT_AUTHENTICATION
-                    | CredentialFlags::NO_CERTIFICATE_VALIDATION
-                    | CredentialFlags::INDICATE_CERTIFICATE_RECEIVED
-                    | CredentialFlags::USE_PORTABLE_CERTIFICATES
-            }
-        };
+        let mut cred_flags = CredentialFlags::INDICATE_CERTIFICATE_RECEIVED
+            | CredentialFlags::USE_PORTABLE_CERTIFICATES;
+        cred_flags |= CredentialFlags::NO_CERTIFICATE_VALIDATION;
+        match self {
+            Self::Client => cred_flags |= CredentialFlags::CLIENT,
+            Self::Server => cred_flags |= CredentialFlags::REQUIRE_CLIENT_AUTHENTICATION,
+        }
         Ok(CredentialConfig::new().set_credential_flags(cred_flags).set_credential(cred))
     }
-}
-
-fn build_pkcs12(credential: &NetCredential) -> anyhow::Result<Vec<u8>> {
-    let p12_der = pkcs12::Pfx::new(
-        credential.my_certs[0].as_ref(),
-        credential.my_key.secret_der(),
-        None,
-        "",
-        "",
-    )
-    .ok_or_else(|| anyhow::anyhow!("Failed to build PFX"))?
-    .to_der();
-    Ok(p12_der)
 }

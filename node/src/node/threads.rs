@@ -13,7 +13,7 @@ where
     TStateSyncService: StateSyncService<Repository = RepositoryImpl>,
     TRandomGenerator: rand::Rng,
 {
-    pub(crate) fn get_block_thread_id(
+    pub(crate) fn _get_block_thread_id(
         &self,
         block: &<Self as NodeAssociatedTypes>::CandidateBlock,
     ) -> anyhow::Result<ThreadIdentifier> {

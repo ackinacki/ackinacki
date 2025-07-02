@@ -396,7 +396,7 @@ pub struct KeyChangeEvent<'a> {
 }
 
 impl KeyChangeEvent<'_> {
-    fn strip_key_prefix(&self, prefix: &str) -> Option<KeyChangeEvent> {
+    fn strip_key_prefix(&self, prefix: &str) -> Option<KeyChangeEvent<'_>> {
         let key_without_prefix = self.key.strip_prefix(prefix)?;
         Some(KeyChangeEvent { key: key_without_prefix, value: self.value, node: self.node })
     }
@@ -603,7 +603,7 @@ mod tests {
         );
         // Because of compression, we need a lot of keys to reach the MTU.
         for i in 0..20_000 {
-            let key = format!("k{}", i);
+            let key = format!("k{i}");
             node1.self_node_state().set(&key, "first_value");
         }
         for _ in 0..2 {

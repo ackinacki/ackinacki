@@ -29,6 +29,8 @@ use tvm_client::ClientConfig;
 use tvm_client::ClientContext;
 
 const EPOCH_CODE_HASH_FILE_PATH: &str = "./contracts/bksystem/BlockKeeperEpochContract.code.hash";
+const PREEPOCH_CODE_HASH_FILE_PATH: &str =
+    "./contracts/bksystem/BlockKeeperPreEpochContract.code.hash";
 
 #[derive(Parser, Debug)]
 #[command(author, about, long_about = None)]
@@ -127,6 +129,10 @@ struct Config {
     #[arg(long, env)]
     pub api_addr: Option<String>,
 
+    /// Advertise address for SDK API
+    #[arg(long, env)]
+    pub api_advertise_addr: Option<url::Url>,
+
     /// Path to zerostate file
     #[arg(long, env)]
     pub zerostate_path: Option<PathBuf>,
@@ -193,10 +199,9 @@ struct Config {
     #[arg(long)]
     pub chitchat_cluster_id: Option<String>,
 
-    /// Number of blocks after which the account is unloaded from shard state.
-    #[arg(long)]
-    pub unload_after: Option<u32>,
-
+    // /// Number of blocks after which the account is unloaded from shard state.
+    // #[arg(long)]
+    // pub unload_after: Option<u32>,
     /// Thread load (aggregated number of messages in a queue to start splitting a thread) threshold for split
     #[arg(long)]
     pub thread_load_threshold: Option<usize>,
@@ -220,6 +225,10 @@ struct Config {
     /// Epoch contract code hash
     #[arg(long, env)]
     pub block_keeper_epoch_code_hash: Option<String>,
+
+    /// PreEpoch contract code hash
+    #[arg(long, env)]
+    pub block_keeper_preepoch_code_hash: Option<String>,
 }
 
 const DEFAULT_NODE_PORT: u16 = 8500;
@@ -257,6 +266,10 @@ fn main() -> anyhow::Result<()> {
                             eprintln!("api_addr must be specified for default config");
                             exit(2);
                         };
+                        let Some(ref api_advertise_addr) = config_cmd.api_advertise_addr else {
+                            eprintln!("api_advertise_addr must be specified for default config");
+                            exit(2);
+                        };
                         let local = NodeConfig::builder()
                             .node_id(NodeIdentifier::from_str(&node_id).expect("Invalid node ID"))
                             .build();
@@ -264,6 +277,7 @@ fn main() -> anyhow::Result<()> {
                             .chitchat_cluster_id(cluster_id)
                             .node_advertise_addr(node_advertise_addr)
                             .api_addr(api_addr)
+                            .api_advertise_addr(api_advertise_addr.clone())
                             .build();
 
                         node::config::Config {
@@ -334,6 +348,10 @@ fn main() -> anyhow::Result<()> {
                 config.network.api_addr = api_addr;
             }
 
+            if let Some(ref api_advertise_addr) = config_cmd.api_advertise_addr {
+                config.network.api_advertise_addr = api_advertise_addr.clone();
+            }
+
             if let Some(network_send_buffer_size) = config_cmd.network_send_buffer_size {
                 config.network.send_buffer_size = network_send_buffer_size;
             }
@@ -366,6 +384,16 @@ fn main() -> anyhow::Result<()> {
                     block_keeper_epoch_code_hash.trim_start_matches("0x").to_string();
             } else if let Ok(code_hash) = std::fs::read_to_string(EPOCH_CODE_HASH_FILE_PATH) {
                 config.global.block_keeper_epoch_code_hash =
+                    code_hash.trim_start_matches("0x").to_string();
+            }
+
+            if let Some(block_keeper_preepoch_code_hash) =
+                config_cmd.block_keeper_preepoch_code_hash
+            {
+                config.global.block_keeper_preepoch_code_hash =
+                    block_keeper_preepoch_code_hash.trim_start_matches("0x").to_string();
+            } else if let Ok(code_hash) = std::fs::read_to_string(PREEPOCH_CODE_HASH_FILE_PATH) {
+                config.global.block_keeper_preepoch_code_hash =
                     code_hash.trim_start_matches("0x").to_string();
             }
 
@@ -422,10 +450,6 @@ fn main() -> anyhow::Result<()> {
 
             if let Some(cluster_id) = config_cmd.chitchat_cluster_id {
                 config.network.chitchat_cluster_id = cluster_id;
-            }
-
-            if let Some(unload_after) = config_cmd.unload_after {
-                config.local.unload_after = Some(unload_after);
             }
 
             if let Some(thread_load_threshold) = config_cmd.thread_load_threshold {
@@ -487,7 +511,7 @@ fn main() -> anyhow::Result<()> {
                 std::fs::write(keys_path, &keys_json)
                     .map_err(|e| anyhow::format_err!("failed to create file with keys: {}", e))?;
             } else {
-                println!("{}", keys_json);
+                println!("{keys_json}");
             }
 
             Ok(())

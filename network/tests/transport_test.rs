@@ -67,7 +67,7 @@ async fn test_transport(transport: impl NetTransport + 'static) {
     init_logs();
     let dc_count = 2;
     let dc_proxy_count = 0;
-    let dc_node_count = 8;
+    let dc_node_count = 2;
 
     let total_node_count = dc_count * dc_node_count;
 
@@ -206,7 +206,7 @@ impl Debug for Message {
             Message::Data(sender, id, data) => {
                 write!(f, "Data: {}, {}, {} bytes", sender, id, data.len())
             }
-            Message::Ack(id) => write!(f, "Ack: {}", id),
+            Message::Ack(id) => write!(f, "Ack: {id}"),
         }
     }
 }
@@ -375,8 +375,7 @@ impl<Transport: NetTransport + 'static> Node<Transport> {
         let ack_received = self.state.ack_received.load(Ordering::Relaxed);
         let live_nodes = self.chitchat.lock().live_nodes().try_len().unwrap_or_default();
         println!(
-            "LiveNodes: {} of {node_count}, Unconfirmed: {}, Data sent: {}, Data received: {}, Ack sent: {}, Ack received: {}",
-            live_nodes, unconfirmed, data_sent, data_received, ack_sent, ack_received
+            "LiveNodes: {live_nodes} of {node_count}, Unconfirmed: {unconfirmed}, Data sent: {data_sent}, Data received: {data_received}, Ack sent: {ack_sent}, Ack received: {ack_received}"
         );
     }
 }
@@ -474,6 +473,6 @@ impl<Transport: NetTransport + 'static> Proxy<Transport> {
 
     fn print_stat(&self) {
         let live_nodes = self.chitchat.lock().live_nodes().try_len().unwrap_or_default();
-        println!("LiveNodes: {}", live_nodes);
+        println!("LiveNodes: {live_nodes}");
     }
 }

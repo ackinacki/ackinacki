@@ -92,7 +92,7 @@ network:                                                                        
   - node0:10000
   - node1:10000
   - node2:10000
-  lite_server_listen_addr: 127.0.0.1:11000                                                          
+  lite_server_listen_addr: 127.0.0.1:11000
   static_storages:                                                                                  # Static storages urls (e.g. https://example.com/storage/)
   - http://host.docker.internal/storage/node-0/
   - http://host.docker.internal/storage/node-1/
@@ -176,6 +176,8 @@ Options:
           All static stores urls-bases (e.g. "https://example.com/storage/") [env: STATIC_STORAGES=]
       --api-addr <API_ADDR>
           Socket address for SDK API [env: API_ADDR=]
+      --api-advertise-addr <API_ADVERTISE_ADDR>
+          Advertise address for SDK API [env: API_ADVERTISE_ADDR=]
       --zerostate-path <ZEROSTATE_PATH>
           Path to zerostate file [env: ZEROSTATE_PATH=]
       --external-state-share-local-base-dir <EXTERNAL_STATE_SHARE_LOCAL_BASE_DIR>
@@ -210,15 +212,15 @@ Usage example:
     "node_id": 2,
 
 ➜ node-helper config -c acki-nacki.conf.json --node-id 3                # Change node_id to `3`
-➜ cat acki-nacki.conf.json | grep node_id               
+➜ cat acki-nacki.conf.json | grep node_id
     "node_id": 3,
 
 ➜ NODE_ID=4 node-helper config -c acki-nacki.conf.json                  # Argument from env
-➜ cat acki-nacki.conf.json | grep node_id             
+➜ cat acki-nacki.conf.json | grep node_id
     "node_id": 4,
 
 ➜ NODE_ID=0 node-helper config -c acki-nacki.conf.json --node-id 1      # Cli argument overrides env
-➜ cat acki-nacki.conf.json | grep node_id                         
+➜ cat acki-nacki.conf.json | grep node_id
     "node_id": 1,
 ```
 
@@ -227,7 +229,7 @@ Usage example:
 node-helper can generate BLS and wallet keys:
 
 ```text
-➜ node-helper bls --help   
+➜ node-helper bls --help
 Generate BLS key pair
 
 Usage: node-helper bls [OPTIONS]
@@ -266,7 +268,7 @@ Generate BLS key pair to file:
 Generate wallet key pair and print it:
 
 ```text
-➜ node-helper gen-keys                     
+➜ node-helper gen-keys
 {
   "public": "836cf25c5dc6a3997b948b97864e8a8ffe14653b4ac403217f61161c3116d0b9",
   "secret": "b15c3d4cf7df7d5b5faa0ac7ff86a3e92c12c26e86a998e5347c677a7c5c82b7"

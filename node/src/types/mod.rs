@@ -6,6 +6,7 @@ mod account_inbox;
 mod ackinacki_block;
 mod attestation;
 mod blk_prev_info_format;
+mod block_height;
 mod block_identifier;
 mod block_index;
 mod block_info;
@@ -16,6 +17,7 @@ mod message_storage;
 mod rnd_seed;
 mod thread_identifier;
 pub mod thread_message_queue;
+pub use block_height::BlockHeight;
 mod threads_table;
 
 pub use account_address::*;

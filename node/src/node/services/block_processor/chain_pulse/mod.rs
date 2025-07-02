@@ -16,6 +16,7 @@ use crate::types::bp_selector::BlockGap;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 
+pub mod events;
 mod pulse_attestations;
 mod pulse_candidates;
 
@@ -56,17 +57,22 @@ struct ChainPulseSettings {
     block_gap: BlockGap,
 
     last_finalized_block: Option<BlockState>,
+
+    chain_pulse_monitor: std::sync::mpsc::Sender<events::ChainPulseEvent>,
 }
 
 pub struct ChainPulse {
+    thread_identifier: ThreadIdentifier,
     attestations: pulse_attestations::PulseAttestations,
     candidates: pulse_candidates::PulseCandidateBlocks,
+    chain_pulse_monitor: std::sync::mpsc::Sender<events::ChainPulseEvent>,
     last_finalized_block: Option<BlockState>,
 }
 
 impl From<ChainPulseSettings> for ChainPulse {
     fn from(settings: ChainPulseSettings) -> Self {
         Self {
+            thread_identifier: settings.thread_identifier,
             attestations: pulse_attestations::PulseAttestations::builder()
                 .node_id(settings.node_id.clone())
                 .thread_identifier(settings.thread_identifier)
@@ -90,7 +96,9 @@ impl From<ChainPulseSettings> for ChainPulse {
                 .trigger_by_no_finalized_since_start_timer(
                     settings.finalization_has_not_started_time_trigger,
                 )
+                .direct_send_tx(settings.direct_send_tx.clone())
                 .build(),
+            chain_pulse_monitor: settings.chain_pulse_monitor,
             last_finalized_block: settings.last_finalized_block,
         }
     }
@@ -110,6 +118,9 @@ impl ChainPulse {
             let prev_seq_no = prev.guarded(|e| e.block_seq_no().unwrap());
             anyhow::ensure!(next_seq_no > prev_seq_no);
         }
+        self.chain_pulse_monitor
+            .send(events::ChainPulseEvent::block_finalized(self.thread_identifier))
+            .unwrap();
         let r1 = self.attestations.pulse(last_finalized_block);
         let r2 = self.candidates.pulse(next_seq_no);
         // Don't care if one fails. Make sure both had a chance to execute.

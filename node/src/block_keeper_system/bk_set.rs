@@ -8,12 +8,14 @@ use crate::types::AckiNackiBlock;
 pub(crate) fn update_block_keeper_set_from_common_section(
     block: &AckiNackiBlock,
     current_bk_set: Arc<BlockKeeperSet>,
-) -> anyhow::Result<Option<Arc<BlockKeeperSet>>> {
+    current_future_bk_set: Arc<BlockKeeperSet>,
+) -> anyhow::Result<Option<(Arc<BlockKeeperSet>, Arc<BlockKeeperSet>)>> {
     let common_section = block.get_common_section();
     if common_section.block_keeper_set_changes.is_empty() {
         return Ok(None);
     }
     let mut new_bk_set = current_bk_set.deref().clone();
+    let mut new_future_bk_set = current_future_bk_set.deref().clone();
     tracing::trace!(
         "update_block_keeper_set_from_common_section block_id:{} {:?}",
         block.identifier(),
@@ -37,12 +39,25 @@ pub(crate) fn update_block_keeper_set_from_common_section(
             tracing::trace!("insert block keeper key: {signer_index} {block_keeper_data}");
             tracing::trace!("insert block keeper key: {:?}", new_bk_set);
             new_bk_set.insert(*signer_index, block_keeper_data.clone());
+            if new_future_bk_set.contains_signer(signer_index) {
+                new_future_bk_set.remove_signer(signer_index);
+            }
+        }
+    }
+    for block_keeper_change in &common_section.block_keeper_set_changes {
+        if let BlockKeeperSetChange::FutureBlockKeeperAdded((signer_index, block_keeper_data)) =
+            block_keeper_change
+        {
+            tracing::trace!("insert future block keeper key: {signer_index} {block_keeper_data}");
+            tracing::trace!("insert future block keeper key: {:?}", new_future_bk_set);
+            new_future_bk_set.insert(*signer_index, block_keeper_data.clone());
         }
     }
     tracing::trace!(
-        "update_block_keeper_set_from_common_section block_id:{} final_bk_set: {:?}",
+        "update_block_keeper_set_from_common_section block_id:{} final_bk_set: {:?}, final_future_bk_set: {:?}",
         block.identifier(),
-        new_bk_set
+        new_bk_set,
+        new_future_bk_set,
     );
-    Ok(Some(Arc::new(new_bk_set)))
+    Ok(Some((Arc::new(new_bk_set), Arc::new(new_future_bk_set))))
 }

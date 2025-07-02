@@ -42,7 +42,7 @@ pub trait BLSSignedEnvelope: Send + Sync + 'static {
     fn has_signer_index(&self, index: Self::SignerIndex) -> bool;
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Envelope<BLS, TData>
 where
     BLS: BLSSignatureScheme,

@@ -106,7 +106,7 @@ pub async fn run(
     let chitchat = chitchat_handle.chitchat();
     let api = Api { chitchat: chitchat.clone() };
     let api_service = OpenApiService::new(api, "Acki Nacki", "1.0")
-        .server(format!("http://{}/", gossip_advertise_addr));
+        .server(format!("http://{gossip_advertise_addr}/"));
     let docs = api_service.swagger_ui();
     let app = Route::new().nest("/", api_service).nest("/docs", docs);
 

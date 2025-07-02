@@ -124,6 +124,7 @@ pub struct BlockBuilder {
     pub(crate) usage_tree: UsageTree,
     pub(crate) initial_optimistic_state: OptimisticStateImpl,
     pub(crate) block_keeper_epoch_code_hash: String,
+    pub(crate) block_keeper_preepoch_code_hash: String,
     pub(crate) block_keeper_set_changes: Vec<BlockKeeperSetChange>,
     pub(crate) base_config_stateinit: StateInit,
     pub(crate) dapp_credit_map: HashMap<DAppIdentifier, DappConfig>,

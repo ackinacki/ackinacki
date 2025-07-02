@@ -15,12 +15,14 @@ use rustls_pki_types::CertificateDer;
 use thiserror::Error;
 use tracing::trace;
 
-use super::buffer::WriteBuffer;
 use super::stream::ReadStream;
 use super::stream::StartError as StreamStartError;
 use super::stream::Stream;
 use super::stream::StreamType;
 use crate::cert_hash;
+use crate::msquic::msquic_async::buffer::WriteBuffer;
+use crate::msquic::msquic_async::send_stream::SendStream;
+use crate::CertValidation;
 
 #[derive(Clone)]
 pub struct Connection(Arc<ConnectionInstance>);
@@ -29,8 +31,11 @@ impl Connection {
     /// Create a new connection.
     ///
     /// The connection is not started until `start` is called.
-    pub fn new(registration: &msquic::Registration) -> Result<Self, ConnectionError> {
-        let inner = Arc::new(ConnectionInner::new(ConnectionState::Open));
+    pub fn new(
+        registration: &msquic::Registration,
+        cert_validation: CertValidation,
+    ) -> Result<Self, ConnectionError> {
+        let inner = Arc::new(ConnectionInner::new(ConnectionState::Open, cert_validation));
         let inner_in_ev = inner.clone();
         let msquic_conn = msquic::Connection::open(registration, move |conn_ref, ev| {
             inner_in_ev.callback_handler_impl(conn_ref, ev)
@@ -49,13 +54,16 @@ impl Connection {
         }
     }
 
-    pub(crate) fn from_raw(handle: msquic::ffi::HQUIC, is_connected: bool) -> Self {
+    pub(crate) fn from_raw(
+        handle: msquic::ffi::HQUIC,
+        is_connected: bool,
+        cert_validation: CertValidation,
+    ) -> Self {
         let msquic_conn = unsafe { msquic::Connection::from_raw(handle) };
-        let inner = Arc::new(ConnectionInner::new(if is_connected {
-            ConnectionState::Connected
-        } else {
-            ConnectionState::Connecting
-        }));
+        let inner = Arc::new(ConnectionInner::new(
+            if is_connected { ConnectionState::Connected } else { ConnectionState::Connecting },
+            cert_validation,
+        ));
         let inner_in_ev = inner.clone();
         msquic_conn.set_callback_handler(move |conn_ref, ev| {
             inner_in_ev.callback_handler_impl(conn_ref, ev)
@@ -126,7 +134,7 @@ impl Connection {
     }
 
     /// Wait for receiving remote certificate
-    pub fn receive_remote_certificate(&self) -> RemoteCertificateReceiver {
+    pub fn receive_remote_certificate(&self) -> RemoteCertificateReceiver<'_> {
         RemoteCertificateReceiver { conn: self }
     }
 
@@ -163,6 +171,11 @@ impl Connection {
             stream: None,
             fail_on_blocked,
         }
+    }
+
+    /// Open a new message based stream.
+    pub fn open_send_stream(&self) -> OpenSendStream<'_> {
+        OpenSendStream { conn: &self.0, stream: None }
     }
 
     /// Accept an inbound bidilectional stream.
@@ -460,6 +473,7 @@ impl Drop for ConnectionInstance {
 }
 
 struct ConnectionInner {
+    cert_validation: CertValidation,
     exclusive: Mutex<ConnectionInnerExclusive>,
 }
 
@@ -481,8 +495,9 @@ struct ConnectionInnerExclusive {
 }
 
 impl ConnectionInner {
-    fn new(state: ConnectionState) -> Self {
+    fn new(state: ConnectionState, cert_validation: CertValidation) -> Self {
         Self {
+            cert_validation,
             exclusive: Mutex::new(ConnectionInnerExclusive {
                 state,
                 error: None,
@@ -696,6 +711,9 @@ impl ConnectionInner {
             std::slice::from_raw_parts((*cert_buffer).Buffer, (*cert_buffer).Length as usize)
         };
         let cert = CertificateDer::from(cert_slice.to_vec());
+        if !self.cert_validation.verify_is_valid_cert(&cert) {
+            return Err(msquic::Status::from(msquic::StatusCode::QUIC_STATUS_BAD_CERTIFICATE));
+        }
         let mut exclusive = self.exclusive.lock().unwrap();
         exclusive.certificate = Some(cert.clone());
         exclusive.certificate_waiters.drain(..).for_each(|waker| waker.wake());
@@ -929,6 +947,47 @@ impl Future for OpenOutboundStream<'_> {
             .unwrap()
             .poll_start(cx, fail_blocked)
             .map(|res| res.map(|_| stream.take().unwrap()))
+    }
+}
+
+/// Future produced by [`Connection::open_send_stream()`].
+pub struct OpenSendStream<'a> {
+    conn: &'a ConnectionInstance,
+    stream: Option<SendStream>,
+}
+
+impl Future for OpenSendStream<'_> {
+    type Output = Result<SendStream, StreamStartError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let OpenSendStream { conn, ref mut stream, .. } = *this;
+
+        let mut exclusive = conn.inner.exclusive.lock().unwrap();
+        match exclusive.state {
+            ConnectionState::Open => {
+                return Poll::Ready(Err(StreamStartError::ConnectionNotStarted));
+            }
+            ConnectionState::Connecting => {
+                exclusive.start_waiters.push(cx.waker().clone());
+                return Poll::Pending;
+            }
+            ConnectionState::Connected => {}
+            ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {
+                return Poll::Ready(Err(StreamStartError::ConnectionLost(
+                    exclusive.error.as_ref().expect("error").clone(),
+                )));
+            }
+        }
+        if stream.is_none() {
+            match SendStream::open(&conn.msquic_conn) {
+                Ok(new_stream) => {
+                    *stream = Some(new_stream);
+                }
+                Err(e) => return Poll::Ready(Err(e)),
+            }
+        }
+        stream.as_mut().unwrap().poll_start(cx).map(|res| res.map(|_| stream.take().unwrap()))
     }
 }
 

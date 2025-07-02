@@ -127,8 +127,8 @@ fn peer_subscribe_addrs(peer_addr: SocketAddr, proxies: &[SocketAddr]) -> Vec<So
 
 fn strategy_info<P: Display>(strategy: &SubscribeStrategy<P>) -> String {
     match strategy {
-        SubscribeStrategy::Peer(id) => format!("Peer({})", id),
-        SubscribeStrategy::Proxy(proxy_url) => format!("Proxy({})", proxy_url),
+        SubscribeStrategy::Peer(id) => format!("Peer({id})"),
+        SubscribeStrategy::Proxy(proxy_url) => format!("Proxy({proxy_url})"),
     }
 }
 fn subscribe_info(subscribe: &[Vec<SocketAddr>]) -> String {

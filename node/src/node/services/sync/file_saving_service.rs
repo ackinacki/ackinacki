@@ -58,25 +58,31 @@ impl FileSavingService {
                     shared_services.exec(|e| -> anyhow::Result<Vec<CrossThreadRefData>> {
                         e.cross_thread_ref_data_service.get_history_tail(&block_id)
                     })?;
-                let bk_set = block_state_repository
-                    .get(&block_id)?
-                    .guarded(|e| e.bk_set().clone())
-                    .ok_or(anyhow::format_err!("Failed to get bk_set"))?;
-                let finalized_block_stats = block_state_repository
-                    .get(&block_id)?
-                    .guarded(|e| e.block_stats().clone())
-                    .ok_or(anyhow::format_err!("Failed to get block_stats"))?;
-                let attestation_target = block_state_repository
-                    .get(&block_id)?
-                    .guarded(|e| (*e.initial_attestations_target()))
-                    .ok_or(anyhow::format_err!("Failed to get attestation target"))?;
-                let producer_selector = block_state_repository
-                    .get(&block_id)?
-                    .guarded(|e| e.producer_selector_data().clone())
-                    .ok_or(anyhow::format_err!("Failed to get bp selector"))?;
                 let finalized_block = repository
-                    .get_block(&block_id)?
+                    .get_finalized_block(&block_id)?
                     .ok_or(anyhow::format_err!("Failed to get block"))?;
+
+                let block_state = block_state_repository.get(&block_id)?;
+                let (
+                    Some(bk_set),
+                    Some(finalized_block_stats),
+                    Some(attestation_target),
+                    Some(producer_selector),
+                    Some(block_height),
+                    Some(prefinalization_proof),
+                ) = block_state.guarded(|e| {
+                    (
+                        e.bk_set().clone(),
+                        e.block_stats().clone(),
+                        *e.initial_attestations_target(),
+                        e.producer_selector_data().clone(),
+                        *e.block_height(),
+                        e.prefinalization_proof().clone(),
+                    )
+                })
+                else {
+                    anyhow::bail!("Failed to get block data");
+                };
 
                 let shared_thread_state = ThreadSnapshot::builder()
                     .optimistic_state(serialized_state)
@@ -87,6 +93,8 @@ impl FileSavingService {
                     .finalized_block_stats(finalized_block_stats)
                     .attestation_target(attestation_target)
                     .producer_selector(producer_selector)
+                    .block_height(block_height)
+                    .prefinalization_proof(prefinalization_proof)
                     .build();
 
                 let bytes = bincode::serialize(&shared_thread_state)?;

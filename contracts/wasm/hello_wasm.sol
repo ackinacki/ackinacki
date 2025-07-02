@@ -49,15 +49,15 @@ contract helloWorld {
 
     // Returns a static message, "helloWorld".
     // This function serves as a basic example of returning a fixed string in Solidity.
-    function runWasm (bytes wasmBinary, string wasmModule, string wasmFunction, bytes wasmArgs) public returns (bytes) {
+    bytes public wasmResSaved;
+    function runWasm (bytes wasmBinary, string wasmModule, string wasmFunction, bytes wasmArgs, bytes wasmHash) public returns (bytes) {
         
-        tvm.accept(); 
         getTokens();
         // uint8[] wasmBinaryArr = Convert.FromBase64String(wasmBinary);
         // uint8[] wasmArgsArr = Convert.FromBase64String(wasmArgs);
         // TODO: somehow pack everythign into cells
         //                                              [1,2]
-        TvmCell wasmResultCell = gosh.runwasm(abi.encode(wasmArgs), abi.encode(wasmFunction), abi.encode(wasmModule), abi.encode(wasmBinary));
+        TvmCell wasmResultCell = gosh.runwasm(abi.encode(wasmHash), abi.encode(wasmArgs), abi.encode(wasmFunction), abi.encode(wasmModule), abi.encode(wasmBinary));
         tvm.commit();
         tvm.log("result acquired");
         // TvmCell eoncoded = abi.encode(wasmArgs);
@@ -65,9 +65,53 @@ contract helloWorld {
         bytes wasmResult = abi.decode(wasmResultCell, bytes);
         // uint8[3]
         //              cell      string        string      cell    
+        wasmResSaved = wasmResult;
+        tvm.accept(); 
         return wasmResult;
         
     }
+    function runWasmConcatMultiarg (bytes wasmBinary, string wasmModule, string wasmFunction, bytes wasmArgs, bytes wasmArgs2, bytes wasmArgs3, bytes wasmArgs4, bytes wasmHash) public returns (bytes) {
+        
+        getTokens();
+        // uint8[] wasmBinaryArr = Convert.FromBase64String(wasmBinary);
+        // uint8[] wasmArgsArr = Convert.FromBase64String(wasmArgs);
+        // TODO: somehow pack everythign into cells
+        //                                              [1,2]
+        TvmCell wasmResultCell = gosh.runwasmconcatmultiarg(abi.encode(wasmHash), abi.encode(wasmArgs4), abi.encode(wasmArgs3), abi.encode(wasmArgs2), abi.encode(wasmArgs), abi.encode(wasmFunction), abi.encode(wasmModule), abi.encode(wasmBinary));
+        tvm.commit();
+        tvm.log("result acquired");
+        // TvmCell eoncoded = abi.encode(wasmArgs);
+        // bytes decoded = abi.decode(eoncoded, (string));
+        bytes wasmResult = abi.decode(wasmResultCell, bytes);
+        // uint8[3]
+        //              cell      string        string      cell    
+        wasmResSaved = wasmResult;
+        tvm.accept(); 
+        return wasmResult;
+        
+    }
+
+    // function rejoinChainOfCells (TvmCell input) public pure returns (uint8[]) {
+    //     // TODO
+    //     //uint8[] dataVec = input;
+    // }
+
+    // function splitToChainOfCells (uint8[] byteArr) public pure returns (TvmCell) {
+    //     // TODO
+    // }
+
+    // pub(super) fn rejoin_chain_of_cells(input: &Cell) -> Result<Vec<u8>, failure::Error> {
+    //     let mut data_vec = input.data().to_vec();
+    //     let mut cur_cell: Cell = input.clone();
+    //     while cur_cell.reference(0).is_ok() {
+    //         let old_len = data_vec.len();
+    //         cur_cell = cur_cell.reference(0)?;
+    //         data_vec.append(&mut cur_cell.data().to_vec());
+
+    //         assert!(data_vec.len() - old_len == cur_cell.data().len());
+    //     }
+    //     Ok(data_vec)
+    // }
 
     // Updates the `timestamp` variable with the current blockchain time.
     // We will use this function to modify the data in the contract.
@@ -151,3 +195,4 @@ contract helloWorld {
     }
 
 }
+

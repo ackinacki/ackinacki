@@ -34,8 +34,8 @@ fn main() {
     // -Iseconds is strict ISO 8601
     let time = cmd!["date", "-Iseconds"].stdout_or(unknown);
 
-    println!("cargo:rustc-env=BUILD_GIT_BRANCH={}", git_branch);
-    println!("cargo:rustc-env=BUILD_GIT_COMMIT={}", git_commit);
-    println!("cargo:rustc-env=BUILD_GIT_DATE={}", git_date);
-    println!("cargo:rustc-env=BUILD_TIME={}", time);
+    println!("cargo:rustc-env=BUILD_GIT_BRANCH={git_branch}");
+    println!("cargo:rustc-env=BUILD_GIT_COMMIT={git_commit}");
+    println!("cargo:rustc-env=BUILD_GIT_DATE={git_date}");
+    println!("cargo:rustc-env=BUILD_TIME={time}");
 }

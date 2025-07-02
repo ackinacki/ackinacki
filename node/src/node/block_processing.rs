@@ -69,9 +69,11 @@ where
         let parent_id = envelope.data().parent();
         let thread_identifier = net_block.thread_id;
         let block_time = envelope.data().time()?;
+        let block_round = envelope.data().get_common_section().round;
+        let block_height = envelope.data().get_common_section().block_height;
         // Initialize block state
         block_state.guarded_mut(|state| {
-            state.set_stored()?;
+            state.set_stored(&envelope)?;
             state.set_block_seq_no(net_block.seq_no)?;
             state.set_thread_identifier(thread_identifier)?;
             // Guard against setting the value repeatedly on the producer
@@ -81,33 +83,41 @@ where
             state.set_parent_block_identifier(parent_id.clone())?;
 
             state.set_block_time_ms(block_time)?;
+            state.add_proposed_in_round(block_round)?;
+            state.set_block_height(block_height)?;
             Ok::<(), anyhow::Error>(())
         })?;
 
         tracing::info!("Add candidate block state to cache: {:?}", net_block.identifier);
-        self.repository.unprocessed_blocks_cache().insert(block_state.clone(), envelope.clone());
+        self.unprocessed_blocks_cache.insert(block_state.clone(), envelope.clone());
 
         // Update parent block state
         // lock parent only after child lock is dropped
-        let siblings = self.block_state_repository.get(&parent_id)?.guarded_mut(|e| {
+        let _siblings = self.block_state_repository.get(&parent_id)?.guarded_mut(|e| {
             e.add_child(thread_identifier, net_block.identifier.clone())?;
             let mut siblings = e.known_children(&thread_identifier).cloned().unwrap_or_default();
             siblings.remove(&net_block.identifier);
             Ok::<_, anyhow::Error>(siblings)
         })?;
-        if !siblings.is_empty() {
-            self.fork_resolution_service.found_fork(&parent_id)?;
-        }
 
         // Steal block attestations
         for attestation in &envelope.data().get_common_section().block_attestations {
             self.last_block_attestations.guarded_mut(|e| {
-                e.add(attestation.clone(), |block_id| {
-                    let Ok(block_state) = self.block_state_repository.get(block_id) else {
-                        return None;
-                    };
-                    block_state.guarded(|e| e.bk_set().clone())
-                })
+                e.add(
+                    attestation.clone(),
+                    |block_id| {
+                        let Ok(block_state) = self.block_state_repository.get(block_id) else {
+                            return None;
+                        };
+                        block_state.guarded(|e| e.bk_set().clone())
+                    },
+                    |block_id| {
+                        let Ok(block_state) = self.block_state_repository.get(block_id) else {
+                            return None;
+                        };
+                        block_state.guarded(|e| e.envelope_hash().clone())
+                    },
+                )
             })?;
         }
         Ok(Some(envelope))

@@ -241,7 +241,7 @@ pub fn convert_epoch_messages(
     let time = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as u32;
     for data in epoch_message.into_iter() {
         let msg = create_epoch_touch_message(&data, time).map_err(|e| {
-            anyhow::Error::msg(format!("Failed to create epoch touch message: {}", e))
+            anyhow::Error::msg(format!("Failed to create epoch touch message: {e}"))
         })?;
         let wrapped_message = WrappedMessage { message: msg.clone() };
         let info =

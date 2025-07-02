@@ -6,11 +6,10 @@ use opentelemetry::metrics::Counter;
 use opentelemetry::metrics::Gauge;
 use opentelemetry::metrics::Histogram;
 use opentelemetry::metrics::Meter;
-use opentelemetry::metrics::ObservableCounter;
-use opentelemetry::metrics::ObservableGauge;
 use opentelemetry::metrics::UpDownCounter;
 use opentelemetry::KeyValue;
 use telemetry_utils::mpsc::InstrumentedChannelMetrics;
+use telemetry_utils::TokioMetrics;
 
 use crate::types::ThreadIdentifier;
 
@@ -48,7 +47,6 @@ struct BlockProductionMetricsInner {
     check_cross_thread_ref_data: Histogram<u64>,
     wait_for_cross_thread_ref_data: Histogram<u64>,
     apply_block_total: Histogram<u64>,
-    verify_fork_resolution: Histogram<u64>,
     common_block_checks: Histogram<u64>,
     processing_delay: Histogram<u64>,
     attestation_after_apply_delay: Histogram<u64>,
@@ -57,11 +55,6 @@ struct BlockProductionMetricsInner {
     blocks_requested: Counter<u64>,
     unfinalized_blocks_queue: Gauge<u64>,
     bk_set_size: Gauge<u64>,
-
-    // Tokio runtime metrics: https://docs.rs/tokio/latest/tokio/runtime/struct.RuntimeMetrics.html
-    _tokio_num_alive_tasks: ObservableGauge<u64>,
-    _tokio_global_queue_depth: ObservableGauge<u64>,
-    _tokio_spawned_tasks_count: ObservableCounter<u64>,
 }
 
 pub const BK_SET_UPDATE_CHANNEL: &str = "bk_set_update";
@@ -82,6 +75,7 @@ pub struct Metrics {
     pub net: NetMetrics,
     pub node: BlockProductionMetrics,
     pub routing: RoutingMetrics,
+    pub tokio: TokioMetrics,
 }
 
 impl Metrics {
@@ -90,6 +84,7 @@ impl Metrics {
             net: NetMetrics::new(meter),
             node: BlockProductionMetrics::new(meter),
             routing: RoutingMetrics::new(meter),
+            tokio: TokioMetrics::new(meter),
         }
     }
 }
@@ -194,7 +189,6 @@ impl BlockProductionMetrics {
                     700.0, 1000.0,
                 ])
                 .build(),
-            verify_fork_resolution: meter.u64_histogram("node_verify_fork_resolution").build(),
             common_block_checks: meter.u64_histogram("node_common_block_checks").build(),
             processing_delay: meter
                 .u64_histogram("node_processing_delay")
@@ -219,35 +213,6 @@ impl BlockProductionMetrics {
             rcv_as_bytes_to_rcv_by_node: meter
                 .u64_histogram("node_rcv_as_bytes_to_rcv_by_node")
                 .with_boundaries(vec![2.0, 5.0, 10.0, 15.0, 20.0, 40.0, 80.0, 200.0, 1000.0])
-                .build(),
-            _tokio_num_alive_tasks: meter
-                .u64_observable_gauge("node_tokio_num_alive_tasks")
-                .with_callback(move |observer| {
-                    observer.observe(
-                        tokio::runtime::Handle::current().metrics().num_alive_tasks() as u64,
-                        &[],
-                    )
-                })
-                .build(),
-
-            _tokio_global_queue_depth: meter
-                .u64_observable_gauge("node_tokio_global_queue_depth")
-                .with_callback(move |observer| {
-                    observer.observe(
-                        tokio::runtime::Handle::current().metrics().global_queue_depth() as u64,
-                        &[],
-                    )
-                })
-                .build(),
-
-            _tokio_spawned_tasks_count: meter
-                .u64_observable_counter("node_tokio_spawned_tasks_count")
-                .with_callback(move |observer| {
-                    observer.observe(
-                        tokio::runtime::Handle::current().metrics().spawned_tasks_count(),
-                        &[],
-                    );
-                })
                 .build(),
         }))
     }
@@ -387,10 +352,6 @@ impl BlockProductionMetrics {
 
     pub fn report_apply_block_total(&self, value: u64, thread_id: &ThreadIdentifier) {
         self.0.apply_block_total.record(value, &[thread_id_attr(thread_id)]);
-    }
-
-    pub fn report_verify_fork_resolution(&self, value: u64, thread_id: &ThreadIdentifier) {
-        self.0.verify_fork_resolution.record(value, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_common_block_checks(&self, value: u64, thread_id: &ThreadIdentifier) {

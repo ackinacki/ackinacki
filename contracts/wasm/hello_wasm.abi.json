@@ -33,7 +33,24 @@
 				{"name":"wasmBinary","type":"bytes"},
 				{"name":"wasmModule","type":"string"},
 				{"name":"wasmFunction","type":"string"},
-				{"name":"wasmArgs","type":"bytes"}
+				{"name":"wasmArgs","type":"bytes"},
+				{"name":"wasmHash","type":"bytes"}
+			],
+			"outputs": [
+				{"name":"value0","type":"bytes"}
+			]
+		},
+		{
+			"name": "runWasmConcatMultiarg",
+			"inputs": [
+				{"name":"wasmBinary","type":"bytes"},
+				{"name":"wasmModule","type":"string"},
+				{"name":"wasmFunction","type":"string"},
+				{"name":"wasmArgs","type":"bytes"},
+				{"name":"wasmArgs2","type":"bytes"},
+				{"name":"wasmArgs3","type":"bytes"},
+				{"name":"wasmArgs4","type":"bytes"},
+				{"name":"wasmHash","type":"bytes"}
 			],
 			"outputs": [
 				{"name":"value0","type":"bytes"}
@@ -90,6 +107,14 @@
 			"outputs": [
 				{"name":"timestamp","type":"uint32"}
 			]
+		},
+		{
+			"name": "wasmResSaved",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"wasmResSaved","type":"bytes"}
+			]
 		}
 	],
 	"events": [
@@ -98,6 +123,7 @@
 		{"init":true,"name":"_pubkey","type":"uint256"},
 		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
-		{"init":false,"name":"timestamp","type":"uint32"}
+		{"init":false,"name":"timestamp","type":"uint32"},
+		{"init":false,"name":"wasmResSaved","type":"bytes"}
 	]
 }

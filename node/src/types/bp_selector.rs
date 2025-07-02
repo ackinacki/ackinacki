@@ -1,6 +1,7 @@
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 
+use derive_getters::Getters;
 use itertools::Itertools;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
@@ -15,7 +16,7 @@ use crate::types::BlockIdentifier;
 
 pub type BlockGap = Arc<AtomicU32>;
 
-#[derive(Debug, Clone, Serialize, Deserialize, TypedBuilder, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, TypedBuilder, Eq, PartialEq, Getters)]
 pub struct ProducerSelector {
     // Block id with last BK set change
     rng_seed_block_id: BlockIdentifier,
@@ -109,7 +110,7 @@ mod tests {
         let mut bk_set = BlockKeeperSet::new();
         for i in 0..100 {
             let acc_id_str =
-                format!("00000000000000000000000000000000000000000000000000000000{:08x}", i);
+                format!("00000000000000000000000000000000000000000000000000000000{i:08x}");
             bk_set.insert(
                 i as SignerIndex,
                 BlockKeeperData {
@@ -123,7 +124,7 @@ mod tests {
         let producer_node_id = producer_selector
             .get_producer_node_id(&bk_set)
             .expect("Producer node id out of bounds");
-        println!("Producer node ID: {}", producer_node_id);
+        println!("Producer node ID: {producer_node_id}");
         let mut distances_set: HashSet<usize> = HashSet::from_iter(0..100usize);
         for node_id in bk_set.iter_node_ids() {
             let dist = producer_selector.get_distance_from_bp(&bk_set, node_id);
@@ -138,7 +139,7 @@ mod tests {
         let mut bk_set = BlockKeeperSet::new();
         for i in 0..100 {
             let acc_id_str =
-                format!("00000000000000000000000000000000000000000000000000000000{:08x}", i);
+                format!("00000000000000000000000000000000000000000000000000000000{i:08x}");
             bk_set.insert(
                 i as SignerIndex,
                 BlockKeeperData {
@@ -167,7 +168,7 @@ mod tests {
         let mut bk_set = BlockKeeperSet::new();
         for i in 0..100 {
             let acc_id_str =
-                format!("00000000000000000000000000000000000000000000000000000000{:08x}", i);
+                format!("00000000000000000000000000000000000000000000000000000000{i:08x}");
             bk_set.insert(
                 i as SignerIndex,
                 BlockKeeperData {
@@ -196,7 +197,7 @@ mod tests {
         let mut bk_set = BlockKeeperSet::new();
         for i in 0..10 {
             let acc_id_str =
-                format!("00000000000000000000000000000000000000000000000000000000{:08x}", i);
+                format!("00000000000000000000000000000000000000000000000000000000{i:08x}");
             bk_set.insert(
                 i as SignerIndex,
                 BlockKeeperData {

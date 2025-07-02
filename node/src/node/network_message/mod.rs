@@ -18,12 +18,12 @@ use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
 use crate::node::NodeIdentifier;
+use crate::protocol::authority_switch::network_message::AuthoritySwitch;
 use crate::types::bp_selector::ProducerSelector;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
-
 mod serde_network_message;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -113,6 +113,8 @@ pub enum NetworkMessage {
     SyncFinalized(
         (BlockIdentifier, BlockSeqNo, HashMap<ThreadIdentifier, BlockIdentifier>, ThreadIdentifier),
     ),
+
+    AuthoritySwitchProtocol(AuthoritySwitch),
 }
 
 impl NetworkMessage {
@@ -143,6 +145,21 @@ impl Debug for NetworkMessage {
                 BlockRequest { .. } => f.write_str("BlockRequest"),
                 SyncFinalized(_) => f.write_str("SyncFinalized"),
                 SyncFrom(_) => f.write_str("SyncFrom"),
+                AuthoritySwitchProtocol(AuthoritySwitch::Request(_)) => {
+                    f.write_str("AuthoritySwitch::Request")
+                }
+                AuthoritySwitchProtocol(AuthoritySwitch::Reject(_)) => {
+                    f.write_str("AuthoritySwitch::Reject")
+                }
+                AuthoritySwitchProtocol(AuthoritySwitch::RejectTooOld(_)) => {
+                    f.write_str("AuthoritySwitch::RejectTooOld")
+                }
+                AuthoritySwitchProtocol(AuthoritySwitch::Switched(_)) => {
+                    f.write_str("AuthoritySwitch::Success")
+                }
+                AuthoritySwitchProtocol(AuthoritySwitch::Failed(_)) => {
+                    f.write_str("AuthoritySwitch::Failed")
+                }
             }
         } else {
             let enum_type = match self {
@@ -155,14 +172,21 @@ impl Debug for NetworkMessage {
                 ),
                 Ack(_) => "Ack",
                 Nack(_) => "Nack",
-                ExternalMessage((msg, _)) => &format!("ExternalMessage: {:?}", msg),
+                ExternalMessage((msg, _)) => &format!("ExternalMessage: {msg:?}"),
                 NodeJoining(_) => "NodeJoining",
                 BlockAttestation(_) => "BlockAttestation",
                 BlockRequest { .. } => "BlockRequest",
                 SyncFinalized(_) => "SyncFinalized",
                 SyncFrom(_) => "SyncFrom",
+                AuthoritySwitchProtocol(AuthoritySwitch::Request(_)) => "AuthoritySwitch::Request",
+                AuthoritySwitchProtocol(AuthoritySwitch::Reject(_)) => "AuthoritySwitch::Reject",
+                AuthoritySwitchProtocol(AuthoritySwitch::RejectTooOld(_)) => {
+                    "AuthoritySwitch::RejectTooOld"
+                }
+                AuthoritySwitchProtocol(AuthoritySwitch::Switched(_)) => "AuthoritySwitch::Success",
+                AuthoritySwitchProtocol(AuthoritySwitch::Failed(_)) => "AuthoritySwitch::Failed",
             };
-            write!(f, "NetworkMessage::{}", enum_type)
+            write!(f, "NetworkMessage::{enum_type}")
         }
     }
 }

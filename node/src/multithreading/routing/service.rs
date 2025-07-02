@@ -216,11 +216,11 @@ impl RoutingService {
                 poisoned_queue.push(msg);
             }
             Err(DispatchError::DestinationClosed(thread_identifier, _msg)) => {
-                panic!("DestinationClosed {}", thread_identifier);
+                // panic!("DestinationClosed {}", thread_identifier);
                 // todo!();
-                // tracing::trace!(
-                //     "Received network message for closed destination: {thread_identifier:?}"
-                // );
+                tracing::trace!(
+                    "Received network message for closed destination: {thread_identifier:?}"
+                );
             }
         }
     }

@@ -12,11 +12,12 @@ mod execution;
 use block_request_service::BlockRequestParams;
 pub use execution::LOOP_PAUSE_DURATION;
 use http_server::ExtMsgFeedbackList;
+
+use crate::utilities::guarded::GuardedMut;
 pub mod block_request_service;
 use tvm_types::AccountId;
 mod network_message;
 
-mod restart;
 mod send;
 pub mod services;
 mod synchronization;
@@ -48,6 +49,8 @@ use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
 use crate::node::services::attestations_target::service::AttestationsTargetService;
+use crate::protocol::authority_switch::action_lock::Authority;
+pub use crate::protocol::authority_switch::network_message::AuthoritySwitch;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
@@ -72,10 +75,9 @@ pub use crate::node::associated_types::NodeIdentifier;
 use crate::node::block_state::repository::BlockState;
 use crate::node::services::block_processor::service::BlockProcessorService;
 use crate::node::services::db_serializer::DBSerializeService;
-use crate::node::services::fork_resolution::service::ForkResolutionService;
 use crate::node::services::send_attestations::AttestationSendServiceHandler;
 use crate::node::services::validation::service::ValidationServiceInterface;
-use crate::types::bp_selector::BlockGap;
+use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::types::ThreadIdentifier;
 
 pub(crate) const DEFAULT_PRODUCTION_TIME_MULTIPLIER: u64 = 1;
@@ -103,7 +105,6 @@ where
     sent_acks: BTreeMap<BlockSeqNo, Envelope<GoshBLS, AckData>>,
     pub received_nacks: Arc<Mutex<Vec<Envelope<GoshBLS, NackData>>>>,
     config: Config,
-    block_gap_length: BlockGap,
     pub received_attestations: BTreeMap<BlockSeqNo, HashMap<BlockIdentifier, HashSet<SignerIndex>>>,
     block_keeper_rng: TRandomGenerator,
     producer_election_rng: TRandomGenerator,
@@ -126,7 +127,6 @@ where
     last_broadcasted_produced_candidate_block_time: std::time::Instant,
     finalization_loop: std::thread::JoinHandle<()>,
     producer_service: ProducerService,
-    fork_resolution_service: ForkResolutionService,
     metrics: Option<BlockProductionMetrics>,
     external_messages: ExternalMessagesThreadState,
 
@@ -135,6 +135,10 @@ where
     // Channel (sender) for block requests
     blk_req_tx: Sender<BlockRequestParams>,
     ext_msg_receiver: JoinHandle<()>,
+    authority_state: Arc<Mutex<Authority>>,
+    unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
+    stop_rx: Receiver<()>,
+    stop_result_tx: Sender<()>,
 }
 
 impl<TStateSyncService, TRandomGenerator> Node<TStateSyncService, TRandomGenerator>
@@ -164,8 +168,6 @@ where
         attestations_target_service: AttestationsTargetService,
         validation_service: ValidationServiceInterface,
         skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
-        fork_resolution_service: ForkResolutionService,
-        block_gap: BlockGap,
         metrics: Option<BlockProductionMetrics>,
         self_tx: Sender<NetworkMessage>,
         external_messages: ExternalMessagesThreadState,
@@ -176,16 +178,49 @@ where
         blk_req_tx: Sender<BlockRequestParams>,
         attestation_send_service: AttestationSendServiceHandler,
         ext_msg_receiver: JoinHandle<()>,
+        authority_state: Arc<Mutex<Authority>>,
+        unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
+        stop_rx: Receiver<()>,
+        stop_result_tx: Sender<()>,
     ) -> Self {
         tracing::trace!("Start node for thread: {thread_id:?}");
         if let Some(metrics) = &metrics {
             metrics.report_thread_count();
         }
 
+        let (block_producer_control_tx, block_producer_control_rx) = std::sync::mpsc::channel();
+
+        // Note:
+        // Let the authority switch do it's job. Do not start block production on restart.
+        // It is possible that other nodes have already selected another BP.
+        //
+        // TODO: this code is bad for graceful restart, node should continue not the last finalized,
+        // but the last valid block.
+        // if let Ok(Some((last_finalized_block_id, last_finalized_block_seq_no))) = repository.select_thread_last_finalized_block(&thread_id) {
+        // let finalized_block_state = block_state_repository.get(&last_finalized_block_id).expect("Should not fail");
+        // if let (Some(producer_selector), Some(bk_set), Some(round)) = finalized_block_state.guarded(|e| (e.producer_selector_data().clone(), e.bk_set().clone(), e.round().clone())) {
+        // if let Ok(true) = producer_selector.is_node_bp(&bk_set, &config.local.node_id) {
+        // tracing::trace!("Sending BP start command: {last_finalized_block_id:?} {last_finalized_block_seq_no:?}");
+        // block_producer_control_tx.send(BlockProducerCommand::Start(
+        // BlockProducerThreadInitialParameters::builder()
+        // .thread_identifier(thread_id.clone())
+        // .parent_block_identifier(last_finalized_block_id)
+        // .parent_block_seq_no(last_finalized_block_seq_no)
+        // .round(round)
+        // .build()
+        // )).expect("Should not fail");
+        // }
+        // }
+        // }
+
+        authority_state.guarded_mut(|e| {
+            e.register_block_producer(thread_id, block_producer_control_tx);
+        });
         let received_acks = Arc::new(Mutex::new(Vec::new()));
         let received_nacks = Arc::new(Mutex::new(Vec::new()));
         let metrics_clone = metrics.clone();
         let is_state_sync_requested = Arc::new(Mutex::new(None));
+        let unprocessed_blocks_cache_clone = unprocessed_blocks_cache.clone();
         Self {
             shared_services: shared_services.clone(),
             state_sync_service: state_sync_service.clone(),
@@ -198,7 +233,6 @@ where
             production_timeout_multiplier: DEFAULT_PRODUCTION_TIME_MULTIPLIER,
             last_block_attestations: last_block_attestations.clone(),
             config: config.clone(),
-            block_gap_length: block_gap.clone(),
             received_attestations: Default::default(),
             block_keeper_rng,
             received_acks: received_acks.clone(),
@@ -217,15 +251,14 @@ where
             message_db: message_db.clone(),
             last_broadcasted_produced_candidate_block_time: std::time::Instant::now(),
             finalization_loop: std::thread::Builder::new()
-                .name(format!("Block finalization loop {}", thread_id))
+                .name(format!("Block finalization loop {thread_id}"))
                 .spawn_critical({
                     let repository_clone = repository.clone();
                     let block_state_repository_clone = block_state_repository.clone();
-                    let block_gap_clone = block_gap.clone();
                     let shared_services_clone = shared_services.clone();
-                    let external_messages = external_messages.clone();
                     let message_db_clone = message_db.clone();
                     let node_id = config.local.node_id.clone();
+                    let authority = authority_state.clone();
                     move || {
                         crate::node::services::finalization::finalization_loop(
                             repository_clone,
@@ -233,22 +266,21 @@ where
                             shared_services_clone,
                             raw_block_tx,
                             state_sync_service,
-                            block_gap_clone,
                             metrics_clone,
-                            external_messages,
                             message_db_clone,
                             &node_id,
+                            authority,
+                            unprocessed_blocks_cache_clone,
                         );
                         Ok(())
                     }
                 })
                 .expect("Failed to start finalization inner loop"),
-            fork_resolution_service: fork_resolution_service.clone(),
             producer_service: ProducerService::start(
                 thread_id,
                 repository.clone(),
                 block_state_repository.clone(),
-                block_gap.clone(),
+                block_producer_control_rx,
                 production_process,
                 feedback_sender.clone(),
                 received_acks.clone(),
@@ -257,11 +289,9 @@ where
                 bls_keys_map.clone(),
                 last_block_attestations.clone(),
                 attestations_target_service,
-                fork_resolution_service.clone(),
                 self_tx,
                 network_broadcast_tx,
                 config.local.node_id.clone(),
-                config.global.producer_change_gap_size,
                 Duration::from_millis(config.global.time_to_produce_block_millis),
                 config.global.save_state_frequency,
                 external_messages.clone(),
@@ -276,6 +306,10 @@ where
             blk_req_tx,
             attestation_send_service,
             ext_msg_receiver,
+            authority_state,
+            unprocessed_blocks_cache,
+            stop_rx,
+            stop_result_tx,
         }
     }
 }

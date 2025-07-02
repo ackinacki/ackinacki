@@ -109,12 +109,12 @@ impl Block {
 
         if let Some(after) = &args.pagination.after {
             if !after.is_empty() {
-                where_ops.push(format!("chain_order > {:?}", after));
+                where_ops.push(format!("chain_order > {after:?}"));
             }
         }
         if let Some(before) = &args.pagination.before {
             if !before.is_empty() {
-                where_ops.push(format!("chain_order < {:?}", before));
+                where_ops.push(format!("chain_order < {before:?}"));
             }
         }
 
@@ -149,8 +149,7 @@ impl Block {
         };
 
         let sql = format!(
-            "SELECT * FROM blocks {where_clause} ORDER BY chain_order {} LIMIT {}",
-            order_by, limit,
+            "SELECT * FROM blocks {where_clause} ORDER BY chain_order {order_by} LIMIT {limit}",
         );
 
         tracing::trace!(target: "blockchain_api", "SQL: {sql}");

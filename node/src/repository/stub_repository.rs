@@ -1,6 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -12,6 +13,7 @@ use tvm_types::AccountId;
 use tvm_types::UInt256;
 
 use super::accounts::AccountsRepository;
+use super::repository_impl::RepositoryImpl;
 use super::repository_impl::RepositoryMetadata;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
@@ -24,6 +26,7 @@ use crate::multithreading::cross_thread_messaging::thread_references_state::Thre
 use crate::node::associated_types::AttestationData;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
+use crate::node::services::sync::StateSyncService;
 use crate::node::shared_services::SharedServices;
 use crate::node::NodeIdentifier;
 use crate::repository::optimistic_state::DAppIdTable;
@@ -246,7 +249,7 @@ impl Repository for RepositoryStub {
         todo!()
     }
 
-    fn get_block(
+    fn get_finalized_block(
         &self,
         _identifier: &BlockIdentifier,
     ) -> anyhow::Result<Option<Arc<Self::CandidateBlock>>> {
@@ -289,15 +292,16 @@ impl Repository for RepositoryStub {
 
     fn mark_block_as_finalized(
         &mut self,
-        _block: &Self::CandidateBlock,
+        _block: impl Borrow<Self::CandidateBlock>,
         _block_state: BlockState,
+        _state_sync_service: Option<Arc<impl StateSyncService<Repository = RepositoryImpl>>>,
     ) -> anyhow::Result<()> {
         Ok(())
     }
 
-    fn is_block_finalized(&self, _block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>> {
-        Ok(None)
-    }
+    //    fn is_block_finalized(&self, _block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>> {
+    // Ok(None)
+    // }
 
     fn get_optimistic_state(
         &self,
@@ -395,10 +399,6 @@ impl Repository for RepositoryStub {
         &self,
         _thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<Self::OptimisticState> {
-        todo!()
-    }
-
-    fn add_thread_buffer(&self, _thread_id: ThreadIdentifier) -> Arc<Mutex<Vec<BlockIdentifier>>> {
         todo!()
     }
 

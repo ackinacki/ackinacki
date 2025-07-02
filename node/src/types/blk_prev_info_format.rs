@@ -12,7 +12,7 @@ impl serde_with::SerializeAs<tvm_block::BlkPrevInfo> for BlkPrevInfoFormat {
     {
         let buffer: Vec<u8> = value
             .write_to_bytes()
-            .map_err(|e| <S as serde::Serializer>::Error::custom(format!("{}, ", e)))?;
+            .map_err(|e| <S as serde::Serializer>::Error::custom(format!("{e}, ")))?;
         <Vec<u8> as serde::Serialize>::serialize(&buffer, serializer)
     }
 }
@@ -24,7 +24,7 @@ impl<'de> serde_with::DeserializeAs<'de, tvm_block::BlkPrevInfo> for BlkPrevInfo
     {
         let buffer: Vec<u8> = <Vec<u8> as serde::Deserialize>::deserialize(deserializer)?;
         let block_prev_info = tvm_block::BlkPrevInfo::construct_from_bytes(&buffer)
-            .map_err(|e| <D as serde::Deserializer>::Error::custom(format!("{}", e)))?;
+            .map_err(|e| <D as serde::Deserializer>::Error::custom(format!("{e}")))?;
         Ok(block_prev_info)
     }
 }

@@ -29,9 +29,9 @@ impl Debug for UnfinalizedAncestorBlocksSelectError {
         use UnfinalizedAncestorBlocksSelectError::*;
         match self {
             IncompleteHistory => write!(f, "Incomplete history"),
-            BlockSeqNoCutoff(chain) => write!(f, "Recursion limit exceeded ({:?})", chain),
+            BlockSeqNoCutoff(chain) => write!(f, "Recursion limit exceeded ({chain:?})"),
             InvalidatedParent(chain) => {
-                write!(f, "Search hit an invalidated ancestor ({:?})", chain)
+                write!(f, "Search hit an invalidated ancestor ({chain:?})")
             }
             FailedToLoadBlockState => write!(f, "Failed to load one of ancestors state"),
         }
@@ -127,10 +127,10 @@ mod test {
         match repo.select_unfinalized_ancestor_blocks(&tail, cutoff) {
             Err(UnfinalizedAncestorBlocksSelectError::BlockSeqNoCutoff(chain)) => {
                 let id_chain: Vec<_> = chain.iter().map(|e| e.block_identifier().clone()).collect();
-                assert_eq!(&id_chain, &(vec![tail_block_id]), "Unexpected chain: {:?}", chain);
+                assert_eq!(&id_chain, &(vec![tail_block_id]), "Unexpected chain: {chain:?}");
             }
             e => {
-                panic!("unexpected result: {:?}", e);
+                panic!("unexpected result: {e:?}");
             }
         }
     }

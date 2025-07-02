@@ -57,7 +57,7 @@ impl ThreadMessageQueueState {
                     if key == message_id {
                         continue;
                     } else {
-                        panic!("Mismatch: expected message {:?} but found {:?}", key, message_id)
+                        panic!("Mismatch: expected message {key:?} but found {message_id:?}")
                     }
                 } else {
                     tail.push_back((message_id, Arc::new(db_message)));

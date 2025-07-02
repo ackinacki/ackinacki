@@ -41,7 +41,11 @@ pub fn verify_block(
 ) -> anyhow::Result<bool> {
     #[cfg(feature = "timing")]
     let start = std::time::Instant::now();
-    tracing::trace!("Verifying block: {:?}", block_candidate.identifier());
+    tracing::trace!(
+        "Verifying block: {:?} {:?}",
+        block_candidate.identifier(),
+        block_candidate.seq_no()
+    );
 
     let producer = TVMBlockVerifier::builder()
         .blockchain_config(blockchain_config)

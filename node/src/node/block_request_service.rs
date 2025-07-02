@@ -17,6 +17,7 @@ use crate::config::Config;
 use crate::helper::block_flow_trace;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::node::block_state::repository::BlockState;
+use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::next_seq_no;
@@ -25,13 +26,13 @@ use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
+use crate::utilities::thread_spawn_critical::SpawnCritical;
 
 pub struct BlockRequestParams {
     pub start: BlockSeqNo,
     pub end: BlockSeqNo,
     pub node_id: NodeIdentifier,
     pub at_least_n_blocks: Option<usize>,
-    pub is_this_node_a_producer: bool,
     pub last_state_sync_executed: Arc<Mutex<std::time::Instant>>,
     pub is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
     pub thread_id: ThreadIdentifier,
@@ -45,6 +46,7 @@ pub struct BlockRequestService {
     network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
     rx: Receiver<BlockRequestParams>,
     metrics: Option<BlockProductionMetrics>,
+    unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
 }
 
 impl BlockRequestService {
@@ -55,6 +57,7 @@ impl BlockRequestService {
         block_state_repository: BlockStateRepository,
         network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
         metrics: Option<BlockProductionMetrics>,
+        unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
     ) -> anyhow::Result<(Sender<BlockRequestParams>, JoinHandle<anyhow::Result<()>>)> {
         let (tx, rx) = std::sync::mpsc::channel::<BlockRequestParams>();
 
@@ -66,10 +69,12 @@ impl BlockRequestService {
             network_direct_tx,
             rx,
             metrics,
+            unprocessed_blocks_cache,
         };
 
-        let handle: JoinHandle<anyhow::Result<()>> =
-            std::thread::Builder::new().name("BlockRequestService".into()).spawn(move || {
+        let handle: JoinHandle<anyhow::Result<()>> = std::thread::Builder::new()
+            .name("BlockRequestService".into())
+            .spawn_critical(move || {
                 for request in service.rx.iter() {
                     service.on_incoming_block_request(request)?
                 }
@@ -85,7 +90,6 @@ impl BlockRequestService {
             end,
             node_id,
             at_least_n_blocks,
-            is_this_node_a_producer,
             last_state_sync_executed,
             is_state_sync_requested,
             thread_id,
@@ -102,9 +106,7 @@ impl BlockRequestService {
 
                 let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
 
-                if is_this_node_a_producer
-                    && elapsed > self.config.global.min_time_between_state_publish_directives
-                {
+                if elapsed > self.config.global.min_time_between_state_publish_directives {
                     {
                         let mut guard = last_state_sync_executed.lock();
                         *guard = std::time::Instant::now();
@@ -175,7 +177,7 @@ impl BlockRequestService {
             .select_thread_last_finalized_block(thread_id)?
             .expect("Must be known here");
         #[allow(clippy::mutable_key_type)]
-        let unprocessed_blocks_cache = self.repository.unprocessed_blocks_cache().clone_queue();
+        let unprocessed_blocks_cache = self.unprocessed_blocks_cache.clone_queue();
         if last_finalized_block_seq_no > from_inclusive {
             let count = self.resend_finalized(
                 thread_id,
@@ -229,7 +231,7 @@ impl BlockRequestService {
         });
         let cached = cached
             .map(|e| {
-                let Some(block) = self.repository.get_block(&e)? else {
+                let Some(block) = self.repository.get_finalized_block(&e)? else {
                     anyhow::bail!("too far into the history (None block)");
                 };
                 Ok(block)
@@ -273,7 +275,7 @@ impl BlockRequestService {
             else {
                 anyhow::bail!("too far into the history (None state)");
             };
-            let Some(block) = self.repository.get_block(&cursor)? else {
+            let Some(block) = self.repository.get_finalized_block(&cursor)? else {
                 anyhow::bail!("too far into the history (None block)");
             };
             cache.push(block);

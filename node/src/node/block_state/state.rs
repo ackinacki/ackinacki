@@ -3,7 +3,6 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fmt::Formatter;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
@@ -16,6 +15,7 @@ use serde::Serialize;
 
 use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperSet;
+use crate::bls::BLSSignatureScheme;
 use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
 use crate::node::AttestationData;
 use crate::node::Envelope;
@@ -24,16 +24,19 @@ use crate::node::NackData;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
 use crate::types::bp_selector::ProducerSelector;
+use crate::types::envelope_hash::AckiNackiEnvelopeHash;
+use crate::types::AckiNackiBlock;
+use crate::types::BlockHeight;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
-use crate::types::ForkResolution;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::AllowGuardedMut;
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Copy)]
 pub struct AttestationsTarget {
-    pub descendant_generations: usize,
-    pub count: usize,
+    pub descendant_generations: usize, // = beta + 1, Check if it is useful
+    pub attestations_target: usize,
+    pub min_attestations_target: usize,
 }
 
 // The main point of this structure is to collect signals from
@@ -51,7 +54,7 @@ pub struct AttestationsTarget {
 // are stored in fields prexied with was_*
 // It is important:
 // All fields must be able to set once and only once.
-#[derive(Serialize, Deserialize, Default, Clone, Getters, Setters)]
+#[derive(Serialize, Deserialize, Default, Clone, Getters, Setters, Debug)]
 #[setters(strip_option, borrow_self, assert_none, prefix = "set_", trace)]
 #[setters(postprocess = "self.save()", result = "anyhow::Result<()>", no_change_action = "Ok(())")]
 pub struct AckiNackiBlockState {
@@ -69,8 +72,15 @@ pub struct AckiNackiBlockState {
     thread_identifier: Option<ThreadIdentifier>,
     parent_block_identifier: Option<BlockIdentifier>,
     block_seq_no: Option<BlockSeqNo>,
+
+    // Lists authority switch rounds this block was proposed in.
+    #[setters(skip)]
+    proposed_in_round: HashSet<u16>,
+    block_height: Option<BlockHeight>,
     producer: Option<NodeIdentifier>,
     block_time_ms: Option<u64>,
+
+    prefinalization_proof: Option<Envelope<GoshBLS, AttestationData>>,
 
     // Flag indicates it has signatures checked.
     #[setters(bool)]
@@ -89,7 +99,8 @@ pub struct AckiNackiBlockState {
     // Flag indicates that block was validated and validation result.
     validated: Option<bool>,
 
-    resolves_forks: Option<Vec<ForkResolution>>,
+    #[setters(skip)]
+    finalizes_blocks: Option<HashSet<BlockIdentifier>>,
 
     // When this flag is set:
     // - On initial target set. This block can't change the history,
@@ -104,8 +115,15 @@ pub struct AckiNackiBlockState {
     #[setters(bool)]
     finalized: Option<bool>,
 
-    // Flag indicated that block has been already received and stored in repo
+    // Prefinalization flag, that means that block has more than a half of bk set attestations.
+    // Can be set separately from attestation target in block processing or authority switch process
     #[setters(bool)]
+    prefinalized: Option<bool>,
+
+    ancestor_blocks_finalization_distances: Option<HashMap<BlockIdentifier, usize>>,
+
+    // Flag indicated that block has been already received and stored in repo
+    #[setters(skip)]
     stored: Option<bool>,
 
     // Note:
@@ -115,8 +133,17 @@ pub struct AckiNackiBlockState {
     #[setters(bool, assert_none = false)]
     invalidated: Option<bool>,
 
+    // Note:
+    // We must keep every BLS signature separate.
+    // Otherwise it will not be possible to blame anyone
+    // if there were an attacker that faked his signature thus broke all signatures if mixed.
+    // Also, it is not possible to verify signatures upfront
+    // since it could be that Nack comes before block itself.
     #[setters(skip)]
-    nacks_count: u64,
+    bad_block_accusers:
+        Vec<(HashMap<SignerIndex, u16>, <GoshBLS as BLSSignatureScheme>::Signature)>,
+
+    at_least_one_verified_bad_block_accuser: Option<bool>,
 
     #[setters(skip)]
     resolved_nacks_count: u64,
@@ -125,8 +152,16 @@ pub struct AckiNackiBlockState {
     // happened in this block
     bk_set: Option<Arc<BlockKeeperSet>>,
 
+    // Set of Block Keepers that has deployed pre epoch contract and will be added to the BK set
+    // after pre epoch contract destruction
+    future_bk_set: Option<Arc<BlockKeeperSet>>,
+
     // BlockKeeper set for descendant blocks with all BK set changes happened in this block
     descendant_bk_set: Option<Arc<BlockKeeperSet>>,
+
+    // Set of future Block Keepers for descendant blocks with all BK set changes happened in this
+    // block
+    descendant_future_bk_set: Option<Arc<BlockKeeperSet>>,
 
     // has_parent_optimistic_state: Option<bool>,
 
@@ -157,13 +192,6 @@ pub struct AckiNackiBlockState {
     #[setters(bool, assert_none = false)]
     has_initial_attestations_target_met: Option<bool>,
 
-    // This flag indicates that there was at least one chain that resolved a fork for
-    // this block (this block is the winner) and the block that resolved this fork
-    // is also in a shape that it can be finalized (his initial attestation target is met
-    // or it has the same story with the chain)
-    #[setters(bool, assert_none = false)]
-    has_attestations_target_met_in_a_resolved_fork_case: Option<bool>,
-
     // Calculated baseline for finalization. Must be calculated based on prev
     // history.
     // The DescendantsChainLength is the exact descendant when it will be checked
@@ -183,7 +211,7 @@ pub struct AckiNackiBlockState {
     // This must be set with a helper method.
     // It is intentionally made this way since it requires syncronization between other
     // potential children.
-    #[setters(skip)]
+    // Note: Setter is enabled due to the protocol changes: #[setters(skip)]
     pub(super) attestation: Option<Envelope<GoshBLS, AttestationData>>,
 
     retracted_attestation: Option<Envelope<GoshBLS, NackData>>,
@@ -191,6 +219,8 @@ pub struct AckiNackiBlockState {
     // Nodes that had sent messages indicating their interest in getting attestations for the block.
     #[setters(skip)]
     known_attestation_interested_parties: HashSet<NodeIdentifier>,
+
+    envelope_hash: Option<AckiNackiEnvelopeHash>,
 
     #[serde(skip)]
     #[getter(skip)]
@@ -207,50 +237,50 @@ pub struct AckiNackiBlockState {
     pub event_timestamps: EventTimestamps,
 }
 
-impl std::fmt::Debug for AckiNackiBlockState {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BlockState")
-            .field("block_identifier", &self.block_identifier)
-            .field("thread_id", &self.thread_identifier)
-            .field("parent_block_identifier", &self.parent_block_identifier)
-            .field("block_seq_no", &self.block_seq_no)
-            .field("signatures_verified", &self.signatures_verified)
-            .field(
-                "envelope_block_producer_signature_verified",
-                &self.envelope_block_producer_signature_verified,
-            )
-            .field("applied", &self.applied)
-            .field("validated", &self.validated)
-            .field("resolves_forks", &self.resolves_forks)
-            .field("must_be_validated", &self.must_be_validated)
-            .field("finalized", &self.finalized)
-            .field("stored", &self.stored)
-            .field("invalidated", &self.invalidated)
-            .field("has_parent_finalized", &self.has_parent_finalized)
-            .field(
-                "has_all_cross_thread_ref_data_available",
-                &self.has_all_cross_thread_ref_data_available,
-            )
-            .field("has_cross_thread_ref_data_prepared", &self.has_cross_thread_ref_data_prepared)
-            .field("has_initial_attestations_target_met", &self.has_initial_attestations_target_met)
-            .field(
-                "has_attestations_target_met_in_a_resolved_fork_case",
-                &self.has_attestations_target_met_in_a_resolved_fork_case,
-            )
-            .field("initial_attestations_target", &self.initial_attestations_target)
-            .field("verified_attestations", &self.verified_attestations)
-            .field("block_stats", &self.block_stats)
-            .field("known_children", &self.known_children)
-            .field("attestation", &self.attestation)
-            .field("retracted_attestation", &self.retracted_attestation)
-            .field(
-                "known_attestation_interested_parties",
-                &self.known_attestation_interested_parties,
-            )
-            .field("event_timestamps", &self.event_timestamps)
-            .finish()
-    }
-}
+// impl std::fmt::Debug for AckiNackiBlockState {
+//     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+//         f.debug_struct("BlockState")
+//             .field("block_identifier", &self.block_identifier)
+//             .field("thread_id", &self.thread_identifier)
+//             .field("parent_block_identifier", &self.parent_block_identifier)
+//             .field("block_seq_no", &self.block_seq_no)
+//             .field("signatures_verified", &self.signatures_verified)
+//             .field(
+//                 "envelope_block_producer_signature_verified",
+//                 &self.envelope_block_producer_signature_verified,
+//             )
+//             .field("applied", &self.applied)
+//             .field("validated", &self.validated)
+//             .field("resolves_forks", &self.resolves_forks)
+//             .field("must_be_validated", &self.must_be_validated)
+//             .field("finalized", &self.finalized)
+//             .field("stored", &self.stored)
+//             .field("invalidated", &self.invalidated)
+//             .field("has_parent_finalized", &self.has_parent_finalized)
+//             .field(
+//                 "has_all_cross_thread_ref_data_available",
+//                 &self.has_all_cross_thread_ref_data_available,
+//             )
+//             .field("has_cross_thread_ref_data_prepared", &self.has_cross_thread_ref_data_prepared)
+//             .field("has_initial_attestations_target_met", &self.has_initial_attestations_target_met)
+//             .field(
+//                 "has_attestations_target_met_in_a_resolved_fork_case",
+//                 &self.has_attestations_target_met_in_a_resolved_fork_case,
+//             )
+//             .field("initial_attestations_target", &self.initial_attestations_target)
+//             .field("verified_attestations", &self.verified_attestations)
+//             .field("block_stats", &self.block_stats)
+//             .field("known_children", &self.known_children)
+//             .field("attestation", &self.attestation)
+//             .field("retracted_attestation", &self.retracted_attestation)
+//             .field(
+//                 "known_attestation_interested_parties",
+//                 &self.known_attestation_interested_parties,
+//             )
+//             .field("event_timestamps", &self.event_timestamps)
+//             .finish()
+//     }
+// }
 
 impl std::fmt::Display for AckiNackiBlockState {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -291,25 +321,45 @@ impl AckiNackiBlockState {
     #[allow(clippy::nonminimal_bool)]
     pub fn has_attestations_target_met(&self) -> bool {
         self.has_initial_attestations_target_met == Some(true)
-            || self.has_attestations_target_met_in_a_resolved_fork_case == Some(true)
     }
 
-    pub fn can_finalize(&self) -> bool {
-        tracing::trace!("BlockState::can_finalize: {self:?}");
-        self.is_signatures_verified()
+    pub fn can_be_finalized(&self) -> bool {
+        let res = self.is_signatures_verified()
             && !self.is_invalidated()
-            && !self.has_unresolved_nacks()
+            && self.has_all_nacks_resolved()
             && self.is_block_already_applied()
             && self.has_parent_finalized == Some(true)
             && self.has_all_cross_thread_references_finalized == Some(true)
             && self.has_all_cross_thread_ref_data_available == Some(true)
             && self.has_attestations_target_met()
             && self.has_cross_thread_ref_data_prepared == Some(true)
-            && !self.is_finalized()
+            && !self.is_finalized();
+        tracing::trace!("BlockState::can_finalize(res={res}): {self:?}");
+        res
     }
 
-    pub fn has_unresolved_nacks(&self) -> bool {
-        self.nacks_count > self.resolved_nacks_count
+    pub fn has_bad_block_nacks_resolved(&self) -> bool {
+        if self.bad_block_accusers.is_empty() {
+            true
+        } else {
+            self.validated == Some(true)
+        }
+    }
+
+    pub fn set_stored(&mut self, block: &Envelope<GoshBLS, AckiNackiBlock>) -> anyhow::Result<()> {
+        self.stored = Some(true);
+        self.envelope_hash = Some(crate::types::envelope_hash::envelope_hash(block));
+        self.save()
+    }
+
+    pub fn set_stored_zero_state(&mut self) -> anyhow::Result<()> {
+        self.stored = Some(true);
+        self.envelope_hash = Some(AckiNackiEnvelopeHash([0; 32]));
+        self.save()
+    }
+
+    pub fn has_all_nacks_resolved(&self) -> bool {
+        self.has_bad_block_nacks_resolved()
     }
 
     pub fn is_invalidated(&self) -> bool {
@@ -324,6 +374,10 @@ impl AckiNackiBlockState {
         self.finalized == Some(true)
     }
 
+    pub fn is_prefinalized(&self) -> bool {
+        self.prefinalized == Some(true)
+    }
+
     pub fn is_stored(&self) -> bool {
         self.stored == Some(true)
     }
@@ -333,15 +387,24 @@ impl AckiNackiBlockState {
         self.applied == Some(true)
     }
 
-    pub fn add_suspicious(&mut self) -> anyhow::Result<()> {
-        self.nacks_count += 1;
+    pub fn add_proposed_in_round(&mut self, round: u16) -> anyhow::Result<()> {
+        self.proposed_in_round.insert(round);
         self.save()
     }
 
-    pub fn resolve_suspicious(&mut self) -> anyhow::Result<()> {
-        self.resolved_nacks_count += 1;
+    pub fn add_suspicious(
+        &mut self,
+        accusers: HashMap<SignerIndex, u16>,
+        signatures: <GoshBLS as BLSSignatureScheme>::Signature,
+    ) -> anyhow::Result<()> {
+        self.bad_block_accusers.push((accusers, signatures));
         self.save()
     }
+
+    // pub fn resolve_suspicious(&mut self) -> anyhow::Result<()> {
+    // self.resolved_nacks_count += 1;
+    // self.save()
+    // }
 
     // Selects attestations sent on behalf of the given block id
     // from all attestations sent with this block.
@@ -423,14 +486,15 @@ impl AckiNackiBlockState {
         self.bk_set.as_ref().and_then(|x| x.get_by_node_id(node_id)).cloned()
     }
 
-    pub fn get_descendant_bk_set(&self) -> Arc<BlockKeeperSet> {
-        if let Some(bk_set) = &self.descendant_bk_set {
-            bk_set.clone()
-        } else {
-            assert!(self.bk_set.is_some());
-            self.bk_set.clone().unwrap()
-        }
-    }
+    // This function is WRONG! It will change depending on the descendant_bk_set thus makes it mutable. MUST BE REMOVED
+    // pub fn get_descendant_bk_set(&self) -> Arc<BlockKeeperSet> {
+    // if let Some(bk_set) = &self.descendant_bk_set {
+    // bk_set.clone()
+    // } else {
+    // assert!(self.bk_set.is_some());
+    // self.bk_set.clone().unwrap()
+    // }
+    // }
 
     // It is made pub super to allow helper methods to explicitly call it.
     pub(super) fn save(&mut self) -> anyhow::Result<()> {
@@ -457,6 +521,17 @@ impl AckiNackiBlockState {
             self.save_requested = false;
             Ok(())
         }
+    }
+
+    pub fn update_finalizes_blocks(&mut self, block_id: BlockIdentifier) {
+        tracing::trace!(
+            "update_finalizes_blocks: self={:?}, add={:?}",
+            self.block_identifier,
+            block_id
+        );
+        let mut current_value = self.finalizes_blocks.clone().unwrap_or_default();
+        current_value.insert(block_id);
+        self.finalizes_blocks = Some(current_value);
     }
 }
 

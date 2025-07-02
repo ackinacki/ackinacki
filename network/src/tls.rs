@@ -29,6 +29,6 @@ impl TlsConfig {
 
     pub fn credential(&self) -> NetCredential {
         let (my_certs, my_key) = self.my_cert.resolve(&self.my_key).unwrap();
-        NetCredential { my_certs, my_key, root_certs: vec![] }
+        NetCredential { my_certs, my_key, cert_validation: Default::default() }
     }
 }

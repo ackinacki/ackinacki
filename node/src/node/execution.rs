@@ -8,6 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bls::envelope::BLSSignedEnvelope;
+use crate::bls::envelope::Envelope;
+use crate::bls::GoshBLS;
 use crate::helper::block_flow_trace;
 use crate::node::associated_types::ExecutionResult;
 use crate::node::associated_types::SynchronizationResult;
@@ -15,6 +17,9 @@ use crate::node::block_request_service::BlockRequestParams;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
 use crate::node::Node;
+use crate::protocol::authority_switch::action_lock::OnNextRoundIncomingRequestResult;
+use crate::protocol::authority_switch::network_message::AuthoritySwitch;
+use crate::protocol::authority_switch::network_message::NextRoundSuccess;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::next_seq_no;
@@ -38,28 +43,28 @@ where
         loop {
             // Synchronization can be executed not once if node looses too much blocks.
             let synchronization_result = {
-                // TODO: Check this code
-                if self.is_spawned_from_node_sync {
-                    // Note: repository is not ready at this stage. Just sync the node thread.
-                    let result = self.execute_synchronizing();
-                    self.is_spawned_from_node_sync = false;
-                    result?
+                //     // TODO: Check this code
+                //     if self.is_spawned_from_node_sync {
+                //         // Note: repository is not ready at this stage. Just sync the node thread.
+                //         // let result = self.execute_synchronizing();
+                //         // self.is_spawned_from_node_sync = false;
+                //         // result?
+                //     } else {
+                //         self.restart_bk()?;
+                //         // if let Some((block_id_to_continue, block_seq_no_to_continue)) =
+                //         //     self.find_thread_last_block_id_this_node_can_continue()?
+                //         // {
+                //         //     self.execute_restarted_producer(
+                //         //         block_id_to_continue,
+                //         //         block_seq_no_to_continue,
+                //         //     )?
+                //         // } else {
+                if needs_synchronizing {
+                    self.execute_synchronizing()?
                 } else {
-                    self.restart_bk()?;
-                    // if let Some((block_id_to_continue, block_seq_no_to_continue)) =
-                    //     self.find_thread_last_block_id_this_node_can_continue()?
-                    // {
-                    //     self.execute_restarted_producer(
-                    //         block_id_to_continue,
-                    //         block_seq_no_to_continue,
-                    //     )?
-                    // } else {
-                    if !self.is_this_node_a_producer() || needs_synchronizing {
-                        self.execute_synchronizing()?
-                    } else {
-                        SynchronizationResult::Ok
-                    }
+                    SynchronizationResult::Ok
                 }
+                //     }
             };
             tracing::trace!("Synchronization finished: {:?}", synchronization_result);
             let exec_result = match synchronization_result {
@@ -90,10 +95,8 @@ where
         self.execute_normal_forwarded(None)
     }
 
-    fn is_this_node_a_producer(&self) -> bool {
-        self.producer_service.producer_status()
-    }
-
+    // TODO: CRITICAL: Refactor. We should return from the method since it is in the loop.
+    // Refactor to ensure loop does not break. Same applies for a result propogation (use of <?>)
     fn execute_normal_forwarded(
         &mut self,
         mut next_message: Option<NetworkMessage>,
@@ -102,12 +105,15 @@ where
         let mut is_stop_signal_received = false;
         // let mut in_flight_productions = self.start_block_production()?;
 
-        let last_state_sync_executed = Arc::new(parking_lot::Mutex::new(std::time::Instant::now()));
-        if self.is_this_node_a_producer() {
-            // Allow producer sync its state from the very beginning
-            let mut guard = last_state_sync_executed.lock();
-            *guard = guard.sub(self.config.global.min_time_between_state_publish_directives);
-        }
+        let last_state_sync_executed = Arc::new(parking_lot::Mutex::new(
+            std::time::Instant::now()
+                .sub(self.config.global.min_time_between_state_publish_directives),
+        ));
+        // if self.is_this_node_a_producer() {
+        // Allow producer sync its state from the very beginning
+        //    let mut guard = last_state_sync_executed.lock();
+        //    *guard = guard.sub(self.config.global.min_time_between_state_publish_directives);
+        //}
 
         let iteration_start = std::time::Instant::now();
         // let mut clear_ext_messages_timestamp = std::time::Instant::now();
@@ -120,6 +126,12 @@ where
                 iteration_start.elapsed().as_millis()
             );
 
+            if self.stop_rx.try_recv().is_ok() {
+                self.repository
+                    .dump_unfinalized_blocks(self.unprocessed_blocks_cache.clone_queue());
+                tracing::trace!("Stop execution");
+                return Ok(ExecutionResult::Disconnected);
+            }
             let thread_id = self.thread_id;
 
             if let Some(sync_delay_value) = sync_delay.as_ref() {
@@ -185,14 +197,146 @@ where
                     self.producer_service.touch();
                 }
                 Ok(msg) => match msg {
+                    NetworkMessage::AuthoritySwitchProtocol(auth_switch) => match auth_switch {
+                        AuthoritySwitch::Request(next_round) => {
+                            tracing::trace!("Received NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Request: {next_round:?})");
+                            if let Some(attestation) = next_round.locked_block_attestation().clone()
+                            {
+                                self.last_block_attestations.guarded_mut(|e| {
+                                    e.add(
+                                        attestation,
+                                        |block_id| {
+                                            let Ok(block_state) =
+                                                self.block_state_repository.get(block_id)
+                                            else {
+                                                return None;
+                                            };
+                                            block_state.guarded(|e| e.bk_set().clone())
+                                        },
+                                        |block_id| {
+                                            let Ok(block_state) =
+                                                self.block_state_repository.get(block_id)
+                                            else {
+                                                return None;
+                                            };
+                                            block_state.guarded(|e| e.envelope_hash().clone())
+                                        },
+                                    )
+                                })?;
+                            }
+                            let unprocessed_cache = self.unprocessed_blocks_cache.clone();
+                            let action = self.authority_state.guarded_mut(|e| {
+                                e.on_next_round_incoming_request(next_round, unprocessed_cache)
+                            });
+                            match action {
+                                OnNextRoundIncomingRequestResult::StartingBlockProducer => {}
+                                OnNextRoundIncomingRequestResult::DoNothing => {}
+                                OnNextRoundIncomingRequestResult::Broadcast(e) => {
+                                    tracing::trace!("Broadcast AuthoritySwitch::Switched({e:?})");
+                                    let _ = self.network_broadcast_tx.send(
+                                        NetworkMessage::AuthoritySwitchProtocol(
+                                            AuthoritySwitch::Switched(e.clone()),
+                                        ),
+                                    )?;
+                                    self.on_authority_switch_success(e)?;
+                                }
+                                OnNextRoundIncomingRequestResult::Reject((e, source)) => {
+                                    self.network_direct_tx.send((
+                                        source,
+                                        NetworkMessage::AuthoritySwitchProtocol(
+                                            AuthoritySwitch::Reject(e),
+                                        ),
+                                    ))?
+                                }
+                                OnNextRoundIncomingRequestResult::RejectTooOldRequest(source) => {
+                                    self.network_direct_tx.send((
+                                        source,
+                                        NetworkMessage::AuthoritySwitchProtocol(
+                                            AuthoritySwitch::RejectTooOld(self.thread_id),
+                                        ),
+                                    ))?
+                                }
+                            }
+                        }
+                        AuthoritySwitch::Switched(next_round_success) => {
+                            //
+                            let Ok(proposed_block) =
+                                next_round_success.data().proposed_block().get_envelope()
+                            else {
+                                tracing::trace!("Failed to parse a proposed block");
+                                continue;
+                            };
+                            let parent_block_identifier = proposed_block.data().parent();
+                            let parent_block_state =
+                                self.block_state_repository.get(&parent_block_identifier).unwrap();
+                            let Some(bk_set) =
+                                parent_block_state.guarded(|e| e.descendant_bk_set().clone())
+                            else {
+                                tracing::trace!("Failed to get descendant bk_set");
+                                continue;
+                            };
+                            match next_round_success
+                                .verify_signatures(bk_set.get_pubkeys_by_signers())
+                            {
+                                Ok(false) => {
+                                    tracing::trace!("Invalid signature");
+                                    continue;
+                                }
+                                Err(e) => {
+                                    tracing::trace!("Signature verification failed: {e:?}");
+                                    continue;
+                                }
+                                Ok(true) => {
+                                    // Consistency check
+                                    let is_correct = {
+                                        let signature_occurrences =
+                                            next_round_success.clone_signature_occurrences();
+
+                                        let Some(expected_signer_index) = bk_set
+                                            .get_by_node_id(
+                                                next_round_success.data().node_identifier(),
+                                            )
+                                            .map(|e| e.signer_index)
+                                        else {
+                                            tracing::trace!(
+                                                "Incorrect or malicious message: incorrect node id"
+                                            );
+                                            continue;
+                                        };
+                                        signature_occurrences.len() == 1
+                                            && signature_occurrences.keys().cloned().last()
+                                                == Some(expected_signer_index)
+                                    };
+                                    if !is_correct {
+                                        tracing::trace!("Incorrect or malicious message");
+                                        continue;
+                                    }
+                                }
+                            }
+                            self.on_authority_switch_success(next_round_success)?;
+                        }
+                        AuthoritySwitch::Reject(_e) => {
+                            // TODO:
+                            // todo!("Add block for processing. e.known_block");
+                            // todo!("Add attestations to be checked. e.known_attestations");
+                        }
+                        AuthoritySwitch::RejectTooOld(_) => {
+                            return Ok(ExecutionResult::SynchronizationRequired);
+                        }
+                        AuthoritySwitch::Failed(_e) => {
+                            // TODO: add an advertised block to a storage
+                            // TBD
+                        }
+                    },
                     NetworkMessage::NodeJoining((node_id, _)) => {
                         tracing::info!("Received NodeJoining message({node_id})");
 
                         let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
-                        if self.is_this_node_a_producer()
-                            && elapsed
-                                > self.config.global.min_time_between_state_publish_directives
-                        {
+                        tracing::trace!(
+                            "Elapsed from the last state sync: {}ms",
+                            elapsed.as_millis()
+                        );
+                        if elapsed > self.config.global.min_time_between_state_publish_directives {
                             {
                                 let mut guard = last_state_sync_executed.lock();
                                 *guard = std::time::Instant::now();
@@ -229,6 +373,8 @@ where
                                         .guarded_mut(|e| *e = Some(block_seq_no_with_sync));
                                 }
                             }
+                        } else {
+                            tracing::trace!("Ignore NodeJoining message");
                         }
                     }
 
@@ -303,26 +449,51 @@ where
                             [],
                         );
                         let mut is_new = self.last_block_attestations.guarded_mut(|e| {
-                            e.add(attestation, |block_id| {
-                                let Ok(block_state) = self.block_state_repository.get(block_id)
-                                else {
-                                    return None;
-                                };
-                                block_state.guarded(|e| e.bk_set().clone())
-                            })
+                            e.add(
+                                attestation,
+                                |block_id| {
+                                    let Ok(block_state) = self.block_state_repository.get(block_id)
+                                    else {
+                                        return None;
+                                    };
+                                    block_state.guarded(|e| e.bk_set().clone())
+                                },
+                                |block_id| {
+                                    let Ok(block_state) = self.block_state_repository.get(block_id)
+                                    else {
+                                        return None;
+                                    };
+                                    block_state.guarded(|e| e.envelope_hash().clone())
+                                },
+                            )
                         })?;
                         loop {
                             match self.network_rx.try_recv() {
                                 Ok(NetworkMessage::BlockAttestation((attestation, _))) => {
+                                    tracing::info!(
+                                        "Received block attestation for thread {:?} {attestation:?}",
+                                        self.thread_id
+                                    );
                                     if self.last_block_attestations.guarded_mut(|e| {
-                                        e.add(attestation, |block_id| {
-                                            let Ok(block_state) =
-                                                self.block_state_repository.get(block_id)
-                                            else {
-                                                return None;
-                                            };
-                                            block_state.guarded(|e| e.bk_set().clone())
-                                        })
+                                        e.add(
+                                            attestation,
+                                            |block_id| {
+                                                let Ok(block_state) =
+                                                    self.block_state_repository.get(block_id)
+                                                else {
+                                                    return None;
+                                                };
+                                                block_state.guarded(|e| e.bk_set().clone())
+                                            },
+                                            |block_id| {
+                                                let Ok(block_state) =
+                                                    self.block_state_repository.get(block_id)
+                                                else {
+                                                    return None;
+                                                };
+                                                block_state.guarded(|e| e.envelope_hash().clone())
+                                            },
+                                        )
                                     })? {
                                         is_new = true;
                                     }
@@ -361,7 +532,6 @@ where
                             end,
                             node_id,
                             at_least_n_blocks,
-                            is_this_node_a_producer: self.is_this_node_a_producer(),
                             last_state_sync_executed: last_state_sync_executed.clone(),
                             is_state_sync_requested: self.is_state_sync_requested.clone(),
                             thread_id: self.thread_id,
@@ -372,13 +542,21 @@ where
                     }
                     NetworkMessage::SyncFrom((seq_no_from, _)) => {
                         // while normal execution we ignore sync messages
-                        log::info!("Received SyncFrom: {:?}", seq_no_from);
+                        log::info!("Received SyncFrom: {seq_no_from:?}");
                         let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
+                        log::info!(
+                            "Received SyncFrom: elapsed from last sync ms: {}",
+                            elapsed.as_millis()
+                        );
+                        let blocks_were_requested = self
+                            .block_processor_service
+                            .missing_blocks_were_requested
+                            .load(Ordering::Relaxed);
+                        log::info!(
+                            "Received SyncFrom: blocks_were_requested={blocks_were_requested:?}"
+                        );
                         if elapsed > self.config.global.min_time_between_state_publish_directives
-                            && self
-                                .block_processor_service
-                                .missing_blocks_were_requested
-                                .load(Ordering::Relaxed)
+                            && blocks_were_requested
                         {
                             return Ok(ExecutionResult::SynchronizationRequired);
                         }
@@ -397,5 +575,64 @@ where
             }
         }
         Ok(ExecutionResult::Disconnected)
+    }
+
+    fn on_authority_switch_success(
+        &mut self,
+        next_round_success: Envelope<GoshBLS, NextRoundSuccess>,
+    ) -> anyhow::Result<()> {
+        tracing::trace!("Received NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched({next_round_success:?}))");
+        // TODO: check signatures.
+        let next_round_success = next_round_success.data();
+        let proposed_block = next_round_success.proposed_block().clone();
+        let resend_node_id = Some(next_round_success.node_identifier().clone());
+        self.block_state_repository
+            .get(&proposed_block.identifier)
+            .unwrap()
+            .guarded_mut(|e| e.add_proposed_in_round(*next_round_success.round()))?;
+        self.on_incoming_candidate_block(&proposed_block, resend_node_id)?;
+        let attestation = next_round_success.attestations_aggregated().clone();
+        if let Some(attestation) = attestation.clone() {
+            let block_state = self.block_state_repository.get(attestation.data().block_id())?;
+            let Some(attestation_target) =
+                block_state.guarded(|e| *e.initial_attestations_target())
+            else {
+                tracing::trace!("Attestation target is not set for switched block {attestation:?}");
+                return Ok(());
+            };
+            if attestation.clone_signature_occurrences().len()
+                >= attestation_target.min_attestations_target
+            {
+                block_state.guarded_mut(|e| {
+                    e.set_prefinalized()?;
+                    e.set_prefinalization_proof(attestation)
+                })?;
+            }
+        }
+        let is_new = self.last_block_attestations.guarded_mut(|e| {
+            if let Some(attestation) = attestation {
+                e.add(
+                    attestation,
+                    |block_id| {
+                        let Ok(block_state) = self.block_state_repository.get(block_id) else {
+                            return None;
+                        };
+                        block_state.guarded(|e| e.bk_set().clone())
+                    },
+                    |block_id| {
+                        let Ok(block_state) = self.block_state_repository.get(block_id) else {
+                            return None;
+                        };
+                        block_state.guarded(|e| e.envelope_hash().clone())
+                    },
+                )
+            } else {
+                Ok(false)
+            }
+        })?;
+        if is_new {
+            self.block_state_repository.touch();
+        }
+        Ok(())
     }
 }

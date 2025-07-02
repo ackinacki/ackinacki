@@ -1,13 +1,13 @@
 pub mod msquic_async;
-mod pkcs12;
 mod quic_settings;
 #[cfg(test)]
 mod tests;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
-use futures::AsyncWriteExt;
 use msquic::BufferRef;
 use msquic::Registration;
 use msquic::RegistrationConfig;
@@ -16,14 +16,13 @@ use msquic_async::Listener;
 use tokio::io::AsyncReadExt;
 
 use crate::cert_hash;
+use crate::msquic::msquic_async::send_stream::SendStream;
 use crate::msquic::msquic_async::stream::ReadStream;
-use crate::msquic::msquic_async::stream::Stream;
 use crate::msquic::quic_settings::ConfigFactory;
 use crate::NetConnection;
 use crate::NetCredential;
 use crate::NetIncomingRequest;
 use crate::NetListener;
-use crate::NetRecvRequest;
 use crate::NetTransport;
 
 const STREAM_OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
@@ -58,11 +57,12 @@ impl NetTransport for MsQuicTransport {
         alpn: &[&str],
         credential: NetCredential,
     ) -> anyhow::Result<Self::Listener> {
+        let local_identity = credential.identity();
         let config = ConfigFactory::Server.build(&self.registration, alpn, &credential)?;
-        let listener = Listener::new(&self.registration, config)?;
+        let listener = Listener::new(&self.registration, config, credential.cert_validation)?;
         let alpn: Vec<BufferRef> = alpn.iter().map(|s| BufferRef::from(*s)).collect();
         listener.start(&alpn, Some(bind_addr))?;
-        Ok(MsQuicListener { instance: listener, local_identity: credential.identity() })
+        Ok(MsQuicListener { instance: listener, local_identity })
     }
 
     async fn connect(
@@ -71,19 +71,16 @@ impl NetTransport for MsQuicTransport {
         alpn: &[&str],
         credential: NetCredential,
     ) -> anyhow::Result<Self::Connection> {
+        let local_identity = credential.identity();
         let config = ConfigFactory::Client.build(&self.registration, alpn, &credential)?;
-        let conn = Connection::new(&self.registration)?;
+        let conn = Connection::new(&self.registration, credential.cert_validation)?;
 
         let host = addr.ip().to_string();
         let port = addr.port();
         conn.start(&config, &host, port).await?;
         let remote_cert = conn.receive_remote_certificate().await?;
         let remote_identity = hex::encode(cert_hash(&remote_cert));
-        Ok(MsQuicNetConnection {
-            inner: conn,
-            local_identity: credential.identity(),
-            remote_identity,
-        })
+        Ok(MsQuicNetConnection::new(conn, local_identity, remote_identity))
     }
 }
 
@@ -121,23 +118,7 @@ impl NetIncomingRequest for MsQuicNetIncomingRequest {
         self.connection.accept().await?;
         let remote_cert = self.connection.receive_remote_certificate().await?;
         let remote_identity = hex::encode(cert_hash(&remote_cert));
-        Ok(MsQuicNetConnection {
-            inner: self.connection,
-            local_identity: self.local_identity,
-            remote_identity,
-        })
-    }
-}
-
-pub struct MsQuicNetRecvRequest {
-    stream: ReadStream,
-}
-
-#[async_trait::async_trait]
-impl NetRecvRequest for MsQuicNetRecvRequest {
-    async fn recv(mut self) -> anyhow::Result<Vec<u8>> {
-        let buf = read_message_from_stream(&mut self.stream).await?;
-        Ok(buf)
+        Ok(MsQuicNetConnection::new(self.connection, self.local_identity, remote_identity))
     }
 }
 
@@ -146,12 +127,60 @@ pub struct MsQuicNetConnection {
     inner: Connection,
     local_identity: String,
     remote_identity: String,
+    stream_pool: Arc<StreamPool>,
+}
+
+struct StreamPool {
+    send: tokio::sync::Mutex<Option<SendStream>>,
+    recv: tokio::sync::Mutex<Option<ReadStream>>,
+}
+
+impl StreamPool {
+    fn new() -> Self {
+        Self { send: tokio::sync::Mutex::new(None), recv: tokio::sync::Mutex::new(None) }
+    }
+
+    async fn acquire_send(
+        &self,
+        connection: &MsQuicNetConnection,
+    ) -> anyhow::Result<tokio::sync::MutexGuard<'_, Option<SendStream>>> {
+        let mut stream_lock = self.send.lock().await;
+        if stream_lock.is_none() {
+            let stream =
+                match tokio::time::timeout(STREAM_OP_TIMEOUT, connection.inner.open_send_stream())
+                    .await
+                {
+                    Ok(stream) => stream?,
+                    Err(_) => {
+                        anyhow::bail!("Timeout opening stream: took more {STREAM_OP_TIMEOUT:?}")
+                    }
+                };
+            stream_lock.replace(stream);
+        }
+        Ok(stream_lock)
+    }
+
+    async fn acquire_recv(
+        &self,
+        connection: &MsQuicNetConnection,
+    ) -> anyhow::Result<tokio::sync::MutexGuard<'_, Option<ReadStream>>> {
+        let mut stream_lock = self.recv.lock().await;
+        if stream_lock.is_none() {
+            let stream = connection.inner.accept_inbound_uni_stream().await?;
+            stream_lock.replace(stream);
+        }
+        Ok(stream_lock)
+    }
+}
+
+impl MsQuicNetConnection {
+    fn new(inner: Connection, local_identity: String, remote_identity: String) -> Self {
+        Self { inner, local_identity, remote_identity, stream_pool: Arc::new(StreamPool::new()) }
+    }
 }
 
 #[async_trait::async_trait]
 impl NetConnection for MsQuicNetConnection {
-    type RecvRequest = MsQuicNetRecvRequest;
-
     fn local_addr(&self) -> SocketAddr {
         self.inner.get_local_addr().unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)))
     }
@@ -173,36 +202,29 @@ impl NetConnection for MsQuicNetConnection {
     }
 
     async fn send(&self, bytes: &[u8]) -> anyhow::Result<()> {
-        let mut stream = match tokio::time::timeout(
-            STREAM_OP_TIMEOUT,
-            self.inner.open_outbound_stream(msquic_async::StreamType::Unidirectional, false),
-        )
-        .await
-        {
-            Ok(stream) => stream?,
-            Err(_) => anyhow::bail!("Timeout opening stream: took more {STREAM_OP_TIMEOUT:?}"),
+        let mut stream = self.stream_pool.acquire_send(self).await?;
+        let result = if let Some(stream) = stream.as_mut() {
+            write_buffer_to_stream(bytes, stream).await
+        } else {
+            Err(anyhow::anyhow!("Unexpectedly missing send stream"))
         };
-        write_buffer_to_stream(bytes, &mut stream).await?;
-        match tokio::time::timeout(STREAM_OP_TIMEOUT, stream.flush()).await {
-            Ok(result) => result?,
-            Err(_) => anyhow::bail!(
-                "Timeout flushing stream: took more {STREAM_OP_TIMEOUT:?}, {}",
-                stream.debug_id(),
-            ),
+        if result.is_err() {
+            *stream = None;
         }
-        match tokio::time::timeout(STREAM_OP_TIMEOUT, stream.close()).await {
-            Ok(result) => result?,
-            Err(_) => anyhow::bail!(
-                "Timeout closing stream: took more {STREAM_OP_TIMEOUT:?}, {}",
-                stream.debug_id()
-            ),
-        }
-        Ok(())
+        result
     }
 
-    async fn accept_recv(&self) -> anyhow::Result<Self::RecvRequest> {
-        let stream = self.inner.accept_inbound_uni_stream().await?;
-        Ok(MsQuicNetRecvRequest { stream })
+    async fn recv(&self) -> anyhow::Result<(Vec<u8>, Duration)> {
+        let mut stream = self.stream_pool.acquire_recv(self).await?;
+        let result = if let Some(stream) = stream.as_mut() {
+            read_message_from_stream(stream).await
+        } else {
+            Err(anyhow::anyhow!("Failed to acquire recv stream"))
+        };
+        if result.is_err() {
+            *stream = None;
+        };
+        result
     }
 
     async fn close(&self, code: usize) {
@@ -216,13 +238,12 @@ impl NetConnection for MsQuicNetConnection {
     }
 }
 
-async fn write_buffer_to_stream(bytes: &[u8], stream: &mut Stream) -> anyhow::Result<()> {
-    // Prepend data with its length in bytes
+async fn write_buffer_to_stream(bytes: &[u8], stream: &mut SendStream) -> anyhow::Result<()> {
     let len = bytes.len() as u32;
     let mut encoded = Vec::with_capacity(4 + bytes.len());
     encoded.extend_from_slice(&len.to_be_bytes());
     encoded.extend_from_slice(bytes);
-    match tokio::time::timeout(STREAM_OP_TIMEOUT, stream.write_all(&encoded)).await {
+    match tokio::time::timeout(STREAM_OP_TIMEOUT, stream.send(encoded)).await {
         Ok(result) => result?,
         Err(_) => anyhow::bail!(
             "Timeout writing stream: took more {STREAM_OP_TIMEOUT:?}, {}",
@@ -234,28 +255,24 @@ async fn write_buffer_to_stream(bytes: &[u8], stream: &mut Stream) -> anyhow::Re
 
 pub async fn read_message_from_stream<S: tokio::io::AsyncRead + Unpin>(
     stream: &mut S,
-) -> anyhow::Result<Vec<u8>> {
-    let mut header = [0u8; 4];
-    let mut header_len = 0;
-    let mut decoded = Vec::new();
-    let mut decoded_len = 0;
-    loop {
-        if header_len < 4 {
-            header_len += stream.read(&mut header[header_len..]).await?;
-        } else {
-            if decoded.is_empty() {
-                decoded.resize(u32::from_be_bytes(header) as usize, 0);
-                if decoded.is_empty() {
-                    return Ok(decoded);
-                }
-            }
-            decoded_len += stream.read(&mut decoded[decoded_len..]).await?;
-            if decoded_len == decoded.len() {
-                // Drain the stream until EOF
-                let mut drain = [0u8; 1024];
-                while stream.read(&mut drain).await? != 0 {}
-                return Ok(decoded);
-            }
-        }
+) -> anyhow::Result<(Vec<u8>, Duration)> {
+    let mut len_buf = [0u8; 4];
+    read_exact(stream, &mut len_buf).await?;
+    let recv_time = Instant::now();
+    let len = u32::from_be_bytes(len_buf);
+    let mut buf = vec![0u8; len as usize];
+    read_exact(stream, &mut buf).await?;
+    Ok((buf, recv_time.elapsed()))
+}
+
+pub async fn read_exact<S: tokio::io::AsyncRead + Unpin>(
+    stream: &mut S,
+    buf: &mut [u8],
+) -> anyhow::Result<()> {
+    let mut offset = 0;
+    while offset < buf.len() {
+        let read_len = stream.read(&mut buf[offset..]).await?;
+        offset += read_len;
     }
+    Ok(())
 }

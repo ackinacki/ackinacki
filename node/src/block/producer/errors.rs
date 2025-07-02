@@ -23,7 +23,7 @@ impl Display for VerifyError {
                 unreachable!("Unknown verify error code")
             }
         };
-        write!(f, "{}", error_description)
+        write!(f, "{error_description}")
     }
 }
 

@@ -92,7 +92,7 @@ fn main() -> anyhow::Result<()> {
     let db_path = PathBuf::from(args.db_path);
 
     if let Err(err) = fs::create_dir_all(db_path.clone()) {
-        eprintln!("Failed to create data dir {:?}: {}", db_path, err);
+        eprintln!("Failed to create data dir {db_path:?}: {err}");
         std::process::exit(1);
     }
 
@@ -150,9 +150,9 @@ fn main() -> anyhow::Result<()> {
         println!("`node.db` is up to date");
     } else if args.schema_version.is_some() {
         if current_version < migrate_to {
-            print!("Upgrading `node.db` to the schema version {:?}... ", migrate_to);
+            print!("Upgrading `node.db` to the schema version {migrate_to:?}... ");
         } else {
-            print!("Downgrading `node.db` to the schema version {:?}... ", migrate_to);
+            print!("Downgrading `node.db` to the schema version {migrate_to:?}... ");
         }
         migrations.to_version(&mut conn, migrate_to as usize)?;
         println!("done.");
@@ -166,9 +166,9 @@ fn main() -> anyhow::Result<()> {
         println!("`node-archive.db` is up to date");
     } else if args.arc_schema_version.is_some() {
         if current_arc_version < migrate_arc_to {
-            print!("Upgrading `node-archive.db` to the schema version {:?}... ", migrate_arc_to);
+            print!("Upgrading `node-archive.db` to the schema version {migrate_arc_to:?}... ");
         } else {
-            print!("Downgrading `node-archive.db` to the schema version {:?}... ", migrate_arc_to);
+            print!("Downgrading `node-archive.db` to the schema version {migrate_arc_to:?}... ");
         }
         migrations_arc.to_version(&mut conn_arc, migrate_arc_to as usize)?;
         println!("done.");
@@ -180,9 +180,9 @@ fn main() -> anyhow::Result<()> {
         println!("`bm-archive.db` is up to date");
     } else if args.bm.is_some() {
         if current_bm_version < migrate_bm_to {
-            print!("Upgrading `bm-archive.db` to the schema version {:?}... ", migrate_bm_to);
+            print!("Upgrading `bm-archive.db` to the schema version {migrate_bm_to:?}... ");
         } else {
-            print!("Downgrading `bm-archive.db` to the schema version {:?}... ", migrate_bm_to);
+            print!("Downgrading `bm-archive.db` to the schema version {migrate_bm_to:?}... ");
         }
         migrations_block_manager.to_version(&mut conn_bm, migrate_bm_to as usize)?;
     }

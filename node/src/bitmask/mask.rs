@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use typed_builder::TypedBuilder;
 
-#[derive(TypedBuilder, Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(TypedBuilder, Clone, Default, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Bitmask<TBitsSource> {
     mask_bits: TBitsSource,
     meaningful_mask_bits: TBitsSource,
@@ -74,7 +74,7 @@ mod tests {
                 }
                 bit = bit >> 1;
             }
-            write!(f, "<mask:{}>", mask)
+            write!(f, "<mask:{mask}>")
         }
     }
 

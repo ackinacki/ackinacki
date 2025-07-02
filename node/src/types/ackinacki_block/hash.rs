@@ -26,7 +26,7 @@ pub fn compare_hashes(lhs: &Sha256Hash, rhs: &Sha256Hash) -> Ordering {
 pub(crate) fn debug_hash(hash: &Sha256Hash) -> String {
     let mut result = String::new();
     for byte in hash {
-        result = format!("{}{:02X}", result, byte);
+        result = format!("{result}{byte:02X}");
     }
     result
 }

@@ -5,7 +5,9 @@
 	LDU 64 ; pubkey timestamp c4
 	LDU 1 ; ctor flag
 	LDU 32
+	LDREF
 	ENDS
+	SETGLOB 11
 	SETGLOB 10
 	SETGLOB 6
 	SETGLOB 3
@@ -13,6 +15,7 @@
 }
 
 .fragment c7_to_c4, {
+	GETGLOB 11
 	GETGLOB 10
 	GETGLOB 3
 	GETGLOB 2
@@ -21,25 +24,26 @@
 	STU 64
 	STONE
 	STU 32
+	STREF
 	ENDC
 	POPROOT
 }
 
 .fragment getTokens_aa6ca808_internal, {
-	.loc helloWorld.sol, 169
+	.loc hello_wasm.sol, 191
 	GETPARAM 7
 	FIRST
 	PUSHINT 100000000000
 	GREATER
 	IFRET
-	.loc helloWorld.sol, 172
+	.loc hello_wasm.sol, 194
 	PUSHINT 100000000000
 	MINTSHELL
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 0
 }
 
 .fragment callExtTouch_347a50dc_internal, {
-	.loc helloWorld.sol, 110
+	.loc hello_wasm.sol, 132
 	GETGLOB 5
 	DUP
 	ISNULL
@@ -51,13 +55,13 @@
 	GETGLOB 2
 	EQUAL
 	THROWIFNOT 102
-	.loc helloWorld.sol, 111
+	.loc hello_wasm.sol, 133
 	ACCEPT
-	.loc helloWorld.sol, 112
+	.loc hello_wasm.sol, 134
 	CALLREF {
 		.inline getTokens_aa6ca808_internal
 	}
-	.loc helloWorld.sol, 113
+	.loc hello_wasm.sol, 135
 	NEWC
 	STSLICECONST x62_
 	STSLICE
@@ -66,7 +70,23 @@
 	ENDC
 	PUSHINT 0
 	SENDRAWMSG
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 0
+}
+
+.fragment upd_only_time_in_c4, {
+	PUSHROOT
+	CTOS
+	LDU 256
+	LDU 64
+	NIP
+	GETGLOB 3
+	ROT
+	NEWC
+	STU 256
+	STU 64
+	STSLICE
+	ENDC
+	POPROOT
 }
 
 .fragment callExtTouch, {
@@ -78,7 +98,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc helloWorld.sol, 107
+	.loc hello_wasm.sol, 129
 	OVER
 	PUSHCONT {
 		LDREF
@@ -88,12 +108,12 @@
 	IF
 	LDMSGADDR
 	ENDS
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 0
 	CALLREF {
 		.inline callExtTouch_347a50dc_internal
 	}
 	IFREF {
-		.inline c7_to_c4
+		.inline upd_only_time_in_c4
 	}
 	THROW 0
 }
@@ -109,17 +129,17 @@
 	THROWIF 51
 	LDU 64
 	ENDS
-	.loc helloWorld.sol, 22
+	.loc hello_wasm.sol, 22
 	CNVRTSHELLQ
-	.loc helloWorld.sol, 25
+	.loc hello_wasm.sol, 25
 	GETGLOB 2
 	THROWIFNOT 101
-	.loc helloWorld.sol, 30
+	.loc hello_wasm.sol, 30
 	ACCEPT
-	.loc helloWorld.sol, 33
+	.loc hello_wasm.sol, 33
 	NOW
 	SETGLOB 10
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 0
 	CALLREF {
 		.inline c7_to_c4
 	}
@@ -127,13 +147,13 @@
 }
 
 .fragment deployNewContract_e6e22826_internal, {
-	.loc helloWorld.sol, 158
+	.loc hello_wasm.sol, 180
 	ACCEPT
-	.loc helloWorld.sol, 159
+	.loc hello_wasm.sol, 181
 	CALLREF {
 		.inline getTokens_aa6ca808_internal
 	}
-	.loc helloWorld.sol, 160
+	.loc hello_wasm.sol, 182
 	PUSH S2
 	HASHCU
 	NEWC
@@ -141,7 +161,7 @@
 	STU 256
 	ENDC
 	CTOS
-	.loc helloWorld.sol, 161
+	.loc hello_wasm.sol, 183
 	ROT
 	UFITS 120
 	SWAP
@@ -181,72 +201,72 @@
 	ENDC
 	PUSHINT 0
 	SENDRAWMSG
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 0
 }
 
 .fragment deployNewContract, {
 	DROP
 	GETGLOB 6
 	THROWIFNOT 76
-	.loc helloWorld.sol, 150
+	.loc hello_wasm.sol, 172
 	LDREF
 	LDU 128
 	LDREF
 	ENDS
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 0
 	CALLREF {
 		.inline deployNewContract_e6e22826_internal
 	}
 	IFREF {
-		.inline c7_to_c4
+		.inline upd_only_time_in_c4
 	}
 	THROW 0
 }
 
 .fragment exchangeToken_53d168e3_internal, {
-	.loc helloWorld.sol, 39
+	.loc hello_wasm.sol, 39
 	ACCEPT
-	.loc helloWorld.sol, 40
+	.loc hello_wasm.sol, 40
 	CALLREF {
 		.inline getTokens_aa6ca808_internal
 	}
-	.loc helloWorld.sol, 41
+	.loc hello_wasm.sol, 41
 	CNVRTSHELLQ
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 0
 }
 
 .fragment exchangeToken, {
 	DROP
 	GETGLOB 6
 	THROWIFNOT 76
-	.loc helloWorld.sol, 38
+	.loc hello_wasm.sol, 38
 	LDU 64
 	ENDS
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 0
 	CALLREF {
 		.inline exchangeToken_53d168e3_internal
 	}
 	IFREF {
-		.inline c7_to_c4
+		.inline upd_only_time_in_c4
 	}
 	THROW 0
 }
 
 .fragment renderHelloWorld_942ae0a7_internal, {
-	.loc helloWorld.sol, 47
+	.loc hello_wasm.sol, 47
 	PUSHREF {
 		.blob x68656c6c6f576f726c64
 	}
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 0
 }
 
 .fragment renderHelloWorld, {
 	DROP
 	GETGLOB 6
 	THROWIFNOT 76
-	.loc helloWorld.sol, 46
+	.loc hello_wasm.sol, 46
 	ENDS
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 0
 	CALLREF {
 		.inline renderHelloWorld_942ae0a7_internal
 	}
@@ -273,19 +293,17 @@
 	}
 	IFELSE
 	IFREF {
-		.inline c7_to_c4
+		.inline upd_only_time_in_c4
 	}
 	THROW 0
 }
 
-.fragment runWasm_c6596f46_internal, {
-	.loc helloWorld.sol, 54
-	ACCEPT
-	.loc helloWorld.sol, 55
+.fragment runWasm_449543f3_internal, {
+	.loc hello_wasm.sol, 55
 	CALLREF {
 		.inline getTokens_aa6ca808_internal
 	}
-	.loc helloWorld.sol, 60
+	.loc hello_wasm.sol, 60
 	NEWC
 	STREF
 	ENDC
@@ -301,19 +319,28 @@
 	NEWC
 	STREF
 	ENDC
+	ROLL 4
+	NEWC
+	STREF
+	ENDC
 	RUNWASM
-	.loc helloWorld.sol, 61
+	.loc hello_wasm.sol, 61
 	CALLREF {
 		.inline c7_to_c4
 	}
 	COMMIT
-	.loc helloWorld.sol, 62
+	.loc hello_wasm.sol, 62
 	PRINTSTR x726573756c74206163717569726564
-	.loc helloWorld.sol, 65
+	.loc hello_wasm.sol, 65
 	CTOS
 	LDREF
 	ENDS
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 68
+	DUP
+	SETGLOB 11
+	.loc hello_wasm.sol, 69
+	ACCEPT
+	.loc hello_wasm.sol, 0
 }
 
 .fragment runWasm, {
@@ -325,15 +352,19 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc helloWorld.sol, 52
+	.loc hello_wasm.sol, 53
 	LDREF
 	LDREF
 	LDREF
 	LDREF
 	ENDS
-	.loc helloWorld.sol, 0
+	CTOS
+	LDREF
+	LDREF
+	ENDS
+	.loc hello_wasm.sol, 0
 	CALLREF {
-		.inline runWasm_c6596f46_internal
+		.inline runWasm_449543f3_internal
 	}
 	OVER
 	PUSHCONT {
@@ -346,7 +377,121 @@
 		NEWC
 		STSLICECONST xc
 		STSLICE
-		PUSHINT 3629407716
+		PUSHINT 2764294501
+		STUR 130
+		STREF
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment runWasmConcatMultiarg_be417fbd_internal, {
+	.loc hello_wasm.sol, 75
+	CALLREF {
+		.inline getTokens_aa6ca808_internal
+	}
+	.loc hello_wasm.sol, 80
+	NEWC
+	STREF
+	ENDC
+	SWAP
+	NEWC
+	STREF
+	ENDC
+	ROT
+	NEWC
+	STREF
+	ENDC
+	ROLL 3
+	NEWC
+	STREF
+	ENDC
+	ROLL 4
+	NEWC
+	STREF
+	ENDC
+	ROLL 5
+	NEWC
+	STREF
+	ENDC
+	ROLL 6
+	NEWC
+	STREF
+	ENDC
+	ROLL 7
+	NEWC
+	STREF
+	ENDC
+	RUNWASMCONCATMULTIARG
+	.loc hello_wasm.sol, 81
+	CALLREF {
+		.inline c7_to_c4
+	}
+	COMMIT
+	.loc hello_wasm.sol, 82
+	PRINTSTR x726573756c74206163717569726564
+	.loc hello_wasm.sol, 85
+	CTOS
+	LDREF
+	ENDS
+	.loc hello_wasm.sol, 88
+	DUP
+	SETGLOB 11
+	.loc hello_wasm.sol, 89
+	ACCEPT
+	.loc hello_wasm.sol, 0
+}
+
+.fragment runWasmConcatMultiarg, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc hello_wasm.sol, 73
+	LDREF
+	LDREF
+	LDREF
+	LDREF
+	ENDS
+	CTOS
+	LDREF
+	LDREF
+	LDREF
+	LDREF
+	ENDS
+	CTOS
+	LDREF
+	LDREF
+	ENDS
+	.loc hello_wasm.sol, 0
+	CALLREF {
+		.inline runWasmConcatMultiarg_be417fbd_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 4054750428
 		STUR 130
 		STREF
 		ENDC
@@ -364,7 +509,7 @@
 }
 
 .fragment sendShell_77e2a3b5_internal, {
-	.loc helloWorld.sol, 133
+	.loc hello_wasm.sol, 155
 	GETGLOB 5
 	DUP
 	ISNULL
@@ -376,13 +521,13 @@
 	GETGLOB 2
 	EQUAL
 	THROWIFNOT 102
-	.loc helloWorld.sol, 134
+	.loc hello_wasm.sol, 156
 	ACCEPT
-	.loc helloWorld.sol, 135
+	.loc hello_wasm.sol, 157
 	CALLREF {
 		.inline getTokens_aa6ca808_internal
 	}
-	.loc helloWorld.sol, 139
+	.loc hello_wasm.sol, 161
 	PUSHINT 2
 	NULL
 	NEWC
@@ -391,7 +536,7 @@
 	ROTREV
 	PUSHINT 32
 	DICTUSETB
-	.loc helloWorld.sol, 141
+	.loc hello_wasm.sol, 163
 	SWAP
 	NEWC
 	STSLICECONST x62_
@@ -406,7 +551,7 @@
 	ENDC
 	PUSHINT 1
 	SENDRAWMSG
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 0
 }
 
 .fragment sendShell, {
@@ -418,7 +563,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc helloWorld.sol, 132
+	.loc hello_wasm.sol, 154
 	OVER
 	PUSHCONT {
 		LDREF
@@ -429,18 +574,18 @@
 	LDMSGADDR
 	LDU 128
 	ENDS
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 0
 	CALLREF {
 		.inline sendShell_77e2a3b5_internal
 	}
 	IFREF {
-		.inline c7_to_c4
+		.inline upd_only_time_in_c4
 	}
 	THROW 0
 }
 
 .fragment sendVMShell_e1519e7b_internal, {
-	.loc helloWorld.sol, 122
+	.loc hello_wasm.sol, 144
 	GETGLOB 5
 	DUP
 	ISNULL
@@ -452,13 +597,13 @@
 	GETGLOB 2
 	EQUAL
 	THROWIFNOT 102
-	.loc helloWorld.sol, 123
+	.loc hello_wasm.sol, 145
 	ACCEPT
-	.loc helloWorld.sol, 124
+	.loc hello_wasm.sol, 146
 	CALLREF {
 		.inline getTokens_aa6ca808_internal
 	}
-	.loc helloWorld.sol, 126
+	.loc hello_wasm.sol, 148
 	SWAP
 	UFITS 120
 	ROTREV
@@ -474,7 +619,7 @@
 	ENDC
 	PUSHINT 0
 	SENDRAWMSG
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 0
 }
 
 .fragment sendVMShell, {
@@ -486,7 +631,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc helloWorld.sol, 121
+	.loc hello_wasm.sol, 143
 	OVER
 	PUSHCONT {
 		LDREF
@@ -498,12 +643,12 @@
 	LDU 128
 	LDI 1
 	ENDS
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 0
 	CALLREF {
 		.inline sendVMShell_e1519e7b_internal
 	}
 	IFREF {
-		.inline c7_to_c4
+		.inline upd_only_time_in_c4
 	}
 	THROW 0
 }
@@ -530,16 +675,16 @@
 }
 
 .fragment touch_a55526db_internal, {
-	.loc helloWorld.sol, 99
+	.loc hello_wasm.sol, 121
 	ACCEPT
-	.loc helloWorld.sol, 100
+	.loc hello_wasm.sol, 122
 	CALLREF {
 		.inline getTokens_aa6ca808_internal
 	}
-	.loc helloWorld.sol, 102
+	.loc hello_wasm.sol, 124
 	NOW
 	SETGLOB 10
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 0
 }
 
 .fragment touch, {
@@ -551,9 +696,9 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc helloWorld.sol, 97
+	.loc hello_wasm.sol, 119
 	ENDS
-	.loc helloWorld.sol, 0
+	.loc hello_wasm.sol, 0
 	CALLREF {
 		.inline touch_a55526db_internal
 	}
@@ -563,9 +708,30 @@
 	THROW 0
 }
 
+.fragment wasmResSaved, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 11
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000c047e3a4
+		NEWC
+		STSLICE
+		STREF
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
 .fragment public_function_selector, {
 	DUP
-	PUSHINT 925969989
+	PUSHINT 658004325
 	LEQ
 	IFJMPREF {
 		DUP
@@ -581,16 +747,16 @@
 			.inline sendShell
 		}
 		DUP
+		PUSHINT 616810853
+		EQUAL
+		IFJMPREF {
+			.inline runWasm
+		}
+		DUP
 		PUSHINT 658004325
 		EQUAL
 		IFJMPREF {
 			.inline deployNewContract
-		}
-		DUP
-		PUSHINT 925969989
-		EQUAL
-		IFJMPREF {
-			.inline touch
 		}
 	}
 	DUP
@@ -598,10 +764,16 @@
 	LEQ
 	IFJMPREF {
 		DUP
-		PUSHINT 1481924068
+		PUSHINT 925969989
 		EQUAL
 		IFJMPREF {
-			.inline runWasm
+			.inline touch
+		}
+		DUP
+		PUSHINT 1078453156
+		EQUAL
+		IFJMPREF {
+			.inline wasmResSaved
 		}
 		DUP
 		PUSHINT 1746396469
@@ -625,6 +797,12 @@
 		EQUAL
 		IFJMPREF {
 			.inline constructor
+		}
+		DUP
+		PUSHINT 1907266780
+		EQUAL
+		IFJMPREF {
+			.inline runWasmConcatMultiarg
 		}
 		DUP
 		PUSHINT 1993511324
@@ -717,24 +895,12 @@
 
 .fragment default_data_cell, {
 	PUSHREF {
-		.blob x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000004_
 	}
-}
-
-.fragment upd_only_time_in_c4, {
-	PUSHROOT
-	CTOS
-	LDU 256
-	LDU 64
-	NIP
-	GETGLOB 3
-	ROT
 	NEWC
-	STU 256
-	STU 64
-	STSLICE
+	PUSHINT 353
+	STZEROES
+	STREF
 	ENDC
-	POPROOT
 }
 
 .fragment onTickTock, {
@@ -752,7 +918,7 @@
 		.code-dict-cell 32, {
 		}
 		.cell { ; version
-			.blob x736f6c20302e37372e32 ; sol 0.77.2
+			.blob x736f6c20302e37382e32 ; sol 0.78.2
 		}
 	}
 	POPCTR c3

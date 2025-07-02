@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use tokio::io::AsyncReadExt;
@@ -15,15 +16,13 @@ use wtransport::quinn::TransportConfig;
 use wtransport::quinn::VarInt;
 use wtransport::Connection;
 use wtransport::Endpoint;
-use wtransport::RecvStream;
 
+use crate::tls::server_tls_config;
 use crate::wtransport::tls::create_client_config;
-use crate::wtransport::tls::server_tls_config;
 use crate::NetConnection;
 use crate::NetCredential;
 use crate::NetIncomingRequest;
 use crate::NetListener;
-use crate::NetRecvRequest;
 use crate::NetTransport;
 
 #[derive(Clone, Default)]
@@ -54,7 +53,7 @@ impl NetTransport for WTransport {
         let mut quic_transport_config = TransportConfig::default();
         quic_transport_config.max_concurrent_uni_streams(VarInt::from_u32(1_000));
 
-        let tls_config = server_tls_config(self.debug_tls_mode, &credential)?;
+        let tls_config = server_tls_config(self.debug_tls_mode, &credential, alpn_supported)?;
 
         let mut server_config = wtransport::ServerConfig::builder()
             .with_bind_address(bind_addr)
@@ -92,8 +91,11 @@ impl NetTransport for WTransport {
         credential: NetCredential,
     ) -> anyhow::Result<Self::Connection> {
         let local_identity = credential.identity();
-        let endpoint =
-            wtransport::Endpoint::client(create_client_config(self.debug_tls_mode, &credential)?)?;
+        let endpoint = wtransport::Endpoint::client(create_client_config(
+            self.debug_tls_mode,
+            &credential,
+            alpn_preferred,
+        )?)?;
         let connection = endpoint
             .connect(
                 ConnectOptions::builder(format!("https://{addr}"))
@@ -165,19 +167,6 @@ impl NetIncomingRequest for WTransportIncomingRequest {
     }
 }
 
-pub struct WTransportRecvRequest {
-    stream: RecvStream,
-}
-
-#[async_trait]
-impl NetRecvRequest for WTransportRecvRequest {
-    async fn recv(mut self) -> anyhow::Result<Vec<u8>> {
-        let mut data = Vec::new();
-        self.stream.read_to_end(&mut data).await?;
-        Ok(data)
-    }
-}
-
 #[derive(Clone)]
 pub struct WTransportConnection {
     connection: Connection,
@@ -188,8 +177,6 @@ pub struct WTransportConnection {
 
 #[async_trait]
 impl NetConnection for WTransportConnection {
-    type RecvRequest = WTransportRecvRequest;
-
     fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
@@ -226,9 +213,12 @@ impl NetConnection for WTransportConnection {
         self.connection.close((code as u32).into(), b"");
     }
 
-    async fn accept_recv(&self) -> anyhow::Result<Self::RecvRequest> {
-        let stream = self.connection.accept_uni().await?;
-        Ok(WTransportRecvRequest { stream })
+    async fn recv(&self) -> anyhow::Result<(Vec<u8>, Duration)> {
+        let recv_time = Instant::now();
+        let mut stream = self.connection.accept_uni().await?;
+        let mut data = Vec::new();
+        stream.read_to_end(&mut data).await?;
+        Ok((data, recv_time.elapsed()))
     }
 
     async fn watch_close(&self) {

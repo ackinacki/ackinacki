@@ -308,7 +308,7 @@ impl Display for ExtMsgFeedbackList {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         let mut list = f.debug_list();
         for feedback in &self.0 {
-            list.entry(&format_args!("{}", feedback));
+            list.entry(&format_args!("{feedback}"));
         }
         list.finish()
     }

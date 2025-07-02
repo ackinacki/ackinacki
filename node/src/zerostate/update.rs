@@ -244,26 +244,31 @@ impl ZeroState {
         data.hash().map_err(|e| anyhow::format_err!("{e}"))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_block_keeper(
         &mut self,
         wallet_address: String,
         pubkey: String,
-        epoch_finish_timestamp: u32,
+        epoch_finish_seq_no: u64,
         stake: BigUint,
         thread_id: ThreadIdentifier,
         signer_index: SignerIndex,
+        owner_pubkey: String,
     ) {
         let wallet_address = AccountId::from_string(&wallet_address).unwrap();
+        let owner_pubkey =
+            UInt256::from_str(&owner_pubkey).expect("Failed to load owner_pubkey from str");
         self.block_keeper_set.entry(thread_id).or_default().insert(
             signer_index,
             BlockKeeperData {
                 pubkey: PubKey::from_str(&pubkey).expect("Failed to load pubkey from str"),
-                epoch_finish_timestamp,
+                epoch_finish_seq_no: Some(epoch_finish_seq_no),
                 status: BlockKeeperStatus::Active,
                 address: String::new(),
                 stake,
                 owner_address: AccountAddress(wallet_address),
                 signer_index,
+                owner_pubkey: owner_pubkey.inner(),
             },
         );
     }

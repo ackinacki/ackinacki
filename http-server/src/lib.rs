@@ -88,7 +88,7 @@ where
         let storage_latest_router = Router::with_path("storage_latest")
             .get(api::StorageLatestHandler::new(self.local_storage_dir.clone()));
         // Returns selected shard state
-        let storage_router = Router::with_path("storage/<**path>")
+        let storage_router = Router::with_path("storage/{*path}")
             .get(StaticDir::new([&self.local_storage_dir]).auto_list(true));
 
         // Process inbound external messages
@@ -131,6 +131,13 @@ where
             .push(bk_set_router);
 
         let router_v2 = Router::with_path("v2").push(ext_messages_router_v2);
+        // `combined_router_bk` routes:
+        // /bk/v1/storage_latest
+        // /bk/v1/storage/<**path>
+        // /bk/v1/messages
+        // /bk/v1/bk_set
+        // /bk/v2/messages
+        let combined_router_bk = Router::new().path("bk").push(router_v1).push(router_v2);
 
         let router_account =
             Router::with_path("account").hoop(auth).get(api::BocByAddressHandler::<
@@ -140,14 +147,15 @@ where
                 TBMLicensePubkeyLoader,
                 TBocByAddrGetter,
             >::new());
+        // `combined_router_bare_v2` routes:
+        // /v2/account?address=<address>
+        let combined_router_bare_v2 = Router::new().path("v2").push(router_account);
 
         Router::new() //
             .hoop(Logger::new())
             .hoop(affix_state::inject(self.clone()))
-            .path("bk")
-            .push(router_v1)
-            .push(router_v2)
-            .push(router_account)
+            .push(combined_router_bk)
+            .push(combined_router_bare_v2)
     }
 
     #[must_use = "server run must be awaited twice (first await is to prepare run call)"]

@@ -38,7 +38,7 @@ rustls = { version = "0.23.19", default-features = false, features = ["ring", "s
 rustls-pemfile = "2.2.0"
 serde_yaml = "0.9.34"
 tempfile = "3.14.0"
-tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+tracing-subscriber.workspace = true
 url = "2.5.4"
 
 [dev-dependencies]

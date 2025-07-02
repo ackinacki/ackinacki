@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use derive_debug::Dbg;
 use parking_lot::Mutex;
 
 use crate::bls::envelope::Envelope;
@@ -23,8 +24,9 @@ pub type UnfinalizedBlocksSnapshot =
 
 impl AllowGuardedMut for UnfinalizedBlocksSnapshot {}
 
-#[derive(Default)]
+#[derive(Default, Dbg)]
 pub struct UnfinalizedBlocksData {
+    #[dbg(skip)]
     main_map: UnfinalizedBlocksSnapshot,
     identifier_to_seqno: HashMap<BlockIdentifier, BlockSeqNo>,
 }
@@ -57,10 +59,11 @@ impl UnfinalizedBlocksData {
 }
 
 #[allow(clippy::mutable_key_type)]
-#[derive(Clone)]
+#[derive(Clone, Dbg)]
 // DO NOT ALLOW DEFAULTS. Requires notifications from a common repo set.
 pub struct UnfinalizedCandidateBlockCollection {
     candidates: Arc<Mutex<UnfinalizedBlocksData>>,
+    #[dbg(skip)]
     notifications: Arc<AtomicU32>,
 }
 

@@ -42,7 +42,7 @@ impl NetMessage {
     }
 
     pub fn encode<Message: Debug + Serialize>(message: &Message) -> anyhow::Result<(Self, usize)> {
-        let label = format!("{:#?}", message);
+        let label = format!("{message:#?}");
         let start = Instant::now();
         let mut data = match bincode::serialize(message) {
             Ok(data) => data,

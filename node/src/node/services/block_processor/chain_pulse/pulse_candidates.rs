@@ -6,6 +6,7 @@ use typed_builder::TypedBuilder;
 
 use crate::node::associated_types::NodeIdentifier;
 use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
+use crate::node::NetDirectSender;
 use crate::node::NetworkMessage;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
@@ -14,11 +15,14 @@ use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 
 #[derive(TypedBuilder)]
+#[allow(dead_code)]
 pub struct PulseCandidateBlocks {
     node_id: NodeIdentifier,
     thread_identifier: ThreadIdentifier,
 
     broadcast_tx: NetBroadcastSender<NetworkMessage>,
+
+    direct_send_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
 
     #[builder(setter(skip), default=None)]
     last_finalized_block: Option<BlockSeqNo>,
@@ -79,10 +83,12 @@ impl PulseCandidateBlocks {
         // setting last_broadcast_timestamp twice. Once before messages sent
         // and at the end with an extra buffer (offset by the number of messages).
         self.last_broadcast_timestamp = Instant::now();
+
         let (finalized_block_id, _) = blocks_repository
             .select_thread_last_finalized_block(&self.thread_identifier)?
             .expect("Must be known here");
-        let Some(finalized_block) = blocks_repository.get_block(&finalized_block_id)? else {
+        let Some(finalized_block) = blocks_repository.get_finalized_block(&finalized_block_id)?
+        else {
             tracing::error!("Failed to load finalized block");
             return Ok(());
         };

@@ -71,12 +71,12 @@ pub fn host_id_prefix(s: &str) -> &str {
 }
 
 pub(crate) fn detailed(err: &impl Debug) -> String {
-    format!("{:#?}", err).replace("\n", "").replace("\r", "")
+    format!("{err:#?}").replace("\n", "").replace("\r", "")
 }
 
 pub fn try_parse_socket_addr(s: impl AsRef<str>, default_port: u16) -> anyhow::Result<SocketAddr> {
     let s = s.as_ref();
-    let s = if s.contains(":") { s.to_string() } else { format!("{}:{}", s, default_port) };
+    let s = if s.contains(":") { s.to_string() } else { format!("{s}:{default_port}") };
     let addr = s
         .to_socket_addrs()?
         .next()
