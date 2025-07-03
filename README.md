@@ -62,8 +62,7 @@
 ## Block Keeper Wallet Deployment
 
 ### Prerequisites
-- The **`tvm-cli`** and **`node-helper`** command-line tools must be installed.
-  Check out [this guide for installing CLI](https://dev.ackinacki.com/how-to-deploy-a-multisig-wallet#create-a-wallet-1), and [download node-helper](https://github.com/ackinacki/ackinacki/releases).
+- The [**`tvm-cli`**](https://github.com/tvmlabs/tvm-sdk/releases) command-line tool must be installed.
 
 - A deployed license contract with obtained license numbers.
   Refer to the [Working with Licenses](https://docs.ackinacki.com//protocol-participation/license/working-with-licenses) section for details.
@@ -73,7 +72,7 @@ For this example, we are using the Shellnet network.
 
 To set the appropriate network, use the following command:
 ```bash
-tvm-cli -g config --url shellnet.ackinacki.org/graphql
+tvm-cli config -g --url shellnet.ackinacki.org/graphql
 ```
 
 ### Deploy
@@ -100,6 +99,23 @@ After the script completes successfully, make sure to save:
 
 These will be required later when running the Ansible playbook.
 
+**Note:**  
+The Node Owner can update the license whitelist at any time. However, the changes will only take effect at the beginning of the next Epoch.
+
+To do this, call the `setLicenseWhiteList(mapping(uint256 => bool))` method in your Block Keeper Node Wallet contract, passing the license numbers received from the License Owners.
+
+Where:  
+* `uint256 (key)` – the license number;
+* `bool (value)` – set to `true` to **add** the license on the whitelist, or `false` to **remove** it.
+
+Example command:  
+```shell
+tvm-cli call BK_NODE_WALLET_ADDR setLicenseWhiteList \
+  '{"whiteListLicense": {"1": true, "2": true, "5": true}}' \
+  --abi acki-nacki/contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json \
+  --sign BK_NODE_OWNER_KEYS
+```
+
 ## Delegating License
 
 Before starting staking, a node must have at least one delegated license.
@@ -110,16 +126,12 @@ Learn more about [working with licenses](https://docs.ackinacki.com//protocol-pa
 If the BK Node Owner is also a License Owner, they must use the `addBKWallet(uint256 pubkey)` method in the [`License`](https://github.com/ackinacki/ackinacki/blob/main/contracts/bksystem/License.sol) contract to delegate their licenses to their node.
 (This must be done for each license contract).
 
-Where:
-
+Where:  
 * `pubkey` – the public key of the node owner, obtained in Step 4.
-
 * [`License.abi.json`](https://github.com/ackinacki/ackinacki/blob/main/contracts/bksystem/License.abi.json) – the ABI of the License contract.
-
 * `License.keys.json` – the keys obtained by the License Owner during registration in the dashboard.
 
-For example:
-
+For example:  
 ```bash
 tvm-cli -j callx --addr 0:7f2f945faaae4cce286299afe74dac9460893dd5cba1ac273b9e91f55f1141ec --abi acki-nacki/contracts/bksystem/License.abi.json --keys license_onwer/license.keys.json --method addBKWallet '{"pubkey": "0xfa4edc8b63c4e66241a57c11e0a522769ca4a4f106692512fc92f2d658169bcc"}'
 ```
@@ -247,7 +259,8 @@ The staking container is part of the Docker Compose setup and runs alongside the
 
 **Note:**  
   Stakes and rewards are denominated in [NACKL](https://docs.ackinacki.com/glossary#nack) tokens.  
-  Node receives rewards per each License delegated to it. Maximum number of licenses delegated per node is 20. 
+  Node receives rewards per each License delegated to it.  
+  Maximum number of licenses delegated per node is 20. 
 
   As a Block Keeper with an active license, you can participate in staking under special conditions: if your BK wallet balance is below the [minimum stake](https://docs.ackinacki.com/glossary#minimal-stake), you can still place a stake as long as you continue staking without interruptions and do not withdraw the received rewards.
 
@@ -340,7 +353,7 @@ To avoid losing rewards and your reputation score when stopping staking, you mus
 tvm-cli -j runx --abi acki-nacki/contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json --addr BK_NODE_WALLET_ADDR -m getDetails| jq -r '.activeStakes[] | select(.status == "1") | .seqNoFinish'
 ```
 
-You will need the ABI file [AckiNackiBlockKeeperNodeWallet.abi.json](https://raw.githubusercontent.com/gosh-sh/acki-nacki/refs/heads/refactor/fee/contracts/bksystem/AckiNackiBlockKeeperNodeWallet.sol?token=GHSAT0AAAAAADCMNSQIMA3ZIFGSUAMDQGQY2DDV64Q) to run these commands.
+You will need the ABI file [AckiNackiBlockKeeperNodeWallet.abi.json](https://raw.githubusercontent.com/ackinacki/ackinacki/refs/heads/main/contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json) to run this command.
 
 **Note:**  
   The address of the BK node wallet can be retrieved from the logs,  
