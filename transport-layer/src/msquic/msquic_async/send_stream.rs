@@ -392,7 +392,8 @@ impl StreamInner {
             exclusive.send_state = StreamSendState::StartComplete;
         }
 
-        if status.0 == msquic::StatusCode::QUIC_STATUS_STREAM_LIMIT_REACHED.into() || peer_accepted
+        if status.0 == (msquic::StatusCode::QUIC_STATUS_STREAM_LIMIT_REACHED as u32)
+            || peer_accepted
         {
             exclusive.start_waiters.drain(..).for_each(|waker| waker.wake());
         }

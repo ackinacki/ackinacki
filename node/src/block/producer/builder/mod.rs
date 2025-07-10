@@ -117,7 +117,9 @@ pub struct BlockBuilder {
     pub(crate) copyleft_rewards: CopyleftRewards,
     pub(crate) transaction_traces: HashMap<UInt256, Vec<EngineTraceInfoData>>,
 
-    pub(crate) control_rx_stop: Option<InstrumentedReceiver<()>>,
+    control_rx_stop: Option<InstrumentedReceiver<()>>,
+    is_stop_requested: bool,
+
     pub(crate) parallelization_level: usize,
     pub(crate) tx_cnt: usize,
 
@@ -143,4 +145,25 @@ pub struct BlockBuilder {
     pub(crate) accounts_that_changed_their_dapp_id:
         HashMap<AccountId, Vec<(AccountRouting, Option<WrappedAccount>)>>,
     metrics: Option<BlockProductionMetrics>,
+}
+
+impl BlockBuilder {
+    fn is_limits_reached(&mut self) -> bool {
+        if self.is_stop_requested {
+            return true;
+        }
+        if let Some(rx) = &self.control_rx_stop {
+            if rx.try_recv().is_ok() {
+                tracing::info!(target: "builder", "block builder received stop");
+                self.is_stop_requested = true;
+                return true;
+            }
+        }
+        if self.total_gas_used > self.block_gas_limit {
+            tracing::info!(target: "builder", "block builder gas limit reached");
+            true
+        } else {
+            false
+        }
+    }
 }

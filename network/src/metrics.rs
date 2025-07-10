@@ -8,6 +8,7 @@ use opentelemetry::metrics::Meter;
 use opentelemetry::metrics::ObservableGauge;
 use opentelemetry::metrics::UpDownCounter;
 use opentelemetry::KeyValue;
+use telemetry_utils::out_of_bounds_guard;
 
 use crate::transfer::TransportError;
 use crate::DeliveryPhase;
@@ -185,6 +186,7 @@ impl NetMetrics {
     }
 
     pub fn report_incoming_message_delivery_duration(&self, value: u64, msg_type: &str) {
+        out_of_bounds_guard!(value, "incoming_message_delivery_duration");
         self.incoming_message_delivery_duration.record(value, &[msg_type_attr(msg_type)]);
     }
 
@@ -203,16 +205,29 @@ impl NetMetrics {
     }
 
     pub fn report_transfer_after_ser(&self, value: u128) {
+        out_of_bounds_guard!(value, "transfer_after_ser");
         self.transfer_after_ser.record(value as u64, &[]);
     }
 
     pub fn report_receive_before_deser(&self, value: u128) {
+        out_of_bounds_guard!(value, "receive_before_deser");
         self.receive_before_deser.record(value as u64, &[]);
     }
 
     pub fn report_message_size(&self, orig_size: usize, compressed_size: usize, msg_type: &str) {
-        self.original_message_size.record(orig_size as u64, &[msg_type_attr(msg_type)]);
-        self.compressed_message_size.record(compressed_size as u64, &[msg_type_attr(msg_type)]);
+        if orig_size < 10_000_000 {
+            self.original_message_size.record(orig_size as u64, &[msg_type_attr(msg_type)]);
+        } else {
+            tracing::warn!("Metric: original_message_size: value {orig_size} is out of bounds");
+        }
+
+        if compressed_size < 10_000_000 {
+            self.compressed_message_size.record(compressed_size as u64, &[msg_type_attr(msg_type)]);
+        } else {
+            tracing::warn!(
+                "Metric: compressed_message_size: value {compressed_size} is out of bounds"
+            );
+        }
     }
 
     pub fn report_gossip_peers(&self, peers: usize, live_nodes_total: u64) {
@@ -249,6 +264,7 @@ impl NetMetrics {
         send_mode: SendMode,
     ) {
         self.update_delivery_phase_counter(phase, msg_count as isize);
+
         if matches!(phase, DeliveryPhase::OutgoingBuffer) {
             self.outgoing_buffer_counter.add(msg_count as i64, &attrs(msg_type, send_mode));
         }
@@ -263,20 +279,27 @@ impl NetMetrics {
         duration: Duration,
     ) {
         self.update_delivery_phase_counter(phase, -(msg_count as isize));
+
         let duration = duration.as_millis() as u64;
         let attrs = attrs(msg_type, send_mode);
         match phase {
             DeliveryPhase::OutgoingBuffer => {
                 self.outgoing_buffer_counter.add(-(msg_count as i64), &attrs);
+
+                out_of_bounds_guard!(duration, "outgoing_buffer_duration");
                 self.outgoing_buffer_duration.record(duration, &attrs);
             }
             DeliveryPhase::OutgoingTransfer => {
                 self.outgoing_message.add(1, &attrs);
+
+                out_of_bounds_guard!(duration, "outgoing_transfer_duration");
                 self.outgoing_transfer_duration.record(duration, &attrs);
             }
             DeliveryPhase::IncomingTransfer => {}
             DeliveryPhase::IncomingBuffer => {
                 self.incoming_message.add(1, &[msg_type_attr(msg_type)]);
+
+                out_of_bounds_guard!(duration, "incoming_buffer_duration");
                 self.incoming_buffer_duration.record(duration, &attrs);
             }
         }

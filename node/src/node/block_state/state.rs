@@ -35,8 +35,8 @@ use crate::utilities::guarded::AllowGuardedMut;
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Copy)]
 pub struct AttestationsTarget {
     pub descendant_generations: usize, // = beta + 1, Check if it is useful
-    pub attestations_target: usize,
-    pub min_attestations_target: usize,
+    pub main_attestations_target: usize,
+    pub fallback_attestations_target: usize,
 }
 
 // The main point of this structure is to collect signals from
@@ -212,7 +212,7 @@ pub struct AckiNackiBlockState {
     // It is intentionally made this way since it requires syncronization between other
     // potential children.
     // Note: Setter is enabled due to the protocol changes: #[setters(skip)]
-    pub(super) attestation: Option<Envelope<GoshBLS, AttestationData>>,
+    attestation: Option<Envelope<GoshBLS, AttestationData>>,
 
     retracted_attestation: Option<Envelope<GoshBLS, NackData>>,
 

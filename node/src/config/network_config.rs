@@ -41,6 +41,20 @@ pub struct NetworkConfig {
     #[serde(default)]
     pub my_key: PathBuf,
 
+    /// Optional secret key of the block keeper's owner wallet key pair.
+    /// Should be represented as a 64-char hex.
+    /// If specified, then owner_key_path should be omitted.
+    #[builder(default = None)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub my_ed_key_secret: Option<String>,
+
+    /// Optional path to the block keeper's owner wallet key file.
+    /// Should be stored as json `{ "public": "64-char hex", "secret": "64-char hex" }`.
+    /// If specified, then owner_key_secret should be omitted.
+    #[builder(default = None)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub my_ed_key_path: Option<String>,
+
     /// Subscribes.
     ///
     /// Node uses a subscribes to subscribe for blocks and other broadcast protocol messages.
@@ -69,6 +83,12 @@ pub struct NetworkConfig {
     #[builder(default)]
     #[serde(default)]
     pub peer_certs: Vec<PathBuf>,
+
+    /// Files and directories with TLS certificates (*.ca.pem), required to verify
+    /// server certificate when node establish client connection to other node or proxy.
+    #[builder(default)]
+    #[serde(default, with = "transport_layer::hex_verifying_keys")]
+    pub peer_ed_pubkeys: Vec<transport_layer::VerifyingKey>,
 
     /// Public node socket address that will be advertised with gossip (QUIC
     /// UDP).

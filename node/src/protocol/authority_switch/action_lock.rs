@@ -588,10 +588,12 @@ impl Authority {
             return OnNextRoundIncomingRequestResult::Reject((
                 NextRoundReject::builder()
                     .thread_identifier(*thread_identifier)
-                    .known_locked_block(
+                    .prefinalized_block(
                         NetBlock::with_envelope(prefinalized_block.as_ref()).unwrap(),
                     )
-                    .known_attestations(prefinalized.guarded(|e| e.prefinalization_proof().clone()))
+                    .proof_of_prefinalization(
+                        prefinalized.guarded(|e| e.prefinalization_proof().clone().unwrap()),
+                    )
                     .build(),
                 node_id,
             ));
@@ -877,7 +879,7 @@ impl Authority {
         todo!("Watch");
     }
 
-    pub fn on_next_round_success(&mut self, _message: NextRoundSuccess) {
+    pub fn on_next_round_success(&mut self, next_round_success: &NextRoundSuccess) {
         // the happy path implementation is in node/execute.
         // - double check that the parent block prefinalized is the same.
         //   if this node didn't have parent prefinalized check the proof and add it for the parent.
@@ -901,44 +903,92 @@ impl Authority {
         // "check that the block is produced and signed by the correct bp accordint to the round"
         // );
         // todo!("ensure all nacks included");
-        // let block_height = todo!("Get the height of the block in this thread!");
-        //
-        // let current_lock = self
-        // .action_lock
-        // .entry(block_height)
-        // .and_modify(|e| {
-        // if *e.locked_round() < round {
-        // e.set_locked_round(round);
-        // e.set_locked_block(BlockRef {
-        // block_seq_no: proposed_block.data().seq_no(),
-        // block_identifier: proposed_block.data().identifier(),
-        // });
-        // }
-        // })
-        // .or_insert_with(|| {
-        // let parent_block_producer_selector_data = todo!("Get from the block state");
-        // ActionLock::builder()
-        // .parent_prefinalization_proof(
-        // parent_block
-        // .guarded(|e| e.prefinalization_proof().clone())
-        // .expect("prefinalization_proof must be set"),
-        // )
-        // .parent_block_producer_selector_data(parent_block_producer_selector_data)
-        // .parent_block(BlockRef::try_from(&parent_block).unwrap())
-        // .locked_round(round)
-        // .locked_block(Some(
-        // BlockRef::builder()
-        // .block_identifier(proposed_block.data().identifier())
-        // .block_seq_no(proposed_block.data().seq_no())
-        // .build(),
-        // ))
-        // .locked_nacks(vec![])
-        // .current_round(round)
-        // .current_block_producer(todo!())
-        // .build()
-        // });
+
+        let block_height = next_round_success.block_height();
+        let round = *next_round_success.round();
+        let Ok(proposed_block) = next_round_success.proposed_block().get_envelope() else {
+            tracing::error!("Incoming next round success contains invalid proposed block");
+            return;
+        };
+
+        let parent_id = proposed_block.data().parent();
+        let parent_state =
+            self.block_state_repository.get(&parent_id).expect("must have parent block state");
+        let Some(parent_state_prefinalization_proof) =
+            parent_state.guarded(|e| e.prefinalization_proof().clone())
+        else {
+            tracing::trace!("Incoming next round success failure: parent block ({parent_id:?}) has no prefinalization proof");
+            return;
+        };
+
+        let Some(parent_producer_selector) =
+            parent_state.guarded(|e| e.producer_selector_data().clone())
+        else {
+            tracing::trace!("Incoming next round success failure: parent block ({parent_id:?}) has no producer_selector_data");
+            return;
+        };
+
+        // TODO: check that proposed block envelope common section contains confirmed bad block nacks
+        // let nacked_blocks_bad_block = self
+        //     .confirmed_bad_block_nacks
+        //     .get(
+        //         &SiblingsBlockHeightKey::builder()
+        //             .parent_block_identifier(lock.parent_block().clone())
+        //             .height(block_height)
+        //             .build(),
+        //     )
+        //     .cloned()
+        //     .unwrap_or_default();
+        let envelope_nacks = HashSet::from_iter(
+            proposed_block
+                .data()
+                .get_common_section()
+                .nacks
+                .iter()
+                .map(|e| e.data().block_id.clone()),
+        );
+
+        self.action_lock
+            .entry(*block_height)
+            .and_modify(|e| {
+                if *e.locked_round() < round {
+                    e.set_locked_round(round);
+                    e.set_locked_block(BlockRef {
+                        block_seq_no: proposed_block.data().seq_no(),
+                        block_identifier: proposed_block.data().identifier().clone(),
+                    });
+                    e.set_locked_bad_block_nacks(envelope_nacks.clone());
+                }
+                if *e.locked_round() == round {
+                    let winner = BlockRef {
+                        block_seq_no: proposed_block.data().seq_no(),
+                        block_identifier: proposed_block.data().identifier().clone(),
+                    };
+                    if e.locked_block() != &Some(winner.clone()) {
+                        e.set_locked_round(round + 1);
+                        e.set_locked_block(winner);
+                        e.set_locked_bad_block_nacks(envelope_nacks.clone());
+                    }
+                }
+            })
+            .or_insert_with(|| {
+                ActionLock::builder()
+                    .parent_prefinalization_proof(Some(parent_state_prefinalization_proof))
+                    .parent_block_producer_selector_data(parent_producer_selector)
+                    .parent_block(BlockRef::try_from(&parent_state).unwrap())
+                    .locked_round(round)
+                    .locked_block(Some(
+                        BlockRef::builder()
+                            .block_identifier(proposed_block.data().identifier())
+                            .block_seq_no(proposed_block.data().seq_no())
+                            .build(),
+                    ))
+                    .locked_bad_block_nacks(envelope_nacks)
+                    .current_round(round)
+                    .build()
+            });
         // Note:
-        todo!("Push the proposed block for processing");
+        // todo!("Push the proposed block for processing");
     }
 
     fn path_to(&self, height: &BlockHeight) -> PathBuf {

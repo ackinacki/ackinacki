@@ -10,11 +10,16 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub use blockchain_config::*;
+use network::pub_sub::CertFile;
+use network::pub_sub::CertStore;
+use network::pub_sub::PrivateKeyFile;
+use network::resolver::GossipPeer;
 pub use network_config::NetworkConfig;
 use serde::Deserialize;
 use serde::Serialize;
 pub use serde_config::load_config_from_file;
 pub use serde_config::save_config_to_file;
+use transport_layer::TlsCertCache;
 use typed_builder::TypedBuilder;
 
 use crate::node::NodeIdentifier;
@@ -42,7 +47,7 @@ pub struct GlobalConfig {
 
     /// Maximum execution duration of one transaction verification in milliseconds.
     /// Applied to transactions that was aborted with ExceptionCode::ExecutionTimeout.
-    /// Defaults to None
+    /// Defaults to Some(time_to_produce_transaction_millis * 0.9) is set in ensure_execution_timeouts
     pub time_to_verify_transaction_aborted_with_execution_timeout_millis: Option<u64>,
 
     /// Timeout between attestation resend.
@@ -190,6 +195,51 @@ impl Default for GlobalConfig {
             thread_load_threshold: 5000,
             chance_of_successful_attack: 0.000000001_f64,
         }
+    }
+}
+
+impl Config {
+    pub fn gossip_config(&self) -> anyhow::Result<gossip::GossipConfig> {
+        Ok(gossip::GossipConfig {
+            listen_addr: self.network.gossip_listen_addr,
+            advertise_addr: self.network.gossip_advertise_addr,
+            seeds: self.network.gossip_seeds.clone(),
+            cluster_id: self.network.chitchat_cluster_id.clone(),
+        })
+    }
+
+    pub fn gossip_peer(&self) -> anyhow::Result<GossipPeer<NodeIdentifier>> {
+        GossipPeer::new(
+            self.local.node_id.clone(),
+            self.network.node_advertise_addr,
+            self.network.proxies.clone(),
+            self.network.bm_api_socket,
+            self.network.bk_api_socket,
+            transport_layer::resolve_signing_key(
+                self.network.my_ed_key_secret.clone(),
+                self.network.my_ed_key_path.clone(),
+            )?,
+        )
+    }
+
+    pub fn network_config(
+        &self,
+        tls_cert_cache: Option<TlsCertCache>,
+    ) -> anyhow::Result<network::config::NetworkConfig> {
+        network::config::NetworkConfig::new(
+            self.network.bind,
+            CertFile::try_new(&self.network.my_cert)?,
+            PrivateKeyFile::try_new(&self.network.my_key)?,
+            transport_layer::resolve_signing_key(
+                self.network.my_ed_key_secret.clone(),
+                self.network.my_ed_key_path.clone(),
+            )?,
+            CertStore::try_new(&self.network.peer_certs)?,
+            self.network.peer_ed_pubkeys.clone(),
+            self.network.subscribe.clone(),
+            self.network.proxies.clone(),
+            tls_cert_cache,
+        )
     }
 }
 

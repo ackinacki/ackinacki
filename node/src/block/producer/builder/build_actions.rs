@@ -194,6 +194,7 @@ impl BlockBuilder {
             produced_internal_messages_to_other_threads,
             accounts_that_changed_their_dapp_id: Default::default(),
             metrics,
+            is_stop_requested: false,
         };
 
         Ok(builder)
@@ -767,21 +768,6 @@ impl BlockBuilder {
             vm_execution_is_block_related,
             block_production_was_finished: Arc::new(Mutex::new(false)),
         })
-    }
-
-    fn is_limits_reached(&self) -> bool {
-        if let Some(rx) = &self.control_rx_stop {
-            if rx.try_recv().is_ok() {
-                tracing::info!(target: "builder", "block builder received stop");
-                return true;
-            }
-        }
-        if self.total_gas_used > self.block_gas_limit {
-            tracing::info!(target: "builder", "block builder gas limit reached");
-            true
-        } else {
-            false
-        }
     }
 
     fn execute_internal_messages(
@@ -1766,7 +1752,7 @@ impl BlockBuilder {
             blockchain_config,
             check_messages_map,
             white_list_of_slashing_messages_hashes.clone(),
-            self.initial_optimistic_state.messages.clone(),
+            self.initial_optimistic_state.high_priority_messages.clone(),
             message_db.clone(),
             time_limits,
         )?;
@@ -1776,7 +1762,7 @@ impl BlockBuilder {
                 blockchain_config,
                 check_messages_map,
                 white_list_of_slashing_messages_hashes,
-                self.initial_optimistic_state.high_priority_messages.clone(),
+                self.initial_optimistic_state.messages.clone(),
                 message_db,
                 time_limits,
             )?;
@@ -1921,6 +1907,9 @@ impl BlockBuilder {
 
         while i < ext_messages_queue.len() && active_ext_threads.len() < self.parallelization_level
         {
+            if self.is_limits_reached() {
+                break;
+            }
             let (_, msg) = &ext_messages_queue[i];
 
             let Some(acc_id) = msg.int_dst_account_id() else {
@@ -2046,6 +2035,10 @@ impl BlockBuilder {
         let mut active_ext_threads = VecDeque::new();
         let mut block_full = false;
         let mut processed_stamps = vec![];
+        if check_messages_map.is_none() && self.is_limits_reached() {
+            // Don't even enter prcessing external messages.
+            return Ok((ext_message_feedbacks, processed_stamps, true));
+        }
 
         loop {
             self.fill_ext_msg_threads_pool(

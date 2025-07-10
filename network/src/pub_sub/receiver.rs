@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::watch;
 use transport_layer::NetConnection;
 
 use crate::detailed;
@@ -13,22 +12,37 @@ use crate::pub_sub::IncomingSender;
 use crate::DeliveryPhase;
 
 pub async fn receiver<Connection: NetConnection + 'static>(
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     metrics: Option<NetMetrics>,
     connection: Arc<ConnectionWrapper<Connection>>,
-    receiver_stop_tx: watch::Sender<bool>,
-    mut receiver_stop_rx: watch::Receiver<bool>,
+    receiver_stop_tx: tokio::sync::watch::Sender<bool>,
+    mut receiver_stop_rx: tokio::sync::watch::Receiver<bool>,
     incoming_tx: IncomingSender,
 ) -> anyhow::Result<()> {
+    tracing::trace!(
+        ident = &connection.connection.local_identity()[..6],
+        local = connection.connection.local_addr().to_string(),
+        peer = connection.info.remote_info(),
+        "Receiver loop started"
+    );
     loop {
         tokio::select! {
+            sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
+                break;
+            },
             _ = receive_message(metrics.clone(), connection.clone(), incoming_tx.clone(), receiver_stop_tx.clone()) => {
             },
-            _ = receiver_stop_rx.changed() => if *receiver_stop_rx.borrow() {
+            sender = receiver_stop_rx.changed() => if sender.is_err() || *receiver_stop_rx.borrow() {
                 break;
             }
         }
     }
-    tracing::trace!(peer = connection.info.remote_info(), "Receiver loop finished");
+    tracing::trace!(
+        ident = &connection.connection.local_identity()[..6],
+        local = connection.connection.local_addr().to_string(),
+        peer = connection.info.remote_info(),
+        "Receiver loop finished"
+    );
     Ok(())
 }
 
@@ -36,7 +50,7 @@ async fn receive_message<Connection: NetConnection + 'static>(
     metrics: Option<NetMetrics>,
     connection: Arc<ConnectionWrapper<Connection>>,
     incoming_tx: IncomingSender,
-    receiver_stop_tx: watch::Sender<bool>,
+    receiver_stop_tx: tokio::sync::watch::Sender<bool>,
 ) {
     let info = connection.info.clone();
     match connection.connection.recv().await {

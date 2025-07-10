@@ -95,6 +95,18 @@ struct Config {
     #[arg(long, env)]
     keys_path: Option<String>,
 
+    /// Optional secret key of the block keeper's owner wallet key pair.
+    /// Should be represented as a 64-char hex.
+    /// If specified, then owner_key_path should be omitted.
+    #[arg(long)]
+    pub network_my_ed_secret: Option<String>,
+
+    /// Optional path to the block keeper's owner wallet key file.
+    /// Should be stored as json `{ "public": "64-char hex", "secret": "64-char hex" }`.
+    /// If specified, then owner_key_secret should be omitted.
+    #[arg(long)]
+    pub network_my_ed_key_path: Option<String>,
+
     /// Node socket to listen on (QUIC UDP)
     #[arg(long, env)]
     pub bind: Option<SocketAddr>,
@@ -470,6 +482,16 @@ fn main() -> anyhow::Result<()> {
 
             if let Some(message_storage_path) = config_cmd.message_storage_path {
                 config.local.message_storage_path = message_storage_path;
+            }
+
+            if let Some(secret) = config_cmd.network_my_ed_secret {
+                config.network.my_ed_key_secret = Some(secret);
+                config.network.my_ed_key_path = None;
+            }
+
+            if let Some(key_path) = config_cmd.network_my_ed_key_path {
+                config.network.my_ed_key_secret = None;
+                config.network.my_ed_key_path = Some(key_path);
             }
 
             save_config_to_file(&config, &config_cmd.config_file_path)

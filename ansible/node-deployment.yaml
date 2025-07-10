@@ -1,5 +1,5 @@
 - name: Block keeper deployment
-  hosts: [block_keepers]
+  hosts: '{{ target | default("block_keepers") }}'
   gather_facts: no
   become: yes
   tasks:
@@ -36,12 +36,6 @@
       path: "{{ BK_DIR }}/contracts"
       state: directory
       mode: u=rwx,g=rx,o=rx
-
-  - name: "Ensures sctipts dir exists: {{ BK_DIR }}/bk-scripts"
-    ansible.builtin.file:
-      path: "{{ BK_DIR }}/bk-scripts"
-      state: directory
-      mode: u=rwx,g=rwx,o=rwx
 
   - name: adjust limits
     lineinfile:
@@ -88,7 +82,7 @@
       src: "{{ item }}"
     with_items: 
       - "{{ NODE_CONFIGS }}"
-      - "{{ MASTER_KEY }}"
+      - "{{ NODE_OWNER_KEY }}"
 
   - name: Put docker compose file
     ansible.builtin.template:

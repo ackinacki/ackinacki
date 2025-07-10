@@ -3,10 +3,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::broadcast;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::task::JoinError;
 use transport_layer::NetConnection;
 use transport_layer::NetTransport;
 
@@ -143,19 +139,21 @@ impl<Connection: NetConnection> ConnectionWrapper<Connection> {
 }
 
 pub async fn connection_supervisor<Transport: NetTransport + 'static>(
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
     pub_sub: PubSub<Transport>,
     metrics: Option<NetMetrics>,
     connection: Arc<ConnectionWrapper<Transport::Connection>>,
     incoming_messages_tx: Option<IncomingSender>,
-    outgoing_messages_rx: Option<broadcast::Receiver<OutgoingMessage>>,
-    connection_closed_tx: mpsc::Sender<Arc<ConnectionInfo>>,
+    outgoing_messages_rx: Option<tokio::sync::broadcast::Receiver<OutgoingMessage>>,
+    connection_closed_tx: tokio::sync::mpsc::Sender<Arc<ConnectionInfo>>,
 ) -> anyhow::Result<()> {
-    let (sender_stop_tx, sender_stop_rx) = watch::channel(false);
-    let (receiver_stop_tx, receiver_stop_rx) = watch::channel(false);
+    let (sender_stop_tx, sender_stop_rx) = tokio::sync::watch::channel(false);
+    let (receiver_stop_tx, receiver_stop_rx) = tokio::sync::watch::channel(false);
     let result = match (incoming_messages_tx, outgoing_messages_rx) {
         (Some(incoming_messages_tx), Some(outgoing_messages_rx)) => {
             tokio::select! {
                 result = tokio::spawn(sender::sender(
+                    shutdown_rx.clone(),
                     metrics.clone(),
                     connection.clone(),
                     sender_stop_tx.clone(),
@@ -163,6 +161,7 @@ pub async fn connection_supervisor<Transport: NetTransport + 'static>(
                     outgoing_messages_rx)
                 ) => trace_connection_task_result(result, "Sender", &connection.info),
                 result = tokio::spawn(receiver::receiver(
+                    shutdown_rx.clone(),
                     metrics.clone(),
                     connection.clone(),
                     receiver_stop_tx.clone(),
@@ -173,6 +172,7 @@ pub async fn connection_supervisor<Transport: NetTransport + 'static>(
         }
         (Some(incoming_messages_tx), None) => {
             let receiver = receiver::receiver(
+                shutdown_rx.clone(),
                 metrics.clone(),
                 connection.clone(),
                 receiver_stop_tx.clone(),
@@ -183,6 +183,7 @@ pub async fn connection_supervisor<Transport: NetTransport + 'static>(
         }
         (None, Some(outgoing_messages_rx)) => {
             let sender = sender::sender(
+                shutdown_rx.clone(),
                 metrics.clone(),
                 connection.clone(),
                 sender_stop_tx.clone(),
@@ -202,10 +203,10 @@ pub async fn connection_supervisor<Transport: NetTransport + 'static>(
 }
 
 fn trace_connection_task_result(
-    result: Result<anyhow::Result<()>, JoinError>,
+    result: Result<anyhow::Result<()>, tokio::task::JoinError>,
     name: &str,
     connection_info: &ConnectionInfo,
-) -> Result<anyhow::Result<()>, JoinError> {
+) -> Result<anyhow::Result<()>, tokio::task::JoinError> {
     match &result {
         Ok(result) => match result {
             Ok(_) => {

@@ -25,6 +25,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use transport_layer::NetConnection;
+use transport_layer::NetCredential;
 use transport_layer::NetTransport;
 
 use crate::detailed;
@@ -32,7 +33,6 @@ use crate::metrics::NetMetrics;
 use crate::pub_sub::connection::connection_remote_host_id;
 use crate::pub_sub::connection::ConnectionInfo;
 use crate::pub_sub::connection::ConnectionRoles;
-use crate::tls::TlsConfig;
 use crate::ACKI_NACKI_SUBSCRIPTION_FROM_NODE_PROTOCOL;
 use crate::ACKI_NACKI_SUBSCRIPTION_FROM_PROXY_PROTOCOL;
 
@@ -92,11 +92,12 @@ impl<Transport: NetTransport> PubSub<Transport> {
     #[allow(clippy::too_many_arguments)]
     pub async fn subscribe_to_publisher(
         &self,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
         metrics: Option<NetMetrics>,
         incoming_messages: &IncomingSender,
         outgoing_messages: &broadcast::Sender<OutgoingMessage>,
         connection_closed: &mpsc::Sender<Arc<ConnectionInfo>>,
-        config: &TlsConfig,
+        credential: &NetCredential,
         publisher_addrs: &[SocketAddr],
     ) -> anyhow::Result<()> {
         let (connection, peer_host_id, peer_addr) = 'connect: {
@@ -110,7 +111,7 @@ impl<Transport: NetTransport> PubSub<Transport> {
                     publisher_addr = publisher_addr.to_string(),
                     "Connecting to publisher"
                 );
-                match self.transport.connect(*publisher_addr, &alpn, config.credential()).await {
+                match self.transport.connect(*publisher_addr, &alpn, credential.clone()).await {
                     Ok(connection) => {
                         let host_id = connection_remote_host_id(&connection);
                         break 'connect (connection, host_id, publisher_addr);
@@ -127,6 +128,7 @@ impl<Transport: NetTransport> PubSub<Transport> {
         };
 
         self.add_connection_handler(
+            shutdown_rx,
             metrics.clone(),
             incoming_messages,
             outgoing_messages,
@@ -142,6 +144,7 @@ impl<Transport: NetTransport> PubSub<Transport> {
     #[allow(clippy::too_many_arguments)]
     pub fn add_connection_handler(
         &self,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
         metrics: Option<NetMetrics>,
         incoming_messages_tx: &IncomingSender,
         outgoing_messages_tx: &broadcast::Sender<OutgoingMessage>,
@@ -169,6 +172,7 @@ impl<Transport: NetTransport> PubSub<Transport> {
             (None, Some(incoming_messages_tx.clone()))
         };
         let task = tokio::spawn(connection::connection_supervisor(
+            shutdown_rx,
             self.clone(),
             metrics.clone(),
             connection.clone(),

@@ -11,7 +11,7 @@ use thiserror::Error;
 use tracing::trace;
 
 use super::connection::Connection;
-use crate::CertValidation;
+use crate::NetCredential;
 
 /// Listener for incoming connections.
 pub struct Listener {
@@ -24,9 +24,9 @@ impl Listener {
     pub fn new(
         registration: &msquic::Registration,
         configuration: msquic::Configuration,
-        cert_validation: CertValidation,
+        credential: NetCredential,
     ) -> Result<Self, ListenError> {
-        let inner = Arc::new(ListenerInner::new(configuration, cert_validation));
+        let inner = Arc::new(ListenerInner::new(configuration, credential));
         let inner_in_ev = inner.clone();
         let msquic_listener = msquic::Listener::open(registration, move |_, ev| match ev {
             msquic::ListenerEvent::NewConnection { info, connection } => {
@@ -152,7 +152,7 @@ unsafe impl Sync for ListenerInnerExclusive {}
 unsafe impl Send for ListenerInnerExclusive {}
 
 struct ListenerInnerShared {
-    cert_validation: CertValidation,
+    credential: NetCredential,
     configuration: msquic::Configuration,
 }
 unsafe impl Sync for ListenerInnerShared {}
@@ -167,7 +167,7 @@ enum ListenerState {
 }
 
 impl ListenerInner {
-    fn new(configuration: msquic::Configuration, cert_validation: CertValidation) -> Self {
+    fn new(configuration: msquic::Configuration, credential: NetCredential) -> Self {
         Self {
             exclusive: Mutex::new(ListenerInnerExclusive {
                 state: ListenerState::Open,
@@ -175,7 +175,7 @@ impl ListenerInner {
                 new_connection_waiters: Vec::new(),
                 shutdown_complete_waiters: Vec::new(),
             }),
-            shared: ListenerInnerShared { configuration, cert_validation },
+            shared: ListenerInnerShared { configuration, credential },
         }
     }
 
@@ -190,7 +190,7 @@ impl ListenerInner {
         let new_conn = Connection::from_raw(
             unsafe { connection.as_raw() },
             false,
-            self.shared.cert_validation.clone(),
+            self.shared.credential.clone(),
         );
 
         let mut exclusive = self.exclusive.lock().unwrap();

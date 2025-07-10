@@ -1,9 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-/*
- * GOSH contracts
- *
- * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
- */
 pragma gosh-solidity >=0.76.1;
 
 import "./errors.sol";
@@ -20,7 +14,7 @@ abstract contract ReplayProtection is Errors {
     // Dummy variable to demonstrate contract functionality.
     uint __value;
     
-    modifier onlyOwner {
+    /*modifier onlyOwner {
         require(msg.pubkey() == tvm.pubkey(), ERR_NOT_OWNER);
         _;
     }
@@ -28,7 +22,7 @@ abstract contract ReplayProtection is Errors {
     modifier accept() {
         tvm.accept();
         _;
-    }
+    }*/
     
     modifier saveMsg() {
         _saveMsg();

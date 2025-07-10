@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::sync::broadcast;
@@ -8,6 +7,7 @@ use transport_layer::NetIncomingRequest;
 use transport_layer::NetListener;
 use transport_layer::NetTransport;
 
+use crate::config::NetworkConfig;
 use crate::detailed;
 use crate::metrics::NetMetrics;
 use crate::pub_sub::connection::connection_remote_host_id;
@@ -16,63 +16,85 @@ use crate::pub_sub::connection::ConnectionRoles;
 use crate::pub_sub::connection::OutgoingMessage;
 use crate::pub_sub::executor::IncomingSender;
 use crate::pub_sub::PubSub;
-use crate::tls::TlsConfig;
 use crate::ACKI_NACKI_DIRECT_PROTOCOL;
 use crate::ACKI_NACKI_SUBSCRIPTION_FROM_NODE_PROTOCOL;
 use crate::ACKI_NACKI_SUBSCRIPTION_FROM_PROXY_PROTOCOL;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn listen_incoming_connections<Transport>(
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    mut network_config_rx: tokio::sync::watch::Receiver<NetworkConfig>,
     pub_sub: PubSub<Transport>,
     metrics: Option<NetMetrics>,
     max_connections: usize,
-    bind: SocketAddr,
     incoming_tx: IncomingSender,
     outgoing_messages: broadcast::Sender<OutgoingMessage>,
     connection_closed_tx: mpsc::Sender<Arc<ConnectionInfo>>,
-    tls_config: TlsConfig,
 ) -> anyhow::Result<()>
 where
     Transport: NetTransport + 'static,
 {
-    tracing::info!("Start listening for incoming connections on {}", bind.to_string());
-    tracing::info!("Pub sub started with host id {}", tls_config.my_host_id_prefix());
-    let listener = pub_sub
-        .transport
-        .create_listener(
-            bind,
-            &[
-                ACKI_NACKI_SUBSCRIPTION_FROM_PROXY_PROTOCOL,
-                ACKI_NACKI_SUBSCRIPTION_FROM_NODE_PROTOCOL,
-                ACKI_NACKI_DIRECT_PROTOCOL,
-            ],
-            tls_config.credential(),
-        )
-        .await?;
     loop {
-        let request = listener.accept().await?;
-        tracing::info!("New session incoming");
-        if pub_sub.open_connections() < max_connections {
-            // It is not critical task because it serves single incoming connection request
-            tokio::spawn(handle_incoming_connection(
-                pub_sub.clone(),
-                metrics.clone(),
-                incoming_tx.clone(),
-                outgoing_messages.clone(),
-                connection_closed_tx.clone(),
-                request,
-            ));
-        } else {
-            tracing::error!(
-                "Max connections reached {} of {}",
-                pub_sub.open_connections(),
-                max_connections
-            );
+        let network_config = network_config_rx.borrow().clone();
+        let listener = pub_sub
+            .transport
+            .create_listener(
+                network_config.bind,
+                &[
+                    ACKI_NACKI_SUBSCRIPTION_FROM_PROXY_PROTOCOL,
+                    ACKI_NACKI_SUBSCRIPTION_FROM_NODE_PROTOCOL,
+                    ACKI_NACKI_DIRECT_PROTOCOL,
+                ],
+                network_config.credential.clone(),
+            )
+            .await?;
+        tracing::info!(
+            "Start listening for incoming connections on {}",
+            network_config.bind.to_string()
+        );
+        tracing::info!(
+            "Pub sub started with host id {}",
+            network_config.credential.identity_prefix()
+        );
+        loop {
+            let request = tokio::select! {
+                request = listener.accept() => request?,
+                sender = network_config_rx.changed() => if sender.is_err() {
+                    return Ok(());
+                } else {
+                    break;
+                },
+                sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
+                    return Ok(());
+                } else {
+                    continue;
+                }
+            };
+            tracing::info!("New session incoming");
+            if pub_sub.open_connections() < max_connections {
+                // It is not critical task because it serves single incoming connection request
+                tokio::spawn(handle_incoming_connection(
+                    shutdown_rx.clone(),
+                    pub_sub.clone(),
+                    metrics.clone(),
+                    incoming_tx.clone(),
+                    outgoing_messages.clone(),
+                    connection_closed_tx.clone(),
+                    request,
+                ));
+            } else {
+                tracing::error!(
+                    "Max connections reached {} of {}",
+                    pub_sub.open_connections(),
+                    max_connections
+                );
+            }
         }
     }
 }
 
 pub async fn handle_incoming_connection<Transport: NetTransport>(
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
     pub_sub: PubSub<Transport>,
     metrics: Option<NetMetrics>,
     incoming_tx: IncomingSender,
@@ -107,6 +129,7 @@ pub async fn handle_incoming_connection<Transport: NetTransport>(
     let host_id = connection_remote_host_id(&connection);
 
     if let Err(err) = pub_sub.add_connection_handler(
+        shutdown_rx,
         metrics.clone(),
         &incoming_tx,
         &outgoing_messages,

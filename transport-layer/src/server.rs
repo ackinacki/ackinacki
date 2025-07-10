@@ -70,8 +70,13 @@ async fn listener_handler(
     incoming_request_tx: tokio::sync::mpsc::UnboundedSender<MsQuicNetIncomingRequest>,
 ) -> anyhow::Result<()> {
     let transport = MsQuicTransport::new();
-    let listener =
-        transport.create_listener(bind, &["ALPN"], NetCredential::generate_self_signed()).await?;
+    let listener = transport
+        .create_listener(
+            bind,
+            &["ALPN"],
+            NetCredential::generate_self_signed(Some(vec![bind.to_string()]), None)?,
+        )
+        .await?;
     tracing::info!("LiteServer started on port {}", bind.port());
     loop {
         match listener.accept().await {

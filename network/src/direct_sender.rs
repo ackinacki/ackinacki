@@ -8,8 +8,10 @@ use std::time::Instant;
 use futures::future::Either;
 use itertools::Itertools;
 use transport_layer::NetConnection;
+use transport_layer::NetCredential;
 use transport_layer::NetTransport;
 
+use crate::config::NetworkConfig;
 use crate::detailed;
 use crate::host_id_prefix;
 use crate::message::NetMessage;
@@ -17,7 +19,6 @@ use crate::metrics::NetMetrics;
 use crate::network::PeerData;
 use crate::pub_sub::connection::connection_remote_host_id;
 use crate::pub_sub::start_critical_task_ex;
-use crate::tls::TlsConfig;
 use crate::transfer::transfer;
 use crate::DeliveryPhase;
 use crate::SendMode;
@@ -36,22 +37,38 @@ impl DirectPeer {
 }
 
 pub async fn run_direct_sender<Transport, PeerId>(
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    mut network_config_rx: tokio::sync::watch::Receiver<NetworkConfig>,
     transport: Transport,
     metrics: Option<NetMetrics>,
     mut messages_rx: tokio::sync::mpsc::UnboundedReceiver<(PeerId, NetMessage, Instant)>,
     peers_rx: tokio::sync::watch::Receiver<HashMap<PeerId, PeerData>>,
-    config: TlsConfig,
 ) where
     Transport: NetTransport + 'static,
     PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
 {
-    tracing::info!("Direct sender started with host id {}", config.my_host_id_prefix());
+    let mut network_config = network_config_rx.borrow().clone();
+    tracing::info!(
+        "Direct sender started with host id {}",
+        network_config.credential.identity_prefix()
+    );
     let (peer_sender_stopped_tx, mut peer_sender_stopped_rx) =
         tokio::sync::mpsc::unbounded_channel::<PeerId>();
 
     let mut peers = HashMap::<PeerId, DirectPeer>::new();
     loop {
         let result = tokio::select! {
+            sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
+                break;
+            } else {
+                continue;
+            },
+            sender = network_config_rx.changed() => if sender.is_err() {
+                break;
+            } else {
+                network_config = network_config_rx.borrow().clone();
+                continue;
+            },
             result = messages_rx.recv() => Either::Left(result),
             result = peer_sender_stopped_rx.recv() => Either::Right(result),
         };
@@ -73,12 +90,13 @@ pub async fn run_direct_sender<Transport, PeerId>(
                         peer_id.clone(),
                         peer_sender_stopped_tx.clone(),
                         peer_sender(
+                            shutdown_rx.clone(),
                             transport.clone(),
                             metrics.clone(),
                             peer_id.clone(),
                             peer_messages_rx,
                             peers_rx.clone(),
-                            config.clone(),
+                            network_config.credential.clone(),
                         ),
                     );
                     peers.insert(peer_id.clone(), DirectPeer::new(peer_messages_tx));
@@ -126,22 +144,38 @@ pub async fn run_direct_sender<Transport, PeerId>(
 }
 
 async fn peer_sender<Transport, PeerId>(
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     transport: Transport,
     metrics: Option<NetMetrics>,
     peer_id: PeerId,
     mut messages_rx: tokio::sync::mpsc::Receiver<(NetMessage, Instant)>,
     mut peers_rx: tokio::sync::watch::Receiver<HashMap<PeerId, PeerData>>,
-    config: TlsConfig,
+    credential: NetCredential,
 ) -> anyhow::Result<()>
 where
     PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
     Transport: NetTransport,
     Transport::Connection: 'static,
 {
+    tracing::trace!(peer_id = peer_id.to_string(), "Peer sender loop started");
     loop {
-        let addrs = resolve_peer_addrs(&mut peers_rx, &peer_id).await;
-        let (connection, host_id, addr) =
-            match connect_to_peer(&transport, &config, &peer_id, &addrs).await {
+        let addrs = tokio::select! {
+            sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
+                tracing::trace!(peer_id = peer_id.to_string(), "Peer sender loop finished");
+                return Ok(());
+            } else {
+                continue;
+            },
+            addrs = resolve_peer_addrs(&mut peers_rx, &peer_id) => addrs,
+        };
+        let (connection, host_id, addr) = tokio::select! {
+            sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
+                tracing::trace!(peer_id = peer_id.to_string(), "Peer sender loop finished");
+                return Ok(());
+            } else {
+                continue;
+            },
+            connect = connect_to_peer(&transport, &credential, &peer_id, &addrs) => match connect {
                 Ok(connection) => connection,
                 Err(err) => {
                     tracing::error!(
@@ -151,10 +185,15 @@ where
                     );
                     continue;
                 }
-            };
+            }
+        };
         let (transfer_result_tx, mut transfer_result_rx) = tokio::sync::mpsc::channel(10);
         loop {
             tokio::select! {
+                sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
+                    tracing::trace!(peer_id = peer_id.to_string(), "Peer sender loop finished");
+                    return Ok(());
+                },
                 result = messages_rx.recv() => {
                     if let Some((net_message, buffer_duration)) = result {
                         let metrics = metrics.clone();
@@ -253,7 +292,7 @@ where
     // track attempt counter for tracing
     let mut attempt = 0;
     loop {
-        if let Some(peer_data) = peers_rx.borrow_and_update().get(peer_id) {
+        if let Some(peer_data) = peers_rx.borrow().get(peer_id) {
             return vec![peer_data.peer_addr];
         }
         tracing::warn!(peer_id = peer_id.to_string(), attempt, "Failed to resolve peer addr");
@@ -264,7 +303,7 @@ where
 
 async fn connect_to_peer<Transport, PeerId>(
     transport: &Transport,
-    config: &TlsConfig,
+    credential: &NetCredential,
     peer_id: &PeerId,
     addrs: &[SocketAddr],
 ) -> anyhow::Result<(Transport::Connection, String, SocketAddr)>
@@ -272,7 +311,6 @@ where
     Transport: NetTransport,
     PeerId: Display,
 {
-    let credential = config.credential();
     // track attempt counter for tracing
     let mut attempt = 0;
     let mut retry_timeout = tokio_retry::strategy::FibonacciBackoff::from_millis(100)

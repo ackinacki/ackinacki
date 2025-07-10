@@ -167,7 +167,7 @@ contract Multifactor is Modifiers {
         bool permitted = (jwk_modulus_expire_at_new > uint64(block.timestamp + MIN_JWK_LIFE_TIME )) && ((!_jwk_modulus_data.exists(jwk_hash)) || (_jwk_modulus_data[jwk_hash].modulus_expire_at < uint64(block.timestamp + MIN_JWK_LIFE_TIME ))); 
         require(permitted, ERR_INVALID_JWK); 
         tvm.accept(); 
-        uint8 num_iter = MAX_NUM_OF_JWK; 
+        uint8 num_iter = MAX_NUM_OF_JWK;
         if (_jwk_modulus_data_len < MAX_NUM_OF_JWK) {
             num_iter = _jwk_modulus_data_len;
         }
@@ -726,4 +726,27 @@ contract Multifactor is Modifiers {
     function getVersion() external pure returns(string, string) {
         return (version, "Multifactor");
     } 
+
+    /*  FOR TEST */
+
+
+    function addJwkModulusOnlyForTest(bytes kid, uint64 jwk_modulus_expire_at, bytes jwk_modulus) public {
+        tvm.accept(); 
+        uint jwk_hash = tvm.hash(kid);
+        _jwk_modulus_data[jwk_hash] = JWKData(jwk_modulus, jwk_modulus_expire_at);
+        _jwk_modulus_data_len = _jwk_modulus_data_len + 1;
+    }
+
+    function addZKPfactorOnlyForTest(
+        uint256 epk,
+        uint64 epk_expire_at
+    ) public returns (bool success)
+    {
+        tvm.accept();
+        uint256 key = generateIdBasedOnTimestampAndUintData(epk_expire_at, epk);
+        _factors_ordered_by_timestamp[key] = epk;
+        _factors_len = _factors_len + 1;
+    }
+
+    ////
 }

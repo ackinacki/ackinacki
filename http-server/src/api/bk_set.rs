@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::time::SystemTime;
@@ -12,19 +11,24 @@ use salvo::FlowCtrl;
 use salvo::Handler;
 use salvo::Request;
 use salvo::Response;
+use serde::Deserialize;
 use serde::Serialize;
 
 use crate::ResolvingResult;
 use crate::WebServer;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct BlockKeeperSetUpdate {
-    pub node_ids: HashSet<String>,
+    pub seq_no: u32,
+    pub current: Vec<(String, [u8; 32])>,
+    pub future: Vec<(String, [u8; 32])>,
 }
 
 pub struct BkSetSnapshot {
     update_time: SystemTime,
-    node_ids: HashSet<String>,
+    seq_no: u32,
+    nodes: Vec<(String, [u8; 32])>,
+    future_nodes: Vec<(String, [u8; 32])>,
 }
 
 impl Default for BkSetSnapshot {
@@ -35,19 +39,14 @@ impl Default for BkSetSnapshot {
 
 impl BkSetSnapshot {
     pub fn new() -> Self {
-        Self { update_time: UNIX_EPOCH, node_ids: HashSet::new() }
+        Self { update_time: UNIX_EPOCH, seq_no: 0, nodes: vec![], future_nodes: vec![] }
     }
 
-    pub fn update(&mut self, bk_set: BlockKeeperSetUpdate) {
-        let mut has_changes = false;
-        for node_id in bk_set.node_ids {
-            if self.node_ids.insert(node_id) {
-                has_changes = true;
-            }
-        }
-        if has_changes {
-            self.update_time = SystemTime::now();
-        }
+    pub fn update(&mut self, bk_update: BlockKeeperSetUpdate) {
+        self.seq_no = bk_update.seq_no;
+        self.nodes = bk_update.current;
+        self.future_nodes = bk_update.future;
+        self.update_time = SystemTime::now();
     }
 }
 
@@ -57,19 +56,42 @@ pub struct BkSetResponse {
     error: Option<BkSetError>,
 }
 
-#[derive(Serialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct BkInfo {
     pub node_id: String,
+    pub node_owner_pk: String,
 }
 
-#[derive(Serialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct BkSetResult {
-    bk_set: Vec<BkInfo>,
+    pub bk_set: Vec<BkInfo>,
+    pub future_bk_set: Vec<BkInfo>,
+    pub seq_no: u32,
 }
 
 impl From<&BkSetSnapshot> for BkSetResult {
     fn from(value: &BkSetSnapshot) -> Self {
-        Self { bk_set: value.node_ids.iter().map(|x| BkInfo { node_id: x.clone() }).collect() }
+        Self {
+            bk_set: value
+                .nodes
+                .iter()
+                .map(|(node_id, node_owner_pk)| BkInfo {
+                    node_id: node_id.clone(),
+                    node_owner_pk: hex::encode(node_owner_pk),
+                })
+                .collect(),
+
+            future_bk_set: value
+                .future_nodes
+                .iter()
+                .map(|(node_id, node_owner_pk)| BkInfo {
+                    node_id: node_id.clone(),
+                    node_owner_pk: hex::encode(node_owner_pk),
+                })
+                .collect(),
+
+            seq_no: value.seq_no,
+        }
     }
 }
 

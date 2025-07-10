@@ -733,21 +733,33 @@ mod tests {
 
     use itertools::Itertools;
     use parking_lot::Mutex;
+    use telemetry_utils::mpsc::instrumented_channel;
+    use telemetry_utils::mpsc::InstrumentedSender;
     use testdir::testdir;
 
     use crate::block::producer::process::TVMBlockProducerProcess;
     use crate::config::load_blockchain_config;
     use crate::external_messages::ExternalMessagesThreadState;
+    use crate::helper::metrics;
     use crate::message_storage::MessageDurableStorage;
     use crate::multithreading::routing::service::RoutingService;
     use crate::node::associated_types::NodeIdentifier;
     use crate::node::shared_services::SharedServices;
     use crate::repository::accounts::AccountsRepository;
+    use crate::repository::repository_impl::BkSetUpdate;
     use crate::repository::repository_impl::RepositoryImpl;
     use crate::tests::project_root;
     use crate::types::BlockIdentifier;
     use crate::types::ThreadIdentifier;
     use crate::utilities::FixedSizeHashSet;
+
+    fn mock_bk_set_updates_tx() -> InstrumentedSender<BkSetUpdate> {
+        let (bk_set_updates_tx, _bk_set_updates_rx) = instrumented_channel::<BkSetUpdate>(
+            None::<metrics::BlockProductionMetrics>,
+            metrics::BK_SET_UPDATE_CHANNEL,
+        );
+        bk_set_updates_tx
+    }
 
     #[test]
     #[ignore]
@@ -791,6 +803,7 @@ mod tests {
             AccountsRepository::new(root_dir.clone(), None, 1),
             message_db.clone(),
             finalized_blocks,
+            mock_bk_set_updates_tx(),
         );
         let (router, _router_rx) = RoutingService::stub();
         let mut production_process = TVMBlockProducerProcess::builder()

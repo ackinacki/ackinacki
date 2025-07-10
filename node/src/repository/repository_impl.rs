@@ -35,6 +35,7 @@ use rusqlite::params;
 use rusqlite::Connection;
 use serde::Deserialize;
 use serde::Serialize;
+use telemetry_utils::mpsc::InstrumentedSender;
 use telemetry_utils::now_ms;
 use tvm_block::Augmentation;
 use tvm_block::ShardStateUnsplit;
@@ -48,6 +49,7 @@ use crate::bls::envelope::Envelope;
 use crate::bls::BLSSignatureScheme;
 use crate::bls::GoshBLS;
 use crate::database::serialize_block::prepare_account_archive_struct;
+use crate::helper::get_temp_file_path;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
@@ -183,6 +185,12 @@ impl FinalizedBlockStorage {
     }
 }
 
+pub struct BkSetUpdate {
+    pub seq_no: u32,
+    pub current: Option<Arc<BlockKeeperSet>>,
+    pub future: Option<Arc<BlockKeeperSet>>,
+}
+
 // TODO: divide repository into 2 entities: one for blocks, one for states with weak refs (for not
 // to store optimistic states longer than necessary)
 pub struct RepositoryImpl {
@@ -206,6 +214,7 @@ pub struct RepositoryImpl {
     message_storage_service: MessageDBWriterService,
     states_cache_size: usize,
     finalized_blocks: Arc<Mutex<FinalizedBlockStorage>>,
+    bk_set_update_tx: InstrumentedSender<BkSetUpdate>,
 }
 
 #[allow(clippy::upper_case_acronyms)]
@@ -287,14 +296,20 @@ pub fn save_to_file<T: Serialize>(
     force_sync: bool,
 ) -> anyhow::Result<()> {
     let buffer = bincode::serialize(&data)?;
-    if let Some(path) = file_path.parent() {
+    let parent_dir = if let Some(path) = file_path.parent() {
         fs::create_dir_all(path)?;
-    }
-    let mut file = File::create(file_path)?;
+        path.to_owned()
+    } else {
+        PathBuf::new()
+    };
+
+    let tmp_file_path = get_temp_file_path(&parent_dir);
+    let mut file = File::create(&tmp_file_path)?;
     file.write_all(&buffer)?;
     if cfg!(feature = "sync_files") || force_sync {
         file.sync_all()?;
     }
+    std::fs::rename(tmp_file_path, file_path)?;
     tracing::trace!("File saved: {:?}", file_path);
     Ok(())
 }
@@ -330,6 +345,7 @@ impl Clone for RepositoryImpl {
             message_db: self.message_db.clone(),
             states_cache_size: self.states_cache_size,
             finalized_blocks: Arc::clone(&self.finalized_blocks),
+            bk_set_update_tx: self.bk_set_update_tx.clone(),
         }
     }
 }
@@ -349,6 +365,7 @@ impl RepositoryImpl {
         accounts_repository: AccountsRepository,
         message_db: MessageDurableStorage,
         finalized_blocks: Arc<Mutex<FinalizedBlockStorage>>,
+        bk_set_update_tx: InstrumentedSender<BkSetUpdate>,
     ) -> Self {
         if let Err(err) = fs::create_dir_all(data_dir.clone()) {
             tracing::error!("Failed to create data dir {:?}: {}", data_dir, err);
@@ -444,6 +461,7 @@ impl RepositoryImpl {
             message_storage_service,
             states_cache_size,
             finalized_blocks,
+            bk_set_update_tx,
         };
 
         let optimistic_dir = format!(
@@ -1051,6 +1069,10 @@ impl RepositoryImpl {
         thread_id: ThreadIdentifier,
         block_state_repository: BlockStateRepository,
     ) -> Self {
+        use telemetry_utils::mpsc::instrumented_channel;
+
+        use crate::helper::metrics;
+
         let metadata =
             Metadata { last_finalized_block_id, last_finalized_block_seq_no, ..Default::default() };
         let mut metadatas = HashMap::new();
@@ -1075,6 +1097,10 @@ impl RepositoryImpl {
         let finalized_blocks =
             crate::repository::repository_impl::tests::finalized_blocks_storage();
 
+        let (bk_set_update_tx, _bk_set_update_rx) = instrumented_channel::<BkSetUpdate>(
+            None::<metrics::BlockProductionMetrics>,
+            metrics::BK_SET_UPDATE_CHANNEL,
+        );
         Self {
             archive,
             accounts: AccountsRepository::new(data_dir.clone(), None, 1),
@@ -1093,6 +1119,7 @@ impl RepositoryImpl {
             message_storage_service: message_service,
             states_cache_size: 1,
             finalized_blocks,
+            bk_set_update_tx,
         }
     }
 
@@ -1316,11 +1343,19 @@ impl Repository for RepositoryImpl {
         let block_state = self.block_state_repository.get(&block_id)?;
         self.finalized_blocks.guarded_mut(|e| e.store(block.borrow().clone()));
         let mut block_state_in = block_state.lock();
+        let block_seq_no = block_state_in.deref().block_seq_no().unwrap();
         if !block_state_in.is_finalized() {
             block_state_in.set_finalized()?;
+
+            if thread_id == ThreadIdentifier::default() {
+                let _ = self.bk_set_update_tx.send(BkSetUpdate {
+                    seq_no: block_seq_no.into(),
+                    current: block_state_in.bk_set().clone(),
+                    future: block_state_in.future_bk_set().clone(),
+                });
+            }
         }
 
-        let block_seq_no = block_state_in.deref().block_seq_no().unwrap();
         let metadata = self.get_metadata_for_thread(&thread_id)?;
         let mut metadata = metadata.lock();
 
@@ -1891,9 +1926,13 @@ pub mod tests {
     use std::sync::Once;
 
     use parking_lot::Mutex;
+    use telemetry_utils::mpsc::instrumented_channel;
+    use telemetry_utils::mpsc::InstrumentedSender;
 
+    use super::BkSetUpdate;
     use super::RepositoryImpl;
     use super::OID;
+    use crate::helper::metrics;
     use crate::message_storage::MessageDurableStorage;
     use crate::multithreading::routing::service::RoutingService;
     use crate::node::shared_services::SharedServices;
@@ -1931,6 +1970,13 @@ pub mod tests {
         Arc::new(Mutex::new(FinalizedBlockStorage::new(100)))
     }
 
+    fn mock_bk_set_updates_tx() -> InstrumentedSender<BkSetUpdate> {
+        let (bk_set_updates_tx, _bk_set_updates_rx) = instrumented_channel::<BkSetUpdate>(
+            None::<metrics::BlockProductionMetrics>,
+            metrics::BK_SET_UPDATE_CHANNEL,
+        );
+        bk_set_updates_tx
+    }
     #[test]
     #[ignore]
     fn test_save_load() -> anyhow::Result<()> {
@@ -1954,6 +2000,7 @@ pub mod tests {
             accounts_repository,
             message_db.clone(),
             finalized_blocks,
+            mock_bk_set_updates_tx(),
         );
 
         let path = "block_status";
@@ -1991,6 +2038,7 @@ pub mod tests {
             accounts_repository,
             message_db.clone(),
             finalized_blocks,
+            mock_bk_set_updates_tx(),
         );
         Ok(())
     }
@@ -2018,6 +2066,7 @@ pub mod tests {
             accounts_repository,
             message_db.clone(),
             finalized_blocks,
+            mock_bk_set_updates_tx(),
         );
 
         let path = "metadata";
@@ -2052,6 +2101,7 @@ pub mod tests {
             accounts_repository,
             message_db.clone(),
             finalized_blocks,
+            mock_bk_set_updates_tx(),
         );
         let path = "optimistic_state";
         let oid = OID::ID(String::from("200"));

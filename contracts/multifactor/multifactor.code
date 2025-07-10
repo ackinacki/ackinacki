@@ -1,0 +1,6303 @@
+.fragment c4_to_c7, {
+	PUSHROOT
+	CTOS
+	LDU 256 ; pubkey c4
+	LDU 64 ; pubkey timestamp c4
+	LDU 1 ; ctor flag
+	LDDICT
+	LDU 8
+	LDU 256
+	LDI 1
+	SWAP
+	NULLSWAPIFNOT
+	PUSHCONT {
+		LDU 256
+		LDU 64
+		ROTREV
+		PAIR
+	}
+	IF
+	SWAP
+	LDREF
+	ENDS
+	CTOS
+	LDU 256
+	LDDICT
+	LDDICT
+	LDU 8
+	LDI 1
+	SWAP
+	NULLSWAPIFNOT
+	PUSHCONT {
+		LDU 256
+		LDREF
+		LDU 64
+		ROTREV
+		PAIR
+		XCHG S1, S2
+		PAIR
+	}
+	IF
+	SWAP
+	LDREF
+	ENDS
+	CTOS
+	LDREF
+	LDU 8
+	LDREF
+	LDI 1
+	LDDICT
+	LDU 8
+	LDREF
+	ENDS
+	CTOS
+	LDDICT
+	LDU 8
+	LDU 128
+	LDU 256
+	LDI 1
+	LDREF
+	LDREF
+	LDREF
+	ENDS
+	CTOS
+	LDREF
+	LDREF
+	ENDS
+	PUSHINT 0
+	GETGLOBVAR
+	GETGLOB 1
+	GETGLOB 2
+	GETGLOB 3
+	GETGLOB 4
+	GETGLOB 5
+	GETGLOB 6
+	GETGLOB 7
+	GETGLOB 8
+	GETGLOB 9
+	PUSHINT 24
+	PUSHINT 10
+	BLKSWX
+	PUSHINT 34
+	TUPLEVAR
+	POP C7
+	SETGLOB 6
+	SETGLOB 3
+	SETGLOB 2
+}
+
+.fragment _factors_len, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 11
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000f22a40d1
+		NEWC
+		STSLICE
+		STU 8
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _factors_ordered_by_timestamp, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 10
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000a75c6bea
+		NEWC
+		STSLICE
+		STDICT
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _force_remove_oldest, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 29
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000b6e847b1
+		NEWC
+		STSLICE
+		STI 1
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _index_mod_4, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 20
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000809afe66
+		NEWC
+		STSLICE
+		STU 8
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _iss_base_64, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 21
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000ca7f0e1b
+		NEWC
+		STSLICE
+		STREF
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _jwk_modulus_data, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 16
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc000000000000000000000000090732624
+		NEWC
+		STSLICE
+		STDICT
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _jwk_modulus_data_len, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 17
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000c49fdf95
+		NEWC
+		STSLICE
+		STU 8
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _m_security_cards, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 23
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000945cb037
+		NEWC
+		STSLICE
+		STDICT
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _m_security_cards_len, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 24
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000f95f9dab
+		NEWC
+		STSLICE
+		STU 8
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _m_transactions, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 25
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc000000000000000000000000092855d55
+		NEWC
+		STSLICE
+		STDICT
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _m_transactions_len, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 26
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000cb0eb5a6
+		NEWC
+		STSLICE
+		STU 8
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _max_cleanup_txns, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 28
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc00000000000000000000000009a20d291
+		NEWC
+		STSLICE
+		STU 256
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _min_value, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 27
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000d43aac2d
+		NEWC
+		STSLICE
+		STU 128
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _owner_pubkey, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 12
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000ae9e840c
+		NEWC
+		STSLICE
+		STU 256
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _pub_recovery_key, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 14
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000ccc6c982
+		NEWC
+		STSLICE
+		STU 256
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _root_provider_certificates, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 15
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000a76e2713
+		NEWC
+		STSLICE
+		STDICT
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _use_security_card, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 22
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000cbb6cacc
+		NEWC
+		STSLICE
+		STI 1
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment _zkid, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 19
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000814607c9
+		NEWC
+		STSLICE
+		STREF
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment acceptCandidateSeedPhrase_c426f705_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 14
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 441
+	GETGLOB 13
+	ISNULL
+	THROWIF 601
+	.loc multifactor.sol, 442
+	GETGLOB 13
+	DUP
+	ISNULL
+	THROWIF 63
+	UNPAIR
+	.loc multifactor.sol, 443
+	PUXC2 S1, S1, S2
+	EQUAL
+	THROWIFNOT 601
+	.loc multifactor.sol, 444
+	NOW
+	SWAP
+	LESS
+	THROWIFNOT 502
+	.loc multifactor.sol, 445
+	ACCEPT
+	.loc multifactor.sol, 446
+	SETGLOB 12
+	.loc multifactor.sol, 447
+	NULL
+	SETGLOB 13
+	.loc multifactor.sol, 0
+}
+
+.fragment c7_to_c4, {
+	PUSH C7
+	FALSE
+	PUSHINT 34
+	SETINDEXVARQ
+	PUSHINT 34
+	UNPACKFIRSTVAR
+	PUSHINT 34
+	PUSHINT 0
+	REVX
+	BLKDROP 10
+	GETGLOB 3
+	GETGLOB 2
+	NEWC
+	STU 256
+	STU 64
+	STONE
+	STDICT
+	STU 8
+	STU 256
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		SWAP
+		CALLREF {
+			UNPAIR
+			SWAP
+			NEWC
+			STU 256
+			STU 64
+		}
+		STBR
+	}
+	IFELSE
+	PUSHINT 20
+	ROLLREVX
+	NEWC
+	STU 256
+	STDICT
+	STDICT
+	STU 8
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		SWAP
+		CALLREF {
+			UNPAIR
+			SWAP
+			NEWC
+			STU 256
+			SWAP
+			UNPAIR
+			XCHG S2
+			STREF
+			STU 64
+		}
+		STBR
+	}
+	IFELSE
+	ROLLREV 15
+	NEWC
+	STREF
+	STU 8
+	STREF
+	STI 1
+	STDICT
+	STU 8
+	ROLLREV 9
+	NEWC
+	STDICT
+	STU 8
+	STU 128
+	STU 256
+	STI 1
+	STREF
+	STREF
+	ROTREV
+	NEWC
+	STREF
+	STREF
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	POPROOT
+}
+
+.fragment acceptCandidateSeedPhrase, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 440
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline acceptCandidateSeedPhrase_c426f705_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment addJwkModulus_c58aa445_internal, {
+	.loc multifactor.sol, 147
+	PUSH S2
+	GETGLOB 15
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	THROWIFNOT 513
+	.loc multifactor.sol, 148
+	NOW
+	MODPOW2 32
+	NEWC
+	STU 32
+	ENDC
+	.loc multifactor.sol, 149
+	GETGLOB 30
+	NEWC
+	STREF
+	ENDC
+	ROT
+	NEWC
+	STREF
+	ENDC
+	ROLL 4
+	GETGLOB 15
+	PUSHPOW2 8
+	DICTUGETREF
+	PUSHCONT {
+		PUSHREF {
+		}
+	}
+	IFNOT
+	NEWC
+	STREF
+	ENDC
+	PUSH S4
+	NEWC
+	STREF
+	ENDC
+	ROLL 4
+	NEWC
+	STREF
+	ENDC
+	PUSHINT 32
+	GETGLOBVAR
+	NEWC
+	STREF
+	ENDC
+	GETGLOB 31
+	NEWC
+	STREF
+	ENDC
+	PUSHINT 33
+	GETGLOBVAR
+	NEWC
+	STREF
+	ENDC
+	RUNWASMCONCATMULTIARG
+	.loc multifactor.sol, 155
+	CTOS
+	LDREF
+	ENDS
+	.loc multifactor.sol, 156
+	DUP
+	CTOS
+	PUSHINT 0
+	CALLREF {
+		PUSHINT 127
+		DIVMOD
+		ROTREV
+		PUSHCONT {
+			LDREFRTOS
+			NIP
+		}
+		REPEAT
+		SWAP
+		MULCONST 8
+		SDSKIPFIRST
+		PLDU 8
+	}
+	EQINT 1
+	THROWIFNOT 510
+	.loc multifactor.sol, 158
+	DUP
+	CTOS
+	PUSHINT 8
+	CALLREF {
+		PUSHINT 127
+		DIVMOD
+		ROTREV
+		PUSHCONT {
+			LDREFRTOS
+			NIP
+		}
+		REPEAT
+		SWAP
+		MULCONST 8
+		SDSKIPFIRST
+		PLDU 8
+	}
+	PUSHINT 0
+	LSHIFT
+	UFITS 64
+	PUSHINT 0
+	OR
+	.loc multifactor.sol, 159
+	OVER
+	CTOS
+	PUSHINT 7
+	CALLREF {
+		PUSHINT 127
+		DIVMOD
+		ROTREV
+		PUSHCONT {
+			LDREFRTOS
+			NIP
+		}
+		REPEAT
+		SWAP
+		MULCONST 8
+		SDSKIPFIRST
+		PLDU 8
+	}
+	LSHIFT 8
+	UFITS 64
+	OR
+	.loc multifactor.sol, 160
+	OVER
+	CTOS
+	PUSHINT 6
+	CALLREF {
+		PUSHINT 127
+		DIVMOD
+		ROTREV
+		PUSHCONT {
+			LDREFRTOS
+			NIP
+		}
+		REPEAT
+		SWAP
+		MULCONST 8
+		SDSKIPFIRST
+		PLDU 8
+	}
+	LSHIFT 16
+	UFITS 64
+	OR
+	.loc multifactor.sol, 161
+	OVER
+	CTOS
+	PUSHINT 5
+	CALLREF {
+		PUSHINT 127
+		DIVMOD
+		ROTREV
+		PUSHCONT {
+			LDREFRTOS
+			NIP
+		}
+		REPEAT
+		SWAP
+		MULCONST 8
+		SDSKIPFIRST
+		PLDU 8
+	}
+	LSHIFT 24
+	UFITS 64
+	OR
+	.loc multifactor.sol, 162
+	OVER
+	CTOS
+	PUSHINT 4
+	CALLREF {
+		PUSHINT 127
+		DIVMOD
+		ROTREV
+		PUSHCONT {
+			LDREFRTOS
+			NIP
+		}
+		REPEAT
+		SWAP
+		MULCONST 8
+		SDSKIPFIRST
+		PLDU 8
+	}
+	LSHIFT 32
+	UFITS 64
+	OR
+	.loc multifactor.sol, 163
+	OVER
+	CTOS
+	PUSHINT 3
+	CALLREF {
+		PUSHINT 127
+		DIVMOD
+		ROTREV
+		PUSHCONT {
+			LDREFRTOS
+			NIP
+		}
+		REPEAT
+		SWAP
+		MULCONST 8
+		SDSKIPFIRST
+		PLDU 8
+	}
+	LSHIFT 40
+	UFITS 64
+	OR
+	.loc multifactor.sol, 164
+	OVER
+	CTOS
+	PUSHINT 2
+	CALLREF {
+		PUSHINT 127
+		DIVMOD
+		ROTREV
+		PUSHCONT {
+			LDREFRTOS
+			NIP
+		}
+		REPEAT
+		SWAP
+		MULCONST 8
+		SDSKIPFIRST
+		PLDU 8
+	}
+	LSHIFT 48
+	UFITS 64
+	OR
+	.loc multifactor.sol, 165
+	OVER
+	CTOS
+	PUSHINT 1
+	CALLREF {
+		PUSHINT 127
+		DIVMOD
+		ROTREV
+		PUSHCONT {
+			LDREFRTOS
+			NIP
+		}
+		REPEAT
+		SWAP
+		MULCONST 8
+		SDSKIPFIRST
+		PLDU 8
+	}
+	LSHIFT 56
+	UFITS 64
+	OR
+	.loc multifactor.sol, 166
+	ROT
+	HASHCU
+	.loc multifactor.sol, 167
+	OVER
+	NOW
+	PUSHINT 300
+	ADD
+	UFITS 64
+	GREATER
+	DUP
+	PUSHCONT {
+		DROP
+		DUP
+		GETGLOB 16
+		PUSHPOW2 8
+		DICTUGET
+		NULLSWAPIFNOT
+		NIP
+		NOT
+		DUP
+		PUSHCONT {
+			DROP
+			DUP
+			GETGLOB 16
+			PUSHPOW2 8
+			DICTUGET
+			IFREFELSEREF
+			{
+				LDREF
+				LDU 64
+				ENDS
+				PAIR
+			}
+			{
+				PUSHREF {
+				}
+				PUSHINT 0
+				PAIR
+			}
+			SECOND
+			NOW
+			PUSHINT 300
+			ADD
+			UFITS 64
+			LESS
+		}
+		IFNOT
+	}
+	IF
+	.loc multifactor.sol, 168
+	THROWIFNOT 509
+	.loc multifactor.sol, 169
+	ACCEPT
+	.loc multifactor.sol, 170
+	PUSHINT 12
+	.loc multifactor.sol, 171
+	GETGLOB 17
+	LESSINT 12
+	PUSHCONT {
+		.loc multifactor.sol, 172
+		DROP
+		GETGLOB 17
+		.loc multifactor.sol, 0
+	}
+	IF
+	.loc multifactor.sol, 185
+	GETGLOB 18
+	ISNULL
+	PUSHCONT {
+		.loc multifactor.sol, 186
+		GETGLOB 16
+		PUSHPOW2 8
+		DICTUMIN
+		NULLSWAPIFNOT
+		IFREF {
+			SWAP
+			LDREF
+			LDU 64
+			ENDS
+			PAIR
+			PAIR
+		}
+		SETGLOB 18
+		.loc multifactor.sol, 0
+	}
+	IF
+	.loc multifactor.sol, 188
+	GETGLOB 18
+	.loc multifactor.sol, 189
+	PUSHINT 0
+	.loc multifactor.sol, 190
+	PUSHCONT {
+		OVER
+		ISNULL
+		NOT
+		PUSH2 S1, S3
+		LESS
+		AND
+	}
+	PUSHCONT {
+		.loc multifactor.sol, 191
+		PUSH2 S1, S1
+		ISNULL
+		THROWIF 63
+		UNPAIR
+		.loc multifactor.sol, 192
+		NOW
+		SWAP
+		SECOND
+		GREATER
+		PUSHCONT {
+			.loc multifactor.sol, 193
+			DUP
+			GETGLOB 16
+			PUSHPOW2 8
+			DICTUDEL
+			DROP
+			SETGLOB 16
+			.loc multifactor.sol, 194
+			GETGLOB 17
+			DEC
+			UFITS 8
+			SETGLOB 17
+			.loc multifactor.sol, 0
+		}
+		IF
+		.loc multifactor.sol, 196
+		GETGLOB 16
+		PUSHPOW2 8
+		DICTUGETNEXT
+		NULLSWAPIFNOT
+		IFREF {
+			SWAP
+			LDREF
+			LDU 64
+			ENDS
+			PAIR
+			PAIR
+		}
+		POP S2
+		.loc multifactor.sol, 197
+		OVER
+		ISNULL
+		PUSHCONT {
+			.loc multifactor.sol, 198
+			GETGLOB 16
+			PUSHPOW2 8
+			DICTUMIN
+			NULLSWAPIFNOT
+			IFREF {
+				SWAP
+				LDREF
+				LDU 64
+				ENDS
+				PAIR
+				PAIR
+			}
+			POP S2
+			.loc multifactor.sol, 0
+		}
+		IF
+		.loc multifactor.sol, 200
+		INC
+		UFITS 8
+		.loc multifactor.sol, 0
+	}
+	WHILE
+	.loc multifactor.sol, 202
+	DROP
+	SETGLOB 18
+	.loc multifactor.sol, 0
+	DROP
+	.loc multifactor.sol, 175
+	GETGLOB 17
+	EQINT 12
+	PUSHCONT {
+		.loc multifactor.sol, 176
+		BLKDROP 3
+		FALSE
+		.loc multifactor.sol, 0
+	}
+	IFJMP
+	.loc multifactor.sol, 178
+	ROT
+	PUSHINT 9
+	PUSHPOW2DEC 32
+	TRUE
+	CALLREF {
+		.inline __subCell
+	}
+	.loc multifactor.sol, 179
+	ROT
+	PAIR
+	GETGLOB 16
+	SWAP
+	CALLREF {
+		UNPAIR
+		SWAP
+		NEWC
+		STREF
+		STU 64
+	}
+	ROTREV
+	PUSHPOW2 8
+	DICTUSETB
+	SETGLOB 16
+	.loc multifactor.sol, 180
+	GETGLOB 17
+	INC
+	UFITS 8
+	SETGLOB 17
+	.loc multifactor.sol, 181
+	TRUE
+	.loc multifactor.sol, 0
+}
+
+.fragment addJwkModulus, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 146
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	LDREF
+	LDREF
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline addJwkModulus_c58aa445_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 4153012567
+		STUR 130
+		STI 1
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment addRootProviderCertificate_ee7974cb_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 313
+	OVER
+	GETGLOB 15
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	THROWIF 512
+	.loc multifactor.sol, 314
+	ACCEPT
+	.loc multifactor.sol, 315
+	SWAP
+	GETGLOB 15
+	PUSHPOW2 8
+	DICTUSETREF
+	SETGLOB 15
+	.loc multifactor.sol, 0
+}
+
+.fragment addRootProviderCertificate, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 312
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	LDREF
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline addRootProviderCertificate_ee7974cb_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment addSecurityCard_382bcb31_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 461
+	GETGLOB 24
+	LESSINT 5
+	THROWIFNOT 702
+	.loc multifactor.sol, 462
+	OVER
+	GETGLOB 23
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	THROWIF 703
+	.loc multifactor.sol, 463
+	OVER
+	THROWIFNOT 101
+	.loc multifactor.sol, 464
+	PUXC S1, S-1
+	CTOS
+	PUSH S2
+	CHKSIGNU
+	THROWIFNOT 501
+	.loc multifactor.sol, 465
+	ACCEPT
+	.loc multifactor.sol, 466
+	GETGLOB 23
+	NEWC
+	STONE
+	ROTREV
+	PUSHPOW2 8
+	DICTUSETB
+	SETGLOB 23
+	.loc multifactor.sol, 467
+	GETGLOB 24
+	INC
+	UFITS 8
+	SETGLOB 24
+	.loc multifactor.sol, 468
+	TRUE
+	SETGLOB 22
+	.loc multifactor.sol, 0
+}
+
+.fragment addSecurityCard, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 460
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	LDREF
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline addSecurityCard_382bcb31_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment addZKPfactor_8b03ad3f_internal, {
+	.loc multifactor.sol, 231
+	PUSHINT 0
+	.loc multifactor.sol, 239
+	PUSH S4
+	THROWIFNOT 101
+	.loc multifactor.sol, 240
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	PUSH S5
+	EQUAL
+	THROWIFNOT 501
+	.loc multifactor.sol, 241
+	GETGLOB 14
+	PUSH S5
+	NEQ
+	GETGLOB 12
+	PUSH S6
+	NEQ
+	AND
+	THROWIFNOT 102
+	.loc multifactor.sol, 242
+	NOW
+	PUSHINT 300
+	ADD
+	UFITS 64
+	PUSH S2
+	LESS
+	THROWIFNOT 502
+	.loc multifactor.sol, 243
+	OVER
+	NOW
+	PUSHINT 2592000
+	ADD
+	UFITS 64
+	LESS
+	THROWIFNOT 511
+	.loc multifactor.sol, 244
+	PUSH2 S1, S4
+	.loc multifactor.sol, 137
+	MODPOW2 192
+	.loc multifactor.sol, 138
+	SWAP
+	LSHIFT 192
+	OR
+	.loc multifactor.sol, 245
+	DUP
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	THROWIF 102
+	.loc multifactor.sol, 246
+	PUSH S4
+	HASHCU
+	.loc multifactor.sol, 247
+	DUP
+	GETGLOB 16
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	THROWIFNOT 508
+	.loc multifactor.sol, 248
+	NOW
+	PUSHINT 300
+	ADD
+	UFITS 64
+	OVER
+	GETGLOB 16
+	PUSHPOW2 8
+	DICTUGET
+	IFREFELSEREF
+	{
+		LDREF
+		LDU 64
+		ENDS
+		PAIR
+	}
+	{
+		PUSHREF {
+		}
+		PUSHINT 0
+		PAIR
+	}
+	SECOND
+	LESS
+	THROWIFNOT 507
+	.loc multifactor.sol, 249
+	GETGLOB 20
+	PUSH3 S4, S7, S1
+	GETGLOB 16
+	PUSHPOW2 8
+	DICTUGET
+	IFREFELSEREF
+	{
+		LDREF
+		LDU 64
+		ENDS
+		PAIR
+	}
+	{
+		PUSHREF {
+		}
+		PUSHINT 0
+		PAIR
+	}
+	FIRST
+	GETGLOB 21
+	PUSH S9
+	GETGLOB 19
+	POSEIDON
+	.loc multifactor.sol, 250
+	PUSH2 S8, S0
+	PUSHINT 0
+	VERGRTH16
+	THROWIFNOT 504
+	.loc multifactor.sol, 252
+	ACCEPT
+	.loc multifactor.sol, 253
+	PUSHINT 5
+	.loc multifactor.sol, 254
+	GETGLOB 11
+	LESSINT 5
+	PUSHCONT {
+		.loc multifactor.sol, 255
+		DROP
+		GETGLOB 11
+		.loc multifactor.sol, 0
+	}
+	IF
+	.loc multifactor.sol, 257
+	DUP
+	.loc multifactor.sol, 270
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUMIN
+	NULLSWAPIFNOT
+	PUSHCONT {
+		SWAP
+		PLDU 256
+		PAIR
+	}
+	IF
+	.loc multifactor.sol, 271
+	PUSHINT 0
+	.loc multifactor.sol, 272
+	PUSHCONT {
+		OVER
+		ISNULL
+		NOT
+		PUSH2 S1, S3
+		LESS
+		AND
+	}
+	PUSHCONT {
+		.loc multifactor.sol, 273
+		PUSH2 S1, S1
+		ISNULL
+		THROWIF 63
+		UNPAIR
+		DROP
+		.loc multifactor.sol, 274
+		DUP
+		RSHIFT 192
+		UFITS 64
+		.loc multifactor.sol, 275
+		NOW
+		SWAP
+		GEQ
+		PUSHCONT {
+			.loc multifactor.sol, 276
+			DUP
+			GETGLOB 10
+			PUSHPOW2 8
+			DICTUDEL
+			DROP
+			SETGLOB 10
+			.loc multifactor.sol, 277
+			GETGLOB 11
+			DEC
+			UFITS 8
+			SETGLOB 11
+			.loc multifactor.sol, 278
+			DUP
+			GETGLOB 10
+			PUSHPOW2 8
+			DICTUGETNEXT
+			NULLSWAPIFNOT
+			PUSHCONT {
+				SWAP
+				PLDU 256
+				PAIR
+			}
+			IF
+			POP S3
+			.loc multifactor.sol, 279
+			OVER
+			INC
+			UFITS 8
+			POP S2
+			.loc multifactor.sol, 0
+		}
+		PUSHCONT {
+			.loc multifactor.sol, 282
+			DROP
+			RETALT
+			.loc multifactor.sol, 0
+		}
+		IFELSE
+		DROP
+		.loc multifactor.sol, 0
+	}
+	WHILEBRK
+	BLKDROP 6
+	.loc multifactor.sol, 258
+	GETGLOB 11
+	EQINT 10
+	GETGLOB 29
+	AND
+	PUSHCONT {
+		.loc multifactor.sol, 288
+		GETGLOB 10
+		PUSHPOW2 8
+		DICTUMIN
+		NULLSWAPIFNOT
+		PUSHCONT {
+			SWAP
+			PLDU 256
+			PAIR
+		}
+		IF
+		.loc multifactor.sol, 289
+		DUP
+		ISNULL
+		PUSHCONT {
+			.loc multifactor.sol, 290
+			BLKPUSH 2, 0
+			ISNULL
+			THROWIF 63
+			UNPAIR
+			DROP
+			.loc multifactor.sol, 291
+			GETGLOB 10
+			PUSHPOW2 8
+			DICTUDEL
+			DROP
+			SETGLOB 10
+			.loc multifactor.sol, 292
+			GETGLOB 11
+			DEC
+			UFITS 8
+			SETGLOB 11
+			.loc multifactor.sol, 0
+		}
+		IFNOT
+		.loc multifactor.sol, 0
+		DROP
+	}
+	IF
+	.loc multifactor.sol, 261
+	GETGLOB 11
+	EQINT 10
+	PUSHCONT {
+		.loc multifactor.sol, 262
+		BLKDROP 7
+		FALSE
+		.loc multifactor.sol, 0
+	}
+	IFJMP
+	.loc multifactor.sol, 264
+	GETGLOB 10
+	ROLL 6
+	NEWC
+	STU 256
+	ROTREV
+	PUSHPOW2 8
+	DICTUSETB
+	SETGLOB 10
+	.loc multifactor.sol, 265
+	BLKDROP 5
+	GETGLOB 11
+	INC
+	UFITS 8
+	SETGLOB 11
+	.loc multifactor.sol, 266
+	TRUE
+	.loc multifactor.sol, 0
+}
+
+.fragment addZKPfactor, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 231
+	OVER
+	PUSHCONT {
+		LDREF
+		LDREF
+		ENDS
+		CTOS
+	}
+	PUSHCONT {
+		LDREF
+	}
+	IFELSE
+	LDU 256
+	LDREF
+	LDREF
+	LDU 64
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline addZKPfactor_8b03ad3f_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 3062799511
+		STUR 130
+		STI 1
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment changeSeedPhrase_045c82a3_internal, {
+	.loc multifactor.sol, 430
+	OVER
+	THROWIFNOT 101
+	.loc multifactor.sol, 431
+	PUXC S1, S-1
+	CTOS
+	PUSH S2
+	CHKSIGNU
+	THROWIFNOT 501
+	.loc multifactor.sol, 432
+	NOW
+	PUSH S2
+	LESS
+	THROWIFNOT 502
+	.loc multifactor.sol, 433
+	OVER
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	.loc multifactor.sol, 137
+	MODPOW2 192
+	.loc multifactor.sol, 138
+	SWAP
+	LSHIFT 192
+	OR
+	.loc multifactor.sol, 434
+	DUP
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	DUP
+	PUSHCONT {
+		DROP
+		DUP
+		GETGLOB 10
+		PUSHPOW2 8
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			PLDU 256
+		}
+		IF
+		GETGLOB 5
+		DUP
+		ISNULL
+		PUSHCONT {
+			DROP
+			PUSHINT 0
+		}
+		IF
+		EQUAL
+	}
+	IF
+	THROWIFNOT 501
+	.loc multifactor.sol, 435
+	DROP
+	GETGLOB 13
+	ISNULL
+	THROWIFNOT 600
+	.loc multifactor.sol, 436
+	ACCEPT
+	.loc multifactor.sol, 437
+	SWAP
+	PAIR
+	SETGLOB 13
+	.loc multifactor.sol, 0
+}
+
+.fragment changeSeedPhrase, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 428
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 64
+	LDU 256
+	LDREF
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline changeSeedPhrase_045c82a3_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment cleanAllExpiredJwks_82781e0d_internal, {
+	.loc multifactor.sol, 206
+	NOW
+	OVER
+	LESS
+	THROWIFNOT 502
+	.loc multifactor.sol, 207
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	.loc multifactor.sol, 137
+	MODPOW2 192
+	.loc multifactor.sol, 138
+	SWAP
+	LSHIFT 192
+	OR
+	.loc multifactor.sol, 208
+	DUP
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	DUP
+	PUSHCONT {
+		DROP
+		DUP
+		GETGLOB 10
+		PUSHPOW2 8
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			PLDU 256
+		}
+		IF
+		GETGLOB 5
+		DUP
+		ISNULL
+		PUSHCONT {
+			DROP
+			PUSHINT 0
+		}
+		IF
+		EQUAL
+	}
+	IF
+	THROWIFNOT 501
+	.loc multifactor.sol, 209
+	DROP
+	ACCEPT
+	.loc multifactor.sol, 210
+	PUSHINT 12
+	.loc multifactor.sol, 211
+	GETGLOB 17
+	LESSINT 12
+	PUSHCONT {
+		.loc multifactor.sol, 212
+		DROP
+		GETGLOB 17
+		.loc multifactor.sol, 0
+	}
+	IF
+	.loc multifactor.sol, 185
+	GETGLOB 18
+	ISNULL
+	PUSHCONT {
+		.loc multifactor.sol, 186
+		GETGLOB 16
+		PUSHPOW2 8
+		DICTUMIN
+		NULLSWAPIFNOT
+		IFREF {
+			SWAP
+			LDREF
+			LDU 64
+			ENDS
+			PAIR
+			PAIR
+		}
+		SETGLOB 18
+		.loc multifactor.sol, 0
+	}
+	IF
+	.loc multifactor.sol, 188
+	GETGLOB 18
+	.loc multifactor.sol, 189
+	PUSHINT 0
+	.loc multifactor.sol, 190
+	PUSHCONT {
+		OVER
+		ISNULL
+		NOT
+		PUSH2 S1, S3
+		LESS
+		AND
+	}
+	PUSHCONT {
+		.loc multifactor.sol, 191
+		PUSH2 S1, S1
+		ISNULL
+		THROWIF 63
+		UNPAIR
+		.loc multifactor.sol, 192
+		NOW
+		SWAP
+		SECOND
+		GREATER
+		PUSHCONT {
+			.loc multifactor.sol, 193
+			DUP
+			GETGLOB 16
+			PUSHPOW2 8
+			DICTUDEL
+			DROP
+			SETGLOB 16
+			.loc multifactor.sol, 194
+			GETGLOB 17
+			DEC
+			UFITS 8
+			SETGLOB 17
+			.loc multifactor.sol, 0
+		}
+		IF
+		.loc multifactor.sol, 196
+		GETGLOB 16
+		PUSHPOW2 8
+		DICTUGETNEXT
+		NULLSWAPIFNOT
+		IFREF {
+			SWAP
+			LDREF
+			LDU 64
+			ENDS
+			PAIR
+			PAIR
+		}
+		POP S2
+		.loc multifactor.sol, 197
+		OVER
+		ISNULL
+		PUSHCONT {
+			.loc multifactor.sol, 198
+			GETGLOB 16
+			PUSHPOW2 8
+			DICTUMIN
+			NULLSWAPIFNOT
+			IFREF {
+				SWAP
+				LDREF
+				LDU 64
+				ENDS
+				PAIR
+				PAIR
+			}
+			POP S2
+			.loc multifactor.sol, 0
+		}
+		IF
+		.loc multifactor.sol, 200
+		INC
+		UFITS 8
+		.loc multifactor.sol, 0
+	}
+	WHILE
+	.loc multifactor.sol, 202
+	DROP
+	SETGLOB 18
+	.loc multifactor.sol, 0
+	DROP
+}
+
+.fragment cleanAllExpiredJwks, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 205
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 64
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline cleanAllExpiredJwks_82781e0d_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment cleanAllExpiredZKPFactors_ce696926_internal, {
+	.loc multifactor.sol, 297
+	NOW
+	OVER
+	LESS
+	THROWIFNOT 502
+	.loc multifactor.sol, 298
+	DUP
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	.loc multifactor.sol, 137
+	MODPOW2 192
+	.loc multifactor.sol, 138
+	SWAP
+	LSHIFT 192
+	OR
+	.loc multifactor.sol, 299
+	DUP
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	DUP
+	PUSHCONT {
+		DROP
+		DUP
+		GETGLOB 10
+		PUSHPOW2 8
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			PLDU 256
+		}
+		IF
+		GETGLOB 5
+		DUP
+		ISNULL
+		PUSHCONT {
+			DROP
+			PUSHINT 0
+		}
+		IF
+		EQUAL
+	}
+	IF
+	THROWIFNOT 501
+	.loc multifactor.sol, 300
+	ACCEPT
+	.loc multifactor.sol, 301
+	PUSHINT 10
+	.loc multifactor.sol, 270
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUMIN
+	NULLSWAPIFNOT
+	PUSHCONT {
+		SWAP
+		PLDU 256
+		PAIR
+	}
+	IF
+	.loc multifactor.sol, 271
+	PUSHINT 0
+	.loc multifactor.sol, 272
+	PUSHCONT {
+		OVER
+		ISNULL
+		NOT
+		PUSH2 S1, S3
+		LESS
+		AND
+	}
+	PUSHCONT {
+		.loc multifactor.sol, 273
+		PUSH2 S1, S1
+		ISNULL
+		THROWIF 63
+		UNPAIR
+		DROP
+		.loc multifactor.sol, 274
+		DUP
+		RSHIFT 192
+		UFITS 64
+		.loc multifactor.sol, 275
+		NOW
+		SWAP
+		GEQ
+		PUSHCONT {
+			.loc multifactor.sol, 276
+			DUP
+			GETGLOB 10
+			PUSHPOW2 8
+			DICTUDEL
+			DROP
+			SETGLOB 10
+			.loc multifactor.sol, 277
+			GETGLOB 11
+			DEC
+			UFITS 8
+			SETGLOB 11
+			.loc multifactor.sol, 278
+			DUP
+			GETGLOB 10
+			PUSHPOW2 8
+			DICTUGETNEXT
+			NULLSWAPIFNOT
+			PUSHCONT {
+				SWAP
+				PLDU 256
+				PAIR
+			}
+			IF
+			POP S3
+			.loc multifactor.sol, 279
+			OVER
+			INC
+			UFITS 8
+			POP S2
+			.loc multifactor.sol, 0
+		}
+		PUSHCONT {
+			.loc multifactor.sol, 282
+			DROP
+			RETALT
+			.loc multifactor.sol, 0
+		}
+		IFELSE
+		DROP
+		.loc multifactor.sol, 0
+	}
+	WHILEBRK
+	BLKDROP 5
+	.loc multifactor.sol, 0
+}
+
+.fragment cleanAllExpiredZKPFactors, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 296
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 64
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline cleanAllExpiredZKPFactors_ce696926_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment cleanAllJwks_81c32782_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 330
+	ACCEPT
+	.loc multifactor.sol, 331
+	NULL
+	SETGLOB 16
+	.loc multifactor.sol, 332
+	PUSHINT 0
+	SETGLOB 17
+	.loc multifactor.sol, 0
+}
+
+.fragment cleanAllJwks, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 329
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline cleanAllJwks_81c32782_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment cleanAllZKPFactors_85420216_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 336
+	ACCEPT
+	.loc multifactor.sol, 337
+	NULL
+	SETGLOB 10
+	.loc multifactor.sol, 338
+	PUSHINT 0
+	SETGLOB 11
+	.loc multifactor.sol, 0
+}
+
+.fragment cleanAllZKPFactors, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 335
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline cleanAllZKPFactors_85420216_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment cleanRootProviderCertificates_251a8ac5_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 325
+	ACCEPT
+	.loc multifactor.sol, 326
+	NULL
+	SETGLOB 15
+	.loc multifactor.sol, 0
+}
+
+.fragment cleanRootProviderCertificates, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 324
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline cleanRootProviderCertificates_251a8ac5_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment confirmTransaction_5798d056_internal, {
+	.loc multifactor.sol, 564
+	GETGLOB 22
+	THROWIFNOT 704
+	.loc multifactor.sol, 565
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 23
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	THROWIFNOT 501
+	.loc multifactor.sol, 566
+	PUSHCONT {
+		.loc multifactor.sol, 646
+		NOW
+		PUSHINT 3601
+		SUB
+		UFITS 64
+		LSHIFT 32
+		UFITS 64
+		.loc multifactor.sol, 583
+		GETGLOB 25
+		PUSHINT 64
+		DICTUMINREF
+		NULLSWAPIFNOT
+		IFREF {
+			SWAP
+			CTOS
+			CALLREF {
+				LDU 64
+				LDU 256
+				LDMSGADDR
+				LDREF
+				ENDS
+				CTOS
+				LDU 128
+				LDDICT
+				LDU 16
+				LDREF
+				LDI 1
+				ENDS
+				TUPLE 8
+			}
+			PAIR
+		}
+		.loc multifactor.sol, 584
+		DUP
+		ISNULL
+		PUSHCONT {
+			.loc multifactor.sol, 584
+			DROP2
+			.loc multifactor.sol, 0
+		}
+		IFJMP
+		.loc multifactor.sol, 585
+		BLKPUSH 2, 0
+		ISNULL
+		THROWIF 63
+		UNPAIR
+		.loc multifactor.sol, 586
+		PUSH2 S1, S3
+		LEQ
+		.loc multifactor.sol, 587
+		DUP
+		PUSHCONT {
+			.loc multifactor.sol, 587
+			BLKDROP 5
+			.loc multifactor.sol, 0
+		}
+		IFNOTJMP
+		.loc multifactor.sol, 589
+		ACCEPT
+		.loc multifactor.sol, 590
+		PUSHINT 0
+		.loc multifactor.sol, 591
+		PUSHCONT {
+			DUP2
+			GETGLOB 28
+			LESS
+			AND
+		}
+		PUSHCONT {
+			.loc multifactor.sol, 593
+			INC
+			.loc multifactor.sol, 594
+			PUSH S3
+			GETGLOB 25
+			PUSHINT 64
+			DICTUDEL
+			DROP
+			SETGLOB 25
+			.loc multifactor.sol, 595
+			GETGLOB 26
+			DEC
+			UFITS 8
+			SETGLOB 26
+			.loc multifactor.sol, 596
+			PUSH S3
+			GETGLOB 25
+			PUSHINT 64
+			DICTUGETNEXT
+			NULLSWAPIFNOT
+			IFREF {
+				SWAP
+				LDREFRTOS
+				NIP
+				CALLREF {
+					LDU 64
+					LDU 256
+					LDMSGADDR
+					LDREF
+					ENDS
+					CTOS
+					LDU 128
+					LDDICT
+					LDU 16
+					LDREF
+					LDI 1
+					ENDS
+					TUPLE 8
+				}
+				PAIR
+			}
+			POP S5
+			.loc multifactor.sol, 597
+			PUSH S4
+			ISNULL
+			PUSHCONT {
+				.loc multifactor.sol, 598
+				FALSE
+			}
+			PUSHCONT {
+				.loc multifactor.sol, 600
+				PUSH2 S4, S4
+				ISNULL
+				THROWIF 63
+				UNPAIR
+				PUXC2 S1, S4, S5
+				DROP2
+				.loc multifactor.sol, 601
+				PUSH S6
+				LEQ
+			}
+			IFELSE
+			POP S2
+			.loc multifactor.sol, 0
+		}
+		WHILE
+		.loc multifactor.sol, 604
+		BLKDROP 6
+		CALLREF {
+			.inline c7_to_c4
+		}
+		COMMIT
+		.loc multifactor.sol, 581
+	}
+	CALLX
+	.loc multifactor.sol, 567
+	DUP
+	GETGLOB 25
+	PUSHINT 64
+	DICTUGETREF
+	NULLSWAPIFNOT
+	IFREF {
+		CTOS
+		CALLREF {
+			LDU 64
+			LDU 256
+			LDMSGADDR
+			LDREF
+			ENDS
+			CTOS
+			LDU 128
+			LDDICT
+			LDU 16
+			LDREF
+			LDI 1
+			ENDS
+			TUPLE 8
+		}
+	}
+	.loc multifactor.sol, 568
+	DUP
+	ISNULL
+	THROWIF 300
+	.loc multifactor.sol, 569
+	ACCEPT
+	.loc multifactor.sol, 646
+	NOW
+	PUSHINT 3601
+	SUB
+	UFITS 64
+	LSHIFT 32
+	UFITS 64
+	.loc multifactor.sol, 571
+	PUXC S2, S-1
+	GREATER
+	.loc multifactor.sol, 572
+	PUSHCONT {
+		.loc multifactor.sol, 573
+		BLKPUSH 2, 0
+		ISNULL
+		THROWIF 63
+		.loc multifactor.sol, 574
+		DUP
+		INDEX 4
+		OVER
+		INDEX 3
+		UFITS 120
+		PUSH S2
+		THIRD
+		PUSH S3
+		INDEX 7
+		NEWC
+		STSLICECONST x6_
+		STI 1
+		STSLICECONST x1_
+		STSLICE
+		SWAP
+		STGRAMS
+		STDICT
+		PUSHINT 1
+		STUR 107
+		OVER
+		INDEX 6
+		STREFR
+		ENDC
+		SWAP
+		INDEX 5
+		SENDRAWMSG
+		.loc multifactor.sol, 0
+	}
+	IF
+	.loc multifactor.sol, 576
+	DROP
+	GETGLOB 25
+	PUSHINT 64
+	DICTUDEL
+	DROP
+	SETGLOB 25
+	.loc multifactor.sol, 577
+	GETGLOB 26
+	DEC
+	UFITS 8
+	SETGLOB 26
+	.loc multifactor.sol, 0
+}
+
+.fragment confirmTransaction, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 563
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 64
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline confirmTransaction_5798d056_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment constructor, {
+	DROP
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	FALSE
+	SETGLOB 22
+	PUSHINT 0
+	SETGLOB 24
+	PUSHINT 0
+	SETGLOB 26
+	PUSHINT 0
+	SETGLOB 27
+	PUSHINT 10
+	SETGLOB 28
+	PUSHREF {
+		.blob xc5b3fe1a4fa391e9660a13d55ca2200f9343d5b1d18473ebbee19d8219e3ddc1
+	}
+	SETGLOB 30
+	PUSHREF {
+		.blob x646f63733a746c73636865636b65722f746c732d636865636b2d696e7465726661636540302e312e30
+	}
+	SETGLOB 31
+	PUSHREF {
+		.blob x746c73636865636b
+	}
+	PUSHINT 32
+	SETGLOBVAR
+	PUSHREF {
+	}
+	PUSHINT 33
+	SETGLOBVAR
+	GETGLOB 6
+	THROWIF 51
+	OVER
+	PUSHCONT {
+		LDREF
+		LDREF
+		LDREF
+		ENDS
+		CTOS
+		LDU 256
+		LDREF
+		LDU 64
+		LDREF
+		LDREF
+		LDU 64
+		LDU 8
+		LDREF
+		ENDS
+		CTOS
+		LDREF
+	}
+	PUSHCONT {
+		LDREF
+		LDREF
+		LDU 256
+		LDREF
+		LDU 64
+		LDREF
+		ENDS
+		CTOS
+		LDREF
+		LDREF
+		LDU 64
+		LDU 8
+		LDREF
+		LDREF
+		ENDS
+		CTOS
+	}
+	IFELSE
+	LDREF
+	LDU 256
+	LDREF
+	LDU 64
+	LDDICT
+	ENDS
+	.loc multifactor.sol, 109
+	SWAP
+	CNVRTSHELLQ
+	.loc multifactor.sol, 110
+	GETGLOB 2
+	NEQINT 0
+	PUSH S3
+	NEQINT 0
+	PUSH S13
+	NEQINT 0
+	AND
+	AND
+	THROWIFNOT 101
+	.loc multifactor.sol, 111
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 2
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 112
+	PUSH S2
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	NEQ
+	PUSH2 S3, S12
+	NEQ
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	PUSH S14
+	NEQ
+	AND
+	AND
+	THROWIFNOT 102
+	.loc multifactor.sol, 113
+	PUXC S2, S1
+	CTOS
+	PUSH S3
+	CHKSIGNU
+	THROWIFNOT 501
+	.loc multifactor.sol, 114
+	PUSH S10
+	ROLL 10
+	CTOS
+	PUSH S11
+	CHKSIGNU
+	THROWIFNOT 501
+	.loc multifactor.sol, 115
+	NOW
+	PUSHINT 300
+	ADD
+	UFITS 64
+	PUSH S9
+	LESS
+	THROWIFNOT 502
+	.loc multifactor.sol, 116
+	NOW
+	PUSHINT 300
+	ADD
+	UFITS 64
+	PUSH S6
+	LESS
+	THROWIFNOT 507
+	.loc multifactor.sol, 120
+	PUSH3 S4, S8, S9
+	PUSH2 S10, S6
+	ROLL 7
+	PUSH S16
+	POSEIDON
+	.loc multifactor.sol, 121
+	ROLL 10
+	SWAP
+	PUSHINT 0
+	VERGRTH16
+	THROWIFNOT 504
+	.loc multifactor.sol, 122
+	ACCEPT
+	.loc multifactor.sol, 123
+	ROLL 9
+	SETGLOB 19
+	.loc multifactor.sol, 124
+	ROLL 3
+	SETGLOB 20
+	.loc multifactor.sol, 125
+	ROT
+	SETGLOB 21
+	.loc multifactor.sol, 126
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	SETGLOB 12
+	.loc multifactor.sol, 127
+	SWAP
+	SETGLOB 14
+	.loc multifactor.sol, 128
+	PUSH S5
+	GETGLOB 10
+	BLKSWAP 2, 6
+	SWAP
+	.loc multifactor.sol, 137
+	MODPOW2 192
+	.loc multifactor.sol, 138
+	SWAP
+	LSHIFT 192
+	OR
+	.loc multifactor.sol, 0
+	XCHG S2
+	NEWC
+	STU 256
+	ROTREV
+	PUSHPOW2 8
+	DICTUSETB
+	SETGLOB 10
+	.loc multifactor.sol, 129
+	PUSHINT 1
+	SETGLOB 11
+	.loc multifactor.sol, 130
+	XCHG3 S0, S3, S3
+	PAIR
+	GETGLOB 16
+	ROLL 3
+	HASHCU
+	XCHG S2
+	CALLREF {
+		UNPAIR
+		SWAP
+		NEWC
+		STREF
+		STU 64
+	}
+	ROTREV
+	PUSHPOW2 8
+	DICTUSETB
+	SETGLOB 16
+	.loc multifactor.sol, 131
+	PUSHINT 1
+	SETGLOB 17
+	.loc multifactor.sol, 132
+	SETGLOB 15
+	.loc multifactor.sol, 133
+	FALSE
+	SETGLOB 29
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment deleteAllSecurityCards_edd880aa_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 495
+	GETGLOB 23
+	DICTEMPTY
+	THROWIF 701
+	.loc multifactor.sol, 496
+	ACCEPT
+	.loc multifactor.sol, 497
+	FALSE
+	SETGLOB 22
+	.loc multifactor.sol, 498
+	NULL
+	SETGLOB 23
+	.loc multifactor.sol, 499
+	PUSHINT 0
+	SETGLOB 24
+	.loc multifactor.sol, 0
+}
+
+.fragment deleteAllSecurityCards, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 494
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline deleteAllSecurityCards_edd880aa_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment deleteCandidateSeedPhrase_5de94809_internal, {
+	.loc multifactor.sol, 451
+	NOW
+	OVER
+	LESS
+	THROWIFNOT 502
+	.loc multifactor.sol, 452
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	.loc multifactor.sol, 137
+	MODPOW2 192
+	.loc multifactor.sol, 138
+	SWAP
+	LSHIFT 192
+	OR
+	.loc multifactor.sol, 453
+	DUP
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	DUP
+	PUSHCONT {
+		DROP
+		DUP
+		GETGLOB 10
+		PUSHPOW2 8
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			PLDU 256
+		}
+		IF
+		GETGLOB 5
+		DUP
+		ISNULL
+		PUSHCONT {
+			DROP
+			PUSHINT 0
+		}
+		IF
+		EQUAL
+	}
+	IF
+	THROWIFNOT 501
+	.loc multifactor.sol, 454
+	DROP
+	ACCEPT
+	.loc multifactor.sol, 455
+	NULL
+	SETGLOB 13
+	.loc multifactor.sol, 0
+}
+
+.fragment deleteCandidateSeedPhrase, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 450
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 64
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline deleteCandidateSeedPhrase_5de94809_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment deleteJwkModulus_cde7f3de_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 395
+	HASHCU
+	.loc multifactor.sol, 396
+	DUP
+	GETGLOB 16
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	THROWIFNOT 508
+	.loc multifactor.sol, 397
+	ACCEPT
+	.loc multifactor.sol, 398
+	GETGLOB 16
+	PUSHPOW2 8
+	DICTUDEL
+	DROP
+	SETGLOB 16
+	.loc multifactor.sol, 399
+	GETGLOB 17
+	DEC
+	UFITS 8
+	SETGLOB 17
+	.loc multifactor.sol, 0
+}
+
+.fragment deleteJwkModulus, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 394
+	LDREF
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline deleteJwkModulus_cde7f3de_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment deleteJwkModulusByFactor_d6014022_internal, {
+	.loc multifactor.sol, 218
+	NOW
+	PUSH S2
+	LESS
+	THROWIFNOT 502
+	.loc multifactor.sol, 219
+	SWAP
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	.loc multifactor.sol, 137
+	MODPOW2 192
+	.loc multifactor.sol, 138
+	SWAP
+	LSHIFT 192
+	OR
+	.loc multifactor.sol, 220
+	DUP
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	DUP
+	PUSHCONT {
+		DROP
+		DUP
+		GETGLOB 10
+		PUSHPOW2 8
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			PLDU 256
+		}
+		IF
+		GETGLOB 5
+		DUP
+		ISNULL
+		PUSHCONT {
+			DROP
+			PUSHINT 0
+		}
+		IF
+		EQUAL
+	}
+	IF
+	THROWIFNOT 501
+	.loc multifactor.sol, 221
+	DROP
+	HASHCU
+	.loc multifactor.sol, 222
+	DUP
+	GETGLOB 16
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	THROWIFNOT 508
+	.loc multifactor.sol, 223
+	ACCEPT
+	.loc multifactor.sol, 224
+	GETGLOB 16
+	PUSHPOW2 8
+	DICTUDEL
+	DROP
+	SETGLOB 16
+	.loc multifactor.sol, 225
+	GETGLOB 17
+	DEC
+	UFITS 8
+	SETGLOB 17
+	.loc multifactor.sol, 0
+}
+
+.fragment deleteJwkModulusByFactor, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 217
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 64
+	LDREF
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline deleteJwkModulusByFactor_d6014022_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment deleteRootProviderCertificate_1153cdc1_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 319
+	DUP
+	GETGLOB 15
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	THROWIFNOT 513
+	.loc multifactor.sol, 320
+	ACCEPT
+	.loc multifactor.sol, 321
+	GETGLOB 15
+	PUSHPOW2 8
+	DICTUDEL
+	DROP
+	SETGLOB 15
+	.loc multifactor.sol, 0
+}
+
+.fragment deleteRootProviderCertificate, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 318
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline deleteRootProviderCertificate_1153cdc1_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment deleteSecurityCard_6a288d5f_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 485
+	DUP
+	GETGLOB 23
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	THROWIFNOT 705
+	.loc multifactor.sol, 486
+	ACCEPT
+	.loc multifactor.sol, 487
+	GETGLOB 23
+	PUSHPOW2 8
+	DICTUDEL
+	DROP
+	SETGLOB 23
+	.loc multifactor.sol, 488
+	GETGLOB 24
+	DEC
+	UFITS 8
+	SETGLOB 24
+	.loc multifactor.sol, 489
+	GETGLOB 23
+	DICTEMPTY
+	PUSHCONT {
+		.loc multifactor.sol, 490
+		FALSE
+		SETGLOB 22
+		.loc multifactor.sol, 0
+	}
+	IF
+	.loc multifactor.sol, 0
+}
+
+.fragment deleteSecurityCard, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 484
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline deleteSecurityCard_6a288d5f_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment deleteZKPfactor_d40921d9_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 137
+	MODPOW2 192
+	.loc multifactor.sol, 138
+	SWAP
+	LSHIFT 192
+	OR
+	.loc multifactor.sol, 404
+	DUP
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	THROWIFNOT 506
+	.loc multifactor.sol, 405
+	ACCEPT
+	.loc multifactor.sol, 406
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUDEL
+	DROP
+	SETGLOB 10
+	.loc multifactor.sol, 407
+	GETGLOB 11
+	DEC
+	UFITS 8
+	SETGLOB 11
+	.loc multifactor.sol, 0
+}
+
+.fragment deleteZKPfactor, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 402
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 64
+	LDU 256
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline deleteZKPfactor_d40921d9_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment deleteZKPfactor__0316f4dc_internal, {
+	.loc multifactor.sol, 410
+	GETGLOB 12
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	OVER
+	EQUAL
+	THROWIFNOT 500
+	.loc modifiers/modifiers.sol, 19
+	SWAP
+	.loc multifactor.sol, 411
+	ACCEPT
+	.loc multifactor.sol, 412
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUMIN
+	NULLSWAPIFNOT
+	PUSHCONT {
+		SWAP
+		PLDU 256
+		PAIR
+	}
+	IF
+	.loc multifactor.sol, 413
+	PUSHCONT {
+		DUP
+		ISNULL
+		NOT
+	}
+	PUSHCONT {
+		.loc multifactor.sol, 414
+		BLKPUSH 2, 0
+		ISNULL
+		THROWIF 63
+		UNPAIR
+		.loc multifactor.sol, 415
+		PUSH S3
+		EQUAL
+		PUSHCONT {
+			.loc multifactor.sol, 416
+			GETGLOB 10
+			PUSHPOW2 8
+			DICTUDEL
+			DROP
+			SETGLOB 10
+			.loc multifactor.sol, 417
+			GETGLOB 11
+			DEC
+			UFITS 8
+			SETGLOB 11
+			.loc multifactor.sol, 418
+			RETALT
+			.loc multifactor.sol, 0
+		}
+		PUSHCONT {
+			.loc multifactor.sol, 421
+			DUP
+			GETGLOB 10
+			PUSHPOW2 8
+			DICTUGETNEXT
+			NULLSWAPIFNOT
+			PUSHCONT {
+				SWAP
+				PLDU 256
+				PAIR
+			}
+			IF
+			POP S2
+			.loc multifactor.sol, 0
+		}
+		IFELSE
+		DROP
+		.loc multifactor.sol, 0
+	}
+	WHILEBRK
+	BLKDROP 3
+	.loc multifactor.sol, 0
+}
+
+.fragment deleteZKPfactor_, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 410
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline deleteZKPfactor__0316f4dc_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment exchangeToken_424ddeb8_internal, {
+	.loc multifactor.sol, 608
+	NOW
+	PUSH S2
+	LESS
+	THROWIFNOT 502
+	.loc multifactor.sol, 609
+	SWAP
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	.loc multifactor.sol, 137
+	MODPOW2 192
+	.loc multifactor.sol, 138
+	SWAP
+	LSHIFT 192
+	OR
+	.loc multifactor.sol, 610
+	DUP
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	DUP
+	PUSHCONT {
+		DROP
+		DUP
+		GETGLOB 10
+		PUSHPOW2 8
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			PLDU 256
+		}
+		IF
+		GETGLOB 5
+		DUP
+		ISNULL
+		PUSHCONT {
+			DROP
+			PUSHINT 0
+		}
+		IF
+		EQUAL
+	}
+	IF
+	THROWIFNOT 501
+	.loc multifactor.sol, 611
+	DROP
+	ACCEPT
+	.loc multifactor.sol, 612
+	CNVRTSHELLQ
+	.loc multifactor.sol, 0
+}
+
+.fragment upd_only_time_in_c4, {
+	PUSHROOT
+	CTOS
+	LDU 256
+	LDU 64
+	NIP
+	GETGLOB 3
+	ROT
+	NEWC
+	STU 256
+	STU 64
+	STSLICE
+	ENDC
+	POPROOT
+}
+
+.fragment exchangeToken, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 607
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 64
+	LDU 64
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline exchangeToken_424ddeb8_internal
+	}
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment exchangeTokenWithOwner_3653e847_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 616
+	ACCEPT
+	.loc multifactor.sol, 617
+	CNVRTSHELLQ
+	.loc multifactor.sol, 0
+}
+
+.fragment exchangeTokenWithOwner, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 615
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 64
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline exchangeTokenWithOwner_3653e847_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment getSecurityCardKeys_f3d177cd_internal, {
+	.loc multifactor.sol, 707
+	PUSHINT 0
+	NULL
+	PAIR
+	GETGLOB 23
+	DUP
+	PUSHPOW2 8
+	DICTUMIN
+	NULLSWAPIFNOT
+	PUSHCONT {
+		SWAP
+		PLDI 1
+		PAIR
+	}
+	IF
+	PUSHCONT {
+		DUP
+		ISNULL
+		NOT
+	}
+	PUSHCONT {
+		PUSH2 S2, S0
+		FIRST
+		NEWC
+		STU 256
+		SWAP
+		UNPAIR
+		OVER
+		INC
+		ROLLREV 3
+		PUSHINT 32
+		DICTUSETB
+		PAIR
+		POP S3
+		FIRST
+		OVER
+		PUSHPOW2 8
+		DICTUGETNEXT
+		NULLSWAPIFNOT
+		PUSHCONT {
+			SWAP
+			PLDI 1
+			PAIR
+		}
+		IF
+	}
+	WHILE
+	DROP2
+	.loc multifactor.sol, 0
+}
+
+.fragment getSecurityCardKeys, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 706
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline getSecurityCardKeys_f3d177cd_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 2876974902
+		STUR 130
+		SWAP
+		UNPAIR
+		XCHG S2
+		STU 32
+		STDICT
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment getTimeStamp_da235b22_internal, {
+	.loc multifactor.sol, 703
+	NOW
+	.loc multifactor.sol, 0
+}
+
+.fragment getTimeStamp, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	.loc multifactor.sol, 702
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline getTimeStamp_da235b22_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 3357467409
+		STUR 130
+		STU 32
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment getTransaction_b07e2a3a_internal, {
+	.loc multifactor.sol, 665
+	GETGLOB 25
+	PUSHINT 64
+	DICTUGETREF
+	NULLSWAPIFNOT
+	IFREF {
+		CTOS
+		CALLREF {
+			LDU 64
+			LDU 256
+			LDMSGADDR
+			LDREF
+			ENDS
+			CTOS
+			LDU 128
+			LDDICT
+			LDU 16
+			LDREF
+			LDI 1
+			ENDS
+			TUPLE 8
+		}
+	}
+	.loc multifactor.sol, 666
+	DUP
+	ISNULL
+	THROWIF 300
+	.loc multifactor.sol, 667
+	DUP
+	ISNULL
+	THROWIF 63
+	.loc multifactor.sol, 0
+}
+
+.fragment getTransaction, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 663
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 64
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline getTransaction_b07e2a3a_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 1
+		STUR 98
+		SWAP
+		NEWC
+		STSLICECONST xf0938845
+		SWAP
+		UNTUPLE 8
+		REVERSE 9, 0
+		STU 64
+		STU 256
+		STSLICE
+		ROLLREV 5
+		NEWC
+		STU 128
+		STDICT
+		STU 16
+		STREF
+		STI 1
+		STBREFR
+		STBREFR
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment getTransactionIds_a2e38b54_internal, {
+	.loc multifactor.sol, 688
+	PUSHINT 0
+	NULL
+	PAIR
+	.loc multifactor.sol, 689
+	PUSHINT 0
+	.loc multifactor.sol, 690
+	GETGLOB 25
+	PUSHINT 64
+	DICTUMINREF
+	NULLSWAPIFNOT
+	IFREF {
+		SWAP
+		CTOS
+		CALLREF {
+			LDU 64
+			LDU 256
+			LDMSGADDR
+			LDREF
+			ENDS
+			CTOS
+			LDU 128
+			LDDICT
+			LDU 16
+			LDREF
+			LDI 1
+			ENDS
+			TUPLE 8
+		}
+		PAIR
+	}
+	.loc multifactor.sol, 691
+	PUSHCONT {
+		DUP
+		ISNULL
+		NOT
+	}
+	PUSHCONT {
+		.loc multifactor.sol, 692
+		DUP
+		ISNULL
+		THROWIF 63
+		UNPAIR
+		XCPU2 S1, S3, S0
+		BLKDROP2 2, 3
+		.loc multifactor.sol, 693
+		NEWC
+		STU 64
+		SWAP
+		UNPAIR
+		OVER
+		INC
+		ROLLREV 3
+		PUSHINT 32
+		DICTUSETB
+		PAIR
+		POP S2
+		.loc multifactor.sol, 694
+		DUP
+		GETGLOB 25
+		PUSHINT 64
+		DICTUGETNEXT
+		NULLSWAPIFNOT
+		IFREF {
+			SWAP
+			LDREFRTOS
+			NIP
+			CALLREF {
+				LDU 64
+				LDU 256
+				LDMSGADDR
+				LDREF
+				ENDS
+				CTOS
+				LDU 128
+				LDDICT
+				LDU 16
+				LDREF
+				LDI 1
+				ENDS
+				TUPLE 8
+			}
+			PAIR
+		}
+		.loc multifactor.sol, 0
+	}
+	WHILE
+	DROP2
+	.loc multifactor.sol, 0
+}
+
+.fragment getTransactionIds, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 688
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline getTransactionIds_a2e38b54_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 3499887885
+		STUR 130
+		SWAP
+		UNPAIR
+		XCHG S2
+		STU 32
+		STDICT
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment getTransactions_83920e90_internal, {
+	.loc multifactor.sol, 673
+	PUSHINT 0
+	NULL
+	PAIR
+	.loc multifactor.sol, 646
+	NOW
+	PUSHINT 3601
+	SUB
+	UFITS 64
+	LSHIFT 32
+	UFITS 64
+	.loc multifactor.sol, 675
+	GETGLOB 25
+	PUSHINT 64
+	DICTUMINREF
+	NULLSWAPIFNOT
+	IFREF {
+		SWAP
+		CTOS
+		CALLREF {
+			LDU 64
+			LDU 256
+			LDMSGADDR
+			LDREF
+			ENDS
+			CTOS
+			LDU 128
+			LDDICT
+			LDU 16
+			LDREF
+			LDI 1
+			ENDS
+			TUPLE 8
+		}
+		PAIR
+	}
+	.loc multifactor.sol, 676
+	PUSHCONT {
+		DUP
+		ISNULL
+		NOT
+	}
+	PUSHCONT {
+		.loc multifactor.sol, 678
+		DUP
+		ISNULL
+		THROWIF 63
+		UNPAIR
+		.loc multifactor.sol, 679
+		PUSH2 S1, S2
+		GREATER
+		PUSHCONT {
+			.loc multifactor.sol, 680
+			PUSH2 S3, S0
+			CALLREF {
+				UNTUPLE 8
+				REVERSE 8, 0
+				NEWC
+				STU 64
+				STU 256
+				STSLICE
+				ROLLREV 5
+				NEWC
+				STU 128
+				STDICT
+				STU 16
+				STREF
+				STI 1
+				STBREFR
+			}
+			ENDC
+			SWAP
+			UNPAIR
+			OVER
+			INC
+			ROLLREV 3
+			PUSHINT 32
+			DICTUSETREF
+			PAIR
+			POP S4
+			.loc multifactor.sol, 0
+		}
+		IF
+		.loc multifactor.sol, 682
+		DROP
+		GETGLOB 25
+		PUSHINT 64
+		DICTUGETNEXT
+		NULLSWAPIFNOT
+		IFREF {
+			SWAP
+			LDREFRTOS
+			NIP
+			CALLREF {
+				LDU 64
+				LDU 256
+				LDMSGADDR
+				LDREF
+				ENDS
+				CTOS
+				LDU 128
+				LDDICT
+				LDU 16
+				LDREF
+				LDI 1
+				ENDS
+				TUPLE 8
+			}
+			PAIR
+		}
+		.loc multifactor.sol, 0
+	}
+	WHILE
+	DROP2
+	.loc multifactor.sol, 0
+}
+
+.fragment getTransactions, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 673
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline getTransactions_83920e90_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 2436616564
+		STUR 130
+		SWAP
+		UNPAIR
+		XCHG S2
+		STU 32
+		STDICT
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment getVersion_0d8e6e2c_internal, {
+	.loc multifactor.sol, 727
+	PUSHREF {
+		.blob x312e302e30
+	}
+	PUSHREF {
+		.blob x4d756c7469666163746f72
+	}
+	.loc multifactor.sol, 0
+}
+
+.fragment getVersion, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	.loc multifactor.sol, 726
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline getVersion_0d8e6e2c_internal
+	}
+	PUSH S2
+	PUSHCONT {
+		PUSH S4
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 98
+		STZEROES
+		XCHG S1, S2
+		STSLICECONST xbfd85655
+		STREF
+		STREF
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP2
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment getZKPEphemeralPublicKeys_68ca7b20_internal, {
+	.loc multifactor.sol, 699
+	PUSHINT 0
+	NULL
+	PAIR
+	GETGLOB 10
+	DUP
+	PUSHPOW2 8
+	DICTUMIN
+	NULLSWAPIFNOT
+	PUSHCONT {
+		SWAP
+		PLDU 256
+		PAIR
+	}
+	IF
+	PUSHCONT {
+		DUP
+		ISNULL
+		NOT
+	}
+	PUSHCONT {
+		PUSH2 S2, S0
+		SECOND
+		NEWC
+		STU 256
+		SWAP
+		UNPAIR
+		OVER
+		INC
+		ROLLREV 3
+		PUSHINT 32
+		DICTUSETB
+		PAIR
+		POP S3
+		FIRST
+		OVER
+		PUSHPOW2 8
+		DICTUGETNEXT
+		NULLSWAPIFNOT
+		PUSHCONT {
+			SWAP
+			PLDU 256
+			PAIR
+		}
+		IF
+	}
+	WHILE
+	DROP2
+	.loc multifactor.sol, 0
+}
+
+.fragment getZKPEphemeralPublicKeys, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 698
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline getZKPEphemeralPublicKeys_68ca7b20_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 4101336375
+		STUR 130
+		SWAP
+		UNPAIR
+		XCHG S2
+		STU 32
+		STDICT
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment get_epk_expire_at_a355969f_internal, {
+	.loc multifactor.sol, 711
+	ACCEPT
+	.loc multifactor.sol, 712
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUMIN
+	NULLSWAPIFNOT
+	PUSHCONT {
+		SWAP
+		PLDU 256
+		PAIR
+	}
+	IF
+	.loc multifactor.sol, 713
+	FALSE ; decl return flag
+	PUSHCONT {
+		OVER
+		ISNULL
+		NOT
+	}
+	PUSHCONT {
+		.loc multifactor.sol, 714
+		PUSH2 S1, S1
+		ISNULL
+		THROWIF 63
+		UNPAIR
+		.loc multifactor.sol, 715
+		PUSH S4
+		EQUAL
+		PUSHCONT {
+			.loc multifactor.sol, 716
+			RSHIFT 192
+			UFITS 64
+			.loc multifactor.sol, 717
+			BLKDROP2 3, 1
+			PUSHINT 4
+			RETALT
+			.loc multifactor.sol, 0
+		}
+		PUSHCONT {
+			.loc multifactor.sol, 720
+			DUP
+			GETGLOB 10
+			PUSHPOW2 8
+			DICTUGETNEXT
+			NULLSWAPIFNOT
+			PUSHCONT {
+				SWAP
+				PLDU 256
+				PAIR
+			}
+			IF
+			POP S3
+			.loc multifactor.sol, 0
+		}
+		IFELSE
+		DROP
+		.loc multifactor.sol, 0
+	}
+	WHILEBRK
+	IFRET
+	.loc multifactor.sol, 723
+	DROP2
+	PUSHINT 0
+	.loc multifactor.sol, 0
+}
+
+.fragment get_epk_expire_at, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 710
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline get_epk_expire_at_a355969f_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 3488101518
+		STUR 130
+		STU 64
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment sendTransaction_85fb4278_internal, {
+	.loc multifactor.sol, 513
+	GETGLOB 22
+	THROWIF 700
+	.loc multifactor.sol, 514
+	PUSH S4
+	GETGLOB 27
+	GEQ
+	THROWIFNOT 200
+	.loc multifactor.sol, 515
+	NOW
+	PUSH S7
+	LESS
+	THROWIFNOT 502
+	.loc multifactor.sol, 516
+	ROLL 6
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	.loc multifactor.sol, 137
+	MODPOW2 192
+	.loc multifactor.sol, 138
+	SWAP
+	LSHIFT 192
+	OR
+	.loc multifactor.sol, 517
+	DUP
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	DUP
+	PUSHCONT {
+		DROP
+		DUP
+		GETGLOB 10
+		PUSHPOW2 8
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			PLDU 256
+		}
+		IF
+		GETGLOB 5
+		DUP
+		ISNULL
+		PUSHCONT {
+			DROP
+			PUSHINT 0
+		}
+		IF
+		EQUAL
+	}
+	IF
+	THROWIFNOT 501
+	.loc multifactor.sol, 518
+	DROP
+	ACCEPT
+	.loc multifactor.sol, 519
+	XCHG3 S0, S3, S4
+	UFITS 120
+	PUSH S5
+	ROLL 5
+	NEWC
+	STSLICECONST x6_
+	STI 1
+	STSLICECONST x1_
+	STSLICE
+	SWAP
+	STGRAMS
+	STDICT
+	PUSHINT 1
+	STUR 107
+	STREF
+	ENDC
+	SWAP
+	SENDRAWMSG
+	.loc multifactor.sol, 0
+}
+
+.fragment sendTransaction, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 504
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 64
+	LDMSGADDR
+	LDU 128
+	LDDICT
+	LDI 1
+	LDU 8
+	LDREF
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline sendTransaction_85fb4278_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 1
+		STUR 98
+		SWAP
+		NEWC
+		STSLICECONST xbe8d2ae8
+		STSLICE
+		STBREFR
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment setForceRemoveOldest_ab4e7079_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 308
+	ACCEPT
+	.loc multifactor.sol, 309
+	SETGLOB 29
+	.loc multifactor.sol, 0
+}
+
+.fragment setForceRemoveOldest, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 307
+	LDI 1
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline setForceRemoveOldest_ab4e7079_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment setMaxCleanupTxns_aec9ffab_internal, {
+	.loc multifactor.sol, 623
+	NOW
+	PUSH S2
+	LESS
+	THROWIFNOT 502
+	.loc multifactor.sol, 624
+	SWAP
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	.loc multifactor.sol, 137
+	MODPOW2 192
+	.loc multifactor.sol, 138
+	SWAP
+	LSHIFT 192
+	OR
+	.loc multifactor.sol, 625
+	DUP
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	DUP
+	PUSHCONT {
+		DROP
+		DUP
+		GETGLOB 10
+		PUSHPOW2 8
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			PLDU 256
+		}
+		IF
+		GETGLOB 5
+		DUP
+		ISNULL
+		PUSHCONT {
+			DROP
+			PUSHINT 0
+		}
+		IF
+		EQUAL
+	}
+	IF
+	THROWIFNOT 501
+	.loc multifactor.sol, 626
+	DROP
+	DUP
+	GTINT 0
+	OVER
+	LESSINT 21
+	AND
+	THROWIFNOT 302
+	.loc multifactor.sol, 627
+	ACCEPT
+	.loc multifactor.sol, 628
+	SETGLOB 28
+	.loc multifactor.sol, 0
+}
+
+.fragment setMaxCleanupTxns, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 622
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 64
+	LDU 256
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline setMaxCleanupTxns_aec9ffab_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment setMinValue_37870f52_internal, {
+	.loc multifactor.sol, 632
+	NOW
+	PUSH S2
+	LESS
+	THROWIFNOT 502
+	.loc multifactor.sol, 633
+	SWAP
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	.loc multifactor.sol, 137
+	MODPOW2 192
+	.loc multifactor.sol, 138
+	SWAP
+	LSHIFT 192
+	OR
+	.loc multifactor.sol, 634
+	DUP
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	DUP
+	PUSHCONT {
+		DROP
+		DUP
+		GETGLOB 10
+		PUSHPOW2 8
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			PLDU 256
+		}
+		IF
+		GETGLOB 5
+		DUP
+		ISNULL
+		PUSHCONT {
+			DROP
+			PUSHINT 0
+		}
+		IF
+		EQUAL
+	}
+	IF
+	THROWIFNOT 501
+	.loc multifactor.sol, 635
+	DROP
+	ACCEPT
+	.loc multifactor.sol, 636
+	SETGLOB 27
+	.loc multifactor.sol, 0
+}
+
+.fragment setMinValue, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 631
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 64
+	LDU 128
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline setMinValue_37870f52_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment submitTransaction_88055fec_internal, {
+	.loc multifactor.sol, 531
+	PUSHINT 0
+	.loc multifactor.sol, 541
+	NOW
+	PUSH S8
+	LESS
+	THROWIFNOT 502
+	.loc multifactor.sol, 542
+	PUSH S7
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	.loc multifactor.sol, 137
+	MODPOW2 192
+	.loc multifactor.sol, 138
+	SWAP
+	LSHIFT 192
+	OR
+	.loc multifactor.sol, 543
+	DUP
+	GETGLOB 10
+	PUSHPOW2 8
+	DICTUGET
+	NULLSWAPIFNOT
+	NIP
+	DUP
+	PUSHCONT {
+		DROP
+		DUP
+		GETGLOB 10
+		PUSHPOW2 8
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			PLDU 256
+		}
+		IF
+		GETGLOB 5
+		DUP
+		ISNULL
+		PUSHCONT {
+			DROP
+			PUSHINT 0
+		}
+		IF
+		EQUAL
+	}
+	IF
+	THROWIFNOT 501
+	.loc multifactor.sol, 544
+	PUSH S6
+	GETGLOB 27
+	GEQ
+	THROWIFNOT 200
+	.loc multifactor.sol, 545
+	PUSHCONT {
+		.loc multifactor.sol, 646
+		NOW
+		PUSHINT 3601
+		SUB
+		UFITS 64
+		LSHIFT 32
+		UFITS 64
+		.loc multifactor.sol, 583
+		GETGLOB 25
+		PUSHINT 64
+		DICTUMINREF
+		NULLSWAPIFNOT
+		IFREF {
+			SWAP
+			CTOS
+			CALLREF {
+				LDU 64
+				LDU 256
+				LDMSGADDR
+				LDREF
+				ENDS
+				CTOS
+				LDU 128
+				LDDICT
+				LDU 16
+				LDREF
+				LDI 1
+				ENDS
+				TUPLE 8
+			}
+			PAIR
+		}
+		.loc multifactor.sol, 584
+		DUP
+		ISNULL
+		PUSHCONT {
+			.loc multifactor.sol, 584
+			DROP2
+			.loc multifactor.sol, 0
+		}
+		IFJMP
+		.loc multifactor.sol, 585
+		BLKPUSH 2, 0
+		ISNULL
+		THROWIF 63
+		UNPAIR
+		.loc multifactor.sol, 586
+		PUSH2 S1, S3
+		LEQ
+		.loc multifactor.sol, 587
+		DUP
+		PUSHCONT {
+			.loc multifactor.sol, 587
+			BLKDROP 5
+			.loc multifactor.sol, 0
+		}
+		IFNOTJMP
+		.loc multifactor.sol, 589
+		ACCEPT
+		.loc multifactor.sol, 590
+		PUSHINT 0
+		.loc multifactor.sol, 591
+		PUSHCONT {
+			DUP2
+			GETGLOB 28
+			LESS
+			AND
+		}
+		PUSHCONT {
+			.loc multifactor.sol, 593
+			INC
+			.loc multifactor.sol, 594
+			PUSH S3
+			GETGLOB 25
+			PUSHINT 64
+			DICTUDEL
+			DROP
+			SETGLOB 25
+			.loc multifactor.sol, 595
+			GETGLOB 26
+			DEC
+			UFITS 8
+			SETGLOB 26
+			.loc multifactor.sol, 596
+			PUSH S3
+			GETGLOB 25
+			PUSHINT 64
+			DICTUGETNEXT
+			NULLSWAPIFNOT
+			IFREF {
+				SWAP
+				LDREFRTOS
+				NIP
+				CALLREF {
+					LDU 64
+					LDU 256
+					LDMSGADDR
+					LDREF
+					ENDS
+					CTOS
+					LDU 128
+					LDDICT
+					LDU 16
+					LDREF
+					LDI 1
+					ENDS
+					TUPLE 8
+				}
+				PAIR
+			}
+			POP S5
+			.loc multifactor.sol, 597
+			PUSH S4
+			ISNULL
+			PUSHCONT {
+				.loc multifactor.sol, 598
+				FALSE
+			}
+			PUSHCONT {
+				.loc multifactor.sol, 600
+				PUSH2 S4, S4
+				ISNULL
+				THROWIF 63
+				UNPAIR
+				PUXC2 S1, S4, S5
+				DROP2
+				.loc multifactor.sol, 601
+				PUSH S6
+				LEQ
+			}
+			IFELSE
+			POP S2
+			.loc multifactor.sol, 0
+		}
+		WHILE
+		.loc multifactor.sol, 604
+		BLKDROP 6
+		CALLREF {
+			.inline c7_to_c4
+		}
+		COMMIT
+		.loc multifactor.sol, 581
+	}
+	CALLX
+	.loc multifactor.sol, 546
+	DROP2
+	GETGLOB 26
+	LESSINT 20
+	THROWIFNOT 301
+	.loc multifactor.sol, 547
+	ACCEPT
+	.loc multifactor.sol, 548
+	PUSHINT 1
+	ROT
+	.loc multifactor.sol, 652
+	PUSHCONT {
+		.loc multifactor.sol, 653
+		DROP
+		PUSHPOW2 7
+		.loc multifactor.sol, 0
+	}
+	IF
+	.loc multifactor.sol, 549
+	GETGLOB 22
+	FALSE
+	EQUAL
+	PUSHCONT {
+		.loc multifactor.sol, 550
+		XCHG3 S0, S3, S4
+		UFITS 120
+		BLKSWAP 2, 4
+		NEWC
+		STSLICECONST x6_
+		STI 1
+		STSLICECONST x1_
+		STSLICE
+		SWAP
+		STGRAMS
+		STDICT
+		PUSHINT 1
+		STUR 107
+		ROT
+		STREFR
+		ENDC
+		SWAP
+		SENDRAWMSG
+		.loc multifactor.sol, 551
+		DROP
+		PUSHINT 0
+		.loc multifactor.sol, 0
+	}
+	PUSHCONT {
+		.loc multifactor.sol, 641
+		NOW
+		LSHIFT 32
+		UFITS 64
+		LTIME
+		MODPOW2 32
+		OR
+		.loc multifactor.sol, 554
+		DUP
+		GETGLOB 5
+		DUP
+		ISNULL
+		PUSHCONT {
+			DROP
+			PUSHINT 0
+		}
+		IF
+		BLKSWAP 3, 6
+		BLKSWAP 3, 6
+		XCHG S2
+		TUPLE 8
+		.loc multifactor.sol, 555
+		OVER
+		GETGLOB 25
+		ROT
+		CALLREF {
+			UNTUPLE 8
+			REVERSE 8, 0
+			NEWC
+			STU 64
+			STU 256
+			STSLICE
+			ROLLREV 5
+			NEWC
+			STU 128
+			STDICT
+			STU 16
+			STREF
+			STI 1
+			STBREFR
+		}
+		ENDC
+		ROTREV
+		PUSHINT 64
+		DICTUSETREF
+		SETGLOB 25
+		.loc multifactor.sol, 556
+		GETGLOB 26
+		INC
+		UFITS 8
+		SETGLOB 26
+		.loc multifactor.sol, 557
+		NIP
+		.loc multifactor.sol, 0
+	}
+	IFELSE
+	.loc multifactor.sol, 0
+}
+
+.fragment submitTransaction, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 531
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 64
+	LDMSGADDR
+	LDU 128
+	LDDICT
+	LDI 1
+	LDI 1
+	LDREF
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline submitTransaction_88055fec_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 3648817658
+		STUR 130
+		STU 64
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment turnOffSecurityCards_3cc95bb2_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 472
+	GETGLOB 22
+	THROWIFNOT 704
+	.loc multifactor.sol, 473
+	ACCEPT
+	.loc multifactor.sol, 474
+	FALSE
+	SETGLOB 22
+	.loc multifactor.sol, 0
+}
+
+.fragment turnOffSecurityCards, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 471
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline turnOffSecurityCards_3cc95bb2_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment turnOnSecurityCards_e2bc03a3_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 478
+	GETGLOB 23
+	DICTEMPTY
+	THROWIF 701
+	.loc multifactor.sol, 479
+	GETGLOB 22
+	THROWIF 700
+	.loc multifactor.sol, 480
+	ACCEPT
+	.loc multifactor.sol, 481
+	TRUE
+	SETGLOB 22
+	.loc multifactor.sol, 0
+}
+
+.fragment turnOnSecurityCards, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 477
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline turnOnSecurityCards_e2bc03a3_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment updateRecoveryPhrase_adb74291_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 342
+	OVER
+	THROWIFNOT 101
+	.loc multifactor.sol, 343
+	OVER
+	GETGLOB 12
+	NEQ
+	THROWIFNOT 102
+	.loc multifactor.sol, 344
+	PUXC S1, S-1
+	CTOS
+	PUSH S2
+	CHKSIGNU
+	THROWIFNOT 501
+	.loc multifactor.sol, 345
+	ACCEPT
+	.loc multifactor.sol, 346
+	SETGLOB 14
+	.loc multifactor.sol, 0
+}
+
+.fragment updateRecoveryPhrase, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 341
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	LDREF
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline updateRecoveryPhrase_adb74291_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment updateSeedPhrase_062aef0c_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 388
+	OVER
+	THROWIFNOT 101
+	.loc multifactor.sol, 389
+	PUXC S1, S-1
+	CTOS
+	PUSH S2
+	CHKSIGNU
+	THROWIFNOT 501
+	.loc multifactor.sol, 390
+	ACCEPT
+	.loc multifactor.sol, 391
+	SETGLOB 12
+	.loc multifactor.sol, 0
+}
+
+.fragment updateSeedPhrase, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 387
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	LDREF
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline updateSeedPhrase_062aef0c_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment updateZkid_a2869fe5_internal, {
+	.loc modifiers/modifiers.sol, 18
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 12
+	EQUAL
+	THROWIFNOT 500
+	.loc multifactor.sol, 363
+	PUSH S9
+	THROWIFNOT 101
+	.loc multifactor.sol, 364
+	GETGLOB 14
+	PUSH S10
+	NEQ
+	GETGLOB 12
+	PUSH S11
+	NEQ
+	AND
+	THROWIFNOT 102
+	.loc multifactor.sol, 365
+	PUSH S9
+	ROLL 9
+	CTOS
+	PUSH S10
+	CHKSIGNU
+	THROWIFNOT 501
+	.loc multifactor.sol, 366
+	NOW
+	PUSHINT 300
+	ADD
+	UFITS 64
+	PUSH S2
+	LESS
+	THROWIFNOT 502
+	.loc multifactor.sol, 367
+	NOW
+	PUSHINT 300
+	ADD
+	UFITS 64
+	PUSH S6
+	LESS
+	THROWIFNOT 507
+	.loc multifactor.sol, 371
+	PUSH2 S4, S1
+	PUSH3 S10, S8, S5
+	ROLL 7
+	PUSH S15
+	POSEIDON
+	.loc multifactor.sol, 372
+	ROLL 9
+	SWAP
+	PUSHINT 0
+	VERGRTH16
+	THROWIFNOT 504
+	.loc multifactor.sol, 373
+	ACCEPT
+	.loc multifactor.sol, 374
+	NULL
+	SETGLOB 15
+	.loc multifactor.sol, 375
+	SETGLOB 15
+	.loc multifactor.sol, 376
+	ROLL 7
+	SETGLOB 19
+	.loc multifactor.sol, 377
+	ROT
+	SETGLOB 20
+	.loc multifactor.sol, 378
+	SWAP
+	SETGLOB 21
+	.loc multifactor.sol, 379
+	NULL
+	SETGLOB 10
+	.loc multifactor.sol, 380
+	PUSH S4
+	GETGLOB 10
+	ROT
+	ROLL 6
+	.loc multifactor.sol, 137
+	MODPOW2 192
+	.loc multifactor.sol, 138
+	SWAP
+	LSHIFT 192
+	OR
+	.loc multifactor.sol, 0
+	XCHG S2
+	NEWC
+	STU 256
+	ROTREV
+	PUSHPOW2 8
+	DICTUSETB
+	SETGLOB 10
+	.loc multifactor.sol, 381
+	PUSHINT 1
+	SETGLOB 11
+	.loc multifactor.sol, 382
+	NULL
+	SETGLOB 16
+	.loc multifactor.sol, 383
+	PAIR
+	GETGLOB 16
+	ROT
+	HASHCU
+	XCHG S2
+	CALLREF {
+		UNPAIR
+		SWAP
+		NEWC
+		STREF
+		STU 64
+	}
+	ROTREV
+	PUSHPOW2 8
+	DICTUSETB
+	SETGLOB 16
+	.loc multifactor.sol, 384
+	PUSHINT 1
+	SETGLOB 17
+	.loc multifactor.sol, 0
+}
+
+.fragment updateZkid, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc multifactor.sol, 349
+	OVER
+	PUSHCONT {
+		LDREF
+		LDREF
+		LDREF
+		ENDS
+		CTOS
+		LDU 256
+		LDREF
+		LDREF
+		LDREF
+		LDU 64
+		LDU 8
+		LDREF
+		ENDS
+		CTOS
+		LDREF
+	}
+	PUSHCONT {
+		LDREF
+		LDREF
+		LDU 256
+		LDREF
+		LDREF
+		ENDS
+		CTOS
+		LDREF
+		LDREF
+		LDU 64
+		LDU 8
+		LDREF
+		LDREF
+		ENDS
+		CTOS
+	}
+	IFELSE
+	LDREF
+	LDU 64
+	LDDICT
+	ENDS
+	.loc multifactor.sol, 0
+	CALLREF {
+		.inline updateZkid_a2869fe5_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment public_function_selector, {
+	DUP
+	PUSHINT 1086559764
+	LEQ
+	IFJMPREF {
+		DUP
+		PUSHINT 310730069
+		LEQ
+		IFJMPREF {
+			DUP
+			PUSHINT 86792323
+			LEQ
+			IFJMPREF {
+				DUP
+				PUSHINT 10157670
+				EQUAL
+				IFJMPREF {
+					.inline _index_mod_4
+				}
+				DUP
+				PUSHINT 21366729
+				EQUAL
+				IFJMPREF {
+					.inline _zkid
+				}
+				DUP
+				PUSHINT 64100759
+				EQUAL
+				IFJMPREF {
+					.inline deleteJwkModulus
+				}
+				DUP
+				PUSHINT 86792323
+				EQUAL
+				IFJMPREF {
+					.inline exchangeToken
+				}
+			}
+			DUP
+			PUSHINT 210105696
+			LEQ
+			IFJMPREF {
+				DUP
+				PUSHINT 146706279
+				EQUAL
+				IFJMPREF {
+					.inline updateZkid
+				}
+				DUP
+				PUSHINT 188583617
+				EQUAL
+				IFJMPREF {
+					.inline constructor
+				}
+				DUP
+				PUSHINT 210105696
+				EQUAL
+				IFJMPREF {
+					.inline acceptCandidateSeedPhrase
+				}
+			}
+			DUP
+			PUSHINT 289132916
+			LEQ
+			IFJMPREF {
+				DUP
+				PUSHINT 275981860
+				EQUAL
+				IFJMPREF {
+					.inline _jwk_modulus_data
+				}
+				DUP
+				PUSHINT 289132916
+				EQUAL
+				IFJMPREF {
+					.inline getTransactions
+				}
+			}
+			DUP
+			PUSHINT 310730069
+			EQUAL
+			IFJMPREF {
+				.inline _m_transactions
+			}
+		}
+		DUP
+		PUSHINT 729491254
+		LEQ
+		IFJMPREF {
+			DUP
+			PUSHINT 438358673
+			LEQ
+			IFJMPREF {
+				DUP
+				PUSHINT 341618743
+				EQUAL
+				IFJMPREF {
+					.inline _m_security_cards
+				}
+				DUP
+				PUSHINT 349945635
+				EQUAL
+				IFJMPREF {
+					.inline deleteZKPfactor
+				}
+				DUP
+				PUSHINT 438358673
+				EQUAL
+				IFJMPREF {
+					.inline _max_cleanup_txns
+				}
+			}
+			DUP
+			PUSHINT 660368362
+			LEQ
+			IFJMPREF {
+				DUP
+				PUSHINT 447168749
+				EQUAL
+				IFJMPREF {
+					.inline confirmTransaction
+				}
+				DUP
+				PUSHINT 660368362
+				EQUAL
+				IFJMPREF {
+					.inline _factors_ordered_by_timestamp
+				}
+			}
+			DUP
+			PUSHINT 661530387
+			EQUAL
+			IFJMPREF {
+				.inline _root_provider_certificates
+			}
+			DUP
+			PUSHINT 729491254
+			EQUAL
+			IFJMPREF {
+				.inline getSecurityCardKeys
+			}
+		}
+		DUP
+		PUSHINT 921192369
+		LEQ
+		IFJMPREF {
+			DUP
+			PUSHINT 815938542
+			LEQ
+			IFJMPREF {
+				DUP
+				PUSHINT 782140428
+				EQUAL
+				IFJMPREF {
+					.inline _owner_pubkey
+				}
+				DUP
+				PUSHINT 815938542
+				EQUAL
+				IFJMPREF {
+					.inline cleanAllZKPFactors
+				}
+			}
+			DUP
+			PUSHINT 874139661
+			EQUAL
+			IFJMPREF {
+				.inline changeSeedPhrase
+			}
+			DUP
+			PUSHINT 915315863
+			EQUAL
+			IFJMPREF {
+				.inline addZKPfactor
+			}
+			DUP
+			PUSHINT 921192369
+			EQUAL
+			IFJMPREF {
+				.inline _force_remove_oldest
+			}
+		}
+		DUP
+		PUSHINT 1086559764
+		LEQ
+		IFJMPREF {
+			DUP
+			PUSHINT 1049438952
+			EQUAL
+			IFJMPREF {
+				.inline sendTransaction
+			}
+			DUP
+			PUSHINT 1071142485
+			EQUAL
+			IFJMPREF {
+				.inline getVersion
+			}
+			DUP
+			PUSHINT 1086559764
+			EQUAL
+			IFJMPREF {
+				.inline deleteJwkModulusByFactor
+			}
+		}
+	}
+	DUP
+	PUSHINT 1501334010
+	LEQ
+	IFJMPREF {
+		DUP
+		PUSHINT 1270270668
+		LEQ
+		IFJMPREF {
+			DUP
+			PUSHINT 1209983761
+			LEQ
+			IFJMPREF {
+				DUP
+				PUSHINT 1151328149
+				EQUAL
+				IFJMPREF {
+					.inline _jwk_modulus_data_len
+				}
+				DUP
+				PUSHINT 1192871604
+				EQUAL
+				IFJMPREF {
+					.inline deleteZKPfactor_
+				}
+				DUP
+				PUSHINT 1209983761
+				EQUAL
+				IFJMPREF {
+					.inline getTimeStamp
+				}
+			}
+			DUP
+			PUSHINT 1259255206
+			LEQ
+			IFJMPREF {
+				DUP
+				PUSHINT 1249840667
+				EQUAL
+				IFJMPREF {
+					.inline _iss_base_64
+				}
+				DUP
+				PUSHINT 1259255206
+				EQUAL
+				IFJMPREF {
+					.inline _m_transactions_len
+				}
+			}
+			DUP
+			PUSHINT 1262161549
+			EQUAL
+			IFJMPREF {
+				.inline cleanRootProviderCertificates
+			}
+			DUP
+			PUSHINT 1270270668
+			EQUAL
+			IFJMPREF {
+				.inline _use_security_card
+			}
+		}
+		DUP
+		PUSHINT 1352404237
+		LEQ
+		IFJMPREF {
+			DUP
+			PUSHINT 1322205845
+			LEQ
+			IFJMPREF {
+				DUP
+				PUSHINT 1288096130
+				EQUAL
+				IFJMPREF {
+					.inline _pub_recovery_key
+				}
+				DUP
+				PUSHINT 1322205845
+				EQUAL
+				IFJMPREF {
+					.inline addSecurityCard
+				}
+			}
+			DUP
+			PUSHINT 1340617870
+			EQUAL
+			IFJMPREF {
+				.inline get_epk_expire_at
+			}
+			DUP
+			PUSHINT 1342099727
+			EQUAL
+			IFJMPREF {
+				.inline setForceRemoveOldest
+			}
+			DUP
+			PUSHINT 1352404237
+			EQUAL
+			IFJMPREF {
+				.inline getTransactionIds
+			}
+		}
+		DUP
+		PUSHINT 1413131309
+		LEQ
+		IFJMPREF {
+			DUP
+			PUSHINT 1376701582
+			EQUAL
+			IFJMPREF {
+				.inline setMinValue
+			}
+			DUP
+			PUSHINT 1407422392
+			EQUAL
+			IFJMPREF {
+				.inline cleanAllJwks
+			}
+			DUP
+			PUSHINT 1413131309
+			EQUAL
+			IFJMPREF {
+				.inline _min_value
+			}
+		}
+		DUP
+		PUSHINT 1501334010
+		LEQ
+		IFJMPREF {
+			DUP
+			PUSHINT 1460010845
+			EQUAL
+			IFJMPREF {
+				.inline setMaxCleanupTxns
+			}
+			DUP
+			PUSHINT 1501334010
+			EQUAL
+			IFJMPREF {
+				.inline submitTransaction
+			}
+		}
+	}
+	DUP
+	PUSHINT 1953852727
+	LEQ
+	IFJMPREF {
+		DUP
+		PUSHINT 1823823154
+		LEQ
+		IFJMPREF {
+			DUP
+			PUSHINT 1636234904
+			EQUAL
+			IFJMPREF {
+				.inline addRootProviderCertificate
+			}
+			DUP
+			PUSHINT 1656328637
+			EQUAL
+			IFJMPREF {
+				.inline cleanAllExpiredJwks
+			}
+			DUP
+			PUSHINT 1738343847
+			EQUAL
+			IFJMPREF {
+				.inline deleteAllSecurityCards
+			}
+			DUP
+			PUSHINT 1823823154
+			EQUAL
+			IFJMPREF {
+				.inline cleanAllExpiredZKPFactors
+			}
+		}
+		DUP
+		PUSHINT 1915371729
+		LEQ
+		IFJMPREF {
+			DUP
+			PUSHINT 1888716869
+			EQUAL
+			IFJMPREF {
+				.inline getTransaction
+			}
+			DUP
+			PUSHINT 1897490209
+			EQUAL
+			IFJMPREF {
+				.inline deleteSecurityCard
+			}
+			DUP
+			PUSHINT 1915371729
+			EQUAL
+			IFJMPREF {
+				.inline _factors_len
+			}
+		}
+		DUP
+		PUSHINT 1942021772
+		LEQ
+		IFJMPREF {
+			DUP
+			PUSHINT 1921973036
+			EQUAL
+			IFJMPREF {
+				.inline exchangeTokenWithOwner
+			}
+			DUP
+			PUSHINT 1942021772
+			EQUAL
+			IFJMPREF {
+				.inline updateRecoveryPhrase
+			}
+		}
+		DUP
+		PUSHINT 1953852727
+		EQUAL
+		IFJMPREF {
+			.inline getZKPEphemeralPublicKeys
+		}
+	}
+	DUP
+	PUSHINT 2113826203
+	LEQ
+	IFJMPREF {
+		DUP
+		PUSHINT 2030187118
+		LEQ
+		IFJMPREF {
+			DUP
+			PUSHINT 2005528919
+			EQUAL
+			IFJMPREF {
+				.inline addJwkModulus
+			}
+			DUP
+			PUSHINT 2011417658
+			EQUAL
+			IFJMPREF {
+				.inline deleteCandidateSeedPhrase
+			}
+			DUP
+			PUSHINT 2030187118
+			EQUAL
+			IFJMPREF {
+				.inline deleteRootProviderCertificate
+			}
+		}
+		DUP
+		PUSHINT 2070334421
+		LEQ
+		IFJMPREF {
+			DUP
+			PUSHINT 2036309419
+			EQUAL
+			IFJMPREF {
+				.inline _m_security_cards_len
+			}
+			DUP
+			PUSHINT 2070334421
+			EQUAL
+			IFJMPREF {
+				.inline turnOnSecurityCards
+			}
+		}
+		DUP
+		PUSHINT 2070392692
+		EQUAL
+		IFJMPREF {
+			.inline turnOffSecurityCards
+		}
+		DUP
+		PUSHINT 2113826203
+		EQUAL
+		IFJMPREF {
+			.inline updateSeedPhrase
+		}
+	}
+}
+
+.fragment main_external, {
+	PUSHSLICE x8000000000000000000000000000000000000000000000000000000000000000001_
+	SETGLOB 9
+	OVER
+	CALLREF {
+		.inline c4_to_c7
+	}
+	LDU 1 ; haveSign msgSlice
+	SWAP
+	PUSHCONT {
+		PUSHPOW2 9
+		LDSLICEX
+		DUP
+		MYADDR
+		NEWC
+		STSLICE
+		STSLICE
+		ENDC
+		HASHCU
+		SWAP
+		LDU 1 ; signatureSlice hashMsgSlice hasPubkey msgSlice
+		SWAP
+		PUSHCONT {
+			LDU 256 ; signatureSlice hashMsgSlice pubkey msgSlice
+			XCHG2 S3, S3
+		}
+		PUSHCONT {
+			XCHG S2
+			GETGLOB 2
+		}
+		IFELSE
+		DUP
+		SETGLOB 5
+		CHKSIGNU
+		THROWIFNOT 40
+	}
+	PUSHCONT {
+		LDU 1 ; hasPubkey msgSlice
+		SWAP
+		THROWIF 58
+	}
+	IFELSE
+	LDU 64 ; timestamp msgSlice
+	SWAP
+	.inline __replayProtection
+	LDU 32 ; expireAt msgSlice
+	SWAP
+	NOW ; msgSlice expireAt now
+	GREATER ; msgSlice expireAt>now
+	THROWIFNOT 57
+	LDU 32 ; funcId body
+	SWAP
+	CALLREF {
+		.inline public_function_selector
+	}
+	THROW 60
+}
+
+.fragment main_internal, {
+	PUSHROOT
+	CTOS
+	PUSHINT 320
+	SDSKIPFIRST
+	PLDI 1
+	SETGLOB 6
+	PUSH S2
+	CTOS
+	LDU 4 ; bounced tail
+	LDMSGADDR ; bounced src tail
+	DROP
+	SETGLOB 9
+	MODPOW2 1
+	IFRET
+	OVER
+	SEMPTY ; isEmpty
+	IFJMPREF {
+		GETGLOB 6
+		THROWIFNOT 76
+	}
+	OVER
+	LDUQ 32  ; [funcId] body' ok
+	THROWIFNOT 60
+	OVER
+	IFNOTJMPREF {
+		GETGLOB 6
+		THROWIFNOT 76
+	}
+	SWAP
+	CALLREF {
+		.inline public_function_selector
+	}
+	THROW 60
+}
+
+.fragment default_data_cell, {
+	PUSHREF {
+	}
+	BLKPUSH 3, 0
+	PUSHINT 0
+	BLKPUSH 3, 0
+	NULL
+	PUSHINT 0
+	NULL
+	PUSHINT 0
+	PUSHREF {
+	}
+	PUSHINT 0
+	PUSHREF {
+	}
+	NULL
+	PUSHINT 0
+	NULL
+	DUP
+	PUSHINT 0
+	NULL
+	NEWC
+	PUSHINT 586
+	STZEROES
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		SWAP
+		CALLREF {
+			UNPAIR
+			SWAP
+			NEWC
+			STU 256
+			STU 64
+		}
+		STBR
+	}
+	IFELSE
+	PUSHINT 20
+	ROLLREVX
+	NEWC
+	STU 256
+	STDICT
+	STDICT
+	STU 8
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		SWAP
+		CALLREF {
+			UNPAIR
+			SWAP
+			NEWC
+			STU 256
+			SWAP
+			UNPAIR
+			XCHG S2
+			STREF
+			STU 64
+		}
+		STBR
+	}
+	IFELSE
+	ROLLREV 15
+	NEWC
+	STREF
+	STU 8
+	STREF
+	STI 1
+	STDICT
+	STU 8
+	ROLLREV 9
+	NEWC
+	STDICT
+	STU 8
+	STU 128
+	STU 256
+	STI 1
+	STREF
+	STREF
+	ROTREV
+	NEWC
+	STREF
+	STREF
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+}
+
+.fragment onTickTock, {
+}
+
+; The code below forms a value of the StateInit type.
+.blob x4_ ; split_depth = nothing
+.blob x4_ ; special = nothing
+.blob xc_ ; code = just
+.cell { ; code cell
+	PUSHREFCONT {
+		DICTPUSHCONST 32
+		DICTUGETJMPZ
+		THROW 78
+		.code-dict-cell 32, {
+		}
+		.cell { ; version
+			.blob x736f6c20302e37382e32 ; sol 0.78.2
+		}
+	}
+	POPCTR c3
+	DUP
+	IFNOTJMPREF {
+		.inline main_internal
+	}
+	DUP
+	EQINT -1
+	IFJMPREF {
+		.inline main_external
+	}
+	DUP
+	EQINT -2
+	IFJMPREF {
+		.inline onTickTock
+	}
+	THROW 11
+}
+.blob xc_ ; data = just
+.cell { 
+	.inline-computed-cell default_data_cell, 0
+}
+.blob x4_ ; library = hme_empty

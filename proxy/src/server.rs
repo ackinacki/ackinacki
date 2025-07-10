@@ -1,13 +1,19 @@
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::LazyLock;
+use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Context;
 use chitchat::transport::UdpTransport;
 use clap::Parser;
+use ed25519_dalek::VerifyingKey;
+use gossip::GossipConfig;
+use network::config::NetworkConfig;
 use network::metrics::NetMetrics;
 use network::pub_sub::connection::IncomingMessage;
 use network::pub_sub::connection::MessageDelivery;
@@ -16,15 +22,21 @@ use network::pub_sub::spawn_critical_task;
 use network::pub_sub::IncomingSender;
 use network::resolver::watch_gossip;
 use network::resolver::SubscribeStrategy;
+use network::resolver::WatchGossipConfig;
 use network::DeliveryPhase;
 use network::SendMode;
 use opentelemetry::global;
 use telemetry_utils::TokioMetrics;
 use tokio::task::JoinHandle;
 use transport_layer::msquic::MsQuicTransport;
+use transport_layer::TlsCertCache;
 
+use crate::bk_set_watcher;
 use crate::config::config_reload_handler;
 use crate::config::ProxyConfig;
+
+const BK_SET_WATCH_INTERVAL_SECS: u64 = 5;
+const BK_SET_REQUEST_TIMEOUT_SECS: u64 = 1;
 
 pub static LONG_VERSION: LazyLock<String> = LazyLock::new(|| {
     format!(
@@ -112,56 +124,46 @@ impl FromStr for NodeId {
 
 impl CliArgs {
     async fn run(self, net_metrics: NetMetrics) -> anyhow::Result<()> {
+        let tls_cert_cache = TlsCertCache::new()?;
         let config = ProxyConfig::from_file(&self.config)?;
         tracing::info!("Loaded configuration: {}", serde_json::to_string_pretty(&config)?);
-        let tls_config = config.tls_config();
+        let shutdown_tx = tokio::sync::watch::channel(false).0;
         let transport = MsQuicTransport::new();
 
-        let (subscribe_tx, _) = tokio::sync::watch::channel(Vec::new());
+        let (config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
+        let (network_config_tx, network_config_rx) =
+            tokio::sync::watch::channel(config.network_config(Some(tls_cert_cache.clone()))?);
+        let (gossip_config_tx, gossip_config_rx) =
+            tokio::sync::watch::channel(config.gossip.clone());
 
-        let (gossip_handle, gossip_rest_handle) = if !config.subscribe.is_empty() {
-            let _ = subscribe_tx.send_replace(config.subscribe.clone());
-            (None, tokio::spawn(std::future::pending::<anyhow::Result<()>>()))
-        } else if let (Some(gossip_config), Some(my_addr)) = (&config.gossip, &config.my_addr) {
-            let seeds = gossip_config.get_seeds();
-            tracing::info!("Gossip seeds expanded: {:?}", seeds);
+        let (watch_gossip_config_tx, watch_gossip_config_rx) =
+            tokio::sync::watch::channel(WatchGossipConfig { trusted_pubkeys: vec![] });
+        let (subscribe_tx, subscribe_rx) = tokio::sync::watch::channel(Vec::new());
+        let (peers_tx, _) = tokio::sync::watch::channel(HashMap::new());
 
-            let listen_addr = gossip_config.listen_addr;
-            let advertise_addr = gossip_config.advertise_addr.unwrap_or(listen_addr);
-
-            let (gossip_handle, gossip_rest_handle) = gossip::run(
-                gossip_config.listen_addr,
-                UdpTransport,
-                advertise_addr,
-                seeds,
-                gossip_config.cluster_id.clone(),
-            )
-            .await?;
-
-            spawn_critical_task(
-                "Gossip",
-                watch_gossip(
-                    SubscribeStrategy::<NodeId>::Proxy(*my_addr),
-                    gossip_handle.chitchat(),
-                    Some(subscribe_tx.clone()),
-                    None,
-                    None,
+        let (gossip_handle, gossip_rest_handle) =
+            gossip::run(shutdown_tx.subscribe(), gossip_config_rx, UdpTransport).await?;
+        spawn_critical_task(
+            "Gossip",
+            watch_gossip(
+                shutdown_tx.subscribe(),
+                watch_gossip_config_rx,
+                SubscribeStrategy::<NodeId>::Proxy(
+                    config.my_addr.unwrap_or(config.gossip.advertise_addr()),
                 ),
-            );
-            (Some(gossip_handle), gossip_rest_handle)
-        } else {
-            (None, tokio::spawn(std::future::pending::<anyhow::Result<()>>()))
-        };
+                gossip_handle.chitchat(),
+                subscribe_tx.clone(),
+                peers_tx,
+                None,
+            ),
+        );
 
         let (outgoing_messages_tx, _ /* we will subscribe() later */) =
             tokio::sync::broadcast::channel(100);
         let (incoming_messages_tx, incoming_messages_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let (config_tx, _config_rx) = tokio::sync::watch::channel(config.clone());
-        let config_reload_handle: JoinHandle<anyhow::Result<()>> = tokio::spawn({
-            let config_path = self.config.clone();
-            async move { config_reload_handler(config_tx, config_path).await }
-        });
+        let config_reload_handle: JoinHandle<anyhow::Result<()>> =
+            tokio::spawn(config_reload_handler(config_tx, self.config.clone()));
 
         let multiplexer_handle = tokio::spawn({
             let outgoing_messages_sender = outgoing_messages_tx.clone();
@@ -176,20 +178,43 @@ impl CliArgs {
             }
         });
 
-        let pub_sub_task = tokio::spawn(async move {
-            network::pub_sub::run(
-                transport,
-                true,
-                Some(net_metrics),
-                self.max_connections,
-                config.bind,
-                tls_config,
-                subscribe_tx,
-                outgoing_messages_tx,
-                IncomingSender::AsyncUnbounded(incoming_messages_tx),
-            )
-            .await
-        });
+        let pub_sub_task = tokio::spawn(network::pub_sub::run(
+            shutdown_tx.subscribe(),
+            network_config_rx,
+            transport,
+            true,
+            Some(net_metrics),
+            self.max_connections,
+            subscribe_rx,
+            outgoing_messages_tx,
+            IncomingSender::AsyncUnbounded(incoming_messages_tx),
+        ));
+
+        let client: reqwest::Client = reqwest::Client::builder()
+            .pool_max_idle_per_host(1000)
+            .timeout(Duration::from_secs(BK_SET_REQUEST_TIMEOUT_SECS))
+            .build()
+            .expect("Reqwest client can be built");
+
+        let (bk_set_update_tx, bk_set_update_rx) =
+            tokio::sync::watch::channel(HashSet::<VerifyingKey>::new());
+
+        let bk_set_watcher_handle = tokio::spawn(bk_set_watcher::run(
+            config_rx.clone(),
+            bk_set_update_tx,
+            client,
+            BK_SET_WATCH_INTERVAL_SECS,
+        ));
+
+        tokio::spawn(dispatch_hot_reload(
+            Some(tls_cert_cache.clone()),
+            shutdown_tx.subscribe(),
+            config_rx,
+            bk_set_update_rx,
+            network_config_tx,
+            gossip_config_tx,
+            watch_gossip_config_tx,
+        ));
 
         tokio::select! {
             v = pub_sub_task => {
@@ -214,9 +239,57 @@ impl CliArgs {
                 if let Err(err) = v {
                     tracing::error!("Critical: Gossip REST task stopped with error: {}", err);
                 }
-                drop(gossip_handle);
                 anyhow::bail!("Gossip REST task stopped");
             }
+            v = bk_set_watcher_handle => {
+                if let Err(err) = v {
+                    tracing::error!("Critical: bk_set_watcher task stopped with error: {}", err);
+                }
+                anyhow::bail!("bk_set_watcher task stopped");
+            }
+        }
+    }
+}
+
+async fn dispatch_hot_reload(
+    tls_cert_cache: Option<TlsCertCache>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    mut proxy_config_rx: tokio::sync::watch::Receiver<ProxyConfig>,
+    mut bk_set_rx: tokio::sync::watch::Receiver<HashSet<VerifyingKey>>,
+    network_config_tx: tokio::sync::watch::Sender<NetworkConfig>,
+    gossip_config_tx: tokio::sync::watch::Sender<GossipConfig>,
+    watch_gossip_config_tx: tokio::sync::watch::Sender<WatchGossipConfig>,
+) {
+    loop {
+        {
+            let config = proxy_config_rx.borrow();
+            let mut network_config = match config.network_config(tls_cert_cache.clone()) {
+                Ok(config) => config,
+                Err(err) => {
+                    tracing::error!("Failed to load network config: {}", err);
+                    return;
+                }
+            };
+            let mut bk_set = bk_set_rx.borrow().clone();
+            bk_set.extend(network_config.credential.trusted_ed_pubkeys.iter().cloned());
+            let trusted_ed_pubkeys = bk_set.into_iter().collect::<Vec<_>>();
+            network_config.credential.trusted_ed_pubkeys = trusted_ed_pubkeys.clone();
+
+            network_config_tx.send_replace(network_config.clone());
+            gossip_config_tx.send_replace(config.gossip.clone());
+            watch_gossip_config_tx
+                .send_replace(WatchGossipConfig { trusted_pubkeys: trusted_ed_pubkeys });
+        }
+        tokio::select! {
+            sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
+                return;
+            },
+            sender = proxy_config_rx.changed() => if sender.is_err() {
+                return;
+            },
+            sender = bk_set_rx.changed() => if sender.is_err() {
+                return;
+            },
         }
     }
 }

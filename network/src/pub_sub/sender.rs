@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::watch;
 use transport_layer::NetConnection;
 
 use crate::detailed;
@@ -13,18 +12,26 @@ use crate::DeliveryPhase;
 use crate::SendMode;
 
 pub async fn sender<Connection: NetConnection + 'static>(
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     metrics: Option<NetMetrics>,
     connection: Arc<ConnectionWrapper<Connection>>,
-    stop_tx: watch::Sender<bool>,
-    mut stop_rx: watch::Receiver<bool>,
+    stop_tx: tokio::sync::watch::Sender<bool>,
+    mut stop_rx: tokio::sync::watch::Receiver<bool>,
     mut outgoing_messages_rx: tokio::sync::broadcast::Receiver<OutgoingMessage>,
 ) -> anyhow::Result<()> {
+    tracing::trace!(
+        ident = &connection.connection.local_identity()[..6],
+        local = connection.connection.local_addr().to_string(),
+        peer = connection.info.remote_info(),
+        "Sender loop started"
+    );
     loop {
         tokio::select! {
-            _ = stop_rx.changed() => {
-                if *stop_rx.borrow_and_update() {
-                    break;
-                }
+            sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
+                break;
+            },
+            sender = stop_rx.changed() => if sender.is_err() || *stop_rx.borrow() {
+                break;
             },
             _ = connection.connection.watch_close() => {
                 break;
@@ -60,7 +67,12 @@ pub async fn sender<Connection: NetConnection + 'static>(
             }
         }
     }
-    tracing::trace!(peer = connection.info.remote_info(), "Sender loop finished");
+    tracing::trace!(
+        ident = &connection.connection.local_identity()[..6],
+        local = connection.connection.local_addr().to_string(),
+        peer = connection.info.remote_info(),
+        "Sender loop finished"
+    );
     Ok(())
 }
 
@@ -68,7 +80,7 @@ async fn send_message<Connection: NetConnection + 'static>(
     metrics: Option<NetMetrics>,
     connection: Arc<ConnectionWrapper<Connection>>,
     mut outgoing: OutgoingMessage,
-    stop_tx: watch::Sender<bool>,
+    stop_tx: tokio::sync::watch::Sender<bool>,
 ) {
     metrics.as_ref().inspect(|x| {
         x.finish_delivery_phase(

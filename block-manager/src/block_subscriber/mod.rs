@@ -131,7 +131,13 @@ fn worker(
 async fn listener(socket_addr: SocketAddr, tx: mpsc::Sender<Vec<u8>>) -> anyhow::Result<()> {
     loop {
         let transport = MsQuicTransport::new();
-        match transport.connect(socket_addr, &["ALPN"], NetCredential::generate_self_signed()).await
+        match transport
+            .connect(
+                socket_addr,
+                &["ALPN"],
+                NetCredential::generate_self_signed(Some(vec![socket_addr.to_string()]), None)?,
+            )
+            .await
         {
             Ok(conn) => loop {
                 tracing::info!("Wait for incoming stream...");

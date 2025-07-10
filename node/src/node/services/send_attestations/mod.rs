@@ -55,7 +55,7 @@ enum AttestationAction {
     // },
 }
 
-#[derive(Getters, Setters, TypedBuilder)]
+#[derive(Getters, Setters, TypedBuilder, Clone)]
 #[setters(strip_option, prefix = "set_", borrow_self)]
 struct TrackedState {
     block_state: BlockState,
@@ -69,8 +69,6 @@ struct TrackedState {
     last_send_timestamp: Option<std::time::Instant>,
     #[builder(default)]
     last_send_destinations: Option<HashSet<NodeIdentifier>>,
-    #[builder(default)]
-    attestation: Option<Envelope<GoshBLS, AttestationData>>,
 }
 
 #[derive(TypedBuilder)]
@@ -129,7 +127,6 @@ impl AttestationSendService {
         self.append_for_tracking(candidates);
         self.stop_tracking_finalized_and_invalidated_candidates();
         self.timestamp_applied();
-        self.prepare_attestations();
         self.update_interested_parties_received_blocks(candidates);
         self.pulse(loopback_attestations, candidate_block_repository)
     }
@@ -150,6 +147,31 @@ impl AttestationSendService {
         }
     }
 
+    fn try_get_attestation(
+        &self,
+        state: &TrackedState,
+    ) -> anyhow::Result<Envelope<GoshBLS, AttestationData>> {
+        if let Some(attn) = state.block_state.guarded(|e| e.attestation().clone()) {
+            return Ok(attn);
+        };
+        match self.generate_attestation(&state.block_state) {
+            Ok(attestation) => Ok(state.block_state.guarded_mut(|e| {
+                if e.attestation().is_none() {
+                    e.set_attestation(attestation.clone()).expect("failed to set attestation");
+                }
+                e.attestation().clone().unwrap()
+            })),
+            Err(error) => {
+                tracing::trace!(
+                    "Failed to generate attestation for {}: {:?}",
+                    state.block_state.block_identifier(),
+                    error
+                );
+                Err(error)
+            }
+        }
+    }
+
     fn pulse(
         &mut self,
         loopback_attestations: Arc<Mutex<CollectedAttestations>>,
@@ -166,7 +188,8 @@ impl AttestationSendService {
             .collect::<HashMap<BlockIdentifier, std::time::Instant>>();
         let trace_node_id = self.node_id.clone();
         let mut next_deadline = std::time::Instant::now() + PULSE_IDLE_TIMEOUT * 2;
-        for (_block_id, state) in self.tracking.iter_mut() {
+        let mut tracking = self.tracking.clone();
+        for (_block_id, state) in tracking.iter_mut() {
             tracing::trace!("AttestationSendService: process: {_block_id:?}");
             let trace_skip = |reason: &str| {
                 tracing::trace!("skip send attestation: {reason}");
@@ -177,10 +200,15 @@ impl AttestationSendService {
                     [],
                 );
             };
-            let Some(attestation) = state.attestation() else {
-                trace_skip("has already sent attn");
+            // let Some(attestation) = state.attestation() else {
+            //     trace_skip("does not have attestation to send");
+            //     continue;
+            // };
+            let Ok(attestation) = self.try_get_attestation(state) else {
+                trace_skip("does not have attestation to send");
                 continue;
             };
+
             let Some(block_applied_timestamp) = state.block_applied_timestamp() else {
                 trace_skip("missing block applied timestamp");
                 continue;
@@ -243,7 +271,9 @@ impl AttestationSendService {
                         // Note: this is intentionally changed
                         // There will be a separate discussion to retaliate block jamming attack.
                         //.max(*block_applied_timestamp)
-                    } else if parent_block_state.guarded(|e| e.is_finalized()) {
+                    } else if parent_block_state
+                        .guarded(|e| e.is_prefinalized() || e.is_finalized())
+                    {
                         let correction = if let Some(initial_attestations_target) =
                             parent_block_state.guarded(|e| *e.initial_attestations_target())
                         {
@@ -254,7 +284,9 @@ impl AttestationSendService {
                         };
                         *block_applied_timestamp - correction
                     } else {
-                        trace_skip("has not sent attestations for parent and it is not finalized");
+                        trace_skip(
+                            "has not sent attestations for parent and it is not prefinalized",
+                        );
                         continue;
                     };
 
@@ -427,6 +459,7 @@ impl AttestationSendService {
             state.set_last_send_timestamp(std::time::Instant::now());
             state.set_last_send_destinations(attestation_interested_parties);
         }
+        self.tracking = tracking;
         for (awaiting_destinations, attestation) in to_send.into_iter() {
             tracing::trace!(
                 "AttestationSendService: pulse: send attestation: {:?} {:?}",
@@ -542,40 +575,40 @@ impl AttestationSendService {
         Ok(())
     }
 
-    fn prepare_attestations(&mut self) {
-        let mut to_attestate = vec![];
-        for (_, candidate) in self.tracking.iter() {
-            if candidate.attestation().is_some() {
-                continue;
-            }
-            if candidate.block_state().guarded(|e| !e.is_block_already_applied()) {
-                continue;
-            }
-            to_attestate.push(candidate.block_state().clone());
-        }
-        let mut attestations = vec![];
-        for block_state in to_attestate.into_iter() {
-            match self.generate_attestation(&block_state) {
-                Ok(attestation) => {
-                    attestations.push(attestation);
-                }
-                Err(error) => {
-                    tracing::error!(
-                        "Failed to generate attestation for {}: {:?}",
-                        block_state.block_identifier(),
-                        error
-                    );
-                }
-            }
-        }
-        for attestation in attestations.into_iter() {
-            if let Some(candidate) = self.tracking.get_mut(attestation.data().block_id()) {
-                let block_id = attestation.data().block_id().clone();
-                tracing::trace!("AttestationSendService: set_attestation {:?}", block_id);
-                candidate.set_attestation(attestation);
-            }
-        }
-    }
+    // fn prepare_attestations(&mut self) {
+    //     let mut to_attestate = vec![];
+    //     for (_, candidate) in self.tracking.iter() {
+    //         if candidate.attestation().is_some() {
+    //             continue;
+    //         }
+    //         if candidate.block_state().guarded(|e| !e.is_block_already_applied()) {
+    //             continue;
+    //         }
+    //         to_attestate.push(candidate.block_state().clone());
+    //     }
+    //     let mut attestations = vec![];
+    //     for block_state in to_attestate.into_iter() {
+    //         match self.generate_attestation(&block_state) {
+    //             Ok(attestation) => {
+    //                 attestations.push(attestation);
+    //             }
+    //             Err(error) => {
+    //                 tracing::error!(
+    //                     "Failed to generate attestation for {}: {:?}",
+    //                     block_state.block_identifier(),
+    //                     error
+    //                 );
+    //             }
+    //         }
+    //     }
+    //     for attestation in attestations.into_iter() {
+    //         if let Some(candidate) = self.tracking.get_mut(attestation.data().block_id()) {
+    //             let block_id = attestation.data().block_id().clone();
+    //             tracing::trace!("AttestationSendService: set_attestation {:?}", block_id);
+    //             candidate.set_attestation(attestation);
+    //         }
+    //     }
+    // }
 
     fn generate_attestation(
         &self,

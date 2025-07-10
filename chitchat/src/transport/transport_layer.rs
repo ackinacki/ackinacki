@@ -191,11 +191,9 @@ async fn handle_socket_listener<Transport: NetTransport + 'static>(
     let listener = transport.create_listener(listen_addr, &[GOSSIP_ALPN], cred).await?;
     loop {
         tokio::select! {
-            _ = stop_rx.changed() => {
-                if *stop_rx.borrow_and_update() {
-                    break;
-                }
-            }
+            sender = stop_rx.changed() => if sender.is_err() || *stop_rx.borrow() {
+                break;
+            },
             accept_result = listener.accept() => match accept_result {
                 Ok(connection_request) => {
                     tokio::spawn(handle_incoming_connection(connection_request, incoming_tx.clone()));

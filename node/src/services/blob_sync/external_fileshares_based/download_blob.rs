@@ -4,6 +4,8 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::helper::get_temp_file_path;
+
 const CONNECT_TIMEOUT: Option<std::time::Duration> = Some(std::time::Duration::from_secs(3));
 
 pub fn download_blob(
@@ -17,16 +19,9 @@ pub fn download_blob(
     if share_full_path.exists() {
         return Ok(());
     }
-    let tmp_file_path = {
-        // TODO: must be guarded code here and in the share blob fn.
-        let mut path;
-        while {
-            let tmp_file_name = format!("_{}.tmp", rand::random::<u64>());
-            path = tmp_dir_path.join(tmp_file_name);
-            path.exists()
-        } {}
-        path
-    };
+    // TODO: must be guarded code here and in the share blob fn.
+
+    let tmp_file_path = get_temp_file_path(tmp_dir_path);
     tracing::trace!("download_blob: trying to create file: {tmp_file_path:?}");
     if let Some(parent) = tmp_file_path.parent() {
         if !parent.exists() {

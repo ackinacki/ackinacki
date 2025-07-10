@@ -14,13 +14,14 @@ pub use api::ext_messages::ExtMsgResponse;
 pub use api::ext_messages::FeedbackError;
 pub use api::ext_messages::FeedbackErrorCode;
 pub use api::ext_messages::ResolvingResult;
+pub use api::BkInfo;
+pub use api::BkSetResult;
 pub use api::BlockKeeperSetUpdate;
 use metrics::RoutingMetrics;
 use rcgen::CertifiedKey;
 use salvo::conn::rustls::Keycert;
 use salvo::conn::rustls::RustlsConfig;
 use salvo::prelude::*;
-use telemetry_utils::mpsc::InstrumentedReceiver;
 use telemetry_utils::mpsc::InstrumentedSender;
 use tokio::sync::oneshot;
 use tvm_block::Message;
@@ -159,7 +160,7 @@ where
     }
 
     #[must_use = "server run must be awaited twice (first await is to prepare run call)"]
-    pub async fn run(self, bk_set_updates_rx: InstrumentedReceiver<BlockKeeperSetUpdate>) {
+    pub async fn run(self, mut bk_set_rx: tokio::sync::watch::Receiver<BlockKeeperSetUpdate>) {
         let rustls_config = rustls_config();
 
         let quinn_listener = QuinnListener::new(
@@ -174,20 +175,18 @@ where
         let acceptor = tcp_listener.join(quinn_listener).bind().await;
 
         let bk_set = self.bk_set.clone();
-        let bk_set_update_task = std::thread::Builder::new()
-            .name("BK set update handler".to_string())
-            .spawn(move || {
-                tracing::info!("BK set update handler started");
-                while let Ok(update) = bk_set_updates_rx.recv() {
-                    bk_set.write().update(update)
-                }
-                tracing::info!("BK set update handler stopped");
-            })
-            .expect("Failed to spawn BK set updates handler");
+        let bk_set_update_task = tokio::spawn(async move {
+            tracing::info!("BK set update handler started");
+            bk_set.write().update(bk_set_rx.borrow().clone());
+            while bk_set_rx.changed().await.is_ok() {
+                bk_set.write().update(bk_set_rx.borrow().clone())
+            }
+            tracing::info!("BK set update handler stopped");
+        });
 
         tracing::info!("Start HTTP server on {}", &self.addr);
         Server::new(acceptor).serve(Service::new(self.route())).await;
-        match bk_set_update_task.join() {
+        match bk_set_update_task.await {
             Ok(_) => tracing::info!("BK set update handler stopped"),
             Err(_) => tracing::error!("BK set update handler stopped with error"),
         }

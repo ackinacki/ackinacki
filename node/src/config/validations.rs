@@ -12,4 +12,33 @@ impl Config {
         self.local.parallelization_level = cpu_cnt;
         self
     }
+
+    pub fn ensure_execution_timeouts(mut self) -> Self {
+        let time_to_produce_block = self.global.time_to_produce_block_millis;
+        let time_to_produce_transaction_millis =
+            if let Some(timeout) = self.global.time_to_produce_transaction_millis {
+                assert!(timeout <= time_to_produce_block);
+                timeout
+            } else {
+                self.global.time_to_produce_transaction_millis = Some(time_to_produce_block);
+                time_to_produce_block
+            };
+        let time_to_verify_block = self.global.time_to_verify_block_millis;
+        assert!(time_to_verify_block >= time_to_produce_block);
+        if let Some(timeout) = self.global.time_to_verify_transaction_millis {
+            assert!(timeout <= time_to_verify_block);
+        } else {
+            self.global.time_to_verify_transaction_millis = Some(time_to_verify_block);
+        }
+
+        if let Some(timeout) =
+            self.global.time_to_verify_transaction_aborted_with_execution_timeout_millis
+        {
+            assert!(timeout <= time_to_produce_transaction_millis);
+        } else {
+            self.global.time_to_verify_transaction_aborted_with_execution_timeout_millis =
+                Some((time_to_produce_transaction_millis as f64 * 0.9).ceil() as u64);
+        }
+        self
+    }
 }

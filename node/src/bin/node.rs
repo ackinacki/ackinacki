@@ -30,6 +30,9 @@ use database::documents_db::DocumentsDb;
 use database::sqlite::sqlite_helper;
 use database::sqlite::sqlite_helper::SqliteHelper;
 use database::sqlite::sqlite_helper::SqliteHelperConfig;
+// use transport_layer::wtransport::WTransport;
+use gossip::GossipConfig;
+use http_server::BlockKeeperSetUpdate;
 use http_server::ResolvingResult;
 use message_router::message_router::MessageRouter;
 use message_router::message_router::MessageRouterConfig;
@@ -37,10 +40,8 @@ use message_router::read_keys_from_file;
 use network::config::NetworkConfig;
 use network::network::BasicNetwork;
 use network::network::PeerData;
-use network::pub_sub::CertFile;
-use network::pub_sub::CertStore;
-use network::pub_sub::PrivateKeyFile;
-use network::resolver::GossipPeer;
+use network::resolver::sign_gossip_node;
+use network::resolver::WatchGossipConfig;
 use node::block_keeper_system::BlockKeeperSet;
 use node::config::load_blockchain_config;
 use node::config::load_config_from_file;
@@ -92,8 +93,8 @@ use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
 use telemetry_utils::mpsc::instrumented_channel;
 use tokio::task::JoinHandle;
-// use transport_layer::wtransport::WTransport;
 use transport_layer::msquic::MsQuicTransport;
+use transport_layer::TlsCertCache;
 use tvm_block::Serializable;
 use tvm_types::base64_encode;
 use tvm_types::AccountId;
@@ -176,63 +177,93 @@ async fn tokio_main() {
     exit(exit_code);
 }
 
+fn bk_set_update(
+    seq_no: u32,
+    current: Option<&BlockKeeperSet>,
+    future: Option<&BlockKeeperSet>,
+) -> BlockKeeperSetUpdate {
+    BlockKeeperSetUpdate {
+        seq_no,
+        current: collect_node_id_owner_pk(current),
+        future: collect_node_id_owner_pk(future),
+    }
+}
+
+fn collect_node_id_owner_pk(bk_set: Option<&BlockKeeperSet>) -> Vec<(String, [u8; 32])> {
+    let Some(bk_set) = bk_set else {
+        return vec![];
+    };
+    bk_set
+        .iter_node_ids()
+        .filter_map(|node_id| {
+            bk_set.get_by_node_id(node_id).map(|x| (node_id.to_string(), x.owner_pubkey))
+        })
+        .collect()
+}
+
 #[allow(clippy::await_holding_lock)]
 async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     tracing::info!("Starting network");
-    let config = load_config_from_file(&args.config_path)?.ensure_min_cpu(MINIMUM_NUMBER_OF_CORES);
-    tracing::info!("Node config: {}", serde_json::to_string_pretty(&config)?);
-    let seeds = config.network.get_gossip_seeds();
-    tracing::info!("Gossip seeds expanded: {:?}", seeds);
 
     tracing::info!("Loading config");
-    let network_config = {
-        NetworkConfig::new(
-            config.network.bind,
-            CertFile::try_new(&config.network.my_cert)?,
-            PrivateKeyFile::try_new(&config.network.my_key)?,
-            CertStore::try_new(&config.network.peer_certs)?,
-            config.network.subscribe.clone(),
-            config.network.proxies.clone(),
-        )
-    };
+    let tls_cert_cache = TlsCertCache::new()?;
+    let config = load_config_from_file(&args.config_path)?.ensure_min_cpu(MINIMUM_NUMBER_OF_CORES);
+    let network_config = config.network_config(Some(tls_cert_cache.clone()))?;
+    let gossip_config = config.gossip_config()?;
     tracing::info!("Loaded config");
 
-    // let transport = WTransport::default().with_debug_tls_mode(network_config.my_key.is_debug());
-    let transport = MsQuicTransport::default();
+    tracing::info!("Node config: {}", serde_json::to_string_pretty(&config)?);
+    tracing::info!("Gossip seeds expanded: {:?}", gossip_config.seeds);
+    tracing::info!("Gossip advertise addr: {:?}", gossip_config.advertise_addr);
+
+    let zerostate =
+        ZeroState::load_from_file(&config.local.zerostate_path).expect("Failed to open zerostate");
+    let bk_set = zerostate.get_block_keeper_set()?;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let initial_bk_set_update = bk_set_update(0, Some(&bk_set), None);
+    let (bk_set_update_async_tx, bk_set_update_async_rx) =
+        tokio::sync::watch::channel(initial_bk_set_update.clone());
+    let (watch_gossip_config_tx, watch_gossip_config_rx) =
+        tokio::sync::watch::channel(WatchGossipConfig { trusted_pubkeys: vec![] });
+    let (config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
+    let (gossip_config_tx, gossip_config_rx) = tokio::sync::watch::channel(gossip_config);
+    let (network_config_tx, network_config_rx) = tokio::sync::watch::channel(network_config);
+    tokio::spawn(dispatch_hot_reload(
+        tls_cert_cache.clone(),
+        shutdown_rx.clone(),
+        config_rx,
+        bk_set_update_async_rx.clone(),
+        network_config_tx,
+        gossip_config_tx,
+        watch_gossip_config_tx,
+    ));
+    let (gossip_handle, gossip_rest_handle) =
+        gossip::run(shutdown_rx, gossip_config_rx, chitchat::transport::UdpTransport).await?;
 
     let gossip_listen_addr_clone = config.network.gossip_listen_addr;
     let gossip_advertise_addr =
         config.network.gossip_advertise_addr.unwrap_or(gossip_listen_addr_clone);
     tracing::info!("Gossip advertise addr: {:?}", gossip_advertise_addr);
 
-    let (gossip_handle, gossip_rest_handle) = gossip::run(
-        config.network.gossip_listen_addr,
-        chitchat::transport::UdpTransport,
-        gossip_advertise_addr,
-        seeds,
-        config.network.chitchat_cluster_id.clone(),
-    )
-    .await?;
-
-    let gossip_node = GossipPeer::new(
-        config.local.node_id.clone(),
-        config.network.node_advertise_addr,
-        config.network.proxies.clone(),
-        config.network.bm_api_socket,
-        config.network.bk_api_socket,
-    );
+    let gossip_node = config.gossip_peer()?;
     gossip_handle
         .with_chitchat(|c| {
             gossip_node.set_to(c.self_node_state());
-
             c.self_node_state().set(
                 node::node::services::sync::GOSSIP_API_ADVERTISE_ADDR_KEY,
                 config.network.api_advertise_addr.to_string(),
             );
+            if let Ok(Some(key)) = transport_layer::resolve_signing_key(
+                config.network.my_ed_key_secret.clone(),
+                config.network.my_ed_key_path.clone(),
+            ) {
+                sign_gossip_node(c.self_node_state(), key);
+            }
         })
         .await;
 
-    let network = BasicNetwork::from(transport.clone(), network_config.clone());
+    let network = BasicNetwork::new(shutdown_tx, network_config_rx, MsQuicTransport::default());
     let chitchat = gossip_handle.chitchat();
 
     let (ext_messages_sender, ext_messages_receiver) = instrumented_channel(
@@ -241,6 +272,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     );
     let (direct_tx, broadcast_tx, incoming_rx, nodes_rx) = network
         .start(
+            watch_gossip_config_rx,
             metrics.as_ref().map(|m| m.net.clone()),
             metrics.as_ref().map(|m| m.node.clone()),
             config.local.node_id.clone(),
@@ -255,12 +287,12 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         instrumented_channel(node_metrics.clone(), node::helper::metrics::RAW_BLOCK_CHANNEL);
 
     let block_manager_listen_addr = config.network.block_manager_listen_addr;
-    let mut nodes_rx_clone = nodes_rx.clone();
+    let nodes_rx_clone = nodes_rx.clone();
     let block_manager_handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
         transport_layer::server::LiteServer::new(block_manager_listen_addr)
             .start(raw_block_receiver, move |node_id: tvm_types::AccountId| {
                 let node_addr = nodes_rx_clone
-                    .borrow_and_update()
+                    .borrow()
                     .get(&(node_id.into()))
                     .map(|x| x.peer_addr.ip().to_string());
 
@@ -310,10 +342,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let keys_map = key_pairs_from_file::<GoshBLS>(&config.local.key_path);
     let bls_keys_map = Arc::new(Mutex::new(keys_map));
     let bls_keys_map_clone = bls_keys_map.clone();
-
-    let zerostate =
-        ZeroState::load_from_file(&config.local.zerostate_path).expect("Failed to open zerostate");
-    let bk_set = zerostate.get_block_keeper_set()?;
 
     // node should sync with other nodes, but if there are
     // no alive nodes, node should wait
@@ -386,7 +414,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         state_in.set_applied()?;
         state_in.set_signatures_verified()?;
         state_in.set_stored_zero_state()?;
-        let bk_set = Arc::new(bk_set);
+        let bk_set = Arc::new(bk_set.clone());
         state_in.set_bk_set(bk_set.clone())?;
         state_in.set_descendant_bk_set(bk_set)?;
         state_in.set_future_bk_set(Arc::new(BlockKeeperSet::new()))?;
@@ -394,8 +422,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         state_in.set_block_stats(BlockStatistics::zero(15, 3))?;
         state_in.set_initial_attestations_target(AttestationsTarget {
             descendant_generations: 3,
-            attestations_target: 0,
-            min_attestations_target: 0,
+            main_attestations_target: 0,
+            fallback_attestations_target: 0,
         })?;
         state_in.set_producer_selector_data(
             ProducerSelector::builder()
@@ -421,6 +449,9 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         1_usize + TryInto::<usize>::try_into(config.global.save_state_frequency * 2).unwrap(),
     )));
 
+    let (bk_set_update_tx, bk_set_update_rx) =
+        instrumented_channel(node_metrics.clone(), node::helper::metrics::BK_SET_UPDATE_CHANNEL);
+
     let mut repository = RepositoryImpl::new(
         repo_path.clone(),
         zerostate_path.clone(),
@@ -433,6 +464,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         accounts_repo,
         message_db.clone(),
         repository_blocks,
+        bk_set_update_tx.clone(),
     );
     let unprocessed_blocks = repository
         .load_saved_blocks(&block_state_repo)
@@ -537,9 +569,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let mut chain_pulse_bind = authority_switch::chain_pulse_monitor::bind(authority.clone());
     let chain_pulse_monitor = chain_pulse_bind.monitor();
 
-    let (bk_set_updates_tx, bk_set_updates_rx) =
-        instrumented_channel(node_metrics.clone(), node::helper::metrics::BK_SET_UPDATE_CHANNEL);
-
     let node_metrics = metrics.as_ref().map(|m| m.node.clone());
     let node_metrics_clone = node_metrics.clone();
     let notifications = Arc::new(AtomicU32::new(0));
@@ -549,13 +578,11 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let stop_result_rx_vec_clone = stop_result_rx_vec.clone();
     let (routing, _inner_service_thread) = RoutingService::start(
         (routing, routing_rx),
-        bk_set_updates_tx,
         move |parent_block_id,
               thread_id,
               thread_receiver,
               thread_sender,
               feedback_sender,
-              bk_set_updates_tx,
               ext_messages_rx| {
             tracing::trace!("start node for thread: {thread_id:?}");
 
@@ -702,7 +729,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 broadcast_tx.clone(),
                 db_sender,
                 skipped_attestation_ids.clone(),
-                bk_set_updates_tx,
                 block_gap.clone(),
                 validation_service.interface(),
                 sync_state_service.clone(),
@@ -792,6 +818,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let signals_join_handle = {
         let mut signals = Signals::new([SIGHUP, SIGINT, SIGTERM])?;
         let blk_key_path = config_clone.local.key_path.clone();
+        let config_path = args.config_path.clone();
         std::thread::Builder::new().name("signal handler".to_string()).spawn(move || {
             for sig in signals.forever() {
                 tracing::info!("Received signal {:?}", sig);
@@ -805,6 +832,14 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                         let mut keys_map = bls_keys_map_clone.lock();
                         *keys_map = new_key_map;
                         http_server::update_ext_message_auth_flag_from_files();
+                        match load_config_from_file(&config_path) {
+                            Ok(config) => {
+                                config_tx.send_replace(config);
+                            }
+                            Err(err) => {
+                                tracing::error!("Failed to load config from file: {err:?}");
+                            }
+                        }
                     }
                     SIGTERM | SIGINT => {
                         break;
@@ -814,6 +849,27 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             }
         })?
     };
+
+    std::thread::Builder::new()
+        .name("BK set update handler".to_string())
+        .spawn(move || {
+            tracing::info!("BK set update handler started");
+            let mut bk_set = initial_bk_set_update;
+            while let Ok(update) = bk_set_update_rx.recv() {
+                let new_bk_set = bk_set_update(
+                    update.seq_no,
+                    update.current.as_ref().map(|x| x.as_ref()),
+                    update.future.as_ref().map(|x| x.as_ref()),
+                );
+                if new_bk_set != bk_set {
+                    tracing::trace!("new bk set update: {:?}", new_bk_set);
+                    bk_set = new_bk_set;
+                    bk_set_update_async_tx.send_replace(bk_set.clone());
+                }
+            }
+            tracing::info!("BK set update handler stopped");
+        })
+        .expect("Failed to spawn BK set updates handler");
 
     let config = config_clone;
     let repo_clone = repository.clone();
@@ -915,7 +971,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             },
             metrics.as_ref().map(|x| x.routing.clone()),
         );
-        let _ = server.run(bk_set_updates_rx).await;
+        let _ = server.run(bk_set_update_async_rx).await;
         anyhow::bail!("HTTP server supposed to work forever");
     });
 
@@ -1056,7 +1112,7 @@ fn resolve_bp(
     tracing::debug!(target: "http_server", "resolver: bp_id={:?}", bp_id);
 
     let list = nodes_rx
-        .borrow_and_update()
+        .borrow()
         .get(bp_id)
         .map(|peer| match &peer.bk_api_socket {
             Some(socket) => socket.to_string(),
@@ -1089,5 +1145,83 @@ fn debug_used_features() {
     }
     if let Ok(otel_service_name) = std::env::var("OTEL_SERVICE_NAME") {
         eprintln!("  OTEL_SERVICE_NAME={otel_service_name}");
+    }
+}
+
+async fn dispatch_hot_reload(
+    tls_cert_cache: TlsCertCache,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    mut config_rx: tokio::sync::watch::Receiver<node::config::Config>,
+    mut bk_set_rx: tokio::sync::watch::Receiver<BlockKeeperSetUpdate>,
+    network_config_tx: tokio::sync::watch::Sender<NetworkConfig>,
+    gossip_config_tx: tokio::sync::watch::Sender<GossipConfig>,
+    watch_gossip_config_tx: tokio::sync::watch::Sender<WatchGossipConfig>,
+) {
+    let mut bk_set_update = bk_set_rx.borrow().clone();
+    let mut config = config_rx.borrow().clone();
+    tracing::trace!(
+        "Hot reload initial node config: {}",
+        serde_json::to_string(&config).unwrap_or_default()
+    );
+    tracing::trace!(
+        "Hot reload initial bk_set: {}",
+        serde_json::to_string(&bk_set_update).unwrap_or_default()
+    );
+    loop {
+        match config.network_config(Some(tls_cert_cache.clone())) {
+            Ok(mut network_config) => {
+                network_config.credential.trusted_ed_pubkeys =
+                    HashSet::<transport_layer::VerifyingKey>::from_iter(
+                        bk_set_update
+                            .current
+                            .iter()
+                            .map(|x| &x.1)
+                            .chain(bk_set_update.future.iter().map(|x| &x.1))
+                            .filter_map(|x| transport_layer::VerifyingKey::from_bytes(x).ok())
+                            .chain(network_config.credential.trusted_ed_pubkeys.iter().cloned()),
+                    )
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                watch_gossip_config_tx.send_replace(WatchGossipConfig {
+                    trusted_pubkeys: network_config.credential.trusted_ed_pubkeys.clone(),
+                });
+                network_config_tx.send_replace(network_config);
+            }
+            Err(err) => {
+                tracing::error!("Failed to split network config: {err}");
+            }
+        }
+        match config_rx.borrow().gossip_config() {
+            Ok(gossip_config) => {
+                gossip_config_tx.send_replace(gossip_config);
+            }
+            Err(err) => {
+                tracing::error!("Failed to split gossip config: {err}");
+            }
+        }
+        tokio::select! {
+            sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
+                tracing::trace!("Hot reload: shutdown");
+                break;
+            },
+            sender = config_rx.changed() => if sender.is_ok() {
+                config = config_rx.borrow().clone();
+                tracing::trace!(
+                    "Hot reload changed node config: {}",
+                    serde_json::to_string(&config).unwrap_or_default()
+                );
+            } else {
+                break;
+            },
+            sender = bk_set_rx.changed() => if sender.is_ok() {
+                bk_set_update = bk_set_rx.borrow().clone();
+                tracing::trace!(
+                    "Hot reload changed bk_set: {}",
+                    serde_json::to_string(&bk_set_update).unwrap_or_default()
+                );
+            } else {
+                break;
+            }
+        }
     }
 }

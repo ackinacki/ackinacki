@@ -4,7 +4,6 @@ use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-use http_server::BlockKeeperSetUpdate;
 use http_server::ExtMsgFeedback;
 use http_server::ExtMsgFeedbackList;
 use http_server::FeedbackError;
@@ -15,7 +14,6 @@ use parking_lot::Mutex;
 use telemetry_utils::mpsc::instrumented_channel;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use telemetry_utils::mpsc::InstrumentedSender;
-use telemetry_utils::now_ms;
 use tokio::sync::oneshot;
 use tvm_block::GetRepresentationHash;
 
@@ -77,7 +75,6 @@ impl RoutingService {
     ) {
         let (cmd_sender, cmd_receiver) =
             instrumented_channel(metrics.clone(), crate::helper::metrics::ROUTING_COMMAND_CHANNEL);
-        let metrics_clone = metrics.clone();
         let forwarding_thread = {
             let cmd_sender_clone = cmd_sender.clone();
             std::thread::Builder::new()
@@ -87,7 +84,6 @@ impl RoutingService {
                         inbound_network_receiver,
                         cmd_sender_clone,
                         net_metrics,
-                        metrics_clone,
                     )
                 })
                 .unwrap()
@@ -117,7 +113,6 @@ impl RoutingService {
 
     pub fn start<F>(
         channel: (RoutingService, InstrumentedReceiver<Command>),
-        bk_set_updates_tx: InstrumentedSender<BlockKeeperSetUpdate>,
         node_factory: F,
     ) -> (Self, std::thread::JoinHandle<()>)
     where
@@ -127,7 +122,6 @@ impl RoutingService {
                 Receiver<NetworkMessage>,
                 Sender<NetworkMessage>,
                 InstrumentedSender<ExtMsgFeedbackList>,
-                InstrumentedSender<BlockKeeperSetUpdate>,
                 Receiver<WrappedMessage>,
             ) -> anyhow::Result<Node>
             + std::marker::Send
@@ -140,13 +134,7 @@ impl RoutingService {
             std::thread::Builder::new()
                 .name("routing_service_main_loop".to_string())
                 .spawn_critical(|| {
-                    Self::inner_main_loop(
-                        handler,
-                        feedback_sender,
-                        bk_set_updates_tx,
-                        dispatcher,
-                        node_factory,
-                    )
+                    Self::inner_main_loop(handler, feedback_sender, dispatcher, node_factory)
                 })
                 .unwrap()
         };
@@ -176,7 +164,6 @@ impl RoutingService {
         feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
         thread_identifier: ThreadIdentifier,
         parent_block_id: Option<BlockIdentifier>,
-        bk_set_updates_tx: InstrumentedSender<BlockKeeperSetUpdate>,
         node_factory: &mut F,
         ext_message_receiver: Receiver<WrappedMessage>,
     ) -> anyhow::Result<Node>
@@ -187,7 +174,6 @@ impl RoutingService {
                 Receiver<NetworkMessage>,
                 Sender<NetworkMessage>,
                 InstrumentedSender<ExtMsgFeedbackList>,
-                InstrumentedSender<BlockKeeperSetUpdate>,
                 Receiver<WrappedMessage>,
             ) -> anyhow::Result<Node>
             + std::marker::Send,
@@ -201,7 +187,6 @@ impl RoutingService {
             incoming_messages_receiver,
             incoming_messages_sender,
             feedback_sender,
-            bk_set_updates_tx,
             ext_message_receiver,
         )
     }
@@ -228,7 +213,6 @@ impl RoutingService {
     fn inner_main_loop<F>(
         control: InstrumentedReceiver<Command>,
         feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
-        bk_set_updates_tx: InstrumentedSender<BlockKeeperSetUpdate>,
         mut dispatcher: Dispatcher,
         mut node_factory: F,
     ) -> anyhow::Result<()>
@@ -239,7 +223,6 @@ impl RoutingService {
                 Receiver<NetworkMessage>,
                 Sender<NetworkMessage>,
                 InstrumentedSender<ExtMsgFeedbackList>,
-                InstrumentedSender<BlockKeeperSetUpdate>,
                 Receiver<WrappedMessage>,
             ) -> anyhow::Result<Node>
             + std::marker::Send,
@@ -283,7 +266,6 @@ impl RoutingService {
                                     feedback_sender.clone(),
                                     thread_identifier,
                                     Some(parent_block_identifier),
-                                    bk_set_updates_tx.clone(),
                                     &mut node_factory,
                                     ext_messages_rx,
                                 )
@@ -311,7 +293,6 @@ impl RoutingService {
                                     feedback_sender.clone(),
                                     thread_identifier,
                                     None,
-                                    bk_set_updates_tx.clone(),
                                     &mut node_factory,
                                     ext_messages_rx,
                                 )
@@ -341,20 +322,11 @@ impl RoutingService {
         inbound_network: InstrumentedReceiver<IncomingMessage>,
         cmd_sender: InstrumentedSender<Command>,
         net_metrics: Option<NetMetrics>,
-        metrics: Option<BlockProductionMetrics>,
     ) -> anyhow::Result<()> {
         loop {
             match inbound_network.recv() {
                 Ok(incoming) => {
-                    let message_received_ms = incoming.message.received_at;
                     if let Some(message) = incoming.finish(&net_metrics) {
-                        metrics.as_ref().inspect(|m| {
-                            // duration between block received as bytes and received by node as block
-                            m.report_rcv_as_bytes_to_rcv_by_node(
-                                now_ms().saturating_sub(message_received_ms),
-                                incoming.message.label,
-                            )
-                        });
                         cmd_sender.send(Command::Route(message))?
                     }
                 }

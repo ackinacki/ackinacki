@@ -75,22 +75,67 @@ fn generate_server_id(public_addr: SocketAddr) -> String {
     format!("server:{public_addr}-{cool_id}")
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GossipConfig {
+    /// UDP socket address to listen gossip.
+    /// Defaults to "127.0.0.1:10000"
+    #[serde(default = "default_gossip_listen_addr")]
+    pub listen_addr: SocketAddr,
+
+    /// Gossip advertise socket address.
+    /// Defaults to `listen_addr` address
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advertise_addr: Option<SocketAddr>,
+
+    /// Gossip seed nodes socket addresses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seeds: Vec<SocketAddr>,
+
+    /// Chitchat cluster id for gossip
+    #[serde(default = "default_chitchat_cluster_id")]
+    pub cluster_id: String,
+}
+
+impl Default for GossipConfig {
+    fn default() -> Self {
+        Self {
+            listen_addr: default_gossip_listen_addr(),
+            advertise_addr: None,
+            seeds: Vec::new(),
+            cluster_id: default_chitchat_cluster_id(),
+        }
+    }
+}
+
+impl GossipConfig {
+    pub fn advertise_addr(&self) -> SocketAddr {
+        self.advertise_addr.unwrap_or(self.listen_addr)
+    }
+}
+
+fn default_gossip_listen_addr() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], 10000))
+}
+
+fn default_chitchat_cluster_id() -> String {
+    "acki_nacki".to_string()
+}
+
 pub async fn run(
-    listen_addr: SocketAddr,
+    _shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    config_rx: tokio::sync::watch::Receiver<GossipConfig>,
     transport: impl chitchat::transport::Transport,
-    gossip_advertise_addr: SocketAddr,
-    seeds: Vec<String>,
-    cluster_id: String,
 ) -> anyhow::Result<(ChitchatHandle, JoinHandle<anyhow::Result<()>>)> {
-    let node_id = generate_server_id(gossip_advertise_addr);
-    let generation = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
-    let chitchat_id = ChitchatId::new(node_id, generation, gossip_advertise_addr);
-    let config = ChitchatConfig {
-        cluster_id,
+    let config = config_rx.borrow().clone();
+    let node_id = generate_server_id(config.advertise_addr());
+    let generation = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_secs();
+    let chitchat_id = ChitchatId::new(node_id, generation, config.advertise_addr());
+    let chitchat_config = ChitchatConfig {
+        cluster_id: config.cluster_id.clone(),
         chitchat_id,
         gossip_interval: DEFAULT_GOSSIP_INTERVAL,
-        listen_addr,
-        seed_nodes: seeds.clone(),
+        listen_addr: config.listen_addr,
+        seed_nodes: config.seeds.iter().map(|x| x.to_string()).collect(),
         failure_detector_config: FailureDetectorConfig::default(),
         marked_for_deletion_grace_period: Duration::from_secs(600),
         catchup_callback: None,
@@ -100,21 +145,21 @@ pub async fn run(
     // tracing::info!("Starting UDP gossip server on {gossip_advertise_addr}");
     // let transport = UdpTransport;
 
-    tracing::info!("Starting gossip server on {gossip_advertise_addr}");
+    tracing::info!("Starting gossip server on {}", config.advertise_addr());
 
-    let chitchat_handle = spawn_chitchat(config, Vec::new(), &transport).await?;
+    let chitchat_handle = spawn_chitchat(chitchat_config, Vec::new(), &transport).await?;
     let chitchat = chitchat_handle.chitchat();
     let api = Api { chitchat: chitchat.clone() };
     let api_service = OpenApiService::new(api, "Acki Nacki", "1.0")
-        .server(format!("http://{gossip_advertise_addr}/"));
+        .server(format!("http://{}/", config.advertise_addr()));
     let docs = api_service.swagger_ui();
     let app = Route::new().nest("/", api_service).nest("/docs", docs);
 
-    tracing::info!("Starting REST server on advertise addr {gossip_advertise_addr}");
-    tracing::info!("Starting REST server on listen addr {listen_addr}");
+    tracing::info!("Starting REST server on advertise addr {}", config.advertise_addr());
+    tracing::info!("Starting REST server on listen addr {}", config.listen_addr);
 
     let rest_server_handle = tokio::spawn(async move {
-        Server::new(TcpListener::bind(listen_addr)).run(app).await.map_err(|err| err.into())
+        Server::new(TcpListener::bind(config.listen_addr)).run(app).await.map_err(|err| err.into())
     });
 
     Ok((chitchat_handle, rest_server_handle))

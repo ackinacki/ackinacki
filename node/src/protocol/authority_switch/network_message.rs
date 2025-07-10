@@ -77,8 +77,8 @@ pub struct NextRoundFailed {
 #[derive(Clone, Serialize, Deserialize, Getters, TypedBuilder)]
 pub struct NextRoundReject {
     thread_identifier: ThreadIdentifier,
-    known_locked_block: NetBlock,
-    known_attestations: Option<Envelope<GoshBLS, AttestationData>>,
+    prefinalized_block: NetBlock,
+    proof_of_prefinalization: Envelope<GoshBLS, AttestationData>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

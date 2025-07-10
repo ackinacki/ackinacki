@@ -9,6 +9,13 @@ Each node register node with:
 - `node_advertise_addr` socket addr of node protocol
 - `bk_api_socket`
 - `bm_api_socket`
+- `pubkey_signature` – base64 of (VerifyingKey([u8; 32]), Signature([u8; 64]))
+
+Signature calculation:
+- Iterate all fields except `pubkey_signature`.
+- Sort fields by key.
+- Make string with concatenated `{key}\0{value}\0`.
+- Sign string utf-8 bytes.
 
 Proxy has no this key/values.
 
@@ -17,14 +24,28 @@ Proxy has no this key/values.
 - If config contains `subscribe`: subscribe to each address from this list.
 - If config contains `proxies`: subscribe to each address from this list.
 - Otherwise scan gossip nodes:
-  - If the node has no proxies: subscribe to the node's `node_advertise_addr`.
+  - Skip missing signature and untrusted pubkey (not in bk sets).
+  - If the node has no proxies: subscribe to the `node_advertise_addr`.
   - If the node has proxies: subscribe to the first accessible proxy.
 
 ## Proxy subscriptions
 
 - If config contains `subscribe`: subscribes to each address from this list.
 - Otherwise scan gossip nodes:
-  - If the node has no proxies: subscribe to the node's `node_advertise_addr`.
-  - If the node's proxies contain this proxy: subscribe to the peer's `node_advertise_addr`.
-  - If the node's proxies do not contain this proxy: subscribe to the first accessible address from this list.
+  - Skip missing signature and untrusted pubkey (not in bk sets).
+  - If the node has no proxies: subscribe to the `node_advertise_addr`.
+  - If the `proxies` contain this proxy: subscribe to the `node_advertise_addr`.
+  - If the `proxies` does not contain this proxy: subscribe to the first accessible address from this list.
 
+## Tokio Tasks
+
+- gossip
+- pub-sub
+  - listener
+  - subscribe
+  - connection-supervisor: for each connection
+    - receiver: for outgoing connection
+    - sender: for incoming connection
+  - direct-sender
+    - dispatcher
+    - sender: for each outgoing connection

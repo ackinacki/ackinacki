@@ -11,9 +11,3 @@ struct MessageInfo {
         uint256 messageHash;
         uint32 expireAt;
 }
-
-struct Factor {
-        bytes ph;
-        uint256 epk;
-        uint64 expire_at;
-}

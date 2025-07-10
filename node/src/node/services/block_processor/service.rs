@@ -9,9 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use http_server::BlockKeeperSetUpdate;
 use parking_lot::Mutex;
-use telemetry_utils::mpsc::InstrumentedSender;
 use tvm_block::ShardStateUnsplit;
 use tvm_types::Cell;
 use tvm_types::UInt256;
@@ -106,7 +104,6 @@ impl BlockProcessorService {
             )>,
         >,
         skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
-        bk_state_update_tx: InstrumentedSender<BlockKeeperSetUpdate>,
         block_gap: BlockGap,
         validation_service: ValidationServiceInterface,
         share_service: ExternalFileSharesBased,
@@ -196,7 +193,6 @@ impl BlockProcessorService {
                                 block_state,
                                 &block_state_repository,
                                 &repository,
-                                &bk_state_update_tx,
                                 &mut shared_services,
                                 nack_set_cache.clone(),
                                 &archive,
@@ -235,7 +231,6 @@ fn process_candidate_block(
     block_state: &BlockState,
     block_state_repository: &BlockStateRepository,
     repository: &RepositoryImpl,
-    bk_set_update_tx: &InstrumentedSender<BlockKeeperSetUpdate>,
     shared_services: &mut SharedServices,
     nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
     archive: &Option<
@@ -455,8 +450,8 @@ fn process_candidate_block(
                     e.set_initial_attestations_target(AttestationsTarget {
                         // Note: spec.
                         descendant_generations,
-                        attestations_target,
-                        min_attestations_target,
+                        main_attestations_target: attestations_target,
+                        fallback_attestations_target: min_attestations_target,
                     })?;
                 }
                 e.set_block_stats(cur_block_stats.clone())?;
@@ -543,16 +538,11 @@ fn process_candidate_block(
                 )
             });
             if producer == node_id {
-                let bk_set_update = block_state.guarded_mut(|e| {
+                block_state.guarded_mut(|e| {
                     e.set_applied()?;
                     e.event_timestamps.block_applied_timestamp_ms = Some(now_ms());
-                    Ok::<_, anyhow::Error>(e.bk_set().as_ref().map(|x| BlockKeeperSetUpdate {
-                        node_ids: x.iter_node_ids().map(|x| x.to_string()).collect(),
-                    }))
+                    Ok::<_, anyhow::Error>(())
                 })?;
-                if let Some(update) = bk_set_update {
-                    let _ = bk_set_update_tx.send(update);
-                }
                 return Ok(());
             }
             if block_state.guarded(|e| {
@@ -560,7 +550,6 @@ fn process_candidate_block(
             }) {
                 validation_service.send((block_state.clone(), candidate_block.clone()));
             }
-
             let (_, last_finalized_seq_no) = repository
                 .select_thread_last_finalized_block(&thread_id)?
                 .expect("Must be known here");
@@ -641,16 +630,12 @@ fn process_candidate_block(
                 }
             }
 
-            let bk_set_update = block_state.guarded_mut(|e| {
+            block_state.guarded_mut(|e| {
                 e.set_applied()?;
                 e.event_timestamps.block_applied_timestamp_ms = Some(now_ms());
-                Ok::<_, anyhow::Error>(e.bk_set().as_ref().map(|x| BlockKeeperSetUpdate {
-                    node_ids: x.iter_node_ids().map(|x| x.to_string()).collect(),
-                }))
+                Ok::<_, anyhow::Error>(())
             })?;
-            if let Some(update) = bk_set_update {
-                let _ = bk_set_update_tx.send(update);
-            }
+
             shared_services.on_block_appended(candidate_block.data());
             shared_services.exec(|e| {
                 e.cross_thread_ref_data_service.set_cross_thread_ref_data(cross_thread_ref_data)
@@ -880,7 +865,9 @@ fn parse_verified_attestations(
             tracing::trace!("parse_verified_attestations: attested block {block_id:?} attestations_target not found, skip the block");
             return Ok(false);
         };
-        if signers.len() >= attestations_target.min_attestations_target {
+
+        // TODO: need to change back to the fallback_attestations_target according to the document
+        if signers.len() >= attestations_target.main_attestations_target {
             tracing::trace!("parse_verified_attestations: block {block_id:?} min_attestations_target was reached");
             ancestor_block_state.guarded_mut(|e| {
                 if !e.is_prefinalized() {
@@ -899,7 +886,7 @@ fn parse_verified_attestations(
                 }
             });
         }
-        if signers.len() >= attestations_target.attestations_target {
+        if signers.len() >= attestations_target.main_attestations_target {
             tracing::trace!(
                 "parse_verified_attestations: block {block_id:?} attestations_target was reached"
             );

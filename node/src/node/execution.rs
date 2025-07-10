@@ -315,17 +315,61 @@ where
                             }
                             self.on_authority_switch_success(next_round_success)?;
                         }
-                        AuthoritySwitch::Reject(_e) => {
-                            // TODO:
-                            // todo!("Add block for processing. e.known_block");
-                            // todo!("Add attestations to be checked. e.known_attestations");
+                        AuthoritySwitch::Reject(e) => {
+                            let net_block = e.prefinalized_block();
+                            self.on_incoming_candidate_block(net_block, None)?;
+                            let attestations = e.proof_of_prefinalization().clone();
+                            self.last_block_attestations.guarded_mut(|e| {
+                                e.add(
+                                    attestations,
+                                    |block_id| {
+                                        let Ok(block_state) =
+                                            self.block_state_repository.get(block_id)
+                                        else {
+                                            return None;
+                                        };
+                                        block_state.guarded(|e| e.bk_set().clone())
+                                    },
+                                    |block_id| {
+                                        let Ok(block_state) =
+                                            self.block_state_repository.get(block_id)
+                                        else {
+                                            return None;
+                                        };
+                                        block_state.guarded(|e| e.envelope_hash().clone())
+                                    },
+                                )
+                            })?;
                         }
                         AuthoritySwitch::RejectTooOld(_) => {
                             return Ok(ExecutionResult::SynchronizationRequired);
                         }
-                        AuthoritySwitch::Failed(_e) => {
-                            // TODO: add an advertised block to a storage
-                            // TBD
+                        AuthoritySwitch::Failed(e) => {
+                            let net_block = e.data().proposed_block();
+                            self.on_incoming_candidate_block(net_block, None)?;
+                            if let Some(attestations) = e.data().attestations_aggregated().clone() {
+                                self.last_block_attestations.guarded_mut(|e| {
+                                    e.add(
+                                        attestations,
+                                        |block_id| {
+                                            let Ok(block_state) =
+                                                self.block_state_repository.get(block_id)
+                                            else {
+                                                return None;
+                                            };
+                                            block_state.guarded(|e| e.bk_set().clone())
+                                        },
+                                        |block_id| {
+                                            let Ok(block_state) =
+                                                self.block_state_repository.get(block_id)
+                                            else {
+                                                return None;
+                                            };
+                                            block_state.guarded(|e| e.envelope_hash().clone())
+                                        },
+                                    )
+                                })?;
+                            }
                         }
                     },
                     NetworkMessage::NodeJoining((node_id, _)) => {
@@ -601,7 +645,7 @@ where
                 return Ok(());
             };
             if attestation.clone_signature_occurrences().len()
-                >= attestation_target.min_attestations_target
+                >= attestation_target.main_attestations_target
             {
                 block_state.guarded_mut(|e| {
                     e.set_prefinalized()?;
@@ -630,6 +674,7 @@ where
                 Ok(false)
             }
         })?;
+        self.authority_state.guarded_mut(|e| e.on_next_round_success(next_round_success));
         if is_new {
             self.block_state_repository.touch();
         }

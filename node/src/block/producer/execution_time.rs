@@ -30,6 +30,11 @@ impl ProductionTimeoutCorrection {
         } else if last_production > 0 && last_production < desired - 20 {
             self.correction += 5;
         }
+        // Do not let correction above 90% of the desired duration.
+        let max_correction = -((desired as i128) * 9 / 10) as i64;
+        if max_correction > self.correction {
+            self.correction = max_correction;
+        }
         Duration::from_millis((desired + self.correction) as u64)
     }
 

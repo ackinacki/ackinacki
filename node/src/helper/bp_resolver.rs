@@ -38,7 +38,7 @@ impl BPResolver for BPResolverImpl {
         tracing::debug!(target: "message_router", "bp_id_for_thread_map: {:?}", bp_id_for_thread_map);
 
         // TODO: this list of threads can change in runtime need to take smth like shared services
-        let peers = self.peers_rx.borrow_and_update();
+        let peers = self.peers_rx.borrow();
         let mut nodes_vec: Vec<SocketAddr> = bp_id_for_thread_map
             .into_iter()
             .filter_map(|(thread, bp_id)| {

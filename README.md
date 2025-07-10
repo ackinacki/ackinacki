@@ -80,7 +80,7 @@ To deploy Block Keeper Wallet, use the shell script [`scripts/create_block_keepe
 
 To run the script, you need to provide the following arguments:
 
-* `-m` – Path to the [Block Keeper Node Owners keys](https://docs.ackinacki.com/glossary#bk-node-owner-keys) file.
+* `-nk` – Path to the [Block Keeper Node Owners keys](https://docs.ackinacki.com/glossary#bk-node-owner-keys) file.
     * If the file exists, the script will use the existing keys;
     * If not, new keys will be generated and saved in this file.
 
@@ -90,7 +90,7 @@ To run the script, you need to provide the following arguments:
 For example:
 ```bash
 cd scripts
-./create_block_keeper_wallet.sh -m ../bk_wallet/bk_wallet.keys.json -l 6,7
+./create_block_keeper_wallet.sh -nk ../bk_wallet/bk_wallet.keys.json -l 6,7
 ```
 
 After the script completes successfully, make sure to save:
@@ -188,6 +188,7 @@ all:
     STAKING_TIME: 60
     TVM_ENDPOINT: shellnet.ackinacki.org
     NETWORK_NAME: shellnet
+    THREAD_COUNT_SOFT_LIMIT: 4
     GOSSIP_SEEDS:
       - shellnet0.ackinacki.org:10000
       - shellnet1.ackinacki.org:10000
@@ -195,7 +196,7 @@ all:
       - shellnet3.ackinacki.org:10000
       - shellnet4.ackinacki.org:10000
       - YOUR-NODE-ADDRESS:10000
-    MASTER_KEY: PATH_TO_MASTER_KEY
+    NODE_OWNER_KEY: PATH_TO_NODE_OWNER_KEY
     NODE_CONFIGS:
       - "zerostate"
       - "blockchain.conf.json"
@@ -238,6 +239,14 @@ Check the Docker containers.
 docker ps
 #OR
 docker compose ps
+```
+
+Verify that the containers using the specified images are in the UP status:
+```
+teamgosh/ackinacki-node
+teamgosh/ackinacki-gql-server
+teamgosh/ackinacki-nginx
+teamgosh/ackinacki-staking
 ```
 
 Check node logs

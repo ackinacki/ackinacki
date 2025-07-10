@@ -28,6 +28,7 @@ use crate::pub_sub::spawn_critical_task;
 use crate::pub_sub::IncomingSender;
 use crate::resolver::watch_gossip;
 use crate::resolver::SubscribeStrategy;
+use crate::resolver::WatchGossipConfig;
 
 pub const BROADCAST_RETENTION_CAPACITY: usize = 100;
 const DEFAULT_MAX_CONNECTIONS: usize = 1000;
@@ -38,18 +39,24 @@ pub struct PeerData {
     pub bk_api_socket: Option<SocketAddr>,
 }
 
-pub struct BasicNetwork<Transport: NetTransport + 'static> {
+pub struct BasicNetwork<Transport: NetTransport> {
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+    config_rx: tokio::sync::watch::Receiver<NetworkConfig>,
     transport: Transport,
-    config: NetworkConfig,
 }
 
 impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
-    pub fn from(transport: Transport, config: NetworkConfig) -> Self {
-        Self { transport, config }
+    pub fn new(
+        shutdown_tx: tokio::sync::watch::Sender<bool>,
+        config_rx: tokio::sync::watch::Receiver<NetworkConfig>,
+        transport: Transport,
+    ) -> Self {
+        Self { shutdown_tx, config_rx, transport }
     }
 
     pub async fn start<PeerId, Message, ChannelMetrics>(
         &self,
+        watch_gossip_config_rx: tokio::sync::watch::Receiver<WatchGossipConfig>,
         metrics: Option<NetMetrics>,
         channel_metrics: Option<ChannelMetrics>,
         self_peer_id: PeerId,
@@ -67,9 +74,7 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
         PeerId: Clone + Display + Send + Sync + Hash + Eq + FromStr<Err: Display> + 'static,
         ChannelMetrics: InstrumentedChannelMetrics + Send + Sync + 'static,
     {
-        tracing::info!("Starting network with configuration: {:?}", self.config);
-
-        let tls_config = self.config.tls_config();
+        tracing::info!("Starting network with configuration: {:?}", self.config_rx.borrow());
 
         let (incoming_tx, incoming_rx) =
             instrumented_channel::<IncomingMessage>(channel_metrics, "network_incoming");
@@ -77,43 +82,44 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
         let (outgoing_direct_tx, outgoing_direct_rx) =
             tokio::sync::mpsc::unbounded_channel::<(PeerId, NetMessage, std::time::Instant)>();
 
-        let (subscribe_tx, _) = tokio::sync::watch::channel(Vec::new());
+        let (subscribe_tx, subscribe_rx) = tokio::sync::watch::channel(Vec::new());
         let (peers_tx, peers_rx) = tokio::sync::watch::channel(HashMap::new());
-        let (gossip_subscribe_tx, gossip_peers_tx) = if !self.config.subscribe.is_empty() {
-            let _ = subscribe_tx.send_replace(self.config.subscribe.clone());
-            (None, Some(peers_tx))
-        } else if !self.config.proxies.is_empty() {
-            let _ = subscribe_tx.send_replace(vec![self.config.proxies.clone()]);
-            (None, Some(peers_tx))
-        } else {
-            (Some(subscribe_tx.clone()), Some(peers_tx))
-        };
+        let (gossip_subscribe_tx, gossip_subscribe_rx) = tokio::sync::watch::channel(Vec::new());
+        tokio::spawn(combine_subscribe(
+            self.shutdown_tx.subscribe(),
+            self.config_rx.clone(),
+            gossip_subscribe_rx,
+            subscribe_tx,
+        ));
 
         spawn_critical_task(
             "Gossip",
             watch_gossip(
+                self.shutdown_tx.subscribe(),
+                watch_gossip_config_rx,
                 SubscribeStrategy::Peer(self_peer_id.clone()),
                 chitchat.clone(),
                 gossip_subscribe_tx,
-                gossip_peers_tx,
+                peers_tx,
                 metrics.clone(),
             ),
         );
 
         // listen for pub/sub connections
-        let bind = self.config.bind;
         let metrics_clone = metrics.clone();
         let outgoing_broadcast_tx_clone = outgoing_broadcast_tx.clone();
         let transport_clone = self.transport.clone();
+        let shutdown_rx_clone = self.shutdown_tx.subscribe();
+        let config_rx_clone = self.config_rx.clone();
         spawn_critical_task("Pub/Sub", async move {
             if let Err(e) = crate::pub_sub::run(
+                shutdown_rx_clone,
+                config_rx_clone,
                 transport_clone,
                 is_proxy,
                 metrics_clone,
                 DEFAULT_MAX_CONNECTIONS,
-                bind,
-                tls_config,
-                subscribe_tx,
+                subscribe_rx,
                 outgoing_broadcast_tx_clone,
                 IncomingSender::SyncUnbounded(incoming_tx),
             )
@@ -124,20 +130,20 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
         });
 
         // listen for outgoing directed messages
-        let config = self.config.tls_config();
         let peers_rx_clone = peers_rx.clone();
         let metrics_clone = metrics.clone();
         let transport_clone = self.transport.clone();
-        spawn_critical_task("Direct sender", async move {
+        spawn_critical_task(
+            "Direct sender",
             direct_sender::run_direct_sender(
+                self.shutdown_tx.subscribe(),
+                self.config_rx.clone(),
                 transport_clone,
                 metrics_clone,
                 outgoing_direct_rx,
                 peers_rx_clone,
-                config,
-            )
-            .await;
-        });
+            ),
+        );
 
         Ok((
             NetDirectSender::<PeerId, Message>::new(
@@ -149,5 +155,39 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
             incoming_rx,
             peers_rx,
         ))
+    }
+}
+
+async fn combine_subscribe(
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    mut config_rx: tokio::sync::watch::Receiver<NetworkConfig>,
+    mut gossip_subscribe_rx: tokio::sync::watch::Receiver<Vec<Vec<SocketAddr>>>,
+    subscribe_tx: tokio::sync::watch::Sender<Vec<Vec<SocketAddr>>>,
+) {
+    let mut config = config_rx.borrow().clone();
+    let mut gossip_subscribe = gossip_subscribe_rx.borrow().clone();
+    loop {
+        if !config.subscribe.is_empty() {
+            subscribe_tx.send_replace(config.subscribe.clone());
+        } else if !config.proxies.is_empty() {
+            subscribe_tx.send_replace(vec![config.proxies.clone()]);
+        } else {
+            subscribe_tx.send_replace(gossip_subscribe.clone());
+        };
+        tokio::select! {
+            sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
+                return;
+            },
+            sender = config_rx.changed() => if sender.is_err() {
+                return;
+            } else {
+                config = config_rx.borrow().clone();
+            },
+            sender = gossip_subscribe_rx.changed() => if sender.is_err() {
+                return;
+            } else {
+                gossip_subscribe = gossip_subscribe_rx.borrow().clone();
+            }
+        }
     }
 }

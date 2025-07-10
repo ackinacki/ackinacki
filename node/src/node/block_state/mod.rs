@@ -1,7 +1,6 @@
 pub mod dependent_ancestor_blocks;
 pub mod repository;
 pub mod state;
-pub mod try_add_attestation;
 pub mod unfinalized_ancestor_blocks;
 
 // TODO: migrate to any embedded db.

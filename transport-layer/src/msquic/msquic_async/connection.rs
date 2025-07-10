@@ -22,7 +22,7 @@ use super::stream::StreamType;
 use crate::cert_hash;
 use crate::msquic::msquic_async::buffer::WriteBuffer;
 use crate::msquic::msquic_async::send_stream::SendStream;
-use crate::CertValidation;
+use crate::NetCredential;
 
 #[derive(Clone)]
 pub struct Connection(Arc<ConnectionInstance>);
@@ -33,9 +33,9 @@ impl Connection {
     /// The connection is not started until `start` is called.
     pub fn new(
         registration: &msquic::Registration,
-        cert_validation: CertValidation,
+        credential: NetCredential,
     ) -> Result<Self, ConnectionError> {
-        let inner = Arc::new(ConnectionInner::new(ConnectionState::Open, cert_validation));
+        let inner = Arc::new(ConnectionInner::new(ConnectionState::Open, credential));
         let inner_in_ev = inner.clone();
         let msquic_conn = msquic::Connection::open(registration, move |conn_ref, ev| {
             inner_in_ev.callback_handler_impl(conn_ref, ev)
@@ -57,12 +57,12 @@ impl Connection {
     pub(crate) fn from_raw(
         handle: msquic::ffi::HQUIC,
         is_connected: bool,
-        cert_validation: CertValidation,
+        credential: NetCredential,
     ) -> Self {
         let msquic_conn = unsafe { msquic::Connection::from_raw(handle) };
         let inner = Arc::new(ConnectionInner::new(
             if is_connected { ConnectionState::Connected } else { ConnectionState::Connecting },
-            cert_validation,
+            credential,
         ));
         let inner_in_ev = inner.clone();
         msquic_conn.set_callback_handler(move |conn_ref, ev| {
@@ -473,7 +473,7 @@ impl Drop for ConnectionInstance {
 }
 
 struct ConnectionInner {
-    cert_validation: CertValidation,
+    credential: NetCredential,
     exclusive: Mutex<ConnectionInnerExclusive>,
 }
 
@@ -495,9 +495,9 @@ struct ConnectionInnerExclusive {
 }
 
 impl ConnectionInner {
-    fn new(state: ConnectionState, cert_validation: CertValidation) -> Self {
+    fn new(state: ConnectionState, credential: NetCredential) -> Self {
         Self {
-            cert_validation,
+            credential,
             exclusive: Mutex::new(ConnectionInnerExclusive {
                 state,
                 error: None,
@@ -711,7 +711,7 @@ impl ConnectionInner {
             std::slice::from_raw_parts((*cert_buffer).Buffer, (*cert_buffer).Length as usize)
         };
         let cert = CertificateDer::from(cert_slice.to_vec());
-        if !self.cert_validation.verify_is_valid_cert(&cert) {
+        if !self.credential.verify_is_valid_cert(&cert) {
             return Err(msquic::Status::from(msquic::StatusCode::QUIC_STATUS_BAD_CERTIFICATE));
         }
         let mut exclusive = self.exclusive.lock().unwrap();

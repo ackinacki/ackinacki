@@ -21,10 +21,10 @@ pub mod metrics;
 pub mod network;
 pub mod pub_sub;
 pub mod resolver;
-mod tls;
+#[cfg(test)]
+pub mod tests;
 pub mod transfer;
 pub mod unix_signals;
-pub use tls::TlsConfig;
 
 const ACKI_NACKI_DIRECT_PROTOCOL: &str = "acki-nacki-direct";
 const ACKI_NACKI_SUBSCRIPTION_FROM_NODE_PROTOCOL: &str = "acki-nacki-subscription-from-node";
@@ -175,7 +175,7 @@ pub fn extract_msg_type(s: impl AsRef<str>) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+mod unit_tests {
     use super::*;
     #[test]
     fn test_socket_addr() {

@@ -1,7 +1,11 @@
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
+use base64::Engine;
 use clap::Parser;
+use rustls::pki_types::CertificateDer;
+use rustls::pki_types::PrivateKeyDer;
+use transport_layer::generate_self_signed_cert;
 
 pub static LONG_VERSION: LazyLock<String> = LazyLock::new(|| {
     format!(
@@ -35,6 +39,12 @@ struct Cli {
     #[arg(short, long)]
     output_dir: Option<PathBuf>,
 
+    #[arg(long)]
+    ed_key_secret: Option<String>,
+
+    #[arg(long)]
+    ed_key_path: Option<String>,
+
     /// Overwrite existing files
     #[arg(short, long)]
     force: bool,
@@ -42,8 +52,10 @@ struct Cli {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    let ed_sign_key =
+        transport_layer::resolve_signing_key(cli.ed_key_secret.clone(), cli.ed_key_path.clone())?;
 
-    generate_certs(cli.name, cli.subjects, cli.output_dir, cli.force)?;
+    generate_certs(cli.name, cli.subjects, ed_sign_key, cli.output_dir, cli.force)?;
 
     Ok(())
 }
@@ -51,13 +63,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn generate_certs(
     name: String,
     subjects: Vec<String>,
+    ed_sing_key: Option<transport_layer::SigningKey>,
     output_dir: Option<PathBuf>,
     force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let output_dir = output_dir.unwrap_or_else(|| PathBuf::from("./"));
 
     std::fs::create_dir_all(&output_dir)?;
-    let client = rcgen::generate_simple_self_signed(subjects)?;
+    let (key, cert) = generate_self_signed_cert(Some(subjects), ed_sing_key)?;
 
     let cert_filepath = output_dir.join(format!("{name}.ca.pem"));
     let key_filepath = output_dir.join(format!("{name}.key.pem"));
@@ -79,10 +92,32 @@ fn generate_certs(
         }
     }
 
-    std::fs::write(cert_filepath, client.cert.pem())?;
-    std::fs::write(key_filepath, client.key_pair.serialize_pem())?;
+    std::fs::write(cert_filepath, cert_der_to_pem(&cert))?;
+    std::fs::write(key_filepath, key_der_to_pem(&key))?;
 
     Ok(())
+}
+
+fn cert_der_to_pem(cert: &CertificateDer<'_>) -> String {
+    der_to_pem("CERTIFICATE", cert.as_ref())
+}
+
+fn key_der_to_pem(key: &PrivateKeyDer<'_>) -> String {
+    der_to_pem("PRIVATE KEY", key.secret_der())
+}
+
+fn der_to_pem(name: &str, der: &[u8]) -> String {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(der);
+    let mut pem = String::new();
+    pem.push_str(&format!("-----BEGIN {name}-----\n"));
+
+    for chunk in b64.as_bytes().chunks(64) {
+        pem.push_str(std::str::from_utf8(chunk).unwrap());
+        pem.push('\n');
+    }
+
+    pem.push_str(&format!("-----END {name}-----\n"));
+    pem
 }
 
 #[cfg(test)]
@@ -95,14 +130,18 @@ mod tests {
     use rustls::pki_types::PrivateKeyDer;
     use rustls::pki_types::UnixTime;
     use rustls::server::WebPkiClientVerifier;
+    use transport_layer::verify_is_valid_cert;
 
     use crate::generate_certs;
 
     #[test]
     fn test() {
+        let client_ed_sign_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+        let unknown_ed_sign_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
         generate_certs(
             "client".to_string(),
             vec!["[::1]".to_string()],
+            Some(client_ed_sign_key.clone()),
             Some(PathBuf::from("certs")),
             true,
         )
@@ -110,6 +149,7 @@ mod tests {
         generate_certs(
             "server".to_string(),
             vec!["[::1]".to_string()],
+            None,
             Some(PathBuf::from("certs")),
             true,
         )
@@ -139,6 +179,8 @@ mod tests {
             .with_single_cert(vec![server_cert.clone()], server_key)
             .expect("server config");
 
+        assert!(verify_is_valid_cert(&client_cert, &[], &[client_ed_sign_key.verifying_key()]));
+        assert!(!verify_is_valid_cert(&client_cert, &[], &[unknown_ed_sign_key.verifying_key()]));
         assert!(client_auth.verify_client_cert(&client_cert, &[], UnixTime::now()).is_ok());
     }
 }

@@ -6,10 +6,14 @@ pub mod bp_resolver;
 pub mod key_handling;
 pub mod metrics;
 
+use std::path::Path;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
 use opentelemetry::global::ObjectSafeSpan;
+use opentelemetry::trace::noop::NoopTracer;
+use opentelemetry::trace::noop::NoopTracerProvider;
 use opentelemetry::trace::SpanBuilder;
 use opentelemetry::trace::TraceId;
 use opentelemetry::trace::Tracer;
@@ -18,6 +22,8 @@ use opentelemetry::KeyValue;
 use opentelemetry_sdk::metrics::PeriodicReader;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::runtime::Tokio;
+use opentelemetry_sdk::trace;
+use opentelemetry_sdk::Resource;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::Layer;
@@ -81,18 +87,64 @@ pub fn init_tracing() -> Option<Metrics> {
     } else {
         default_filter()
     };
+    // According to OpenTelemetry Specification:
+    // The following environment variables configure the OTLP exporter:
+    // `OTEL_EXPORTER_OTLP_ENDPOINT`:
+    // The default endpoint used for all OTLP signal types (traces, metrics, logs) if more specific ones are not provided.
+    //
+    // `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`:
+    // Sets the endpoint just for traces.
+    //
+    // `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`:
+    // Sets the endpoint just for metrics.
 
-    let meter_provider = init_meter_provider();
-    opentelemetry::global::set_meter_provider(meter_provider);
-    let metrics = Metrics::new(&opentelemetry::global::meter("node"));
+    let traces_endpoint = std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        .or_else(|_| std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT"))
+        .ok();
 
     if let Ok(Ok(targets)) =
         std::env::var("TELEMETRY_LOG").map(|x| tracing_subscriber::filter::Targets::from_str(&x))
     {
+        if let Some(endpoint) = traces_endpoint {
+            println!("Using OTLP traces endpoint: {endpoint}");
+            let telemetry_layer = tracing_opentelemetry::layer()
+                .with_tracer(init_tracer(endpoint))
+                .with_filter(tracing_subscriber::filter::filter_fn(|x| x.is_span()))
+                .with_filter(targets);
+            tracing_subscriber::registry()
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .compact()
+                        .with_thread_ids(true)
+                        .with_ansi(false)
+                        .with_writer(std::io::stderr)
+                        .with_filter(filter),
+                )
+                .with(telemetry_layer)
+                .init();
+        } else {
+            println!("No OTEL exporter endpoint found, using noop tracer.");
+            let telemetry_layer = tracing_opentelemetry::layer()
+                .with_tracer(init_noop_tracer())
+                .with_filter(tracing_subscriber::filter::filter_fn(|x| x.is_span()))
+                .with_filter(targets);
+            tracing_subscriber::registry()
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .compact()
+                        .with_thread_ids(true)
+                        .with_ansi(false)
+                        .with_writer(std::io::stderr)
+                        .with_filter(filter),
+                )
+                .with(telemetry_layer)
+                .init();
+        }
+    } else if let Some(endpoint) = traces_endpoint {
+        println!("Using OTLP traces endpoint: {endpoint}");
         let telemetry_layer = tracing_opentelemetry::layer()
-            .with_tracer(init_tracer())
-            .with_filter(tracing_subscriber::filter::filter_fn(|x| x.is_span()))
-            .with_filter(targets);
+            .with_tracer(init_tracer(endpoint))
+            .with_filter(tracing_subscriber::filter::filter_fn(|x| x.is_span()));
         tracing_subscriber::registry()
             .with(
                 tracing_subscriber::fmt::layer()
@@ -105,8 +157,9 @@ pub fn init_tracing() -> Option<Metrics> {
             .with(telemetry_layer)
             .init();
     } else {
+        println!("No OTEL exporter endpoint found, using noop tracer.");
         let telemetry_layer = tracing_opentelemetry::layer()
-            .with_tracer(init_tracer())
+            .with_tracer(init_noop_tracer())
             .with_filter(tracing_subscriber::filter::filter_fn(|x| x.is_span()));
         tracing_subscriber::registry()
             .with(
@@ -120,7 +173,21 @@ pub fn init_tracing() -> Option<Metrics> {
             .with(telemetry_layer)
             .init();
     }
-    Some(metrics)
+
+    // Init metrics
+    let metrics_endpoint = std::env::var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")
+        .or_else(|_| std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT"))
+        .ok();
+
+    if let Some(endpoint) = metrics_endpoint {
+        tracing::info!("Using OTLP metrics endpoint: {endpoint}");
+        opentelemetry::global::set_meter_provider(init_meter_provider());
+        Some(Metrics::new(&opentelemetry::global::meter("node")))
+    } else {
+        tracing::info!("No OTEL exporter endpoint found, metrics not collected.");
+        opentelemetry::global::set_meter_provider(SdkMeterProvider::builder().build());
+        None
+    }
 }
 
 pub fn shutdown_tracing() {
@@ -128,18 +195,18 @@ pub fn shutdown_tracing() {
     opentelemetry::global::shutdown_tracer_provider();
 }
 
-pub fn init_tracer() -> opentelemetry_sdk::trace::Tracer {
+pub fn init_tracer(endpoint: String) -> opentelemetry_sdk::trace::Tracer {
     let default_service_name = KeyValue::new("service.name", "acki-nacki-node");
 
-    let resource = opentelemetry_sdk::Resource::new(vec![default_service_name.clone()])
-        .merge(&opentelemetry_sdk::Resource::default());
+    let resource = Resource::new(vec![default_service_name.clone()]).merge(&Resource::default());
 
+    tracing::info!("Using OTLP traces endpoint: {endpoint}");
     let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
         .build()
         .expect("Failed to build OTLP exporter");
 
-    let tracer_provider = opentelemetry_sdk::trace::TracerProvider::builder()
+    let tracer_provider = trace::TracerProvider::builder()
         .with_batch_exporter(otlp_exporter, Tokio)
         .with_resource(resource)
         .build();
@@ -148,12 +215,17 @@ pub fn init_tracer() -> opentelemetry_sdk::trace::Tracer {
     tracer_provider.tracer("node")
 }
 
+pub fn init_noop_tracer() -> NoopTracer {
+    let noop_tracer_provider = NoopTracerProvider::new();
+    opentelemetry::global::set_tracer_provider(noop_tracer_provider.clone());
+    noop_tracer_provider.tracer("node")
+}
+
 pub fn init_meter_provider() -> SdkMeterProvider {
     let default_service_name = KeyValue::new("service.name", "acki-nacki-node");
 
     let resource = opentelemetry_sdk::Resource::new(vec![default_service_name.clone()])
         .merge(&opentelemetry_sdk::Resource::default());
-
     let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
         .with_tonic()
         .build()
@@ -207,4 +279,14 @@ pub fn block_flow_trace_with_time<const N: usize>(
     }
     let mut span = tracer.build(builder);
     span.end()
+}
+
+pub fn get_temp_file_path(parent_path: &Path) -> PathBuf {
+    let mut path;
+    while {
+        let tmp_file_name = format!("_{}.tmp", rand::random::<u64>());
+        path = parent_path.join(tmp_file_name);
+        path.exists()
+    } {}
+    path
 }

@@ -44,7 +44,7 @@ impl ConfigFactory {
             .set_InitialWindowPackets(100)
             .set_StreamRecvWindowDefault(268_435_456)
             .set_ConnFlowControlWindow(2_147_483_648)
-        // .set_SendBufferingEnabled()
+            .set_SendBufferingEnabled()
     }
 
     pub(crate) fn build_credential(

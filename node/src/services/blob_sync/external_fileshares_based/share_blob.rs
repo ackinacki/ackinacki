@@ -4,6 +4,8 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::helper::get_temp_file_path;
+
 pub fn share_blob(
     share_full_path: PathBuf,
     tmp_dir_path: &Path,
@@ -12,15 +14,7 @@ pub fn share_blob(
     if share_full_path.exists() {
         return Ok(());
     }
-    let tmp_file_path = {
-        let mut path;
-        while {
-            let tmp_file_name = format!("_{}.tmp", rand::random::<u64>());
-            path = tmp_dir_path.join(tmp_file_name);
-            path.exists()
-        } {}
-        path
-    };
+    let tmp_file_path = get_temp_file_path(tmp_dir_path);
     tracing::trace!("share_blob: trying to create file: {tmp_file_path:?}");
     if let Some(parent) = tmp_file_path.parent() {
         if !parent.exists() {

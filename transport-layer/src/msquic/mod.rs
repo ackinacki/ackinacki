@@ -29,7 +29,15 @@ const STREAM_OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12
 
 #[derive(Clone)]
 pub struct MsQuicTransport {
-    registration: Arc<Registration>,
+    registration: Arc<RegistrationWrapper>,
+}
+
+struct RegistrationWrapper(Registration);
+
+impl Drop for RegistrationWrapper {
+    fn drop(&mut self) {
+        self.0.shutdown();
+    }
 }
 
 impl Default for MsQuicTransport {
@@ -42,7 +50,7 @@ impl MsQuicTransport {
     pub fn new() -> Self {
         let registration = Registration::new(&RegistrationConfig::default())
             .expect("Default registration is always possible");
-        Self { registration: Arc::new(registration) }
+        Self { registration: Arc::new(RegistrationWrapper(registration)) }
     }
 }
 
@@ -58,8 +66,8 @@ impl NetTransport for MsQuicTransport {
         credential: NetCredential,
     ) -> anyhow::Result<Self::Listener> {
         let local_identity = credential.identity();
-        let config = ConfigFactory::Server.build(&self.registration, alpn, &credential)?;
-        let listener = Listener::new(&self.registration, config, credential.cert_validation)?;
+        let config = ConfigFactory::Server.build(&self.registration.0, alpn, &credential)?;
+        let listener = Listener::new(&self.registration.0, config, credential)?;
         let alpn: Vec<BufferRef> = alpn.iter().map(|s| BufferRef::from(*s)).collect();
         listener.start(&alpn, Some(bind_addr))?;
         Ok(MsQuicListener { instance: listener, local_identity })
@@ -72,8 +80,8 @@ impl NetTransport for MsQuicTransport {
         credential: NetCredential,
     ) -> anyhow::Result<Self::Connection> {
         let local_identity = credential.identity();
-        let config = ConfigFactory::Client.build(&self.registration, alpn, &credential)?;
-        let conn = Connection::new(&self.registration, credential.cert_validation)?;
+        let config = ConfigFactory::Client.build(&self.registration.0, alpn, &credential)?;
+        let conn = Connection::new(&self.registration.0, credential)?;
 
         let host = addr.ip().to_string();
         let port = addr.port();

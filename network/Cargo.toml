@@ -10,12 +10,15 @@ license-file.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+base64 = { version = "0.22.1" }
 bincode.workspace = true
 chitchat.workspace = true
 clap.workspace = true
+ed25519-dalek.workspace = true
 enum_dispatch.workspace = true
 faster-hex.workspace = true
 futures.workspace = true
+gossip.workspace = true
 hex.workspace = true
 itertools.workspace = true
 opentelemetry.workspace = true
@@ -45,7 +48,6 @@ wtransport.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
-gossip.workspace = true
 once_cell = "1.21.3"
 rand.workspace = true
 tracing-subscriber.workspace = true

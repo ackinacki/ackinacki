@@ -4,22 +4,23 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::Context;
-use itertools::Itertools;
+use gossip::GossipConfig;
+use network::config::NetworkConfig;
 use network::pub_sub::CertFile;
 use network::pub_sub::CertStore;
 use network::pub_sub::PrivateKeyFile;
-use network::TlsConfig;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::signal::unix::signal;
 use tokio::signal::unix::SignalKind;
+use transport_layer::TlsCertCache;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProxyConfig {
     pub bind: SocketAddr,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gossip: Option<GossipConfig>,
+    #[serde(default)]
+    pub gossip: GossipConfig,
 
     /// Should be the same as it specified in proxy list
     #[serde(default, deserialize_with = "network::deserialize_optional_publisher_addr")]
@@ -27,6 +28,9 @@ pub struct ProxyConfig {
     pub my_cert: CertFile,
     pub my_key: PrivateKeyFile,
     pub peer_certs: CertStore,
+    #[serde(default, with = "transport_layer::hex_verifying_keys")]
+    pub peer_ed_pubkeys: Vec<transport_layer::VerifyingKey>,
+    pub bk_addrs: Vec<SocketAddr>,
     #[serde(
         serialize_with = "network::serialize_subscribe",
         deserialize_with = "network::deserialize_subscribe"
@@ -34,44 +38,7 @@ pub struct ProxyConfig {
     pub subscribe: Vec<Vec<SocketAddr>>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct GossipConfig {
-    /// UDP socket address to listen gossip.
-    /// Defaults to "127.0.0.1:10000"
-    #[serde(default = "default_gossip_listen_addr")]
-    pub listen_addr: SocketAddr,
-
-    /// Gossip advertise socket address.
-    /// Defaults to `bind` address
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub advertise_addr: Option<SocketAddr>,
-
-    /// Gossip seed nodes socket addresses.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub seeds: Vec<SocketAddr>,
-
-    /// Chitchat cluster id for gossip
-    #[serde(default = "default_chitchat_cluster_id")]
-    pub cluster_id: String,
-}
-
-fn default_gossip_listen_addr() -> SocketAddr {
-    SocketAddr::from(([127, 0, 0, 1], 10000))
-}
-
-fn default_chitchat_cluster_id() -> String {
-    "acki_nacki".to_string()
-}
-
 impl ProxyConfig {
-    pub(crate) fn tls_config(&self) -> TlsConfig {
-        TlsConfig {
-            my_cert: self.my_cert.clone(),
-            my_key: self.my_key.clone(),
-            peer_certs: self.peer_certs.clone(),
-        }
-    }
-
     pub fn from_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let file = std::fs::File::open(path.as_ref())?;
         serde_yaml::from_reader(file).context("Failed to load config")
@@ -84,11 +51,22 @@ impl ProxyConfig {
         writer.flush()?;
         Ok(())
     }
-}
 
-impl GossipConfig {
-    pub fn get_seeds(&self) -> Vec<String> {
-        self.seeds.iter().map(|x| x.to_string()).collect_vec()
+    pub fn network_config(
+        &self,
+        tls_cert_cache: Option<TlsCertCache>,
+    ) -> anyhow::Result<NetworkConfig> {
+        NetworkConfig::new(
+            self.bind,
+            self.my_cert.clone(),
+            self.my_key.clone(),
+            None,
+            self.peer_certs.clone(),
+            self.peer_ed_pubkeys.clone(),
+            self.subscribe.clone(),
+            vec![],
+            tls_cert_cache,
+        )
     }
 }
 

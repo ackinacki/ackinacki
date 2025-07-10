@@ -116,11 +116,18 @@ impl BlockProducer {
         // self.execute_restarted_producer(block_id_to_continue, block_seq_no_to_continue)?;
         // }
 
-        let mut in_flight_productions = self.start_production()?;
+        let mut in_flight_productions = None;
         let mut memento = None;
+        let mut next_bp_command = None;
         loop {
+            if let Ok(bp_command) = self.control_rx.try_recv() {
+                in_flight_productions = None;
+                memento = None;
+                let _ = self.production_process.stop_thread_production(&self.thread_id);
+                next_bp_command = Some(bp_command);
+            }
             if in_flight_productions.is_none() && memento.is_none() {
-                in_flight_productions = self.start_production()?;
+                in_flight_productions = self.start_production(next_bp_command.take())?;
                 if in_flight_productions.is_some() {
                     let (block_id_to_continue, block_seq_no_to_continue) =
                         in_flight_productions.clone().unwrap();
@@ -184,12 +191,15 @@ impl BlockProducer {
         }
     }
 
-    pub fn start_production(&mut self) -> anyhow::Result<Option<(BlockIdentifier, BlockSeqNo)>> {
+    pub fn start_production(
+        &mut self,
+        next_bp_command: Option<BlockProducerCommand>,
+    ) -> anyhow::Result<Option<(BlockIdentifier, BlockSeqNo)>> {
         tracing::trace!("start_block_production");
         // Produce whatever threads it has to produce
         let mut producer_tails = None;
         if let Some((block_id_to_continue, block_seq_no_to_continue, initial_round)) =
-            self.find_thread_last_block_id_this_node_can_continue()?
+            self.find_thread_last_block_id_this_node_can_continue(next_bp_command)?
         {
             tracing::info!(
                 "Requesting producer to continue block id {:?}; seq_no {:?}, node_id {:?}",
@@ -226,12 +236,13 @@ impl BlockProducer {
 
     pub(crate) fn find_thread_last_block_id_this_node_can_continue(
         &mut self,
+        next_bp_command: Option<BlockProducerCommand>,
     ) -> anyhow::Result<Option<(BlockIdentifier, BlockSeqNo, u16)>> {
         tracing::trace!(
             "find_thread_last_block_id_this_node_can_continue start {:?}",
             self.thread_id
         );
-        let mut update = None;
+        let mut update = next_bp_command;
         let mut last_update = loop {
             match self.control_rx.try_recv() {
                 Ok(params) => {

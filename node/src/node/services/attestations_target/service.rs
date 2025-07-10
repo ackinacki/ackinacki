@@ -191,8 +191,8 @@ impl AttestationsTargetService {
             };
             let Some(AttestationsTarget {
                 descendant_generations: descendants_chain_length_required,
-                attestations_target,
-                min_attestations_target: _,
+                main_attestations_target,
+                fallback_attestations_target: _,
             }) = initial_attestations_target
             else {
                 return Err(AttestationsFailure::NotAllInitialAttestationTargetsSet);
@@ -217,7 +217,7 @@ impl AttestationsTargetService {
             match self.evaluate_block_attestations(
                 block.block_identifier(),
                 checkpoint,
-                attestations_target,
+                main_attestations_target,
             ) {
                 Ok(AttestationsSuccess::InitialAttestationsTargetMet) => {
                     on_initial_attestations_target_met(block)?;

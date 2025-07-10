@@ -89,7 +89,6 @@ mod unit_tests {
     use crate::msquic::quic_settings::ConfigFactory;
     use crate::msquic::read_message_from_stream;
     use crate::msquic::MsQuicTransport;
-    use crate::CertValidation;
     use crate::NetConnection;
     use crate::NetCredential;
     use crate::NetIncomingRequest;
@@ -100,15 +99,12 @@ mod unit_tests {
     #[ignore]
     async fn test_msquic_transport() {
         init_logs();
-        let mut server_cred = NetCredential::generate_self_signed();
+        let mut server_cred = NetCredential::generate_self_signed(None, None).unwrap();
         let client_ed_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
         let mut client_cred =
-            NetCredential::generate_self_signed_with_ed_signature(&client_ed_key).unwrap();
-        server_cred
-            .cert_validation
-            .trusted_ed_pubkeys
-            .push(client_ed_key.verifying_key().to_bytes());
-        client_cred.cert_validation.root_certs.push(server_cred.my_certs[0].clone());
+            NetCredential::generate_self_signed(None, Some(client_ed_key.clone())).unwrap();
+        server_cred.trusted_ed_pubkeys.push(client_ed_key.verifying_key());
+        client_cred.trusted_certs.push(server_cred.my_certs[0].clone());
         let server_cred_clone = server_cred.clone();
         let client_cred_clone = client_cred.clone();
         let mut tasks = JoinSet::new();
@@ -162,7 +158,12 @@ mod unit_tests {
 
         let address = "127.0.0.1";
         let port = 4444;
-        let l = msquic_async::Listener::new(&reg, config, CertValidation::default()).unwrap();
+        let l = msquic_async::Listener::new(
+            &reg,
+            config,
+            NetCredential::generate_self_signed(None, None).unwrap(),
+        )
+        .unwrap();
         let local_address = SocketAddr::new(address.parse().unwrap(), port);
 
         l.start(&alpn, Some(local_address)).unwrap();
@@ -182,7 +183,11 @@ mod unit_tests {
 
             let host = "127.0.0.1";
             let port = 4444;
-            let conn = msquic_async::Connection::new(&reg, CertValidation::default()).unwrap();
+            let conn = msquic_async::Connection::new(
+                &reg,
+                NetCredential::generate_self_signed(None, None).unwrap(),
+            )
+            .unwrap();
             let rt = tokio::runtime::Runtime::new().unwrap();
 
             rt.block_on(async {
@@ -350,7 +355,8 @@ mod unit_tests {
         let creds = NetCredential {
             my_key: key,
             my_certs: vec![cert],
-            cert_validation: CertValidation::default(),
+            trusted_certs: vec![],
+            trusted_ed_pubkeys: vec![],
         };
         let reg = Registration::new(&RegistrationConfig::default()).unwrap();
         let alpn = ["qtest"];

@@ -4,7 +4,7 @@ set -eu
 
 # SPONSOR_WALLET_ADDRESS=""
 # SPONSOR_WALLET_KEY_FILE=""
-MASTER_KEY_FILE_OUTPUT_PATH=""
+NODE_OWNER_KEY_FILE_OUTPUT_PATH=""
 LICENSE_NUMBERS=""
 
 print_usage () {
@@ -17,10 +17,10 @@ To craete wallet see: https://dev.ackinacki.com/how-to-deploy-a-sponsor-wallet#c
 
 REQUIRED OPTIONS:
 
-    -w|--wallet          specify wallet address from where send tokens
-    -wk|--wallet-keys    give wallet keys file
-    -m|--master-keys     provide path to file with master keys
-    -l|--license-numbers provide license numbers for wallet. Use ',' as a delimiter for numbers without any whitespaces. For example "-l 1,2,3"
+    -w|--wallet             specify wallet address from where send tokens
+    -wk|--wallet-keys       give wallet keys file
+    -nk|--node-owner-keys   provide path to file with node owner keys
+    -l|--license-numbers    provide license numbers for wallet. Use ',' as a delimiter for numbers without any whitespaces. For example "-l 1,2,3"
 
 EOF
 }
@@ -29,9 +29,9 @@ get_options () {
   while [ $# -gt 0 ]; do
     key="$1"
     case $key in
-        -m|--master-keys)
+        -nk|--node-owner-keys)
             shift
-            MASTER_KEY_FILE_OUTPUT_PATH="$1"
+            NODE_OWNER_KEY_FILE_OUTPUT_PATH="$1"
             shift
             ;;
         -l|--license-numbers)
@@ -78,20 +78,20 @@ WALLET_INIT=1000000000
 ECC_KEY="1"
 
 gen_key () {
-  if [ ! -e $MASTER_KEY_FILE_OUTPUT_PATH ]; then
-    echo File $MASTER_KEY_FILE_OUTPUT_PATH not found. Generating master keys...
-    tvm-cli -j genphrase --dump $MASTER_KEY_FILE_OUTPUT_PATH > $MASTER_KEY_FILE_OUTPUT_PATH.phrase
+  if [ ! -e $NODE_OWNER_KEY_FILE_OUTPUT_PATH ]; then
+    echo File $NODE_OWNER_KEY_FILE_OUTPUT_PATH not found. Generating node owner keys...
+    tvm-cli -j genphrase --dump $NODE_OWNER_KEY_FILE_OUTPUT_PATH > $NODE_OWNER_KEY_FILE_OUTPUT_PATH.phrase
   fi
 }
 
 read_key () {
-  local MASTER_PUB_KEY_JSON=$(jq -r .public $MASTER_KEY_FILE_OUTPUT_PATH)
+  local NODE_OWNER_PUB_KEY_JSON=$(jq -r .public $NODE_OWNER_KEY_FILE_OUTPUT_PATH)
   local WHITELISTPARAMS=$(echo "$LICENSE_NUMBERS" | jq -R 'split(",") | map({(.): true}) | add')
   
   [ "$(echo $WHITELISTPARAMS | jq -r '. | length')" -gt 5 ] && { echo "License numbers couldn't be greater than 5" ; exit 1 ; }
 
-  MASTER_PUB_KEY=$(echo '{"pubkey": "0x{public}"}' | sed -e "s/{public}/$MASTER_PUB_KEY_JSON/g")
-  MASTER_PUB_KEY_LICENSE=$(echo "{\"pubkey\": \"0x{public}\", \"whiteListLicense\": $WHITELISTPARAMS}" | sed -e "s/{public}/$MASTER_PUB_KEY_JSON/g")
+  NODE_OWNER_PUB_KEY=$(echo '{"pubkey": "0x{public}"}' | sed -e "s/{public}/$NODE_OWNER_PUB_KEY_JSON/g")
+  NODE_OWNER_PUB_KEY_LICENSE=$(echo "{\"pubkey\": \"0x{public}\", \"whiteListLicense\": $WHITELISTPARAMS}" | sed -e "s/{public}/$NODE_OWNER_PUB_KEY_JSON/g")
 }
 
 # TVM_ACCOUNT_STATUS=$(tvm-cli -j account $SPONSOR_WALLET_ADDRESS | jq -r '.acc_type')
@@ -107,9 +107,9 @@ read_key
 
 echo Deploying wallet...
 
-tvm-cli -j callx --addr $ROOT --abi $ABI --method deployAckiNackiBlockKeeperNodeWallet "$MASTER_PUB_KEY_LICENSE"
+tvm-cli -j callx --addr $ROOT --abi $ABI --method deployAckiNackiBlockKeeperNodeWallet "$NODE_OWNER_PUB_KEY_LICENSE"
 
-WALLET_ADDR=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeperNodeWalletAddress "$MASTER_PUB_KEY" | jq -r '.wallet')
+WALLET_ADDR=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeperNodeWalletAddress "$NODE_OWNER_PUB_KEY" | jq -r '.wallet')
 
 echo Wallet $WALLET_ADDR is deployed.
 
@@ -136,6 +136,6 @@ echo "Checking wallet balance..."
 WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r '.balance')
 echo $WALLET_DETAILS | xargs printf "Current wallet balance: %d\n"
 
-tvm-cli -j runx --addr $ROOT --abi $ABI --method getAckiNackiBlockKeeperNodeWalletAddress "$MASTER_PUB_KEY" | jq -r .wallet | cut -d ':' -f2 | xargs printf "Node ID: %s\n"
+tvm-cli -j runx --addr $ROOT --abi $ABI --method getAckiNackiBlockKeeperNodeWalletAddress "$NODE_OWNER_PUB_KEY" | jq -r .wallet | cut -d ':' -f2 | xargs printf "Node ID: %s\n"
 
 printf "Initial steps have been done. Save your node id\n"

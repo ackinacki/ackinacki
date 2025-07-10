@@ -4,17 +4,17 @@
 use std::fmt::Debug;
 use std::net::SocketAddr;
 
+use transport_layer::NetCredential;
+use transport_layer::TlsCertCache;
+
 use crate::pub_sub::CertFile;
 use crate::pub_sub::CertStore;
 use crate::pub_sub::PrivateKeyFile;
-use crate::tls::TlsConfig;
 
 #[derive(Clone)]
 pub struct NetworkConfig {
     pub bind: SocketAddr,
-    pub my_cert: CertFile,
-    pub my_key: PrivateKeyFile,
-    pub peer_certs: CertStore,
+    pub credential: NetCredential,
     pub subscribe: Vec<Vec<SocketAddr>>,
     pub proxies: Vec<SocketAddr>,
 }
@@ -26,23 +26,26 @@ impl Debug for NetworkConfig {
 }
 
 impl NetworkConfig {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         bind: SocketAddr,
         my_cert: CertFile,
         my_key: PrivateKeyFile,
+        my_ed_key: Option<transport_layer::SigningKey>,
         peer_certs: CertStore,
+        peer_ed_pubkeys: Vec<transport_layer::VerifyingKey>,
         subscribe: Vec<Vec<SocketAddr>>,
         proxies: Vec<SocketAddr>,
-    ) -> Self {
+        tls_cert_cache: Option<TlsCertCache>,
+    ) -> anyhow::Result<Self> {
         tracing::info!("Creating new network configuration with bind: {}", bind);
-        Self { bind, my_cert, my_key, subscribe, peer_certs, proxies }
-    }
-
-    pub fn tls_config(&self) -> TlsConfig {
-        TlsConfig {
-            my_cert: self.my_cert.clone(),
-            my_key: self.my_key.clone(),
-            peer_certs: self.peer_certs.clone(),
-        }
+        let (my_certs, my_key) = my_cert.resolve(&my_key, &my_ed_key, tls_cert_cache)?;
+        let credential = NetCredential {
+            my_certs,
+            my_key,
+            trusted_ed_pubkeys: peer_ed_pubkeys,
+            trusted_certs: peer_certs.certs,
+        };
+        Ok(Self { bind, credential, subscribe, proxies })
     }
 }

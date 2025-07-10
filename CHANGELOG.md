@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.1] - 2025-07-10
+
+### Improvements
+- master keys renamed to node owner keys
+- staking scripts updated
+
+## [0.6.0] - 2025-07-08
+
+### New
+- QUIC authentication by TLS certificate generated with node_owner keys from BK set
+- Multifactor wallet with the support of Google authentication released
+
+### Fixed
+- OLTP errors in logs
+- Order of internal messages
+- Block time correction led to infinite block generation time
+- A BK node that had already been a Producer couldn't become a Producer again
+- Authority switch
+
 ## [0.5.3] - 2025-07-01
 
 ### Fixed

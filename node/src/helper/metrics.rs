@@ -9,6 +9,7 @@ use opentelemetry::metrics::Meter;
 use opentelemetry::metrics::UpDownCounter;
 use opentelemetry::KeyValue;
 use telemetry_utils::mpsc::InstrumentedChannelMetrics;
+use telemetry_utils::out_of_bounds_guard;
 use telemetry_utils::TokioMetrics;
 
 use crate::types::ThreadIdentifier;
@@ -51,7 +52,6 @@ struct BlockProductionMetricsInner {
     processing_delay: Histogram<u64>,
     attestation_after_apply_delay: Histogram<u64>,
     attn_target_descendant_generations: Histogram<u64>,
-    rcv_as_bytes_to_rcv_by_node: Histogram<u64>,
     blocks_requested: Counter<u64>,
     unfinalized_blocks_queue: Gauge<u64>,
     bk_set_size: Gauge<u64>,
@@ -210,10 +210,6 @@ impl BlockProductionMetrics {
                 .u64_histogram("node_attn_target_descendant_generations")
                 .with_boundaries((0..=20).map(|x| x as f64).collect())
                 .build(),
-            rcv_as_bytes_to_rcv_by_node: meter
-                .u64_histogram("node_rcv_as_bytes_to_rcv_by_node")
-                .with_boundaries(vec![2.0, 5.0, 10.0, 15.0, 20.0, 40.0, 80.0, 200.0, 1000.0])
-                .build(),
         }))
     }
 
@@ -223,23 +219,35 @@ impl BlockProductionMetrics {
         correction_time: i64,
         thread_id: &ThreadIdentifier,
     ) {
-        self.0.block_production_time.record(production_time as u64, &[thread_id_attr(thread_id)]);
+        if production_time < 10_000 {
+            self.0
+                .block_production_time
+                .record(production_time as u64, &[thread_id_attr(thread_id)]);
+        } else {
+            tracing::warn!(
+                "Metric block_production_time: value {production_time} is out of bounds",
+            );
+        }
+
         self.0
             .block_production_time_correction
             .record(correction_time, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_block_apply_time(&self, value: u64, thread_id: &ThreadIdentifier) {
+        out_of_bounds_guard!(value, "block_apply_time");
         self.0.block_apply_time.record(value, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_finalization(&self, seq_no: u32, tx_count: usize, thread_id: &ThreadIdentifier) {
         self.0.block_finalized.add(1, &[thread_id_attr(thread_id)]);
-        self.0.tx_finalized.add(tx_count as u64, &[thread_id_attr(thread_id)]);
         self.0.last_finalized_seqno.record(seq_no as u64, &[thread_id_attr(thread_id)]);
+
+        self.0.tx_finalized.add(tx_count as u64, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_finalization_time(&self, duration_ms: u64, thread_id: &ThreadIdentifier) {
+        out_of_bounds_guard!(duration_ms, "finalization_time");
         self.0.finalization_time.record(duration_ms, &[thread_id_attr(thread_id)]);
     }
 
@@ -281,6 +289,7 @@ impl BlockProductionMetrics {
     }
 
     pub fn report_memento_duration(&self, value: u128, thread_id: &ThreadIdentifier) {
+        out_of_bounds_guard!(value, "memento_duration");
         self.0.memento_duration.record(value as u64, &[thread_id_attr(thread_id)]);
     }
 
@@ -293,10 +302,12 @@ impl BlockProductionMetrics {
     }
 
     pub fn report_block_received_attestation_sent(&self, value: u64, thread_id: &ThreadIdentifier) {
+        out_of_bounds_guard!(value, "block_received_attestation_sent");
         self.0.block_received_attestation_sent.record(value, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_child_parent_attestation(&self, value: u64, thread_id: &ThreadIdentifier) {
+        out_of_bounds_guard!(value, "child_parent_attestation");
         self.0.child_parent_attestation.record(value, &[thread_id_attr(thread_id)]);
     }
 
@@ -329,14 +340,17 @@ impl BlockProductionMetrics {
     }
 
     pub fn report_store_block_on_disk(&self, value: u64, thread_id: &ThreadIdentifier) {
+        out_of_bounds_guard!(value, "store_block_on_disk");
         self.0.store_block_on_disk.record(value, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_verify_all_block_signatures(&self, value: u64, thread_id: &ThreadIdentifier) {
+        out_of_bounds_guard!(value, "verify_all_block_signatures");
         self.0.verify_all_block_signatures.record(value, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_calc_consencus_params(&self, value: u64, thread_id: &ThreadIdentifier) {
+        out_of_bounds_guard!(value, "calc_consencus_params");
         self.0.calc_consencus_params.record(value, &[thread_id_attr(thread_id)]);
     }
 
@@ -346,23 +360,30 @@ impl BlockProductionMetrics {
         wait_ms: u64,
         thread_id: &ThreadIdentifier,
     ) {
+        out_of_bounds_guard!(check_ms, "check_cross_thread_ref_data");
         self.0.check_cross_thread_ref_data.record(check_ms, &[thread_id_attr(thread_id)]);
+
+        out_of_bounds_guard!(wait_ms, "wait_for_cross_thread_ref_data");
         self.0.wait_for_cross_thread_ref_data.record(wait_ms, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_apply_block_total(&self, value: u64, thread_id: &ThreadIdentifier) {
+        out_of_bounds_guard!(value, "apply_block_total");
         self.0.apply_block_total.record(value, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_common_block_checks(&self, value: u64, thread_id: &ThreadIdentifier) {
+        out_of_bounds_guard!(value, "common_block_checks");
         self.0.common_block_checks.record(value, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_processing_delay(&self, value: u64, thread_id: &ThreadIdentifier) {
+        out_of_bounds_guard!(value, "processing_delay");
         self.0.processing_delay.record(value, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_attestation_after_apply_delay(&self, value: u64, thread_id: &ThreadIdentifier) {
+        out_of_bounds_guard!(value, "attestation_after_apply_delay");
         self.0.attestation_after_apply_delay.record(value, &[thread_id_attr(thread_id)]);
     }
 
@@ -371,13 +392,10 @@ impl BlockProductionMetrics {
         value: usize,
         thread_id: &ThreadIdentifier,
     ) {
+        out_of_bounds_guard!(value, "attn_target_descendant_generations");
         self.0
             .attn_target_descendant_generations
             .record(value as u64, &[thread_id_attr(thread_id)]);
-    }
-
-    pub fn report_rcv_as_bytes_to_rcv_by_node(&self, value: u64, msg_type: String) {
-        self.0.rcv_as_bytes_to_rcv_by_node.record(value, &[msg_type_attr(msg_type)]);
     }
 }
 
@@ -389,8 +407,4 @@ impl InstrumentedChannelMetrics for BlockProductionMetrics {
 
 fn thread_id_attr(thread_id: &ThreadIdentifier) -> KeyValue {
     KeyValue::new("thread", BlockProductionMetrics::thread_label(thread_id))
-}
-
-fn msg_type_attr(msg_type: String) -> KeyValue {
-    KeyValue::new("msg_type", msg_type)
 }
