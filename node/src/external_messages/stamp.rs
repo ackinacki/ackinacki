@@ -10,7 +10,7 @@ use serde::Serialize;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Stamp {
-    pub(crate) index: u32,
+    pub(crate) index: u64,
     pub(crate) timestamp: DateTime<Utc>,
 }
 

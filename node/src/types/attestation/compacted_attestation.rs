@@ -17,6 +17,7 @@ pub struct CompactedAttestation {
     envelope_hash: AckiNackiEnvelopeHash,
     aggregated_signature: <GoshBLS as BLSSignatureScheme>::Signature,
     signature_occurrences: BTreeMap<SignerIndex, u16>,
+    is_fallback: bool,
 }
 
 impl From<&Envelope<GoshBLS, AttestationData>> for CompactedAttestation {
@@ -26,6 +27,7 @@ impl From<&Envelope<GoshBLS, AttestationData>> for CompactedAttestation {
             envelope_hash: value.data().envelope_hash().clone(),
             aggregated_signature: value.aggregated_signature().clone(),
             signature_occurrences: BTreeMap::from_iter(value.clone_signature_occurrences()),
+            is_fallback: *value.data().is_fallback(),
         }
     }
 }
@@ -40,6 +42,7 @@ impl From<(CompactedAttestation, &CompactedMapKey)> for Envelope<GoshBLS, Attest
                 .block_seq_no(*value.1.block_seq_no())
                 .parent_block_id(value.0.parent_block_id.clone())
                 .envelope_hash(value.0.envelope_hash.clone())
+                .is_fallback(value.0.is_fallback)
                 .build(),
         )
     }

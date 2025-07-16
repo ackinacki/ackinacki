@@ -155,12 +155,14 @@ impl BlockBuilder {
         if let Some(rx) = &self.control_rx_stop {
             if rx.try_recv().is_ok() {
                 tracing::info!(target: "builder", "block builder received stop");
+                tracing::event!(tracing::Level::INFO, "block builder received stop");
                 self.is_stop_requested = true;
                 return true;
             }
         }
         if self.total_gas_used > self.block_gas_limit {
             tracing::info!(target: "builder", "block builder gas limit reached");
+            tracing::event!(tracing::Level::INFO, "block builder gas limit reached");
             true
         } else {
             false

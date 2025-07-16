@@ -70,7 +70,7 @@ impl PulseAttestations {
         }
         self.last_finalized_block_seq_no = Some(next_seq_no);
         self.min_generations_to_request = last_finalized_block
-            .guarded(|e| e.initial_attestations_target().map(|x| x.descendant_generations + 1));
+            .guarded(|e| e.attestation_target().map(|x| *x.primary().generation_deadline() + 1));
         self.last_pulse = Instant::now();
         // drop timers and ranges
         self.last_requested_time = None;

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -345,16 +344,12 @@ impl RoutingService {
         feedback_receiver: InstrumentedReceiver<ExtMsgFeedbackList>,
         cmd_sender: InstrumentedSender<Command>,
     ) -> anyhow::Result<()> {
-        // let queue_limit =
-        let queue_size = Arc::new(AtomicUsize::new(0));
         let feedback_registry = Arc::new(Mutex::new(HashMap::new()));
         let feedback_loop_thread_join_handler = {
             let registry = Arc::clone(&feedback_registry);
             std::thread::Builder::new()
                 .name("routing_service_ext_messages_feedback_loop".to_string())
-                .spawn_critical(move || {
-                    Self::inner_feedback_loop(feedback_receiver, registry, queue_size)
-                })
+                .spawn_critical(move || Self::inner_feedback_loop(feedback_receiver, registry))
                 .unwrap()
         };
         loop {
@@ -375,9 +370,10 @@ impl RoutingService {
                             .hash()
                             .map_err(|e| anyhow::format_err!("{e}"))?
                             .to_hex_string();
-                        let is_msg_exists =
-                            { feedback_registry.lock().contains_key(&message_hash) };
-                        if is_msg_exists {
+
+                        let mut registry_guard = feedback_registry.lock();
+                        #[allow(clippy::map_entry)]
+                        if registry_guard.contains_key(&message_hash) {
                             if let Some(sender) = sender {
                                 let feedback = ExtMsgFeedback {
                                     message_hash,
@@ -391,9 +387,9 @@ impl RoutingService {
                                 let _ = sender.send(feedback); // warn about duplicate
                             }
                         } else {
-                            feedback_registry.lock().insert(message_hash, sender.unwrap());
+                            registry_guard.insert(message_hash, sender.unwrap());
+                            cmd_sender.send(Command::ExtMessage(message))?;
                         }
-                        cmd_sender.send(Command::ExtMessage(message))?;
                     }
                 }
             }
@@ -403,7 +399,6 @@ impl RoutingService {
     fn inner_feedback_loop(
         feedback_receiver: InstrumentedReceiver<ExtMsgFeedbackList>,
         feedback_registry: Arc<Mutex<FeedbackRegistry>>,
-        queue_size: Arc<AtomicUsize>,
     ) -> anyhow::Result<()> {
         loop {
             match feedback_receiver.recv() {
@@ -419,8 +414,6 @@ impl RoutingService {
                             feedback_registry.lock().remove(&feedback.message_hash)
                         {
                             let _ = sender.send(feedback);
-                        } else {
-                            queue_size.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
                 }

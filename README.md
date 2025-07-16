@@ -37,6 +37,7 @@
   - [System requirements](#system-requirements-2)
   - [Deployment with Ansible](#deployment-with-ansible-1)
     - [Prerequisites](#prerequisites-4)
+    - [How Deployment Works](#how-deployment-works)
     - [Key Variables](#key-variables-1)
     - [Prepare Your Inventory](#prepare-your-inventory-2)
     - [Run Ansible Playbook](#run-ansible-playbook-2)
@@ -208,7 +209,7 @@ block_keepers:
       NODE_ID: NODE_ID
       HOST_PUBLIC_IP: YOUR-NODE-PUBLIC-ADDRESS
       HOST_PRIVATE_IP: YOUR-NODE-PRIVATE-ADDRESS
-      PROXIES: # delete this section if the BK will operate without a Proxy
+      PROXIES: # delete this section if the BK operates without a Proxy
         - PROXY_IP:8085
 ```
 
@@ -612,11 +613,13 @@ tail -f $MNT_DATA/logs-block-manager/block-manager.log
 
 **Broadcast Proxy** is a specialized network service designed to optimize block exchange between participants in the Acki Nacki network. Its primary purpose is to reduce the overall network traffic between nodes operated by different Node Providers, while also improving the network’s scalability and stability.
 
+Read more about [the motivation behind the Proxy here](https://docs.ackinacki.com/protocol-participation/proxy-service#why-everyone-should-connect-via-a-proxy). 
+
 ## System requirements
 
 | Configuration | CPU (cores) | RAM (GiB) | Storage      | Network                                            |
 | ------------- | ----------- | --------- | ------------ | -------------------------------------------------- |
-| Recommended   | 8c/16t      | 32        | 500 GB NVMe  | 100 Gbit synchronous unmetered Internet connection |
+| Recommended   | 8c/16t      | 32        | 500 GB NVMe  | 1Gb *(multiply) the number of nodes behind Proxy. For example, for 100 nodes behind a proxy, the required bandwidth is 100 Gb. |
 
 **Important:**  
   To ensure stable operation, proxy servers must be deployed in pairs (one master and one failover).
@@ -626,8 +629,22 @@ tail -f $MNT_DATA/logs-block-manager/block-manager.log
 ### Prerequisites
 * A dedicated server for the Proxy.
 * Docker with the Compose plugin installed.
+* A file containing the Block Keeper Node Owner keys (required to sign the TLS certificate).
+* Ansible for deployment
 
-The deployment uses Ansible roles and a playbook. There's no need to manually configure the proxy settings or the Docker Compose file — everything is handled through Ansible variables.
+**Note:**  
+The TLS certificate for the Proxy will only be accepted by other Block Keepers after the Block Keeper whose keys were used to generate this certificate has joined the BK‑set.
+
+### How Deployment Works
+
+* All deployment is automated with Ansible.  
+  You can learn [how to deploy the Proxy without Ansible here](https://github.com/ackinacki/ackinacki/blob/main/proxy/README.md).
+* Docker Compose files and Proxy configuration are generated automatically.
+* Since the QUIC+TLS protocol is used to communicate with the Proxy, the Proxy requires a TLS key and a TLS certificate.  
+  These will also be created automatically during deployment.  
+  For more details on [how the certificates are generated, see the link](https://github.com/ackinacki/ackinacki/tree/main/proxy#tls-key-and-certificate-generation).  
+* Place BK Node Owner keys to `ansible` folder
+* You only need to prepare an Ansible inventory with the required variables ([see example below](#prepare-your-inventory-2)).
 
 ### Key Variables
 
@@ -658,7 +675,7 @@ NETWORK_NAME: shellnet
 **Important:**  
 You must add Proxy addresses to the Block Keeper configuration. Otherwise, the Block Keeper will not be able to connect to the Proxy.
 
-Example Block Keeper host configuration:
+Example:
 ```yaml
 block_keeper_host:
   NODE_ID: 99999

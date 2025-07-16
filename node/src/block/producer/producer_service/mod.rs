@@ -22,7 +22,7 @@ use crate::external_messages::ExternalMessagesThreadState;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::NackData;
 use crate::node::block_state::repository::BlockStateRepository;
-use crate::node::services::attestations_target::service::AttestationsTargetService;
+use crate::node::services::attestations_target::service::AttestationTargetsService;
 use crate::node::shared_services::SharedServices;
 use crate::node::NetworkMessage;
 use crate::node::NodeIdentifier;
@@ -55,7 +55,7 @@ impl ProducerService {
         shared_services: SharedServices,
         bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
         last_block_attestations: Arc<Mutex<CollectedAttestations>>,
-        attestations_target_service: AttestationsTargetService,
+        attestations_target_service: AttestationTargetsService,
         self_tx: Sender<NetworkMessage>,
         broadcast_tx: NetBroadcastSender<NetworkMessage>,
 

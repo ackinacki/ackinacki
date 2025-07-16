@@ -2,7 +2,6 @@
 //
 
 use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::mem;
 use std::sync::Arc;
 use std::thread::sleep;
@@ -17,7 +16,6 @@ use telemetry_utils::mpsc::InstrumentedReceiver;
 use telemetry_utils::mpsc::InstrumentedSender;
 use tracing::instrument;
 use tracing::trace_span;
-use tvm_block::Message;
 use tvm_block::ShardStateUnsplit;
 use tvm_executor::BlockchainConfig;
 use tvm_types::Cell;
@@ -35,7 +33,6 @@ use crate::bls::BLSSignatureScheme;
 use crate::bls::GoshBLS;
 use crate::config::Config;
 use crate::external_messages::ExternalMessagesThreadState;
-use crate::external_messages::Stamp;
 use crate::helper::block_flow_trace;
 use crate::helper::block_flow_trace_with_time;
 use crate::helper::metrics::BlockProductionMetrics;
@@ -59,6 +56,7 @@ use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
+use crate::utilities::thread_spawn_critical::SpawnCritical;
 
 #[derive(TypedBuilder)]
 pub struct TVMBlockProducerProcess {
@@ -134,8 +132,7 @@ impl TVMBlockProducerProcess {
         let production_time = Instant::now();
         let (message_queue, epoch_block_keeper_data, block_nack, aggregated_acks, aggregated_nacks) =
             trace_span!("read messages").in_scope(|| {
-                let message_queue: VecDeque<(Stamp, Message)> =
-                    external_messages_queue.get_remaining_external_messages()?.into();
+                let message_queue = external_messages_queue.get_remaining_external_messages()?;
 
                 let mut received_acks_in = received_acks.lock();
                 let received_acks_copy = received_acks_in.clone();
@@ -360,7 +357,9 @@ impl TVMBlockProducerProcess {
         common_section.acks = aggregated_acks;
         common_section.nacks = aggregated_nacks.clone();
         block.set_common_section(common_section, false)?;
-        external_messages_queue.erase_processed(&processed_stamps)?;
+        if !processed_stamps.is_empty() {
+            external_messages_queue.erase_processed(&processed_stamps)?;
+        }
 
         if tracing::level_filters::STATIC_MAX_LEVEL >= tracing::Level::TRACE {
             if let Ok(info) = block.tvm_block().info.read_struct() {
@@ -519,62 +518,71 @@ impl TVMBlockProducerProcess {
         let accounts_repo = self.repository.accounts_repository().clone();
         let node_config = self.node_config.clone();
         let share_service = self.share_service.clone();
+        let produce = move || {
+            let mut active_block_producer_threads = vec![];
+            // Note:
+            // This loop runs infinitely till the interrupt signal generating new blocks
+            //
+            // Note:
+            // Repository in this case can be assumed a shared state between all threads.
+            // Using repository threads can find messages incoming from other threads.
+            // It is also possible to track blocks dependencies through repository.
+            // TODO: think if it is the best solution given all circumstances
+            let mut timeout_correction = ProductionTimeoutCorrection::default();
+            let mut round = initial_round;
+            loop {
+                let stopped = Self::produce_next(
+                    node_config.clone(),
+                    &mut initial_state,
+                    blockchain_config.clone(),
+                    producer_node_id.clone(),
+                    thread_count_soft_limit,
+                    parallelization_level,
+                    block_keeper_epoch_code_hash.clone(),
+                    block_keeper_preepoch_code_hash.clone(),
+                    produced_blocks.clone(),
+                    timeout.clone(),
+                    &mut timeout_correction,
+                    thread_id_clone,
+                    &epoch_block_keeper_data_rx,
+                    &mut shared_services,
+                    &mut active_block_producer_threads,
+                    received_acks.clone(),
+                    received_nacks.clone(),
+                    block_state_repository.clone(),
+                    accounts_repo.clone(),
+                    &external_control_rx,
+                    metrics.clone(),
+                    &mut external_messages,
+                    &repo_clone,
+                    is_state_sync_requested.clone(),
+                    share_service.clone(),
+                    round,
+                );
+                round = 0;
+                tracing::trace!("produce_next result: {:?}", stopped);
+                if stopped.is_err() || stopped.unwrap() == ProcudeNextResult::Stopped {
+                    trace_span!("store optimistic").in_scope(|| {
+                        repo_clone
+                            .store_optimistic(initial_state.clone())
+                            .expect("Failed to store optimistic state");
+                        tracing::trace!("Stop production process: {}", &thread_id_clone);
+                    });
+                    #[cfg(not(feature = "fail-fast"))]
+                    return initial_state;
+                    #[cfg(feature = "fail-fast")]
+                    return Ok(initial_state);
+                }
+            }
+        };
+        #[cfg(not(feature = "fail-fast"))]
         let handler = std::thread::Builder::new()
             .name(format!("Production {}", &thread_id_clone))
-            .spawn(move || {
-                let mut active_block_producer_threads = vec![];
-                // Note:
-                // This loop runs infinitely till the interrupt signal generating new blocks
-                //
-                // Note:
-                // Repository in this case can be assumed a shared state between all threads.
-                // Using repository threads can find messages incoming from other threads.
-                // It is also possible to track blocks dependencies through repository.
-                // TODO: think if it is the best solution given all circumstances
-                let mut timeout_correction = ProductionTimeoutCorrection::default();
-                let mut round = initial_round;
-                loop {
-                    let stopped = Self::produce_next(
-                        node_config.clone(),
-                        &mut initial_state,
-                        blockchain_config.clone(),
-                        producer_node_id.clone(),
-                        thread_count_soft_limit,
-                        parallelization_level,
-                        block_keeper_epoch_code_hash.clone(),
-                        block_keeper_preepoch_code_hash.clone(),
-                        produced_blocks.clone(),
-                        timeout.clone(),
-                        &mut timeout_correction,
-                        thread_id_clone,
-                        &epoch_block_keeper_data_rx,
-                        &mut shared_services,
-                        &mut active_block_producer_threads,
-                        received_acks.clone(),
-                        received_nacks.clone(),
-                        block_state_repository.clone(),
-                        accounts_repo.clone(),
-                        &external_control_rx,
-                        metrics.clone(),
-                        &mut external_messages,
-                        &repo_clone,
-                        is_state_sync_requested.clone(),
-                        share_service.clone(),
-                        round,
-                    );
-                    round = 0;
-                    tracing::trace!("produce_next result: {:?}", stopped);
-                    if stopped.is_err() || stopped.unwrap() == ProcudeNextResult::Stopped {
-                        trace_span!("store optimistic").in_scope(|| {
-                            repo_clone
-                                .store_optimistic(initial_state.clone())
-                                .expect("Failed to store optimistic state");
-                            tracing::trace!("Stop production process: {}", &thread_id_clone);
-                        });
-                        return initial_state;
-                    }
-                }
-            })?;
+            .spawn(produce)?;
+        #[cfg(feature = "fail-fast")]
+        let handler = std::thread::Builder::new()
+            .name(format!("Production {}", &thread_id_clone))
+            .spawn_critical(produce)?;
         self.active_producer_thread = Some((handler, control_tx));
         self.epoch_block_keeper_data_senders = Some(epoch_block_keeper_data_tx);
         Ok(())
@@ -608,8 +616,17 @@ impl TVMBlockProducerProcess {
     pub fn get_produced_blocks(
         &mut self,
     ) -> Vec<(AckiNackiBlock, OptimisticStateImpl, ExtMsgFeedbackList, Instant)> {
+        let mut clear_active_production = false;
         if let Some(handler) = self.active_producer_thread.as_ref() {
-            assert!(!handler.0.is_finished());
+            if cfg!(feature = "fail-fast") {
+                assert!(!handler.0.is_finished());
+            } else if handler.0.is_finished() {
+                clear_active_production = true;
+            }
+        }
+        if clear_active_production {
+            self.active_producer_thread = None;
+            return vec![];
         }
         let mut blocks = self.produced_blocks.lock();
         let now = Instant::now();
@@ -806,6 +823,7 @@ mod tests {
             mock_bk_set_updates_tx(),
         );
         let (router, _router_rx) = RoutingService::stub();
+        let feedback_sender = router.feedback_sender.clone();
         let mut production_process = TVMBlockProducerProcess::builder()
             .metrics(repository.get_metrics())
             .node_config(config.clone())
@@ -846,6 +864,7 @@ mod tests {
                 .with_report_metrics(None)
                 .with_thread_id(thread_id)
                 .with_cache_size(1)
+                .with_feedback_sender(feedback_sender)
                 .build()?,
             Arc::new(Mutex::new(None)),
             0,

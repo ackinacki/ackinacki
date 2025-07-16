@@ -1,5 +1,5 @@
-my_cert: ""
-my_key: ""
+my_cert: "/workdir/certs/proxy.ca.pem"
+my_key: "/workdir/certs/proxy.key.pem"
 
 peer_certs: []
 
@@ -7,7 +7,10 @@ bind: {{ ansible_host }}:8085
 my_addr: {{ ansible_host }}:8085
 
 subscribe: []
-bk_addrs: []
+bk_addrs:
+- {{ hostvars[groups['block_keepers'][0]].HOST_PUBLIC_IP }}:8600
+- {{ hostvars[groups['block_keepers'][1]].HOST_PUBLIC_IP }}:8600
+- {{ hostvars[groups['block_keepers'][2]].HOST_PUBLIC_IP }}:8600
 
 gossip:
   listen_addr: 0.0.0.0:10000

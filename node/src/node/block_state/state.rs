@@ -12,6 +12,7 @@ use derive_getters::Getters;
 use derive_setters::*;
 use serde::Deserialize;
 use serde::Serialize;
+use typed_builder::TypedBuilder;
 
 use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperSet;
@@ -32,11 +33,16 @@ use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::AllowGuardedMut;
 
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Copy)]
-pub struct AttestationsTarget {
-    pub descendant_generations: usize, // = beta + 1, Check if it is useful
-    pub main_attestations_target: usize,
-    pub fallback_attestations_target: usize,
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Copy, Getters, TypedBuilder)]
+pub struct AttestationTarget {
+    generation_deadline: usize, // = beta + 1, Check if it is useful
+    required_attestation_count: usize,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Copy, Getters, TypedBuilder)]
+pub struct AttestationTargets {
+    primary: AttestationTarget,
+    fallback: AttestationTarget,
 }
 
 // The main point of this structure is to collect signals from
@@ -190,14 +196,16 @@ pub struct AckiNackiBlockState {
     // Since it is not possible to set it to false since can't be certain that
     // there's no other chain that meets the initia attestation target.
     #[setters(bool, assert_none = false)]
-    has_initial_attestations_target_met: Option<bool>,
+    has_primary_attestation_target_met: Option<bool>,
+
+    #[setters(bool, assert_none = false)]
+    has_fallback_attestation_target_met: Option<bool>,
 
     // Calculated baseline for finalization. Must be calculated based on prev
     // history.
     // The DescendantsChainLength is the exact descendant when it will be checked
     // if this chain has collected the required number of attestations.
-    #[setters(postprocess = "self.assert_initial_attestations_target_and_save()")]
-    initial_attestations_target: Option<AttestationsTarget>,
+    attestation_target: Option<AttestationTargets>,
 
     #[setters(skip)]
     verified_attestations: HashMap<BlockIdentifier, HashSet<SignerIndex>>,
@@ -208,11 +216,7 @@ pub struct AckiNackiBlockState {
     #[getter(skip)]
     known_children: HashMap<ThreadIdentifier, HashSet<BlockIdentifier>>,
 
-    // This must be set with a helper method.
-    // It is intentionally made this way since it requires syncronization between other
-    // potential children.
-    // Note: Setter is enabled due to the protocol changes: #[setters(skip)]
-    attestation: Option<Envelope<GoshBLS, AttestationData>>,
+    own_attestation: Option<Envelope<GoshBLS, AttestationData>>,
 
     retracted_attestation: Option<Envelope<GoshBLS, NackData>>,
 
@@ -262,12 +266,12 @@ pub struct AckiNackiBlockState {
 //                 &self.has_all_cross_thread_ref_data_available,
 //             )
 //             .field("has_cross_thread_ref_data_prepared", &self.has_cross_thread_ref_data_prepared)
-//             .field("has_initial_attestations_target_met", &self.has_initial_attestations_target_met)
+//             .field("has_primary_attestation_target_met", &self.has_primary_attestation_target_met)
 //             .field(
 //                 "has_attestations_target_met_in_a_resolved_fork_case",
 //                 &self.has_attestations_target_met_in_a_resolved_fork_case,
 //             )
-//             .field("initial_attestations_target", &self.initial_attestations_target)
+//             .field("attestation_target.primary()", &self.attestation_target.primary())
 //             .field("verified_attestations", &self.verified_attestations)
 //             .field("block_stats", &self.block_stats)
 //             .field("known_children", &self.known_children)
@@ -320,7 +324,7 @@ impl AckiNackiBlockState {
 
     #[allow(clippy::nonminimal_bool)]
     pub fn has_attestations_target_met(&self) -> bool {
-        self.has_initial_attestations_target_met == Some(true)
+        self.has_primary_attestation_target_met == Some(true)
     }
 
     pub fn can_be_finalized(&self) -> bool {
@@ -506,11 +510,6 @@ impl AckiNackiBlockState {
         self.notifications.fetch_add(1, Ordering::Relaxed);
         atomic_wait::wake_all(self.notifications.as_ref());
         Ok(())
-    }
-
-    fn assert_initial_attestations_target_and_save(&mut self) -> anyhow::Result<()> {
-        assert!(self.initial_attestations_target.unwrap().descendant_generations > 0);
-        self.save()
     }
 
     pub fn set_bulk_change(&mut self, bulk_change: bool) -> anyhow::Result<()> {

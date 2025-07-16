@@ -285,4 +285,5 @@ pub struct AttestationData {
     block_id: BlockIdentifier,
     block_seq_no: BlockSeqNo,
     envelope_hash: AckiNackiEnvelopeHash,
+    is_fallback: bool,
 }

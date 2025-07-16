@@ -2,11 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.2] - 2025-07-16
+
+### Improvements
+- External messages processing optimizations
+
 ## [0.6.1] - 2025-07-10
 
 ### Improvements
-- master keys renamed to node owner keys
-- staking scripts updated
+- Master keys renamed to Node Owner keys
+- Staking scripts updated
 
 ## [0.6.0] - 2025-07-08
 

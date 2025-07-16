@@ -1,6 +1,6 @@
 ---
 
-- name: "Ensures proxy dirs exist"
+- name: Ensures proxy dirs exist
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
@@ -8,6 +8,11 @@
   with_items:
     - "{{ PROXY_DIR }}"
     - "{{ PROXY_CERTS_DIR }}"
+
+- name: Copy Block Keeper key to proxy 
+  copy:
+    dest: "{{ PROXY_CERTS_DIR }}"
+    src: "block_keeper{{ hostvars[groups['block_keepers'][0]].NODE_ID }}.keys.json"
 
 - name: Production compose
   ansible.builtin.template:

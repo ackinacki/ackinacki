@@ -1,6 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -12,6 +13,7 @@ use tracing::instrument;
 use tracing::trace_span;
 use tvm_block::GetRepresentationHash;
 use tvm_executor::BlockchainConfig;
+use tvm_types::AccountId;
 use tvm_types::Cell;
 use tvm_types::HashmapType;
 use typed_builder::TypedBuilder;
@@ -82,7 +84,7 @@ pub trait BlockProducer {
 pub struct TVMBlockProducer {
     active_threads: Vec<(Cell, ActiveThread)>,
     blockchain_config: Arc<BlockchainConfig>,
-    message_queue: VecDeque<(Stamp, tvm_block::Message)>,
+    message_queue: HashMap<AccountId, VecDeque<(Stamp, tvm_block::Message)>>,
     producer_node_id: NodeIdentifier,
     thread_count_soft_limit: usize,
     parallelization_level: usize,

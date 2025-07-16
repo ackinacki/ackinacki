@@ -48,7 +48,7 @@ use crate::message_storage::MessageDurableStorage;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
-use crate::node::services::attestations_target::service::AttestationsTargetService;
+use crate::node::services::attestations_target::service::AttestationTargetsService;
 use crate::protocol::authority_switch::action_lock::Authority;
 pub use crate::protocol::authority_switch::network_message::AuthoritySwitch;
 use crate::repository::repository_impl::RepositoryImpl;
@@ -165,7 +165,7 @@ where
         _update_producer_group: bool,
         block_state_repository: BlockStateRepository,
         block_processor_service: BlockProcessorService,
-        attestations_target_service: AttestationsTargetService,
+        attestations_target_service: AttestationTargetsService,
         validation_service: ValidationServiceInterface,
         skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
         metrics: Option<BlockProductionMetrics>,

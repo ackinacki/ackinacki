@@ -60,7 +60,7 @@ use crate::multithreading::routing::service::RoutingService;
 use crate::node::associated_types::AttestationData;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
-use crate::node::block_state::state::AttestationsTarget;
+use crate::node::block_state::state::AttestationTargets;
 use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
 use crate::node::services::sync::ExternalFileSharesBased;
 use crate::node::services::sync::StateSyncService;
@@ -262,7 +262,7 @@ pub struct ThreadSnapshot {
     finalized_block: Envelope<GoshBLS, AckiNackiBlock>,
     bk_set: BlockKeeperSet,
     finalized_block_stats: BlockStatistics,
-    attestation_target: AttestationsTarget,
+    attestation_target: AttestationTargets,
     producer_selector: ProducerSelector,
     block_height: BlockHeight,
     prefinalization_proof: Envelope<GoshBLS, AttestationData>,
@@ -1661,9 +1661,10 @@ impl Repository for RepositoryImpl {
                 state.set_block_stats(thread_snapshot.finalized_block_stats.clone())?;
                 state.set_block_height(thread_snapshot.block_height)?;
                 state.set_ancestor_blocks_finalization_distances(HashMap::new())?;
-                state.set_initial_attestations_target(thread_snapshot.attestation_target)?;
+                state.set_attestation_target(thread_snapshot.attestation_target)?;
                 state.set_prefinalization_proof(thread_snapshot.prefinalization_proof.clone())?;
-                state.set_initial_attestations_target(thread_snapshot.attestation_target)?;
+                // TODO: check with alexander.s if it was some kind of fix
+                // state.set_attestation_target(thread_snapshot.attestation_target)?;
                 state.set_producer_selector_data(thread_snapshot.producer_selector.clone())?;
                 Ok::<(), anyhow::Error>(())
             })?;

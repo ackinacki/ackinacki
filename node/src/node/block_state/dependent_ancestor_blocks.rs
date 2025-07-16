@@ -2,7 +2,7 @@ use derive_getters::Getters;
 use typed_builder::TypedBuilder;
 
 use super::repository::BlockStateRepository;
-use crate::node::block_state::state::AttestationsTarget;
+use crate::node::block_state::state::AttestationTargets;
 use crate::node::block_state::unfinalized_ancestor_blocks::UnfinalizedAncestorBlocksSelectError;
 use crate::node::BlockState;
 use crate::types::BlockIdentifier;
@@ -42,28 +42,27 @@ impl DependentAncestorBlocks for BlockStateRepository {
             }
             let (parent, attestation_target) = cursor.guarded(
                 |e| -> Result<
-                    (BlockIdentifier, AttestationsTarget),
+                    (BlockIdentifier, AttestationTargets),
                     UnfinalizedAncestorBlocksSelectError,
                 > {
                     if e.is_invalidated() && !e.is_finalized() {
                         chain.push(cursor.clone());
                         return Err(InvalidatedParent(chain.clone()));
                     }
-                    let attestation_target =
-                        (*e.initial_attestations_target()).ok_or(IncompleteHistory)?;
+                    let attestation_target = (*e.attestation_target()).ok_or(IncompleteHistory)?;
                     let parent_block_identifier =
                         e.parent_block_identifier().clone().ok_or(IncompleteHistory)?;
                     Ok((parent_block_identifier, attestation_target))
                 },
             )?;
-            if attestation_target.descendant_generations < generation_distance {
+            if *attestation_target.primary().generation_deadline() < generation_distance {
                 return Ok(DependentBlocks::builder()
                     .dependent_ancestor_chain(chain)
                     .dependent_ancestor_blocks(dependent_ancestor_blocks)
                     .build());
             }
             chain.push(cursor.clone());
-            if attestation_target.descendant_generations == generation_distance {
+            if *attestation_target.primary().generation_deadline() == generation_distance {
                 dependent_ancestor_blocks.push(cursor);
             }
             generation_distance += 1;

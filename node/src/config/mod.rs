@@ -153,7 +153,7 @@ pub struct NodeConfig {
     pub rate_limit_on_incoming_block_req: u32,
 
     /// Ext messages cache size
-    #[builder(default = 100)]
+    #[builder(default = 1000)]
     pub ext_messages_cache_size: usize,
 }
 

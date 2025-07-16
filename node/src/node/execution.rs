@@ -315,10 +315,71 @@ where
                             }
                             self.on_authority_switch_success(next_round_success)?;
                         }
-                        AuthoritySwitch::Reject(e) => {
-                            let net_block = e.prefinalized_block();
+                        AuthoritySwitch::Reject(rejection_reason) => {
+                            let net_block = rejection_reason.prefinalized_block();
+                            //
+                            let Ok(prefinalized_block) = net_block.get_envelope() else {
+                                tracing::trace!("Failed to parse a prefinalized block");
+                                continue;
+                            };
+                            let parent_block_identifier = prefinalized_block.data().parent();
+                            let parent_block_state =
+                                self.block_state_repository.get(&parent_block_identifier).unwrap();
+                            let Some(bk_set) =
+                                parent_block_state.guarded(|e| e.descendant_bk_set().clone())
+                            else {
+                                tracing::trace!("Failed to get descendant bk_set");
+                                continue;
+                            };
+                            match prefinalized_block
+                                .verify_signatures(bk_set.get_pubkeys_by_signers())
+                            {
+                                Ok(false) => {
+                                    tracing::trace!("Invalid signature");
+                                    continue;
+                                }
+                                Err(e) => {
+                                    tracing::trace!("Signature verification failed: {e:?}");
+                                    continue;
+                                }
+                                Ok(true) => {}
+                            }
                             self.on_incoming_candidate_block(net_block, None)?;
-                            let attestations = e.proof_of_prefinalization().clone();
+                            let attestations = rejection_reason.proof_of_prefinalization().clone();
+                            if attestations.data().block_id()
+                                != &prefinalized_block.data().identifier()
+                            {
+                                tracing::warn!(
+                                    "Malicious message: attestation is sent for a wrong block"
+                                );
+                                continue;
+                            }
+                            let round = prefinalized_block.data().get_common_section().round;
+                            self.block_state_repository
+                                .get(&prefinalized_block.data().identifier())
+                                .unwrap()
+                                .guarded_mut(|e| e.add_proposed_in_round(round))?;
+                            let block_state =
+                                self.block_state_repository.get(attestations.data().block_id())?;
+                            // TODO: expedite setting the attestation target.
+                            let Some(attestation_target) =
+                                block_state.guarded(|e| *e.attestation_target())
+                            else {
+                                tracing::trace!("Attestation target is not set for switched block {attestations:?}");
+                                continue;
+                            };
+                            if attestations.clone_signature_occurrences().len()
+                                >= *attestation_target.primary().required_attestation_count()
+                            {
+                                block_state.guarded_mut(|e| -> anyhow::Result<()> {
+                                    e.set_prefinalized()?;
+                                    if e.prefinalization_proof().is_none() {
+                                        e.set_prefinalization_proof(attestations.clone())?;
+                                    }
+                                    Ok(())
+                                })?;
+                            }
+
                             self.last_block_attestations.guarded_mut(|e| {
                                 e.add(
                                     attestations,
@@ -638,18 +699,20 @@ where
         let attestation = next_round_success.attestations_aggregated().clone();
         if let Some(attestation) = attestation.clone() {
             let block_state = self.block_state_repository.get(attestation.data().block_id())?;
-            let Some(attestation_target) =
-                block_state.guarded(|e| *e.initial_attestations_target())
-            else {
+            let Some(attestation_target) = block_state.guarded(|e| *e.attestation_target()) else {
                 tracing::trace!("Attestation target is not set for switched block {attestation:?}");
                 return Ok(());
             };
             if attestation.clone_signature_occurrences().len()
-                >= attestation_target.main_attestations_target
+                >= *attestation_target.primary().required_attestation_count()
             {
                 block_state.guarded_mut(|e| {
                     e.set_prefinalized()?;
-                    e.set_prefinalization_proof(attestation)
+                    if e.prefinalization_proof().is_none() {
+                        e.set_prefinalization_proof(attestation)?;
+                    }
+
+                    anyhow::Ok(())
                 })?;
             }
         }

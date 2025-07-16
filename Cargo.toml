@@ -22,7 +22,7 @@ members = [
     "tvm_contracts",
 ]
 
-package.version = "0.6.1"
+package.version = "0.6.2"
 package.edition = "2021"
 package.rust-version = "1.86.0"
 package.license = "Acki Nacki Node License"

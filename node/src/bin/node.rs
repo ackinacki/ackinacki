@@ -54,8 +54,9 @@ use node::multithreading::routing::service::Command;
 use node::multithreading::routing::service::RoutingService;
 use node::node::block_request_service::BlockRequestService;
 use node::node::block_state::repository::BlockStateRepository;
-use node::node::block_state::state::AttestationsTarget;
-use node::node::services::attestations_target::service::AttestationsTargetService;
+use node::node::block_state::state::AttestationTarget;
+use node::node::block_state::state::AttestationTargets;
+use node::node::services::attestations_target::service::AttestationTargetsService;
 use node::node::services::block_processor::service::BlockProcessorService;
 use node::node::services::block_processor::service::SecurityGuarantee;
 use node::node::services::db_serializer::DBSerializeService;
@@ -420,11 +421,22 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         state_in.set_future_bk_set(Arc::new(BlockKeeperSet::new()))?;
         state_in.set_descendant_future_bk_set(Arc::new(BlockKeeperSet::new()))?;
         state_in.set_block_stats(BlockStatistics::zero(15, 3))?;
-        state_in.set_initial_attestations_target(AttestationsTarget {
-            descendant_generations: 3,
-            main_attestations_target: 0,
-            fallback_attestations_target: 0,
-        })?;
+        state_in.set_attestation_target(
+            AttestationTargets::builder()
+                .primary(
+                    AttestationTarget::builder()
+                        .generation_deadline(3)
+                        .required_attestation_count(0)
+                        .build(),
+                )
+                .fallback(
+                    AttestationTarget::builder()
+                        .generation_deadline(6)
+                        .required_attestation_count(0)
+                        .build(),
+                )
+                .build(),
+        )?;
         state_in.set_producer_selector_data(
             ProducerSelector::builder()
                 .rng_seed_block_id(BlockIdentifier::default())
@@ -615,6 +627,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 .with_thread_id(*thread_id)
                 .with_report_metrics(node_metrics.clone())
                 .with_cache_size(config.local.ext_messages_cache_size)
+                .with_feedback_sender(feedback_sender.clone())
                 .build()?;
 
             let external_messages_clone = external_messages.clone();
@@ -775,7 +788,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 block_state_repo.clone(),
                 block_processing_service,
                 // attestations_target_service:
-                AttestationsTargetService::builder()
+                AttestationTargetsService::builder()
                     .repository(repository.clone())
                     .block_state_repository(block_state_repo.clone())
                     .build(),

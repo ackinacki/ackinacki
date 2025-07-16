@@ -10,7 +10,6 @@ use typed_builder::TypedBuilder;
 
 use crate::node::block_state::dependent_ancestor_blocks::DependentAncestorBlocks;
 use crate::node::block_state::repository::BlockState;
-use crate::node::block_state::state::AttestationsTarget;
 use crate::node::block_state::unfinalized_ancestor_blocks::UnfinalizedAncestorBlocksSelectError;
 use crate::node::BlockStateRepository;
 use crate::node::SignerIndex;
@@ -20,15 +19,21 @@ use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 
+pub struct AttestationTargetPlugin {}
+
+impl AttestationTargetPlugin {
+    pub fn setup() {}
+}
+
 #[derive(TypedBuilder, Clone)]
-pub struct AttestationsTargetService {
+pub struct AttestationTargetsService {
     repository: RepositoryImpl,
     block_state_repository: BlockStateRepository,
 }
 
 pub enum AttestationsSuccess {
-    InitialAttestationsTargetMet,
-    SecondaryAttestationsTargetMet,
+    InitialAttestationTargetsMet,
+    SecondaryAttestationTargetsMet,
 }
 
 pub enum AttestationsFailure {
@@ -133,7 +138,7 @@ impl TargetBlock for Target {
     }
 }
 
-impl AttestationsTargetService {
+impl AttestationTargetsService {
     // TODO: expand errors set. Return actual errors instead of Ok(false)
     pub fn evaluate_if_next_block_ancestors_required_attestations_will_be_met(
         &self,
@@ -170,7 +175,7 @@ impl AttestationsTargetService {
     fn evaluate_attestations<FPrimary, FSecordary>(
         &self,
         mut chain: impl AsChain,
-        mut on_initial_attestations_target_met: FPrimary,
+        mut on_primary_attestation_target_met: FPrimary,
         mut on_secondary_attestations_target_met: FSecordary,
     ) -> std::result::Result<(), AttestationsFailure>
     where
@@ -184,19 +189,18 @@ impl AttestationsTargetService {
             if block.has_attestations_target_met() {
                 continue;
             }
-            let (initial_attestations_target, thread_identifier) =
-                block.guarded(|e| (*e.initial_attestations_target(), *e.thread_identifier()));
+            let (attestation_target, thread_identifier) =
+                block.guarded(|e| (*e.attestation_target(), *e.thread_identifier()));
             let Some(thread_identifier) = thread_identifier else {
                 return Err(AttestationsFailure::ThreadIdentifierIsNotSet);
             };
-            let Some(AttestationsTarget {
-                descendant_generations: descendants_chain_length_required,
-                main_attestations_target,
-                fallback_attestations_target: _,
-            }) = initial_attestations_target
-            else {
+            let Some(attestation_target) = attestation_target else {
                 return Err(AttestationsFailure::NotAllInitialAttestationTargetsSet);
             };
+            let main_attestations_target =
+                *attestation_target.primary().required_attestation_count();
+            let descendants_chain_length_required =
+                *attestation_target.primary().generation_deadline();
             use AttestationsFailure::*;
             let Some(checkpoint) = chain.peek(descendants_chain_length_required - 1) else {
                 // return Err(AttestationsFailure::ChainIsTooShort);
@@ -219,11 +223,11 @@ impl AttestationsTargetService {
                 checkpoint,
                 main_attestations_target,
             ) {
-                Ok(AttestationsSuccess::InitialAttestationsTargetMet) => {
-                    on_initial_attestations_target_met(block)?;
+                Ok(AttestationsSuccess::InitialAttestationTargetsMet) => {
+                    on_primary_attestation_target_met(block)?;
                     continue;
                 }
-                Ok(AttestationsSuccess::SecondaryAttestationsTargetMet) => {
+                Ok(AttestationsSuccess::SecondaryAttestationTargetsMet) => {
                     on_secondary_attestations_target_met(block)?;
                     continue;
                 }
@@ -260,7 +264,7 @@ impl AttestationsTargetService {
         let is_target_met = block_attestations_signers.len() >= min_attestations_count_required;
 
         if is_target_met {
-            return Ok(AttestationsSuccess::InitialAttestationsTargetMet);
+            return Ok(AttestationsSuccess::InitialAttestationTargetsMet);
         }
         Err(AttestationsFailure::InvalidBlock_TailDoesNotMeetCriteria)
     }
@@ -275,9 +279,9 @@ impl AttestationsTargetService {
         while !chain.is_empty() {
             let cursor = chain.remove(0);
             let (required_chain_length, block_identifier) = cursor.guarded(|e| {
-                anyhow::ensure!(e.initial_attestations_target().is_some());
+                anyhow::ensure!(e.attestation_target().is_some());
                 Ok((
-                    e.initial_attestations_target().unwrap().descendant_generations,
+                    *e.attestation_target().unwrap().primary().generation_deadline(),
                     e.block_identifier().clone(),
                 ))
             })?;

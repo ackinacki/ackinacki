@@ -444,7 +444,7 @@ impl Authority {
                     if let Some(proof) = e.prefinalization_proof().clone() {
                         Some(proof)
                     } else {
-                        e.attestation().clone()
+                        e.own_attestation().clone()
                     }
                 });
                 (Some(candidate.block_identifier().clone()), attestations)
@@ -761,6 +761,7 @@ impl Authority {
                 .block_id(block.data().identifier())
                 .block_seq_no(block.data().seq_no())
                 .envelope_hash(envelope_hash)
+                .is_fallback(false)
                 .build();
             for attestation in collected_attestations.iter() {
                 if attestation.data() != &attestation_data {

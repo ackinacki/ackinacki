@@ -21,7 +21,8 @@ use crate::bls::GoshBLS;
 use crate::config::must_save_state_on_seq_no;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
-use crate::node::block_state::state::AttestationsTarget;
+use crate::node::block_state::state::AttestationTarget;
+use crate::node::block_state::state::AttestationTargets;
 use crate::node::block_state::unfinalized_ancestor_blocks::UnfinalizedAncestorBlocks;
 use crate::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
 use crate::node::services::block_processor::chain_pulse::ChainPulse;
@@ -365,8 +366,8 @@ fn process_candidate_block(
                 .guarded(|e| e.bk_set().clone())
                 .map(|map| map.len())
                 .expect("BK set must be set on this stage");
-            let attestations_target = (2 * bk_set_len).div_ceil(3);
-            let min_attestations_target = (bk_set_len >> 1) + 1;
+            let primary_attestation_target = (2 * bk_set_len).div_ceil(3);
+            let fallback_attestation_target = (bk_set_len >> 1) + 1;
 
             let attestations = candidate_block
                 .data()
@@ -386,7 +387,7 @@ fn process_candidate_block(
             let cur_block_stats = parent_stats.clone().next(
                 // TODO: parent id was here check what is the right one
                 block_id.clone(),
-                attestations_target,
+                primary_attestation_target,
                 attestations,
                 None,
             );
@@ -397,7 +398,7 @@ fn process_candidate_block(
                     cur_block_stats.median_descendants_chain_length_to_meet_threshold();
                 tracing::trace!("median_descendants_chain_length_to_meet_threshold: {median_descendants_chain_length_to_meet_threshold}");
                 // from the spec:
-                let A = attestations_target as f64;
+                let A = primary_attestation_target as f64;
                 tracing::trace!("A: {A}");
                 let N = e.bk_set().as_ref().map(|x| x.len()).unwrap() as f64;
                 tracing::trace!("N: {N}");
@@ -429,10 +430,10 @@ fn process_candidate_block(
                         e.set_must_be_validated()?;
                     }
                 }
-                if e.initial_attestations_target().is_none() {
-                    let parent_attestation_target = parent_block_state.guarded(|e| *e.initial_attestations_target()).expect("Parent attestation target must be set");
-                    let descendant_generations = if median_descendants_chain_length_to_meet_threshold < parent_attestation_target.descendant_generations {
-                        parent_attestation_target.descendant_generations - 1
+                if e.attestation_target().is_none() {
+                    let parent_attestation_target = parent_block_state.guarded(|e| *e.attestation_target()).expect("Parent attestation target must be set");
+                    let descendant_generations = if median_descendants_chain_length_to_meet_threshold < *parent_attestation_target.primary().generation_deadline() {
+                        *parent_attestation_target.primary().generation_deadline() - 1
                     } else if median_descendants_chain_length_to_meet_threshold < MAX_ATTESTATION_TARGET_BETA {
                         median_descendants_chain_length_to_meet_threshold
                     } else {
@@ -447,12 +448,19 @@ fn process_candidate_block(
                         }
                     });
                     // TODO: add second attestation target check
-                    e.set_initial_attestations_target(AttestationsTarget {
-                        // Note: spec.
-                        descendant_generations,
-                        main_attestations_target: attestations_target,
-                        fallback_attestations_target: min_attestations_target,
-                    })?;
+                    e.set_attestation_target(AttestationTargets::builder()
+                        .primary(AttestationTarget::builder()
+                            .generation_deadline(descendant_generations)
+                            .required_attestation_count(primary_attestation_target)
+                            .build()
+                        )
+                        .fallback(AttestationTarget::builder()
+                            .generation_deadline(2 * descendant_generations)
+                            .required_attestation_count(fallback_attestation_target)
+                            .build()
+                        )
+                        .build()
+                    )?;
                 }
                 e.set_block_stats(cur_block_stats.clone())?;
 
@@ -859,15 +867,14 @@ fn parse_verified_attestations(
     );
     for (block_id, signers) in verified_attestations {
         let ancestor_block_state = block_state_repository.get(&block_id)?;
-        let Some(attestations_target) =
-            ancestor_block_state.guarded(|e| *e.initial_attestations_target())
+        let Some(attestations_target) = ancestor_block_state.guarded(|e| *e.attestation_target())
         else {
             tracing::trace!("parse_verified_attestations: attested block {block_id:?} attestations_target not found, skip the block");
             return Ok(false);
         };
 
         // TODO: need to change back to the fallback_attestations_target according to the document
-        if signers.len() >= attestations_target.main_attestations_target {
+        if signers.len() >= *attestations_target.primary().required_attestation_count() {
             tracing::trace!("parse_verified_attestations: block {block_id:?} min_attestations_target was reached");
             ancestor_block_state.guarded_mut(|e| {
                 if !e.is_prefinalized() {
@@ -886,14 +893,14 @@ fn parse_verified_attestations(
                 }
             });
         }
-        if signers.len() >= attestations_target.main_attestations_target {
+        if signers.len() >= *attestations_target.primary().required_attestation_count() {
             tracing::trace!(
                 "parse_verified_attestations: block {block_id:?} attestations_target was reached"
             );
             ancestor_block_state.guarded_mut(|e| {
-                if e.has_initial_attestations_target_met().is_none() {
-                    e.set_has_initial_attestations_target_met()
-                        .expect("Failed to  set_has_initial_attestations_target_met");
+                if e.has_primary_attestation_target_met().is_none() {
+                    e.set_has_primary_attestation_target_met()
+                        .expect("Failed to  set_has_primary_attestation_target_met");
                 }
                 block_state.guarded_mut(|e| e.update_finalizes_blocks(block_id.clone()));
             });
@@ -917,7 +924,7 @@ fn parse_verified_attestations(
             //     .clone()
             //     .expect("Block stats must be set here")
             //     .median_descendants_chain_length_to_meet_threshold()
-            e.initial_attestations_target().expect("Must be set").descendant_generations
+            *e.attestation_target().expect("Must be set").primary().generation_deadline()
         }),
     );
     tracing::trace!(

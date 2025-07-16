@@ -11,7 +11,8 @@ services:
       - bash
       - -c
       - >
-        proxy > /logsdir/proxy.log 2>&1
+        gen_certs -f -n proxy -s "localhost" --ed-key-path /workdir/certs/block_keeper{{ hostvars[groups['block_keepers'][0]].NODE_ID }}.keys.json -o /workdir/certs
+        && proxy > /logsdir/proxy.log 2>&1
     volumes:
       - {{ PROXY_DIR }}/config.yaml:/workdir/config.yaml
       - {{ PROXY_CERTS_DIR }}:/workdir/certs

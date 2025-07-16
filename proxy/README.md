@@ -1,134 +1,126 @@
 # Proxy
 
-## TLS Key/Certificate generation
+- [Deployment Instructions](#deployment-instructions)
+  - [TLS Key and Certificate Generation](#tls-key-and-certificate-generation)
+  - [Configuration File Preparation](#configuration-file-preparation)
+  - [Proxy Startup](#proxy-startup)
+
+## Deployment Instructions
+
+
+To deploy a Proxy, you will need:
+
+* A TLS key and a TLS certificate that is generated using the BK Node Owner’s keys
+* A file containing the Block Keeper Node Owner keys (required to generate the TLS certificate)
+* A configuration file
+
+### TLS Key and Certificate Generation
+The Proxy operates over the QUIC+TLS protocol, so it must have its own TLS key and TLS certificate that is generated using the BK Node Owner’s keys.
+
+**Important:**  
+The certificate will not be accepted until the BK that issued it is included in the [BK set](https://docs.ackinacki.com/glossary#bk-set).
+Once that happens, there is no need to reissue the certificate.
+
+To generate them, use the `gen_certs` command:  
 
 ```txt
-Usage: gen_certs [OPTIONS] --name <NAME>
+Usage: gen_certs [OPTIONS] --name <NAME> 
 
 Options:
-  -s, --subjects <SUBJECTS>      Comma-separated list of certificate subjects (e.g. 'localhost,*.example.com,127.0.0.1')
-  -n, --name <NAME>              Certificate name (e.g. client)
-  -o, --output-dir <OUTPUT_DIR>  Output directory (default: current directory)
-  -f, --force                    Overwrite existing files
-  -h, --help                     Print help
-  -V, --version                  Print version
+  -s, --subjects <SUBJECTS>            Comma-separated list of certificate subjects (e.g. 'localhost,*.example.com,127.0.0.1')
+  -n, --name <NAME>                    Certificate name (e.g. client)
+  -o, --output-dir <OUTPUT_DIR>        Output directory (default: current directory)
+      --ed-key-secret <ED_KEY_SECRET>  OOptional secret key of the Block Keeper’s owner wallet key pair (64-char hex). If specified, omit `ed_key_path`
+      --ed-key-path <ED_KEY_PATH>      Optional path to the Block Keeper’s owner wallet key file, stored as JSON `{ "public": "64-char hex", "secret": "64-char hex" }`. If specified, omit `ed_key_secret`
+  -f, --force                          Overwrite existing files
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
-### Example
-
+For example:  
 ```bash
-gen_certs --name client -o ./certs --subjects "localhost,*.example.com,127.0.0.1"
+gen_certs -n client -o ./certs -s "localhost,*.example.com,127.0.0.1" --ed-key-path ./bk_wallet/bk_wallet.keys.json
 ```
 
-Will generate two files: `client.ca.pem` and `client.key.pem` in the `./certs` directory.
-Certificates will be self-signed and will have the following subjects: `localhost`, `*.example.com` and `127.0.0.1` (other subjects will be rejected).
+After running the command, the `./certs` directory will contain:  
+* `proxy.ca.pem` — the TLS certificate
+* `proxy.key.pem` — the private key
 
-## Proxy config
+These files must then be specified in the Proxy configuration (`my_cert` and `my_key`).
+
+Certificates will be self-signed and will include the following subjects: `localhost`, `*.example.com`, and `127.0.0.1` (any other subjects will be rejected).
+
+### Configuration File Preparation
+
+```yaml
+# proxy_config.yaml
+---
+# Socket address listen on.
+bind: 0.0.0.0:10000
+
+# Public socket address, used to connect to this Proxy
+# Must match the address specified in the Block Keeper host configuration  
+my_addr: <SocketAddr>
+
+# Path to the TLS certificate PEM file, generated with `gen_certs`
+# Certificate should be generated with owner's BK wallet keys
+my_cert: proxy.ca.pem
+
+# Path to the TLS private key PEM file, generated with `gen_certs`
+my_key: proxy.key.pem
+
+# Optional trusted TLS certificates
+# Usually Proxy uses trusted pubkeys from gossip cluster and this field is empty
+peer_certs:
+  - certs/peer1.ca.pem
+
+# Optional trusted BK wallet pubkeys
+# Usually Proxy gets trusted pubkeys from gossip cluster and this field is empty
+peer_ed_pubkeys:
+  - hex-64-pubkey
+
+# Socket addresses of owner's node
+# Used to get an actual BK set
+bk_addrs:
+  - 1.2.3.4:8600
+
+# Predefined list for subscribing.
+# If specified, then Proxy will not use gossip and BK set.
+# Usually this list is empty, so Proxy builds a subscribe list from the actual BK set and gossip cluster
+subscribe:
+  - 1.2.3.4:8600
+
+# Gossip configuration
+gossip:
+  # UDP socket address to listen gossip.
+  # Defaults to "127.0.0.1:10000"
+  listen_addr: 0.0.0.0:10000
+
+  # Public gossip advertises socket address.
+  # Defaults to `listen_addr` address
+  advertise_addr: 1.2.3.4:10000
+
+  # Gossip seed nodes socket addresses.
+  seeds:
+    - 1.2.3.4:10001
+
+  # Chitchat cluster id for gossip
+  # Defaults to: acki_nacki
+  cluster_id: acki_nacki
+```
+
+### Proxy Startup
 
 ```txt
 Usage: proxy [OPTIONS]
 
 Options:
-  -b, --bind <BIND>                [default: 0.0.0.0:8080]
   -c, --config-path <CONFIG_PATH>  [default: config.yaml]
   -h, --help                       Print help
   -V, --version                    Print version
 ```
 
-NOTE: `--bind` suppose to be socket address not an url
-
-Example command:
-
+Example command:  
 ```bash
-proxy -b 0.0.0.0:8080 -c path/to/proxy_config.yaml
-```
-
-```yaml
-# proxy_config.yaml
----
-server:
-  # path to PEM only TLS certificate of the proxy
-  cert: certs/server.ca.pem
-  # path to PEM only TLS key of the proxy
-  key: certs/server.key.pem
-connections:
-  connection1:
-    # if true, connection will receive data from the proxy
-    subscriber: true
-    # if true, connection is allowed to send data to the proxy
-    publisher: true
-    # tags do nothing for now
-    tags:
-      - tag1
-    # path to PEM only TLS certificate of the destination client or proxy
-    cert: connections/connection_name.ca.pem
-    # outer connection type means that rather than waiting for connection from the client proxy will connect to the destination itself
-    outer:
-      # if `enabled: true` proxy periodically will attempt to connect to the destination itself
-      # if `disable: false` proxy won't connect proactively but if connection already exists it will hold till enabled back and reuse TLS handshake when possible before re-handshake
-      enabled: true
-      url: https://localhost:4433/1/2/3
-```
-
-## Proxy Manager config
-
-```txt
-Acki Nacki Proxy Manager CLI
-
-Usage: proxy_manager [OPTIONS] <COMMAND>
-
-Commands:
-  docker    Docker
-  pid-path
-  pid
-  help      Print this message or the help of the given subcommand(s)
-
-Options:
-  -c, --proxy-config <PROXY_CONFIG>  Path to the proxy configuration file (should already exist) [default: ./proxy.yaml]
-  -h, --help                         Print help
-  -V, --version                      Print version
-```
-
-### Example of usage
-
-```bash
-proxy_manager -c path/to/config.yaml docker --container 'container_name'
-# or
-proxy_manager -c path/to/config.yaml pid --pid 1234
-```
-
-### Proxy list format (WIP)
-
-Proxy manager receives a list of proxies to connect from the blockchain in JSON format:
-
-```jsonc
-[
-  {
-    "url": "https://www.example.com/path/path1", // full proxy url with protocol and path(optional)
-    // content of the TLS certificate file in PEM format (e.g. like if it's for nginx or apache or openssl)
-    "cert": "-----BEGIN CERTIFICATE-----
-MIIBWzCCAQCgAwIBAgIUVQCMPQZ8PYCKYWzNeySt/DyTJAMwCgYIKoZIzj0EAwIw
-ITEfMB0GA1UEAwwWcmNnZW4gc2VsZiBzaWduZWQgY2VydDAgFw03NTAxMDEwMDAw
-MDBaGA80MDk2MDEwMTAwMDAwMFowITEfMB0GA1UEAwwWcmNnZW4gc2VsZiBzaWdu
-ZWQgY2VydDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABI4RYVCqhTLpm4uZ2g4O
-B+w5mfDZvtqOwV7felR7ZFcxXu2lhEqVcd8I32RIqukSfJddopfrP7JQkwoVApDl
-hkyjFDASMBAGA1UdEQQJMAeCBVs6OjFdMAoGCCqGSM49BAMCA0kAMEYCIQCEDCR4
-fCECGL41JQnpQO+S89epyGbp96ij7/I/H1eR4wIhAI/VDdnc+8mUajOs3jswvp46
-CtRDY1voE6J17J6sd3Os
------END CERTIFICATE-----",
-  },
-  {
-    "url": "https://www.example.com:4321/path/path2",
-    "cert": "-----BEGIN CERTIFICATE-----
-MIIBWzCCAQCgAwIBAgIUVQCMPQZ8PYCKYWzNeySt/DyTJAMwCgYIKoZIzj0EAwIw
-ITEfMB0GA1UEAwwWcmNnZW4gc2VsZiBzaWduZWQgY2VydDAgFw03NTAxMDEwMDAw
-MDBaGA80MDk2MDEwMTAwMDAwMFowITEfMB0GA1UEAwwWcmNnZW4gc2VsZiBzaWdu
-ZWQgY2VydDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABI4RYVCqhTLpm4uZ2g4O
-B+w5mfDZvtqOwV7felR7ZFcxXu2lhEqVcd8I32RIqukSfJddopfrP7JQkwoVApDl
-hkyjFDASMBAGA1UdEQQJMAeCBVs6OjFdMAoGCCqGSM49BAMCA0kAMEYCIQCEDCR4
-fCECGL41JQnpQO+S89epyGbp96ij7/I/H1eR4wIhAI/VDdnc+8mUajOs3jswvp46
-CtRDY1voE6J17J6sd3Os
------END CERTIFICATE-----",
-  }
-]
+proxy -c path/to/proxy_config.yaml
 ```

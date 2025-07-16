@@ -2,53 +2,60 @@
 //
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::collections::HashMap;
+use std::collections::VecDeque;
 
+use chrono::DateTime;
 use chrono::Utc;
 use derive_getters::Getters;
-use serde::Deserialize;
-use serde::Serialize;
 use tvm_block::Message;
+use tvm_types::AccountId;
 
 use crate::external_messages::stamp::Stamp;
 use crate::message::WrappedMessage;
-use crate::utilities::guarded::AllowGuardedMut;
 
-#[derive(Serialize, Deserialize, Getters)]
+#[derive(Getters, Debug)]
 pub struct ExternalMessagesQueue {
-    messages: BTreeMap<Stamp, WrappedMessage>,
-    last_index: u32,
+    messages: BTreeMap<Stamp, (AccountId, WrappedMessage)>,
+    last_index: u64,
 }
-
-impl std::fmt::Debug for ExternalMessagesQueue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ExternalMessagesQueue(last_index={})", self.last_index)
-    }
-}
-
-impl AllowGuardedMut for ExternalMessagesQueue {}
 
 impl ExternalMessagesQueue {
     pub fn empty() -> Self {
         Self { messages: BTreeMap::new(), last_index: 0 }
     }
 
-    pub fn erase_processed(&mut self, processed: &Vec<Stamp>) {
-        for stamp in processed {
-            self.messages.remove(stamp);
-        }
+    pub fn erase_processed(&mut self, processed: &[Stamp]) {
+        let to_remove: BTreeSet<_> = processed.iter().cloned().collect();
+        self.messages.retain(|stamp, _| !to_remove.contains(stamp));
     }
 
-    pub fn push_external_messages(&mut self, messages: &[WrappedMessage]) {
+    pub fn push_external_messages(
+        &mut self,
+        messages: &[WrappedMessage],
+        timestamp: DateTime<Utc>,
+    ) {
         let mut cursor = self.last_index;
-        let timestamp = Utc::now();
-        for message in messages {
+        for message in messages.iter() {
             cursor += 1;
-            self.messages.insert(Stamp { index: cursor, timestamp }, message.clone());
+            let stamp = Stamp { index: cursor, timestamp };
+            self.messages
+                .insert(stamp, (message.message.int_dst_account_id().unwrap(), message.clone()));
         }
         self.last_index = cursor;
     }
 
-    pub fn unprocessed_messages(&self) -> Vec<(Stamp, Message)> {
-        self.messages.iter().map(|(stamp, msg)| (stamp.clone(), msg.message.clone())).collect()
+    pub fn unprocessed_messages(&self) -> HashMap<AccountId, VecDeque<(Stamp, Message)>> {
+        let mut grouped_by_acc: HashMap<AccountId, VecDeque<(Stamp, Message)>> = HashMap::new();
+
+        for (stamp, (acc_id, msg)) in &self.messages {
+            grouped_by_acc
+                .entry(acc_id.clone())
+                .or_default()
+                .push_back((stamp.clone(), msg.message.clone()));
+        }
+
+        grouped_by_acc
     }
 }

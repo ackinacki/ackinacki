@@ -1,19 +1,29 @@
 // 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::Arc;
 
+use chrono::Utc;
+use http_server::ExtMsgFeedbackList;
 use parking_lot::Mutex;
+use telemetry_utils::mpsc::InstrumentedSender;
 use tvm_block::Message;
+use tvm_types::AccountId;
 use typed_builder::TypedBuilder;
 
-use super::queue::ExternalMessagesQueue;
+use crate::block::producer::builder::build_actions::create_queue_overflow_feedback;
+use crate::external_messages::queue::ExternalMessagesQueue;
 use crate::external_messages::Stamp;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::WrappedMessage;
 use crate::types::ThreadIdentifier;
+use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
+
+impl AllowGuardedMut for ExternalMessagesQueue {}
 
 #[derive(TypedBuilder)]
 #[builder(
@@ -22,37 +32,26 @@ use crate::utilities::guarded::GuardedMut;
     builder_type(vis="pub", name=ExternalMessagesThreadStateBuilder),
     field_defaults(setter(prefix="with_")),
 )]
-struct ExternalMessagesThreadStateConfig {
+pub struct ExternalMessagesThreadStateConfig {
     report_metrics: Option<BlockProductionMetrics>,
     thread_id: ThreadIdentifier,
     cache_size: usize,
+    feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
 }
 
-impl std::convert::From<ExternalMessagesThreadStateConfig>
-    for anyhow::Result<ExternalMessagesThreadState>
-{
-    fn from(
-        config: ExternalMessagesThreadStateConfig,
-    ) -> anyhow::Result<ExternalMessagesThreadState> {
-        let ExternalMessagesThreadStateConfig { report_metrics, thread_id, cache_size } = config;
-        let queue: ExternalMessagesQueue = ExternalMessagesQueue::empty();
+impl From<ExternalMessagesThreadStateConfig> for anyhow::Result<ExternalMessagesThreadState> {
+    fn from(config: ExternalMessagesThreadStateConfig) -> Self {
+        tracing::trace!(target: "ext_messages", "configured cache_size: {}", config.cache_size);
         Ok(ExternalMessagesThreadState {
-            queue: Arc::new(Mutex::new(queue)),
-            report_metrics,
-            thread_id,
-            cache_size,
+            queue: Arc::new(Mutex::new(ExternalMessagesQueue::empty())),
+            report_metrics: config.report_metrics,
+            thread_id: config.thread_id,
+            cache_size: config.cache_size,
+            feedback_sender: config.feedback_sender,
         })
     }
 }
 
-// Note (obsolete?):
-// It is important to keep external messages and their progress in sync.
-// If one is stored in a durable storage the other one must be stored aswell.
-// This is the main reason why progress is not stored in BlockState directly,
-// and rather stored together with the external messages.
-// The other side effect is that the progress for external messages
-// is different for each thread while block may exist in several threads
-// simultaneously (thread starting block).
 #[derive(Clone)]
 pub struct ExternalMessagesThreadState {
     queue: Arc<Mutex<ExternalMessagesQueue>>,
@@ -60,6 +59,7 @@ pub struct ExternalMessagesThreadState {
     // For reporting only.
     thread_id: ThreadIdentifier,
     cache_size: usize,
+    feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
 }
 
 impl ExternalMessagesThreadState {
@@ -68,39 +68,56 @@ impl ExternalMessagesThreadState {
     }
 
     pub fn push_external_messages(&self, messages: &[WrappedMessage]) -> anyhow::Result<()> {
-        tracing::trace!("add_external_messages {:?}", messages.len());
-        let report_len = self.queue.guarded_mut(|e| -> anyhow::Result<usize> {
-            let rest = self.cache_size.saturating_sub(e.messages().len()).min(messages.len());
-            if rest > 0 {
-                e.push_external_messages(messages.split_at(rest).0);
-                tracing::trace!("cur cache_size len {:?}", e.messages().len());
-            }
-            Ok(e.messages().len())
-        })?;
-        self.report_metrics
-            .as_ref()
-            .inspect(|e| e.report_ext_msg_queue_size(report_len, &self.thread_id));
+        tracing::trace!("add_external_messages: {}", messages.len());
+
+        let now = Utc::now();
+
+        let (report_len, unused) = self.queue.guarded_mut(|q| {
+            let remaining = self.cache_size.saturating_sub(q.messages().len());
+
+            let (to_push, unused) = messages.split_at(remaining.min(messages.len()));
+
+            q.push_external_messages(to_push, now);
+            (q.messages().len(), unused.to_vec())
+        });
+
+        if !unused.is_empty() {
+            let overflow_feedbacks: Vec<_> = unused
+                .into_iter()
+                .map(|msg| create_queue_overflow_feedback(msg.message, &self.thread_id))
+                .collect::<Result<_, _>>()?;
+
+            let _ = self.feedback_sender.send(ExtMsgFeedbackList(overflow_feedbacks));
+        }
+
+        if let Some(metrics) = &self.report_metrics {
+            metrics.report_ext_msg_queue_size(report_len, &self.thread_id);
+        }
+
         Ok(())
     }
 
-    pub fn erase_processed(&mut self, processed: &Vec<Stamp>) -> anyhow::Result<()> {
-        tracing::trace!("erase_processed ext messages {}", processed.len());
+    pub fn erase_processed(&self, processed: &[Stamp]) -> anyhow::Result<()> {
+        tracing::trace!("erase_processed ext messages: {}", processed.len());
 
         let report_len = self.queue.guarded_mut(|q| {
             q.erase_processed(processed);
             q.messages().len()
         });
 
-        self.report_metrics
-            .as_ref()
-            .inspect(|e| e.report_ext_msg_queue_size(report_len, &self.thread_id));
+        tracing::trace!(target: "ext_messages", "on erase: queue_size={}", report_len);
+
+        if let Some(metrics) = &self.report_metrics {
+            metrics.report_ext_msg_queue_size(report_len, &self.thread_id);
+        }
 
         Ok(())
     }
 
-    pub fn get_remaining_external_messages(&self) -> anyhow::Result<Vec<(Stamp, Message)>> {
+    pub fn get_remaining_external_messages(
+        &self,
+    ) -> anyhow::Result<HashMap<AccountId, VecDeque<(Stamp, Message)>>> {
         tracing::trace!("get_remaining_externals");
-
         self.queue.guarded(|q| Ok(q.unprocessed_messages()))
     }
 }

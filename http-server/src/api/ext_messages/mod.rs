@@ -200,6 +200,7 @@ pub enum FeedbackErrorCode {
     ThreadMismatch,
     InternalError,
     ComputeSkipped,
+    QueueOverflow,
 }
 
 impl FeedbackErrorCode {
@@ -216,6 +217,7 @@ impl FeedbackErrorCode {
             FeedbackErrorCode::ThreadMismatch => Cow::Borrowed("THREAD_MISMATCH"),
             FeedbackErrorCode::InternalError => Cow::Borrowed("INTERNAL_ERROR"),
             FeedbackErrorCode::ComputeSkipped => Cow::Borrowed("COMPUTE_SKIPPED"),
+            FeedbackErrorCode::QueueOverflow => Cow::Borrowed("QUEUE_OVERFLOW"),
         }
     }
 }

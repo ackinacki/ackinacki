@@ -74,7 +74,7 @@ impl FileSavingService {
                     (
                         e.bk_set().clone(),
                         e.block_stats().clone(),
-                        *e.initial_attestations_target(),
+                        *e.attestation_target(),
                         e.producer_selector_data().clone(),
                         *e.block_height(),
                         e.prefinalization_proof().clone(),

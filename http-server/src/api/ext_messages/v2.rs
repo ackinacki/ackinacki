@@ -135,6 +135,10 @@ where
             }
         };
 
+        if message.int_dst_account_id().is_none() {
+            return render_error(res, StatusCode::BAD_REQUEST, "Invalid destination");
+        }
+
         let bm_license_addr = match message.header() {
             CommonMsgInfo::ExtInMsgInfo(header) => match &header.src {
                 MsgAddressExt::AddrExtern(addr) => Some(addr.to_string()),

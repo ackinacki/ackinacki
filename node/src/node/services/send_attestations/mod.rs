@@ -151,15 +151,15 @@ impl AttestationSendService {
         &self,
         state: &TrackedState,
     ) -> anyhow::Result<Envelope<GoshBLS, AttestationData>> {
-        if let Some(attn) = state.block_state.guarded(|e| e.attestation().clone()) {
+        if let Some(attn) = state.block_state.guarded(|e| e.own_attestation().clone()) {
             return Ok(attn);
         };
         match self.generate_attestation(&state.block_state) {
             Ok(attestation) => Ok(state.block_state.guarded_mut(|e| {
-                if e.attestation().is_none() {
-                    e.set_attestation(attestation.clone()).expect("failed to set attestation");
+                if e.own_attestation().is_none() {
+                    e.set_own_attestation(attestation).expect("failed to set attestation");
                 }
-                e.attestation().clone().unwrap()
+                e.own_attestation().clone().unwrap()
             })),
             Err(error) => {
                 tracing::trace!(
@@ -274,11 +274,11 @@ impl AttestationSendService {
                     } else if parent_block_state
                         .guarded(|e| e.is_prefinalized() || e.is_finalized())
                     {
-                        let correction = if let Some(initial_attestations_target) =
-                            parent_block_state.guarded(|e| *e.initial_attestations_target())
+                        let correction = if let Some(attestation_target) =
+                            parent_block_state.guarded(|e| *e.attestation_target())
                         {
                             self.pulse_timeout
-                                * (initial_attestations_target.descendant_generations as u32)
+                                * (*attestation_target.primary().generation_deadline() as u32)
                         } else {
                             self.pulse_timeout
                         };
@@ -377,8 +377,8 @@ impl AttestationSendService {
                     // Due to the protocol changes remove try_add_attestation
                     // and set attestation directly.
                     state.block_state().guarded_mut(|e| {
-                        if e.attestation().is_none() {
-                            e.set_attestation(attestation.clone())
+                        if e.own_attestation().is_none() {
+                            e.set_own_attestation(attestation.clone())
                                 .expect("Failed to set attestation");
                         }
                     });
@@ -401,8 +401,8 @@ impl AttestationSendService {
                         continue;
                     };
                     let (is_actual, this_child_attestation) = child.guarded(|e| {
-                        if e.attestation().is_some() && e.retracted_attestation().is_none() {
-                            (true, e.attestation().clone())
+                        if e.own_attestation().is_some() && e.retracted_attestation().is_none() {
+                            (true, e.own_attestation().clone())
                         } else {
                             (false, None)
                         }
@@ -644,6 +644,7 @@ impl AttestationSendService {
             .block_seq_no(block_seq_no)
             .parent_block_id(parent_id)
             .envelope_hash(envelope_hash)
+            .is_fallback(false)
             .build();
         tracing::trace!("Generate attestation: {:?}", attestation_data);
 

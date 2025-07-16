@@ -1178,7 +1178,7 @@ impl BlockBuilder {
     #[allow(clippy::too_many_arguments)]
     pub fn build_block(
         mut self,
-        mut ext_messages_queue: VecDeque<(Stamp, Message)>,
+        ext_messages_queue: HashMap<AccountId, VecDeque<(Stamp, Message)>>,
         blockchain_config: &BlockchainConfig,
         mut active_threads: Vec<(Cell, ActiveThread)>,
         mut check_messages_map: Option<HashMap<AccountId, BTreeMap<u64, UInt256>>>,
@@ -1190,11 +1190,7 @@ impl BlockBuilder {
             tracing::span!(tracing::Level::INFO, "build_block", seq_no = self.block_info.seq_no());
         active_threads.clear();
         tracing::info!(target: "builder", "Start build of block: {} for {:?}", self.block_info.seq_no(), self.thread_id);
-        tracing::info!(target: "builder", "Build block with parallelization_level: {}", self.parallelization_level);
-        tracing::info!(target: "builder", "ext_messages_queue.len={}, active_threads.len={}, check_messages_map.len={:?}", ext_messages_queue.len(), active_threads.len(), check_messages_map.as_ref().map(|map| map.len()));
-
-        // TODO: remove debug print
-        tracing::info!(target: "builder", "ext_messages_queue={:?}", ext_messages_queue);
+        tracing::info!(target: "builder", "ext_messages_queue.len={}, active_threads.len={}, check_messages_map.len={:?}", queue_len(&ext_messages_queue), active_threads.len(), check_messages_map.as_ref().map(|map| map.len()));
 
         let (block_unixtime, block_lt) = self.at_and_lt();
 
@@ -1213,21 +1209,21 @@ impl BlockBuilder {
         )?;
 
         // Third step: execute external messages if block is not full
-        eprintln!("build_block(block is full={block_full}): {ext_messages_queue:?}");
-        let (ext_message_feedbacks, processed_stamps) =
+        let (ext_message_feedbacks, processed_stamps, unprocessed_ext_msgs_cnt) =
             if !block_full && !ext_messages_queue.is_empty() {
-                let (feedbacks, processed_stamps, is_full) = self.execute_external_messages(
-                    blockchain_config,
-                    &mut ext_messages_queue,
-                    block_unixtime,
-                    block_lt,
-                    &mut check_messages_map,
-                    time_limits,
-                )?;
+                let (feedbacks, processed_stamps, is_full, unprocessed) = self
+                    .execute_external_messages(
+                        blockchain_config,
+                        ext_messages_queue,
+                        block_unixtime,
+                        block_lt,
+                        &mut check_messages_map,
+                        time_limits,
+                    )?;
                 block_full = is_full;
-                (feedbacks, processed_stamps)
+                (feedbacks, processed_stamps, unprocessed)
             } else {
-                (ExtMsgFeedbackList::new(), vec![])
+                (ExtMsgFeedbackList::new(), vec![], queue_len(&ext_messages_queue))
             };
 
         #[cfg(feature = "timing")]
@@ -1367,8 +1363,7 @@ impl BlockBuilder {
         //     Ok::<_, anyhow::Error>(())
         // })?;
 
-        tracing::info!(target: "builder", "ext messages queue len={}", ext_messages_queue.len());
-        tracing::info!(target: "builder", "processed ext messages={}", processed_stamps.len());
+        tracing::info!(target: "ext_messages", "unprocessed/processed/feedbacks={}/{}/{}", unprocessed_ext_msgs_cnt, processed_stamps.len(), ext_message_feedbacks.0.len());
 
         let prepared_block = self.finish_and_prepare_block(active_threads, message_db)?;
 
@@ -1635,10 +1630,14 @@ impl BlockBuilder {
         )
         .map_err(|e| anyhow::format_err!("Failed to construct block: {e}"))?;
 
+        let span = tracing::span!(tracing::Level::INFO, "serialize and write boc");
+        let span_guard = span.enter();
         let cell = block.serialize().unwrap();
         let root_hash = cell.repr_hash();
 
         let serialized_block = tvm_types::write_boc(&cell).unwrap();
+        drop(span_guard);
+
         let file_hash = UInt256::calc_file_hash(&serialized_block);
         let prev_block_info = BlkPrevInfo::Block {
             prev: ExtBlkRef {
@@ -1800,6 +1799,7 @@ impl BlockBuilder {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     fn finish_and_prepare_block(
         mut self,
         active_threads: Vec<(Cell, ActiveThread)>,
@@ -1821,7 +1821,9 @@ impl BlockBuilder {
             .finish_block(message_db)
             .map_err(|e| anyhow::format_err!("Failed to finish block: {e}"))?;
 
-        Ok(PreparedBlock {
+        let span = tracing::span!(tracing::Level::INFO, "prepare block struct");
+        let span_guard = span.enter();
+        let prepared_block = PreparedBlock {
             block,
             state: new_state,
             is_empty: false,
@@ -1832,7 +1834,10 @@ impl BlockBuilder {
             block_keeper_set_changes,
             cross_thread_ref_data,
             changed_dapp_ids,
-        })
+        };
+        drop(span_guard);
+
+        Ok(prepared_block)
     }
 
     fn retrieve_next_message(
@@ -1888,7 +1893,7 @@ impl BlockBuilder {
     #[allow(clippy::too_many_arguments)]
     fn fill_ext_msg_threads_pool(
         &mut self,
-        ext_messages_queue: &mut VecDeque<(Stamp, Message)>,
+        ext_messages_queue: &mut HashMap<AccountId, VecDeque<(Stamp, Message)>>,
         active_ext_threads: &mut VecDeque<(Stamp, ActiveThread)>,
         active_destinations: &mut HashSet<AccountId>,
         ext_message_feedbacks: &mut ExtMsgFeedbackList,
@@ -1903,59 +1908,78 @@ impl BlockBuilder {
             return Ok(());
         }
 
-        let mut i = 0;
+        let span = tracing::span!(
+            tracing::Level::INFO,
+            "ext messages filling thread pool",
+            ext_queue_size = queue_len(ext_messages_queue),
+            ext_queue_dst = ext_messages_queue.keys().len(),
+            ext_active_threads = active_ext_threads.len(),
+        );
+        let span_guard = span.enter();
 
-        while i < ext_messages_queue.len() && active_ext_threads.len() < self.parallelization_level
-        {
-            if self.is_limits_reached() {
+        for (acc_id, _queue) in ext_messages_queue.clone().into_iter() {
+            if self.is_limits_reached() || active_ext_threads.len() >= self.parallelization_level {
                 break;
             }
-            let (_, msg) = &ext_messages_queue[i];
-
-            let Some(acc_id) = msg.int_dst_account_id() else {
-                let (stamp, skipped_msg) = ext_messages_queue.remove(i).unwrap();
-                processed_stamps.push(stamp);
-                ext_message_feedbacks.push(create_invalid_destination_feedback(skipped_msg)?);
-                tracing::debug!(target: "ext_messages", "invalid destination. skipped");
-                continue;
-            };
 
             if active_destinations.contains(&acc_id) {
-                tracing::debug!(target: "ext_messages", "acc_id is in active_destinations. goto next ext message");
-                i += 1;
                 continue;
             }
 
             if !self.initial_optimistic_state.does_account_belong_to_the_state(&acc_id)? {
-                let (stamp, msg) = ext_messages_queue.remove(i).unwrap();
-                // If message destination doesn't belong to the current thread, remove it from the queue
-                let acc_thread = self.initial_optimistic_state.get_thread_for_account(&acc_id).ok();
-                processed_stamps.push(stamp);
-                ext_message_feedbacks.push(create_thread_mismatch_feedback(msg, acc_thread)?);
-                tracing::debug!(target: "ext_messages", "thread mismatch. skipped");
+                if let Some(mut q) = ext_messages_queue.remove(&acc_id) {
+                    // If message destination doesn't belong to the current thread, remove it from the queue
+                    let acc_thread =
+                        self.initial_optimistic_state.get_thread_for_account(&acc_id).ok();
+                    tracing::debug!(target: "ext_messages", "thread mismatch for <dst:{}>. skipped", acc_id.to_hex_string());
+
+                    while let Some((stamp, msg)) = q.pop_front() {
+                        processed_stamps.push(stamp);
+                        ext_message_feedbacks
+                            .push(create_thread_mismatch_feedback(msg, acc_thread)?);
+                    }
+                }
                 continue;
             }
 
             // used in tests/ext_messages/process_in_parallel.py
-            tracing::debug!(target: "ext_messages", "fill threads: active_ext_threads={}, ext_messages_queue={}", active_ext_threads.len(), ext_messages_queue.len());
-            let (stamp, msg) = ext_messages_queue.remove(i).unwrap();
+            tracing::debug!(target: "ext_messages", "fill threads: active_ext_threads={}, ext_messages_queue={}", active_ext_threads.len(), queue_len(ext_messages_queue));
 
-            anyhow::ensure!(msg.int_header().is_none());
-            tracing::trace!(target: "ext_messages", "Parallel ext message: {:?} to {:?}", msg.hash().unwrap(), acc_id.to_hex_string());
+            if let Some(q) = ext_messages_queue.get_mut(&acc_id) {
+                if let Some((stamp, msg)) = q.pop_front() {
+                    anyhow::ensure!(msg.int_header().is_none());
+                    tracing::trace!(
+                        target: "ext_messages",
+                        "Parallel ext message: {:?} to {:?}",
+                        msg.hash().unwrap(),
+                        acc_id.to_hex_string()
+                    );
 
-            let thread = self.execute(
-                msg.clone(),
-                blockchain_config,
-                &acc_id,
-                block_unixtime,
-                block_lt,
-                check_messages_map,
-                time_limits,
-            )?;
+                    let exec_span = tracing::span!(tracing::Level::INFO, "execute ext message");
+                    let span_guard = exec_span.enter();
+                    let thread = self.execute(
+                        msg.clone(),
+                        blockchain_config,
+                        &acc_id,
+                        block_unixtime,
+                        block_lt,
+                        check_messages_map,
+                        time_limits,
+                    )?;
+                    drop(span_guard);
 
-            active_ext_threads.push_back((stamp.clone(), thread));
-            active_destinations.insert(acc_id);
+                    active_ext_threads.push_back((stamp.clone(), thread));
+                    active_destinations.insert(acc_id.clone());
+                    processed_stamps.push(stamp);
+
+                    if q.is_empty() {
+                        ext_messages_queue.remove(&acc_id);
+                    }
+                }
+            }
         }
+
+        drop(span_guard);
 
         Ok(())
     }
@@ -1965,8 +1989,14 @@ impl BlockBuilder {
         active_ext_threads: &mut VecDeque<(Stamp, ActiveThread)>,
         active_destinations: &mut HashSet<AccountId>,
         ext_message_feedbacks: &mut ExtMsgFeedbackList,
-        processed_stamps: &mut Vec<Stamp>,
     ) -> anyhow::Result<()> {
+        let span = tracing::span!(
+            tracing::Level::INFO,
+            "ext messages processing completed thread pool",
+            active_ext_threads = active_ext_threads.len()
+        );
+        let span_guard = span.enter();
+
         let mut i = 0;
 
         while i < active_ext_threads.len() {
@@ -1990,7 +2020,7 @@ impl BlockBuilder {
             // used in tests/ext_messages/process_in_parallel.py
             tracing::trace!(target: "ext_messages", "process completed: active_ext_threads={}", active_ext_threads.len());
 
-            let (stamp, thread) = active_ext_threads.remove(i).unwrap();
+            let (_, thread) = active_ext_threads.remove(i).unwrap();
             let thread_result = thread_result
                 .map_err(|_| anyhow::anyhow!("Failed to execute transaction in parallel"))?;
 
@@ -2007,9 +2037,10 @@ impl BlockBuilder {
 
             self.after_transaction(thread_result)?;
             active_destinations.remove(&acc_id);
-            processed_stamps.push(stamp);
             ext_message_feedbacks.push(feedback);
         }
+
+        drop(span_guard);
 
         Ok(())
     }
@@ -2017,17 +2048,22 @@ impl BlockBuilder {
     fn execute_external_messages(
         &mut self,
         blockchain_config: &BlockchainConfig,
-        ext_messages_queue: &mut VecDeque<(Stamp, Message)>,
+        mut ext_messages_queue: HashMap<AccountId, VecDeque<(Stamp, Message)>>,
         block_unixtime: u32,
         block_lt: u64,
         check_messages_map: &mut Option<HashMap<AccountId, BTreeMap<u64, UInt256>>>,
         time_limits: &ExecutionTimeLimits,
-    ) -> anyhow::Result<(ExtMsgFeedbackList, Vec<Stamp>, bool)> {
-        let _span = tracing::span!(tracing::Level::INFO, "external messages execution");
+    ) -> anyhow::Result<(ExtMsgFeedbackList, Vec<Stamp>, bool, usize)> {
+        let incoming_queue_len: usize = queue_len(&ext_messages_queue);
 
-        let incoming_queue_len = ext_messages_queue.len();
+        let span = tracing::span!(
+            tracing::Level::INFO,
+            "external messages execution",
+            queue_size = incoming_queue_len
+        );
+        let span_guard = span.enter();
 
-        #[cfg(feature = "timing")]
+        // #[cfg(feature = "timing")]
         let start = std::time::Instant::now();
 
         let mut ext_message_feedbacks = ExtMsgFeedbackList::new();
@@ -2037,12 +2073,12 @@ impl BlockBuilder {
         let mut processed_stamps = vec![];
         if check_messages_map.is_none() && self.is_limits_reached() {
             // Don't even enter prcessing external messages.
-            return Ok((ext_message_feedbacks, processed_stamps, true));
+            return Ok((ext_message_feedbacks, processed_stamps, true, incoming_queue_len));
         }
 
         loop {
             self.fill_ext_msg_threads_pool(
-                ext_messages_queue,
+                &mut ext_messages_queue,
                 &mut active_ext_threads,
                 &mut active_destinations,
                 &mut ext_message_feedbacks,
@@ -2058,28 +2094,33 @@ impl BlockBuilder {
                 &mut active_ext_threads,
                 &mut active_destinations,
                 &mut ext_message_feedbacks,
-                &mut processed_stamps,
             )?;
 
+            let span = tracing::span!(tracing::Level::INFO, "is_limits_reached");
+            let span_guard = span.enter();
             if check_messages_map.is_none() && self.is_limits_reached() {
                 block_full = true;
                 tracing::debug!(target: "ext_messages", "Ext messages stop because block is full");
                 break;
             }
+            drop(span_guard);
 
             if ext_messages_queue.is_empty() && active_ext_threads.is_empty() {
                 tracing::debug!(target: "ext_messages", "Ext messages stop");
                 break;
             }
         }
+
+        drop(span_guard);
+
         tracing::debug!(target: "ext_messages", "processed per block (total/processed): {}/{}", incoming_queue_len, processed_stamps.len());
 
-        #[cfg(feature = "timing")]
+        // #[cfg(feature = "timing")]
         tracing::info!(target: "builder", "External messages execution time {} ms", start.elapsed().as_millis());
 
         tracing::Span::current().record("messages.count", processed_stamps.len() as i64);
 
-        Ok((ext_message_feedbacks, processed_stamps, block_full))
+        Ok((ext_message_feedbacks, processed_stamps, block_full, queue_len(&ext_messages_queue)))
     }
 }
 
@@ -2148,24 +2189,6 @@ fn create_feedback(
     Ok(feedback)
 }
 
-fn create_invalid_destination_feedback(msg: Message) -> anyhow::Result<ExtMsgFeedback> {
-    tracing::warn!(
-        target: "builder",
-        "Found external msg with not valid internal destination: {:?}",
-        msg
-    );
-
-    create_feedback(
-        msg,
-        None,
-        None,
-        Some(FeedbackError {
-            code: FeedbackErrorCode::InternalError,
-            message: Some("Invalid destination".to_string()),
-        }),
-    )
-}
-
 fn create_thread_mismatch_feedback(
     msg: Message,
     acc_thread: Option<ThreadIdentifier>,
@@ -2185,4 +2208,31 @@ fn create_thread_mismatch_feedback(
             message: Some("Internal processing error: thread mismatch".to_string()),
         }),
     )
+}
+
+pub fn create_queue_overflow_feedback(
+    msg: Message,
+    thread_id: &ThreadIdentifier,
+) -> anyhow::Result<ExtMsgFeedback> {
+    tracing::warn!(
+        target: "builder",
+        "External msg is rejected in case of queue overflow: {:?}",
+        msg
+    );
+
+    create_feedback(
+        msg,
+        None,
+        Some(*thread_id),
+        Some(FeedbackError {
+            code: FeedbackErrorCode::QueueOverflow,
+            message: Some(
+                "Message queue is full. Please try to send the message later.".to_string(),
+            ),
+        }),
+    )
+}
+
+fn queue_len(map: &HashMap<AccountId, VecDeque<(Stamp, Message)>>) -> usize {
+    map.values().map(|queue| queue.len()).sum()
 }

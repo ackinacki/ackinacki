@@ -34,7 +34,7 @@ use crate::node::block_state::dependent_ancestor_blocks::DependentAncestorBlocks
 use crate::node::block_state::dependent_ancestor_blocks::DependentBlocks;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::block_state::unfinalized_ancestor_blocks::UnfinalizedAncestorBlocksSelectError;
-use crate::node::services::attestations_target::service::AttestationsTargetService;
+use crate::node::services::attestations_target::service::AttestationTargetsService;
 use crate::node::shared_services::SharedServices;
 use crate::node::NetBlock;
 use crate::node::NetworkMessage;
@@ -80,7 +80,7 @@ pub struct BlockProducer {
     #[builder(default = std::time::Instant::now())]
     last_broadcasted_produced_candidate_block_time: std::time::Instant,
     last_block_attestations: Arc<Mutex<CollectedAttestations>>,
-    attestations_target_service: AttestationsTargetService,
+    attestations_target_service: AttestationTargetsService,
     self_tx: Sender<NetworkMessage>,
     broadcast_tx: NetBroadcastSender<NetworkMessage>,
 

@@ -39,9 +39,15 @@ struct Cli {
     #[arg(short, long)]
     output_dir: Option<PathBuf>,
 
+    /// Optional secret key of the block keeper's owner wallet key pair.
+    /// Should be represented as a 64-char hex.
+    /// If specified, then ed_key_path should be omitted.
     #[arg(long)]
     ed_key_secret: Option<String>,
 
+    /// Optional path to the block keeper's owner wallet key file.
+    /// Should be stored as json `{ "public": "64-char hex", "secret": "64-char hex" }`.
+    /// If specified, then ed_key_secret should be omitted.
     #[arg(long)]
     ed_key_path: Option<String>,
 

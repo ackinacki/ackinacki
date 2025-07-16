@@ -197,11 +197,17 @@ impl BlockVerifier for TVMBlockVerifier {
         ensure!(block_parse_result?, "Failed to parse incoming block messages");
         ext_messages.sort_by(|(lt_a, _), (lt_b, _)| lt_a.cmp(lt_b));
         let timestamp = Utc::now();
-        let ext_msg_iter = ext_messages
-            .into_iter()
-            .enumerate()
-            .map(|(i, (_, msg))| (Stamp { index: i as u32, timestamp }, msg));
-        let ext_messages = VecDeque::from_iter(ext_msg_iter);
+        let mut grouped_ext_messages = HashMap::new();
+
+        for (i, (_, msg)) in ext_messages.into_iter().enumerate() {
+            let stamp = Stamp { index: i as u64, timestamp };
+            let acc_id = msg.int_dst_account_id().unwrap_or_default();
+
+            grouped_ext_messages
+                .entry(acc_id)
+                .or_insert_with(VecDeque::new)
+                .push_back((stamp, msg));
+        }
 
         let block_gas_limit = self.blockchain_config.get_gas_config(false).block_gas_limit;
 
@@ -223,7 +229,7 @@ impl BlockVerifier for TVMBlockVerifier {
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (verify_block, _, _) = producer.build_block(
-            ext_messages,
+            grouped_ext_messages,
             &self.blockchain_config,
             vec![],
             Some(check_messages_map),
