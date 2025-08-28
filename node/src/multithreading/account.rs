@@ -17,8 +17,7 @@ pub(crate) fn get_account_routing_for_account(
     dapp_id: Option<UInt256>,
 ) -> AccountRouting {
     // For None dapp id we consider its address as a dapp id mask
-    let account_dapp_id =
-        dapp_id.map(|dapp_id| AccountAddress(AccountId::from(dapp_id))).map(DAppIdentifier);
+    let account_dapp_id = dapp_id.map(AccountAddress).map(DAppIdentifier);
 
-    AccountRouting::from((account_dapp_id, AccountAddress(account_address)))
+    AccountRouting::from((account_dapp_id, (account_address as AccountId).into()))
 }

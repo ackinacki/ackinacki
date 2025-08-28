@@ -1,7 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-pub mod bm_license_loader;
+pub mod account_boc_loader;
 pub mod bp_resolver;
 pub mod key_handling;
 pub mod metrics;
@@ -9,7 +9,7 @@ pub mod metrics;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::time::Duration;
+use std::sync::OnceLock;
 
 use opentelemetry::global::ObjectSafeSpan;
 use opentelemetry::trace::noop::NoopTracer;
@@ -19,11 +19,13 @@ use opentelemetry::trace::TraceId;
 use opentelemetry::trace::Tracer;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry::KeyValue;
-use opentelemetry_sdk::metrics::PeriodicReader;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::runtime::Tokio;
 use opentelemetry_sdk::trace;
 use opentelemetry_sdk::Resource;
+use telemetry_utils::get_metrics_endpoint;
+use telemetry_utils::init_meter_provider;
+use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::Layer;
@@ -33,6 +35,8 @@ use crate::node::NodeIdentifier;
 use crate::types::BlockIdentifier;
 
 pub const TIMING_TARGET: &str = "timing";
+
+pub static SHUTDOWN_FLAG: OnceLock<bool> = OnceLock::new();
 
 fn default_verbose_filter() -> tracing_subscriber::EnvFilter {
     let (tvm_trace_level, builder_trace_level) =
@@ -55,7 +59,7 @@ fn default_verbose_filter() -> tracing_subscriber::EnvFilter {
     // tracing_subscriber::EnvFilter::new(format!(""))
 }
 
-fn default_non_verbose_filter() -> tracing_subscriber::EnvFilter {
+fn _default_non_verbose_filter() -> tracing_subscriber::EnvFilter {
     tracing_subscriber::EnvFilter::new(
         "gossip=info,\
             http_server=info,\
@@ -71,22 +75,24 @@ fn default_non_verbose_filter() -> tracing_subscriber::EnvFilter {
             transport_layer=trace,\
             ext_messages=info",
     )
+    // tracing_subscriber::EnvFilter::new(format!(""))
 }
 
 fn default_filter() -> tracing_subscriber::EnvFilter {
-    if std::env::var("NODE_VERBOSE").is_ok() {
-        default_verbose_filter()
-    } else {
-        default_non_verbose_filter()
-    }
+    // if std::env::var("NODE_VERBOSE").is_ok() {
+    default_verbose_filter()
+    // } else {
+    //     default_non_verbose_filter()
+    // }
 }
 
-pub fn init_tracing() -> Option<Metrics> {
-    let filter = if std::env::var(tracing_subscriber::EnvFilter::DEFAULT_ENV).is_ok() {
-        tracing_subscriber::EnvFilter::from_default_env()
-    } else {
-        default_filter()
-    };
+pub fn init_tracing() -> (Option<Metrics>, WorkerGuard) {
+    let filter = default_filter();
+    // if std::env::var(tracing_subscriber::EnvFilter::DEFAULT_ENV).is_ok() {
+    // tracing_subscriber::EnvFilter::from_default_env()
+    // } else {
+    //     default_filter()
+    // };
     // According to OpenTelemetry Specification:
     // The following environment variables configure the OTLP exporter:
     // `OTEL_EXPORTER_OTLP_ENDPOINT`:
@@ -102,6 +108,7 @@ pub fn init_tracing() -> Option<Metrics> {
         .or_else(|_| std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT"))
         .ok();
 
+    let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stderr());
     if let Ok(Ok(targets)) =
         std::env::var("TELEMETRY_LOG").map(|x| tracing_subscriber::filter::Targets::from_str(&x))
     {
@@ -117,7 +124,7 @@ pub fn init_tracing() -> Option<Metrics> {
                         .compact()
                         .with_thread_ids(true)
                         .with_ansi(false)
-                        .with_writer(std::io::stderr)
+                        .with_writer(non_blocking)
                         .with_filter(filter),
                 )
                 .with(telemetry_layer)
@@ -134,7 +141,7 @@ pub fn init_tracing() -> Option<Metrics> {
                         .compact()
                         .with_thread_ids(true)
                         .with_ansi(false)
-                        .with_writer(std::io::stderr)
+                        .with_writer(non_blocking)
                         .with_filter(filter),
                 )
                 .with(telemetry_layer)
@@ -151,7 +158,7 @@ pub fn init_tracing() -> Option<Metrics> {
                     .compact()
                     .with_thread_ids(true)
                     .with_ansi(false)
-                    .with_writer(std::io::stderr)
+                    .with_writer(non_blocking)
                     .with_filter(filter),
             )
             .with(telemetry_layer)
@@ -167,7 +174,7 @@ pub fn init_tracing() -> Option<Metrics> {
                     .compact()
                     .with_thread_ids(true)
                     .with_ansi(false)
-                    .with_writer(std::io::stderr)
+                    .with_writer(non_blocking)
                     .with_filter(filter),
             )
             .with(telemetry_layer)
@@ -175,24 +182,21 @@ pub fn init_tracing() -> Option<Metrics> {
     }
 
     // Init metrics
-    let metrics_endpoint = std::env::var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")
-        .or_else(|_| std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT"))
-        .ok();
-
-    if let Some(endpoint) = metrics_endpoint {
+    if let Some(endpoint) = get_metrics_endpoint() {
         tracing::info!("Using OTLP metrics endpoint: {endpoint}");
         opentelemetry::global::set_meter_provider(init_meter_provider());
-        Some(Metrics::new(&opentelemetry::global::meter("node")))
+        (Some(Metrics::new(&opentelemetry::global::meter("node"))), guard)
     } else {
         tracing::info!("No OTEL exporter endpoint found, metrics not collected.");
         opentelemetry::global::set_meter_provider(SdkMeterProvider::builder().build());
-        None
+        (None, guard)
     }
 }
 
-pub fn shutdown_tracing() {
+pub fn shutdown_tracing(tracing_guard: WorkerGuard) {
     tracing::trace!("shutting down tracing");
     opentelemetry::global::shutdown_tracer_provider();
+    drop(tracing_guard);
 }
 
 pub fn init_tracer(endpoint: String) -> opentelemetry_sdk::trace::Tracer {
@@ -219,27 +223,6 @@ pub fn init_noop_tracer() -> NoopTracer {
     let noop_tracer_provider = NoopTracerProvider::new();
     opentelemetry::global::set_tracer_provider(noop_tracer_provider.clone());
     noop_tracer_provider.tracer("node")
-}
-
-pub fn init_meter_provider() -> SdkMeterProvider {
-    let default_service_name = KeyValue::new("service.name", "acki-nacki-node");
-
-    let resource = opentelemetry_sdk::Resource::new(vec![default_service_name.clone()])
-        .merge(&opentelemetry_sdk::Resource::default());
-    let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
-        .with_tonic()
-        .build()
-        .expect("Failed to build OTLP metrics exporter");
-
-    SdkMeterProvider::builder()
-        .with_reader(
-            PeriodicReader::builder(metric_exporter, Tokio)
-                .with_interval(Duration::from_secs(30))
-                .with_timeout(Duration::from_secs(5))
-                .build(),
-        )
-        .with_resource(resource)
-        .build()
 }
 
 pub fn block_flow_trace<const N: usize>(

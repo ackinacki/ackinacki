@@ -139,17 +139,18 @@ contract Multifactor is Modifiers {
     }
 
     /** Functions to add check and delete JWK keys  */
-    bytes _wasm_hash = hex"c5b3fe1a4fa391e9660a13d55ca2200f9343d5b1d18473ebbee19d8219e3ddc1";
+    bytes _wasm_hash = hex"25dc3d80d7e4d8f27dfadc9c2faf9cf2d8dea0a9e08a692da2db7e34d74d66e1";
+    //hex"f45dae3df26f2a45f006bd7e7d32f426e240dfd1391669953688cb40886aff11";
     string _wasm_module = "docs:tlschecker/tls-check-interface@0.1.0";
     string _wasm_function = "tlscheck";
     bytes _wasm_binary = "";
-    function addJwkModulus(uint256 root_cert_sn, bytes kid, bytes tls_data) public returns (bool success) {
+    function addJwkModulus(uint256 root_cert_sn, bytes lv_kid, bytes tls_data) public returns (bool success) {
         require(_root_provider_certificates.exists(root_cert_sn), ERR_CERT_NOT_FOUND);
         bytes stamp = bytes(bytes4(block.timestamp & 0xFFFFFFFF));
         TvmCell wasm_result_cell = gosh.runwasmconcatmultiarg(abi.encode(_wasm_hash), 
         abi.encode(tls_data), 
         abi.encode(_root_provider_certificates[root_cert_sn]), 
-        abi.encode(kid), 
+        abi.encode(lv_kid), 
         abi.encode(stamp), 
         abi.encode(_wasm_function), abi.encode(_wasm_module), abi.encode(_wasm_binary));
         bytes wasm_result = abi.decode(wasm_result_cell, bytes);
@@ -163,6 +164,7 @@ contract Multifactor is Modifiers {
         jwk_modulus_expire_at_new |= uint64(uint8(wasm_result[3])) << 40; 
         jwk_modulus_expire_at_new |= uint64(uint8(wasm_result[2])) << 48; 
         jwk_modulus_expire_at_new |= uint64(uint8(wasm_result[1])) << 56; 
+        bytes kid = lv_kid[1:];
         uint jwk_hash = tvm.hash(kid);
         bool permitted = (jwk_modulus_expire_at_new > uint64(block.timestamp + MIN_JWK_LIFE_TIME )) && ((!_jwk_modulus_data.exists(jwk_hash)) || (_jwk_modulus_data[jwk_hash].modulus_expire_at < uint64(block.timestamp + MIN_JWK_LIFE_TIME ))); 
         require(permitted, ERR_INVALID_JWK); 
@@ -176,8 +178,11 @@ contract Multifactor is Modifiers {
             return false;
         }
         bytes jwk_modulus = wasm_result[9:];
+        if (!_jwk_modulus_data.exists(jwk_hash)) {
+            _jwk_modulus_data_len = _jwk_modulus_data_len + 1;
+        }
         _jwk_modulus_data[jwk_hash] = JWKData(jwk_modulus, jwk_modulus_expire_at_new);
-        _jwk_modulus_data_len = _jwk_modulus_data_len + 1;
+
         return true;
     }
 
@@ -500,7 +505,6 @@ contract Multifactor is Modifiers {
     }
 
     /** Value Transfer/Exchange functionality */
-
     function sendTransaction(
         uint64 epk_expire_at,
         address dest,
@@ -508,7 +512,7 @@ contract Multifactor is Modifiers {
         mapping(uint32 => varuint32) cc,
         bool bounce,
         uint8 flags,
-        TvmCell payload) public  returns(address)
+        TvmCell payload) public view returns(address)
     {
         require(!_use_security_card, ERR_CARD_IS_TURNED_ON);
         require(value >= _min_value, ERR_TOO_SMALL_VALUE);
@@ -520,14 +524,6 @@ contract Multifactor is Modifiers {
         return dest;
     }
 
-    
-    /// @dev Allows custodian to submit and confirm new transaction.
-    /// @param dest Transfer target address.
-    /// @param value Nanograms value to transfer.
-    /// @param bounce Bounce flag. Set true if need to transfer grams to existing account; set false to create new account.
-    /// @param allBalance Set true if need to transfer all remaining balance.
-    /// @param payload Tree of cells used as body of outbound internal message.
-    /// @return transId Transaction ID.
     function submitTransaction(
         uint64 epk_expire_at,
         address dest,
@@ -558,8 +554,6 @@ contract Multifactor is Modifiers {
         }
     }
 
-    /// @dev Allows security card to confirm a transaction.
-    /// @param transactionId Transaction ID.
     function confirmTransaction(uint64 transactionId) public {
         require(_use_security_card, ERR_CARD_IS_TURNED_OFF);     
         require(_m_security_cards.exists(msg.pubkey()), ERR_INVALID_SIGNATURE);
@@ -612,7 +606,7 @@ contract Multifactor is Modifiers {
         gosh.cnvrtshellq(value);
     }
 
-    function exchangeTokenWithOwner(uint64 value) public onlyOwnerPubkey(_owner_pubkey) {
+    function exchangeTokenWithOwner(uint64 value) public view onlyOwnerPubkey(_owner_pubkey) {
         tvm.accept();
         gosh.cnvrtshellq(value);
     }

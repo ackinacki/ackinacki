@@ -13,7 +13,8 @@ anyhow.workspace = true
 bincode.workspace = true
 clap.workspace = true
 database.workspace = true
-gosh_bls_lib.workspace = true
+ext-messages-auth.workspace = true
+gosh_blst.workspace = true
 hex.workspace = true
 http-server.workspace = true
 lazy_static.workspace = true
@@ -33,22 +34,24 @@ serde_with.workspace = true
 telemetry_utils.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-appender.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
+tracing-test = "0.1"
 tvm_abi.workspace = true
 tvm_block.workspace = true
 tvm_block_json.workspace = true
 tvm_client.workspace = true
-tvm_contracts.workspace = true
 tvm_executor.workspace = true
-tvm_tl_codegen.workspace = true
 tvm_types.workspace = true
 tvm_vm.workspace = true
 url.workspace = true
+wasmtime.workspace = true
 
 account-inbox = { path = "./libs/account-inbox" }
+aerospike = "1.3.0"
 atomic-wait = "1.1.0"
-bitflags = "2.6.0"
+cached = "0.56.0"
 chitchat.workspace = true
 chrono = { version = "0.4.38", features = ["serde"] }
 core_affinity = { version = "0.8.3" }
@@ -56,21 +59,20 @@ derive-debug = "0.1.2"
 derive-getters = "0.5.0"
 derive_setters = { path = "./libs/derive-setters" }
 failure = "0.1.8"
-futures = { version = "0.3.30", default-features = false }
 gossip.workspace = true
 governor.workspace = true
 indexset = "0.10.3"
 itertools = "0.12.0"
 log = "0.4.20"
 lru = "0.12.3"
-nonzero_ext.workspace = true
 num_cpus = "1.16.0"
 rand = { version = "0.8.5", features = ["small_rng"] }
-reqwest = { version = "0.11.22", default-features = false, features = ["rustls-tls", "gzip", "stream", "blocking"] }
+reqwest = { version = "0.12.22", default-features = false, features = ["rustls-tls", "gzip", "stream", "blocking"] }
 rusqlite.workspace = true
 serde_yaml = "0.9.33"
 signal-hook = "0.3.17"
 thiserror = "2.0.3"
+threadpool = "1.8.1"
 transport-layer.workspace = true
 typed-builder = "0.20.0"
 weak-table = "0.3.2"
@@ -91,7 +93,15 @@ tempfile = "3.14.0"
 testdir = "0.9.3"
 
 [features]
-default = ["fail-fast", "deadlock-detection"]
+default = [
+    "fail-fast",
+    "deadlock-detection",
+    "delay-references",
+    "sync_files",
+    "rayon_affinity",
+    "messages_db",
+    "monitor-accounts-number",
+]
 # Use automocks in binaries
 use_automocks = []
 allow-dappid-thread-split = []
@@ -99,6 +109,9 @@ allow-threads-merge = []
 deadlock-detection = []
 fail-fast = []
 messages_db = []
+delay-references = []
+
+fail_on_long_lock = []
 
 # Record time of heavy operations
 timing = []
@@ -115,9 +128,15 @@ rayon_affinity = []
 # Call sync while saving files that are also stored in memory cache
 sync_files = []
 
-# Disable write operations to the sqlite database
-disable_db_write = []
+# Add account cnt data to state and block
+monitor-accounts-number = []
+
+# Enable the extraction and storage of raw blocks and external out messages (events) only
+store_events_only = []
 
 [[bench]]
 name = "on_block_finalized"
 harness = false
+
+[package.metadata.cargo-machete]
+ignored = ["failure"]

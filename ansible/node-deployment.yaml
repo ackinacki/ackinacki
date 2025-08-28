@@ -37,6 +37,32 @@
       state: directory
       mode: u=rwx,g=rx,o=rx
 
+  - name: "Ensures Aerospike dirs exist"
+    ansible.builtin.file:
+      path: "{{ item }}"
+      state: directory
+      mode: u=rwx,g=rx,o=rx
+    with_list:
+      - "{{ BK_DATA_DIR }}/aerospike"
+      - "{{ BK_DIR }}/aerospike-config"
+
+  - name: "Ensures WASM binaries dir exists: {{ BK_DIR }}/bk-binaries/wasm"
+    ansible.builtin.file:
+      path: "{{ BK_DIR }}/bk-binaries/wasm"
+      state: directory
+      mode: u=rwx,g=rx,o=rx
+
+  - name: Copy WASM binaries to Block Keeper
+    copy:
+      dest: "{{ BK_DIR }}/bk-binaries/wasm"
+      src: "wasm/{{ item }}"
+    loop:
+      - "c5b3fe1a4fa391e9660a13d55ca2200f9343d5b1d18473ebbee19d8219e3ddc1"
+      - "7b7f96a857a4ada292d7c6b1f47940dde33112a2c2bc15b577dff9790edaeef2"
+      - "e88c99c9a1cbbde5bf47839db7685953c3bf266945f3270abb731ed84d58d163"
+      - "e7adc782c05b67bcda5babaca1deabf80f30ca0e6cf668c89825286c3ce0e560"
+      - "25dc3d80d7e4d8f27dfadc9c2faf9cf2d8dea0a9e08a692da2db7e34d74d66e1"
+
   - name: adjust limits
     lineinfile:
       dest: /etc/security/limits.conf
@@ -88,6 +114,12 @@
     ansible.builtin.template:
       src: templates/docker-compose.j2
       dest: "{{ BK_DIR }}/docker-compose.yaml"
+      mode: "0644"
+
+  - name: Aerospike configuration
+    ansible.builtin.template:
+      src: templates/aerospike.conf.j2
+      dest: "{{ BK_DIR }}/aerospike-config/aerospike.conf"
       mode: "0644"
 
   - name: Logrotate entrypoint

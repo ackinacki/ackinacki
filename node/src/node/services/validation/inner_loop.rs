@@ -5,21 +5,21 @@ use std::collections::VecDeque;
 use std::sync::mpsc::RecvError;
 use std::sync::mpsc::TryRecvError;
 use std::sync::Arc;
-use std::thread::sleep;
-use std::time::Duration;
 
 use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use tvm_executor::BlockchainConfig;
 
+use crate::block::producer::wasm::WasmNodeCache;
 use crate::block::verify::verify_block;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::config::Config;
 use crate::helper::metrics::BlockProductionMetrics;
-use crate::message_storage::MessageDurableStorage;
+use crate::helper::SHUTDOWN_FLAG;
 use crate::node::block_state::repository::BlockStateRepository;
+use crate::node::block_state::tools::invalidate_branch;
 use crate::node::services::validation::feedback::AckiNackiSend;
 use crate::node::shared_services::SharedServices;
 // use std::thread::sleep;
@@ -28,6 +28,7 @@ use crate::protocol::authority_switch::action_lock::Authority;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
+use crate::storage::MessageDurableStorage;
 use crate::types::AckiNackiBlock;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
@@ -67,11 +68,15 @@ pub(super) fn inner_loop(
     mut shared_services: SharedServices,
     send: AckiNackiSend,
     metrics: Option<BlockProductionMetrics>,
+    wasm_cache: WasmNodeCache,
     message_db: MessageDurableStorage,
     authority: Arc<Mutex<Authority>>,
 ) {
     let mut buffer = VecDeque::<(BlockState, Envelope<GoshBLS, AckiNackiBlock>)>::new();
     loop {
+        if SHUTDOWN_FLAG.get() == Some(&true) {
+            return;
+        }
         if !read_into_buffer(&mut rx, &mut buffer) {
             return;
         }
@@ -89,9 +94,6 @@ pub(super) fn inner_loop(
                     && *x.envelope_block_producer_signature_verified() != Some(false)
             })
         });
-        if buffer.is_empty() {
-            sleep(Duration::from_millis(10));
-        }
 
         for (state, next_envelope) in buffer.iter() {
             if state.guarded(|e| e.is_finalized() || e.is_invalidated()) {
@@ -128,13 +130,14 @@ pub(super) fn inner_loop(
                 next_block.seq_no(),
             );
             let prev_block_id = next_block.parent();
-            let Ok(Some(mut prev_state)) = repository.get_optimistic_state(
+            let Ok(Some(prev_state)) = repository.get_optimistic_state(
                 &prev_block_id,
                 &next_block.get_common_section().thread_id,
                 None,
             ) else {
                 continue;
             };
+            let mut prev_state = Arc::unwrap_or_clone(prev_state);
             let refs = shared_services.exec(|service| {
                 let mut refs = vec![];
                 for block_id in &next_block.get_common_section().refs {
@@ -159,6 +162,7 @@ pub(super) fn inner_loop(
                 block_state_repo.clone(),
                 repository.accounts_repository().clone(),
                 metrics.clone(),
+                wasm_cache.clone(),
                 message_db.clone(),
             )
             .expect("Failed to verify block");
@@ -170,10 +174,19 @@ pub(super) fn inner_loop(
                     let _ = e.set_validated(verify_res);
                 }
             });
+            if !verify_res {
+                invalidate_branch(state.clone(), &block_state_repo);
+            }
+            if SHUTDOWN_FLAG.get() == Some(&true) {
+                return;
+            }
             if verify_res {
                 let _ = send.send_ack(state.clone());
             } else {
-                authority.guarded_mut(|e| e.on_bad_block_nack_confirmed(state.clone()));
+                let thread_id = next_block.get_common_section().thread_id;
+                authority
+                    .guarded_mut(|e| e.get_thread_authority(&thread_id))
+                    .guarded_mut(|e| e.on_bad_block_nack_confirmed(state.clone()));
                 let _ = send.send_nack_bad_block(state.clone(), next_envelope.clone());
             }
         }

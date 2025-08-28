@@ -1,4 +1,4 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use async_graphql::futures_util::TryStreamExt;
@@ -6,8 +6,8 @@ use sqlx::prelude::FromRow;
 use sqlx::SqlitePool;
 
 use crate::defaults;
-use crate::schema::graphql::blockchain_api::query::PaginateDirection;
-use crate::schema::graphql::blockchain_api::query::PaginationArgs;
+use crate::schema::graphql::query::PaginateDirection;
+use crate::schema::graphql::query::PaginationArgs;
 
 #[allow(dead_code)]
 #[derive(Clone, FromRow)]

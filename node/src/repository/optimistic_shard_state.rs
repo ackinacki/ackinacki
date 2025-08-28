@@ -5,6 +5,7 @@ use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
+use parking_lot::Mutex;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -18,31 +19,51 @@ use tvm_types::Cell;
 use typed_builder::TypedBuilder;
 
 use super::tvm_cell_serde::CellFormat;
+use crate::utilities::guarded::AllowGuardedMut;
+use crate::utilities::guarded::Guarded;
+use crate::utilities::guarded::GuardedMut;
+
+#[derive(Clone)]
+pub enum OptimisticShardStateRepresentation {
+    Both(Arc<ShardStateUnsplit>, Arc<Cell>),
+    AsShardState(Arc<ShardStateUnsplit>),
+    AsCell(Arc<Cell>),
+}
+
+impl AllowGuardedMut for OptimisticShardStateRepresentation {}
 
 #[derive(Clone, TypedBuilder)]
 pub struct OptimisticShardState {
-    pub(crate) shard_state: Option<Arc<ShardStateUnsplit>>,
-    pub(crate) shard_state_cell: Option<Cell>,
+    data: Arc<Mutex<OptimisticShardStateRepresentation>>,
 }
 
 impl Debug for OptimisticShardState {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let (is_shard_state, is_cell) = match *self.data.lock() {
+            OptimisticShardStateRepresentation::Both(_, _) => (true, true),
+            OptimisticShardStateRepresentation::AsShardState(_) => (true, false),
+            OptimisticShardStateRepresentation::AsCell(_) => (false, true),
+        };
         f.debug_struct("OptimisticShardState")
-            .field("shard_state", &self.shard_state.is_some())
-            .field("shard_state_cell", &self.shard_state_cell.is_some())
+            .field("shard_state", &is_shard_state)
+            .field("shard_state_cell", &is_cell)
             .finish()
     }
 }
 
 impl Default for OptimisticShardState {
     fn default() -> Self {
-        Self { shard_state: Some(Arc::new(ShardStateUnsplit::default())), shard_state_cell: None }
+        Self {
+            data: Arc::new(Mutex::new(OptimisticShardStateRepresentation::AsShardState(Arc::new(
+                ShardStateUnsplit::default(),
+            )))),
+        }
     }
 }
 
 impl From<Arc<ShardStateUnsplit>> for OptimisticShardState {
     fn from(value: Arc<ShardStateUnsplit>) -> Self {
-        Self { shard_state: Some(value), shard_state_cell: None }
+        Self { data: Arc::new(Mutex::new(OptimisticShardStateRepresentation::AsShardState(value))) }
     }
 }
 
@@ -50,8 +71,10 @@ impl From<(ShardStateUnsplit, Cell)> for OptimisticShardState {
     fn from(value: (ShardStateUnsplit, Cell)) -> Self {
         let (shard_state, shard_state_root_cell) = value;
         Self {
-            shard_state: Some(Arc::new(shard_state)),
-            shard_state_cell: Some(shard_state_root_cell),
+            data: Arc::new(Mutex::new(OptimisticShardStateRepresentation::Both(
+                Arc::new(shard_state),
+                Arc::new(shard_state_root_cell),
+            ))),
         }
     }
 }
@@ -59,19 +82,32 @@ impl From<(ShardStateUnsplit, Cell)> for OptimisticShardState {
 impl From<(Arc<ShardStateUnsplit>, Cell)> for OptimisticShardState {
     fn from(value: (Arc<ShardStateUnsplit>, Cell)) -> Self {
         let (shard_state, shard_state_root_cell) = value;
-        Self { shard_state: Some(shard_state), shard_state_cell: Some(shard_state_root_cell) }
+        Self {
+            data: Arc::new(Mutex::new(OptimisticShardStateRepresentation::Both(
+                shard_state,
+                Arc::new(shard_state_root_cell),
+            ))),
+        }
     }
 }
 
 impl From<Cell> for OptimisticShardState {
-    fn from(value: Cell) -> Self {
-        Self { shard_state: None, shard_state_cell: Some(value) }
+    fn from(shard_state_root_cell: Cell) -> Self {
+        Self {
+            data: Arc::new(Mutex::new(OptimisticShardStateRepresentation::AsCell(Arc::new(
+                shard_state_root_cell,
+            )))),
+        }
     }
 }
 
 impl From<ShardStateUnsplit> for OptimisticShardState {
     fn from(value: ShardStateUnsplit) -> Self {
-        Self { shard_state: Some(Arc::new(value)), shard_state_cell: None }
+        Self {
+            data: Arc::new(Mutex::new(OptimisticShardStateRepresentation::AsShardState(Arc::new(
+                value,
+            )))),
+        }
     }
 }
 
@@ -80,17 +116,17 @@ impl Serialize for OptimisticShardState {
     where
         S: Serializer,
     {
-        if let Some(cell) = &self.shard_state_cell {
-            <CellFormat as SerializeAs<Cell>>::serialize_as(cell, serializer)
-        } else {
-            let cell = self
-                .shard_state
-                .clone()
-                .expect("Either state or root cell must exist")
-                .serialize()
-                .expect("Failed to serialize shard state");
-            <CellFormat as SerializeAs<Cell>>::serialize_as(&cell, serializer)
-        }
+        self.data.guarded(|e| match e {
+            OptimisticShardStateRepresentation::Both(_, root_cell)
+            | OptimisticShardStateRepresentation::AsCell(root_cell) => {
+                <CellFormat as SerializeAs<Cell>>::serialize_as(root_cell.as_ref(), serializer)
+            }
+            OptimisticShardStateRepresentation::AsShardState(shard_state) => {
+                let cell =
+                    shard_state.clone().serialize().expect("Failed to serialize shard state");
+                <CellFormat as SerializeAs<Cell>>::serialize_as(&cell, serializer)
+            }
+        })
     }
 }
 
@@ -105,29 +141,52 @@ impl<'de> Deserialize<'de> for OptimisticShardState {
 }
 
 impl OptimisticShardState {
-    pub fn into_cell(&mut self) -> Cell {
-        if self.shard_state_cell.is_none() {
-            let cell = self
-                .shard_state
-                .clone()
-                .expect("Either state or root cell must exist")
-                .serialize()
-                .expect("Failed to serialize shard state");
-            self.shard_state_cell = Some(cell);
-        }
-        self.shard_state_cell.clone().unwrap()
+    pub fn make_an_independent_copy(&self) -> Self {
+        OptimisticShardState { data: Arc::new(Mutex::new(self.data.lock().clone())) }
     }
 
-    pub fn into_shard_state(&mut self) -> Arc<ShardStateUnsplit> {
-        if self.shard_state.is_none() {
-            assert!(self.shard_state_cell.is_some());
-            let cell = self.shard_state_cell.clone().unwrap();
-            let shard_state = Arc::new(
-                ShardStateUnsplit::construct_from_cell(cell)
-                    .expect("Failed to deserialize shard state from cell"),
-            );
-            self.shard_state = Some(shard_state.clone());
-        }
-        self.shard_state.clone().unwrap()
+    pub fn into_cell(&self) -> Arc<Cell> {
+        self.data.guarded_mut(|e| match e {
+            OptimisticShardStateRepresentation::Both(_, root_cell)
+            | OptimisticShardStateRepresentation::AsCell(root_cell) => Arc::clone(root_cell),
+            OptimisticShardStateRepresentation::AsShardState(shard_state) => {
+                let root_cell = Arc::new(
+                    shard_state.clone().serialize().expect("Failed to serialize shard state"),
+                );
+                *e = OptimisticShardStateRepresentation::Both(
+                    Arc::clone(shard_state),
+                    Arc::clone(&root_cell),
+                );
+                root_cell
+            }
+        })
+    }
+
+    pub fn into_shard_state(&self) -> Arc<ShardStateUnsplit> {
+        self.data.guarded_mut(|e| match e {
+            OptimisticShardStateRepresentation::Both(shard_state, _)
+            | OptimisticShardStateRepresentation::AsShardState(shard_state) => {
+                tracing::trace!("take existing shard state");
+                Arc::clone(shard_state)
+            }
+            OptimisticShardStateRepresentation::AsCell(root_cell) => {
+                let cell = Arc::make_mut(root_cell).clone();
+                tracing::trace!("deser shard state from cell start");
+                let shard_state = Arc::new(
+                    ShardStateUnsplit::construct_from_cell(cell)
+                        .expect("Failed to deserialize shard state from cell"),
+                );
+                tracing::trace!("deser shard state from cell finish");
+                *e = OptimisticShardStateRepresentation::Both(
+                    Arc::clone(&shard_state),
+                    Arc::clone(root_cell),
+                );
+                shard_state
+            }
+        })
+    }
+
+    pub fn clone_representation(&self) -> OptimisticShardStateRepresentation {
+        self.data.guarded(|e| e.clone())
     }
 }

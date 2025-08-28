@@ -30,17 +30,22 @@ pub fn set_bk_set(
         return false;
     };
 
-    block_state.guarded_mut(|e| {
+    let bk_set_len = bk_set.len();
+    let (did_update, thread_id) = block_state.guarded_mut(|e| {
+        let mut did_update = false;
         if e.bk_set().is_none() {
-            if let Some(thread_id) = e.thread_identifier() {
-                metrics.inspect(|m| m.report_bk_set_size(bk_set.len() as u64, thread_id));
-            }
-
             let _ = e.set_bk_set(bk_set);
+            did_update = true;
         }
         if e.future_bk_set().is_none() {
             let _ = e.set_future_bk_set(future_bk_set);
         }
+        (did_update, *e.thread_identifier())
     });
+    if did_update {
+        if let Some(thread_id) = thread_id {
+            metrics.inspect(|m| m.report_bk_set_size(bk_set_len as u64, &thread_id));
+        }
+    }
     true
 }

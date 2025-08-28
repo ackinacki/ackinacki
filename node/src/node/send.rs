@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use network::channel::NetDirectSender;
 
 use crate::bls::envelope::BLSSignedEnvelope;
+use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::NodeAssociatedTypes;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
@@ -32,7 +33,7 @@ pub fn send_blocks_range_request(
         exclusive_to,
         at_least_n_blocks
     );
-    network_direct_tx.send((
+    match network_direct_tx.send((
         destination_node_id,
         NetworkMessage::BlockRequest {
             inclusive_from,
@@ -41,7 +42,14 @@ pub fn send_blocks_range_request(
             thread_id,
             at_least_n_blocks,
         },
-    ))?;
+    )) {
+        Ok(()) => {}
+        Err(e) => {
+            if SHUTDOWN_FLAG.get() != Some(&true) {
+                anyhow::bail!("Failed to send direct message: {e}");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -52,19 +60,17 @@ where
 {
     pub(crate) fn broadcast_node_joining(&self) -> anyhow::Result<()> {
         tracing::trace!("Broadcast NetworkMessage::NodeJoining");
-        self.network_broadcast_tx.send(NetworkMessage::NodeJoining((
-            self.config.local.node_id.clone(),
-            self.thread_id,
-        )))?;
-        Ok(())
-    }
-
-    pub(crate) fn _broadcast_candidate_block(
-        &self,
-        candidate_block: <Self as NodeAssociatedTypes>::CandidateBlock,
-    ) -> anyhow::Result<()> {
-        tracing::info!("broadcasting block: {}", candidate_block,);
-        self.network_broadcast_tx.send(NetworkMessage::candidate(&candidate_block)?)?;
+        match self
+            .network_broadcast_tx
+            .send(NetworkMessage::NodeJoining((self.config.local.node_id.clone(), self.thread_id)))
+        {
+            Ok(_) => {}
+            Err(e) => {
+                if SHUTDOWN_FLAG.get() != Some(&true) {
+                    anyhow::bail!("Failed to broadcast node joining: {e}");
+                }
+            }
+        }
         Ok(())
     }
 
@@ -104,12 +110,19 @@ where
             block_identifier,
             shared_res_address
         );
-        self.network_broadcast_tx.send(NetworkMessage::SyncFinalized((
+        match self.network_broadcast_tx.send(NetworkMessage::SyncFinalized((
             block_identifier,
             block_seq_no,
             shared_res_address,
             self.thread_id,
-        )))?;
+        ))) {
+            Ok(_) => {}
+            Err(e) => {
+                if SHUTDOWN_FLAG.get() != Some(&true) {
+                    anyhow::bail!("Failed to broadcast sync finalized: {e}");
+                }
+            }
+        }
         Ok(())
     }
 
@@ -119,8 +132,17 @@ where
         from_seq_no: BlockSeqNo,
     ) -> anyhow::Result<()> {
         tracing::info!("sending syncFrom to node {}: {:?}", node_id, from_seq_no,);
-        self.network_direct_tx
-            .send((node_id, NetworkMessage::SyncFrom((from_seq_no, self.thread_id))))?;
+        match self
+            .network_direct_tx
+            .send((node_id, NetworkMessage::SyncFrom((from_seq_no, self.thread_id))))
+        {
+            Ok(()) => {}
+            Err(e) => {
+                if SHUTDOWN_FLAG.get() != Some(&true) {
+                    anyhow::bail!("Failed to send sync from: {e}");
+                }
+            }
+        }
         Ok(())
     }
 
@@ -130,26 +152,14 @@ where
         ack: <Self as NodeAssociatedTypes>::Ack,
     ) -> anyhow::Result<()> {
         tracing::trace!("Broadcasting Ack: {:?}", ack.data());
-        self.network_broadcast_tx.send(NetworkMessage::Ack((ack, self.thread_id)))?;
-        Ok(())
-    }
-
-    pub(crate) fn _send_ack(
-        &self,
-        node_id: NodeIdentifier,
-        ack: <Self as NodeAssociatedTypes>::Ack,
-    ) -> anyhow::Result<()> {
-        tracing::info!("sending Ack to node {}: {:?}", node_id, ack.data(),);
-        self.network_direct_tx.send((node_id, NetworkMessage::Ack((ack, self.thread_id))))?;
-        Ok(())
-    }
-
-    pub(crate) fn _broadcast_nack(
-        &self,
-        nack: <Self as NodeAssociatedTypes>::Nack,
-    ) -> anyhow::Result<()> {
-        tracing::trace!("Broadcasting Nack: {:?}", nack.data().block_id);
-        self.network_broadcast_tx.send(NetworkMessage::Nack((nack, self.thread_id)))?;
+        match self.network_broadcast_tx.send(NetworkMessage::Ack((ack, self.thread_id))) {
+            Ok(_) => {}
+            Err(e) => {
+                if SHUTDOWN_FLAG.get() != Some(&true) {
+                    anyhow::bail!("Failed to broadcast ack: {e}");
+                }
+            }
+        }
         Ok(())
     }
 }

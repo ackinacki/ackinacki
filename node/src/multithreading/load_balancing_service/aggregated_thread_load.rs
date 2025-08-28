@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::in_thread_accounts_load::InThreadAccountsLoad;
 use crate::bitmask::mask::Bitmask;
 use crate::helper::metrics::BlockProductionMetrics;
@@ -52,7 +54,7 @@ impl AggregatedLoad {
     pub fn append_from<TOptimisticState>(
         &mut self,
         block: &AckiNackiBlock,
-        block_state: &mut TOptimisticState,
+        block_state: Arc<TOptimisticState>,
         metrics: &Option<BlockProductionMetrics>,
     ) where
         TOptimisticState: OptimisticState,
@@ -63,7 +65,7 @@ impl AggregatedLoad {
             self.cursor = 0;
         }
         let prev = self.window[self.cursor];
-        let queue_length = snapshot_load(block_state);
+        let queue_length = snapshot_load(Arc::clone(&block_state));
         metrics
             .as_ref()
             .inspect(|m| m.report_int_msg_queue_size(queue_length, block_state.get_thread_id()));
@@ -77,7 +79,7 @@ impl AggregatedLoad {
     }
 }
 
-fn snapshot_load<T>(block_state: &mut T) -> Load
+fn snapshot_load<T>(block_state: Arc<T>) -> Load
 where
     T: OptimisticState,
 {

@@ -139,17 +139,18 @@ contract Multifactor is Modifiers {
     }
 
     /** Functions to add check and delete JWK keys  */
-    bytes _wasm_hash = hex"c5b3fe1a4fa391e9660a13d55ca2200f9343d5b1d18473ebbee19d8219e3ddc1";
+    bytes _wasm_hash = hex"25dc3d80d7e4d8f27dfadc9c2faf9cf2d8dea0a9e08a692da2db7e34d74d66e1";
+    //hex"f45dae3df26f2a45f006bd7e7d32f426e240dfd1391669953688cb40886aff11";
     string _wasm_module = "docs:tlschecker/tls-check-interface@0.1.0";
     string _wasm_function = "tlscheck";
     bytes _wasm_binary = "";
-    function addJwkModulus(uint256 root_cert_sn, bytes kid, bytes tls_data) public returns (bool success) {
+    function addJwkModulus(uint256 root_cert_sn, bytes lv_kid, bytes tls_data) public returns (bool success) {
         require(_root_provider_certificates.exists(root_cert_sn), ERR_CERT_NOT_FOUND);
         bytes stamp = bytes(bytes4(block.timestamp & 0xFFFFFFFF));
         TvmCell wasm_result_cell = gosh.runwasmconcatmultiarg(abi.encode(_wasm_hash), 
         abi.encode(tls_data), 
         abi.encode(_root_provider_certificates[root_cert_sn]), 
-        abi.encode(kid), 
+        abi.encode(lv_kid), 
         abi.encode(stamp), 
         abi.encode(_wasm_function), abi.encode(_wasm_module), abi.encode(_wasm_binary));
         bytes wasm_result = abi.decode(wasm_result_cell, bytes);
@@ -163,11 +164,12 @@ contract Multifactor is Modifiers {
         jwk_modulus_expire_at_new |= uint64(uint8(wasm_result[3])) << 40; 
         jwk_modulus_expire_at_new |= uint64(uint8(wasm_result[2])) << 48; 
         jwk_modulus_expire_at_new |= uint64(uint8(wasm_result[1])) << 56; 
+        bytes kid = lv_kid[1:];
         uint jwk_hash = tvm.hash(kid);
         bool permitted = (jwk_modulus_expire_at_new > uint64(block.timestamp + MIN_JWK_LIFE_TIME )) && ((!_jwk_modulus_data.exists(jwk_hash)) || (_jwk_modulus_data[jwk_hash].modulus_expire_at < uint64(block.timestamp + MIN_JWK_LIFE_TIME ))); 
         require(permitted, ERR_INVALID_JWK); 
         tvm.accept(); 
-        uint8 num_iter = MAX_NUM_OF_JWK;
+        uint8 num_iter = MAX_NUM_OF_JWK; 
         if (_jwk_modulus_data_len < MAX_NUM_OF_JWK) {
             num_iter = _jwk_modulus_data_len;
         }
@@ -176,8 +178,11 @@ contract Multifactor is Modifiers {
             return false;
         }
         bytes jwk_modulus = wasm_result[9:];
+        if (!_jwk_modulus_data.exists(jwk_hash)) {
+            _jwk_modulus_data_len = _jwk_modulus_data_len + 1;
+        }
         _jwk_modulus_data[jwk_hash] = JWKData(jwk_modulus, jwk_modulus_expire_at_new);
-        _jwk_modulus_data_len = _jwk_modulus_data_len + 1;
+
         return true;
     }
 
@@ -265,6 +270,8 @@ contract Multifactor is Modifiers {
         _factors_len = _factors_len + 1;
         return true; 
     }
+
+    /** Functions to add and clear zkp factors  */
 
     function cleanExpiredZKPFactors(uint8 num_iter) inline private {
         optional(uint256, uint256) pair = _factors_ordered_by_timestamp.min();

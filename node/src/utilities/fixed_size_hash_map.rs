@@ -10,6 +10,7 @@ use std::hash::Hash;
 // all its descendants blocks have finalized.
 // However this solution is much faster to implement and it's safe as
 // long as we have a good capacity
+#[derive(Clone)]
 pub struct FixedSizeHashMap<K, V> {
     capacity: usize,
     blocks: HashMap<K, V>,

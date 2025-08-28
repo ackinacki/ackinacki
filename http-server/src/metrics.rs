@@ -1,6 +1,7 @@
 use opentelemetry::metrics::Histogram;
 use opentelemetry::metrics::Meter;
 use opentelemetry::KeyValue;
+use telemetry_utils::out_of_bounds_guard;
 
 #[derive(Clone)]
 pub struct RoutingMetrics {
@@ -31,15 +32,18 @@ impl RoutingMetrics {
     }
 
     pub fn report_ext_msg_delivery_duration(&self, value: u64) {
+        out_of_bounds_guard!(value, "ext_msg_delivery_duration");
         self.ext_msg_delivery_duration.record(value, &[]);
     }
 
     pub fn report_ext_msg_processing_duration(&self, value: u64, http_code: u16) {
+        out_of_bounds_guard!(value, "ext_msg_processing_duration");
         self.ext_msg_processing_duration
             .record(value, &[KeyValue::new("code", http_code.to_string())]);
     }
 
     pub fn report_boc_by_address_response(&self, value: u64, http_code: u16) {
+        out_of_bounds_guard!(value, "boc_by_address_response");
         self.boc_by_address_response.record(value, &[KeyValue::new("code", http_code.to_string())]);
     }
 }

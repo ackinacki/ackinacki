@@ -29,7 +29,7 @@
 			"name": "addJwkModulus",
 			"inputs": [
 				{"name":"root_cert_sn","type":"uint256"},
-				{"name":"kid","type":"bytes"},
+				{"name":"lv_kid","type":"bytes"},
 				{"name":"tls_data","type":"bytes"}
 			],
 			"outputs": [

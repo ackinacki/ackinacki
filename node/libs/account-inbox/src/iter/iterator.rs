@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::iter::Iterator;
 use std::ops::RangeInclusive;
 
@@ -17,6 +18,10 @@ pub struct MessagesRangeIterator<'a, MessageKey, Message, Storage>
 where
     Storage: DurableStorageRead<MessageKey, Message>,
 {
+    // pub struct MessagesRange<MessageKey, Message> {
+    //     compacted_history: Option<RangeInclusive<MessageKey>>,
+    //     pub(crate) tail_sequence: VecDeque<(MessageKey, Message)>,
+    // }
     remaining: MessagesRange<MessageKey, Message>,
     db: &'a Storage,
 }
@@ -146,23 +151,39 @@ mod consume {
     >
     where
         Storage: DurableStorageRead<MessageKey, Message>,
-        MessageKey: std::cmp::PartialEq + From<Message>,
+        MessageKey: std::cmp::PartialEq + From<Message> + Clone,
         Message: Clone,
     {
-        let messages = db
+        let mut messages = db
             .remaining_messages(&msg_ref, limit)
             .map_err(|e| IteratorError::LoadMessageError(e))?;
-        let Some(msg_ref) = messages.last().cloned().map(|m| MessageKey::from(m)) else {
-            return Ok((vec![], None));
-        };
-        if msg_ref == end {
-            return Ok((messages, None));
+
+        let message_refs: Vec<_> = messages.iter().cloned().map(MessageKey::from).collect();
+
+        if let Some(pos) = message_refs.iter().position(|k| k == &end) {
+            if pos == message_refs.len() - 1 {
+                // println!("Position OK");
+                return Ok((messages, None));
+            } else {
+                // println!("Position in between");
+                messages.truncate(pos + 1);
+                let next_key = message_refs[pos + 1].clone();
+                return Ok((messages, Some(RangeInclusive::new(next_key, end))));
+            }
         }
-        let Some(next_message_key) =
-            db.next(&msg_ref).map_err(|e| IteratorError::LoadNextRefError(e))?
-        else {
-            return Err(IteratorError::BrokenRange { missing_end: end, actual_last: msg_ref });
-        };
-        Ok((messages, Some(RangeInclusive::new(next_message_key, end))))
+        // The end has not been found yet
+        match message_refs.last().cloned() {
+            Some(last_key) => match db.next(&last_key).map_err(IteratorError::LoadNextRefError)? {
+                Some(next_key) => {
+                    // println!("Position not reached");
+                    Ok((messages, Some(RangeInclusive::new(next_key, end))))
+                }
+                None => Err(IteratorError::BrokenRange { missing_end: end, actual_last: last_key }),
+            },
+            None => {
+                // println!("Position none");
+                Ok((vec![], None))
+            }
+        }
     }
 }

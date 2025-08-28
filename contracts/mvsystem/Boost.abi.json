@@ -1,0 +1,61 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"wallet","type":"address"},
+				{"name":"rootPubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteMbiCur",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setMbiCur",
+			"inputs": [
+				{"name":"mbiCur","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"mbiCur","type":"uint64"},
+				{"name":"wallet","type":"address"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_wallet","type":"address"},
+		{"init":true,"name":"_popitGame","type":"address"},
+		{"init":false,"name":"_root","type":"address"},
+		{"init":false,"name":"_mbiCur","type":"uint64"},
+		{"init":false,"name":"_rootPubkey","type":"uint256"}
+	]
+}

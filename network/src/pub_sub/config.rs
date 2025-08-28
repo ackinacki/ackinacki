@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -6,8 +7,8 @@ use ::serde::Serialize;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::PrivateKeyDer;
-use transport_layer::cert_hash;
 use transport_layer::generate_self_signed_cert;
+use transport_layer::CertHash;
 use transport_layer::TlsCertCache;
 
 pub static DEBUG_CERTIFICATE: &[u8] = include_bytes!("../../certs/debug.ca.pem");
@@ -50,16 +51,24 @@ impl CertFile {
             tracing::info!("Loaded TLS certificate from {}", self.path.to_string_lossy());
             (key.clone_key(), cert.clone())
         } else if let Some(cert_cache) = tls_cert_cache {
-            cert_cache.get_key_cert(None, key.key.as_ref(), ed_key.clone())?
+            let (key, cert) = cert_cache.get_key_cert(None, key.key.as_ref(), ed_key.clone())?;
+            tracing::info!(
+                "Reused previously generated TLS certificate{}: {}, key: {}",
+                if ed_key.is_some() { " with ed signature" } else { "" },
+                CertHash::from(&cert),
+                hex::encode(key.secret_der()),
+            );
+            (key, cert)
         } else {
-            generate_self_signed_cert(None, ed_key.clone())?
+            let (key, cert) = generate_self_signed_cert(None, ed_key.clone())?;
+            tracing::info!(
+                "Generated self signed TLS certificate{}: {}, key: {}",
+                if ed_key.is_some() { " with ed signature" } else { "" },
+                CertHash::from(&cert),
+                hex::encode(key.secret_der()),
+            );
+            (key, cert)
         };
-        tracing::info!(
-            "Generated self signed TLS certificate{}: {}, key: {}",
-            if ed_key.is_some() { " with ed signature" } else { "" },
-            hex::encode(cert_hash(&cert)),
-            hex::encode(key.secret_der()),
-        );
         Ok((vec![cert], key))
     }
 
@@ -118,6 +127,10 @@ impl CertStore {
             }
         }
         Ok(Self { paths: paths.to_vec(), certs })
+    }
+
+    pub(crate) fn cert_hashes(&self) -> HashSet<CertHash> {
+        self.certs.iter().map(CertHash::from).collect()
     }
 }
 

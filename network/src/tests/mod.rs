@@ -2,6 +2,7 @@ mod test_hot_reload;
 mod transport_test;
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -122,13 +123,13 @@ impl<Transport: NetTransport + 'static> Proxy<Transport> {
         tokio::spawn(Self::message_multiplexor(incoming_messages_rx, outgoing_messages_tx.clone()));
 
         let (watch_gossip_config_tx, watch_gossip_config_rx) =
-            tokio::sync::watch::channel(WatchGossipConfig { trusted_pubkeys: vec![] });
+            tokio::sync::watch::channel(WatchGossipConfig { trusted_pubkeys: HashSet::new() });
         let (subscribe_tx, subscribe_rx) = tokio::sync::watch::channel(Vec::new());
         let (peers_tx, _) = tokio::sync::watch::channel(HashMap::new());
         tokio::spawn(watch_gossip(
             shutdown_rx.clone(),
             watch_gossip_config_rx,
-            SubscribeStrategy::<String>::Proxy(config.network.bind),
+            SubscribeStrategy::<String>::Proxy(vec![config.network.bind]),
             chitchat_handle.chitchat(),
             subscribe_tx.clone(),
             peers_tx,
@@ -215,7 +216,7 @@ impl NodeConfig {
                 key_file,
                 None,
                 CertStore::default(),
-                vec![],
+                HashSet::new(),
                 vec![],
                 vec![],
                 None,
@@ -326,7 +327,7 @@ impl<Transport: NetTransport + 'static> Node<Transport> {
         let (gossip_config_tx, _gossip_config_rx) =
             tokio::sync::watch::channel(config.gossip.clone());
         let (watch_gossip_config_tx, watch_gossip_config_rx) =
-            tokio::sync::watch::channel(WatchGossipConfig { trusted_pubkeys: vec![] });
+            tokio::sync::watch::channel(WatchGossipConfig { trusted_pubkeys: HashSet::new() });
         tokio::spawn(split_config(
             shutdown_rx.clone(),
             config_rx,

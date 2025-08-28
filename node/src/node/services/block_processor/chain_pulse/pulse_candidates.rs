@@ -9,10 +9,8 @@ use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
 use crate::node::NetDirectSender;
 use crate::node::NetworkMessage;
 use crate::repository::repository_impl::RepositoryImpl;
-use crate::repository::Repository;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
-use crate::utilities::guarded::Guarded;
 
 #[derive(TypedBuilder)]
 #[allow(dead_code)]
@@ -58,8 +56,8 @@ impl PulseCandidateBlocks {
     #[allow(clippy::mutable_key_type)]
     pub fn evaluate(
         &mut self,
-        candidates: &UnfinalizedBlocksSnapshot,
-        blocks_repository: &RepositoryImpl,
+        _candidates: &UnfinalizedBlocksSnapshot,
+        _blocks_repository: &RepositoryImpl,
     ) -> anyhow::Result<()> {
         let is_triggering = {
             // Dump simple implementation. One of two conditions:
@@ -84,31 +82,31 @@ impl PulseCandidateBlocks {
         // and at the end with an extra buffer (offset by the number of messages).
         self.last_broadcast_timestamp = Instant::now();
 
-        let (finalized_block_id, _) = blocks_repository
-            .select_thread_last_finalized_block(&self.thread_identifier)?
-            .expect("Must be known here");
-        let Some(finalized_block) = blocks_repository.get_finalized_block(&finalized_block_id)?
-        else {
-            tracing::error!("Failed to load finalized block");
-            return Ok(());
-        };
-        let mut sent_cnt = 1;
-        tracing::info!("rebroadcasting block: {}", finalized_block,);
-        let message = NetworkMessage::resent_candidate(&finalized_block, self.node_id.clone())?;
-        let _ = self.broadcast_tx.send(message);
-        for (x, block) in candidates.values() {
-            x.guarded(|e| {
-                if e.is_stored() && !e.is_invalidated() {
-                    sent_cnt += 1;
-                    tracing::info!("rebroadcasting block: {}", block,);
-                    if let Ok(message) =
-                        NetworkMessage::resent_candidate(block, self.node_id.clone())
-                    {
-                        let _ = self.broadcast_tx.send(message);
-                    }
-                }
-            })
-        }
+        // let (finalized_block_id, _) = blocks_repository
+        //     .select_thread_last_finalized_block(&self.thread_identifier)?
+        //     .expect("Must be known here");
+        // let Some(finalized_block) = blocks_repository.get_finalized_block(&finalized_block_id)?
+        // else {
+        //     tracing::error!("Failed to load finalized block");
+        //     return Ok(());
+        // };
+        let sent_cnt = 1;
+        // tracing::info!("rebroadcasting block: {}", finalized_block,);
+        // let message = NetworkMessage::resent_candidate(&finalized_block, self.node_id.clone())?;
+        // let _ = self.broadcast_tx.send(message);
+        // for (x, block) in candidates.values() {
+        // x.guarded(|e| {
+        // if e.is_stored() && !e.is_invalidated() {
+        // sent_cnt += 1;
+        // tracing::info!("rebroadcasting block: {}", block,);
+        // if let Ok(message) =
+        // NetworkMessage::resent_candidate(block, self.node_id.clone())
+        // {
+        // let _ = self.broadcast_tx.send(message);
+        // }
+        // }
+        // })
+        // }
         self.last_broadcast_timestamp =
             Instant::now() + self.resend_extra_timeout_per_candidate.saturating_mul(sent_cnt);
         //

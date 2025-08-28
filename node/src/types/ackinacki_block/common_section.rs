@@ -21,12 +21,11 @@ use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
+use crate::repository::dapp_id_table::DAppIdTableChangeSet;
 use crate::types::bp_selector::ProducerSelector;
-use crate::types::AccountAddress;
-use crate::types::BlockEndLT;
 use crate::types::BlockHeight;
 use crate::types::BlockIdentifier;
-use crate::types::DAppIdentifier;
+use crate::types::BlockRound;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
@@ -46,7 +45,7 @@ pub struct CommonSection {
     pub block_height: BlockHeight,
     pub directives: Directives,
     pub block_attestations: Vec<Envelope<GoshBLS, AttestationData>>,
-    pub round: u16,
+    pub round: BlockRound,
     pub producer_id: NodeIdentifier,
     pub thread_id: ThreadIdentifier,
     pub threads_table: Option<ThreadsTable>,
@@ -65,21 +64,24 @@ pub struct CommonSection {
     // This field must be set, but it is option, because we can't set it up on block creation and update it later
     pub producer_selector: Option<ProducerSelector>,
 
-    pub changed_dapp_ids: HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>,
+    pub changed_dapp_ids: DAppIdTableChangeSet,
+    #[cfg(feature = "monitor-accounts-number")]
+    pub accounts_number_diff: i64,
 }
 
 impl CommonSection {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         thread_id: ThreadIdentifier,
-        round: u16,
+        round: BlockRound,
         producer_id: NodeIdentifier,
         block_keeper_set_changes: Vec<BlockKeeperSetChange>,
         verify_complexity: SignerIndex,
         refs: Vec<BlockIdentifier>,
         threads_table: Option<ThreadsTable>,
-        changed_dapp_ids: HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>,
+        changed_dapp_ids: DAppIdTableChangeSet,
         block_height: BlockHeight,
+        #[cfg(feature = "monitor-accounts-number")] accounts_number_diff: i64,
     ) -> Self {
         CommonSection {
             block_height,
@@ -96,6 +98,8 @@ impl CommonSection {
             nacks: vec![],
             producer_selector: None,
             changed_dapp_ids,
+            #[cfg(feature = "monitor-accounts-number")]
+            accounts_number_diff,
         }
     }
 
@@ -106,24 +110,51 @@ impl CommonSection {
             bincode::serialize(&self.acks).expect("Failed to serialize last finalized blocks");
         let nacks_data =
             bincode::serialize(&self.nacks).expect("Failed to serialize last finalized blocks");
-        WrappedCommonSection {
-            round: self.round,
-            directives: self.directives.clone(),
-            block_attestations: block_attestations_data,
-            producer_id: self.producer_id.clone(),
-            block_keeper_set_changes: self.block_keeper_set_changes.clone(),
-            verify_complexity: self.verify_complexity,
-            acks: acks_data,
-            nacks: nacks_data,
-            producer_selector: self
-                .producer_selector
-                .clone()
-                .expect("Producer selector must be set before serialization"),
-            thread_identifier: self.thread_id,
-            refs: self.refs.clone(),
-            threads_table: self.threads_table.clone(),
-            changed_dapp_ids: self.changed_dapp_ids.clone(),
-            block_height: self.block_height,
+
+        #[cfg(feature = "monitor-accounts-number")]
+        {
+            WrappedCommonSection {
+                round: self.round,
+                directives: self.directives.clone(),
+                block_attestations: block_attestations_data,
+                producer_id: self.producer_id.clone(),
+                block_keeper_set_changes: self.block_keeper_set_changes.clone(),
+                verify_complexity: self.verify_complexity,
+                acks: acks_data,
+                nacks: nacks_data,
+                producer_selector: self
+                    .producer_selector
+                    .clone()
+                    .expect("Producer selector must be set before serialization"),
+                thread_identifier: self.thread_id,
+                refs: self.refs.clone(),
+                threads_table: self.threads_table.clone(),
+                changed_dapp_ids: self.changed_dapp_ids.clone(),
+                block_height: self.block_height,
+                accounts_number_diff: self.accounts_number_diff,
+            }
+        }
+        #[cfg(not(feature = "monitor-accounts-number"))]
+        {
+            WrappedCommonSection {
+                round: self.round,
+                directives: self.directives.clone(),
+                block_attestations: block_attestations_data,
+                producer_id: self.producer_id.clone(),
+                block_keeper_set_changes: self.block_keeper_set_changes.clone(),
+                verify_complexity: self.verify_complexity,
+                acks: acks_data,
+                nacks: nacks_data,
+                producer_selector: self
+                    .producer_selector
+                    .clone()
+                    .expect("Producer selector must be set before serialization"),
+                thread_identifier: self.thread_id,
+                refs: self.refs.clone(),
+                threads_table: self.threads_table.clone(),
+                changed_dapp_ids: self.changed_dapp_ids.clone(),
+                block_height: self.block_height,
+            }
         }
     }
 
@@ -135,28 +166,52 @@ impl CommonSection {
             bincode::deserialize(&data.acks).expect("Failed to deserialize acks");
         let nacks: Vec<Envelope<GoshBLS, NackData>> =
             bincode::deserialize(&data.nacks).expect("Failed to deserialize nacks");
-        Self {
-            round: data.round,
-            directives: data.directives,
-            block_attestations,
-            producer_id: data.producer_id,
-            block_keeper_set_changes: data.block_keeper_set_changes,
-            verify_complexity: data.verify_complexity,
-            acks,
-            nacks,
-            producer_selector: Some(data.producer_selector),
-            refs: data.refs,
-            thread_id: data.thread_identifier,
-            threads_table: data.threads_table,
-            changed_dapp_ids: data.changed_dapp_ids,
-            block_height: data.block_height,
+
+        #[cfg(not(feature = "monitor-accounts-number"))]
+        {
+            Self {
+                round: data.round,
+                directives: data.directives,
+                block_attestations,
+                producer_id: data.producer_id,
+                block_keeper_set_changes: data.block_keeper_set_changes,
+                verify_complexity: data.verify_complexity,
+                acks,
+                nacks,
+                producer_selector: Some(data.producer_selector),
+                refs: data.refs,
+                thread_id: data.thread_identifier,
+                threads_table: data.threads_table,
+                changed_dapp_ids: data.changed_dapp_ids,
+                block_height: data.block_height,
+            }
+        }
+        #[cfg(feature = "monitor-accounts-number")]
+        {
+            Self {
+                round: data.round,
+                directives: data.directives,
+                block_attestations,
+                producer_id: data.producer_id,
+                block_keeper_set_changes: data.block_keeper_set_changes,
+                verify_complexity: data.verify_complexity,
+                acks,
+                nacks,
+                producer_selector: Some(data.producer_selector),
+                refs: data.refs,
+                thread_id: data.thread_identifier,
+                threads_table: data.threads_table,
+                changed_dapp_ids: data.changed_dapp_ids,
+                block_height: data.block_height,
+                accounts_number_diff: data.accounts_number_diff,
+            }
         }
     }
 }
 
 #[derive(Serialize, Deserialize)]
 struct WrappedCommonSection {
-    pub round: u16,
+    pub round: BlockRound,
     pub directives: Directives,
     pub block_attestations: Vec<u8>,
     pub producer_id: NodeIdentifier,
@@ -168,8 +223,10 @@ struct WrappedCommonSection {
     pub thread_identifier: ThreadIdentifier,
     pub refs: Vec<BlockIdentifier>,
     pub threads_table: Option<ThreadsTable>,
-    pub changed_dapp_ids: HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>,
+    pub changed_dapp_ids: DAppIdTableChangeSet,
     pub block_height: BlockHeight,
+    #[cfg(feature = "monitor-accounts-number")]
+    pub accounts_number_diff: i64,
 }
 
 impl Serialize for CommonSection {
@@ -193,20 +250,42 @@ impl<'de> Deserialize<'de> for CommonSection {
 
 impl Debug for CommonSection {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("")
-            .field("thread_id", &self.thread_id)
-            .field("round", &self.round)
-            .field("producer_id", &self.producer_id)
-            .field("directives", &self.directives)
-            .field("block_attestations", &self.block_attestations)
-            .field("block_keeper_set_changes", &self.block_keeper_set_changes)
-            .field("verify_complexity", &self.verify_complexity)
-            .field("acks", &self.acks)
-            .field("nacks", &self.nacks)
-            .field("producer_selector", &self.producer_selector)
-            .field("refs", &self.refs)
-            .field("threads_table", &self.threads_table)
-            .field("changed_dapp_ids.len", &self.changed_dapp_ids.len())
-            .finish()
+        #[cfg(not(feature = "monitor-accounts-number"))]
+        {
+            f.debug_struct("")
+                .field("thread_id", &self.thread_id)
+                .field("round", &self.round)
+                .field("producer_id", &self.producer_id)
+                .field("directives", &self.directives)
+                .field("block_attestations", &self.block_attestations)
+                .field("block_keeper_set_changes", &self.block_keeper_set_changes)
+                .field("verify_complexity", &self.verify_complexity)
+                .field("acks", &self.acks)
+                .field("nacks", &self.nacks)
+                .field("producer_selector", &self.producer_selector)
+                .field("refs", &self.refs)
+                .field("threads_table", &self.threads_table)
+                .field("changed_dapp_ids.len", &self.changed_dapp_ids.len())
+                .finish()
+        }
+        #[cfg(feature = "monitor-accounts-number")]
+        {
+            f.debug_struct("")
+                .field("thread_id", &self.thread_id)
+                .field("round", &self.round)
+                .field("producer_id", &self.producer_id)
+                .field("directives", &self.directives)
+                .field("block_attestations", &self.block_attestations)
+                .field("block_keeper_set_changes", &self.block_keeper_set_changes)
+                .field("verify_complexity", &self.verify_complexity)
+                .field("acks", &self.acks)
+                .field("nacks", &self.nacks)
+                .field("producer_selector", &self.producer_selector)
+                .field("refs", &self.refs)
+                .field("threads_table", &self.threads_table)
+                .field("changed_dapp_ids.len", &self.changed_dapp_ids.len())
+                .field("accounts_number_diff", &self.accounts_number_diff)
+                .finish()
+        }
     }
 }

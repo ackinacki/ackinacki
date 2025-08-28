@@ -8,13 +8,14 @@ use tvm_block::ShardStateUnsplit;
 
 use crate::block_keeper_system::epoch::create_epoch_touch_message;
 use crate::block_keeper_system::BlockKeeperData;
+use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
-use crate::message_storage::MessageDurableStorage;
 use crate::repository::optimistic_shard_state::OptimisticShardState;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::CrossThreadRefData;
 use crate::repository::CrossThreadRefDataRead;
+use crate::storage::MessageDurableStorage;
 use crate::types::account::WrappedAccount;
 use crate::types::thread_message_queue::ThreadMessageQueueState;
 use crate::types::AccountAddress;
@@ -32,7 +33,7 @@ pub struct PreprocessingResult {
     pub redirected_messages: HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     pub settled_messages: HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
 }
-
+#[allow(clippy::too_many_arguments)]
 #[instrument(skip_all)]
 pub fn preprocess<'a, I, TRepo>(
     parent_block_state: State,
@@ -42,6 +43,7 @@ pub fn preprocess<'a, I, TRepo>(
     slashing_messages: Vec<Arc<WrappedMessage>>,
     epoch_block_keeper_data: Vec<BlockKeeperData>,
     message_db: MessageDurableStorage,
+    metrics: Option<BlockProductionMetrics>,
 ) -> anyhow::Result<PreprocessingResult>
 where
     I: std::iter::Iterator<Item = &'a CrossThreadRefData>,
@@ -113,15 +115,15 @@ where
     //
     #[cfg(feature = "allow-threads-merge")]
     compile_error!("need to merge state threads table and DAPP table with other threads");
-
     let mut preprocessed_state = trace_span!("merge dapp id tables").in_scope(|| {
         for block_referenced in all_referenced_blocks.iter() {
-            preprocessed_state.merge_dapp_id_tables(block_referenced.dapp_id_table_diff())?;
+            preprocessed_state.update_dapp_id_table(block_referenced.dapp_id_table_diff());
             preprocessed_state.threads_table.merge(block_referenced.threads_table())?;
         }
         Ok::<_, anyhow::Error>(preprocessed_state)
     })?;
 
+    tracing::trace!("Start crop");
     // --- Handle split thread case ---
     preprocessed_state.crop(descendant_thread_identifier, &in_table, message_db.clone())?;
 
@@ -132,11 +134,11 @@ where
             descendant_thread_identifier,
             preprocessed_state,
             message_db.clone(),
+            metrics,
         )?;
         preprocessed_state = x;
         Ok::<_, anyhow::Error>(preprocessed_state)
     })?;
-
     // Import messages and either settle them or move back to the outbox with the renewed route
 
     let mut settled_messages: HashMap<
@@ -155,7 +157,7 @@ where
                 }
                 // It is possible that this message should be forwarded with the updated route.
                 let account_address: AccountAddress = route.1.clone();
-                let actual_route = preprocessed_state.get_account_routing(&account_address)?;
+                let actual_route = preprocessed_state.get_account_routing(&account_address, None);
                 if &actual_route != route {
                     // Forward with the new route
                     redirected_messages
@@ -226,7 +228,7 @@ pub fn convert_slashing_messages(
         let info = msg.int_header().unwrap();
         let dst = info.dst.address();
         slashing_messages_map
-            .entry(AccountAddress(dst))
+            .entry(dst.into())
             .or_default()
             .push((MessageIdentifier::from(&*message), message));
     }
@@ -248,7 +250,7 @@ pub fn convert_epoch_messages(
             msg.int_header().ok_or_else(|| anyhow::Error::msg("Failed to get message header"))?;
         let dst = info.dst.address();
         high_priority_map
-            .entry(AccountAddress(dst))
+            .entry(dst.into())
             .or_default()
             .push((MessageIdentifier::from(&wrapped_message), Arc::new(wrapped_message)));
     }
@@ -261,16 +263,18 @@ fn import_migrating_accounts_with_their_inboxes(
     descendant_thread_identifier: &ThreadIdentifier,
     mut state: State,
     message_db: MessageDurableStorage,
+    metrics: Option<BlockProductionMetrics>,
 ) -> anyhow::Result<State> {
     let mut migrated_accounts = vec![];
     let mut migrated_inboxes: BTreeMap<AccountAddress, AccountInbox> = BTreeMap::new();
+    let mut outbound_accounts_number = 0;
     for block_referenced in all_referenced_blocks.iter() {
         for (route, (account_state, inbox)) in block_referenced.outbound_accounts().iter() {
             if !in_table.is_match(route, *descendant_thread_identifier) {
                 continue;
             }
             let account_address: AccountAddress = route.1.clone();
-            let actual_route = state.get_account_routing(&account_address)?;
+            let actual_route = state.get_account_routing(&account_address, None);
             assert!(
                 &actual_route == route,
                 concat!(
@@ -285,8 +289,14 @@ fn import_migrating_accounts_with_their_inboxes(
             if let Some(inbox) = inbox {
                 migrated_inboxes.insert(account_address, inbox.clone());
             }
+            outbound_accounts_number += 1;
         }
     }
+
+    if let Some(m) = metrics.as_ref() {
+        m.report_outbound_accounts(outbound_accounts_number, descendant_thread_identifier)
+    }
+
     settle_accounts(&mut state.shard_state, migrated_accounts)?;
     let x = state.messages;
     let y = ThreadMessageQueueState::build_next()
@@ -305,6 +315,9 @@ fn settle_accounts(
     shard_state: &mut OptimisticShardState,
     migrated_accounts: Vec<WrappedAccount>,
 ) -> anyhow::Result<()> {
+    if migrated_accounts.is_empty() {
+        return Ok(());
+    }
     let mut binding = shard_state.into_shard_state();
     let existing_state = Arc::<ShardStateUnsplit>::make_mut(&mut binding);
     let mut existing_accounts = existing_state
@@ -313,7 +326,7 @@ fn settle_accounts(
     for wrapped_account in migrated_accounts.into_iter() {
         existing_accounts
             .insert_with_aug(
-                &wrapped_account.account_id,
+                &wrapped_account.account_id.0,
                 &wrapped_account.account,
                 &wrapped_account.aug,
             )

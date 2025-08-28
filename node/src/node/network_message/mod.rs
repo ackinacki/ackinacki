@@ -115,6 +115,9 @@ pub enum NetworkMessage {
     ),
 
     AuthoritySwitchProtocol(AuthoritySwitch),
+
+    // Local command from authority switch service
+    StartSynchronization,
 }
 
 impl NetworkMessage {
@@ -160,6 +163,7 @@ impl Debug for NetworkMessage {
                 AuthoritySwitchProtocol(AuthoritySwitch::Failed(_)) => {
                     f.write_str("AuthoritySwitch::Failed")
                 }
+                StartSynchronization => f.write_str("StartSynchronization"),
             }
         } else {
             let enum_type = match self {
@@ -185,6 +189,7 @@ impl Debug for NetworkMessage {
                 }
                 AuthoritySwitchProtocol(AuthoritySwitch::Switched(_)) => "AuthoritySwitch::Success",
                 AuthoritySwitchProtocol(AuthoritySwitch::Failed(_)) => "AuthoritySwitch::Failed",
+                StartSynchronization => "StartSynchronization",
             };
             write!(f, "NetworkMessage::{enum_type}")
         }

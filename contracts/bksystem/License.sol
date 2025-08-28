@@ -24,150 +24,100 @@ contract LicenseContract is Modifiers {
 
     optional(address) _bkwallet;
     uint128 _reputationTime;
-    bool _isPriority = true;
+    bool _isPrivileged = true;
 
     mapping(uint8 => TvmCell) _code;
-    uint32 _license_start;
+    uint64 _license_start;
     bool is_ready = false;
-    uint128 _lock_seqno;
-    uint32 _last_touch;
+    uint64 _last_touch;
+    uint64 _licenseLastTouch;
 
-    /**
-     * @dev Initializes the License contract with the public key of the owner, wallet code, and the root election address.
-     * @param pubkey The public key of the license owner.
-     * @param walletCode The code of the wallet to be used in the contract.
-     * @param rootElection The address of the root election entity.
-     *
-     * Requirements:
-     * - Only callable by the `_root` address.
-     */
     constructor (
         uint256 pubkey,
         TvmCell walletCode,
         address rootElection
-    ) senderIs(_root) {
-        ensureBalance();
+    ) senderIs(_root) accept {
         _owner_pubkey = pubkey;
         _code[m_AckiNackiBlockKeeperNodeWalletCode] = walletCode;
         _rootElection = rootElection;
+        _licenseLastTouch = 0;
     }
 
-    /**
-     * @dev Allows the owner to update their owner address.
-     * @param owner The new address for the owner. 
-     *
-     * Requirements:
-     * - Only callable by the current owner (verified by '_owner_address' or `_owner_pubkey`).
-     */
-    function setOwnerAddress(address owner) public onlyOwnerWalletOpt(_owner_address, _owner_pubkey) accept saveMsg {
+    function setOwnerAddress(address owner) public onlyOwnerWalletOpt(_owner_address, _owner_pubkey) accept {
+        require(block.seqno > _licenseLastTouch + LICENSE_TOUCH, ERR_LICENSE_BUSY);
+        _licenseLastTouch = block.seqno;
+        ensureBalance();
         _owner_address = owner;
         _owner_pubkey = null;
     }
 
-    /**
-     * @dev Ensures the contract has enough balance for operations.
-     * If the balance is insufficient, mints additional funds.
-     */
     function ensureBalance() private pure {
         if (address(this).balance > FEE_DEPLOY_LICENSE) { return; }
-        gosh.mintshell(FEE_DEPLOY_LICENSE);
+        gosh.mintshellq(FEE_DEPLOY_LICENSE);
     }
 
-    /**
-     * @dev Allows the owner to update their public key.
-     * @param pubkey The new public key for the owner.
-     *
-     * Requirements:
-     * - Only callable by the current owner (verified by '_owner_address' or `_owner_pubkey`).
-     */
-    function setOwnerPubkey(uint256 pubkey) public onlyOwnerWalletOpt(_owner_address, _owner_pubkey) accept saveMsg {
+    function setOwnerPubkey(uint256 pubkey) public onlyOwnerWalletOpt(_owner_address, _owner_pubkey) accept {
+        require(block.seqno > _licenseLastTouch + LICENSE_TOUCH, ERR_LICENSE_BUSY);
+        _licenseLastTouch = block.seqno;
+        ensureBalance();
         _owner_pubkey = pubkey;
         _owner_address = null;
     }
 
-    /**
-     * @dev Sets whether the license wallet can be locked to stake.
-     * @param lock Boolean value indicating whether the wallet should be locked.
-     *
-     * Requirements:
-     * - The wallet must exist before setting the lock.
-     */
-    function setLockToStake(bool lock) public onlyOwnerWalletOpt(_owner_address, _owner_pubkey) accept saveMsg {
+    function setLockToStake(bool lock) public onlyOwnerWalletOpt(_owner_address, _owner_pubkey) accept {
         require(_bkwallet.hasValue(), ERR_WALLET_NOT_EXIST);
+        require(block.seqno > _licenseLastTouch + LICENSE_TOUCH, ERR_LICENSE_BUSY);
+        _licenseLastTouch = block.seqno;
         ensureBalance();
         AckiNackiBlockKeeperNodeWallet(_bkwallet.get()).setLockToStake{value: 0.1 vmshell, flag: 1}(_license_number, lock);
     }
-
-    /**
-     * @dev Removes the connecting with the BlockKeeper wallet for this license.
-     * @param to The address to which the wallet will transfer free rewards.
-     *
-     * Requirements:
-     * - The license must be connected to wallet before it can be removed.
-     */
-    function removeBKWallet(address to) public onlyOwnerWalletOpt(_owner_address, _owner_pubkey) accept saveMsg {
+    
+    function removeBKWallet() public onlyOwnerWalletOpt(_owner_address, _owner_pubkey) accept {
         require(_bkwallet.hasValue(), ERR_WALLET_NOT_EXIST);
+        require(block.seqno > _licenseLastTouch + LICENSE_TOUCH, ERR_LICENSE_BUSY);
+        _licenseLastTouch = block.seqno;
         ensureBalance();
-        AckiNackiBlockKeeperNodeWallet(_bkwallet.get()).removeLicense{value: 0.1 vmshell, flag: 1}(_license_number, to);
+        AckiNackiBlockKeeperNodeWallet(_bkwallet.get()).removeLicense{value: 0.1 vmshell, flag: 1}(_license_number);
     }
 
-    /**
-     * @dev Delete associated wallet from license. 
-     * Sets the actual reputation time.
-     * @param reputationTime The time to set for the reputation after deletion.
-     *
-     * Requirements:
-     * - Only callable by the BlockKeeper wallet.
-     */
-    function deleteLicense(uint128 reputationTime, bool isPriority, uint32 last_touch) public senderIs(_bkwallet.get()) accept {
+    function deleteWallet(uint128 reputationTime, bool isPrivileged, uint64 last_touch) public {
         require(_bkwallet.hasValue(), ERR_WALLET_NOT_EXIST);
+        require(msg.sender == _bkwallet.get(), ERR_INVALID_SENDER);
+        require(block.seqno > _licenseLastTouch + LICENSE_TOUCH, ERR_LICENSE_BUSY);
+        _licenseLastTouch = block.seqno;
+        tvm.accept();
         ensureBalance();
         _bkwallet = null;
         _reputationTime = reputationTime;
-        _isPriority = isPriority;
+        _isPrivileged = isPrivileged;
         _last_touch = last_touch;
     }
 
-    /**
-     * @dev Adds a BlockKeeper wallet connect for this license.
-     * @param pubkey The public key of the BlockKeeper wallet to add.
-     *
-     * Requirements:
-     * - A license should not already connect.
-     * - Need to wait 10 blocks after the last operation.
-     */
-    function addBKWallet(uint256 pubkey) public onlyOwnerWalletOpt(_owner_address, _owner_pubkey) accept saveMsg {
-        require(_bkwallet.hasValue() == false, ERR_WALLET_EXIST);
-        require(_lock_seqno + 10 < block.seqno, ERR_LICENSE_BUSY);
+    function destroyLicense() public  {
+        require(_bkwallet.hasValue(), ERR_WALLET_NOT_EXIST);
+        require(msg.sender == _bkwallet.get(), ERR_INVALID_SENDER);
+        tvm.accept();
         ensureBalance();
-        _lock_seqno = block.seqno;
+        selfdestruct(_rootElection);
+    }
+
+    function addBKWallet(uint256 pubkey) public onlyOwnerWalletOpt(_owner_address, _owner_pubkey) accept {
+        require(_bkwallet.hasValue() == false, ERR_WALLET_EXIST);
+        require(block.seqno > _licenseLastTouch + LICENSE_TOUCH, ERR_LICENSE_BUSY);
+        _licenseLastTouch = block.seqno;
+        ensureBalance();
         if (is_ready == false) {
-            AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, pubkey)).addLicense{value: 0.1 vmshell, flag: 1}(_license_number, _reputationTime, block.timestamp, _isPriority);
+            AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, pubkey)).addLicense{value: 0.1 vmshell, flag: 1}(_license_number, _reputationTime, block.seqno, _isPrivileged);
         } else {
-            AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, pubkey)).addLicense{value: 0.1 vmshell, flag: 1}(_license_number, _reputationTime, _last_touch, _isPriority);
+            AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, pubkey)).addLicense{value: 0.1 vmshell, flag: 1}(_license_number, _reputationTime, _last_touch, _isPrivileged);
         }
     }
 
-    /**
-     * @dev Get message that the license as not accepted for the BlockKeeperWallet with given public key.
-     * @param pubkey The public key of the BlockKeeper wallet.
-     *
-     * Requirements:
-     * - Only callable by the associated BlockKeeper wallet.
-     */
     function notAcceptLicense(uint256 pubkey) public view senderIs(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, pubkey)) accept {
         ensureBalance();
     }
 
-    /**
-     * @dev Accepts a license for a BlockKeeperWallet with given public key and starts the license from a specified time if it first time.
-     * @param pubkey The public key of the BlockKeeper wallet.
-     * @param last_touch The actual time of the license connect.
-     *
-     * Requirements:
-     * - Only callable by the associated BlockKeeper wallet.
-     */
-    function acceptLicense(uint256 pubkey, uint32 last_touch) public senderIs(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, pubkey)) accept {
+    function acceptLicense(uint256 pubkey, uint64 last_touch) public senderIs(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, pubkey)) accept {
         ensureBalance();
         if (is_ready == false) {
             is_ready = true;
@@ -175,18 +125,42 @@ contract LicenseContract is Modifiers {
         }
         _last_touch = last_touch;
         _bkwallet = msg.sender;
+        if (uint128(address(this).currencies[CURRENCIES_ID]) != 0) {
+            mapping(uint32 => varuint32) data;
+            data[CURRENCIES_ID] = address(this).currencies[CURRENCIES_ID];
+            AckiNackiBlockKeeperNodeWallet(msg.sender).addBalance{value: 0.1 vmshell, flag: 1, currencies: data}(_license_number);
+        }
     }
 
-    /**
-     * @dev Allows the owner to withdraw tokens from the BlockKeeper wallet.
-     * @param to The address to which the tokens will be sent.
-     * @param value The amount of tokens to withdraw.
-     *
-     * Requirements:
-     * - Only callable by the current owner.
-     */
-    function toWithdrawToken(address to, uint128 value) public onlyOwnerWalletOpt(_owner_address, _owner_pubkey) accept saveMsg {
+    function toWithdrawToken(address to, uint128 value) public onlyOwnerWalletOpt(_owner_address, _owner_pubkey) accept {
+        ensureBalance();
+        require(_bkwallet.hasValue(), ERR_WALLET_NOT_EXIST);
+        require(block.seqno > _licenseLastTouch + LICENSE_TOUCH, ERR_LICENSE_BUSY);
+        _licenseLastTouch = block.seqno;
         AckiNackiBlockKeeperNodeWallet(_bkwallet.get()).withdrawToken{value: 0.1 vmshell, flag: 1}(_license_number, to, value);
+    }
+
+    function withdrawToken(address to, uint128 value) public onlyOwnerWalletOpt(_owner_address, _owner_pubkey) accept {
+        ensureBalance();
+        require(!_bkwallet.hasValue(), ERR_WALLET_EXIST);
+        require(uint128(address(this).currencies[CURRENCIES_ID]) >= value, ERR_TOO_LOW_BALANCE);
+        require(block.seqno > _licenseLastTouch + LICENSE_TOUCH, ERR_LICENSE_BUSY);
+        _licenseLastTouch = block.seqno;
+        mapping(uint32 => varuint32) data;
+        data[CURRENCIES_ID] = value;
+        _isPrivileged = false;
+        to.transfer({value: 0.1 vmshell, currencies: data, flag: 1});    
+    }
+
+    function toAddBalance(uint128 value) public onlyOwnerWalletOpt(_owner_address, _owner_pubkey) accept {
+        ensureBalance();
+        require(_bkwallet.hasValue(), ERR_WALLET_NOT_EXIST);
+        require(uint128(address(this).currencies[CURRENCIES_ID]) >= value, ERR_TOO_LOW_BALANCE);
+        require(block.seqno > _licenseLastTouch + LICENSE_TOUCH, ERR_LICENSE_BUSY);
+        _licenseLastTouch = block.seqno;
+        mapping(uint32 => varuint32) data;
+        data[CURRENCIES_ID] = value;
+        AckiNackiBlockKeeperNodeWallet(_bkwallet.get()).addBalance{value: 0.1 vmshell, currencies: data, flag: 1}(_license_number);
     }
 
     //Fallback/Receive
@@ -195,14 +169,10 @@ contract LicenseContract is Modifiers {
 
 
     //Getters
-    function getDetails() external view returns (uint256 license_number, optional(address) bkwallet, optional(uint256) owner_pubkey, optional(address) owner_address, uint128 reputationTime) {
-        return (_license_number, _bkwallet, _owner_pubkey, _owner_address, _reputationTime);
+    function getDetails() external view returns (uint256 license_number, optional(address) bkwallet, optional(uint256) owner_pubkey, optional(address) owner_address, uint128 reputationTime, uint64 license_start) {
+        return (_license_number, _bkwallet, _owner_pubkey, _owner_address, _reputationTime, _license_start);
     }
     
-    /*
-     * @dev Retrieves the BlockKeeper wallet address.
-     * @return The address of the BlockKeeper wallet if available.
-     */
     function getBK() external view returns (optional(address) bkwallet) {
         return _bkwallet;
     }
@@ -211,11 +181,6 @@ contract LicenseContract is Modifiers {
         return (_owner_pubkey, _owner_address);
     }
 
-    /**
-     * @dev Retrieves the contract version and its type.
-     * @return version The version of the contract.
-     * @return type The type of the contract.
-     */
     function getVersion() external pure returns(string, string) {
         return (version, "LicenseBlockKeeper");
     }   

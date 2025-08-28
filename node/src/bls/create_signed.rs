@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use itertools::Itertools;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -36,7 +37,10 @@ where
         data: TData,
     ) -> anyhow::Result<Self> {
         let Some(bk_data) = bk_set.get_by_node_id(node_identifier).cloned() else {
-            anyhow::bail!("Node is not in the bk set");
+            anyhow::bail!(
+                "Node \"{node_identifier}\" is not in the bk set [{}]",
+                bk_set.iter_node_ids().join(",")
+            );
         };
         let Some((secret, _)) = bls_keys_map.get(&bk_data.pubkey).cloned() else {
             anyhow::bail!("Bls keymap does not have secret stored");

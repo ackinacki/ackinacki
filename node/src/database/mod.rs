@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use database::documents_db::DocumentsDb;
+use parking_lot::Mutex;
 use tvm_block::Deserializable;
 use tvm_block::ShardStateUnsplit;
 use tvm_types::Cell;
@@ -18,7 +19,7 @@ use crate::types::AckiNackiBlock;
 pub mod serialize_block;
 
 pub fn write_to_db(
-    archive: Arc<dyn DocumentsDb>,
+    archive: Arc<Mutex<dyn DocumentsDb>>,
     envelope: Envelope<GoshBLS, AckiNackiBlock>,
     shard_state: Option<Arc<ShardStateUnsplit>>,
     shard_state_cell: Option<Cell>,
@@ -40,7 +41,7 @@ pub fn write_to_db(
     tracing::trace!("Write to archive: seq_no={:?}, id={:?}", block.seq_no(), block.identifier());
 
     let mut transaction_traces = HashMap::new();
-    reflect_block_in_db(sqlite_clone, envelope, shard_state, &mut transaction_traces)
+    reflect_block_in_db(sqlite_clone, envelope, None, shard_state, &mut transaction_traces)
         .map_err(|e| anyhow::format_err!("Failed to archive block data: {e}"))
         .expect("Failed to archive block data");
 

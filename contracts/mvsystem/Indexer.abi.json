@@ -1,0 +1,110 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"wallet","type":"address"},
+				{"name":"rootPubkey","type":"uint256"},
+				{"name":"index","type":"uint128"},
+				{"name":"root","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "isOwner",
+			"inputs": [
+				{"name":"wallet","type":"address"},
+				{"name":"zkid","type":"string"},
+				{"name":"proof","type":"bytes"},
+				{"name":"epk","type":"uint256"},
+				{"name":"epk_sig","type":"bytes"},
+				{"name":"epk_expire_at","type":"uint64"},
+				{"name":"jwk_modulus","type":"bytes"},
+				{"name":"kid","type":"bytes"},
+				{"name":"jwk_modulus_expire_at","type":"uint64"},
+				{"name":"index_mod_4","type":"uint8"},
+				{"name":"iss_base_64","type":"string"},
+				{"name":"header_base_64","type":"string"},
+				{"name":"pub_recovery_key","type":"uint256"},
+				{"name":"pub_recovery_key_sig","type":"bytes"},
+				{"name":"root_provider_certificates","type":"map(uint256,bytes)"},
+				{"name":"owner_pubkey","type":"uint256"},
+				{"name":"index","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "isOwnerRoot",
+			"inputs": [
+				{"name":"wallet","type":"address"},
+				{"name":"zkid","type":"string"},
+				{"name":"proof","type":"bytes"},
+				{"name":"epk","type":"uint256"},
+				{"name":"epk_sig","type":"bytes"},
+				{"name":"epk_expire_at","type":"uint64"},
+				{"name":"jwk_modulus","type":"bytes"},
+				{"name":"kid","type":"bytes"},
+				{"name":"jwk_modulus_expire_at","type":"uint64"},
+				{"name":"index_mod_4","type":"uint8"},
+				{"name":"iss_base_64","type":"string"},
+				{"name":"header_base_64","type":"string"},
+				{"name":"pub_recovery_key","type":"uint256"},
+				{"name":"pub_recovery_key_sig","type":"bytes"},
+				{"name":"root_provider_certificates","type":"map(uint256,bytes)"},
+				{"name":"owner_pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setNewWalletRoot",
+			"inputs": [
+				{"name":"wallet","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setNewWallet",
+			"inputs": [
+				{"name":"wallet","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"name","type":"string"},
+				{"name":"wallet","type":"address"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":true,"name":"_name","type":"string"},
+		{"init":false,"name":"_wallet","type":"address"},
+		{"init":false,"name":"_root","type":"address"},
+		{"init":false,"name":"_rootPubkey","type":"uint256"}
+	]
+}

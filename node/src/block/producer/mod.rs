@@ -10,6 +10,7 @@ pub use single_block_verifier::BlockVerifier;
 pub use single_block_verifier::TVMBlockVerifier;
 pub mod builder;
 pub mod process;
+pub mod wasm;
 
 pub mod errors;
 pub(crate) mod execution_time;

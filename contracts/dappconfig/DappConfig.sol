@@ -22,7 +22,6 @@ contract DappConfig is Modifiers {
 
     CreditConfig _data;
     address _owner;
-    address _voter;
     uint256 _dapp_id;
 
     /**
@@ -33,28 +32,29 @@ contract DappConfig is Modifiers {
      * - The sender of the deployment transaction must be the DappRoot address.
      */
     constructor (
+        uint256 dapp_id,
         CreditConfig data
     ) {
+        dapp_id;
         TvmCell salt = abi.codeSalt(tvm.code()).get();
         (uint256 dapp_id_salt) = abi.decode(salt, (uint256));
         _owner = address(0x9999999999999999999999999999999999999999999999999999999999999999);
         _dapp_id = dapp_id_salt;
-        _voter = address.makeAddrStd(0, 0);
         require(msg.sender == _owner, ERR_INVALID_SENDER);
         _data = data;
     }
 
     /**
      * @dev Updates the configuration by deducting minted tokens from the available balance.
-     * @param minted The amount of tokens to deduct.
+     * @param value The amount of tokens to deduct.
      *
      * Requirements:
      * - Callable only by the contract itself. Message created by BlockProducer.
      */
     function setNewConfig(
-        uint128 minted
+        int128 value
     ) public internalMsg senderIs(address(this)) functionID(5) {
-        _data.available_balance -= int128(minted);
+        _data.available_balance -= value;
     }
 
     /**
@@ -64,6 +64,22 @@ contract DappConfig is Modifiers {
     receive() external {
         tvm.accept();
         _data.available_balance += int128(msg.currencies[CURRENCIES_ID_SHELL]);
+        uint128 balance_vmshell = uint128(address(this).balance);
+        uint128 value = uint128(address(this).currencies[CURRENCIES_ID_SHELL]);
+        uint128 converted = 0;
+        if (balance_vmshell < MIN_BALANCE) {
+            uint128 for_convert = MIN_BALANCE - balance_vmshell;
+            converted = math.min(value, for_convert);
+            gosh.cnvrtshellq(uint64(converted));
+        }
+        value -= converted;
+        if (value > BALANCE_ECC) {
+            value -= BALANCE_ECC;
+            if (value > type(uint64).max) {
+                value = type(uint64).max;
+            }
+            gosh.burnecc(uint64(value), CURRENCIES_ID_SHELL);
+        }
     }
 
     function getDetails() external view returns(uint256 dapp_id, CreditConfig data) {

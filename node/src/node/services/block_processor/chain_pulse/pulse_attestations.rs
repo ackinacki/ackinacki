@@ -9,7 +9,7 @@ use network::channel::NetDirectSender;
 use typed_builder::TypedBuilder;
 
 use crate::helper::metrics::BlockProductionMetrics;
-use crate::node::services::block_processor::chain_tracker::find_shortest_gap;
+use crate::node::services::block_processor::chain_tracker::_find_shortest_gap;
 use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
 use crate::node::BlockState;
 use crate::node::BlockStateRepository;
@@ -21,6 +21,7 @@ use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 
+#[allow(dead_code)]
 #[derive(TypedBuilder)]
 pub struct PulseAttestations {
     node_id: NodeIdentifier,
@@ -84,7 +85,7 @@ impl PulseAttestations {
     pub fn evaluate(
         &mut self,
         candidates: &UnfinalizedBlocksSnapshot,
-        block_state_repository: &BlockStateRepository,
+        _block_state_repository: &BlockStateRepository,
         metrics: Option<BlockProductionMetrics>,
     ) -> anyhow::Result<()> {
         let is_triggering = {
@@ -94,14 +95,14 @@ impl PulseAttestations {
                 false
             };
             let is_queue_triggered = if let Some(length) = self.trigger_by_length {
-                candidates.len() > length
+                candidates.blocks().len() > length
             } else {
                 false
             };
             is_time_triggered || is_queue_triggered
         };
         if is_triggering {
-            self.try_request_missing(candidates, block_state_repository, metrics.clone())?;
+            // self.try_request_missing(candidates, block_state_repository, metrics.clone())?;
         }
         let gap = if let Some(time) = self.trigger_increase_block_gap {
             if self.last_gap_increase.elapsed() > time {
@@ -124,7 +125,7 @@ impl PulseAttestations {
     }
 
     #[allow(clippy::mutable_key_type)]
-    fn try_request_missing(
+    fn _try_request_missing(
         &mut self,
         candidates: &UnfinalizedBlocksSnapshot,
         block_state_repository: &BlockStateRepository,
@@ -136,7 +137,7 @@ impl PulseAttestations {
             }
         }
         let mut attestation_interested_parties = {
-            candidates.iter().fold(HashSet::new(), |mut all, (_, (e, _))| {
+            candidates.blocks().iter().fold(HashSet::new(), |mut all, (_, (e, _))| {
                 all.extend(e.guarded(|s| s.known_attestation_interested_parties().clone()));
                 all
             })
@@ -148,7 +149,7 @@ impl PulseAttestations {
 
         if let Some(requested) = self.last_requested_range {
             let request_range_start = requested.1;
-            let request_range_end = find_shortest_gap(
+            let request_range_end = _find_shortest_gap(
                 &self.thread_identifier,
                 candidates,
                 block_state_repository,
@@ -156,7 +157,7 @@ impl PulseAttestations {
                 metrics.clone(),
             );
             if let Some(request_range_end) = request_range_end {
-                return self.make_request(
+                return self._make_request(
                     attestation_interested_parties,
                     request_range_start,
                     request_range_end,
@@ -167,7 +168,7 @@ impl PulseAttestations {
         }
         // Note: this next_seq_no use is correct for multithreaded chains environment
         let request_range_start = next_seq_no(self.last_finalized_block_seq_no.unwrap_or_default());
-        let Some(request_range_end) = find_shortest_gap(
+        let Some(request_range_end) = _find_shortest_gap(
             &self.thread_identifier,
             candidates,
             block_state_repository,
@@ -178,7 +179,7 @@ impl PulseAttestations {
         };
         tracing::trace!("set blocks_were_requested");
         self.missing_blocks_were_requested.store(true, atomic::Ordering::Relaxed);
-        self.make_request(
+        self._make_request(
             attestation_interested_parties,
             request_range_start,
             request_range_end,
@@ -187,7 +188,7 @@ impl PulseAttestations {
         )
     }
 
-    fn make_request(
+    fn _make_request(
         &mut self,
         attestation_interested_parties: HashSet<NodeIdentifier>,
         request_range_start: BlockSeqNo,

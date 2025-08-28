@@ -7,7 +7,7 @@ use tvm_block::OutMsgQueueKey;
 
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
-use crate::message_storage::MessageDurableStorage;
+use crate::storage::MessageDurableStorage;
 
 const BATCH_SIZE: usize = 50;
 

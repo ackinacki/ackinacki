@@ -1,0 +1,117 @@
+#[cfg(all(test, feature = "messages_db"))]
+mod write_new_messages_tests {
+    use super::*;
+
+    // Helper to create a dummy WrappedMessage
+    fn dummy_message(id: u64) -> Arc<WrappedMessage> {
+        // You may need to adjust this depending on WrappedMessage's constructor
+        Arc::new(WrappedMessage::dummy_with_id(id))
+    }
+
+    // Helper to create a MessagesRange from a vector of (MessageIdentifier, Arc<WrappedMessage>)
+    fn make_range(
+        items: Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
+    ) -> account_inbox::range::MessagesRange<MessageIdentifier, Arc<WrappedMessage>> {
+        account_inbox::range::MessagesRange::from_vec(items)
+    }
+
+    #[test]
+    fn test_write_new_messages_empty() {
+        let btree: BTreeMap<
+            AccountAddress,
+            account_inbox::range::MessagesRange<MessageIdentifier, Arc<WrappedMessage>>,
+        > = BTreeMap::new();
+        let m_map = Mutex::new(HashMap::new());
+        let result = write_new_messages(&btree, &m_map.lock()).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_write_new_messages_no_last_saved() {
+        let addr = AccountAddress([1u8; 32]);
+        let msg1 = dummy_message(1);
+        let msg2 = dummy_message(2);
+        let id1 = MessageIdentifier::from(msg1.as_ref());
+        let id2 = MessageIdentifier::from(msg2.as_ref());
+        let mut btree = BTreeMap::new();
+        btree.insert(
+            addr.clone(),
+            make_range(vec![(id1.clone(), msg1.clone()), (id2.clone(), msg2.clone())]),
+        );
+        let m_map = Mutex::new(HashMap::new());
+        let result = write_new_messages(&btree, &m_map.lock()).unwrap();
+        assert_eq!(result.len(), 1);
+        let msgs = result.get(&addr).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].0, id1);
+        assert_eq!(msgs[1].0, id2);
+    }
+
+    #[test]
+    fn test_write_new_messages_with_last_saved() {
+        let addr = AccountAddress([2u8; 32]);
+        let msg1 = dummy_message(10);
+        let msg2 = dummy_message(20);
+        let msg3 = dummy_message(30);
+        let id1 = MessageIdentifier::from(msg1.as_ref());
+        let id2 = MessageIdentifier::from(msg2.as_ref());
+        let id3 = MessageIdentifier::from(msg3.as_ref());
+        let mut btree = BTreeMap::new();
+        btree.insert(
+            addr.clone(),
+            make_range(vec![
+                (id1.clone(), msg1.clone()),
+                (id2.clone(), msg2.clone()),
+                (id3.clone(), msg3.clone()),
+            ]),
+        );
+        let mut m_map = HashMap::new();
+        m_map.insert(addr.clone(), id2.clone());
+        let m_map = Mutex::new(m_map);
+        let result = write_new_messages(&btree, &m_map.lock()).unwrap();
+        assert_eq!(result.len(), 1);
+        let msgs = result.get(&addr).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].0, id3);
+    }
+
+    #[test]
+    fn test_write_new_messages_all_saved() {
+        let addr = AccountAddress([3u8; 32]);
+        let msg1 = dummy_message(100);
+        let id1 = MessageIdentifier::from(msg1.as_ref());
+        let mut btree = BTreeMap::new();
+        btree.insert(addr.clone(), make_range(vec![(id1.clone(), msg1.clone())]));
+        let mut m_map = HashMap::new();
+        m_map.insert(addr.clone(), id1.clone());
+        let m_map = Mutex::new(m_map);
+        let result = write_new_messages(&btree, &m_map.lock()).unwrap();
+        // All messages already saved, so result should be empty
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_write_new_messages_multiple_accounts() {
+        let addr1 = AccountAddress([4u8; 32]);
+        let addr2 = AccountAddress([5u8; 32]);
+        let msg1 = dummy_message(1);
+        let msg2 = dummy_message(2);
+        let msg3 = dummy_message(3);
+        let id1 = MessageIdentifier::from(msg1.as_ref());
+        let id2 = MessageIdentifier::from(msg2.as_ref());
+        let id3 = MessageIdentifier::from(msg3.as_ref());
+        let mut btree = BTreeMap::new();
+        btree.insert(
+            addr1.clone(),
+            make_range(vec![(id1.clone(), msg1.clone()), (id2.clone(), msg2.clone())]),
+        );
+        btree.insert(addr2.clone(), make_range(vec![(id3.clone(), msg3.clone())]));
+        let mut m_map = HashMap::new();
+        m_map.insert(addr1.clone(), id1.clone());
+        let m_map = Mutex::new(m_map);
+        let result = write_new_messages(&btree, &m_map.lock()).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get(&addr1).unwrap().len(), 1);
+        assert_eq!(result.get(&addr2).unwrap().len(), 1);
+    }
+}

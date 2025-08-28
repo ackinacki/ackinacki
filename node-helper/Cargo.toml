@@ -8,7 +8,7 @@ license-file.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-gosh_bls_lib.workspace = true
+gosh_blst.workspace = true
 hex.workspace = true
 network.workspace = true
 node.workspace = true

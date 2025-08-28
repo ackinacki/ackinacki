@@ -9,7 +9,10 @@
 				{"name":"LicenseBMCode","type":"cell"},
 				{"name":"whiteListLicense","type":"map(uint256,bool)"},
 				{"name":"licenseBMRoot","type":"address"},
-				{"name":"start_time","type":"uint32"}
+				{"name":"start_time","type":"uint32"},
+				{"name":"waitStep","type":"uint64"},
+				{"name":"signing_pubkey","type":"uint256"},
+				{"name":"walletTouch","type":"uint8"}
 			],
 			"outputs": [
 			]
@@ -18,6 +21,14 @@
 			"name": "removeLicense",
 			"inputs": [
 				{"name":"license_number","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setSigningPubkey",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
 			],
 			"outputs": [
 			]
@@ -33,7 +44,23 @@
 		{
 			"name": "addLicense",
 			"inputs": [
-				{"name":"license_number","type":"uint256"}
+				{"name":"license_number","type":"uint256"},
+				{"name":"reward","type":"uint128"},
+				{"name":"slashSum","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "slash",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "noRewards",
+			"inputs": [
 			],
 			"outputs": [
 			]
@@ -41,7 +68,6 @@
 		{
 			"name": "withdrawToken",
 			"inputs": [
-				{"name":"license_number","type":"uint256"},
 				{"name":"to","type":"address"},
 				{"name":"value","type":"varuint32"}
 			],
@@ -51,7 +77,6 @@
 		{
 			"name": "startBM",
 			"inputs": [
-				{"name":"key","type":"uint256"}
 			],
 			"outputs": [
 			]
@@ -59,6 +84,17 @@
 		{
 			"name": "getReward",
 			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "takeReward",
+			"inputs": [
+				{"name":"walletTouch","type":"uint8"},
+				{"name":"waitStep","type":"uint64"},
+				{"name":"epochStart","type":"uint32"},
+				{"name":"epochEnd","type":"uint32"}
 			],
 			"outputs": [
 			]
@@ -79,7 +115,8 @@
 				{"name":"root","type":"address"},
 				{"name":"balance","type":"uint256"},
 				{"name":"license_num","type":"optional(uint256)"},
-				{"name":"work_key","type":"optional(uint256)"}
+				{"name":"minstake","type":"uint128"},
+				{"name":"signerPubkey","type":"uint256"}
 			]
 		},
 		{
@@ -96,22 +133,27 @@
 	],
 	"fields": [
 		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
-		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
-		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
-		{"init":false,"name":"__value","type":"uint256"},
 		{"init":false,"name":"_code","type":"map(uint8,cell)"},
 		{"init":true,"name":"_owner_pubkey","type":"uint256"},
 		{"init":false,"name":"_root","type":"address"},
-		{"init":false,"name":"_bm_root","type":"address"},
 		{"init":false,"name":"_license_num","type":"optional(uint256)"},
 		{"init":false,"name":"_whiteListLicense","type":"map(uint256,bool)"},
 		{"init":false,"name":"_licenseBMRoot","type":"address"},
 		{"init":false,"name":"_start_bm","type":"optional(uint32)"},
-		{"init":false,"name":"_work_key","type":"optional(uint256)"},
-		{"init":false,"name":"_hash_wallet","type":"uint256"},
 		{"init":false,"name":"_wallet_reward","type":"uint128"},
+		{"init":false,"name":"_slashSum","type":"uint128"},
 		{"init":false,"name":"_start_time","type":"uint32"},
-		{"init":false,"name":"_rewarded","type":"uint32"}
+		{"init":false,"name":"_stop_seqno","type":"uint32"},
+		{"init":false,"name":"_waitStep","type":"uint64"},
+		{"init":false,"name":"_rewarded","type":"uint32"},
+		{"init":false,"name":"_epochStart","type":"uint32"},
+		{"init":false,"name":"_epochEnd","type":"uint32"},
+		{"init":false,"name":"_walletLastTouch","type":"uint64"},
+		{"init":false,"name":"_isSlashing","type":"bool"},
+		{"init":false,"name":"_tryReward","type":"uint32"},
+		{"init":false,"name":"_walletTouch","type":"uint8"},
+		{"init":false,"name":"_signing_pubkey","type":"uint256"}
 	]
 }

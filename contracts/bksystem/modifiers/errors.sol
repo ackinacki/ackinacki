@@ -104,4 +104,11 @@ abstract contract Errors {
     uint16 constant ERR_NOT_SUPPORT = 293;
     uint16 constant ERR_WRONG_LICENSE = 294;
     uint16 constant ERR_WRONG_SIGNER_INDEX = 295;
+    uint16 constant ERR_TOO_LATE = 296;
+    uint16 constant ERR_STAKE_STATUS_NOT_EPOCH = 297;
+    uint16 constant ERR_ALREADY_STARTED = 298;
+    uint16 constant ERR_ALREADY_REWARDED = 299;
+    uint16 constant ERR_WALLET_BUSY = 300;
+    uint16 constant ERR_TOO_MANY_LICENSES = 301;
+    uint16 constant ERR_ALREADY_SLASH = 302;
 }

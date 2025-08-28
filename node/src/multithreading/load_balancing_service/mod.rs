@@ -9,6 +9,8 @@ use crate::bitmask::mask::Bitmask;
 mod in_thread_accounts_load;
 mod threads_merge;
 mod threads_split;
+use std::sync::Arc;
+
 use aggregated_thread_load::AggregatedLoad;
 use aggregated_thread_load::Load;
 
@@ -159,7 +161,7 @@ impl LoadBalancingService {
     pub fn handle_block_finalized<TOptimisticState>(
         &mut self,
         block: &AckiNackiBlock,
-        block_state: &mut TOptimisticState,
+        block_state: Arc<TOptimisticState>,
     ) where
         TOptimisticState: OptimisticState,
     {
@@ -208,8 +210,21 @@ impl crate::multithreading::threads_tracking_service::Subscriber for LoadBalanci
         &mut self,
         _parent_split_block: &BlockIdentifier,
         thread_identifier: &ThreadIdentifier,
+        threads_table: Option<ThreadsTable>,
     ) {
-        tracing::trace!("load balancing handle_start_thread called");
+        tracing::trace!("load balancing handle_start_thread called: {thread_identifier}");
+        // Note: new thread must be inserted after its parent thread. Clear parent thread statistics
+        if let Some(threads) = threads_table {
+            if let Some((index, _row)) =
+                threads.rows().enumerate().find(|(_, row)| row.1 == *thread_identifier)
+            {
+                if let Some((_, parent_thread)) = threads.rows().nth(index + 1) {
+                    if let Some(load) = self.thread_load_map.get_mut(parent_thread) {
+                        load.reset()
+                    }
+                }
+            }
+        }
         self.thread_load_map.insert(*thread_identifier, AggregatedLoad::new(self.window_size));
     }
 

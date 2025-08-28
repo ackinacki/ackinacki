@@ -1,6 +1,7 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::ops::Add;
 use std::ops::Sub;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::RecvTimeoutError;
@@ -8,18 +9,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bls::envelope::BLSSignedEnvelope;
-use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
 use crate::helper::block_flow_trace;
+use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::ExecutionResult;
 use crate::node::associated_types::SynchronizationResult;
 use crate::node::block_request_service::BlockRequestParams;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
 use crate::node::Node;
-use crate::protocol::authority_switch::action_lock::OnNextRoundIncomingRequestResult;
-use crate::protocol::authority_switch::network_message::AuthoritySwitch;
-use crate::protocol::authority_switch::network_message::NextRoundSuccess;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::next_seq_no;
@@ -34,6 +31,7 @@ where
     TStateSyncService: StateSyncService<Repository = RepositoryImpl>,
     TRandomGenerator: rand::Rng,
 {
+    // TODO: remove result, handle all failures
     pub fn execute(&mut self) -> anyhow::Result<()> {
         // Note:
         // This whole thing assumes that there is only one thread.
@@ -126,9 +124,10 @@ where
                 iteration_start.elapsed().as_millis()
             );
 
-            if self.stop_rx.try_recv().is_ok() {
-                self.repository
-                    .dump_unfinalized_blocks(self.unprocessed_blocks_cache.clone_queue());
+            if *SHUTDOWN_FLAG.get().unwrap_or(&false) {
+                let blocks_queue = self.unprocessed_blocks_cache.clone_queue();
+                tracing::trace!("Stop execution: {}", blocks_queue.blocks().len());
+                self.repository.dump_unfinalized_blocks(blocks_queue);
                 tracing::trace!("Stop execution");
                 return Ok(ExecutionResult::Disconnected);
             }
@@ -179,14 +178,10 @@ where
                     Err(RecvTimeoutError::Timeout)
                 } else {
                     tracing::trace!("trying to receive messages from other nodes");
-
                     self.network_rx.recv_timeout(recv_timeout)
                 }
             };
             tracing::trace!("Node message receive result: {:?}", next);
-            if let Some(db_service) = self.db_service.as_ref() {
-                db_service.check();
-            }
             match next {
                 Err(RecvTimeoutError::Disconnected) => {
                     tracing::info!("Disconnect signal received");
@@ -197,244 +192,19 @@ where
                     self.producer_service.touch();
                 }
                 Ok(msg) => match msg {
-                    NetworkMessage::AuthoritySwitchProtocol(auth_switch) => match auth_switch {
-                        AuthoritySwitch::Request(next_round) => {
-                            tracing::trace!("Received NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Request: {next_round:?})");
-                            if let Some(attestation) = next_round.locked_block_attestation().clone()
-                            {
-                                self.last_block_attestations.guarded_mut(|e| {
-                                    e.add(
-                                        attestation,
-                                        |block_id| {
-                                            let Ok(block_state) =
-                                                self.block_state_repository.get(block_id)
-                                            else {
-                                                return None;
-                                            };
-                                            block_state.guarded(|e| e.bk_set().clone())
-                                        },
-                                        |block_id| {
-                                            let Ok(block_state) =
-                                                self.block_state_repository.get(block_id)
-                                            else {
-                                                return None;
-                                            };
-                                            block_state.guarded(|e| e.envelope_hash().clone())
-                                        },
-                                    )
-                                })?;
-                            }
-                            let unprocessed_cache = self.unprocessed_blocks_cache.clone();
-                            let action = self.authority_state.guarded_mut(|e| {
-                                e.on_next_round_incoming_request(next_round, unprocessed_cache)
-                            });
-                            match action {
-                                OnNextRoundIncomingRequestResult::StartingBlockProducer => {}
-                                OnNextRoundIncomingRequestResult::DoNothing => {}
-                                OnNextRoundIncomingRequestResult::Broadcast(e) => {
-                                    tracing::trace!("Broadcast AuthoritySwitch::Switched({e:?})");
-                                    let _ = self.network_broadcast_tx.send(
-                                        NetworkMessage::AuthoritySwitchProtocol(
-                                            AuthoritySwitch::Switched(e.clone()),
-                                        ),
-                                    )?;
-                                    self.on_authority_switch_success(e)?;
-                                }
-                                OnNextRoundIncomingRequestResult::Reject((e, source)) => {
-                                    self.network_direct_tx.send((
-                                        source,
-                                        NetworkMessage::AuthoritySwitchProtocol(
-                                            AuthoritySwitch::Reject(e),
-                                        ),
-                                    ))?
-                                }
-                                OnNextRoundIncomingRequestResult::RejectTooOldRequest(source) => {
-                                    self.network_direct_tx.send((
-                                        source,
-                                        NetworkMessage::AuthoritySwitchProtocol(
-                                            AuthoritySwitch::RejectTooOld(self.thread_id),
-                                        ),
-                                    ))?
-                                }
-                            }
-                        }
-                        AuthoritySwitch::Switched(next_round_success) => {
-                            //
-                            let Ok(proposed_block) =
-                                next_round_success.data().proposed_block().get_envelope()
-                            else {
-                                tracing::trace!("Failed to parse a proposed block");
-                                continue;
-                            };
-                            let parent_block_identifier = proposed_block.data().parent();
-                            let parent_block_state =
-                                self.block_state_repository.get(&parent_block_identifier).unwrap();
-                            let Some(bk_set) =
-                                parent_block_state.guarded(|e| e.descendant_bk_set().clone())
-                            else {
-                                tracing::trace!("Failed to get descendant bk_set");
-                                continue;
-                            };
-                            match next_round_success
-                                .verify_signatures(bk_set.get_pubkeys_by_signers())
-                            {
-                                Ok(false) => {
-                                    tracing::trace!("Invalid signature");
-                                    continue;
-                                }
-                                Err(e) => {
-                                    tracing::trace!("Signature verification failed: {e:?}");
-                                    continue;
-                                }
-                                Ok(true) => {
-                                    // Consistency check
-                                    let is_correct = {
-                                        let signature_occurrences =
-                                            next_round_success.clone_signature_occurrences();
-
-                                        let Some(expected_signer_index) = bk_set
-                                            .get_by_node_id(
-                                                next_round_success.data().node_identifier(),
-                                            )
-                                            .map(|e| e.signer_index)
-                                        else {
-                                            tracing::trace!(
-                                                "Incorrect or malicious message: incorrect node id"
-                                            );
-                                            continue;
-                                        };
-                                        signature_occurrences.len() == 1
-                                            && signature_occurrences.keys().cloned().last()
-                                                == Some(expected_signer_index)
-                                    };
-                                    if !is_correct {
-                                        tracing::trace!("Incorrect or malicious message");
-                                        continue;
-                                    }
-                                }
-                            }
-                            self.on_authority_switch_success(next_round_success)?;
-                        }
-                        AuthoritySwitch::Reject(rejection_reason) => {
-                            let net_block = rejection_reason.prefinalized_block();
-                            //
-                            let Ok(prefinalized_block) = net_block.get_envelope() else {
-                                tracing::trace!("Failed to parse a prefinalized block");
-                                continue;
-                            };
-                            let parent_block_identifier = prefinalized_block.data().parent();
-                            let parent_block_state =
-                                self.block_state_repository.get(&parent_block_identifier).unwrap();
-                            let Some(bk_set) =
-                                parent_block_state.guarded(|e| e.descendant_bk_set().clone())
-                            else {
-                                tracing::trace!("Failed to get descendant bk_set");
-                                continue;
-                            };
-                            match prefinalized_block
-                                .verify_signatures(bk_set.get_pubkeys_by_signers())
-                            {
-                                Ok(false) => {
-                                    tracing::trace!("Invalid signature");
-                                    continue;
-                                }
-                                Err(e) => {
-                                    tracing::trace!("Signature verification failed: {e:?}");
-                                    continue;
-                                }
-                                Ok(true) => {}
-                            }
-                            self.on_incoming_candidate_block(net_block, None)?;
-                            let attestations = rejection_reason.proof_of_prefinalization().clone();
-                            if attestations.data().block_id()
-                                != &prefinalized_block.data().identifier()
-                            {
-                                tracing::warn!(
-                                    "Malicious message: attestation is sent for a wrong block"
-                                );
-                                continue;
-                            }
-                            let round = prefinalized_block.data().get_common_section().round;
-                            self.block_state_repository
-                                .get(&prefinalized_block.data().identifier())
-                                .unwrap()
-                                .guarded_mut(|e| e.add_proposed_in_round(round))?;
-                            let block_state =
-                                self.block_state_repository.get(attestations.data().block_id())?;
-                            // TODO: expedite setting the attestation target.
-                            let Some(attestation_target) =
-                                block_state.guarded(|e| *e.attestation_target())
-                            else {
-                                tracing::trace!("Attestation target is not set for switched block {attestations:?}");
-                                continue;
-                            };
-                            if attestations.clone_signature_occurrences().len()
-                                >= *attestation_target.primary().required_attestation_count()
-                            {
-                                block_state.guarded_mut(|e| -> anyhow::Result<()> {
-                                    e.set_prefinalized()?;
-                                    if e.prefinalization_proof().is_none() {
-                                        e.set_prefinalization_proof(attestations.clone())?;
-                                    }
-                                    Ok(())
-                                })?;
-                            }
-
-                            self.last_block_attestations.guarded_mut(|e| {
-                                e.add(
-                                    attestations,
-                                    |block_id| {
-                                        let Ok(block_state) =
-                                            self.block_state_repository.get(block_id)
-                                        else {
-                                            return None;
-                                        };
-                                        block_state.guarded(|e| e.bk_set().clone())
-                                    },
-                                    |block_id| {
-                                        let Ok(block_state) =
-                                            self.block_state_repository.get(block_id)
-                                        else {
-                                            return None;
-                                        };
-                                        block_state.guarded(|e| e.envelope_hash().clone())
-                                    },
-                                )
-                            })?;
-                        }
-                        AuthoritySwitch::RejectTooOld(_) => {
-                            return Ok(ExecutionResult::SynchronizationRequired);
-                        }
-                        AuthoritySwitch::Failed(e) => {
-                            let net_block = e.data().proposed_block();
-                            self.on_incoming_candidate_block(net_block, None)?;
-                            if let Some(attestations) = e.data().attestations_aggregated().clone() {
-                                self.last_block_attestations.guarded_mut(|e| {
-                                    e.add(
-                                        attestations,
-                                        |block_id| {
-                                            let Ok(block_state) =
-                                                self.block_state_repository.get(block_id)
-                                            else {
-                                                return None;
-                                            };
-                                            block_state.guarded(|e| e.bk_set().clone())
-                                        },
-                                        |block_id| {
-                                            let Ok(block_state) =
-                                                self.block_state_repository.get(block_id)
-                                            else {
-                                                return None;
-                                            };
-                                            block_state.guarded(|e| e.envelope_hash().clone())
-                                        },
-                                    )
-                                })?;
-                            }
-                        }
-                    },
+                    NetworkMessage::StartSynchronization => {
+                        tracing::info!("Received StartSynchronization");
+                        return Ok(ExecutionResult::SynchronizationRequired);
+                    }
+                    NetworkMessage::AuthoritySwitchProtocol(_auth_switch) => {
+                        panic!("This module should not receive authority messages");
+                    }
                     NetworkMessage::NodeJoining((node_id, _)) => {
                         tracing::info!("Received NodeJoining message({node_id})");
+                        tracing::trace!(
+                            "Stalled threads: {:?}",
+                            self.stalled_threads.guarded(|e| e.clone())
+                        );
 
                         let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
                         tracing::trace!(
@@ -451,7 +221,7 @@ where
                                 .repository
                                 .select_thread_last_finalized_block(&thread_id)?
                                 .expect("Must be known here");
-                            if self.production_timeout_multiplier == 0
+                            if self.stalled_threads.guarded(|e| e.contains(&self.thread_id))
                                 || last_finalized_seq_no == BlockSeqNo::default()
                             {
                                 // If node is stopped or this is init of network and some
@@ -478,8 +248,8 @@ where
                                         .guarded_mut(|e| *e = Some(block_seq_no_with_sync));
                                 }
                             }
-                        } else {
-                            tracing::trace!("Ignore NodeJoining message");
+                        } else if let Some((id, seq_no, hint)) = self.last_synced_state.clone() {
+                            self.broadcast_sync_finalized(id, seq_no, hint)?;
                         }
                     }
 
@@ -516,31 +286,8 @@ where
                         );
                         self.on_nack(&nack)?;
                     }
-                    NetworkMessage::ExternalMessage((msg, _)) => {
-                        let mut ext_messages = vec![msg];
-
-                        loop {
-                            match self.network_rx.try_recv() {
-                                Ok(NetworkMessage::ExternalMessage((msg, _))) => {
-                                    ext_messages.push(msg);
-                                }
-                                Ok(other) => {
-                                    next_message = Some(other);
-                                    break;
-                                }
-                                Err(_) => {
-                                    break;
-                                }
-                            }
-                        }
-
-                        // Filter not external inbound messages
-                        ext_messages.retain(|msg| msg.message.ext_in_header().is_some());
-                        if !ext_messages.is_empty() {
-                            tracing::info!("Received external messages: {}", ext_messages.len());
-                            // TODO: here we get incoming ext_messages one by one and in case of big amount of messages we can spend a lot of time processing them one by one
-                            let _ = self.external_messages.push_external_messages(&ext_messages);
-                        }
+                    NetworkMessage::ExternalMessage((_msg, _)) => {
+                        panic!("This module should not receive ext messages");
                     }
                     NetworkMessage::BlockAttestation((attestation, _)) => {
                         tracing::info!(
@@ -553,25 +300,10 @@ where
                             &self.config.local.node_id,
                             [],
                         );
-                        let mut is_new = self.last_block_attestations.guarded_mut(|e| {
-                            e.add(
-                                attestation,
-                                |block_id| {
-                                    let Ok(block_state) = self.block_state_repository.get(block_id)
-                                    else {
-                                        return None;
-                                    };
-                                    block_state.guarded(|e| e.bk_set().clone())
-                                },
-                                |block_id| {
-                                    let Ok(block_state) = self.block_state_repository.get(block_id)
-                                    else {
-                                        return None;
-                                    };
-                                    block_state.guarded(|e| e.envelope_hash().clone())
-                                },
-                            )
-                        })?;
+                        let mut attestations = vec![attestation];
+                        // let mut is_new = self
+                        //     .last_block_attestations
+                        //     .guarded_mut(|e| e.add(attestation, attested_block_state, true))?;
                         loop {
                             match self.network_rx.try_recv() {
                                 Ok(NetworkMessage::BlockAttestation((attestation, _))) => {
@@ -579,29 +311,12 @@ where
                                         "Received block attestation for thread {:?} {attestation:?}",
                                         self.thread_id
                                     );
-                                    if self.last_block_attestations.guarded_mut(|e| {
-                                        e.add(
-                                            attestation,
-                                            |block_id| {
-                                                let Ok(block_state) =
-                                                    self.block_state_repository.get(block_id)
-                                                else {
-                                                    return None;
-                                                };
-                                                block_state.guarded(|e| e.bk_set().clone())
-                                            },
-                                            |block_id| {
-                                                let Ok(block_state) =
-                                                    self.block_state_repository.get(block_id)
-                                                else {
-                                                    return None;
-                                                };
-                                                block_state.guarded(|e| e.envelope_hash().clone())
-                                            },
-                                        )
-                                    })? {
-                                        is_new = true;
-                                    }
+                                    attestations.push(attestation);
+                                    // if self.last_block_attestations.guarded_mut(|e| {
+                                    //     e.add(attestation, attested_block_state, true)
+                                    // })? {
+                                    //     is_new = true;
+                                    // }
                                 }
                                 Ok(other) => {
                                     next_message = Some(other);
@@ -612,7 +327,10 @@ where
                                 }
                             }
                         }
-                        if is_new {
+                        if self
+                            .last_block_attestations
+                            .guarded_mut(|e| e.add_bunch(attestations, true))?
+                        {
                             self.block_state_repository.touch();
                         }
                     }
@@ -653,6 +371,10 @@ where
                             "Received SyncFrom: elapsed from last sync ms: {}",
                             elapsed.as_millis()
                         );
+                        let (_last_finalized_id, last_finalized_seq_no) = self
+                            .repository
+                            .select_thread_last_finalized_block(&thread_id)?
+                            .expect("Must be known here");
                         let blocks_were_requested = self
                             .block_processor_service
                             .missing_blocks_were_requested
@@ -661,7 +383,11 @@ where
                             "Received SyncFrom: blocks_were_requested={blocks_were_requested:?}"
                         );
                         if elapsed > self.config.global.min_time_between_state_publish_directives
-                            && blocks_were_requested
+                            && (blocks_were_requested
+                                || seq_no_from
+                                    > last_finalized_seq_no.add(
+                                        self.config.global.need_synchronization_block_diff as u32,
+                                    ))
                         {
                             return Ok(ExecutionResult::SynchronizationRequired);
                         }
@@ -674,73 +400,29 @@ where
                             identifier,
                             address
                         );
-                        self.on_sync_finalized(seq_no, identifier)?;
+                        let (_last_finalized_id, last_finalized_seq_no) = self
+                            .repository
+                            .select_thread_last_finalized_block(&thread_id)?
+                            .expect("Must be known here");
+
+                        let blocks_were_requested = self
+                            .block_processor_service
+                            .missing_blocks_were_requested
+                            .load(Ordering::Relaxed);
+                        let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
+                        if elapsed > self.config.global.min_time_between_state_publish_directives
+                            && (blocks_were_requested
+                                || seq_no
+                                    > last_finalized_seq_no.add(
+                                        self.config.global.need_synchronization_block_diff as u32,
+                                    ))
+                        {
+                            return Ok(ExecutionResult::SynchronizationRequired);
+                        }
                     }
                 },
             }
         }
         Ok(ExecutionResult::Disconnected)
-    }
-
-    fn on_authority_switch_success(
-        &mut self,
-        next_round_success: Envelope<GoshBLS, NextRoundSuccess>,
-    ) -> anyhow::Result<()> {
-        tracing::trace!("Received NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched({next_round_success:?}))");
-        // TODO: check signatures.
-        let next_round_success = next_round_success.data();
-        let proposed_block = next_round_success.proposed_block().clone();
-        let resend_node_id = Some(next_round_success.node_identifier().clone());
-        self.block_state_repository
-            .get(&proposed_block.identifier)
-            .unwrap()
-            .guarded_mut(|e| e.add_proposed_in_round(*next_round_success.round()))?;
-        self.on_incoming_candidate_block(&proposed_block, resend_node_id)?;
-        let attestation = next_round_success.attestations_aggregated().clone();
-        if let Some(attestation) = attestation.clone() {
-            let block_state = self.block_state_repository.get(attestation.data().block_id())?;
-            let Some(attestation_target) = block_state.guarded(|e| *e.attestation_target()) else {
-                tracing::trace!("Attestation target is not set for switched block {attestation:?}");
-                return Ok(());
-            };
-            if attestation.clone_signature_occurrences().len()
-                >= *attestation_target.primary().required_attestation_count()
-            {
-                block_state.guarded_mut(|e| {
-                    e.set_prefinalized()?;
-                    if e.prefinalization_proof().is_none() {
-                        e.set_prefinalization_proof(attestation)?;
-                    }
-
-                    anyhow::Ok(())
-                })?;
-            }
-        }
-        let is_new = self.last_block_attestations.guarded_mut(|e| {
-            if let Some(attestation) = attestation {
-                e.add(
-                    attestation,
-                    |block_id| {
-                        let Ok(block_state) = self.block_state_repository.get(block_id) else {
-                            return None;
-                        };
-                        block_state.guarded(|e| e.bk_set().clone())
-                    },
-                    |block_id| {
-                        let Ok(block_state) = self.block_state_repository.get(block_id) else {
-                            return None;
-                        };
-                        block_state.guarded(|e| e.envelope_hash().clone())
-                    },
-                )
-            } else {
-                Ok(false)
-            }
-        })?;
-        self.authority_state.guarded_mut(|e| e.on_next_round_success(next_round_success));
-        if is_new {
-            self.block_state_repository.touch();
-        }
-        Ok(())
     }
 }

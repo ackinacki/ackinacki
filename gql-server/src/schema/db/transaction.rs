@@ -1,4 +1,4 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use async_graphql::futures_util::TryStreamExt;
@@ -7,10 +7,10 @@ use sqlx::SqlitePool;
 
 use crate::defaults;
 use crate::helpers::u64_to_string;
-use crate::schema::graphql::blockchain_api::account::BlockchainMasterSeqNoFilter;
-use crate::schema::graphql::blockchain_api::query::PaginateDirection;
-use crate::schema::graphql::blockchain_api::query::PaginationArgs;
-use crate::schema::graphql::blockchain_api::transactions::BlockchainTransactionsQueryArgs;
+use crate::schema::graphql::query::PaginateDirection;
+use crate::schema::graphql::query::PaginationArgs;
+use crate::schema::graphql_ext::blockchain_api::account::BlockchainMasterSeqNoFilter;
+use crate::schema::graphql_ext::blockchain_api::transactions::BlockchainTransactionsQueryArgs;
 
 #[allow(dead_code)]
 pub struct AccountTransactionsQueryArgs {

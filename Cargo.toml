@@ -17,12 +17,14 @@ members = [
     "node-helper",
     "node/libs/account-inbox",
     "proxy",
+    "shared/ext-messages-auth",
+    "shared/sdk-wrapper",
     "telemetry_utils",
     "transport-layer",
     "tvm_contracts",
 ]
 
-package.version = "0.6.2"
+package.version = "0.7.0"
 package.edition = "2021"
 package.rust-version = "1.86.0"
 package.license = "Acki Nacki Node License"
@@ -47,7 +49,7 @@ ed25519-dalek = { version = "2.1.1", features = ["rand_core", "serde"] }
 enum_dispatch = { version = "0.3.13" }
 faster-hex = { version = "0.10.0", features = ["serde"] }
 futures = "0.3"
-gosh_bls_lib = { git = "https://github.com/gosh-sh/gosh-bls-lib.git", tag = "0.4.0" }
+gosh_blst = { git = "https://github.com/gosh-sh/gosh_blst.git", features = ["portable"], rev = "a9da6e80b30143e04ca06ea1090525ba8cf1f299" }
 governor = "0.10.0"
 hex = "0.4.3"
 itertools = { version = "0.14.0" }
@@ -71,34 +73,39 @@ salvo = { version = "0.77", features = ["affix-state", "anyhow", "catch-panic", 
 serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.114"
 serde_with = "3.12.0"
+signal-hook = "0.3.18"
 thiserror = "2.0.3"
 tokio = { version = "1.44.2", features = ["full"] }
 tokio-retry = { version = "0.3.0" }
 tracing = "0.1.40"
+tracing-appender = "0.2.3"
 tracing-opentelemetry = "0.28"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 url = { version = "2.5.0", features = ["serde"] }
+wasmtime = "35.0.0"
 wtransport = { version = "0.6.0", features = ["dangerous-configuration", "quinn"] }
 zstd = { version = "0.13.3" }
 
-
-tvm_abi = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.18.2.an" }
-tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.18.2.an" }
-tvm_block_json = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.18.2.an" }
-tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.18.2.an", default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
-tvm_executor = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.18.2.an", features = ['signature_with_id'] }
-tvm_tl_codegen = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.18.2.an", default-features = false }
-tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.18.2.an" }
-tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.18.2.an", features = ['gosh'] }
+tvm_abi = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an' }
+tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an' }
+tvm_block_json = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an' }
+tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an', default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
+tvm_executor = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an', features = ['signature_with_id'] }
+tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an' }
+tvm_tl_codegen = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an', default-features = false }
+tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an' }
+tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an', features = ['gosh'] }
 
 chitchat = { path = "chitchat" }
 database = { path = "database" }
+ext-messages-auth = { path = "shared/ext-messages-auth" }
 gossip = { path = "gossip" }
 http-server = { path = "http-server" }
 message-router = { path = "message-router" }
 migration-tool = { path = "migration-tool" }
 network = { path = "network" }
 node = { path = "node" }
+sdk-wrapper = { path = "shared/sdk-wrapper" }
 telemetry_utils = { path = "telemetry_utils" }
 transport-layer = { path = "transport-layer" }
 tvm_contracts = { path = "tvm_contracts" }

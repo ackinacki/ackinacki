@@ -15,7 +15,6 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
-use tvm_types::AccountId;
 
 use crate::bls::gosh_bls::PubKey;
 use crate::node::NodeIdentifier;
@@ -24,7 +23,6 @@ use crate::types::AccountAddress;
 
 pub mod abi;
 pub mod bk_set;
-pub mod bm_license;
 pub mod epoch;
 pub mod wallet_config;
 
@@ -75,7 +73,7 @@ impl Default for BlockKeeperData {
 
 impl BlockKeeperData {
     pub fn node_id(&self) -> NodeIdentifier {
-        self.owner_address.0.clone().into()
+        self.owner_address.clone().into()
     }
 }
 
@@ -190,7 +188,7 @@ impl<'de> Deserialize<'de> for BlockKeeperSet {
 
 impl Debug for BlockKeeperData {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&format!("{:?}", self.pubkey))
+        f.write_str(&format!("({:?},{:?})", self.owner_address, self.pubkey))
     }
 }
 
@@ -212,7 +210,7 @@ impl Display for BlockKeeperData {
 pub struct BlockKeeperSlashData {
     pub node_id: NodeIdentifier,
     pub bls_pubkey: PubKey,
-    pub addr: AccountId,
+    pub addr: AccountAddress,
     pub slash_type: u8,
 }
 

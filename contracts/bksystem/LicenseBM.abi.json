@@ -8,7 +8,7 @@
 			"inputs": [
 				{"name":"pubkey","type":"uint256"},
 				{"name":"walletCode","type":"cell"},
-				{"name":"rootElection","type":"address"}
+				{"name":"rootBM","type":"address"}
 			],
 			"outputs": [
 			]
@@ -37,8 +37,10 @@
 			]
 		},
 		{
-			"name": "deleteLicense",
+			"name": "deleteWallet",
 			"inputs": [
+				{"name":"reward","type":"uint128"},
+				{"name":"slashSum","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -47,6 +49,15 @@
 			"name": "addBMWallet",
 			"inputs": [
 				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "withdrawToken",
+			"inputs": [
+				{"name":"to","type":"address"},
+				{"name":"value","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -82,7 +93,7 @@
 			],
 			"outputs": [
 				{"name":"license_number","type":"uint256"},
-				{"name":"bkwallet","type":"optional(address)"},
+				{"name":"bmwallet","type":"optional(address)"},
 				{"name":"owner_pubkey","type":"optional(uint256)"},
 				{"name":"owner_address","type":"optional(address)"}
 			]
@@ -118,17 +129,17 @@
 	],
 	"fields": [
 		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
-		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
-		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
-		{"init":false,"name":"__value","type":"uint256"},
 		{"init":true,"name":"_license_number","type":"uint256"},
 		{"init":true,"name":"_root","type":"address"},
 		{"init":false,"name":"_owner_pubkey","type":"optional(uint256)"},
 		{"init":false,"name":"_owner_address","type":"optional(address)"},
-		{"init":false,"name":"_rootElection","type":"address"},
-		{"init":false,"name":"_lock_seqno","type":"uint128"},
+		{"init":false,"name":"_rootBM","type":"address"},
 		{"init":false,"name":"_bmwallet","type":"optional(address)"},
+		{"init":false,"name":"_rewarded","type":"uint128"},
+		{"init":false,"name":"_slashSum","type":"uint128"},
+		{"init":false,"name":"_licenseLastTouch","type":"uint64"},
 		{"init":false,"name":"_code","type":"map(uint8,cell)"}
 	]
 }

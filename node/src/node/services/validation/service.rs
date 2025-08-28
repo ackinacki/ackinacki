@@ -11,17 +11,19 @@ use telemetry_utils::mpsc::InstrumentedSender;
 // use std::thread::sleep;
 use super::feedback::AckiNackiSend;
 use super::inner_loop;
+use crate::block::producer::wasm::WasmNodeCache;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::config::load_blockchain_config;
 use crate::config::Config;
 use crate::helper::metrics::BlockProductionMetrics;
-use crate::message_storage::MessageDurableStorage;
+use crate::helper::SHUTDOWN_FLAG;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::node::BlockState;
 use crate::protocol::authority_switch::action_lock::Authority;
 use crate::repository::repository_impl::RepositoryImpl;
+use crate::storage::MessageDurableStorage;
 use crate::types::AckiNackiBlock;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
 
@@ -32,7 +34,14 @@ pub struct ValidationServiceInterface {
 
 impl ValidationServiceInterface {
     pub fn send(&self, state: (BlockState, Envelope<GoshBLS, AckiNackiBlock>)) {
-        self.send_tx.send(state).expect("Validation service must not ever die");
+        match self.send_tx.send(state) {
+            Ok(()) => {}
+            Err(e) => {
+                if SHUTDOWN_FLAG.get() != Some(&true) {
+                    panic!("Validation service must not ever die: {e}");
+                }
+            }
+        }
     }
 }
 
@@ -55,6 +64,7 @@ impl ValidationService {
         block_state_repo: BlockStateRepository,
         send: AckiNackiSend,
         metrics: Option<BlockProductionMetrics>,
+        wasm_cache: WasmNodeCache,
         message_db: MessageDurableStorage,
         authority: Arc<Mutex<Authority>>,
     ) -> anyhow::Result<Self> {
@@ -75,6 +85,7 @@ impl ValidationService {
                     shared_services,
                     send,
                     metrics,
+                    wasm_cache,
                     message_db,
                     authority,
                 );

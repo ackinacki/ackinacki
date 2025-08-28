@@ -10,10 +10,12 @@ use crate::block::producer::execution_time::ExecutionTimeLimits;
 use crate::block::producer::BlockProducer;
 use crate::external_messages::Stamp;
 use crate::message::message_stub::MessageStub;
-use crate::message_storage::MessageDurableStorage;
+use crate::node::block_state::repository::BlockState;
 use crate::repository::stub_repository::OptimisticStateStub;
 use crate::repository::CrossThreadRefData;
+use crate::storage::MessageDurableStorage;
 use crate::types::AckiNackiBlock;
+use crate::types::BlockRound;
 use crate::types::ThreadIdentifier;
 
 #[cfg(test)]
@@ -32,7 +34,8 @@ impl BlockProducer for BlockProducerStub {
         _control_rx_stop: InstrumentedReceiver<()>,
         _db: MessageDurableStorage,
         _time_limits: &ExecutionTimeLimits,
-        _block_round: u16,
+        _block_round: BlockRound,
+        _parent_block_state: BlockState,
     ) -> anyhow::Result<(
         AckiNackiBlock,
         Self::OptimisticState,
@@ -40,6 +43,7 @@ impl BlockProducer for BlockProducerStub {
         CrossThreadRefData,
         Vec<Stamp>,
         ExtMsgFeedbackList,
+        BlockState,
     )>
     where
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,

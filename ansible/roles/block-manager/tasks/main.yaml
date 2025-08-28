@@ -1,0 +1,8 @@
+---
+- name: Block Manager start
+  include_tasks: start-bm.yaml
+  when: [DO_START, not FAST_UPDATE]
+
+- name: Block Manager stop
+  include_tasks: start-bm.yaml
+  when: DO_STOP

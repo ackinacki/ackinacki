@@ -1,4 +1,4 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::collections::BTreeMap;
@@ -17,6 +17,7 @@ use database::sqlite::ArchAccount;
 use database::sqlite::ArchBlock;
 use database::sqlite::ArchMessage;
 use database::sqlite::ArchTransaction;
+use parking_lot::Mutex;
 use tvm_block::Account;
 use tvm_block::AccountBlock;
 use tvm_block::AccountStatus;
@@ -44,6 +45,7 @@ use crate::block::producer::builder::EngineTraceInfoData;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
+use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
 
 lazy_static::lazy_static!(
@@ -53,8 +55,9 @@ lazy_static::lazy_static!(
 );
 
 pub fn reflect_block_in_db(
-    archive: Arc<dyn DocumentsDb>,
+    archive: Arc<Mutex<dyn DocumentsDb>>,
     envelope: Envelope<GoshBLS, AckiNackiBlock>,
+    raw_block: Option<Vec<u8>>,
     shard_state: Arc<ShardStateUnsplit>,
     transaction_traces: &mut HashMap<UInt256, Vec<EngineTraceInfoData>, RandomState>,
 ) -> anyhow::Result<()> {
@@ -72,7 +75,6 @@ pub fn reflect_block_in_db(
     let file_hash = UInt256::calc_file_hash(&serialized_block);
     let block_extra =
         block.read_extra().map_err(|e| anyhow::format_err!("Failed to read block extra: {e}"))?;
-    let block_boc = &serialized_block;
     let info =
         block.read_info().map_err(|e| anyhow::format_err!("Failed to read block info: {e}"))?;
     let block_index = block_index(block)?;
@@ -82,12 +84,12 @@ pub fn reflect_block_in_db(
         .map_err(|e| anyhow::format_err!("Failed to read block accounts: {e}"))?;
 
     // Prepare sorted tvm_block transactions and addresses of changed accounts
-    let mut changed_acc = HashSet::new();
-    let mut deleted_acc = HashSet::new();
-    let mut acc_last_trans_chain_order = HashMap::new();
+    let mut changed_acc = HashSet::<AccountAddress>::new();
+    let mut deleted_acc = HashSet::<AccountAddress>::new();
+    let mut acc_last_trans_chain_order = HashMap::<AccountAddress, _>::new();
     let now = std::time::Instant::now();
     let mut tr_count = 0;
-    let mut transactions = BTreeMap::new();
+    let mut transactions = BTreeMap::<(u64, AccountAddress), _>::new();
     block_extra
         .read_account_blocks()
         .map_err(|e| anyhow::format_err!("Failed to read account blocks: {e}"))?
@@ -100,7 +102,7 @@ pub fn reflect_block_in_db(
                     "reflect_block_in_db: deleted acc: {}",
                     account_block.account_id().to_hex_string()
                 );
-                deleted_acc.insert(account_block.account_id().clone());
+                deleted_acc.insert(account_block.account_id().clone().into());
                 if state_upd.old_hash == *ACCOUNT_NONE_HASH {
                     check_account_existed = true;
                 }
@@ -109,7 +111,7 @@ pub fn reflect_block_in_db(
                     "reflect_block_in_db: changed acc: {}",
                     account_block.account_id().to_hex_string()
                 );
-                changed_acc.insert(account_block.account_id().clone());
+                changed_acc.insert(account_block.account_id().clone().into());
             }
 
             let mut account_existed = false;
@@ -122,7 +124,8 @@ pub fn reflect_block_in_db(
                     "reflect_block_in_db: prepare transaction: {}",
                     transaction.hash().unwrap().to_hex_string()
                 );
-                let ordering_key = (transaction.logical_time(), transaction.account_id().clone());
+                let ordering_key =
+                    (transaction.logical_time(), transaction.account_id().clone().into());
                 if transaction.orig_status != AccountStatus::AccStateNonexist
                     || transaction.end_status != AccountStatus::AccStateNonexist
                 {
@@ -135,7 +138,7 @@ pub fn reflect_block_in_db(
             })?;
 
             if check_account_existed && !account_existed {
-                deleted_acc.remove(account_block.account_id());
+                deleted_acc.remove(&account_block.account_id().into());
             }
 
             Ok(true)
@@ -166,7 +169,7 @@ pub fn reflect_block_in_db(
         )?;
 
         let account_id = transaction.account_id().clone();
-        acc_last_trans_chain_order.insert(account_id, transaction_index.clone());
+        acc_last_trans_chain_order.insert(account_id.into(), transaction_index.clone());
         let trace = transaction_traces.remove(&cell.repr_hash());
 
         let mut doc = prepare_transaction_archive_struct(
@@ -184,6 +187,7 @@ pub fn reflect_block_in_db(
     }
     if !transaction_docs.is_empty() {
         archive
+            .lock()
             .put_transactions(transaction_docs)
             .map_err(|e| anyhow::format_err!("Failed to put tx: {e}"))?;
     }
@@ -201,7 +205,7 @@ pub fn reflect_block_in_db(
     for account_id in changed_acc.iter() {
         tracing::trace!(target: "database", "reflect_block_in_db: prepare account: {}", account_id.to_hex_string());
         let acc = shard_accounts
-            .account(account_id)
+            .account(&account_id.into())
             .map_err(|e| anyhow::format_err!("Failed to read account: {e}"))?;
 
         // TODO remove this workaround after implementing state parsing in the BM
@@ -237,7 +241,7 @@ pub fn reflect_block_in_db(
     for account_id in deleted_acc {
         let last_trans_chain_order = acc_last_trans_chain_order.remove(&account_id);
         let prepared_account = prepare_deleted_account_archive_struct(
-            account_id,
+            account_id.into(),
             workchain_id,
             None,
             last_trans_chain_order,
@@ -246,6 +250,7 @@ pub fn reflect_block_in_db(
     }
     if !account_docs.is_empty() {
         archive
+            .lock()
             .put_accounts(account_docs)
             .map_err(|e| anyhow::format_err!("Failed to put account: {e}"))?;
     }
@@ -259,7 +264,7 @@ pub fn reflect_block_in_db(
         arch_messages.push(arch_msg);
     }
     if !arch_messages.is_empty() {
-        archive.put_messages(arch_messages).map_err(|e| anyhow::format_err!("{e}"))?;
+        archive.lock().put_messages(arch_messages).map_err(|e| anyhow::format_err!("{e}"))?;
     }
     tracing::info!(target: "database", "TIME: prepare {} messages {}ms;", msg_count, now.elapsed().as_millis(),);
 
@@ -268,12 +273,12 @@ pub fn reflect_block_in_db(
     let item = prepare_block_archive_struct(
         envelope,
         &block_root,
-        block_boc,
+        &raw_block.unwrap_or_default(),
         &file_hash,
         block_index.clone(),
     )
     .map_err(|e| anyhow::format_err!("{e}"))?;
-    archive.put_block(item).map_err(|e| anyhow::format_err!("{e}"))?;
+    archive.lock().put_block(item).map_err(|e| anyhow::format_err!("{e}"))?;
     tracing::info!(target: "database", "TIME: block({}) {}ms;", block_id_hex, now.elapsed().as_millis());
     tracing::info!(target: "database",
         "TIME: prepare & build jsons {}ms;   {}",
@@ -291,29 +296,31 @@ pub(crate) fn prepare_messages_from_transaction(
     block_root_for_proof: Option<&Cell>,
     messages: &mut HashMap<UInt256, ArchMessage>,
 ) -> anyhow::Result<()> {
-    if let Some(message_cell) = transaction.in_msg_cell() {
-        let message_id = message_cell.repr_hash();
+    if !cfg!(feature = "store_events_only") {
+        if let Some(message_cell) = transaction.in_msg_cell() {
+            let message_id = message_cell.repr_hash();
 
-        let mut doc = if let Some(doc) = messages.get_mut(&message_id) {
-            doc.to_owned()
-        } else {
-            let message = Message::construct_from_cell(message_cell.clone())
-                .map_err(|e| anyhow::format_err!("{e}"))?;
-            prepare_message_archive_struct(
-                message_cell,
-                message,
-                block_root_for_proof,
-                block_id.clone(),
-                None,
-                Some(transaction.now()),
-            )
-            .map_err(|e| anyhow::format_err!("{e}"))?
+            let mut doc = if let Some(doc) = messages.get_mut(&message_id) {
+                doc.to_owned()
+            } else {
+                let message = Message::construct_from_cell(message_cell.clone())
+                    .map_err(|e| anyhow::format_err!("{e}"))?;
+                prepare_message_archive_struct(
+                    message_cell,
+                    message,
+                    block_root_for_proof,
+                    block_id.clone(),
+                    None,
+                    Some(transaction.now()),
+                )
+                .map_err(|e| anyhow::format_err!("{e}"))?
+            };
+
+            doc.dst_chain_order = Some(format!("{}{}", transaction_index, u64_to_string(0)));
+
+            messages.insert(message_id, doc);
         };
-
-        doc.dst_chain_order = Some(format!("{}{}", transaction_index, u64_to_string(0)));
-
-        messages.insert(message_id, doc);
-    };
+    }
 
     let mut index: u64 = 1;
     transaction
@@ -338,9 +345,13 @@ pub(crate) fn prepare_messages_from_transaction(
 
             // messages are ordered by created_lt
             doc.src_chain_order = Some(format!("{}{}", transaction_index, u64_to_string(index)));
+            doc.msg_chain_order = Some(format!("{}{}", transaction_index, u64_to_string(index)));
 
             index += 1;
-            messages.insert(message_id.clone(), doc);
+            if !cfg!(feature = "store_events_only") && doc.msg_type == Some(2) {
+                messages.insert(message_id.clone(), doc);
+            }
+
             Ok(true)
         })
         .map_err(|e| anyhow::format_err!("Failed to iterate out messages: {e}"))?;

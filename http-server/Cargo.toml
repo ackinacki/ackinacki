@@ -7,13 +7,10 @@ license-file.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-ed25519-dalek.workspace = true
+ext-messages-auth.workspace = true
 hex.workspace = true
 httpdate = "1.0.3"
-lazy_static.workspace = true
 opentelemetry.workspace = true
-opentelemetry-otlp.workspace = true
-opentelemetry_sdk.workspace = true
 parking_lot.workspace = true
 rcgen.workspace = true
 salvo.workspace = true

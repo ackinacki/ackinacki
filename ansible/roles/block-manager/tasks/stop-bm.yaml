@@ -1,0 +1,9 @@
+- name: Compose stop
+  ansible.builtin.shell:
+    chdir: "{{ BM_DIR }}"
+    cmd: docker compose stop
+
+- name: Compose stop (hard)
+  ansible.builtin.shell:
+    chdir: "{{ BM_DIR }}"
+    cmd: docker compose kill

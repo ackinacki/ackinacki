@@ -1,7 +1,7 @@
 @port = 3000
 @host = http://localhost
-@v1 = bk/v1
-@v2 = bk/v2
+@v1 = v1
+@v2 = v2
 
 ###
 POST {{host}}/{{v1}}/messages HTTP/1.1
@@ -23,7 +23,28 @@ Content-Type: application/json
 [{"id":null,"boc":"te6ccgEBAwEArAAB5YgAIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIE0Ap1G32StJQY1wMVSS6H073lMAQuFickJ4oQkNhnO6gXnNy8Tc0DqyRwn3ID8GKZk5e+daUXkNHwQ/s0F/pwCAAABk/KVdrhnaRx9VWYlaoBAUyAFx8WyMjSLQ03fyvEHCcW980Kl2KbzetO6jSG7KGP+BModzWUAQIAFaAAAAACKF0h26AE","expire":null}]
 
 ###
-POST http://localhost/bm/v2/messages HTTP/1.1
+POST http://localhost:8700/bm/v2/messages HTTP/1.1
 Content-Type: application/json
 
-[{"id":"0pbhyFAfdD5fxNxFBFphbVdx4kvaa4YkLApUoHlFdSQ=","boc":"te6ccgEBAwEArAAB5YgAIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIE0Ap1G32StJQY1wMVSS6H073lMAQuFickJ4oQkNhnO6gXnNy8Tc0DqyRwn3ID8GKZk5e+daUXkNHwQ/s0F/pwCAAABk/KVdrhnaRx9VWYlaoBAUyAFx8WyMjSLQ03fyvEHCcW980Kl2KbzetO6jSG7KGP+BModzWUAQIAFaAAAAACKF0h26AE","expire":null}]
+[{
+    "id":"ee4ca4f6ddb38b572f118d9d5d564fe0960fc0fe3a29737ff8e8713bf329db69",
+    "body":"te6ccgEBAwEArAAB5YgAIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIETOvwmPq9uswx/ZmdFACL1cTUjIjqMZdCN3KK6qUF/q5aGEDKJwYTIJsP2Sxg+djlLaqw1R/jduyM+oPHOx5IAAAABmEZ6aUFohLs4VWYlaoBAUyADf2WI1gLul8GTE8DV0gfjr+hS07Q7GLeUzhmlbhm6gHIdzWUAQIAFaAAAAACKF0h26AE",
+    "expire_at":null,
+    "thread_id":"00000000000000000000000000000000000000000000000000000000000000000000",
+    "bm_pubkey":null,
+    "ext_message_token":null
+}]
+
+###
+POST http://localhost:11003/bk/v2/messages HTTP/1.1
+Content-Type: application/json
+Authorization: Bearer my-secret-token
+
+[{
+    "id": "4d5772b75a413327386aabf4bfb53acd58279c26b19dea5d8325a635fc7c3aee",
+    "body": "te6ccgEBAwEArAAB5YgAIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIGJyLl8kEh9T8KJU1dntQ8pjJlnJjSc/8cAow7TpiVJs/pVZp5Ct/RIB+dSyV2RQxHvZPhmYmKkCmvAPPSYEZINAAABmEGjBYVog34rVWYlaoBAUyADf2WI1gLul8GTE8DV0gfjr+hS07Q7GLeUzhmlbhm6gHIdzWUAQIAFaAAAAACKF0h26AE",
+    "expire_at": null,
+    "thread_id": "00000000000000000000000000000000000000000000000000000000000000000000",
+    "bm_pubkey": null,
+    "ext_message_token": null
+}]

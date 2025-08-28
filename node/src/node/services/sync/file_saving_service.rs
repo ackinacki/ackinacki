@@ -6,7 +6,7 @@ use std::thread::JoinHandle;
 use parking_lot::Mutex;
 use typed_builder::TypedBuilder;
 
-use crate::message_storage::MessageDurableStorage;
+use crate::helper::get_temp_file_path;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::repository::cross_thread_ref_repository::CrossThreadRefDataHistory;
@@ -15,6 +15,7 @@ use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::repository_impl::ThreadSnapshot;
 use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
+use crate::storage::MessageDurableStorage;
 use crate::types::thread_message_queue::account_messages_iterator::AccountMessagesIterator;
 use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
@@ -40,6 +41,7 @@ impl FileSavingService {
         path: PathBuf,
     ) -> anyhow::Result<()> {
         let path = self.root_path.join(path);
+        let parent_dir = self.root_path.clone();
         let message_db = self.message_db.clone();
         let mut shared_services = self.shared_services.clone();
         let block_state_repository = self.block_state_repository.clone();
@@ -98,7 +100,9 @@ impl FileSavingService {
                     .build();
 
                 let bytes = bincode::serialize(&shared_thread_state)?;
-                std::fs::write(path.clone(), bytes)?;
+                let tmp_file_path = get_temp_file_path(&parent_dir);
+                std::fs::write(tmp_file_path.clone(), bytes)?;
+                std::fs::rename(tmp_file_path, path)?;
                 Ok(())
             })?;
         self.threads.guarded_mut(|threads| {

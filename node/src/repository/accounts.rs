@@ -6,8 +6,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use tvm_block::ShardAccounts;
-use tvm_types::UInt256;
 
+use crate::helper::get_temp_file_path;
+use crate::types::AccountAddress;
 use crate::types::ThreadIdentifier;
 
 #[derive(Debug, Clone)]
@@ -15,7 +16,7 @@ pub struct AccountsRepository {
     data_dir: PathBuf,
     unload_after: Option<u32>,
     store_after: u32,
-    deleted_accounts: Arc<Mutex<HashMap<ThreadIdentifier, BTreeMap<u64, Vec<UInt256>>>>>,
+    deleted_accounts: Arc<Mutex<HashMap<ThreadIdentifier, BTreeMap<u64, Vec<AccountAddress>>>>>,
 }
 
 impl AccountsRepository {
@@ -30,7 +31,7 @@ impl AccountsRepository {
 
     fn account_path(
         &self,
-        account_id: &tvm_types::UInt256,
+        account_id: &AccountAddress,
         last_trans_hash: &tvm_types::UInt256,
         last_trans_lt: u64,
     ) -> PathBuf {
@@ -41,10 +42,11 @@ impl AccountsRepository {
 
     pub fn load_account(
         &self,
-        account_id: &tvm_types::UInt256,
+        account_id: &AccountAddress,
         last_trans_hash: &tvm_types::UInt256,
         last_trans_lt: u64,
     ) -> anyhow::Result<tvm_types::Cell> {
+        assert!(self.unload_after.is_some(), "Tried to load account while unload is disabled");
         let path = self.account_path(account_id, last_trans_hash, last_trans_lt);
         let data = std::fs::read(&path).map_err(|err| {
             anyhow::format_err!("Failed to read account {}: {err}", path.display())
@@ -56,27 +58,37 @@ impl AccountsRepository {
 
     pub fn store_account(
         &self,
-        account_id: &tvm_types::UInt256,
+        account_id: &AccountAddress,
         last_trans_hash: &tvm_types::UInt256,
         last_trans_lt: u64,
         account: tvm_types::Cell,
     ) -> anyhow::Result<()> {
+        assert!(self.unload_after.is_some(), "Tried to store account while unload is disabled");
         let path = self.account_path(account_id, last_trans_hash, last_trans_lt);
-        if let Some(parent) = path.parent() {
+        let parent_dir = if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|err| {
                 anyhow::format_err!("Failed to create directory {}: {err}", parent.display())
             })?;
-        }
+            parent.to_owned()
+        } else {
+            PathBuf::new()
+        };
+        let tmp_file_path = get_temp_file_path(&parent_dir);
         let data = tvm_types::boc::write_boc(&account).map_err(|err| {
             anyhow::format_err!("Failed to serialize account {}: {err}", path.display())
         })?;
-        let mut file = std::fs::File::create(&path).map_err(|err| {
-            anyhow::format_err!("Failed to write account {}: {err}", path.display())
+        let mut file = std::fs::File::create(&tmp_file_path).map_err(|err| {
+            anyhow::format_err!("Failed to write account {}: {err}", tmp_file_path.display())
         })?;
         file.write_all(&data).map_err(|err| {
-            anyhow::format_err!("Failed to write account {}: {err}", path.display())
+            anyhow::format_err!("Failed to write account {}: {err}", tmp_file_path.display())
         })?;
-        file.sync_all()?;
+
+        if cfg!(feature = "sync_files") {
+            file.sync_all()?;
+        }
+        drop(file);
+        std::fs::rename(tmp_file_path, &path)?;
         tracing::trace!("File saved: {:?}", path);
         Ok(())
     }
@@ -146,7 +158,12 @@ impl AccountsRepository {
         }
     }
 
-    pub fn accounts_deleted(&self, thread_id: &ThreadIdentifier, accounts: Vec<UInt256>, lt: u64) {
+    pub fn accounts_deleted(
+        &self,
+        thread_id: &ThreadIdentifier,
+        accounts: Vec<AccountAddress>,
+        lt: u64,
+    ) {
         let mut deleted = self.deleted_accounts.lock().unwrap();
         let thread_deleted = deleted.entry(*thread_id).or_default();
         thread_deleted.insert(lt, accounts);

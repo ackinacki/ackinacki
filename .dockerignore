@@ -5,3 +5,4 @@ venv
 Cargo.lock
 **/Cargo.lock
 tests
+!tests/rust

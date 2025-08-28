@@ -52,6 +52,9 @@ impl Serialize for NetworkMessage {
             AuthoritySwitchProtocol(e) => {
                 serializer.serialize_newtype_variant(TYPE, 10, "AuthoritySwitchProtocol", &e)
             }
+            StartSynchronization => {
+                serializer.serialize_newtype_variant(TYPE, 11, "StartSynchronization", &())
+            }
         }
     }
 }

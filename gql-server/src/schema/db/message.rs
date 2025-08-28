@@ -1,24 +1,16 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use async_graphql::futures_util::TryStreamExt;
-use serde::Deserialize;
 use sqlx::prelude::FromRow;
 use sqlx::SqlitePool;
-use tvm_client::boc::ParamsOfParse;
 
-use crate::client::BlockchainClient;
 use crate::defaults;
 use crate::helpers::u64_to_string;
-use crate::schema::graphql::blockchain_api::account::BlockchainMasterSeqNoFilter;
-use crate::schema::graphql::blockchain_api::account::BlockchainMessageTypeFilterEnum;
-use crate::schema::graphql::blockchain_api::query::PaginateDirection;
-use crate::schema::graphql::blockchain_api::query::PaginationArgs;
-
-#[derive(Deserialize)]
-struct MessageBody {
-    body: Option<String>,
-}
+use crate::schema::graphql::query::PaginateDirection;
+use crate::schema::graphql::query::PaginationArgs;
+use crate::schema::graphql_ext::blockchain_api::account::BlockchainMasterSeqNoFilter;
+use crate::schema::graphql_ext::blockchain_api::account::BlockchainMessageTypeFilterEnum;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, FromRow)]
@@ -114,6 +106,7 @@ pub struct Message {
     pub data: Option<Vec<u8>>,
     pub data_hash: Option<String>,
     pub src_dapp_id: Option<String>, // src_dapp_id TEXT
+    pub msg_chain_order: Option<String>,
 }
 
 impl Message {
@@ -162,7 +155,6 @@ impl Message {
 
     pub async fn account_messages(
         pool: &SqlitePool,
-        an_client: BlockchainClient,
         account: String,
         args: &AccountMessagesQueryArgs,
     ) -> anyhow::Result<Vec<Message>> {
@@ -243,36 +235,66 @@ impl Message {
             Err(e) => {
                 anyhow::bail!("ERROR: {e}");
             }
-            Ok(mut value) => {
+            Ok(value) => {
                 tracing::debug!("OK: {} rows", value.len());
-                value.iter_mut().for_each(|m: &mut Message| {
-                    m.body = if let Some(boc) = &m.boc {
-                        let params =
-                            ParamsOfParse { boc: tvm_types::base64_encode(boc).to_string() };
-                        let res = tvm_client::boc::parse_message(an_client.clone(), params);
-                        match res {
-                            Ok(value) => {
-                                let body = serde_json::from_value::<MessageBody>(value.parsed)
-                                    .unwrap()
-                                    .body;
-                                match body {
-                                    Some(body) => tvm_types::base64_decode(body).ok(),
-                                    _ => None,
-                                }
-                            }
-                            Err(_) => None,
-                        }
-                        // tracing::trace!("parse_message(): {:?}",
-                        // res.parsed["body"]);
-                    } else {
-                        None
-                    };
-                });
                 Ok(match direction {
                     PaginateDirection::Forward => value,
                     PaginateDirection::Backward => value.into_iter().rev().collect(),
                 })
             }
         }
+    }
+
+    pub async fn account_events(
+        pool: &SqlitePool,
+        account: String,
+        pagination: &PaginationArgs,
+    ) -> anyhow::Result<Vec<Message>> {
+        let limit = pagination.get_limit();
+        let direction = pagination.get_direction();
+
+        let order_by_sort = match direction {
+            PaginateDirection::Forward => "ASC",
+            PaginateDirection::Backward => "DESC",
+        };
+
+        let mut where_ops = vec![format!("src={account:?}")];
+
+        if !cfg!(feature = "store_events_only") {
+            where_ops.push("msg_type=2".to_string());
+        }
+
+        let cursor_field = "msg_chain_order";
+
+        if let Some(after) = &pagination.after {
+            if !after.is_empty() {
+                where_ops.push(format!("{cursor_field} > {after:?}"));
+            }
+        }
+
+        if let Some(before) = &pagination.before {
+            if !before.is_empty() {
+                where_ops.push(format!("{cursor_field} < {before:?}"));
+            }
+        }
+
+        let sql = format!(
+            "SELECT * FROM messages WHERE {} ORDER BY {} {} LIMIT {}",
+            where_ops.join(" AND "),
+            cursor_field,
+            order_by_sort,
+            limit,
+        );
+
+        tracing::debug!("account_events: SQL: {sql}");
+
+        sqlx::query_as(&sql)
+            .fetch_all(pool)
+            .await
+            .map(|list| match direction {
+                PaginateDirection::Forward => list,
+                PaginateDirection::Backward => list.into_iter().rev().collect(),
+            })
+            .map_err(|e| anyhow::format_err!("{}", e))
     }
 }

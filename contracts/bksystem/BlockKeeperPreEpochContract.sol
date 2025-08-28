@@ -25,7 +25,6 @@ contract BlockKeeperPreEpoch is Modifiers {
     uint64 _seqNoDestruct;
     uint64 _epochDuration;
     uint64 _waitStep;
-    address _owner;
     bytes _bls_pubkey;
     varuint32 _stake;
     uint16 _signerIndex;
@@ -35,6 +34,8 @@ contract BlockKeeperPreEpoch is Modifiers {
     optional(uint128) _virtualStake;
     uint128 _reward_sum;
     string _myIp;
+    uint128 _reward_adjustment;
+    bool isDestroy = false;
 
     constructor (
         uint64 waitStep,
@@ -47,7 +48,9 @@ contract BlockKeeperPreEpoch is Modifiers {
         optional(uint128) virtualStake,
         mapping(uint8 => string) ProxyList,
         uint128 reward_sum,
-        string myIp
+        string myIp,
+        uint64 epochCliff,
+        uint128 reward_adjustment
     ) {
         _code = code;
         TvmBuilder b;
@@ -60,7 +63,6 @@ contract BlockKeeperPreEpoch is Modifiers {
         require(hashwallet == hashwalletsalt, ERR_SENDER_NO_ALLOWED);
         _root = root;
         require(msg.sender == BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] , _root, _owner_pubkey), ERR_SENDER_NO_ALLOWED);
-        _owner = msg.sender;
         _waitStep = waitStep;
         _bls_pubkey = bls_pubkey;
         _epochDuration = epochDuration;
@@ -69,54 +71,66 @@ contract BlockKeeperPreEpoch is Modifiers {
         _sumReputationCoef = rep_coef;
         _licenses = licenses;
         _virtualStake = virtualStake;
-        _seqNoDestruct = _seqNoStart * 2 - block.seqno + 1;
+        _seqNoDestruct = _seqNoStart + uint64(PRE_EPOCH_DESTRUCT_MULT)*epochCliff;
         _reward_sum = reward_sum;
-        ensureBalance();
         _wallet = msg.sender;
         _myIp = myIp;
+        _reward_adjustment = reward_adjustment;
+        mapping(uint8 => TvmCell) code_for_proxy;
+        code_for_proxy[m_AckiNackiBlockKeeperNodeWalletCode] = _code[m_AckiNackiBlockKeeperNodeWalletCode];
+        code_for_proxy[m_BlockKeeperPreEpochCode] = _code[m_BlockKeeperPreEpochCode];
+        code_for_proxy[m_BlockKeeperEpochCode] = _code[m_BlockKeeperEpochCode];
         AckiNackiBlockKeeperNodeWallet(_wallet).setLockStake{value: 0.1 vmshell, flag: 1}(_seqNoStart, _stake, _bls_pubkey, _signerIndex, licenses);
         new BlockKeeperEpochProxyList {
                 stateInit: BlockKeeperLib.composeBlockKeeperEpochProxyListStateInit(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], _owner_pubkey, _root), 
                 value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST),
                 wid: 0, 
                 flag: 1
-        } (_code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _code[m_BlockKeeperEpochCode], _seqNoStart, ProxyList);
+        } (code_for_proxy, _seqNoStart, ProxyList);
     }
 
     function ensureBalance() private pure {
-        if (address(this).balance > FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET + FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST + 1 vmshell) { return; }
-        gosh.mintshell(FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET + FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST + 1 vmshell);
+        if (address(this).balance > FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET + 1 vmshell) { return; }
+        gosh.mintshellq(FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET + 1 vmshell);
     }
 
-    function changeReputation(bool is_inc, uint128 value) public senderIs(_wallet) {
-        if (is_inc) {
-            _sumReputationCoef += value;
-        } else {
-            _sumReputationCoef -= value;
+    function destroy(bool isProxyDelete) public view senderIs(address(this)) accept {
+        if (isProxyDelete) {
+            BlockKeeperEpochProxyList(BlockKeeperLib.calculateBlockKeeperEpochProxyListAddress(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], _owner_pubkey, _root)).destroy{value: 0.1 vmshell, flag: 1}(_seqNoStart);
         }
+        AckiNackiBlockKeeperNodeWallet(_wallet).deleteLockStake{value: 0.1 vmshell, flag: 161, bounce: false}(_seqNoStart, _bls_pubkey, _signerIndex, _licenses);
+    }
+        
+    function touch() public pure accept { 
+        ensureBalance();      
+        this.touchIn{value: 0.1 vmshell, flag: 1}();
     }
 
-    function touch() public saveMsg {       
-        if (_seqNoStart <= block.seqno) { tvm.accept(); }
-        else { return; } 
+    function touchIn() public senderIs(address(this)) accept { 
+        ensureBalance();      
+        if (_seqNoStart > block.seqno) { return; } 
+        if (isDestroy) { return; }
+        isDestroy = true;
         if (_seqNoDestruct < block.seqno) { 
-            AckiNackiBlockKeeperNodeWallet(_wallet).deleteLockStake{value: 0.1 vmshell, flag: 1}(_seqNoStart, _bls_pubkey, _signerIndex, _licenses);
-            selfdestruct(_wallet);
+            this.destroy{value: 0.1 vmshell, flag: 1}(false);
             return;
         }
-        ensureBalance();
-        mapping(uint32 => varuint32) data_cur;
-        data_cur[CURRENCIES_ID] = _stake;
-        
+                
         TvmCell data = BlockKeeperLib.composeBlockKeeperEpochStateInit(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, _seqNoStart);
-        address epoch = new BlockKeeperEpoch {
+        new BlockKeeperEpoch {
             stateInit: data, 
-            value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_WALLET),
-            currencies: data_cur,
+            value: 0.1 vmshell,
             wid: 0, 
-            flag: 1
-        } (_waitStep, _epochDuration, _bls_pubkey, _code, false, _sumReputationCoef, _signerIndex, _licenses, _virtualStake, _reward_sum, _myIp);
-        selfdestruct(epoch);
+            flag: 161, 
+            bounce: false
+        } (_waitStep, _epochDuration, _bls_pubkey, _code, _sumReputationCoef, _signerIndex, _licenses, _virtualStake, _reward_sum, _myIp, false, _reward_adjustment, null);
+    }
+
+    function cancelPreEpoch() public senderIs(_wallet) accept {     
+        ensureBalance();  
+        if (isDestroy) { return; }
+        isDestroy = true;
+        this.destroy{value: 0.1 vmshell, flag: 1}(true);
     }
     
     //Fallback/Receive
@@ -130,7 +144,7 @@ contract BlockKeeperPreEpoch is Modifiers {
         uint64 seqNoStart,
         address owner) 
     {
-        return  (_owner_pubkey, _root, _seqNoStart, _owner);
+        return  (_owner_pubkey, _root, _seqNoStart, _wallet);
     }
 
     function getVersion() external pure returns(string, string) {

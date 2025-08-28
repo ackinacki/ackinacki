@@ -1,4 +1,4 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use serde::Deserialize;
@@ -39,6 +39,7 @@ pub struct ArchMessage {
     pub code_hash: Option<String>,
     pub data: Option<Vec<u8>>,
     pub data_hash: Option<String>,
+    pub msg_chain_order: Option<String>,
 }
 
 impl From<MessageSerializationSet> for ArchMessage {
@@ -119,6 +120,7 @@ impl From<MessageSerializationSet> for ArchMessage {
                 id,
                 transaction_id,
                 boc,
+                body,
                 status,
                 proof,
                 code,

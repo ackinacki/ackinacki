@@ -1,4 +1,4 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 mod acki_nacki;
@@ -12,10 +12,11 @@ mod execution;
 use block_request_service::BlockRequestParams;
 pub use execution::LOOP_PAUSE_DURATION;
 use http_server::ExtMsgFeedbackList;
+use telemetry_utils::instrumented_channel_ext::XInstrumentedReceiver;
+use telemetry_utils::instrumented_channel_ext::XInstrumentedSender;
 
 use crate::utilities::guarded::GuardedMut;
 pub mod block_request_service;
-use tvm_types::AccountId;
 mod network_message;
 
 mod send;
@@ -29,7 +30,6 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::atomic::AtomicI32;
-use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -44,7 +44,6 @@ use typed_builder::TypedBuilder;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::config::Config;
-use crate::message_storage::MessageDurableStorage;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
@@ -52,6 +51,7 @@ use crate::node::services::attestations_target::service::AttestationTargetsServi
 use crate::protocol::authority_switch::action_lock::Authority;
 pub use crate::protocol::authority_switch::network_message::AuthoritySwitch;
 use crate::repository::repository_impl::RepositoryImpl;
+use crate::storage::MessageDurableStorage;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::CollectedAttestations;
@@ -73,14 +73,13 @@ use crate::bls::gosh_bls::Secret;
 use crate::external_messages::ExternalMessagesThreadState;
 pub use crate::node::associated_types::NodeIdentifier;
 use crate::node::block_state::repository::BlockState;
+use crate::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
 use crate::node::services::block_processor::service::BlockProcessorService;
-use crate::node::services::db_serializer::DBSerializeService;
 use crate::node::services::send_attestations::AttestationSendServiceHandler;
 use crate::node::services::validation::service::ValidationServiceInterface;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
+use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::types::ThreadIdentifier;
-
-pub(crate) const DEFAULT_PRODUCTION_TIME_MULTIPLIER: u64 = 1;
 
 #[allow(dead_code)]
 #[derive(TypedBuilder)]
@@ -93,13 +92,12 @@ where
     shared_services: SharedServices,
     state_sync_service: TStateSyncService,
     // TODO: @AleksandrS Add priority rx
-    network_rx: Receiver<NetworkMessage>,
+    network_rx: XInstrumentedReceiver<NetworkMessage>,
     network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
     network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
-    raw_block_tx: InstrumentedSender<(AccountId, Vec<u8>)>,
+    raw_block_tx: InstrumentedSender<(NodeIdentifier, Vec<u8>)>,
     bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
 
-    production_timeout_multiplier: u64,
     last_block_attestations: Arc<Mutex<CollectedAttestations>>,
     pub received_acks: Arc<Mutex<Vec<Envelope<GoshBLS, AckData>>>>,
     sent_acks: BTreeMap<BlockSeqNo, Envelope<GoshBLS, AckData>>,
@@ -131,14 +129,19 @@ where
     external_messages: ExternalMessagesThreadState,
 
     is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
-    db_service: Option<DBSerializeService>,
     // Channel (sender) for block requests
     blk_req_tx: Sender<BlockRequestParams>,
     ext_msg_receiver: JoinHandle<()>,
     authority_state: Arc<Mutex<Authority>>,
     unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
-    stop_rx: Receiver<()>,
     stop_result_tx: Sender<()>,
+
+    stalled_threads: Arc<Mutex<Vec<ThreadIdentifier>>>,
+    last_synced_state:
+        Option<(BlockIdentifier, BlockSeqNo, HashMap<ThreadIdentifier, BlockIdentifier>)>,
+    chain_pulse_monitor: Sender<ChainPulseEvent>,
+
+    authority_handler: JoinHandle<()>,
 }
 
 impl<TStateSyncService, TRandomGenerator> Node<TStateSyncService, TRandomGenerator>
@@ -152,10 +155,10 @@ where
         state_sync_service: TStateSyncService,
         production_process: TVMBlockProducerProcess,
         repository: RepositoryImpl,
-        network_rx: Receiver<NetworkMessage>,
+        network_rx: XInstrumentedReceiver<NetworkMessage>,
         network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
         network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
-        raw_block_tx: InstrumentedSender<(AccountId, Vec<u8>)>,
+        raw_block_tx: InstrumentedSender<(NodeIdentifier, Vec<u8>)>,
         bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
         config: Config,
         block_keeper_rng: TRandomGenerator,
@@ -169,19 +172,22 @@ where
         validation_service: ValidationServiceInterface,
         skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
         metrics: Option<BlockProductionMetrics>,
-        self_tx: Sender<NetworkMessage>,
+        self_tx: XInstrumentedSender<NetworkMessage>,
         external_messages: ExternalMessagesThreadState,
         message_db: MessageDurableStorage,
         last_block_attestations: Arc<Mutex<CollectedAttestations>>,
         bp_production_count: Arc<AtomicI32>,
-        db_service: Option<DBSerializeService>,
         blk_req_tx: Sender<BlockRequestParams>,
         attestation_send_service: AttestationSendServiceHandler,
         ext_msg_receiver: JoinHandle<()>,
         authority_state: Arc<Mutex<Authority>>,
         unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
-        stop_rx: Receiver<()>,
         stop_result_tx: Sender<()>,
+        stalled_threads: Arc<Mutex<Vec<ThreadIdentifier>>>,
+        chain_pulse_monitor: Sender<ChainPulseEvent>,
+        authority_handler: JoinHandle<()>,
+        self_authority_tx: XInstrumentedSender<NetworkMessage>,
+        save_optimistic_service_sender: InstrumentedSender<Arc<OptimisticStateImpl>>,
     ) -> Self {
         tracing::trace!("Start node for thread: {thread_id:?}");
         if let Some(metrics) = &metrics {
@@ -213,14 +219,17 @@ where
         // }
         // }
 
-        authority_state.guarded_mut(|e| {
-            e.register_block_producer(thread_id, block_producer_control_tx);
+        authority_state.guarded_mut(|e| e.get_thread_authority(&thread_id)).guarded_mut(|e| {
+            e.register_block_producer(block_producer_control_tx);
         });
         let received_acks = Arc::new(Mutex::new(Vec::new()));
         let received_nacks = Arc::new(Mutex::new(Vec::new()));
         let metrics_clone = metrics.clone();
         let is_state_sync_requested = Arc::new(Mutex::new(None));
         let unprocessed_blocks_cache_clone = unprocessed_blocks_cache.clone();
+        let last_block_attestations_clone = last_block_attestations.clone();
+        let chain_pulse_monitor_clone = chain_pulse_monitor.clone();
+        let thread_id_clone = thread_id;
         Self {
             shared_services: shared_services.clone(),
             state_sync_service: state_sync_service.clone(),
@@ -230,7 +239,6 @@ where
             network_direct_tx: network_direct_tx.clone(),
             raw_block_tx: raw_block_tx.clone(),
             bls_keys_map: bls_keys_map.clone(),
-            production_timeout_multiplier: DEFAULT_PRODUCTION_TIME_MULTIPLIER,
             last_block_attestations: last_block_attestations.clone(),
             config: config.clone(),
             received_attestations: Default::default(),
@@ -271,6 +279,9 @@ where
                             &node_id,
                             authority,
                             unprocessed_blocks_cache_clone,
+                            last_block_attestations_clone,
+                            chain_pulse_monitor_clone,
+                            thread_id_clone,
                         );
                         Ok(())
                     }
@@ -290,6 +301,7 @@ where
                 last_block_attestations.clone(),
                 attestations_target_service,
                 self_tx,
+                self_authority_tx,
                 network_broadcast_tx,
                 config.local.node_id.clone(),
                 Duration::from_millis(config.global.time_to_produce_block_millis),
@@ -297,19 +309,22 @@ where
                 external_messages.clone(),
                 is_state_sync_requested.clone(),
                 bp_production_count,
+                save_optimistic_service_sender,
             )
             .expect("Failed to start producer service"),
             metrics,
             external_messages,
             is_state_sync_requested,
-            db_service,
             blk_req_tx,
             attestation_send_service,
             ext_msg_receiver,
             authority_state,
             unprocessed_blocks_cache,
-            stop_rx,
             stop_result_tx,
+            stalled_threads,
+            last_synced_state: None,
+            chain_pulse_monitor,
+            authority_handler,
         }
     }
 }

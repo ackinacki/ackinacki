@@ -1,3 +1,6 @@
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+//
+
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::time::SystemTime;
@@ -20,8 +23,27 @@ use crate::WebServer;
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct BlockKeeperSetUpdate {
     pub seq_no: u32,
+    #[serde(with = "bk_vec_serde")]
     pub current: Vec<(String, [u8; 32])>,
+    #[serde(with = "bk_vec_serde")]
     pub future: Vec<(String, [u8; 32])>,
+}
+
+mod bk_vec_serde {
+    use hex::encode;
+    use serde::ser::SerializeSeq;
+    use serde::Serializer;
+
+    pub fn serialize<S>(vec: &Vec<(String, [u8; 32])>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(vec.len()))?;
+        for (s, bytes) in vec {
+            seq.serialize_element(&(s, encode(bytes)))?;
+        }
+        seq.end()
+    }
 }
 
 pub struct BkSetSnapshot {
@@ -101,22 +123,16 @@ pub struct BkSetError {
     message: String,
 }
 
-pub struct BkSetHandler<
-    TMessage,
-    TMsgConverter,
-    TBPResolver,
-    TBMLicensePubkeyLoader,
-    TBocByAddrGetter,
->(
+pub struct BkSetHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>(
     PhantomData<TMessage>,
     PhantomData<TMsgConverter>,
     PhantomData<TBPResolver>,
-    PhantomData<TBMLicensePubkeyLoader>,
     PhantomData<TBocByAddrGetter>,
+    PhantomData<TSeqnoGetter>,
 );
 
-impl<TMessage, TMsgConverter, TBPResolver, TBMLicensePubkeyLoader, TBocByAddrGetter>
-    BkSetHandler<TMessage, TMsgConverter, TBPResolver, TBMLicensePubkeyLoader, TBocByAddrGetter>
+impl<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
+    BkSetHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
 {
     pub fn new() -> Self {
         Self(PhantomData, PhantomData, PhantomData, PhantomData, PhantomData)
@@ -124,8 +140,8 @@ impl<TMessage, TMsgConverter, TBPResolver, TBMLicensePubkeyLoader, TBocByAddrGet
 }
 
 #[async_trait]
-impl<TMessage, TMsgConverter, TBPResolver, TBMLicensePubkeyLoader, TBocByAddrGetter> Handler
-    for BkSetHandler<TMessage, TMsgConverter, TBPResolver, TBMLicensePubkeyLoader, TBocByAddrGetter>
+impl<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter> Handler
+    for BkSetHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
 where
     TMessage: Clone + Send + Sync + 'static + std::fmt::Debug,
     TMsgConverter: Clone
@@ -134,8 +150,9 @@ where
         + 'static
         + Fn(tvm_block::Message, [u8; 34]) -> anyhow::Result<TMessage>,
     TBPResolver: Clone + Send + Sync + 'static + FnMut([u8; 34]) -> ResolvingResult,
-    TBMLicensePubkeyLoader: Send + Sync + Clone + 'static + Fn(String) -> Option<String>,
-    TBocByAddrGetter: Clone + Send + Sync + 'static + Fn(String) -> anyhow::Result<String>,
+    TBocByAddrGetter:
+        Clone + Send + Sync + 'static + Fn(String) -> anyhow::Result<(String, Option<String>)>,
+    TSeqnoGetter: Clone + Send + Sync + 'static + Fn() -> anyhow::Result<u32>,
 {
     async fn handle(
         &self,
@@ -150,8 +167,8 @@ where
             TMessage,
             TMsgConverter,
             TBPResolver,
-            TBMLicensePubkeyLoader,
             TBocByAddrGetter,
+            TSeqnoGetter,
         >>() else {
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
             render_error_response(

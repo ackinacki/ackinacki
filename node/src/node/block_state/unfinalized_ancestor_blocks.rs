@@ -99,7 +99,7 @@ mod test {
         let tmp_dir = tempfile::tempdir().unwrap();
         let tmp_path = tmp_dir.path().to_owned();
         let zero_thread = ThreadIdentifier::new(&BlockIdentifier::default(), 0);
-        let repo = BlockStateRepository::new(tmp_path);
+        let repo = BlockStateRepository::test(tmp_path);
         let finalized_really_old = BlockIdentifier::from_str(
             "ffa1345a4a9ef86615040207e6f4af9f399d8f3ad4a7fc491e4e985f34c351eb",
         )

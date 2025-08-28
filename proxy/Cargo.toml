@@ -23,7 +23,7 @@ opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
 quinn.workspace = true
 rcgen = "0.13.1"
-reqwest = { version = "0.11.23", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12.22", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite.workspace = true
 rustls = { version = "0.23.19", default-features = false, features = ["ring", "std", "logging"] }
 rustls-pemfile = "2.2.0"

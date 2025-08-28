@@ -1,7 +1,6 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -20,12 +19,10 @@ use crate::types::ackinacki_block::common_section::Directives;
 use crate::types::ackinacki_block::hash::calculate_hash;
 use crate::types::ackinacki_block::hash::debug_hash;
 use crate::types::ackinacki_block::hash::Sha256Hash;
-use crate::types::AccountAddress;
-use crate::types::BlockEndLT;
 use crate::types::BlockHeight;
 use crate::types::BlockIdentifier;
+use crate::types::BlockRound;
 use crate::types::BlockSeqNo;
-use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
@@ -37,6 +34,8 @@ mod parse_block_accounts_and_messages;
 mod serialize;
 
 pub use hash::compare_hashes;
+
+use crate::repository::dapp_id_table::DAppIdTableChangeSet;
 
 const BLOCK_SUFFIX_LEN: usize = 32;
 
@@ -83,9 +82,10 @@ impl AckiNackiBlock {
         verify_complexity: SignerIndex,
         refs: Vec<BlockIdentifier>,
         threads_table: Option<ThreadsTable>,
-        changed_dapp_ids: HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>,
-        round: u16,
+        changed_dapp_ids: DAppIdTableChangeSet,
+        round: BlockRound,
         block_height: BlockHeight,
+        #[cfg(feature = "monitor-accounts-number")] accounts_number_diff: i64,
     ) -> Self {
         // Note: according to the node logic we will update common section of every
         // block so there is no need to calculate hash here
@@ -102,6 +102,8 @@ impl AckiNackiBlock {
                 threads_table,
                 changed_dapp_ids,
                 block_height,
+                #[cfg(feature = "monitor-accounts-number")]
+                accounts_number_diff,
             ),
             block,
             tx_cnt,

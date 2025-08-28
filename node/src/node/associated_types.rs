@@ -14,7 +14,6 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
-use tvm_types::AccountId;
 use typed_builder::TypedBuilder;
 
 use super::block_request_service::BlockRequestService;
@@ -32,11 +31,12 @@ use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
+use crate::utilities::guarded::Guarded;
 
 pub type SignerIndex = u16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub struct NodeIdentifier(AccountId);
+pub struct NodeIdentifier(AccountAddress);
 
 impl NodeIdentifier {
     #[cfg(any(test, feature = "nack_test"))]
@@ -48,7 +48,7 @@ impl NodeIdentifier {
 impl NodeIdentifier {
     #[cfg(any(test, feature = "nack_test"))]
     pub fn test(seed: usize) -> NodeIdentifier {
-        AccountId::from(UInt256::from_be_bytes(&seed.to_be_bytes())).into()
+        AccountAddress(UInt256::from_be_bytes(&seed.to_be_bytes())).into()
     }
 }
 
@@ -71,13 +71,19 @@ impl<'de> Deserialize<'de> for NodeIdentifier {
     }
 }
 
-impl From<AccountId> for NodeIdentifier {
-    fn from(value: AccountId) -> Self {
+impl From<AccountAddress> for NodeIdentifier {
+    fn from(value: AccountAddress) -> Self {
         Self(value)
     }
 }
 
-impl From<NodeIdentifier> for AccountId {
+impl From<tvm_types::AccountId> for NodeIdentifier {
+    fn from(value: tvm_types::AccountId) -> Self {
+        Self(AccountAddress::from(value))
+    }
+}
+
+impl From<NodeIdentifier> for AccountAddress {
     fn from(value: NodeIdentifier) -> Self {
         value.0
     }
@@ -155,9 +161,7 @@ impl NackReason {
                 nack_target_node_id = envelope.data().get_common_section().producer_id.clone();
                 // TODO: think of possible attacks base on impossibility of finding BK key
                 let state = block_state_repository.get(&envelope.data().parent()).unwrap();
-                let state_in = state.lock();
-                let bk_set = state_in.bk_set().clone().unwrap();
-                drop(state_in);
+                let bk_set = state.guarded(|e| e.bk_set().clone()).unwrap();
                 if let Some(data) = bk_set.get_by_node_id(&nack_target_node_id) {
                     nack_key = data.pubkey.clone();
                     nack_wallet_addr = data.owner_address.clone();
@@ -279,11 +283,18 @@ pub struct NackData {
     pub reason: NackReason,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[repr(u8)]
+pub enum AttestationTargetType {
+    Primary,
+    Fallback,
+}
+
 #[derive(TypedBuilder, Eq, PartialEq, Debug, Clone, Serialize, Deserialize, Getters)]
 pub struct AttestationData {
     parent_block_id: BlockIdentifier,
     block_id: BlockIdentifier,
     block_seq_no: BlockSeqNo,
     envelope_hash: AckiNackiEnvelopeHash,
-    is_fallback: bool,
+    target_type: AttestationTargetType,
 }

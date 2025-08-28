@@ -22,7 +22,7 @@ hex = "0.4.3"
 hmac = "^0.12"
 lazy_static = "^1.4"
 libc = { version = "0.2" }
-msquic = { git = "https://github.com/gosh-sh/msquic.git", rev = "6b49129a65c2a095396d30199bd6371e3388ef7c", features = ["static"] }
+msquic = { git = "https://github.com/gosh-sh/msquic.git", rev = "d1909c987d97e43be94845f8333e38e207666cb5", features = ["static"] }
 parking_lot = "0.12.3"
 pem = "3.0.5"
 quinn.workspace = true

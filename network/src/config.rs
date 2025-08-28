@@ -1,6 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::net::SocketAddr;
 
@@ -11,7 +12,7 @@ use crate::pub_sub::CertFile;
 use crate::pub_sub::CertStore;
 use crate::pub_sub::PrivateKeyFile;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct NetworkConfig {
     pub bind: SocketAddr,
     pub credential: NetCredential,
@@ -33,7 +34,7 @@ impl NetworkConfig {
         my_key: PrivateKeyFile,
         my_ed_key: Option<transport_layer::SigningKey>,
         peer_certs: CertStore,
-        peer_ed_pubkeys: Vec<transport_layer::VerifyingKey>,
+        peer_ed_pubkeys: HashSet<transport_layer::VerifyingKey>,
         subscribe: Vec<Vec<SocketAddr>>,
         proxies: Vec<SocketAddr>,
         tls_cert_cache: Option<TlsCertCache>,
@@ -44,7 +45,7 @@ impl NetworkConfig {
             my_certs,
             my_key,
             trusted_ed_pubkeys: peer_ed_pubkeys,
-            trusted_certs: peer_certs.certs,
+            trusted_cert_hashes: peer_certs.cert_hashes(),
         };
         Ok(Self { bind, credential, subscribe, proxies })
     }

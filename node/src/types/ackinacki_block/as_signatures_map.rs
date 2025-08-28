@@ -5,18 +5,25 @@ use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::node::associated_types::AttestationData;
+use crate::node::associated_types::AttestationTargetType;
 use crate::types::ackinacki_block::SignerIndex;
 use crate::types::BlockIdentifier;
 
 pub trait AsSignaturesMap {
-    fn as_signatures_map(&self) -> HashMap<BlockIdentifier, HashSet<SignerIndex>>;
+    fn as_signatures_map(
+        &self,
+    ) -> HashMap<(BlockIdentifier, AttestationTargetType), HashSet<SignerIndex>>;
 }
 
 impl AsSignaturesMap for Vec<Envelope<GoshBLS, AttestationData>> {
-    fn as_signatures_map(&self) -> HashMap<BlockIdentifier, HashSet<SignerIndex>> {
-        let mut attestations_map = HashMap::<BlockIdentifier, HashSet<SignerIndex>>::new();
+    fn as_signatures_map(
+        &self,
+    ) -> HashMap<(BlockIdentifier, AttestationTargetType), HashSet<SignerIndex>> {
+        let mut attestations_map =
+            HashMap::<(BlockIdentifier, AttestationTargetType), HashSet<SignerIndex>>::new();
         for attestation in self.iter() {
-            let attestation_target = attestation.data().block_id().clone();
+            let attestation_target =
+                (attestation.data().block_id().clone(), *attestation.data().target_type());
             let attestation_signers =
                 HashSet::from_iter(attestation.clone_signature_occurrences().keys().cloned());
             attestations_map

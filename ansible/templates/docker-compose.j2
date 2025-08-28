@@ -1,4 +1,22 @@
 services:
+  aerospike:
+    image: {{ AEROSPIKE_IMAGE }}
+    volumes:
+      - {{ BK_DIR }}/aerospike-config:/opt/aerospike/etc
+      - {{ BK_DATA_DIR }}/aerospike:/opt/aerospike/data
+    command: ["--config-file", "/opt/aerospike/etc/aerospike.conf"]
+    healthcheck:
+      test: ["CMD-SHELL", "asinfo -h 127.0.0.1 -p {{ AEROSPIKE_PORT }} -v 'build' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    ports:
+      - 127.0.0.1:{{ AEROSPIKE_PORT }}:{{ AEROSPIKE_PORT }}
+    networks:
+      - ackinacki-net
+  
   nginx{{ NODE_ID }}:
     image: {{ REVPROXY_IMAGE }}
     restart: unless-stopped
@@ -7,7 +25,6 @@ services:
     environment:
       - NODE_API_ADDRESS=node{{ NODE_ID }}:8600
       - MESSAGE_ROUTER_ADDRESS=node{{ NODE_ID }}:8700
-      - Q_SERVER_ADDRESS=q_server{{ NODE_ID }}:3000
       - BLOCK_MANAGER_API={{ inventory_hostname }}:8700
     volumes:
       - {{ BK_DATA_DIR }}/share:/var/www/storage/node
@@ -16,28 +33,6 @@ services:
         host_ip: {{ HOST_PRIVATE_IP }}
         published: 8080
         protocol: tcp
-
-  q_server{{ NODE_ID }}:
-    image: {{ GQL_IMAGE }}
-    entrypoint: []
-    restart: unless-stopped
-    environment: &q_server-base-env
-      NODE_URL: http://nginx{{ NODE_ID }}/bm/v1/messages
-    command:
-      - bash
-      - -c
-      - >
-        gql-server -d ./data/node-archive.db -l 0.0.0.0:3000
-    expose:
-      - "3000"
-    ports:
-      - {{ HOST_PRIVATE_IP }}:3000:3000
-    volumes:
-      - {{ BK_DATA_DIR }}/workdir:/workdir/data
-    networks:
-      - ackinacki-net
-    depends_on:
-      - node{{ NODE_ID }}
 
   node{{ NODE_ID }}:
     image: {{ NODE_IMAGE }}
@@ -49,6 +44,7 @@ services:
       API_ADDR: 0.0.0.0:8600
       MESSAGE_ROUTER: 0.0.0.0:8700
       GOSSIP_SEEDS: {{ GOSSIP_SEEDS | join(',') }}
+      AEROSPIKE_SOCKET_ADDR: 127.0.0.1:{{ AEROSPIKE_PORT }}
       MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES: 600s
       NODE_JOINING_TIMEOUT: 60s
       NODE_ID: {{ NODE_ID }}
@@ -78,22 +74,17 @@ services:
         --thread-count-soft-limit {{ THREAD_COUNT_SOFT_LIMIT }}
         --block-keeper-epoch-code-hash {{ CODE_HASH }}
         && cat acki-nacki.conf.yaml
-        && migration-tool -p ./data -n -a --block-manager
         && node -c acki-nacki.conf.yaml >> /logsdir/node.log 2>&1
-    ports:
-      - {{ BIND_GOSSIP_PORT }}:10000/udp
-      - {{ BIND_GOSSIP_PORT }}:10000/tcp
-      - {{ BIND_PORT }}:8500/udp
-      - {{ HOST_PUBLIC_IP }}:8600:8600
-      - {{ BIND_MESSAGE_ROUTER_PORT }}:8700
-      - {{ HOST_PUBLIC_IP }}:{{ BLOCK_MANAGER_PORT }}:12000/udp
     volumes:
       - {{ BK_DATA_DIR }}/share:/share
       - {{ BK_DATA_DIR }}/workdir:/workdir/data
       - {{ BK_DIR }}/bk-configs:/bk-configs
+      - {{ BK_DIR }}/bk-binaries:/workdir/config
       - {{ BK_LOGS_DIR }}:/logsdir
-    networks:
-      - ackinacki-net
+    network_mode: "host"
+    depends_on:
+      aerospike:
+        condition: service_healthy
 
   staking{{ NODE_ID }}:
     image: {{ STAKING_IMAGE }}

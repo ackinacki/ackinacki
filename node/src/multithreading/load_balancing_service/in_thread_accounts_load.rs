@@ -1,5 +1,6 @@
+use std::sync::Arc;
+
 use tvm_block::HashmapAugType;
-use tvm_types::AccountId;
 
 use crate::bitmask::mask::Bitmask;
 use crate::multithreading::load_balancing_service::AckiNackiBlock;
@@ -24,7 +25,7 @@ pub struct InThreadAccountsLoad {
 impl InThreadAccountsLoad {
     pub fn new_from<TOptimisticState>(
         block: &AckiNackiBlock,
-        block_state: &mut TOptimisticState,
+        block_state: Arc<TOptimisticState>,
     ) -> Self
     where
         TOptimisticState: OptimisticState,
@@ -82,7 +83,7 @@ impl InThreadAccountsLoad {
     pub fn append_from<TOptimisticState>(
         &mut self,
         block: &AckiNackiBlock,
-        block_state: &mut TOptimisticState,
+        block_state: Arc<TOptimisticState>,
     ) where
         TOptimisticState: OptimisticState,
     {
@@ -94,29 +95,32 @@ impl InThreadAccountsLoad {
             .read_in_msg_descr()
             .unwrap_or_default()
             .iterate_objects(|in_msg| {
-                if let Ok(message) = in_msg.read_message() {
-                    if let Some(destination) = message.int_dst_account_id() {
-                        let destination = AccountAddress(destination);
-                        let route = AccountRouting::from((
-                            dapps.get(&destination).and_then(|e| e.0.clone()).or(message
-                                .int_header()
-                                .and_then(|hdr| hdr.src_dapp_id.clone())
-                                .map(|dapp_uint| {
-                                    DAppIdentifier(AccountAddress(AccountId::from(dapp_uint)))
-                                })),
-                            destination,
-                        ));
-                        let bits: [[bool; 256]; 2] = route.into();
-                        for outer in 0..bits.len() {
-                            for inner in 0..bits[outer].len() {
-                                if !bits[outer][inner] {
-                                    self.zero_bits_count[outer][inner] += 1;
-                                }
-                            }
+                let Ok(message) = in_msg.read_message() else {
+                    return Ok(true);
+                };
+                let Some(destination) = message.int_dst_account_id() else {
+                    return Ok(true);
+                };
+                let destination = destination.into();
+                let Some(dapp_id) = dapps.get(&destination).and_then(|e| e.0.clone()).or(message
+                    .int_header()
+                    .and_then(|hdr| hdr.src_dapp_id.clone())
+                    .map(|dapp_uint| DAppIdentifier(AccountAddress(dapp_uint))))
+                else {
+                    return Ok(true);
+                };
+
+                // Calculate messages from existing dapps only.
+                let route = AccountRouting::from((Some(dapp_id), destination));
+                let bits: [[bool; 256]; 2] = route.into();
+                for outer in 0..bits.len() {
+                    for inner in 0..bits[outer].len() {
+                        if !bits[outer][inner] {
+                            self.zero_bits_count[outer][inner] += 1;
                         }
-                        self.total_transactions_count += 1;
                     }
                 }
+                self.total_transactions_count += 1;
                 Ok(true)
             });
     }

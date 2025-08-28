@@ -117,13 +117,13 @@ pub fn decode_dapp_config_data(account: &Account) -> anyhow::Result<Option<DappC
 }
 
 pub fn create_config_touch_message(
-    minted: u128,
+    minted: i128,
     addr: UInt256,
     block_time: u32,
 ) -> anyhow::Result<Message> {
     tracing::trace!("create_Dapp_Config message: {addr:?}");
     let expire = block_time + 5;
-    let parameters = format!(r#"{{"minted": {minted}}}"#,);
+    let parameters = format!(r#"{{"value": {minted}}}"#,);
     tracing::trace!(target: "builder", "parameters {:?}", parameters);
     let msg_body = tvm_abi::encode_function_call(
         DAPP_CONFIG_ABI,

@@ -60,6 +60,7 @@ pub(crate) fn get_test_cred() -> Credential {
 
 #[cfg(test)]
 mod unit_tests {
+    use std::collections::HashSet;
     use std::net::SocketAddr;
     use std::pin::Pin;
     use std::task::Context;
@@ -89,6 +90,7 @@ mod unit_tests {
     use crate::msquic::quic_settings::ConfigFactory;
     use crate::msquic::read_message_from_stream;
     use crate::msquic::MsQuicTransport;
+    use crate::CertHash;
     use crate::NetConnection;
     use crate::NetCredential;
     use crate::NetIncomingRequest;
@@ -103,8 +105,8 @@ mod unit_tests {
         let client_ed_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
         let mut client_cred =
             NetCredential::generate_self_signed(None, Some(client_ed_key.clone())).unwrap();
-        server_cred.trusted_ed_pubkeys.push(client_ed_key.verifying_key());
-        client_cred.trusted_certs.push(server_cred.my_certs[0].clone());
+        server_cred.trusted_ed_pubkeys.insert(client_ed_key.verifying_key());
+        client_cred.trusted_cert_hashes.insert(CertHash::from(&server_cred.my_certs[0]));
         let server_cred_clone = server_cred.clone();
         let client_cred_clone = client_cred.clone();
         let mut tasks = JoinSet::new();
@@ -355,8 +357,8 @@ mod unit_tests {
         let creds = NetCredential {
             my_key: key,
             my_certs: vec![cert],
-            trusted_certs: vec![],
-            trusted_ed_pubkeys: vec![],
+            trusted_cert_hashes: HashSet::new(),
+            trusted_ed_pubkeys: HashSet::new(),
         };
         let reg = Registration::new(&RegistrationConfig::default()).unwrap();
         let alpn = ["qtest"];

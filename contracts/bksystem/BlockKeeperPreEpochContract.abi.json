@@ -16,22 +16,37 @@
 				{"name":"virtualStake","type":"optional(uint128)"},
 				{"name":"ProxyList","type":"map(uint8,string)"},
 				{"name":"reward_sum","type":"uint128"},
-				{"name":"myIp","type":"string"}
+				{"name":"myIp","type":"string"},
+				{"name":"epochCliff","type":"uint64"},
+				{"name":"reward_adjustment","type":"uint128"}
 			],
 			"outputs": [
 			]
 		},
 		{
-			"name": "changeReputation",
+			"name": "destroy",
 			"inputs": [
-				{"name":"is_inc","type":"bool"},
-				{"name":"value","type":"uint128"}
+				{"name":"isProxyDelete","type":"bool"}
 			],
 			"outputs": [
 			]
 		},
 		{
 			"name": "touch",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "touchIn",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "cancelPreEpoch",
 			"inputs": [
 			],
 			"outputs": [
@@ -62,10 +77,8 @@
 	],
 	"fields": [
 		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
-		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
-		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
-		{"init":false,"name":"__value","type":"uint256"},
 		{"init":false,"name":"_code","type":"map(uint8,cell)"},
 		{"init":true,"name":"_owner_pubkey","type":"uint256"},
 		{"init":false,"name":"_root","type":"address"},
@@ -73,7 +86,6 @@
 		{"init":false,"name":"_seqNoDestruct","type":"uint64"},
 		{"init":false,"name":"_epochDuration","type":"uint64"},
 		{"init":false,"name":"_waitStep","type":"uint64"},
-		{"init":false,"name":"_owner","type":"address"},
 		{"init":false,"name":"_bls_pubkey","type":"bytes"},
 		{"init":false,"name":"_stake","type":"varuint32"},
 		{"init":false,"name":"_signerIndex","type":"uint16"},
@@ -82,6 +94,8 @@
 		{"init":false,"name":"_wallet","type":"address"},
 		{"init":false,"name":"_virtualStake","type":"optional(uint128)"},
 		{"init":false,"name":"_reward_sum","type":"uint128"},
-		{"init":false,"name":"_myIp","type":"string"}
+		{"init":false,"name":"_myIp","type":"string"},
+		{"init":false,"name":"_reward_adjustment","type":"uint128"},
+		{"init":false,"name":"isDestroy","type":"bool"}
 	]
 }

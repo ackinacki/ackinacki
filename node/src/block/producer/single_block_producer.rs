@@ -13,7 +13,6 @@ use tracing::instrument;
 use tracing::trace_span;
 use tvm_block::GetRepresentationHash;
 use tvm_executor::BlockchainConfig;
-use tvm_types::AccountId;
 use tvm_types::Cell;
 use tvm_types::HashmapType;
 use typed_builder::TypedBuilder;
@@ -21,6 +20,7 @@ use typed_builder::TypedBuilder;
 use crate::block::producer::builder::ActiveThread;
 use crate::block::producer::builder::BlockBuilder;
 use crate::block::producer::execution_time::ExecutionTimeLimits;
+use crate::block::producer::wasm::WasmNodeCache;
 use crate::block_keeper_system::wallet_config::create_wallet_slash_message;
 use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperSlashData;
@@ -31,10 +31,10 @@ use crate::external_messages::Stamp;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::Message;
 use crate::message::WrappedMessage;
-use crate::message_storage::MessageDurableStorage;
 use crate::multithreading::load_balancing_service::CheckError;
 use crate::multithreading::load_balancing_service::ThreadAction;
 use crate::node::associated_types::NackData;
+use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::node::NodeIdentifier;
@@ -43,8 +43,11 @@ use crate::repository::accounts::AccountsRepository;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
+use crate::storage::MessageDurableStorage;
+use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
+use crate::types::BlockRound;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
@@ -61,12 +64,13 @@ pub trait BlockProducer {
         // This ensures this object will not be reused
         self,
         thread_identifier: ThreadIdentifier,
-        parent_block_state: Self::OptimisticState,
+        parent_state: Self::OptimisticState,
         refs: I,
         control_rx_stop: InstrumentedReceiver<()>,
         message_db: MessageDurableStorage,
         time_limits: &ExecutionTimeLimits,
-        block_round: u16,
+        block_round: BlockRound,
+        parent_block_state: BlockState,
     ) -> anyhow::Result<(
         AckiNackiBlock,
         Self::OptimisticState,
@@ -74,6 +78,7 @@ pub trait BlockProducer {
         CrossThreadRefData,
         Vec<Stamp>,
         ExtMsgFeedbackList,
+        BlockState,
     )>
     where
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
@@ -84,7 +89,7 @@ pub trait BlockProducer {
 pub struct TVMBlockProducer {
     active_threads: Vec<(Cell, ActiveThread)>,
     blockchain_config: Arc<BlockchainConfig>,
-    message_queue: HashMap<AccountId, VecDeque<(Stamp, tvm_block::Message)>>,
+    message_queue: HashMap<AccountAddress, VecDeque<(Stamp, tvm_block::Message)>>,
     producer_node_id: NodeIdentifier,
     thread_count_soft_limit: usize,
     parallelization_level: usize,
@@ -96,6 +101,7 @@ pub struct TVMBlockProducer {
     accounts: AccountsRepository,
     block_state_repository: BlockStateRepository,
     metrics: Option<BlockProductionMetrics>,
+    wasm_cache: WasmNodeCache,
 }
 
 impl TVMBlockProducer {
@@ -119,12 +125,13 @@ impl BlockProducer for TVMBlockProducer {
         // This ensures this object will not be reused
         mut self,
         thread_identifier: ThreadIdentifier,
-        parent_block_state: Self::OptimisticState,
+        parent_state: Self::OptimisticState,
         refs: I,
         control_rx_stop: InstrumentedReceiver<()>,
         message_db: MessageDurableStorage,
         time_limits: &ExecutionTimeLimits,
-        block_round: u16,
+        block_round: BlockRound,
+        parent_block_state: BlockState,
     ) -> anyhow::Result<(
         AckiNackiBlock,
         Self::OptimisticState,
@@ -132,20 +139,20 @@ impl BlockProducer for TVMBlockProducer {
         CrossThreadRefData,
         Vec<Stamp>,
         ExtMsgFeedbackList,
+        BlockState,
     )>
     where
         // TODO: remove Clone and change to Into<>
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
         CrossThreadRefData: 'a,
     {
-        let parent_block_id = parent_block_state.block_id.clone();
         let (initial_state, in_table, white_list_of_slashing_messages_hashes, forwarded_messages) =
             trace_span!("pre processing").in_scope(|| {
                 tracing::trace!("Start production");
                 tracing::trace!(
                     "Producing block for {}, parent_seq_no: {}, refs: {:?}",
                     thread_identifier,
-                    parent_block_state.block_seq_no,
+                    parent_state.block_seq_no,
                     refs.clone()
                         .map(|e| (*e.block_thread_identifier(), *e.block_seq_no()))
                         .collect::<Vec<_>>()
@@ -162,7 +169,7 @@ impl BlockProducer for TVMBlockProducer {
                             let epoch_nack_data = BlockKeeperSlashData {
                                 node_id: id,
                                 bls_pubkey: bls_key,
-                                addr: addr.0,
+                                addr,
                                 slash_type: 0,
                             };
                             let msg = create_wallet_slash_message(&epoch_nack_data)?;
@@ -177,13 +184,14 @@ impl BlockProducer for TVMBlockProducer {
                     .shared_services
                     .exec(|container| container.cross_thread_ref_data_service.clone());
                 let preprocessing_result = crate::block::preprocessing::preprocess(
-                    parent_block_state,
+                    parent_state,
                     refs.clone(),
                     &thread_identifier,
                     &cross_thread_ref_data_service,
                     wrapped_slash_messages,
                     self.epoch_block_keeper_data.clone(),
                     message_db.clone(),
+                    self.metrics.clone(),
                 )?;
                 Ok::<_, anyhow::Error>((
                     preprocessing_result.state,
@@ -216,10 +224,11 @@ impl BlockProducer for TVMBlockProducer {
             self.parallelization_level,
             forwarded_messages,
             self.metrics.clone(),
+            self.wasm_cache,
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (mut prepared_block, processed_stamps, ext_message_feedbacks) = producer.build_block(
-            self.message_queue.clone(),
+            std::mem::take(&mut self.message_queue),
             &self.blockchain_config,
             active_threads,
             None,
@@ -284,20 +293,17 @@ impl BlockProducer for TVMBlockProducer {
             cross_thread_ref_data.set_block_refs(ref_ids.clone());
             let processed_ext_msg_cnt = processed_stamps.len();
 
-            let parent_state =
-                self.block_state_repository.get(&parent_block_id).expect("Can't fail");
-            let block_height = parent_state
+            let block_height = parent_block_state
                 .guarded(|e| *e.block_height())
                 .expect("Parent block does not have block height set")
                 .next(&thread_identifier);
 
-            self.block_state_repository.get(&produced_block_id).expect("Can't fail").guarded_mut(
-                |e| {
-                    e.set_block_height(block_height).expect("Failed to set block_height");
-                    e.add_proposed_in_round(block_round)
-                        .expect("Failed to set round for block state")
-                },
-            );
+            let produced_block_state =
+                self.block_state_repository.get(&produced_block_id).expect("Can't fail");
+            produced_block_state.guarded_mut(|e| {
+                e.set_block_height(block_height).expect("Failed to set block_height");
+                e.set_block_round(block_round).expect("Failed to set round for the block state")
+            });
 
             let res = (
                 AckiNackiBlock::new(
@@ -312,12 +318,15 @@ impl BlockProducer for TVMBlockProducer {
                     prepared_block.changed_dapp_ids,
                     block_round,
                     block_height,
+                    #[cfg(feature = "monitor-accounts-number")]
+                    prepared_block.accounts_number_diff,
                 ),
                 new_state,
                 active_threads,
                 cross_thread_ref_data,
                 processed_stamps,
                 ext_message_feedbacks,
+                produced_block_state,
             );
 
             tracing::trace!(

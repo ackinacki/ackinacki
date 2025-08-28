@@ -10,6 +10,9 @@ use http_server::FeedbackErrorCode;
 use network::metrics::NetMetrics;
 use network::pub_sub::connection::IncomingMessage;
 use parking_lot::Mutex;
+use telemetry_utils::instrumented_channel_ext;
+use telemetry_utils::instrumented_channel_ext::XInstrumentedReceiver;
+use telemetry_utils::instrumented_channel_ext::XInstrumentedSender;
 use telemetry_utils::mpsc::instrumented_channel;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use telemetry_utils::mpsc::InstrumentedSender;
@@ -20,12 +23,14 @@ use super::dispatcher::DispatchError;
 use super::dispatcher::Dispatcher;
 use super::poisoned_queue::PoisonedQueue as PQueue;
 use crate::helper::metrics::BlockProductionMetrics;
+use crate::helper::SHUTDOWN_FLAG;
 use crate::message::WrappedMessage;
 use crate::node::services::sync::ExternalFileSharesBased;
 use crate::node::NetworkMessage;
 use crate::node::Node as NodeImpl;
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
+use crate::types::ThreadsTable;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
 
 // TODO: make into a config.
@@ -112,14 +117,17 @@ impl RoutingService {
 
     pub fn start<F>(
         channel: (RoutingService, InstrumentedReceiver<Command>),
+        metrics: Option<BlockProductionMetrics>,
         node_factory: F,
     ) -> (Self, std::thread::JoinHandle<()>)
     where
         F: FnMut(
                 Option<BlockIdentifier>,
                 &ThreadIdentifier,
-                Receiver<NetworkMessage>,
-                Sender<NetworkMessage>,
+                XInstrumentedReceiver<NetworkMessage>,
+                XInstrumentedReceiver<NetworkMessage>,
+                XInstrumentedSender<NetworkMessage>,
+                XInstrumentedSender<NetworkMessage>,
                 InstrumentedSender<ExtMsgFeedbackList>,
                 Receiver<WrappedMessage>,
             ) -> anyhow::Result<Node>
@@ -133,7 +141,13 @@ impl RoutingService {
             std::thread::Builder::new()
                 .name("routing_service_main_loop".to_string())
                 .spawn_critical(|| {
-                    Self::inner_main_loop(handler, feedback_sender, dispatcher, node_factory)
+                    Self::inner_main_loop(
+                        handler,
+                        feedback_sender,
+                        dispatcher,
+                        node_factory,
+                        metrics,
+                    )
                 })
                 .unwrap()
         };
@@ -165,26 +179,44 @@ impl RoutingService {
         parent_block_id: Option<BlockIdentifier>,
         node_factory: &mut F,
         ext_message_receiver: Receiver<WrappedMessage>,
+        metrics: Option<BlockProductionMetrics>,
     ) -> anyhow::Result<Node>
     where
         F: FnMut(
                 Option<BlockIdentifier>,
                 &ThreadIdentifier,
-                Receiver<NetworkMessage>,
-                Sender<NetworkMessage>,
+                XInstrumentedReceiver<NetworkMessage>,
+                XInstrumentedReceiver<NetworkMessage>,
+                XInstrumentedSender<NetworkMessage>,
+                XInstrumentedSender<NetworkMessage>,
                 InstrumentedSender<ExtMsgFeedbackList>,
                 Receiver<WrappedMessage>,
             ) -> anyhow::Result<Node>
             + std::marker::Send,
     {
         tracing::trace!("NetworkMessageRouter: add sender for thread: {thread_identifier:?}");
-        let (incoming_messages_sender, incoming_messages_receiver) = std::sync::mpsc::channel();
-        dispatcher.add_route(thread_identifier, incoming_messages_sender.clone());
+        let (incoming_messages_sender, incoming_messages_receiver) =
+            instrumented_channel_ext::instrumented_channel(
+                metrics.clone(),
+                crate::helper::metrics::THREAD_RECEIVER_CHANNEL,
+            );
+        let (authority_messages_sender, authority_messages_receiver) =
+            instrumented_channel_ext::instrumented_channel(
+                metrics.clone(),
+                crate::helper::metrics::AUTHORITY_RECEIVER_CHANNEL,
+            );
+        dispatcher.add_route(
+            thread_identifier,
+            incoming_messages_sender.clone(),
+            authority_messages_sender.clone(),
+        );
         node_factory(
             parent_block_id,
             &thread_identifier,
             incoming_messages_receiver,
+            authority_messages_receiver,
             incoming_messages_sender,
+            authority_messages_sender,
             feedback_sender,
             ext_message_receiver,
         )
@@ -214,13 +246,16 @@ impl RoutingService {
         feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
         mut dispatcher: Dispatcher,
         mut node_factory: F,
+        metrics: Option<BlockProductionMetrics>,
     ) -> anyhow::Result<()>
     where
         F: FnMut(
                 Option<BlockIdentifier>,
                 &ThreadIdentifier,
-                Receiver<NetworkMessage>,
-                Sender<NetworkMessage>,
+                XInstrumentedReceiver<NetworkMessage>,
+                XInstrumentedReceiver<NetworkMessage>,
+                XInstrumentedSender<NetworkMessage>,
+                XInstrumentedSender<NetworkMessage>,
                 InstrumentedSender<ExtMsgFeedbackList>,
                 Receiver<WrappedMessage>,
             ) -> anyhow::Result<Node>
@@ -233,11 +268,17 @@ impl RoutingService {
                 HashMap::new();
             let mut node_handlers = vec![];
             loop {
+                if SHUTDOWN_FLAG.get() == Some(&true) {
+                    return Ok(());
+                }
                 match control.recv() {
                     Err(e) => {
                         tracing::error!(
                             "NetworkMessageRouter: common receiver was disconnected: {e}"
                         );
+                        if SHUTDOWN_FLAG.get() == Some(&true) {
+                            return Ok(());
+                        }
                         anyhow::bail!(e)
                     }
                     Ok(command) => {
@@ -247,7 +288,16 @@ impl RoutingService {
                                 if let NetworkMessage::ExternalMessage((message, thread)) = message
                                 {
                                     if let Some(tx) = ext_message_router.get_mut(&thread) {
-                                        tx.send(message)?;
+                                        match tx.send(message) {
+                                            Ok(()) => {}
+                                            _ => {
+                                                if SHUTDOWN_FLAG.get() != Some(&true) {
+                                                    panic!("Failed to send ext message");
+                                                } else {
+                                                    return Ok(());
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -267,6 +317,7 @@ impl RoutingService {
                                     Some(parent_block_identifier),
                                     &mut node_factory,
                                     ext_messages_rx,
+                                    metrics.clone(),
                                 )
                                 .expect("Must be able to create node instances");
                                 let node_thread = std::thread::Builder::new()
@@ -294,6 +345,7 @@ impl RoutingService {
                                     None,
                                     &mut node_factory,
                                     ext_messages_rx,
+                                    metrics.clone(),
                                 )
                                 .expect("Must be able to create node instances");
                                 node.is_spawned_from_node_sync = true;
@@ -326,13 +378,25 @@ impl RoutingService {
             match inbound_network.recv() {
                 Ok(incoming) => {
                     if let Some(message) = incoming.finish(&net_metrics) {
-                        cmd_sender.send(Command::Route(message))?
+                        match cmd_sender.send(Command::Route(message)) {
+                            Ok(()) => {}
+                            _ => {
+                                if SHUTDOWN_FLAG.get() != Some(&true) {
+                                    panic!("Failed to send cmd");
+                                } else {
+                                    return Ok(());
+                                }
+                            }
+                        }
                     }
                 }
                 Err(err) => {
                     tracing::error!(
                         "NetworkMessageRouter: common receiver was disconnected: {err}"
                     );
+                    if SHUTDOWN_FLAG.get() == Some(&true) {
+                        return Ok(());
+                    }
                     anyhow::bail!(err)
                 }
             }
@@ -359,6 +423,9 @@ impl RoutingService {
                         "NetworkMessageRouter: external messages receiver was disconnected: {e}"
                     );
                     drop(feedback_loop_thread_join_handler);
+                    if SHUTDOWN_FLAG.get() == Some(&true) {
+                        return Ok(());
+                    }
                     anyhow::bail!("NetworkMessageRouter closed");
                 }
                 Ok(message) => {
@@ -388,7 +455,14 @@ impl RoutingService {
                             }
                         } else {
                             registry_guard.insert(message_hash, sender.unwrap());
-                            cmd_sender.send(Command::ExtMessage(message))?;
+                            match cmd_sender.send(Command::ExtMessage(message)) {
+                                Ok(()) => {}
+                                Err(e) => {
+                                    if SHUTDOWN_FLAG.get() != Some(&true) {
+                                        anyhow::bail!("Failed to send ext message: {e}");
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -413,6 +487,9 @@ impl RoutingService {
                         if let Some(sender) =
                             feedback_registry.lock().remove(&feedback.message_hash)
                         {
+                            if SHUTDOWN_FLAG.get() == Some(&true) {
+                                return Ok(());
+                            }
                             let _ = sender.send(feedback);
                         }
                     }
@@ -427,6 +504,7 @@ impl crate::multithreading::threads_tracking_service::Subscriber for RoutingServ
         &mut self,
         parent_block: &BlockIdentifier,
         thread_id: &ThreadIdentifier,
+        _threads_table: Option<ThreadsTable>,
     ) {
         let _ = self.cmd_sender.send(Command::StartThread((*thread_id, parent_block.clone())));
     }

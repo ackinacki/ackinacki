@@ -191,7 +191,7 @@ contract helloWorld {
         if (address(this).balance > 100000000000) {     // 100 VMSHELL
             return; 
         }
-        gosh.mintshell(100000000000);                   // 100 VMSHELL
+        gosh.mintshellq(100000000000);                   // 100 VMSHELL
     }
 
 }

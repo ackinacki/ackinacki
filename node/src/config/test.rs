@@ -53,7 +53,7 @@ mod tests {
         "message_storage_path": "message_strage",
         "rate_limit_on_incoming_block_req": 1000,
         "ext_messages_cache_size": 10,
-        "unload_after": 10
+        "node_wallet_pubkey": "hex_string"
     }
 }"#;
         let config: Config = serde_json::from_str(config_str)?;

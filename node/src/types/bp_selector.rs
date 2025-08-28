@@ -95,7 +95,7 @@ mod tests {
     use std::collections::HashSet;
     use std::str::FromStr;
 
-    use tvm_types::AccountId;
+    use tvm_types::UInt256;
 
     use crate::block_keeper_system::BlockKeeperData;
     use crate::block_keeper_system::BlockKeeperSet;
@@ -104,7 +104,6 @@ mod tests {
     use crate::types::bp_selector::ProducerSelector;
     use crate::types::AccountAddress;
     use crate::types::BlockIdentifier;
-
     #[test]
     fn test_get_distance() {
         let mut bk_set = BlockKeeperSet::new();
@@ -114,11 +113,12 @@ mod tests {
             bk_set.insert(
                 i as SignerIndex,
                 BlockKeeperData {
-                    owner_address: AccountAddress(AccountId::from_str(&acc_id_str).unwrap()),
+                    owner_address: AccountAddress(UInt256::from_str(&acc_id_str).unwrap()),
                     ..Default::default()
                 },
             )
         }
+
         let producer_selector =
             ProducerSelector { rng_seed_block_id: BlockIdentifier::default(), index: 0 };
         let producer_node_id = producer_selector
@@ -143,7 +143,7 @@ mod tests {
             bk_set.insert(
                 i as SignerIndex,
                 BlockKeeperData {
-                    owner_address: AccountAddress(AccountId::from_str(&acc_id_str).unwrap()),
+                    owner_address: AccountAddress(UInt256::from_str(&acc_id_str).unwrap()),
                     ..Default::default()
                 },
             )
@@ -172,7 +172,7 @@ mod tests {
             bk_set.insert(
                 i as SignerIndex,
                 BlockKeeperData {
-                    owner_address: AccountAddress(AccountId::from_str(&acc_id_str).unwrap()),
+                    owner_address: AccountAddress::from_str(&acc_id_str).unwrap(),
                     ..Default::default()
                 },
             )
@@ -201,7 +201,7 @@ mod tests {
             bk_set.insert(
                 i as SignerIndex,
                 BlockKeeperData {
-                    owner_address: AccountAddress(AccountId::from_str(&acc_id_str).unwrap()),
+                    owner_address: AccountAddress::from_str(&acc_id_str).unwrap(),
                     ..Default::default()
                 },
             )
@@ -213,7 +213,8 @@ mod tests {
         let producer_selector_clone = producer_selector.clone();
         let test_acc_id_str =
             format!("00000000000000000000000000000000000000000000000000000000{:08x}", 0);
-        let test_node_id = NodeIdentifier::from(AccountId::from_str(&test_acc_id_str).unwrap());
+        let test_node_id =
+            NodeIdentifier::from(AccountAddress::from_str(&test_acc_id_str).unwrap());
         let bp_distance_for_this_node =
             producer_selector_clone.get_distance_from_bp(&bk_set, &test_node_id);
         assert!(bp_distance_for_this_node.is_none());

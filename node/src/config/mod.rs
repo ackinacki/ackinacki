@@ -6,6 +6,8 @@ mod serde_config;
 #[cfg(test)]
 mod test;
 mod validations;
+
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -99,8 +101,13 @@ pub struct GlobalConfig {
     /// Thread load window size, which is used to calculate thread load
     pub thread_load_window_size: usize,
 
-    /// Change for a successfull attack
+    /// Chance of a successful attack
     pub chance_of_successful_attack: f64,
+
+    /// BP rotation round parameters
+    pub round_min_time_millis: u64,
+    pub round_step_millis: u64,
+    pub round_max_time_millis: u64,
 }
 
 /// Node interaction settings
@@ -142,11 +149,8 @@ pub struct NodeConfig {
     pub state_cache_size: usize,
 
     /// Number of blocks after which the account is unloaded from shard state.
-    #[builder(default = 10)]
-    pub unload_after: u32,
-    /// Path for message durable storage.
-    #[builder(default = PathBuf::from("./message_storage/db"))]
-    pub message_storage_path: PathBuf,
+    #[builder(default = None)]
+    pub unload_after: Option<u32>,
 
     /// Limit of calls to the on_incoming_block_request function per second
     #[builder(default = u32::MAX)]
@@ -155,6 +159,15 @@ pub struct NodeConfig {
     /// Ext messages cache size
     #[builder(default = 1000)]
     pub ext_messages_cache_size: usize,
+
+    /// BlockKeeper node owner wallet pubkey
+    #[builder(default = "".to_string())]
+    pub node_wallet_pubkey: String,
+
+    /// Path to file with keys pair for signing the authorization token of incoming external messages
+    /// Required for direct sending external messages via node
+    #[builder(default = None)]
+    pub signing_keys: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -187,13 +200,16 @@ impl Default for GlobalConfig {
             sync_delay_milliseconds: 500,
             save_state_frequency: 200,
             block_keeper_epoch_code_hash:
-                "7929933699d89b37b22b4c35632408197d3ba3f54e95af8f8ef04fc1962f203b".to_string(),
+                "ad2647fa7fe0540f656b9fc137f0bcfc18fc7750c0197e789230f8e28c437df6".to_string(),
             block_keeper_preepoch_code_hash:
-                "e3ae3234925316215a2310cb687ec65ed4a68aae285d038c73aa851c216ec894".to_string(),
+                "aad416360eaf1d667e1470e5d4c9f56b7f55810e43cb5fa239bde4cec3454a72".to_string(),
             thread_count_soft_limit: 100,
             thread_load_window_size: 100,
             thread_load_threshold: 5000,
             chance_of_successful_attack: 0.000000001_f64,
+            round_min_time_millis: 10000,
+            round_step_millis: 1000,
+            round_max_time_millis: 30000,
         }
     }
 }
@@ -235,7 +251,7 @@ impl Config {
                 self.network.my_ed_key_path.clone(),
             )?,
             CertStore::try_new(&self.network.peer_certs)?,
-            self.network.peer_ed_pubkeys.clone(),
+            HashSet::from_iter(self.network.peer_ed_pubkeys.clone()),
             self.network.subscribe.clone(),
             self.network.proxies.clone(),
             tls_cert_cache,
@@ -256,10 +272,11 @@ impl Default for NodeConfig {
             block_keeper_seed_path: "block_keeper.keys.json".to_string(),
             block_cache_size: 20,
             state_cache_size: 10,
-            unload_after: 10,
-            message_storage_path: PathBuf::from("./message_storage/db"),
+            unload_after: None,
             rate_limit_on_incoming_block_req: u32::MAX,
             ext_messages_cache_size: 200,
+            node_wallet_pubkey: "some_public_key".to_string(),
+            signing_keys: None,
         }
     }
 }

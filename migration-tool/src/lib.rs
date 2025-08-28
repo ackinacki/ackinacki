@@ -1,4 +1,4 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::fs;
@@ -22,12 +22,6 @@ impl DbInfo {
         name: "bm-archive",
         migrations: include_dir!("$CARGO_MANIFEST_DIR/migrations/bm-archive"),
     };
-    pub const NODE: Self =
-        Self { name: "node", migrations: include_dir!("$CARGO_MANIFEST_DIR/migrations/node") };
-    pub const NODE_ARCHIVE: Self = Self {
-        name: "node-archive",
-        migrations: include_dir!("$CARGO_MANIFEST_DIR/migrations/node-archive"),
-    };
 }
 
 pub struct DbMaintenance {
@@ -45,7 +39,8 @@ impl DbMaintenance {
         db_dir: impl AsRef<Path>,
         options: DbMaintenanceOptions,
     ) -> anyhow::Result<()> {
-        for db in &[DbInfo::NODE, DbInfo::NODE_ARCHIVE, DbInfo::BM_ARCHIVE] {
+        {
+            let db = &DbInfo::BM_ARCHIVE;
             DbMaintenance::new(db, &db_dir).migrate(MigrateTo::Latest, options.clone())?;
         }
         Ok(())
@@ -170,18 +165,12 @@ mod tests {
     use super::*;
 
     lazy_static! {
-        static ref MIGRATIONS: Migrations<'static> =
-            Migrations::from_directory(&DbInfo::NODE.migrations).unwrap();
-        static ref MIGRATIONS_ARC: Migrations<'static> =
-            Migrations::from_directory(&DbInfo::NODE_ARCHIVE.migrations).unwrap();
         static ref MIGRATIONS_BM: Migrations<'static> =
             Migrations::from_directory(&DbInfo::BM_ARCHIVE.migrations).unwrap();
     }
 
     #[test]
     fn migrations_test() {
-        assert!(MIGRATIONS.validate().is_ok());
-        assert!(MIGRATIONS_ARC.validate().is_ok());
         assert!(MIGRATIONS_BM.validate().is_ok());
     }
 }

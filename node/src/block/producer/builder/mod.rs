@@ -22,23 +22,24 @@ use tvm_block::ShardAccounts;
 use tvm_block::ShardStateUnsplit;
 use tvm_block::StateInit;
 use tvm_block::Transaction;
-use tvm_types::AccountId;
 use tvm_types::Cell;
 use tvm_types::UInt256;
 use tvm_types::UsageTree;
 
+use crate::block::producer::wasm::WasmNodeCache;
 use crate::block_keeper_system::BlockKeeperSetChange;
 use crate::creditconfig::DappConfig;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::repository::accounts::AccountsRepository;
+use crate::repository::dapp_id_table::DAppIdTable;
+use crate::repository::dapp_id_table::DAppIdTableChangeSet;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::types::account::WrappedAccount;
 use crate::types::AccountAddress;
 use crate::types::AccountRouting;
-use crate::types::BlockEndLT;
 use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 
@@ -52,21 +53,23 @@ pub struct PreparedBlock {
     pub state: OptimisticStateImpl,
     pub is_empty: bool,
     // TODO: check if we can get rid of it
-    pub transaction_traces: HashMap<UInt256, Vec<EngineTraceInfoData>>,
+    // pub transaction_traces: HashMap<UInt256, Vec<EngineTraceInfoData>>,
     pub active_threads: Vec<(Cell, ActiveThread)>,
     pub tx_cnt: usize,
     pub block_keeper_set_changes: Vec<BlockKeeperSetChange>,
     pub cross_thread_ref_data: CrossThreadRefData,
-    pub changed_dapp_ids: HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>,
+    pub changed_dapp_ids: DAppIdTableChangeSet,
+    #[cfg(feature = "monitor-accounts-number")]
+    pub accounts_number_diff: i64,
 }
 
 pub struct ThreadResult {
     pub transaction: Transaction,
     pub lt: u64,
-    pub trace: Option<Vec<EngineTraceInfoData>>,
+    // pub trace: Option<Vec<EngineTraceInfoData>>,
     pub account_root: Cell,
-    pub account_id: AccountId,
-    pub minted_shell: u128,
+    pub account_id: AccountAddress,
+    pub minted_shell: i128,
     pub initial_dapp_id: Option<DAppIdentifier>,
     pub in_msg_is_ext: bool,
     pub in_msg: Message,
@@ -115,8 +118,7 @@ pub struct BlockBuilder {
     pub(crate) start_lt: u64,
     pub(crate) end_lt: u64, // biggest logical time of all messages
     pub(crate) copyleft_rewards: CopyleftRewards,
-    pub(crate) transaction_traces: HashMap<UInt256, Vec<EngineTraceInfoData>>,
-
+    // pub(crate) transaction_traces: HashMap<UInt256, Vec<EngineTraceInfoData>>,
     control_rx_stop: Option<InstrumentedReceiver<()>>,
     is_stop_requested: bool,
 
@@ -130,8 +132,8 @@ pub struct BlockBuilder {
     pub(crate) block_keeper_set_changes: Vec<BlockKeeperSetChange>,
     pub(crate) base_config_stateinit: StateInit,
     pub(crate) dapp_credit_map: HashMap<DAppIdentifier, DappConfig>,
-    pub(crate) dapp_minted_map: HashMap<DAppIdentifier, u128>,
-    pub(crate) dapp_id_table: HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>,
+    pub(crate) dapp_minted_map: HashMap<DAppIdentifier, i128>,
+    pub(crate) dapp_id_table: DAppIdTable,
     pub(crate) accounts_repository: AccountsRepository,
 
     // part used to update local state
@@ -143,8 +145,15 @@ pub struct BlockBuilder {
     pub(crate) produced_internal_messages_to_other_threads:
         HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     pub(crate) accounts_that_changed_their_dapp_id:
-        HashMap<AccountId, Vec<(AccountRouting, Option<WrappedAccount>)>>,
+        HashMap<AccountAddress, Vec<(AccountRouting, Option<WrappedAccount>)>>,
+    pub(crate) dapp_id_table_change_set: DAppIdTableChangeSet,
     metrics: Option<BlockProductionMetrics>,
+
+    // cached resources used for wasm execution
+    pub(crate) wasm_cache: WasmNodeCache,
+
+    #[cfg(feature = "monitor-accounts-number")]
+    pub(crate) accounts_number_diff: i64,
 }
 
 impl BlockBuilder {

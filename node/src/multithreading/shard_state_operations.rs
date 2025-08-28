@@ -1,7 +1,6 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -13,9 +12,9 @@ use tvm_types::HashmapRemover;
 use tvm_types::HashmapType;
 
 use crate::multithreading::account::get_account_routing_for_account;
+use crate::repository::dapp_id_table::DAppIdTable;
 use crate::types::AccountAddress;
 use crate::types::AccountRouting;
-use crate::types::BlockEndLT;
 use crate::types::BlockIdentifier;
 use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
@@ -33,7 +32,7 @@ pub(crate) fn crop_shard_state_based_on_threads_table<F>(
     shard_state: Arc<ShardStateUnsplit>,
     threads_table: &ThreadsTable,
     thread_id: ThreadIdentifier,
-    dapp_id_table: &HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>,
+    dapp_id_table: &DAppIdTable,
     // TODO: remove
     _block_id: BlockIdentifier,
     optimization_skip_shard_accounts_crop: bool,
@@ -67,7 +66,7 @@ where
             // To define where to put out message, we should find a destination account routing.
             // check message
             if let Some(header) = message.int_header() {
-                let dest_address = AccountAddress(header.dst.address().clone());
+                let dest_address = header.dst.address().clone().into();
                 let dest_account_routing = if let Some((dapp_id, _)) =
                     dapp_id_table.get(&dest_address)
                 {
@@ -124,7 +123,7 @@ where
             .map_err(|e| anyhow::format_err!("Failed to iterate and split accounts: {e}"))?;
 
         removed_accounts_buffer
-            .extend(keys_to_remove_from_state.iter().map(|addr| AccountAddress(addr.into())));
+            .extend(keys_to_remove_from_state.iter().map(|addr| AccountAddress(addr.clone())));
         // Clear removed accounts from the state
         for key in keys_to_remove_from_state {
             shard_accounts.remove(&key).map_err(|e| {

@@ -3,7 +3,7 @@
 pub mod bp_resolver;
 mod defaults;
 pub mod message_router;
-mod token;
+pub mod process_ext_messages;
 
 pub use bp_resolver::MockBPResolver;
 pub use defaults::DEFAULT_NODE_URL_PATH;
@@ -29,14 +29,4 @@ pub fn read_keys_from_file(path: &str) -> Result<KeyPair, Box<dyn std::error::Er
     let reader = std::io::BufReader::new(file);
     let keys: KeyPair = serde_json::from_reader(reader)?;
     Ok(keys)
-}
-
-fn now_plus_n_secs(ttl: u64) -> String {
-    let now = std::time::SystemTime::now();
-    let future = now + std::time::Duration::from_secs(ttl);
-    future
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_millis()
-        .to_string()
 }

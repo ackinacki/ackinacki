@@ -6,10 +6,10 @@
  */
 pragma gosh-solidity >=0.76.1;
 
-import "./replayprotection.sol";
+import "./errors.sol";
 import "./structs/structs.sol";
 
-abstract contract Modifiers is ReplayProtection {   
+abstract contract Modifiers is Errors {   
     string constant versionModifiers = "1.0.0";
     
     //TvmCell constants
@@ -18,6 +18,7 @@ abstract contract Modifiers is ReplayProtection {
     //Deploy constants
     uint128 constant FEE_DEPLOY_CONFIG = 15 vmshell;
     uint64 constant MIN_BALANCE = 100000 vmshell;
+    uint64 constant BALANCE_ECC = 100000 vmshell;
 
 
     uint32 constant CURRENCIES_ID = 1;
@@ -26,6 +27,16 @@ abstract contract Modifiers is ReplayProtection {
     modifier onlyOwnerPubkeyOptional(optional(uint256) rootpubkey) {
         require(rootpubkey.hasValue() == true, ERR_NOT_OWNER);
         require(msg.pubkey() == rootpubkey.get(), ERR_NOT_OWNER);
+        _;
+    }
+
+    modifier onlyOwner {
+        require(msg.pubkey() == tvm.pubkey(), ERR_NOT_OWNER);
+        _;
+    }
+    
+    modifier accept() {
+        tvm.accept();
         _;
     }
 

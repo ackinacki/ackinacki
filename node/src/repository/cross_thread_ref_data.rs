@@ -7,7 +7,7 @@ use serde::Serialize;
 use typed_builder::TypedBuilder;
 
 use crate::message::identifier::MessageIdentifier;
-use crate::repository::optimistic_state::DAppIdTable;
+use crate::repository::dapp_id_table::DAppIdTableChangeSet;
 use crate::repository::WrappedMessage;
 use crate::types::account::WrappedAccount;
 use crate::types::AccountInbox;
@@ -25,7 +25,7 @@ pub struct CrossThreadRefData {
     block_seq_no: BlockSeqNo,
     /// This is an identifier of the block thread (An input state to generate this data)
     block_thread_identifier: ThreadIdentifier,
-    dapp_id_table_diff: DAppIdTable,
+    dapp_id_table_diff: DAppIdTableChangeSet,
     // This stores outbound messages for THIS block only. It does not aggregate
     // this info over multiple blocks.
     // TODO: research possible optimizations: we don't have to store messages, seems better to have

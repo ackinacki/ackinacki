@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::fmt::Formatter;
@@ -44,13 +43,6 @@ where
 
     pub fn add_messages(&mut self, messages: Vec<(MessageKey, Message)>) {
         self.tail_sequence.extend(messages);
-    }
-
-    pub fn remove_messages(&mut self, messages_keys: HashSet<MessageKey>) {
-        assert!(messages_keys.len() <= self.tail_sequence.iter().len());
-        let removed_messages =
-            HashSet::from_iter(self.tail_sequence.drain(0..messages_keys.len()).map(|(id, _)| id));
-        assert!(removed_messages == messages_keys);
     }
 
     pub fn length(&self) -> usize {

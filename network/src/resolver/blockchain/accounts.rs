@@ -10,7 +10,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use tvm_block::Account;
 use tvm_contracts::TvmContract;
-use tvm_types::AccountId;
 use tvm_types::UInt256;
 
 use crate::parse_publisher_addr;
@@ -65,9 +64,9 @@ static BK: LazyLock<TvmContract> = LazyLock::new(|| {
 
 pub struct Bk(pub Account);
 impl Bk {
-    pub fn get_proxy_list_addr(&self) -> anyhow::Result<AccountId> {
+    pub fn get_proxy_list_addr(&self) -> anyhow::Result<UInt256> {
         let output = BK.run_get(&self.0, "getProxyListAddr", None)?;
-        Ok(get_u256(&output, "value0")?.into())
+        get_u256(&output, "value0")
     }
 }
 
@@ -81,9 +80,9 @@ static EPOCH: LazyLock<TvmContract> = LazyLock::new(|| {
 pub struct Epoch(pub Account);
 
 impl Epoch {
-    pub fn get_owner_address(&self) -> anyhow::Result<AccountId> {
+    pub fn get_owner_address(&self) -> anyhow::Result<UInt256> {
         let details = EPOCH.run_get(&self.0, "getDetails", None)?;
-        Ok(get_u256(&details, "owner")?.into())
+        get_u256(&details, "owner")
     }
 }
 
@@ -124,13 +123,13 @@ pub fn collect_bk_set<PeerId>(
     nodes: &mut HashMap<PeerId, (Option<SocketAddr>, HashSet<SocketAddr>)>,
 ) -> anyhow::Result<()>
 where
-    PeerId: Eq + Hash + From<AccountId>,
+    PeerId: Eq + Hash + From<UInt256>,
 {
     let proxy_list_id = bk.get_proxy_list_addr()?;
     let Some(proxy_list_acc) = accounts.get_account(&proxy_list_id) else { return Ok(()) };
-    nodes.insert(
-        bk.0.get_id().ok_or_else(|| anyhow::anyhow!("Proxy list account has no id"))?.into(),
-        ProxyList(proxy_list_acc).get_proxy_list()?,
-    );
+    let account_id =
+        bk.0.get_id().ok_or_else(|| anyhow::anyhow!("Proxy list account has no id"))?;
+    let account_id: UInt256 = account_id.try_into().map_err(|err| anyhow::anyhow!("{err}"))?;
+    nodes.insert(account_id.into(), ProxyList(proxy_list_acc).get_proxy_list()?);
     Ok(())
 }

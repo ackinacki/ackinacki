@@ -1,0 +1,163 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"code","type":"map(uint8,cell)"},
+				{"name":"root_pubkey","type":"uint256"},
+				{"name":"index","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "popCoinRootDeployed",
+			"inputs": [
+				{"name":"name","type":"string"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "popCoinWalletDeployed",
+			"inputs": [
+				{"name":"name","type":"string"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateGameCodeForWallet",
+			"inputs": [
+				{"name":"name","type":"string"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateGameCode",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setGameCode",
+			"inputs": [
+				{"name":"GameCode","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setMbiCur",
+			"inputs": [
+				{"name":"mbiCur","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployGame",
+			"inputs": [
+				{"name":"name","type":"string"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployPopCoinWallet",
+			"inputs": [
+				{"name":"name","type":"string"},
+				{"name":"value","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "gameDestroyed",
+			"inputs": [
+				{"name":"name","type":"string"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "withdraw",
+			"inputs": [
+				{"name":"value","type":"uint128"},
+				{"name":"to","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getPopCoinWalletAddress",
+			"inputs": [
+				{"name":"name","type":"string"}
+			],
+			"outputs": [
+				{"name":"popCoinWalletAddress","type":"address"}
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"owner","type":"address"},
+				{"name":"root","type":"address"},
+				{"name":"startTime","type":"uint32"},
+				{"name":"mbiCur","type":"uint64"},
+				{"name":"boost","type":"address"},
+				{"name":"rewards","type":"uint128"},
+				{"name":"minstake","type":"uint128"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+		{
+			"name": "PopCoinRootReceived",
+			"inputs": [
+				{"name":"name","type":"string"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "PopCoinWalletReceived",
+			"inputs": [
+				{"name":"name","type":"string"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_code","type":"map(uint8,cell)"},
+		{"init":true,"name":"_owner","type":"address"},
+		{"init":false,"name":"_mbiCur","type":"uint64"},
+		{"init":false,"name":"_root","type":"address"},
+		{"init":false,"name":"_startTime","type":"uint32"},
+		{"init":false,"name":"_root_pubkey","type":"uint256"},
+		{"init":false,"name":"_boost","type":"address"},
+		{"init":false,"name":"_rewards","type":"uint128"},
+		{"init":false,"name":"_locked","type":"uint128"},
+		{"init":false,"name":"_countPlay","type":"uint128"}
+	]
+}

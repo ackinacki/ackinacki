@@ -9,19 +9,20 @@ use tvm_types::UInt256;
 
 use crate::block::producer::errors::VerifyError;
 use crate::block::producer::errors::BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK;
+use crate::block::producer::wasm::WasmNodeCache;
 use crate::block::producer::BlockVerifier;
 use crate::block::producer::TVMBlockVerifier;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::config::Config;
 use crate::helper::metrics::BlockProductionMetrics;
-use crate::message_storage::MessageDurableStorage;
 use crate::node::associated_types::NackData;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::repository::accounts::AccountsRepository;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
+use crate::storage::MessageDurableStorage;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockInfo;
 
@@ -37,6 +38,7 @@ pub fn verify_block(
     block_state_repo: BlockStateRepository,
     accounts_repo: AccountsRepository,
     metrics: Option<BlockProductionMetrics>,
+    wasm_cache: WasmNodeCache,
     message_db: MessageDurableStorage,
 ) -> anyhow::Result<bool> {
     #[cfg(feature = "timing")]
@@ -56,6 +58,7 @@ pub fn verify_block(
         .block_state_repository(block_state_repo)
         .accounts_repository(accounts_repo)
         .metrics(metrics)
+        .wasm_cache(wasm_cache)
         .build();
 
     // TODO: need to refactor this point to reuse generated verify block

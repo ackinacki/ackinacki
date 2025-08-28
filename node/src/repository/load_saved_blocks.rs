@@ -52,10 +52,11 @@ impl SavedBlocksLoader for RepositoryImpl {
                 if let Ok(state) = block_state_repository.get(&block_id) {
                     if state.guarded(|e| e.is_finalized() && !e.is_invalidated()) {
                         tracing::trace!("add finalized block {:?}", block_id);
-                        self.finalized_blocks_mut().guarded_mut(|e| e.store(block));
+                        self.finalized_blocks_mut().guarded_mut(|e| e.store(state.clone(), block));
                         continue;
                     }
                     if let Some(thread_id) = state.guarded(|e| *e.thread_identifier()) {
+                        tracing::trace!("add unfinalized block {:?}", block_id);
                         result
                             .entry(thread_id)
                             .and_modify(|v| v.push((state.clone(), Arc::new(block.clone()))))

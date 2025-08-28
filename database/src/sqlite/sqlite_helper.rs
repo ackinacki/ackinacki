@@ -1,6 +1,7 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::sync::mpsc::Receiver;
@@ -21,9 +22,11 @@ use crate::documents_db::DBStoredRecord;
 use crate::documents_db::DocumentsDb;
 
 pub const SQLITE_DATA_DIR: &str = "./data";
+pub const SQLITE_EMPTY_DB: &str = "bm-schema.db";
+pub const SQLITE_NEXT_DB: &str = "bm-archive-next.db";
 
 fn default_db_file() -> PathBuf {
-    "node-archive.db".into()
+    "bm-archive.db".into()
 }
 
 #[derive(Clone)]
@@ -40,13 +43,22 @@ impl SqliteHelperConfig {
 
 pub struct SqliteHelperContext {
     pub config: SqliteHelperConfig,
-    pub conn: rusqlite::Connection,
+    pub conn: Arc<Mutex<rusqlite::Connection>>,
+}
+
+#[derive(Clone)]
+struct DBFiles {
+    empty: PathBuf,
+    next: PathBuf,
+    work: PathBuf,
 }
 
 #[derive(Clone)]
 pub struct SqliteHelper {
-    record_sender: Arc<Mutex<Sender<DBStoredRecord>>>,
+    record_sender: Sender<DBStoredRecord>,
     pub config: SqliteHelperConfig,
+    pub conn: Arc<Mutex<rusqlite::Connection>>,
+    db_files: DBFiles,
 }
 
 impl SqliteHelper {
@@ -56,18 +68,18 @@ impl SqliteHelper {
         let db_path = config.data_dir.clone().join(config.db_file.clone());
 
         let (record_sender, record_receiver) = channel::<DBStoredRecord>();
-        let mut context = SqliteHelperContext {
-            config: config.clone(),
-            conn: Self::create_connection(db_path.clone())?,
-        };
+        let conn = Arc::new(Mutex::new(Self::create_connection(db_path.clone())?));
+        let mut context = SqliteHelperContext { config: config.clone(), conn: conn.clone() };
         let writer_join_handle = thread::Builder::new()
             .name("sqlite".to_string())
             .spawn(move || Self::put_records_worker(record_receiver, &mut context))?;
 
-        Ok((
-            SqliteHelper { record_sender: Arc::new(Mutex::new(record_sender)), config },
-            writer_join_handle,
-        ))
+        let db_files = DBFiles {
+            empty: config.data_dir.join(SQLITE_EMPTY_DB),
+            next: config.data_dir.join(SQLITE_NEXT_DB),
+            work: config.data_dir.join(&config.db_file),
+        };
+        Ok((SqliteHelper { record_sender, config, conn, db_files }, writer_join_handle))
     }
 
     fn create_connection(db_path: PathBuf) -> anyhow::Result<rusqlite::Connection> {
@@ -108,6 +120,55 @@ impl SqliteHelper {
         Ok(conn)
     }
 
+    pub fn shutdown(&mut self) -> anyhow::Result<()> {
+        let (dummy_sender, _) = channel::<DBStoredRecord>();
+        self.record_sender = dummy_sender;
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let guarded = self.conn.lock();
+        guarded.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
+        Ok(())
+    }
+
+    pub fn rotate_db_file(&mut self) -> anyhow::Result<thread::JoinHandle<()>> {
+        // prepare an empty DB file with the applied schema
+        std::fs::copy(&self.db_files.empty, &self.db_files.next)?;
+
+        // lock db writer
+        let (dummy_sender, _) = channel::<DBStoredRecord>();
+        self.record_sender = dummy_sender;
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let timestamp = chrono::Utc::now().timestamp();
+        let archived_path = self.config.data_dir.join(format!("bm-archive-{timestamp}.db"));
+
+        // move DB files (db, wal, shm)
+        rename_with_suffixes(&self.db_files.work, &archived_path)?;
+        std::fs::rename(&self.db_files.next, &self.db_files.work)?;
+        tracing::info!(target: "sqlite", "Database file created");
+
+        let conn = Arc::new(Mutex::new(Self::create_connection(self.db_files.work.clone())?));
+
+        let (record_sender, record_receiver) = channel::<DBStoredRecord>();
+        let mut context = SqliteHelperContext { config: self.config.clone(), conn: conn.clone() };
+        self.conn = conn;
+
+        let writer_join_handle =
+            thread::Builder::new().name("sqlite".to_string()).spawn(move || {
+                Self::put_records_worker(record_receiver, &mut context);
+            })?;
+
+        self.record_sender = record_sender;
+
+        // sync wal
+        let archive = Self::create_connection(archived_path.clone())?;
+        archive.execute_batch("PRAGMA WAL_CHECKPOINT")?;
+
+        tracing::info!(target: "sqlite", "Database file rotated to: {:?}", archived_path);
+
+        Ok(writer_join_handle)
+    }
+
     fn put_records_worker(receiver: Receiver<DBStoredRecord>, context: &mut SqliteHelperContext) {
         for record in receiver {
             let result = match record {
@@ -132,6 +193,7 @@ impl SqliteHelper {
                 };
             }
         }
+        tracing::debug!(target: "sqlite", "receiver dropped");
     }
 
     fn store_accounts(
@@ -139,7 +201,8 @@ impl SqliteHelper {
         accounts: Vec<ArchAccount>,
     ) -> anyhow::Result<()> {
         let cnt_accounts = accounts.len();
-        let tx = context.conn.transaction()?;
+        let mut guarded = context.conn.lock();
+        let tx = guarded.transaction()?;
 
         let now_batched = std::time::Instant::now();
         {
@@ -207,82 +270,110 @@ impl SqliteHelper {
     }
 
     fn store_block(context: &mut SqliteHelperContext, block: Box<ArchBlock>) -> anyhow::Result<()> {
-        let tx = context.conn.transaction()?;
+        let mut guarded = context.conn.lock();
+        let tx = guarded.transaction()?;
 
         let now = std::time::Instant::now();
         {
-            let mut stmt = tx.prepare_cached(
-                "INSERT INTO blocks (
-                    id,status,seq_no,parent,aggregated_signature,signature_occurrences,
-                    share_state_resource_address,global_id,version,after_merge,before_split,after_split,
-                    want_split,want_merge,key_block,flags,shard,workchain_id,gen_utime,gen_utime_ms_part,
-                    start_lt,end_lt,gen_validator_list_hash_short,gen_catchain_seqno,min_ref_mc_seqno,
-                    prev_key_block_seqno,gen_software_version,gen_software_capabilities,boc,file_hash,
-                    root_hash,prev_ref_seq_no,prev_ref_end_lt,prev_ref_file_hash,prev_ref_root_hash,
-                    prev_alt_ref_seq_no,prev_alt_ref_end_lt,prev_alt_ref_file_hash,prev_alt_ref_root_hash,
-                    in_msgs,out_msgs,data,chain_order,tr_count,thread_id,producer_id
-                ) VALUES (
-                    ?1,?2,?3,?4,?5,?6,   ?7,?8,?9,   ?10,?11,?12,?13,?14,?15,
-                    ?16,?17,?18,?19,?20,?21,?22,   ?23,?24,?25,   ?26,?27,?28,   ?29,?30,?31,
-                    ?32,?33,?34,?35,   ?36,?37,?38,?39,   ?40,?41,?42,?43,?44,?45,?46
-                )
-                ON CONFLICT(id) DO UPDATE SET
-                    aggregated_signature=excluded.aggregated_signature,
-                    signature_occurrences=excluded.signature_occurrences,
-                    status=excluded.status"
-            )?;
+            let result = if !cfg!(feature = "store_events_only") {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT INTO blocks (
+                        id,status,seq_no,parent,aggregated_signature,signature_occurrences,
+                        share_state_resource_address,global_id,version,after_merge,before_split,after_split,
+                        want_split,want_merge,key_block,flags,shard,workchain_id,gen_utime,gen_utime_ms_part,
+                        start_lt,end_lt,gen_validator_list_hash_short,gen_catchain_seqno,min_ref_mc_seqno,
+                        prev_key_block_seqno,gen_software_version,gen_software_capabilities,boc,file_hash,
+                        root_hash,prev_ref_seq_no,prev_ref_end_lt,prev_ref_file_hash,prev_ref_root_hash,
+                        prev_alt_ref_seq_no,prev_alt_ref_end_lt,prev_alt_ref_file_hash,prev_alt_ref_root_hash,
+                        in_msgs,out_msgs,data,chain_order,tr_count,thread_id,producer_id
+                    ) VALUES (
+                        ?1,?2,?3,?4,?5,?6,   ?7,?8,?9,   ?10,?11,?12,?13,?14,?15,
+                        ?16,?17,?18,?19,?20,?21,?22,   ?23,?24,?25,   ?26,?27,?28,   ?29,?30,?31,
+                        ?32,?33,?34,?35,   ?36,?37,?38,?39,   ?40,?41,?42,?43,?44,?45,?46
+                    )
+                    ON CONFLICT(id) DO UPDATE SET
+                        aggregated_signature=excluded.aggregated_signature,
+                        signature_occurrences=excluded.signature_occurrences,
+                        status=excluded.status"
+                )?;
 
-            let prev_ref = block.prev_ref.unwrap_or_default();
-            let prev_alt_ref = block.prev_alt_ref.unwrap_or_default();
-            let params = rusqlite::params![
-                block.id,
-                block.status,
-                block.seq_no,
-                block.parent,
-                block.aggregated_signature,
-                block.signature_occurrences,
-                block.share_state_resource_address,
-                block.global_id,
-                block.version,
-                block.after_merge,
-                block.before_split,
-                block.after_split,
-                block.want_split,
-                block.want_merge,
-                block.key_block,
-                block.flags,
-                block.shard,
-                block.workchain_id,
-                block.gen_utime,
-                block.gen_utime_ms_part,
-                block.start_lt,
-                block.end_lt,
-                block.gen_validator_list_hash_short,
-                block.gen_catchain_seqno,
-                block.min_ref_mc_seqno,
-                block.prev_key_block_seqno,
-                block.gen_software_version,
-                block.gen_software_capabilities,
-                block.boc,
-                block.file_hash,
-                block.root_hash,
-                prev_ref.seq_no,
-                prev_ref.end_lt,
-                prev_ref.file_hash,
-                prev_ref.root_hash,
-                prev_alt_ref.seq_no,
-                prev_alt_ref.end_lt,
-                prev_alt_ref.file_hash,
-                prev_alt_ref.root_hash,
-                block.in_msgs,
-                block.out_msgs,
-                block.data,
-                block.chain_order,
-                block.tr_count,
-                block.thread_id,
-                block.producer_id,
-            ];
-            if let Err(err) = stmt.execute(params) {
+                let prev_ref = block.prev_ref.unwrap_or_default();
+                let prev_alt_ref = block.prev_alt_ref.unwrap_or_default();
+                let params = rusqlite::params![
+                    block.id,
+                    block.status,
+                    block.seq_no,
+                    block.parent,
+                    block.aggregated_signature,
+                    block.signature_occurrences,
+                    block.share_state_resource_address,
+                    block.global_id,
+                    block.version,
+                    block.after_merge,
+                    block.before_split,
+                    block.after_split,
+                    block.want_split,
+                    block.want_merge,
+                    block.key_block,
+                    block.flags,
+                    block.shard,
+                    block.workchain_id,
+                    block.gen_utime,
+                    block.gen_utime_ms_part,
+                    block.start_lt,
+                    block.end_lt,
+                    block.gen_validator_list_hash_short,
+                    block.gen_catchain_seqno,
+                    block.min_ref_mc_seqno,
+                    block.prev_key_block_seqno,
+                    block.gen_software_version,
+                    block.gen_software_capabilities,
+                    block.boc,
+                    block.file_hash,
+                    block.root_hash,
+                    prev_ref.seq_no,
+                    prev_ref.end_lt,
+                    prev_ref.file_hash,
+                    prev_ref.root_hash,
+                    prev_alt_ref.seq_no,
+                    prev_alt_ref.end_lt,
+                    prev_alt_ref.file_hash,
+                    prev_alt_ref.root_hash,
+                    block.in_msgs,
+                    block.out_msgs,
+                    block.data,
+                    block.chain_order,
+                    block.tr_count,
+                    block.thread_id,
+                    block.producer_id,
+                ];
+
+                stmt.execute(params)
+            } else {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT INTO blocks (
+                        id,status,seq_no,parent,producer_id,thread_id,gen_utime,chain_order,boc
+                    ) VALUES (
+                        ?1,?2,?3,?4,?5,?6,?7,?8,?9
+                    )",
+                )?;
+
+                let params = rusqlite::params![
+                    block.id,
+                    block.status,
+                    block.seq_no,
+                    block.parent,
+                    block.producer_id,
+                    block.thread_id,
+                    block.gen_utime,
+                    block.chain_order,
+                    block.boc,
+                ];
+
+                stmt.execute(params)
+            };
+
+            if let Err(err) = result {
                 tracing::error!("store_block(): failed to store block: {err}")
             }
         }
@@ -300,54 +391,93 @@ impl SqliteHelper {
         messages: Vec<ArchMessage>,
     ) -> anyhow::Result<()> {
         let cnt_messages = messages.len();
-        let tx = context.conn.transaction()?;
+        let mut guarded = context.conn.lock();
+        let tx = guarded.transaction()?;
 
         let now_batched = std::time::Instant::now();
         {
-            let mut stmt = tx.prepare_cached(
-                "INSERT INTO messages (
-                id, boc, status, msg_type, src, src_workchain_id, dst, dst_workchain_id,
-                fwd_fee, bounce, bounced, value, created_lt, created_at,
-                dst_chain_order, src_chain_order, transaction_id, proof, src_dapp_id,
-                code, code_hash, data, data_hash, body, body_hash, value_other
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,   ?9, ?10, ?11, ?12, ?13, ?14,   ?15, ?16, ?17, ?18,
-                ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
-            ) ON CONFLICT(id) DO UPDATE SET
-                dst_chain_order=excluded.dst_chain_order",
-            )?;
+            if !cfg!(feature = "store_events_only") {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT INTO messages (
+                    id, boc, status, msg_type, src, src_workchain_id, dst, dst_workchain_id,
+                    fwd_fee, bounce, bounced, value, created_lt, created_at,
+                    dst_chain_order, src_chain_order, transaction_id, proof, src_dapp_id,
+                    code, code_hash, data, data_hash, body, body_hash, value_other, msg_chain_order
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,   ?9, ?10, ?11, ?12, ?13, ?14,   ?15, ?16, ?17, ?18,
+                    ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
+                ) ON CONFLICT(id) DO UPDATE SET
+                    dst_chain_order=excluded.dst_chain_order",
+                )?;
 
-            for msg in messages.into_iter() {
-                let params = rusqlite::params![
-                    msg.id,
-                    msg.boc,
-                    msg.status,
-                    msg.msg_type,
-                    msg.src,
-                    msg.src_workchain_id,
-                    msg.dst,
-                    msg.dst_workchain_id,
-                    msg.fwd_fee,
-                    msg.bounce,
-                    msg.bounced,
-                    msg.value,
-                    msg.created_lt,
-                    msg.created_at,
-                    msg.dst_chain_order,
-                    msg.src_chain_order,
-                    msg.transaction_id,
-                    msg.proof,
-                    msg.src_dapp_id,
-                    msg.code,
-                    msg.code_hash,
-                    msg.data,
-                    msg.data_hash,
-                    msg.body,
-                    msg.body_hash,
-                    msg.value_other,
-                ];
-                if let Err(err) = stmt.execute(params) {
-                    tracing::error!("store_messages(): failed to store message: {err}")
+                for msg in messages.into_iter() {
+                    let params = rusqlite::params![
+                        msg.id,
+                        msg.boc,
+                        msg.status,
+                        msg.msg_type,
+                        msg.src,
+                        msg.src_workchain_id,
+                        msg.dst,
+                        msg.dst_workchain_id,
+                        msg.fwd_fee,
+                        msg.bounce,
+                        msg.bounced,
+                        msg.value,
+                        msg.created_lt,
+                        msg.created_at,
+                        msg.dst_chain_order,
+                        msg.src_chain_order,
+                        msg.transaction_id,
+                        msg.proof,
+                        msg.src_dapp_id,
+                        msg.code,
+                        msg.code_hash,
+                        msg.data,
+                        msg.data_hash,
+                        msg.body,
+                        msg.body_hash,
+                        msg.value_other,
+                        msg.msg_chain_order,
+                    ];
+                    if let Err(err) = stmt.execute(params) {
+                        tracing::error!("store_messages(): failed to store message: {err}")
+                    }
+                }
+            } else {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT INTO messages (
+                    id, boc, body, status, msg_type, src, dst,
+                    value, created_lt, created_at,
+                    dst_chain_order, src_chain_order, src_dapp_id, value_other,
+                    msg_chain_order
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,   ?9, ?10, ?11, ?12, ?13,  ?14, ?15
+                ) ON CONFLICT(id) DO UPDATE SET
+                    dst_chain_order=excluded.dst_chain_order",
+                )?;
+
+                for msg in messages.into_iter() {
+                    let params = rusqlite::params![
+                        msg.id,
+                        msg.boc,
+                        msg.body,
+                        msg.status,
+                        msg.msg_type,
+                        msg.src,
+                        msg.dst,
+                        msg.value,
+                        msg.created_lt,
+                        msg.created_at,
+                        msg.dst_chain_order,
+                        msg.src_chain_order,
+                        msg.src_dapp_id,
+                        msg.value_other,
+                        msg.msg_chain_order,
+                    ];
+                    if let Err(err) = stmt.execute(params) {
+                        tracing::error!("store_messages(): failed to store message: {err}")
+                    }
                 }
             }
         }
@@ -364,7 +494,8 @@ impl SqliteHelper {
         transactions: Vec<ArchTransaction>,
     ) -> anyhow::Result<()> {
         let cnt_transactions = transactions.len();
-        let tx = context.conn.transaction()?;
+        let mut guarded = context.conn.lock();
+        let tx = guarded.transaction()?;
 
         let now_batched = std::time::Instant::now();
         {
@@ -459,6 +590,7 @@ impl SqliteHelper {
             Err(e) => tracing::error!("transactions commit error: {e}"),
         }
         tracing::debug!(target: "sqlite", "TIME: commit complete");
+
         Ok(())
     }
 }
@@ -466,7 +598,7 @@ impl SqliteHelper {
 impl DocumentsDb for SqliteHelper {
     fn put_block(&self, item: ArchBlock) -> anyhow::Result<()> {
         if let Err(SendError(DBStoredRecord::Block(item))) =
-            self.record_sender.lock().send(DBStoredRecord::Block(Box::new(item)))
+            self.record_sender.send(DBStoredRecord::Block(Box::new(item)))
         {
             tracing::error!(target: "node", "Error sending block {}:", item.id);
         };
@@ -475,18 +607,20 @@ impl DocumentsDb for SqliteHelper {
     }
 
     fn put_accounts(&self, items: Vec<ArchAccount>) -> anyhow::Result<()> {
-        if let Err(SendError(DBStoredRecord::Accounts(items))) =
-            self.record_sender.lock().send(DBStoredRecord::Accounts(items))
-        {
-            tracing::error!(target: "node", "Error sending accounts {}:", items.len());
-        };
+        if !cfg!(feature = "store_events_only") {
+            if let Err(SendError(DBStoredRecord::Accounts(items))) =
+                self.record_sender.send(DBStoredRecord::Accounts(items))
+            {
+                tracing::error!(target: "node", "Error sending accounts {}:", items.len());
+            };
+        }
 
         Ok(())
     }
 
     fn put_messages(&self, items: Vec<ArchMessage>) -> anyhow::Result<()> {
         if let Err(SendError(DBStoredRecord::Messages(items))) =
-            self.record_sender.lock().send(DBStoredRecord::Messages(items))
+            self.record_sender.send(DBStoredRecord::Messages(items))
         {
             tracing::error!(target: "node", "Error sending arch_messages {}:", items.len());
         };
@@ -495,11 +629,13 @@ impl DocumentsDb for SqliteHelper {
     }
 
     fn put_transactions(&self, items: Vec<ArchTransaction>) -> anyhow::Result<()> {
-        if let Err(SendError(DBStoredRecord::Transactions(items))) =
-            self.record_sender.lock().send(DBStoredRecord::Transactions(items))
-        {
-            tracing::error!(target: "node", "Error sending transactions {}:", items.len());
-        };
+        if !cfg!(feature = "store_events_only") {
+            if let Err(SendError(DBStoredRecord::Transactions(items))) =
+                self.record_sender.send(DBStoredRecord::Transactions(items))
+            {
+                tracing::error!(target: "node", "Error sending transactions {}:", items.len());
+            };
+        }
 
         Ok(())
     }
@@ -530,4 +666,28 @@ pub fn unprefix_opt_u128str(value: Option<String>) -> Option<String> {
         }
         None => None,
     }
+}
+
+fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.file_name().unwrap().to_os_string();
+    name.push(suffix);
+    path.with_file_name(name)
+}
+
+fn rename_with_suffixes(work: &Path, archived: &Path) -> std::io::Result<()> {
+    std::fs::rename(work, archived)?;
+
+    let wal_src = append_suffix(work, "-wal");
+    let wal_dst = append_suffix(archived, "-wal");
+    if wal_src.exists() {
+        std::fs::rename(wal_src, wal_dst)?;
+    }
+
+    let shm_src = append_suffix(work, "-shm");
+    let shm_dst = append_suffix(archived, "-shm");
+    if shm_src.exists() {
+        std::fs::rename(shm_src, shm_dst)?;
+    }
+
+    Ok(())
 }

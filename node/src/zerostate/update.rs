@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::Path;
-use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -36,8 +35,9 @@ use crate::block_keeper_system::BlockKeeperStatus;
 use crate::bls::gosh_bls::PubKey;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
-use crate::message_storage::MessageDurableStorage;
 use crate::node::SignerIndex;
+use crate::repository::dapp_id_table::DAppIdTableChangeSet;
+use crate::storage::MessageDurableStorage;
 use crate::types::thread_message_queue::ThreadMessageQueueState;
 use crate::types::AccountAddress;
 use crate::types::BlockEndLT;
@@ -106,17 +106,21 @@ impl ZeroState {
             .insert_account(&account_id, &shard_account)
             .map_err(|e| anyhow::format_err!("Failed to insert account to shard state: {e}"))?;
         self.state_mut(thread_identifier)?.set_shard_state(Arc::new(shard_state));
-
+        #[cfg(feature = "monitor-accounts-number")]
+        {
+            let state = self.state_mut(thread_identifier)?;
+            state.accounts_number += 1;
+        }
         // Add account to dapp_id cache for all threads
         if let Some(dapp_id) = dapp_id {
             for state in self.states_mut().values_mut() {
-                state.dapp_id_table.insert(
-                    AccountAddress(AccountId::from(account_id.clone())),
-                    (
-                        Some(DAppIdentifier(AccountAddress(AccountId::from(dapp_id.clone())))),
-                        BlockEndLT(0),
-                    ),
+                let mut change_set = DAppIdTableChangeSet::default();
+                change_set.insert(
+                    AccountAddress(account_id.clone()),
+                    Some(DAppIdentifier(AccountAddress(dapp_id.clone()))),
+                    BlockEndLT(0),
                 );
+                state.update_dapp_id_table(&change_set);
             }
         }
         Ok(account_id.to_hex_string())
@@ -189,15 +193,10 @@ impl ZeroState {
 
         {
             let optimistic_state = self.state_mut(thread_identifier)?;
-            let dest = AccountAddress(message.int_dst_account_id().unwrap());
+            let dest = message.int_dst_account_id().map(From::from).unwrap();
             let message = WrappedMessage { message };
             let message_key = MessageIdentifier::from(&message);
-            let db_path = PathBuf::from("/tmp/zs_storage");
-            if db_path.exists() {
-                std::fs::remove_file(&db_path).expect("Failed to remove existing database file");
-            }
-            std::fs::File::create(&db_path).expect("Failed to create database file");
-            let message_db = MessageDurableStorage::new(db_path)?;
+            let message_db = MessageDurableStorage::as_noop();
             optimistic_state.messages = ThreadMessageQueueState::build_next()
                 .with_initial_state(optimistic_state.messages.clone())
                 .with_consumed_messages(HashMap::new())
@@ -266,7 +265,7 @@ impl ZeroState {
                 status: BlockKeeperStatus::Active,
                 address: String::new(),
                 stake,
-                owner_address: AccountAddress(wallet_address),
+                owner_address: wallet_address.into(),
                 signer_index,
                 owner_pubkey: owner_pubkey.inner(),
             },

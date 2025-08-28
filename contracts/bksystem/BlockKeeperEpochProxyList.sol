@@ -29,15 +29,11 @@ contract BlockKeeperEpochProxyList is Modifiers {
     bool _is_closed = false;
 
     constructor (
-        TvmCell AckiNackiBlockKeeperNodeWalletCode,
-        TvmCell BlockKeeperPreEpochCode,
-        TvmCell BlockKeeperEpochCode,
+        mapping(uint8 => TvmCell) code,
         uint64 seqNoStart,
         mapping(uint8 => string) ProxyList
     ) accept {
-        _code[m_AckiNackiBlockKeeperNodeWalletCode] = AckiNackiBlockKeeperNodeWalletCode;
-        _code[m_BlockKeeperPreEpochCode] = BlockKeeperPreEpochCode;
-        _code[m_BlockKeeperEpochCode] = BlockKeeperEpochCode;
+        _code = code;
         TvmCell data = abi.codeSalt(tvm.code()).get();
         (string lib, uint256 hashwalletsalt, uint256 hashepochsalt, uint256 hashpreepochsalt, address root) = abi.decode(data, (string, uint256, uint256, uint256, address));
         require(BlockKeeperLib.versionLib == lib, ERR_SENDER_NO_ALLOWED);
@@ -60,19 +56,25 @@ contract BlockKeeperEpochProxyList is Modifiers {
     }
 
     function setNewProxyList(uint64 seqNoStart, mapping(uint8 => string) ProxyList) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, seqNoStart)) accept {
+        ensureBalance();
         _ProxyList = ProxyList;
     }
 
     function ensureBalance() private pure {
         if (address(this).balance > FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST) { return; }
-        gosh.mintshell(FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST);
+        gosh.mintshellq(FEE_DEPLOY_BLOCK_KEEPER_PROXY_LIST);
     }
 
     function toClose(uint64 seqNoStart) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, seqNoStart)) accept {
+        ensureBalance();
         _is_closed = true;
     }
 
     function destroy(uint64 seqNoStart) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, seqNoStart)) accept {
+        selfdestruct(_root);
+    }
+
+    function destroyPreEpoch(uint64 seqNoStart) public senderIs(BlockKeeperLib.calculateBlockKeeperPreEpochAddress(_code[m_BlockKeeperPreEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _root, _owner_pubkey, seqNoStart)) accept {
         selfdestruct(_root);
     }
 
@@ -84,14 +86,16 @@ contract BlockKeeperEpochProxyList is Modifiers {
     function addProxyList(mapping(uint8 => string) data) public onlyOwnerWallet(_owner, _owner_pubkey) accept {
         require(_is_closed == false, ERR_NOT_READY);
         require(status == false, ERR_NOT_READY);
+        require(data.keys().length <= PROXY_LIST_CHANGE_SIZE);
         ensureBalance();
         status = true;
         this.iterateProxyList{value: 0.1 vmshell}(data, data.min(), true);
     }
 
-    function deleteProxyList(mapping(uint8 => string) data) public onlyOwnerWallet(_owner, _owner_pubkey) {
+    function deleteProxyList(mapping(uint8 => string) data) public onlyOwnerWallet(_owner, _owner_pubkey) accept {
         require(_is_closed == false, ERR_NOT_READY);
         require(status == false, ERR_NOT_READY);
+        require(data.keys().length <= PROXY_LIST_CHANGE_SIZE);
         ensureBalance();
         status = true;
         this.iterateProxyList{value: 0.1 vmshell}(data, data.min(), false);   

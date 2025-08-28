@@ -1,4 +1,4 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::marker::PhantomData;
@@ -12,24 +12,18 @@ pub struct BocByAddressHandler<
     TMesssage,
     TMsgConverter,
     TBPResolver,
-    TBMLicensePubkeyLoader,
     TBocByAddrGetter,
+    TSeqnoGetter,
 >(
     PhantomData<TMesssage>,
     PhantomData<TMsgConverter>,
     PhantomData<TBPResolver>,
-    PhantomData<TBMLicensePubkeyLoader>,
     PhantomData<TBocByAddrGetter>,
+    PhantomData<TSeqnoGetter>,
 );
 
-impl<TMessage, TMsgConverter, TBPResolver, TBMLicensePubkeyLoader, TBocByAddrGetter>
-    BocByAddressHandler<
-        TMessage,
-        TMsgConverter,
-        TBPResolver,
-        TBMLicensePubkeyLoader,
-        TBocByAddrGetter,
-    >
+impl<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
+    BocByAddressHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
 {
     pub fn new() -> Self {
         Self(PhantomData, PhantomData, PhantomData, PhantomData, PhantomData)
@@ -37,14 +31,8 @@ impl<TMessage, TMsgConverter, TBPResolver, TBMLicensePubkeyLoader, TBocByAddrGet
 }
 
 #[async_trait]
-impl<TMessage, TMsgConverter, TBPResolver, TBMLicensePubkeyLoader, TBocByAddrGetter> Handler
-    for BocByAddressHandler<
-        TMessage,
-        TMsgConverter,
-        TBPResolver,
-        TBMLicensePubkeyLoader,
-        TBocByAddrGetter,
-    >
+impl<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter> Handler
+    for BocByAddressHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
 where
     TMessage: Clone + Send + Sync + 'static + std::fmt::Debug,
     TMsgConverter: Clone
@@ -53,8 +41,9 @@ where
         + 'static
         + Fn(tvm_block::Message, [u8; 34]) -> anyhow::Result<TMessage>,
     TBPResolver: Clone + Send + Sync + 'static + FnMut([u8; 34]) -> ResolvingResult,
-    TBMLicensePubkeyLoader: Send + Sync + Clone + 'static + Fn(String) -> Option<String>,
-    TBocByAddrGetter: Clone + Send + Sync + 'static + Fn(String) -> anyhow::Result<String>,
+    TBocByAddrGetter:
+        Clone + Send + Sync + 'static + Fn(String) -> anyhow::Result<(String, Option<String>)>,
+    TSeqnoGetter: Clone + Send + Sync + 'static + Fn() -> anyhow::Result<u32>,
 {
     async fn handle(
         &self,
@@ -77,20 +66,27 @@ where
             TMessage,
             TMsgConverter,
             TBPResolver,
-            TBMLicensePubkeyLoader,
             TBocByAddrGetter,
+            TSeqnoGetter,
         >>() else {
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
             res.render("Internal server error: Web Server state not found");
             return;
         };
 
+        // This code is a bit repetitive, but it's easy to understand.
         let http_code = match (web_server.get_boc_by_addr)(address) {
-            Ok(boc) => {
-                let response = serde_json::json!({
+            Ok((boc, None)) => {
+                res.render(Json(serde_json::json!({
                     "boc": boc,
-                });
-                res.render(Json(response));
+                })));
+                StatusCode::OK
+            }
+            Ok((boc, Some(dapp_id))) => {
+                res.render(Json(serde_json::json!({
+                    "boc": boc,
+                    "dapp_id": dapp_id
+                })));
                 StatusCode::OK
             }
             Err(e) => {

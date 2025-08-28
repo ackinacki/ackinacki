@@ -30,6 +30,7 @@ pub type ThreadsTable = crate::bitmask::table::BitmasksTable<AccountRouting, Thr
 
 impl ThreadsTable {
     pub fn merge(&mut self, another_table: &ThreadsTable) -> anyhow::Result<()> {
+        tracing::trace!("ThreadsTable::merge start");
         let mut merged_table = ThreadsTable::default();
         let mut self_rows = self.rows().cloned().collect::<Vec<_>>();
         let mut another_table_rows = another_table.rows().cloned().collect::<Vec<_>>();
@@ -74,6 +75,7 @@ impl ThreadsTable {
             tracing::trace!("Threads table was updated after merge: {merged_table:?}");
         }
         *self = merged_table;
+        tracing::trace!("ThreadsTable::merge finish");
         Ok(())
     }
 
@@ -115,7 +117,7 @@ impl DirectBitAccess for AccountRouting {
 impl std::convert::From<AccountRouting> for [[bool; 256]; 2] {
     fn from(val: AccountRouting) -> Self {
         let mut result = [[false; 256]; 2];
-        let parts: [Vec<u8>; 2] = [val.0 .0 .0.get_bytestring(0), val.1 .0.get_bytestring(0)];
+        let parts: [[u8; 32]; 2] = [*val.0 .0 .0.as_array(), *val.1 .0.as_array()];
         for outer in 0..parts.len() {
             for inner in 0..parts[outer].len() {
                 for shift in 0..8 {
@@ -184,6 +186,23 @@ mod tests {
         add_mask(&mut etalon, &[254], 2, 2);
         println!("{etalon:?}");
         assert_eq!(threads_table, etalon);
+        Ok(())
+    }
+
+    #[test]
+    fn test_duplicates() -> anyhow::Result<()> {
+        let mut threads_table = ThreadsTable::new();
+        add_mask(&mut threads_table, &[254], 0, 1);
+        add_mask(&mut threads_table, &[254], 0, 2);
+        add_mask(&mut threads_table, &[255], 0, 3);
+        add_mask(&mut threads_table, &[253, 255], 0, 4);
+        add_mask(&mut threads_table, &[254, 255], 0, 5);
+        add_mask(&mut threads_table, &[253, 254, 255], 0, 6);
+
+        let rows = threads_table.rows().map(|(a, _b)| a.clone()).collect::<Vec<_>>();
+        let mut rows_dedup = rows.clone();
+        rows_dedup.dedup();
+        assert_ne!(rows_dedup.len(), rows.len());
         Ok(())
     }
 }

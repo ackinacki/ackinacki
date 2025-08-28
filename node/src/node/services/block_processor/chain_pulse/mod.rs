@@ -57,22 +57,21 @@ struct ChainPulseSettings {
     block_gap: BlockGap,
 
     last_finalized_block: Option<BlockState>,
-
-    chain_pulse_monitor: std::sync::mpsc::Sender<events::ChainPulseEvent>,
+    // chain_pulse_monitor: std::sync::mpsc::Sender<events::ChainPulseEvent>,
 }
 
 pub struct ChainPulse {
-    thread_identifier: ThreadIdentifier,
+    // thread_identifier: ThreadIdentifier,
     attestations: pulse_attestations::PulseAttestations,
     candidates: pulse_candidates::PulseCandidateBlocks,
-    chain_pulse_monitor: std::sync::mpsc::Sender<events::ChainPulseEvent>,
+    // chain_pulse_monitor: std::sync::mpsc::Sender<events::ChainPulseEvent>,
     last_finalized_block: Option<BlockState>,
 }
 
 impl From<ChainPulseSettings> for ChainPulse {
     fn from(settings: ChainPulseSettings) -> Self {
         Self {
-            thread_identifier: settings.thread_identifier,
+            // thread_identifier: settings.thread_identifier,
             attestations: pulse_attestations::PulseAttestations::builder()
                 .node_id(settings.node_id.clone())
                 .thread_identifier(settings.thread_identifier)
@@ -98,7 +97,7 @@ impl From<ChainPulseSettings> for ChainPulse {
                 )
                 .direct_send_tx(settings.direct_send_tx.clone())
                 .build(),
-            chain_pulse_monitor: settings.chain_pulse_monitor,
+            // chain_pulse_monitor: settings.chain_pulse_monitor,
             last_finalized_block: settings.last_finalized_block,
         }
     }
@@ -110,7 +109,9 @@ impl ChainPulse {
     }
 
     pub fn pulse(&mut self, last_finalized_block: &BlockState) -> anyhow::Result<()> {
-        let next_seq_no = last_finalized_block.guarded(|e| e.block_seq_no().unwrap());
+        let next_seq_no = last_finalized_block
+            .guarded(|e| *e.block_seq_no())
+            .ok_or(anyhow::format_err!("Can fail on restart"))?;
         if let Some(ref prev) = self.last_finalized_block {
             if prev == last_finalized_block {
                 return Ok(());
@@ -118,9 +119,17 @@ impl ChainPulse {
             let prev_seq_no = prev.guarded(|e| e.block_seq_no().unwrap());
             anyhow::ensure!(next_seq_no > prev_seq_no);
         }
-        self.chain_pulse_monitor
-            .send(events::ChainPulseEvent::block_finalized(self.thread_identifier))
-            .unwrap();
+        // match self.chain_pulse_monitor.send(events::ChainPulseEvent::block_finalized(
+        //     self.thread_identifier,
+        //     Some(block_height),
+        // )) {
+        //     Ok(()) => {}
+        //     Err(e) => {
+        //         if SHUTDOWN_FLAG.get() != Some(&true) {
+        //             anyhow::bail!("Failed to send block finalized: {e}");
+        //         }
+        //     }
+        // }
         let r1 = self.attestations.pulse(last_finalized_block);
         let r2 = self.candidates.pulse(next_seq_no);
         // Don't care if one fails. Make sure both had a chance to execute.

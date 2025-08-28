@@ -23,8 +23,6 @@ contract LicenseRoot is Modifiers {
     uint256 _license_number_bm;
     address _rootElection;
     address _rootBM;
-    address _lastAddress;
-    address _lastAddressBM;
 
     constructor (
         uint32 timeUnlock,
@@ -33,7 +31,6 @@ contract LicenseRoot is Modifiers {
         address rootElection,
         address rootBM
     ) {
-        ensureBalance();
         _timeUnlock = timeUnlock;
         _license_number = license_number;
         _license_number_bm = license_number_bm;
@@ -43,22 +40,22 @@ contract LicenseRoot is Modifiers {
 
     function ensureBalance() private pure {
         if (address(this).balance > ROOT_BALANCE) { return; }
-        gosh.mintshell(ROOT_BALANCE);
+        gosh.mintshellq(ROOT_BALANCE);
     }
 
-    function deployLicense(uint256 pubkey) public accept {
+    function deployLicense(uint256 pubkey) public accept  {
         ensureBalance();
         require(block.timestamp > _timeUnlock, ERR_NOT_READY);
         TvmCell data = BlockKeeperLib.composeLicenseStateInit(_code[m_LicenseCode], _license_number, address(this));
         _license_number += 1;
-        _lastAddress = new LicenseContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection);
+        new LicenseContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection);
     }
  
-    function deployLicenseOwner(uint256 pubkey) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept {
+    function deployLicenseOwner(uint256 pubkey) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  {
         ensureBalance();
         TvmCell data = BlockKeeperLib.composeLicenseStateInit(_code[m_LicenseCode], _license_number, address(this));
         _license_number += 1;
-        _lastAddress = new LicenseContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection);
+        new LicenseContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection);
     }
 
     function deployLicenseBM(uint256 pubkey) public accept {
@@ -66,25 +63,28 @@ contract LicenseRoot is Modifiers {
         require(block.timestamp > _timeUnlock, ERR_NOT_READY);
         TvmCell data = BlockKeeperLib.composeLicenseBMStateInit(_code[m_LicenseBMCode], _license_number_bm, address(this));
         _license_number_bm += 1;
-        _lastAddressBM = new LicenseBMContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE_BM), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockManagerNodeWalletCode], _rootBM);
+        new LicenseBMContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE_BM), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockManagerNodeWalletCode], _rootBM);
     }
  
-    function deployLicenseBMOwner(uint256 pubkey) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept {
+    function deployLicenseBMOwner(uint256 pubkey) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  {
         ensureBalance();
         TvmCell data = BlockKeeperLib.composeLicenseBMStateInit(_code[m_LicenseBMCode], _license_number_bm, address(this));
         _license_number_bm += 1;
-        _lastAddressBM = new LicenseBMContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE_BM), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockManagerNodeWalletCode], _rootBM);
+        new LicenseBMContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE_BM), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockManagerNodeWalletCode], _rootBM);
     }
 
-    function setNewCode(uint8 id, TvmCell code) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept saveMsg { 
+    function setNewCode(uint8 id, TvmCell code) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  { 
+        ensureBalance();
         _code[id] = code;
     }
 
-    function setOwner(address wallet) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) {
+    function setOwner(address wallet) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  {
+        ensureBalance();
         _owner_wallet = wallet;
     }
 
-    function updateCode(TvmCell newcode, TvmCell cell) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept saveMsg {
+    function updateCode(TvmCell newcode, TvmCell cell) public view onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  {
+        ensureBalance();
         tvm.setcode(newcode);
         tvm.setCurrentCode(newcode);
         onCodeUpgrade(cell);
@@ -99,10 +99,6 @@ contract LicenseRoot is Modifiers {
 
 
     //Getters
-    function getLastAddress() external view returns(address lastAddress, address lastAddressBM, uint256 num) {
-        return (_lastAddress, _lastAddressBM, _license_number - 1);
-    }
-
     function getLastLicenseNum() external view returns(uint256 num, uint256 numbm) {
         return (_license_number, _license_number_bm);
     }

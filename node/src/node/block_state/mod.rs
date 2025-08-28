@@ -1,7 +1,11 @@
-pub mod dependent_ancestor_blocks;
+pub mod attestation_target_checkpoints;
+pub mod block_state_inner;
 pub mod repository;
+mod save_service;
 pub mod state;
+pub mod tools;
 pub mod unfinalized_ancestor_blocks;
+pub use save_service::start_state_save_service;
 
 // TODO: migrate to any embedded db.
 mod private {
@@ -24,6 +28,7 @@ mod private {
 
     pub fn save(state: &AckiNackiBlockState) -> anyhow::Result<()> {
         let file_path = state.file_path.clone();
-        save_to_file(&file_path, state, false)
+        save_to_file(&file_path, &state, false)?;
+        Ok(())
     }
 }

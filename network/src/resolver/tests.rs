@@ -7,7 +7,7 @@ use crate::resolver::blockchain::watch_blockchain;
 use crate::resolver::blockchain::NodeDb;
 
 fn node_db() -> NodeDb {
-    NodeDb::new("/Users/michaelvlasov/dev/gosh/node-archive.db")
+    NodeDb::new("/Users/michaelvlasov/dev/gosh/bm-archive.db")
 }
 
 #[tokio::test]

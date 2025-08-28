@@ -1,0 +1,206 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"owners_pubkey","type":"uint256[]"},
+				{"name":"owners_address","type":"address[]"},
+				{"name":"reqConfirms","type":"uint8"},
+				{"name":"reqConfirmsData","type":"uint8"},
+				{"name":"value","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setMaxCleanupOperations",
+			"inputs": [
+				{"name":"value","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "acceptTransfer",
+			"inputs": [
+				{"name":"payload","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "sendTransaction",
+			"inputs": [
+				{"name":"dest","type":"address"},
+				{"name":"value","type":"uint128"},
+				{"name":"cc","type":"map(uint32,varuint32)"},
+				{"name":"bounce","type":"bool"},
+				{"name":"flags","type":"uint8"},
+				{"name":"payload","type":"cell"}
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
+			"name": "submitTransaction",
+			"inputs": [
+				{"name":"dest","type":"address"},
+				{"name":"value","type":"uint128"},
+				{"name":"cc","type":"map(uint32,varuint32)"},
+				{"name":"bounce","type":"bool"},
+				{"name":"flag","type":"uint8"},
+				{"name":"payload","type":"cell"}
+			],
+			"outputs": [
+				{"name":"transId","type":"uint64"}
+			]
+		},
+		{
+			"name": "confirmTransaction",
+			"inputs": [
+				{"name":"transactionId","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "submitDataUpdate",
+			"inputs": [
+				{"name":"owners_pubkey","type":"uint256[]"},
+				{"name":"owners_address","type":"address[]"},
+				{"name":"reqConfirms","type":"uint8"},
+				{"name":"reqConfirmsData","type":"uint8"}
+			],
+			"outputs": [
+				{"name":"transId","type":"uint64"}
+			]
+		},
+		{
+			"name": "confirmDataUpdate",
+			"inputs": [
+				{"name":"dataUpdateId","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "isConfirmed",
+			"inputs": [
+				{"name":"mask","type":"uint32"},
+				{"name":"index","type":"uint8"}
+			],
+			"outputs": [
+				{"name":"confirmed","type":"bool"}
+			]
+		},
+		{
+			"name": "getParameters",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"maxQueuedTransactions","type":"uint8"},
+				{"name":"maxCustodianCount","type":"uint8"},
+				{"name":"expirationTime","type":"uint64"},
+				{"name":"requiredTxnConfirms","type":"uint8"},
+				{"name":"requiredDataConfirms","type":"uint8"}
+			]
+		},
+		{
+			"name": "getTransaction",
+			"inputs": [
+				{"name":"transactionId","type":"uint64"}
+			],
+			"outputs": [
+				{"components":[{"name":"id","type":"uint64"},{"name":"confirmationsMask","type":"uint32"},{"name":"signsRequired","type":"uint8"},{"name":"signsReceived","type":"uint8"},{"components":[{"name":"owner_pubkey","type":"optional(uint256)"},{"name":"owner_address","type":"optional(address)"},{"name":"index","type":"uint8"}],"name":"creator","type":"tuple"},{"name":"dest","type":"address"},{"name":"value","type":"uint128"},{"name":"cc","type":"map(uint32,varuint32)"},{"name":"sendFlags","type":"uint16"},{"name":"payload","type":"cell"},{"name":"bounce","type":"bool"}],"name":"trans","type":"tuple"}
+			]
+		},
+		{
+			"name": "getUpdateData",
+			"inputs": [
+				{"name":"updateDataId","type":"uint64"}
+			],
+			"outputs": [
+				{"components":[{"name":"id","type":"uint64"},{"name":"confirmationsMask","type":"uint32"},{"name":"signsRequired","type":"uint8"},{"name":"signsReceived","type":"uint8"},{"components":[{"name":"owner_pubkey","type":"optional(uint256)"},{"name":"owner_address","type":"optional(address)"},{"name":"index","type":"uint8"}],"name":"creator","type":"tuple"},{"name":"owners_pubkey","type":"uint256[]"},{"name":"owners_address","type":"address[]"},{"name":"reqConfirms","type":"uint8"},{"name":"reqConfirmsData","type":"uint8"}],"name":"data","type":"tuple"}
+			]
+		},
+		{
+			"name": "getTransactions",
+			"inputs": [
+			],
+			"outputs": [
+				{"components":[{"name":"id","type":"uint64"},{"name":"confirmationsMask","type":"uint32"},{"name":"signsRequired","type":"uint8"},{"name":"signsReceived","type":"uint8"},{"components":[{"name":"owner_pubkey","type":"optional(uint256)"},{"name":"owner_address","type":"optional(address)"},{"name":"index","type":"uint8"}],"name":"creator","type":"tuple"},{"name":"dest","type":"address"},{"name":"value","type":"uint128"},{"name":"cc","type":"map(uint32,varuint32)"},{"name":"sendFlags","type":"uint16"},{"name":"payload","type":"cell"},{"name":"bounce","type":"bool"}],"name":"transactions","type":"tuple[]"}
+			]
+		},
+		{
+			"name": "getUpdateDatas",
+			"inputs": [
+			],
+			"outputs": [
+				{"components":[{"name":"id","type":"uint64"},{"name":"confirmationsMask","type":"uint32"},{"name":"signsRequired","type":"uint8"},{"name":"signsReceived","type":"uint8"},{"components":[{"name":"owner_pubkey","type":"optional(uint256)"},{"name":"owner_address","type":"optional(address)"},{"name":"index","type":"uint8"}],"name":"creator","type":"tuple"},{"name":"owners_pubkey","type":"uint256[]"},{"name":"owners_address","type":"address[]"},{"name":"reqConfirms","type":"uint8"},{"name":"reqConfirmsData","type":"uint8"}],"name":"data","type":"tuple[]"}
+			]
+		},
+		{
+			"name": "getTransactionIds",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"ids","type":"uint64[]"}
+			]
+		},
+		{
+			"name": "getUpdateCodeIds",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"ids","type":"uint64[]"}
+			]
+		},
+		{
+			"name": "getCustodians",
+			"inputs": [
+			],
+			"outputs": [
+				{"components":[{"name":"owner_pubkey","type":"optional(uint256)"},{"name":"owner_address","type":"optional(address)"},{"name":"index","type":"uint8"}],"name":"custodians","type":"tuple[]"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+		{
+			"name": "TransferAccepted",
+			"inputs": [
+				{"name":"payload","type":"bytes"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"m_ownerKey","type":"optional(uint256)"},
+		{"init":false,"name":"m_ownerAddress","type":"optional(address)"},
+		{"init":false,"name":"m_requestsMask","type":"uint256"},
+		{"init":false,"name":"m_requestsMaskData","type":"uint256"},
+		{"components":[{"name":"id","type":"uint64"},{"name":"confirmationsMask","type":"uint32"},{"name":"signsRequired","type":"uint8"},{"name":"signsReceived","type":"uint8"},{"components":[{"name":"owner_pubkey","type":"optional(uint256)"},{"name":"owner_address","type":"optional(address)"},{"name":"index","type":"uint8"}],"name":"creator","type":"tuple"},{"name":"dest","type":"address"},{"name":"value","type":"uint128"},{"name":"cc","type":"map(uint32,varuint32)"},{"name":"sendFlags","type":"uint16"},{"name":"payload","type":"cell"},{"name":"bounce","type":"bool"}],"init":false,"name":"m_transactions","type":"map(uint64,tuple)"},
+		{"components":[{"name":"id","type":"uint64"},{"name":"confirmationsMask","type":"uint32"},{"name":"signsRequired","type":"uint8"},{"name":"signsReceived","type":"uint8"},{"components":[{"name":"owner_pubkey","type":"optional(uint256)"},{"name":"owner_address","type":"optional(address)"},{"name":"index","type":"uint8"}],"name":"creator","type":"tuple"},{"name":"owners_pubkey","type":"uint256[]"},{"name":"owners_address","type":"address[]"},{"name":"reqConfirms","type":"uint8"},{"name":"reqConfirmsData","type":"uint8"}],"init":false,"name":"m_data","type":"map(uint64,tuple)"},
+		{"components":[{"name":"owner_pubkey","type":"optional(uint256)"},{"name":"owner_address","type":"optional(address)"},{"name":"index","type":"uint8"}],"init":false,"name":"m_custodians","type":"map(uint256,tuple)"},
+		{"init":false,"name":"m_custodianCount","type":"uint8"},
+		{"init":false,"name":"m_defaultRequiredConfirmations","type":"uint8"},
+		{"init":false,"name":"m_defaultRequiredConfirmationsData","type":"uint8"},
+		{"init":false,"name":"_max_cleanup_operations","type":"uint256"}
+	]
+}

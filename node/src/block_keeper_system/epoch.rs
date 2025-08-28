@@ -22,13 +22,12 @@ use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperStatus;
 use crate::bls::gosh_bls::PubKey;
 use crate::node::SignerIndex;
-use crate::types::AccountAddress;
 
 const BLS_PUBKEY_TOKEN_KEY: &str = "_bls_pubkey";
 const EPOCH_FINISH_TOKEN_KEY: &str = "_seqNoFinish";
 const STAKE_TOKEN_KEY: &str = "_stake";
 const OWNER_TOKEN_KEY: &str = "_owner_address";
-const PREEPOCH_OWNER_TOKEN_KEY: &str = "_owner";
+const PREEPOCH_OWNER_TOKEN_KEY: &str = "_wallet";
 const SIGNER_INDEX_KEY: &str = "_signerIndex";
 const OWNER_PUBKEY_KEY: &str = "_owner_pubkey";
 
@@ -137,7 +136,7 @@ pub fn decode_epoch_data(
                     // TODO: better fix pure unwrap for address
                     address: account.get_addr().unwrap().to_string(),
                     stake: block_keeper_stake,
-                    owner_address: AccountAddress(wallet_address),
+                    owner_address: wallet_address.into(),
                     signer_index,
                     owner_pubkey,
                 },
@@ -154,19 +153,19 @@ pub fn decode_preepoch_data(
     if let Some(data) = account.get_data() {
         let decoded_data = abi
             .abi()
-            .map_err(|e| anyhow::format_err!("Failed to load epoch ABI: {e}"))?
+            .map_err(|e| anyhow::format_err!("Failed to load preepoch ABI: {e}"))?
             .decode_storage_fields(
                 slice_from_cell(data)
-                    .map_err(|e| anyhow::format_err!("Failed to decode epoch data cell: {e}"))?,
+                    .map_err(|e| anyhow::format_err!("Failed to decode preepoch data cell: {e}"))?,
                 true,
             )
-            .map_err(|e| anyhow::format_err!("Failed to decode epoch storage: {e}"))?;
+            .map_err(|e| anyhow::format_err!("Failed to decode preepoch storage: {e}"))?;
         let mut block_keeper_bls_key = None;
         let mut block_keeper_stake = None;
         let mut wallet_address = None;
         let mut signer_index = None;
         let mut owner_pubkey = None;
-        tracing::trace!("decoded epoch data: {decoded_data:?}");
+        tracing::trace!("decoded preepoch data: {decoded_data:?}");
         for token in decoded_data {
             if token.name == BLS_PUBKEY_TOKEN_KEY {
                 if let TokenValue::Bytes(pubkey) = token.value {
@@ -174,7 +173,7 @@ pub fn decode_preepoch_data(
                 }
             } else if token.name == STAKE_TOKEN_KEY {
                 if let TokenValue::VarUint(_len, stake) = token.value {
-                    tracing::trace!("decoded epoch stake: {stake:?}");
+                    tracing::trace!("decoded preepoch stake: {stake:?}");
                     block_keeper_stake =
                         Some(if stake.is_zero() { BigUint::zero() } else { stake });
                 }
@@ -185,7 +184,7 @@ pub fn decode_preepoch_data(
                         MsgAddress::AddrNone => None,
                         MsgAddress::AddrExt(_) => None,
                         MsgAddress::AddrStd(data) => {
-                            let addr = data.address;
+                            let addr = data.address.into();
                             Some(addr)
                         }
                         MsgAddress::AddrVar(_) => None,
@@ -208,7 +207,7 @@ pub fn decode_preepoch_data(
                 }
             }
         }
-        tracing::trace!("decoded epoch data: {block_keeper_bls_key:?} {block_keeper_stake:?} {wallet_address:?} {signer_index:?} {owner_pubkey:?}");
+        tracing::trace!("decoded preepoch data: {block_keeper_bls_key:?} {block_keeper_stake:?} {wallet_address:?} {signer_index:?} {owner_pubkey:?}");
         if let (
             Some(block_keeper_bls_key),
             Some(block_keeper_stake),
@@ -218,7 +217,6 @@ pub fn decode_preepoch_data(
         ) =
             (block_keeper_bls_key, block_keeper_stake, wallet_address, signer_index, owner_pubkey)
         {
-            let wallet_address = AccountId::from(wallet_address);
             return Ok(Some((
                 signer_index,
                 BlockKeeperData {
@@ -228,7 +226,7 @@ pub fn decode_preepoch_data(
                     // TODO: better fix pure unwrap for address
                     address: account.get_addr().unwrap().to_string(),
                     stake: block_keeper_stake,
-                    owner_address: AccountAddress(wallet_address),
+                    owner_address: wallet_address,
                     signer_index,
                     owner_pubkey,
                 },

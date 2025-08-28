@@ -91,14 +91,14 @@ impl<Transport: NetTransport> PubSub<Transport> {
 
     #[allow(clippy::too_many_arguments)]
     pub async fn subscribe_to_publisher(
-        &self,
+        self,
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
         metrics: Option<NetMetrics>,
-        incoming_messages: &IncomingSender,
-        outgoing_messages: &broadcast::Sender<OutgoingMessage>,
-        connection_closed: &mpsc::Sender<Arc<ConnectionInfo>>,
-        credential: &NetCredential,
-        publisher_addrs: &[SocketAddr],
+        incoming_messages: IncomingSender,
+        outgoing_messages: broadcast::Sender<OutgoingMessage>,
+        connection_closed: mpsc::Sender<Arc<ConnectionInfo>>,
+        credential: NetCredential,
+        publisher_addrs: Vec<SocketAddr>,
     ) -> anyhow::Result<()> {
         let (connection, peer_host_id, peer_addr) = 'connect: {
             for publisher_addr in publisher_addrs {
@@ -111,7 +111,7 @@ impl<Transport: NetTransport> PubSub<Transport> {
                     publisher_addr = publisher_addr.to_string(),
                     "Connecting to publisher"
                 );
-                match self.transport.connect(*publisher_addr, &alpn, credential.clone()).await {
+                match self.transport.connect(publisher_addr, &alpn, credential.clone()).await {
                     Ok(connection) => {
                         let host_id = connection_remote_host_id(&connection);
                         break 'connect (connection, host_id, publisher_addr);
@@ -130,12 +130,12 @@ impl<Transport: NetTransport> PubSub<Transport> {
         self.add_connection_handler(
             shutdown_rx,
             metrics.clone(),
-            incoming_messages,
-            outgoing_messages,
-            connection_closed,
+            &incoming_messages,
+            &outgoing_messages,
+            &connection_closed,
             connection,
             peer_host_id,
-            Some(*peer_addr),
+            Some(peer_addr),
             false,
             ConnectionRoles::subscriber(),
         )

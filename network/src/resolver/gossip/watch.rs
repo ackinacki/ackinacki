@@ -14,12 +14,12 @@ use crate::resolver::GossipPeer;
 
 pub enum SubscribeStrategy<PeerId> {
     Peer(PeerId),
-    Proxy(SocketAddr),
+    Proxy(Vec<SocketAddr>),
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct WatchGossipConfig {
-    pub trusted_pubkeys: Vec<transport_layer::VerifyingKey>,
+    pub trusted_pubkeys: HashSet<transport_layer::VerifyingKey>,
 }
 
 pub async fn watch_gossip<PeerId>(
@@ -122,8 +122,8 @@ where
                     vec![]
                 }
             }
-            SubscribeStrategy::Proxy(self_addr) => {
-                if peer.proxies.contains(self_addr) {
+            SubscribeStrategy::Proxy(self_addrs) => {
+                if self_addrs.iter().any(|x| peer.proxies.contains(x)) {
                     vec![peer.advertise_addr]
                 } else {
                     peer_subscribe_addrs(peer.advertise_addr, &peer.proxies)
@@ -165,7 +165,7 @@ fn peer_subscribe_addrs(peer_addr: SocketAddr, proxies: &[SocketAddr]) -> Vec<So
 fn strategy_info<P: Display>(strategy: &SubscribeStrategy<P>) -> String {
     match strategy {
         SubscribeStrategy::Peer(id) => format!("Peer({id})"),
-        SubscribeStrategy::Proxy(proxy_url) => format!("Proxy({proxy_url})"),
+        SubscribeStrategy::Proxy(addrs) => format!("Proxy({})", addrs.iter().join(",")),
     }
 }
 fn subscribe_info(subscribe: &[Vec<SocketAddr>]) -> String {

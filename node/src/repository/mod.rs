@@ -12,9 +12,10 @@ use tvm_block::ShardStateUnsplit;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::BLSSignatureScheme;
-use crate::message_storage::MessageDurableStorage;
 use crate::node::associated_types::AttestationData;
 use crate::repository::optimistic_state::OptimisticState;
+use crate::storage::MessageDBWriterService;
+use crate::storage::MessageDurableStorage;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
@@ -22,6 +23,7 @@ use crate::types::ThreadIdentifier;
 
 pub mod accounts;
 mod cross_thread_ref_data;
+// pub mod thread_state;
 pub mod cross_thread_ref_repository;
 pub mod optimistic_shard_state;
 pub mod optimistic_state;
@@ -34,12 +36,16 @@ pub use cross_thread_ref_repository::CrossThreadRefDataRepository;
 use crate::message::WrappedMessage;
 use crate::node::block_state::repository::BlockState;
 use crate::node::services::sync::StateSyncService;
+use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::repository_impl::RepositoryMetadata;
 
+pub mod dapp_id_table;
 pub mod load_saved_blocks;
+mod optimistic_state_save_service;
 #[cfg(test)]
 pub mod stub_repository;
+pub use optimistic_state_save_service::start_optimistic_state_save_service;
 
 #[derive(thiserror::Error, Debug)]
 pub enum RepositoryError {
@@ -76,18 +82,13 @@ pub trait Repository {
     fn get_block_from_repo_or_archive(
         &self,
         block_id: &BlockIdentifier,
-    ) -> anyhow::Result<Arc<<Self as Repository>::CandidateBlock>>;
-
-    fn get_block_from_repo_or_archive_by_seq_no(
-        &self,
-        block_seq_no: &BlockSeqNo,
         thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<Vec<<Self as Repository>::CandidateBlock>>;
+    ) -> anyhow::Result<Arc<<Self as Repository>::CandidateBlock>>;
 
     fn last_finalized_optimistic_state(
         &self,
         thread_id: &ThreadIdentifier,
-    ) -> Option<Self::OptimisticState>;
+    ) -> Option<Arc<Self::OptimisticState>>;
 
     fn clear_verification_markers(
         &self,
@@ -123,21 +124,15 @@ pub trait Repository {
         &self,
         block_id: &BlockIdentifier,
         thread_id: &ThreadIdentifier,
-        min_state: Option<Self::OptimisticState>,
-    ) -> anyhow::Result<Option<Self::OptimisticState>>;
+        min_state: Option<Arc<Self::OptimisticState>>,
+    ) -> anyhow::Result<Option<Arc<Self::OptimisticState>>>;
 
     fn get_full_optimistic_state(
         &self,
         block_id: &BlockIdentifier,
         thread_id: &ThreadIdentifier,
-        min_state: Option<Self::OptimisticState>,
-    ) -> anyhow::Result<Option<Self::OptimisticState>>;
-
-    fn erase_block_and_optimistic_state(
-        &self,
-        block_id: &BlockIdentifier,
-        thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<()>;
+        min_state: Option<Arc<Self::OptimisticState>>,
+    ) -> anyhow::Result<Option<Arc<Self::OptimisticState>>>;
 
     fn erase_block(
         &self,
@@ -165,9 +160,10 @@ pub trait Repository {
         accounts: HashMap<String, SerializedItem>,
     ) -> anyhow::Result<()>;
 
-    fn store_optimistic<T: Into<Self::OptimisticState>>(&self, state: T) -> anyhow::Result<()>;
+    fn store_optimistic<T: Into<Arc<Self::OptimisticState>>>(&self, state: T)
+        -> anyhow::Result<()>;
 
-    fn store_optimistic_in_cache<T: Into<Self::OptimisticState>>(
+    fn store_optimistic_in_cache<T: Into<Arc<Self::OptimisticState>>>(
         &self,
         state: T,
     ) -> anyhow::Result<()>;
@@ -184,9 +180,14 @@ pub trait Repository {
     fn get_zero_state_for_thread(
         &self,
         thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<Self::OptimisticState>;
+    ) -> anyhow::Result<Arc<Self::OptimisticState>>;
 
     fn get_all_metadata(&self) -> RepositoryMetadata;
 
     fn get_message_db(&self) -> MessageDurableStorage;
+
+    fn unfinalized_blocks(
+        &self,
+    ) -> Arc<Mutex<HashMap<ThreadIdentifier, UnfinalizedCandidateBlockCollection>>>;
+    fn get_message_storage_service(&self) -> &MessageDBWriterService;
 }

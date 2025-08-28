@@ -1,4 +1,4 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::collections::HashMap;
@@ -18,12 +18,13 @@ use tvm_block::ExtraCurrencyCollection;
 use tvm_types::read_single_root_boc;
 
 use crate::schema::db;
+use crate::schema::graphql::block::Block;
 use crate::schema::graphql::currency::OtherCurrency;
 use crate::schema::graphql::formats::BigIntFormat;
 use crate::schema::graphql::message::InMsg;
 use crate::schema::graphql::message::Message;
 use crate::schema::graphql::transaction::Transaction;
-use crate::schema::graphql::Block;
+use crate::schema::graphql_ext::QueryOrderBy;
 
 pub(crate) trait ToBool {
     fn to_bool(&self) -> Option<bool>;
@@ -273,6 +274,30 @@ pub fn ecc_from_bytes(bytes: Option<Vec<u8>>) -> anyhow::Result<Option<Vec<Other
     };
 
     Ok(other_currency)
+}
+
+pub fn query_order_by_str(order_by: Option<Vec<Option<QueryOrderBy>>>) -> String {
+    if order_by.is_none() {
+        return "".to_string();
+    }
+
+    let order_str = order_by
+        .unwrap()
+        .iter()
+        .filter_map(|v| {
+            let v = v.as_ref()?;
+            let path = v.path.as_deref()?;
+
+            let path = if path == "id" { "block_id" } else { path };
+            Some(format!("{} {}", path, v.direction.unwrap()))
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    match order_str.len() {
+        0 => "".to_string(),
+        _ => format!(" ORDER BY {order_str} "),
+    }
 }
 
 #[cfg(test)]

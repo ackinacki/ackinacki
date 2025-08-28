@@ -3,37 +3,23 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
-use std::vec::Vec;
 
 use typed_builder::TypedBuilder;
 
-use crate::node::block_state::dependent_ancestor_blocks::DependentAncestorBlocks;
-use crate::node::block_state::repository::BlockState;
+use crate::node::associated_types::AttestationTargetType;
+use crate::node::block_state::attestation_target_checkpoints::inherit_checkpoint;
+use crate::node::block_state::attestation_target_checkpoints::AncestorBlocksFinalizationCheckpoints;
+use crate::node::block_state::attestation_target_checkpoints::AncestorBlocksFinalizationCheckpointsConstructor;
 use crate::node::block_state::unfinalized_ancestor_blocks::UnfinalizedAncestorBlocksSelectError;
 use crate::node::BlockStateRepository;
 use crate::node::SignerIndex;
-use crate::repository::repository_impl::RepositoryImpl;
-use crate::repository::Repository;
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 
-pub struct AttestationTargetPlugin {}
-
-impl AttestationTargetPlugin {
-    pub fn setup() {}
-}
-
 #[derive(TypedBuilder, Clone)]
 pub struct AttestationTargetsService {
-    repository: RepositoryImpl,
     block_state_repository: BlockStateRepository,
-}
-
-pub enum AttestationsSuccess {
-    InitialAttestationTargetsMet,
-    SecondaryAttestationTargetsMet,
 }
 
 pub enum AttestationsFailure {
@@ -46,293 +32,63 @@ pub enum AttestationsFailure {
     InvalidBlock_TailDoesNotMeetCriteria,
 }
 
-trait AsChain {
-    fn next(&mut self) -> Option<BlockState>;
-    fn peek(&mut self, nth_child: usize) -> Option<impl TargetBlock>;
-}
-impl AsChain for VecDeque<BlockState> {
-    fn next(&mut self) -> Option<BlockState> {
-        self.pop_front()
-    }
-
-    fn peek(&mut self, nth_child: usize) -> Option<impl TargetBlock> {
-        self.get(nth_child).cloned()
-    }
-}
-
-impl AsChain for (VecDeque<BlockState>, Target) {
-    fn next(&mut self) -> Option<BlockState> {
-        self.0.pop_front()
-    }
-
-    fn peek(&mut self, nth_child: usize) -> Option<impl TargetBlock> {
-        if nth_child == self.0.len() {
-            Some(self.1.clone())
-        } else {
-            self.0.get(nth_child).map(|e| Target::Candidate(e.clone()))
-        }
-    }
-}
-
-trait TargetBlock {
-    fn thread_identifier(&self) -> Option<ThreadIdentifier>;
-    fn attestations_for(&self, block_id: &BlockIdentifier) -> Option<HashSet<SignerIndex>>;
-    fn has_attestations_target_met(&self) -> bool;
-}
-
-#[derive(Clone)]
-enum Target {
-    // Note: intentionally made tuple. It is easier to pass later in the code.
-    Phantom((ThreadIdentifier, HashMap<BlockIdentifier, HashSet<SignerIndex>>)),
-    Candidate(BlockState),
-}
-
-impl TargetBlock for BlockState {
-    fn thread_identifier(&self) -> Option<ThreadIdentifier> {
-        self.guarded(|e| *e.thread_identifier())
-    }
-
-    fn attestations_for(&self, block_id: &BlockIdentifier) -> Option<HashSet<SignerIndex>> {
-        self.guarded(|e| e.verified_attestations_for(block_id))
-    }
-
-    fn has_attestations_target_met(&self) -> bool {
-        self.guarded(|e| e.has_attestations_target_met())
-    }
-}
-
-impl TargetBlock for &(ThreadIdentifier, HashMap<BlockIdentifier, HashSet<SignerIndex>>) {
-    fn thread_identifier(&self) -> Option<ThreadIdentifier> {
-        Some(self.0)
-    }
-
-    fn attestations_for(&self, block_id: &BlockIdentifier) -> Option<HashSet<SignerIndex>> {
-        Some(self.1.get(block_id).cloned().unwrap_or_default())
-    }
-
-    fn has_attestations_target_met(&self) -> bool {
-        false
-    }
-}
-
-impl TargetBlock for Target {
-    fn thread_identifier(&self) -> Option<ThreadIdentifier> {
-        match self {
-            Target::Candidate(e) => e.thread_identifier(),
-            Target::Phantom(e) => e.thread_identifier(),
-        }
-    }
-
-    fn attestations_for(&self, block_id: &BlockIdentifier) -> Option<HashSet<SignerIndex>> {
-        match self {
-            Target::Candidate(e) => e.attestations_for(block_id),
-            Target::Phantom(e) => e.attestations_for(block_id),
-        }
-    }
-
-    fn has_attestations_target_met(&self) -> bool {
-        match self {
-            Target::Candidate(e) => e.has_attestations_target_met(),
-            Target::Phantom(e) => e.has_attestations_target_met(),
-        }
-    }
-}
-
 impl AttestationTargetsService {
     // TODO: expand errors set. Return actual errors instead of Ok(false)
     pub fn evaluate_if_next_block_ancestors_required_attestations_will_be_met(
         &self,
         thread_identifier: ThreadIdentifier,
         parent_block_identifier: BlockIdentifier,
-        next_block_attestations: HashMap<BlockIdentifier, HashSet<SignerIndex>>,
+        next_block_attestations: HashMap<
+            (BlockIdentifier, AttestationTargetType),
+            HashSet<SignerIndex>,
+        >,
     ) -> anyhow::Result<bool, UnfinalizedAncestorBlocksSelectError> {
         tracing::trace!("evaluate_if_next_block_ancestors_required_attestations_will_be_met: parent_block_identifier: {parent_block_identifier:?}, next_block_attestations: {next_block_attestations:?}");
-        let Ok(tail) = self.block_state_repository.get(&parent_block_identifier) else {
-            return Ok(false);
-        };
-        let chain = self.block_state_repository.select_dependent_ancestor_blocks(&tail)?;
-        use AttestationsFailure::*;
-        let mut chain = chain.dependent_ancestor_chain().clone();
-        chain.reverse();
-        match self.evaluate_attestations(
-            (
-                VecDeque::<BlockState>::from(chain),
-                Target::Phantom((thread_identifier, next_block_attestations)),
-            ),
-            |_| Ok(()),
-            |_| Ok(()),
-        ) {
-            Ok(()) | Err(ChainIsTooShort) => Ok(true),
-
-            Err(NotAllInitialAttestationTargetsSet)
-            | Err(ThreadIdentifierIsNotSet)
-            | Err(InvalidBlock_TailDoesNotMeetCriteria)
-            | Err(FailedToSaveBlockState)
-            | Err(AttestationsAreNotVerifiedYet) => Ok(false),
-        }
-    }
-
-    fn evaluate_attestations<FPrimary, FSecordary>(
-        &self,
-        mut chain: impl AsChain,
-        mut on_primary_attestation_target_met: FPrimary,
-        mut on_secondary_attestations_target_met: FSecordary,
-    ) -> std::result::Result<(), AttestationsFailure>
-    where
-        FPrimary: FnMut(BlockState) -> anyhow::Result<(), AttestationsFailure>,
-        FSecordary: FnMut(BlockState) -> anyhow::Result<(), AttestationsFailure>,
-    {
-        loop {
-            let Some(block) = chain.next() else {
-                return Ok(());
-            };
-            if block.has_attestations_target_met() {
-                continue;
-            }
-            let (attestation_target, thread_identifier) =
-                block.guarded(|e| (*e.attestation_target(), *e.thread_identifier()));
-            let Some(thread_identifier) = thread_identifier else {
-                return Err(AttestationsFailure::ThreadIdentifierIsNotSet);
-            };
-            let Some(attestation_target) = attestation_target else {
-                return Err(AttestationsFailure::NotAllInitialAttestationTargetsSet);
-            };
-            let main_attestations_target =
-                *attestation_target.primary().required_attestation_count();
-            let descendants_chain_length_required =
-                *attestation_target.primary().generation_deadline();
-            use AttestationsFailure::*;
-            let Some(checkpoint) = chain.peek(descendants_chain_length_required - 1) else {
-                // return Err(AttestationsFailure::ChainIsTooShort);
-                continue;
-            };
-            let Some(checkpoint_thread_identifier) = checkpoint.thread_identifier() else {
-                return Err(AttestationsFailure::ThreadIdentifierIsNotSet);
-            };
-            if checkpoint_thread_identifier != thread_identifier {
-                if cfg!(feature = "allow-threads-merge") {
-                    #[cfg(feature = "allow-threads-merge")]
-                    compile_error!(
-                        "it has to check if another thread is a successor of the initial block  thread."
-                    );
-                }
-                continue;
-            }
-            match self.evaluate_block_attestations(
-                block.block_identifier(),
-                checkpoint,
-                main_attestations_target,
-            ) {
-                Ok(AttestationsSuccess::InitialAttestationTargetsMet) => {
-                    on_primary_attestation_target_met(block)?;
-                    continue;
-                }
-                Ok(AttestationsSuccess::SecondaryAttestationTargetsMet) => {
-                    on_secondary_attestations_target_met(block)?;
-                    continue;
-                }
-                Err(ChainIsTooShort)
-                | Err(NotAllInitialAttestationTargetsSet)
-                | Err(AttestationsAreNotVerifiedYet)
-                | Err(FailedToSaveBlockState)
-                | Err(ThreadIdentifierIsNotSet) => continue,
-                Err(InvalidBlock_TailDoesNotMeetCriteria) => {
-                    Err(InvalidBlock_TailDoesNotMeetCriteria)?
-                }
-            }
-        }
-    }
-
-    fn evaluate_block_attestations(
-        &self,
-        block_id: &BlockIdentifier,
-        initial_target: impl TargetBlock,
-        min_attestations_count_required: usize,
-    ) -> std::result::Result<AttestationsSuccess, AttestationsFailure> {
-        // Optimization assumptions:
-        // - It is assumed that all attestations are folded in the last block,
-        //   therefore it is possible to skip checking prev block and go straight
-        //   to the initial attestation target.
-        // Before this optmization it was iterating over the chain of descendants.
-        let Some(block_attestations_signers) = initial_target.attestations_for(block_id) else {
-            return Err(AttestationsFailure::AttestationsAreNotVerifiedYet);
-        };
-
-        // --- end of an optimization ---
-
-        // We had all the required information to check if target was met or not.
-        let is_target_met = block_attestations_signers.len() >= min_attestations_count_required;
-
-        if is_target_met {
-            return Ok(AttestationsSuccess::InitialAttestationTargetsMet);
-        }
-        Err(AttestationsFailure::InvalidBlock_TailDoesNotMeetCriteria)
-    }
-
-    // Note: this may change with more information added in the next blocks
-    pub fn find_next_block_known_dependants(
-        &self,
-        parent_block_identifier: BlockIdentifier,
-    ) -> anyhow::Result<Vec<BlockIdentifier>> {
-        let mut chain = self.prepare_chain(parent_block_identifier)?;
-        let mut result = vec![];
-        while !chain.is_empty() {
-            let cursor = chain.remove(0);
-            let (required_chain_length, block_identifier) = cursor.guarded(|e| {
-                anyhow::ensure!(e.attestation_target().is_some());
-                Ok((
-                    *e.attestation_target().unwrap().primary().generation_deadline(),
-                    e.block_identifier().clone(),
-                ))
-            })?;
-            if required_chain_length != chain.len() + 1 {
-                continue;
-            }
-            result.push(block_identifier);
-        }
-        Ok(result)
-    }
-
-    // TODO: use select_unfinalized_ancestor_blocks instead
-    // Creates a chain starting from the first non-finalized block to the tail (inclusive)
-    fn prepare_chain(&self, tail: BlockIdentifier) -> anyhow::Result<Vec<BlockState>> {
-        let parent_state = self.block_state_repository.get(&tail)?;
-        let (is_parent_finalized, thread_id) = parent_state.guarded(|e| {
-            anyhow::ensure!(!e.is_invalidated());
-            anyhow::ensure!(e.thread_identifier().is_some());
-            Ok((e.is_finalized(), e.thread_identifier().unwrap()))
-        })?;
-        if is_parent_finalized {
-            return Ok(vec![]);
-        }
-        let Some((_, thread_last_finalized_block_seq_no)) =
-            self.repository.select_thread_last_finalized_block(&thread_id)?
+        let parent_block_state =
+            self.block_state_repository.get(&parent_block_identifier).expect("It must not fail");
+        tracing::trace!("evaluate_if_next_block_ancestors_required_attestations_will_be_met: parent state: {parent_block_state:?}");
+        let Some(parent_block_thread_identifier) =
+            parent_block_state.guarded(|e| *e.thread_identifier())
         else {
-            return Err(anyhow::format_err!("Thread was not initialized"));
+            // anyhow::bail!("parent block is not ready");
+            return Err(UnfinalizedAncestorBlocksSelectError::FailedToLoadBlockState);
         };
-        let mut chain = vec![];
-        let mut cursor = parent_state;
-        loop {
-            let (is_finalized, parent_id, cursor_seq_no) = cursor.guarded(|e| {
-                anyhow::ensure!(!e.is_invalidated());
-                if e.is_finalized() {
-                    Ok((true, None, None))
-                } else {
-                    anyhow::ensure!(e.parent_block_identifier().is_some());
-                    anyhow::ensure!(e.block_seq_no().is_some());
-                    Ok((false, e.parent_block_identifier().clone(), *e.block_seq_no()))
-                }
-            })?;
-            if is_finalized {
-                chain.reverse();
-                return Ok(chain);
-            }
-            chain.push(cursor);
-            let parent_id = parent_id.unwrap();
-            let cursor_seq_no = cursor_seq_no.unwrap();
-            anyhow::ensure!(cursor_seq_no > thread_last_finalized_block_seq_no);
-            cursor = self.block_state_repository.get(&parent_id)?;
+        let Some(ancestor_blocks_finalization_distances_prototype) =
+            parent_block_state.guarded(|e| e.ancestor_blocks_finalization_checkpoints().clone())
+        else {
+            // anyhow::bail!("parent block is not ready");
+            return Err(UnfinalizedAncestorBlocksSelectError::FailedToLoadBlockState);
+        };
+        if thread_identifier != parent_block_thread_identifier {
+            return Ok(true);
         }
+        let mut ancestor_blocks_finalization_primary_checkpoints =
+            ancestor_blocks_finalization_distances_prototype.primary().clone();
+        let mut ancestor_blocks_finalization_fallback_checkpoints =
+            ancestor_blocks_finalization_distances_prototype.fallback().clone();
+        for checkpoint in ancestor_blocks_finalization_primary_checkpoints.values_mut() {
+            *checkpoint = inherit_checkpoint(*checkpoint);
+        }
+        for checkpoint in ancestor_blocks_finalization_fallback_checkpoints.values_mut() {
+            *checkpoint = checkpoint.iter().map(|e| inherit_checkpoint(*e)).collect();
+        }
+        let checkpoint_result = AncestorBlocksFinalizationCheckpointsConstructor::builder()
+            .inherited_checkpoints(
+                AncestorBlocksFinalizationCheckpoints::builder()
+                    .primary(ancestor_blocks_finalization_primary_checkpoints)
+                    .fallback(ancestor_blocks_finalization_fallback_checkpoints)
+                    .build(),
+            )
+            .passed_primary(vec![])
+            .passed_fallback(vec![])
+            .passed_fallback_preattestation_checkpoint(vec![])
+            .build()
+            .update(next_block_attestations.into_iter().map(|(k, v)| (k, v.len())).collect());
+
+        if !checkpoint_result.failed.is_empty() {
+            tracing::trace!("evaluate_if_next_block_ancestors_required_attestations_will_be_met: failed full result: {checkpoint_result:?}");
+        }
+        Ok(checkpoint_result.failed.is_empty())
     }
 }
 
@@ -340,30 +96,249 @@ impl AttestationTargetsService {
 mod tests {
     use std::str::FromStr;
 
+    use tracing_test::traced_test;
+
     use super::*;
+    use crate::node::associated_types::AttestationTargetType;
+    use crate::node::block_state::attestation_target_checkpoints::AttestationTargetCheckpoint;
+    use crate::utilities::guarded::GuardedMut;
+
+    #[traced_test]
+    #[test]
+    fn bug_evaluation_failed_jul_19_2025() {
+        // Note: this is a repro from a log. Somehow it did fail in a load test.
+        // This test confims that it was a side effect from something else.
+
+        // Prepare test
+        let thread_identifier = ThreadIdentifier::try_from(
+            "00000000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+        )
+        .unwrap();
+        let parent_block_identifier = BlockIdentifier::from_str(
+            "cf90c7b6f94c80595c6b43590b1d64cb1a55e98360f96ca6008acb551d1b0619",
+        )
+        .unwrap();
+        let ancestor_block_identifier = BlockIdentifier::from_str(
+            "abe5f32c13ca775f9c4458e5ac750f4637e3a0d4c15bdcde5c87094355a42e0f",
+        )
+        .unwrap();
+
+        let tmp_dir = tempfile::tempdir().unwrap().path().to_owned();
+        let block_state_repository = BlockStateRepository::test(tmp_dir);
+
+        // Prepare checkpoints
+        let mut next_block_attestations: HashMap<
+            (BlockIdentifier, AttestationTargetType),
+            HashSet<SignerIndex>,
+        > = HashMap::new();
+        next_block_attestations.insert(
+            (parent_block_identifier.clone(), AttestationTargetType::Primary),
+            HashSet::from_iter(vec![
+                1, 9, 5, 14, 8, 13, 6, 10, 19, 16, 3, 7, 11, 17, 12, 15, 18, 4, 2,
+            ]),
+        );
+        next_block_attestations.insert(
+            (ancestor_block_identifier.clone(), AttestationTargetType::Primary),
+            HashSet::from_iter(vec![
+                6, 0, 14, 7, 1, 15, 9, 10, 19, 3, 18, 8, 12, 5, 17, 4, 11, 16, 2,
+            ]),
+        );
+        let mut ancestor_blocks_finalization_primary_checkpoints = HashMap::new();
+        // a69ac728fa4f2b797a1fde2a5b98c7c36281af4b73b616d0da8a8345b1502943
+        ancestor_blocks_finalization_primary_checkpoints.insert(
+            ancestor_block_identifier.clone(),
+            AttestationTargetCheckpoint::builder()
+                .current_distance(2)
+                .deadline(3)
+                .required_attestation_count(14)
+                .attestation_target_type(AttestationTargetType::Primary)
+                .build(),
+        );
+
+        // cf90c7b6f94c80595c6b43590b1d64cb1a55e98360f96ca6008acb551d1b0619
+        ancestor_blocks_finalization_primary_checkpoints.insert(
+            parent_block_identifier.clone(),
+            AttestationTargetCheckpoint::builder()
+                .current_distance(0)
+                .deadline(3)
+                .required_attestation_count(14)
+                .attestation_target_type(AttestationTargetType::Primary)
+                .build(),
+        );
+
+        let mut ancestor_blocks_finalization_fallback_checkpoints = HashMap::new();
+        ancestor_blocks_finalization_fallback_checkpoints.insert(
+            // cf90c7b6f94c80595c6b43590b1d64cb1a55e98360f96ca6008acb551d1b0619
+            parent_block_identifier.clone(),
+            vec![
+                AttestationTargetCheckpoint::builder()
+                    .current_distance(0)
+                    .deadline(3)
+                    .required_attestation_count(11)
+                    .attestation_target_type(AttestationTargetType::Primary)
+                    .build(),
+                AttestationTargetCheckpoint::builder()
+                    .current_distance(0)
+                    .deadline(7)
+                    .required_attestation_count(11)
+                    .attestation_target_type(AttestationTargetType::Fallback)
+                    .build(),
+            ],
+        );
+        ancestor_blocks_finalization_fallback_checkpoints.insert(
+            // a69ac728fa4f2b797a1fde2a5b98c7c36281af4b73b616d0da8a8345b1502943
+            ancestor_block_identifier,
+            vec![
+                AttestationTargetCheckpoint::builder()
+                    .current_distance(2)
+                    .deadline(3)
+                    .required_attestation_count(11)
+                    .attestation_target_type(AttestationTargetType::Primary)
+                    .build(),
+                AttestationTargetCheckpoint::builder()
+                    .current_distance(2)
+                    .deadline(7)
+                    .required_attestation_count(11)
+                    .attestation_target_type(AttestationTargetType::Fallback)
+                    .build(),
+            ],
+        );
+        {
+            let parent_block_state = block_state_repository.get(&parent_block_identifier).unwrap();
+
+            parent_block_state
+                .guarded_mut(|e| {
+                    e.set_thread_identifier(thread_identifier)?;
+                    e.set_ancestor_blocks_finalization_checkpoints(
+                        AncestorBlocksFinalizationCheckpoints::builder()
+                            .primary(ancestor_blocks_finalization_primary_checkpoints)
+                            .fallback(ancestor_blocks_finalization_fallback_checkpoints)
+                            .build(),
+                    )
+                })
+                .unwrap();
+        }
+
+        let service = AttestationTargetsService::builder()
+            .block_state_repository(block_state_repository)
+            .build();
+
+        let actual_result = service
+            .evaluate_if_next_block_ancestors_required_attestations_will_be_met(
+                thread_identifier,
+                parent_block_identifier,
+                next_block_attestations,
+            );
+        assert!(actual_result.is_ok());
+        let actual_result = actual_result.unwrap();
+        assert!(actual_result);
+    }
 
     #[test]
-    fn ensure_peek_returns_none_when_above_the_length() {
-        let tmp_dir = tempfile::tempdir().unwrap();
-        let tmp_path = tmp_dir.path().to_owned();
-        let repo = BlockStateRepository::new(tmp_path);
-        let some_block_id = BlockIdentifier::from_str(
-            "ffa1345a4a9ef86615040207e6f4af9f399d8f3ad4a7fc491e4e985f34c351eb",
+    fn bug_evaluation_failed_jul_18_2025() {
+        // Note: this is a repro from a log. Somehow it did fail in a load test.
+        // This test confims that it was a side effect from something else.
+
+        // Prepare test
+        let thread_identifier = ThreadIdentifier::try_from(
+            "0000eac840d2c8b877128b16f2cac07cc58be00e67567f7926da716a9868db570283".to_owned(),
         )
         .unwrap();
-        let another_block_id = BlockIdentifier::from_str(
-            "0e42bf59d3e8cad9422c9e503b4a950c625e0e662b22f1d35377d4203a3202c8",
+        let parent_block_identifier = BlockIdentifier::from_str(
+            "7058438073b47201a18aa556b095cc568206d723d7511dad119998c29cf4fb08",
         )
         .unwrap();
-        let mut foo = VecDeque::<BlockState>::from(vec![
-            repo.get(&some_block_id).unwrap(),
-            repo.get(&another_block_id).unwrap(),
-        ]);
-        assert!(foo.peek(0).is_some());
-        assert!(foo.peek(1).is_some());
-        let evicted = foo.next();
-        assert!(evicted.is_some());
-        assert!(foo.peek(0).is_some());
-        assert!(foo.peek(1).is_none());
+        let ancestor_block_identifier = BlockIdentifier::from_str(
+            "bb38d25c01ef8878b4f7585ff618930f9a7263d33ba054ffcc37ab77ef475925",
+        )
+        .unwrap();
+
+        let tmp_dir = tempfile::tempdir().unwrap().path().to_owned();
+        let block_state_repository = BlockStateRepository::test(tmp_dir);
+
+        // Prepare checkpoints
+        let mut next_block_attestations: HashMap<
+            (BlockIdentifier, AttestationTargetType),
+            HashSet<SignerIndex>,
+        > = HashMap::new();
+        next_block_attestations.insert(
+            (parent_block_identifier.clone(), AttestationTargetType::Primary),
+            HashSet::from_iter(vec![
+                17, 19, 9, 2, 8, 10, 3, 15, 5, 16, 18, 6, 13, 11, 14, 7, 0, 1, 12, 4,
+            ]),
+        );
+        next_block_attestations.insert(
+            (ancestor_block_identifier.clone(), AttestationTargetType::Primary),
+            HashSet::from_iter(vec![
+                9, 1, 16, 17, 18, 8, 3, 2, 6, 11, 13, 7, 5, 19, 0, 14, 4, 10, 12, 15,
+            ]),
+        );
+        next_block_attestations.insert(
+            (ancestor_block_identifier.clone(), AttestationTargetType::Fallback),
+            HashSet::from_iter(vec![
+                0, 19, 1, 11, 14, 2, 9, 4, 8, 16, 10, 17, 18, 13, 5, 15, 12, 6, 3, 7,
+            ]),
+        );
+
+        let mut ancestor_blocks_finalization_primary_checkpoints = HashMap::new();
+        ancestor_blocks_finalization_primary_checkpoints.insert(
+            parent_block_identifier.clone(),
+            AttestationTargetCheckpoint::builder()
+                .current_distance(0)
+                .deadline(1)
+                .required_attestation_count(14)
+                .attestation_target_type(AttestationTargetType::Primary)
+                .build(),
+        );
+
+        let mut ancestor_blocks_finalization_fallback_checkpoints = HashMap::new();
+        ancestor_blocks_finalization_fallback_checkpoints.insert(
+            parent_block_identifier.clone(),
+            vec![AttestationTargetCheckpoint::builder()
+                .current_distance(2)
+                .deadline(3)
+                .required_attestation_count(11)
+                .attestation_target_type(AttestationTargetType::Fallback)
+                .build()],
+        );
+        ancestor_blocks_finalization_fallback_checkpoints.insert(
+            ancestor_block_identifier,
+            vec![AttestationTargetCheckpoint::builder()
+                .current_distance(1)
+                .deadline(3)
+                .required_attestation_count(11)
+                .attestation_target_type(AttestationTargetType::Fallback)
+                .build()],
+        );
+        {
+            let parent_block_state = block_state_repository.get(&parent_block_identifier).unwrap();
+
+            parent_block_state
+                .guarded_mut(|e| {
+                    e.set_thread_identifier(thread_identifier)?;
+                    e.set_ancestor_blocks_finalization_checkpoints(
+                        AncestorBlocksFinalizationCheckpoints::builder()
+                            .primary(ancestor_blocks_finalization_primary_checkpoints)
+                            .fallback(ancestor_blocks_finalization_fallback_checkpoints)
+                            .build(),
+                    )
+                })
+                .unwrap();
+            drop(parent_block_state);
+        }
+
+        let service = AttestationTargetsService::builder()
+            .block_state_repository(block_state_repository)
+            .build();
+
+        let actual_result = service
+            .evaluate_if_next_block_ancestors_required_attestations_will_be_met(
+                thread_identifier,
+                parent_block_identifier,
+                next_block_attestations,
+            );
+        assert!(actual_result.is_ok());
+        let actual_result = actual_result.unwrap();
+        assert!(actual_result);
     }
 }

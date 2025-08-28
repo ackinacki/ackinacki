@@ -1,20 +1,18 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 pub mod block_subscriber;
-mod blockchain;
+pub mod bm_contract_root;
 mod bp_resolver;
 pub mod cli;
 pub mod events;
 pub mod executor;
-mod helpers;
-pub mod license_root;
 pub mod message_types;
+pub mod metrics;
 mod rest_api_routes;
 pub mod signals;
 pub mod state;
 pub mod tracing;
-
 pub const DEFAULT_BP_PORT: u16 = 8500;
 
 // 1 process: reads raw_blocks, has seq_no of all threads and for all blocks since start of reading

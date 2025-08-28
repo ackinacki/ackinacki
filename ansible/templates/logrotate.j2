@@ -28,8 +28,7 @@ chmod 644 /etc/logrotate.d/node
 
 chmod 755 /logsdir
 
-echo "59 * * * * /bin/chmod 755 /logsdir" > /etc/crontabs/root
-echo "0 * * * * /usr/sbin/logrotate -v /etc/logrotate.conf" >> /etc/crontabs/root
+echo "{{ LOG_ROTATE_SPEC | default('0 *') }} * * * /bin/chmod 755 /logsdir; /usr/sbin/logrotate -v /etc/logrotate.conf" > /etc/crontabs/root
 
 echo "Starting crond"
 

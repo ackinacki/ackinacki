@@ -6,10 +6,10 @@
  */
 pragma gosh-solidity >=0.76.1;
 
-import "./replayprotection.sol";
+import "./errors.sol";
 import "./structs/structs.sol";
 
-abstract contract Modifiers is ReplayProtection {   
+abstract contract Modifiers is Errors {   
     string constant versionModifiers = "1.0.0";
     
     //TvmCell constants
@@ -39,11 +39,14 @@ abstract contract Modifiers is ReplayProtection {
     uint64 constant FEE_DEPLOY_NAME_INDEX = 8 vmshell;
     uint64 constant ROOT_BALANCE = 1000000 vmshell;
 
+    uint64 constant BLS_PUBKEY_LENGTH = 48;
+
     uint16 constant MAX_SIGNER_INDEX = 60000;
 
-    uint128 constant MIN_REP_COEF = 1000000000;
-    
-    uint8 constant MAX_LICENSE_NUMBER = 10;
+    uint8 constant MAX_LICENSE_NUMBER = 20;
+    uint8 constant MAX_LICENSE_NUMBER_WHITELIST_BK = 20;
+    uint8 constant MAX_LICENSE_NUMBER_WHITELIST_BM = 5;
+    uint128 constant MIN_REP_COEF = 1000000000 * uint128(MAX_LICENSE_NUMBER);
 
     uint8 constant PRE_EPOCH_DEPLOYED = 0;
     uint8 constant EPOCH_DEPLOYED = 1;
@@ -52,13 +55,29 @@ abstract contract Modifiers is ReplayProtection {
     uint32 constant CURRENCIES_ID = 1;
     uint32 constant CURRENCIES_ID_SHELL = 2;
 
+    uint8 constant KSMAX = 3;
+    uint8 constant KSMAX_DENOMINATOR = 4;
+    uint8 constant PROXY_LIST_CHANGE_SIZE = 5;
     uint8 constant FULL_STAKE_SLASH = 0;
     uint8 constant FULL_STAKE_PERCENT = 100;
+    uint8 constant EPOCH_CLIFF = 10;
+    uint8 constant WALLET_CLIFF = 10;
+    uint8 constant LICENSE_TOUCH = 200;
 
     uint8 constant LICENSE_REST = 0;
     uint8 constant LICENSE_PRE_EPOCH = 1;
     uint8 constant LICENSE_EPOCH = 2;
     uint8 constant LICENSE_CONTINUE = 3;
+
+    uint8 constant EPOCH_DENOMINATOR = 2;
+    uint8 constant EPOCH_DENOMINATOR_CONTINUE = 10;
+    uint8 constant EPOCH_DENOMINATOR_START_CONTINUE = 5;
+    uint8 constant PRE_EPOCH_DESTRUCT_MULT = 19;
+    uint8 constant CONFIG_CLIFF_DENOMINATOR = 10;
+    uint8 constant CONFIG_WAIT_DENOMINATOR = 20;
+    uint8 constant BLOCKS_PER_SECOND = 3;
+
+    uint8 constant MANAGER_REWARD_WAIT = 10;
 
     uint128 constant MAX_LOCK_NUMBER = 1000000000;
 
@@ -101,9 +120,26 @@ abstract contract Modifiers is ReplayProtection {
         require(msg.sender == sender, ERR_INVALID_SENDER);
         _;
     }
+
+    modifier senderOfTwo(address sender, address sender1) {
+        if (msg.sender != sender1) {
+            require(msg.sender == sender, ERR_INVALID_SENDER);
+        }
+        _;
+    }
     
     modifier minBalance(uint128 val) {
         require(address(this).balance > val + 1 vmshell, ERR_LOW_BALANCE);
+        _;
+    }
+
+    modifier onlyOwner {
+        require(msg.pubkey() == tvm.pubkey(), ERR_NOT_OWNER);
+        _;
+    }
+    
+    modifier accept() {
+        tvm.accept();
         _;
     }
 }

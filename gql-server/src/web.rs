@@ -1,4 +1,4 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::convert::Infallible;
@@ -10,6 +10,7 @@ use async_graphql::dataloader::DataLoader;
 use async_graphql::http::playground_source;
 use async_graphql::http::GraphQLPlaygroundConfig;
 use async_graphql::http::GraphiQLSource;
+use async_graphql::EmptyMutation;
 use async_graphql::EmptySubscription;
 use async_graphql::Schema;
 use async_graphql_warp::GraphQLBadRequest;
@@ -23,14 +24,11 @@ use warp::http::StatusCode;
 use warp::Filter;
 use warp::Rejection;
 
-use crate::client::create_client;
-use crate::defaults;
 use crate::schema::graphql::block::BlockLoader;
 use crate::schema::graphql::message::MessageLoader;
-use crate::schema::graphql::mutations::NodeUrl;
 use crate::schema::graphql::transaction::TransactionLoader;
-use crate::schema::graphql::MutationRoot;
-use crate::schema::graphql::QueryRoot;
+use crate::schema::graphql_ext;
+use crate::schema::graphql_std;
 
 async fn open_db(db_path: PathBuf) -> anyhow::Result<Pool<Sqlite>> {
     let db_path_str = db_path.display().to_string();
@@ -62,30 +60,8 @@ async fn open_db(db_path: PathBuf) -> anyhow::Result<Pool<Sqlite>> {
 
 pub async fn start(bind_to: String, db_path: PathBuf) -> anyhow::Result<()> {
     let pool = open_db(db_path).await?;
-    let node_url = match std::env::var("NODE_URL") {
-        Ok(node_url) => node_url,
-        _ => defaults::NODE_URL.to_string(),
-    };
-    let schema = Schema::build(QueryRoot, MutationRoot, EmptySubscription)
-        .data(pool.clone())
-        .data(NodeUrl::from(node_url))
-        .data(create_client()?)
-        .data(DataLoader::new(BlockLoader { pool: pool.clone() }, tokio::spawn))
-        .data(DataLoader::new(MessageLoader { pool: pool.clone() }, tokio::spawn))
-        .data(DataLoader::new(TransactionLoader { pool }, tokio::spawn))
-        .with_sorted_fields()
-        .finish();
+    let socket_addr = bind_to.parse::<SocketAddr>()?;
 
-    let graphql_post = async_graphql_warp::graphql(schema).and_then(
-        |(schema, request): (
-            Schema<QueryRoot, MutationRoot, EmptySubscription>,
-            async_graphql::Request,
-        )| async move {
-            Ok::<_, Infallible>(GraphQLResponse::from(schema.execute(request).await))
-        },
-    );
-
-    // let playground_graphql_cloned = playground_graphql.clone();
     let graphql_playground = warp::path!("graphql_old").and(warp::get()).map(move || {
         HttpResponse::builder()
             .header("content-type", "text/html")
@@ -98,27 +74,77 @@ pub async fn start(bind_to: String, db_path: PathBuf) -> anyhow::Result<()> {
             .body(GraphiQLSource::build().endpoint("/graphql").finish())
     });
 
-    let routes =
-        graphql_post.or(graphql_playground).or(graphiql).recover(|err: Rejection| async move {
-            if let Some(GraphQLBadRequest(err)) = err.find() {
-                return Ok::<_, Infallible>(warp::reply::with_status(
-                    err.to_string(),
-                    StatusCode::BAD_REQUEST,
-                ));
-            }
+    if !cfg!(feature = "store_events_only") {
+        let schema = Schema::build(graphql_ext::QueryRoot, EmptyMutation, EmptySubscription)
+            .data(pool.clone())
+            .data(DataLoader::new(BlockLoader { pool: pool.clone() }, tokio::spawn))
+            .data(DataLoader::new(MessageLoader { pool: pool.clone() }, tokio::spawn))
+            .data(DataLoader::new(TransactionLoader { pool }, tokio::spawn))
+            .with_sorted_fields()
+            .finish();
 
-            Ok(warp::reply::with_status(
-                "INTERNAL_SERVER_ERROR".to_string(),
-                StatusCode::INTERNAL_SERVER_ERROR,
-            ))
-        });
+        let graphql_post = async_graphql_warp::graphql(schema).and_then(
+            |(schema, request): (
+                Schema<graphql_ext::QueryRoot, EmptyMutation, EmptySubscription>,
+                async_graphql::Request,
+            )| async move {
+                Ok::<_, Infallible>(GraphQLResponse::from(schema.execute(request).await))
+            },
+        );
 
-    tracing::info!("Listening on: {}\n", bind_to);
+        let routes =
+            graphql_post.or(graphql_playground).or(graphiql).recover(|err: Rejection| async move {
+                if let Some(GraphQLBadRequest(err)) = err.find() {
+                    return Ok::<_, Infallible>(warp::reply::with_status(
+                        err.to_string(),
+                        StatusCode::BAD_REQUEST,
+                    ));
+                }
+
+                Ok(warp::reply::with_status(
+                    "INTERNAL_SERVER_ERROR".to_string(),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                ))
+            });
+
+        tracing::info!("[API:extended] Listening on: {}\n", bind_to);
+        warp::serve(routes).run((socket_addr.ip(), socket_addr.port())).await;
+    } else {
+        let schema = Schema::build(graphql_std::QueryRoot, EmptyMutation, EmptySubscription)
+            .data(pool.clone())
+            .with_sorted_fields()
+            .finish();
+
+        let graphql_post = async_graphql_warp::graphql(schema).and_then(
+            |(schema, request): (
+                Schema<graphql_std::QueryRoot, EmptyMutation, EmptySubscription>,
+                async_graphql::Request,
+            )| async move {
+                Ok::<_, Infallible>(GraphQLResponse::from(schema.execute(request).await))
+            },
+        );
+
+        let routes =
+            graphql_post.or(graphql_playground).or(graphiql).recover(|err: Rejection| async move {
+                if let Some(GraphQLBadRequest(err)) = err.find() {
+                    return Ok::<_, Infallible>(warp::reply::with_status(
+                        err.to_string(),
+                        StatusCode::BAD_REQUEST,
+                    ));
+                }
+
+                Ok(warp::reply::with_status(
+                    "INTERNAL_SERVER_ERROR".to_string(),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                ))
+            });
+
+        tracing::info!("[API:standard] Listening on: {}\n", bind_to);
+        warp::serve(routes).run((socket_addr.ip(), socket_addr.port())).await;
+    }
+
     // tracing::info!("GraphQL Playground: {}", playground_graphql.clone());
     // tracing::info!("GraphQL IDE: {}", playground_graphql_ide);
-
-    let socket_addr = bind_to.parse::<SocketAddr>()?;
-    warp::serve(routes).run((socket_addr.ip(), socket_addr.port())).await;
 
     Ok(())
 }

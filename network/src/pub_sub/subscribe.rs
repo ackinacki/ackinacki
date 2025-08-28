@@ -39,17 +39,21 @@ pub async fn handle_subscriptions<Transport: NetTransport + 'static>(
 ) -> anyhow::Result<()> {
     tracing::trace!("Subscription loop started");
     let mut reason = "starting".to_string();
+    let mut subscriptions = subscribe_rx.borrow().clone();
     loop {
-        let subscribers = subscribe_rx.borrow().clone();
-        let count = subscribers.iter().flatten().count();
+        let count = subscriptions.iter().flatten().count();
         metrics.as_ref().inspect(|m| m.report_subscribers_count(count));
 
         let (should_be_subscribed, should_be_unsubscribed) =
-            { pub_sub.schedule_subscriptions(&subscribers) };
+            { pub_sub.schedule_subscriptions(&subscriptions) };
 
         tracing::trace!(
             "Update subscriptions{} because of {reason}",
-            diff_info(subscribers.len(), should_be_subscribed.len(), should_be_unsubscribed.len()),
+            diff_info(
+                subscriptions.len(),
+                should_be_subscribed.len(),
+                should_be_unsubscribed.len()
+            ),
         );
         for connection in should_be_unsubscribed {
             connection.connection.close(0).await;
@@ -61,27 +65,15 @@ pub async fn handle_subscriptions<Transport: NetTransport + 'static>(
         let mut connect_tasks = JoinSet::new();
         let mut addrs_by_task_id = HashMap::<tokio::task::Id, Vec<SocketAddr>>::new();
         for publisher_addrs in should_be_subscribed.clone() {
-            let shutdown_rx = shutdown_rx.clone();
-            let pub_sub = pub_sub.clone();
-            let metrics = metrics.clone();
-            let incoming_messages = incoming_messages.clone();
-            let outgoing_messages = outgoing_messages.clone();
-            let connection_closed_tx = connection_closed_tx.clone();
-            let tls_config = credential.clone();
-            let publisher_addrs_clone = publisher_addrs.clone();
-            let abort_handle = connect_tasks.spawn(async move {
-                pub_sub
-                    .subscribe_to_publisher(
-                        shutdown_rx,
-                        metrics,
-                        &incoming_messages,
-                        &outgoing_messages,
-                        &connection_closed_tx,
-                        &tls_config,
-                        &publisher_addrs_clone,
-                    )
-                    .await
-            });
+            let abort_handle = connect_tasks.spawn(pub_sub.clone().subscribe_to_publisher(
+                shutdown_rx.clone(),
+                metrics.clone(),
+                incoming_messages.clone(),
+                outgoing_messages.clone(),
+                connection_closed_tx.clone(),
+                credential.clone(),
+                publisher_addrs.clone(),
+            ));
             addrs_by_task_id.insert(abort_handle.id(), publisher_addrs);
         }
         loop {
@@ -138,7 +130,13 @@ pub async fn handle_subscriptions<Transport: NetTransport + 'static>(
                     tracing::trace!("Subscription loop finished");
                     return Ok(());
                 } else {
-                    reason = "subscribe changed".to_string();
+                    let new_subscriptions = subscribe_rx.borrow().clone();
+                    if new_subscriptions != subscriptions {
+                        subscriptions = new_subscriptions;
+                        reason = "subscribe changed".to_string();
+                    } else {
+                        continue;
+                    }
                 },
                 _ = tokio::time::sleep(sleep_duration) => {
                     reason = format!("{} failed to subscribe", should_be_subscribed_len - successfully_subscribed);

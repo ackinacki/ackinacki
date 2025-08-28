@@ -15,10 +15,10 @@ use msquic_async::Connection;
 use msquic_async::Listener;
 use tokio::io::AsyncReadExt;
 
-use crate::cert_hash;
 use crate::msquic::msquic_async::send_stream::SendStream;
 use crate::msquic::msquic_async::stream::ReadStream;
 use crate::msquic::quic_settings::ConfigFactory;
+use crate::CertHash;
 use crate::NetConnection;
 use crate::NetCredential;
 use crate::NetIncomingRequest;
@@ -87,7 +87,7 @@ impl NetTransport for MsQuicTransport {
         let port = addr.port();
         conn.start(&config, &host, port).await?;
         let remote_cert = conn.receive_remote_certificate().await?;
-        let remote_identity = hex::encode(cert_hash(&remote_cert));
+        let remote_identity = CertHash::from(&remote_cert).to_string();
         Ok(MsQuicNetConnection::new(conn, local_identity, remote_identity))
     }
 }
@@ -125,7 +125,7 @@ impl NetIncomingRequest for MsQuicNetIncomingRequest {
     async fn accept(self) -> anyhow::Result<Self::Connection> {
         self.connection.accept().await?;
         let remote_cert = self.connection.receive_remote_certificate().await?;
-        let remote_identity = hex::encode(cert_hash(&remote_cert));
+        let remote_identity = CertHash::from(&remote_cert).to_string();
         Ok(MsQuicNetConnection::new(self.connection, self.local_identity, remote_identity))
     }
 }

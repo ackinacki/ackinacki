@@ -9,12 +9,23 @@
 				{"name":"waitStep","type":"uint64"},
 				{"name":"owner","type":"address"},
 				{"name":"root","type":"address"},
-				{"name":"bls_pubkey","type":"bytes"},
-				{"name":"code","type":"map(uint8,cell)"},
 				{"name":"signerIndex","type":"uint16"},
 				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
-				{"name":"epochDuration","type":"uint128"},
-				{"name":"is_continue","type":"bool"}
+				{"name":"stake","type":"uint128"},
+				{"name":"isContinue","type":"bool"},
+				{"name":"stakeContinue","type":"uint128"},
+				{"name":"epochDurationContinue","type":"uint64"},
+				{"name":"waitStepContinue","type":"uint64"},
+				{"name":"bls_pubkeyContinue","type":"bytes"},
+				{"name":"signerIndexContinue","type":"uint16"},
+				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licensesContinue","type":"tuple[]"},
+				{"name":"virtualStakeContinue","type":"optional(uint128)"},
+				{"name":"reward_sum_continue","type":"uint128"},
+				{"name":"myIp","type":"string"},
+				{"name":"unixtimeStart","type":"uint32"},
+				{"name":"reward_adjustment","type":"uint128"},
+				{"name":"sumReputationCoefContinue","type":"uint128"},
+				{"name":"slash_type","type":"optional(uint8)"}
 			],
 			"outputs": [
 			]
@@ -22,7 +33,8 @@
 		{
 			"name": "slash",
 			"inputs": [
-				{"name":"slash_type","type":"uint8"}
+				{"name":"slash_type","type":"uint8"},
+				{"name":"isFromEpoch","type":"bool"}
 			],
 			"outputs": [
 			]
@@ -62,18 +74,14 @@
 	],
 	"fields": [
 		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
-		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
-		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
-		{"init":false,"name":"__value","type":"uint256"},
-		{"init":false,"name":"_code","type":"map(uint8,cell)"},
 		{"init":true,"name":"_owner_pubkey","type":"uint256"},
 		{"init":false,"name":"_root","type":"address"},
 		{"init":true,"name":"_seqNoStart","type":"uint64"},
 		{"init":false,"name":"_seqNoFinish","type":"uint64"},
 		{"init":false,"name":"_owner","type":"address"},
-		{"init":false,"name":"_bls_pubkey","type":"bytes"},
-		{"init":false,"name":"_stake","type":"uint256"},
+		{"init":false,"name":"_stake","type":"uint128"},
 		{"init":false,"name":"_signerIndex","type":"uint16"},
 		{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"init":false,"name":"_licenses","type":"tuple[]"}
 	]

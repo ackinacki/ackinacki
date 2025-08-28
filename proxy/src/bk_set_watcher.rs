@@ -10,7 +10,7 @@ use http_server::BkSetResult;
 use crate::config::ProxyConfig;
 
 fn get_bk_set_url(addr: SocketAddr) -> String {
-    format!("http://{addr}/bk/v1/bk_set")
+    format!("http://{addr}/v2/bk_set")
 }
 
 pub async fn run(

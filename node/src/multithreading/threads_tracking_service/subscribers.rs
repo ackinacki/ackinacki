@@ -1,11 +1,13 @@
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
+use crate::types::ThreadsTable;
 
 pub trait Subscriber {
     fn handle_start_thread(
         &mut self,
         parent_split_block: &BlockIdentifier,
         thread_identifier: &ThreadIdentifier,
+        threads_table: Option<ThreadsTable>,
     );
     fn handle_stop_thread(
         &mut self,
@@ -24,11 +26,13 @@ macro_rules! tuple_subs {
                 &mut self,
                 parent_split_block: &BlockIdentifier,
                 thread_identifier: &ThreadIdentifier,
+                threads_table: Option<ThreadsTable>,
             ) {
                 $(
                 self.$I.handle_start_thread(
                     parent_split_block,
                     thread_identifier,
+                    threads_table.clone(),
                 );
                 )+
             }

@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::TryRecvError;
-use std::sync::Arc;
 use std::time::Duration;
 
 use telemetry_utils::mpsc::instrumented_channel;
@@ -159,6 +158,9 @@ where
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Ok(msg) => match msg {
+                    NetworkMessage::StartSynchronization => {
+                        continue;
+                    }
                     NetworkMessage::AuthoritySwitchProtocol(_) => {
                         // todo!("monitor authority switch accepts");
                         // Authority switch is processed in execute_normal
@@ -357,67 +359,10 @@ where
                                 synchronization_tx.clone(),
                             )?;
                         }
-                        self.on_sync_finalized(seq_no, identifier)?;
                     }
                 },
             }
         }
-    }
-
-    pub(crate) fn on_sync_finalized(
-        &self,
-        sync_finalized_seq_no: BlockSeqNo,
-        sync_finalized_block_id: BlockIdentifier,
-    ) -> anyhow::Result<()> {
-        // We have received Sync from (last finalized block) from BP,
-        // but this node may have sent attestations, BP did not get, so resend them
-        tracing::trace!("on_sync_finalized: {sync_finalized_seq_no:?} {sync_finalized_block_id:?}");
-        let mut parent_block_id = sync_finalized_block_id;
-        let mut attestation_seq_no = next_seq_no(sync_finalized_seq_no);
-        loop {
-            let blocks = self
-                .repository
-                .get_block_from_repo_or_archive_by_seq_no(&attestation_seq_no, &self.thread_id)?;
-            if blocks.is_empty() {
-                break;
-            }
-            attestation_seq_no = next_seq_no(attestation_seq_no);
-            let mut found_attestation_to_send = false;
-            for block in blocks {
-                if self.is_candidate_block_signed_by_this_node(&block)?
-                    && block.data().parent() == parent_block_id
-                {
-                    found_attestation_to_send = true;
-                    // let envelope_hash = crate::types::ackinacki_block::envelope_hash::envelope_hash(block)
-                    // let _block_attestation =
-                    // <Self as NodeAssociatedTypes>::BlockAttestation::create(
-                    // block.aggregated_signature().clone(),
-                    // block.clone_signature_occurrences(),
-                    // AttestationData::builder()
-                    // .block_id(block.data().identifier())
-                    // .block_seq_no(block.data().seq_no())
-                    // .parent_block_id(block.data().parent())
-                    // .envelope_hash(envelope_hash)
-                    // .build(),
-                    // );
-                    tracing::trace!(
-                        "on_sync_finalized sending attestation: {:?} {:?}",
-                        block.data().seq_no(),
-                        block.data().identifier(),
-                    );
-                    // self.send_block_attestation(self.current_block_producer_id(&block.data().seq_no()), block_attestation)?;
-                    parent_block_id = block.data().identifier();
-                    std::thread::sleep(Duration::from_millis(
-                        self.config.global.time_to_produce_block_millis,
-                    ));
-                }
-            }
-            if !found_attestation_to_send {
-                break;
-            }
-        }
-
-        Ok(())
     }
 
     pub(crate) fn share_finalized_state(
@@ -448,10 +393,14 @@ where
                 if let Some(state) =
                     self.repository.get_full_optimistic_state(block_id, thread_id, None)?
                 {
-                    self.state_sync_service.save_state_for_sharing(Arc::new(state))?;
+                    self.state_sync_service.save_state_for_sharing(state)?;
                 }
             }
-
+            self.last_synced_state = Some((
+                last_finalized_block_id.clone(),
+                last_finalized_seq_no,
+                share_state_hint.clone(),
+            ));
             self.broadcast_sync_finalized(
                 last_finalized_block_id,
                 last_finalized_seq_no,

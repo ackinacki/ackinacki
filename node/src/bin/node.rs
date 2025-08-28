@@ -1,36 +1,32 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
-
 use std::any::Any;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
+use std::num::NonZero;
 use std::path::PathBuf;
 use std::process::exit;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use ::node::block::producer::process::TVMBlockProducerProcess;
 use ::node::bls::GoshBLS;
-use ::node::helper::bm_license_loader::load_bm_license_contract_pubkey;
 use ::node::helper::init_tracing;
 use ::node::helper::key_handling::key_pairs_from_file;
 use ::node::message::WrappedMessage;
 use ::node::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
 use ::node::node::NetworkMessage;
 use ::node::node::Node;
+use ::node::protocol::authority_switch::round_time::RoundTime;
 use ::node::repository::optimistic_state::OptimisticState;
 use ::node::repository::repository_impl::FinalizedBlockStorage;
 use ::node::repository::repository_impl::RepositoryImpl;
-use anyhow::bail;
 use clap::Parser;
-use database::documents_db::DocumentsDb;
-use database::sqlite::sqlite_helper;
-use database::sqlite::sqlite_helper::SqliteHelper;
-use database::sqlite::sqlite_helper::SqliteHelperConfig;
-// use transport_layer::wtransport::WTransport;
+use ext_messages_auth::auth::AccountRequest;
 use gossip::GossipConfig;
 use http_server::BlockKeeperSetUpdate;
 use http_server::ResolvingResult;
@@ -42,24 +38,30 @@ use network::network::BasicNetwork;
 use network::network::PeerData;
 use network::resolver::sign_gossip_node;
 use network::resolver::WatchGossipConfig;
+use node::block::producer::wasm::WasmNodeCache;
 use node::block_keeper_system::BlockKeeperSet;
 use node::config::load_blockchain_config;
 use node::config::load_config_from_file;
 use node::external_messages::ExternalMessagesThreadState;
+use node::helper::account_boc_loader::get_account_from_shard_state;
 use node::helper::bp_resolver::BPResolverImpl;
 use node::helper::metrics::Metrics;
+use node::helper::metrics::BLOCK_STATE_SAVE_CHANNEL;
+use node::helper::metrics::OPTIMISTIC_STATE_SAVE_CHANNEL;
 use node::helper::shutdown_tracing;
-use node::message_storage::MessageDurableStorage;
+use node::helper::SHUTDOWN_FLAG;
 use node::multithreading::routing::service::Command;
 use node::multithreading::routing::service::RoutingService;
 use node::node::block_request_service::BlockRequestService;
+use node::node::block_state::attestation_target_checkpoints::AncestorBlocksFinalizationCheckpoints;
 use node::node::block_state::repository::BlockStateRepository;
+use node::node::block_state::start_state_save_service;
 use node::node::block_state::state::AttestationTarget;
 use node::node::block_state::state::AttestationTargets;
 use node::node::services::attestations_target::service::AttestationTargetsService;
+use node::node::services::authority_switch::AuthoritySwitchService;
 use node::node::services::block_processor::service::BlockProcessorService;
 use node::node::services::block_processor::service::SecurityGuarantee;
-use node::node::services::db_serializer::DBSerializeService;
 use node::node::services::send_attestations::AttestationSendService;
 use node::node::services::send_attestations::AttestationSendServiceHandler;
 use node::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
@@ -73,15 +75,27 @@ use node::protocol::authority_switch;
 use node::protocol::authority_switch::action_lock::Authority;
 use node::repository::accounts::AccountsRepository;
 use node::repository::load_saved_blocks::SavedBlocksLoader;
+use node::repository::start_optimistic_state_save_service;
 use node::repository::Repository;
 use node::services::blob_sync;
+use node::services::cross_thread_ref_data_availability_synchronization::CrossThreadRefDataAvailabilitySynchronizationService;
+use node::storage::ActionLockStorage;
+use node::storage::AerospikeStore;
+use node::storage::CachedStore;
+use node::storage::CrossRefStorage;
+use node::storage::LruSizedCache;
+use node::storage::MessageDurableStorage;
+use node::storage::DEFAULT_AEROSPIKE_MESSAGE_CACHE_MAX_ENTRIES;
 use node::types::bp_selector::ProducerSelector;
 use node::types::calculate_hash;
+use node::types::thread_message_queue::account_messages_iterator::AccountMessagesIterator;
 use node::types::BlockHeight;
 use node::types::BlockIdentifier;
 use node::types::BlockSeqNo;
 use node::types::CollectedAttestations;
 use node::types::ThreadIdentifier;
+use node::utilities::guarded::Guarded;
+use node::utilities::guarded::GuardedMut;
 use node::utilities::thread_spawn_critical::SpawnCritical;
 use node::utilities::FixedSizeHashSet;
 use node::zerostate::ZeroState;
@@ -96,9 +110,9 @@ use telemetry_utils::mpsc::instrumented_channel;
 use tokio::task::JoinHandle;
 use transport_layer::msquic::MsQuicTransport;
 use transport_layer::TlsCertCache;
+use tvm_block::GetRepresentationHash;
 use tvm_block::Serializable;
 use tvm_types::base64_encode;
-use tvm_types::AccountId;
 
 // const ALIVE_NODES_WAIT_TIMEOUT_MILLIS: u64 = 100;
 const MINIMUM_NUMBER_OF_CORES: usize = 8;
@@ -125,10 +139,12 @@ struct Args {
 #[cfg(feature = "rayon_affinity")]
 fn init_rayon() {
     let cores = core_affinity::get_core_ids().expect("Unable to get core IDs");
+    let custom_stack_size = 16 * 1024 * 1024;
     // Build Rayon thread pool and set affinity for each thread
     rayon::ThreadPoolBuilder::new()
         .num_threads(cores.len())
-        .thread_name(|thread_index| format!("rayon{}", thread_index))
+        .thread_name(|thread_index| format!("rayon{thread_index}"))
+        .stack_size(custom_stack_size)
         .start_handler(move |thread_index| {
             let core_id = cores[thread_index % cores.len()];
             core_affinity::set_for_current(core_id);
@@ -161,7 +177,7 @@ fn main() -> Result<(), std::io::Error> {
 
 async fn tokio_main() {
     let args = Args::parse();
-    let metrics = init_tracing();
+    let (metrics, tracing_guard) = init_tracing();
     tracing::info!("Tracing and metrics initialized");
 
     #[cfg(feature = "misbehave")]
@@ -174,7 +190,7 @@ async fn tokio_main() {
             1
         }
     };
-    shutdown_tracing();
+    shutdown_tracing(tracing_guard);
     exit(exit_code);
 }
 
@@ -202,6 +218,36 @@ fn collect_node_id_owner_pk(bk_set: Option<&BlockKeeperSet>) -> Vec<(String, [u8
         .collect()
 }
 
+fn verify_zerostate(zs: &ZeroState, message_db: &MessageDurableStorage) -> anyhow::Result<()> {
+    let mut messages = HashSet::new();
+    for state in zs.states().values() {
+        let messages_queue = state.messages().clone();
+        let acc_iter = messages_queue.iter(message_db);
+        for account_messages in acc_iter {
+            for msg in account_messages {
+                let (message, _) =
+                    msg.map_err(|e| anyhow::format_err!("Failed to unpack message: {e:?}"))?;
+                let tvm_message = message.message.clone();
+                if !messages.insert(
+                    tvm_message
+                        .hash()
+                        .map_err(|e| anyhow::format_err!("Failed to calc message hash: {e}"))?,
+                ) {
+                    let hash = tvm_message.hash().map(|x| x.to_hex_string()).unwrap_or_default();
+                    let src =
+                        tvm_message.src().map(|x| x.address().to_hex_string()).unwrap_or_default();
+                    let dst =
+                        tvm_message.dst().map(|x| x.address().to_hex_string()).unwrap_or_default();
+                    return Err(anyhow::format_err!(
+                        "Duplicated message in zerostate: {hash}, src: {src}, dst: {dst}"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::await_holding_lock)]
 async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     tracing::info!("Starting network");
@@ -217,8 +263,30 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     tracing::info!("Gossip seeds expanded: {:?}", gossip_config.seeds);
     tracing::info!("Gossip advertise addr: {:?}", gossip_config.advertise_addr);
 
+    let node_metrics = metrics.as_ref().map(|m| m.node.clone());
+    let socket_address =
+        std::env::var("AEROSPIKE_SOCKET_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
+    let set_prefix = std::env::var("AEROSPIKE_SET_PREFIX").unwrap_or_else(|_| "node".to_string());
+
+    let num_cached_entries = std::env::var("AEROSPIKE_CACHE_MESSAGE_MAX_ENTRIES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_AEROSPIKE_MESSAGE_CACHE_MAX_ENTRIES);
+
+    let aerospike_store = AerospikeStore::new(socket_address, node_metrics.clone())?;
+
+    let cache = LruSizedCache::new(num_cached_entries);
+    let aerospike_cached_store = CachedStore::new(aerospike_store.clone(), cache);
+    let message_db = MessageDurableStorage::new(aerospike_cached_store, &format!("m-{set_prefix}"));
+
+    // These two dbs do not need cache (some cache is implemented in the code yet).
+    // Aerospike store can be shared among different store types.
+    let crossref_db = CrossRefStorage::new(aerospike_store.clone(), &format!("c-{set_prefix}"));
+    let action_lock_db = ActionLockStorage::new(aerospike_store, &format!("a-{set_prefix}"));
+
     let zerostate =
         ZeroState::load_from_file(&config.local.zerostate_path).expect("Failed to open zerostate");
+    verify_zerostate(&zerostate, &message_db)?;
     let bk_set = zerostate.get_block_keeper_set()?;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -226,7 +294,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let (bk_set_update_async_tx, bk_set_update_async_rx) =
         tokio::sync::watch::channel(initial_bk_set_update.clone());
     let (watch_gossip_config_tx, watch_gossip_config_rx) =
-        tokio::sync::watch::channel(WatchGossipConfig { trusted_pubkeys: vec![] });
+        tokio::sync::watch::channel(WatchGossipConfig { trusted_pubkeys: HashSet::default() });
     let (config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
     let (gossip_config_tx, gossip_config_rx) = tokio::sync::watch::channel(gossip_config);
     let (network_config_tx, network_config_rx) = tokio::sync::watch::channel(network_config);
@@ -241,7 +309,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     ));
     let (gossip_handle, gossip_rest_handle) =
         gossip::run(shutdown_rx, gossip_config_rx, chitchat::transport::UdpTransport).await?;
-
     let gossip_listen_addr_clone = config.network.gossip_listen_addr;
     let gossip_advertise_addr =
         config.network.gossip_advertise_addr.unwrap_or(gossip_listen_addr_clone);
@@ -267,6 +334,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let network = BasicNetwork::new(shutdown_tx, network_config_rx, MsQuicTransport::default());
     let chitchat = gossip_handle.chitchat();
 
+    let wasm_cache = WasmNodeCache::new()?;
+
     let (ext_messages_sender, ext_messages_receiver) = instrumented_channel(
         metrics.as_ref().map(|x| x.node.clone()),
         node::helper::metrics::INBOUND_EXT_CHANNEL,
@@ -283,19 +352,18 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         .await?;
 
     let bp_thread_count = Arc::<AtomicI32>::default();
-    let node_metrics = metrics.as_ref().map(|m| m.node.clone());
-    let (raw_block_sender, raw_block_receiver) =
-        instrumented_channel(node_metrics.clone(), node::helper::metrics::RAW_BLOCK_CHANNEL);
+    let (raw_block_sender, raw_block_receiver) = instrumented_channel::<(NodeIdentifier, Vec<u8>)>(
+        node_metrics.clone(),
+        node::helper::metrics::RAW_BLOCK_CHANNEL,
+    );
 
     let block_manager_listen_addr = config.network.block_manager_listen_addr;
     let nodes_rx_clone = nodes_rx.clone();
     let block_manager_handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
         transport_layer::server::LiteServer::new(block_manager_listen_addr)
-            .start(raw_block_receiver, move |node_id: tvm_types::AccountId| {
-                let node_addr = nodes_rx_clone
-                    .borrow()
-                    .get(&(node_id.into()))
-                    .map(|x| x.peer_addr.ip().to_string());
+            .start(raw_block_receiver, move |node_id| {
+                let node_addr =
+                    nodes_rx_clone.borrow().get(&node_id).map(|x| x.peer_addr.ip().to_string());
 
                 node_addr
             })
@@ -307,32 +375,16 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         let orig_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |panic_info| {
             // invoke the default handler and exit the process
-            tracing::trace!("{:?}", panic_info);
+            if let Some(location) = panic_info.location() {
+                eprintln!("panic occurred in file '{}'", location.file());
+            } else {
+                eprintln!("panic occurred but can't get location information...");
+            }
+            eprintln!("{panic_info:?}");
             orig_hook(panic_info);
             std::process::exit(100);
         }));
     }
-
-    let sqlite_helper_config = SqliteHelperConfig::new(
-        std::env::var("SQLITE_DATA_DIR")
-            .unwrap_or(sqlite_helper::SQLITE_DATA_DIR.to_string())
-            .into(),
-        None,
-    );
-
-    let (sqlite_helper, writer_join_handle) = if !cfg!(feature = "disable_db_write") {
-        let (sqlite_helper, writer_join_handle) =
-            SqliteHelper::from_config(sqlite_helper_config)
-                .map_err(|e| anyhow::format_err!("Failed to create sqlite helper: {e}"))?;
-
-        let sqlite_helper: Arc<dyn DocumentsDb> = Arc::new(sqlite_helper);
-        (Some(sqlite_helper), writer_join_handle)
-    } else {
-        (
-            None,
-            std::thread::Builder::new().name("sqlite_stub".to_string()).spawn(std::thread::park)?,
-        )
-    };
 
     let zerostate_path = Some(config.local.zerostate_path.clone());
 
@@ -381,6 +433,11 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     );
 
     let repo_path = PathBuf::from("./data");
+    let node_cross_thread_ref_data_availability_synchronization_service =
+        CrossThreadRefDataAvailabilitySynchronizationService::new(
+            metrics.as_ref().map(|m| m.node.clone()),
+        )
+        .unwrap();
 
     let mut node_shared_services = node::node::shared_services::SharedServices::start(
         routing.clone(),
@@ -390,6 +447,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         config.global.thread_load_window_size,
         config.local.rate_limit_on_incoming_block_req,
         config.global.thread_count_soft_limit,
+        crossref_db,
     );
     let blob_sync_service =
         blob_sync::external_fileshares_based::ExternalFileSharesBased::builder()
@@ -398,65 +456,87 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             .start(metrics.as_ref().map(|m| m.node.clone()))
             .expect("Blob sync service start");
     let nack_set_cache = Arc::new(Mutex::new(FixedSizeHashSet::new(DEFAULT_NACK_SIZE_CACHE)));
-    let block_state_repo = BlockStateRepository::new(repo_path.clone().join("blocks-states"));
+    let (state_save_tx, state_save_rx) =
+        instrumented_channel(node_metrics.clone(), BLOCK_STATE_SAVE_CHANNEL);
+    let state_save_service = std::thread::Builder::new()
+        .name("State save service".to_string())
+        .spawn_critical(move || start_state_save_service(state_save_rx))?;
+    let block_state_repo =
+        BlockStateRepository::new(repo_path.clone().join("blocks-states"), Arc::new(state_save_tx));
+
     let block_id = BlockIdentifier::default();
     let state = block_state_repo.get(&block_id)?;
-    let mut state_in = state.lock();
-    if !state_in.is_stored() {
-        state_in.set_thread_identifier(ThreadIdentifier::default())?;
-        state_in.set_parent_block_identifier(block_id.clone())?;
-        let first_node_id = bk_set.iter_node_ids().next().unwrap().clone();
-        state_in.set_producer(first_node_id)?;
-        state_in.set_block_seq_no(BlockSeqNo::default())?;
-        state_in.set_block_time_ms(0)?;
-        state_in.set_common_checks_passed()?;
-        state_in.set_finalized()?;
-        state_in.set_prefinalized()?;
-        state_in.set_applied()?;
-        state_in.set_signatures_verified()?;
-        state_in.set_stored_zero_state()?;
-        let bk_set = Arc::new(bk_set.clone());
-        state_in.set_bk_set(bk_set.clone())?;
-        state_in.set_descendant_bk_set(bk_set)?;
-        state_in.set_future_bk_set(Arc::new(BlockKeeperSet::new()))?;
-        state_in.set_descendant_future_bk_set(Arc::new(BlockKeeperSet::new()))?;
-        state_in.set_block_stats(BlockStatistics::zero(15, 3))?;
-        state_in.set_attestation_target(
-            AttestationTargets::builder()
-                .primary(
-                    AttestationTarget::builder()
-                        .generation_deadline(3)
-                        .required_attestation_count(0)
-                        .build(),
-                )
-                .fallback(
-                    AttestationTarget::builder()
-                        .generation_deadline(6)
-                        .required_attestation_count(0)
-                        .build(),
-                )
-                .build(),
-        )?;
-        state_in.set_producer_selector_data(
-            ProducerSelector::builder()
-                .rng_seed_block_id(BlockIdentifier::default())
-                .index(0)
-                .build(),
-        )?;
-        state_in.set_ancestor_blocks_finalization_distances(HashMap::new())?;
-        state_in.set_block_height(
-            BlockHeight::builder().thread_identifier(ThreadIdentifier::default()).height(0).build(),
-        )?;
-        state_in.add_proposed_in_round(0)?;
-    }
-    drop(state_in);
+    state.guarded_mut(|state_in| -> anyhow::Result<()> {
+        if !state_in.is_stored() {
+            state_in.set_thread_identifier(ThreadIdentifier::default())?;
+            let first_node_id = bk_set.iter_node_ids().next().unwrap().clone();
+            state_in.set_producer(first_node_id)?;
+            state_in.set_block_seq_no(BlockSeqNo::default())?;
+            state_in.set_block_time_ms(0)?;
+            state_in.set_common_checks_passed()?;
+            state_in.set_finalized()?;
+            // state_in.set_prefinalized()?;
+            state_in.set_ancestors(vec![])?;
+            state_in.set_applied(
+                Instant::now() - Duration::from_millis(330),
+                Instant::now() - Duration::from_millis(330),
+            )?;
+            state_in.set_signatures_verified()?;
+            state_in.set_stored_zero_state()?;
+            let bk_set = Arc::new(bk_set.clone());
+            state_in.set_bk_set(bk_set.clone())?;
+            state_in.set_descendant_bk_set(bk_set)?;
+            state_in.set_future_bk_set(Arc::new(BlockKeeperSet::new()))?;
+            state_in.set_descendant_future_bk_set(Arc::new(BlockKeeperSet::new()))?;
+            state_in.set_block_stats(BlockStatistics::zero(
+                NonZero::new(15).unwrap(),
+                NonZero::new(3).unwrap(),
+            ))?;
+            state_in.set_attestation_target(
+                AttestationTargets::builder()
+                    .primary(
+                        AttestationTarget::builder()
+                            .generation_deadline(3)
+                            .required_attestation_count(0)
+                            .build(),
+                    )
+                    .fallback(
+                        AttestationTarget::builder()
+                            .generation_deadline(7)
+                            .required_attestation_count(0)
+                            .build(),
+                    )
+                    .build(),
+            )?;
+            state_in.set_producer_selector_data(
+                ProducerSelector::builder()
+                    .rng_seed_block_id(BlockIdentifier::default())
+                    .index(0)
+                    .build(),
+            )?;
+            state_in.set_ancestor_blocks_finalization_checkpoints(
+                AncestorBlocksFinalizationCheckpoints::builder()
+                    .primary(HashMap::new())
+                    .fallback(HashMap::new())
+                    .build(),
+            )?;
+            state_in.set_block_height(
+                BlockHeight::builder()
+                    .thread_identifier(ThreadIdentifier::default())
+                    .height(0)
+                    .build(),
+            )?;
+            state_in.set_block_round(0)?;
+        }
+        Ok(())
+    })?;
+    drop(state);
     let accounts_repo = AccountsRepository::new(
         repo_path.clone(),
-        Some(config.local.unload_after),
+        config.local.unload_after,
         config.global.save_state_frequency,
     );
-    let message_db: MessageDurableStorage =
-        MessageDurableStorage::new(config.local.message_storage_path.clone())?;
+
     let repository_blocks = Arc::new(Mutex::new(FinalizedBlockStorage::new(
         1_usize + TryInto::<usize>::try_into(config.global.save_state_frequency * 2).unwrap(),
     )));
@@ -470,7 +550,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         config.local.state_cache_size,
         node_shared_services.clone(),
         Arc::clone(&nack_set_cache),
-        true, // This option can't be turned off, need fixes
+        config.local.unload_after.is_some(),
         block_state_repo.clone(),
         metrics.as_ref().map(|m| m.node.clone()),
         accounts_repo,
@@ -478,6 +558,16 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         repository_blocks,
         bk_set_update_tx.clone(),
     );
+
+    let (optimistic_save_tx, optimistic_save_rx) =
+        instrumented_channel(node_metrics.clone(), OPTIMISTIC_STATE_SAVE_CHANNEL);
+    let repository_clone = repository.clone();
+    let optimistic_state_service = std::thread::Builder::new()
+        .name("Optimistic state save service".to_string())
+        .spawn_critical(move || {
+            start_optimistic_state_save_service(repository_clone, optimistic_save_rx)
+        })?;
+
     let unprocessed_blocks = repository
         .load_saved_blocks(&block_state_repo)
         .map_err(|e| {
@@ -539,16 +629,27 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
     let authority = Arc::new(Mutex::new(
         Authority::builder()
+        .round_buckets(RoundTime::linear(
+            // min round time
+            Duration::from_millis(config.global.round_min_time_millis),
+            // step
+            Duration::from_millis(config.global.round_step_millis),
+            // max round time: 30 sec
+            Duration::from_millis(config.global.round_max_time_millis),
+        ))
         .data_dir(repo_path.join("action-locks"))
         .block_state_repository(block_state_repo.clone())
         .block_repository(repository.clone())
         .node_identifier(config.local.node_id.clone())
         .bls_keys_map(bls_keys_map.clone())
         // TODO: make it restored from disk
-        .action_lock(HashMap::new())
+        // .action_lock(HashMap::new())
         .network_direct_tx(direct_tx.clone())
-        .block_producers(HashMap::new())
+        // .block_producers(HashMap::new())
         .bp_production_count(bp_thread_count.clone())
+        .network_broadcast_tx(broadcast_tx.clone())
+        .node_joining_timeout(config.global.node_joining_timeout)
+        .action_lock_db(action_lock_db)
         .build(),
     ));
 
@@ -560,50 +661,68 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         block_state_repo.clone(),
         ackinackisender.clone(),
         metrics.as_ref().map(|m| m.node.clone()),
+        wasm_cache.clone(),
         message_db.clone(),
         authority.clone(),
     )
     .expect("Failed to create validation process");
 
     let repository_clone = repository.clone();
-
+    let (heartbeat_channel_tx, heartbeat_channel_rx) = std::sync::mpsc::channel();
     let heartbeat_thread_join_handle = {
         // This is a simple hack to allow time based triggers to work.
         // Without this hack it will go stale once it runs out of all
         // messages in the system (it will wait for repo changes forever).
-        let blocks_repo = block_state_repo.clone();
+        let mut blocks_repo = block_state_repo.clone();
         let heartbeat_rate = std::time::Duration::from_millis(300);
-        std::thread::Builder::new().name("heartbeat".to_string()).spawn(move || loop {
-            std::thread::sleep(heartbeat_rate);
-            blocks_repo.touch();
+        std::thread::Builder::new().name("heartbeat".to_string()).spawn(move || {
+            use std::sync::mpsc::TryRecvError;
+            let mut attestation_notifications: Vec<Arc<Mutex<CollectedAttestations>>> = vec![];
+            'outer: loop {
+                std::thread::sleep(heartbeat_rate);
+                blocks_repo.touch();
+                for attestations in attestation_notifications.iter_mut() {
+                    attestations.guarded_mut(|e| e.touch());
+                }
+                'inner: loop {
+                    match heartbeat_channel_rx.try_recv() {
+                        Ok(notifications) => attestation_notifications.push(notifications),
+                        Err(TryRecvError::Empty) => break 'inner,
+                        Err(TryRecvError::Disconnected) => break 'outer,
+                    }
+                }
+            }
         })?
     };
     let mut chain_pulse_bind = authority_switch::chain_pulse_monitor::bind(authority.clone());
     let chain_pulse_monitor = chain_pulse_bind.monitor();
+    let stalled_threads = chain_pulse_bind.stalled_threads();
 
     let node_metrics = metrics.as_ref().map(|m| m.node.clone());
     let node_metrics_clone = node_metrics.clone();
-    let notifications = Arc::new(AtomicU32::new(0));
-    let stop_tx_vec = Arc::new(Mutex::new(vec![]));
-    let stop_tx_vec_clone = stop_tx_vec.clone();
     let stop_result_rx_vec = Arc::new(Mutex::new(vec![]));
     let stop_result_rx_vec_clone = stop_result_rx_vec.clone();
     let (routing, _inner_service_thread) = RoutingService::start(
         (routing, routing_rx),
+        metrics.as_ref().map(|m| m.node.clone()),
         move |parent_block_id,
               thread_id,
               thread_receiver,
+              thread_authority_receiver,
               thread_sender,
+              thread_authority_sender,
               feedback_sender,
               ext_messages_rx| {
             tracing::trace!("start node for thread: {thread_id:?}");
 
             let block_collection = UnfinalizedCandidateBlockCollection::new(
                 unprocessed_blocks.get(thread_id).cloned().unwrap_or_default().into_iter(),
-                notifications.clone(),
             );
 
             let mut repository = repository_clone.clone();
+            repository
+                .unfinalized_blocks()
+                .guarded_mut(|e| e.insert(*thread_id, block_collection.clone()));
             // HACK!
             if parent_block_id.is_some()
                 && parent_block_id.as_ref().unwrap() != &BlockIdentifier::default()
@@ -648,13 +767,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     Ok(())
                 })?;
 
-            let (db_sender, db_service) = if let Some(sqlite_helper) = sqlite_helper.clone() {
-                let (db_sender, db_receiver) = std::sync::mpsc::channel();
-                (Some(db_sender), Some(DBSerializeService::new(sqlite_helper, db_receiver)?))
-            } else {
-                (None, None)
-            };
-
             let file_saving_service = FileSavingService::builder()
                 .root_path(config.local.external_state_share_local_base_dir.clone())
                 .repository(repository.clone())
@@ -687,13 +799,14 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     &config.local.blockchain_config_path,
                 )?))
                 .parallelization_level(config.local.parallelization_level)
-                .archive_sender(db_sender.clone())
                 .shared_services(node_shared_services.clone())
                 .block_produce_timeout(Arc::new(Mutex::new(Duration::from_millis(
                     config.global.time_to_produce_block_millis,
                 ))))
                 .thread_count_soft_limit(config.global.thread_count_soft_limit)
                 .share_service(Some(sync_state_service.clone()))
+                .wasm_cache(wasm_cache.clone())
+                .save_optimistic_service_sender(optimistic_save_tx.clone())
                 .build();
 
             let attestation_sender_service = AttestationSendService::builder()
@@ -710,6 +823,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 .authority(authority.clone())
                 .build();
             let last_block_attestations = Arc::new(Mutex::new(CollectedAttestations::default()));
+            let _ = heartbeat_channel_tx.send(Arc::clone(&last_block_attestations));
 
             let skipped_attestation_ids = Arc::new(Mutex::new(HashSet::new()));
             let block_gap = Arc::new(AtomicU32::new(0));
@@ -721,10 +835,37 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 block_collection.clone(),
             );
             let chain_pulse_monitor = chain_pulse_monitor.clone();
-            chain_pulse_monitor
+            match chain_pulse_monitor
                 .send(ChainPulseEvent::start_thread(*thread_id, block_collection.clone()))
-                .unwrap();
-            chain_pulse_monitor.send(ChainPulseEvent::block_finalized(*thread_id)).unwrap();
+            {
+                Ok(()) => {}
+                _ => {
+                    if SHUTDOWN_FLAG.get() != Some(&true) {
+                        anyhow::bail!("Failed to send start thread message");
+                    }
+                }
+            }
+            let block_height = if let Some(parent_block_id) = parent_block_id.as_ref() {
+                let parent_state = block_state_repo
+                    .get(parent_block_id)
+                    .expect("Failed to get block state of the block that has started a thread");
+                let block_height = parent_state
+                    .guarded(|e| *e.block_height())
+                    .expect("Block that starts a thread must have a block height set");
+                Some(block_height)
+            } else {
+                None
+            };
+            match chain_pulse_monitor
+                .send(ChainPulseEvent::block_finalized(*thread_id, block_height))
+            {
+                Ok(()) => {}
+                _ => {
+                    if SHUTDOWN_FLAG.get() != Some(&true) {
+                        anyhow::bail!("Failed to send block finalized message");
+                    }
+                }
+            }
             let block_processing_service = BlockProcessorService::new(
                 SecurityGuarantee::from_chance_of_successful_attack(
                     config.global.chance_of_successful_attack,
@@ -740,14 +881,15 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 nack_set_cache.clone(),
                 direct_tx.clone(),
                 broadcast_tx.clone(),
-                db_sender,
                 skipped_attestation_ids.clone(),
                 block_gap.clone(),
                 validation_service.interface(),
                 sync_state_service.clone(),
                 ackinackisender.clone(),
-                chain_pulse_monitor,
+                chain_pulse_monitor.clone(),
                 block_collection.clone(),
+                node_cross_thread_ref_data_availability_synchronization_service.interface(),
+                optimistic_save_tx.clone(),
             );
 
             // TODO: save blk_req_join_handle
@@ -761,14 +903,40 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 block_collection.clone(),
             )?;
 
-            let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-            {
-                stop_tx_vec_clone.lock().push(stop_tx);
-            }
             let (stop_result_tx, stop_result_rx) = std::sync::mpsc::channel();
             {
                 stop_result_rx_vec_clone.lock().push(stop_result_rx);
             }
+
+            let self_node_tx_clone = thread_sender.clone();
+            let direct_tx_clone = direct_tx.clone();
+            let block_collection_clone = block_collection.clone();
+            let thread_authority = authority.guarded_mut(|e| e.get_thread_authority(thread_id));
+            let block_state_repo_clone = block_state_repo.clone();
+            let broadcast_tx_clone = broadcast_tx.clone();
+            let chain_pulse_monitor_clone = chain_pulse_monitor.clone();
+            let thread_id_clone = *thread_id;
+            let authority_handler = std::thread::Builder::new()
+                .name("routing_service_network_messages_forwarding_loop".to_string())
+                .spawn_critical(move || {
+                    let mut authority_service = AuthoritySwitchService::builder()
+                        .rx(thread_authority_receiver)
+                        .self_node_tx(self_node_tx_clone)
+                        .network_direct_tx(direct_tx_clone)
+                        .thread_id(thread_id_clone)
+                        .unprocessed_blocks_cache(block_collection_clone)
+                        .thread_authority(thread_authority)
+                        .network_broadcast_tx(broadcast_tx_clone)
+                        .block_state_repository(block_state_repo_clone)
+                        .chain_pulse_monitor(chain_pulse_monitor_clone)
+                        .sync_timeout_duration(
+                            config.global.min_time_between_state_publish_directives,
+                        )
+                        .build();
+                    authority_service.run()
+                })
+                .unwrap();
+
             let node = Node::new(
                 node_shared_services.clone(),
                 sync_state_service,
@@ -789,27 +957,29 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 block_processing_service,
                 // attestations_target_service:
                 AttestationTargetsService::builder()
-                    .repository(repository.clone())
                     .block_state_repository(block_state_repo.clone())
                     .build(),
                 validation_service.interface(),
                 skipped_attestation_ids,
                 // block_gap,
                 node_metrics_clone.clone(),
-                thread_sender,
+                thread_sender.clone(),
                 external_messages,
                 message_db.clone(),
                 last_block_attestations,
                 bp_thread_count.clone(),
-                db_service,
                 // Channel (sender) for block requests
                 blk_req_tx.clone(),
                 attestation_send_service,
                 ext_msg_receiver,
                 authority.clone(),
                 block_collection.clone(),
-                stop_rx,
                 stop_result_tx,
+                stalled_threads.clone(),
+                chain_pulse_monitor.clone(),
+                authority_handler,
+                thread_authority_sender,
+                optimistic_save_tx.clone(),
             );
 
             Ok(node)
@@ -844,7 +1014,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                         );
                         let mut keys_map = bls_keys_map_clone.lock();
                         *keys_map = new_key_map;
-                        http_server::update_ext_message_auth_flag_from_files();
+                        ext_messages_auth::auth::update_ext_message_auth_flag_from_files();
                         match load_config_from_file(&config_path) {
                             Ok(config) => {
                                 config_tx.send_replace(config);
@@ -862,6 +1032,24 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             }
         })?
     };
+
+    let repo_clone = repository.clone();
+    let repo = Arc::new(Mutex::new(repo_clone));
+
+    let (account_request_tx, mut account_request_rx) =
+        tokio::sync::mpsc::channel::<AccountRequest>(100);
+
+    let account_request_handle = tokio::spawn(async move {
+        while let Some(AccountRequest { address, response }) = account_request_rx.recv().await {
+            tracing::trace!("incoming account ({address}) request");
+            let result = get_account_from_shard_state(repo.clone(), &address)
+                .map(|(acc, _dapp_id)| Some(acc));
+
+            tracing::trace!("incoming account ({address}) request result: {result:?}");
+
+            let _ = response.send(result);
+        }
+    });
 
     std::thread::Builder::new()
         .name("BK set update handler".to_string())
@@ -889,99 +1077,43 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
     let mut nodes_rx_clone = nodes_rx.clone();
     let http_server_handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
-        let default_thread = ThreadIdentifier::default();
         // Sync required by a bound in `salvo::Handler`
-        let repo = Arc::new(Mutex::new(repo_clone));
-        let repo_clone = repo.clone();
-
+        let repo_clone_0 = Arc::new(Mutex::new(repo_clone));
+        let repo_clone_1 = repo_clone_0.clone();
         let server = http_server::WebServer::new(
             config.network.api_addr,
             config.local.external_state_share_local_base_dir,
             ext_messages_sender,
+            account_request_tx,
             |msg: tvm_block::Message, thread: [u8; 34]| into_external_message(msg, thread.into()),
             {
-                let repo = Arc::clone(&repo);
+                let repo = repo_clone_0.clone();
                 let node_id = config.local.node_id.clone();
                 move |thread_id| resolve_bp(thread_id.into(), &repo, &mut nodes_rx_clone, &node_id)
             },
-            {
-                let shard_state = match repo.lock().last_finalized_optimistic_state(&default_thread)
-                {
-                    Some(mut state) => state.get_shard_state().as_ref().clone(),
-                    None => anyhow::bail!("Shard state not found"),
-                };
-
-                move |bm_license_addr| match load_bm_license_contract_pubkey(
-                    shard_state.clone(),
-                    bm_license_addr,
-                ) {
-                    Ok(pubkey) => pubkey,
-                    Err(e) => {
-                        tracing::error!("Failed to load pubkey for BMLicense: {e}");
-                        None
-                    }
-                }
-            },
-            // This closure resolves account addresses to BOC
-            move |account_address| {
-                let repo = repo_clone.lock();
-
-                let mut state = repo
-                    .last_finalized_optimistic_state(&ThreadIdentifier::default())
-                    .ok_or_else(|| anyhow::anyhow!("Shard state not found"))?;
-
-                let acc_id = AccountId::from_string(&account_address)
-                    .map_err(|_| anyhow::anyhow!("Invalid account address"))?;
-
-                let thread_id = state
-                    .get_thread_for_account(&acc_id)
-                    .map_err(|_| anyhow::anyhow!("Account not found"))?;
-
-                let shard_state = repo
-                    .last_finalized_optimistic_state(&thread_id)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("Shard state for thread_id {thread_id} not found")
-                    })?
-                    .get_shard_state()
-                    .clone();
-
-                let accounts = shard_state
-                    .read_accounts()
-                    .map_err(|e| anyhow::anyhow!("Can't read accounts from shard state: {e}"))?;
-
-                let mut acc = accounts
-                    .account(&acc_id)
-                    .map_err(|e| anyhow::anyhow!("Can't find account in shard state: {e}"))?
-                    .ok_or_else(|| anyhow::anyhow!("Can't find account in shard state"))?;
-
-                if acc.is_external() {
-                    let acc_id: tvm_types::UInt256 = acc_id
-                        .clone()
-                        .try_into()
-                        .map_err(|e| anyhow::anyhow!("Failed to convert address: {e}"))?;
-
-                    let root = match state.cached_accounts.get(&acc_id) {
-                        Some((_, acc_root)) => acc_root.clone(),
-                        None => repo.accounts_repository().load_account(
-                            &acc_id,
-                            acc.last_trans_hash(),
-                            acc.last_trans_lt(),
-                        )?,
-                    };
-                    if root.repr_hash() != acc.account_cell().repr_hash() {
-                        bail!("External account cell hash mismatch");
-                    }
-                    acc.set_account_cell(root);
-                }
-
-                let account = acc
-                    .read_account()
-                    .and_then(|acc| acc.as_struct())
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
-
+            // This closure resolves account addresses to tuple: (BOC, Option<dapp_id_as_hex_string>)
+            move |address| {
+                let (account, dapp_id) =
+                    get_account_from_shard_state(repo_clone_0.clone(), &address)?;
                 let boc = account.write_to_bytes().map_err(|e| anyhow::anyhow!("{e}"))?;
-                Ok(base64_encode(&boc))
+                let tuple = (
+                    base64_encode(&boc), //
+                    dapp_id.map(|id| id.as_hex_string()),
+                );
+                Ok(tuple)
             },
+            // This closure returns last seq_no for default thread
+            move || {
+                let block_seq_no = *(repo_clone_1
+                    .lock()
+                    .last_finalized_optimistic_state(&ThreadIdentifier::default())
+                    .ok_or_else(|| anyhow::anyhow!("Shard state not found"))?
+                    .get_block_seq_no());
+
+                Ok(block_seq_no.into())
+            },
+            Some(config.local.node_wallet_pubkey),
+            config.local.signing_keys,
             metrics.as_ref().map(|x| x.routing.clone()),
         );
         let _ = server.run(bk_set_update_async_rx).await;
@@ -994,15 +1126,14 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             BPResolverImpl::new(nodes_rx.clone(), Arc::new(Mutex::new(repository.clone())));
         let config = MessageRouterConfig {
             bp_resolver: Arc::new(Mutex::new(bp_resolver)),
-            license_addr: std::env::var("BM_LICENSE_ADDRESS").ok(),
-            keys: std::env::var("BM_KEYS_FILE")
+            owner_wallet_pubkey: None,
+            signing_keys: std::env::var("BM_ISSUER_KEYS_FILE")
                 .ok()
                 .and_then(|path| read_keys_from_file(&path).ok()),
         };
-        let _ = MessageRouter::new(bind_to, config);
+        MessageRouter::new(bind_to, config).run();
     }
 
-    let wrapped_writer_join_handle = tokio::task::spawn_blocking(move || writer_join_handle.join());
     let wrapped_signals_join_handle =
         tokio::task::spawn_blocking(move || signals_join_handle.join());
     let wrapped_heartbeat_thread_join_handle =
@@ -1019,26 +1150,19 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         Ok::<(), Box<dyn Any + Send + 'static>>(())
     });
 
+    let state_save_service_join_handle =
+        tokio::task::spawn_blocking(move || state_save_service.join());
+    let optimistic_save_service_join_handle =
+        tokio::task::spawn_blocking(move || optimistic_state_service.join());
+
     let result = tokio::select! {
-        res = wrapped_writer_join_handle => {
-            match res {
-                Ok(_) =>{
-                    unreachable!("record writer thread never returns")
-                }
-                Err(error) => {
-                    anyhow::bail!("record writer thread failed with error: {error}");
-                }
-            }
-        },
         res = wrapped_signals_join_handle => {
              match res {
                 Ok(_) => {
                     // unreachable!("sigint handler thread never returns")
 
                     tracing::trace!("Start shutdown");
-                    for stop_tx in stop_tx_vec.lock().iter() {
-                        let _ = stop_tx.send(());
-                    }
+                    SHUTDOWN_FLAG.set(true).expect("");
                     repository.dump_state();
 
                     // Note: vec of rx can be locked because we don't expect new threads to start
@@ -1047,7 +1171,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     for rx in result_rx_vec.iter() {
                         let _ = rx.recv();
                     }
-
+                    tracing::trace!("Shutdown finished");
                     Ok(())
                 }
                 Err(error) => {
@@ -1093,6 +1217,15 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 }
             }
         },
+        v = account_request_handle => {
+            anyhow::bail!("AccountRequest resolver failed: {v:?}");
+        },
+        v = state_save_service_join_handle => {
+            anyhow::bail!("State saving service failed: {v:?}");
+        },
+        v = optimistic_save_service_join_handle => {
+            anyhow::bail!("Optimistic state saving service failed: {v:?}");
+        }
     };
 
     // Note: reachable on SIGTERM
@@ -1150,6 +1283,9 @@ fn debug_used_features() {
     if cfg!(feature = "allow-threads-merge") {
         eprintln!("  allow-threads-merge");
     }
+    if cfg!(feature = "messages_db") {
+        eprintln!("  messages_db");
+    }
     if std::env::var("NODE_VERBOSE").is_ok() {
         eprintln!("  NODE_VERBOSE");
     }
@@ -1192,9 +1328,7 @@ async fn dispatch_hot_reload(
                             .chain(bk_set_update.future.iter().map(|x| &x.1))
                             .filter_map(|x| transport_layer::VerifyingKey::from_bytes(x).ok())
                             .chain(network_config.credential.trusted_ed_pubkeys.iter().cloned()),
-                    )
-                    .into_iter()
-                    .collect::<Vec<_>>();
+                    );
                 watch_gossip_config_tx.send_replace(WatchGossipConfig {
                     trusted_pubkeys: network_config.credential.trusted_ed_pubkeys.clone(),
                 });

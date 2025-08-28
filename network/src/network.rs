@@ -74,7 +74,7 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
         PeerId: Clone + Display + Send + Sync + Hash + Eq + FromStr<Err: Display> + 'static,
         ChannelMetrics: InstrumentedChannelMetrics + Send + Sync + 'static,
     {
-        tracing::info!("Starting network with configuration: {:?}", self.config_rx.borrow());
+        tracing::info!("Starting network with configuration: {:?}", *self.config_rx.borrow());
 
         let (incoming_tx, incoming_rx) =
             instrumented_channel::<IncomingMessage>(channel_metrics, "network_incoming");
@@ -160,17 +160,17 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
 
 async fn combine_subscribe(
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    mut config_rx: tokio::sync::watch::Receiver<NetworkConfig>,
+    mut network_config_rx: tokio::sync::watch::Receiver<NetworkConfig>,
     mut gossip_subscribe_rx: tokio::sync::watch::Receiver<Vec<Vec<SocketAddr>>>,
     subscribe_tx: tokio::sync::watch::Sender<Vec<Vec<SocketAddr>>>,
 ) {
-    let mut config = config_rx.borrow().clone();
+    let mut network_config = network_config_rx.borrow().clone();
     let mut gossip_subscribe = gossip_subscribe_rx.borrow().clone();
     loop {
-        if !config.subscribe.is_empty() {
-            subscribe_tx.send_replace(config.subscribe.clone());
-        } else if !config.proxies.is_empty() {
-            subscribe_tx.send_replace(vec![config.proxies.clone()]);
+        if !network_config.subscribe.is_empty() {
+            subscribe_tx.send_replace(network_config.subscribe.clone());
+        } else if !network_config.proxies.is_empty() {
+            subscribe_tx.send_replace(vec![network_config.proxies.clone()]);
         } else {
             subscribe_tx.send_replace(gossip_subscribe.clone());
         };
@@ -178,10 +178,10 @@ async fn combine_subscribe(
             sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
                 return;
             },
-            sender = config_rx.changed() => if sender.is_err() {
+            sender = network_config_rx.changed() => if sender.is_err() {
                 return;
             } else {
-                config = config_rx.borrow().clone();
+                network_config = network_config_rx.borrow().clone();
             },
             sender = gossip_subscribe_rx.changed() => if sender.is_err() {
                 return;

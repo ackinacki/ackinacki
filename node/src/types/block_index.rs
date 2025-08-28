@@ -11,7 +11,7 @@ use crate::types::BlockSeqNo;
 
 #[derive(Debug, Clone, Eq, PartialEq, Getters)]
 pub struct BlockIndex {
-    block_seq_no: BlockSeqNo,
+    block_seq_no: BlockSeqNo, // TODO: change to block height
     block_identifier: BlockIdentifier,
 }
 

@@ -13,7 +13,7 @@ mod order_set;
 pub struct ThreadMessageQueueState {
     // TODO: fix this:
     // Note: dirty solution
-    messages: std::collections::BTreeMap<AccountAddress, AccountInbox>,
+    pub messages: std::collections::BTreeMap<AccountAddress, AccountInbox>,
     order_set: order_set::OrderSet,
     cursor: usize,
 }

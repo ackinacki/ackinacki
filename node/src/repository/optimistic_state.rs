@@ -6,7 +6,13 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::fmt::Formatter;
+use std::fs::File;
+use std::io::BufWriter;
+use std::io::Read;
+use std::io::Write;
 use std::ops::Deref;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -23,7 +29,7 @@ use tvm_block::MsgEnvelope;
 use tvm_block::OutMsgQueueKey;
 use tvm_block::Serializable;
 use tvm_block::ShardStateUnsplit;
-use tvm_types::AccountId;
+use tvm_types::ByteOrderRead;
 use tvm_types::Cell;
 use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
@@ -35,21 +41,23 @@ use crate::block::verify::prepare_prev_block_info;
 use crate::block_keeper_system::wallet_config::create_wallet_slash_message;
 use crate::block_keeper_system::BlockKeeperSlashData;
 use crate::bls::envelope::BLSSignedEnvelope;
+use crate::helper::get_temp_file_path;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::Message;
 use crate::message::WrappedMessage;
-use crate::message_storage::MessageDurableStorage;
 use crate::multithreading::cross_thread_messaging::thread_references_state::ThreadReferencesState;
 use crate::multithreading::shard_state_operations::crop_shard_state_based_on_threads_table;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
+use crate::repository::dapp_id_table::DAppIdTable;
+use crate::repository::dapp_id_table::DAppIdTableChangeSet;
 use crate::repository::CrossThreadRefData;
 use crate::repository::CrossThreadRefDataRead;
+use crate::storage::MessageDurableStorage;
 use crate::types::thread_message_queue::ThreadMessageQueueState;
 use crate::types::AccountAddress;
 use crate::types::AccountRouting;
 use crate::types::AckiNackiBlock;
-use crate::types::BlockEndLT;
 use crate::types::BlockIdentifier;
 use crate::types::BlockInfo;
 use crate::types::BlockSeqNo;
@@ -66,8 +74,8 @@ pub trait OptimisticState: Send + Clone {
     fn get_share_stare_refs(&self) -> HashMap<ThreadIdentifier, BlockIdentifier>;
     fn get_block_seq_no(&self) -> &BlockSeqNo;
     fn get_block_id(&self) -> &BlockIdentifier;
-    fn get_shard_state(&mut self) -> Self::ShardState;
-    fn get_shard_state_as_cell(&mut self) -> Self::Cell;
+    fn get_shard_state(&self) -> Self::ShardState;
+    fn get_shard_state_as_cell(&self) -> Self::Cell;
     fn get_block_info(&self) -> &BlockInfo;
     fn serialize_into_buf(self) -> anyhow::Result<Vec<u8>>;
     fn apply_block(
@@ -91,21 +99,25 @@ pub trait OptimisticState: Send + Clone {
         threads_table: &ThreadsTable,
         message_db: MessageDurableStorage,
     ) -> anyhow::Result<()>;
-    fn get_account_routing<T>(&mut self, account_id: &T) -> anyhow::Result<AccountRouting>
+    fn get_account_routing<T>(
+        &self,
+        account_id: &T,
+        change_set: Option<&DAppIdTableChangeSet>,
+    ) -> AccountRouting
     where
         T: Clone + Into<AccountAddress>;
     fn get_thread_for_account(
-        &mut self,
-        account_id: &AccountId,
+        &self,
+        account_id: &AccountAddress,
     ) -> anyhow::Result<ThreadIdentifier>;
-    fn does_routing_belong_to_the_state(
+    fn does_routing_belong_to_the_state(&self, account_routing: &AccountRouting) -> bool;
+    fn does_account_belong_to_the_state(
         &mut self,
-        account_routing: &AccountRouting,
-    ) -> anyhow::Result<bool>;
-    fn does_account_belong_to_the_state(&mut self, account_id: &AccountId) -> anyhow::Result<bool>;
-    fn get_dapp_id_table(&self) -> &HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>;
-    fn merge_dapp_id_tables(&mut self, another_state: &DAppIdTable) -> anyhow::Result<()>;
-    fn get_internal_message_queue_length(&mut self) -> usize;
+        account_id: &AccountAddress,
+        change_set: Option<&DAppIdTableChangeSet>,
+    ) -> bool;
+    fn get_dapp_id_table(&self) -> &DAppIdTable;
+    fn get_internal_message_queue_length(&self) -> usize;
     fn does_state_has_messages_to_other_threads(&mut self) -> anyhow::Result<bool>;
     fn add_slashing_messages(
         &mut self,
@@ -123,8 +135,6 @@ pub struct CrossThreadMessageData {
     // Destination account routing (can be used to track message)
     pub dest_account_routing: AccountRouting,
 }
-
-pub type DAppIdTable = HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>;
 
 #[serde_as]
 #[derive(Clone, TypedBuilder, Serialize, Deserialize)]
@@ -149,9 +159,11 @@ pub struct OptimisticStateImpl {
     pub cropped: Option<(ThreadIdentifier, ThreadsTable)>,
 
     #[serde(skip)]
-    pub changed_accounts: HashMap<UInt256, BlockSeqNo>,
+    pub changed_accounts: HashMap<AccountAddress, BlockSeqNo>,
     #[serde(skip)]
-    pub cached_accounts: HashMap<UInt256, (BlockSeqNo, Cell)>,
+    pub cached_accounts: HashMap<AccountAddress, (BlockSeqNo, Cell)>,
+    #[cfg(feature = "monitor-accounts-number")]
+    pub accounts_number: u64,
 }
 
 impl Debug for OptimisticStateImpl {
@@ -177,6 +189,14 @@ impl Default for OptimisticStateImpl {
 }
 
 impl OptimisticStateImpl {
+    pub fn make_an_independent_copy(&mut self) {
+        self.shard_state = self.shard_state.make_an_independent_copy();
+    }
+
+    pub fn messages(&self) -> &ThreadMessageQueueState {
+        &self.messages
+    }
+
     pub fn deserialize_from_buf(data: &[u8]) -> anyhow::Result<Self> {
         let state: Self = bincode::deserialize(data)?;
         Ok(state)
@@ -190,7 +210,7 @@ impl OptimisticStateImpl {
             block_info: BlockInfo::default(),
             threads_table: ThreadsTable::default(),
             thread_id: ThreadIdentifier::default(),
-            dapp_id_table: HashMap::new(),
+            dapp_id_table: DAppIdTable::default(),
             thread_refs_state: ThreadReferencesState::builder()
                 .all_thread_refs(HashMap::from_iter(vec![(
                     ThreadIdentifier::default(),
@@ -207,6 +227,8 @@ impl OptimisticStateImpl {
             high_priority_messages: ThreadMessageQueueState::empty(),
             changed_accounts: Default::default(),
             cached_accounts: Default::default(),
+            #[cfg(feature = "monitor-accounts-number")]
+            accounts_number: 0,
         }
     }
 
@@ -224,7 +246,7 @@ impl OptimisticStateImpl {
         state: &mut ShardStateUnsplit,
         block: &tvm_block::Block,
         accounts_repo: AccountsRepository,
-    ) -> anyhow::Result<HashSet<UInt256>> {
+    ) -> anyhow::Result<HashSet<AccountAddress>> {
         let mut accounts = state
             .read_accounts()
             .map_err(|e| anyhow::format_err!("Failed to read shard state accounts: {e}"))?;
@@ -236,6 +258,7 @@ impl OptimisticStateImpl {
             .map_err(|e| anyhow::format_err!("Failed to read account blocks: {e}"))?;
         let mut changed_accounts = HashSet::new();
         block_accounts.iterate_slices_with_keys(|account_id, _| {
+            let account_id = AccountAddress(account_id);
             if let Some(mut shard_acc) = accounts.account(&(&account_id).into())? {
                 if shard_acc.is_external() {
                     let acc_root = match self.cached_accounts.get(&account_id) {
@@ -246,7 +269,7 @@ impl OptimisticStateImpl {
                         return Err(tvm_types::error!("External account {account_id} cell hash mismatch: required: {}, actual: {}", acc_root.repr_hash(), shard_acc.account_cell().repr_hash()));
                     }
                     shard_acc.set_account_cell(acc_root);
-                    accounts.insert(&account_id, &shard_acc)?;
+                    accounts.insert(&account_id.0, &shard_acc)?;
                 }
             }
             changed_accounts.insert(account_id);
@@ -255,7 +278,60 @@ impl OptimisticStateImpl {
         state
             .write_accounts(&accounts)
             .map_err(|e| anyhow::format_err!("Failed to write shard state accounts: {e}"))?;
+
         Ok(changed_accounts)
+    }
+
+    pub fn update_dapp_id_table(&mut self, change_set: &DAppIdTableChangeSet) {
+        let dapp_id_table = std::mem::take(&mut self.dapp_id_table);
+        tracing::trace!("update_dapp_id_table: start apply");
+        self.dapp_id_table = DAppIdTable::apply_change_set(dapp_id_table, change_set);
+        tracing::trace!("update_dapp_id_table: finish");
+    }
+
+    pub fn save_to_file(self, path: &Path) -> anyhow::Result<()> {
+        if path.exists() {
+            return Ok(());
+        }
+        let parent_dir = if let Some(path) = path.parent() {
+            std::fs::create_dir_all(path)?;
+            path.to_owned()
+        } else {
+            PathBuf::new()
+        };
+        let tmp_file_path = get_temp_file_path(&parent_dir);
+
+        let shard_state = self.shard_state.into_cell();
+        let trimmed_state: TrimmedOptimisticStateImpl = self.into();
+        let file = File::create(&tmp_file_path)?;
+        let metadata = bincode::serialize(&trimmed_state)?;
+        let metadata_len = metadata.len() as u64;
+        let len_bytes = metadata_len.to_be_bytes();
+        let mut buf_file = BufWriter::new(file);
+        buf_file.write_all(&len_bytes)?;
+        buf_file.write_all(&metadata)?;
+        tvm_types::boc::write_boc_to(&shard_state, &mut buf_file)
+            .map_err(|e| anyhow::format_err!("Failed to serialize state cell: {e}"))?;
+
+        if cfg!(feature = "sync_files") {
+            buf_file.flush()?;
+        }
+        drop(buf_file);
+        std::fs::rename(tmp_file_path, path)?;
+        tracing::trace!("File saved: {:?}", path);
+        Ok(())
+    }
+
+    pub fn load_from_file(path: &Path) -> anyhow::Result<Self> {
+        let mut file = File::open(path)?;
+        let metadata_len = file.read_be_u64()?;
+        let mut data = vec![];
+        file.read_to_end(&mut data)?;
+        let (metadata_bytes, shard_state_bytes) = data.split_at(metadata_len as usize);
+        let trimmed_state: TrimmedOptimisticStateImpl = bincode::deserialize(metadata_bytes)?;
+        let shard_state_cell = tvm_types::read_single_root_boc(shard_state_bytes)
+            .map_err(|e| anyhow::format_err!("Failed to deser shard state cell: {e}"))?;
+        Ok(state_from_trimmed(trimmed_state, shard_state_cell))
     }
 }
 
@@ -275,11 +351,11 @@ impl OptimisticState for OptimisticStateImpl {
         thread_refs
     }
 
-    fn get_dapp_id_table(&self) -> &HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)> {
+    fn get_dapp_id_table(&self) -> &DAppIdTable {
         &self.dapp_id_table
     }
 
-    fn get_internal_message_queue_length(&mut self) -> usize {
+    fn get_internal_message_queue_length(&self) -> usize {
         self.messages.length()
     }
 
@@ -291,12 +367,12 @@ impl OptimisticState for OptimisticStateImpl {
         &self.block_id
     }
 
-    fn get_shard_state(&mut self) -> Self::ShardState {
+    fn get_shard_state(&self) -> Self::ShardState {
         self.shard_state.into_shard_state()
     }
 
-    fn get_shard_state_as_cell(&mut self) -> Self::Cell {
-        self.shard_state.into_cell()
+    fn get_shard_state_as_cell(&self) -> Self::Cell {
+        Arc::unwrap_or_clone(self.shard_state.into_cell())
     }
 
     fn get_block_info(&self) -> &BlockInfo {
@@ -340,12 +416,8 @@ impl OptimisticState for OptimisticStateImpl {
             tracing::trace!("push nack into slash {:?}", nack);
             let reason = nack.data().reason.clone();
             if let Some((id, bls_key, addr)) = reason.get_node_data(block_state_repo.clone()) {
-                let epoch_nack_data = BlockKeeperSlashData {
-                    node_id: id,
-                    bls_pubkey: bls_key,
-                    addr: addr.0,
-                    slash_type: 0,
-                };
+                let epoch_nack_data =
+                    BlockKeeperSlashData { node_id: id, bls_pubkey: bls_key, addr, slash_type: 0 };
                 let msg = create_wallet_slash_message(&epoch_nack_data)?;
                 let wrapped_message = WrappedMessage { message: msg.clone() };
                 wrapped_slash_messages.push(Arc::new(wrapped_message));
@@ -397,18 +469,23 @@ impl OptimisticState for OptimisticStateImpl {
             wrapped_slash_messages,
             Vec::new(),
             message_db.clone(),
+            shared_services.metrics.clone(),
         )?;
         // todo!("Use this to init outbox {:?}", forwarded_messages);
         *self = preprocessing_result.state;
+        tracing::trace!("deser shard state start");
         let mut prev_state = self.get_shard_state().deref().clone();
+        tracing::trace!("deser shard state finish");
         let changed = self.load_changed_accounts(
             &mut prev_state,
             block_candidate.tvm_block(),
             accounts_repo.clone(),
         )?;
+        tracing::trace!("Start state serialization");
         let prev_state = prev_state
             .serialize()
             .map_err(|e| anyhow::format_err!("Failed to serialize state: {e}"))?;
+        tracing::trace!("finished state serialization");
         tracing::trace!("Applying block");
         tracing::trace!(target: "node", "apply_block: Old state hash: {:?}", prev_state.repr_hash());
         let state_update = block_candidate
@@ -456,8 +533,11 @@ impl OptimisticState for OptimisticStateImpl {
         } else {
             self.threads_table.clone()
         };
-
-        let (mut new_state, cross_thread_ref_data) = postprocess(
+        #[cfg(feature = "monitor-accounts-number")]
+        let updated_accounts_number = (self.accounts_number as i64
+            + block_candidate.get_common_section().accounts_number_diff)
+            as u64;
+        let (new_state, cross_thread_ref_data) = postprocess(
             self.clone(),
             consumed_internal_messages,
             produced_internal_messages_to_the_current_thread,
@@ -474,9 +554,9 @@ impl OptimisticState for OptimisticStateImpl {
             changed,
             accounts_repo,
             message_db.clone(),
+            #[cfg(feature = "monitor-accounts-number")]
+            updated_accounts_number,
         )?;
-        // merge with update from block
-        new_state.merge_dapp_id_tables(&block_candidate.get_common_section().changed_dapp_ids)?;
         *self = new_state;
 
         let nacks = block_candidate.get_common_section().clone().nacks;
@@ -580,12 +660,27 @@ impl OptimisticState for OptimisticStateImpl {
     }
 
     // TODO: can't return error
-    fn get_account_routing<T>(&mut self, account_id: &T) -> anyhow::Result<AccountRouting>
+    fn get_account_routing<T>(
+        &self,
+        account_id: &T,
+        change_set: Option<&DAppIdTableChangeSet>,
+    ) -> AccountRouting
     where
         T: Into<AccountAddress> + Clone,
     {
         let account_address = account_id.clone().into();
-        Ok(if let Some(dapp_id) = self.dapp_id_table.get(&account_address) {
+        if let Some(change_set) = change_set {
+            if let Some((dapp, _lt)) = change_set.get_value(&account_address) {
+                return match dapp {
+                    Some(dapp) => AccountRouting(dapp.clone(), account_address.clone()),
+                    None => AccountRouting(
+                        DAppIdentifier(account_address.clone()),
+                        account_address.clone(),
+                    ),
+                };
+            }
+        }
+        if let Some(dapp_id) = self.dapp_id_table.get(&account_address) {
             match &dapp_id.0 {
                 Some(dapp_id) => AccountRouting(dapp_id.clone(), account_address.clone()),
                 None => {
@@ -594,57 +689,34 @@ impl OptimisticState for OptimisticStateImpl {
             }
         } else {
             AccountRouting(DAppIdentifier(account_address.clone()), account_address.clone())
-        })
+        }
     }
 
     fn get_thread_for_account(
-        &mut self,
-        account_id: &AccountId,
+        &self,
+        account_id: &AccountAddress,
     ) -> anyhow::Result<ThreadIdentifier> {
-        let account_routing = self.get_account_routing(account_id)?;
+        // TODO: check if we should be able to pass DAppIdTabkeChangeSet here
+        let account_routing = self.get_account_routing(account_id, None);
         Ok(self.threads_table.find_match(&account_routing))
     }
 
-    fn does_routing_belong_to_the_state(
+    fn does_routing_belong_to_the_state(&self, account_routing: &AccountRouting) -> bool {
+        self.threads_table.is_match(account_routing, self.thread_id)
+    }
+
+    fn does_account_belong_to_the_state(
         &mut self,
-        account_routing: &AccountRouting,
-    ) -> anyhow::Result<bool> {
-        Ok(self.threads_table.is_match(account_routing, self.thread_id))
-    }
-
-    fn does_account_belong_to_the_state(&mut self, account_id: &AccountId) -> anyhow::Result<bool> {
-        let account_routing = self.get_account_routing(account_id)?;
-        Ok(self.threads_table.is_match(&account_routing, self.thread_id))
-    }
-
-    fn merge_dapp_id_tables(&mut self, another_state: &DAppIdTable) -> anyhow::Result<()> {
-        // TODO: need to think of how to merge dapp id tables, because accounts can be deleted and created in both threads
-        // Possible solution is to store tuple (Option<Value>, timestamp) as a value and compare timestamps on merge.
-        for (account_address, (dapp_id, lt)) in another_state {
-            self.dapp_id_table
-                .entry(account_address.clone())
-                .and_modify(|data| {
-                    if data.1 < *lt {
-                        *data = (dapp_id.clone(), lt.clone())
-                    }
-                })
-                .or_insert_with(|| (dapp_id.clone(), lt.clone()));
-        }
-        Ok(())
+        account_id: &AccountAddress,
+        change_set: Option<&DAppIdTableChangeSet>,
+    ) -> bool {
+        let account_routing = self.get_account_routing(account_id, change_set);
+        self.threads_table.is_match(&account_routing, self.thread_id)
     }
 
     fn does_state_has_messages_to_other_threads(&mut self) -> anyhow::Result<bool> {
         // TODO: We cant have a mut ref in this function, so have to decode shard state
-        let shard_state = if let Some(state) = self.shard_state.shard_state.clone() {
-            state
-        } else {
-            assert!(self.shard_state.shard_state_cell.is_some());
-            let cell = self.shard_state.shard_state_cell.clone().unwrap();
-            Arc::new(
-                ShardStateUnsplit::construct_from_cell(cell)
-                    .expect("Failed to deserialize shard state from cell"),
-            )
-        };
+        let shard_state = self.shard_state.into_shard_state();
         let out_msg_queue_info = shard_state
             .read_out_msg_queue_info()
             .map_err(|e| anyhow::format_err!("Failed to read out msg queue: {e}"))?;
@@ -655,11 +727,8 @@ impl OptimisticState for OptimisticStateImpl {
             .out_queue()
             .iterate_objects(|enq_message| {
                 let message = enq_message.read_out_msg()?.read_message()?;
-                if let Some(dest_account_id) = message.int_dst_account_id() {
-                    if !self
-                        .does_account_belong_to_the_state(&dest_account_id)
-                        .map_err(|e| tvm_types::error!("{}", e))?
-                    {
+                if let Some(dest_account_id) = message.int_dst_account_id().map(From::from) {
+                    if !self.does_account_belong_to_the_state(&dest_account_id, None) {
                         result = true;
                     }
                 }
@@ -726,4 +795,80 @@ impl OptimisticState for OptimisticStateImpl {
     fn get_thread_refs(&self) -> &ThreadReferencesState {
         &self.thread_refs_state
     }
+}
+
+#[serde_as]
+#[derive(Clone, TypedBuilder, Serialize, Deserialize)]
+struct TrimmedOptimisticStateImpl {
+    block_seq_no: BlockSeqNo,
+    block_id: BlockIdentifier,
+    messages: ThreadMessageQueueState,
+    high_priority_messages: ThreadMessageQueueState,
+    block_info: BlockInfo,
+    threads_table: ThreadsTable,
+    thread_id: ThreadIdentifier,
+    dapp_id_table: DAppIdTable,
+    thread_refs_state: ThreadReferencesState,
+    cropped: Option<(ThreadIdentifier, ThreadsTable)>,
+    #[cfg(feature = "monitor-accounts-number")]
+    accounts_number: u64,
+}
+
+impl From<OptimisticStateImpl> for TrimmedOptimisticStateImpl {
+    fn from(value: OptimisticStateImpl) -> Self {
+        Self {
+            block_seq_no: value.block_seq_no,
+            block_id: value.block_id,
+            messages: value.messages,
+            high_priority_messages: value.high_priority_messages,
+            block_info: value.block_info,
+            threads_table: value.threads_table,
+            thread_id: value.thread_id,
+            dapp_id_table: value.dapp_id_table,
+            thread_refs_state: value.thread_refs_state,
+            cropped: value.cropped,
+            #[cfg(feature = "monitor-accounts-number")]
+            accounts_number: value.accounts_number,
+        }
+    }
+}
+
+fn state_from_trimmed(
+    trimmed: TrimmedOptimisticStateImpl,
+    state_cell: Cell,
+) -> OptimisticStateImpl {
+    #[cfg(feature = "monitor-accounts-number")]
+    let res = OptimisticStateImpl::builder()
+        .block_seq_no(trimmed.block_seq_no)
+        .block_id(trimmed.block_id)
+        .shard_state(state_cell)
+        .messages(trimmed.messages)
+        .high_priority_messages(trimmed.high_priority_messages)
+        .block_info(trimmed.block_info)
+        .threads_table(trimmed.threads_table)
+        .thread_id(trimmed.thread_id)
+        .dapp_id_table(trimmed.dapp_id_table)
+        .thread_refs_state(trimmed.thread_refs_state)
+        .cropped(trimmed.cropped)
+        .changed_accounts(HashMap::new())
+        .cached_accounts(HashMap::new())
+        .accounts_number(trimmed.accounts_number)
+        .build();
+    #[cfg(not(feature = "monitor-accounts-number"))]
+    let res = OptimisticStateImpl::builder()
+        .block_seq_no(trimmed.block_seq_no)
+        .block_id(trimmed.block_id)
+        .shard_state(state_cell)
+        .messages(trimmed.messages)
+        .high_priority_messages(trimmed.high_priority_messages)
+        .block_info(trimmed.block_info)
+        .threads_table(trimmed.threads_table)
+        .thread_id(trimmed.thread_id)
+        .dapp_id_table(trimmed.dapp_id_table)
+        .thread_refs_state(trimmed.thread_refs_state)
+        .cropped(trimmed.cropped)
+        .changed_accounts(HashMap::new())
+        .cached_accounts(HashMap::new())
+        .build();
+    res
 }

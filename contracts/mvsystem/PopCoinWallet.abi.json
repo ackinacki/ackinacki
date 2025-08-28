@@ -1,0 +1,164 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"PopitGameCode","type":"cell"},
+				{"name":"GameCode","type":"cell"},
+				{"name":"value","type":"uint128"},
+				{"name":"popcoinroot","type":"address"},
+				{"name":"root_pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteCandidate",
+			"inputs": [
+				{"name":"index","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "addValue",
+			"inputs": [
+				{"name":"id","type":"uint256"},
+				{"name":"value","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "addValueOld",
+			"inputs": [
+				{"name":"value","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "activatePopit",
+			"inputs": [
+				{"name":"id","type":"uint256"},
+				{"name":"indexRoot","type":"uint16"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setReadyPopit",
+			"inputs": [
+				{"name":"index","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateGameCode",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setGameCode",
+			"inputs": [
+				{"name":"GameCode","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "activate",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setReady",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployGame",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployGameFinal",
+			"inputs": [
+				{"name":"mbiCur","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "gameDestroyed",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "destroy",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"popcoinroot","type":"address"},
+				{"name":"name","type":"string"},
+				{"name":"owner","type":"address"},
+				{"name":"value","type":"uint128"},
+				{"name":"isReady","type":"bool"},
+				{"name":"isPlay","type":"bool"},
+				{"name":"gameAddress","type":"address"},
+				{"name":"popits_candidate","type":"map(uint256,uint128)"},
+				{"name":"start_time","type":"uint64"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_code","type":"map(uint8,cell)"},
+		{"init":false,"name":"_popcoinroot","type":"address"},
+		{"init":true,"name":"_name","type":"string"},
+		{"init":true,"name":"_owner","type":"address"},
+		{"init":false,"name":"_root","type":"address"},
+		{"init":false,"name":"_value","type":"uint128"},
+		{"init":false,"name":"_popits_candidate","type":"map(uint256,uint128)"},
+		{"init":false,"name":"_popitGame","type":"address"},
+		{"init":false,"name":"_isReady","type":"bool"},
+		{"init":false,"name":"_isPlay","type":"bool"},
+		{"init":false,"name":"_game","type":"address"},
+		{"init":false,"name":"_root_pubkey","type":"uint256"},
+		{"init":false,"name":"_start_time","type":"uint32"}
+	]
+}

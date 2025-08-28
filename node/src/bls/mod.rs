@@ -14,7 +14,7 @@ pub use gosh_bls::GoshBLS;
 pub trait BLSSignatureScheme: 'static + Clone {
     type PubKey: Clone + Debug;
     type Secret: Clone;
-    type Signature: Clone + Serialize + for<'a> Deserialize<'a> + Send + Sync + Default;
+    type Signature: Clone + Serialize + for<'a> Deserialize<'a> + Send + Sync;
 
     fn sign<TData: Serialize>(
         secret: &Self::Secret,

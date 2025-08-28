@@ -42,6 +42,7 @@ pub(super) fn find_last_prefinalized(
     {
         Some((id, _)) => id,
         None => {
+            tracing::trace!("Failed to find last finalized block for {thread_identifier:?}");
             // Assumption:
             // It means this thread has no blocks at all.
             // Lookup for the root block for this thread.

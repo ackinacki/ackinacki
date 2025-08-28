@@ -75,7 +75,7 @@ fn generate_server_id(public_addr: SocketAddr) -> String {
     format!("server:{public_addr}-{cool_id}")
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct GossipConfig {
     /// UDP socket address to listen gossip.
     /// Defaults to "127.0.0.1:10000"

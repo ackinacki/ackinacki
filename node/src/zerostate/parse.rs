@@ -2,13 +2,44 @@
 //
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use account_inbox::storage::DurableStorageRead;
+use account_inbox::storage::LoadErr;
 use serde::Serialize;
 use tvm_block::GetRepresentationHash;
-use tvm_block::HashmapAugType;
 
 use super::ZeroState;
+use crate::message::identifier::MessageIdentifier;
+use crate::message::WrappedMessage;
+use crate::types::thread_message_queue::account_messages_iterator::AccountMessagesIterator;
 use crate::types::ThreadIdentifier;
+
+#[derive(Default)]
+struct DummyMessageStorage;
+
+impl DurableStorageRead<MessageIdentifier, Arc<WrappedMessage>> for DummyMessageStorage {
+    type LoadError = LoadErr;
+
+    fn next(&self, _key: &MessageIdentifier) -> Result<Option<MessageIdentifier>, Self::LoadError> {
+        Ok(None)
+    }
+
+    fn load_message(
+        &self,
+        _key: &MessageIdentifier,
+    ) -> Result<Arc<WrappedMessage>, Self::LoadError> {
+        unreachable!()
+    }
+
+    fn remaining_messages(
+        &self,
+        _starting_key: &MessageIdentifier,
+        _limit: usize,
+    ) -> Result<Vec<Arc<WrappedMessage>>, Self::LoadError> {
+        Ok(vec![])
+    }
+}
 
 #[derive(Serialize)]
 pub struct ZeroStateMessage {
@@ -66,42 +97,45 @@ impl ZeroState {
         thread_identifier: &ThreadIdentifier,
     ) -> anyhow::Result<Vec<ZeroStateMessage>> {
         let mut zs_messages = vec![];
-        let out_msgs = self.get_shard_state(thread_identifier)?.read_out_msg_queue_info();
-        if let Ok(msgs) = out_msgs {
-            msgs.out_queue()
-                .iterate_with_keys(|_k, v| {
-                    let message = v.out_msg.read_struct().unwrap().read_message().unwrap();
-                    zs_messages.push(ZeroStateMessage {
-                        source: message
-                            .get_int_src_account_id()
-                            .map(|src| src.to_hex_string())
-                            .unwrap_or("None".to_string()),
-                        destination: message
-                            .int_dst_account_id()
-                            .map(|dst| dst.to_hex_string())
-                            .unwrap_or("None".to_string()),
-                        value: message.value().map(|cc| cc.grams.inner()).unwrap_or(0),
-                        ecc: message
-                            .value()
-                            .map(|cc| {
-                                let mut res = HashMap::new();
-                                cc.other
-                                    .iterate_with_keys(|k, v| {
-                                        res.insert(k, v.value().to_string());
-                                        Ok(true)
-                                    })
-                                    .unwrap();
-                                res
-                            })
-                            .unwrap_or_default(),
-                        id: message.hash()?.to_hex_string(),
-                        src_dapp_id: message
-                            .int_header()
-                            .and_then(|hdr| hdr.src_dapp_id.clone().map(|val| val.to_hex_string())),
-                    });
-                    Ok(true)
-                })
-                .map_err(|e| anyhow::format_err!("Failed to iterate out msgs: {e}"))?;
+        let state = self.state(thread_identifier)?;
+        let messages_queue = state.messages().clone();
+        let message_db = DummyMessageStorage;
+        let acc_iter = messages_queue.iter(&message_db);
+        for account_messages in acc_iter {
+            for msg in account_messages {
+                let (message, _) =
+                    msg.map_err(|e| anyhow::format_err!("Failed to unpack message: {e:?}"))?;
+                let message = message.message.clone();
+
+                zs_messages.push(ZeroStateMessage {
+                    source: message
+                        .get_int_src_account_id()
+                        .map(|src| src.to_hex_string())
+                        .unwrap_or("None".to_string()),
+                    destination: message
+                        .int_dst_account_id()
+                        .map(|dst| dst.to_hex_string())
+                        .unwrap_or("None".to_string()),
+                    value: message.value().map(|cc| cc.grams.inner()).unwrap_or(0),
+                    ecc: message
+                        .value()
+                        .map(|cc| {
+                            let mut res = HashMap::new();
+                            cc.other
+                                .iterate_with_keys(|k, v| {
+                                    res.insert(k, v.value().to_string());
+                                    Ok(true)
+                                })
+                                .unwrap();
+                            res
+                        })
+                        .unwrap_or_default(),
+                    id: message.hash().unwrap().to_hex_string(),
+                    src_dapp_id: message
+                        .int_header()
+                        .and_then(|hdr| hdr.src_dapp_id.clone().map(|val| val.to_hex_string())),
+                });
+            }
         }
         Ok(zs_messages)
     }

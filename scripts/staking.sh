@@ -151,10 +151,39 @@ place_stake () {
   local SIGN_INDEX_END=60000
   local SIGNER_INDEX=1
 
+  local WALLET_DETAILS_JSON=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails)
   # We don't need to get min stake for now
   # WALLET_STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake' | xargs printf "%d * 1.1 / 1000000000\n" | bc -l) # | cut -d'.' -f1)
-  local WALLET_BALANCE=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r '.balance' | xargs printf "%d")
-  WALLET_STAKE=$(printf "%d / 2\n" $WALLET_BALANCE | bc)
+  local WALLET_BALANCE=$(echo "$WALLET_DETAILS_JSON" | jq -r '.balance' | xargs printf "%d")
+  local TOTAL_AVAILABLE=0
+
+  local LICENSES_JSON=$(echo "$WALLET_DETAILS_JSON" | jq -c '.licenses')
+  local LICENSES_KEYS=$(echo "$LICENSES_JSON" | jq -r 'keys[]')
+  for key in $LICENSES_KEYS; do
+    local LICENSE=$(echo "$LICENSES_JSON" | jq -r ".[\"$key\"]")
+    local isLockToStake=$(echo "$LICENSE" | jq -r '.isLockToStake')
+    local isLockToStakeByWallet=$(echo "$LICENSE" | jq -r '.isLockToStakeByWallet')
+    if [ "$isLockToStake" = "true" ]; then
+      log "License $key is locked for staking, skipping"
+      continue
+    fi
+    if [ "$isLockToStakeByWallet" = "true" ]; then
+      log "License $key is locked for staking by Wallet, skipping"
+      continue
+    fi
+    local balance=$(echo "$LICENSE" | jq -r '.balance' | xargs printf "%d")
+    local lockStake=$(echo "$LICENSE" | jq -r '.lockStake' | xargs printf "%d")
+    local lockContinue=$(echo "$LICENSE" | jq -r '.lockContinue' | xargs printf "%d")
+    local lockCooler=$(echo "$LICENSE" | jq -r '.lockCooler' | xargs printf "%d")
+    
+    local available=$((balance - lockStake - lockContinue - lockCooler))
+    if [ $available -lt 0 ]; then
+      available=0
+    fi
+    TOTAL_AVAILABLE=$((TOTAL_AVAILABLE + available))
+  done
+
+  WALLET_STAKE=$((TOTAL_AVAILABLE / 2))
   # WALLET_STAKE=$((${WALLET_STAKE%.*} + 1))
 
   log "Current wallet $WALLET_ADDR balance: $WALLET_BALANCE"
@@ -206,9 +235,36 @@ place_continue_stake () {
   local SIGN_INDEX_END=60000
   local SIGNER_INDEX=1
 
+  local WALLET_DETAILS_JSON=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails)
   # CONT_WALLET_STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake' | xargs printf "%d * 1.1\n" | bc | cut -d'.' -f1)
-  local WALLET_BALANCE=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r '.balance' | xargs printf "%d")
+  local WALLET_BALANCE=$(echo "$WALLET_DETAILS_JSON" | jq -r '.balance' | xargs printf "%d")
+  local TOTAL_AVAILABLE=0
 
+  local LICENSES_JSON=$(echo "$WALLET_DETAILS_JSON" | jq -c '.licenses')
+  local LICENSES_KEYS=$(echo "$LICENSES_JSON" | jq -r 'keys[]')
+  for key in $LICENSES_KEYS; do
+    local LICENSE=$(echo "$LICENSES_JSON" | jq -r ".[\"$key\"]")
+    local isLockToStake=$(echo "$LICENSE" | jq -r '.isLockToStake')
+    local isLockToStakeByWallet=$(echo "$LICENSE" | jq -r '.isLockToStakeByWallet')
+    if [ "$isLockToStake" = "true" ]; then
+      log "License $key is locked for staking, skipping"
+      continue
+    fi
+    if [ "$isLockToStakeByWallet" = "true" ]; then
+      log "License $key is locked for staking by Wallet, skipping"
+      continue
+    fi
+    local balance=$(echo "$LICENSE" | jq -r '.balance' | xargs printf "%d")
+    local lockStake=$(echo "$LICENSE" | jq -r '.lockStake' | xargs printf "%d")
+    local lockContinue=$(echo "$LICENSE" | jq -r '.lockContinue' | xargs printf "%d")
+    local lockCooler=$(echo "$LICENSE" | jq -r '.lockCooler' | xargs printf "%d")
+    
+    local available=$((balance - lockStake - lockContinue - lockCooler))
+    if [ $available -lt 0 ]; then
+      available=0
+    fi
+    TOTAL_AVAILABLE=$((TOTAL_AVAILABLE + available))
+  done
   ### Not needed to send only minStake. Send full wallet balance
   ###
   # Tokens could be in Cooler almost
@@ -236,8 +292,8 @@ place_continue_stake () {
   done
 
   update_bls_keys $BLS_KEYS_FILE
-  log "Sending continue stake - $WALLET_BALANCE"
-  CONT_STAKING="{\"bls_pubkey\": \"$UPD_BLS_PUBLIC_KEY\", \"stake\": $WALLET_BALANCE, \"seqNoStartOld\": \"$1\", \"signerIndex\": $SIGNER_INDEX, \"ProxyList\": {}}"
+  log "Sending continue stake - $TOTAL_AVAILABLE"
+  CONT_STAKING="{\"bls_pubkey\": \"$UPD_BLS_PUBLIC_KEY\", \"stake\": $TOTAL_AVAILABLE, \"seqNoStartOld\": \"$1\", \"signerIndex\": $SIGNER_INDEX, \"ProxyList\": {}}"
   tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $NODE_OWNER_KEY --method sendBlockKeeperRequestWithStakeContinue "$CONT_STAKING" || { log "Error with sending continue stake request" >&2 ; exit 1 ;}
 }
 
@@ -258,8 +314,9 @@ process_cooler_epoch () {
   log "Calculating rewards..."
   calculate_reward $1 $2
   log "Reward is $REWARD"
-  log "Touching cooler contract"
-  tvm-cli -j callx --abi $COOLER_ABI --addr $1 -m touch
+  log "There is no need to touch Cooler within staking..."
+  # log "Touching cooler contract"
+  # tvm-cli -j callx --abi $COOLER_ABI --addr $1 -m touch
 }
 
 process_epoch () {
@@ -303,7 +360,14 @@ process_epoch () {
         IS_EPOCH_ACTIVE=true
         IS_EPOCH_CONTINUE=$(echo $EPOCH_DETAILS | jq -r '.isContinue')
         SEQNO=$ACTIVE_STAKES_SEQ
-        if [ "$IS_EPOCH_CONTINUE" = false ] && [ "$WILL_EPOCH_CONTINUE" = true ]; then
+        EPOCH_SEQNO_START=$(echo $EPOCH_DETAILS | jq -r '.seqNoStart')
+        EPOCH_SEQNO_FINISH=$(echo $EPOCH_DETAILS | jq -r '.seqNoFinish')
+        CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq -r '.[0].seq_no')
+        if [ "$IS_EPOCH_CONTINUE" = false ] && [ "$WILL_EPOCH_CONTINUE" = true ] && [ "$(echo "$EPOCH_SEQNO_FINISH - $EPOCH_SEQNO_FINISH * 0.7 < $CUR_BLOCK_SEQ" | bc)" -eq 1 ]; then
+          # if tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -e '.activeStakes | .[] | select(.status == "2")' > /dev/null 2>&1; then
+          #   log "There is active Cooler in stakes"
+          #   continue
+          # fi
           log "Current epoch is not being continued. Sending continue stake..."
           place_continue_stake $SEQNO
         fi

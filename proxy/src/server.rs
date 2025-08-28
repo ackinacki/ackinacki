@@ -95,7 +95,7 @@ async fn tokio_main() -> anyhow::Result<()> {
     global::set_meter_provider(meter_provider.clone());
 
     // Create a NetMetrics instance using the meter provider
-    let net_metrics = NetMetrics::new(&global::meter("node"));
+    let net_metrics = Some(NetMetrics::new(&global::meter("node")));
     let _tokio_metrics = TokioMetrics::new(&global::meter("node"));
 
     let result = args.run(net_metrics).await;
@@ -123,7 +123,7 @@ impl FromStr for NodeId {
 }
 
 impl CliArgs {
-    async fn run(self, net_metrics: NetMetrics) -> anyhow::Result<()> {
+    async fn run(self, net_metrics: Option<NetMetrics>) -> anyhow::Result<()> {
         let tls_cert_cache = TlsCertCache::new()?;
         let config = ProxyConfig::from_file(&self.config)?;
         tracing::info!("Loaded configuration: {}", serde_json::to_string_pretty(&config)?);
@@ -137,7 +137,7 @@ impl CliArgs {
             tokio::sync::watch::channel(config.gossip.clone());
 
         let (watch_gossip_config_tx, watch_gossip_config_rx) =
-            tokio::sync::watch::channel(WatchGossipConfig { trusted_pubkeys: vec![] });
+            tokio::sync::watch::channel(WatchGossipConfig { trusted_pubkeys: HashSet::new() });
         let (subscribe_tx, subscribe_rx) = tokio::sync::watch::channel(Vec::new());
         let (peers_tx, _) = tokio::sync::watch::channel(HashMap::new());
 
@@ -149,7 +149,7 @@ impl CliArgs {
                 shutdown_tx.subscribe(),
                 watch_gossip_config_rx,
                 SubscribeStrategy::<NodeId>::Proxy(
-                    config.my_addr.unwrap_or(config.gossip.advertise_addr()),
+                    config.my_addr.unwrap_or(vec![config.gossip.advertise_addr()]),
                 ),
                 gossip_handle.chitchat(),
                 subscribe_tx.clone(),
@@ -165,25 +165,18 @@ impl CliArgs {
         let config_reload_handle: JoinHandle<anyhow::Result<()>> =
             tokio::spawn(config_reload_handler(config_tx, self.config.clone()));
 
-        let multiplexer_handle = tokio::spawn({
-            let outgoing_messages_sender = outgoing_messages_tx.clone();
-            let net_metrics = net_metrics.clone();
-            async move {
-                message_multiplexor(
-                    Some(net_metrics),
-                    incoming_messages_rx,
-                    outgoing_messages_sender,
-                )
-                .await
-            }
-        });
+        let multiplexer_handle = tokio::spawn(message_multiplexor(
+            net_metrics.clone(),
+            incoming_messages_rx,
+            outgoing_messages_tx.clone(),
+        ));
 
         let pub_sub_task = tokio::spawn(network::pub_sub::run(
             shutdown_tx.subscribe(),
             network_config_rx,
             transport,
             true,
-            Some(net_metrics),
+            net_metrics,
             self.max_connections,
             subscribe_rx,
             outgoing_messages_tx,
@@ -260,25 +253,28 @@ async fn dispatch_hot_reload(
     gossip_config_tx: tokio::sync::watch::Sender<GossipConfig>,
     watch_gossip_config_tx: tokio::sync::watch::Sender<WatchGossipConfig>,
 ) {
+    let Some((mut network_config, mut gossip_config, mut watch_gossip_config)) =
+        dispatch_configs(&proxy_config_rx, &bk_set_rx, &tls_cert_cache)
+    else {
+        return;
+    };
     loop {
-        {
-            let config = proxy_config_rx.borrow();
-            let mut network_config = match config.network_config(tls_cert_cache.clone()) {
-                Ok(config) => config,
-                Err(err) => {
-                    tracing::error!("Failed to load network config: {}", err);
-                    return;
-                }
-            };
-            let mut bk_set = bk_set_rx.borrow().clone();
-            bk_set.extend(network_config.credential.trusted_ed_pubkeys.iter().cloned());
-            let trusted_ed_pubkeys = bk_set.into_iter().collect::<Vec<_>>();
-            network_config.credential.trusted_ed_pubkeys = trusted_ed_pubkeys.clone();
-
+        let Some((new_network_config, new_gossip_config, new_watch_gossip_config)) =
+            dispatch_configs(&proxy_config_rx, &bk_set_rx, &tls_cert_cache)
+        else {
+            return;
+        };
+        if new_network_config != network_config {
+            network_config = new_network_config;
             network_config_tx.send_replace(network_config.clone());
-            gossip_config_tx.send_replace(config.gossip.clone());
-            watch_gossip_config_tx
-                .send_replace(WatchGossipConfig { trusted_pubkeys: trusted_ed_pubkeys });
+        }
+        if new_gossip_config != gossip_config {
+            gossip_config = new_gossip_config;
+            gossip_config_tx.send_replace(gossip_config.clone());
+        }
+        if new_watch_gossip_config != watch_gossip_config {
+            watch_gossip_config = new_watch_gossip_config;
+            watch_gossip_config_tx.send_replace(watch_gossip_config.clone());
         }
         tokio::select! {
             sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
@@ -292,6 +288,30 @@ async fn dispatch_hot_reload(
             },
         }
     }
+}
+
+fn dispatch_configs(
+    proxy_config_rx: &tokio::sync::watch::Receiver<ProxyConfig>,
+    bk_set_rx: &tokio::sync::watch::Receiver<HashSet<VerifyingKey>>,
+    tls_cert_cache: &Option<TlsCertCache>,
+) -> Option<(NetworkConfig, GossipConfig, WatchGossipConfig)> {
+    let config = proxy_config_rx.borrow();
+    let mut network_config = match config.network_config(tls_cert_cache.clone()) {
+        Ok(config) => config,
+        Err(err) => {
+            tracing::error!("Failed to load network config: {}", err);
+            return None;
+        }
+    };
+    let mut bk_set = bk_set_rx.borrow().clone();
+    bk_set.extend(network_config.credential.trusted_ed_pubkeys.iter().cloned());
+    let trusted_ed_pubkeys = bk_set.into_iter().collect::<HashSet<_>>();
+    network_config.credential.trusted_ed_pubkeys = trusted_ed_pubkeys.clone();
+    Some((
+        network_config,
+        config.gossip.clone(),
+        WatchGossipConfig { trusted_pubkeys: trusted_ed_pubkeys },
+    ))
 }
 
 async fn message_multiplexor(

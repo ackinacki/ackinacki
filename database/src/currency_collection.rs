@@ -1,22 +1,27 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
+
+use std::collections::HashMap;
+
+use num_bigint::BigInt;
 use tvm_block::CurrencyCollection;
 use tvm_block::Deserializable;
 use tvm_block::VarUInteger32;
 use tvm_types::HashmapType;
 
 pub(crate) struct SignedCurrencyCollection {
-    pub grams: num_bigint::BigInt,
-    pub other: std::collections::HashMap<u32, num_bigint::BigInt>,
+    pub grams: BigInt,
+    pub other: HashMap<u32, BigInt>,
 }
 
 impl SignedCurrencyCollection {
     pub fn new() -> Self {
-        SignedCurrencyCollection { grams: 0.into(), other: std::collections::HashMap::new() }
+        SignedCurrencyCollection { grams: BigInt::default(), other: HashMap::new() }
     }
 
     pub fn from_cc(cc: &CurrencyCollection) -> tvm_types::Result<Self> {
-        let mut other = std::collections::HashMap::new();
+        let mut other = HashMap::new();
+
         cc.other_as_hashmap().iterate_slices(
             |ref mut key, ref mut value| -> tvm_types::Result<bool> {
                 let key = key.get_next_u32()?;
@@ -31,29 +36,23 @@ impl SignedCurrencyCollection {
 
     pub fn add(&mut self, other: &Self) {
         self.grams += &other.grams;
-        for (key, value) in self.other.iter_mut() {
-            if let Some(other_value) = other.other.get(key) {
-                *value += other_value;
-            }
-        }
-        for (key, value) in other.other.iter() {
-            if !self.other.contains_key(key) {
-                self.other.insert(*key, value.clone());
-            }
+
+        for (&key, other_val) in &other.other {
+            self.other
+                .entry(key)
+                .and_modify(|v| *v += other_val)
+                .or_insert_with(|| other_val.clone());
         }
     }
 
     pub fn sub(&mut self, other: &Self) {
         self.grams -= &other.grams;
-        for (key, value) in self.other.iter_mut() {
-            if let Some(other_value) = other.other.get(key) {
-                *value -= other_value;
-            }
-        }
-        for (key, value) in other.other.iter() {
-            if !self.other.contains_key(key) {
-                self.other.insert(*key, -value.clone());
-            }
+
+        for (&key, other_val) in &other.other {
+            self.other
+                .entry(key)
+                .and_modify(|v| *v -= other_val)
+                .or_insert_with(|| -other_val.clone());
         }
     }
 }

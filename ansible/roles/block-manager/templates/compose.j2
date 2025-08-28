@@ -1,0 +1,103 @@
+services:
+  nginx_bm:
+    image: {{ NGINX_IMAGE }}
+    restart: unless-stopped
+    networks:
+      - ackinacki-net
+    environment:
+      - MESSAGE_ROUTER_ADDRESS=block_manager:{{ BM_API_PORT }}
+      - Q_SERVER_ADDRESS=q_server_bm:3000
+      - NODE_API_ADDRESS=block_manager:{{ BM_API_PORT }}
+      - BLOCK_MANAGER_API=block_manager::{{ BM_API_PORT }}
+    ports:
+      - target: 80
+{% if NGINX_IP == "public" %}
+        host_ip: {{ HOST_PUBLIC_IP }}
+{% elif NGINX_IP == "private" %}
+        host_ip: {{ HOST_PRIVATE_IP }}
+{% else %}
+        host_ip: {{ NGINX_IP }}
+{% endif %}
+        published: {{ NGINX_PORT }}
+        protocol: tcp
+
+  q_server_bm:
+    image: {{ GQL_IMAGE }}
+    entrypoint: []
+    restart: unless-stopped
+    environment:
+      NODE_VERBOSE: 1
+    command:
+      - bash
+      - -c
+      - >
+        gql-server -d ./data/bm-archive.db -l 0.0.0.0:3000
+    expose:
+      - "3000"
+    ports:
+      - {{ HOST_PRIVATE_IP }}:{{ Q_SERVER_MAPPED_PORT }}:3000
+    volumes:
+      - {{ BM_DATA_DIR }}/workdir:/workdir/data
+    networks:
+      - ackinacki-net
+    depends_on:
+      - block_manager
+
+  block_manager:
+    image: {{ BM_IMAGE }}
+    entrypoint: []
+    restart: unless-stopped
+    init: true
+    environment:
+        RUST_BACKTRACE: 1
+        RUST_LOG: debug
+        NODE_VERBOSE: 1
+        HTTP_SRC_URL: http://{{ NODE_IP }}:{{ BM_NODE_HTTP_URL_PORT }}
+        SQLITE_PATH: ./data
+        STREAM_SRC_URL: https://{{ NODE_IP }}:{{ BM_NODE_STREAM_PORT }}
+        BLOCK_MANAGER_API: 0.0.0.0:{{ BM_API_PORT }}
+        DEFAULT_BP: {{ NODE_IP }}:{{ BM_NODE_PORT }}
+        BM_OWNER_WALLET_PUBKEY: {{ BM_OWNER_WALLET_PUBKEY }}
+        BM_ISSUER_KEYS_FILE: /bm-configs/block_manager_signing.keys.json
+        TOKEN_TTL: {{ BM_TOKEN_TTL }}
+        BK_API_TOKEN: {{ BK_API_TOKEN }}
+        REST_API: 0.0.0.0:8600
+{# Adding service section #}
+{% include 'block-manager/bm_otel.j2' ignore missing +%}
+    command:
+      - bash
+      - -c
+      - >
+        migration-tool -p ./data --block-manager
+        && cp ./data/bm-archive.db ./data/bm-schema.db
+        && exec {{ BM_BINARY }} >> /logsdir/block-manager.log 2>&1
+    expose:
+      - {{ BM_API_PORT }}
+    ports:
+      - {{ BM_API_PORT }}:{{ BM_API_PORT }}
+      - "8600:8600/tcp"
+    volumes:
+      - {{ BM_DATA_DIR }}/workdir:/workdir/data
+      - {{ BM_DIR }}/bm-configs:/bm-configs
+      - {{ BM_LOGS_DIR }}:/logsdir
+    networks:
+      - ackinacki-net
+
+  logrotate:
+    image: {{ LOGROTATE_IMAGE }}
+    restart: unless-stopped
+    environment:
+      - CRON_SCHEDULE="58 * * * *"
+    volumes:
+      - {{ BM_LOGS_DIR }}:/logsdir
+      - ./logrotate.sh:/logrotate.sh
+    command: [ "/bin/bash", "/logrotate.sh" ]
+    init: true
+
+networks:
+  ackinacki-net:
+    name: ackinacki-net
+{% if EXTERNAL_NET %}
+    external: true
+{% endif %}
+

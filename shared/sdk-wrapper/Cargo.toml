@@ -1,0 +1,15 @@
+[package]
+name = "sdk-wrapper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+license-file.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+tvm_client.workspace = true
+tvm_types.workspace = true
+
+tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.21.2.an" }

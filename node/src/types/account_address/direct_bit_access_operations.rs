@@ -8,25 +8,26 @@ pub trait DirectBitAccess {
 
 impl DirectBitAccess for AccountAddress {
     fn get_bit_value(&self, index: usize) -> bool {
-        self.0.get_bit_opt(index).expect("index out of bounds")
+        let bytes = self.0.as_array();
+        if index >= 256 {
+            panic!("index out of bounds")
+        }
+        let hi = index / 8;
+        let lo = index % 8;
+        ((bytes[hi] >> (7 - lo)) & 1) != 0
     }
 
     // TODO: value assumed to be always true, can be removed from arg
     fn set_bit_value(&mut self, index: usize, value: bool) {
         assert!(value, "set_bit_value: value must be true");
-        if index >= self.0.remaining_bits() {
+        if index >= 256 {
             panic!("index out of bounds");
-        } else {
-            let mut buffer: [u8; 32] = self
-                .0
-                .get_bytestring(0)
-                .try_into()
-                .expect("Account address must be an uint256 value");
-            let hi = index / 8usize;
-            let lo = 7 - index % 8usize;
-            buffer[hi] |= 1 << lo;
-            self.0 = tvm_types::AccountId::from(buffer);
         }
+        let mut buffer = *self.0.as_array();
+        let hi = index / 8usize;
+        let lo = 7 - index % 8usize;
+        buffer[hi] |= 1 << lo;
+        self.0 = buffer.into();
     }
 }
 

@@ -15,12 +15,13 @@ use crate::multithreading::thread_synchrinization_service::ThreadSyncService;
 use crate::multithreading::threads_tracking_service::ThreadsTrackingService;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::CrossThreadRefDataRepository;
+use crate::storage::CrossRefStorage;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::utilities::FixedSizeHashSet;
 
-const DIRTY_HACK__CACHE_SIZE: usize = 10000; // 100 blocks for 100 threads.
+const DIRTY_HACK_CACHE_SIZE: usize = 10000; // 100 blocks for 100 threads.
 
 #[derive(Clone)]
 pub struct SharedServices {
@@ -54,9 +55,21 @@ impl SharedServices {
     #[cfg(test)]
     pub fn test_start(router: RoutingService, rate: u32) -> Self {
         // An alias to make a little easier code navigation
-        Self::start(router, PathBuf::from("./data-dir-test"), None, 5000, 100, rate, 1)
+
+        use crate::storage::CrossRefStorage;
+        Self::start(
+            router,
+            PathBuf::from("./data-dir-test"),
+            None,
+            5000,
+            100,
+            rate,
+            1,
+            CrossRefStorage::as_noop(),
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         router: RoutingService,
         data_dir: PathBuf,
@@ -65,6 +78,7 @@ impl SharedServices {
         thread_load_window_size: usize,
         rate_limit_on_incoming_block_req: u32,
         thread_cnt_soft_limit: usize,
+        crossref_db: CrossRefStorage,
     ) -> Self {
         Self {
             container: Arc::new(Mutex::new(Container {
@@ -79,10 +93,11 @@ impl SharedServices {
                 cross_thread_ref_data_service: CrossThreadRefDataRepository::new(
                     data_dir,
                     thread_cnt_soft_limit,
+                    crossref_db,
                 ),
-                dirty_hack__appended_blocks: FixedSizeHashSet::new(DIRTY_HACK__CACHE_SIZE),
-                dirty_hack__finalized_blocks: FixedSizeHashSet::new(DIRTY_HACK__CACHE_SIZE),
-                dirty_hack__invalidated_blocks: FixedSizeHashSet::new(DIRTY_HACK__CACHE_SIZE),
+                dirty_hack__appended_blocks: FixedSizeHashSet::new(DIRTY_HACK_CACHE_SIZE),
+                dirty_hack__finalized_blocks: FixedSizeHashSet::new(DIRTY_HACK_CACHE_SIZE),
+                dirty_hack__invalidated_blocks: FixedSizeHashSet::new(DIRTY_HACK_CACHE_SIZE),
             })),
             metrics,
             // Arc is enough for the rate limiter, since its state lives in AtomicU64
@@ -98,18 +113,27 @@ impl SharedServices {
     where
         F: FnOnce(&mut Container) -> R,
     {
+        #[cfg(feature = "fail_on_long_lock")]
+        let start = std::time::Instant::now();
         let mut services = self.container.lock().expect("Can not be poisoned");
-        f(&mut services)
-    }
-
-    pub fn on_block_appended(&mut self, _block: &AckiNackiBlock) {
-        // No actions.
+        let result = f(&mut services);
+        drop(services);
+        #[cfg(feature = "fail_on_long_lock")]
+        {
+            let elapsed = start.elapsed().as_millis();
+            tracing::trace!("Shared_services exec time: {:?} ms", elapsed);
+            if elapsed > 50 {
+                tracing::warn!("too long shared services exec time: {:?}", elapsed);
+                tracing::warn!("{:?}", std::backtrace::Backtrace::force_capture());
+            }
+        }
+        result
     }
 
     pub fn on_block_finalized<TOptimisticState>(
         &mut self,
         block: &AckiNackiBlock,
-        state: &mut TOptimisticState,
+        state: Arc<TOptimisticState>,
     ) where
         TOptimisticState: OptimisticState,
     {

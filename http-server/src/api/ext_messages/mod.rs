@@ -2,9 +2,13 @@
 //
 
 use std::borrow::Cow;
+use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
+use ext_messages_auth::auth::Token;
+pub(crate) use message::ExternalMessage;
+pub(crate) use message::IncomingExternalMessage;
 use salvo::http::StatusCode;
 use salvo::writing::Json;
 use salvo::Response;
@@ -15,8 +19,7 @@ use serde_with::Bytes;
 use tvm_types::write_boc;
 use tvm_types::SliceData;
 
-pub(crate) mod token;
-pub mod v1;
+mod message;
 pub mod v2;
 
 #[serde_as]
@@ -59,15 +62,26 @@ impl From<ThreadIdentifier> for [u8; 34] {
     }
 }
 
+impl Debug for ThreadIdentifier {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", hex::encode(self.0))
+    }
+}
+
 #[derive(Serialize, Clone, Debug, Default)]
 pub struct ExtMsgResponse {
     result: Option<ExtMsgResult>,
     error: Option<ExtMsgError>,
+    ext_message_token: Option<Token>,
 }
 
 impl ExtMsgResponse {
     pub fn new_with_error(code: String, message: String, data: Option<ExtMsgErrorData>) -> Self {
-        Self { result: None, error: Some(ExtMsgError::new(code, message, data)) }
+        Self {
+            result: None,
+            error: Some(ExtMsgError::new(code, message, data)),
+            ext_message_token: None,
+        }
     }
 
     fn set_producers(&mut self, producers: Vec<String>) {
@@ -340,6 +354,7 @@ pub(crate) fn render_error_response(
     code: &str,
     message: Option<&str>,
     data: Option<ExtMsgErrorData>,
+    ext_message_token: Option<Token>,
 ) {
     res.status_code(StatusCode::BAD_REQUEST);
     res.render(Json(ExtMsgResponse {
@@ -349,10 +364,16 @@ pub(crate) fn render_error_response(
             message: message.unwrap_or(code).to_string(),
             data,
         }),
+        ext_message_token,
     }));
 }
 
-pub(crate) fn render_error(res: &mut Response, status: StatusCode, message: &str) {
+pub(crate) fn render_error(
+    res: &mut Response,
+    status: StatusCode,
+    message: &str,
+    ext_message_token: Option<Token>,
+) {
     res.status_code(status);
     res.render(Json(ExtMsgResponse {
         result: None,
@@ -361,5 +382,6 @@ pub(crate) fn render_error(res: &mut Response, status: StatusCode, message: &str
             message: message.to_string(),
             data: None,
         }),
+        ext_message_token,
     }));
 }

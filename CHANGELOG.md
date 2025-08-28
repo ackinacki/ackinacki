@@ -2,9 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.6.2] - 2025-07-16
+## [0.7.0] - 2025-08-29
+
+### New
+- External messages authorization on BK using a pubkey from BK set
+- Block Manager database rotation
+- Fallback protocol support
+- Chain invalidation mechanism
+- Store cross-reference data, internal messages, and action locks in Aerospike DB
+- `get_account` BK endpoint now returns `{boc, dapp_id}`
+- Account events now exposed in GQL API
+- WASM binary added for Multifactor Wallet token validation
 
 ### Improvements
+- `Mobile Verifiers` contract system updates
+- Avoid config reload on BK set update
+- Proxy role enhancements
+- Block Manager scripts enhancements
+- Reduced block state repository lock time on initial state load
+- Zerostate verification logic added
+- Optimistic state is saved via a separate service
+- `last_seqno` metric added to BM 
+- Outbound accounts metric added to BK
+- Panic hook added to BM
+- State saving performance improved
+- Block apply disabled on BP
+
+### Fixed
+- Apply failure 
+- Split state condition
+  
+## [0.6.2] - 2025-07-16 
+
+### Improvements 
 - External messages processing optimizations
 
 ## [0.6.1] - 2025-07-10

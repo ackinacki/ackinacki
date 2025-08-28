@@ -7,11 +7,12 @@ use serde::Serialize;
 use serde::Serializer;
 use tvm_block::Deserializable;
 use tvm_block::Serializable;
-use tvm_types::UInt256;
+
+use crate::types::AccountAddress;
 
 #[derive(Clone, PartialEq)]
 pub struct WrappedAccount {
-    pub account_id: UInt256,
+    pub account_id: AccountAddress,
     pub account: tvm_block::ShardAccount,
     pub aug: tvm_block::DepthBalanceInfo,
 }
@@ -24,7 +25,7 @@ impl Debug for WrappedAccount {
 
 #[derive(Serialize, Deserialize)]
 struct WrappedAccountData {
-    account_id: [u8; 32],
+    account_id: AccountAddress,
     data: Vec<u8>,
     aug: Vec<u8>,
 }
@@ -32,7 +33,7 @@ struct WrappedAccountData {
 impl WrappedAccount {
     fn wrap_serialize(&self) -> WrappedAccountData {
         WrappedAccountData {
-            account_id: self.account_id.clone().inner(),
+            account_id: self.account_id.clone(),
             data: self.account.write_to_bytes().unwrap(),
             aug: self.aug.write_to_bytes().unwrap(),
         }
@@ -40,7 +41,7 @@ impl WrappedAccount {
 
     fn wrap_deserialize(data: WrappedAccountData) -> Self {
         Self {
-            account_id: UInt256::from(data.account_id),
+            account_id: data.account_id.clone(),
             account: tvm_block::ShardAccount::construct_from_bytes(&data.data).unwrap(),
             aug: tvm_block::DepthBalanceInfo::construct_from_bytes(&data.aug).unwrap(),
         }

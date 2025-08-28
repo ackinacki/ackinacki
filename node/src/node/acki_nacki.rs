@@ -2,7 +2,6 @@
 //
 
 use crate::bls::envelope::BLSSignedEnvelope;
-use crate::node::associated_types::BlockStatus;
 use crate::node::associated_types::NackReason;
 use crate::node::associated_types::NodeAssociatedTypes;
 use crate::node::services::sync::StateSyncService;
@@ -19,75 +18,6 @@ where
     TStateSyncService: StateSyncService<Repository = RepositoryImpl>,
     TRandomGenerator: rand::Rng,
 {
-    // pub(crate) fn _generate_nack(
-    //     &self,
-    //     block_id: BlockIdentifier,
-    //     block_seq_no: BlockSeqNo,
-    //     reason: NackReason,
-    // ) -> anyhow::Result<Option<<Self as NodeAssociatedTypes>::Nack>> {
-    //     if let Some((signer_index, secret)) = self.get_signer_data_for_block_id(block_id.clone()) {
-    //         let nack_data = NackData { block_id, block_seq_no, reason };
-    //         let signature = <GoshBLS as BLSSignatureScheme>::sign(&secret, &nack_data)?;
-    //         let mut signature_occurrences = HashMap::new();
-    //         signature_occurrences.insert(signer_index, 1);
-    //
-    //         Ok(Some(<Self as NodeAssociatedTypes>::Nack::create(
-    //             signature,
-    //             signature_occurrences,
-    //             nack_data,
-    //         )))
-    //     } else {
-    //         Ok(None)
-    //     }
-    // }
-
-    pub(crate) fn _parse_block_acks_and_nacks(
-        &mut self,
-        candidate_block: &<Self as NodeAssociatedTypes>::CandidateBlock,
-    ) -> anyhow::Result<BlockStatus> {
-        tracing::trace!("parse_block_acks_and_nacks");
-        tracing::trace!("sent_acks len: {}", self.sent_acks.len());
-        let received_acks = &candidate_block.data().get_common_section().acks;
-        tracing::trace!("received_acks len: {}", received_acks.len());
-        let keys_ring = self.get_block_keeper_pubkeys(candidate_block.data().parent()).unwrap();
-
-        // clear received acks from sent acks
-        for ack in received_acks {
-            if !ack.verify_signatures(&keys_ring)? {
-                return Ok(BlockStatus::BadBlock);
-            }
-            let sigs = ack.clone_signature_occurrences();
-            if let Some(signer_index) =
-                self.get_node_signer_index_for_block_id(ack.data().block_id.clone())
-            {
-                if sigs.contains_key(&signer_index) {
-                    tracing::trace!("remove ack from cache: {:?}", ack.data());
-                    self.sent_acks.remove(&ack.data().block_seq_no);
-                }
-            }
-        }
-        tracing::trace!("sent_acks after clear len: {}", self.sent_acks.len());
-
-        // If Ack was sent long ago enough and was not added to block, broadcast it and remove from cache
-        // let keys: Vec<BlockSeqNo> = self.sent_acks.keys().copied().collect();
-        // for seq_no in keys {
-        //     if seq_no + BROADCAST_ACK_BLOCK_DIFF < candidate_block.data().seq_no() {
-        //         let ack = self.sent_acks.remove(&seq_no).unwrap();
-        //         self.broadcast_ack(ack)?;
-        //     }
-        // }
-
-        let received_nacks = &candidate_block.data().get_common_section().nacks;
-        tracing::trace!("received_nacks len: {}", received_nacks.len());
-        for nack in received_nacks {
-            if !nack.verify_signatures(&keys_ring)? {
-                return Ok(BlockStatus::BadBlock);
-            }
-            self.on_nack(nack)?;
-        }
-        Ok(BlockStatus::Ok)
-    }
-
     pub(crate) fn on_ack(
         &mut self,
         ack: &<Self as NodeAssociatedTypes>::Ack,

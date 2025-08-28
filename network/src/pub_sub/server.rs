@@ -34,35 +34,38 @@ pub async fn listen_incoming_connections<Transport>(
 where
     Transport: NetTransport + 'static,
 {
+    let mut bind = network_config_rx.borrow().bind;
+    let mut credential = network_config_rx.borrow().credential.clone();
     loop {
-        let network_config = network_config_rx.borrow().clone();
         let listener = pub_sub
             .transport
             .create_listener(
-                network_config.bind,
+                bind,
                 &[
                     ACKI_NACKI_SUBSCRIPTION_FROM_PROXY_PROTOCOL,
                     ACKI_NACKI_SUBSCRIPTION_FROM_NODE_PROTOCOL,
                     ACKI_NACKI_DIRECT_PROTOCOL,
                 ],
-                network_config.credential.clone(),
+                credential.clone(),
             )
             .await?;
-        tracing::info!(
-            "Start listening for incoming connections on {}",
-            network_config.bind.to_string()
-        );
-        tracing::info!(
-            "Pub sub started with host id {}",
-            network_config.credential.identity_prefix()
-        );
+        tracing::info!("Start listening for incoming connections on {}", bind.to_string());
+        tracing::info!("Pub sub started with host id {}", credential.identity_prefix());
         loop {
             let request = tokio::select! {
                 request = listener.accept() => request?,
                 sender = network_config_rx.changed() => if sender.is_err() {
                     return Ok(());
                 } else {
-                    break;
+                    let new_config = network_config_rx.borrow();
+                    if new_config.bind != bind || new_config.credential != credential {
+                        bind = new_config.bind;
+                        credential = new_config.credential.clone();
+                        tracing::info!("Listener config changed. Restarting listener.");
+                        break;
+                    } else {
+                        continue;
+                    }
                 },
                 sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
                     return Ok(());

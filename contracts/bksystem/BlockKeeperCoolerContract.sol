@@ -16,15 +16,13 @@ import "./AckiNackiBlockKeeperNodeWallet.sol";
 
 contract BlockKeeperCooler is Modifiers {
     string constant version = "1.0.0";
-    mapping(uint8 => TvmCell) _code;
 
     uint256 static _owner_pubkey;
     address _root; 
     uint64 static _seqNoStart;
     uint64 _seqNoFinish;
     address _owner;
-    bytes _bls_pubkey;
-    uint256 _stake;
+    uint128 _stake;
     uint16 _signerIndex;
     LicenseStake[] _licenses;
 
@@ -32,12 +30,23 @@ contract BlockKeeperCooler is Modifiers {
         uint64 waitStep,
         address owner,
         address root,
-        bytes bls_pubkey,
-        mapping(uint8 => TvmCell) code,
         uint16 signerIndex,
         LicenseStake[] licenses,
-        uint128 epochDuration,
-        bool is_continue
+        uint128 stake,
+        bool isContinue,
+        uint128 stakeContinue, 
+        uint64 epochDurationContinue, 
+        uint64 waitStepContinue, 
+        bytes bls_pubkeyContinue, 
+        uint16 signerIndexContinue, 
+        LicenseStake[] licensesContinue, 
+        optional(uint128) virtualStakeContinue, 
+        uint128 reward_sum_continue,
+        string myIp,
+        uint32 unixtimeStart,
+        uint128 reward_adjustment,
+        uint128 sumReputationCoefContinue,
+        optional(uint8) slash_type
     ) {
         TvmCell data = abi.codeSalt(tvm.code()).get();
         (string lib, address epoch) = abi.decode(data, (string, address));
@@ -46,42 +55,56 @@ contract BlockKeeperCooler is Modifiers {
         require(msg.sender == epoch, ERR_SENDER_NO_ALLOWED);
         _seqNoFinish = block.seqno + waitStep;
         _owner = owner;
-        _bls_pubkey = bls_pubkey;
-        _code = code;
-        _stake = msg.currencies[CURRENCIES_ID];
+        _stake = stake;
         _signerIndex = signerIndex;
         _licenses = licenses;
-        AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode], _root, _owner_pubkey)).updateLockStakeCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, _seqNoFinish, _licenses, epochDuration, is_continue);
+        AckiNackiBlockKeeperNodeWallet(_owner).updateLockStakeCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, _seqNoFinish, _licenses, isContinue, block.timestamp - unixtimeStart);
+        if ((isContinue) && (!slash_type.hasValue())) {
+            mapping(uint32 => varuint32) data_cur;
+            data_cur[CURRENCIES_ID] = varuint32(stakeContinue);
+            AckiNackiBlockKeeperNodeWallet(_owner).deployBlockKeeperContractContinueAfterDestroy{value: 0.1 vmshell, flag: 1, currencies: data_cur}(epochDurationContinue, waitStepContinue, bls_pubkeyContinue, _seqNoStart, signerIndexContinue, licensesContinue, _licenses, virtualStakeContinue, reward_sum_continue, myIp, reward_adjustment, sumReputationCoefContinue, block.timestamp - unixtimeStart);
+        }
+        if (slash_type.hasValue()) {
+            this.slash{value: 0.1 vmshell, flag: 1}(slash_type.get(), true);
+        }
     }
 
     function ensureBalance() private pure {
         if (address(this).balance > FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_COOLER_WALLET) { return; }
-        gosh.mintshell(FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_COOLER_WALLET);
+        gosh.mintshellq(FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_COOLER_WALLET);
     }
 
-    function slash(uint8 slash_type) public senderIs(_owner) accept {  
+    function slash(uint8 slash_type, bool isFromEpoch) public senderOfTwo(_owner, address(this)) accept {  
         ensureBalance();
         if (slash_type == FULL_STAKE_SLASH) {
-            AckiNackiBlockKeeperNodeWallet(_owner).slashCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, slash_type, 0, _licenses);
-            selfdestruct(_root);
+            AckiNackiBlockKeeperNodeWallet(_owner).slashCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, slash_type, 0, _licenses, isFromEpoch);
+            BlockKeeperContractRoot(_root).coolerSlash{value: 0.1 vmshell, flag: 161, bounce: false}(_seqNoStart, _owner_pubkey, uint128(_licenses.length), true);       
             return;
         }                
-        uint256 slash_stake = _stake * slash_type / 100;
-        mapping(uint32 => varuint32) data_cur;
-        data_cur[CURRENCIES_ID] = varuint32(slash_stake);
-        _root.transfer({value: 0.1 vmshell, currencies: data_cur, flag: 1});
+        uint128 reward = uint128(address(this).currencies[CURRENCIES_ID]) - _stake;
+        uint128 slash_stake_reward = reward * slash_type / FULL_STAKE_PERCENT;
+        uint128 slash_stake = 0;
+        for (uint i = 0; i < _licenses.length; i++) {
+            slash_stake = slashPartHelper(i, slash_type, slash_stake);   
+        }
         _stake -= slash_stake;
-        AckiNackiBlockKeeperNodeWallet(_owner).slashCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, slash_type, slash_stake, _licenses);            
+        mapping(uint32 => varuint32) data_cur; 
+        data_cur[CURRENCIES_ID] = varuint32(slash_stake + slash_stake_reward);
+        AckiNackiBlockKeeperNodeWallet(_owner).slashCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, slash_type, slash_stake, _licenses, isFromEpoch);    
+        BlockKeeperContractRoot(_root).coolerSlash{value: 0.1 vmshell, currencies: data_cur, flag: 1}(_seqNoStart, _owner_pubkey, uint128(_licenses.length), false);       
     }
 
-    function touch() public saveMsg {       
-        if (_seqNoFinish <= block.seqno) { tvm.accept(); }
-        else { return; }    
+    function slashPartHelper(uint i, uint8 slash_type, uint128 slash_stake) private returns(uint128) {
+        uint128 slash_value = _licenses[i].stake * slash_type / FULL_STAKE_PERCENT;
+        _licenses[i].stake -= slash_value;
+        slash_stake += slash_value;
+        return slash_stake;
+    }
+
+    function touch() public view senderIs(_owner) accept {       
         ensureBalance();
-        mapping(uint32 => varuint32) data_cur;
-        data_cur[CURRENCIES_ID] = address(this).currencies[CURRENCIES_ID];
-        AckiNackiBlockKeeperNodeWallet(_owner).unlockStakeCooler{value: 0.1 vmshell, flag: 1, currencies: data_cur}(_seqNoStart, _licenses);
-        selfdestruct(_owner);
+        if (_seqNoFinish > block.seqno) { return; }
+        AckiNackiBlockKeeperNodeWallet(_owner).unlockStakeCooler{value: 0.1 vmshell, flag: 161, bounce: false}(_seqNoStart, _licenses, _stake);
     }
     
     //Fallback/Receive

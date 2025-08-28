@@ -8,6 +8,7 @@ use opentelemetry::metrics::Histogram;
 use opentelemetry::metrics::Meter;
 use opentelemetry::metrics::UpDownCounter;
 use opentelemetry::KeyValue;
+use telemetry_utils::instrumented_channel_ext::XInstrumentedChannelMetrics;
 use telemetry_utils::mpsc::InstrumentedChannelMetrics;
 use telemetry_utils::out_of_bounds_guard;
 use telemetry_utils::TokioMetrics;
@@ -55,6 +56,16 @@ struct BlockProductionMetricsInner {
     blocks_requested: Counter<u64>,
     unfinalized_blocks_queue: Gauge<u64>,
     bk_set_size: Gauge<u64>,
+    internal_message_queue_length: Gauge<u64>,
+    aerospike_messages_write_busy: Counter<u64>,
+    aerospike_read: Histogram<f64>,
+    aerospike_write: Histogram<f64>,
+    aerospike_write_err: Counter<u64>,
+    aerospike_read_err: Counter<u64>,
+    accounts_number: Gauge<u64>,
+    generate_merkle_update_time: Histogram<u64>,
+    outbound_accounts: Counter<u64>,
+    saved_states_counter: Counter<u64>,
 }
 
 pub const BK_SET_UPDATE_CHANNEL: &str = "bk_set_update";
@@ -67,8 +78,18 @@ pub const PRODUCE_CONTROL_CHANNEL: &str = "produce_control";
 pub const PRODUCE_THREAD_RESULT_CHANNEL: &str = "produce_thread_result";
 pub const RAW_BLOCK_CHANNEL: &str = "raw_block";
 pub const ROUTING_COMMAND_CHANNEL: &str = "routing_command";
+pub const THREAD_RECEIVER_CHANNEL: &str = "thread_receiver";
+pub const AUTHORITY_RECEIVER_CHANNEL: &str = "authority_receiver";
 pub const ROUTING_DISPATCHER_CHANNEL: &str = "routing_dispatcher";
 pub const STATE_LOAD_RESULT_CHANNEL: &str = "state_load_result";
+pub const CROSS_THREAD_REF_DATA_AVAILABILITY_SYNCHRONIZATION_SERVICE_CHANNEL: &str =
+    "cross_thread_ref_data_availability_synchronization";
+pub const BLOCK_STATE_SAVE_CHANNEL: &str = "block_state_save_channel";
+pub const OPTIMISTIC_STATE_SAVE_CHANNEL: &str = "optimistic_state_save_channel";
+
+pub const AEROSPIKE_OBJECT_TYPE_INT_MESSAGES: &str = "int_messages";
+pub const AEROSPIKE_OBJECT_TYPE_CROSS_REF_DATA: &str = "cross_ref_data";
+pub const AEROSPIKE_OBJECT_TYPE_CROSS_ACTION_LOCK: &str = "action_lock";
 
 #[derive(Clone)]
 pub struct Metrics {
@@ -109,6 +130,10 @@ impl BlockProductionMetrics {
                     0.0, 10.0, 30.0, 50.0, 80.0, 110.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0,
                     700.0, 1000.0,
                 ])
+                .build(),
+            generate_merkle_update_time: meter
+                .u64_histogram("node_generate_merkle_update_time")
+                .with_boundaries(vec![0.0, 5.0, 10.0, 20.0, 30.0, 50.0, 80.0, 100.0, 150.0, 200.0])
                 .build(),
             finalization_time: meter
                 .u64_histogram("node_finalization_time")
@@ -210,6 +235,31 @@ impl BlockProductionMetrics {
                 .u64_histogram("node_attn_target_descendant_generations")
                 .with_boundaries((0..=20).map(|x| x as f64).collect())
                 .build(),
+
+            #[cfg(feature = "monitor-accounts-number")]
+            accounts_number: meter.u64_gauge("node_accounts_number").build(),
+            aerospike_messages_write_busy: meter
+                .u64_counter("node_aerospike_messages_write_busy")
+                .build(),
+            internal_message_queue_length: meter
+                .u64_gauge("node_internal_message_queue_length")
+                .build(),
+            aerospike_write: meter
+                .f64_histogram("node_aerospike_write")
+                .with_boundaries(vec![
+                    100.0, 200.0, 400.0, 600.00, 1000.0, 1500.0, 2000.0, 3000.0, 5000.0, 10000.0,
+                ])
+                .build(),
+            aerospike_read: meter
+                .f64_histogram("node_aerospike_read")
+                .with_boundaries(vec![
+                    100.0, 200.0, 400.0, 600.00, 1000.0, 1500.0, 2000.0, 3000.0, 5000.0, 10000.0,
+                ])
+                .build(),
+            aerospike_write_err: meter.u64_counter("node_aerospike_write_err").build(),
+            aerospike_read_err: meter.u64_counter("node_aerospike_read_err").build(),
+            outbound_accounts: meter.u64_counter("node_outbound_accounts").build(),
+            saved_states_counter: meter.u64_counter("node_saved_states_counter").build(),
         }))
     }
 
@@ -239,11 +289,20 @@ impl BlockProductionMetrics {
         self.0.block_apply_time.record(value, &[thread_id_attr(thread_id)]);
     }
 
+    pub fn report_generate_merkle_update_time(&self, value: u64, thread_id: &ThreadIdentifier) {
+        self.0.generate_merkle_update_time.record(value, &[thread_id_attr(thread_id)]);
+    }
+
     pub fn report_finalization(&self, seq_no: u32, tx_count: usize, thread_id: &ThreadIdentifier) {
         self.0.block_finalized.add(1, &[thread_id_attr(thread_id)]);
         self.0.last_finalized_seqno.record(seq_no as u64, &[thread_id_attr(thread_id)]);
 
         self.0.tx_finalized.add(tx_count as u64, &[thread_id_attr(thread_id)]);
+    }
+
+    #[cfg(feature = "monitor-accounts-number")]
+    pub fn report_accounts_number(&self, accounts_number: u64, thread_id: &ThreadIdentifier) {
+        self.0.accounts_number.record(accounts_number, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_finalization_time(&self, duration_ms: u64, thread_id: &ThreadIdentifier) {
@@ -397,6 +456,38 @@ impl BlockProductionMetrics {
             .attn_target_descendant_generations
             .record(value as u64, &[thread_id_attr(thread_id)]);
     }
+
+    pub fn report_aerospike_messages_write_busy(&self, value: u64) {
+        self.0.aerospike_messages_write_busy.add(value, &[]);
+    }
+
+    pub fn report_internal_message_queue_length(&self, value: u64) {
+        self.0.internal_message_queue_length.record(value, &[]);
+    }
+
+    pub fn report_aerospike_write(&self, value: f64, object_type: &'static str) {
+        self.0.aerospike_write.record(value, &[KeyValue::new("object_type", object_type)]);
+    }
+
+    pub fn report_aerospike_read(&self, value: f64, object_type: &'static str) {
+        self.0.aerospike_read.record(value, &[KeyValue::new("object_type", object_type)]);
+    }
+
+    pub fn report_aerospike_write_err(&self, object_type: &'static str) {
+        self.0.aerospike_write_err.add(1, &[KeyValue::new("object_type", object_type)]);
+    }
+
+    pub fn report_aerospike_read_err(&self, object_type: &'static str) {
+        self.0.aerospike_read_err.add(1, &[KeyValue::new("object_type", object_type)]);
+    }
+
+    pub fn report_outbound_accounts(&self, value: u64, thread_id: &ThreadIdentifier) {
+        self.0.outbound_accounts.add(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_saved_state(&self, thread_id: &ThreadIdentifier) {
+        self.0.saved_states_counter.add(1, &[thread_id_attr(thread_id)]);
+    }
 }
 
 impl InstrumentedChannelMetrics for BlockProductionMetrics {
@@ -404,7 +495,13 @@ impl InstrumentedChannelMetrics for BlockProductionMetrics {
         self.0.channel_len.add(delta as i64, &[KeyValue::new("channel", channel)]);
     }
 }
-
+impl XInstrumentedChannelMetrics for BlockProductionMetrics {
+    fn report_channel(&self, channel: &'static str, delta: isize, label: String) {
+        self.0
+            .channel_len
+            .add(delta as i64, &[KeyValue::new("channel", channel), KeyValue::new("tag", label)]);
+    }
+}
 fn thread_id_attr(thread_id: &ThreadIdentifier) -> KeyValue {
     KeyValue::new("thread", BlockProductionMetrics::thread_label(thread_id))
 }

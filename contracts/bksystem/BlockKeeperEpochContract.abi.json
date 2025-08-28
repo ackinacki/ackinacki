@@ -10,13 +10,15 @@
 				{"name":"epochDuration","type":"uint64"},
 				{"name":"bls_pubkey","type":"bytes"},
 				{"name":"code","type":"map(uint8,cell)"},
-				{"name":"isContinue","type":"bool"},
 				{"name":"sumReputationCoef","type":"uint128"},
 				{"name":"signerIndex","type":"uint16"},
 				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"virtualStake","type":"optional(uint128)"},
 				{"name":"reward_sum","type":"uint128"},
-				{"name":"myIp","type":"string"}
+				{"name":"myIp","type":"string"},
+				{"name":"isContinue","type":"bool"},
+				{"name":"reward_adjustment","type":"uint128"},
+				{"name":"timeStart","type":"optional(uint32)"}
 			],
 			"outputs": [
 			]
@@ -33,15 +35,12 @@
 		{
 			"name": "continueStake",
 			"inputs": [
-				{"name":"epochDuration","type":"uint64"},
-				{"name":"waitStep","type":"uint64"},
 				{"name":"bls_pubkey","type":"bytes"},
 				{"name":"signerIndex","type":"uint16"},
-				{"name":"rep_coef","type":"uint128"},
 				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"virtualStake","type":"optional(uint128)"},
 				{"name":"ProxyList","type":"map(uint8,string)"},
-				{"name":"reward_sum","type":"uint128"}
+				{"name":"sumReputationCoef","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -49,6 +48,14 @@
 		{
 			"name": "cancelContinueStake",
 			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "changeReputation",
+			"inputs": [
+				{"name":"value","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -69,9 +76,20 @@
 			]
 		},
 		{
+			"name": "cantDelete",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "canDelete",
 			"inputs": [
-				{"name":"reward","type":"uint256"}
+				{"name":"reward","type":"uint256"},
+				{"name":"epochDuration","type":"uint64"},
+				{"name":"waitStep","type":"uint64"},
+				{"name":"reward_adjustment","type":"uint128"},
+				{"name":"reward_sum","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -79,32 +97,17 @@
 		{
 			"name": "destroy",
 			"inputs": [
+				{"name":"epochDurationContinue","type":"uint64"},
+				{"name":"waitStepContinue","type":"uint64"},
+				{"name":"reward_adjustment_continue","type":"uint128"},
+				{"name":"reward_sum_continue","type":"uint128"}
 			],
 			"outputs": [
 			]
 		},
 		{
-			"name": "destroy_slash",
+			"name": "destroy_full_slash",
 			"inputs": [
-				{"name":"slash_type","type":"uint8"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "changeReputation",
-			"inputs": [
-				{"name":"is_inc","type":"bool"},
-				{"name":"value","type":"uint128"},
-				{"name":"num","type":"uint256"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "changeReputationContinue",
-			"inputs": [
-				{"name":"value","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -157,10 +160,8 @@
 	],
 	"fields": [
 		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
-		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
-		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
-		{"init":false,"name":"__value","type":"uint256"},
 		{"init":false,"name":"_code","type":"map(uint8,cell)"},
 		{"init":true,"name":"_owner_pubkey","type":"uint256"},
 		{"init":false,"name":"_root","type":"address"},
@@ -169,16 +170,14 @@
 		{"init":false,"name":"_bls_pubkey","type":"bytes"},
 		{"init":false,"name":"_isContinue","type":"bool"},
 		{"init":false,"name":"_waitStep","type":"uint64"},
-		{"init":false,"name":"_stake","type":"uint256"},
+		{"init":false,"name":"_stake","type":"uint128"},
 		{"init":false,"name":"_totalStake","type":"uint256"},
 		{"init":false,"name":"_owner_address","type":"address"},
-		{"init":false,"name":"_epochDurationContinue","type":"uint64"},
-		{"init":false,"name":"_waitStepContinue","type":"uint64"},
 		{"init":false,"name":"_bls_pubkeyContinue","type":"bytes"},
-		{"init":false,"name":"_stakeContinue","type":"uint256"},
-		{"init":false,"name":"_epochDuration","type":"uint64"},
+		{"init":false,"name":"_stakeContinue","type":"uint128"},
 		{"init":false,"name":"_numberOfActiveBlockKeepers","type":"uint128"},
 		{"init":false,"name":"_unixtimeStart","type":"uint32"},
+		{"init":false,"name":"_reward_adjustment","type":"uint128"},
 		{"init":false,"name":"_sumReputationCoef","type":"uint128"},
 		{"init":false,"name":"_sumReputationCoefContinue","type":"uint128"},
 		{"init":false,"name":"_signerIndex","type":"uint16"},
@@ -190,6 +189,9 @@
 		{"init":false,"name":"_virtualStake","type":"optional(uint128)"},
 		{"init":false,"name":"_virtualStakeContinue","type":"optional(uint128)"},
 		{"init":false,"name":"_reward_sum","type":"uint128"},
-		{"init":false,"name":"_reward_sum_continue","type":"uint128"}
+		{"init":false,"name":"_busy_seqno","type":"uint64"},
+		{"init":false,"name":"_is_full_slashing","type":"bool"},
+		{"init":false,"name":"_is_touching","type":"bool"},
+		{"init":false,"name":"_slash_type","type":"optional(uint8)"}
 	]
 }

@@ -1,8 +1,8 @@
 mod block_producer;
+pub mod memento;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicI32;
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -10,6 +10,7 @@ use std::time::Duration;
 use http_server::ExtMsgFeedbackList;
 use network::channel::NetBroadcastSender;
 use parking_lot::Mutex;
+use telemetry_utils::instrumented_channel_ext::XInstrumentedSender;
 use telemetry_utils::mpsc::InstrumentedSender;
 
 use crate::block::producer::process::TVMBlockProducerProcess;
@@ -27,6 +28,7 @@ use crate::node::shared_services::SharedServices;
 use crate::node::NetworkMessage;
 use crate::node::NodeIdentifier;
 use crate::protocol::authority_switch::action_lock::BlockProducerCommand;
+use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::BlockSeqNo;
 use crate::types::CollectedAttestations;
@@ -56,7 +58,8 @@ impl ProducerService {
         bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
         last_block_attestations: Arc<Mutex<CollectedAttestations>>,
         attestations_target_service: AttestationTargetsService,
-        self_tx: Sender<NetworkMessage>,
+        self_tx: XInstrumentedSender<NetworkMessage>,
+        self_authority_tx: XInstrumentedSender<NetworkMessage>,
         broadcast_tx: NetBroadcastSender<NetworkMessage>,
 
         node_identifier: NodeIdentifier,
@@ -66,10 +69,12 @@ impl ProducerService {
 
         is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
         bp_production_count: Arc<AtomicI32>,
+        save_optimistic_service_sender: InstrumentedSender<Arc<OptimisticStateImpl>>,
     ) -> anyhow::Result<Self> {
         let mut producer = BlockProducer::builder()
             .node_identifier(node_identifier)
             .self_tx(self_tx)
+            .self_authority_tx(self_authority_tx)
             .attestations_target_service(attestations_target_service)
             .production_timeout(production_timeout)
             .block_state_repository(block_state_repository)
@@ -88,6 +93,7 @@ impl ProducerService {
             .external_messages(external_messages)
             .is_state_sync_requested(is_state_sync_requested)
             .bp_production_count(bp_production_count)
+            .save_optimistic_service_sender(save_optimistic_service_sender)
             .build();
         let handler =
             std::thread::Builder::new().name("ProducerService".to_string()).spawn(move || {

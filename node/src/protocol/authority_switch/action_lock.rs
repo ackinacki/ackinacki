@@ -4,9 +4,14 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use derive_getters::Getters;
 use derive_setters::Setters;
+use network::channel::NetBroadcastSender;
 use network::channel::NetDirectSender;
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -15,6 +20,7 @@ use typed_builder::TypedBuilder;
 
 use super::find_last_prefinalized::find_last_prefinalized;
 use super::find_last_prefinalized::find_next_prefinalized;
+use super::round_time::RoundTime;
 use crate::bls::create_signed::CreateSealed;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
@@ -22,9 +28,12 @@ use crate::bls::gosh_bls::PubKey;
 use crate::bls::gosh_bls::Secret;
 use crate::bls::BLSSignatureScheme;
 use crate::bls::GoshBLS;
+use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::AttestationData;
+use crate::node::associated_types::AttestationTargetType;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
+use crate::node::block_state::tools::invalidate_branch;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::NetBlock;
 use crate::node::NetworkMessage;
@@ -35,29 +44,25 @@ use crate::protocol::authority_switch::network_message::Lock;
 use crate::protocol::authority_switch::network_message::NextRound;
 use crate::protocol::authority_switch::network_message::NextRoundReject;
 use crate::protocol::authority_switch::network_message::NextRoundSuccess;
+use crate::protocol::authority_switch::round_time::CalculateRoundResult;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
+use crate::storage::ActionLockStorage;
 use crate::types::bp_selector::ProducerSelector;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockHeight;
 use crate::types::BlockIdentifier;
+use crate::types::BlockRound;
 use crate::types::BlockSeqNo;
 use crate::types::RndSeed;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
 
-// This structure tells what actions had been done and prevents taking mutually exclusive actions.
-// At any moment in time node either sends an attestation or request an authority switch.
-//
-// If authority switch request was sent it prevents sending an attestation.
-
-pub type Round = u16;
-
 // Note: std::time::Instant is not serializable
 pub type Timeout = std::time::SystemTime;
 
-#[derive(Serialize, Deserialize, Getters, TypedBuilder, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Getters, TypedBuilder, Clone, PartialEq, Eq, Debug)]
 pub struct BlockRef {
     block_seq_no: BlockSeqNo,
     block_identifier: BlockIdentifier,
@@ -88,7 +93,7 @@ pub struct StartBlockProducerThreadInitialParameters {
     thread_identifier: ThreadIdentifier,
     parent_block_identifier: BlockIdentifier,
     parent_block_seq_no: BlockSeqNo,
-    round: u16,
+    round: BlockRound,
     nacked_blocks_bad_block: Vec<Arc<Envelope<GoshBLS, AckiNackiBlock>>>,
     // Aggregated BLS for the same lock
     proof_of_valid_start: Vec<Envelope<GoshBLS, Lock>>,
@@ -101,21 +106,24 @@ pub enum BlockProducerCommand {
     // Stop(thread),
 }
 
-#[derive(Serialize, Deserialize, Getters, Clone, TypedBuilder, Setters)]
+#[derive(Serialize, Deserialize, Getters, Clone, TypedBuilder, Setters, Debug)]
 #[setters(strip_option, prefix = "set_", borrow_self)]
 pub struct ActionLock {
     parent_block_producer_selector_data: ProducerSelector,
     parent_block: BlockRef,
     parent_prefinalization_proof: Option<Envelope<GoshBLS, AttestationData>>,
-    locked_round: u16,
-    locked_block: Option<BlockRef>,
+    locked_round: BlockRound,
+    locked_block: Option<(BlockRound, BlockRef)>,
 
     // It is possible that there were a block that was prefinalized and was invalidated
     // later due to the NACK. So this list will contain all of those blocks on the same hieght.
     // Those nacks MUST be included into the block produced or it will not be attestated.
     locked_bad_block_nacks: HashSet<BlockIdentifier>,
+    // current_round: BlockRound,
+}
 
-    current_round: u16,
+fn trace_lock(action_lock: &ActionLock, message: &str) {
+    tracing::trace!("{message}: {action_lock:?}");
 }
 
 #[derive(Clone)]
@@ -134,13 +142,184 @@ struct SiblingsBlockHeightKey {
 // Note:
 // ActionLock MUST be durable. Any time lock is set it must be stored on a disk.
 // Fail to do so may lead to stake slashing.
-#[derive(Getters, TypedBuilder)]
+
+#[derive(TypedBuilder)]
 pub struct Authority {
+    #[builder(setter(skip))]
+    #[builder(default = HashMap::new())]
+    authorities: HashMap<ThreadIdentifier, Arc<Mutex<ThreadAuthority>>>,
+    round_buckets: RoundTime,
     data_dir: PathBuf,
     node_identifier: NodeIdentifier,
     bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
+    block_repository: RepositoryImpl,
+    block_state_repository: BlockStateRepository,
+    network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
+    bp_production_count: Arc<AtomicI32>,
+    network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
+    node_joining_timeout: Duration,
+    action_lock_db: ActionLockStorage,
+}
 
-    action_lock: HashMap<BlockHeight, ActionLock>,
+impl Authority {
+    pub fn get_thread_authority(
+        &mut self,
+        thread_id: &ThreadIdentifier,
+    ) -> Arc<Mutex<ThreadAuthority>> {
+        Arc::clone(
+            self.authorities.entry(*thread_id).or_insert(Arc::new(Mutex::new(
+                ThreadAuthority::builder()
+                    .thread_id(*thread_id)
+                    .round_buckets(self.round_buckets.clone())
+                    .action_lock_data_dir(
+                        self.data_dir.clone().join(format!("{thread_id:?}")),
+                        self.action_lock_db.clone(),
+                    )
+                    .node_identifier(self.node_identifier.clone())
+                    .bls_keys_map(self.bls_keys_map.clone())
+                    .block_repository(self.block_repository.clone())
+                    .block_state_repository(self.block_state_repository.clone())
+                    .network_direct_tx(self.network_direct_tx.clone())
+                    .bp_production_count(self.bp_production_count.clone())
+                    .network_broadcast_tx(self.network_broadcast_tx.clone())
+                    .node_joining_timeout(self.node_joining_timeout)
+                    .build(),
+            ))),
+        )
+    }
+}
+
+impl AllowGuardedMut for ThreadAuthority {}
+
+pub struct ActionLockCollection {
+    preloaded: HashMap<BlockHeight, Option<ActionLock>>,
+    data_dir: PathBuf,
+    action_lock_db: ActionLockStorage,
+}
+
+impl ActionLockCollection {
+    pub fn new(data_dir: PathBuf, action_lock_db: ActionLockStorage) -> Self {
+        Self { data_dir, preloaded: HashMap::new(), action_lock_db }
+    }
+
+    pub fn get_mut(
+        &mut self,
+        block_height: &BlockHeight,
+        block_state_repository: &BlockStateRepository,
+    ) -> Option<&mut ActionLock> {
+        self.preload(block_height);
+        if !self.is_active(block_height, block_state_repository) {
+            self.preloaded.insert(*block_height, None);
+        }
+        match self.preloaded.get_mut(block_height) {
+            None => None,
+            Some(inner) => inner.as_mut(),
+        }
+    }
+
+    pub fn get(
+        &mut self,
+        block_height: &BlockHeight,
+        block_state_repository: &BlockStateRepository,
+    ) -> Option<&ActionLock> {
+        self.preload(block_height);
+        if !self.is_active(block_height, block_state_repository) {
+            return None;
+        }
+        match self.preloaded.get(block_height) {
+            None => None,
+            Some(inner) => inner.as_ref(),
+        }
+    }
+
+    pub fn insert(&mut self, block_height: BlockHeight, action_lock: ActionLock) {
+        self.preloaded.insert(block_height, Some(action_lock));
+    }
+
+    pub fn remove(&mut self, block_height: &BlockHeight) {
+        self.preloaded.insert(*block_height, None);
+    }
+
+    pub fn drop_old_locks(&mut self, block_height: &BlockHeight) {
+        self.preloaded.retain(|k, _| {
+            k.thread_identifier() != block_height.thread_identifier()
+                || k.height() >= block_height.height()
+        });
+    }
+
+    fn is_active(
+        &self,
+        block_height: &BlockHeight,
+        block_state_repository: &BlockStateRepository,
+    ) -> bool {
+        if let Some(Some(action_lock)) = self.preloaded.get(block_height) {
+            if let Some(block_ref) = &action_lock.locked_block {
+                let locked_block_state =
+                    block_state_repository.get(&block_ref.1.block_identifier).unwrap();
+                if locked_block_state.guarded(|e| e.is_invalidated()) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn preload(&mut self, block_height: &BlockHeight) {
+        if self.preloaded.contains_key(block_height) {
+            return;
+        }
+
+        let file_path = self.path_to(block_height);
+
+        let maybe_lock = if cfg!(feature = "messages_db") {
+            self.action_lock_db
+                .read_blob(&file_path.to_string_lossy())
+                .unwrap_or_else(|_| panic!("Failed to load record: {}", file_path.display()))
+        } else {
+            crate::repository::repository_impl::load_from_file(&file_path)
+                .unwrap_or_else(|_| panic!("Failed to load file: {}", file_path.display()))
+        };
+
+        let Some(lock) = maybe_lock else {
+            return;
+        };
+        self.preloaded.insert(*block_height, lock);
+    }
+
+    fn save(&self, block_height: &BlockHeight) {
+        let Some(data) = self.preloaded.get(block_height) else {
+            return;
+        };
+        let file_path = self.path_to(block_height);
+        if cfg!(feature = "messages_db") {
+            // `true` → keep retrying writes until they succeed
+            self.action_lock_db
+                .write_blob(&file_path.to_string_lossy(), data, true)
+                .expect("Can't fail if data is serializable")
+        } else {
+            crate::repository::repository_impl::save_to_file(&file_path, data, false)
+                .expect("must work");
+        }
+    }
+
+    fn path_to(&self, height: &BlockHeight) -> PathBuf {
+        self.data_dir.clone().join(format!("{}-{}", height.thread_identifier(), height.height()))
+    }
+}
+
+#[derive(Getters, TypedBuilder)]
+pub struct ThreadAuthority {
+    thread_id: ThreadIdentifier,
+    round_buckets: RoundTime,
+    node_identifier: NodeIdentifier,
+    bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
+
+    // TODO: load on restart
+    #[builder(setter(
+        suffix="_data_dir",
+        transform = |data_dir: PathBuf, action_lock_db: ActionLockStorage| ActionLockCollection::new(data_dir, action_lock_db)
+    ))]
+    action_lock: ActionLockCollection,
 
     // This field contains NACKs sent/confirmed by THIS node.
     #[builder(setter(skip))]
@@ -150,20 +329,27 @@ pub struct Authority {
     #[builder(setter(skip))]
     #[builder(default = HashMap::new())]
     collecting_next_round:
-        HashMap<(SiblingsBlockHeightKey, Round), CollectedAuthoritySwitchRoundRequests>,
+        HashMap<(SiblingsBlockHeightKey, BlockRound), CollectedAuthoritySwitchRoundRequests>,
 
     // TODO: Critical: must be durable. Otherwise this node may be slashed on reboot.
     #[builder(setter(skip))]
     #[builder(default = HashMap::new())]
-    closed_round: HashMap<SiblingsBlockHeightKey, Round>,
+    closed_round: HashMap<SiblingsBlockHeightKey, BlockRound>,
 
-    block_producers: HashMap<ThreadIdentifier, std::sync::mpsc::Sender<BlockProducerCommand>>,
+    #[builder(setter(skip))]
+    #[builder(default = None)]
+    block_producers: Option<std::sync::mpsc::Sender<BlockProducerCommand>>,
 
     block_repository: RepositoryImpl,
-
     block_state_repository: BlockStateRepository,
     network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
     bp_production_count: Arc<AtomicI32>,
+
+    network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
+    node_joining_timeout: Duration,
+    #[builder(setter(skip))]
+    #[builder(default = std::time::Instant::now().checked_sub(Duration::from_secs(10000)).unwrap())]
+    last_node_joining_sent: Instant,
 }
 
 impl std::fmt::Debug for Authority {
@@ -172,11 +358,13 @@ impl std::fmt::Debug for Authority {
     }
 }
 
+#[derive(Eq, PartialEq)]
 pub enum ActionLockResult {
     OkSendAttestation,
     Rejected,
 }
 
+#[allow(clippy::large_enum_variant)]
 pub enum OnNextRoundIncomingRequestResult {
     DoNothing,
     StartingBlockProducer,
@@ -185,26 +373,40 @@ pub enum OnNextRoundIncomingRequestResult {
     RejectTooOldRequest(NodeIdentifier),
 }
 
-#[derive(Getters)]
+#[derive(Getters, Debug)]
 pub struct OnBlockProducerStalledResult {
     next_deadline: std::time::Instant,
     next_round: Option<NextRound>,
+    block_height: Option<BlockHeight>,
+}
+
+impl OnBlockProducerStalledResult {
+    pub fn retry_later(block_height: Option<BlockHeight>) -> Self {
+        OnBlockProducerStalledResult {
+            // TODO: config.
+            next_deadline: std::time::Instant::now() + std::time::Duration::from_millis(30),
+            next_round: None,
+            block_height,
+        }
+    }
 }
 
 impl AllowGuardedMut for Authority {}
 
-impl Authority {
+impl ThreadAuthority {
     // This does not move any authority. It only checks if the node can send
     // an attestation for the given block.
     // It is equivalent to the on PROPOSED / RESEND handler.
+
     pub fn try_lock_send_attestation_action(
         &mut self,
         block_identifier: &BlockIdentifier,
     ) -> ActionLockResult {
-        // TODO: @andrew check not the block round but the last authority switch success round
-        tracing::trace!("try_lock_send_attestation_action: start");
+        tracing::trace!("try_lock_send_attestation_action: start {block_identifier:?}");
         let block_state = self.block_state_repository.get(block_identifier).unwrap();
-        let block_proposed_in_rounds = block_state.guarded(|e| e.proposed_in_round().clone());
+        if block_state.guarded(|e| e.is_finalized() || e.is_prefinalized()) {
+            return ActionLockResult::OkSendAttestation;
+        }
         if block_state.guarded(|e| e.is_invalidated()) {
             tracing::trace!("try_lock_send_attestation_action: invalidated block");
             return ActionLockResult::Rejected;
@@ -218,12 +420,12 @@ impl Authority {
             return ActionLockResult::Rejected;
         };
 
-        if block_proposed_in_rounds.is_empty() {
+        let Some(block_round) = block_state.guarded(|e| *e.block_round()) else {
             tracing::trace!(
                 "try_lock_send_attestation_action: block is not set to be a part of any round yet"
             );
             return ActionLockResult::Rejected;
-        }
+        };
 
         let Some(parent_block_id) = block_state.guarded(|e| e.parent_block_identifier().clone())
         else {
@@ -232,97 +434,135 @@ impl Authority {
         };
 
         let parent_block = self.block_state_repository.get(&parent_block_id).unwrap();
+        let Some(bk_set) = parent_block.guarded(|e| e.descendant_bk_set().clone()) else {
+            // The outer part of the program must ensure that all blocks were proceeded and bk_set values are set before setting some BP as stalled.
+            tracing::trace!(
+                "try_lock_send_attestation_action: parent block descendant bk set is not set"
+            );
+            return ActionLockResult::Rejected;
+        };
 
+        let Some(parent_block_time) = parent_block.guarded(|e| *e.block_time_ms()) else {
+            tracing::trace!("try_lock_send_attestation_action: parent block time is not set");
+            return ActionLockResult::Rejected;
+        };
+        let now = {
+            let start = SystemTime::now();
+            let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("time should go forward");
+            TryInto::<u64>::try_into(since_the_epoch.as_millis()).unwrap()
+        };
+        if parent_block_time > now {
+            tracing::warn!(
+                "try_lock_send_attestation_action: local clock and BP clock is out of sync"
+            );
+            return ActionLockResult::Rejected;
+        }
+        let duration_from_parent_block = Duration::from_millis(now - parent_block_time);
+        let local_round = self
+            .round_buckets
+            .calculate_round(duration_from_parent_block, bk_set.len().try_into().unwrap())
+            .round;
+        // if local_round > *block_proposed_in_rounds.iter().min().unwrap() {
+        //     tracing::trace!("Can not lock a block from a future round, local_round={local_round:?} > {:?}", *block_proposed_in_rounds.iter().min().unwrap());
+        //     return ActionLockResult::Rejected;
+        // }
         let block_ref = BlockRef::try_from(&block_state).unwrap();
 
-        self.preload(&block_height);
-        if let Some(lock) = self.action_lock.get_mut(&block_height) {
-            if block_proposed_in_rounds.contains(&lock.current_round) {
-                lock.locked_block = Some(block_ref);
-                lock.locked_round = lock.current_round;
-                tracing::trace!(
-                    "try_lock_send_attestation_action: locked round is the same as attn target"
+        let mut is_lock_updated = false;
+        let result = || -> ActionLockResult {
+            if let Some(lock) =
+                self.action_lock.get_mut(&block_height, &self.block_state_repository)
+            {
+                trace_lock(lock, "lock state in");
+                if block_round > lock.locked_round {
+                    lock.locked_block = Some((block_round, block_ref));
+                    lock.locked_round = block_round;
+                    trace_lock(
+                    lock,
+                    "try_lock_send_attestation_action: (updating) block_round is newer than the locked round."
                 );
-                return ActionLockResult::OkSendAttestation;
-            }
-            let Some(locked_block) = lock.locked_block.clone() else {
-                tracing::trace!("try_lock_send_attestation_action: no block was locked");
-                return ActionLockResult::Rejected;
-            };
-            if locked_block.block_identifier() == block_identifier {
-                tracing::trace!(
-                    "try_lock_send_attestation_action: locked block is the same as attn target"
-                );
-                ActionLockResult::OkSendAttestation
-            } else {
-                tracing::trace!(
+                    is_lock_updated = true;
+                    return ActionLockResult::OkSendAttestation;
+                }
+                if block_round == lock.locked_round && lock.locked_block.is_none() {
+                    lock.locked_block = Some((block_round, block_ref));
+                    lock.locked_round = local_round + 1;
+                    trace_lock(
+                        lock,
+                        "try_lock_send_attestation_action: (updating) locked round is the same as attn target"
+                    );
+                    is_lock_updated = true;
+                    return ActionLockResult::OkSendAttestation;
+                }
+                let Some(locked_block) = lock.locked_block.clone() else {
+                    tracing::trace!("try_lock_send_attestation_action: no block was locked");
+                    return ActionLockResult::Rejected;
+                };
+                if locked_block.1.block_identifier() == block_identifier {
+                    tracing::trace!(
+                        "try_lock_send_attestation_action: locked block is the same as attn target"
+                    );
+                    ActionLockResult::OkSendAttestation
+                } else {
+                    tracing::trace!(
                     "try_lock_send_attestation_action: locked block is not the same as attn target"
                 );
-                ActionLockResult::Rejected
-            }
-        } else {
-            let is_default_chain: bool = {
-                block_proposed_in_rounds.contains(&0_u16) && block_proposed_in_rounds.len() == 1
-            };
+                    ActionLockResult::Rejected
+                }
+            } else {
+                let Some(parent_block_producer_selector_data) =
+                    parent_block.guarded(|e| e.producer_selector_data().clone())
+                else {
+                    tracing::trace!("try_lock_send_attestation_action: parent selector is not set");
+                    return ActionLockResult::Rejected;
+                };
 
-            if !is_default_chain {
-                tracing::trace!("try_lock_send_attestation_action: block round is not 0");
-                return ActionLockResult::Rejected;
+                let lock: ActionLock = ActionLock {
+                    parent_block_producer_selector_data,
+                    parent_block: BlockRef::try_from(&parent_block).unwrap(),
+                    parent_prefinalization_proof: None,
+                    locked_round: local_round,
+                    locked_block: Some((block_round, block_ref)),
+                    locked_bad_block_nacks: self
+                        .confirmed_bad_block_nacks
+                        .get(
+                            &SiblingsBlockHeightKey::builder()
+                                .parent_block_identifier(parent_block_id)
+                                .height(block_height)
+                                .build(),
+                        )
+                        .cloned()
+                        .unwrap_or_default(),
+                    // current_round: round,
+                };
+                trace_lock(
+                    &lock,
+                    "try_lock_send_attestation_action: locked a block on a new height.",
+                );
+                is_lock_updated = true;
+                self.action_lock.insert(block_height, lock);
+                ActionLockResult::OkSendAttestation
             }
-
-            let Some(parent_block_producer_selector_data) =
-                parent_block.guarded(|e| e.producer_selector_data().clone())
-            else {
-                tracing::trace!("try_lock_send_attestation_action: parent selector is not set");
-                return ActionLockResult::Rejected;
-            };
-            // TODO: this code seems to block sending attestation, parent block can not be prefinalized
-            // let Some(parent_prefinalization_proof) =
-            //     parent_block.guarded(|e| e.prefinalization_proof().clone())
-            // else {
-            //     tracing::trace!("try_lock_send_attestation_action: parent proof is not set");
-            //     return ActionLockResult::Rejected;
-            // };
-            let lock: ActionLock = ActionLock {
-                parent_block_producer_selector_data,
-                parent_block: BlockRef::try_from(&parent_block).unwrap(),
-                parent_prefinalization_proof: None,
-                locked_round: 0,
-                locked_block: Some(block_ref),
-                locked_bad_block_nacks: self
-                    .confirmed_bad_block_nacks
-                    .get(
-                        &SiblingsBlockHeightKey::builder()
-                            .parent_block_identifier(parent_block_id)
-                            .height(block_height)
-                            .build(),
-                    )
-                    .cloned()
-                    .unwrap_or_default(),
-                current_round: 0,
-            };
-            self.save(&block_height, &lock);
-            self.action_lock.insert(block_height, lock);
-            ActionLockResult::OkSendAttestation
+        }();
+        if is_lock_updated {
+            self.action_lock.save(&block_height);
         }
+        result
     }
 
     pub fn register_block_producer(
         &mut self,
-        thread_identifier: ThreadIdentifier,
         block_producer_control_tx: std::sync::mpsc::Sender<BlockProducerCommand>,
     ) {
-        tracing::trace!("register_block_producer for {:?}", thread_identifier);
-        self.block_producers.insert(thread_identifier, block_producer_control_tx);
+        tracing::trace!("register_block_producer for {:?}", self.thread_id);
+        self.block_producers = Some(block_producer_control_tx);
     }
 
-    pub fn on_block_producer_stalled(
-        &mut self,
-        thread_identifier: &ThreadIdentifier,
-    ) -> OnBlockProducerStalledResult {
-        tracing::trace!("on_block_producer_stalled: start");
+    pub fn on_block_producer_stalled(&mut self) -> OnBlockProducerStalledResult {
+        let thread_identifier = self.thread_id;
+        tracing::trace!("on_block_producer_stalled: start {thread_identifier:?}");
         let Ok(last_prefinalized) = find_last_prefinalized(
-            thread_identifier,
+            &thread_identifier,
             &self.block_repository,
             &self.block_state_repository,
         ) else {
@@ -330,15 +570,12 @@ impl Authority {
                 "on_block_producer_stalled: Failed to get the last prefinalized block for the thread: {}",
                 thread_identifier
             );
-            return OnBlockProducerStalledResult {
-                // TODO: config.
-                next_deadline: std::time::Instant::now() + std::time::Duration::from_millis(330),
-                next_round: None,
-            };
+            return OnBlockProducerStalledResult::retry_later(None);
         };
+        tracing::trace!("on_block_producer_stalled: last_prefinalized={last_prefinalized:?}");
         let parent_block: BlockState = last_prefinalized;
         let parent_block_height: BlockHeight = parent_block.guarded(|e| e.block_height().unwrap());
-        let block_height = parent_block_height.next(thread_identifier);
+        let block_height = parent_block_height.next(&thread_identifier);
         self.start_next_round(parent_block, block_height)
     }
 
@@ -358,9 +595,8 @@ impl Authority {
         block_height: BlockHeight,
     ) -> OnBlockProducerStalledResult {
         // Check if we have an active action_lock for the height
-        self.preload(&block_height);
         {
-            let active_lock = self.action_lock.get(&block_height);
+            let active_lock = self.action_lock.get(&block_height, &self.block_state_repository);
             let mut is_active_lock_valid = false;
             if let Some(active_lock) = active_lock {
                 // Check if this lock is still valid: parent block is the one prefinalized
@@ -373,15 +609,16 @@ impl Authority {
                 self.action_lock.remove(&block_height);
             }
         }
+        if let Some(lock) = self.action_lock.get(&block_height, &self.block_state_repository) {
+            trace_lock(lock, "start_next_round: in lock (exists)");
+        } else {
+            tracing::trace!("start_next_round: no lock on block height: {block_height:?}");
+        }
 
         let Some(bk_set) = parent_block.guarded(|e| e.descendant_bk_set().clone()) else {
             // The outer part of the program must ensure that all blocks were proceeded and bk_set values are set before setting some BP as stalled.
-            tracing::trace!("on_block_producer_stalled: parent block descendant bk set is not set");
-            return OnBlockProducerStalledResult {
-                // TODO: config.
-                next_deadline: std::time::Instant::now() + std::time::Duration::from_millis(330),
-                next_round: None,
-            };
+            tracing::trace!("start_next_round: parent block descendant bk set is not set");
+            return OnBlockProducerStalledResult::retry_later(Some(block_height));
         };
 
         let parent_prefinalization_proof =
@@ -395,69 +632,207 @@ impl Authority {
                     }
                 }
             };
+        let Some(parent_block_time) = parent_block.guarded(|e| *e.block_time_ms()) else {
+            tracing::trace!("start_next_round: parent block time is not set");
+            return OnBlockProducerStalledResult::retry_later(Some(block_height));
+        };
+        let now = {
+            let start = SystemTime::now();
+            let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("time should go forward");
+            TryInto::<u64>::try_into(since_the_epoch.as_millis()).unwrap()
+        };
+        if parent_block_time > now {
+            tracing::warn!("start_next_round: local clock and BP clock is out of sync");
+            return OnBlockProducerStalledResult::retry_later(Some(block_height));
+        }
+        let duration_from_parent_block = Duration::from_millis(now - parent_block_time);
+        let CalculateRoundResult { round: local_round, round_remaining_time } = self
+            .round_buckets
+            .calculate_round(duration_from_parent_block, bk_set.len().try_into().unwrap());
+        if local_round == 0 {
+            tracing::warn!("start_next_round: (failed) still in the round zero.");
+            return OnBlockProducerStalledResult {
+                next_deadline: Instant::now() + round_remaining_time,
+                next_round: None,
+                block_height: Some(block_height),
+            };
+        }
         // TODO: check that the next candidate can be used with the current round.
         // May be we should move the lock accordingly.
-        let current_lock = self
-            .action_lock
-            .entry(block_height)
-            .and_modify(|e| {
-                let prev_locked_round = *e.locked_round();
-                let locked_round = prev_locked_round + 1;
-                e.set_locked_round(locked_round);
-                let prev_cur_round = *e.current_round();
-                e.set_current_round(prev_cur_round + 1);
-            })
-            .or_insert_with(|| {
+        let mut was_lock_updated = false;
+        let current_lock_snapshot = {
+            if let Some(existing) =
+                self.action_lock.get_mut(&block_height, &self.block_state_repository)
+            {
+                let prev_locked_round = *existing.locked_round();
+                // Note: adding equals case so that a lock
+                // updated in a previous round with a new block
+                // can send a request in the next round.
+                if local_round >= prev_locked_round {
+                    existing.set_locked_round(local_round);
+                    was_lock_updated = true;
+                }
+                existing.clone()
+            } else {
+                was_lock_updated = true;
                 let parent_block_producer_selector_data =
                     parent_block.guarded(|e| e.producer_selector_data().clone().unwrap());
-                ActionLock::builder()
+                let new_lock = ActionLock::builder()
                     .parent_prefinalization_proof(parent_prefinalization_proof)
                     .parent_block_producer_selector_data(parent_block_producer_selector_data)
                     .parent_block(BlockRef::try_from(&parent_block).unwrap())
-                    .locked_round(1)
-                    .locked_block(None) // TODO: none for not BP, if this node is BP it should set block after production
+                    .locked_round(local_round)
+                    // Note: if we ended up at this line it is clear that no attestation
+                    // for any block were send yet. safe to assume that there's no block
+                    // candidate available
+                    .locked_block(None)
                     .locked_bad_block_nacks(self.confirmed_bad_block_nacks.get(
                         &SiblingsBlockHeightKey::builder()
                             .parent_block_identifier(parent_block.block_identifier().clone())
                             .height(block_height)
                             .build()
                     ).cloned().unwrap_or_default())
-                    .current_round(1)
-                    .build()
-            })
-            .clone();
-
-        let round = *current_lock.locked_round();
-        assert!(round >= 1);
-        self.save(&block_height, &current_lock);
-        let next_producer_selector = current_lock
+                    //.current_round(round)
+                    .build();
+                self.action_lock.insert(block_height, new_lock.clone());
+                new_lock
+            }
+        };
+        if !was_lock_updated {
+            tracing::warn!("start_next_round: round was not updated.");
+            return OnBlockProducerStalledResult {
+                next_deadline: Instant::now() + round_remaining_time,
+                next_round: None,
+                block_height: Some(block_height),
+            };
+        }
+        trace_lock(&current_lock_snapshot, "start_next_round: preparing a request.");
+        self.action_lock.save(&block_height);
+        let cur_producer_selector =
+            current_lock_snapshot.parent_block_producer_selector_data().clone().move_index(
+                TryInto::<usize>::try_into((local_round as i64) - 1)
+                    .expect("local round must be greater or equal to 1"),
+                bk_set.len(),
+            );
+        let cur_producer_node_id = cur_producer_selector.get_producer_node_id(&bk_set).unwrap();
+        let next_producer_selector = current_lock_snapshot
             .parent_block_producer_selector_data()
             .clone()
-            .move_index(round as usize, bk_set.len());
+            .move_index(local_round as usize, bk_set.len());
         let next_producer_node_id = next_producer_selector.get_producer_node_id(&bk_set).unwrap();
-        let next_candidate_ref = current_lock.locked_block().clone();
+        let next_candidate_ref = current_lock_snapshot.locked_block().clone().map(|e| e.1);
+        let mut has_all_attestations_locked = true;
         let (block, attestations) = match next_candidate_ref {
             Some(candidate_ref) => {
                 let candidate =
                     self.block_state_repository.get(candidate_ref.block_identifier()).unwrap();
-                let attestations = candidate.guarded(|e| {
-                    if let Some(proof) = e.prefinalization_proof().clone() {
-                        Some(proof)
+                let prefinalization_proof =
+                    candidate.guarded(|e| e.prefinalization_proof().clone());
+                let attestations = {
+                    if prefinalization_proof.is_none() {
+                        if self.try_lock_send_attestation_action(candidate_ref.block_identifier())
+                            == ActionLockResult::OkSendAttestation
+                        {
+                            candidate.guarded(|e| e.own_attestation().clone())
+                        } else {
+                            has_all_attestations_locked = false;
+                            None
+                        }
                     } else {
-                        e.own_attestation().clone()
+                        prefinalization_proof
                     }
-                });
+                };
                 (Some(candidate.block_identifier().clone()), attestations)
             }
             None => (None, None),
         };
+
+        let attestations_for_ancestors = {
+            if block.is_some() {
+                vec![]
+            } else {
+                let Some(ancestor_blocks_finalization_checkpoints) =
+                    parent_block.guarded(|e| e.ancestor_blocks_finalization_checkpoints().clone())
+                else {
+                    tracing::trace!("start_next_round: parent ancestor_blocks_finalization_checkpoints are not set");
+                    return OnBlockProducerStalledResult::retry_later(Some(block_height));
+                };
+                let required_fallback_attestations = {
+                    let mut ancestors = Vec::<BlockIdentifier>::from_iter(
+                        ancestor_blocks_finalization_checkpoints.fallback().keys().cloned(),
+                    );
+                    ancestors.retain(|e| {
+                        // Keep keys that are in the fallback checkpoints list
+                        // and are not in the primary list.
+                        // Those are blocks that have missed their primary attestation target.
+                        !ancestor_blocks_finalization_checkpoints.primary().contains_key(e)
+                    });
+                    ancestors
+                };
+                let required_primary_attestations = Vec::<BlockIdentifier>::from_iter(
+                    ancestor_blocks_finalization_checkpoints.primary().iter().filter_map(
+                        |(id, _checkpoint)| {
+                            // Note:
+                            // It is possible to send only attestations for blocks
+                            // that must be finalized on the next round.
+                            // However it seems that sending attestations for the entire
+                            // chain may work better.
+                            if !required_fallback_attestations.contains(id) {
+                                Some(id.clone())
+                            } else {
+                                None
+                            }
+                        },
+                    ),
+                );
+                let mut attestations = vec![];
+                for id in required_fallback_attestations.iter() {
+                    let ancestor_state = self.block_state_repository.get(id).unwrap();
+                    if self.try_lock_send_attestation_action(id)
+                        != ActionLockResult::OkSendAttestation
+                    {
+                        has_all_attestations_locked = false;
+                    }
+                    let Some(attestation) =
+                        ancestor_state.guarded(|e| e.own_fallback_attestation().clone())
+                    else {
+                        tracing::trace!("start_next_round: ancestor block does not have own_fallback_attestation set");
+                        return OnBlockProducerStalledResult::retry_later(Some(block_height));
+                    };
+                    attestations.push(attestation);
+                }
+                for id in required_primary_attestations.iter() {
+                    let ancestor_state = self.block_state_repository.get(id).unwrap();
+                    if self.try_lock_send_attestation_action(id)
+                        != ActionLockResult::OkSendAttestation
+                    {
+                        has_all_attestations_locked = false;
+                    }
+                    let Some(attestation) = ancestor_state.guarded(|e| e.own_attestation().clone())
+                    else {
+                        tracing::trace!(
+                            "start_next_round: ancestor block does not have own_attestation set"
+                        );
+                        return OnBlockProducerStalledResult::retry_later(Some(block_height));
+                    };
+                    attestations.push(attestation);
+                }
+                attestations
+            }
+        };
+
+        if !has_all_attestations_locked {
+            tracing::warn!("start_next_round: were not able to lock all ancestor attestations");
+            return OnBlockProducerStalledResult::retry_later(Some(block_height));
+        }
+
         let lock = Lock::builder()
             .height(block_height)
-            .locked_round(round)
+            .locked_round(*current_lock_snapshot.locked_round())
             .locked_block(block)
             .next_auth_node_id(next_producer_node_id.clone())
             .parent_block(parent_block.block_identifier().clone())
-            .nack_bad_block(current_lock.locked_bad_block_nacks().clone())
+            .nack_bad_block(current_lock_snapshot.locked_bad_block_nacks().clone())
             .build();
         let secrets = self.bls_keys_map.guarded(|map| map.clone());
         let Ok(lock) =
@@ -465,29 +840,53 @@ impl Authority {
                 tracing::warn!("Failed to sign a lock: {}", e);
             })
         else {
-            return OnBlockProducerStalledResult {
-                // TODO: config.
-                next_deadline: std::time::Instant::now() + std::time::Duration::from_millis(330),
-                next_round: None,
-            };
+            if self.last_node_joining_sent.elapsed() > self.node_joining_timeout {
+                self.last_node_joining_sent = std::time::Instant::now();
+                let thread_id = parent_block
+                    .guarded(|e| *e.thread_identifier())
+                    .expect("Thread id must be set for parent block");
+                let _ = self
+                    .network_broadcast_tx
+                    .send(NetworkMessage::NodeJoining((self.node_identifier.clone(), thread_id)));
+            }
+            return OnBlockProducerStalledResult::retry_later(Some(block_height));
         };
         tracing::trace!(
             "sending next round message to {next_producer_node_id}: lock {:?}, attns: {:?}",
             lock.data(),
             attestations,
         );
-        let next_round =
-            NextRound::builder().lock(lock).locked_block_attestation(attestations).build();
+
+        let next_round = NextRound::builder()
+            .lock(lock)
+            .locked_block_attestation(attestations)
+            .attestations_for_ancestors(attestations_for_ancestors)
+            .build();
         let _ = self.network_direct_tx.send((
             next_producer_node_id,
             NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Request(next_round.clone())),
         ));
+        let _ = self.network_direct_tx.send((
+            cur_producer_node_id,
+            NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Request(next_round.clone())),
+        ));
+
         OnBlockProducerStalledResult {
-            // TODO: config.
-            next_deadline: std::time::Instant::now()
-                + (round as u32 * std::time::Duration::from_secs(3)),
+            next_deadline: Instant::now() + round_remaining_time,
             next_round: Some(next_round),
+            block_height: Some(block_height),
         }
+    }
+
+    fn get_block(
+        &self,
+        block_identifier: &BlockIdentifier,
+        unprocessed_blocks_cache: &UnfinalizedCandidateBlockCollection,
+    ) -> Option<Arc<Envelope<GoshBLS, AckiNackiBlock>>> {
+        if let Some(block) = unprocessed_blocks_cache.get_block_by_id(block_identifier) {
+            return Some(block);
+        }
+        self.block_repository.get_finalized_block(block_identifier).unwrap()
     }
 
     pub fn on_next_round_incoming_request(
@@ -501,12 +900,27 @@ impl Authority {
             "on_next_round_incoming_request: next_round_message = {next_round_message:?}"
         );
         let lock = next_round_message.lock().data().clone();
+        let signer_index = {
+            let signers = next_round_message
+                .lock()
+                .clone_signature_occurrences()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            if signers.len() != 1 {
+                tracing::trace!(
+                    "on_next_round_incoming_request: lock was signed by more than one bk, skip malicious block."
+                );
+                return OnNextRoundIncomingRequestResult::DoNothing;
+            }
+            signers[0]
+        };
         let block_height = *lock.height();
         let thread_identifier = block_height.thread_identifier();
         let parent_state = self.block_state_repository.get(lock.parent_block()).unwrap();
         // - double check that the parent block prefinalized is the same.
         //  Skipping: if this node didn't have parent prefinalized check the proof and add it for the parent.
-        if parent_state.guarded(|e| !e.is_prefinalized()) {
+        if parent_state.guarded(|e| !e.is_prefinalized() && !e.is_finalized()) {
             tracing::trace!("on_next_round_incoming_request: parent is not prefinalized");
             return OnNextRoundIncomingRequestResult::DoNothing;
         }
@@ -539,6 +953,10 @@ impl Authority {
                 }
             }
         }
+        let Some(node_id) = bk_set.get_by_signer(&signer_index).map(|data| data.node_id()) else {
+            tracing::trace!("on_next_round_incoming_request: lock signer is not in the bk set");
+            return OnNextRoundIncomingRequestResult::DoNothing;
+        };
 
         // TODO: add signature verification of the request. Low pri: hard to tell what is cheaper for the node: reply to all of malicious request and spam another node or to spend cpu verifying signatures.
         let prefinalized =
@@ -549,21 +967,17 @@ impl Authority {
                 prefinalized.block_identifier(),
                 prefinalized.guarded(|e| *e.block_seq_no()),
             );
-            let signers = next_round_message
-                .lock()
-                .clone_signature_occurrences()
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>();
-            if signers.len() != 1 {
-                tracing::trace!(
-                    "on_next_round_incoming_request: lock was signed by more than one bk, skip malicious block."
-                );
-                return OnNextRoundIncomingRequestResult::DoNothing;
-            }
-            let Some(node_id) = bk_set.get_by_signer(&signers[0]).map(|data| data.node_id()) else {
-                tracing::trace!("on_next_round_incoming_request: lock signer is not in the bk set");
-                return OnNextRoundIncomingRequestResult::DoNothing;
+            let Some(_ensure_block_is_available) =
+                self.get_block(prefinalized.block_identifier(), &unprocessed_blocks_cache)
+            else {
+                return if prefinalized.guarded(|e| e.is_finalized()) {
+                    OnNextRoundIncomingRequestResult::RejectTooOldRequest(node_id)
+                } else {
+                    tracing::trace!(
+                        "on_next_round_incoming_request: can't load next prefinalized child"
+                    );
+                    OnNextRoundIncomingRequestResult::DoNothing
+                };
             };
             let prefinalized_block = match unprocessed_blocks_cache
                 .get_block_by_id(prefinalized.block_identifier())
@@ -605,11 +1019,12 @@ impl Authority {
         // - Append the request to the collection of requests
         // = Check if this collection has grown above the threshold of 50%+1.
         //   if so, create and send a broadcast for a successful round.
-        self.preload(&block_height);
-        if let Some(current_lock) = self.action_lock.get(&block_height) {
+        if let Some(current_lock) =
+            self.action_lock.get(&block_height, &self.block_state_repository)
+        {
             if current_lock.locked_round() > lock.locked_round() {
                 tracing::trace!(
-                    "on_next_round_incoming_request: reject. Round is lower than our locked"
+                    "on_next_round_incoming_request: reject. BlockRound is lower than our locked"
                 );
                 return OnNextRoundIncomingRequestResult::DoNothing;
             }
@@ -629,6 +1044,13 @@ impl Authority {
                 );
                 return OnNextRoundIncomingRequestResult::DoNothing;
             }
+        }
+
+        if next_round_message.lock().data().next_auth_node_id() != &self.node_identifier {
+            tracing::trace!(
+                "on_next_round_incoming_request: do nothing. request is not for this node"
+            );
+            return OnNextRoundIncomingRequestResult::DoNothing;
         }
         let collected_requests = self
             .collecting_next_round
@@ -681,13 +1103,9 @@ impl Authority {
             }
         }
 
-        // TODO: revert back to 50% + 1 after adding secondary attestation target
-        // if bk_set.len() >= 2 * collected_voters.len() {
-        // Less than 50% + 1 of signers yet.
-
-        // Note: temporary restriction to 66%
-        let votes_target = (2 * bk_set.len()).div_ceil(3);
+        let votes_target = (bk_set.len() + 1).div_ceil(2);
         if collected_voters.len() < votes_target {
+            // Less than 50% + 1 of signers yet.
             tracing::trace!(
                 "on_next_round_incoming_request: not enough signers ({}), bk_set.len()={}",
                 collected_voters.len(),
@@ -696,18 +1114,13 @@ impl Authority {
             return OnNextRoundIncomingRequestResult::DoNothing;
         }
         let mut max_locked_block: Option<Arc<Envelope<GoshBLS, AckiNackiBlock>>> = None;
-        let mut max_locked_block_round: Option<u16> = None;
+        let mut max_locked_block_round: Option<BlockRound> = None;
+        let mut locked_none_count = 0;
         for e in collected_requests.iter() {
             if let Some(block_id) = e.lock().data().locked_block() {
-                let block = match unprocessed_blocks_cache.get_block_by_id(block_id) {
-                    Some(block) => block,
-                    _ => {
-                        let Ok(Some(block)) = self.block_repository.get_finalized_block(block_id)
-                        else {
-                            panic!("must have a block. collected rounds can not have an unknown block. checked above.");
-                        };
-                        block
-                    }
+                let Some(block) = self.get_block(block_id, &unprocessed_blocks_cache) else {
+                    // An unknown block id. Skip it.
+                    continue;
                 };
 
                 let block_round = block.data().get_common_section().round;
@@ -720,7 +1133,15 @@ impl Authority {
                     max_locked_block = Some(block);
                     max_locked_block_round = Some(block_round);
                 }
+            } else {
+                locked_none_count += 1;
             }
+        }
+        if max_locked_block.is_none() && locked_none_count < votes_target {
+            tracing::trace!(
+                    "on_next_round_incoming_request: there is a quorum already. However this node has no block to share. (block identifiers only). Not enough votes to produce a new block",
+                );
+            return OnNextRoundIncomingRequestResult::DoNothing;
         }
 
         let max_locked_block = max_locked_block.map(Arc::unwrap_or_clone);
@@ -738,6 +1159,8 @@ impl Authority {
             return OnNextRoundIncomingRequestResult::DoNothing;
         }
 
+        // TODO: <closed_round> Must be durable.
+        self.closed_round.insert(round_key.0, *round);
         if let Some(block) = max_locked_block {
             let max_locked_block_status =
                 self.block_state_repository.get(&block.data().identifier()).expect("must work");
@@ -761,7 +1184,7 @@ impl Authority {
                 .block_id(block.data().identifier())
                 .block_seq_no(block.data().seq_no())
                 .envelope_hash(envelope_hash)
-                .is_fallback(false)
+                .target_type(AttestationTargetType::Primary)
                 .build();
             for attestation in collected_attestations.iter() {
                 if attestation.data() != &attestation_data {
@@ -795,8 +1218,6 @@ impl Authority {
                 "on_next_round_incoming_request: broadcast block: round:{round}, block: {block:?}"
             );
             let secrets = self.bls_keys_map.guarded(|map| map.clone());
-            // TODO: <closed_round> Must be durable.
-            self.closed_round.insert(round_key.0, *round);
 
             // Produce block for this round AND broadcast it as a NextRoundSuccess
             tracing::trace!("Resend existing locked block from a top round {thread_identifier:?}");
@@ -820,10 +1241,35 @@ impl Authority {
                 .expect("must work"),
             );
         }
-
+        let Some(parent_block_time) = parent_state.guarded(|e| *e.block_time_ms()) else {
+            tracing::trace!("on_next_round_incoming_request: parent block time is not set");
+            return OnNextRoundIncomingRequestResult::DoNothing;
+        };
+        let now = {
+            let start = SystemTime::now();
+            let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("time should go forward");
+            TryInto::<u64>::try_into(since_the_epoch.as_millis()).unwrap()
+        };
+        if parent_block_time > now {
+            tracing::warn!(
+                "on_next_round_incoming_request: local clock and prev BP clock is out of sync"
+            );
+            return OnNextRoundIncomingRequestResult::DoNothing;
+        }
+        let duration_from_parent_block = Duration::from_millis(now - parent_block_time);
+        let CalculateRoundResult { round: local_round, round_remaining_time } = self
+            .round_buckets
+            .calculate_round(duration_from_parent_block, bk_set.len().try_into().unwrap());
+        // TODO: investigate if the second check is a good guess or not.
+        if local_round > *round || round_remaining_time < std::time::Duration::from_millis(330) {
+            tracing::warn!(
+                "on_next_round_incoming_request: will not have enough time to produce a block before other nodes would be locked in another round"
+            );
+            return OnNextRoundIncomingRequestResult::DoNothing;
+        }
         // Produce block for this round AND broadcast it as a NextRoundSuccess
-        self.block_producers
-            .get(thread_identifier)
+        match self.block_producers
+            .as_ref()
             .expect("must have producer service for this thread registered already")
             .send(BlockProducerCommand::Start(
                 StartBlockProducerThreadInitialParameters::builder()
@@ -851,17 +1297,20 @@ impl Authority {
                     )
                     .proof_of_valid_start(proof_of_valid_round)
                     .build(),
-            ))
-            .unwrap();
+            ))  {
+                Ok(()) => {},
+                Err(e) => {
+                    if SHUTDOWN_FLAG.get() != Some(&true) {
+                        panic!("Failed to send BP start cmd: {e}");
+                    }
+                }
+            }
         tracing::trace!("on_next_round_incoming_request: StartingBlockProducer: {round}");
         OnNextRoundIncomingRequestResult::StartingBlockProducer
     }
 
     pub fn on_block_finalized(&mut self, block_height: &BlockHeight) {
-        self.action_lock.retain(|k, _| {
-            k.thread_identifier() != block_height.thread_identifier()
-                || k.height() >= block_height.height()
-        });
+        self.action_lock.drop_old_locks(block_height);
     }
 
     pub fn on_next_round_failed(
@@ -881,45 +1330,28 @@ impl Authority {
     }
 
     pub fn on_next_round_success(&mut self, next_round_success: &NextRoundSuccess) {
-        // the happy path implementation is in node/execute.
-        // - double check that the parent block prefinalized is the same.
-        //   if this node didn't have parent prefinalized check the proof and add it for the parent.
-        // - check if proposed block in this round has enough attestations to be prefinalized.
-        //   if so, do prefinalization.
-        // - otherwise do the regular work:
-        // let is_block_prefinalized: bool = todo!("check if there already was a block that had enough attestations to be finalized on this height.");
-        // if is_block_prefinalized {
-        // todo!("Reply to the node sent a proposal with the proof of a prefinalized block");
-        // return;
-        // }
-        //
-        // let parent_block_identifier = proposed_block.data().parent();
-        // let parent_block: BlockState = todo!("find from parent_block_identifier");
-        //
-        // let proposed_block_round = proposed_block.data().get_common_section().round;
-        //
-        // todo!("check the proof for quantity of the next round sent");
-        // todo!("(?) check that the proposed block is the right one according to the proof");
-        // todo!(
-        // "check that the block is produced and signed by the correct bp accordint to the round"
-        // );
-        // todo!("ensure all nacks included");
-
         let block_height = next_round_success.block_height();
         let round = *next_round_success.round();
         let Ok(proposed_block) = next_round_success.proposed_block().get_envelope() else {
             tracing::error!("Incoming next round success contains invalid proposed block");
             return;
         };
-
+        let block_round = proposed_block.data().get_common_section().round;
         let parent_id = proposed_block.data().parent();
         let parent_state =
             self.block_state_repository.get(&parent_id).expect("must have parent block state");
-        let Some(parent_state_prefinalization_proof) =
-            parent_state.guarded(|e| e.prefinalization_proof().clone())
-        else {
-            tracing::trace!("Incoming next round success failure: parent block ({parent_id:?}) has no prefinalization proof");
-            return;
+        let parent_state_prefinalization_proof = match parent_state
+            .guarded(|e| e.prefinalization_proof().clone())
+        {
+            Some(prefinalization_proof) => Some(prefinalization_proof),
+            None => {
+                if parent_id == BlockIdentifier::default() {
+                    None
+                } else {
+                    tracing::trace!("Incoming next round success failure: parent block ({parent_id:?}) has no prefinalization proof");
+                    return;
+                }
+            }
         };
 
         let Some(parent_producer_selector) =
@@ -949,69 +1381,68 @@ impl Authority {
                 .map(|e| e.data().block_id.clone()),
         );
 
-        self.action_lock
-            .entry(*block_height)
-            .and_modify(|e| {
-                if *e.locked_round() < round {
-                    e.set_locked_round(round);
-                    e.set_locked_block(BlockRef {
-                        block_seq_no: proposed_block.data().seq_no(),
-                        block_identifier: proposed_block.data().identifier().clone(),
-                    });
-                    e.set_locked_bad_block_nacks(envelope_nacks.clone());
+        // Note: Majority of nodes voted to produce a new block.
+        // This means the old block can never ever be accepted by a majority to be finalized.
+        let mut to_invalidate = None;
+        if let Some(e) = self.action_lock.get_mut(block_height, &self.block_state_repository) {
+            if round >= *e.locked_round() {
+                e.set_locked_round(round);
+                if e.locked_block().is_none() || block_round > e.locked_block().as_ref().unwrap().0
+                {
+                    to_invalidate = e.locked_block().clone();
+                    e.set_locked_block((
+                        block_round,
+                        BlockRef {
+                            block_seq_no: proposed_block.data().seq_no(),
+                            block_identifier: proposed_block.data().identifier().clone(),
+                        },
+                    ));
                 }
-                if *e.locked_round() == round {
-                    let winner = BlockRef {
-                        block_seq_no: proposed_block.data().seq_no(),
-                        block_identifier: proposed_block.data().identifier().clone(),
-                    };
-                    if e.locked_block() != &Some(winner.clone()) {
-                        e.set_locked_round(round + 1);
-                        e.set_locked_block(winner);
-                        e.set_locked_bad_block_nacks(envelope_nacks.clone());
+                e.set_locked_bad_block_nacks(envelope_nacks.clone());
+            }
+            if *e.locked_round() == round
+                && (e.locked_block().is_none()
+                    || block_round > e.locked_block().as_ref().unwrap().0)
+            {
+                let leader = BlockRef {
+                    block_seq_no: proposed_block.data().seq_no(),
+                    block_identifier: proposed_block.data().identifier().clone(),
+                };
+                if let Some(prev_locked_block) = e.locked_block().clone() {
+                    if prev_locked_block.1.block_identifier != leader.block_identifier {
+                        to_invalidate = Some(prev_locked_block);
                     }
                 }
-            })
-            .or_insert_with(|| {
-                ActionLock::builder()
-                    .parent_prefinalization_proof(Some(parent_state_prefinalization_proof))
+                e.set_locked_round(round + 1);
+                e.set_locked_block((block_round, leader));
+                e.set_locked_bad_block_nacks(envelope_nacks.clone());
+            }
+        } else {
+            let new_lock = ActionLock::builder()
+                    .parent_prefinalization_proof(parent_state_prefinalization_proof)
                     .parent_block_producer_selector_data(parent_producer_selector)
                     .parent_block(BlockRef::try_from(&parent_state).unwrap())
                     .locked_round(round)
-                    .locked_block(Some(
+                    .locked_block(Some((
+                        block_round,
                         BlockRef::builder()
                             .block_identifier(proposed_block.data().identifier())
                             .block_seq_no(proposed_block.data().seq_no())
                             .build(),
-                    ))
+                    )))
                     .locked_bad_block_nacks(envelope_nacks)
-                    .current_round(round)
-                    .build()
-            });
+                    //.current_round(round)
+                    .build();
+            self.action_lock.insert(*block_height, new_lock);
+        }
+        if let Some(abandoned_by_majority_block_ref) = to_invalidate {
+            let abandoned_by_majority_block = self
+                .block_state_repository
+                .get(&abandoned_by_majority_block_ref.1.block_identifier)
+                .unwrap();
+            invalidate_branch(abandoned_by_majority_block, &self.block_state_repository);
+        }
         // Note:
         // todo!("Push the proposed block for processing");
-    }
-
-    fn path_to(&self, height: &BlockHeight) -> PathBuf {
-        self.data_dir.clone().join(format!("{}-{}", height.thread_identifier(), height.height()))
-    }
-
-    fn save(&self, block_height: &BlockHeight, data: &ActionLock) {
-        let file_path = self.path_to(block_height);
-        crate::repository::repository_impl::save_to_file(&file_path, data, false)
-            .expect("must work");
-    }
-
-    fn preload(&mut self, block_height: &BlockHeight) {
-        if self.action_lock.contains_key(block_height) {
-            return;
-        }
-        let file_path = self.path_to(block_height);
-        let Some(lock) =
-            crate::repository::repository_impl::load_from_file(&file_path).expect("must work")
-        else {
-            return;
-        };
-        self.action_lock.insert(*block_height, lock);
     }
 }

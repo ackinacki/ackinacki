@@ -1,3 +1,0 @@
-ALTER TABLE blocks ADD COLUMN chain_order TEXT;
-ALTER TABLE blocks ADD COLUMN tr_count INTEGER;
-ALTER TABLE accounts ADD COLUMN dapp_id TEXT;

@@ -1,21 +1,24 @@
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+//
+
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
-use std::time::Instant;
 
 use http_server::ExtMsgFeedbackList;
-use itertools::Itertools;
 use network::channel::NetBroadcastSender;
 use parking_lot::Mutex;
+use telemetry_utils::instrumented_channel_ext::WrappedItem;
+use telemetry_utils::instrumented_channel_ext::XInstrumentedSender;
 use telemetry_utils::mpsc::InstrumentedSender;
 use typed_builder::TypedBuilder;
 
 use crate::block::producer::process::TVMBlockProducerProcess;
+use crate::block::producer::producer_service::memento::BlockProducerMemento;
 use crate::bls::create_signed::CreateSealed;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
@@ -25,13 +28,13 @@ use crate::bls::GoshBLS;
 use crate::config::must_save_state_on_seq_no;
 use crate::external_messages::ExternalMessagesThreadState;
 use crate::helper::block_flow_trace;
+use crate::helper::SHUTDOWN_FLAG;
 #[cfg(feature = "misbehave")]
 use crate::misbehavior::misbehave_rules;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::NackData;
 use crate::node::associated_types::SynchronizationResult;
-use crate::node::block_state::dependent_ancestor_blocks::DependentAncestorBlocks;
-use crate::node::block_state::dependent_ancestor_blocks::DependentBlocks;
+use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::block_state::unfinalized_ancestor_blocks::UnfinalizedAncestorBlocksSelectError;
 use crate::node::services::attestations_target::service::AttestationTargetsService;
@@ -52,7 +55,9 @@ use crate::types::as_signatures_map::AsSignaturesMap;
 use crate::types::bp_selector::ProducerSelector;
 use crate::types::common_section::Directives;
 use crate::types::AckiNackiBlock;
+use crate::types::AggregateFilter;
 use crate::types::BlockIdentifier;
+use crate::types::BlockRound;
 use crate::types::BlockSeqNo;
 use crate::types::CollectedAttestations;
 use crate::types::RndSeed;
@@ -81,7 +86,8 @@ pub struct BlockProducer {
     last_broadcasted_produced_candidate_block_time: std::time::Instant,
     last_block_attestations: Arc<Mutex<CollectedAttestations>>,
     attestations_target_service: AttestationTargetsService,
-    self_tx: Sender<NetworkMessage>,
+    self_tx: XInstrumentedSender<NetworkMessage>,
+    self_authority_tx: XInstrumentedSender<NetworkMessage>,
     broadcast_tx: NetBroadcastSender<NetworkMessage>,
 
     node_identifier: NodeIdentifier,
@@ -99,6 +105,8 @@ pub struct BlockProducer {
     external_messages: ExternalMessagesThreadState,
     is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
     control_rx: std::sync::mpsc::Receiver<BlockProducerCommand>,
+
+    save_optimistic_service_sender: InstrumentedSender<Arc<OptimisticStateImpl>>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -106,6 +114,8 @@ enum UpdateCommonSectionResult {
     Success,
     FailedToBuildChainToTheLastFinalizedBlock,
     NotReadyYet,
+    AncestorIsNotReadyYet,
+    // NotEnoughAttestations(u32),
 }
 
 impl BlockProducer {
@@ -164,9 +174,10 @@ impl BlockProducer {
 
                     // Cut off block producer. Send whatever it has
                     let post_production_timestamp = std::time::Instant::now();
+                    let had_memento = memento.is_some();
                     let (broadcasted, next_memento) =
-                        self.on_production_timeout(&mut in_flight_productions, memento.clone())?;
-                    let cleared_memento = next_memento.is_none() && memento.is_some();
+                        self.on_production_timeout(&mut in_flight_productions, memento)?;
+                    let cleared_memento = next_memento.is_none() && had_memento;
                     memento = next_memento;
                     (broadcasted, cleared_memento, Some(post_production_timestamp))
                 } else {
@@ -237,7 +248,7 @@ impl BlockProducer {
     pub(crate) fn find_thread_last_block_id_this_node_can_continue(
         &mut self,
         next_bp_command: Option<BlockProducerCommand>,
-    ) -> anyhow::Result<Option<(BlockIdentifier, BlockSeqNo, u16)>> {
+    ) -> anyhow::Result<Option<(BlockIdentifier, BlockSeqNo, BlockRound)>> {
         tracing::trace!(
             "find_thread_last_block_id_this_node_can_continue start {:?}",
             self.thread_id
@@ -258,7 +269,12 @@ impl BlockProducer {
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     // do a graceful shutdown. program is shutting down.
-                    unimplemented!();
+                    return if SHUTDOWN_FLAG.get() == Some(&true) {
+                        // NOTE: to prevent unexpected block finalization during shutdown
+                        Ok(None)
+                    } else {
+                        Err(anyhow::anyhow!("Control tx was disconnected"))
+                    };
                 }
             }
         };
@@ -270,7 +286,12 @@ impl BlockProducer {
             // await a command.
             let Ok(update) = self.control_rx.recv() else {
                 // do a graceful shutdown. program is shutting down.
-                unimplemented!();
+                return if SHUTDOWN_FLAG.get() == Some(&true) {
+                    // NOTE: to prevent unexpected block finalization during shutdown
+                    Ok(None)
+                } else {
+                    Err(anyhow::anyhow!("Control tx was disconnected"))
+                };
             };
             tracing::trace!(
                 "find_thread_last_block_id_this_node_can_continue control_rx received {:?}",
@@ -297,15 +318,28 @@ impl BlockProducer {
             }
         }
         tracing::trace!("find_thread_last_block_id_this_node_can_continue last_update self.production_status {:?}", self.production_status);
-        let production_status = self.production_status.as_ref().expect("it must be set by now");
-        if let Some((block_id, block_seq_no)) = production_status.last_produced.clone() {
-            Ok(Some((block_id, block_seq_no, 0)))
+        let Some(production_status) = self.production_status.as_ref() else {
+            return Ok(None);
+        };
+        let (block_id, seq_no, round) =
+            if let Some((block_id, block_seq_no)) = production_status.last_produced.clone() {
+                (block_id, block_seq_no, 0)
+            } else {
+                (
+                    production_status.init_params.parent_block_identifier().clone(),
+                    *production_status.init_params.parent_block_seq_no(),
+                    *production_status.init_params.round(),
+                )
+            };
+        let (_last_finalized_id, last_finalized_seq_no) = self
+            .repository
+            .select_thread_last_finalized_block(&self.thread_id)?
+            .ok_or(anyhow::format_err!("Failed to select last finalized block"))?;
+        if seq_no < last_finalized_seq_no {
+            self.production_status = None;
+            Ok(None)
         } else {
-            Ok(Some((
-                production_status.init_params.parent_block_identifier().clone(),
-                *production_status.init_params.parent_block_seq_no(),
-                *production_status.init_params.round(),
-            )))
+            Ok(Some((block_id, seq_no, round)))
         }
     }
 
@@ -313,24 +347,28 @@ impl BlockProducer {
     pub(crate) fn on_production_timeout(
         &mut self,
         producer_tails: &mut Option<(BlockIdentifier, BlockSeqNo)>,
-        mut memento: Option<(
-            Vec<(AckiNackiBlock, OptimisticStateImpl, ExtMsgFeedbackList, Instant)>,
-            Option<DependentBlocks>,
-        )>,
-    ) -> anyhow::Result<(
-        bool,
-        Option<(
-            Vec<(AckiNackiBlock, OptimisticStateImpl, ExtMsgFeedbackList, Instant)>,
-            Option<DependentBlocks>,
-        )>,
-    )> {
+        mut memento: Option<BlockProducerMemento>,
+    ) -> anyhow::Result<(bool, Option<BlockProducerMemento>)> {
         tracing::trace!("on_production_timeout start");
+        if let Some(memento_ref) = memento.as_ref() {
+            if let Some(saved_notification) = memento_ref.last_attestation_notification() {
+                tracing::trace!("memento is set, wait for notification");
+
+                let (lock, cvar) =
+                    &*self.last_block_attestations.guarded(|e| Arc::clone(e.notifications()));
+                let mut notification = lock.lock();
+                cvar.wait_while(&mut notification, |e| e == saved_notification);
+                tracing::trace!("memento is set, wait for notification end");
+            }
+        }
+
         let mut did_broadcast_something = false;
 
-        let (mut produced_data, mut dependent_blocks) =
-            memento.take().unwrap_or_else(|| (self.production_process.get_produced_blocks(), None));
-
-        produced_data.sort_by(|a, b| a.0.seq_no().cmp(&b.0.seq_no()));
+        let mut produced_data = memento.take().unwrap_or_else(|| {
+            BlockProducerMemento::builder()
+                .produced_blocks(self.production_process.get_produced_blocks())
+                .build()
+        });
 
         // While producer process was generating blocks, the node could receive valid
         // blocks, and the generated blocks could be discarded.
@@ -341,9 +379,8 @@ impl BlockProducer {
             .unwrap_or_default()
             .1;
         tracing::trace!("on_production_timeout: minimal_seq_no_that_can_be_accepted_from_producer_process = {minimal_seq_no_that_can_be_accepted_from_producer_process:?}");
-        while !produced_data.is_empty() {
-            let (mut block, optimistic_state, ext_msg_feedbacks, produced_instant) =
-                produced_data.first().unwrap().clone();
+        while let Some(produced_block) = produced_data.produced_blocks().first() {
+            let mut block = produced_block.block().clone();
             block_flow_trace("check produced", &block.identifier(), &self.node_identifier, []);
             tracing::info!(
                 "Got block from producer. id: {:?}; seq_no: {:?}, parent: {:?}",
@@ -358,12 +395,11 @@ impl BlockProducer {
                 *producer_tails = None;
                 return Ok((false, None));
             }
-            self.shared_services.on_block_appended(&block);
             let share_resulting_state = self.is_state_sync_requested.guarded(|e| *e);
             let share_state_ids = if let Some(seq_no) = &share_resulting_state {
                 if seq_no == &block.seq_no() {
                     tracing::trace!("Node should share state for last block");
-                    Some(optimistic_state.get_share_stare_refs())
+                    Some(produced_block.optimistic_state().get_share_stare_refs())
                 } else {
                     None
                 }
@@ -371,15 +407,18 @@ impl BlockProducer {
                 None
             };
             let block_will_share_state = share_state_ids.is_some();
+            let attestations_notifications_stamp: u32 = {
+                let (lock, _cvar) =
+                    &*self.last_block_attestations.guarded(|e| e.notifications().clone());
+                let n = *lock.lock();
+                n
+            };
             let update_result = self.update_candidate_common_section(
                 &mut block,
                 share_state_ids,
-                &optimistic_state,
-                dependent_blocks.take(),
+                produced_block.optimistic_state(),
             );
-            dependent_blocks =
-                update_result.as_ref().map(|(_res, cache)| cache.clone()).ok().flatten();
-            match update_result.map(|(res, _cache)| res) {
+            let produced_block = match update_result {
                 Ok(UpdateCommonSectionResult::FailedToBuildChainToTheLastFinalizedBlock) => {
                     tracing::trace!("Failed to update common section and our block seems to be invalidated, stop production");
                     self.production_process.stop_thread_production(&self.thread_id)?;
@@ -389,29 +428,45 @@ impl BlockProducer {
                 Err(e) => {
                     tracing::trace!("Update common section error {e:?}");
                     self.production_process.stop_thread_production(&self.thread_id)?;
-                    self.repository.store_optimistic(optimistic_state)?;
+                    self.repository
+                        .store_optimistic_in_cache(produced_block.optimistic_state().clone())?;
+                    let _ = self
+                        .save_optimistic_service_sender
+                        .send(produced_block.optimistic_state().clone());
                     *producer_tails = None;
-                    return Ok((false, Some((produced_data, dependent_blocks))));
+                    return Ok((false, Some(produced_data)));
                 }
-                Ok(UpdateCommonSectionResult::NotReadyYet) => {
+                Ok(UpdateCommonSectionResult::AncestorIsNotReadyYet) => {
                     // Memento
-                    tracing::trace!("Failed to update common section, stop production");
+                    tracing::trace!("Failed to update common section, AncestorIsNotReadyYet");
                     // self.production_process.stop_thread_production(&self.thread_id)?;
                     // self.repository.store_optimistic(optimistic_state)?;
                     // *producer_tails = None;
-                    return Ok((false, Some((produced_data, dependent_blocks))));
+                    produced_data
+                        .set_last_attestation_notification(attestations_notifications_stamp + 1);
+                    return Ok((false, Some(produced_data)));
+                }
+                Ok(UpdateCommonSectionResult::NotReadyYet) => {
+                    // Memento
+                    tracing::trace!("Failed to update common section, NotReadyYet");
+                    // self.production_process.stop_thread_production(&self.thread_id)?;
+                    // self.repository.store_optimistic(optimistic_state)?;
+                    // *producer_tails = None;
+                    produced_data
+                        .set_last_attestation_notification(attestations_notifications_stamp);
+                    return Ok((false, Some(produced_data)));
                 }
                 Ok(UpdateCommonSectionResult::Success) => {
                     tracing::trace!("Speed up production");
                     self.production_process.set_timeout(self.production_timeout);
-                    produced_data.remove(0);
                     if let Some(seq_no) = share_resulting_state {
                         if seq_no <= block.seq_no() {
                             self.is_state_sync_requested.guarded_mut(|e| *e = None);
                         }
                     }
+                    produced_data.produced_blocks_mut().remove(0)
                 }
-            }
+            };
 
             let parent_state = self.block_state_repository.get(&block.parent())?;
 
@@ -423,14 +478,18 @@ impl BlockProducer {
                     self.save_state_frequency,
                 );
             if must_save_state {
-                self.repository.store_optimistic(optimistic_state.clone())?;
+                self.repository
+                    .store_optimistic_in_cache(produced_block.optimistic_state().clone())?;
+                let _ = self
+                    .save_optimistic_service_sender
+                    .send(produced_block.optimistic_state().clone());
             }
 
             // NOTE: Issue here: This blocks accepting new blocks!
+            let mut notifications = self.block_state_repository.notifications().clone();
             loop {
                 tracing::trace!("loop get parent bk set");
-                let notifications =
-                    self.block_state_repository.notifications().load(Ordering::Relaxed);
+                let stamp = notifications.stamp();
                 if parent_state.guarded(|e| e.descendant_bk_set().is_some()) {
                     break;
                 }
@@ -440,7 +499,7 @@ impl BlockProducer {
                     self.production_process.stop_thread_production(&self.thread_id)?;
                     return Ok((false, None));
                 }
-                atomic_wait::wait(self.block_state_repository.notifications(), notifications);
+                notifications.wait_for_updates(stamp);
             }
             tracing::trace!("Got parent bk set");
             let bk_set = parent_state.guarded(|e| e.descendant_bk_set().clone().unwrap());
@@ -468,28 +527,25 @@ impl BlockProducer {
             let parent_height = parent_state
                 .guarded(|e| *e.block_height())
                 .expect("Parent block height must be set");
-            self.block_state_repository.get(&block.identifier())?.guarded_mut(|e| {
+            produced_block.block_state().guarded_mut(|e| {
                 e.set_validated(true)?;
                 e.set_producer_selector_data(producer_selector.clone())?;
                 e.set_block_height(parent_height.next(&self.thread_id))
             })?;
 
-            let net_message = {
+            let (send_res, net_message) = {
                 if production_status.last_produced.is_none()
                     && *production_status.init_params.round() != 0
                 {
-                    let block_id = envelope.data().identifier();
-                    let block_height = self
-                        .block_state_repository
-                        .get(&block_id)
-                        .unwrap()
-                        .guarded(|e| (*e.block_height()).unwrap());
-                    NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched(
-                        Envelope::sealed(
-                            &self.node_identifier,
-                            &bk_set,
-                            &secrets,
-                            NextRoundSuccess::builder()
+                    let block_height =
+                        produced_block.block_state().guarded(|e| (*e.block_height()).unwrap());
+                    let message =
+                        NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched(
+                            Envelope::sealed(
+                                &self.node_identifier,
+                                &bk_set,
+                                &secrets,
+                                NextRoundSuccess::builder()
                                 .node_identifier(self.node_identifier.clone())
                                 .round(*production_status.init_params.round())
                                 .block_height(block_height)
@@ -498,23 +554,48 @@ impl BlockProducer {
                                 // TODO: Must include a proof!
                                 .requests_aggregated(vec![])
                                 .build(),
-                        )
-                        .expect("must work"),
-                    ))
+                            )
+                            .expect("must work"),
+                        ));
+                    (
+                        self.self_authority_tx.send(WrappedItem {
+                            payload: message.clone(),
+                            label: self.thread_id.to_string(),
+                        }),
+                        message,
+                    )
                 } else {
-                    NetworkMessage::candidate(&envelope)?
+                    let message = NetworkMessage::candidate(&envelope)?;
+                    (
+                        self.self_tx.send(WrappedItem {
+                            payload: message.clone(),
+                            label: self.thread_id.to_string(),
+                        }),
+                        message,
+                    )
                 }
             };
-            self.self_tx.send(net_message.clone())?;
+            match send_res {
+                Ok(()) => {}
+                _ => {
+                    if SHUTDOWN_FLAG.get() != Some(&true) {
+                        anyhow::bail!("Failed to send produced message");
+                    }
+                }
+            }
             self.shared_services.metrics.as_ref().inspect(|m| {
-                m.report_memento_duration(produced_instant.elapsed().as_millis(), &self.thread_id)
+                if let Some(metrics_memento_init_time) = produced_block.metrics_memento_init_time()
+                {
+                    m.report_memento_duration(
+                        metrics_memento_init_time.elapsed().as_millis(),
+                        &self.thread_id,
+                    );
+                }
             });
 
             let block_id = envelope.data().identifier();
             let block_seq_no = envelope.data().seq_no();
 
-            self.production_process
-                .write_block_to_db(envelope.clone(), optimistic_state.clone())?;
             tracing::trace!("insert to cache_forward_optimistic {:?} {:?}", block_seq_no, block_id);
             if let Some(ref mut production_status) = self.production_status {
                 production_status.last_produced = Some((block_id.clone(), block_seq_no));
@@ -529,8 +610,12 @@ impl BlockProducer {
             // }
 
             self.last_broadcasted_produced_candidate_block_time = std::time::Instant::now();
-            self.broadcast_candidate_block(&block_id, net_message, ext_msg_feedbacks)?;
-            self.repository.store_optimistic_in_cache(optimistic_state)?;
+            self.broadcast_candidate_block(
+                &block_id,
+                net_message,
+                produced_block.feedbacks().clone(),
+            )?;
+            self.repository.store_optimistic_in_cache(produced_block.optimistic_state().clone())?;
             did_broadcast_something = true;
         }
 
@@ -557,76 +642,63 @@ impl BlockProducer {
         candidate_block: &mut AckiNackiBlock,
         share_state_ids: Option<HashMap<ThreadIdentifier, BlockIdentifier>>,
         optimistic_state: &OptimisticStateImpl,
-        dependent_ancestor_blocks: Option<DependentBlocks>,
-    ) -> anyhow::Result<(UpdateCommonSectionResult, Option<DependentBlocks>)> {
+    ) -> anyhow::Result<UpdateCommonSectionResult> {
         tracing::trace!(
             "update_candidate_common_section: share_state {} block_seq_no: {:?}, id: {:?}",
             share_state_ids.is_some(),
             candidate_block.seq_no(),
             candidate_block.identifier()
         );
+        let mut received_attestations = self.last_block_attestations.guarded(|e| e.clone());
 
         let parent_block_state = self.block_state_repository.get(&candidate_block.parent())?;
-        use UnfinalizedAncestorBlocksSelectError::*;
-        let dependent_ancestor_blocks = match dependent_ancestor_blocks {
-            Some(v) => v,
-            None => {
-                match self
-                    .block_state_repository
-                    .select_dependent_ancestor_blocks(&parent_block_state)
-                {
-                    Ok(blocks) => blocks,
-                    Err(IncompleteHistory) => {
-                        tracing::trace!(
-                            "update_candidate_common_section: Failed to build unfinalized chain: Incomplete history"
-                        );
-                        return Ok((UpdateCommonSectionResult::NotReadyYet, None));
-                    }
-                    Err(e) => {
-                        tracing::trace!(
-                            "update_candidate_common_section: Failed to build unfinalized chain: {e}"
-                        );
-                        return Ok((
-                            UpdateCommonSectionResult::FailedToBuildChainToTheLastFinalizedBlock,
-                            None,
-                        ));
-                    }
+        let Some(ancestor_blocks_finalization_checkpoints) =
+            parent_block_state.guarded(|e| e.ancestor_blocks_finalization_checkpoints().clone())
+        else {
+            tracing::trace!(
+                "update_candidate_common_section: ancestor_blocks_finalization_checkpoints missing"
+            );
+            // anyhow::bail!("ancestor_blocks_finalization_checkpoints missing");
+            return Ok(UpdateCommonSectionResult::AncestorIsNotReadyYet);
+        };
+
+        let attestations_required: Vec<(BlockState, AggregateFilter)> = {
+            let mut buffer = vec![];
+            let primary_only: Vec<BlockIdentifier> = {
+                ancestor_blocks_finalization_checkpoints
+                    .primary()
+                    .keys()
+                    .filter(|e| {
+                        !ancestor_blocks_finalization_checkpoints.fallback().contains_key(*e)
+                    })
+                    .cloned()
+                    .collect()
+            };
+            for ancestor_id in primary_only.into_iter() {
+                let checkpoint =
+                    ancestor_blocks_finalization_checkpoints.primary().get(&ancestor_id).unwrap();
+                let ancestor = self.block_state_repository.get(&ancestor_id)?;
+                buffer.push((ancestor, AggregateFilter::from(checkpoint)));
+            }
+            for (ancestor_id, checkpoints) in
+                ancestor_blocks_finalization_checkpoints.fallback().iter()
+            {
+                let ancestor = self.block_state_repository.get(ancestor_id)?;
+                for checkpoint in checkpoints.iter() {
+                    buffer.push((ancestor.clone(), AggregateFilter::from(checkpoint)));
                 }
             }
+            buffer
         };
-        let (Some(parent_statistics), Some(bk_set)) = parent_block_state
+        let (Some(_parent_statistics), Some(bk_set)) = parent_block_state
             .guarded(|e| (e.block_stats().clone(), e.descendant_bk_set().clone()))
         else {
             tracing::trace!("update_candidate_common_section: Failed to get parent block data");
-            return Ok((UpdateCommonSectionResult::NotReadyYet, Some(dependent_ancestor_blocks)));
+            return Ok(UpdateCommonSectionResult::NotReadyYet);
         };
-        let attestations_watched_for_statistics = parent_statistics.attestations_watched();
 
-        let ancestor_blocks_chain = HashSet::from_iter(
-            dependent_ancestor_blocks
-                .dependent_ancestor_chain()
-                .iter()
-                .map(|e| e.block_identifier().clone()),
-        );
-        let trace_attestations_required = format!("{ancestor_blocks_chain:?}");
-        let mut attestations_required = ancestor_blocks_chain;
-        attestations_required.extend(attestations_watched_for_statistics);
-        let mut received_attestations = self.last_block_attestations.guarded(|e| e.clone());
-        let aggregated_attestations = received_attestations.aggregate(
-            attestations_required,
-            |block_id| {
-                let Ok(block_state) = self.block_state_repository.get(block_id) else {
-                    return None;
-                };
-                block_state.guarded(|e| e.bk_set().clone())
-            },
-            |block_id| {
-                let Ok(block_state) = self.block_state_repository.get(block_id) else {
-                    return None;
-                };
-                block_state.guarded(|e| e.envelope_hash().clone())
-            },
-        )?;
+        let trace_attestations_required = format!("{attestations_required:?}");
+        let aggregated_attestations = received_attestations.aggregate(&attestations_required)?;
 
         let proposed_attestations = aggregated_attestations.as_signatures_map();
         tracing::trace!(
@@ -635,15 +707,10 @@ impl BlockProducer {
             trace_attestations_required,
             &proposed_attestations,
         );
-        let dependants = dependent_ancestor_blocks
-            .dependent_ancestor_blocks()
-            .iter()
-            .map(|e| e.block_identifier().clone())
-            .collect::<Vec<_>>();
         tracing::trace!(
             "update_candidate_common_section ({:?}): dependants: {:?}",
             candidate_block.identifier(),
-            dependants,
+            attestations_required,
         );
         let mut common_section = candidate_block.get_common_section().clone();
         common_section.block_attestations = aggregated_attestations;
@@ -711,6 +778,7 @@ impl BlockProducer {
                     for attestation in attestations {
                         e.add_verified_attestations_for(
                             attestation.data().block_id().clone(),
+                            *attestation.data().target_type(),
                             HashSet::from_iter(
                                 attestation.clone_signature_occurrences().keys().cloned(),
                             ),
@@ -718,43 +786,42 @@ impl BlockProducer {
                     }
                     Ok::<(), anyhow::Error>(())
                 })?;
-                if let Some((last_dependant_block_seq_no, last_dependant_block_id)) =
-                    dependent_ancestor_blocks
-                        .dependent_ancestor_blocks()
-                        .iter()
-                        .map(|e| {
-                            e.guarded(|e| {
-                                (
-                                    (*e.block_seq_no()).expect("Must be set"),
-                                    e.block_identifier().clone(),
-                                )
-                            })
-                        })
-                        .sorted_by(|a, b| a.0.cmp(&b.0))
-                        .next_back()
-                {
-                    self.clear_old_attestations(
-                        last_dependant_block_id,
-                        last_dependant_block_seq_no,
-                    )?;
-                }
-                Ok((UpdateCommonSectionResult::Success, None))
+                // if let Some((last_dependant_block_seq_no, last_dependant_block_id)) =
+                //     dependent_ancestor_blocks
+                //         .dependent_ancestor_blocks()
+                //         .iter()
+                //         .map(|e| {
+                //             e.guarded(|e| {
+                //                 (
+                //                     (*e.block_seq_no()).expect("Must be set"),
+                //                     e.block_identifier().clone(),
+                //                 )
+                //             })
+                //         })
+                //         .sorted_by(|a, b| a.0.cmp(&b.0))
+                //         .next_back()
+                // {
+                //     self.clear_old_attestations(
+                //         last_dependant_block_id,
+                //         last_dependant_block_seq_no,
+                //     )?;
+                // }
+                Ok(UpdateCommonSectionResult::Success)
             }
             Ok(false) => {
                 tracing::trace!(
                     "update_candidate_common_section: Failed to meet ancestors attestation targets"
                 );
-                Ok((UpdateCommonSectionResult::NotReadyYet, Some(dependent_ancestor_blocks)))
+                Ok(UpdateCommonSectionResult::NotReadyYet)
             }
             Err(UnfinalizedAncestorBlocksSelectError::IncompleteHistory)
             | Err(UnfinalizedAncestorBlocksSelectError::FailedToLoadBlockState) => {
-                Ok((UpdateCommonSectionResult::NotReadyYet, Some(dependent_ancestor_blocks)))
+                Ok(UpdateCommonSectionResult::NotReadyYet)
             }
             Err(UnfinalizedAncestorBlocksSelectError::InvalidatedParent(_chain))
-            | Err(UnfinalizedAncestorBlocksSelectError::BlockSeqNoCutoff(_chain)) => Ok((
-                UpdateCommonSectionResult::FailedToBuildChainToTheLastFinalizedBlock,
-                Some(dependent_ancestor_blocks),
-            )),
+            | Err(UnfinalizedAncestorBlocksSelectError::BlockSeqNoCutoff(_chain)) => {
+                Ok(UpdateCommonSectionResult::FailedToBuildChainToTheLastFinalizedBlock)
+            }
         }
     }
 
@@ -777,16 +844,6 @@ impl BlockProducer {
         }
     }
 
-    fn clear_old_attestations(
-        &mut self,
-        last_block_id: BlockIdentifier,
-        last_block_seq_no: BlockSeqNo,
-    ) -> anyhow::Result<()> {
-        self.last_block_attestations
-            .guarded_mut(|e| e.move_cutoff(last_block_seq_no, last_block_id));
-        Ok(())
-    }
-
     pub(crate) fn broadcast_candidate_block(
         &self,
         block_id: &BlockIdentifier,
@@ -796,7 +853,14 @@ impl BlockProducer {
         tracing::info!("broadcasting block: {block_id}");
 
         block_flow_trace("broadcasting candidate", block_id, &self.node_identifier, []);
-        self.broadcast_tx.send(candidate_block)?;
+        match self.broadcast_tx.send(candidate_block) {
+            Ok(_) => {}
+            _ => {
+                if SHUTDOWN_FLAG.get() != Some(&true) {
+                    panic!("Failed to broadcast block");
+                }
+            }
+        }
 
         if !ext_msg_feedbacks.0.is_empty() {
             ext_msg_feedbacks.0.iter_mut().for_each(|feedback| {

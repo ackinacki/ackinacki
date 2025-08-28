@@ -476,8 +476,12 @@ impl StreamInner {
         Ok(())
     }
 
-    fn handle_event_ideal_send_buffer_size(&self, _byte_count: u64) -> Result<(), msquic::Status> {
-        trace!("Stream({:p}, id={:?}) Ideal send buffer size", self, self.shared.id.read());
+    fn handle_event_ideal_send_buffer_size(&self, byte_count: u64) -> Result<(), msquic::Status> {
+        trace!(
+            "Stream({:p}, id={:?}) Ideal send buffer size {byte_count}",
+            self,
+            self.shared.id.read()
+        );
         Ok(())
     }
 

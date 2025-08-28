@@ -19,106 +19,206 @@ contract AckiNackiBlockManagerNodeWallet is Modifiers {
     mapping(uint8 => TvmCell) _code;
 
     uint256 static _owner_pubkey;
-    address _root; 
+    address _root;
 
-    address _bm_root = address.makeAddrStd(0, 0);
     optional(uint256) _license_num;
     mapping(uint256=>bool) _whiteListLicense;
-    address _licenseBMRoot;    
+    address _licenseBMRoot;
     optional(uint32) _start_bm;
-    optional(uint256) _work_key;
-    uint256 _hash_wallet;
     uint128 _wallet_reward;
+    uint128 _slashSum;
     uint32 _start_time;
+    uint32 _stop_seqno;
+    uint64 _waitStep;
     uint32 _rewarded;
+    uint32 _epochStart;
+    uint32 _epochEnd;
+    uint64 _walletLastTouch;
+    bool _isSlashing = false;
+    uint32 _tryReward;
+    uint8 _walletTouch;
+    uint256 _signing_pubkey;
 
     constructor (
         TvmCell LicenseBMCode,
         mapping(uint256=>bool) whiteListLicense,
         address licenseBMRoot,
-        uint32 start_time
+        uint32 start_time,
+        uint64 waitStep,
+        uint256 signing_pubkey,
+        uint8 walletTouch
     ) {
         TvmCell data = abi.codeSalt(tvm.code()).get();
         (string lib, address root) = abi.decode(data, (string, address));
         require(BlockKeeperLib.versionLib == lib, ERR_SENDER_NO_ALLOWED);
+
         _root = root;
         require(msg.sender == _root, ERR_SENDER_NO_ALLOWED);
+
         _code[m_LicenseBMCode] = LicenseBMCode;
         _whiteListLicense = whiteListLicense;
         _licenseBMRoot = licenseBMRoot;
         _start_time = start_time;
+        _waitStep = waitStep;
+        _signing_pubkey = signing_pubkey;
+        _walletTouch = walletTouch;
     }
 
     function removeLicense(uint256 license_number) public senderIs(BlockKeeperLib.calculateLicenseBMAddress(_code[m_LicenseBMCode], license_number, _licenseBMRoot)) accept {
         ensureBalance();
         require(_license_num.hasValue(), ERR_LICENSE_NOT_EXIST); 
         require(_license_num.get() == license_number, ERR_WRONG_LICENSE); 
+        require(_start_bm.hasValue() == false, ERR_ALREADY_STARTED);
+        require(_stop_seqno + _waitStep < block.seqno, ERR_LICENSE_BUSY);
         _license_num = null;
-        LicenseBMContract(msg.sender).deleteLicense{value: 0.1 vmshell, flag: 1}();
+        mapping(uint32 => varuint32) data;
+        data[CURRENCIES_ID] = address(this).currencies[CURRENCIES_ID];
+        LicenseBMContract(msg.sender).deleteWallet{value: 0.1 vmshell, currencies: data, flag: 1}(_wallet_reward, _slashSum);
+        _wallet_reward = 0;
+        _slashSum = 0;
     }
 
-    function setLicenseWhiteList(mapping(uint256 => bool) whiteListLicense) public onlyOwnerPubkey(_owner_pubkey) accept saveMsg {
+    function setSigningPubkey(uint256 pubkey) public onlyOwnerPubkey(_owner_pubkey) accept {
+        ensureBalance();
+        require(block.seqno > _walletLastTouch + _walletTouch, ERR_WALLET_BUSY);
+        _walletLastTouch = block.seqno;
+        _signing_pubkey = pubkey;
+    }
+
+    function setLicenseWhiteList(mapping(uint256 => bool) whiteListLicense) public onlyOwnerPubkey(_owner_pubkey) accept {
+        require(block.seqno > _walletLastTouch + _walletTouch, ERR_WALLET_BUSY);
+        _walletLastTouch = block.seqno;
+        require(whiteListLicense.keys().length <= MAX_LICENSE_NUMBER_WHITELIST_BM, ERR_TOO_MANY_LICENSES);
         ensureBalance();
         _whiteListLicense = whiteListLicense;
     }
 
-    function addLicense(uint256 license_number) public senderIs(BlockKeeperLib.calculateLicenseBMAddress(_code[m_LicenseBMCode], license_number, _licenseBMRoot)) accept {
+    function addLicense(uint256 license_number, uint128 reward, uint128 slashSum) public senderIs(BlockKeeperLib.calculateLicenseBMAddress(_code[m_LicenseBMCode], license_number, _licenseBMRoot)) accept {
         ensureBalance();
-        if (_license_num.hasValue()) {
+        if ((_license_num.hasValue()) || (_whiteListLicense[license_number] != true)) {
             LicenseBMContract(msg.sender).notAcceptLicense{value: 0.1 vmshell, flag: 1}(_owner_pubkey);
             return;
         }
+
         _license_num = license_number;
+        _wallet_reward = reward;
+        _slashSum = slashSum;
         LicenseBMContract(msg.sender).acceptLicense{value: 0.1 vmshell, flag: 1}(_owner_pubkey);
     }
 
     function ensureBalance() private pure {
         if (address(this).balance > FEE_DEPLOY_BLOCK_MANAGER_WALLET * 3) { return; }
-        gosh.mintshell(FEE_DEPLOY_BLOCK_MANAGER_WALLET * 3);
+        gosh.mintshellq(FEE_DEPLOY_BLOCK_MANAGER_WALLET * 3);
+    }
+    
+    function slash() public senderIs(address(this)) {
+        require(_license_num.hasValue(), ERR_LICENSE_NOT_EXIST);
+        require(_isSlashing == false, ERR_ALREADY_SLASH);
+        _walletLastTouch = block.seqno;
+        ensureBalance();
+        _stop_seqno = block.seqno;
+        _isSlashing = true;
+        if (_tryReward + MANAGER_REWARD_WAIT > block.seqno) {
+            return;
+        }
+        if (block.timestamp < _epochEnd) {
+            finalSlash();
+            return;
+        }
+        BlockManagerContractRoot(_root).getReward{value: 0.1 vmshell, flag: 1}(_owner_pubkey, _signing_pubkey, address(this), _rewarded, _start_bm.get(), false);
+        _start_bm = null;
     }
 
-    function withdrawToken(uint256 license_number, address to, varuint32 value) public view senderIs(BlockKeeperLib.calculateLicenseBMAddress(_code[m_LicenseBMCode], license_number, _licenseBMRoot)) accept {
-        ensureBalance();
-        if (_start_bm.hasValue()) {
-            require(value + gosh.calcminstakebm(_wallet_reward, block.timestamp - _start_time) <= address(this).currencies[CURRENCIES_ID], ERR_LOW_VALUE);
-        } else {
-            require(value <= address(this).currencies[CURRENCIES_ID], ERR_LOW_VALUE);
+    function noRewards() public senderIs(_root) accept {
+        if (_isSlashing) {
+            finalSlash();
         }
+        _tryReward = 0;
+    }
+
+    function finalSlash() private {
+        mapping(uint32 => varuint32) data_cur;
+        uint128 diff = 0;
+        if (_wallet_reward > _slashSum) {
+            diff = _wallet_reward - _slashSum;
+        }
+        uint128 slash_value = math.min(gosh.calcminstakebm(diff, block.timestamp - _start_time), uint128(address(this).currencies[CURRENCIES_ID]));
+        data_cur[CURRENCIES_ID] = varuint32(slash_value);
+        _slashSum += slash_value;
+        _isSlashing = false;
+        BlockManagerContractRoot(_root).slashed{value: 0.1 vmshell, currencies: data_cur, flag: 1}(_owner_pubkey);
+    }
+
+    function withdrawToken(address to, varuint32 value) public view senderIs(BlockKeeperLib.calculateLicenseBMAddress(_code[m_LicenseBMCode], _license_num.get(), _licenseBMRoot)) accept {
+        ensureBalance();  
+        require(_start_bm.hasValue() == false, ERR_ALREADY_STARTED);
+        require(_stop_seqno + _waitStep < block.seqno, ERR_LICENSE_BUSY);
+        require(value <= address(this).currencies[CURRENCIES_ID], ERR_LOW_VALUE);
         mapping(uint32 => varuint32) data;
         data[CURRENCIES_ID] = value;
         to.transfer({value: 0.1 vmshell, currencies: data, flag: 1});
     }
 
-    function startBM(uint256 key) public onlyOwnerPubkey(_owner_pubkey) accept saveMsg {
+    function startBM() public onlyOwnerPubkey(_owner_pubkey) accept {
         require(_license_num.hasValue(), ERR_LICENSE_NOT_EXIST);
-        require(_start_bm.hasValue() == false, ERR_ALREADY_CONFIRMED);
-        require(gosh.calcminstakebm(_wallet_reward, block.timestamp - _start_time) <= address(this).currencies[CURRENCIES_ID], ERR_LOW_VALUE);
+        require(_start_bm.hasValue() == false, ERR_ALREADY_STARTED);
+        require(_stop_seqno + _waitStep < block.seqno, ERR_LICENSE_BUSY);
+        require(block.seqno > _walletLastTouch + _walletTouch, ERR_WALLET_BUSY);
+        _walletLastTouch = block.seqno;
+        uint128 diff = 0;
+        if (_wallet_reward > _slashSum) {
+            diff = _wallet_reward - _slashSum;
+        }
+        require(gosh.calcminstakebm(diff, block.timestamp - _start_time) <= address(this).currencies[CURRENCIES_ID], ERR_LOW_VALUE);
+        ensureBalance();
         _start_bm = block.timestamp;
-        _work_key = key;
         _rewarded = block.timestamp;
-        BlockManagerContractRoot(_root).increaseBM{value: 0.1 ton, flag: 1}(_owner_pubkey);
+        BlockManagerContractRoot(_root).increaseBM{value: 0.1 vmshell, flag: 1}(_owner_pubkey);
     }
 
-    function getReward() public onlyOwnerPubkey(_owner_pubkey) accept saveMsg {
+    function getReward() public onlyOwnerPubkey(_owner_pubkey) accept {
         require(_license_num.hasValue(), ERR_LICENSE_NOT_EXIST);
         require(_start_bm.hasValue(), ERR_ALREADY_CONFIRMED);
-        BlockManagerContractRoot(_root).getReward{value: 0.1 ton, flag: 1}(_owner_pubkey, _rewarded, _start_bm.get(), false);
+        if (_epochEnd != 0) {        
+            require(block.timestamp > _epochEnd, ERR_ALREADY_REWARDED);
+        }
+        require(block.seqno > _walletLastTouch + _walletTouch, ERR_WALLET_BUSY);
+        _walletLastTouch = block.seqno;
+        ensureBalance();
+        _tryReward = block.seqno;
+        BlockManagerContractRoot(_root).getReward{value: 0.1 vmshell, flag: 1}(_owner_pubkey, _signing_pubkey, address(this), _rewarded, _start_bm.get(), false);
     }
 
-    function stopBM() public onlyOwnerPubkey(_owner_pubkey) accept saveMsg {
+    function takeReward(uint8 walletTouch, uint64 waitStep, uint32 epochStart, uint32 epochEnd) public senderIs(_root) accept {
+        ensureBalance();
+        _walletTouch = walletTouch;
+        _waitStep = waitStep;
+        _rewarded = block.timestamp;
+        _epochStart = epochStart;
+        _epochEnd = epochEnd;
+        _tryReward = 0;
+        _wallet_reward += uint128(msg.currencies[CURRENCIES_ID]);
+        if (_isSlashing) {
+            finalSlash();
+        }
+    }
+
+    function stopBM() public onlyOwnerPubkey(_owner_pubkey) accept {
         require(_license_num.hasValue(), ERR_LICENSE_NOT_EXIST);
         require(_start_bm.hasValue(), ERR_ALREADY_CONFIRMED);
-        _work_key = null;
-        BlockManagerContractRoot(_root).getReward{value: 0.1 ton, flag: 1}(_owner_pubkey, _rewarded, _start_bm.get(), true);
+        require(block.seqno > _walletLastTouch + _walletTouch, ERR_WALLET_BUSY);
+        _walletLastTouch = block.seqno;
+        _tryReward = block.seqno;
+        ensureBalance();
+        BlockManagerContractRoot(_root).getReward{value: 0.1 vmshell, flag: 1}(_owner_pubkey, _signing_pubkey, address(this), _rewarded, _start_bm.get(), true);
         _start_bm = null;
+        _stop_seqno = block.seqno;
     }
-    
+
     //Fallback/Receive
     receive() external {
-        if (msg.sender == _bm_root) {
-            _rewarded = block.timestamp;
-            _wallet_reward += uint128(msg.currencies[CURRENCIES_ID]);
-        }
+        tvm.accept();
+        ensureBalance();
     }
 
     //Getters
@@ -127,9 +227,14 @@ contract AckiNackiBlockManagerNodeWallet is Modifiers {
         address root,
         uint256 balance,
         optional(uint256) license_num,
-        optional(uint256) work_key
+        uint128 minstake,
+        uint256 signerPubkey
     ) {
-        return  (_owner_pubkey, _root, address(this).currencies[CURRENCIES_ID], _license_num, _work_key);
+        uint128 diff = 0;
+        if (_wallet_reward > _slashSum) {
+            diff = _wallet_reward - _slashSum;
+        }
+        return  (_owner_pubkey, _root, address(this).currencies[CURRENCIES_ID], _license_num, gosh.calcminstakebm(diff, block.timestamp - _start_time), _signing_pubkey);
     }
 
     function getVersion() external pure returns(string, string) {

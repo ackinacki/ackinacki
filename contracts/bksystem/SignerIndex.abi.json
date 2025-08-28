@@ -6,10 +6,7 @@
 		{
 			"name": "constructor",
 			"inputs": [
-				{"name":"wallet","type":"address"},
-				{"name":"pubkey","type":"uint256"},
-				{"name":"stake","type":"uint256"},
-				{"name":"bls_key","type":"bytes"}
+				{"name":"wallet","type":"address"}
 			],
 			"outputs": [
 			]
@@ -17,9 +14,11 @@
 		{
 			"name": "isSignerIndexAccept",
 			"inputs": [
+				{"name":"wallet","type":"address"},
+				{"name":"blsKey","type":"bytes"},
 				{"name":"pubkey","type":"uint256"},
 				{"name":"rep_coef","type":"uint128"},
-				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
+				{"name":"stake","type":"uint128"},
 				{"name":"virtualStake","type":"optional(uint128)"},
 				{"name":"ProxyList","type":"map(uint8,string)"},
 				{"name":"myIp","type":"string"}
@@ -30,12 +29,14 @@
 		{
 			"name": "isSignerIndexAcceptContinue",
 			"inputs": [
+				{"name":"wallet","type":"address"},
+				{"name":"blsKey","type":"bytes"},
 				{"name":"pubkey","type":"uint256"},
 				{"name":"seqNoStartOld","type":"uint64"},
-				{"name":"rep_coef","type":"uint128"},
-				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
+				{"name":"stake","type":"uint128"},
 				{"name":"virtualStake","type":"optional(uint128)"},
-				{"name":"ProxyList","type":"map(uint8,string)"}
+				{"name":"ProxyList","type":"map(uint8,string)"},
+				{"name":"sumReputationCoef","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -69,16 +70,11 @@
 	],
 	"fields": [
 		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
-		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
-		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
-		{"init":false,"name":"__value","type":"uint256"},
 		{"init":true,"name":"_signerIndex","type":"uint16"},
 		{"init":true,"name":"_root","type":"address"},
 		{"init":false,"name":"_wallet","type":"address"},
-		{"init":false,"name":"_wallet_pubkey","type":"uint256"},
-		{"init":false,"name":"_stake","type":"uint256"},
-		{"init":false,"name":"_ready","type":"bool"},
-		{"init":false,"name":"_bls","type":"bytes"}
+		{"init":false,"name":"_ready","type":"bool"}
 	]
 }

@@ -52,9 +52,7 @@ impl AckiNackiBlock {
                     .ok_or(tvm_types::error!("Failed to read block out message"))?;
                 if let Some(dest_account_id) = msg.int_dst_account_id() {
                     // TODO: check that message dst belongs to this thread
-                    let addr = initial_optimistic_state
-                        .get_account_routing(&dest_account_id)
-                        .map_err(|_e| tvm_types::error!("failed to get account routing"))?;
+                    let addr = initial_optimistic_state.get_account_routing(&dest_account_id, None);
                     let wrapped_message = WrappedMessage { message: msg };
                     let message_identifier = MessageIdentifier::from(&wrapped_message);
                     let entry = produced_internal_messages.entry(addr.clone()).or_default();
@@ -71,7 +69,7 @@ impl AckiNackiBlock {
             .iterate_objects(|in_msg| {
                 let msg = in_msg.read_message()?;
                 if let Some(header) = msg.int_header() {
-                    let addr = AccountAddress(header.dst.address());
+                    let addr = AccountAddress::from(header.dst.address());
                     let wrapped_message = WrappedMessage { message: msg };
                     let message_identifier = MessageIdentifier::from(&wrapped_message);
                     let entry = consumed_internal_messages.entry(addr.clone()).or_default();
@@ -83,19 +81,17 @@ impl AckiNackiBlock {
         let shard_state = updated_shard_state
             .read_accounts()
             .map_err(|e| anyhow::format_err!("Failed to read accounts: {e}"))?;
-        for (addr, (new_dapp_id, _)) in &self.get_common_section().changed_dapp_ids {
+        for (addr, (new_dapp_id, _)) in self.get_common_section().changed_dapp_ids.iter() {
             match new_dapp_id {
                 Some(new_dapp_id) => {
                     let account = shard_state
-                        .account(&addr.0)
+                        .account(&addr.into())
                         .map_err(|e| anyhow::format_err!("Failed to read account: {e}"))?
                         .expect("account must exist");
                     accounts_that_changed_their_dapp_id.insert(
                         AccountRouting(new_dapp_id.clone(), addr.clone()),
                         Some(WrappedAccount {
-                            account_id: addr.0.clone().try_into().map_err(|e| {
-                                anyhow::format_err!("Failed to convert address: {e}")
-                            })?,
+                            account_id: addr.clone(),
                             aug: account.aug().map_err(|e| {
                                 anyhow::format_err!("Failed to get account aug: {e}")
                             })?,
@@ -118,7 +114,7 @@ impl AckiNackiBlock {
             Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
         > = HashMap::new();
         for (routing, data) in produced_internal_messages {
-            if initial_optimistic_state.does_routing_belong_to_the_state(&routing)? {
+            if initial_optimistic_state.does_routing_belong_to_the_state(&routing) {
                 produced_internal_messages_to_the_current_thread.insert(routing.1, data);
             } else {
                 produced_internal_messages_to_other_threads.insert(routing, data);

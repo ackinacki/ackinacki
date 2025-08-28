@@ -12,6 +12,7 @@ use crate::node::NetBlock;
 use crate::node::NodeIdentifier;
 use crate::types::BlockHeight;
 use crate::types::BlockIdentifier;
+use crate::types::BlockRound;
 use crate::types::ThreadIdentifier;
 
 // Note for the lock:
@@ -36,7 +37,7 @@ pub struct Lock {
     parent_block: BlockIdentifier,
     height: BlockHeight,
     next_auth_node_id: NodeIdentifier,
-    locked_round: u16,
+    locked_round: BlockRound,
     locked_block: Option<BlockIdentifier>,
 
     // Invalid block NACK handling:
@@ -48,16 +49,19 @@ pub struct Lock {
 #[derive(Clone, Serialize, Deserialize, Getters, TypedBuilder, Debug)]
 pub struct NextRound {
     lock: Envelope<GoshBLS, Lock>,
-    // LAST_ACK_VALUE
     locked_block_attestation: Option<Envelope<GoshBLS, AttestationData>>,
+    // Attestations for blocks that were not yet finalized in this chain.
+    // This field is required when locked block is None
+    attestations_for_ancestors: Vec<Envelope<GoshBLS, AttestationData>>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Getters, TypedBuilder, Debug)]
 pub struct NextRoundSuccess {
     node_identifier: NodeIdentifier,
-    round: u16,
+    round: BlockRound,
     block_height: BlockHeight,
     proposed_block: NetBlock, // Envelope<GoshBLS, AckiNackiBlock>,
+    // This field MUST exist when proposed_block is a winner in the voting.
     attestations_aggregated: Option<Envelope<GoshBLS, AttestationData>>,
     // proof that this round was successful
     requests_aggregated: Vec<Envelope<GoshBLS, Lock>>,
@@ -66,7 +70,7 @@ pub struct NextRoundSuccess {
 #[derive(Clone, Serialize, Deserialize, Getters, TypedBuilder)]
 pub struct NextRoundFailed {
     node_identifier: NodeIdentifier,
-    round: u16,
+    round: BlockRound,
     block_height: BlockHeight,
     proposed_block: NetBlock, // Envelope<GoshBLS, AckiNackiBlock>,
     attestations_aggregated: Option<Envelope<GoshBLS, AttestationData>>,
@@ -96,6 +100,7 @@ pub enum AuthoritySwitch {
     /// This message is send in a reply to the AuthoritySwitch::Request
     /// in the case when a node does have a proof of a particular block
     /// prefinalized on the given height.
+    /// TLDR; this height has a prefinalized block.
     Reject(NextRoundReject),
 
     /// This message is send in a reply to the AuthoritySwitch::Request
@@ -105,8 +110,17 @@ pub enum AuthoritySwitch {
 
     /// This message is send in a reply to the AuthoritySwitch::Request
     /// if node has collected a required quorum to finish the round.
-    /// It either resends a locked block from any previous round
-    /// or produces a new one if none were available.
+    /// This round successful result may have the following outcomes:
+    /// - There were a majority of votes for a block and the node
+    ///   had seen this block in the past. So it can accept it as a winner
+    ///   and resend the winning block.
+    /// - There were a majority of votes that had no block voted for.
+    ///   A new block were produced.
+    /// - It have a quorum (50%+1) of votes. No decisive resultion yet.
+    ///   Sends the best known block.
+    ///   It either resends a locked block from any previous round
+    ///   that has more than 50% + 1 of requested votes for this block,
+    ///   or produces a new one if 50% + 1 of requests had no block voted for.
     Switched(Envelope<GoshBLS, NextRoundSuccess>),
 
     /// This message is sent in a reply to the AuthoritySwitch::Request

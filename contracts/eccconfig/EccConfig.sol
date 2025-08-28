@@ -18,8 +18,7 @@ contract EccConfig is Modifiers {
 
     constructor (
     ) {
-        _owner = address.makeAddrStd(0, 0);
-        gosh.mintshell(MIN_BALANCE);
+        _owner = address(this);
     }
 
     /**
@@ -28,7 +27,7 @@ contract EccConfig is Modifiers {
      */
     function ensureBalance() private pure {
         if (address(this).balance > MIN_BALANCE) { return; }
-        gosh.mintshell(MIN_BALANCE);
+        gosh.mintshellq(MIN_BALANCE);
     }
 
     /**
@@ -39,6 +38,9 @@ contract EccConfig is Modifiers {
     function setNewToken(EccToken token, optional(address) to) public internalMsg senderIs(_owner) {
         ensureBalance();
         require(_data.exists(token.key) == false, ERR_WRONG_KEY);
+        if (token.baseMinted != 0) {
+            require(to.hasValue(), ERR_NO_DATA);
+        }
         EccData data;
         data.data = token;
         data.time = block.timestamp;

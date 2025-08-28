@@ -1,0 +1,5 @@
+---
+- name: Compose down
+  ansible.builtin.shell:
+    chdir: "{{ PROXY_DIR }}"
+    cmd: docker compose down -v

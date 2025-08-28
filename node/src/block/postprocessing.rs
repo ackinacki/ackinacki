@@ -5,27 +5,25 @@ use std::sync::Arc;
 
 use tracing::instrument;
 use tvm_block::Augmentation;
-use tvm_types::UInt256;
 
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
-use crate::message_storage::MessageDurableStorage;
 use crate::repository::accounts::AccountsRepository;
+use crate::repository::dapp_id_table::DAppIdTable;
+use crate::repository::dapp_id_table::DAppIdTableChangeSet;
 use crate::repository::optimistic_shard_state::OptimisticShardState;
-use crate::repository::optimistic_state::DAppIdTable;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
+use crate::storage::MessageDurableStorage;
 use crate::types::account::WrappedAccount;
 use crate::types::thread_message_queue::ThreadMessageQueueState;
 use crate::types::AccountAddress;
 use crate::types::AccountInbox;
 use crate::types::AccountRouting;
-use crate::types::BlockEndLT;
 use crate::types::BlockIdentifier;
 use crate::types::BlockInfo;
 use crate::types::BlockSeqNo;
-use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
@@ -46,14 +44,15 @@ pub fn postprocess(
         AccountRouting,
         Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
     >,
-    new_dapp_id_table: HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)>,
+    new_dapp_id_table: DAppIdTable,
     block_info: BlockInfo,
     thread_id: ThreadIdentifier,
     threads_table: ThreadsTable,
-    changed_dapp_ids: DAppIdTable,
-    block_accounts: HashSet<UInt256>,
+    changed_dapp_ids: DAppIdTableChangeSet,
+    block_accounts: HashSet<AccountAddress>,
     accounts_repo: AccountsRepository,
     db: MessageDurableStorage,
+    #[cfg(feature = "monitor-accounts-number")] updated_accounts_number: u64,
 ) -> anyhow::Result<(OptimisticStateImpl, CrossThreadRefData)> {
     // Prepare produced_internal_messages_to_the_current_thread
     for (addr, messages) in produced_internal_messages_to_the_current_thread.iter_mut() {
@@ -108,7 +107,7 @@ pub fn postprocess(
         // Note: we are using input state threads table to determine if this account should be in
         //  the descendant state. In case of thread split those accounts will be cropped into the
         // correct thread.
-        if !initial_optimistic_state.does_routing_belong_to_the_state(routing)? {
+        if !initial_optimistic_state.does_routing_belong_to_the_state(routing) {
             removed_accounts.push(routing.1.clone());
             let account_inbox =
                 initial_optimistic_state.messages.account_inbox(&routing.1).cloned();
@@ -127,19 +126,22 @@ pub fn postprocess(
     initial_optimistic_state.messages = messages;
 
     let mut changed_accounts = initial_optimistic_state.changed_accounts;
-    changed_accounts.extend(block_accounts.into_iter().map(|acc| (acc, block_seq_no)));
     let mut cached_accounts = initial_optimistic_state.cached_accounts;
-    cached_accounts.retain(|account_id, (seq_no, _)| {
-        if *seq_no + accounts_repo.get_store_after() >= block_seq_no
-            && !changed_accounts.contains_key(account_id)
-        {
-            true
-        } else {
-            tracing::trace!(account_id = account_id.to_hex_string(), "Removing account from cache");
-            false
-        }
-    });
     if let Some(unload_after) = accounts_repo.get_unload_after() {
+        changed_accounts.extend(block_accounts.into_iter().map(|acc| (acc, block_seq_no)));
+        cached_accounts.retain(|account_id, (seq_no, _)| {
+            if *seq_no + accounts_repo.get_store_after() >= block_seq_no
+                && !changed_accounts.contains_key(account_id)
+            {
+                true
+            } else {
+                tracing::trace!(
+                    account_id = account_id.to_hex_string(),
+                    "Removing account from cache"
+                );
+                false
+            }
+        });
         let mut shard_state = new_state.into_shard_state().as_ref().clone();
         let mut shard_accounts = shard_state
             .read_accounts()
@@ -162,7 +164,7 @@ pub fn postprocess(
                         .replace_with_external()
                         .map_err(|e| anyhow::format_err!("Failed to set account external: {e}"))?;
                     cached_accounts.insert(account_id.clone(), (block_seq_no, cell));
-                    shard_accounts.insert_with_aug(&account_id, &account, &aug).map_err(|e| {
+                    shard_accounts.insert_with_aug(&account_id.0, &account, &aug).map_err(|e| {
                         anyhow::format_err!("Failed to insert account into shard state: {e}")
                     })?;
                 } else {
@@ -181,6 +183,28 @@ pub fn postprocess(
         new_state = shard_state.into();
     }
 
+    #[cfg(feature = "monitor-accounts-number")]
+    let mut new_state = OptimisticStateImpl::builder()
+        .block_seq_no(block_seq_no)
+        .block_id(block_id.clone())
+        .shard_state(new_state)
+        .messages(initial_optimistic_state.messages)
+        .high_priority_messages(initial_optimistic_state.high_priority_messages)
+        .threads_table(threads_table.clone())
+        .thread_id(thread_id)
+        .block_info(block_info)
+        .dapp_id_table(new_dapp_id_table)
+        .thread_refs_state(new_thread_refs)
+        .cropped(initial_optimistic_state.cropped)
+        .changed_accounts(changed_accounts)
+        .cached_accounts(cached_accounts)
+        .accounts_number(updated_accounts_number)
+        .build();
+
+    // merge with update from block
+    new_state.update_dapp_id_table(&changed_dapp_ids);
+
+    #[cfg(not(feature = "monitor-accounts-number"))]
     let new_state = OptimisticStateImpl::builder()
         .block_seq_no(block_seq_no)
         .block_id(block_id.clone())
@@ -190,7 +214,7 @@ pub fn postprocess(
         .threads_table(threads_table.clone())
         .thread_id(thread_id)
         .block_info(block_info)
-        .dapp_id_table(new_dapp_id_table.clone())
+        .dapp_id_table(new_dapp_id_table)
         .thread_refs_state(new_thread_refs)
         .cropped(initial_optimistic_state.cropped)
         .changed_accounts(changed_accounts)

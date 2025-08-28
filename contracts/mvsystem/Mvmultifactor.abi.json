@@ -1,0 +1,580 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"name","type":"string"},
+				{"name":"zkid","type":"string"},
+				{"name":"proof","type":"bytes"},
+				{"name":"epk","type":"uint256"},
+				{"name":"epk_sig","type":"bytes"},
+				{"name":"epk_expire_at","type":"uint64"},
+				{"name":"jwk_modulus","type":"bytes"},
+				{"name":"kid","type":"bytes"},
+				{"name":"jwk_modulus_expire_at","type":"uint64"},
+				{"name":"index_mod_4","type":"uint8"},
+				{"name":"iss_base_64","type":"string"},
+				{"name":"header_base_64","type":"string"},
+				{"name":"pub_recovery_key","type":"uint256"},
+				{"name":"pub_recovery_key_sig","type":"bytes"},
+				{"name":"root_provider_certificates","type":"map(uint256,bytes)"},
+				{"name":"index","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "cleanWhiteList",
+			"inputs": [
+				{"name":"epk_expire_at","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateWhiteList",
+			"inputs": [
+				{"name":"epk_expire_at","type":"uint32"},
+				{"name":"index","type":"uint8"},
+				{"name":"name","type":"string"},
+				{"name":"indexMirror","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setWhiteList",
+			"inputs": [
+				{"name":"new_addr","type":"address"},
+				{"name":"index","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "addJwkModulus",
+			"inputs": [
+				{"name":"root_cert_sn","type":"uint256"},
+				{"name":"lv_kid","type":"bytes"},
+				{"name":"tls_data","type":"bytes"}
+			],
+			"outputs": [
+				{"name":"success","type":"bool"}
+			]
+		},
+		{
+			"name": "cleanAllExpiredJwks",
+			"inputs": [
+				{"name":"epk_expire_at","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteJwkModulusByFactor",
+			"inputs": [
+				{"name":"epk_expire_at","type":"uint64"},
+				{"name":"kid","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "addZKPfactor",
+			"inputs": [
+				{"name":"proof","type":"bytes"},
+				{"name":"epk","type":"uint256"},
+				{"name":"kid","type":"bytes"},
+				{"name":"header_base_64","type":"string"},
+				{"name":"epk_expire_at","type":"uint64"}
+			],
+			"outputs": [
+				{"name":"success","type":"bool"}
+			]
+		},
+		{
+			"name": "cleanAllExpiredZKPFactors",
+			"inputs": [
+				{"name":"epk_expire_at","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setForceRemoveOldest",
+			"inputs": [
+				{"name":"flag","type":"bool"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "addRootProviderCertificate",
+			"inputs": [
+				{"name":"sn","type":"uint256"},
+				{"name":"root_provider_certificate","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteRootProviderCertificate",
+			"inputs": [
+				{"name":"sn","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "cleanRootProviderCertificates",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "cleanAllJwks",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "cleanAllZKPFactors",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateRecoveryPhrase",
+			"inputs": [
+				{"name":"new_pub_recovery_key","type":"uint256"},
+				{"name":"new_pub_recovery_key_sig","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateZkid",
+			"inputs": [
+				{"name":"zkid","type":"string"},
+				{"name":"proof","type":"bytes"},
+				{"name":"epk","type":"uint256"},
+				{"name":"epk_sig","type":"bytes"},
+				{"name":"kid","type":"bytes"},
+				{"name":"jwk_modulus","type":"bytes"},
+				{"name":"jwk_modulus_expire_at","type":"uint64"},
+				{"name":"index_mod_4","type":"uint8"},
+				{"name":"iss_base_64","type":"string"},
+				{"name":"header_base_64","type":"string"},
+				{"name":"epk_expire_at","type":"uint64"},
+				{"name":"root_provider_certificates","type":"map(uint256,bytes)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateSeedPhrase",
+			"inputs": [
+				{"name":"new_owner_pubkey","type":"uint256"},
+				{"name":"new_owner_pubkey_sig","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteJwkModulus",
+			"inputs": [
+				{"name":"kid","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteZKPfactor",
+			"inputs": [
+				{"name":"epk_expire_at","type":"uint64"},
+				{"name":"epk","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteZKPfactor_",
+			"inputs": [
+				{"name":"epk","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "changeSeedPhrase",
+			"inputs": [
+				{"name":"epk_expire_at","type":"uint64"},
+				{"name":"new_owner_pubkey","type":"uint256"},
+				{"name":"new_owner_pubkey_sig","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "acceptCandidateSeedPhrase",
+			"inputs": [
+				{"name":"new_owner_pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteCandidateSeedPhrase",
+			"inputs": [
+				{"name":"epk_expire_at","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "addSecurityCard",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"pubkey_sig","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "turnOffSecurityCards",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "turnOnSecurityCards",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteSecurityCard",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteAllSecurityCards",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "sendTransaction",
+			"inputs": [
+				{"name":"epk_expire_at","type":"uint64"},
+				{"name":"dest","type":"address"},
+				{"name":"value","type":"uint128"},
+				{"name":"cc","type":"map(uint32,varuint32)"},
+				{"name":"bounce","type":"bool"},
+				{"name":"flags","type":"uint8"},
+				{"name":"payload","type":"cell"}
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
+			"name": "submitTransaction",
+			"inputs": [
+				{"name":"epk_expire_at","type":"uint64"},
+				{"name":"dest","type":"address"},
+				{"name":"value","type":"uint128"},
+				{"name":"cc","type":"map(uint32,varuint32)"},
+				{"name":"bounce","type":"bool"},
+				{"name":"allBalance","type":"bool"},
+				{"name":"payload","type":"cell"}
+			],
+			"outputs": [
+				{"name":"transId","type":"uint64"}
+			]
+		},
+		{
+			"name": "confirmTransaction",
+			"inputs": [
+				{"name":"transactionId","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setMaxCleanupTxns",
+			"inputs": [
+				{"name":"epk_expire_at","type":"uint64"},
+				{"name":"value","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setMinValue",
+			"inputs": [
+				{"name":"epk_expire_at","type":"uint64"},
+				{"name":"value","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getTransaction",
+			"inputs": [
+				{"name":"transactionId","type":"uint64"}
+			],
+			"outputs": [
+				{"components":[{"name":"id","type":"uint64"},{"name":"creator","type":"uint256"},{"name":"dest","type":"address"},{"name":"value","type":"uint128"},{"name":"cc","type":"map(uint32,varuint32)"},{"name":"sendFlags","type":"uint16"},{"name":"payload","type":"cell"},{"name":"bounce","type":"bool"}],"name":"trans","type":"tuple"}
+			]
+		},
+		{
+			"name": "getTransactions",
+			"inputs": [
+			],
+			"outputs": [
+				{"components":[{"name":"id","type":"uint64"},{"name":"creator","type":"uint256"},{"name":"dest","type":"address"},{"name":"value","type":"uint128"},{"name":"cc","type":"map(uint32,varuint32)"},{"name":"sendFlags","type":"uint16"},{"name":"payload","type":"cell"},{"name":"bounce","type":"bool"}],"name":"transactions","type":"tuple[]"}
+			]
+		},
+		{
+			"name": "getTransactionIds",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"ids","type":"uint64[]"}
+			]
+		},
+		{
+			"name": "getZKPEphemeralPublicKeys",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"uint256[]"}
+			]
+		},
+		{
+			"name": "getTimeStamp",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"uint32"}
+			]
+		},
+		{
+			"name": "getSecurityCardKeys",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"sc_keys","type":"uint256[]"}
+			]
+		},
+		{
+			"name": "get_epk_expire_at",
+			"inputs": [
+				{"name":"epk","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"value0","type":"uint64"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		},
+		{
+			"name": "_factors_ordered_by_timestamp",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_factors_ordered_by_timestamp","type":"map(uint256,uint256)"}
+			]
+		},
+		{
+			"name": "_factors_len",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_factors_len","type":"uint8"}
+			]
+		},
+		{
+			"name": "_name",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_name","type":"string"}
+			]
+		},
+		{
+			"name": "_pub_recovery_key",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_pub_recovery_key","type":"uint256"}
+			]
+		},
+		{
+			"name": "_root_provider_certificates",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_root_provider_certificates","type":"map(uint256,bytes)"}
+			]
+		},
+		{
+			"name": "_jwk_modulus_data",
+			"inputs": [
+			],
+			"outputs": [
+				{"components":[{"name":"modulus","type":"bytes"},{"name":"modulus_expire_at","type":"uint64"}],"name":"_jwk_modulus_data","type":"map(uint256,tuple)"}
+			]
+		},
+		{
+			"name": "_jwk_modulus_data_len",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_jwk_modulus_data_len","type":"uint8"}
+			]
+		},
+		{
+			"name": "_zkid",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_zkid","type":"string"}
+			]
+		},
+		{
+			"name": "_index_mod_4",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_index_mod_4","type":"uint8"}
+			]
+		},
+		{
+			"name": "_iss_base_64",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_iss_base_64","type":"string"}
+			]
+		},
+		{
+			"name": "_use_security_card",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_use_security_card","type":"bool"}
+			]
+		},
+		{
+			"name": "_m_security_cards",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_m_security_cards","type":"map(uint256,bool)"}
+			]
+		},
+		{
+			"name": "_m_security_cards_len",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_m_security_cards_len","type":"uint8"}
+			]
+		},
+		{
+			"name": "_m_transactions",
+			"inputs": [
+			],
+			"outputs": [
+				{"components":[{"name":"id","type":"uint64"},{"name":"creator","type":"uint256"},{"name":"dest","type":"address"},{"name":"value","type":"uint128"},{"name":"cc","type":"map(uint32,varuint32)"},{"name":"sendFlags","type":"uint16"},{"name":"payload","type":"cell"},{"name":"bounce","type":"bool"}],"name":"_m_transactions","type":"map(uint64,tuple)"}
+			]
+		},
+		{
+			"name": "_m_transactions_len",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_m_transactions_len","type":"uint8"}
+			]
+		},
+		{
+			"name": "_min_value",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_min_value","type":"uint128"}
+			]
+		},
+		{
+			"name": "_max_cleanup_txns",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_max_cleanup_txns","type":"uint256"}
+			]
+		},
+		{
+			"name": "_force_remove_oldest",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_force_remove_oldest","type":"bool"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_factors_ordered_by_timestamp","type":"map(uint256,uint256)"},
+		{"init":false,"name":"_factors_len","type":"uint8"},
+		{"init":false,"name":"_root","type":"address"},
+		{"init":false,"name":"_name","type":"string"},
+		{"init":true,"name":"_owner_pubkey","type":"uint256"},
+		{"components":[{"name":"value0","type":"uint256"},{"name":"value1","type":"uint64"}],"init":false,"name":"_candidate_new_owner_pubkey_and_expiration","type":"optional(tuple)"},
+		{"init":false,"name":"_pub_recovery_key","type":"uint256"},
+		{"init":false,"name":"_root_provider_certificates","type":"map(uint256,bytes)"},
+		{"components":[{"name":"modulus","type":"bytes"},{"name":"modulus_expire_at","type":"uint64"}],"init":false,"name":"_jwk_modulus_data","type":"map(uint256,tuple)"},
+		{"init":false,"name":"_jwk_modulus_data_len","type":"uint8"},
+		{"components":[{"name":"value0","type":"uint256"},{"components":[{"name":"modulus","type":"bytes"},{"name":"modulus_expire_at","type":"uint64"}],"name":"value1","type":"tuple"}],"init":false,"name":"_start_point_jwk","type":"optional(tuple)"},
+		{"init":false,"name":"_zkid","type":"string"},
+		{"init":false,"name":"_index_mod_4","type":"uint8"},
+		{"init":false,"name":"_iss_base_64","type":"string"},
+		{"init":false,"name":"_use_security_card","type":"bool"},
+		{"init":false,"name":"_m_security_cards","type":"map(uint256,bool)"},
+		{"init":false,"name":"_m_security_cards_len","type":"uint8"},
+		{"components":[{"name":"id","type":"uint64"},{"name":"creator","type":"uint256"},{"name":"dest","type":"address"},{"name":"value","type":"uint128"},{"name":"cc","type":"map(uint32,varuint32)"},{"name":"sendFlags","type":"uint16"},{"name":"payload","type":"cell"},{"name":"bounce","type":"bool"}],"init":false,"name":"_m_transactions","type":"map(uint64,tuple)"},
+		{"init":false,"name":"_m_transactions_len","type":"uint8"},
+		{"init":false,"name":"_min_value","type":"uint128"},
+		{"init":false,"name":"_max_cleanup_txns","type":"uint256"},
+		{"init":false,"name":"_force_remove_oldest","type":"bool"},
+		{"init":false,"name":"_whiteListOfAddress","type":"map(address,bool)"},
+		{"init":false,"name":"_wasm_hash","type":"bytes"},
+		{"init":false,"name":"_wasm_module","type":"string"},
+		{"init":false,"name":"_wasm_function","type":"string"},
+		{"init":false,"name":"_wasm_binary","type":"bytes"}
+	]
+}

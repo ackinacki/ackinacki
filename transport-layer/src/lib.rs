@@ -1,6 +1,8 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::HashSet;
+use std::fmt::Display;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -30,15 +32,27 @@ mod tls;
 mod utils;
 pub mod wtransport;
 
-pub fn cert_hash(cert: &CertificateDer) -> [u8; 32] {
-    sha2::Sha256::digest(cert).into()
+#[derive(Clone, Copy, PartialEq, Hash, Eq)]
+pub struct CertHash(pub [u8; 32]);
+
+impl From<&CertificateDer<'static>> for CertHash {
+    fn from(cert: &CertificateDer) -> Self {
+        Self(sha2::Sha256::digest(cert).into())
+    }
 }
 
+impl Display for CertHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", hex::encode(self.0))
+    }
+}
+
+#[derive(PartialEq)]
 pub struct NetCredential {
     pub my_key: PrivateKeyDer<'static>,
     pub my_certs: Vec<CertificateDer<'static>>,
-    pub trusted_certs: Vec<CertificateDer<'static>>,
-    pub trusted_ed_pubkeys: Vec<VerifyingKey>,
+    pub trusted_cert_hashes: HashSet<CertHash>,
+    pub trusted_ed_pubkeys: HashSet<VerifyingKey>,
 }
 
 impl NetCredential {
@@ -50,8 +64,8 @@ impl NetCredential {
         Ok(Self {
             my_key,
             my_certs: vec![my_cert],
-            trusted_certs: vec![],
-            trusted_ed_pubkeys: vec![],
+            trusted_cert_hashes: HashSet::new(),
+            trusted_ed_pubkeys: HashSet::new(),
         })
     }
 
@@ -59,7 +73,7 @@ impl NetCredential {
         if self.my_certs.is_empty() {
             String::new()
         } else {
-            hex::encode(cert_hash(&self.my_certs[0]))
+            CertHash::from(&self.my_certs[0]).to_string()
         }
     }
 
@@ -67,17 +81,17 @@ impl NetCredential {
         if self.my_certs.is_empty() {
             String::new()
         } else {
-            hex::encode(cert_hash(&self.my_certs[0]).iter().take(4).cloned().collect::<Vec<_>>())
+            CertHash::from(&self.my_certs[0]).to_string().chars().take(4).collect()
         }
     }
 
     pub fn any_cert_are_trusted(&self) -> bool {
-        self.trusted_certs.is_empty() && self.trusted_ed_pubkeys.is_empty()
+        self.trusted_cert_hashes.is_empty() && self.trusted_ed_pubkeys.is_empty()
     }
 
-    pub fn verify_is_valid_cert(&self, cert: &CertificateDer) -> bool {
+    pub fn verify_is_valid_cert(&self, cert: &CertificateDer<'static>) -> bool {
         self.any_cert_are_trusted()
-            | verify_is_valid_cert(cert, &self.trusted_certs, &self.trusted_ed_pubkeys)
+            | verify_is_valid_cert(cert, &self.trusted_cert_hashes, &self.trusted_ed_pubkeys)
     }
 }
 
@@ -86,7 +100,7 @@ impl Clone for NetCredential {
         Self {
             my_key: self.my_key.clone_key(),
             my_certs: self.my_certs.clone(),
-            trusted_certs: self.trusted_certs.clone(),
+            trusted_cert_hashes: self.trusted_cert_hashes.clone(),
             trusted_ed_pubkeys: self.trusted_ed_pubkeys.clone(),
         }
     }

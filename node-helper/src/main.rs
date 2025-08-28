@@ -9,8 +9,8 @@ use std::time::Duration;
 use clap::ArgAction;
 use clap::Parser;
 use clap::Subcommand;
-use gosh_bls_lib::bls::gen_bls_key_pair;
-use gosh_bls_lib::serde_bls::BLSKeyPair;
+use gosh_blst::gen_bls_key_pair;
+use gosh_blst::BLSKeyPair;
 use network::parse_publisher_addr;
 use network::try_parse_socket_addr;
 use node::bls::gosh_bls::PubKey;
@@ -241,6 +241,27 @@ struct Config {
     /// PreEpoch contract code hash
     #[arg(long, env)]
     pub block_keeper_preepoch_code_hash: Option<String>,
+
+    /// BlockKeeper node owner wallet pubkey
+    #[arg(long, env)]
+    pub node_wallet_pubkey: Option<String>,
+
+    /// Path to file with keys pair for signing the authorization token of incoming external messages
+    /// Required for direct sending external messages via node
+    #[arg(long)]
+    pub signing_keys: Option<String>,
+
+    /// BP rotation round min time in millis
+    #[arg(long, env)]
+    pub round_min_time_millis: Option<u64>,
+
+    /// BP rotation round step in millis
+    #[arg(long, env)]
+    pub round_step_millis: Option<u64>,
+
+    /// BP rotation round max time in millis
+    #[arg(long, env)]
+    pub round_max_time_millis: Option<u64>,
 }
 
 const DEFAULT_NODE_PORT: u16 = 8500;
@@ -480,10 +501,6 @@ fn main() -> anyhow::Result<()> {
                 config.local.state_cache_size = state_cache_size;
             }
 
-            if let Some(message_storage_path) = config_cmd.message_storage_path {
-                config.local.message_storage_path = message_storage_path;
-            }
-
             if let Some(secret) = config_cmd.network_my_ed_secret {
                 config.network.my_ed_key_secret = Some(secret);
                 config.network.my_ed_key_path = None;
@@ -494,11 +511,27 @@ fn main() -> anyhow::Result<()> {
                 config.network.my_ed_key_path = Some(key_path);
             }
 
+            if let Some(node_wallet_pubkey) = config_cmd.node_wallet_pubkey {
+                config.local.node_wallet_pubkey = node_wallet_pubkey;
+            }
+
+            config.local.signing_keys = config_cmd.signing_keys;
+
+            if let Some(round_min_time_millis) = config_cmd.round_min_time_millis {
+                config.global.round_min_time_millis = round_min_time_millis;
+            }
+            if let Some(round_step_millis) = config_cmd.round_step_millis {
+                config.global.round_step_millis = round_step_millis;
+            }
+            if let Some(round_max_time_millis) = config_cmd.round_max_time_millis {
+                config.global.round_max_time_millis = round_max_time_millis;
+            }
+
             save_config_to_file(&config, &config_cmd.config_file_path)
         }
         Commands::Bls(bls_cmd) => {
-            let keypair = BLSKeyPair::from(gen_bls_key_pair()?);
-            let rng_seed = RndSeed::from(gen_bls_key_pair()?.1);
+            let keypair = BLSKeyPair::from(gen_bls_key_pair());
+            let rng_seed = RndSeed::from(gen_bls_key_pair().1.to_bytes());
             if let Some(path) = bls_cmd.path {
                 if !bls_cmd.quiet {
                     let pubkey = json!({"pubkey": format!("{}", hex::encode(keypair.public))});
@@ -548,7 +581,7 @@ fn save_keys_map_to_file(
     let mut keys_vec = vec![];
     for (pubkey, (secret, rnd_seed)) in keys_map {
         let mut json_map = serde_json::Map::new();
-        json_map.insert("public".to_string(), json!(hex::encode(pubkey.as_ref())));
+        json_map.insert("public".to_string(), json!(hex::encode(pubkey.as_ref().to_bytes())));
         json_map.insert("secret".to_string(), json!(hex::encode(secret.take_as_seed())));
         json_map.insert("rnd".to_string(), json!(hex::encode(rnd_seed.as_ref())));
         keys_vec.push(json_map);

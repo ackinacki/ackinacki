@@ -50,6 +50,7 @@ pub struct BlockRequestService {
 }
 
 impl BlockRequestService {
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         config: Config,
         shared_services: SharedServices,
@@ -58,7 +59,7 @@ impl BlockRequestService {
         network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
         metrics: Option<BlockProductionMetrics>,
         unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
-    ) -> anyhow::Result<(Sender<BlockRequestParams>, JoinHandle<anyhow::Result<()>>)> {
+    ) -> anyhow::Result<(Sender<BlockRequestParams>, JoinHandle<()>)> {
         let (tx, rx) = std::sync::mpsc::channel::<BlockRequestParams>();
 
         let service = BlockRequestService {
@@ -72,13 +73,15 @@ impl BlockRequestService {
             unprocessed_blocks_cache,
         };
 
-        let handle: JoinHandle<anyhow::Result<()>> = std::thread::Builder::new()
+        let handle: JoinHandle<()> = std::thread::Builder::new()
             .name("BlockRequestService".into())
             .spawn_critical(move || {
                 for request in service.rx.iter() {
-                    service.on_incoming_block_request(request)?
+                    service
+                        .on_incoming_block_request(request)
+                        .expect("Failed to process block request");
                 }
-                Err(anyhow::anyhow!("Sender has disconnected"))
+                Ok(())
             })?;
 
         Ok((tx, handle))
@@ -107,16 +110,17 @@ impl BlockRequestService {
                 let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
 
                 if elapsed > self.config.global.min_time_between_state_publish_directives {
-                    {
-                        let mut guard = last_state_sync_executed.lock();
-                        *guard = std::time::Instant::now();
-                    }
+                    // that's not sync state here, do not clear timer
+                    // {
+                    //     let mut guard = last_state_sync_executed.lock();
+                    //     *guard = std::time::Instant::now();
+                    // }
 
                     // Otherwise share state in one of the next blocks if we have not marked one block yet
                     if let Some(block_seq_no) = is_state_sync_requested.guarded(|e| *e) {
                         // Note: error handling logic was changed here
                         if self.send_sync_from(node_id, &thread_id, block_seq_no).is_err() {
-                            tracing::error!("Reciever has gone"); // TODO: Add error metric here?
+                            tracing::error!("Receiver has gone"); // TODO: Add error metric here?
                         }
                     } else {
                         // Note: error handling logic was changed here
@@ -214,8 +218,8 @@ impl BlockRequestService {
                 generation = next_generation;
             }
         }
-        let cached = unprocessed_blocks_cache.into_iter().filter_map(|(_, (e, _))| {
-            if demanded.contains(&e) {
+        let cached = unprocessed_blocks_cache.blocks().iter().filter_map(|(_, (e, _))| {
+            if demanded.contains(e) {
                 return Some(e.block_identifier().clone());
             }
             let (block_id, Some(seq_no)) =
@@ -248,8 +252,9 @@ impl BlockRequestService {
         from_seq_no: BlockSeqNo,
     ) -> anyhow::Result<()> {
         tracing::info!("sending syncFrom to node {}: {:?}", node_id, from_seq_no,);
-        self.network_direct_tx
-            .send((node_id, NetworkMessage::SyncFrom((from_seq_no, *thread_id))))?;
+        let _ = self
+            .network_direct_tx
+            .send((node_id, NetworkMessage::SyncFrom((from_seq_no, *thread_id))));
         Ok(())
     }
 
@@ -313,7 +318,8 @@ impl BlockRequestService {
             &self.config.local.node_id,
             [("to", &node_id.to_string())],
         );
-        self.network_direct_tx.send((node_id, NetworkMessage::candidate(&candidate_block)?))?;
+        let _ =
+            self.network_direct_tx.send((node_id, NetworkMessage::candidate(&candidate_block)?));
         Ok(())
     }
 }

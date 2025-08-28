@@ -1,0 +1,32 @@
+---
+BM_DIR: "{{ ROOT_DIR }}/block-manager"
+BM_DATA_DIR: "{{ MNT_DATA }}/block-manager"
+BM_LOGS_DIR: "{{ MNT_DATA }}/logs-block-manager"
+DO_START: yes
+DO_STOP: no
+DELETE_DATA: no
+CREATE_NET: no
+EXTERNAL_NET: no
+LOG_ROTATE_AMOUNT: 50
+LOG_ROTATE_SIZE: 1G
+BM_BINARY: block-manager
+BM_NODE_HTTP_URL_PORT: 11000
+BM_NODE_STREAM_PORT: 12000
+BM_NODE_PORT: 8600
+BM_API_PORT: 8700
+BM_OWNER_WALLET_PUBKEY: default-public-key
+BM_TOKEN_TTL: 300
+BK_API_TOKEN: my-secret-token
+BM_WALLET_KEYS: block_manager.keys.json
+BM_SIGNER_KEYS: block_manager_signing.keys.json
+
+# keep in sync with caddy/defaults/main.yaml !!!
+NGINX_IP:   "private" # "private" or specific IP
+NGINX_PORT: 8080
+
+Q_SERVER_MAPPED_PORT: 3000
+
+# LOGROTATE_IMAGE: "stakater/logrotate:3.13.0"
+LOGROTATE_IMAGE: "docker.gosh.sh/logrotate:3.13.0"
+
+FAST_UPDATE: no

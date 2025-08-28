@@ -23,6 +23,6 @@ pub mod multithreading;
 #[cfg(test)]
 mod tests;
 
-pub mod message_storage;
 #[cfg(feature = "misbehave")]
 pub mod misbehavior;
+pub mod storage;

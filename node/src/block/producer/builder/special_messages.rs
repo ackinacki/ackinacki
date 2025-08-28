@@ -16,7 +16,6 @@ use tvm_block::MsgEnvelope;
 use tvm_block::OutMsg;
 use tvm_block::Serializable;
 use tvm_executor::BlockchainConfig;
-use tvm_types::AccountId;
 use tvm_types::UInt256;
 
 use super::BlockBuilder;
@@ -34,7 +33,7 @@ impl BlockBuilder {
         blockchain_config: &BlockchainConfig,
         block_unixtime: u32,
         block_lt: u64,
-        check_messages_map: &mut Option<HashMap<AccountId, BTreeMap<u64, UInt256>>>,
+        check_messages_map: &mut Option<HashMap<AccountAddress, BTreeMap<u64, UInt256>>>,
     ) -> anyhow::Result<()> {
         tracing::trace!(target: "builder", "map of minted shell {:?}", self.dapp_minted_map);
         let mut config_messages: Vec<Message> = Vec::new();
@@ -59,25 +58,15 @@ impl BlockBuilder {
                             anyhow::format_err!("Failed to create config touch message: {e}")
                         })?;
 
-                let dst_addr =
-                    AccountAddress(message.dst().expect("must be set").address().clone());
-                let destination_routing =
-                    self.initial_optimistic_state.get_account_routing(&dst_addr).map_err(|e| {
-                        anyhow::anyhow!(
-                            "Failed to check account routing for new message destination: {}",
-                            e
-                        )
-                    })?;
+                let dst_addr = message.dst().expect("must be set").address().clone().into();
+                let destination_routing = self
+                    .initial_optimistic_state
+                    .get_account_routing(&dst_addr, Some(&self.dapp_id_table_change_set));
 
                 let wrapped_message = WrappedMessage { message: message.clone() };
                 if self
                     .initial_optimistic_state
                     .does_routing_belong_to_the_state(&destination_routing)
-                    .map_err(|_e| {
-                        anyhow::format_err!(
-                            "Failed to check account routing for new message destination"
-                        )
-                    })?
                 {
                     // If message destination matches current thread, save it in cache to possibly execute in the current block
                     let entry = self
@@ -132,7 +121,7 @@ impl BlockBuilder {
                     .map_err(|e| anyhow::format_err!("Failed to add msg to out msg descr: {e}"))?;
             }
         }
-        let mut active_destinations = HashSet::new();
+        let mut active_destinations = HashSet::<AccountAddress>::new();
         let mut active_ext_threads = VecDeque::new();
         loop {
             if active_ext_threads.len() < self.parallelization_level {
@@ -140,7 +129,7 @@ impl BlockBuilder {
                     if active_ext_threads.len() == self.parallelization_level {
                         break;
                     }
-                    if let Some(acc_id) = config_messages[0].int_dst_account_id() {
+                    if let Some(acc_id) = config_messages[0].int_dst_account_id().map(From::from) {
                         if !active_destinations.contains(&acc_id) {
                             let msg = config_messages.remove(0);
                             tracing::trace!(target: "builder", "Parallel config message: {:?} to {:?}", msg.hash().unwrap(), acc_id.to_hex_string());

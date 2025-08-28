@@ -10,17 +10,17 @@ use std::net::SocketAddr;
 use itertools::Itertools;
 pub use node_db::NodeDb;
 use tvm_block::Account;
-use tvm_types::AccountId;
+use tvm_types::UInt256;
 
 use crate::resolver::blockchain::accounts::collect_bk_set;
 use crate::resolver::blockchain::accounts::Bk;
 
 pub trait BkSetProvider {
-    fn get_bk_set(&self) -> Vec<AccountId>;
+    fn get_bk_set(&self) -> Vec<UInt256>;
 }
 
 pub trait AccountProvider {
-    fn get_account(&self, id: &AccountId) -> Option<Account>;
+    fn get_account(&self, id: &UInt256) -> Option<Account>;
 }
 
 pub async fn watch_blockchain<PeerId, B, A>(
@@ -32,7 +32,7 @@ pub async fn watch_blockchain<PeerId, B, A>(
 ) where
     B: BkSetProvider + Send + Sync + 'static,
     A: AccountProvider + Send + Sync + 'static,
-    PeerId: Display + Clone + Hash + Eq + From<AccountId>,
+    PeerId: Display + Clone + Hash + Eq + From<UInt256>,
 {
     let mut subscribe = Vec::new();
     let mut peers = HashMap::new();
@@ -56,7 +56,7 @@ async fn refresh<PeerId, B, A>(
 where
     B: BkSetProvider + Send + Sync + 'static,
     A: AccountProvider + Send + Sync + 'static,
-    PeerId: Display + Clone + Hash + Eq + From<AccountId>,
+    PeerId: Display + Clone + Hash + Eq + From<UInt256>,
 {
     let mut bk_set = HashMap::<PeerId, _>::new();
     // let mut peers = HashMap::new();

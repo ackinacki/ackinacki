@@ -58,7 +58,7 @@ impl ThreadsTrackingService {
             threads_set
         );
         for thread in threads_set.iter() {
-            subscribers.handle_start_thread(&block_identifier, thread);
+            subscribers.handle_start_thread(&block_identifier, thread, None);
         }
     }
 
@@ -98,7 +98,11 @@ impl ThreadsTrackingService {
             threads
         };
         for thread in new_threads.iter() {
-            subscribers.handle_start_thread(&block_identifier, thread);
+            subscribers.handle_start_thread(
+                &block_identifier,
+                thread,
+                Some(threads_table_after_this_block.clone()),
+            );
         }
         tracing::trace!("threads tracking service: handle_block_finalized: checkpoint 3",);
         // Note: removed threads
@@ -130,6 +134,7 @@ mod tests {
                 &mut self,
                 parent_split_block: &BlockIdentifier,
                 thread_identifier: &ThreadIdentifier,
+                _threads_table: Option<ThreadsTable>,
             );
             fn handle_stop_thread(
                 &mut self,

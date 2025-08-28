@@ -3,18 +3,35 @@ my_key: "/workdir/certs/proxy.key.pem"
 
 peer_certs: []
 
-bind: {{ ansible_host }}:8085
-my_addr: {{ ansible_host }}:8085
+bind: {{ PROXY_BIND_IP | default(HOST_PUBLIC_IP) }}:{{ PROXY_PORT }}
+my_addr:
+{% if ansible_all_ipv4_addresses is defined %}
+{% for ip in ansible_all_ipv4_addresses %}
+- {{ ip }}:{{ PROXY_PORT }}
+{% endfor %}
+{% else %}
+{% for iface in ansible_interfaces | default([]) %}
+{% set fact = hostvars[inventory_hostname]['ansible_' ~ iface] | default({}) %}
+{% if fact.ipv4 is defined and fact.ipv4.address is defined %}
+- {{ fact.ipv4.address }}:{{ PROXY_PORT }}
+{% endif %}
+{% endfor %}
+{% endif %}
 
 subscribe: []
 bk_addrs:
+{% if PROXY_BK_ADDRS %}
+{% for addr in PROXY_BK_ADDRS %}
+- {{ addr }}
+{% endfor %}
+{% else %}
 - {{ hostvars[groups['block_keepers'][0]].HOST_PUBLIC_IP }}:8600
 - {{ hostvars[groups['block_keepers'][1]].HOST_PUBLIC_IP }}:8600
 - {{ hostvars[groups['block_keepers'][2]].HOST_PUBLIC_IP }}:8600
-
+{% endif %}
 gossip:
-  listen_addr: 0.0.0.0:10000
-  advertise_addr: {{ ansible_host }}:10000
+  listen_addr: {{ HOST_PUBLIC_IP }}:{{ PROXY_GOSSIP_PORT }}
+  advertise_addr: {{ HOST_PUBLIC_IP }}:{{ PROXY_GOSSIP_PORT }}
   seeds:
   {% for seed in SEEDS -%}
   - {{ seed }}

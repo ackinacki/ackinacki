@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use ed25519_dalek::Signer;
@@ -24,6 +25,7 @@ use rustls_pki_types::UnixTime;
 use serde::Deserialize;
 use x509_parser::nom::AsBytes;
 
+use crate::CertHash;
 use crate::NetCredential;
 
 #[derive(Debug, Default)]
@@ -129,10 +131,8 @@ impl ClientCertVerifier for NoCertVerification {
     }
 }
 
-fn root_cert_store(cred: &NetCredential) -> RootCertStore {
-    let mut store = RootCertStore::empty();
-    store.add_parsable_certificates(cred.trusted_certs.clone());
-    store
+fn root_cert_store(_cred: &NetCredential) -> RootCertStore {
+    RootCertStore::empty()
 }
 
 pub fn client_tls_config(
@@ -239,58 +239,63 @@ pub fn get_ed_pubkey_from_cert(
 }
 
 pub fn verify_is_valid_cert(
-    cert: &CertificateDer,
-    root_certs: &[CertificateDer],
-    trusted_ed_pubkeys: &[crate::VerifyingKey],
+    cert: &CertificateDer<'static>,
+    trusted_cert_hashes: &HashSet<CertHash>,
+    trusted_ed_pubkeys: &HashSet<crate::VerifyingKey>,
 ) -> bool {
     let Some((_, x509)) = x509_parser::parse_x509_certificate(cert.as_ref()).ok() else {
         return false;
     };
 
     if x509.verify_signature(None).is_err() {
+        tracing::warn!("Failed to verify signature of certificate");
         return false;
     }
 
-    match (!root_certs.is_empty(), !trusted_ed_pubkeys.is_empty()) {
+    match (!trusted_cert_hashes.is_empty(), !trusted_ed_pubkeys.is_empty()) {
         (false, false) => true,
         (false, true) => is_valid_with_trusted_ed_pub_keys(&x509, trusted_ed_pubkeys),
-        (true, false) => is_valid_with_root_certs(cert, root_certs),
+        (true, false) => is_valid_with_cert_hashes(cert, trusted_cert_hashes),
         (true, true) => {
             is_valid_with_trusted_ed_pub_keys(&x509, trusted_ed_pubkeys)
-                || is_valid_with_root_certs(cert, root_certs)
+                || is_valid_with_cert_hashes(cert, trusted_cert_hashes)
         }
     }
 }
 
-fn is_valid_with_root_certs(cert: &CertificateDer, root_certs: &[CertificateDer]) -> bool {
-    let Ok(end_entity) = webpki::EndEntityCert::try_from(cert.as_ref()) else {
-        return false;
-    };
-    let now = webpki::Time::from_seconds_since_unix_epoch(
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
-    );
-    let anchors: Vec<webpki::TrustAnchor<'_>> = root_certs
-        .iter()
-        .filter_map(|rc| webpki::TrustAnchor::try_from_cert_der(rc.as_ref()).ok())
-        .collect();
-    let trust_anchors = webpki::TlsServerTrustAnchors(&anchors);
-    end_entity
-        .verify_is_valid_tls_server_cert_ext(
-            &[&webpki::ECDSA_P256_SHA256, &webpki::ED25519],
-            &trust_anchors,
-            &[],
-            now,
-        )
-        .is_ok()
+fn is_valid_with_cert_hashes(
+    cert: &CertificateDer<'static>,
+    cert_hashes: &HashSet<CertHash>,
+) -> bool {
+    if cert_hashes.contains(&CertHash::from(cert)) {
+        true
+    } else {
+        tracing::warn!("TLS certificated is not trusted");
+        false
+    }
 }
 
 fn is_valid_with_trusted_ed_pub_keys(
     cert: &x509_parser::certificate::X509Certificate,
-    trusted_ed_pubkeys: &[crate::VerifyingKey],
+    trusted_ed_pubkeys: &HashSet<crate::VerifyingKey>,
 ) -> bool {
     match get_ed_pubkey_from_cert(cert) {
-        Ok(Some(pubkey)) => trusted_ed_pubkeys.contains(&pubkey),
-        _ => false,
+        Ok(Some(pubkey)) => {
+            if trusted_ed_pubkeys.contains(&pubkey) {
+                true
+            } else {
+                tracing::warn!("TLS certificate has an untrusted ED pubkey");
+                false
+            }
+        }
+        Ok(None) => {
+            tracing::warn!("TLS certificate is not signed with ED key");
+            false
+        }
+        Err(err) => {
+            tracing::warn!("TLS certificate has invalid ED signature: {}", err);
+            false
+        }
     }
 }
 
@@ -464,5 +469,9 @@ fn test_cert_validation() {
     let ed_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
     let (_key, cert) = generate_self_signed_cert(None, Some(ed_key.clone())).unwrap();
 
-    assert!(verify_is_valid_cert(&cert, &[], &[ed_key.verifying_key()]));
+    assert!(verify_is_valid_cert(
+        &cert,
+        &HashSet::new(),
+        &HashSet::from_iter([ed_key.verifying_key()].into_iter())
+    ));
 }

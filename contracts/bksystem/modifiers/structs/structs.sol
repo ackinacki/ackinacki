@@ -23,14 +23,17 @@ struct Stake {
 struct LicenseData {
         uint128 reputationTime;
         uint8 status;
-        bool isPriority;
+        bool isPrivileged;
         optional(address) stakeController;
-        uint32 last_touch;
+        uint64 last_touch;
         uint128 balance;
         uint128 lockStake;
         uint128 lockContinue;
         uint128 lockCooler;
         bool isLockToStake;
+        uint32 coolerCount;
+        bool isLockToStakeByWallet;
+        bool isLockBecauseOfSlashing;
 }
 
 struct LicenseStake {

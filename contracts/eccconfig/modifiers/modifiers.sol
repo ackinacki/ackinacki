@@ -6,10 +6,10 @@
  */
 pragma gosh-solidity >=0.76.1;
 
-import "./replayprotection.sol";
+import "./errors.sol";
 import "./structs/structs.sol";
 
-abstract contract Modifiers is ReplayProtection {   
+abstract contract Modifiers is Errors {   
     string constant versionModifiers = "1.0.0";
     uint64 constant MIN_BALANCE = 100000 vmshell;
 

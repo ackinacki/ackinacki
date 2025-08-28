@@ -8,13 +8,13 @@ bk_stream_blocks_endpoint: https://node0:12000
 db_path: ./data
 
 # BLOCK_MANAGER_API
-api_listen_addr: 0.0.0.0:8700
+api_listen_addr: 0.0.0.0:8600
 
-# BM_LICENSE_NUMBER
-license_number: 0
+# BM_OWNER_WALLET_PUBKEY
+bm_owner_wallet_pubkey: e2c9d4be54d342d3f0e6394a7738fc39b93d4fe3fdba317aa699f7305566de2b
 
-# BM_KEYS_FILE
-keys: config/block_manager.keys.json
+# BM_ISSUER_KEYS_FILE
+keys: config/block_manager_signing.keys.json
 
 # DEFAULT_BP
 default_bp: node0:8600

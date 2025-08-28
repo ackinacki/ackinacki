@@ -32,10 +32,8 @@
 	],
 	"fields": [
 		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
-		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
-		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
-		{"init":false,"name":"__value","type":"uint256"},
 		{"components":[{"components":[{"name":"key","type":"uint32"},{"name":"name","type":"string"},{"name":"decimals","type":"uint64"},{"name":"baseMinted","type":"uint64"},{"name":"description","type":"string"}],"name":"data","type":"tuple"},{"name":"time","type":"uint32"}],"init":false,"name":"_data","type":"map(uint32,tuple)"},
 		{"init":false,"name":"_owner","type":"address"}
 	]

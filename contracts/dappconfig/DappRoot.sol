@@ -29,7 +29,6 @@ contract DappRoot is Modifiers {
      */
     constructor (
     ) {
-        gosh.mintshell(MIN_BALANCE);
     }
 
     /**
@@ -40,7 +39,7 @@ contract DappRoot is Modifiers {
      * Requirements:
      * - Only callable by the contract owner.
      */
-    function setNewCode(uint8 id, TvmCell code) public onlyOwnerPubkey(tvm.pubkey()) accept saveMsg { 
+    function setNewCode(uint8 id, TvmCell code) public onlyOwnerPubkey(tvm.pubkey()) accept { 
         ensureBalance();
         _codeStorage[id] = code;
     }
@@ -51,7 +50,7 @@ contract DappRoot is Modifiers {
      */
     function ensureBalance() private pure {
         if (address(this).balance > MIN_BALANCE) { return; }
-        gosh.mintshell(MIN_BALANCE);
+        gosh.mintshellq(MIN_BALANCE);
     }
 
     /**
@@ -65,7 +64,7 @@ contract DappRoot is Modifiers {
         uint256 dapp_id
     ) public view accept {
         ensureBalance();
-        CreditConfig info = CreditConfig(false, 0);
+        CreditConfig info = CreditConfig(false, 100 vmshell);
         deployConfig(dapp_id, info);
     }
 
@@ -103,8 +102,9 @@ contract DappRoot is Modifiers {
         uint256 dapp_id,
         CreditConfig info
     ) private view {
+        require(_codeStorage.exists(m_ConfigCode), ERR_NO_DATA);
         TvmCell data = DappLib.composeDappConfigStateInit(_codeStorage[m_ConfigCode], dapp_id);
-        new DappConfig {stateInit: data, value: varuint16(FEE_DEPLOY_CONFIG), wid: 0, flag: 1}(info);
+        new DappConfig {stateInit: data, value: varuint16(FEE_DEPLOY_CONFIG), wid: 0, flag: 1}(dapp_id, info);
     }
 
     /**

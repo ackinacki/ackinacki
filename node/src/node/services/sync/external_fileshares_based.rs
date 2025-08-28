@@ -13,6 +13,7 @@ use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedSender;
 use url::Url;
 
+use crate::helper::SHUTDOWN_FLAG;
 use crate::node::services::sync::FileSavingService;
 use crate::node::services::sync::StateSyncService;
 use crate::node::services::sync::GOSSIP_API_ADVERTISE_ADDR_KEY;
@@ -103,7 +104,7 @@ impl StateSyncService for ExternalFileSharesBased {
                     .flat_map(|node| node.get(GOSSIP_API_ADVERTISE_ADDR_KEY))
                     .flat_map(|raw_url| Url::parse(raw_url).ok())
                     // TODO: make it connected to http-server settings so that it's not hardcoded
-                    .flat_map(|url| url.join("bk/v1/storage/").ok()),
+                    .flat_map(|url| url.join("v2/storage/").ok()),
                 );
                 services.drain().collect()
             };
@@ -131,7 +132,7 @@ impl StateSyncService for ExternalFileSharesBased {
                                 checker_clone.lock().remove(&thread_id);
                             }
                             Err(e) => {
-                                output_clone.send(Err(e.into())).expect("Callback error");
+                                let _ = output_clone.send(Err(e.into()));
                             }
                         }
                     }
@@ -147,9 +148,12 @@ impl StateSyncService for ExternalFileSharesBased {
         }
         let spawned = std::thread::Builder::new().name("State load".to_string()).spawn_critical(
             move || loop {
+                if SHUTDOWN_FLAG.get() == Some(&true) {
+                    return Ok(());
+                }
                 let checker = checker.lock();
                 if checker.is_empty() {
-                    output.send(Ok(()))?;
+                    let _ = output.send(Ok(()));
                     return Ok(());
                 }
                 drop(checker);

@@ -15,7 +15,6 @@ use tvm_block::HashmapAugType;
 use tvm_block::TrComputePhase;
 use tvm_block::TransactionDescr;
 use tvm_executor::BlockchainConfig;
-use tvm_types::AccountId;
 use tvm_types::ExceptionCode;
 use tvm_types::HashmapType;
 use tvm_types::UInt256;
@@ -23,6 +22,7 @@ use typed_builder::TypedBuilder;
 
 use crate::block::producer::builder::BlockBuilder;
 use crate::block::producer::execution_time::ExecutionTimeLimits;
+use crate::block::producer::wasm::WasmNodeCache;
 use crate::block_keeper_system::wallet_config::create_wallet_slash_message;
 use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperSlashData;
@@ -34,7 +34,6 @@ use crate::external_messages::Stamp;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::Message;
 use crate::message::WrappedMessage;
-use crate::message_storage::MessageDurableStorage;
 use crate::node::associated_types::NackData;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
@@ -42,6 +41,8 @@ use crate::repository::accounts::AccountsRepository;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
+use crate::storage::MessageDurableStorage;
+use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
 
 // Note: produces single verification block.
@@ -73,6 +74,7 @@ pub struct TVMBlockVerifier {
     accounts_repository: AccountsRepository,
     block_state_repository: BlockStateRepository,
     metrics: Option<BlockProductionMetrics>,
+    wasm_cache: WasmNodeCache,
 }
 
 impl TVMBlockVerifier {
@@ -114,12 +116,8 @@ impl BlockVerifier for TVMBlockVerifier {
             if let Some((id, bls_key, addr)) =
                 reason.get_node_data(self.block_state_repository.clone())
             {
-                let epoch_nack_data = BlockKeeperSlashData {
-                    node_id: id,
-                    bls_pubkey: bls_key,
-                    addr: addr.0,
-                    slash_type: 0,
-                };
+                let epoch_nack_data =
+                    BlockKeeperSlashData { node_id: id, bls_pubkey: bls_key, addr, slash_type: 0 };
                 let msg = create_wallet_slash_message(&epoch_nack_data)?;
                 let wrapped_message = WrappedMessage { message: msg.clone() };
                 wrapped_slash_messages.push(Arc::new(wrapped_message));
@@ -135,6 +133,7 @@ impl BlockVerifier for TVMBlockVerifier {
                 wrapped_slash_messages,
                 Vec::new(),
                 message_db.clone(),
+                self.metrics.clone(),
             )
         })?;
         let mut ref_ids = vec![];
@@ -151,7 +150,8 @@ impl BlockVerifier for TVMBlockVerifier {
         let rand_seed = block_extra.rand_seed.clone();
 
         let mut ext_messages = Vec::new();
-        let mut check_messages_map: HashMap<AccountId, BTreeMap<u64, UInt256>> = HashMap::new();
+        let mut check_messages_map: HashMap<AccountAddress, BTreeMap<u64, UInt256>> =
+            HashMap::new();
         let block_parse_result = block
             .tvm_block()
             .read_extra()
@@ -165,7 +165,8 @@ impl BlockVerifier for TVMBlockVerifier {
                 };
                 let in_msg = in_msg.read_message()?;
                 let msg_hash = in_msg.hash().unwrap();
-                let Some(dest_account_address) = in_msg.int_dst_account_id() else {
+                let Some(dest_account_address) = in_msg.int_dst_account_id().map(|x| x.into())
+                else {
                     tracing::trace!("InMsg does not contain internal destination");
                     return Ok(false);
                 };
@@ -201,7 +202,7 @@ impl BlockVerifier for TVMBlockVerifier {
 
         for (i, (_, msg)) in ext_messages.into_iter().enumerate() {
             let stamp = Stamp { index: i as u64, timestamp };
-            let acc_id = msg.int_dst_account_id().unwrap_or_default();
+            let acc_id = AccountAddress::from(msg.int_dst_account_id().unwrap_or_default());
 
             grouped_ext_messages
                 .entry(acc_id)
@@ -226,6 +227,7 @@ impl BlockVerifier for TVMBlockVerifier {
             self.node_config.local.parallelization_level,
             preprocessing_result.redirected_messages,
             self.metrics,
+            self.wasm_cache,
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (verify_block, _, _) = producer.build_block(
@@ -262,6 +264,8 @@ impl BlockVerifier for TVMBlockVerifier {
                 block.get_common_section().changed_dapp_ids.clone(),
                 block.get_common_section().round,
                 block.get_common_section().block_height,
+                #[cfg(feature = "monitor-accounts-number")]
+                block.get_common_section().accounts_number_diff,
             ),
             new_state,
         );

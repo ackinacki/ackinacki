@@ -48,6 +48,10 @@ impl ZeroState {
         &self.block_keeper_set
     }
 
+    pub fn states(&self) -> &HashMap<ThreadIdentifier, OptimisticStateImpl> {
+        &self.states
+    }
+
     pub fn states_mut(&mut self) -> &mut HashMap<ThreadIdentifier, OptimisticStateImpl> {
         &mut self.states
     }

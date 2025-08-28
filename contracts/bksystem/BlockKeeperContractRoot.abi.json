@@ -6,8 +6,8 @@
 		{
 			"name": "constructor",
 			"inputs": [
-				{"name":"giver","type":"address"},
-				{"name":"licenseRoot","type":"address"}
+				{"name":"licenseRoot","type":"address"},
+				{"name":"reward_adjustment","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -21,14 +21,42 @@
 			]
 		},
 		{
+			"name": "closeRoot",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "setConfig",
 			"inputs": [
 				{"name":"epochDuration","type":"uint64"},
-				{"name":"epochCliff","type":"uint64"},
-				{"name":"waitStep","type":"uint64"},
 				{"name":"minBlockKeepers","type":"uint128"},
+				{"name":"min_reward_period","type":"uint32"},
 				{"name":"reward_period","type":"uint32"},
-				{"name":"needNumberOfActiveBlockKeepers","type":"uint128"}
+				{"name":"reward_last_time","type":"uint32"},
+				{"name":"calc_reward_num","type":"uint32"},
+				{"name":"isNeedNumberOfActiveBlockKeepers","type":"bool"},
+				{"name":"needNumberOfActiveBlockKeepers","type":"uint128"},
+				{"name":"walletTouch","type":"uint8"},
+				{"name":"nlinit","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setConfigNode",
+			"inputs": [
+				{"name":"epochDuration","type":"uint64"},
+				{"name":"minBlockKeepers","type":"uint128"},
+				{"name":"min_reward_period","type":"uint32"},
+				{"name":"reward_period","type":"uint32"},
+				{"name":"reward_last_time","type":"uint32"},
+				{"name":"calc_reward_num","type":"uint32"},
+				{"name":"isNeedNumberOfActiveBlockKeepers","type":"bool"},
+				{"name":"needNumberOfActiveBlockKeepers","type":"uint128"},
+				{"name":"walletTouch","type":"uint8"},
+				{"name":"nlinit","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -43,14 +71,12 @@
 			]
 		},
 		{
-			"name": "decreaseActiveBlockKeeperNumber",
+			"name": "coolerSlash",
 			"inputs": [
-				{"name":"pubkey","type":"uint256"},
 				{"name":"seqNoStart","type":"uint64"},
-				{"name":"stake","type":"uint256"},
-				{"name":"rep_coef","type":"uint128"},
-				{"name":"is_slash","type":"bool"},
-				{"name":"virtualStake","type":"optional(uint128)"}
+				{"name":"pubkey","type":"uint256"},
+				{"name":"licenseCount","type":"uint128"},
+				{"name":"isFull","type":"bool"}
 			],
 			"outputs": [
 			]
@@ -60,7 +86,20 @@
 			"inputs": [
 				{"name":"pubkey","type":"uint256"},
 				{"name":"seqNoStart","type":"uint64"},
-				{"name":"stake","type":"uint256"}
+				{"name":"slash_stake","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "changeReputation",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"seqNoStart","type":"uint64"},
+				{"name":"stake","type":"uint128"},
+				{"name":"virtualStake","type":"optional(uint128)"},
+				{"name":"rep_coef_old","type":"uint128"},
+				{"name":"rep_coef_new","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -70,7 +109,7 @@
 			"inputs": [
 				{"name":"pubkey","type":"uint256"},
 				{"name":"seqNoStart","type":"uint64"},
-				{"name":"stake","type":"uint256"},
+				{"name":"stake","type":"uint128"},
 				{"name":"rep_coef","type":"uint128"},
 				{"name":"virtualStake","type":"optional(uint128)"}
 			],
@@ -84,7 +123,6 @@
 				{"name":"bls_pubkey","type":"bytes"},
 				{"name":"signerIndex","type":"uint16"},
 				{"name":"rep_coef","type":"uint128"},
-				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"is_min","type":"bool"},
 				{"name":"ProxyList","type":"map(uint8,string)"},
 				{"name":"myIp","type":"string"}
@@ -95,13 +133,13 @@
 		{
 			"name": "isBLSAccepted",
 			"inputs": [
+				{"name":"wallet","type":"address"},
 				{"name":"pubkey","type":"uint256"},
 				{"name":"bls_pubkey","type":"bytes"},
-				{"name":"stake","type":"uint256"},
+				{"name":"stake","type":"uint128"},
 				{"name":"isNotOk","type":"bool"},
 				{"name":"signerIndex","type":"uint16"},
 				{"name":"rep_coef","type":"uint128"},
-				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"virtualStake","type":"optional(uint128)"},
 				{"name":"ProxyList","type":"map(uint8,string)"},
 				{"name":"myIp","type":"string"}
@@ -112,13 +150,13 @@
 		{
 			"name": "isSignerIndexAccepted",
 			"inputs": [
+				{"name":"wallet","type":"address"},
 				{"name":"pubkey","type":"uint256"},
 				{"name":"bls_pubkey","type":"bytes"},
-				{"name":"stake","type":"uint256"},
+				{"name":"stake","type":"uint128"},
 				{"name":"isNotOk","type":"bool"},
 				{"name":"signerIndex","type":"uint16"},
 				{"name":"rep_coef","type":"uint128"},
-				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"virtualStake","type":"optional(uint128)"},
 				{"name":"ProxyList","type":"map(uint8,string)"},
 				{"name":"myIp","type":"string"}
@@ -133,10 +171,10 @@
 				{"name":"bls_pubkey","type":"bytes"},
 				{"name":"seqNoStartOld","type":"uint64"},
 				{"name":"signerIndex","type":"uint16"},
-				{"name":"rep_coef","type":"uint128"},
-				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"is_min","type":"bool"},
-				{"name":"ProxyList","type":"map(uint8,string)"}
+				{"name":"ProxyList","type":"map(uint8,string)"},
+				{"name":"seqNoFinish","type":"uint64"},
+				{"name":"sumReputationCoef","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -144,16 +182,16 @@
 		{
 			"name": "isBLSAcceptedContinue",
 			"inputs": [
+				{"name":"wallet","type":"address"},
 				{"name":"pubkey","type":"uint256"},
 				{"name":"bls_pubkey","type":"bytes"},
-				{"name":"stake","type":"uint256"},
+				{"name":"stake","type":"uint128"},
 				{"name":"isNotOk","type":"bool"},
 				{"name":"seqNoStartOld","type":"uint64"},
 				{"name":"signerIndex","type":"uint16"},
-				{"name":"rep_coef","type":"uint128"},
-				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"virtualStake","type":"optional(uint128)"},
-				{"name":"ProxyList","type":"map(uint8,string)"}
+				{"name":"ProxyList","type":"map(uint8,string)"},
+				{"name":"sumReputationCoef","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -161,16 +199,16 @@
 		{
 			"name": "isSignerIndexContinue",
 			"inputs": [
+				{"name":"wallet","type":"address"},
 				{"name":"pubkey","type":"uint256"},
 				{"name":"bls_pubkey","type":"bytes"},
-				{"name":"stake","type":"uint256"},
+				{"name":"stake","type":"uint128"},
 				{"name":"isNotOk","type":"bool"},
 				{"name":"seqNoStartOld","type":"uint64"},
 				{"name":"signerIndex","type":"uint16"},
-				{"name":"rep_coef","type":"uint128"},
-				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"virtualStake","type":"optional(uint128)"},
-				{"name":"ProxyList","type":"map(uint8,string)"}
+				{"name":"ProxyList","type":"map(uint8,string)"},
+				{"name":"sumReputationCoef","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -185,23 +223,44 @@
 			]
 		},
 		{
-			"name": "canDeleteEpoch",
+			"name": "setNewCodeNode",
+			"inputs": [
+				{"name":"id","type":"uint8"},
+				{"name":"code","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "decreaseActiveBlockKeeper",
 			"inputs": [
 				{"name":"pubkey","type":"uint256"},
+				{"name":"rep_coef","type":"uint128"},
 				{"name":"seqNoStart","type":"uint64"},
-				{"name":"stake","type":"uint256"},
-				{"name":"reputationTime","type":"uint128"},
+				{"name":"stake","type":"uint128"},
 				{"name":"totalStakeOld","type":"uint256"},
 				{"name":"numberOfActiveBlockKeepers","type":"uint128"},
 				{"name":"time","type":"uint128"},
 				{"name":"virtualStake","type":"optional(uint128)"},
-				{"name":"reward_sum","type":"uint128"}
+				{"name":"reward_sum","type":"uint128"},
+				{"name":"licenseCount","type":"uint128"},
+				{"name":"reward_adjustment","type":"uint128"},
+				{"name":"isSlash","type":"bool"}
 			],
 			"outputs": [
 			]
 		},
 		{
 			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"},
+				{"name":"cell","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateCodeNode",
 			"inputs": [
 				{"name":"newcode","type":"cell"},
 				{"name":"cell","type":"cell"}
@@ -338,6 +397,14 @@
 			]
 		},
 		{
+			"name": "getMaxStakeNow",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"maxstake","type":"uint128"}
+			]
+		},
+		{
 			"name": "getConfig",
 			"inputs": [
 			],
@@ -399,23 +466,22 @@
 	],
 	"fields": [
 		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
-		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
-		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
-		{"init":false,"name":"__value","type":"uint256"},
 		{"init":false,"name":"_code","type":"map(uint8,cell)"},
 		{"init":false,"name":"_epochDuration","type":"uint64"},
 		{"init":false,"name":"_epochCliff","type":"uint64"},
 		{"init":false,"name":"_waitStep","type":"uint64"},
 		{"init":false,"name":"_minBlockKeepers","type":"uint128"},
-		{"init":false,"name":"_giver","type":"address"},
-		{"init":false,"name":"_totalStake","type":"uint256"},
+		{"init":false,"name":"_totalStake","type":"uint128"},
 		{"init":false,"name":"_licenseRoot","type":"address"},
+		{"init":false,"name":"_walletTouch","type":"uint8"},
 		{"init":false,"name":"_networkStart","type":"uint32"},
 		{"init":false,"name":"_numberOfActiveBlockKeepers","type":"uint128"},
-		{"init":false,"name":"_needNumberOfActiveBlockKeepers","type":"uint128"},
 		{"init":false,"name":"_block_seqno","type":"uint32"},
 		{"init":false,"name":"_numberOfActiveBlockKeepersAtBlockStart","type":"uint128"},
+		{"init":false,"name":"_needNumberOfActiveBlockKeepers","type":"uint128"},
+		{"init":false,"name":"_isNeedNumberOfActiveBlockKeepers","type":"bool"},
 		{"init":false,"name":"_reward_adjustment","type":"uint128"},
 		{"init":false,"name":"_reward_last_time","type":"uint32"},
 		{"init":false,"name":"_min_reward_period","type":"uint32"},
@@ -424,6 +490,8 @@
 		{"init":false,"name":"_reputationCoefAvg","type":"uint128"},
 		{"init":false,"name":"_reward_sum","type":"uint128"},
 		{"init":false,"name":"_slash_sum","type":"uint128"},
+		{"init":false,"name":"_nlinit","type":"uint128"},
+		{"init":false,"name":"_is_close_owner","type":"bool"},
 		{"init":false,"name":"_owner_wallet","type":"optional(address)"}
 	]
 }

@@ -128,6 +128,7 @@ fn der_to_pem(name: &str, der: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -185,8 +186,16 @@ mod tests {
             .with_single_cert(vec![server_cert.clone()], server_key)
             .expect("server config");
 
-        assert!(verify_is_valid_cert(&client_cert, &[], &[client_ed_sign_key.verifying_key()]));
-        assert!(!verify_is_valid_cert(&client_cert, &[], &[unknown_ed_sign_key.verifying_key()]));
+        assert!(verify_is_valid_cert(
+            &client_cert,
+            &HashSet::default(),
+            &HashSet::from_iter([client_ed_sign_key.verifying_key()].into_iter())
+        ));
+        assert!(!verify_is_valid_cert(
+            &client_cert,
+            &HashSet::default(),
+            &HashSet::from_iter([unknown_ed_sign_key.verifying_key()].into_iter())
+        ));
         assert!(client_auth.verify_client_cert(&client_cert, &[], UnixTime::now()).is_ok());
     }
 }

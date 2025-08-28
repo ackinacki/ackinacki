@@ -10,7 +10,6 @@ use http_server::ExtMsgFeedbackList;
 use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedSender;
 use tvm_block::Message;
-use tvm_types::AccountId;
 use typed_builder::TypedBuilder;
 
 use crate::block::producer::builder::build_actions::create_queue_overflow_feedback;
@@ -18,6 +17,7 @@ use crate::external_messages::queue::ExternalMessagesQueue;
 use crate::external_messages::Stamp;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::WrappedMessage;
+use crate::types::AccountAddress;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
@@ -116,7 +116,7 @@ impl ExternalMessagesThreadState {
 
     pub fn get_remaining_external_messages(
         &self,
-    ) -> anyhow::Result<HashMap<AccountId, VecDeque<(Stamp, Message)>>> {
+    ) -> anyhow::Result<HashMap<AccountAddress, VecDeque<(Stamp, Message)>>> {
         tracing::trace!("get_remaining_externals");
         self.queue.guarded(|q| Ok(q.unprocessed_messages()))
     }

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -23,8 +24,12 @@ pub struct ProxyConfig {
     pub gossip: GossipConfig,
 
     /// Should be the same as it specified in proxy list
-    #[serde(default, deserialize_with = "network::deserialize_optional_publisher_addr")]
-    pub my_addr: Option<SocketAddr>,
+    #[serde(
+        default,
+        deserialize_with = "addr_serde::opt_vec_deser",
+        serialize_with = "addr_serde::opt_vec_ser"
+    )]
+    pub my_addr: Option<Vec<SocketAddr>>,
     pub my_cert: CertFile,
     pub my_key: PrivateKeyFile,
     pub peer_certs: CertStore,
@@ -62,7 +67,7 @@ impl ProxyConfig {
             self.my_key.clone(),
             None,
             self.peer_certs.clone(),
-            self.peer_ed_pubkeys.clone(),
+            HashSet::from_iter(self.peer_ed_pubkeys.clone()),
             self.subscribe.clone(),
             vec![],
             tls_cert_cache,
@@ -93,6 +98,43 @@ pub(crate) async fn config_reload_handler(
                 );
             }
         };
+    }
+}
+
+mod addr_serde {
+    use serde::Deserialize;
+    use serde::Deserializer;
+    use serde::Serializer;
+
+    use super::*;
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany<T> {
+        One(T),
+        Many(Vec<T>),
+    }
+
+    pub fn opt_vec_deser<'de, D>(de: D) -> Result<Option<Vec<SocketAddr>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let v = Option::<OneOrMany<SocketAddr>>::deserialize(de)?;
+        Ok(v.map(|x| match x {
+            OneOrMany::One(x) => vec![x],
+            OneOrMany::Many(v) => v,
+        }))
+    }
+
+    pub fn opt_vec_ser<S>(v: &Option<Vec<SocketAddr>>, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match v {
+            None => ser.serialize_none(),
+            Some(vec) if vec.len() == 1 => ser.serialize_some(&vec[0]),
+            Some(vec) => ser.serialize_some(vec),
+        }
     }
 }
 

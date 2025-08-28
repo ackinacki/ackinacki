@@ -13,20 +13,18 @@ anyhow.workspace = true
 bincode.workspace = true
 clap.workspace = true
 database.workspace = true
-futures.workspace = true
-gosh_bls_lib.workspace = true
-hex.workspace = true
-http-server.workspace = true
-lazy_static.workspace = true
 message-router.workspace = true
 network.workspace = true
 node.workspace = true
+opentelemetry.workspace = true
 parking_lot.workspace = true
-rcgen.workspace = true
 rusqlite.workspace = true
 salvo.workspace = true
+sdk-wrapper.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+signal-hook.workspace = true
+telemetry_utils.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -36,11 +34,8 @@ tvm_client.workspace = true
 tvm_types.workspace = true
 url.workspace = true
 
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { version = "0.12.22", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rustls-pki-types = { version = "1.8.0" }
-signal-hook = "0.3.17"
-tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.18.2.an" }
+tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.21.2.an" }
 
 dotenvy = "0"
-num_cpus = "*"
-rand = "*"

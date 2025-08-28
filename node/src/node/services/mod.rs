@@ -1,10 +1,11 @@
+// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+//
+
 use std::time::Duration;
 
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
-//
 pub mod attestations_target;
+pub mod authority_switch;
 pub mod block_processor;
-pub mod db_serializer;
 pub mod finalization;
 pub mod send_attestations;
 pub mod statistics;

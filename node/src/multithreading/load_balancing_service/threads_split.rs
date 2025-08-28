@@ -39,6 +39,11 @@ pub fn try_threads_split(
     }
 
     let proposed_mask = proposed_mask.unwrap();
+
+    if threads_table.rows().any(|(mask, _)| *mask == proposed_mask) {
+        tracing::trace!("Proposed mask already exists: {:?}", proposed_mask);
+        return Ok(ThreadAction::ContinueAsIs);
+    }
     let new_thread_id = ThreadIdentifier::new(produced_block_id, 0u16);
     let mut proposed_threads_table = threads_table.clone();
     let _: () = proposed_threads_table

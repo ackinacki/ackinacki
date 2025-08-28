@@ -34,7 +34,7 @@ impl Handler for StorageLatestHandler {
             }
         };
 
-        res.render(Redirect::temporary(format!("/bk/v1/storage/{file_name}")));
+        res.render(Redirect::temporary(format!("/v2/storage/{file_name}")));
     }
 }
 

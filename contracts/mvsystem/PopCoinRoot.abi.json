@@ -1,0 +1,199 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"PopCoinWalletCode","type":"cell"},
+				{"name":"popitgamehash","type":"uint256"},
+				{"name":"maxPopitIndex","type":"uint16"},
+				{"components":[{"name":"media","type":"string"},{"name":"id","type":"uint256"},{"name":"protopopit","type":"optional(uint32)"}],"name":"popits_media","type":"map(uint16,tuple)"},
+				{"name":"description","type":"string"},
+				{"name":"root_pubkey","type":"uint256"},
+				{"name":"isPublic","type":"bool"},
+				{"name":"index","type":"uint128"},
+				{"name":"popitGameOwner","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setIsPublic",
+			"inputs": [
+				{"name":"isPublic","type":"bool"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setPopitMedia",
+			"inputs": [
+				{"name":"index","type":"uint16"},
+				{"components":[{"name":"media","type":"string"},{"name":"id","type":"uint256"},{"name":"protopopit","type":"optional(uint32)"}],"name":"data","type":"tuple"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "addNewPopit",
+			"inputs": [
+				{"name":"media","type":"string"},
+				{"name":"protopopit","type":"optional(uint32)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "addNewPopitPublic",
+			"inputs": [
+				{"name":"media","type":"string"},
+				{"name":"protopopit","type":"optional(uint32)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "activate",
+			"inputs": [
+				{"name":"isOld","type":"bool"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "activatePopit",
+			"inputs": [
+				{"name":"id","type":"uint256"},
+				{"name":"media","type":"optional(string)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteCandidate",
+			"inputs": [
+				{"name":"id","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getTapReward",
+			"inputs": [
+				{"name":"id","type":"uint256"},
+				{"name":"media","type":"optional(string)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "destroy",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "mintValue",
+			"inputs": [
+				{"name":"owner","type":"address"},
+				{"name":"value","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "mintValuePopit",
+			"inputs": [
+				{"name":"owner","type":"address"},
+				{"name":"dataId","type":"uint256"},
+				{"name":"dataValue","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "mintValueOld",
+			"inputs": [
+				{"name":"owner","type":"address"},
+				{"name":"value","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "isReady",
+			"inputs": [
+				{"name":"owner","type":"address"},
+				{"name":"value","type":"uint128"},
+				{"name":"popitGameAddress","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "isReadyPopit",
+			"inputs": [
+				{"name":"owner","type":"address"},
+				{"name":"indexRoot","type":"uint16"},
+				{"name":"candidateId","type":"uint256"},
+				{"name":"candidateValue","type":"uint128"},
+				{"name":"popitGameAddress","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"root","type":"address"},
+				{"name":"name","type":"string"},
+				{"name":"totalSupply","type":"uint128"},
+				{"name":"maxPopitIndex","type":"uint16"},
+				{"components":[{"name":"rewards","type":"uint128"},{"name":"value","type":"uint128"},{"name":"leftValue","type":"uint128"}],"name":"popits_value","type":"map(uint16,tuple)"},
+				{"components":[{"name":"media","type":"string"},{"name":"id","type":"uint256"},{"name":"protopopit","type":"optional(uint32)"}],"name":"popits_media","type":"map(uint16,tuple)"},
+				{"name":"rewards","type":"uint128"},
+				{"components":[{"name":"value","type":"uint128"},{"name":"media","type":"string"},{"name":"protopopit","type":"optional(uint32)"},{"name":"time","type":"uint32"}],"name":"popits_candidate","type":"map(uint256,tuple)"},
+				{"name":"isReadyStatus","type":"bool"},
+				{"name":"popitGameOwner","type":"address"},
+				{"name":"description","type":"string"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_code","type":"map(uint8,cell)"},
+		{"init":false,"name":"_isReady","type":"bool"},
+		{"init":false,"name":"_popitgamehash","type":"uint256"},
+		{"init":false,"name":"_root","type":"address"},
+		{"init":true,"name":"_name","type":"string"},
+		{"init":false,"name":"_isPublic","type":"bool"},
+		{"init":false,"name":"_totalSupply","type":"uint128"},
+		{"init":false,"name":"_maxPopitIndex","type":"uint16"},
+		{"components":[{"name":"rewards","type":"uint128"},{"name":"value","type":"uint128"},{"name":"leftValue","type":"uint128"}],"init":false,"name":"_popits_value","type":"map(uint16,tuple)"},
+		{"components":[{"name":"media","type":"string"},{"name":"id","type":"uint256"},{"name":"protopopit","type":"optional(uint32)"}],"init":false,"name":"_popits_media","type":"map(uint16,tuple)"},
+		{"components":[{"name":"value","type":"uint128"},{"name":"media","type":"string"},{"name":"protopopit","type":"optional(uint32)"},{"name":"time","type":"uint32"}],"init":false,"name":"_popits_candidate","type":"map(uint256,tuple)"},
+		{"init":false,"name":"_root_pubkey","type":"uint256"},
+		{"init":false,"name":"_description","type":"string"},
+		{"init":false,"name":"_rewards","type":"uint128"},
+		{"init":false,"name":"_basicValue","type":"uint128"},
+		{"init":false,"name":"_popitGameOwner","type":"address"}
+	]
+}

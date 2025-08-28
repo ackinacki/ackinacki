@@ -66,10 +66,11 @@ then
   exit 1
 fi
 
+MAX_LICENSES_PER_WALLET=20
+
 ABI=../contracts/bksystem/BlockKeeperContractRoot.abi.json
 WALLET_ABI=../contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json
 ROOT=0:7777777777777777777777777777777777777777777777777777777777777777
-SPONSOR_WALLET_ABI=../contracts/multisig/multisig.abi.json
 LICENSE_ROOT_ABI=../contracts/bksystem/LicenseRoot.abi.json
 LICENSE_ROOT_ADDR=0:4444444444444444444444444444444444444444444444444444444444444444
 LICENSE_ABI=../contracts/bksystem/License.abi.json
@@ -88,7 +89,7 @@ read_key () {
   local NODE_OWNER_PUB_KEY_JSON=$(jq -r .public $NODE_OWNER_KEY_FILE_OUTPUT_PATH)
   local WHITELISTPARAMS=$(echo "$LICENSE_NUMBERS" | jq -R 'split(",") | map({(.): true}) | add')
   
-  [ "$(echo $WHITELISTPARAMS | jq -r '. | length')" -gt 5 ] && { echo "License numbers couldn't be greater than 5" ; exit 1 ; }
+  [ "$(echo $WHITELISTPARAMS | jq -r '. | length')" -gt $MAX_LICENSES_PER_WALLET ] && { echo "License numbers couldn't be greater than $MAX_LICENSES_PER_WALLET" ; exit 1 ; }
 
   NODE_OWNER_PUB_KEY=$(echo '{"pubkey": "0x{public}"}' | sed -e "s/{public}/$NODE_OWNER_PUB_KEY_JSON/g")
   NODE_OWNER_PUB_KEY_LICENSE=$(echo "{\"pubkey\": \"0x{public}\", \"whiteListLicense\": $WHITELISTPARAMS}" | sed -e "s/{public}/$NODE_OWNER_PUB_KEY_JSON/g")
@@ -133,9 +134,10 @@ done
 # tvm-cli -j call $SPONSOR_WALLET_ADDRESS sendTransaction "$SPONSOR_PARAMS" --abi $SPONSOR_WALLET_ABI --sign $SPONSOR_WALLET_KEY_FILE
 
 echo "Checking wallet balance..."
-WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r '.balance')
-echo $WALLET_DETAILS | xargs printf "Current wallet balance: %d\n"
+WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails)
+echo $WALLET_DETAILS
+echo $WALLET_DETAILS | jq -r '.balance' | xargs printf "Current wallet balance: %d\n"
 
-tvm-cli -j runx --addr $ROOT --abi $ABI --method getAckiNackiBlockKeeperNodeWalletAddress "$NODE_OWNER_PUB_KEY" | jq -r .wallet | cut -d ':' -f2 | xargs printf "Node ID: %s\n"
+echo $WALLET_ADDR | cut -d ':' -f2 | xargs printf "Node ID: %s\n"
 
 printf "Initial steps have been done. Save your node id\n"

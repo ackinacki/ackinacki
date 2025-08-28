@@ -19,9 +19,9 @@ use super::stream::ReadStream;
 use super::stream::StartError as StreamStartError;
 use super::stream::Stream;
 use super::stream::StreamType;
-use crate::cert_hash;
 use crate::msquic::msquic_async::buffer::WriteBuffer;
 use crate::msquic::msquic_async::send_stream::SendStream;
+use crate::CertHash;
 use crate::NetCredential;
 
 #[derive(Clone)]
@@ -449,7 +449,7 @@ impl Connection {
 
     /// Get the remote address of the connection.
     pub fn get_remote_certificate_hash(&self) -> Option<[u8; 32]> {
-        self.0.exclusive.lock().unwrap().certificate.as_ref().map(|x| cert_hash(x))
+        self.0.exclusive.lock().unwrap().certificate.as_ref().map(|x| CertHash::from(x).0)
     }
 }
 

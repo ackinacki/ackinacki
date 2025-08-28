@@ -5,7 +5,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use telemetry_utils::mpsc::InstrumentedReceiver;
-use tvm_types::AccountId;
 
 use crate::msquic::MsQuicNetIncomingRequest;
 use crate::msquic::MsQuicTransport;
@@ -27,13 +26,14 @@ impl LiteServer {
         Self { bind }
     }
 
-    pub async fn start<TBPResolver>(
+    pub async fn start<TBPResolver, A>(
         self,
-        raw_block_receiver: InstrumentedReceiver<(AccountId, Vec<u8>)>,
+        raw_block_receiver: InstrumentedReceiver<(A, Vec<u8>)>,
         bp_resolver: TBPResolver,
     ) -> anyhow::Result<()>
     where
-        TBPResolver: Send + Sync + Clone + 'static + FnMut(AccountId) -> Option<String>,
+        TBPResolver: Send + Sync + Clone + 'static + FnMut(A) -> Option<String>,
+        A: Send + 'static,
     {
         let (incoming_request_tx, incoming_request_rx) =
             tokio::sync::mpsc::unbounded_channel::<MsQuicNetIncomingRequest>();
@@ -153,13 +153,14 @@ async fn connection_handler(
     }
 }
 
-fn message_multiplexor_handler<TBKAddrResolver>(
-    incoming_message_rx: InstrumentedReceiver<(AccountId, Vec<u8>)>,
+fn message_multiplexor_handler<TBKAddrResolver, A>(
+    incoming_message_rx: InstrumentedReceiver<(A, Vec<u8>)>,
     outgoing_message_tx: tokio::sync::broadcast::Sender<Arc<Vec<u8>>>,
     mut bp_resolver: TBKAddrResolver,
 ) -> anyhow::Result<()>
 where
-    TBKAddrResolver: Send + Sync + Clone + 'static + FnMut(AccountId) -> Option<String>,
+    TBKAddrResolver: Send + Sync + Clone + 'static + FnMut(A) -> Option<String>,
+    A: Send,
 {
     tracing::info!("Message multiplexor started");
     loop {

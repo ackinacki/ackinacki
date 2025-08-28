@@ -9,7 +9,6 @@ use std::sync::Arc;
 use database::documents_db::SerializedItem;
 use parking_lot::Mutex;
 use tvm_block::ShardStateUnsplit;
-use tvm_types::AccountId;
 use tvm_types::UInt256;
 
 use super::accounts::AccountsRepository;
@@ -21,26 +20,28 @@ use crate::message::identifier::MessageIdentifier;
 #[cfg(test)]
 use crate::message::message_stub::MessageStub;
 use crate::message::WrappedMessage;
-use crate::message_storage::MessageDurableStorage;
 use crate::multithreading::cross_thread_messaging::thread_references_state::ThreadReferencesState;
 use crate::node::associated_types::AttestationData;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::services::sync::StateSyncService;
 use crate::node::shared_services::SharedServices;
+use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::NodeIdentifier;
-use crate::repository::optimistic_state::DAppIdTable;
+use crate::repository::dapp_id_table::DAppIdTable;
+use crate::repository::dapp_id_table::DAppIdTableChangeSet;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
+#[cfg(test)]
+use crate::storage::MessageDBWriterService;
+use crate::storage::MessageDurableStorage;
 use crate::types::AccountAddress;
 use crate::types::AccountRouting;
 use crate::types::AckiNackiBlock;
-use crate::types::BlockEndLT;
 use crate::types::BlockIdentifier;
 use crate::types::BlockInfo;
 use crate::types::BlockSeqNo;
-use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 use crate::utilities::FixedSizeHashSet;
@@ -75,7 +76,7 @@ impl OptimisticState for OptimisticStateStub {
         todo!()
     }
 
-    fn get_shard_state(&mut self) -> Self::ShardState {
+    fn get_shard_state(&self) -> Self::ShardState {
         todo!()
     }
 
@@ -83,7 +84,7 @@ impl OptimisticState for OptimisticStateStub {
         todo!()
     }
 
-    fn get_shard_state_as_cell(&mut self) -> Self::Cell {
+    fn get_shard_state_as_cell(&self) -> Self::Cell {
         todo!()
     }
 
@@ -124,42 +125,37 @@ impl OptimisticState for OptimisticStateStub {
     }
 
     fn get_account_routing<T: Into<AccountAddress> + Clone>(
-        &mut self,
+        &self,
         _account_id: &T,
-    ) -> anyhow::Result<AccountRouting> {
+        _change_set: Option<&DAppIdTableChangeSet>,
+    ) -> AccountRouting {
         todo!()
     }
 
     fn get_thread_for_account(
-        &mut self,
-        _account_id: &AccountId,
+        &self,
+        _account_id: &AccountAddress,
     ) -> anyhow::Result<ThreadIdentifier> {
         todo!()
     }
 
-    fn does_routing_belong_to_the_state(
-        &mut self,
-        _account_routing: &AccountRouting,
-    ) -> anyhow::Result<bool> {
+    fn does_routing_belong_to_the_state(&self, _account_routing: &AccountRouting) -> bool {
         todo!()
     }
 
     fn does_account_belong_to_the_state(
         &mut self,
-        _account_id: &AccountId,
-    ) -> anyhow::Result<bool> {
+        _account_id: &AccountAddress,
+        _change_set: Option<&DAppIdTableChangeSet>,
+    ) -> bool {
         todo!()
     }
 
-    fn get_dapp_id_table(&self) -> &HashMap<AccountAddress, (Option<DAppIdentifier>, BlockEndLT)> {
+    fn get_dapp_id_table(&self) -> &DAppIdTable {
         todo!()
     }
 
-    fn merge_dapp_id_tables(&mut self, _another_state: &DAppIdTable) -> anyhow::Result<()> {
-        todo!()
-    }
-
-    fn get_internal_message_queue_length(&mut self) -> usize {
+    fn get_internal_message_queue_length(&self) -> usize {
         todo!()
     }
 
@@ -239,6 +235,10 @@ impl Repository for RepositoryStub {
         todo!()
     }
 
+    fn get_message_storage_service(&self) -> &MessageDBWriterService {
+        todo!()
+    }
+
     fn has_thread_metadata(&self, _thread_id: &ThreadIdentifier) -> bool {
         todo!()
     }
@@ -259,15 +259,8 @@ impl Repository for RepositoryStub {
     fn get_block_from_repo_or_archive(
         &self,
         _block_id: &BlockIdentifier,
-    ) -> anyhow::Result<Arc<<Self as Repository>::CandidateBlock>> {
-        todo!()
-    }
-
-    fn get_block_from_repo_or_archive_by_seq_no(
-        &self,
-        _block_seq_no: &BlockSeqNo,
         _thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<Vec<<Self as Repository>::CandidateBlock>> {
+    ) -> anyhow::Result<Arc<<Self as Repository>::CandidateBlock>> {
         todo!()
     }
 
@@ -307,26 +300,18 @@ impl Repository for RepositoryStub {
         &self,
         block_id: &BlockIdentifier,
         _thread_id: &ThreadIdentifier,
-        _min_seq_no: Option<OptimisticStateStub>,
-    ) -> anyhow::Result<Option<OptimisticStateStub>> {
-        Ok(self.optimistic_state.get(block_id).map(|s| s.to_owned()))
+        _min_seq_no: Option<Arc<OptimisticStateStub>>,
+    ) -> anyhow::Result<Option<Arc<OptimisticStateStub>>> {
+        Ok(self.optimistic_state.get(block_id).map(|s| Arc::new(s.to_owned())))
     }
 
     fn get_full_optimistic_state(
         &self,
         block_id: &BlockIdentifier,
         _thread_id: &ThreadIdentifier,
-        _min_state: Option<Self::OptimisticState>,
-    ) -> anyhow::Result<Option<Self::OptimisticState>> {
-        Ok(self.optimistic_state.get(block_id).map(|s| s.to_owned()))
-    }
-
-    fn erase_block_and_optimistic_state(
-        &self,
-        _block_id: &BlockIdentifier,
-        _thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<()> {
-        todo!();
+        _min_state: Option<Arc<Self::OptimisticState>>,
+    ) -> anyhow::Result<Option<Arc<Self::OptimisticState>>> {
+        Ok(self.optimistic_state.get(block_id).map(|s| Arc::new(s.to_owned())))
     }
 
     fn erase_block(
@@ -369,11 +354,14 @@ impl Repository for RepositoryStub {
         todo!()
     }
 
-    fn store_optimistic<T: Into<Self::OptimisticState>>(&self, _state: T) -> anyhow::Result<()> {
+    fn store_optimistic<T: Into<Arc<Self::OptimisticState>>>(
+        &self,
+        _state: T,
+    ) -> anyhow::Result<()> {
         todo!()
     }
 
-    fn store_optimistic_in_cache<T: Into<Self::OptimisticState>>(
+    fn store_optimistic_in_cache<T: Into<Arc<Self::OptimisticState>>>(
         &self,
         _state: T,
     ) -> anyhow::Result<()> {
@@ -398,7 +386,7 @@ impl Repository for RepositoryStub {
     fn get_zero_state_for_thread(
         &self,
         _thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<Self::OptimisticState> {
+    ) -> anyhow::Result<Arc<Self::OptimisticState>> {
         todo!()
     }
 
@@ -409,7 +397,13 @@ impl Repository for RepositoryStub {
     fn last_finalized_optimistic_state(
         &self,
         _thread_id: &ThreadIdentifier,
-    ) -> Option<Self::OptimisticState> {
+    ) -> Option<Arc<Self::OptimisticState>> {
+        todo!()
+    }
+
+    fn unfinalized_blocks(
+        &self,
+    ) -> Arc<Mutex<HashMap<ThreadIdentifier, UnfinalizedCandidateBlockCollection>>> {
         todo!()
     }
 }

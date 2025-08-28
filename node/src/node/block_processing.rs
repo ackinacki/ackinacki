@@ -4,6 +4,7 @@ use telemetry_utils::now_ms;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::node::associated_types::NodeAssociatedTypes;
+use crate::node::block_state::tools::connect;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetBlock;
 use crate::node::Node;
@@ -71,6 +72,7 @@ where
         let block_time = envelope.data().time()?;
         let block_round = envelope.data().get_common_section().round;
         let block_height = envelope.data().get_common_section().block_height;
+        let parent = self.block_state_repository.get(&parent_id).unwrap();
         // Initialize block state
         block_state.guarded_mut(|state| {
             state.set_stored(&envelope)?;
@@ -80,45 +82,46 @@ where
             if state.producer_selector_data().is_none() {
                 state.set_producer_selector_data(producer_selector)?;
             }
-            state.set_parent_block_identifier(parent_id.clone())?;
 
             state.set_block_time_ms(block_time)?;
-            state.add_proposed_in_round(block_round)?;
-            state.set_block_height(block_height)?;
+            if let Some(r) = state.block_round() {
+                assert!(*r == block_round);
+            } else {
+                state.set_block_round(block_round)?;
+            }
+            if let Some(h) = state.block_height() {
+                assert!(h == &block_height);
+            } else {
+                state.set_block_height(block_height)?;
+            }
             Ok::<(), anyhow::Error>(())
         })?;
+
+        connect!(parent = parent, child = block_state, &self.block_state_repository);
+        if let Some(hint) =
+            envelope.data().get_common_section().directives.share_state_resources().clone()
+        {
+            self.last_synced_state =
+                Some((envelope.data().identifier().clone(), envelope.data().seq_no(), hint));
+        }
 
         tracing::info!("Add candidate block state to cache: {:?}", net_block.identifier);
         self.unprocessed_blocks_cache.insert(block_state.clone(), envelope.clone());
 
         // Update parent block state
         // lock parent only after child lock is dropped
-        let _siblings = self.block_state_repository.get(&parent_id)?.guarded_mut(|e| {
-            e.add_child(thread_identifier, net_block.identifier.clone())?;
-            let mut siblings = e.known_children(&thread_identifier).cloned().unwrap_or_default();
-            siblings.remove(&net_block.identifier);
-            Ok::<_, anyhow::Error>(siblings)
-        })?;
+        let parent_is_finalized =
+            self.block_state_repository.get(&parent_id)?.guarded_mut(|e| {
+                e.add_child(thread_identifier, net_block.identifier.clone())?;
+                Ok::<bool, anyhow::Error>(e.is_finalized())
+            })?;
+        if parent_is_finalized {
+            block_state.guarded_mut(|state| state.set_has_parent_finalized())?;
+        }
 
         // Steal block attestations
         for attestation in &envelope.data().get_common_section().block_attestations {
-            self.last_block_attestations.guarded_mut(|e| {
-                e.add(
-                    attestation.clone(),
-                    |block_id| {
-                        let Ok(block_state) = self.block_state_repository.get(block_id) else {
-                            return None;
-                        };
-                        block_state.guarded(|e| e.bk_set().clone())
-                    },
-                    |block_id| {
-                        let Ok(block_state) = self.block_state_repository.get(block_id) else {
-                            return None;
-                        };
-                        block_state.guarded(|e| e.envelope_hash().clone())
-                    },
-                )
-            })?;
+            self.last_block_attestations.guarded_mut(|e| e.add(attestation.clone(), true))?;
         }
         Ok(Some(envelope))
     }

@@ -40,17 +40,23 @@
 		{
 			"name": "removeBKWallet",
 			"inputs": [
-				{"name":"to","type":"address"}
 			],
 			"outputs": [
 			]
 		},
 		{
-			"name": "deleteLicense",
+			"name": "deleteWallet",
 			"inputs": [
 				{"name":"reputationTime","type":"uint128"},
-				{"name":"isPriority","type":"bool"},
-				{"name":"last_touch","type":"uint32"}
+				{"name":"isPrivileged","type":"bool"},
+				{"name":"last_touch","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "destroyLicense",
+			"inputs": [
 			],
 			"outputs": [
 			]
@@ -75,7 +81,7 @@
 			"name": "acceptLicense",
 			"inputs": [
 				{"name":"pubkey","type":"uint256"},
-				{"name":"last_touch","type":"uint32"}
+				{"name":"last_touch","type":"uint64"}
 			],
 			"outputs": [
 			]
@@ -90,6 +96,23 @@
 			]
 		},
 		{
+			"name": "withdrawToken",
+			"inputs": [
+				{"name":"to","type":"address"},
+				{"name":"value","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "toAddBalance",
+			"inputs": [
+				{"name":"value","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "getDetails",
 			"inputs": [
 			],
@@ -98,7 +121,8 @@
 				{"name":"bkwallet","type":"optional(address)"},
 				{"name":"owner_pubkey","type":"optional(uint256)"},
 				{"name":"owner_address","type":"optional(address)"},
-				{"name":"reputationTime","type":"uint128"}
+				{"name":"reputationTime","type":"uint128"},
+				{"name":"license_start","type":"uint64"}
 			]
 		},
 		{
@@ -132,10 +156,8 @@
 	],
 	"fields": [
 		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
-		{"init":false,"name":"messages","type":"map(uint32,map(uint256,bool))"},
-		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"lastMessage","type":"tuple"},
-		{"init":false,"name":"__value","type":"uint256"},
 		{"init":true,"name":"_license_number","type":"uint256"},
 		{"init":true,"name":"_root","type":"address"},
 		{"init":false,"name":"_owner_pubkey","type":"optional(uint256)"},
@@ -143,11 +165,11 @@
 		{"init":false,"name":"_rootElection","type":"address"},
 		{"init":false,"name":"_bkwallet","type":"optional(address)"},
 		{"init":false,"name":"_reputationTime","type":"uint128"},
-		{"init":false,"name":"_isPriority","type":"bool"},
+		{"init":false,"name":"_isPrivileged","type":"bool"},
 		{"init":false,"name":"_code","type":"map(uint8,cell)"},
-		{"init":false,"name":"_license_start","type":"uint32"},
+		{"init":false,"name":"_license_start","type":"uint64"},
 		{"init":false,"name":"is_ready","type":"bool"},
-		{"init":false,"name":"_lock_seqno","type":"uint128"},
-		{"init":false,"name":"_last_touch","type":"uint32"}
+		{"init":false,"name":"_last_touch","type":"uint64"},
+		{"init":false,"name":"_licenseLastTouch","type":"uint64"}
 	]
 }

@@ -8,37 +8,35 @@ license-file.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-graphql = { version = "=7.0.17", features = ["dataloader"] }
-async-graphql-derive = { version = "=7.0.17" }
 async-graphql-warp = "=7.0.17"
-base64 = "0.21.7"
 chrono = "0.4.38"
 clap.workspace = true
-env_logger = "0.11.3"
 futures = "0.3.30"
-log = "0.4.21"
 num = "0.4.1"
 rand = "0.8.5"
-reqwest = { version = "0.12.2", features = ["json", "rustls-tls"], default-features = false }
 serde.workspace = true
 serde_json = { version = "1.0.114", features = ["preserve_order"] }
 serde_with.workspace = true
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "tls-rustls"] }
-struct-fields-macro-derive = { path = "crates/struct-fields-macro-derive" }
-thiserror = "2.0.9"
 tokio = { version = "1", features = ["full", "rt"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tvm_block.workspace = true
-tvm_client.workspace = true
-tvm_tl_codegen.workspace = true
 tvm_types.workspace = true
 warp = { version = "0.3.7", features = ["tls"] }
 
 [dev-dependencies]
 migration-tool = { workspace = true }
+reqwest = { version = "0.12.22", features = ["json", "rustls-tls"], default-features = false }
 testdir = "0.9.3"
 tokio = { workspace = true }
 
 [[bin]]
 name = "gql-server"
 path = "src/main.rs"
+
+[features]
+default = []
+
+# Enable the extraction and storage of raw blocks and external out messages (events) only
+store_events_only = []
