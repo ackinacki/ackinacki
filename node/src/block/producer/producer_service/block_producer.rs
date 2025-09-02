@@ -511,8 +511,12 @@ impl BlockProducer {
                 &bk_set,
                 &secrets,
                 block.clone(),
-            )?;
-
+            );
+            if let Err(e) = &envelope {
+                tracing::error!("Failed to sign block: {e}");
+                return Ok((false, None));
+            };
+            let envelope = envelope?;
             // Check if this node has already signed block of the same height
             // Note: Not valid anymore. Can't sign blocks of the same round though.
             // TODO: add corrected check.

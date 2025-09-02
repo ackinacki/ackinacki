@@ -3,6 +3,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
+use ed25519_dalek::VerifyingKey;
+use transport_layer::get_ed_pubkey_from_cert_der;
+use transport_layer::CertHash;
 use transport_layer::NetConnection;
 use transport_layer::NetTransport;
 
@@ -64,6 +67,8 @@ pub struct ConnectionInfo {
     pub remote_host_id: String,
     pub remote_host_id_prefix: String,
     pub remote_is_proxy: bool,
+    pub remote_cert_hash: CertHash,
+    pub remote_ed_pubkey: Option<VerifyingKey>,
 }
 
 impl ConnectionInfo {
@@ -104,9 +109,11 @@ impl<Connection: NetConnection> ConnectionWrapper<Connection> {
         remote_is_proxy: bool,
         connection: Connection,
         roles: ConnectionRoles,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let remote_host_id_prefix = host_id_prefix(&remote_host_id).to_string();
-        Self {
+        let cert =
+            connection.remote_certificate().ok_or_else(|| anyhow::anyhow!("No certificate"))?;
+        Ok(Self {
             info: Arc::new(ConnectionInfo {
                 id,
                 local_is_proxy,
@@ -118,10 +125,12 @@ impl<Connection: NetConnection> ConnectionWrapper<Connection> {
                 remote_host_id,
                 remote_host_id_prefix,
                 remote_is_proxy,
+                remote_cert_hash: CertHash::from(&cert),
+                remote_ed_pubkey: get_ed_pubkey_from_cert_der(&cert)?,
                 roles,
             }),
             connection,
-        }
+        })
     }
 
     pub fn allow_sending(&self, outgoing: &OutgoingMessage) -> bool {

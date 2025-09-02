@@ -4,6 +4,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use rustls_pki_types::CertificateDer;
 
 use crate::tls::client_tls_config;
 use crate::tls::server_tls_config;
@@ -141,6 +142,10 @@ impl NetConnection for QuinnConnection {
 
     fn remote_identity(&self) -> String {
         "remote".into()
+    }
+
+    fn remote_certificate(&self) -> Option<CertificateDer<'static>> {
+        None
     }
 
     fn alpn_negotiated(&self) -> Option<String> {

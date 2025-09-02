@@ -57,10 +57,18 @@ where
                 sender = network_config_rx.changed() => if sender.is_err() {
                     return Ok(());
                 } else {
-                    let new_config = network_config_rx.borrow();
-                    if new_config.bind != bind || new_config.credential != credential {
-                        bind = new_config.bind;
-                        credential = new_config.credential.clone();
+                    let config_changed = {
+                        let new_config = network_config_rx.borrow();
+                        if new_config.bind != bind || new_config.credential != credential {
+                            bind = new_config.bind;
+                            credential = new_config.credential.clone();
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if config_changed {
+                        pub_sub.disconnect_untrusted(&credential).await;
                         tracing::info!("Listener config changed. Restarting listener.");
                         break;
                     } else {

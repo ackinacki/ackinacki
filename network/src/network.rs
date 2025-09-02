@@ -33,7 +33,7 @@ use crate::resolver::WatchGossipConfig;
 pub const BROADCAST_RETENTION_CAPACITY: usize = 100;
 const DEFAULT_MAX_CONNECTIONS: usize = 1000;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PeerData {
     pub peer_addr: SocketAddr,
     pub bk_api_socket: Option<SocketAddr>,

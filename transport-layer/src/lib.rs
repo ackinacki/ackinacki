@@ -18,9 +18,11 @@ use sha2::Digest;
 
 pub use crate::tls::create_self_signed_cert_with_ed_signature;
 pub use crate::tls::generate_self_signed_cert;
+pub use crate::tls::get_ed_pubkey_from_cert_der;
 pub use crate::tls::hex_verifying_key;
 pub use crate::tls::hex_verifying_keys;
 pub use crate::tls::resolve_signing_key;
+use crate::tls::verify_cert_or_ed_pubkey_is_trusted;
 pub use crate::tls::verify_is_valid_cert;
 pub use crate::tls::TlsCertCache;
 
@@ -32,7 +34,7 @@ mod tls;
 mod utils;
 pub mod wtransport;
 
-#[derive(Clone, Copy, PartialEq, Hash, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 pub struct CertHash(pub [u8; 32]);
 
 impl From<&CertificateDer<'static>> for CertHash {
@@ -91,7 +93,17 @@ impl NetCredential {
 
     pub fn verify_is_valid_cert(&self, cert: &CertificateDer<'static>) -> bool {
         self.any_cert_are_trusted()
-            | verify_is_valid_cert(cert, &self.trusted_cert_hashes, &self.trusted_ed_pubkeys)
+            || verify_is_valid_cert(cert, &self.trusted_cert_hashes, &self.trusted_ed_pubkeys)
+    }
+
+    pub fn is_trusted(&self, cert_hash: &CertHash, ed_pubkey: &Option<VerifyingKey>) -> bool {
+        self.any_cert_are_trusted()
+            || verify_cert_or_ed_pubkey_is_trusted(
+                cert_hash,
+                ed_pubkey,
+                &self.trusted_cert_hashes,
+                &self.trusted_ed_pubkeys,
+            )
     }
 }
 
@@ -145,6 +157,7 @@ pub trait NetConnection: Clone + Send + Sync {
     fn local_identity(&self) -> String;
     // Returns unique remote endpoint identification (usually it is hash of the TLS certificate)
     fn remote_identity(&self) -> String;
+    fn remote_certificate(&self) -> Option<CertificateDer<'static>>;
     fn alpn_negotiated(&self) -> Option<String>;
     fn alpn_negotiated_is(&self, protocol: &str) -> bool {
         self.alpn_negotiated().as_ref().map(|x| x == protocol).unwrap_or_default()

@@ -13,6 +13,7 @@ use msquic::Registration;
 use msquic::RegistrationConfig;
 use msquic_async::Connection;
 use msquic_async::Listener;
+use rustls_pki_types::CertificateDer;
 use tokio::io::AsyncReadExt;
 
 use crate::msquic::msquic_async::send_stream::SendStream;
@@ -199,6 +200,10 @@ impl NetConnection for MsQuicNetConnection {
 
     fn local_identity(&self) -> String {
         self.local_identity.clone()
+    }
+
+    fn remote_certificate(&self) -> Option<CertificateDer<'static>> {
+        self.inner.get_remote_certificate()
     }
 
     fn remote_identity(&self) -> String {

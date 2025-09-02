@@ -11,6 +11,7 @@ use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::gosh_bls::PubKey;
 use crate::bls::gosh_bls::Secret;
 use crate::bls::BLSSignatureScheme;
+use crate::helper::SHUTDOWN_FLAG;
 use crate::node::NodeIdentifier;
 use crate::types::RndSeed;
 
@@ -43,6 +44,7 @@ where
             );
         };
         let Some((secret, _)) = bls_keys_map.get(&bk_data.pubkey).cloned() else {
+            SHUTDOWN_FLAG.set(true).expect("");
             anyhow::bail!("Bls keymap does not have secret stored");
         };
         let signature = <GoshBLS as BLSSignatureScheme>::sign(&secret, &data)?;

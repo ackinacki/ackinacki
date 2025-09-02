@@ -332,7 +332,7 @@ all:
     LOG_ROTATE_SIZE: 1G     # minimum size of the log file to rotate
     LOG_ROTATE_SPEC: "0 *"  # period of rotation in cron "minute hour" format
     STAKING_IMAGE: teamgosh/ackinacki-staking:<latest-release-tag>
-    STAKING_TIME: 60
+    STAKING_TIME: 600
     TVM_ENDPOINT: shellnet.ackinacki.org
     NETWORK_NAME: shellnet
     THREAD_COUNT_SOFT_LIMIT: 4
@@ -341,6 +341,9 @@ all:
     AEROSPIKE_FABRIC_PORT: 4001    # port for intra-cluster communication (migration, replication, etc.)
     AEROSPIKE_HEARTBEAT_PORT: 4002 # port used to maintain database cluster health (heartbeat)
     AEROSPIKE_IMAGE: "aerospike/aerospike-server:latest"
+    NODE_GROUP_ID: ""
+    OTEL_COLLECTOR: no
+    OTEL_SERVICE_NAME: ""
     GOSSIP_SEEDS:
       - shellnet0.ackinacki.org:10000
       - shellnet1.ackinacki.org:10000
@@ -371,6 +374,12 @@ For example, default `"0 *"` value means that the log files will be rotated ever
 In case rotated log files are too large, you might want to decrease the period of rotation.
 
 For example, `"*/5 *"` value means that the log files will be rotated every 5 minutes.
+
+
+`NODE_GROUP_ID`, `OTEL_COLLECTOR` and `OTEL_SERVICE_NAME` are optional and related to node metrics integration.
+
+They can be used to send metrics to the specified collector server. `NODE_GROUP_ID` should be used to identify the node group
+and should be the same for all nodes in your deployment.
 
 
 Ensure your configuration data is added to the inventory before running the playbook.
@@ -442,7 +451,7 @@ all:
     LOG_ROTATE_AMOUNT: 30
     LOG_ROTATE_SIZE: 1G
     STAKING_IMAGE: teamgosh/ackinacki-staking:<latest-release-tag>
-    STAKING_TIME: 60
+    STAKING_TIME: 600
     TVM_ENDPOINT: shellnet.ackinacki.org
     NETWORK_NAME: shellnet
     THREAD_COUNT_SOFT_LIMIT: 4
@@ -451,6 +460,9 @@ all:
     AEROSPIKE_FABRIC_PORT: 4001    # port for intra-cluster communication (migration, replication, etc.)
     AEROSPIKE_HEARTBEAT_PORT: 4002 # port used to maintain database cluster health (heartbeat)
     AEROSPIKE_IMAGE: "aerospike/aerospike-server:latest"
+    NODE_GROUP_ID: ""
+    OTEL_COLLECTOR: no
+    OTEL_SERVICE_NAME: ""
     GOSSIP_SEEDS:
       - shellnet0.ackinacki.org:10000
       - shellnet1.ackinacki.org:10000
@@ -511,12 +523,12 @@ docker compose ps
 You should see log entries similar to:
 
 ```
-NAME                    IMAGE                          SERVICE                 CREATED      
+NAME                    IMAGE                          SERVICE                 CREATED
 
-block-keeper-node       teamgosh/ackinacki-node       node{{ NODE_ID }}       28 hours ago 
+block-keeper-node       teamgosh/ackinacki-node       node{{ NODE_ID }}       28 hours ago
 ```
 
-* Make note of the `SERVICE` value (`node{{ NODE_ID }}` in the example).  
+* Make note of the `SERVICE` value (`node{{ NODE_ID }}` in the example).
 
 * Gracefully stop the node process by sending SIGHUP to the service:
 
@@ -530,7 +542,7 @@ docker compose exec node{{ NODE_ID }} pkill node
 docker compose down node{{ NODE_ID }}
 ```
 
-* Check the logs to ensure shutdown has completed.  
+* Check the logs to ensure shutdown has completed.
 You should see a message similar to:
 
 ```yaml
@@ -826,7 +838,7 @@ node_sync_status.sh path/to/log
 
 **Steps**
 
-1. Identify the Block Keeper your Block Manager service will work with and request the following information from its owner:  
+1. Identify the Block Keeper your Block Manager service will work with and request the following information from its owner:
   * Authorization Token (`BK_API_TOKEN`) – the access token required for interacting with the BK API.
   * BK Public IP Address (`NODE_IP`)
 2. Deploy Block Manager Wallet

@@ -89,6 +89,27 @@ impl<Transport: NetTransport> PubSub<Transport> {
         diff(subscribed, subscribe)
     }
 
+    pub async fn disconnect_untrusted(&self, credential: &NetCredential) {
+        let untrusted = {
+            let inner = self.inner.read();
+            let mut untrusted = Vec::new();
+            for connection in inner.connections.values() {
+                if !credential.is_trusted(
+                    &connection.info.remote_cert_hash,
+                    &connection.info.remote_ed_pubkey,
+                ) {
+                    untrusted.push(connection.clone());
+                }
+            }
+            untrusted
+        };
+        for connection in untrusted {
+            tracing::trace!(peer = connection.info.remote_info(), "Disconnect untrusted");
+            connection.connection.close(0).await;
+            self.remove_connection(&connection.info);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn subscribe_to_publisher(
         self,
@@ -164,7 +185,7 @@ impl<Transport: NetTransport> PubSub<Transport> {
             remote_is_proxy,
             connection,
             roles,
-        ));
+        )?);
 
         let (outgoing_messages_tx, incoming_messages_tx) = if roles.publisher {
             (Some(outgoing_messages_tx.subscribe()), None)

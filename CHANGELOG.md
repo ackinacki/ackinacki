@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.1] - 2025-09-02
+
+### Improvements
+- Ansible scripts: 
+  - nginx removed from BK deployment
+  - set BIND, API_ADDR, MESSAGE_ROUTER via variables
+
+### Fixed
+- Staking script: create a stake even if coolers exist
+- Disconnect from peers that were removed from BK set
+- BIND_GOSSIP_PORT was not propagated to GOSSIP_LISTEN_ADDR which caused gossip unavailability in case of multiple BK deployment
+
 ## [0.7.0] - 2025-08-29
 
 ### New

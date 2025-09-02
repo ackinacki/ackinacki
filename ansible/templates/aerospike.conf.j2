@@ -37,7 +37,14 @@ namespace node {
 	replication-factor 1
 	storage-engine device {
 		file /opt/aerospike/data/node.dat
-		filesize 40G
+{% for i in range(2, (AS_FILES_CNT | default(16) + 1)) %}
+		file /opt/aerospike/data/node{{ i }}.dat
+{% endfor %}
+		filesize {{ AS_FILE_SIZE | default('80G') }}
+		direct-files true
+		disable-odsync true
 		read-page-cache true
+		stop-writes-used-pct 100
+		stop-writes-avail-pct 0
 	}
 }

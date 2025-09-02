@@ -1225,6 +1225,13 @@ impl Repository for RepositoryImpl {
                 ))
             })?;
         if thread_id == ThreadIdentifier::default() {
+            if let Some(metrics) = &self.metrics {
+                if let (Some(bk_set), Some(future_bk_set)) =
+                    (bk_set.as_deref(), future_bk_set.as_deref())
+                {
+                    metrics.report_bk_set(bk_set.len(), future_bk_set.len(), &thread_id)
+                }
+            }
             let _ = self.bk_set_update_tx.send(BkSetUpdate {
                 seq_no: block_seq_no.into(),
                 current: bk_set,

@@ -34,6 +34,11 @@ done
 
 shift $(( OPTIND - 1 ))
 
+if [[ -f $LOGFILE ]]; then
+  TIME_NOW=$(date +%s)
+  cp $LOGFILE $LOGFILE-$TIME_NOW
+fi
+
 exec 1>"$LOGFILE" 2>&1
 # Function for proper logging
 log() {
@@ -121,7 +126,12 @@ fi
 NODE_OWNER_PUB_KEY_JSON=$(jq -e -r .public $NODE_OWNER_KEY || { log "Error with reading node owner public key" >&2 ; exit 1 ;})
 NODE_OWNER_PUB_KEY=$(echo '{"pubkey": "0x{public}"}' | sed -e "s/{public}/$NODE_OWNER_PUB_KEY_JSON/g")
 BLS_PUB_KEY=$(jq -e -r .[0].public $BLS_KEYS_FILE || { log "Error with reading BLS public key" >&2 ; exit 1 ;})
-sleep 10
+READINESS_COUNT=0
+while ! tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails > /dev/null 2>&1 && [[ $READINESS_COUNT -lt 10 ]]; do
+  log "Network endpoint is not reachable. Waiting..."
+  sleep 2
+  READINESS_COUNT=$(( READINESS_COUNT + 1 ))
+done
 WALLET_ADDR=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeperNodeWalletAddress "$NODE_OWNER_PUB_KEY" | jq -e -r '.wallet' || { log "Error with getting wallet address" >&2 ; exit 1 ;})
 INIT_WALLET_STATE=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails || { log "Error with getting details $WALLET_ADDR" >&2 ; exit 1 ;})
 INIT_ACTIVE_STAKES=$(echo $INIT_WALLET_STATE | jq '.activeStakes | length')
@@ -314,7 +324,7 @@ process_cooler_epoch () {
   log "Calculating rewards..."
   calculate_reward $1 $2
   log "Reward is $REWARD"
-  log "There is no need to touch Cooler within staking..."
+  # log "There is no need to touch Cooler within staking..."
   # log "Touching cooler contract"
   # tvm-cli -j callx --abi $COOLER_ABI --addr $1 -m touch
 }
@@ -332,6 +342,16 @@ process_epoch () {
     log "Active Stakes - ${ACTIVE_STAKES_ARRAY[@]}"
     log "Stakes count - ${#ACTIVE_STAKES_ARRAY[@]}"
     # return 0
+  fi
+
+  # Processing another cases where is no epoch or pre-epoch
+  if tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -e '.activeStakes | (. != {} and all(.[] | .status | tonumber; . != 0 and . != 1))' > /dev/null 2>&1; then
+    log "No active epoch and pre-epoch have been found for wallet - $WALLET_ADDR. Placing stake..." >&2
+    place_stake
+
+    readarray -t ACTIVE_STAKES_ARRAY < <(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '.activeStakes | keys | .[]')
+    log "Active Stakes - ${ACTIVE_STAKES_ARRAY[@]}"
+    log "Stakes count - ${#ACTIVE_STAKES_ARRAY[@]}"
   fi
 
   for k in ${ACTIVE_STAKES_ARRAY[@]}; do

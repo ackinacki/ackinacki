@@ -7,6 +7,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use rustls_pki_types::CertificateDer;
 use tokio::io::AsyncReadExt;
 use wtransport::endpoint::endpoint_side::Server;
 use wtransport::endpoint::ConnectOptions;
@@ -196,6 +197,16 @@ impl NetConnection for WTransportConnection {
             }
         }
         self.remote_addr().to_string()
+    }
+
+    fn remote_certificate(&self) -> Option<CertificateDer<'static>> {
+        self.connection.peer_identity().and_then(|x| {
+            if x.as_slice().is_empty() {
+                None
+            } else {
+                Some(CertificateDer::from(x.as_slice()[0].der().to_vec()))
+            }
+        })
     }
 
     fn alpn_negotiated(&self) -> Option<String> {

@@ -135,8 +135,12 @@ impl AckiNackiSend {
             let node_epoch_pubkey = node_epoch_bk_data.pubkey;
             Some((node_epoch_pubkey, node_epoch_signer_index))
         })?;
-        let node_epoch_secret =
-            self.bls_keys_map.guarded(|e| e.get(&node_epoch_pubkey).cloned())?.0;
+        let node_epoch_secret = self.bls_keys_map.guarded(|e| e.get(&node_epoch_pubkey).cloned());
+        if node_epoch_secret.is_none() {
+            SHUTDOWN_FLAG.set(true).expect("");
+            tracing::error!("Node does not have valid key which was used to deploy epoch: pubkey={node_epoch_pubkey:?}");
+        }
+        let node_epoch_secret = node_epoch_secret?.0;
         Some((node_epoch_signer_index, node_epoch_secret))
     }
 }

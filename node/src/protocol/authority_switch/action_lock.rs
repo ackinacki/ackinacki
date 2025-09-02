@@ -1224,22 +1224,25 @@ impl ThreadAuthority {
             // Note: block production is not needed so far.
             // Block producer kicks in when there were no block in a previous round or the majority
             // of the block keepers had no block locked.
-            return OnNextRoundIncomingRequestResult::Broadcast(
-                Envelope::sealed(
-                    &self.node_identifier,
-                    &bk_set,
-                    &secrets,
-                    NextRoundSuccess::builder()
-                        .node_identifier(self.node_identifier.clone())
-                        .round(*round)
-                        .block_height(block_height)
-                        .proposed_block(NetBlock::with_envelope(&block).unwrap())
-                        .attestations_aggregated(aggregated_attestations)
-                        .requests_aggregated(proof_of_valid_round)
-                        .build(),
-                )
-                .expect("must work"),
-            );
+            let Ok(envelope) = Envelope::sealed(
+                &self.node_identifier,
+                &bk_set,
+                &secrets,
+                NextRoundSuccess::builder()
+                    .node_identifier(self.node_identifier.clone())
+                    .round(*round)
+                    .block_height(block_height)
+                    .proposed_block(NetBlock::with_envelope(&block).unwrap())
+                    .attestations_aggregated(aggregated_attestations)
+                    .requests_aggregated(proof_of_valid_round)
+                    .build(),
+            ) else {
+                SHUTDOWN_FLAG.set(true).expect("");
+                tracing::error!("Node does not have valid key to sign message");
+                return OnNextRoundIncomingRequestResult::DoNothing;
+            };
+
+            return OnNextRoundIncomingRequestResult::Broadcast(envelope);
         }
         let Some(parent_block_time) = parent_state.guarded(|e| *e.block_time_ms()) else {
             tracing::trace!("on_next_round_incoming_request: parent block time is not set");

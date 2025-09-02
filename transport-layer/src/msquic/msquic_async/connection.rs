@@ -447,9 +447,14 @@ impl Connection {
             .map_err(ConnectionError::OtherError)
     }
 
-    /// Get the remote address of the connection.
+    /// Get the remote certificate hash of the connection.
     pub fn get_remote_certificate_hash(&self) -> Option<[u8; 32]> {
         self.0.exclusive.lock().unwrap().certificate.as_ref().map(|x| CertHash::from(x).0)
+    }
+
+    /// Get the remote certificate of the connection.
+    pub fn get_remote_certificate(&self) -> Option<CertificateDer<'static>> {
+        self.0.exclusive.lock().unwrap().certificate.clone()
     }
 }
 

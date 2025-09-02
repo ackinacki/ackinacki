@@ -66,6 +66,8 @@ struct BlockProductionMetricsInner {
     generate_merkle_update_time: Histogram<u64>,
     outbound_accounts: Counter<u64>,
     saved_states_counter: Counter<u64>,
+    bk_set: Gauge<u64>,
+    future_bk_set: Gauge<u64>,
 }
 
 pub const BK_SET_UPDATE_CHANNEL: &str = "bk_set_update";
@@ -260,6 +262,8 @@ impl BlockProductionMetrics {
             aerospike_read_err: meter.u64_counter("node_aerospike_read_err").build(),
             outbound_accounts: meter.u64_counter("node_outbound_accounts").build(),
             saved_states_counter: meter.u64_counter("node_saved_states_counter").build(),
+            bk_set: meter.u64_gauge("node_bk_set").build(),
+            future_bk_set: meter.u64_gauge("node_future_bk_set").build(),
         }))
     }
 
@@ -396,6 +400,12 @@ impl BlockProductionMetrics {
 
     pub fn report_bk_set_size(&self, value: u64, thread_id: &ThreadIdentifier) {
         self.0.bk_set_size.record(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_bk_set(&self, bk_set: usize, future_bk_set: usize, thread_id: &ThreadIdentifier) {
+        let attrs = &[thread_id_attr(thread_id)];
+        self.0.bk_set.record(bk_set as u64, attrs);
+        self.0.future_bk_set.record(future_bk_set as u64, attrs);
     }
 
     pub fn report_store_block_on_disk(&self, value: u64, thread_id: &ThreadIdentifier) {

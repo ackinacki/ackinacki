@@ -31,6 +31,7 @@ pub fn set_bk_set(
     };
 
     let bk_set_len = bk_set.len();
+    let future_bk_set_len = future_bk_set.len();
     let (did_update, thread_id) = block_state.guarded_mut(|e| {
         let mut did_update = false;
         if e.bk_set().is_none() {
@@ -44,7 +45,10 @@ pub fn set_bk_set(
     });
     if did_update {
         if let Some(thread_id) = thread_id {
-            metrics.inspect(|m| m.report_bk_set_size(bk_set_len as u64, &thread_id));
+            metrics.inspect(|m| {
+                m.report_bk_set(bk_set_len, future_bk_set_len, &thread_id);
+                m.report_bk_set_size(bk_set_len as u64, &thread_id)
+            });
         }
     }
     true

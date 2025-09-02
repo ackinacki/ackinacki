@@ -218,6 +218,13 @@ pub fn create_self_signed_cert_with_ed_signature(
     Ok((tls_key.clone_key(), cert_der))
 }
 
+pub fn get_ed_pubkey_from_cert_der(
+    cert: &CertificateDer<'static>,
+) -> anyhow::Result<Option<ed25519_dalek::VerifyingKey>> {
+    let (_, x509) = x509_parser::parse_x509_certificate(cert.as_ref())?;
+    get_ed_pubkey_from_cert(&x509)
+}
+
 pub fn get_ed_pubkey_from_cert(
     cert: &x509_parser::certificate::X509Certificate,
 ) -> anyhow::Result<Option<ed25519_dalek::VerifyingKey>> {
@@ -236,6 +243,22 @@ pub fn get_ed_pubkey_from_cert(
     ed_pub.verify(tls_pub_der, &ed_sig)?;
 
     Ok(Some(ed_pub))
+}
+
+pub fn verify_cert_or_ed_pubkey_is_trusted(
+    cert_hash: &CertHash,
+    ed_pub_key: &Option<ed25519_dalek::VerifyingKey>,
+    trusted_cert_hashes: &HashSet<CertHash>,
+    trusted_ed_pubkeys: &HashSet<ed25519_dalek::VerifyingKey>,
+) -> bool {
+    let is_trusted_cert_hash = || trusted_cert_hashes.contains(cert_hash);
+    let is_trusted_ed_pub_key = || ed_pub_key.is_some_and(|x| trusted_ed_pubkeys.contains(&x));
+    match (!trusted_cert_hashes.is_empty(), !trusted_ed_pubkeys.is_empty()) {
+        (false, false) => true,
+        (false, true) => is_trusted_cert_hash(),
+        (true, false) => is_trusted_ed_pub_key(),
+        (true, true) => is_trusted_cert_hash() || is_trusted_ed_pub_key(),
+    }
 }
 
 pub fn verify_is_valid_cert(

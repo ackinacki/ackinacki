@@ -502,33 +502,32 @@ fn process_candidate_block(
             if let Some(pubkey) =
                 bk_set.as_ref().and_then(|x| x.get_by_node_id(&node_id)).map(|x| x.pubkey.clone())
             {
-                let rnd: RndSeed =
-                    bls_keys_map.guarded(|e| e.get(&pubkey).map(|x| x.1.clone())).unwrap();
-                tracing::trace!("rnd: {rnd:?}");
-                tracing::trace!("block_id: {block_id:?}");
-                let rnd = rnd ^ block_id.clone();
-                tracing::trace!("rnd: {rnd:?}");
+                if let Some(rnd) = bls_keys_map.guarded(|e| e.get(&pubkey).map(|x| x.1.clone())) {
+                    let rnd = rnd ^ block_id.clone();
 
-                let this_block = rnd.not_a_modulus(1 << 16) as SignerIndex;
-                tracing::trace!("this_block: {this_block}");
-                if (this_block as f64) * N <= (v * (SignerIndex::MAX as f64)) {
-                    tracing::trace!("set_must_be_validated");
-                    block_state.guarded_mut(|e| {
-                        if e.must_be_validated() != &Some(true) {
-                            e.set_must_be_validated()
-                        } else {
-                            anyhow::Ok(())
-                        }
-                    })?;
-                } else if (this_block as f64) * N <= (fallback_v * (SignerIndex::MAX as f64)) {
-                    tracing::trace!("set_must_be_validated_in_fallback_case");
-                    block_state.guarded_mut(|e| {
-                        if e.must_be_validated_in_fallback_case() != &Some(true) {
-                            e.set_must_be_validated_in_fallback_case()
-                        } else {
-                            anyhow::Ok(())
-                        }
-                    })?;
+                    let this_block = rnd.not_a_modulus(1 << 16) as SignerIndex;
+                    if (this_block as f64) * N <= (v * (SignerIndex::MAX as f64)) {
+                        tracing::trace!("set_must_be_validated");
+                        block_state.guarded_mut(|e| {
+                            if e.must_be_validated() != &Some(true) {
+                                e.set_must_be_validated()
+                            } else {
+                                anyhow::Ok(())
+                            }
+                        })?;
+                    } else if (this_block as f64) * N <= (fallback_v * (SignerIndex::MAX as f64)) {
+                        tracing::trace!("set_must_be_validated_in_fallback_case");
+                        block_state.guarded_mut(|e| {
+                            if e.must_be_validated_in_fallback_case() != &Some(true) {
+                                e.set_must_be_validated_in_fallback_case()
+                            } else {
+                                anyhow::Ok(())
+                            }
+                        })?;
+                    }
+                } else {
+                    SHUTDOWN_FLAG.set(true).expect("");
+                    tracing::error!("Node does not have valid key which was used to deploy epoch: pubkey={pubkey:?}");
                 }
             }
             let attestation_target = block_state.guarded(|e| *e.attestation_target());
