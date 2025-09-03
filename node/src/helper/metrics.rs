@@ -68,6 +68,9 @@ struct BlockProductionMetricsInner {
     saved_states_counter: Counter<u64>,
     bk_set: Gauge<u64>,
     future_bk_set: Gauge<u64>,
+    broadcast_join: Counter<u64>,
+    sync_time_spent: Counter<u64>,
+    sync_error: Counter<u64>,
 }
 
 pub const BK_SET_UPDATE_CHANNEL: &str = "bk_set_update";
@@ -264,6 +267,9 @@ impl BlockProductionMetrics {
             saved_states_counter: meter.u64_counter("node_saved_states_counter").build(),
             bk_set: meter.u64_gauge("node_bk_set").build(),
             future_bk_set: meter.u64_gauge("node_future_bk_set").build(),
+            broadcast_join: meter.u64_counter("node_broadcast_join").build(),
+            sync_time_spent: meter.u64_counter("node_sync_time_spent").build(),
+            sync_error: meter.u64_counter("node_sync_error").build(),
         }))
     }
 
@@ -497,6 +503,18 @@ impl BlockProductionMetrics {
 
     pub fn report_saved_state(&self, thread_id: &ThreadIdentifier) {
         self.0.saved_states_counter.add(1, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_broadcast_join(&self, thread_id: &ThreadIdentifier) {
+        self.0.broadcast_join.add(1, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_sync_time_spent(&self, value: u64, thread_id: &ThreadIdentifier) {
+        self.0.sync_time_spent.add(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_sync_error(&self, thread_id: &ThreadIdentifier) {
+        self.0.sync_error.add(1, &[thread_id_attr(thread_id)]);
     }
 }
 

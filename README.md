@@ -35,11 +35,13 @@
       - [1.1  Get the Current Epoch Contract Address](#11get-the-current-epoch-contract-address)
       - [1.2  Determine the Epoch Length](#12determine-the-epoch-length)
     - [2. Stop Staking (Graceful Shutdown)](#2-stop-staking-graceful-shutdown)
-    - [3. Stop node (Graceful Shutdown)](#3-stop-node-graceful-shutdown)
-    - [4. Deploy BK Software on the New Node](#3-deploy-bk-software-on-the-new-node)
-    - [5. Start Staking on the New IP Address](#4-start-staking-on-the-new-ip-address)
-    - [6. Check Node Status](#5-check-node-status)
-- [Block Manager documentation](#block-manager-documentation)
+    - [3. Stop Node (Graceful Shutdown)](#3-stop-node-graceful-shutdown)
+    - [4. Deploy BK Software on the New Node](#4-deploy-bk-software-on-the-new-node)
+    - [5. Start Staking on the New IP Address](#5-start-staking-on-the-new-ip-address)
+    - [6. Check Node Status](#6-check-node-status)
+  - [Troubleshooting](#troubleshooting)
+    - [Recovery from Corrupted BK State](#recovery-from-corrupted-bk-state)
+- [Block Manager Documentation](#block-manager-documentation)
   - [System Requirements](#system-requirements)
   - [Deployment with Ansible](#deployment-with-ansible)
     - [Prerequisites](#prerequisites-3)
@@ -54,7 +56,7 @@
     - [Prerequisites](#prerequisites-4)
     - [How Deployment Works](#how-deployment-works)
     - [Key Variables](#key-variables-1)
-    - [Prepare Your Inventory](#prepare-your-inventory-2)
+    - [Prepare Your Inventory](#prepare-your-inventory-1)
     - [Run the Ansible Playbook](#run-the-ansible-playbook-2)
 
 # Block Keeper System Requirements
@@ -267,7 +269,7 @@ If the BK Node Owner is also a License Owner, they must use the `addBKWallet(uin
 (This must be done for each license contract).
 
 Where:
-* `pubkey` – the public key of the node owner, obtained in Step 4.
+* `pubkey` – the public key of the BK node wallet.
 * [`License.abi.json`](https://github.com/ackinacki/ackinacki/blob/main/contracts/bksystem/License.abi.json) – the ABI of the License contract.
 * `License.keys.json` – the keys obtained by the License Owner during registration in the dashboard.
 
@@ -317,20 +319,19 @@ all:
     ansible_user: ubuntu
     ROOT_DIR: /home/user/deployment # path to store deployment files
     MNT_DATA: /home/user/data       # path to store data
-    BIND_PORT: 8500
-    BIND_API_PORT: 8600
+    BIND_PORT: 8500                 # this port must be open
+    BIND_API_PORT: 8600             # this port must be open
     BIND_MESSAGE_ROUTER_PORT: 8700
-    BIND_GOSSIP_PORT: 10000
+    BIND_GOSSIP_PORT: 10000         # this port must be open
     BLOCK_MANAGER_PORT: 12000
     NODE_IMAGE: teamgosh/ackinacki-node:<latest-release-tag>      # i.e. teamgosh/ackinacki-node:v0.3.3
     GQL_IMAGE: teamgosh/ackinacki-gql-server:<latest-release-tag> # i.e. teamgosh/ackinacki-gql-server:v0.3.3
-    REVPROXY_IMAGE: teamgosh/ackinacki-nginx
     BK_DIR: "{{ ROOT_DIR }}/block-keeper"
     BK_DATA_DIR: "{{ MNT_DATA }}/block-keeper"
     BK_LOGS_DIR: "{{ MNT_DATA }}/logs-block-keeper"
-    LOG_ROTATE_AMOUNT: 30   # maximum number of log files to keep
-    LOG_ROTATE_SIZE: 1G     # minimum size of the log file to rotate
-    LOG_ROTATE_SPEC: "0 *"  # period of rotation in cron "minute hour" format
+    LOG_ROTATE_AMOUNT: 20   # maximum number of log files to keep
+    LOG_ROTATE_SIZE: 5G     # minimum size of the log file to rotate
+    LOG_ROTATE_SPEC: "*/2 *"  # period of rotation in cron "minute hour" format
     STAKING_IMAGE: teamgosh/ackinacki-staking:<latest-release-tag>
     STAKING_TIME: 600
     TVM_ENDPOINT: shellnet.ackinacki.org
@@ -416,8 +417,8 @@ Verify that the containers using the specified images are in the UP status:
 ```
 teamgosh/ackinacki-node
 teamgosh/ackinacki-gql-server
-teamgosh/ackinacki-nginx
 teamgosh/ackinacki-staking
+aerospike/aerospike-server:latest
 ```
 
 Check node logs
@@ -444,12 +445,12 @@ all:
     ansible_host: SERVER_IP_TO_CONNECT
     NODE_IMAGE: teamgosh/ackinacki-node:<latest-release-tag>      # i.e. teamgosh/ackinacki-node:v0.3.3
     GQL_IMAGE: teamgosh/ackinacki-gql-server:<latest-release-tag> # i.e. teamgosh/ackinacki-gql-server:v0.3.3
-    REVPROXY_IMAGE: teamgosh/ackinacki-nginx
     BK_DIR: "{{ ROOT_DIR }}/block-keeper"
     BK_DATA_DIR: "{{ MNT_DATA }}/block-keeper"
     BK_LOGS_DIR: "{{ MNT_DATA }}/logs-block-keeper"
-    LOG_ROTATE_AMOUNT: 30
-    LOG_ROTATE_SIZE: 1G
+    LOG_ROTATE_AMOUNT: 20
+    LOG_ROTATE_SIZE: 5G
+    LOG_ROTATE_SPEC: "*/2 *"
     STAKING_IMAGE: teamgosh/ackinacki-staking:<latest-release-tag>
     STAKING_TIME: 600
     TVM_ENDPOINT: shellnet.ackinacki.org
@@ -463,6 +464,7 @@ all:
     NODE_GROUP_ID: ""
     OTEL_COLLECTOR: no
     OTEL_SERVICE_NAME: ""
+
     GOSSIP_SEEDS:
       - shellnet0.ackinacki.org:10000
       - shellnet1.ackinacki.org:10000
@@ -530,16 +532,10 @@ block-keeper-node       teamgosh/ackinacki-node       node{{ NODE_ID }}       28
 
 * Make note of the `SERVICE` value (`node{{ NODE_ID }}` in the example).
 
-* Gracefully stop the node process by sending SIGHUP to the service:
+* Gracefully stop the node process by sending SIGTERM to the service:
 
 ```bash
 docker compose exec node{{ NODE_ID }} pkill node
-```
-
-* After shutdown, remove the container with the old configuration:
-
-```
-docker compose down node{{ NODE_ID }}
 ```
 
 * Check the logs to ensure shutdown has completed.
@@ -550,6 +546,12 @@ You should see a message similar to:
 ```
 
 and no new logs should appear afterward.
+
+* After shutdown, remove the container with the old configuration:
+
+```
+docker compose down node{{ NODE_ID }}
+```
 
 ## Running Staking with Ansible
 Staking is deployed as a Docker container using Docker Compose. Docker Compose, in turn, is deployed via Ansible using the `node-deployment.yaml` playbook.
@@ -627,7 +629,7 @@ cd {{ ROOT_DIR }}/block-keeper
 
 * Send `SIGHUP` to the staking process:
 ```bash
-sudo docker compose exec staking /bin/bash -c 'pkill --signal 1 -f staking.sh'
+docker compose exec staking /bin/bash -c 'pkill --signal 1 -f staking.sh'
 ```
 
 You should see log entries similar to:
@@ -826,6 +828,91 @@ Your BK node should now be operating on the new IP address. To get the node's st
 ```bash
 node_sync_status.sh path/to/log
 ```
+
+## Troubleshooting
+
+### Recovery from Corrupted BK State
+
+Node may end up with a corrupted state after restart without graceful shutdown.
+It may fail with a panic like this:
+```
+thread 'main' panicked at node/src/repository/repository_impl.rs:460:22:
+Failed to get last finalized state: get_block_from_repo_or_archive: failed to load block: 87d520d75b051a37b7821c5e8236f65afb0371edec2f5afada2647445c870ea5
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+Follow these steps to restore the node (it will resync):
+
+**Steps**
+
+1) **Stop the BK node**  
+Run the following command to stop the BK node and staking  
+(staking will stop automatically with the node):
+    ```bash
+    docker compose down node{{ NODE_ID }}
+    ```
+
+1) **Stop Aerospike**  
+    ```bash
+    docker compose down aerospike
+    ```
+
+2) **Remove corrupted state directories**  
+Navigate to the Block Keeper data directory `{{ BK_DATA_DIR }}` and remove the following folders:
+    ```bash
+    rm -rf aerospike/ share/ workdir/
+    ```
+
+1) **Restart services**  
+Go back to the Block Keeper directory `{{ BK_DIR }}` where the `docker-compose.yml` file is located, and start the services again:
+    ```bash
+    docker compose up -d
+    ```
+
+1) **Verify service status**  
+Ensure that node, staking, and aerospike services are running without restarts or crashes:
+    ```bash
+    docker compose ps
+    ```
+
+    Ensure the following containers are running (status: UP):  
+    ```
+    teamgosh/ackinacki-node
+    teamgosh/ackinacki-gql-server
+    teamgosh/ackinacki-staking
+    aerospike/aerospike-server:latest
+    ```
+
+1) **Check the node logs**  
+Verify that the node logs are active and contain no errors:
+    ```bash
+    tail -f $MNT_DATA/logs-block-keeper/node.log
+    ```
+    Additionally, you can check the container logs:  
+
+    ```bash
+    docker compose logs -f node{{ NODE_ID }}
+    ```
+
+1) **Check staking logs**  
+Review the staking logs. They must not contain errors and should display information about stakes, Epochs, and related activities:
+    ```bash
+    tail -f $MNT_DATA/logs-block-keeper/staking.log
+    ```
+    
+    Additionally, you can check the container logs:
+    ```bash
+    docker compose logs -f staking
+    ```
+
+1) **Wait for synchronization**
+It may take around 20+ minutes for synchronization. Once complete, the `seq_no` should begin to increase, indicating successful recovery.
+
+    🚨 **Important:**  
+    If the node does not synchronize, it usually means there was an incorrect setup. Possible causes include:
+    - Misconfigured config file  
+    - Incorrect or corrupted key files  
+
 
 # Block Manager Documentation
 

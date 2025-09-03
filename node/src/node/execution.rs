@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::helper::block_flow_trace;
@@ -58,7 +59,16 @@ where
                 //         //     )?
                 //         // } else {
                 if needs_synchronizing {
-                    self.execute_synchronizing()?
+                    let start = Instant::now();
+                    let result = self.execute_synchronizing();
+                    if let Some(m) = &self.metrics {
+                        let duration_ms = start.elapsed().as_millis() as u64;
+                        m.report_sync_time_spent(duration_ms, &self.thread_id);
+                        if result.is_err() {
+                            m.report_sync_error(&self.thread_id);
+                        }
+                    }
+                    result?
                 } else {
                     SynchronizationResult::Ok
                 }

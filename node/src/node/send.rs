@@ -64,7 +64,11 @@ where
             .network_broadcast_tx
             .send(NetworkMessage::NodeJoining((self.config.local.node_id.clone(), self.thread_id)))
         {
-            Ok(_) => {}
+            Ok(_) => {
+                if let Some(m) = &self.metrics {
+                    m.report_broadcast_join(&self.thread_id);
+                }
+            }
             Err(e) => {
                 if SHUTDOWN_FLAG.get() != Some(&true) {
                     anyhow::bail!("Failed to broadcast node joining: {e}");
