@@ -423,6 +423,42 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let block_keeper_rng = SmallRng::from_seed(secret_seed.take_as_seed());
 
     let config_clone = config.clone();
+
+    let signals_join_handle = {
+        let mut signals = Signals::new([SIGHUP, SIGINT, SIGTERM])?;
+        let blk_key_path = config_clone.local.key_path.clone();
+        let config_path = args.config_path.clone();
+        std::thread::Builder::new().name("signal handler".to_string()).spawn(move || {
+            for sig in signals.forever() {
+                tracing::info!("Received signal {:?}", sig);
+                match sig {
+                    SIGHUP => {
+                        let new_key_map = key_pairs_from_file::<GoshBLS>(&blk_key_path);
+                        tracing::trace!(
+                            "Insert key pair, pubkeys: {:?}",
+                            new_key_map.keys().collect::<Vec<_>>()
+                        );
+                        let mut keys_map = bls_keys_map_clone.lock();
+                        *keys_map = new_key_map;
+                        ext_messages_auth::auth::update_ext_message_auth_flag_from_files();
+                        match load_config_from_file(&config_path) {
+                            Ok(config) => {
+                                config_tx.send_replace(config);
+                            }
+                            Err(err) => {
+                                tracing::error!("Failed to load config from file: {err:?}");
+                            }
+                        }
+                    }
+                    SIGTERM | SIGINT => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        })?
+    };
+
     // let mut node_execute_handlers = JoinSet::new();
     // TODO: check that inner_service_loop is active
     let (routing, routing_rx, _inner_service_loop, _inner_ext_messages_loop) = RoutingService::new(
@@ -997,41 +1033,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     }
 
     tracing::info!("Adding routes");
-
-    let signals_join_handle = {
-        let mut signals = Signals::new([SIGHUP, SIGINT, SIGTERM])?;
-        let blk_key_path = config_clone.local.key_path.clone();
-        let config_path = args.config_path.clone();
-        std::thread::Builder::new().name("signal handler".to_string()).spawn(move || {
-            for sig in signals.forever() {
-                tracing::info!("Received signal {:?}", sig);
-                match sig {
-                    SIGHUP => {
-                        let new_key_map = key_pairs_from_file::<GoshBLS>(&blk_key_path);
-                        tracing::trace!(
-                            "Insert key pair, pubkeys: {:?}",
-                            new_key_map.keys().collect::<Vec<_>>()
-                        );
-                        let mut keys_map = bls_keys_map_clone.lock();
-                        *keys_map = new_key_map;
-                        ext_messages_auth::auth::update_ext_message_auth_flag_from_files();
-                        match load_config_from_file(&config_path) {
-                            Ok(config) => {
-                                config_tx.send_replace(config);
-                            }
-                            Err(err) => {
-                                tracing::error!("Failed to load config from file: {err:?}");
-                            }
-                        }
-                    }
-                    SIGTERM | SIGINT => {
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-        })?
-    };
 
     let repo_clone = repository.clone();
     let repo = Arc::new(Mutex::new(repo_clone));

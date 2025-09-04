@@ -2,10 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.3] - 2025-09-04
+
+### Improvements
+- Staking improvemens
+
+### Fixed
+- SIGHUP signal was handled incorrectly when the node was not in sync 
+
 ## [0.7.2] - 2025-09-03
 
 ### Improvements
-- new sync metrics
+- New sync metrics
   
 ## [0.7.1] - 2025-09-02
 

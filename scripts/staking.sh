@@ -304,7 +304,7 @@ place_continue_stake () {
   update_bls_keys $BLS_KEYS_FILE
   log "Sending continue stake - $TOTAL_AVAILABLE"
   CONT_STAKING="{\"bls_pubkey\": \"$UPD_BLS_PUBLIC_KEY\", \"stake\": $TOTAL_AVAILABLE, \"seqNoStartOld\": \"$1\", \"signerIndex\": $SIGNER_INDEX, \"ProxyList\": {}}"
-  tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $NODE_OWNER_KEY --method sendBlockKeeperRequestWithStakeContinue "$CONT_STAKING" || { log "Error with sending continue stake request" >&2 ; exit 1 ;}
+  tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $NODE_OWNER_KEY --method sendBlockKeeperRequestWithStakeContinue "$CONT_STAKING" || { log "Error with sending continue stake request. Go to the next step" >&2 ;}
 }
 
 calculate_reward () {
