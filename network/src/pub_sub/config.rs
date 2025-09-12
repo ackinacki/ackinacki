@@ -44,26 +44,26 @@ impl CertFile {
     pub fn resolve(
         &self,
         key: &PrivateKeyFile,
-        ed_key: &Option<transport_layer::SigningKey>,
+        ed_keys: &[transport_layer::SigningKey],
         tls_cert_cache: Option<TlsCertCache>,
     ) -> anyhow::Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
         let (key, cert) = if let (Some(cert), Some(key)) = (&self.cert, &key.key) {
             tracing::info!("Loaded TLS certificate from {}", self.path.to_string_lossy());
             (key.clone_key(), cert.clone())
         } else if let Some(cert_cache) = tls_cert_cache {
-            let (key, cert) = cert_cache.get_key_cert(None, key.key.as_ref(), ed_key.clone())?;
+            let (key, cert) = cert_cache.get_key_cert(None, key.key.as_ref(), ed_keys)?;
             tracing::info!(
                 "Reused previously generated TLS certificate{}: {}, key: {}",
-                if ed_key.is_some() { " with ed signature" } else { "" },
+                if !ed_keys.is_empty() { " with ed signature(s)" } else { "" },
                 CertHash::from(&cert),
                 hex::encode(key.secret_der()),
             );
             (key, cert)
         } else {
-            let (key, cert) = generate_self_signed_cert(None, ed_key.clone())?;
+            let (key, cert) = generate_self_signed_cert(None, ed_keys)?;
             tracing::info!(
                 "Generated self signed TLS certificate{}: {}, key: {}",
-                if ed_key.is_some() { " with ed signature" } else { "" },
+                if !ed_keys.is_empty() { " with ed signature(s)" } else { "" },
                 CertHash::from(&cert),
                 hex::encode(key.secret_der()),
             );

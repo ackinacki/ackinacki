@@ -2,6 +2,7 @@
 //
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
@@ -31,7 +32,7 @@ where
 {
     pub(crate) fn execute_synchronizing(
         &mut self,
-    ) -> anyhow::Result<SynchronizationResult<NetworkMessage>> {
+    ) -> anyhow::Result<SynchronizationResult<(NetworkMessage, SocketAddr)>> {
         tracing::trace!("Start synchronization");
         self.state_sync_service.reset_sync();
         let (synchronization_tx, synchronization_rx) = instrumented_channel(
@@ -157,7 +158,7 @@ where
                     return Ok(SynchronizationResult::Interrupted);
                 }
                 Err(RecvTimeoutError::Timeout) => {}
-                Ok(msg) => match msg {
+                Ok((msg, reply_to)) => match msg {
                     NetworkMessage::StartSynchronization => {
                         continue;
                     }
@@ -261,7 +262,7 @@ where
                             tracing::trace!("[synchronizing] Candidate block can be applied");
                             // let parent_id = candidate_block.data().parent();
                             // if parent_id == BlockIdentifier::default() {
-                            return Ok(SynchronizationResult::Forward(msg));
+                            return Ok(SynchronizationResult::Forward((msg, reply_to)));
                             // }
                             // if let Some(block) = self.repository.get_block(&parent_id)? {
                             //     if self.is_candidate_block_signed_by_this_node(&block)? {

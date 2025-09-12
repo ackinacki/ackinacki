@@ -231,9 +231,9 @@ impl Config {
             self.network.proxies.clone(),
             self.network.bm_api_socket,
             self.network.bk_api_socket,
-            transport_layer::resolve_signing_key(
-                self.network.my_ed_key_secret.clone(),
-                self.network.my_ed_key_path.clone(),
+            &transport_layer::resolve_signing_keys(
+                &self.network.my_ed_key_secret,
+                &self.network.my_ed_key_path,
             )?,
         )
     }
@@ -246,9 +246,9 @@ impl Config {
             self.network.bind,
             CertFile::try_new(&self.network.my_cert)?,
             PrivateKeyFile::try_new(&self.network.my_key)?,
-            transport_layer::resolve_signing_key(
-                self.network.my_ed_key_secret.clone(),
-                self.network.my_ed_key_path.clone(),
+            &transport_layer::resolve_signing_keys(
+                &self.network.my_ed_key_secret,
+                &self.network.my_ed_key_path,
             )?,
             CertStore::try_new(&self.network.peer_certs)?,
             HashSet::from_iter(self.network.peer_ed_pubkeys.clone()),

@@ -1,0 +1,8 @@
+---
+DO_START: yes
+DO_STOP: no
+DELETE_DATA: no
+DELETE_LOGS: no
+CREATE_NET: no
+EXTERNAL_NET: no
+FAST_UPDATE: no

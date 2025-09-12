@@ -1,0 +1,17 @@
+---
+LOG_ROTATE_AMOUNT: 50
+LOG_ROTATE_SIZE: 1G
+BM_BINARY: block-manager
+
+BM_OWNER_WALLET_PUBKEY: default-public-key
+BM_TOKEN_TTL: 300
+BK_API_TOKEN: my-secret-token
+BM_WALLET_KEYS: block_manager.keys.json
+BM_SIGNER_KEYS: block_manager_signing.keys.json
+
+# keep in sync with caddy/defaults/main.yaml !!!
+NGINX_IP:   "private" # "private" or specific IP
+NGINX_PORT: 8080
+
+LOGROTATE_IMAGE: "stakater/logrotate:3.13.0"
+

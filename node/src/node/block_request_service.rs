@@ -254,7 +254,7 @@ impl BlockRequestService {
         tracing::info!("sending syncFrom to node {}: {:?}", node_id, from_seq_no,);
         let _ = self
             .network_direct_tx
-            .send((node_id, NetworkMessage::SyncFrom((from_seq_no, *thread_id))));
+            .send((node_id.into(), NetworkMessage::SyncFrom((from_seq_no, *thread_id))));
         Ok(())
     }
 
@@ -318,8 +318,9 @@ impl BlockRequestService {
             &self.config.local.node_id,
             [("to", &node_id.to_string())],
         );
-        let _ =
-            self.network_direct_tx.send((node_id, NetworkMessage::candidate(&candidate_block)?));
+        let _ = self
+            .network_direct_tx
+            .send((node_id.into(), NetworkMessage::candidate(&candidate_block)?));
         Ok(())
     }
 }

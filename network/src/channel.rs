@@ -1,10 +1,14 @@
 use std::fmt::Debug;
+use std::fmt::Display;
+use std::hash::Hash;
 use std::marker::PhantomData;
+use std::net::SocketAddr;
 use std::time::Duration;
 use std::time::Instant;
 
 use serde::Serialize;
 
+use crate::direct_sender::DirectReceiver;
 use crate::message::NetMessage;
 use crate::metrics::NetMetrics;
 use crate::pub_sub::connection::MessageDelivery;
@@ -13,10 +17,14 @@ use crate::DeliveryPhase;
 use crate::SendMode;
 
 #[derive(Clone)]
-pub struct NetDirectSender<PeerId, Message> {
-    inner: tokio::sync::mpsc::UnboundedSender<(PeerId, NetMessage, Instant)>,
+pub struct NetDirectSender<PeerId, Message>
+where
+    PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
+{
+    inner: tokio::sync::mpsc::UnboundedSender<(DirectReceiver<PeerId>, NetMessage, Instant)>,
     metrics: Option<NetMetrics>,
     self_peer_id: PeerId,
+    self_addr: SocketAddr,
     _message_type: PhantomData<Message>,
 }
 
@@ -63,19 +71,25 @@ fn encode_outgoing<Message: Debug + Serialize>(
 impl<PeerId, Message> NetDirectSender<PeerId, Message>
 where
     Message: Debug + serde::Serialize + Send + Sync + Clone + 'static,
-    PeerId: PartialEq + ToString + Clone,
+    PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
 {
     pub(crate) fn new(
-        inner: tokio::sync::mpsc::UnboundedSender<(PeerId, NetMessage, Instant)>,
+        inner: tokio::sync::mpsc::UnboundedSender<(DirectReceiver<PeerId>, NetMessage, Instant)>,
         metrics: Option<NetMetrics>,
         self_peer_id: PeerId,
+        self_addr: SocketAddr,
     ) -> Self {
-        Self { inner, metrics, self_peer_id, _message_type: PhantomData }
+        Self { inner, metrics, self_peer_id, self_addr, _message_type: PhantomData }
     }
 
-    pub fn send(&self, args: (PeerId, Message)) -> Result<(), NetSendError<Message>> {
-        let (peer_id, outgoing) = args;
-        if peer_id == self.self_peer_id {
+    pub fn send(
+        &self,
+        args: (DirectReceiver<PeerId>, Message),
+    ) -> Result<(), NetSendError<Message>> {
+        let (receiver, outgoing) = args;
+        if receiver == DirectReceiver::Peer(self.self_peer_id.clone())
+            || receiver == DirectReceiver::Addr(self.self_addr)
+        {
             tracing::trace!("Skip message to self");
             return Ok(());
         }
@@ -97,7 +111,7 @@ where
         });
 
         tracing::debug!(
-            peer_id = peer_id.to_string(),
+            peer_id = receiver.to_string(),
             msg_id = net_message.id,
             msg_type = label,
             broadcast = false,
@@ -106,7 +120,7 @@ where
 
         let message_aprox_size = NetMessage::transfer_size(&net_message);
 
-        match self.inner.send((peer_id.clone(), net_message, Instant::now())) {
+        match self.inner.send((receiver.clone(), net_message, Instant::now())) {
             Ok(()) => {
                 self.metrics.as_ref().inspect(|metrics| {
                     metrics.report_sent_to_outgoing_buffer_bytes(
@@ -119,7 +133,7 @@ where
             }
             Err(_) => {
                 tracing::error!(
-                    peer_id = peer_id.to_string(),
+                    peer_id = receiver.to_string(),
                     msg_id = id,
                     msg_type = label,
                     broadcast = false,

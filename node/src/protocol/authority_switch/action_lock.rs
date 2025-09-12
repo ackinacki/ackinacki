@@ -34,6 +34,7 @@ use crate::node::associated_types::AttestationTargetType;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::block_state::tools::invalidate_branch;
+use crate::node::services::send_attestations::AttestationSendService;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::NetBlock;
 use crate::node::NetworkMessage;
@@ -58,6 +59,7 @@ use crate::types::RndSeed;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
+use crate::utilities::guarded::GuardedMut;
 
 // Note: std::time::Instant is not serializable
 pub type Timeout = std::time::SystemTime;
@@ -159,6 +161,7 @@ pub struct Authority {
     network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
     node_joining_timeout: Duration,
     action_lock_db: ActionLockStorage,
+    max_lookback_block_height_distance: usize,
 }
 
 impl Authority {
@@ -183,6 +186,7 @@ impl Authority {
                     .bp_production_count(self.bp_production_count.clone())
                     .network_broadcast_tx(self.network_broadcast_tx.clone())
                     .node_joining_timeout(self.node_joining_timeout)
+                    .max_lookback_block_height_distance(self.max_lookback_block_height_distance)
                     .build(),
             ))),
         )
@@ -350,6 +354,8 @@ pub struct ThreadAuthority {
     #[builder(setter(skip))]
     #[builder(default = std::time::Instant::now().checked_sub(Duration::from_secs(10000)).unwrap())]
     last_node_joining_sent: Instant,
+
+    max_lookback_block_height_distance: usize,
 }
 
 impl std::fmt::Debug for Authority {
@@ -370,7 +376,7 @@ pub enum OnNextRoundIncomingRequestResult {
     StartingBlockProducer,
     Broadcast(Envelope<GoshBLS, NextRoundSuccess>),
     Reject((NextRoundReject, NodeIdentifier)),
-    RejectTooOldRequest(NodeIdentifier),
+    RejectTooOldRequest(network::DirectReceiver<NodeIdentifier>),
 }
 
 #[derive(Getters, Debug)]
@@ -574,7 +580,14 @@ impl ThreadAuthority {
         };
         tracing::trace!("on_block_producer_stalled: last_prefinalized={last_prefinalized:?}");
         let parent_block: BlockState = last_prefinalized;
-        let parent_block_height: BlockHeight = parent_block.guarded(|e| e.block_height().unwrap());
+        let (seq_no, parent_block_height) = parent_block
+            .guarded(|e| (e.block_seq_no().unwrap_or_default(), e.block_height().unwrap()));
+
+        if let Some(m) = self.block_repository.get_metrics() {
+            let seq_no: u32 = seq_no.into();
+            m.report_last_prefinalized_seqno(seq_no as u64, &thread_identifier);
+        }
+
         let block_height = parent_block_height.next(&thread_identifier);
         self.start_next_round(parent_block, block_height)
     }
@@ -793,11 +806,38 @@ impl ThreadAuthority {
                     {
                         has_all_attestations_locked = false;
                     }
-                    let Some(attestation) =
-                        ancestor_state.guarded(|e| e.own_fallback_attestation().clone())
-                    else {
-                        tracing::trace!("start_next_round: ancestor block does not have own_fallback_attestation set");
-                        return OnBlockProducerStalledResult::retry_later(Some(block_height));
+
+                    let attestation = match ancestor_state
+                        .guarded(|e| e.own_fallback_attestation().clone())
+                    {
+                        Some(attestation) => attestation,
+                        None => {
+                            if ancestor_state.guarded(|e| e.is_finalized()) {
+                                let Ok(attestation) = AttestationSendService::generate_attestation(
+                                    self.bls_keys_map.clone(),
+                                    &self.node_identifier,
+                                    &ancestor_state,
+                                    AttestationTargetType::Fallback,
+                                ) else {
+                                    tracing::trace!("start_next_round: Failed to generate fallback attestation for {:?}", ancestor_state);
+                                    return OnBlockProducerStalledResult::retry_later(Some(
+                                        block_height,
+                                    ));
+                                };
+                                ancestor_state.guarded_mut(|e| {
+                                    if e.own_fallback_attestation().is_none() {
+                                        e.set_own_fallback_attestation(attestation)
+                                            .expect("failed to set fallback attestation");
+                                    }
+                                    e.own_fallback_attestation().clone().unwrap()
+                                })
+                            } else {
+                                tracing::trace!("start_next_round: ancestor block does not have own_fallback_attestation set");
+                                return OnBlockProducerStalledResult::retry_later(Some(
+                                    block_height,
+                                ));
+                            }
+                        }
                     };
                     attestations.push(attestation);
                 }
@@ -808,13 +848,43 @@ impl ThreadAuthority {
                     {
                         has_all_attestations_locked = false;
                     }
-                    let Some(attestation) = ancestor_state.guarded(|e| e.own_attestation().clone())
-                    else {
-                        tracing::trace!(
-                            "start_next_round: ancestor block does not have own_attestation set"
-                        );
-                        return OnBlockProducerStalledResult::retry_later(Some(block_height));
+                    let attestation = match ancestor_state.guarded(|e| e.own_attestation().clone())
+                    {
+                        Some(attestation) => attestation,
+                        None => {
+                            if ancestor_state.guarded(|e| e.is_finalized()) {
+                                let Ok(attestation) = AttestationSendService::generate_attestation(
+                                    self.bls_keys_map.clone(),
+                                    &self.node_identifier,
+                                    &ancestor_state,
+                                    AttestationTargetType::Primary,
+                                ) else {
+                                    tracing::trace!(
+                                        "start_next_round: Failed to generate attestation for {:?}",
+                                        ancestor_state
+                                    );
+                                    return OnBlockProducerStalledResult::retry_later(Some(
+                                        block_height,
+                                    ));
+                                };
+                                ancestor_state.guarded_mut(|e| {
+                                    if e.own_attestation().is_none() {
+                                        e.set_own_attestation(attestation)
+                                            .expect("failed to set attestation");
+                                    }
+                                    e.own_attestation().clone().unwrap()
+                                })
+                            } else {
+                                tracing::trace!(
+                                    "start_next_round: ancestor block does not have own_attestation set"
+                                );
+                                return OnBlockProducerStalledResult::retry_later(Some(
+                                    block_height,
+                                ));
+                            }
+                        }
                     };
+
                     attestations.push(attestation);
                 }
                 attestations
@@ -857,17 +927,21 @@ impl ThreadAuthority {
             attestations,
         );
 
+        if let Some(m) = self.block_repository.get_metrics() {
+            m.report_next_round_block_height(*block_height.height(), &self.thread_id);
+        }
+
         let next_round = NextRound::builder()
             .lock(lock)
             .locked_block_attestation(attestations)
             .attestations_for_ancestors(attestations_for_ancestors)
             .build();
         let _ = self.network_direct_tx.send((
-            next_producer_node_id,
+            next_producer_node_id.into(),
             NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Request(next_round.clone())),
         ));
         let _ = self.network_direct_tx.send((
-            cur_producer_node_id,
+            cur_producer_node_id.into(),
             NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Request(next_round.clone())),
         ));
 
@@ -892,6 +966,7 @@ impl ThreadAuthority {
     pub fn on_next_round_incoming_request(
         &mut self,
         next_round_message: NextRound,
+        sender: Option<std::net::SocketAddr>,
         unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
     ) -> OnNextRoundIncomingRequestResult {
         // TODO: ensure that only requests from the last round are collected
@@ -916,6 +991,66 @@ impl ThreadAuthority {
             signers[0]
         };
         let block_height = *lock.height();
+        let last_finalized_block_height_relative_to_this_thread = {
+            let Ok(last_finalized_block_info) =
+                self.block_repository.select_thread_last_finalized_block(&self.thread_id)
+            else {
+                tracing::warn!(
+                    "on_next_round_incoming_request: select_thread_last_finalized_block failed"
+                );
+                return OnNextRoundIncomingRequestResult::DoNothing;
+            };
+
+            if let Some((last_finalized_block_id, _seq_no)) = last_finalized_block_info {
+                let Ok(last_finalized_block_state) =
+                    self.block_state_repository.get(&last_finalized_block_id)
+                else {
+                    tracing::warn!(
+                        "on_next_round_incoming_request: failed to load finalized block state"
+                    );
+                    return OnNextRoundIncomingRequestResult::DoNothing;
+                };
+                let Some(height) = last_finalized_block_state.guarded(|e| *e.block_height()) else {
+                    tracing::warn!("on_next_round_incoming_request: we have a finalized block with no height information available");
+                    return OnNextRoundIncomingRequestResult::DoNothing;
+                };
+                // just to make sure it stays in this thread.
+                // this will be handled with greater vs grater or equal later
+                height.next(&self.thread_id)
+            } else {
+                let thread_root_block_id = self.thread_id.spawning_block_id();
+                let Ok(thread_root_block_state) =
+                    self.block_state_repository.get(&thread_root_block_id)
+                else {
+                    tracing::warn!(
+                        "on_next_round_incoming_request: failed to load thread root block state"
+                    );
+                    return OnNextRoundIncomingRequestResult::DoNothing;
+                };
+                let Some(height) = thread_root_block_state.guarded(|e| *e.block_height()) else {
+                    tracing::warn!("on_next_round_incoming_request: we have a finalized thread root block with no height information available");
+                    return OnNextRoundIncomingRequestResult::DoNothing;
+                };
+
+                // this ensures same heigh calculation logic
+                height.next(&self.thread_id)
+            }
+        };
+
+        if block_height
+            .signed_distance_to(&last_finalized_block_height_relative_to_this_thread)
+            .map(|e| e > self.max_lookback_block_height_distance as i128)
+            .unwrap_or_default()
+        {
+            if let Some(addr) = sender {
+                return OnNextRoundIncomingRequestResult::RejectTooOldRequest(
+                    network::DirectReceiver::Addr(addr),
+                );
+            } else {
+                return OnNextRoundIncomingRequestResult::DoNothing;
+            }
+        }
+
         let thread_identifier = block_height.thread_identifier();
         let parent_state = self.block_state_repository.get(lock.parent_block()).unwrap();
         // - double check that the parent block prefinalized is the same.
@@ -971,7 +1106,7 @@ impl ThreadAuthority {
                 self.get_block(prefinalized.block_identifier(), &unprocessed_blocks_cache)
             else {
                 return if prefinalized.guarded(|e| e.is_finalized()) {
-                    OnNextRoundIncomingRequestResult::RejectTooOldRequest(node_id)
+                    OnNextRoundIncomingRequestResult::RejectTooOldRequest(node_id.into())
                 } else {
                     tracing::trace!(
                         "on_next_round_incoming_request: can't load next prefinalized child"
@@ -988,7 +1123,7 @@ impl ThreadAuthority {
                         self.block_repository.get_finalized_block(prefinalized.block_identifier())
                     else {
                         return if prefinalized.guarded(|e| e.is_finalized()) {
-                            OnNextRoundIncomingRequestResult::RejectTooOldRequest(node_id)
+                            OnNextRoundIncomingRequestResult::RejectTooOldRequest(node_id.into())
                         } else {
                             tracing::trace!(
                             "on_next_round_incoming_request: can't load next prefinalized child"
@@ -1221,6 +1356,9 @@ impl ThreadAuthority {
 
             // Produce block for this round AND broadcast it as a NextRoundSuccess
             tracing::trace!("Resend existing locked block from a top round {thread_identifier:?}");
+            if let Some(m) = self.block_repository.get_metrics() {
+                m.report_authority_switch_direct_resent(thread_identifier);
+            }
             // Note: block production is not needed so far.
             // Block producer kicks in when there were no block in a previous round or the majority
             // of the block keepers had no block locked.

@@ -1,0 +1,150 @@
+{%- if GOSSIP_SEEDS is not defined and GOSSIP_INIT is defined and GOSSIP_INIT -%}
+{%- set GOSSIP_SEEDS = [] -%}
+{%- for host in groups['block_keepers'] -%}
+{%-   if hostvars[host].HOST_PUBLIC_IP is defined and hostvars[host].BIND_GOSSIP_PORT is defined -%}
+{%-     set _ = GOSSIP_SEEDS.append(hostvars[host].HOST_PUBLIC_IP ~ ':' ~ (hostvars[host].BIND_GOSSIP_PORT | string)) -%}
+{%-   endif -%}
+{%- endfor -%}
+{%- endif -%}
+
+services:
+  aerospike:
+    image: {{ AEROSPIKE_IMAGE }}
+    volumes:
+      - {{ BK_DIR }}/aerospike-config:/opt/aerospike/etc
+      - {{ BK_DATA_DIR }}/aerospike:/opt/aerospike/data
+    command: ["--config-file", "/opt/aerospike/etc/aerospike.conf"]
+    healthcheck:
+      test: ["CMD-SHELL", "asinfo -h 127.0.0.1 -p {{ AEROSPIKE_PORT }} -v 'build' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    ports:
+      - 127.0.0.1:{{ AEROSPIKE_PORT }}:{{ AEROSPIKE_PORT }}
+    networks:
+      - ackinacki-net
+
+  node{{ NODE_ID }}:
+    image: {{ NODE_IMAGE }}
+    restart: {{ "no" if (FAIL_FAST | default(true)) else "unless-stopped" }}
+    environment:
+      EXTERNAL_STATE_SHARE_LOCAL_BASE_DIR: /share
+      BIND: 0.0.0.0:{{ BIND_PORT }}
+      API_ADDR: 0.0.0.0:{{ BIND_API_PORT }}
+      MESSAGE_ROUTER: 0.0.0.0:{{ BIND_MESSAGE_ROUTER_PORT }}
+      AEROSPIKE_SOCKET_ADDR: 127.0.0.1:{{ AEROSPIKE_PORT }}
+      GOSSIP_SEEDS: {{ GOSSIP_SEEDS | join(',') }}
+      MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES: {{ MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES }}
+      NODE_JOINING_TIMEOUT: {{ NODE_JOINING_TIMEOUT }}
+      NODE_ID: {{ NI_PFX | default("") }}{{ NODE_ID }}
+      NODE_WALLET_PUBKEY: {{ N_PFX | default("") }}{{ NODE_ID }}_WALLET_PUBKEY
+      NODE_ADVERTISE_ADDR: {{ HOST_PUBLIC_IP }}:{{ BIND_PORT }}
+      API_ADVERTISE_ADDR: http://{{ HOST_PUBLIC_IP }}:{{ BIND_API_PORT }}
+      RAYON_NUM_THREADS: {{ RAYON_NUM_THREADS }}
+      RUST_BACKTRACE: 1
+{% if NODE_VERBOSE is defined and NODE_VERBOSE %}
+      NODE_VERBOSE: 1
+{% endif %}
+      GOSSIP_ADVERTISE_ADDR: {{ HOST_PUBLIC_IP }}:{{ BIND_GOSSIP_PORT }}
+      GOSSIP_LISTEN_ADDR: 0.0.0.0:{{ BIND_GOSSIP_PORT }}
+      BLOCK_MANAGER_LISTEN_ADDR: 0.0.0.0:{{ BLOCK_MANAGER_PORT }}
+      EXT_MESSAGE_AUTH_REQUIRED: {{ EXT_MESSAGE_AUTH_REQUIRED | lower }}
+      BK_API_SOCKET: {{ HOST_PUBLIC_IP }}:{{ BIND_API_PORT }}
+      BM_API_SOCKET: {{ HOST_PUBLIC_IP }}:{{ BIND_MESSAGE_ROUTER_PORT }}
+      AUTH_TOKEN: {{ AUTH_TOKEN }}
+{% set otel_node_id = (NODE_ID | string)[:6] %}{% if NODE_GROUP_ID is defined and NODE_GROUP_ID %}{% set otel_node_id = NODE_GROUP_ID ~ '-' ~ otel_node_id %}{% endif %}
+      OTEL_RESOURCE_ATTRIBUTES: node={{ otel_node_id }},service.namespace={{ NETWORK_NAME }},service.instance.id={{ otel_node_id }},host.name={{ OTEL_MY_HOST_NAME | default(inventory_hostname) | default(ansible_host) }}
+{% if OTEL_COLLECTOR is defined and OTEL_COLLECTOR %}
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: {{ OTEL_COLLECTOR }}
+      OTEL_EXPORTER_OTLP_METRICS_PROTOCOL: {{ OTEL_COLLECTOR_PROTO | default('grpc') }}
+{% endif %}
+      OTEL_SERVICE_NAME: {{ OTEL_SERVICE_NAME | default(TEST_NAME ~ '-' ~ COMMIT_HASH) }}
+{# Adding service section #}
+{% include 'extra/block-keeper-env.j2' ignore missing +%}
+    entrypoint: []
+    init: true
+{% if NUMACTL %}
+    cap_add:
+      - SYS_NICE
+{% endif %}
+    command:
+      - bash
+      - -c
+      - >
+{% if NUMACTL %}
+        (numactl -s || (apt-get update && apt-get install -y numactl && numactl -s)) &&
+{% endif %}
+        node-helper config
+        -c acki-nacki.conf.yaml -d
+        --blockchain-config=/bk-configs/blockchain.conf.json
+        --network-my-ed-key-path=/bk-configs/{{ NODE_OWNER_KEY | basename }}
+        --keys-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
+        --block-keeper-seed-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
+        --signing-keys=config/block_keeper{{ NODE_ID }}_signing.keys.json
+        --zerostate-path=/bk-configs/zerostate
+        --thread-load-threshold {{ THREAD_LOAD_THRESHOLD }}
+        --parallelization-level {{ PARALLELIZATION_LEVEL }}
+        --thread-count-soft-limit {{ THREAD_COUNT_SOFT_LIMIT }}
+        --shared-state-max-download-tries 30
+        --thread-load-window-size {{ THREAD_LOAD_WINDOW_SIZE }}
+        --chitchat-cluster-id "{{ NETWORK_NAME }}"
+        --block-keeper-epoch-code-hash {{ CODE_HASH }}
+{% if PROXIES is defined %}
+        --network-proxies {{ PROXIES | join(',') }}
+{% endif %}
+{% include 'extra/block-keeper-cmd.j2' ignore missing %}
+        && cat acki-nacki.conf.yaml
+        && {% if NUMACTL %} numactl {{ NUMACTL }} -- {% endif %}
+        {{ NODE_BINARY | default('node') }} -c acki-nacki.conf.yaml >> /logsdir/node.log 2>&1
+    volumes:
+      - {{ BK_DATA_DIR }}/share:/share
+      - {{ BK_DATA_DIR }}/workdir:/workdir/data
+      - {{ BK_DIR }}/bk-configs:/bk-configs
+      - {{ BK_DIR }}/bk-binaries:/workdir/config
+      - {{ BK_LOGS_DIR }}:/logsdir
+    network_mode: "host"
+    depends_on:
+      aerospike:
+        condition: service_healthy
+
+{% if DISABLE_STAKING is not defined or not DISABLE_STAKING %}
+  staking{{ NODE_ID if (NUMBERED_SERVICES | default(true)) else "" }}:
+    image: {{ STAKING_IMAGE }}
+    restart: unless-stopped
+    entrypoint: []
+    pid: service:node{{ NODE_ID }}
+    command:
+      - /bin/bash
+      - -c
+      - >
+        tvm-cli config -g --url "{{ TVM_ENDPOINT }}"
+        && exec /staking/staking.sh -l /staking/logs/staking.log -d {{ STAKING_TIME }} /staking/configs/{{ NODE_OWNER_KEY | basename }} /staking/configs/block_keeper{{ NODE_ID }}_bls.keys.json {{ HOST_PUBLIC_IP }}
+    volumes:
+      - {{ BK_LOGS_DIR }}:/staking/logs
+      - {{ BK_DIR }}/bk-configs:/staking/configs
+    depends_on:
+      - node{{ NODE_ID }}
+    networks:
+      - ackinacki-net
+{% endif %}
+
+  logrotate{{ NODE_ID if (NUMBERED_SERVICES | default(true)) else "" }}:
+    image: {{ LOGROTATE_IMAGE }}
+    restart: unless-stopped
+    environment:
+      - CRON_SCHEDULE="58 * * * *"
+    volumes:
+      - {{ BK_LOGS_DIR }}:/logsdir
+      - ./logrotate.sh:/logrotate.sh
+    command: [ "/bin/bash", "/logrotate.sh" ]
+    init: true
+    network_mode: "none"
+
+networks:
+  ackinacki-net:
+    name: ackinacki-net
+{% if EXTERNAL_NET %}
+    external: true
+{% endif %}

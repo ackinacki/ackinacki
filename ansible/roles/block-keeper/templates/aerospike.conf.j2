@@ -1,0 +1,50 @@
+# Aerospike database configuration file
+service {
+	cluster-name acki-nacki-node
+}
+
+logging {
+	console {
+		context any info
+	}
+}
+
+network {
+	service {
+		address any
+		port {{ AEROSPIKE_PORT }}
+		# access-address <IPADDR>
+	}
+
+	heartbeat {
+		# mesh is used for environments that do not support multicast
+		mode mesh
+		address local
+		port {{ AEROSPIKE_HEARTBEAT_PORT }}
+		interval 150
+		timeout 10
+	}
+
+	fabric {
+		# Intra-cluster communication port (migrates, replication, etc)
+		address local
+		port {{ AEROSPIKE_FABRIC_PORT }}
+	}
+
+}
+
+namespace node {
+	replication-factor 1
+	storage-engine device {
+		file /opt/aerospike/data/node.dat
+{% for i in range(2, (AS_FILES_CNT | default(16) + 1)) %}
+		file /opt/aerospike/data/node{{ i }}.dat
+{% endfor %}
+		filesize {{ AS_FILE_SIZE | default('80G') }}
+		direct-files true
+		disable-odsync true
+		read-page-cache true
+		stop-writes-used-pct 100
+		stop-writes-avail-pct 0
+	}
+}

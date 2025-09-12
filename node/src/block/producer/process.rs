@@ -550,7 +550,7 @@ impl TVMBlockProducerProcess {
         let parallelization_level = self.parallelization_level;
         let block_keeper_epoch_code_hash = self.block_keeper_epoch_code_hash.clone();
         let block_keeper_preepoch_code_hash = self.block_keeper_preepoch_code_hash.clone();
-        let metrics = self.repository.get_metrics();
+        let metrics = self.repository.get_metrics().cloned();
         let wasm_cache = self.wasm_cache.clone();
         let accounts_repo = self.repository.accounts_repository().clone();
         let node_config = self.node_config.clone();
@@ -873,7 +873,7 @@ mod tests {
             "test",
         );
         let mut production_process = TVMBlockProducerProcess::builder()
-            .metrics(repository.get_metrics())
+            .metrics(repository.get_metrics().cloned())
             .node_config(config.clone())
             .repository(repository.clone())
             .block_keeper_epoch_code_hash(config.global.block_keeper_epoch_code_hash.clone())

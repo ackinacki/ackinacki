@@ -7,8 +7,10 @@ members = [
     "database",
     "gossip",
     "gql-server",
+    "helpers/block-state-helper",
     "helpers/log-helper",
     "http-server",
+    "libsqlite3-sys",
     "message-router",
     "migration-tool",
     "network",
@@ -24,7 +26,7 @@ members = [
     "tvm_contracts",
 ]
 
-package.version = "0.7.3"
+package.version = "0.7.4"
 package.edition = "2021"
 package.rust-version = "1.86.0"
 package.license = "Acki Nacki Node License"
@@ -66,7 +68,7 @@ quinn = { version = "0.11", features = ["rustls"] }
 rand = "0.8.5"
 rayon = { version = "1.10.0" }
 rcgen = "0.13"
-rusqlite = { version = "0.32.1", features = ["bundled"] }
+rusqlite = { version = "0.37.0", features = ["bundled"] }
 rustls = { version = "0.23.20", default-features = false }
 rustls-pemfile = { version = "2.2.0" }
 salvo = { version = "0.77", features = ["affix-state", "anyhow", "catch-panic", "logging", "quinn", "rustls", "serve-static", "test"] }
@@ -109,3 +111,6 @@ sdk-wrapper = { path = "shared/sdk-wrapper" }
 telemetry_utils = { path = "telemetry_utils" }
 transport-layer = { path = "transport-layer" }
 tvm_contracts = { path = "tvm_contracts" }
+
+[patch.crates-io]
+libsqlite3-sys = { path = "libsqlite3-sys" }

@@ -37,6 +37,7 @@ use typed_builder::TypedBuilder;
 
 use super::accounts::AccountsRepository;
 use crate::block_keeper_system::BlockKeeperSet;
+use crate::block_keeper_system::BlockKeeperSetChange;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
@@ -112,6 +113,10 @@ impl std::fmt::Debug for FinalizedBlockStorage {
 impl AllowGuardedMut for FinalizedBlockStorage {}
 
 impl FinalizedBlockStorage {
+    pub fn cache_size(&self) -> usize {
+        self.per_thread_buffer_size
+    }
+
     pub fn new(per_thread_buffer_size: usize) -> Self {
         Self { per_thread_buffer_size, buffer: HashMap::new() }
     }
@@ -186,6 +191,7 @@ pub struct BkSetUpdate {
     pub seq_no: u32,
     pub current: Option<Arc<BlockKeeperSet>>,
     pub future: Option<Arc<BlockKeeperSet>>,
+    pub added_nodes: (HashSet<NodeIdentifier>, HashSet<NodeIdentifier>),
 }
 
 // TODO: divide repository into 2 entities: one for blocks, one for states with weak refs (for not
@@ -226,7 +232,7 @@ enum OID {
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct Metadata<TBlockIdentifier: Hash + Eq, TBlockSeqNo> {
     last_finalized_block_id: TBlockIdentifier,
-    last_finalized_block_seq_no: TBlockSeqNo,
+    pub last_finalized_block_seq_no: TBlockSeqNo,
     pub last_finalized_producer_id: Option<NodeIdentifier>,
 }
 
@@ -537,6 +543,10 @@ impl RepositoryImpl {
         PathBuf::from(format!("{}/{}/{}", self.data_dir.clone().to_str().unwrap(), path, oid))
     }
 
+    pub fn finalized_blocks(&self) -> &Arc<Mutex<FinalizedBlockStorage>> {
+        &self.finalized_blocks
+    }
+
     pub fn finalized_blocks_mut(&mut self) -> &mut Arc<Mutex<FinalizedBlockStorage>> {
         &mut self.finalized_blocks
     }
@@ -614,8 +624,8 @@ impl RepositoryImpl {
         "attestations"
     }
 
-    pub fn get_metrics(&self) -> Option<BlockProductionMetrics> {
-        self.metrics.clone()
+    pub fn get_metrics(&self) -> Option<&BlockProductionMetrics> {
+        self.metrics.as_ref()
     }
 
     pub fn load_metadata(
@@ -1229,13 +1239,34 @@ impl Repository for RepositoryImpl {
                 if let (Some(bk_set), Some(future_bk_set)) =
                     (bk_set.as_deref(), future_bk_set.as_deref())
                 {
+                    // In fact, for this metric `thread_id` is not needed at all.
+                    // `thread_id` is kept only to avoid confusion in an existing dashboard.
                     metrics.report_bk_set(bk_set.len(), future_bk_set.len(), &thread_id)
                 }
             }
+            let bk_set_change =
+                block.borrow().data().get_common_section().block_keeper_set_changes.clone();
+
+            let mut current_added_nodes = HashSet::new();
+            let mut future_added_nodes = HashSet::new();
+
+            for change in &bk_set_change {
+                match change {
+                    BlockKeeperSetChange::BlockKeeperAdded((_, bk_data)) => {
+                        current_added_nodes.insert(bk_data.node_id());
+                    }
+                    BlockKeeperSetChange::FutureBlockKeeperAdded((_, bk_data)) => {
+                        future_added_nodes.insert(bk_data.node_id());
+                    }
+                    _ => {}
+                }
+            }
+
             let _ = self.bk_set_update_tx.send(BkSetUpdate {
                 seq_no: block_seq_no.into(),
                 current: bk_set,
                 future: future_bk_set,
+                added_nodes: (current_added_nodes, future_added_nodes),
             });
         }
         let metadata = self.get_metadata_for_thread(&thread_id)?;

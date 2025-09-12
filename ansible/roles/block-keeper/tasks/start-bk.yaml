@@ -1,0 +1,45 @@
+---
+
+- name: Compose pull
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}"
+    cmd: docker compose pull
+  when:
+    - DO_START or (UPGRADE is defined and 'compose' in UPGRADE)
+    - SUBNODE_ID is not defined or SUBNODE_ID == 0 or (PULL_ALL is defined and PULL_ALL)
+
+- name: Create ackinacki-net manually
+  ansible.builtin.shell:
+    cmd: docker network create ackinacki-net
+  ignore_errors: true
+  when:
+    - CREATE_NET
+    - DO_START
+    - not UPGRADE is defined or not UPGRADE
+
+- name: Compose down
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}"
+    cmd: docker compose down --remove-orphans -t={{ STOP_TIMEOUT }}
+  ignore_errors: true
+  when: UPGRADE is defined and 'deep-compose' in UPGRADE
+
+- name: Create BLS keys
+  ansible.builtin.shell:
+    cmd: "docker run --rm --entrypoint /usr/local/bin/node-helper -v {{ BK_DIR }}/bk-configs:/staking {{ STAKING_IMAGE }} bls --path block_keeper{{ NODE_ID }}_bls.keys.json"
+    creates: "{{ BK_DIR }}/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json"
+  when: '"block_keeper" ~ NODE_ID ~ "_bls.keys.json" not in OTHER_KEYS'
+
+- name: Compose up
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}"
+    cmd: docker compose up -d --remove-orphans
+  when: DO_START or (UPGRADE is defined and UPGRADE | length > 0)
+
+- name: Compose restart logrotate
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}"
+    cmd: docker compose restart "logrotate{{ NODE_ID if (NUMBERED_SERVICES | default(true)) else "" }}"
+  when:
+    - DO_START
+    - logrotate is defined and logrotate.changed

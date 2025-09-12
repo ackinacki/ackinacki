@@ -178,11 +178,11 @@ impl<Transport: NetTransport + 'static> NodeTest<Transport> {
     ) -> anyhow::Result<()> {
         tracing::info!("Consumer started");
         while let Ok(message) = incoming_rx.recv() {
-            let message = message.finish::<Message>(&None).unwrap();
+            let (message, _) = message.finish::<Message>(&None).unwrap();
             match message {
                 Message::Data(sender, id, _data) => {
                     state.data_received.fetch_add(1, Ordering::Relaxed);
-                    direct_tx.send((sender, Message::Ack(id)))?;
+                    direct_tx.send((sender.into(), Message::Ack(id)))?;
                     state.ack_sent.fetch_add(1, Ordering::Relaxed);
                 }
                 Message::Ack(id) => {

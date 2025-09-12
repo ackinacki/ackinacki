@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -27,6 +28,7 @@ use transport_layer::NetTransport;
 use tvm_block::ShardStateUnsplit;
 
 use crate::events::Event;
+use crate::executor::AppState;
 use crate::metrics::Metrics;
 
 pub enum WorkerCommand {
@@ -60,6 +62,7 @@ impl BlockSubscriber {
 
     pub async fn run(
         &self,
+        app_state: Arc<AppState>,
         metrics: Option<Metrics>,
         cmd_tx: mpsc::Sender<WorkerCommand>,
         cmd_rx: mpsc::Receiver<WorkerCommand>,
@@ -72,7 +75,7 @@ impl BlockSubscriber {
         let block_sub_handle = tokio::task::spawn_blocking(move || {
             match thread::Builder::new()
                 .name("block-subscriber".to_string())
-                .spawn(|| worker(db_file, cmd_rx, events_pub, bp_data_tx, metrics))
+                .spawn(|| worker(db_file, cmd_rx, events_pub, bp_data_tx, app_state, metrics))
                 .expect("spawn block-subscriber worker")
                 .join()
             {
@@ -98,6 +101,7 @@ fn worker(
     rx: mpsc::Receiver<WorkerCommand>,
     event_pub: mpsc::Sender<Event>,
     bp_data_tx: mpsc::Sender<(String, Vec<String>)>,
+    app_state: Arc<AppState>,
     metrics: Option<Metrics>,
 ) -> anyhow::Result<()> {
     let data_dir =
@@ -122,6 +126,13 @@ fn worker(
                 if let Some(node_addr) = node_addr {
                     if let Err(err) = bp_data_tx.send((thread_id.to_string(), vec![node_addr])) {
                         tracing::error!("Failed to send data to the BPresolver: {err}");
+                    }
+                }
+
+                if let Ok(time) = envelope.data().time() {
+                    let current = app_state.last_block_gen_utime.load(Ordering::Relaxed);
+                    if current < time {
+                        app_state.last_block_gen_utime.store(time, Ordering::Relaxed);
                     }
                 }
 
@@ -181,7 +192,7 @@ async fn listener(socket_addr: SocketAddr, tx: mpsc::Sender<WorkerCommand>) -> a
             .connect(
                 socket_addr,
                 &["ALPN"],
-                NetCredential::generate_self_signed(Some(vec![socket_addr.to_string()]), None)?,
+                NetCredential::generate_self_signed(Some(vec![socket_addr.to_string()]), &[])?,
             )
             .await
         {

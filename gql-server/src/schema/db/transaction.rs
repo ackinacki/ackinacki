@@ -3,6 +3,7 @@
 
 use async_graphql::futures_util::TryStreamExt;
 use sqlx::prelude::FromRow;
+use sqlx::QueryBuilder;
 use sqlx::SqlitePool;
 
 use crate::defaults;
@@ -118,7 +119,10 @@ impl Transaction {
 
         let sql = format!("SELECT * FROM transactions {filter} {order_by} LIMIT {limit}");
         tracing::debug!("SQL: {sql}");
-        let transactions = sqlx::query_as(&sql)
+
+        let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
+        let transactions = builder
+            .build_query_as()
             .fetch(pool)
             .map_ok(|b| b)
             .try_collect::<Vec<Transaction>>()
@@ -177,8 +181,12 @@ impl Transaction {
 
         tracing::trace!(target: "blockchain_api", "SQL: {sql}");
 
-        let result: Result<Vec<Transaction>, anyhow::Error> =
-            sqlx::query_as(&sql).fetch_all(pool).await.map_err(|e| anyhow::format_err!("{}", e));
+        let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
+        let result: Result<Vec<Transaction>, anyhow::Error> = builder
+            .build_query_as()
+            .fetch_all(pool)
+            .await
+            .map_err(|e| anyhow::format_err!("{}", e));
 
         if let Err(e) = result {
             anyhow::bail!("ERROR: {e}");
@@ -259,8 +267,13 @@ impl Transaction {
 
         tracing::trace!(target: "blockchain_api.account.transactions", "SQL: {sql}");
 
-        let result: Result<Vec<Transaction>, anyhow::Error> =
-            sqlx::query_as(&sql).fetch_all(pool).await.map_err(|e| anyhow::format_err!("{}", e));
+        let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
+
+        let result: Result<Vec<Transaction>, anyhow::Error> = builder
+            .build_query_as()
+            .fetch_all(pool)
+            .await
+            .map_err(|e| anyhow::format_err!("{}", e));
 
         if let Err(e) = result {
             anyhow::bail!("ERROR: {e}");
@@ -290,6 +303,8 @@ impl Transaction {
         );
         tracing::debug!("SQL: {sql}");
 
-        Ok(sqlx::query_as(&sql).fetch_optional(pool).await?)
+        let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
+
+        Ok(builder.build_query_as().fetch_optional(pool).await?)
     }
 }

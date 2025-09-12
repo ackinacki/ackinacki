@@ -99,13 +99,13 @@ struct Config {
     /// Should be represented as a 64-char hex.
     /// If specified, then owner_key_path should be omitted.
     #[arg(long)]
-    pub network_my_ed_secret: Option<String>,
+    pub network_my_ed_secret: Vec<String>,
 
     /// Optional path to the block keeper's owner wallet key file.
     /// Should be stored as json `{ "public": "64-char hex", "secret": "64-char hex" }`.
     /// If specified, then owner_key_secret should be omitted.
     #[arg(long)]
-    pub network_my_ed_key_path: Option<String>,
+    pub network_my_ed_key_path: Vec<String>,
 
     /// Node socket to listen on (QUIC UDP)
     #[arg(long, env)]
@@ -501,14 +501,12 @@ fn main() -> anyhow::Result<()> {
                 config.local.state_cache_size = state_cache_size;
             }
 
-            if let Some(secret) = config_cmd.network_my_ed_secret {
-                config.network.my_ed_key_secret = Some(secret);
-                config.network.my_ed_key_path = None;
+            if !config_cmd.network_my_ed_secret.is_empty() {
+                config.network.my_ed_key_secret = config_cmd.network_my_ed_secret;
             }
 
-            if let Some(key_path) = config_cmd.network_my_ed_key_path {
-                config.network.my_ed_key_secret = None;
-                config.network.my_ed_key_path = Some(key_path);
+            if !config_cmd.network_my_ed_key_path.is_empty() {
+                config.network.my_ed_key_path = config_cmd.network_my_ed_key_path;
             }
 
             if let Some(node_wallet_pubkey) = config_cmd.node_wallet_pubkey {

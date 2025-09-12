@@ -7,8 +7,6 @@ license-file.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-async-trait.workspace = true
-bincode.workspace = true
 chitchat.workspace = true
 clap.workspace = true
 docker-api = "0.14"
@@ -16,29 +14,18 @@ dotenvy = "0.15.7"
 futures = "0.3.31"
 gossip.workspace = true
 http-server.workspace = true
-itertools.workspace = true
 network.workspace = true
 opentelemetry.workspace = true
-opentelemetry-otlp.workspace = true
-opentelemetry_sdk.workspace = true
-quinn.workspace = true
-rcgen = "0.13.1"
 reqwest = { version = "0.12.22", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-rusqlite.workspace = true
 rustls = { version = "0.23.19", default-features = false, features = ["ring", "std", "logging"] }
-rustls-pemfile = "2.2.0"
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9.34"
 telemetry_utils.workspace = true
-tempfile = "3.14.0"
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 transport-layer.workspace = true
-tvm_block.workspace = true
-tvm_contracts.workspace = true
-tvm_types.workspace = true
 wtransport.workspace = true
 
 base64 = { version = "0.22.1" }
@@ -46,6 +33,3 @@ ed25519-dalek.workspace = true
 hex = "0.4.3"
 rand.workspace = true
 url = "2.5.4"
-
-[dev-dependencies]
-assert_fs = "1.1.2"

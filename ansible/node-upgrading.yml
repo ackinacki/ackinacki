@@ -1,0 +1,17 @@
+- name: Block keeper upgrading
+  gather_facts: no
+  hosts: '{{ target | default("block_keepers") }}'
+  become: yes
+  any_errors_fatal: true
+  vars:
+    DELETE_DATA: no
+    DO_START: yes
+    FAIL_FAST: yes
+    FAST_UPDATE: yes
+    UPGRADE:
+      - node       # grsh + stop + up
+      - compose    # grsh + down + up
+      - aerospike  # as stop + up
+      - logrotate  # up + lr restart
+  roles:
+    - block-keeper

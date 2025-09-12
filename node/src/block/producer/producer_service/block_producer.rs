@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -73,6 +74,7 @@ struct ProductionStatus {
 
 #[derive(TypedBuilder)]
 pub struct BlockProducer {
+    self_addr: SocketAddr,
     thread_id: ThreadIdentifier,
     repository: RepositoryImpl,
     block_state_repository: BlockStateRepository,
@@ -86,8 +88,8 @@ pub struct BlockProducer {
     last_broadcasted_produced_candidate_block_time: std::time::Instant,
     last_block_attestations: Arc<Mutex<CollectedAttestations>>,
     attestations_target_service: AttestationTargetsService,
-    self_tx: XInstrumentedSender<NetworkMessage>,
-    self_authority_tx: XInstrumentedSender<NetworkMessage>,
+    self_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
+    self_authority_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
     broadcast_tx: NetBroadcastSender<NetworkMessage>,
 
     node_identifier: NodeIdentifier,
@@ -116,6 +118,7 @@ enum UpdateCommonSectionResult {
     NotReadyYet,
     AncestorIsNotReadyYet,
     // NotEnoughAttestations(u32),
+    AbortNotInBKSet,
 }
 
 impl BlockProducer {
@@ -466,6 +469,12 @@ impl BlockProducer {
                     }
                     produced_data.produced_blocks_mut().remove(0)
                 }
+                Ok(UpdateCommonSectionResult::AbortNotInBKSet) => {
+                    tracing::trace!("Stop production: not in bk set");
+                    self.production_process.stop_thread_production(&self.thread_id)?;
+                    *producer_tails = None;
+                    return Ok((false, None));
+                }
             };
 
             let parent_state = self.block_state_repository.get(&block.parent())?;
@@ -563,7 +572,7 @@ impl BlockProducer {
                         ));
                     (
                         self.self_authority_tx.send(WrappedItem {
-                            payload: message.clone(),
+                            payload: (message.clone(), self.self_addr),
                             label: self.thread_id.to_string(),
                         }),
                         message,
@@ -572,7 +581,7 @@ impl BlockProducer {
                     let message = NetworkMessage::candidate(&envelope)?;
                     (
                         self.self_tx.send(WrappedItem {
-                            payload: message.clone(),
+                            payload: (message.clone(), self.self_addr),
                             label: self.thread_id.to_string(),
                         }),
                         message,
@@ -700,6 +709,9 @@ impl BlockProducer {
             tracing::trace!("update_candidate_common_section: Failed to get parent block data");
             return Ok(UpdateCommonSectionResult::NotReadyYet);
         };
+        if !bk_set.contains_node(&self.node_identifier) {
+            return Ok(UpdateCommonSectionResult::AbortNotInBKSet);
+        }
 
         let trace_attestations_required = format!("{attestations_required:?}");
         let aggregated_attestations = received_attestations.aggregate(&attestations_required)?;
@@ -739,9 +751,12 @@ impl BlockProducer {
                     .rng_seed_block_id(candidate_block.identifier().clone())
                     .index(0)
                     .build();
-                let bp_distance_for_this_node = producer_selector
-                    .get_distance_from_bp(&bk_set, &self.node_identifier)
-                    .expect("Must be able to find bp_distance_for_this_node");
+                let Some(bp_distance_for_this_node) =
+                    producer_selector.get_distance_from_bp(&bk_set, &self.node_identifier)
+                else {
+                    tracing::trace!("Producer: This node is not in the bk-set");
+                    return Ok(UpdateCommonSectionResult::AbortNotInBKSet);
+                };
                 producer_selector =
                     producer_selector.move_index(bp_distance_for_this_node, bk_set.len());
             }

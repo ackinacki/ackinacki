@@ -191,7 +191,7 @@ where
             tracing::info!("BK set update handler started");
             bk_set.write().update(bk_set_rx.borrow().clone());
             while bk_set_rx.changed().await.is_ok() {
-                bk_set.write().update(bk_set_rx.borrow().clone())
+                bk_set.write().update(bk_set_rx.borrow_and_update().clone())
             }
             tracing::info!("BK set update handler stopped");
         });

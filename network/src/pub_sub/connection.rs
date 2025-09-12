@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ed25519_dalek::VerifyingKey;
-use transport_layer::get_ed_pubkey_from_cert_der;
+use transport_layer::get_ed_pubkeys_from_cert_der;
 use transport_layer::CertHash;
 use transport_layer::NetConnection;
 use transport_layer::NetTransport;
@@ -20,41 +20,20 @@ use crate::pub_sub::PubSub;
 use crate::DeliveryPhase;
 use crate::SendMode;
 
-#[derive(Debug, Default, Copy, Clone)]
-pub struct ConnectionRoles {
-    pub subscriber: bool,
-    pub publisher: bool,
-    pub direct_receiver: bool,
-    pub direct_sender: bool,
+#[derive(Debug, Copy, Clone)]
+pub enum ConnectionRole {
+    Subscriber,
+    Publisher,
+    DirectReceiver,
 }
 
-impl ConnectionRoles {
-    pub fn subscriber() -> Self {
-        Self { subscriber: true, ..Default::default() }
+impl ConnectionRole {
+    pub fn is_publisher(&self) -> bool {
+        matches!(self, Self::Publisher)
     }
 
-    pub fn publisher() -> Self {
-        Self { publisher: true, ..Default::default() }
-    }
-
-    pub fn direct_sender() -> Self {
-        Self { direct_sender: true, ..Default::default() }
-    }
-
-    pub fn direct_receiver() -> Self {
-        Self { direct_receiver: true, ..Default::default() }
-    }
-
-    pub fn is_broadcast(&self) -> bool {
-        self.subscriber || self.publisher
-    }
-
-    pub fn send_mode(&self) -> SendMode {
-        if self.publisher || self.subscriber {
-            SendMode::Broadcast
-        } else {
-            SendMode::Direct
-        }
+    pub fn is_subscriber(&self) -> bool {
+        matches!(self, Self::Subscriber)
     }
 }
 
@@ -62,31 +41,43 @@ impl ConnectionRoles {
 pub struct ConnectionInfo {
     pub id: u64,
     pub local_is_proxy: bool,
-    pub roles: ConnectionRoles,
+    pub role: ConnectionRole,
     pub remote_addr: SocketAddr,
     pub remote_host_id: String,
     pub remote_host_id_prefix: String,
     pub remote_is_proxy: bool,
     pub remote_cert_hash: CertHash,
-    pub remote_ed_pubkey: Option<VerifyingKey>,
+    pub remote_ed_pubkeys: Vec<VerifyingKey>,
 }
 
 impl ConnectionInfo {
     pub fn remote_info(&self) -> String {
-        let mut info = self.remote_addr.to_string();
-        if self.roles.subscriber {
-            info.push_str(" (publisher)");
+        self.remote_addr.to_string()
+            + match self.role {
+                ConnectionRole::Subscriber => " (publisher)",
+                ConnectionRole::Publisher => " (subscriber)",
+                ConnectionRole::DirectReceiver => " (direct sender)",
+            }
+    }
+
+    pub fn is_publisher(&self) -> bool {
+        matches!(self.role, ConnectionRole::Publisher)
+    }
+
+    pub fn is_subscriber(&self) -> bool {
+        matches!(self.role, ConnectionRole::Subscriber)
+    }
+
+    pub fn is_broadcast(&self) -> bool {
+        matches!(self.role, ConnectionRole::Subscriber | ConnectionRole::Publisher)
+    }
+
+    pub fn send_mode(&self) -> SendMode {
+        if self.is_broadcast() {
+            SendMode::Broadcast
+        } else {
+            SendMode::Direct
         }
-        if self.roles.publisher {
-            info.push_str(" (subscriber)");
-        }
-        if self.roles.direct_receiver {
-            info.push_str(" (direct sender)");
-        }
-        if self.roles.direct_sender {
-            info.push_str(" (direct receiver)");
-        }
-        info
     }
 }
 
@@ -108,7 +99,7 @@ impl<Connection: NetConnection> ConnectionWrapper<Connection> {
         remote_host_id: String,
         remote_is_proxy: bool,
         connection: Connection,
-        roles: ConnectionRoles,
+        role: ConnectionRole,
     ) -> anyhow::Result<Self> {
         let remote_host_id_prefix = host_id_prefix(&remote_host_id).to_string();
         let cert =
@@ -126,8 +117,8 @@ impl<Connection: NetConnection> ConnectionWrapper<Connection> {
                 remote_host_id_prefix,
                 remote_is_proxy,
                 remote_cert_hash: CertHash::from(&cert),
-                remote_ed_pubkey: get_ed_pubkey_from_cert_der(&cert)?,
-                roles,
+                remote_ed_pubkeys: get_ed_pubkeys_from_cert_der(&cert)?,
+                role,
             }),
             connection,
         })
@@ -138,9 +129,9 @@ impl<Connection: NetConnection> ConnectionWrapper<Connection> {
             return false;
         }
         match &outgoing.delivery {
-            MessageDelivery::Broadcast => self.info.roles.publisher,
+            MessageDelivery::Broadcast => self.info.is_publisher(),
             MessageDelivery::BroadcastExcluding(excluding) => {
-                self.info.roles.publisher && self.info.remote_host_id != excluding.remote_host_id
+                self.info.is_publisher() && self.info.remote_host_id != excluding.remote_host_id
             }
             MessageDelivery::Addr(addr) => self.info.remote_addr == *addr,
         }
@@ -248,7 +239,7 @@ pub struct IncomingMessage {
 }
 
 impl IncomingMessage {
-    pub fn finish<Message>(&self, metrics: &Option<NetMetrics>) -> Option<Message>
+    pub fn finish<Message>(&self, metrics: &Option<NetMetrics>) -> Option<(Message, SocketAddr)>
     where
         Message: Debug + for<'de> serde::Deserialize<'de> + Send + Sync + Clone + 'static,
     {
@@ -257,7 +248,7 @@ impl IncomingMessage {
                 DeliveryPhase::IncomingBuffer,
                 1,
                 &self.message.label,
-                self.connection_info.roles.send_mode(),
+                self.connection_info.send_mode(),
                 self.duration_after_transfer.elapsed(),
             );
         });
@@ -265,7 +256,7 @@ impl IncomingMessage {
             host_id = self.connection_info.remote_host_id_prefix,
             msg_id = self.message.id,
             msg_type = self.message.label,
-            broadcast = self.connection_info.roles.subscriber,
+            broadcast = self.connection_info.is_broadcast(),
             "Message delivery: decode"
         );
         let (message, decompress_ms, deserialize_ms) = match self.message.decode() {
@@ -276,7 +267,7 @@ impl IncomingMessage {
                     host_id = self.connection_info.remote_host_id_prefix,
                     msg_id = self.message.id,
                     msg_type = self.message.label,
-                    broadcast = self.connection_info.roles.subscriber,
+                    broadcast = self.connection_info.is_broadcast(),
                     "Message delivery: decoding failed"
                 );
                 return None;
@@ -310,12 +301,12 @@ impl IncomingMessage {
             host_id = self.connection_info.remote_host_id_prefix,
             msg_id = self.message.id,
             msg_type = self.message.label,
-            broadcast = self.connection_info.roles.subscriber,
+            broadcast = self.connection_info.is_broadcast(),
             decompress_ms,
             deserialize_ms,
             "Message delivery: finished"
         );
-        Some(message)
+        Some((message, self.connection_info.remote_addr))
     }
 }
 

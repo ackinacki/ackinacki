@@ -27,6 +27,8 @@ services:
     restart: unless-stopped
     environment:
       NODE_VERBOSE: 1
+      RUST_BACKTRACE: 1
+      BM_API_SOCKET: block_manager:8600
     command:
       - bash
       - -c
@@ -63,7 +65,7 @@ services:
         BK_API_TOKEN: {{ BK_API_TOKEN }}
         REST_API: 0.0.0.0:8600
 {# Adding service section #}
-{% include 'block-manager/bm_otel.j2' ignore missing +%}
+{% include 'extra/block-manager-env.j2' ignore missing +%}
     command:
       - bash
       - -c

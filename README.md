@@ -1104,6 +1104,8 @@ block_keeper_host:
   PROXIES:
     - PROXY_IP:8085
 ```
+When the proxy service starts, a certificate will be created. The proxy requires a certificate to communicate with the Block Keepers.
+Specify the Block Keepers’ signing keys in your inventory. Block Keepers must be included in the Block Keeper set.
 
 ### Prepare Your Inventory
 
@@ -1126,6 +1128,10 @@ proxy:
       - shellnet2.ackinacki.org:10000
       - shellnet3.ackinacki.org:10000
       - shellnet4.ackinacki.org:10000
+      # Add signing keys to proxy for generating certificates
+      PROXY_SIGNING_KEYS:
+      - "block-keeper-1.keys.json"
+      - "block-keeper-2.keys.json"
 ```
 
 To test the deployment with a dry run:

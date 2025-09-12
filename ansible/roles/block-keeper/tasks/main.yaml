@@ -1,0 +1,42 @@
+---
+
+- name: Get Epoch code hash
+  ansible.builtin.set_fact:
+    CODE_HASH: "{{ lookup('ansible.builtin.file', 'BlockKeeperEpochContract.code.hash') }}"
+  when: [not FAST_UPDATE, CODE_HASH is not defined]
+
+- name: Ensure required directories exist
+  include_tasks: ensure-dirs.yaml
+  when: [DO_START, not FAST_UPDATE]
+
+- name: Copy static configs
+  include_tasks: copy-static-configs.yaml
+  when: [DO_START, not FAST_UPDATE]
+
+- name: Prepare host
+  include_tasks: prepare-host.yaml
+  when: [DO_START, PREPARE_HOST, not FAST_UPDATE]
+
+- name: Copy deployment configs
+  include_tasks: copy-deployment-configs.yaml
+  when: not FAST_UPDATE or UPGRADE is defined
+
+- name: Pre-upgrade stop
+  include_tasks: pre-upgrade-stop.yaml
+  when: UPGRADE is defined
+
+- name: Stop block keeper
+  include_tasks: stop-bk.yaml
+  when: DO_STOP
+
+- name: Stop and delete data
+  include_tasks: stop-delete-data.yaml
+  when: DELETE_DATA
+
+- name: Stop and delete logs
+  include_tasks: stop-delete-logs.yaml
+  when: DELETE_LOGS
+
+- name: Start block keeper
+  include_tasks: start-bk.yaml
+  when: DO_START or UPGRADE is defined

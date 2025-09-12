@@ -30,9 +30,9 @@ CREATE TABLE messages (
 );
 
 CREATE INDEX index_messages_msg_id ON messages (id);
-CREATE INDEX index_messages_status ON messages (status);
-CREATE INDEX index_messages_msg_type ON messages (msg_type);
-CREATE INDEX index_messages_created_at ON messages (created_at);
+-- CREATE INDEX index_messages_status ON messages (status);
+-- CREATE INDEX index_messages_msg_type ON messages (msg_type);
+-- CREATE INDEX index_messages_created_at ON messages (created_at);
 CREATE INDEX index_messages_src_dapp_id ON messages(src_dapp_id);
 CREATE INDEX index_messages_dst ON messages(dst);
 CREATE INDEX index_messages_src ON messages(src);
@@ -136,7 +136,7 @@ CREATE TABLE transactions (
     boc BLOB
 );
 
--- CREATE INDEX index_transactions_transaction_id ON transactions (id);
+CREATE INDEX index_transactions_transaction_id ON transactions (id);
 -- CREATE INDEX index_transactions_block_id ON transactions (block_id);
 -- CREATE INDEX index_transactions_status ON transactions (status);
 -- CREATE INDEX index_transactions_aborted ON transactions (aborted);
@@ -198,7 +198,7 @@ CREATE TABLE blocks (
 
 CREATE INDEX index_blocks_block_id ON blocks (id);
 CREATE INDEX index_blocks_seq_no ON blocks (seq_no);
-CREATE INDEX index_blocks_parent ON blocks (parent);
+-- CREATE INDEX index_blocks_parent ON blocks (parent);
 CREATE INDEX index_blocks_chain_order ON blocks (chain_order);
 CREATE INDEX index_blocks_thread_id ON blocks (thread_id);
 

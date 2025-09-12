@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use async_graphql::dataloader::Loader;
 use async_graphql::Error;
 use futures::TryStreamExt;
+use sqlx::QueryBuilder;
 use sqlx::SqlitePool;
 
 use crate::schema::db;
@@ -25,7 +26,9 @@ impl Loader<String> for MessageLoader {
         let ids = keys.iter().map(|m| format!("{m:?}")).collect::<Vec<_>>().join(",");
         let sql = format!("SELECT * FROM messages WHERE id IN ({ids})");
         tracing::trace!(target: "data_loader",  "SQL: {sql}");
-        let messages = sqlx::query_as(&sql)
+        let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
+        let messages = builder
+            .build_query_as()
             .fetch(&self.pool)
             .map_ok(|msg: db::Message| {
                 let message: Self::Value = msg.into();

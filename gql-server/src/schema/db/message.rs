@@ -3,6 +3,7 @@
 
 use async_graphql::futures_util::TryStreamExt;
 use sqlx::prelude::FromRow;
+use sqlx::QueryBuilder;
 use sqlx::SqlitePool;
 
 use crate::defaults;
@@ -123,8 +124,14 @@ impl Message {
 
         let sql = format!("SELECT * FROM messages {filter} {order_by} LIMIT {limit}");
         tracing::debug!("SQL: {sql}");
-        let messages =
-            sqlx::query_as(&sql).fetch(pool).map_ok(|b| b).try_collect::<Vec<Message>>().await?;
+
+        let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
+        let messages = builder
+            .build_query_as()
+            .fetch(pool)
+            .map_ok(|b| b)
+            .try_collect::<Vec<Message>>()
+            .await?;
 
         Ok(messages)
     }
@@ -140,7 +147,10 @@ impl Message {
         "
         );
 
-        let messages = sqlx::query_as(&sql)
+        let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
+
+        let messages = builder
+            .build_query_as()
             .fetch(pool)
             .map_ok(|m| {
                 tracing::debug!("m: {m:?}");
@@ -219,6 +229,7 @@ impl Message {
             PaginateDirection::Forward => "ASC",
             PaginateDirection::Backward => "DESC",
         };
+
         let sql = format!(
             "SELECT * FROM messages WHERE {} ORDER BY {} {} LIMIT {}",
             where_ops.join(" AND "),
@@ -226,10 +237,15 @@ impl Message {
             order_by_sort,
             limit,
         );
-
         tracing::debug!("account_messages: SQL: {sql}");
-        let result =
-            sqlx::query_as(&sql).fetch_all(pool).await.map_err(|e| anyhow::format_err!("{}", e));
+
+        let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
+
+        let result = builder
+            .build_query_as()
+            .fetch_all(pool)
+            .await
+            .map_err(|e| anyhow::format_err!("{}", e));
 
         match result {
             Err(e) => {
@@ -288,7 +304,9 @@ impl Message {
 
         tracing::debug!("account_events: SQL: {sql}");
 
-        sqlx::query_as(&sql)
+        let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
+        builder
+            .build_query_as()
             .fetch_all(pool)
             .await
             .map(|list| match direction {

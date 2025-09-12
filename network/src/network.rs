@@ -20,6 +20,7 @@ use crate::channel::NetDirectSender;
 use crate::config::NetworkConfig;
 use crate::detailed;
 use crate::direct_sender;
+use crate::direct_sender::DirectReceiver;
 use crate::message::NetMessage;
 use crate::metrics::NetMetrics;
 use crate::pub_sub::connection::IncomingMessage;
@@ -54,12 +55,14 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
         Self { shutdown_tx, config_rx, transport }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn start<PeerId, Message, ChannelMetrics>(
         &self,
         watch_gossip_config_rx: tokio::sync::watch::Receiver<WatchGossipConfig>,
         metrics: Option<NetMetrics>,
         channel_metrics: Option<ChannelMetrics>,
         self_peer_id: PeerId,
+        self_addr: SocketAddr,
         is_proxy: bool,
         chitchat: ChitchatRef,
     ) -> anyhow::Result<(
@@ -79,8 +82,11 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
         let (incoming_tx, incoming_rx) =
             instrumented_channel::<IncomingMessage>(channel_metrics, "network_incoming");
         let (outgoing_broadcast_tx, _) = tokio::sync::broadcast::channel::<OutgoingMessage>(1000);
-        let (outgoing_direct_tx, outgoing_direct_rx) =
-            tokio::sync::mpsc::unbounded_channel::<(PeerId, NetMessage, std::time::Instant)>();
+        let (outgoing_direct_tx, outgoing_direct_rx) = tokio::sync::mpsc::unbounded_channel::<(
+            DirectReceiver<PeerId>,
+            NetMessage,
+            std::time::Instant,
+        )>();
 
         let (subscribe_tx, subscribe_rx) = tokio::sync::watch::channel(Vec::new());
         let (peers_tx, peers_rx) = tokio::sync::watch::channel(HashMap::new());
@@ -111,6 +117,7 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
         let transport_clone = self.transport.clone();
         let shutdown_rx_clone = self.shutdown_tx.subscribe();
         let config_rx_clone = self.config_rx.clone();
+        let incoming_tx_clone = IncomingSender::SyncUnbounded(incoming_tx.clone());
         spawn_critical_task("Pub/Sub", async move {
             if let Err(e) = crate::pub_sub::run(
                 shutdown_rx_clone,
@@ -121,7 +128,7 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
                 DEFAULT_MAX_CONNECTIONS,
                 subscribe_rx,
                 outgoing_broadcast_tx_clone,
-                IncomingSender::SyncUnbounded(incoming_tx),
+                incoming_tx_clone,
             )
             .await
             {
@@ -133,6 +140,8 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
         let peers_rx_clone = peers_rx.clone();
         let metrics_clone = metrics.clone();
         let transport_clone = self.transport.clone();
+        let outgoing_reply_tx_clone = outgoing_broadcast_tx.clone();
+        let incoming_reply_tx_clone = IncomingSender::SyncUnbounded(incoming_tx.clone());
         spawn_critical_task(
             "Direct sender",
             direct_sender::run_direct_sender(
@@ -141,6 +150,8 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
                 transport_clone,
                 metrics_clone,
                 outgoing_direct_rx,
+                outgoing_reply_tx_clone,
+                incoming_reply_tx_clone,
                 peers_rx_clone,
             ),
         );
@@ -150,6 +161,7 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
                 outgoing_direct_tx,
                 metrics.clone(),
                 self_peer_id,
+                self_addr,
             ),
             NetBroadcastSender::<Message>::new(outgoing_broadcast_tx, metrics.clone()),
             incoming_rx,

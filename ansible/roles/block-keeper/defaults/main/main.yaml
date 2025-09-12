@@ -1,0 +1,38 @@
+---
+LOG_ROTATE_AMOUNT: 20
+LOG_ROTATE_SIZE: 5G
+LOG_ROTATE_SPEC: "*/2 *"
+
+NODE_BINARY: node
+FAIL_FAST: yes
+STAKING_TIME: 600
+
+NUMACTL: no
+
+OTEL_MY_HOST_NAME: "{{ inventory_hostname }}"
+
+AEROSPIKE_IMAGE: "aerospike/aerospike-server:latest"
+
+EXT_MESSAGE_AUTH_REQUIRED: no
+AUTH_TOKEN: some-secret-auth-token
+
+LOGROTATE_IMAGE: "stakater/logrotate:3.13.0"
+
+COMMIT_HASH: commit_unknown
+TEST_NAME: test_unknown
+
+MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES: 1200s
+NODE_JOINING_TIMEOUT: 600s
+
+STOP_TIMEOUT: 900
+DISABLE_STAKING: no
+
+NUMBERED_SERVICES: yes
+
+NODE_CONFIGS:
+  - blockchain.conf.json
+  - zerostate
+
+OTHER_KEYS: []
+
+PREPARE_HOST: yes

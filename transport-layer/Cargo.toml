@@ -7,7 +7,6 @@ build = "build.rs"
 
 [dependencies]
 anyhow.workspace = true
-async-channel = "2.3.1"
 async-trait.workspace = true
 bincode.workspace = true
 bytes = { version = "1.10.1" }
@@ -24,13 +23,11 @@ lazy_static = "^1.4"
 libc = { version = "0.2" }
 msquic = { git = "https://github.com/gosh-sh/msquic.git", rev = "d1909c987d97e43be94845f8333e38e207666cb5", features = ["static"] }
 parking_lot = "0.12.3"
-pem = "3.0.5"
 quinn.workspace = true
 rand.workspace = true
 rangemap = { version = "1.5.1" }
 rc2 = "^0.8"
 rcgen = { version = "0.13.2", features = ["pem"] }
-ring = { version = "0.17.14" }
 rustls.workspace = true
 rustls-pki-types = { version = "1.8.0" }
 serde = { version = "1.0.219", features = ["derive"] }
@@ -38,17 +35,16 @@ serde_json.workspace = true
 sha1 = "^0.10"
 sha2 = "0.10.9"
 telemetry_utils.workspace = true
-tempfile = "3.20.0"
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tvm_types.workspace = true
-webpki = { version = "0.22.4" }
 wtransport.workspace = true
 x509-parser = { version = "0.17.0", features = ["verify"] }
 yasna = { version = "^0.5", features = ["std"] }
 
 [dev-dependencies]
-hex-literal = "^0.3.1"
 once_cell = "1.21.3"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+
+[package.metadata.cargo-machete]
+ignored = ["cipher"]

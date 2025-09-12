@@ -1,0 +1,25 @@
+---
+
+- name: Production compose
+  ansible.builtin.template:
+    src: templates/docker-compose.j2
+    dest: "{{ BK_DIR }}/docker-compose.yaml"
+    mode: "0644"
+  register: compose
+  when: not FAST_UPDATE or (UPGRADE is defined and ('compose' in UPGRADE or 'node' in UPGRADE or 'compose-add' in UPGRADE))
+
+- name: Aerospike configuration
+  ansible.builtin.template:
+    src: templates/aerospike.conf.j2
+    dest: "{{ BK_DIR }}/aerospike-config/aerospike.conf"
+    mode: "0644"
+  register: aerospike
+  when: not FAST_UPDATE or (UPGRADE is defined and 'aerospike' in UPGRADE)
+
+- name: Log rotate configuration
+  ansible.builtin.template:
+    src: templates/logrotate.j2
+    dest: "{{ BK_DIR }}/logrotate.sh"
+    mode: "0755"
+  register: logrotate
+  when: not FAST_UPDATE or (UPGRADE is defined and 'logrotate' in UPGRADE)

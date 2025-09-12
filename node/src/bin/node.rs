@@ -198,22 +198,53 @@ fn bk_set_update(
     seq_no: u32,
     current: Option<&BlockKeeperSet>,
     future: Option<&BlockKeeperSet>,
+    prev_update: Option<&BlockKeeperSetUpdate>,
+    added_nodes: (HashSet<NodeIdentifier>, HashSet<NodeIdentifier>),
 ) -> BlockKeeperSetUpdate {
+    // Transorm Vector to HashMap for fast searches
+    let prev_current: Option<HashMap<&String, u32>> = prev_update.map(|update| {
+        update.current.iter().map(|(id, _, epoch_start_seq_no)| (id, *epoch_start_seq_no)).collect()
+    });
+    let prev_future: Option<HashMap<&String, u32>> = prev_update.map(|update| {
+        update.future.iter().map(|(id, _, epoch_start_seq_no)| (id, *epoch_start_seq_no)).collect()
+    });
     BlockKeeperSetUpdate {
         seq_no,
-        current: collect_node_id_owner_pk(current),
-        future: collect_node_id_owner_pk(future),
+        current: collect_node_id_owner_pk(seq_no, current, &prev_current, added_nodes.0),
+        future: collect_node_id_owner_pk(seq_no, future, &prev_future, added_nodes.1),
     }
 }
 
-fn collect_node_id_owner_pk(bk_set: Option<&BlockKeeperSet>) -> Vec<(String, [u8; 32])> {
+fn collect_node_id_owner_pk(
+    seq_no: u32,
+    bk_set: Option<&BlockKeeperSet>,
+    prev_update: &Option<HashMap<&String, u32>>,
+    added_nodes: HashSet<NodeIdentifier>,
+) -> Vec<(String, [u8; 32], u32)> {
     let Some(bk_set) = bk_set else {
         return vec![];
     };
+
     bk_set
         .iter_node_ids()
         .filter_map(|node_id| {
-            bk_set.get_by_node_id(node_id).map(|x| (node_id.to_string(), x.owner_pubkey))
+            bk_set.get_by_node_id(node_id).map(|x| {
+                let node_as_string = node_id.to_string();
+                let epoch_start_seq_no = if let Some(prev_update) = &prev_update {
+                    // If `node_id` was found among just added nodes, its epoch just started
+                    if added_nodes.contains(node_id) {
+                        &seq_no
+                    } else {
+                        // otherwise copy already saved `seq_no` value
+                        prev_update.get(&node_as_string).unwrap_or(&seq_no)
+                    }
+                } else {
+                    // this node just appeared in current bk set
+                    &seq_no
+                };
+
+                (node_as_string, x.owner_pubkey, *epoch_start_seq_no)
+            })
         })
         .collect()
 }
@@ -290,7 +321,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let bk_set = zerostate.get_block_keeper_set()?;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let initial_bk_set_update = bk_set_update(0, Some(&bk_set), None);
+    let initial_bk_set_update =
+        bk_set_update(0, Some(&bk_set), None, None, (HashSet::new(), HashSet::new()));
     let (bk_set_update_async_tx, bk_set_update_async_rx) =
         tokio::sync::watch::channel(initial_bk_set_update.clone());
     let (watch_gossip_config_tx, watch_gossip_config_rx) =
@@ -322,11 +354,13 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 node::node::services::sync::GOSSIP_API_ADVERTISE_ADDR_KEY,
                 config.network.api_advertise_addr.to_string(),
             );
-            if let Ok(Some(key)) = transport_layer::resolve_signing_key(
-                config.network.my_ed_key_secret.clone(),
-                config.network.my_ed_key_path.clone(),
+            if let Ok(keys) = transport_layer::resolve_signing_keys(
+                &config.network.my_ed_key_secret,
+                &config.network.my_ed_key_path,
             ) {
-                sign_gossip_node(c.self_node_state(), key);
+                if let Some(key) = keys.first() {
+                    sign_gossip_node(c.self_node_state(), key.clone());
+                }
             }
         })
         .await;
@@ -346,6 +380,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             metrics.as_ref().map(|m| m.net.clone()),
             metrics.as_ref().map(|m| m.node.clone()),
             config.local.node_id.clone(),
+            config.network.node_advertise_addr,
             false,
             chitchat.clone(),
         )
@@ -572,10 +607,10 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         config.local.unload_after,
         config.global.save_state_frequency,
     );
-
-    let repository_blocks = Arc::new(Mutex::new(FinalizedBlockStorage::new(
-        1_usize + TryInto::<usize>::try_into(config.global.save_state_frequency * 2).unwrap(),
-    )));
+    let finalized_block_storage_size =
+        1_usize + TryInto::<usize>::try_into(config.global.save_state_frequency * 2).unwrap();
+    let repository_blocks =
+        Arc::new(Mutex::new(FinalizedBlockStorage::new(finalized_block_storage_size)));
 
     let (bk_set_update_tx, bk_set_update_rx) =
         instrumented_channel(node_metrics.clone(), node::helper::metrics::BK_SET_UPDATE_CHANNEL);
@@ -592,7 +627,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         accounts_repo,
         message_db.clone(),
         repository_blocks,
-        bk_set_update_tx.clone(),
+        bk_set_update_tx,
     );
 
     let (optimistic_save_tx, optimistic_save_rx) =
@@ -686,6 +721,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         .network_broadcast_tx(broadcast_tx.clone())
         .node_joining_timeout(config.global.node_joining_timeout)
         .action_lock_db(action_lock_db)
+        .max_lookback_block_height_distance(finalized_block_storage_size)
         .build(),
     ));
 
@@ -956,6 +992,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 .name("routing_service_network_messages_forwarding_loop".to_string())
                 .spawn_critical(move || {
                     let mut authority_service = AuthoritySwitchService::builder()
+                        .self_addr(config.network.node_advertise_addr)
                         .rx(thread_authority_receiver)
                         .self_node_tx(self_node_tx_clone)
                         .network_direct_tx(direct_tx_clone)
@@ -1062,6 +1099,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     update.seq_no,
                     update.current.as_ref().map(|x| x.as_ref()),
                     update.future.as_ref().map(|x| x.as_ref()),
+                    Some(&bk_set),
+                    update.added_nodes,
                 );
                 if new_bk_set != bk_set {
                     tracing::trace!("new bk set update: {:?}", new_bk_set);
@@ -1162,7 +1201,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 Ok(_) => {
                     // unreachable!("sigint handler thread never returns")
 
-                    tracing::trace!("Start shutdown");
+                    tracing::info!(target: "monit", "Start shutdown");
                     SHUTDOWN_FLAG.set(true).expect("");
                     repository.dump_state();
 
@@ -1172,7 +1211,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     for rx in result_rx_vec.iter() {
                         let _ = rx.recv();
                     }
-                    tracing::trace!("Shutdown finished");
+                    tracing::info!(target: "monit", "Shutdown finished");
                     Ok(())
                 }
                 Err(error) => {

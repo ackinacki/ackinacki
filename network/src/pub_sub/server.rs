@@ -12,7 +12,7 @@ use crate::detailed;
 use crate::metrics::NetMetrics;
 use crate::pub_sub::connection::connection_remote_host_id;
 use crate::pub_sub::connection::ConnectionInfo;
-use crate::pub_sub::connection::ConnectionRoles;
+use crate::pub_sub::connection::ConnectionRole;
 use crate::pub_sub::connection::OutgoingMessage;
 use crate::pub_sub::executor::IncomingSender;
 use crate::pub_sub::PubSub;
@@ -131,11 +131,11 @@ pub async fn handle_incoming_connection<Transport: NetTransport>(
 
     let (role, remote_is_proxy) =
         if connection.alpn_negotiated_is(ACKI_NACKI_SUBSCRIPTION_FROM_PROXY_PROTOCOL) {
-            (ConnectionRoles::publisher(), true)
+            (ConnectionRole::Publisher, true)
         } else if connection.alpn_negotiated_is(ACKI_NACKI_SUBSCRIPTION_FROM_NODE_PROTOCOL) {
-            (ConnectionRoles::publisher(), false)
+            (ConnectionRole::Publisher, false)
         } else {
-            (ConnectionRoles::direct_sender(), false)
+            (ConnectionRole::DirectReceiver, false)
         };
     let host_id = connection_remote_host_id(&connection);
 

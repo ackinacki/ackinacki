@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.4] - 2025-09-12
+
+### New
+- `/readiness` endpoint on BM
+- Ability to sign Proxy certificate with multiple BK keys from BK set
+- Detached attestations
+- Added ability to send direct replies without NodeID
+- New metrics with prefinalized blocks and authority switch metrics
+- GQL server returns account data in `query{blockchain{account{info}}}` and account data is now available in Explorer
+
+
+### Improvements
+- DEBUG traces turned off by default, export `NODE_VERBOSE=1` to enable them. INFO, ERROR logs enabled by default
+- WAL2 support in BM
+- Improvements in staking scripts
+- BK ansible role refactored 
+
+
+### Fixed
+- Node join fixes
+- Load of finalized block on start
+- Allow BP stop on epoch end
+- Attestatio target for reject
+- `bk_set`, `future_bk_set` metrics fixed
+- Generate attestation for an old block if needed
+
+
 ## [0.7.3] - 2025-09-04
 
 ### Improvements

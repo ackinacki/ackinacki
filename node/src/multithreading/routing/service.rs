@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -40,7 +41,7 @@ const MAX_POISONED_QUEUE_SIZE: usize = 10000;
 type FeedbackMessage = (NetworkMessage, Option<oneshot::Sender<ExtMsgFeedback>>);
 type FeedbackRegistry = HashMap<String, oneshot::Sender<ExtMsgFeedback>>;
 
-type PoisonedQueue = PQueue<NetworkMessage>;
+type PoisonedQueue = PQueue<(NetworkMessage, SocketAddr)>;
 
 type Node = NodeImpl<ExternalFileSharesBased, rand::prelude::SmallRng>;
 
@@ -49,7 +50,7 @@ type Node = NodeImpl<ExternalFileSharesBased, rand::prelude::SmallRng>;
 pub enum Command {
     //    Stop,
     ExtMessage(NetworkMessage),
-    Route(NetworkMessage),
+    Route(NetworkMessage, SocketAddr),
     StartThread(
         (
             ThreadIdentifier, // Thread to start
@@ -124,10 +125,10 @@ impl RoutingService {
         F: FnMut(
                 Option<BlockIdentifier>,
                 &ThreadIdentifier,
-                XInstrumentedReceiver<NetworkMessage>,
-                XInstrumentedReceiver<NetworkMessage>,
-                XInstrumentedSender<NetworkMessage>,
-                XInstrumentedSender<NetworkMessage>,
+                XInstrumentedReceiver<(NetworkMessage, SocketAddr)>,
+                XInstrumentedReceiver<(NetworkMessage, SocketAddr)>,
+                XInstrumentedSender<(NetworkMessage, SocketAddr)>,
+                XInstrumentedSender<(NetworkMessage, SocketAddr)>,
                 InstrumentedSender<ExtMsgFeedbackList>,
                 Receiver<WrappedMessage>,
             ) -> anyhow::Result<Node>
@@ -185,10 +186,10 @@ impl RoutingService {
         F: FnMut(
                 Option<BlockIdentifier>,
                 &ThreadIdentifier,
-                XInstrumentedReceiver<NetworkMessage>,
-                XInstrumentedReceiver<NetworkMessage>,
-                XInstrumentedSender<NetworkMessage>,
-                XInstrumentedSender<NetworkMessage>,
+                XInstrumentedReceiver<(NetworkMessage, SocketAddr)>,
+                XInstrumentedReceiver<(NetworkMessage, SocketAddr)>,
+                XInstrumentedSender<(NetworkMessage, SocketAddr)>,
+                XInstrumentedSender<(NetworkMessage, SocketAddr)>,
                 InstrumentedSender<ExtMsgFeedbackList>,
                 Receiver<WrappedMessage>,
             ) -> anyhow::Result<Node>
@@ -222,7 +223,11 @@ impl RoutingService {
         )
     }
 
-    fn route(dispatcher: &Dispatcher, message: NetworkMessage, poisoned_queue: &mut PoisonedQueue) {
+    fn route(
+        dispatcher: &Dispatcher,
+        message: (NetworkMessage, SocketAddr),
+        poisoned_queue: &mut PoisonedQueue,
+    ) {
         let dispatcher_result = dispatcher.dispatch(message);
         match dispatcher_result {
             Ok(()) => {}
@@ -252,10 +257,10 @@ impl RoutingService {
         F: FnMut(
                 Option<BlockIdentifier>,
                 &ThreadIdentifier,
-                XInstrumentedReceiver<NetworkMessage>,
-                XInstrumentedReceiver<NetworkMessage>,
-                XInstrumentedSender<NetworkMessage>,
-                XInstrumentedSender<NetworkMessage>,
+                XInstrumentedReceiver<(NetworkMessage, SocketAddr)>,
+                XInstrumentedReceiver<(NetworkMessage, SocketAddr)>,
+                XInstrumentedSender<(NetworkMessage, SocketAddr)>,
+                XInstrumentedSender<(NetworkMessage, SocketAddr)>,
                 InstrumentedSender<ExtMsgFeedbackList>,
                 Receiver<WrappedMessage>,
             ) -> anyhow::Result<Node>
@@ -301,8 +306,8 @@ impl RoutingService {
                                     }
                                 }
                             }
-                            Route(message) => {
-                                Self::route(&dispatcher, message, &mut poisoned_queue)
+                            Route(message, reply_to) => {
+                                Self::route(&dispatcher, (message, reply_to), &mut poisoned_queue)
                             }
                             StartThread((thread_identifier, parent_block_identifier)) => {
                                 if dispatcher.has_route(&thread_identifier) {
@@ -377,8 +382,8 @@ impl RoutingService {
         loop {
             match inbound_network.recv() {
                 Ok(incoming) => {
-                    if let Some(message) = incoming.finish(&net_metrics) {
-                        match cmd_sender.send(Command::Route(message)) {
+                    if let Some((message, reply_to)) = incoming.finish(&net_metrics) {
+                        match cmd_sender.send(Command::Route(message, reply_to)) {
                             Ok(()) => {}
                             _ => {
                                 if SHUTDOWN_FLAG.get() != Some(&true) {

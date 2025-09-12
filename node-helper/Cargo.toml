@@ -14,8 +14,5 @@ network.workspace = true
 node.workspace = true
 parse_duration = "2.1.1"
 serde_json.workspace = true
-tvm_block.workspace = true
 tvm_client.workspace = true
-tvm_types.workspace = true
-
 url.workspace = true

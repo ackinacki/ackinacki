@@ -44,16 +44,16 @@ pub struct NetworkConfig {
     /// Optional secret key of the block keeper's owner wallet key pair.
     /// Should be represented as a 64-char hex.
     /// If specified, then owner_key_path should be omitted.
-    #[builder(default = None)]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub my_ed_key_secret: Option<String>,
+    #[builder(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub my_ed_key_secret: Vec<String>,
 
     /// Optional path to the block keeper's owner wallet key file.
     /// Should be stored as json `{ "public": "64-char hex", "secret": "64-char hex" }`.
     /// If specified, then owner_key_secret should be omitted.
-    #[builder(default = None)]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub my_ed_key_path: Option<String>,
+    #[builder(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub my_ed_key_path: Vec<String>,
 
     /// Subscribes.
     ///

@@ -6,7 +6,6 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-bincode.workspace = true
 chrono = "0.4.41"
 num-bigint.workspace = true
 parking_lot.workspace = true

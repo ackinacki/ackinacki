@@ -1,9 +1,22 @@
 // 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::sync::Arc;
+
+use anyhow::bail;
 use async_graphql::futures_util::TryStreamExt;
 use sqlx::prelude::FromRow;
+use sqlx::QueryBuilder;
 use sqlx::SqlitePool;
+use tvm_block::AccountStatus;
+use tvm_block::Deserializable;
+use tvm_block::Serializable;
+use tvm_client::account::get_account;
+use tvm_client::account::ParamsOfGetAccount;
+use tvm_client::net::ErrorCode;
+use tvm_client::ClientContext;
+use tvm_types::base64_decode;
+use tvm_types::write_boc;
 
 use crate::defaults;
 use crate::schema::graphql::query::PaginateDirection;
@@ -13,7 +26,7 @@ use crate::schema::graphql::query::PaginationArgs;
 #[derive(Clone, FromRow)]
 pub struct Account {
     #[sqlx(skip)]
-    rowid: i64, // id INTEGER PRIMARY KEY,
+    pub rowid: i64, // id INTEGER PRIMARY KEY,
     pub id: String,      // account_id TEXT NOT NULL UNIQUE,
     pub acc_type: u8,    // acc_type INTEGER NOT NULL,
     pub balance: String, // balance TEXT NOT NULL,
@@ -60,25 +73,112 @@ impl Account {
 
         let sql = format!("SELECT * FROM accounts {where_clause} {order_by} LIMIT {limit}");
         tracing::debug!("SQL: {sql}");
-        let accounts =
-            sqlx::query_as(&sql).fetch(pool).map_ok(|b| b).try_collect::<Vec<Account>>().await?;
+
+        let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
+        let accounts = builder
+            .build_query_as()
+            .fetch(pool)
+            .map_ok(|b| b)
+            .try_collect::<Vec<Account>>()
+            .await?;
 
         Ok(accounts)
     }
 
     pub async fn by_address(
-        pool: &SqlitePool,
+        _pool: &SqlitePool,
+        client: &Arc<ClientContext>,
         address: Option<String>,
     ) -> anyhow::Result<Option<Account>> {
         if address.is_none() {
             return Ok(None);
         }
 
-        let sql = format!("SELECT * FROM accounts WHERE id={:?}", address.unwrap());
-        tracing::debug!("SQL: {sql}");
-        let account = sqlx::query_as(&sql).fetch_optional(pool).await?;
+        let Some(address) = address else { bail!("Address required!") };
 
-        Ok(account)
+        let params = ParamsOfGetAccount { address: address.clone() };
+
+        match get_account(client.clone(), params).await {
+            Ok(got_acc) => {
+                let boc_base64 = got_acc.boc;
+
+                let acc = tvm_block::Account::construct_from_base64(&boc_base64)
+                    .map_err(|e| anyhow::anyhow!("Failed to construct account from boc: {e}"))?;
+
+                let boc = base64_decode(boc_base64)
+                    .map_err(|e| anyhow::anyhow!("Failed to decode received data: {e}"))?;
+
+                let balance = acc
+                    .balance()
+                    .map(|bal| format!("{:x}", bal.grams.as_u128()))
+                    .unwrap_or_default();
+
+                let balance_other = acc
+                    .balance()
+                    .and_then(|bal| bal.other.serialize().ok())
+                    .and_then(|cell| write_boc(&cell).ok());
+
+                let code_hash =
+                    acc.get_code_hash().map(|hash| hash.as_hex_string()).unwrap_or_default();
+
+                let (code, data) = if matches!(acc.status(), AccountStatus::AccStateActive) {
+                    if let Some(state) = acc.state_init() {
+                        let code = state
+                            .code()
+                            .filter(|cell| !cell.is_pruned())
+                            .and_then(|cell| write_boc(cell).ok());
+
+                        let data = state
+                            .data()
+                            .filter(|cell| !cell.is_pruned())
+                            .and_then(|cell| write_boc(cell).ok());
+
+                        (code, data)
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                };
+
+                let account = Account {
+                    id: address,
+                    acc_type: serialize_account_status(&acc.status()),
+                    balance,
+                    balance_other,
+                    boc: Some(boc),
+                    code,
+                    code_hash,
+                    data,
+                    dapp_id: got_acc.dapp_id,
+                    last_paid: acc.last_paid() as u64,
+                    last_trans_lt: acc.last_tr_time().map_or("".to_owned(), |v| format!("{:x}", v)),
+                    // Next properties left not initialized
+                    rowid: 0,
+                    prev_code_hash: None,
+                    proof: None,
+                    public_cells: "".to_string(),
+                    split_depth: None,
+                    state_hash: None,
+                    last_trans_hash: "".to_string(),
+                    last_trans_chain_order: "".to_string(),
+                    workchain_id: 0,
+                    bits: "".to_string(),
+                    cells: "".to_string(),
+                    due_payment: None,
+                    init_code_hash: "".to_string(),
+                    data_hash: "".to_string(),
+                };
+
+                Ok(Some(account))
+            }
+            Err(err) => {
+                if err.code == ErrorCode::NotFound as u32 {
+                    return Ok(None);
+                }
+                bail!("failed to get account {address}: {err}");
+            }
+        }
     }
 
     pub(crate) async fn blockchain_accounts(
@@ -140,7 +240,9 @@ impl Account {
 
         tracing::trace!(target: "blockchain_api", "SQL: {sql}");
 
-        let mut query = sqlx::query_as(&sql);
+        let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
+
+        let mut query = builder.build_query_as();
         if let Some(after) = bind_after {
             query = query.bind(after);
         }
@@ -165,5 +267,15 @@ impl Account {
                 })
             }
         }
+    }
+}
+
+// Helpers: copy from acki-nacki/database/src
+fn serialize_account_status(status: &AccountStatus) -> u8 {
+    match status {
+        AccountStatus::AccStateUninit => 0b00,
+        AccountStatus::AccStateFrozen => 0b10,
+        AccountStatus::AccStateActive => 0b01,
+        AccountStatus::AccStateNonexist => 0b11,
     }
 }

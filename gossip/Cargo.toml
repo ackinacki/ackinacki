@@ -19,14 +19,8 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-transport-layer.workspace = true
 
 cool-id-generator = "1.0.1"
 poem = "3.1.8"
 poem-openapi = { version = "5.1.12", features = ["swagger-ui"] }
 structopt = "0.3.26"
-
-[dev-dependencies]
-assert_cmd = "2.0.13"
-predicates = "3.1.0"
-reqwest = { version = "0.12.22", default-features = false, features = ["blocking", "json", "rustls-tls"] }

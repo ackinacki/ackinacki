@@ -1,6 +1,6 @@
 [package]
 name = "node"
-version = "0.7.3"
+version = "0.7.4"
 edition.workspace = true
 rust-version.workspace = true
 build = 'build.rs'
@@ -11,14 +11,16 @@ license-file.workspace = true
 [dependencies]
 anyhow.workspace = true
 bincode.workspace = true
+chitchat.workspace = true
 clap.workspace = true
 database.workspace = true
 ext-messages-auth.workspace = true
 gosh_blst.workspace = true
+gossip.workspace = true
+governor.workspace = true
 hex.workspace = true
 http-server.workspace = true
 lazy_static.workspace = true
-lockfree.workspace = true
 message-router.workspace = true
 network.workspace = true
 num-bigint.workspace = true
@@ -37,7 +39,7 @@ tracing.workspace = true
 tracing-appender.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
-tracing-test = "0.1"
+transport-layer.workspace = true
 tvm_abi.workspace = true
 tvm_block.workspace = true
 tvm_block_json.workspace = true
@@ -50,17 +52,13 @@ wasmtime.workspace = true
 
 account-inbox = { path = "./libs/account-inbox" }
 aerospike = "1.3.0"
-atomic-wait = "1.1.0"
 cached = "0.56.0"
-chitchat.workspace = true
 chrono = { version = "0.4.38", features = ["serde"] }
 core_affinity = { version = "0.8.3" }
 derive-debug = "0.1.2"
 derive-getters = "0.5.0"
 derive_setters = { path = "./libs/derive-setters" }
 failure = "0.1.8"
-gossip.workspace = true
-governor.workspace = true
 indexset = "0.10.3"
 itertools = "0.12.0"
 log = "0.4.20"
@@ -68,12 +66,10 @@ lru = "0.12.3"
 num_cpus = "1.16.0"
 rand = { version = "0.8.5", features = ["small_rng"] }
 reqwest = { version = "0.12.22", default-features = false, features = ["rustls-tls", "gzip", "stream", "blocking"] }
-rusqlite.workspace = true
 serde_yaml = "0.9.33"
 signal-hook = "0.3.17"
 thiserror = "2.0.3"
-threadpool = "1.8.1"
-transport-layer.workspace = true
+tracing-test = "0.1"
 typed-builder = "0.20.0"
 weak-table = "0.3.2"
 

@@ -31,6 +31,23 @@ use crate::NetCredential;
 #[derive(Debug, Default)]
 struct NoCertVerification;
 
+fn supported_schemes() -> Vec<SignatureScheme> {
+    vec![
+        SignatureScheme::RSA_PKCS1_SHA1,
+        SignatureScheme::ECDSA_SHA1_Legacy,
+        SignatureScheme::RSA_PKCS1_SHA256,
+        SignatureScheme::ECDSA_NISTP256_SHA256,
+        SignatureScheme::RSA_PKCS1_SHA384,
+        SignatureScheme::ECDSA_NISTP384_SHA384,
+        SignatureScheme::RSA_PKCS1_SHA512,
+        SignatureScheme::ECDSA_NISTP521_SHA512,
+        SignatureScheme::RSA_PSS_SHA256,
+        SignatureScheme::RSA_PSS_SHA384,
+        SignatureScheme::RSA_PSS_SHA512,
+        SignatureScheme::ED25519,
+        SignatureScheme::ED448,
+    ]
+}
 impl ServerCertVerifier for NoCertVerification {
     fn verify_server_cert(
         &self,
@@ -62,21 +79,7 @@ impl ServerCertVerifier for NoCertVerification {
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        vec![
-            SignatureScheme::RSA_PKCS1_SHA1,
-            SignatureScheme::ECDSA_SHA1_Legacy,
-            SignatureScheme::RSA_PKCS1_SHA256,
-            SignatureScheme::ECDSA_NISTP256_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384,
-            SignatureScheme::ECDSA_NISTP384_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512,
-            SignatureScheme::ECDSA_NISTP521_SHA512,
-            SignatureScheme::RSA_PSS_SHA256,
-            SignatureScheme::RSA_PSS_SHA384,
-            SignatureScheme::RSA_PSS_SHA512,
-            SignatureScheme::ED25519,
-            SignatureScheme::ED448,
-        ]
+        supported_schemes()
     }
 }
 
@@ -113,21 +116,7 @@ impl ClientCertVerifier for NoCertVerification {
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        vec![
-            SignatureScheme::RSA_PKCS1_SHA1,
-            SignatureScheme::ECDSA_SHA1_Legacy,
-            SignatureScheme::RSA_PKCS1_SHA256,
-            SignatureScheme::ECDSA_NISTP256_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384,
-            SignatureScheme::ECDSA_NISTP384_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512,
-            SignatureScheme::ECDSA_NISTP521_SHA512,
-            SignatureScheme::RSA_PSS_SHA256,
-            SignatureScheme::RSA_PSS_SHA384,
-            SignatureScheme::RSA_PSS_SHA512,
-            SignatureScheme::ED25519,
-            SignatureScheme::ED448,
-        ]
+        supported_schemes()
     }
 }
 
@@ -185,74 +174,75 @@ const ED_SIGNATURE_OID: x509_parser::der_parser::Oid =
 
 pub fn generate_self_signed_cert(
     subjects: Option<Vec<String>>,
-    ed_signing_key: Option<ed25519_dalek::SigningKey>,
+    ed_signing_keys: &[ed25519_dalek::SigningKey],
 ) -> anyhow::Result<(PrivateKeyDer<'static>, CertificateDer<'static>)> {
     let key_pair = rcgen::KeyPair::generate()?;
     let key = PrivateKeyDer::<'static>::try_from(key_pair.serialize_der())
         .map_err(|err| anyhow::anyhow!("Failed to generate TLS key: {}", err.to_string()))?
         .clone_key();
-    create_self_signed_cert_with_ed_signature(subjects, &key, ed_signing_key)
+    create_self_signed_cert_with_ed_signatures(subjects, &key, ed_signing_keys)
 }
 
-pub fn create_self_signed_cert_with_ed_signature(
+pub fn create_self_signed_cert_with_ed_signatures(
     subjects: Option<Vec<String>>,
     tls_key: &PrivateKeyDer<'static>,
-    ed_signing_key: Option<ed25519_dalek::SigningKey>,
+    ed_signing_keys: &[ed25519_dalek::SigningKey],
 ) -> anyhow::Result<(PrivateKeyDer<'static>, CertificateDer<'static>)> {
     let mut params = CertificateParams::new(cert_subjects(subjects))?;
     let key_pair = rcgen::KeyPair::try_from(tls_key)?;
 
-    if let Some(ed_signing_key) = ed_signing_key {
+    let mut ext_value = Vec::new();
+    for ed_signing_key in ed_signing_keys {
         let signature = ed_signing_key.sign(&key_pair.public_key_der());
-
-        let mut ed_signature_value = Vec::new();
-        ed_signature_value.extend_from_slice(ed_signing_key.verifying_key().as_bytes()); // 32 bytes
-        ed_signature_value.extend_from_slice(&signature.to_bytes()); // 64 bytes
-
-        params.custom_extensions.push(CustomExtension::from_oid_content(
-            &ED_SIGNATURE_OID_PARTS,
-            ed_signature_value.clone(),
-        ));
+        ext_value.extend_from_slice(ed_signing_key.verifying_key().as_bytes()); // 32 bytes
+        ext_value.extend_from_slice(&signature.to_bytes()); // 64 bytes
     }
+    params
+        .custom_extensions
+        .push(CustomExtension::from_oid_content(&ED_SIGNATURE_OID_PARTS, ext_value));
     let cert_der = params.self_signed(&key_pair)?.der().clone();
     Ok((tls_key.clone_key(), cert_der))
 }
 
-pub fn get_ed_pubkey_from_cert_der(
+pub fn get_ed_pubkeys_from_cert_der(
     cert: &CertificateDer<'static>,
-) -> anyhow::Result<Option<ed25519_dalek::VerifyingKey>> {
+) -> anyhow::Result<Vec<ed25519_dalek::VerifyingKey>> {
     let (_, x509) = x509_parser::parse_x509_certificate(cert.as_ref())?;
-    get_ed_pubkey_from_cert(&x509)
+    get_ed_pubkeys_from_cert(&x509)
 }
 
-pub fn get_ed_pubkey_from_cert(
+pub fn get_ed_pubkeys_from_cert(
     cert: &x509_parser::certificate::X509Certificate,
-) -> anyhow::Result<Option<ed25519_dalek::VerifyingKey>> {
+) -> anyhow::Result<Vec<ed25519_dalek::VerifyingKey>> {
     let Some(ext) = cert.extensions().iter().find(|e| e.oid == ED_SIGNATURE_OID) else {
-        return Ok(None);
+        return Ok(vec![]);
     };
-    // Split: first 32 bytes = ed25519 pubkey, rest = signature
-    let (pubkey_bytes, sig_bytes) = ext
-        .value
-        .split_at_checked(32)
-        .ok_or_else(|| anyhow::anyhow!("Invalid ED_SIGNATURE certificate extension"))?;
-    let ed_pub = ed25519_dalek::VerifyingKey::from_bytes(pubkey_bytes.try_into()?)?;
-    let ed_sig = ed25519_dalek::Signature::from_bytes(sig_bytes.try_into()?);
-
     let tls_pub_der = cert.public_key().raw;
-    ed_pub.verify(tls_pub_der, &ed_sig)?;
+    let mut pubkeys = Vec::new();
+    let mut offset = 0;
+    while ext.value.len() - offset >= 32 + 64 {
+        let pubkey_bytes = &ext.value[offset..(offset + 32)];
+        offset += 32;
+        let sig_bytes = &ext.value[offset..(offset + 64)];
+        offset += 64;
+        let ed_pub = ed25519_dalek::VerifyingKey::from_bytes(pubkey_bytes.try_into()?)?;
+        let ed_sig = ed25519_dalek::Signature::from_bytes(sig_bytes.try_into()?);
 
-    Ok(Some(ed_pub))
+        ed_pub.verify(tls_pub_der, &ed_sig)?;
+        pubkeys.push(ed_pub);
+    }
+
+    Ok(pubkeys)
 }
 
-pub fn verify_cert_or_ed_pubkey_is_trusted(
+pub fn verify_cert_or_ed_pubkeys_is_trusted(
     cert_hash: &CertHash,
-    ed_pub_key: &Option<ed25519_dalek::VerifyingKey>,
+    ed_pub_keys: &[ed25519_dalek::VerifyingKey],
     trusted_cert_hashes: &HashSet<CertHash>,
     trusted_ed_pubkeys: &HashSet<ed25519_dalek::VerifyingKey>,
 ) -> bool {
     let is_trusted_cert_hash = || trusted_cert_hashes.contains(cert_hash);
-    let is_trusted_ed_pub_key = || ed_pub_key.is_some_and(|x| trusted_ed_pubkeys.contains(&x));
+    let is_trusted_ed_pub_key = || ed_pub_keys.iter().any(|x| trusted_ed_pubkeys.contains(x));
     match (!trusted_cert_hashes.is_empty(), !trusted_ed_pubkeys.is_empty()) {
         (false, false) => true,
         (false, true) => is_trusted_cert_hash(),
@@ -302,17 +292,18 @@ fn is_valid_with_trusted_ed_pub_keys(
     cert: &x509_parser::certificate::X509Certificate,
     trusted_ed_pubkeys: &HashSet<crate::VerifyingKey>,
 ) -> bool {
-    match get_ed_pubkey_from_cert(cert) {
-        Ok(Some(pubkey)) => {
-            if trusted_ed_pubkeys.contains(&pubkey) {
-                true
-            } else {
-                tracing::warn!("TLS certificate has an untrusted ED pubkey");
-                false
+    match get_ed_pubkeys_from_cert(cert) {
+        Ok(pubkeys) => {
+            for pubkey in &pubkeys {
+                if trusted_ed_pubkeys.contains(pubkey) {
+                    return true;
+                }
             }
-        }
-        Ok(None) => {
-            tracing::warn!("TLS certificate is not signed with ED key");
+            if !pubkeys.is_empty() {
+                tracing::warn!("TLS certificate has no trusted ED pubkeys");
+            } else {
+                tracing::warn!("TLS certificate is not signed with ED key");
+            }
             false
         }
         Err(err) => {
@@ -335,25 +326,23 @@ pub fn build_pkcs12(credential: &NetCredential) -> anyhow::Result<Vec<u8>> {
     Ok(p12_der)
 }
 
-pub fn resolve_signing_key(
-    key_secret: Option<String>,
-    key_path: Option<String>,
-) -> anyhow::Result<Option<crate::SigningKey>> {
-    match (key_secret, key_path) {
-        (Some(_), Some(_)) => Err(anyhow::anyhow!(
-            "Both key secret and key file are specified. Only one of them is allowed."
-        )),
-        (None, None) => Ok(None),
-        (Some(secret), None) => Ok(Some(parse_signing_key(&secret)?)),
-        (None, Some(path)) => {
-            #[derive(Deserialize)]
-            struct Key {
-                secret: String,
-            }
-            let key = serde_json::from_slice::<Key>(&std::fs::read(path)?)?;
-            Ok(Some(parse_signing_key(&key.secret)?))
-        }
+pub fn resolve_signing_keys(
+    key_secrets: &[String],
+    key_paths: &[String],
+) -> anyhow::Result<Vec<crate::SigningKey>> {
+    let mut keys = Vec::new();
+    for secret in key_secrets {
+        keys.push(parse_signing_key(secret.as_str())?);
     }
+    for path in key_paths {
+        #[derive(Deserialize)]
+        struct Key {
+            secret: String,
+        }
+        let key = serde_json::from_slice::<Key>(&std::fs::read(path)?)?;
+        keys.push(parse_signing_key(&key.secret)?);
+    }
+    Ok(keys)
 }
 
 fn parse_signing_key(s: &str) -> anyhow::Result<crate::SigningKey> {
@@ -382,7 +371,7 @@ impl TlsCertCache {
         &self,
         subjects: Option<Vec<String>>,
         tls_key: Option<&PrivateKeyDer<'static>>,
-        ed_signing_key: Option<ed25519_dalek::SigningKey>,
+        ed_signing_keys: &[ed25519_dalek::SigningKey],
     ) -> anyhow::Result<(PrivateKeyDer<'static>, CertificateDer<'static>)> {
         let mut inner = self.0.lock().map_err(|_| anyhow::anyhow!("Failed to lock mutex"))?;
         let tls_key = tls_key.unwrap_or(&inner.default_key);
@@ -393,7 +382,7 @@ impl TlsCertCache {
             cache_key.extend_from_slice(subject.as_bytes());
         }
         cache_key.extend_from_slice(tls_key.secret_der());
-        if let Some(ed_key) = &ed_signing_key {
+        for ed_key in ed_signing_keys {
             cache_key.extend_from_slice(ed_key.verifying_key().as_ref());
         }
 
@@ -401,7 +390,8 @@ impl TlsCertCache {
             return Ok((key.clone_key(), cert.clone()));
         }
 
-        let (key, cert) = create_self_signed_cert_with_ed_signature(None, tls_key, ed_signing_key)?;
+        let (key, cert) =
+            create_self_signed_cert_with_ed_signatures(None, tls_key, ed_signing_keys)?;
         inner.certs.insert(cache_key, (key.clone_key(), cert.clone()));
         Ok((key, cert))
     }
@@ -486,15 +476,46 @@ pub mod hex_verifying_keys {
         deserializer.deserialize_seq(KeyVisitor)
     }
 }
+#[cfg(test)]
+mod tests {
+    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::VerifyingKey;
+    use rustls_pki_types::CertificateDer;
 
-#[test]
-fn test_cert_validation() {
-    let ed_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
-    let (_key, cert) = generate_self_signed_cert(None, Some(ed_key.clone())).unwrap();
+    use crate::generate_self_signed_cert;
+    use crate::verify_is_valid_cert;
 
-    assert!(verify_is_valid_cert(
-        &cert,
-        &HashSet::new(),
-        &HashSet::from_iter([ed_key.verifying_key()].into_iter())
-    ));
+    fn is_trusted<const N: usize>(
+        cert: &CertificateDer<'static>,
+        trusted_pubkeys: [VerifyingKey; N],
+    ) -> bool {
+        verify_is_valid_cert(cert, &[].into(), &trusted_pubkeys.into())
+    }
+
+    fn gen_key() -> (SigningKey, VerifyingKey) {
+        let k = SigningKey::generate(&mut rand::thread_rng());
+        let v = k.verifying_key();
+        (k, v)
+    }
+
+    fn gen_cert<const N: usize>(keys: [SigningKey; N]) -> CertificateDer<'static> {
+        generate_self_signed_cert(None, &keys).unwrap().1
+    }
+
+    #[test]
+    fn test_cert_validation() {
+        let ((k1, v1), (k2, v2), (_, v3)) = (gen_key(), gen_key(), gen_key());
+
+        let cert = gen_cert([k1.clone()]);
+        assert!(is_trusted(&cert, [v1]));
+
+        let cert = gen_cert([k1, k2]);
+        assert!(is_trusted(&cert, [v1, v2, v3]));
+        assert!(is_trusted(&cert, [v1, v2]));
+        assert!(is_trusted(&cert, [v1, v3]));
+        assert!(is_trusted(&cert, [v2, v3]));
+        assert!(is_trusted(&cert, [v1]));
+        assert!(is_trusted(&cert, [v2]));
+        assert!(!is_trusted(&cert, [v3]));
+    }
 }

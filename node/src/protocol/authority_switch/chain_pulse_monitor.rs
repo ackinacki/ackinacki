@@ -131,7 +131,7 @@ pub fn bind(authority: Arc<Mutex<Authority>>) -> ChainPulseMonitor {
                                             .get(thread_id)
                                             .cloned()
                                             .expect("Unexpected stalled thread");
-                                        e.on_next_round_incoming_request(next_round, blocks);
+                                        e.on_next_round_incoming_request(next_round, None, blocks);
                                     }
                                     deadlines.insert(
                                         *thread_id,

@@ -79,7 +79,7 @@ impl AckiNackiSend {
                 block_seq_no,
                 block_id
             );
-            match self.ack_network_direct_tx.send((destination_node_id, message.clone())) {
+            match self.ack_network_direct_tx.send((destination_node_id.into(), message.clone())) {
                 Ok(()) => {}
                 Err(e) => {
                     if SHUTDOWN_FLAG.get() != Some(&true) {

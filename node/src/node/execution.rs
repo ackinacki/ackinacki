@@ -1,6 +1,7 @@
 // 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::net::SocketAddr;
 use std::ops::Add;
 use std::ops::Sub;
 use std::sync::atomic::Ordering;
@@ -107,7 +108,7 @@ where
     // Refactor to ensure loop does not break. Same applies for a result propogation (use of <?>)
     fn execute_normal_forwarded(
         &mut self,
-        mut next_message: Option<NetworkMessage>,
+        mut next_message: Option<(NetworkMessage, SocketAddr)>,
     ) -> anyhow::Result<ExecutionResult> {
         tracing::trace!("Start execute_normal_forwarded: {next_message:?}");
         let mut is_stop_signal_received = false;
@@ -201,7 +202,7 @@ where
                     tracing::info!("Recv timeout");
                     self.producer_service.touch();
                 }
-                Ok(msg) => match msg {
+                Ok((msg, _)) => match msg {
                     NetworkMessage::StartSynchronization => {
                         tracing::info!("Received StartSynchronization");
                         return Ok(ExecutionResult::SynchronizationRequired);
@@ -316,7 +317,7 @@ where
                         //     .guarded_mut(|e| e.add(attestation, attested_block_state, true))?;
                         loop {
                             match self.network_rx.try_recv() {
-                                Ok(NetworkMessage::BlockAttestation((attestation, _))) => {
+                                Ok((NetworkMessage::BlockAttestation((attestation, _)), _)) => {
                                     tracing::info!(
                                         "Received block attestation for thread {:?} {attestation:?}",
                                         self.thread_id

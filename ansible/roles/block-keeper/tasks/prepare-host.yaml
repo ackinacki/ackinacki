@@ -1,0 +1,39 @@
+---
+- name: adjust limits
+  lineinfile:
+    dest: /etc/security/limits.conf
+    state: present
+    regexp: "{{ item.r }}"
+    line: "{{ item.l }}"
+  with_items:
+    - { r: "hard nofile", l: "* hard nofile 1048576" }
+    - { r: "soft nofile", l: "* soft nofile 1048576" }
+    - { r: "hard memlock", l: "* hard memlock unlimited" }
+    - { r: "soft memlock", l: "* soft memlock unlimited" }
+    - { r: "hard nproc", l: "* hard nproc unlimited" }
+    - { r: "soft nproc", l: "* soft nproc unlimited" }
+
+- name: sysctl limits
+  lineinfile:
+    dest: /etc/sysctl.conf
+    state: present
+    regexp: "vm.max_map_count"
+    line: "vm.max_map_count = 512000"
+
+- name: docker memlock limit
+  become: yes
+  register: docker_changed
+  ini_file:
+    path: /lib/systemd/system/docker.service
+    section: Service
+    option: LimitMEMLOCK
+    value: infinity
+    no_extra_spaces: true
+    backup: no
+
+- name: restart docker
+  ansible.builtin.systemd:
+    daemon_reexec: yes
+    state: restarted
+    name: docker
+  when: docker_changed.changed

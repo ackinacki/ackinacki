@@ -55,7 +55,7 @@ impl HotReloadNode {
         received_messages: Arc<std::sync::Mutex<Vec<Message>>>,
     ) {
         while let Ok(message) = message_rx.recv() {
-            if let Some(message) = message.finish(&None) {
+            if let Some((message, _)) = message.finish(&None) {
                 tracing::trace!("Message received by {receiver}: {:?}", message);
                 received_messages.lock().unwrap().push(message);
             }

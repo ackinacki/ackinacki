@@ -196,6 +196,7 @@ impl<Transport: NetTransport + 'static> Proxy<Transport> {
 pub struct NodeConfig {
     pub(crate) node_id: String,
     network: NetworkConfig,
+    advertise_addr: SocketAddr,
     gossip: GossipConfig,
 }
 
@@ -214,7 +215,7 @@ impl NodeConfig {
                 node_addr,
                 cert_file,
                 key_file,
-                None,
+                &[],
                 CertStore::default(),
                 HashSet::new(),
                 vec![],
@@ -222,6 +223,7 @@ impl NodeConfig {
                 None,
             )
             .unwrap(),
+            advertise_addr: node_addr,
             gossip: GossipConfig {
                 advertise_addr: None,
                 listen_addr: gossip_addr,
@@ -348,7 +350,7 @@ impl<Transport: NetTransport + 'static> Node<Transport> {
             config.network.proxies.clone(),
             None,
             None,
-            None,
+            &[],
         )?;
         chitchat_handle
             .with_chitchat(|c| {
@@ -365,6 +367,7 @@ impl<Transport: NetTransport + 'static> Node<Transport> {
                 None,
                 Option::<NoChannelMetrics>::None,
                 config.node_id.clone(),
+                config.advertise_addr,
                 false,
                 chitchat.clone(),
             )

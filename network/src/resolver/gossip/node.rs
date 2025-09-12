@@ -35,7 +35,7 @@ where
         proxies: Vec<SocketAddr>,
         bm_api_socket: Option<SocketAddr>,
         bk_api_socket: Option<SocketAddr>,
-        signing_key: Option<transport_layer::SigningKey>,
+        signing_keys: &[transport_layer::SigningKey],
     ) -> anyhow::Result<Self> {
         let mut peer = Self {
             id,
@@ -45,7 +45,7 @@ where
             bk_api_socket,
             pubkey_signature: None,
         };
-        if let Some(key) = signing_key {
+        if let Some(key) = signing_keys.first() {
             let signature =
                 key.sign(&bytes_to_sign(peer.values().iter().map(|(k, v)| (*k, v.as_str()))));
             peer.pubkey_signature = Some((key.verifying_key(), signature));
@@ -213,7 +213,7 @@ impl<PeerId: Display> Display for GossipPeer<PeerId> {
 #[test]
 fn test_signature() {
     let a =
-        GossipPeer::new("1".to_string(), ([127, 0, 0, 1], 1234).into(), vec![], None, None, None)
+        GossipPeer::new("1".to_string(), ([127, 0, 0, 1], 1234).into(), vec![], None, None, &[])
             .unwrap();
     let values = a.values();
     let b = GossipPeer::<String>::try_from_values(values.iter().map(|(k, v)| (*k, v.as_str())))
@@ -232,7 +232,7 @@ fn test_signature() {
         vec![],
         None,
         None,
-        Some(signing_key.clone()),
+        std::slice::from_ref(&signing_key),
     )
     .unwrap();
     let mut values = a.values();

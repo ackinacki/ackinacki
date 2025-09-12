@@ -16,13 +16,13 @@ use rustls_pki_types::CertificateDer;
 use rustls_pki_types::PrivateKeyDer;
 use sha2::Digest;
 
-pub use crate::tls::create_self_signed_cert_with_ed_signature;
+pub use crate::tls::create_self_signed_cert_with_ed_signatures;
 pub use crate::tls::generate_self_signed_cert;
-pub use crate::tls::get_ed_pubkey_from_cert_der;
+pub use crate::tls::get_ed_pubkeys_from_cert_der;
 pub use crate::tls::hex_verifying_key;
 pub use crate::tls::hex_verifying_keys;
-pub use crate::tls::resolve_signing_key;
-use crate::tls::verify_cert_or_ed_pubkey_is_trusted;
+pub use crate::tls::resolve_signing_keys;
+use crate::tls::verify_cert_or_ed_pubkeys_is_trusted;
 pub use crate::tls::verify_is_valid_cert;
 pub use crate::tls::TlsCertCache;
 
@@ -60,9 +60,9 @@ pub struct NetCredential {
 impl NetCredential {
     pub fn generate_self_signed(
         subjects: Option<Vec<String>>,
-        ed_signing_key: Option<SigningKey>,
+        ed_signing_keys: &[SigningKey],
     ) -> anyhow::Result<Self> {
-        let (my_key, my_cert) = generate_self_signed_cert(subjects, ed_signing_key)?;
+        let (my_key, my_cert) = generate_self_signed_cert(subjects, ed_signing_keys)?;
         Ok(Self {
             my_key,
             my_certs: vec![my_cert],
@@ -96,11 +96,11 @@ impl NetCredential {
             || verify_is_valid_cert(cert, &self.trusted_cert_hashes, &self.trusted_ed_pubkeys)
     }
 
-    pub fn is_trusted(&self, cert_hash: &CertHash, ed_pubkey: &Option<VerifyingKey>) -> bool {
+    pub fn is_trusted(&self, cert_hash: &CertHash, ed_pubkeys: &[VerifyingKey]) -> bool {
         self.any_cert_are_trusted()
-            || verify_cert_or_ed_pubkey_is_trusted(
+            || verify_cert_or_ed_pubkeys_is_trusted(
                 cert_hash,
-                ed_pubkey,
+                ed_pubkeys,
                 &self.trusted_cert_hashes,
                 &self.trusted_ed_pubkeys,
             )

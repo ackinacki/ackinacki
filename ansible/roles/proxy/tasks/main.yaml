@@ -1,13 +1,10 @@
 ---
 
-- name: Deploy proxy
-  include_tasks: "proxy-deployment.yaml"
-  when:
-    - PROXY_UP
-    - not PROXY_STOP
-
 - name: Stop proxy
   include_tasks: "proxy-stopping.yaml"
-  when:
-    - PROXY_STOP
-    - not PROXY_UP
+  when: [ PROXY_STOP ]
+
+- name: Deploy proxy
+  include_tasks: "proxy-deployment.yaml"
+  when: [ PROXY_UP ]
+

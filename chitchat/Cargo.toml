@@ -51,7 +51,6 @@ parking_lot.workspace = true
 rand.workspace = true
 rustls-pki-types = "1.11.0"
 serde.workspace = true
-tempfile = "3.19.1"
 tokio.workspace = true
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 tracing.workspace = true

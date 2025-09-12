@@ -1,36 +1,33 @@
 // 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use message_router::message_router::MessageRouter;
 use message_router::process_ext_messages;
 use salvo::prelude::*;
+use telemetry_utils::now_ms;
 use tvm_types::AccountId;
 
 use crate::bm_contract_root::build_fetch_boc_request;
+use crate::executor::AppState;
 
-#[derive(Clone)]
-pub struct AppState {
-    pub default_bp: SocketAddr,
-    pub message_router: Arc<MessageRouter>,
-}
+const HEALTH_GEN_UTIME_DIFF_SEC: u64 = 5;
 
-pub fn rest_api_router(message_router: MessageRouter, default_bp: SocketAddr) -> Router {
-    let app_state = AppState { default_bp, message_router: Arc::new(message_router) };
+pub fn rest_api_router(app_state: Arc<AppState>) -> Router {
     Router::new()
         .path("v2")
         // No auth required
         // .hoop(auth)
         .hoop(affix_state::inject(app_state))
         .push(Router::with_path("account").get(boc_by_address))
+        .push(Router::with_path("readiness").get(readiness))
         .push(Router::with_path("messages").post(route_message))
 }
 
 #[handler]
 async fn route_message(req: &mut Request, depot: &mut Depot, res: &mut Response) {
-    let Ok(state) = depot.obtain::<AppState>() else {
+    let Ok(state) = depot.obtain::<Arc<AppState>>() else {
         tracing::error!("Can't obtain internal state");
         render_error(res, StatusCode::INTERNAL_SERVER_ERROR, "Internal error");
         return;
@@ -60,7 +57,7 @@ async fn route_message(req: &mut Request, depot: &mut Depot, res: &mut Response)
 
 #[handler]
 async fn boc_by_address(req: &mut Request, depot: &mut Depot, res: &mut Response) {
-    let Ok(state) = depot.obtain::<AppState>() else {
+    let Ok(state) = depot.obtain::<Arc<AppState>>() else {
         tracing::error!("Can't obtain internal state");
         render_error(res, StatusCode::INTERNAL_SERVER_ERROR, "Internal error");
         return;
@@ -112,6 +109,24 @@ async fn boc_by_address(req: &mut Request, depot: &mut Depot, res: &mut Response
             render_error(res, StatusCode::BAD_GATEWAY, "API request failed");
         }
     }
+}
+
+#[handler]
+async fn readiness(_req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    let Ok(state) = depot.obtain::<Arc<AppState>>() else {
+        tracing::error!("Can't obtain internal state");
+        render_error(res, StatusCode::INTERNAL_SERVER_ERROR, "Internal error");
+        return;
+    };
+
+    let last_block_gen_utime = state.last_block_gen_utime.load(Ordering::Relaxed);
+    let now = now_ms();
+    let diff = now.saturating_sub(last_block_gen_utime);
+    let ready = diff < HEALTH_GEN_UTIME_DIFF_SEC * 1000;
+    res.status_code(if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE });
+    res.render(format!(
+        "ready = {ready}, diff = {diff}, now = {now}, last_block_gen_utime = {last_block_gen_utime}"
+    ));
 }
 
 fn render_error(res: &mut Response, status_code: StatusCode, text: &str) {

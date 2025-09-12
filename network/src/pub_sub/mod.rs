@@ -32,7 +32,7 @@ use crate::detailed;
 use crate::metrics::NetMetrics;
 use crate::pub_sub::connection::connection_remote_host_id;
 use crate::pub_sub::connection::ConnectionInfo;
-use crate::pub_sub::connection::ConnectionRoles;
+use crate::pub_sub::connection::ConnectionRole;
 use crate::ACKI_NACKI_SUBSCRIPTION_FROM_NODE_PROTOCOL;
 use crate::ACKI_NACKI_SUBSCRIPTION_FROM_PROXY_PROTOCOL;
 
@@ -46,6 +46,7 @@ pub struct PubSub<Transport: NetTransport + 'static> {
 pub struct PubSubInner<Connection: NetConnection> {
     next_connection_id: u64,
     connections: HashMap<u64, Arc<ConnectionWrapper<Connection>>>,
+    connections_by_remote_addr: HashMap<SocketAddr, Arc<ConnectionWrapper<Connection>>>,
     tasks: HashMap<u64, Arc<JoinHandle<anyhow::Result<()>>>>,
 }
 
@@ -65,6 +66,7 @@ impl<Transport: NetTransport> PubSub<Transport> {
             inner: Arc::new(parking_lot::RwLock::new(PubSubInner::<Transport::Connection> {
                 next_connection_id: 1,
                 connections: HashMap::new(),
+                connections_by_remote_addr: HashMap::new(),
                 tasks: HashMap::new(),
             })),
         }
@@ -80,7 +82,9 @@ impl<Transport: NetTransport> PubSub<Transport> {
     ) -> (Vec<Vec<SocketAddr>>, Vec<Arc<ConnectionWrapper<Transport::Connection>>>) {
         let inner = self.inner.read();
         let subscribed = inner.connections.values().filter_map(|connection| {
-            if let (addr, true) = (&connection.info.remote_addr, connection.info.roles.subscriber) {
+            if let (addr, true) =
+                (&connection.info.remote_addr, connection.info.role.is_subscriber())
+            {
                 Some((*addr, connection.clone()))
             } else {
                 None
@@ -96,7 +100,7 @@ impl<Transport: NetTransport> PubSub<Transport> {
             for connection in inner.connections.values() {
                 if !credential.is_trusted(
                     &connection.info.remote_cert_hash,
-                    &connection.info.remote_ed_pubkey,
+                    &connection.info.remote_ed_pubkeys,
                 ) {
                     untrusted.push(connection.clone());
                 }
@@ -158,7 +162,7 @@ impl<Transport: NetTransport> PubSub<Transport> {
             peer_host_id,
             Some(peer_addr),
             false,
-            ConnectionRoles::subscriber(),
+            ConnectionRole::Subscriber,
         )
     }
 
@@ -174,7 +178,7 @@ impl<Transport: NetTransport> PubSub<Transport> {
         remote_host_id: String,
         remote_addr: Option<SocketAddr>,
         remote_is_proxy: bool,
-        roles: ConnectionRoles,
+        role: ConnectionRole,
     ) -> anyhow::Result<()> {
         let id = { self.inner.write().generate_connection_id() };
         let connection = Arc::new(ConnectionWrapper::new(
@@ -184,13 +188,14 @@ impl<Transport: NetTransport> PubSub<Transport> {
             remote_host_id,
             remote_is_proxy,
             connection,
-            roles,
+            role,
         )?);
 
-        let (outgoing_messages_tx, incoming_messages_tx) = if roles.publisher {
-            (Some(outgoing_messages_tx.subscribe()), None)
-        } else {
-            (None, Some(incoming_messages_tx.clone()))
+        let (outgoing_messages_tx, incoming_messages_tx) = match role {
+            ConnectionRole::Publisher => (Some(outgoing_messages_tx.subscribe()), None),
+            ConnectionRole::Subscriber | ConnectionRole::DirectReceiver => {
+                (Some(outgoing_messages_tx.subscribe()), Some(incoming_messages_tx.clone()))
+            }
         };
         let task = tokio::spawn(connection::connection_supervisor(
             shutdown_rx,
@@ -205,6 +210,7 @@ impl<Transport: NetTransport> PubSub<Transport> {
         let mut inner = self.inner.write();
         inner.tasks.insert(connection.info.id, Arc::new(task));
         inner.connections.insert(connection.info.id, connection.clone());
+        inner.connections_by_remote_addr.insert(connection.info.remote_addr, connection.clone());
 
         tracing::info!(
             connection_count = inner.connections.len(),
@@ -219,17 +225,32 @@ impl<Transport: NetTransport> PubSub<Transport> {
         let mut inner = self.inner.write();
         inner.tasks.remove(&conn.id);
         inner.connections.remove(&conn.id);
+        inner.connections_by_remote_addr.remove(&conn.remote_addr);
         tracing::info!(
             connection_count = inner.connections.len(),
             peer = conn.remote_info(),
             host_id = conn.remote_host_id_prefix,
             "Removed connection"
         );
-        if conn.roles.subscriber {
-            tracing::info!(publisher = conn.remote_addr.to_string(), "Disconnected from publisher");
-        }
-        if conn.roles.publisher {
-            tracing::info!(subscriber = conn.remote_addr.to_string(), "Subscriber disconnected");
+        match conn.role {
+            ConnectionRole::Subscriber => {
+                tracing::info!(
+                    publisher = conn.remote_addr.to_string(),
+                    "Disconnected from publisher"
+                );
+            }
+            ConnectionRole::Publisher => {
+                tracing::info!(
+                    subscriber = conn.remote_addr.to_string(),
+                    "Subscriber disconnected"
+                );
+            }
+            ConnectionRole::DirectReceiver => {
+                tracing::info!(
+                    subscriber = conn.remote_addr.to_string(),
+                    "Disconnected from direct sender"
+                );
+            }
         }
     }
 }

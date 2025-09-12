@@ -17,17 +17,19 @@ rand = "0.8.5"
 serde.workspace = true
 serde_json = { version = "1.0.114", features = ["preserve_order"] }
 serde_with.workspace = true
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "tls-rustls"] }
+sqlx = { git = "https://github.com/launchbadge/sqlx", rev = "69bb5952ab665f6edfb461b45e63cc3b6d99a4d0", features = ["runtime-tokio", "sqlite", "tls-rustls"] }
 tokio = { version = "1", features = ["full", "rt"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tvm_block.workspace = true
+tvm_client.workspace = true
 tvm_types.workspace = true
 warp = { version = "0.3.7", features = ["tls"] }
 
 [dev-dependencies]
 migration-tool = { workspace = true }
 reqwest = { version = "0.12.22", features = ["json", "rustls-tls"], default-features = false }
+rusqlite = { workspace = true }
 testdir = "0.9.3"
 tokio = { workspace = true }
 

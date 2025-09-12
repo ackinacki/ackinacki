@@ -65,7 +65,7 @@ impl ProxyConfig {
             self.bind,
             self.my_cert.clone(),
             self.my_key.clone(),
-            None,
+            &[],
             self.peer_certs.clone(),
             HashSet::from_iter(self.peer_ed_pubkeys.clone()),
             self.subscribe.clone(),

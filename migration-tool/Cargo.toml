@@ -12,7 +12,7 @@ include_dir = "0.7.3"
 indoc = "2"
 lazy_static.workspace = true
 rusqlite.workspace = true
-rusqlite_migration = { version = "1.1.0", features = ["from-directory"] }
+rusqlite_migration = { version = "2", features = ["from-directory"] }
 
 [[bin]]
 name = "migration-tool"
@@ -21,3 +21,6 @@ path = "src/main.rs"
 [build-dependencies]
 cargo-emit = "0.2.1"
 merkle_hash = "3.7.0"
+
+[package.metadata.cargo-machete]
+ignored = ["cargo-emit", "merkle_hash"]

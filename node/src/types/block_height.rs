@@ -22,4 +22,11 @@ impl BlockHeight {
             Self { thread_identifier, height: 0 }
         }
     }
+
+    pub fn signed_distance_to(&self, other: &BlockHeight) -> Option<i128> {
+        if self.thread_identifier != other.thread_identifier {
+            return None;
+        }
+        Some(other.height as i128 - self.height as i128)
+    }
 }

@@ -1,0 +1,4 @@
+---
+BK_DIR: "{{ ROOT_DIR }}/block-keeper"
+BK_DATA_DIR: "{{ MNT_DATA }}/block-keeper"
+BK_LOGS_DIR: "{{ MNT_DATA }}/logs-block-keeper"

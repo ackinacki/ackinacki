@@ -2,6 +2,7 @@ mod block_producer;
 pub mod memento;
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::AtomicI32;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -46,6 +47,7 @@ impl AllowGuardedMut for Option<BlockSeqNo> {}
 impl ProducerService {
     #[allow(clippy::too_many_arguments)]
     pub fn start(
+        self_addr: SocketAddr,
         thread_id: ThreadIdentifier,
         repository: RepositoryImpl,
         block_state_repository: BlockStateRepository,
@@ -58,8 +60,8 @@ impl ProducerService {
         bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
         last_block_attestations: Arc<Mutex<CollectedAttestations>>,
         attestations_target_service: AttestationTargetsService,
-        self_tx: XInstrumentedSender<NetworkMessage>,
-        self_authority_tx: XInstrumentedSender<NetworkMessage>,
+        self_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
+        self_authority_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
         broadcast_tx: NetBroadcastSender<NetworkMessage>,
 
         node_identifier: NodeIdentifier,
@@ -72,6 +74,7 @@ impl ProducerService {
         save_optimistic_service_sender: InstrumentedSender<Arc<OptimisticStateImpl>>,
     ) -> anyhow::Result<Self> {
         let mut producer = BlockProducer::builder()
+            .self_addr(self_addr)
             .node_identifier(node_identifier)
             .self_tx(self_tx)
             .self_authority_tx(self_authority_tx)

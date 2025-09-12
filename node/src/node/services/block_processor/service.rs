@@ -300,8 +300,7 @@ fn process_candidate_block(
     };
     if block_state.guarded(|e| e.bk_set().is_none()) {
         if parent_block_state.guarded(|e| e.descendant_bk_set().is_some()) {
-            let metrics = shared_services.metrics.as_ref();
-            if !rules::bk_set::set_bk_set(block_state, block_state_repository, metrics) {
+            if !rules::bk_set::set_bk_set(block_state, block_state_repository) {
                 tracing::trace!("Failed to set BK set. Skip block");
                 return Ok(());
             }
@@ -597,6 +596,24 @@ fn process_candidate_block(
                     tracing::error!("Thread id not set for block {}", block_id);
                 }
             });
+        }
+    }
+
+    if !block_state.guarded(|e| e.is_prefinalized()) {
+        for detached_attestations in block_state.guarded(|e| e.detached_attestations().clone()) {
+            if let Some(attestation_target) = block_state.guarded(|e| *e.attestation_target()) {
+                if detached_attestations.clone_signature_occurrences().len()
+                    >= *attestation_target.fallback().required_attestation_count()
+                {
+                    if let (Some(thread_id), block_height) = block_state.guarded_mut(|e| {
+                        e.set_prefinalized(detached_attestations.clone())?;
+                        anyhow::Ok((*e.thread_identifier(), *e.block_height()))
+                    })? {
+                        let _ = chain_pulse_monitor
+                            .send(ChainPulseEvent::block_prefinalized(thread_id, block_height));
+                    }
+                }
+            }
         }
     }
 

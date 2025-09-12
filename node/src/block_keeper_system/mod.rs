@@ -118,6 +118,10 @@ impl BlockKeeperSet {
         self.by_signer.contains_key(signer_index)
     }
 
+    pub fn contains_node(&self, node_id: &NodeIdentifier) -> bool {
+        self.signer_by_node_id.contains_key(node_id)
+    }
+
     pub fn get_by_signer(&self, signer_index: &SignerIndex) -> Option<&BlockKeeperData> {
         self.by_signer.get(signer_index)
     }

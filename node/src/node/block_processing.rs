@@ -24,6 +24,7 @@ where
         resend_source_node_id: Option<NodeIdentifier>,
     ) -> anyhow::Result<Option<<Self as NodeAssociatedTypes>::CandidateBlock>> {
         tracing::info!(
+            target: "monit",
             "Incoming block candidate: {}, resend_source_node_id: {:?}",
             net_block,
             resend_source_node_id
@@ -50,6 +51,7 @@ where
 
         let envelope = net_block.get_envelope()?;
         tracing::info!(
+            target: "monit",
             "Incoming block candidate: {}, signatures: {:?}, resend_source_node_id: {:?}",
             envelope.data(),
             envelope.clone_signature_occurrences(),

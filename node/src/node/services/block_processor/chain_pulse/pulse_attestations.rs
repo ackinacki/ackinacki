@@ -86,7 +86,7 @@ impl PulseAttestations {
         &mut self,
         candidates: &UnfinalizedBlocksSnapshot,
         _block_state_repository: &BlockStateRepository,
-        metrics: Option<BlockProductionMetrics>,
+        metrics: Option<&BlockProductionMetrics>,
     ) -> anyhow::Result<()> {
         let is_triggering = {
             let is_time_triggered = if let Some(time) = self.trigger_by_time {

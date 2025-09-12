@@ -1,0 +1,35 @@
+#!/bin/bash
+
+if [[ -f /.dockerenv ]] || grep -Eq '(lxc|docker)' /proc/1/cgroup; then
+    echo -n
+else
+    echo "Docker only!"
+    exit 1
+fi
+
+rm /etc/logrotate.d/*
+cat >/etc/logrotate.d/node <<EOF
+/logsdir/*.log {
+    missingok
+    rotate {{ LOG_ROTATE_AMOUNT }}
+    size {{ LOG_ROTATE_SIZE }}
+    notifempty
+    copytruncate
+}
+EOF
+
+cat /etc/logrotate.d/node
+
+chown 0:0 /etc/logrotate.d
+chown 0:0 /etc/logrotate.d/node
+
+chmod 755 /etc/logrotate.d
+chmod 644 /etc/logrotate.d/node
+
+chmod 755 /logsdir
+
+echo "{{ LOG_ROTATE_SPEC | default('0 *') }} * * * /bin/chmod 755 /logsdir; /usr/sbin/logrotate -v /etc/logrotate.conf" > /etc/crontabs/root
+
+echo "Starting crond"
+
+crond -f

@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::ops::Sub;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -15,7 +16,6 @@ use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::helper::SHUTDOWN_FLAG;
-use crate::node::associated_types::AttestationTargetType;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
@@ -31,8 +31,9 @@ use crate::utilities::guarded::GuardedMut;
 
 #[derive(TypedBuilder)]
 pub struct AuthoritySwitchService {
-    rx: XInstrumentedReceiver<NetworkMessage>,
-    self_node_tx: XInstrumentedSender<NetworkMessage>,
+    self_addr: SocketAddr,
+    rx: XInstrumentedReceiver<(NetworkMessage, SocketAddr)>,
+    self_node_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
     network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
     thread_id: ThreadIdentifier,
     unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
@@ -49,7 +50,7 @@ impl AuthoritySwitchService {
             std::time::Instant::now().sub(self.sync_timeout_duration);
         loop {
             match self.rx.recv() {
-                Ok(msg) => {
+                Ok((msg, sender)) => {
                     match msg {
                         NetworkMessage::AuthoritySwitchProtocol(auth_switch) => match auth_switch {
                             AuthoritySwitch::Request(next_round) => {
@@ -59,25 +60,35 @@ impl AuthoritySwitchService {
                                     next_round.locked_block_attestation().clone()
                                 {
                                     let _ = self.self_node_tx.send(WrappedItem {
-                                        payload: NetworkMessage::BlockAttestation((
-                                            attestation,
-                                            self.thread_id,
-                                        )),
+                                        payload: (
+                                            NetworkMessage::BlockAttestation((
+                                                attestation,
+                                                self.thread_id,
+                                            )),
+                                            self.self_addr,
+                                        ),
                                         label: self.thread_id.to_string(),
                                     });
                                 }
                                 for attestation in next_round.attestations_for_ancestors().iter() {
                                     let _ = self.self_node_tx.send(WrappedItem {
-                                        payload: NetworkMessage::BlockAttestation((
-                                            attestation.clone(),
-                                            self.thread_id,
-                                        )),
+                                        payload: (
+                                            NetworkMessage::BlockAttestation((
+                                                attestation.clone(),
+                                                self.thread_id,
+                                            )),
+                                            self.self_addr,
+                                        ),
                                         label: self.thread_id.to_string(),
                                     });
                                 }
                                 let unprocessed_cache = self.unprocessed_blocks_cache.clone();
                                 let action = self.thread_authority.guarded_mut(|e| {
-                                    e.on_next_round_incoming_request(next_round, unprocessed_cache)
+                                    e.on_next_round_incoming_request(
+                                        next_round,
+                                        Some(sender),
+                                        unprocessed_cache,
+                                    )
                                 });
                                 match action {
                                     OnNextRoundIncomingRequestResult::StartingBlockProducer => {}
@@ -104,7 +115,7 @@ impl AuthoritySwitchService {
                                     }
                                     OnNextRoundIncomingRequestResult::Reject((e, source)) => {
                                         match self.network_direct_tx.send((
-                                            source,
+                                            source.into(),
                                             NetworkMessage::AuthoritySwitchProtocol(
                                                 AuthoritySwitch::Reject(e),
                                             ),
@@ -246,7 +257,10 @@ impl AuthoritySwitchService {
                                     Ok(true) => {}
                                 }
                                 let _ = self.self_node_tx.send(WrappedItem {
-                                    payload: NetworkMessage::Candidate(net_block.clone()),
+                                    payload: (
+                                        NetworkMessage::Candidate(net_block.clone()),
+                                        self.self_addr,
+                                    ),
                                     label: self.thread_id.to_string(),
                                 });
                                 // self.on_incoming_candidate_block(net_block, None)?;
@@ -279,14 +293,8 @@ impl AuthoritySwitchService {
                                 // check block validity
                                 // call common code to prefinalize block
 
-                                let target = match *attestations.data().target_type() {
-                                    AttestationTargetType::Primary => {
-                                        *attestation_target.primary().required_attestation_count()
-                                    }
-                                    AttestationTargetType::Fallback => {
-                                        *attestation_target.fallback().required_attestation_count()
-                                    }
-                                };
+                                let target =
+                                    *attestation_target.fallback().required_attestation_count();
 
                                 if attestations.clone_signature_occurrences().len() >= target {
                                     block_state.guarded_mut(|e| -> anyhow::Result<()> {
@@ -306,10 +314,13 @@ impl AuthoritySwitchService {
                                     );
                                 }
                                 let _ = self.self_node_tx.send(WrappedItem {
-                                    payload: NetworkMessage::BlockAttestation((
-                                        attestations,
-                                        self.thread_id,
-                                    )),
+                                    payload: (
+                                        NetworkMessage::BlockAttestation((
+                                            attestations,
+                                            self.thread_id,
+                                        )),
+                                        self.self_addr,
+                                    ),
                                     label: self.thread_id.to_string(),
                                 });
 
@@ -324,7 +335,11 @@ impl AuthoritySwitchService {
                                     let result = e.on_block_producer_stalled();
                                     tracing::trace!("on_block_producer_stalled result: {result:?}");
                                     if let Some(next_round) = result.next_round().clone() {
-                                        e.on_next_round_incoming_request(next_round, blocks);
+                                        e.on_next_round_incoming_request(
+                                            next_round,
+                                            Some(sender),
+                                            blocks,
+                                        );
                                     }
                                 });
                             }
@@ -332,7 +347,10 @@ impl AuthoritySwitchService {
                                 if last_state_sync_executed.elapsed() > self.sync_timeout_duration {
                                     last_state_sync_executed = std::time::Instant::now();
                                     let _ = self.self_node_tx.send(WrappedItem {
-                                        payload: NetworkMessage::StartSynchronization,
+                                        payload: (
+                                            NetworkMessage::StartSynchronization,
+                                            self.self_addr,
+                                        ),
                                         label: self.thread_id.to_string(),
                                     });
                                 }
@@ -341,17 +359,23 @@ impl AuthoritySwitchService {
                                 let net_block = e.data().proposed_block();
                                 // self.on_incoming_candidate_block(net_block, None)?;
                                 let _ = self.self_node_tx.send(WrappedItem {
-                                    payload: NetworkMessage::Candidate(net_block.clone()),
+                                    payload: (
+                                        NetworkMessage::Candidate(net_block.clone()),
+                                        self.self_addr,
+                                    ),
                                     label: self.thread_id.to_string(),
                                 });
                                 if let Some(attestations) =
                                     e.data().attestations_aggregated().clone()
                                 {
                                     let _ = self.self_node_tx.send(WrappedItem {
-                                        payload: NetworkMessage::BlockAttestation((
-                                            attestations,
-                                            self.thread_id,
-                                        )),
+                                        payload: (
+                                            NetworkMessage::BlockAttestation((
+                                                attestations,
+                                                self.thread_id,
+                                            )),
+                                            self.self_addr,
+                                        ),
                                         label: self.thread_id.to_string(),
                                     });
                                 }
@@ -381,36 +405,43 @@ impl AuthoritySwitchService {
         // let resend_node_id = Some(next_round_success.node_identifier().clone());
         // self.on_incoming_candidate_block(&proposed_block, resend_node_id)?;
         let _ = self.self_node_tx.send(WrappedItem {
-            payload: NetworkMessage::Candidate(proposed_block.clone()),
+            payload: (NetworkMessage::Candidate(proposed_block.clone()), self.self_addr),
             label: self.thread_id.to_string(),
         });
         let attestation = next_round_success.attestations_aggregated().clone();
         if let Some(attestation) = attestation.clone() {
             let block_state = self.block_state_repository.get(attestation.data().block_id())?;
-            let Some(attestation_target) = block_state.guarded(|e| *e.attestation_target()) else {
+            if let Some(attestation_target) = block_state.guarded(|e| *e.attestation_target()) {
+                if attestation.clone_signature_occurrences().len()
+                    >= *attestation_target.fallback().required_attestation_count()
+                {
+                    // TODO: check attestations before going further
+                    block_state.guarded_mut(|e| {
+                        e.set_prefinalized(attestation.clone())?;
+                        anyhow::Ok(())
+                    })?;
+                    let block = proposed_block.get_envelope()?;
+                    let _ = self.chain_pulse_monitor.send(ChainPulseEvent::block_prefinalized(
+                        block.data().get_common_section().thread_id,
+                        Some(block.data().get_common_section().block_height),
+                    ));
+                }
+            } else {
                 tracing::trace!("Attestation target is not set for switched block {attestation:?}");
+                block_state.guarded_mut(|e| e.add_detached_attestations(attestation));
                 return Ok(());
-            };
-            if attestation.clone_signature_occurrences().len()
-                >= *attestation_target.fallback().required_attestation_count()
-            {
-                block_state.guarded_mut(|e| {
-                    e.set_prefinalized(attestation.clone())?;
-                    anyhow::Ok(())
-                })?;
-                let block = proposed_block.get_envelope()?;
-                let _ = self.chain_pulse_monitor.send(ChainPulseEvent::block_prefinalized(
-                    block.data().get_common_section().thread_id,
-                    Some(block.data().get_common_section().block_height),
-                ));
             }
         }
         if let Some(attestation) = attestation {
             let _ = self.self_node_tx.send(WrappedItem {
-                payload: NetworkMessage::BlockAttestation((attestation, self.thread_id)),
+                payload: (
+                    NetworkMessage::BlockAttestation((attestation, self.thread_id)),
+                    self.self_addr,
+                ),
                 label: self.thread_id.to_string(),
             });
         }
+
         self.thread_authority.guarded_mut(|e| e.on_next_round_success(next_round_success));
 
         let proposed_block_round =
@@ -426,7 +457,7 @@ impl AuthoritySwitchService {
                 let result = e.on_block_producer_stalled();
                 tracing::trace!("on_block_producer_stalled result: {result:?}");
                 if let Some(next_round) = result.next_round().clone() {
-                    e.on_next_round_incoming_request(next_round, blocks);
+                    e.on_next_round_incoming_request(next_round, None, blocks);
                 }
             });
         }

@@ -71,6 +71,9 @@ struct BlockProductionMetricsInner {
     broadcast_join: Counter<u64>,
     sync_time_spent: Counter<u64>,
     sync_error: Counter<u64>,
+    last_prefinalized_seqno: Gauge<u64>,
+    next_round_block_height: Gauge<u64>,
+    authority_switch_direct_resent: Counter<u64>,
 }
 
 pub const BK_SET_UPDATE_CHANNEL: &str = "bk_set_update";
@@ -270,6 +273,9 @@ impl BlockProductionMetrics {
             broadcast_join: meter.u64_counter("node_broadcast_join").build(),
             sync_time_spent: meter.u64_counter("node_sync_time_spent").build(),
             sync_error: meter.u64_counter("node_sync_error").build(),
+            last_prefinalized_seqno: meter.u64_gauge("node_last_prefinalized_seqno").build(),
+            next_round_block_height: meter.u64_gauge("node_next_round_block_height").build(),
+            authority_switch_direct_resent: meter.u64_counter("node_auth_sw_dir_resent").build(),
         }))
     }
 
@@ -515,6 +521,18 @@ impl BlockProductionMetrics {
 
     pub fn report_sync_error(&self, thread_id: &ThreadIdentifier) {
         self.0.sync_error.add(1, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_last_prefinalized_seqno(&self, value: u64, thread_id: &ThreadIdentifier) {
+        self.0.last_prefinalized_seqno.record(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_next_round_block_height(&self, value: u64, thread_id: &ThreadIdentifier) {
+        self.0.next_round_block_height.record(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_authority_switch_direct_resent(&self, thread_id: &ThreadIdentifier) {
+        self.0.authority_switch_direct_resent.add(1, &[thread_id_attr(thread_id)]);
     }
 }
 

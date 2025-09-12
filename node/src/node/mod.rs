@@ -29,6 +29,7 @@ pub mod impl_trait_macro;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::sync::atomic::AtomicI32;
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
@@ -92,7 +93,7 @@ where
     shared_services: SharedServices,
     state_sync_service: TStateSyncService,
     // TODO: @AleksandrS Add priority rx
-    network_rx: XInstrumentedReceiver<NetworkMessage>,
+    network_rx: XInstrumentedReceiver<(NetworkMessage, SocketAddr)>,
     network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
     network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
     raw_block_tx: InstrumentedSender<(NodeIdentifier, Vec<u8>)>,
@@ -154,7 +155,7 @@ where
         state_sync_service: TStateSyncService,
         production_process: TVMBlockProducerProcess,
         repository: RepositoryImpl,
-        network_rx: XInstrumentedReceiver<NetworkMessage>,
+        network_rx: XInstrumentedReceiver<(NetworkMessage, SocketAddr)>,
         network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
         network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
         raw_block_tx: InstrumentedSender<(NodeIdentifier, Vec<u8>)>,
@@ -171,7 +172,7 @@ where
         validation_service: ValidationServiceInterface,
         skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
         metrics: Option<BlockProductionMetrics>,
-        self_tx: XInstrumentedSender<NetworkMessage>,
+        self_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
         external_messages: ExternalMessagesThreadState,
         message_db: MessageDurableStorage,
         last_block_attestations: Arc<Mutex<CollectedAttestations>>,
@@ -185,7 +186,7 @@ where
         stalled_threads: Arc<Mutex<Vec<ThreadIdentifier>>>,
         chain_pulse_monitor: Sender<ChainPulseEvent>,
         authority_handler: JoinHandle<()>,
-        self_authority_tx: XInstrumentedSender<NetworkMessage>,
+        self_authority_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
         save_optimistic_service_sender: InstrumentedSender<Arc<OptimisticStateImpl>>,
     ) -> Self {
         tracing::trace!("Start node for thread: {thread_id:?}");
@@ -287,6 +288,7 @@ where
                 })
                 .expect("Failed to start finalization inner loop"),
             producer_service: ProducerService::start(
+                config.network.node_advertise_addr,
                 thread_id,
                 repository.clone(),
                 block_state_repository.clone(),

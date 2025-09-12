@@ -24,9 +24,9 @@ use crate::WebServer;
 pub struct BlockKeeperSetUpdate {
     pub seq_no: u32,
     #[serde(with = "bk_vec_serde")]
-    pub current: Vec<(String, [u8; 32])>,
+    pub current: Vec<(String, [u8; 32], u32)>,
     #[serde(with = "bk_vec_serde")]
-    pub future: Vec<(String, [u8; 32])>,
+    pub future: Vec<(String, [u8; 32], u32)>,
 }
 
 mod bk_vec_serde {
@@ -34,13 +34,16 @@ mod bk_vec_serde {
     use serde::ser::SerializeSeq;
     use serde::Serializer;
 
-    pub fn serialize<S>(vec: &Vec<(String, [u8; 32])>, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(
+        vec: &Vec<(String, [u8; 32], u32)>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         let mut seq = serializer.serialize_seq(Some(vec.len()))?;
-        for (s, bytes) in vec {
-            seq.serialize_element(&(s, encode(bytes)))?;
+        for (s, bytes, epoch_start_seq_no) in vec {
+            seq.serialize_element(&(s, encode(bytes), epoch_start_seq_no))?;
         }
         seq.end()
     }
@@ -49,8 +52,8 @@ mod bk_vec_serde {
 pub struct BkSetSnapshot {
     update_time: SystemTime,
     seq_no: u32,
-    nodes: Vec<(String, [u8; 32])>,
-    future_nodes: Vec<(String, [u8; 32])>,
+    nodes: Vec<(String, [u8; 32], u32)>,
+    future_nodes: Vec<(String, [u8; 32], u32)>,
 }
 
 impl Default for BkSetSnapshot {
@@ -82,6 +85,7 @@ pub struct BkSetResponse {
 pub struct BkInfo {
     pub node_id: String,
     pub node_owner_pk: String,
+    pub epoch_start_seq_no: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -97,18 +101,20 @@ impl From<&BkSetSnapshot> for BkSetResult {
             bk_set: value
                 .nodes
                 .iter()
-                .map(|(node_id, node_owner_pk)| BkInfo {
+                .map(|(node_id, node_owner_pk, epoch_start_seq_no)| BkInfo {
                     node_id: node_id.clone(),
                     node_owner_pk: hex::encode(node_owner_pk),
+                    epoch_start_seq_no: *epoch_start_seq_no,
                 })
                 .collect(),
 
             future_bk_set: value
                 .future_nodes
                 .iter()
-                .map(|(node_id, node_owner_pk)| BkInfo {
+                .map(|(node_id, node_owner_pk, epoch_start_seq_no)| BkInfo {
                     node_id: node_id.clone(),
                     node_owner_pk: hex::encode(node_owner_pk),
+                    epoch_start_seq_no: *epoch_start_seq_no,
                 })
                 .collect(),
 
@@ -161,8 +167,6 @@ where
         res: &mut Response,
         _ctrl: &mut FlowCtrl,
     ) {
-        tracing::info!(target: "http_server", "Rest service: request got!");
-
         let Ok(web_server_state) = depot.obtain::<WebServer<
             TMessage,
             TMsgConverter,

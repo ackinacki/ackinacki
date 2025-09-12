@@ -16,6 +16,7 @@ pub mod channel;
 pub mod cli;
 pub mod config;
 mod direct_sender;
+pub use direct_sender::*;
 pub mod message;
 pub mod metrics;
 pub mod network;

@@ -16,7 +16,8 @@
 - name: Copy Block Keeper key to proxy
   ansible.builtin.copy:
     dest: "{{ PROXY_CERTS_DIR }}"
-    src: "block_keeper{{ hostvars[groups['block_keepers'][0]].NODE_ID }}.keys.json"
+    src: "{{ item }}"
+  with_list: "{{ PROXY_SIGNING_KEYS | mandatory(msg='Proxy signing key variable is required') }}"
 
 - name: Production compose
   ansible.builtin.template:

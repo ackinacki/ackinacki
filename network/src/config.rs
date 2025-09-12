@@ -32,7 +32,7 @@ impl NetworkConfig {
         bind: SocketAddr,
         my_cert: CertFile,
         my_key: PrivateKeyFile,
-        my_ed_key: Option<transport_layer::SigningKey>,
+        my_ed_keys: &[transport_layer::SigningKey],
         peer_certs: CertStore,
         peer_ed_pubkeys: HashSet<transport_layer::VerifyingKey>,
         subscribe: Vec<Vec<SocketAddr>>,
@@ -40,7 +40,7 @@ impl NetworkConfig {
         tls_cert_cache: Option<TlsCertCache>,
     ) -> anyhow::Result<Self> {
         tracing::info!("Creating new network configuration with bind: {}", bind);
-        let (my_certs, my_key) = my_cert.resolve(&my_key, &my_ed_key, tls_cert_cache)?;
+        let (my_certs, my_key) = my_cert.resolve(&my_key, my_ed_keys, tls_cert_cache)?;
         let credential = NetCredential {
             my_certs,
             my_key,

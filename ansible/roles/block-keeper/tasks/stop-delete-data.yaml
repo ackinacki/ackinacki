@@ -1,0 +1,18 @@
+---
+
+- name: Graceful shutdown request before compose down
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}"
+    cmd: docker compose exec "node{{ NODE_ID }}" pkill node
+  ignore_errors: true
+
+- name: Compose down
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}"
+    cmd: docker compose down --remove-orphans
+  ignore_errors: true
+
+- name: Remove data folder
+  ansible.builtin.file:
+    path: "{{ BK_DATA_DIR }}"
+    state: absent

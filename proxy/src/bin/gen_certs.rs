@@ -43,13 +43,13 @@ struct Cli {
     /// Should be represented as a 64-char hex.
     /// If specified, then ed_key_path should be omitted.
     #[arg(long)]
-    ed_key_secret: Option<String>,
+    ed_key_secret: Vec<String>,
 
     /// Optional path to the block keeper's owner wallet key file.
     /// Should be stored as json `{ "public": "64-char hex", "secret": "64-char hex" }`.
     /// If specified, then ed_key_secret should be omitted.
     #[arg(long)]
-    ed_key_path: Option<String>,
+    ed_key_path: Vec<String>,
 
     /// Overwrite existing files
     #[arg(short, long)]
@@ -58,10 +58,9 @@ struct Cli {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let ed_sign_key =
-        transport_layer::resolve_signing_key(cli.ed_key_secret.clone(), cli.ed_key_path.clone())?;
+    let ed_sign_keys = transport_layer::resolve_signing_keys(&cli.ed_key_secret, &cli.ed_key_path)?;
 
-    generate_certs(cli.name, cli.subjects, ed_sign_key, cli.output_dir, cli.force)?;
+    generate_certs(cli.name, cli.subjects, &ed_sign_keys, cli.output_dir, cli.force)?;
 
     Ok(())
 }
@@ -69,14 +68,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn generate_certs(
     name: String,
     subjects: Vec<String>,
-    ed_sing_key: Option<transport_layer::SigningKey>,
+    ed_sing_keys: &[transport_layer::SigningKey],
     output_dir: Option<PathBuf>,
     force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let output_dir = output_dir.unwrap_or_else(|| PathBuf::from("./"));
 
     std::fs::create_dir_all(&output_dir)?;
-    let (key, cert) = generate_self_signed_cert(Some(subjects), ed_sing_key)?;
+    let (key, cert) = generate_self_signed_cert(Some(subjects), ed_sing_keys)?;
 
     let cert_filepath = output_dir.join(format!("{name}.ca.pem"));
     let key_filepath = output_dir.join(format!("{name}.key.pem"));
@@ -148,7 +147,7 @@ mod tests {
         generate_certs(
             "client".to_string(),
             vec!["[::1]".to_string()],
-            Some(client_ed_sign_key.clone()),
+            std::slice::from_ref(&client_ed_sign_key),
             Some(PathBuf::from("certs")),
             true,
         )
@@ -156,7 +155,7 @@ mod tests {
         generate_certs(
             "server".to_string(),
             vec!["[::1]".to_string()],
-            None,
+            &[],
             Some(PathBuf::from("certs")),
             true,
         )

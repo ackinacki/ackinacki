@@ -3,16 +3,18 @@ services:
     image: {{ PROXY_IMAGE }}
     environment:
       RUST_LOG: {{ PROXY_LOG_LEVEL }}
+      RUST_BACKTRACE: 1
 {# Adding service section #}
-{% include 'proxy/proxy_otel.j2' ignore missing +%}
+{% include 'extra/proxy-env.j2' ignore missing +%}
     network_mode: host
     entrypoint: []
     command:
       - bash
       - -c
       - >
-        gen_certs -f -n proxy -s "localhost" --ed-key-path /workdir/certs/block_keeper{{ hostvars[groups['block_keepers'][0]].NODE_ID }}.keys.json -o /workdir/certs
-        && proxy > /logsdir/proxy.log 2>&1
+        [ -f /workdir/certs/proxy.ca.pem ] ||
+        { gen_certs -f -n proxy -s "localhost" {{ PROXY_SIGNING_KEYS | map('regex_replace', '^(.*)$', '--ed-key-path /workdir/certs/\\1') | list | join(' ') }} -o /workdir/certs || exit $?; };
+        proxy > /logsdir/proxy.log 2>&1
     volumes:
       - {{ PROXY_DIR }}/config.yaml:/workdir/config.yaml
       - {{ PROXY_CERTS_DIR }}:/workdir/certs

@@ -97,7 +97,7 @@ impl SqliteHelper {
 
         conn.execute_batch(
             "
-            PRAGMA journal_mode = WAL;
+            PRAGMA journal_mode = WAL2;
             PRAGMA synchronous = NORMAL;
             PRAGMA wal_autocheckpoint = 1000;
             PRAGMA wal_checkpoint(TRUNCATE);
@@ -106,6 +106,9 @@ impl SqliteHelper {
             PRAGMA page_size = 4096;
         ",
         )?;
+
+        print_sqlite_info(&conn)?;
+
         Ok(conn)
     }
 
@@ -683,6 +686,12 @@ fn rename_with_suffixes(work: &Path, archived: &Path) -> std::io::Result<()> {
         std::fs::rename(wal_src, wal_dst)?;
     }
 
+    let wal2_src = append_suffix(work, "-wal2");
+    let wal2_dst = append_suffix(archived, "-wal2");
+    if wal2_src.exists() {
+        std::fs::rename(wal2_src, wal2_dst)?;
+    }
+
     let shm_src = append_suffix(work, "-shm");
     let shm_dst = append_suffix(archived, "-shm");
     if shm_src.exists() {
@@ -690,4 +699,84 @@ fn rename_with_suffixes(work: &Path, archived: &Path) -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+pub fn print_sqlite_info(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    let journal_mode: String = conn.query_row("PRAGMA journal_mode;", [], |row| row.get(0))?;
+    println!("journal_mode       = {}", journal_mode);
+
+    let synchronous: i32 = conn.query_row("PRAGMA synchronous;", [], |row| row.get(0))?;
+    println!("synchronous        = {} (0=OFF, 1=NORMAL, 2=FULL, 3=EXTRA)", synchronous);
+
+    let wal_autocheckpoint: i32 =
+        conn.query_row("PRAGMA wal_autocheckpoint;", [], |row| row.get(0))?;
+    println!("wal_autocheckpoint = {} pages", wal_autocheckpoint);
+
+    let page_size: i32 = conn.query_row("PRAGMA page_size;", [], |row| row.get(0))?;
+    println!("page_size          = {} bytes", page_size);
+
+    let cache_size: i32 = conn.query_row("PRAGMA cache_size;", [], |row| row.get(0))?;
+    println!("cache_size         = {} pages", cache_size);
+
+    let foreign_keys: i32 = conn.query_row("PRAGMA foreign_keys;", [], |row| row.get(0))?;
+    println!("foreign_keys       = {}", if foreign_keys == 1 { "ON" } else { "OFF" });
+
+    let user_version: i32 = conn.query_row("PRAGMA user_version;", [], |row| row.get(0))?;
+    println!("user_version       = {}", user_version);
+
+    let schema_version: i32 = conn.query_row("PRAGMA schema_version;", [], |row| row.get(0))?;
+    println!("schema_version     = {}", schema_version);
+
+    let (log_size, frames, checkpointed): (i32, i32, i32) =
+        conn.query_row("PRAGMA wal_checkpoint(PASSIVE);", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+    println!(
+        "WAL checkpoint     = log_size={}, frames={}, checkpointed={}",
+        log_size, frames, checkpointed
+    );
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use rusqlite::Connection;
+    use rusqlite::OpenFlags;
+
+    use crate::sqlite::sqlite_helper::print_sqlite_info;
+
+    #[test]
+    fn test_sqlite_features() -> anyhow::Result<()> {
+        let db_path = "./dummy.db";
+        let conn = Connection::open_with_flags(
+            db_path,
+            OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+
+        let mode: String = conn.query_row("PRAGMA journal_mode = wal2;", [], |row| row.get(0))?;
+        assert_eq!(mode, "wal2");
+
+        conn.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS foo (id INTEGER PRIMARY KEY, name TEXT)",
+            [],
+        )?;
+
+        let expected_name = "Alice";
+        conn.execute("BEGIN CONCURRENT", [])?;
+        conn.execute("INSERT INTO foo (name) VALUES (?1)", [expected_name])?;
+        conn.execute("COMMIT", [])?;
+
+        let mut stmt = conn.prepare("SELECT id, name FROM foo")?;
+        let (id, name) =
+            stmt.query_one([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+        assert_eq!((id, name), (1, expected_name.to_string()));
+
+        print_sqlite_info(&conn)?;
+
+        Ok(())
+    }
 }

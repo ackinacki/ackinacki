@@ -3,6 +3,7 @@
 
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
+use std::sync::atomic::AtomicU64;
 use std::sync::mpsc;
 use std::sync::mpsc::channel;
 use std::sync::Arc;
@@ -25,6 +26,12 @@ use crate::cli::Args;
 use crate::events;
 use crate::metrics::Metrics;
 use crate::rest_api_routes::rest_api_router;
+
+pub struct AppState {
+    pub default_bp: SocketAddr,
+    pub message_router: Arc<MessageRouter>,
+    pub last_block_gen_utime: AtomicU64,
+}
 
 pub async fn execute(
     args: Args,
@@ -81,8 +88,15 @@ pub async fn execute(
     let tcp_listener = TcpListener::new(args.rest_api);
     let acceptor = tcp_listener.try_bind().await?;
 
+    let app_state = Arc::new(AppState {
+        default_bp,
+        message_router: Arc::new(message_router),
+        last_block_gen_utime: AtomicU64::new(0),
+    });
+
+    let app_state_clone = app_state.clone();
     let rest_api_server_handler = tokio::spawn(async move {
-        Server::new(acceptor).serve(rest_api_router(message_router, default_bp)).await;
+        Server::new(acceptor).serve(rest_api_router(app_state_clone)).await;
     });
 
     // block subscriber
@@ -92,7 +106,8 @@ pub async fn execute(
         event_pub.clone(),
         bp_data_tx,
     );
-    let block_subscriber_handler = block_subscriber.run(metrics, cmd_tx, cmd_rx);
+
+    let block_subscriber_handler = block_subscriber.run(app_state, metrics, cmd_tx, cmd_rx);
 
     tokio::select! {
         _ = block_subscriber_handler => {

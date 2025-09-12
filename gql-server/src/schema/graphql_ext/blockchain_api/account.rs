@@ -1,6 +1,8 @@
 // 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::sync::Arc;
+
 use async_graphql::connection::ConnectionNameType;
 use async_graphql::connection::Edge;
 use async_graphql::connection::EdgeNameType;
@@ -14,6 +16,7 @@ use async_graphql::InputObject;
 use async_graphql::Object;
 use async_graphql::OutputType;
 use sqlx::SqlitePool;
+use tvm_client::ClientContext;
 
 use super::transactions::BlockchainTransaction;
 use crate::schema::db;
@@ -112,7 +115,9 @@ impl BlockchainAccountQuery<'_> {
             return Some(preloaded.clone().into());
         }
         let pool = self.ctx.data::<SqlitePool>().unwrap();
-        db::Account::by_address(pool, Some(self.address.clone()))
+        let client = self.ctx.data::<Arc<ClientContext>>().unwrap();
+
+        db::Account::by_address(pool, client, Some(self.address.clone()))
             .await
             .unwrap()
             .map(|db_account| db_account.into())

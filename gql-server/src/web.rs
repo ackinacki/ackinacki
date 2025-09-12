@@ -4,6 +4,7 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Context;
 use async_graphql::dataloader::DataLoader;
@@ -19,6 +20,7 @@ use sqlx::Pool;
 use sqlx::Sqlite;
 use sqlx::SqlitePool;
 use tokio::time;
+use tvm_client::ClientContext;
 use warp::http::Response as HttpResponse;
 use warp::http::StatusCode;
 use warp::Filter;
@@ -32,12 +34,13 @@ use crate::schema::graphql_std;
 
 async fn open_db(db_path: PathBuf) -> anyhow::Result<Pool<Sqlite>> {
     let db_path_str = db_path.display().to_string();
+    let connect_string = format!("{}?mode=ro", db_path_str);
     let mut interval = time::interval(time::Duration::from_secs(3));
     let mut attempt: u16 = 0;
     let pool = loop {
         interval.tick().await;
 
-        let res = SqlitePool::connect(&db_path_str)
+        let res = SqlitePool::connect(&connect_string)
             .await
             .with_context(|| format!("DB file: {db_path_str}"));
 
@@ -58,8 +61,13 @@ async fn open_db(db_path: PathBuf) -> anyhow::Result<Pool<Sqlite>> {
     Ok(pool)
 }
 
-pub async fn start(bind_to: String, db_path: PathBuf) -> anyhow::Result<()> {
+pub async fn start(
+    bind_to: String,
+    db_path: PathBuf,
+    sdk_client: Arc<ClientContext>,
+) -> anyhow::Result<()> {
     let pool = open_db(db_path).await?;
+
     let socket_addr = bind_to.parse::<SocketAddr>()?;
 
     let graphql_playground = warp::path!("graphql_old").and(warp::get()).map(move || {
@@ -77,6 +85,7 @@ pub async fn start(bind_to: String, db_path: PathBuf) -> anyhow::Result<()> {
     if !cfg!(feature = "store_events_only") {
         let schema = Schema::build(graphql_ext::QueryRoot, EmptyMutation, EmptySubscription)
             .data(pool.clone())
+            .data(sdk_client)
             .data(DataLoader::new(BlockLoader { pool: pool.clone() }, tokio::spawn))
             .data(DataLoader::new(MessageLoader { pool: pool.clone() }, tokio::spawn))
             .data(DataLoader::new(TransactionLoader { pool }, tokio::spawn))

@@ -101,10 +101,11 @@ mod unit_tests {
     #[ignore]
     async fn test_msquic_transport() {
         init_logs();
-        let mut server_cred = NetCredential::generate_self_signed(None, None).unwrap();
+        let mut server_cred = NetCredential::generate_self_signed(None, &[]).unwrap();
         let client_ed_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
         let mut client_cred =
-            NetCredential::generate_self_signed(None, Some(client_ed_key.clone())).unwrap();
+            NetCredential::generate_self_signed(None, std::slice::from_ref(&client_ed_key))
+                .unwrap();
         server_cred.trusted_ed_pubkeys.insert(client_ed_key.verifying_key());
         client_cred.trusted_cert_hashes.insert(CertHash::from(&server_cred.my_certs[0]));
         let server_cred_clone = server_cred.clone();
@@ -163,7 +164,7 @@ mod unit_tests {
         let l = msquic_async::Listener::new(
             &reg,
             config,
-            NetCredential::generate_self_signed(None, None).unwrap(),
+            NetCredential::generate_self_signed(None, &[]).unwrap(),
         )
         .unwrap();
         let local_address = SocketAddr::new(address.parse().unwrap(), port);
@@ -187,7 +188,7 @@ mod unit_tests {
             let port = 4444;
             let conn = msquic_async::Connection::new(
                 &reg,
-                NetCredential::generate_self_signed(None, None).unwrap(),
+                NetCredential::generate_self_signed(None, &[]).unwrap(),
             )
             .unwrap();
             let rt = tokio::runtime::Runtime::new().unwrap();

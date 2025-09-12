@@ -1,0 +1,5 @@
+---
+BM_DIR: "{{ ROOT_DIR }}/block-manager"
+BM_DATA_DIR: "{{ MNT_DATA }}/block-manager"
+BM_LOGS_DIR: "{{ MNT_DATA }}/logs-block-manager"
+

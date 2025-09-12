@@ -1,15 +1,9 @@
 // 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::HashMap;
-
-use async_graphql::futures_util::TryStreamExt;
-use futures::future;
-use futures::stream::FuturesUnordered;
 use num::bigint::Sign;
 use num::BigInt;
 use num::Num;
-use sqlx::SqlitePool;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -17,13 +11,8 @@ use tvm_block::Deserializable;
 use tvm_block::ExtraCurrencyCollection;
 use tvm_types::read_single_root_boc;
 
-use crate::schema::db;
-use crate::schema::graphql::block::Block;
 use crate::schema::graphql::currency::OtherCurrency;
 use crate::schema::graphql::formats::BigIntFormat;
-use crate::schema::graphql::message::InMsg;
-use crate::schema::graphql::message::Message;
-use crate::schema::graphql::transaction::Transaction;
 use crate::schema::graphql_ext::QueryOrderBy;
 
 pub(crate) trait ToBool {
@@ -99,7 +88,6 @@ impl ToFloat for Option<i64> {
 
 pub fn format_big_int(value: Option<String>, format: Option<BigIntFormat>) -> Option<String> {
     // value.as_ref()?;
-
     match value {
         Some(value) if !value.is_empty() => {
             let big_int = BigInt::from_str_radix(&value, 16).unwrap();
@@ -144,88 +132,6 @@ pub fn u64_to_string(value: u64) -> String {
     let mut string = format!("{value:x}");
     string.insert_str(0, &format!("{:x}", string.len() - 1));
     string
-}
-
-pub async fn _load_trx_out_messages(
-    pool: &SqlitePool,
-    trx: &mut [Option<Transaction>],
-) -> anyhow::Result<()> {
-    let mut ids: Vec<String> = Vec::new();
-
-    for t in trx.iter_mut() {
-        let trx_id = &t.as_ref().unwrap().id;
-        ids.push(format!("{:?}", trx_id.clone()));
-    }
-
-    let mut messages: HashMap<String, Vec<Option<Message>>> = HashMap::new();
-    let sql = format!("SELECT * FROM messages WHERE transaction_id IN ({})", ids.join(","));
-    let rows =
-        sqlx::query_as(&sql).fetch(pool).map_ok(|m| m).try_collect::<Vec<db::Message>>().await?;
-
-    for row in rows {
-        let message: Message = row.clone().into();
-        if let Some(ref tr_id) = row.transaction_id {
-            if messages.contains_key(&tr_id.clone()) {
-                if let Some(m_vec) = messages.get_mut(tr_id) {
-                    m_vec.push(Some(message));
-                }
-            } else {
-                messages.insert(tr_id.to_string(), vec![Some(message)]);
-            }
-        }
-    }
-
-    for t in trx.iter_mut().flatten() {
-        if messages.contains_key(&t.id) {
-            t.out_messages = Some(messages.get(&t.id).unwrap().to_vec());
-        }
-    }
-    Ok(())
-}
-
-pub async fn _load_blocks_in_messages(
-    pool: &SqlitePool,
-    blocks: &mut [Option<Block>],
-) -> anyhow::Result<()> {
-    // let ids = blocks
-    // .iter()
-    // .map(|b| format!("{:?}", &b.as_ref().unwrap().id))
-    // .collect::<Vec<String>>()
-    // .join(",");
-    //
-    // let mut messages: HashMap<String, Vec<Message>> = HashMap::new();
-    // let sql = format!(
-    // "SELECT * FROM messages WHERE id IN (SELECT in_msg FROM transactions WHERE
-    // block_id IN ({}))", ids
-    // );
-    // let rows = sqlx::query_as(&sql)
-    // .fetch(pool)
-    // .map_ok(|m| m)
-    // .try_collect::<Vec<db::Message>>()
-    // .await?;
-    let tasks = blocks
-        .iter()
-        .map(|b| {
-            let block = b.clone();
-            let pool = pool.clone();
-            tokio::spawn(async move {
-                let sql = format!(
-                    "SELECT * FROM messages WHERE id IN (SELECT in_msg FROM transactions WHERE block_id={:?})",
-                    block.clone().unwrap().id
-                );
-                let _rows = sqlx::query_as(&sql)
-                    .fetch(&pool)
-                    .map_ok(|m: db::Message| m.into())
-                    .try_collect::<Vec<InMsg>>()
-                    .await;
-                block.clone()
-            })
-        })
-        .collect::<FuturesUnordered<_>>();
-
-    let _res = future::join_all(tasks).await;
-
-    Ok(())
 }
 
 pub fn init_tracing() {

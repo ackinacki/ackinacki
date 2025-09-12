@@ -1,6 +1,8 @@
 // 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::sync::Arc;
+
 use async_graphql::connection::query;
 use async_graphql::connection::Connection;
 use async_graphql::connection::ConnectionNameType;
@@ -12,6 +14,7 @@ use async_graphql::Object;
 use async_graphql::OutputType;
 use async_graphql::SimpleObject;
 use sqlx::SqlitePool;
+use tvm_client::ClientContext;
 
 use crate::schema::db;
 use crate::schema::graphql::query::PaginationArgs;
@@ -64,7 +67,9 @@ impl AccountQuery {
         }
 
         let pool = ctx.data::<SqlitePool>().unwrap();
-        db::Account::by_address(pool, Some(self.address.clone()))
+        let client = ctx.data::<Arc<ClientContext>>().unwrap();
+
+        db::Account::by_address(pool, client, Some(self.address.clone()))
             .await
             .unwrap()
             .map(|db_account| db_account.into())

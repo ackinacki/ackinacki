@@ -1,0 +1,14 @@
+- name: Block keeper stopping
+  gather_facts: no
+  # Need to add target var due to control hosts
+  hosts: '{{ target | default("block_keepers") }}'
+  become: yes
+  any_errors_fatal: true
+  vars:
+    DELETE_DATA: no
+    DO_START: no
+    DO_STOP: yes
+    FAST_UPDATE: yes
+
+  roles:
+    - block-keeper

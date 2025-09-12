@@ -104,6 +104,11 @@ pub struct AckiNackiBlockState {
     primary_finalization_proof: Option<Envelope<GoshBLS, AttestationData>>,
     fallback_finalization_proof: Option<Envelope<GoshBLS, AttestationData>>,
 
+    // Attestations from NextRoundSuccess that can't be processed right now
+    #[serde(skip)]
+    #[setters(skip)]
+    detached_attestations: Vec<Envelope<GoshBLS, AttestationData>>,
+
     // Flag indicates it has signatures checked.
     #[setters(bool)]
     signatures_verified: Option<bool>,
@@ -351,6 +356,25 @@ impl std::fmt::Display for AckiNackiBlockState {
 }
 
 impl AckiNackiBlockState {
+    #[allow(clippy::inherent_to_string_shadow_display)]
+    pub fn to_string(&self) -> String {
+        format!(
+            r#"AckiNackiBlockState:
+    block_id: {:?}
+    block_seq_no: {:?}
+    known_children: {:?}
+    invalidated: {:?}
+    finalized: {:?}
+"#,
+            self.block_identifier,
+            self.block_seq_no,
+            self.known_children,
+            self.invalidated,
+            self.finalized,
+        )
+        .to_string()
+    }
+
     pub fn new(block_identifier: BlockIdentifier) -> Self {
         Self {
             block_identifier,
@@ -358,6 +382,10 @@ impl AckiNackiBlockState {
             has_all_cross_thread_references_finalized: Some(true),
             ..Default::default()
         }
+    }
+
+    pub fn add_detached_attestations(&mut self, attestation: Envelope<GoshBLS, AttestationData>) {
+        self.detached_attestations.push(attestation);
     }
 
     #[allow(clippy::nonminimal_bool)]
@@ -460,7 +488,7 @@ has_cross_thread_ref_data_prepared={:?}\
         start_time: std::time::Instant,
         _end_time: std::time::Instant,
     ) -> anyhow::Result<()> {
-        tracing::trace!("{:?} Call setter: set_applied({:?}..{:?})", &self, start_time, _end_time);
+        tracing::trace!(target: "monit", "{:?} Call setter: set_applied({:?}..{:?})", &self, start_time, _end_time);
         if self.applied == Some(true) {
             return Ok(());
         }

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 use telemetry_utils::instrumented_channel_ext::WrappedItem;
 use telemetry_utils::instrumented_channel_ext::XInstrumentedSender;
@@ -7,7 +8,7 @@ use crate::node::NetworkMessage;
 use crate::protocol::authority_switch;
 use crate::types::ThreadIdentifier;
 
-type Payload = NetworkMessage;
+type Payload = (NetworkMessage, SocketAddr);
 
 pub enum DispatchError {
     NoRoute(ThreadIdentifier, Payload),
@@ -45,7 +46,7 @@ impl Dispatcher {
 
     #[allow(clippy::result_large_err)]
     pub fn dispatch(&self, message: Payload) -> anyhow::Result<(), DispatchError> {
-        let (is_authority, thread_id) = match &message {
+        let (is_authority, thread_id) = match &message.0 {
             NetworkMessage::AuthoritySwitchProtocol(e) => {
                 (true, authority_switch::routing::route(e))
             }
@@ -65,7 +66,7 @@ impl Dispatcher {
                 return Ok(());
             }
         };
-        tracing::trace!("Dispatcher: received message for {thread_id:?} {message:?}");
+        tracing::trace!("Dispatcher: received message for {thread_id:?} {:?}", message.0);
         match self.routes.get(&thread_id) {
             Some((sender, authority)) => {
                 if is_authority {
@@ -81,7 +82,7 @@ impl Dispatcher {
             }
             None => {
                 // TODO: Received block for unexpected thread, skip it for now
-                tracing::warn!("Received block from unexpected thread: {message:?}");
+                tracing::warn!("Received block from unexpected thread: {:?}", message.0);
                 Err(DispatchError::NoRoute(thread_id, message))
             }
         }

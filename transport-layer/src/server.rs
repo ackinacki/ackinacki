@@ -74,7 +74,7 @@ async fn listener_handler(
         .create_listener(
             bind,
             &["ALPN"],
-            NetCredential::generate_self_signed(Some(vec![bind.to_string()]), None)?,
+            NetCredential::generate_self_signed(Some(vec![bind.to_string()]), &[])?,
         )
         .await?;
     tracing::info!("LiteServer started on port {}", bind.port());

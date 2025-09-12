@@ -291,6 +291,7 @@ pub fn on_block_finalized(
         tracing::info!("Block marked as finalized: {:?} {:?} {:?}", block_seq_no, block_id, thread_id);
         let producer_id = block.data().get_common_section().producer_id.clone();
         tracing::info!(
+            target: "monit",
             "Last finalized block data: seq_no: {:?}, block_id: {:?}, producer_id: {}, signatures: {:?}, thread_id: {:?}, tx_cnt: {}, time: {}",
             block.data().seq_no(),
             block.data().identifier(),

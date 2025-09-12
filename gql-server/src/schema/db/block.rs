@@ -3,6 +3,7 @@
 
 use async_graphql::futures_util::TryStreamExt;
 use sqlx::prelude::FromRow;
+use sqlx::QueryBuilder;
 use sqlx::SqlitePool;
 
 use crate::defaults;
@@ -77,7 +78,11 @@ impl Block {
 
         let sql = format!("SELECT * FROM blocks {where_clause} {order_by} LIMIT {limit}");
         tracing::debug!("SQL: {sql}");
-        let res = sqlx::query_as(&sql).fetch(pool).map_ok(|b| b).try_collect::<Vec<Block>>().await;
+
+        let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
+
+        let res =
+            builder.build_query_as().fetch(pool).map_ok(|b| b).try_collect::<Vec<Block>>().await;
 
         let blocks = if let Err(err) = res {
             tracing::error!("ERROR: {:?}", err);
@@ -154,8 +159,12 @@ impl Block {
 
         tracing::trace!(target: "blockchain_api", "SQL: {sql}");
 
-        let result: Result<Vec<Block>, anyhow::Error> =
-            sqlx::query_as(&sql).fetch_all(pool).await.map_err(|e| anyhow::format_err!("{}", e));
+        let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
+        let result: Result<Vec<Block>, anyhow::Error> = builder
+            .build_query_as()
+            .fetch_all(pool)
+            .await
+            .map_err(|e| anyhow::format_err!("{}", e));
 
         match result {
             Err(e) => {

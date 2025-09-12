@@ -144,7 +144,7 @@ pub async fn handle_subscriptions<Transport: NetTransport + 'static>(
                 connection = connection_closed_rx.recv() => {
                     if let Some(connection) = connection {
                         // if the closed connection is not our subscription, continue waiting
-                        if !connection.roles.subscriber {
+                        if !connection.is_subscriber() {
                             continue;
                         }
                     }

@@ -141,7 +141,12 @@ impl AttestationSendService {
         if let Some(attn) = state.block_state.guarded(|e| e.own_attestation().clone()) {
             return Ok(attn);
         };
-        match self.generate_attestation(&state.block_state, AttestationTargetType::Primary) {
+        match Self::generate_attestation(
+            self.bls_keys_map.clone(),
+            &self.node_id,
+            &state.block_state,
+            AttestationTargetType::Primary,
+        ) {
             Ok(attestation) => Ok(state.block_state.guarded_mut(|e| {
                 if e.own_attestation().is_none() {
                     e.set_own_attestation(attestation).expect("failed to set attestation");
@@ -166,7 +171,12 @@ impl AttestationSendService {
         if let Some(attn) = state.block_state.guarded(|e| e.own_fallback_attestation().clone()) {
             return Ok(attn);
         };
-        match self.generate_attestation(&state.block_state, AttestationTargetType::Fallback) {
+        match Self::generate_attestation(
+            self.bls_keys_map.clone(),
+            &self.node_id,
+            &state.block_state,
+            AttestationTargetType::Fallback,
+        ) {
             Ok(attestation) => Ok(state.block_state.guarded_mut(|e| {
                 if e.own_fallback_attestation().is_none() {
                     e.set_own_fallback_attestation(attestation).expect("failed to set attestation");
@@ -466,6 +476,7 @@ impl AttestationSendService {
         self.tracking = tracking;
         for (awaiting_destinations, attestation) in to_send.into_iter() {
             tracing::trace!(
+                target: "monit",
                 "AttestationSendService: pulse: send attestation: {:?} {:?}",
                 attestation,
                 awaiting_destinations
@@ -533,7 +544,7 @@ impl AttestationSendService {
                     [("to", &destination_node_id.to_string())],
                 );
                 match self.network_direct_tx.send((
-                    destination_node_id,
+                    destination_node_id.into(),
                     NetworkMessage::BlockAttestation((attestation, self.thread_id)),
                 )) {
                     Ok(()) => {}
@@ -601,13 +612,14 @@ impl AttestationSendService {
     //     }
     // }
 
-    fn generate_attestation(
-        &self,
+    pub fn generate_attestation(
+        bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
+        node_id: &NodeIdentifier,
         block_state: &BlockState,
         attestation_target_type: AttestationTargetType,
     ) -> anyhow::Result<Envelope<GoshBLS, AttestationData>> {
         let Some(bk_data) =
-            block_state.guarded(|state_in| state_in.get_bk_data_for_node_id(&self.node_id))
+            block_state.guarded(|state_in| state_in.get_bk_data_for_node_id(node_id))
         else {
             anyhow::bail!("Failed to generate attestation: no bk data for node id is available");
         };
@@ -622,8 +634,7 @@ impl AttestationSendService {
             anyhow::bail!("Failed to generate attestation: parent id is not available");
         };
 
-        let Some(secret) = self.bls_keys_map.guarded(|map| map.get(&bk_data.pubkey).cloned())
-        else {
+        let Some(secret) = bls_keys_map.guarded(|map| map.get(&bk_data.pubkey).cloned()) else {
             anyhow::bail!("Failed to generate attestation: missing bls key secret");
         };
         let (signer_index, secret) = (bk_data.signer_index, secret.0);

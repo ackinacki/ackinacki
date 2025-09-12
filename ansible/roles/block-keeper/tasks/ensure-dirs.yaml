@@ -1,0 +1,52 @@
+---
+
+- name: "Ensures dir exists: {{ BK_DIR }}"
+  ansible.builtin.file:
+    path: "{{ BK_DIR | mandatory }}/"
+    state: directory
+    mode: u=rwx,g=rwx,o=rwx
+
+- name: "Ensures node share dir exists: {{ BK_DATA_DIR }}/share"
+  ansible.builtin.file:
+    path: "{{ BK_DATA_DIR | mandatory }}/share"
+    state: directory
+    mode: u=rwx,g=rwx,o=rwx
+
+- name: "Ensures node logs dir exists: {{ BK_LOGS_DIR | mandatory }}"
+  ansible.builtin.file:
+    path: "{{ BK_LOGS_DIR | mandatory }}"
+    state: directory
+    mode: u=rwx,g=rwx,o=rwx
+
+- name: "Ensures keys dir exists: {{ BK_DIR }}/bk-configs"
+  ansible.builtin.file:
+    path: "{{ BK_DIR }}/bk-configs"
+    state: directory
+    mode: u=rwx,g=,o=rwx
+
+- name: "Ensures contracts dir exists: {{ BK_DIR }}/contracts"
+  ansible.builtin.file:
+    path: "{{ BK_DIR }}/contracts"
+    state: directory
+    mode: u=rwx,g=rx,o=rx
+
+- name: "Ensures scripts dir exists: {{ BK_DIR }}/bk-scripts"
+  ansible.builtin.file:
+    path: "{{ BK_DATA_DIR | mandatory }}/"
+    state: directory
+    mode: u=rwx,g=rwx,o=rwx
+
+- name: "Ensures Aerospike dirs exist"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: u=rwx,g=rx,o=rx
+  with_list:
+    - "{{ BK_DIR }}/aerospike"
+    - "{{ BK_DIR }}/aerospike-config"
+
+- name: "Ensures WASM binaries dir exists: {{ BK_DIR }}/bk-binaries/wasm"
+  ansible.builtin.file:
+    path: "{{ BK_DIR }}/bk-binaries/wasm"
+    state: directory
+    mode: u=rwx,g=rx,o=rx

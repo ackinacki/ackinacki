@@ -34,7 +34,7 @@ pub fn send_blocks_range_request(
         at_least_n_blocks
     );
     match network_direct_tx.send((
-        destination_node_id,
+        destination_node_id.into(),
         NetworkMessage::BlockRequest {
             inclusive_from,
             exclusive_to,
@@ -59,7 +59,7 @@ where
     TRandomGenerator: rand::Rng,
 {
     pub(crate) fn broadcast_node_joining(&self) -> anyhow::Result<()> {
-        tracing::trace!("Broadcast NetworkMessage::NodeJoining");
+        tracing::info!(target: "monit", "Broadcast NetworkMessage::NodeJoining");
         match self
             .network_broadcast_tx
             .send(NetworkMessage::NodeJoining((self.config.local.node_id.clone(), self.thread_id)))
@@ -138,7 +138,7 @@ where
         tracing::info!("sending syncFrom to node {}: {:?}", node_id, from_seq_no,);
         match self
             .network_direct_tx
-            .send((node_id, NetworkMessage::SyncFrom((from_seq_no, self.thread_id))))
+            .send((node_id.into(), NetworkMessage::SyncFrom((from_seq_no, self.thread_id))))
         {
             Ok(()) => {}
             Err(e) => {

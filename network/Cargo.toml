@@ -9,31 +9,23 @@ license-file.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-async-trait.workspace = true
 base64 = { version = "0.22.1" }
 bincode.workspace = true
 chitchat.workspace = true
 clap.workspace = true
 ed25519-dalek.workspace = true
-enum_dispatch.workspace = true
-faster-hex.workspace = true
 futures.workspace = true
 gossip.workspace = true
 hex.workspace = true
 itertools.workspace = true
 opentelemetry.workspace = true
 opentelemetry-otlp.workspace = true
-opentelemetry_sdk.workspace = true
 parking_lot.workspace = true
-quinn.workspace = true
 rcgen.workspace = true
 rusqlite.workspace = true
 rustls.workspace = true
-rustls-pemfile.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_with.workspace = true
-sha2 = "0.10.9"
 telemetry_utils.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -43,7 +35,6 @@ transport-layer.workspace = true
 tvm_block.workspace = true
 tvm_contracts.workspace = true
 tvm_types.workspace = true
-url.workspace = true
 wtransport.workspace = true
 zstd.workspace = true
 
@@ -55,3 +46,6 @@ tracing-subscriber.workspace = true
 [features]
 # Use automocks in binaries
 use_automocks = []
+
+[package.metadata.cargo-machete]
+ignored = ["opentelemetry-otlp"]

@@ -66,7 +66,7 @@ async fn receive_message<Connection: NetConnection + 'static>(
 
             let msg_type = net_message.label.clone();
             tracing::debug!(
-                broadcast = info.roles.is_broadcast(),
+                broadcast = info.is_broadcast(),
                 msg_type,
                 msg_id = net_message.id,
                 peer = info.remote_info(),
@@ -76,12 +76,12 @@ async fn receive_message<Connection: NetConnection + 'static>(
                 "Message delivery: incoming transfer finished",
             );
             metrics.as_ref().inspect(|x| {
-                x.report_received_bytes(data.len(), &msg_type, info.roles.send_mode());
+                x.report_received_bytes(data.len(), &msg_type, info.send_mode());
                 x.start_delivery_phase(
                     DeliveryPhase::IncomingBuffer,
                     1,
                     &msg_type,
-                    info.roles.send_mode(),
+                    info.send_mode(),
                 );
             });
             let duration_after_transfer = Instant::now();
@@ -98,7 +98,7 @@ async fn receive_message<Connection: NetConnection + 'static>(
                         DeliveryPhase::IncomingBuffer,
                         1,
                         &msg_type,
-                        info.roles.send_mode(),
+                        info.send_mode(),
                         duration_after_transfer.elapsed(),
                     );
                 });
@@ -107,7 +107,7 @@ async fn receive_message<Connection: NetConnection + 'static>(
         }
         Err(err) => {
             tracing::error!(
-                broadcast = info.roles.is_broadcast(),
+                broadcast = info.is_broadcast(),
                 peer = info.remote_info(),
                 "Incoming transfer failed: {}",
                 detailed(&err)
