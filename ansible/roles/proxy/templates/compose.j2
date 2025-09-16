@@ -3,7 +3,6 @@ services:
     image: {{ PROXY_IMAGE }}
     environment:
       RUST_LOG: {{ PROXY_LOG_LEVEL }}
-      RUST_BACKTRACE: 1
 {# Adding service section #}
 {% include 'extra/proxy-env.j2' ignore missing +%}
     network_mode: host
@@ -14,7 +13,7 @@ services:
       - >
         [ -f /workdir/certs/proxy.ca.pem ] ||
         { gen_certs -f -n proxy -s "localhost" {{ PROXY_SIGNING_KEYS | map('regex_replace', '^(.*)$', '--ed-key-path /workdir/certs/\\1') | list | join(' ') }} -o /workdir/certs || exit $?; };
-        proxy > /logsdir/proxy.log 2>&1
+        proxy >> /logsdir/proxy.log 2>&1
     volumes:
       - {{ PROXY_DIR }}/config.yaml:/workdir/config.yaml
       - {{ PROXY_CERTS_DIR }}:/workdir/certs

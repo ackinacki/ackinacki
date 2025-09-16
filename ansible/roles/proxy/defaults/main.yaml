@@ -13,3 +13,5 @@ PROXY_BK_ADDRS: []
 
 PROXY_UP: yes
 PROXY_STOP: no
+
+CLEANUP_KEYS: yes

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
@@ -16,6 +17,8 @@ use network::channel::NetDirectSender;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde::Serialize;
+use telemetry_utils::instrumented_channel_ext::WrappedItem;
+use telemetry_utils::instrumented_channel_ext::XInstrumentedSender;
 use typed_builder::TypedBuilder;
 
 use super::find_last_prefinalized::find_last_prefinalized;
@@ -162,6 +165,7 @@ pub struct Authority {
     node_joining_timeout: Duration,
     action_lock_db: ActionLockStorage,
     max_lookback_block_height_distance: usize,
+    self_addr: SocketAddr,
 }
 
 impl Authority {
@@ -187,6 +191,7 @@ impl Authority {
                     .network_broadcast_tx(self.network_broadcast_tx.clone())
                     .node_joining_timeout(self.node_joining_timeout)
                     .max_lookback_block_height_distance(self.max_lookback_block_height_distance)
+                    .self_addr(self.self_addr)
                     .build(),
             ))),
         )
@@ -356,6 +361,12 @@ pub struct ThreadAuthority {
     last_node_joining_sent: Instant,
 
     max_lookback_block_height_distance: usize,
+
+    #[builder(setter(skip))]
+    #[builder(default = None)]
+    self_node_authority_tx: Option<XInstrumentedSender<(NetworkMessage, SocketAddr)>>,
+
+    self_addr: SocketAddr,
 }
 
 impl std::fmt::Debug for Authority {
@@ -391,6 +402,15 @@ impl OnBlockProducerStalledResult {
         OnBlockProducerStalledResult {
             // TODO: config.
             next_deadline: std::time::Instant::now() + std::time::Duration::from_millis(30),
+            next_round: None,
+            block_height,
+        }
+    }
+
+    pub fn retry_after(block_height: Option<BlockHeight>, timeout: std::time::Duration) -> Self {
+        OnBlockProducerStalledResult {
+            // TODO: config.
+            next_deadline: std::time::Instant::now() + timeout,
             next_round: None,
             block_height,
         }
@@ -562,6 +582,14 @@ impl ThreadAuthority {
     ) {
         tracing::trace!("register_block_producer for {:?}", self.thread_id);
         self.block_producers = Some(block_producer_control_tx);
+    }
+
+    pub fn register_self_node_authority_tx(
+        &mut self,
+        self_node_authority_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
+    ) {
+        tracing::trace!("register_self_node_authority_tx for {:?}", self.thread_id);
+        self.self_node_authority_tx = Some(self_node_authority_tx);
     }
 
     pub fn on_block_producer_stalled(&mut self) -> OnBlockProducerStalledResult {
@@ -918,6 +946,21 @@ impl ThreadAuthority {
                 let _ = self
                     .network_broadcast_tx
                     .send(NetworkMessage::NodeJoining((self.node_identifier.clone(), thread_id)));
+                let _ = self.self_node_authority_tx.as_ref().map(|e| {
+                    e.send(WrappedItem {
+                        payload: (
+                            NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::RejectTooOld(
+                                self.thread_id,
+                            )),
+                            self.self_addr,
+                        ),
+                        label: self.thread_id.to_string(),
+                    })
+                });
+                return OnBlockProducerStalledResult::retry_after(
+                    Some(block_height),
+                    self.node_joining_timeout,
+                );
             }
             return OnBlockProducerStalledResult::retry_later(Some(block_height));
         };

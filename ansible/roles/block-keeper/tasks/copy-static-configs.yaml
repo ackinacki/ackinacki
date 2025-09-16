@@ -24,3 +24,4 @@
   copy:
     dest: "{{ BK_DIR }}"
     src: ".env"
+  when: COPY_ENV is defined and COPY_ENV

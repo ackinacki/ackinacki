@@ -703,37 +703,36 @@ fn rename_with_suffixes(work: &Path, archived: &Path) -> std::io::Result<()> {
 
 pub fn print_sqlite_info(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     let journal_mode: String = conn.query_row("PRAGMA journal_mode;", [], |row| row.get(0))?;
-    println!("journal_mode       = {}", journal_mode);
+    println!("journal_mode       = {journal_mode}");
 
     let synchronous: i32 = conn.query_row("PRAGMA synchronous;", [], |row| row.get(0))?;
-    println!("synchronous        = {} (0=OFF, 1=NORMAL, 2=FULL, 3=EXTRA)", synchronous);
+    println!("synchronous        = {synchronous} (0=OFF, 1=NORMAL, 2=FULL, 3=EXTRA)");
 
     let wal_autocheckpoint: i32 =
         conn.query_row("PRAGMA wal_autocheckpoint;", [], |row| row.get(0))?;
-    println!("wal_autocheckpoint = {} pages", wal_autocheckpoint);
+    println!("wal_autocheckpoint = {wal_autocheckpoint} pages");
 
     let page_size: i32 = conn.query_row("PRAGMA page_size;", [], |row| row.get(0))?;
-    println!("page_size          = {} bytes", page_size);
+    println!("page_size          = {page_size} bytes");
 
     let cache_size: i32 = conn.query_row("PRAGMA cache_size;", [], |row| row.get(0))?;
-    println!("cache_size         = {} pages", cache_size);
+    println!("cache_size         = {cache_size} pages");
 
     let foreign_keys: i32 = conn.query_row("PRAGMA foreign_keys;", [], |row| row.get(0))?;
     println!("foreign_keys       = {}", if foreign_keys == 1 { "ON" } else { "OFF" });
 
     let user_version: i32 = conn.query_row("PRAGMA user_version;", [], |row| row.get(0))?;
-    println!("user_version       = {}", user_version);
+    println!("user_version       = {user_version}");
 
     let schema_version: i32 = conn.query_row("PRAGMA schema_version;", [], |row| row.get(0))?;
-    println!("schema_version     = {}", schema_version);
+    println!("schema_version     = {schema_version}");
 
     let (log_size, frames, checkpointed): (i32, i32, i32) =
         conn.query_row("PRAGMA wal_checkpoint(PASSIVE);", [], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })?;
     println!(
-        "WAL checkpoint     = log_size={}, frames={}, checkpointed={}",
-        log_size, frames, checkpointed
+        "WAL checkpoint     = log_size={log_size}, frames={frames}, checkpointed={checkpointed}"
     );
 
     Ok(())

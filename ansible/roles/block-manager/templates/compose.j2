@@ -27,7 +27,6 @@ services:
     restart: unless-stopped
     environment:
       NODE_VERBOSE: 1
-      RUST_BACKTRACE: 1
       BM_API_SOCKET: block_manager:8600
     command:
       - bash

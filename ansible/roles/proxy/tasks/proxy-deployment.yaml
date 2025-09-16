@@ -13,7 +13,7 @@
     gather_subset:
       - network
 
-- name: Copy Block Keeper key to proxy
+- name: Copy Block Keeper keys to proxy
   ansible.builtin.copy:
     dest: "{{ PROXY_CERTS_DIR }}"
     src: "{{ item }}"
@@ -54,3 +54,29 @@
     cmd: docker compose restart logrotate
   when:
     - logrotate.changed
+
+- name: Wait for proxy certificate to be available
+  ansible.builtin.wait_for:
+    path: "{{ PROXY_CERTS_DIR }}/proxy.ca.pem"
+    timeout: 300
+  when: CLEANUP_KEYS
+
+- name: Wait for proxy key to be available
+  ansible.builtin.wait_for:
+    path: "{{ PROXY_CERTS_DIR }}/proxy.key.pem"
+    timeout: 300
+  when: CLEANUP_KEYS
+
+- name: Securely shred Block Keeper keys before removal
+  ansible.builtin.command:
+    cmd: "shred -u '{{ PROXY_CERTS_DIR }}/{{ item | basename }}'"
+  with_list: "{{ PROXY_SIGNING_KEYS }}"
+  ignore_errors: yes
+  when: CLEANUP_KEYS
+
+- name: Remove Block Keeper keys after deployment
+  ansible.builtin.file:
+    dest: "{{ PROXY_CERTS_DIR }}/{{ item | basename }}"
+    state: absent
+  with_list: "{{ PROXY_SIGNING_KEYS }}"
+  when: CLEANUP_KEYS

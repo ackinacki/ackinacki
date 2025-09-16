@@ -34,7 +34,7 @@ use crate::schema::graphql_std;
 
 async fn open_db(db_path: PathBuf) -> anyhow::Result<Pool<Sqlite>> {
     let db_path_str = db_path.display().to_string();
-    let connect_string = format!("{}?mode=ro", db_path_str);
+    let connect_string = format!("{db_path_str}?mode=ro");
     let mut interval = time::interval(time::Duration::from_secs(3));
     let mut attempt: u16 = 0;
     let pool = loop {

@@ -221,6 +221,7 @@ where
 
         authority_state.guarded_mut(|e| e.get_thread_authority(&thread_id)).guarded_mut(|e| {
             e.register_block_producer(block_producer_control_tx);
+            e.register_self_node_authority_tx(self_authority_tx.clone());
         });
         let received_acks = Arc::new(Mutex::new(Vec::new()));
         let received_nacks = Arc::new(Mutex::new(Vec::new()));

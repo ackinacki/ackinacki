@@ -67,6 +67,14 @@
 			]
 		},
 		{
+			"name": "deleteZKPfactorByItself",
+			"inputs": [
+				{"name":"epk_expire_at","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "cleanAllExpiredZKPFactors",
 			"inputs": [
 				{"name":"epk_expire_at","type":"uint64"}

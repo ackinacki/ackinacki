@@ -27,7 +27,7 @@ while getopts 'd:l:' opts; do
       LOGFILE="$OPTARG"
       ;;
     *)
-      echo Unknown paremeter
+      echo Unknown parameter
       exit 2 ;;
   esac
 done
@@ -46,21 +46,25 @@ log() {
 }
 
 trigger_stopping_staking () {
-  log "Stop signal has been recieved. Trying to shutdown gracefully"
+  log "Stop signal has been received. Trying to shutdown gracefully"
   WILL_EPOCH_CONTINUE=false
-  local WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails || { log "Error with getting details $WALLET_ADDR. Returning..." >&2 ; return 0 ;})
+  local WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails || { log "Error with getting details $WALLET_ADDR. Returning..." >&2 ; return 1 ;})
   local OLD_SEQ=$(echo $WALLET_DETAILS | jq -r '.activeStakes[] | select(.status == "1") | .seqNoStart')
-  EPOCH_PARAMS=$(cat $NODE_OWNER_KEY | jq -e -r '.public' || { log "Error with reading node owner public key. Returning..." >&2 ; return 0 ;})
+  if [[ ! -n "$OLD_SEQ" ]]; then
+    log "Couldn't get seqNoStart for epoch in wallet $WALLET_DETAILS..."
+    return 1
+  fi
+  EPOCH_PARAMS=$(cat $NODE_OWNER_KEY | jq -e -r '.public' || { log "Error with reading node owner public key. Returning..." >&2 ; return 1 ;})
   EPOCH_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperEpochAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$OLD_SEQ\"}" | jq -r -e '.epochAddress' || { log "Can't get epoch address. Probably epoch has been touched. Exiting..." >&2 ; exit 0 ;})
   EPOCH_DETAILS=$(tvm-cli -j runx --abi $EPOCH_ABI --addr $EPOCH_ADDRESS -m getDetails || { log "Can't get epoch $EPOCH_ADDRESS details. Probably epoch $EPOCH_ADDRESS has been touched. Exiting..." >&2 ; exit 0 ;})
   EPOCH_FINISH=$(echo $EPOCH_DETAILS | jq -r '.seqNoFinish')
   log "Current epoch address $EPOCH_ADDRESS and epoch seqNo finish $EPOCH_FINISH"
 
-  CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo. Returning..." >&2 ; return 0 ;})
+  CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo. Returning..." >&2 ; return 1 ;})
   while [ "$(echo "$EPOCH_FINISH < $CUR_BLOCK_SEQ" | bc)" -ne 1 ]; do
     log "Current block seq_no is less than epoch finishing block seq_no. Waiting..."
     sleep 2
-    CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo. Returning..." >&2 ; return 0 ;})
+    CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo. Returning..." >&2 ; return 1 ;})
   done
 
   log "Current epoch $EPOCH_ADDRESS is ready to be touched"
@@ -73,10 +77,13 @@ trigger_stopping_staking () {
 trigger_stopping_continue_staking () {
   log "SIGHUP signal has been recieved. Disabling continue staking"
   WILL_EPOCH_CONTINUE=false
-  local WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails || { log "Error with getting details $WALLET_ADDR. Returning..." >&2 ; return 0 ;})
+  local WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails || { log "Error with getting details $WALLET_ADDR. Returning..." >&2 ; return 1 ;})
   local OLD_SEQ=$(echo $WALLET_DETAILS | jq -r '.activeStakes[] | select(.status == "1") | .seqNoStart')
-
-  EPOCH_PARAMS=$(cat $NODE_OWNER_KEY | jq -e -r '.public' || { log "Error with reading node owner public key. Returning..." >&2 ; return 0 ;})
+  if [[ ! -n "$OLD_SEQ" ]]; then
+    log "Couldn't get seqNoStart for epoch in wallet $WALLET_DETAILS..."
+    return 1
+  fi
+  EPOCH_PARAMS=$(cat $NODE_OWNER_KEY | jq -e -r '.public' || { log "Error with reading node owner public key. Returning..." >&2 ; return 1 ;})
   EPOCH_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperEpochAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$OLD_SEQ\"}" | jq -r -e '.epochAddress' || { log "Can't get epoch address. Exiting..." >&2 ; exit 1 ;})
   EPOCH_DETAILS=$(tvm-cli -j runx --abi $EPOCH_ABI --addr $EPOCH_ADDRESS -m getDetails || { log "Can't get epoch $EPOCH_ADDRESS details. Exiting..." >&2 ; exit 1 ;})
   IS_EPOCH_CONTINUE=$(echo $EPOCH_DETAILS | jq -r '.isContinue')
@@ -85,16 +92,19 @@ trigger_stopping_continue_staking () {
     return 0
   fi
 
-  local BALANCE_BEFORE=$(echo $WALLET_DETAILS | jq -r '.balance' | xargs printf "%d")
+  local BALANCE_BEFORE_HEX=$(echo $WALLET_DETAILS | jq -r '.balance' | cut -d'x' -f 2 | tr '[:lower:]' '[:upper:]')
+  local BALANCE_BEFORE=$(echo "ibase=16; ${BALANCE_BEFORE_HEX}" | bc)
   log "Current wallet balance - $BALANCE_BEFORE"
   local CANCEL_PARAMS="{\"seqNoStartOld\": \"$OLD_SEQ\"}"
-  tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $NODE_OWNER_KEY --method sendBlockKeeperRequestWithCancelStakeContinue "$CANCEL_PARAMS" || { log "Can't cancel continue staking. Probably there is no active epoch for wallet $WALLET_ADDR. Returning..." >&2 ; return 0 ;}
+  tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $NODE_OWNER_KEY --method sendBlockKeeperRequestWithCancelStakeContinue "$CANCEL_PARAMS" || { log "Can't cancel continue staking. Probably there is no active epoch for wallet $WALLET_ADDR. Returning..." >&2 ; return 1 ;}
   
-  local BALANCE_AFTER=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r '.balance' | xargs printf "%d" || { log "Can't get balance for wallet $WALLET_ADDR. Returning..." >&2 ; return 0 ;})
+  local BALANCE_AFTER_HEX=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r '.balance' | cut -d'x' -f 2 | tr '[:lower:]' '[:upper:]' || { log "Can't get balance for wallet $WALLET_ADDR. Returning..." >&2 ; return 1 ;})
+  local BALANCE_AFTER=$(echo "ibase=16; ${BALANCE_AFTER_HEX}" | bc)
   local BALANCE_ATTEMPTS=0
   while [ $BALANCE_AFTER -le $BALANCE_BEFORE ] && [ $BALANCE_ATTEMPTS -lt 10 ]; do
     log "Updated balance - $BALANCE_AFTER"
-    local BALANCE_AFTER=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r '.balance' | xargs printf "%d" || { log "Can't get balance for wallet $WALLET_ADDR. Returning..." >&2 ; return 0 ;})
+    local BALANCE_AFTER_HEX=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r '.balance' | cut -d'x' -f 2 | tr '[:lower:]' '[:upper:]' || { log "Can't get balance for wallet $WALLET_ADDR. Returning..." >&2 ; return 1 ;})
+    local BALANCE_AFTER=$(echo "ibase=16; ${BALANCE_AFTER_HEX}" | bc)
     local BALANCE_ATTEMPTS=$(( BALANCE_ATTEMPTS + 1 ))
     sleep 2
   done
@@ -106,7 +116,7 @@ trigger_stopping_continue_staking () {
   return 0
 }
 
-trap 'trigger_stopping_continue_staking' SIGHUP
+trap trigger_stopping_continue_staking SIGHUP
 trap trigger_stopping_staking SIGINT SIGTERM
 
 NODE_OWNER_KEY=$1
@@ -120,6 +130,13 @@ fi
 
 if [[ ! -f $BLS_KEYS_FILE ]]; then
   log "$BLS_KEYS_FILE not found."
+  exit 1
+fi
+
+REGEX="^([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])\.([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])\.([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])\.([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$"
+
+if [[ ! $NODE_IP =~ $REGEX ]]; then
+  log "Incorrect IP - $NODE_IP"
   exit 1
 fi
 
@@ -174,10 +191,11 @@ place_stake () {
   local SIGN_INDEX_END=60000
   local SIGNER_INDEX=1
 
-  local WALLET_DETAILS_JSON=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails || { log "Error with getting details $WALLET_ADDR" >&2 ; return 0 ;})
+  local WALLET_DETAILS_JSON=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails || { log "Error with getting details $WALLET_ADDR" >&2 ; return 1 ;})
   # We don't need to get min stake for now
   # WALLET_STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake' | xargs printf "%d * 1.1 / 1000000000\n" | bc -l) # | cut -d'.' -f1)
-  local WALLET_BALANCE=$(echo "$WALLET_DETAILS_JSON" | jq -r '.balance' | xargs printf "%d")
+  local WALLET_BALANCE_HEX=$(echo "$WALLET_DETAILS_JSON" | jq -r '.balance' | cut -d'x' -f 2 | tr '[:lower:]' '[:upper:]')
+  local WALLET_BALANCE=$(echo "ibase=16; ${WALLET_BALANCE_HEX}" | bc)
   local TOTAL_AVAILABLE=0
 
   local LICENSES_JSON=$(echo "$WALLET_DETAILS_JSON" | jq -c '.licenses')
@@ -194,19 +212,19 @@ place_stake () {
       log "License $key is locked for staking by Wallet, skipping"
       continue
     fi
-    local balance=$(echo "$LICENSE" | jq -r '.balance' | xargs printf "%d")
-    local lockStake=$(echo "$LICENSE" | jq -r '.lockStake' | xargs printf "%d")
-    local lockContinue=$(echo "$LICENSE" | jq -r '.lockContinue' | xargs printf "%d")
-    local lockCooler=$(echo "$LICENSE" | jq -r '.lockCooler' | xargs printf "%d")
+    local balance=$(echo "$LICENSE" | jq -r '.balance')
+    local lockStake=$(echo "$LICENSE" | jq -r '.lockStake')
+    local lockContinue=$(echo "$LICENSE" | jq -r '.lockContinue')
+    local lockCooler=$(echo "$LICENSE" | jq -r '.lockCooler')
     
-    local available=$((balance - lockStake - lockContinue - lockCooler))
+    local available=$(echo "$balance - $lockStake - $lockContinue - $lockCooler" | bc)
     if [ $available -lt 0 ]; then
       available=0
     fi
-    TOTAL_AVAILABLE=$((TOTAL_AVAILABLE + available))
+    TOTAL_AVAILABLE=$(echo "$TOTAL_AVAILABLE + $available" | bc)
   done
 
-  WALLET_STAKE=$((TOTAL_AVAILABLE / 2))
+  WALLET_STAKE=$(echo "$TOTAL_AVAILABLE / 2" | bc)
   # WALLET_STAKE=$((${WALLET_STAKE%.*} + 1))
 
   log "Current wallet $WALLET_ADDR balance: $WALLET_BALANCE"
@@ -215,14 +233,14 @@ place_stake () {
   compare=$(echo "$WALLET_BALANCE < $WALLET_STAKE" | bc)
   if [ "$compare" -eq 1 ]; then
     log "Not enough token's on the wallet"
-    exit 1
+    return 1
   fi
 
   # Get signer index
   for i in `seq $SIGN_INDEX_START $SIGN_INDEX_END`; do
     local SIGNER_INDEX_TEMP=$(($RANDOM%(60000-1+1)+1))
     log "Trying signer index: $SIGNER_INDEX_TEMP"
-    SIGNER_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getSignerIndexAddress "{\"index\": $SIGNER_INDEX_TEMP}" | jq -r -e '.signerIndex' || { log "Error with getting signer address" >&2 ; return 0 ;})
+    SIGNER_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getSignerIndexAddress "{\"index\": $SIGNER_INDEX_TEMP}" | jq -r -e '.signerIndex' || { log "Error with getting signer address" >&2 ; return 1 ;})
     ADDRESS_DETAILS=$(tvm-cli -j account $SIGNER_ADDRESS || /bin/true)
     #ADDRESS_DETAILS_LEN=$(echo $ADDRESS_DETAILS | jq '. | length')
     ADDRESS_DETAILS_TYPE=$(echo $ADDRESS_DETAILS | jq -r '.acc_type')
@@ -235,19 +253,24 @@ place_stake () {
     fi
   done
 
-  PREV_ACTIVE_STAKES=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '.activeStakes | length' || { log "Error with getting details $WALLET_ADDR" >&2 ; return 0 ;})
+  PREV_ACTIVE_STAKES=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '.activeStakes | length' || { log "Error with getting details $WALLET_ADDR" >&2 ; return 1 ;})
   PLACE_PARAMS="{\"bls_pubkey\": \"$BLS_PUB_KEY\", \"stake\": $WALLET_STAKE, \"signerIndex\": $SIGNER_INDEX, \"ProxyList\": {}, \"myIp\": \"$NODE_IP\"}"
-  tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $NODE_OWNER_KEY --method sendBlockKeeperRequestWithStake "$PLACE_PARAMS"
+  tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $NODE_OWNER_KEY --method sendBlockKeeperRequestWithStake "$PLACE_PARAMS" || { log "Error with sending stake request. Go to the next step" >&2 ;}
   log "Waiting active stakes..."
-  sleep 5
+  
+  ACTIVE_STAKES=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '.activeStakes | length' || { log "Error with getting active stakes" >&2 ; return 1 ;})
+  STAKES_WAIT_COUNT=0
 
-  ACTIVE_STAKES=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '.activeStakes | length' || { log "Error with getting active stakes" >&2 ; return 0 ;})
-  log "Active stakes - $ACTIVE_STAKES"
+  while [ $ACTIVE_STAKES -eq 0 ] && [ $STAKES_WAIT_COUNT -lt 15 ]; do
+    log "New stakes haven't been found. Current stakes - $ACTIVE_STAKES. Waiting..."
+    sleep 5
+    ACTIVE_STAKES=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '.activeStakes | length' || { log "Error with getting active stakes" >&2 ; return 1 ;})
+    STAKES_WAIT_COUNT=$(( STAKES_WAIT_COUNT + 1 ))
+  done
 
   compare=$(echo "$ACTIVE_STAKES <= $PREV_ACTIVE_STAKES" | bc)
   if [ "$compare" -eq 1 ]; then
     log "Stake request failed..."
-    log "Exiting"
     return 0
   fi
   log "Stake request successfuly accepted..."
@@ -258,9 +281,10 @@ place_continue_stake () {
   local SIGN_INDEX_END=60000
   local SIGNER_INDEX=1
 
-  local WALLET_DETAILS_JSON=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails || { log "Error with getting details $WALLET_ADDR" >&2 ; return 0 ;})
+  local WALLET_DETAILS_JSON=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails || { log "Error with getting details $WALLET_ADDR" >&2 ; return 1 ;})
   # CONT_WALLET_STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake' | xargs printf "%d * 1.1\n" | bc | cut -d'.' -f1)
-  local WALLET_BALANCE=$(echo "$WALLET_DETAILS_JSON" | jq -r '.balance' | xargs printf "%d")
+  local WALLET_BALANCE_HEX=$(echo "$WALLET_DETAILS_JSON" | jq -r '.balance' | cut -d'x' -f 2 | tr '[:lower:]' '[:upper:]')
+  local WALLET_BALANCE=$(echo "ibase=16; ${WALLET_BALANCE_HEX}" | bc)
   local TOTAL_AVAILABLE=0
 
   local LICENSES_JSON=$(echo "$WALLET_DETAILS_JSON" | jq -c '.licenses')
@@ -277,16 +301,16 @@ place_continue_stake () {
       log "License $key is locked for staking by Wallet, skipping"
       continue
     fi
-    local balance=$(echo "$LICENSE" | jq -r '.balance' | xargs printf "%d")
-    local lockStake=$(echo "$LICENSE" | jq -r '.lockStake' | xargs printf "%d")
-    local lockContinue=$(echo "$LICENSE" | jq -r '.lockContinue' | xargs printf "%d")
-    local lockCooler=$(echo "$LICENSE" | jq -r '.lockCooler' | xargs printf "%d")
+    local balance=$(echo "$LICENSE" | jq -r '.balance')
+    local lockStake=$(echo "$LICENSE" | jq -r '.lockStake')
+    local lockContinue=$(echo "$LICENSE" | jq -r '.lockContinue')
+    local lockCooler=$(echo "$LICENSE" | jq -r '.lockCooler')
     
-    local available=$((balance - lockStake - lockContinue - lockCooler))
+    local available=$(echo "$balance - $lockStake - $lockContinue - $lockCooler" | bc)
     if [ $available -lt 0 ]; then
       available=0
     fi
-    TOTAL_AVAILABLE=$((TOTAL_AVAILABLE + available))
+    TOTAL_AVAILABLE=$(echo "$TOTAL_AVAILABLE + $available" | bc -l)
   done
   ### Not needed to send only minStake. Send full wallet balance
   ###
@@ -301,7 +325,7 @@ place_continue_stake () {
   for i in `seq $SIGN_INDEX_START $SIGN_INDEX_END`; do
     local SIGNER_INDEX_TEMP=$(($RANDOM%(60000-1+1)+1))
     log "Trying signer index: $SIGNER_INDEX_TEMP"
-    SIGNER_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getSignerIndexAddress "{\"index\": $SIGNER_INDEX_TEMP}" | jq -r -e '.signerIndex' || { log "Error with getting signer address to continue" >&2 ; return 0 ;})
+    SIGNER_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getSignerIndexAddress "{\"index\": $SIGNER_INDEX_TEMP}" | jq -r -e '.signerIndex' || { log "Error with getting signer address to continue" >&2 ; return 1 ;})
     ADDRESS_DETAILS=$(tvm-cli -j account $SIGNER_ADDRESS || /bin/true)
     # ADDRESS_DETAILS_LEN=$(echo $ADDRESS_DETAILS | jq '. | length')
     ADDRESS_DETAILS_TYPE=$(echo $ADDRESS_DETAILS | jq -r '.acc_type')
@@ -322,14 +346,16 @@ place_continue_stake () {
 
 calculate_reward () {
   COOLER_REWARD=$(tvm-cli -j account $1 | jq -r -e '.ecc_balance."1"' || { echo 0 ; }) # || { log "Error with getting cooler balance" >&2 ; exit 1 ;}) # | xargs printf "%s / 1000000000\n" | bc -l)
-  STAKE=$(echo $2 | xargs printf "%d\n")
+  STAKE_HEX=$(echo $2 | cut -d'x' -f 2 | tr '[:lower:]' '[:upper:]')
+  STAKE=$(echo "ibase=16; ${STAKE_HEX}" | bc)
+
   REWARD=$(printf "$COOLER_REWARD - $STAKE\n" | bc -l)
 }
 
 process_cooler_epoch () {
-  COOLER_SEQNO_FINISH=$(tvm-cli -j runx --abi $COOLER_ABI --addr $1 -m getDetails | jq -r -e '.seqNoFinish' || { log "Error with getting cooler seq_no finish" >&2 ; return 0 ;})
+  COOLER_SEQNO_FINISH=$(tvm-cli -j runx --abi $COOLER_ABI --addr $1 -m getDetails | jq -r -e '.seqNoFinish' || { log "Error with getting cooler seq_no finish" >&2 ; return 1 ;})
   log "Cooler Epoch found with address \"$1\" and finish seqno \"$COOLER_SEQNO_FINISH\""
-  CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo" >&2 ; return 0 ;})
+  CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo" >&2 ; return 1 ;})
   if [ "$(echo "$COOLER_SEQNO_FINISH < $CUR_BLOCK_SEQ" | bc)" -ne 1 ]; then
     log "Current block seq_no is less than cooler finish block seq_no. Skipping cooler processing..."
     return 0
@@ -344,18 +370,22 @@ process_cooler_epoch () {
 
 process_epoch () {
   EPOCH_PARAMS=$(cat $NODE_OWNER_KEY | jq -e -r '.public' || { log "Error with reading node owner public key" >&2 ; return 0 ;})
-  EPOCH_WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '.activeStakes | keys | .[]' || { log "Error with getting details $WALLET_ADDR" >&2 ; return 0 ;})
-  readarray -t ACTIVE_STAKES_ARRAY < <(echo $EPOCH_WALLET_DETAILS)
+  EPOCH_WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails || { log "Error with getting details $WALLET_ADDR" >&2 ; return 0 ;})
+  # readarray -t ACTIVE_STAKES_ARRAY < <(echo $EPOCH_WALLET_DETAILS | jq '.activeStakes | keys | .[]')
+  ACTIVE_STAKES_ARRAY=( $(echo $EPOCH_WALLET_DETAILS | jq '.activeStakes | keys | .[]') )
+  STAKES_LENGTH=$(echo $EPOCH_WALLET_DETAILS | jq '.activeStakes | length')
   log "Active Stakes - ${ACTIVE_STAKES_ARRAY[@]}"
-  log "Stakes count - ${#ACTIVE_STAKES_ARRAY[@]}"
-  if [ ${#ACTIVE_STAKES_ARRAY[@]} -le 0 ] && [ "$WILL_EPOCH_CONTINUE" = true ]; then
+  log "Stakes count - ${STAKES_LENGTH}"
+  if [ ${STAKES_LENGTH} -le 0 ] && [ "$WILL_EPOCH_CONTINUE" = true ]; then
     log "No active stakes have been found for wallet - $WALLET_ADDR. Placing stake..." >&2
     place_stake
 
-    EPOCH_WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '.activeStakes | keys | .[]' || { log "Error with getting details $WALLET_ADDR" >&2 ; return 0 ;})
-    readarray -t ACTIVE_STAKES_ARRAY < <(echo $EPOCH_WALLET_DETAILS)
+    EPOCH_WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails || { log "Error with getting details $WALLET_ADDR" >&2 ; return 0 ;})
+    # readarray -t ACTIVE_STAKES_ARRAY < <(echo $EPOCH_WALLET_DETAILS | jq '.activeStakes | keys | .[]')
+    ACTIVE_STAKES_ARRAY=( $(echo $EPOCH_WALLET_DETAILS | jq '.activeStakes | keys | .[]') )
+    STAKES_LENGTH=$(echo $EPOCH_WALLET_DETAILS | jq '.activeStakes | length')
     log "Active Stakes - ${ACTIVE_STAKES_ARRAY[@]}"
-    log "Stakes count - ${#ACTIVE_STAKES_ARRAY[@]}"
+    log "Stakes count - ${STAKES_LENGTH}"
     # return 0
   fi
 
@@ -364,42 +394,44 @@ process_epoch () {
     log "No active epoch and pre-epoch have been found for wallet - $WALLET_ADDR. Placing stake..." >&2
     place_stake
 
-    EPOCH_WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '.activeStakes | keys | .[]' || { log "Error with getting details $WALLET_ADDR" >&2 ; return 0 ;})
-    readarray -t ACTIVE_STAKES_ARRAY < <(echo $EPOCH_WALLET_DETAILS)
+    EPOCH_WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails || { log "Error with getting details $WALLET_ADDR" >&2 ; return 0 ;})
+    # readarray -t ACTIVE_STAKES_ARRAY < <(echo $EPOCH_WALLET_DETAILS | jq '.activeStakes | keys | .[]')
+    ACTIVE_STAKES_ARRAY=( $(echo $EPOCH_WALLET_DETAILS | jq '.activeStakes | keys | .[]') )
+    STAKES_LENGTH=$(echo $EPOCH_WALLET_DETAILS | jq '.activeStakes | length')
     log "Active Stakes - ${ACTIVE_STAKES_ARRAY[@]}"
-    log "Stakes count - ${#ACTIVE_STAKES_ARRAY[@]}"
+    log "Stakes count - ${STAKES_LENGTH}"
   fi
 
   for k in ${ACTIVE_STAKES_ARRAY[@]}; do
-    ACTIVE_STAKES_SEQ=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r ".activeStakes[$k].seqNoStart" || { log "Error with getting seqNoStart for $k in $WALLET_ADDR" >&2 ; return 0 ;})
-    ACTIVE_STAKES_STAKE=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r ".activeStakes[$k].stake" || { log "Error with getting stake for $k in $WALLET_ADDR" >&2 ; return 0 ;})
-    ACTIVE_STAKES_CASE=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r ".activeStakes[$k].status" || { log "Error with getting status for $k in $WALLET_ADDR" >&2 ; return 0 ;})
+    ACTIVE_STAKES_SEQ=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r ".activeStakes[$k].seqNoStart" || { log "Error with getting seqNoStart for $k in $WALLET_ADDR" >&2 ; return 1 ;})
+    ACTIVE_STAKES_STAKE=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r ".activeStakes[$k].stake" || { log "Error with getting stake for $k in $WALLET_ADDR" >&2 ; return 1 ;})
+    ACTIVE_STAKES_CASE=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r ".activeStakes[$k].status" || { log "Error with getting status for $k in $WALLET_ADDR" >&2 ; return 1 ;})
     case $ACTIVE_STAKES_CASE in
       0)
         log "Pre Epoch - $k"
-        CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo" >&2 ; return 0 ;})
-        PRE_EPOCH_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperPreEpochAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$ACTIVE_STAKES_SEQ\"}" | jq -r -e '.preEpochAddress' || { log "Error with getting pre-epoch address" >&2 ; return 0 ;})
+        CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo" >&2 ; return 1 ;})
+        PRE_EPOCH_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperPreEpochAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$ACTIVE_STAKES_SEQ\"}" | jq -r -e '.preEpochAddress' || { log "Error with getting pre-epoch address" >&2 ; return 1 ;})
         log "PreEpoch contract address \"$PRE_EPOCH_ADDRESS\" and sequence start is \"$ACTIVE_STAKES_SEQ\" and current sequence is \"$CUR_BLOCK_SEQ\""
         IS_EPOCH_ACTIVE=false
         while [ "$(echo "$ACTIVE_STAKES_SEQ < $CUR_BLOCK_SEQ" | bc)" -ne 1 ]; do
           log "Current block seq_no is less than starting block seq_no. Waiting..."
           sleep 1
-          CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo" >&2 ; return 0 ;})
+          CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo" >&2 ; return 1 ;})
         done
         log "Touching preEpoch contract"
         tvm-cli -j callx --abi $PRE_EPOCH_ABI --addr $PRE_EPOCH_ADDRESS -m touch
         ;;
       1)
         log "Epoch in progress - $k"
-        EPOCH_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperEpochAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$ACTIVE_STAKES_SEQ\"}" | jq -r -e '.epochAddress' || { log "Error with getting epoch address" >&2 ; return 0 ;})
-        EPOCH_DETAILS=$(tvm-cli -j runx --abi $EPOCH_ABI --addr $EPOCH_ADDRESS -m getDetails || { log "Error with getting epoch $EPOCH_ADDRESS details" >&2 ; return 0 ;})
+        EPOCH_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperEpochAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$ACTIVE_STAKES_SEQ\"}" | jq -r -e '.epochAddress' || { log "Error with getting epoch address" >&2 ; return 1 ;})
+        EPOCH_DETAILS=$(tvm-cli -j runx --abi $EPOCH_ABI --addr $EPOCH_ADDRESS -m getDetails || { log "Error with getting epoch $EPOCH_ADDRESS details" >&2 ; return 1 ;})
         log "There is active stake with epoch address \"$EPOCH_ADDRESS\""
         IS_EPOCH_ACTIVE=true
         IS_EPOCH_CONTINUE=$(echo $EPOCH_DETAILS | jq -r '.isContinue')
         SEQNO=$ACTIVE_STAKES_SEQ
         EPOCH_SEQNO_START=$(echo $EPOCH_DETAILS | jq -r '.seqNoStart')
         EPOCH_SEQNO_FINISH=$(echo $EPOCH_DETAILS | jq -r '.seqNoFinish')
-        CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq -r '.[0].seq_no' || { log "Error with getting current block seqNo" >&2 ; return 0 ;})
+        CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq -r '.[0].seq_no' || { log "Error with getting current block seqNo" >&2 ; return 1 ;})
         if [ "$IS_EPOCH_CONTINUE" = false ] && [ "$WILL_EPOCH_CONTINUE" = true ] && [ "$(echo "($EPOCH_SEQNO_FINISH - $EPOCH_SEQNO_START) * 0.3 + $EPOCH_SEQNO_START < $CUR_BLOCK_SEQ" | bc)" -eq 1 ]; then
           # if tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -e '.activeStakes | .[] | select(.status == "2")' > /dev/null 2>&1; then
           #   log "There is active Cooler in stakes"
@@ -410,7 +442,7 @@ process_epoch () {
         fi
         IS_EPOCH_CONTINUE=$(echo $EPOCH_DETAILS | jq -r '.isContinue')
         log "Epoch with address \"$EPOCH_ADDRESS\" is being continued: $IS_EPOCH_CONTINUE"
-        CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo" >&2 ; return 0 ;})
+        CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo" >&2 ; return 1 ;})
         if [ "$(echo $EPOCH_DETAILS | jq -r '.seqNoFinish')" -le $CUR_BLOCK_SEQ ]; then
           log "Current epoch $EPOCH_ADDRESS is ready to be touched"
           tvm-cli -j callx --abi $EPOCH_ABI --addr $EPOCH_ADDRESS -m touch
@@ -418,7 +450,7 @@ process_epoch () {
         ;;
       2)
         log "Cooler Epoch - $k"
-        COOLER_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperCoolerAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$ACTIVE_STAKES_SEQ\"}" | jq -r -e '.value0' || { log "Error with getting cooler address" >&2 ; return 0 ;})
+        COOLER_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperCoolerAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$ACTIVE_STAKES_SEQ\"}" | jq -r -e '.value0' || { log "Error with getting cooler address" >&2 ; return 1 ;})
         log "Cooler address - $COOLER_ADDRESS"
         process_cooler_epoch $COOLER_ADDRESS $ACTIVE_STAKES_STAKE
         ;;
@@ -427,7 +459,7 @@ process_epoch () {
 }
 
 # Use when there is no active stakes
-if [ $INIT_ACTIVE_STAKES -le 0 ]; then
+if [ $INIT_ACTIVE_STAKES -eq 0 ]; then
   place_stake
 fi
 

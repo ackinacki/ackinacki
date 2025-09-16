@@ -289,6 +289,14 @@ contract Multifactor is Modifiers {
         }
     }
 
+    function deleteZKPfactorByItself(uint64 epk_expire_at) public {
+        uint256 key = generateIdBasedOnTimestampAndUintData(epk_expire_at, msg.pubkey());
+        require(_factors_ordered_by_timestamp.exists(key) && _factors_ordered_by_timestamp[key] == msg.pubkey(), ERR_INVALID_SIGNATURE);
+        tvm.accept();
+        delete _factors_ordered_by_timestamp[key];
+        _factors_len = _factors_len - 1;
+    }
+
     function cleanOldestZKPFactor() inline private {
         optional(uint256, uint256) pair = _factors_ordered_by_timestamp.min();
         if (pair.hasValue()) {

@@ -722,6 +722,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         .node_joining_timeout(config.global.node_joining_timeout)
         .action_lock_db(action_lock_db)
         .max_lookback_block_height_distance(finalized_block_storage_size)
+        .self_addr(config.network.node_advertise_addr)
         .build(),
     ));
 

@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.5] - 2025-09-16
+
+### Fixed
+- Node join issues
+
+### Improvements
+- Forced entering into syncing state when requesting Node Join
+- Staking improvements
+- RUST_BACKTRACE removed
+
 ## [0.7.4] - 2025-09-12
 
 ### New

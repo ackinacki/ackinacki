@@ -127,7 +127,7 @@ where
         if let Some(id) = &state.id {
             f.write_str(&id.to_string())?;
             if let Some(addr) = state.addr {
-                write!(f, " ({})", addr)?;
+                write!(f, " ({addr})")?;
             }
         } else if let Some(addr) = state.addr {
             f.write_str(&addr.to_string())?;
