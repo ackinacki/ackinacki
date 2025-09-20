@@ -8,5 +8,13 @@ pub use aerospike::*;
 pub use cache::*;
 pub use cross_ref_data::CrossRefStorage;
 pub use internal_messages::*;
+mod fs;
+mod mem;
+mod split;
+mod store;
 #[cfg(test)]
 mod tests;
+
+pub use fs::*;
+pub use split::*;
+pub use store::*;

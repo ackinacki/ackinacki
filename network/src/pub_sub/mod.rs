@@ -82,10 +82,8 @@ impl<Transport: NetTransport> PubSub<Transport> {
     ) -> (Vec<Vec<SocketAddr>>, Vec<Arc<ConnectionWrapper<Transport::Connection>>>) {
         let inner = self.inner.read();
         let subscribed = inner.connections.values().filter_map(|connection| {
-            if let (addr, true) =
-                (&connection.info.remote_addr, connection.info.role.is_subscriber())
-            {
-                Some((*addr, connection.clone()))
+            if connection.info.role.is_subscriber() {
+                Some((connection.info.remote_addr, connection.clone()))
             } else {
                 None
             }
@@ -98,10 +96,13 @@ impl<Transport: NetTransport> PubSub<Transport> {
             let inner = self.inner.read();
             let mut untrusted = Vec::new();
             for connection in inner.connections.values() {
-                if !credential.is_trusted(
-                    &connection.info.remote_cert_hash,
-                    &connection.info.remote_ed_pubkeys,
-                ) {
+                if credential
+                    .verify_cert_hash_and_pubkeys(
+                        &connection.info.remote_cert_hash,
+                        &connection.info.remote_cert_pubkeys,
+                    )
+                    .is_err()
+                {
                     untrusted.push(connection.clone());
                 }
             }
@@ -125,13 +126,13 @@ impl<Transport: NetTransport> PubSub<Transport> {
         credential: NetCredential,
         publisher_addrs: Vec<SocketAddr>,
     ) -> anyhow::Result<()> {
+        let alpn = [if self.is_proxy {
+            ACKI_NACKI_SUBSCRIPTION_FROM_PROXY_PROTOCOL
+        } else {
+            ACKI_NACKI_SUBSCRIPTION_FROM_NODE_PROTOCOL
+        }];
         let (connection, peer_host_id, peer_addr) = 'connect: {
             for publisher_addr in publisher_addrs {
-                let alpn = [if self.is_proxy {
-                    ACKI_NACKI_SUBSCRIPTION_FROM_PROXY_PROTOCOL
-                } else {
-                    ACKI_NACKI_SUBSCRIPTION_FROM_NODE_PROTOCOL
-                }];
                 tracing::debug!(
                     publisher_addr = publisher_addr.to_string(),
                     "Connecting to publisher"
@@ -321,36 +322,36 @@ pub fn monitor_critical_task_ex<Key: Send + 'static>(
     });
 }
 
-fn diff<Key: Hash + Eq + Clone, Value: Clone>(
-    original: impl Iterator<Item = (Key, Value)>,
-    target: &Vec<Vec<Key>>,
-) -> (Vec<Vec<Key>>, Vec<Value>) {
+fn diff<Addr: Hash + Eq + Clone, Conn: Clone>(
+    original: impl Iterator<Item = (Addr, Conn)>,
+    target: &Vec<Vec<Addr>>,
+) -> (Vec<Vec<Addr>>, Vec<Conn>) {
     let mut preserve_original = HashMap::new();
-    for (key, value) in original {
-        preserve_original.insert(key, (value, false));
+    for (addr, conn) in original {
+        preserve_original.insert(addr, (conn, false));
     }
-    let mut included_keys = HashSet::new();
-    let mut should_be_included = Vec::<Vec<Key>>::new();
-    for keys in target {
-        let mut all_keys_are_new = true;
-        for key in keys {
-            if let Some((_, preserve)) = preserve_original.get_mut(key) {
-                all_keys_are_new = false;
+    let mut included_addrs = HashSet::new();
+    let mut should_be_included = Vec::<Vec<Addr>>::new();
+    for addrs in target {
+        let mut all_addrs_are_new = true;
+        for addr in addrs {
+            if let Some((_, preserve)) = preserve_original.get_mut(addr) {
+                all_addrs_are_new = false;
                 *preserve = true;
-            } else if included_keys.contains(key) {
-                all_keys_are_new = false;
+            } else if included_addrs.contains(addr) {
+                all_addrs_are_new = false;
             }
         }
-        if all_keys_are_new {
-            for key in keys {
-                included_keys.insert(key.clone());
+        if all_addrs_are_new {
+            for addr in addrs {
+                included_addrs.insert(addr.clone());
             }
-            should_be_included.push(keys.to_vec());
+            should_be_included.push(addrs.to_vec());
         }
     }
     let should_be_excluded = preserve_original
         .values()
-        .filter_map(|(v, preserve)| (!preserve).then_some(v.clone()))
+        .filter_map(|(conn, preserve)| (!preserve).then_some(conn.clone()))
         .collect::<Vec<_>>();
     (should_be_included, should_be_excluded)
 }

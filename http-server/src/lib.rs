@@ -14,9 +14,14 @@ pub use api::ext_messages::ExtMsgResponse;
 pub use api::ext_messages::FeedbackError;
 pub use api::ext_messages::FeedbackErrorCode;
 pub use api::ext_messages::ResolvingResult;
-pub use api::BkInfo;
-pub use api::BkSetResult;
-pub use api::BlockKeeperSetUpdate;
+pub use api::ApiBk;
+pub use api::ApiBkSet;
+pub use api::ApiBkStatus;
+pub use api::ApiPubKey;
+pub use api::ApiUInt256;
+pub use api::BkSetSummary;
+pub use api::BkSetSummaryResult;
+pub use api::BkSummary;
 use ext_messages_auth::auth::AccountRequest;
 use ext_messages_auth::auth::Token;
 use ext_messages_auth::read_keys_from_file;
@@ -34,7 +39,8 @@ use tvm_block::Message;
 use crate::api::ext_messages::render_error;
 use crate::api::ext_messages::ExternalMessage;
 use crate::api::ext_messages::IncomingExternalMessage;
-use crate::api::BkSetSnapshot;
+use crate::api::ApiBkSetSnapshot;
+use crate::api::BkSetSummarySnapshot;
 
 mod api;
 mod helpers;
@@ -51,7 +57,8 @@ pub struct WebServer<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSe
     pub incoming_message_sender:
         InstrumentedSender<(TMessage, Option<oneshot::Sender<ExtMsgFeedback>>)>,
     pub signing_pubkey_request_senber: mpsc::Sender<AccountRequest>,
-    pub bk_set: Arc<parking_lot::RwLock<BkSetSnapshot>>,
+    pub bk_set_summary: Arc<parking_lot::RwLock<BkSetSummarySnapshot>>,
+    pub bk_set: Arc<parking_lot::RwLock<ApiBkSetSnapshot>>,
     pub into_external_message: TMsgConverter,
     pub bp_resolver: TBPResolver,
     pub get_boc_by_addr: TBocByAddrGetter,
@@ -98,7 +105,8 @@ where
             signing_pubkey_request_senber,
             into_external_message,
             bp_resolver,
-            bk_set: Arc::new(parking_lot::RwLock::new(BkSetSnapshot::new())),
+            bk_set_summary: Arc::new(parking_lot::RwLock::new(BkSetSummarySnapshot::new())),
+            bk_set: Arc::new(parking_lot::RwLock::new(ApiBkSetSnapshot::new())),
             get_boc_by_addr,
             get_default_thread_seqno,
             owner_wallet_pubkey,
@@ -115,7 +123,15 @@ where
         let storage_router = Router::with_path("storage/{*path}")
             .get(StaticDir::new([&self.local_storage_dir]).auto_list(true));
 
-        let bk_set_router = Router::with_path("bk_set").get(api::BkSetHandler::<
+        let bk_set_router = Router::with_path("bk_set").get(api::BkSetSummaryHandler::<
+            TMessage,
+            TMsgConverter,
+            TBPResolver,
+            TBocByAddrGetter,
+            TSeqnoGetter,
+        >::new());
+
+        let bk_set_update_router = Router::with_path("bk_set_update").get(api::ApiBkSetHandler::<
             TMessage,
             TMsgConverter,
             TBPResolver,
@@ -165,6 +181,7 @@ where
                 .push(router_account)
                 .push(router_ext_messages)
                 .push(bk_set_router)
+                .push(bk_set_update_router)
                 .push(router_seqno)
                 .push(storage_latest_router)
                 .push(storage_router),
@@ -172,7 +189,7 @@ where
     }
 
     #[must_use = "server run must be awaited twice (first await is to prepare run call)"]
-    pub async fn run(self, mut bk_set_rx: tokio::sync::watch::Receiver<BlockKeeperSetUpdate>) {
+    pub async fn run(self, mut bk_set_rx: tokio::sync::watch::Receiver<ApiBkSet>) {
         let rustls_config = rustls_config();
 
         let quinn_listener = QuinnListener::new(
@@ -186,19 +203,25 @@ where
         // TODO: maybe use try_bind?
         let acceptor = tcp_listener.join(quinn_listener).bind().await;
 
-        let bk_set = self.bk_set.clone();
-        let bk_set_update_task = tokio::spawn(async move {
-            tracing::info!("BK set update handler started");
-            bk_set.write().update(bk_set_rx.borrow().clone());
+        let shared_bk_set = self.bk_set.clone();
+        let shared_bk_set_summary = self.bk_set_summary.clone();
+        let bk_set_task = tokio::spawn(async move {
+            tracing::info!("BK set handler started");
+            let mut bk_set = bk_set_rx.borrow().clone();
+            shared_bk_set.write().replace(bk_set.clone());
+            shared_bk_set_summary.write().replace(BkSetSummary::new(&bk_set));
             while bk_set_rx.changed().await.is_ok() {
-                bk_set.write().update(bk_set_rx.borrow_and_update().clone())
+                if bk_set.update(&bk_set_rx.borrow_and_update()) {
+                    shared_bk_set.write().replace(bk_set.clone());
+                    shared_bk_set_summary.write().replace(BkSetSummary::new(&bk_set));
+                }
             }
-            tracing::info!("BK set update handler stopped");
+            tracing::info!("BK set handler stopped");
         });
 
         tracing::info!("Start HTTP server on {}", &self.addr);
         Server::new(acceptor).serve(Service::new(self.route())).await;
-        match bk_set_update_task.await {
+        match bk_set_task.await {
             Ok(_) => tracing::info!("BK set update handler stopped"),
             Err(_) => tracing::error!("BK set update handler stopped with error"),
         }

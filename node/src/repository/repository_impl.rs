@@ -25,6 +25,8 @@ use chrono::Utc;
 use database::documents_db::SerializedItem;
 use database::sqlite::ArchAccount;
 use derive_getters::Getters;
+use http_server::ApiBk;
+use http_server::ApiBkSet;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde::Serialize;
@@ -194,6 +196,43 @@ pub struct BkSetUpdate {
     pub added_nodes: (HashSet<NodeIdentifier>, HashSet<NodeIdentifier>),
 }
 
+impl From<ApiBkSet> for BkSetUpdate {
+    fn from(value: ApiBkSet) -> Self {
+        fn bk_set_from(value: Vec<ApiBk>) -> Option<Arc<BlockKeeperSet>> {
+            if !value.is_empty() {
+                Some(Arc::new(value.into()))
+            } else {
+                None
+            }
+        }
+
+        Self {
+            seq_no: value.seq_no as u32,
+            current: bk_set_from(value.current),
+            future: bk_set_from(value.future),
+            added_nodes: (HashSet::new(), HashSet::new()),
+        }
+    }
+}
+
+impl From<BkSetUpdate> for ApiBkSet {
+    fn from(value: BkSetUpdate) -> Self {
+        fn bk_set_from(value: Option<Arc<BlockKeeperSet>>) -> Vec<ApiBk> {
+            if let Some(value) = value {
+                value.as_ref().into()
+            } else {
+                vec![]
+            }
+        }
+
+        Self {
+            seq_no: value.seq_no as u64,
+            current: bk_set_from(value.current),
+            future: bk_set_from(value.future),
+        }
+    }
+}
+
 // TODO: divide repository into 2 entities: one for blocks, one for states with weak refs (for not
 // to store optimistic states longer than necessary)
 pub struct RepositoryImpl {
@@ -265,6 +304,7 @@ pub struct ThreadSnapshot {
     db_messages: Vec<Vec<Arc<WrappedMessage>>>,
     finalized_block: Envelope<GoshBLS, AckiNackiBlock>,
     bk_set: BlockKeeperSet,
+    future_bk_set: BlockKeeperSet,
     finalized_block_stats: BlockStatistics,
     attestation_target: AttestationTargets,
     producer_selector: ProducerSelector,
@@ -962,13 +1002,13 @@ impl RepositoryImpl {
         }
 
         let data_dir = PathBuf::default();
-        let message_db = MessageDurableStorage::as_noop();
+        let message_db = MessageDurableStorage::mem();
         let message_service = MessageDBWriterService::new(message_db.clone(), None).unwrap();
         let finalized_blocks =
             crate::repository::repository_impl::tests::finalized_blocks_storage();
 
         let (bk_set_update_tx, _bk_set_update_rx) = instrumented_channel::<BkSetUpdate>(
-            None::<metrics::BlockProductionMetrics>,
+            None::<BlockProductionMetrics>,
             metrics::BK_SET_UPDATE_CHANNEL,
         );
         Self {
@@ -1468,10 +1508,10 @@ impl Repository for RepositoryImpl {
                             self.accounts.load_account(&account_id, shard_acc.last_trans_hash(), shard_acc.last_trans_lt()).map_err(|err| tvm_types::error!("{}", err))?
                         }
                     };
-                    if acc_root.repr_hash() != shard_acc.account_cell().repr_hash() {
-                        return Err(tvm_types::error!("External account {tvm_account_id} cell hash mismatch: required: {}, actual: {}", acc_root.repr_hash(), shard_acc.account_cell().repr_hash()));
+                    if acc_root.repr_hash() != shard_acc.account_cell()?.repr_hash() {
+                        return Err(tvm_types::error!("External account {tvm_account_id} cell hash mismatch: required: {}, actual: {}", acc_root.repr_hash(), shard_acc.account_cell()?.repr_hash()));
                     }
-                    shard_acc.set_account_cell(acc_root);
+                    shard_acc.set_account_cell(acc_root)?;
                     shard_accounts.insert_with_aug(&tvm_account_id, &shard_acc, &aug)?;
                 }
                 Ok(true)
@@ -1581,10 +1621,11 @@ impl Repository for RepositoryImpl {
                     state.set_stored(&thread_snapshot.finalized_block)?;
                     let bk_set = Arc::new(thread_snapshot.bk_set.clone());
                     state.set_bk_set(bk_set.clone())?;
+                    let future_bk_set = Arc::new(thread_snapshot.future_bk_set.clone());
+                    state.set_future_bk_set(future_bk_set.clone())?;
                     state.set_descendant_bk_set(bk_set)?;
                     // TODO: need to sync future BK set
-                    state.set_future_bk_set(Arc::new(BlockKeeperSet::new()))?;
-                    state.set_descendant_future_bk_set(Arc::new(BlockKeeperSet::new()))?;
+                    state.set_descendant_future_bk_set(future_bk_set)?;
                     state.set_block_stats(thread_snapshot.finalized_block_stats.clone())?;
                     state.set_block_height(thread_snapshot.block_height)?;
                     state.set_ancestor_blocks_finalization_checkpoints(
@@ -1711,14 +1752,17 @@ impl Repository for RepositoryImpl {
         accounts
             .iterate_accounts(|acc_id, v, _| {
                 let last_trans_hash = v.last_trans_hash().clone();
-                let account = v.read_account().unwrap().as_struct()?;
+                let Ok(account) = v.read_account() else {
+                    return Ok(true);
+                };
+                let account = account.as_struct()?;
                 if self.split_state {
                     self.accounts
                         .store_account(
                             &AccountAddress(acc_id),
                             &last_trans_hash,
                             v.last_trans_lt(),
-                            v.account_cell(),
+                            v.account_cell()?,
                         )
                         .map_err(|err| tvm_types::error!("{}", err))?;
                 }
@@ -1986,7 +2030,7 @@ pub mod tests {
             BlockStateRepository::test(PathBuf::from("./tests-data/test_save_load/block-state"));
         let accounts_repository =
             AccountsRepository::new(PathBuf::from("./tests-data/test_save_load"), Some(0), 1);
-        let message_db = MessageDurableStorage::as_noop();
+        let message_db = MessageDurableStorage::mem();
         let finalized_blocks = finalized_blocks_storage();
         let repository = RepositoryImpl::new(
             PathBuf::from("./tests-data/test_save_load"),
@@ -2024,7 +2068,7 @@ pub mod tests {
             Some(0),
             1,
         );
-        let message_db = MessageDurableStorage::as_noop();
+        let message_db = MessageDurableStorage::mem();
         let finalized_blocks = finalized_blocks_storage();
         let _repository = RepositoryImpl::new(
             PathBuf::from("/home/user/GOSH/acki-nacki/server_data/node1/"),
@@ -2051,7 +2095,7 @@ pub mod tests {
             BlockStateRepository::test(PathBuf::from("./tests-data/test_exists/block-state"));
         let accounts_repository =
             AccountsRepository::new(PathBuf::from("./tests-data/test_exists"), Some(0), 1);
-        let message_db = MessageDurableStorage::as_noop();
+        let message_db = MessageDurableStorage::mem();
         let finalized_blocks = finalized_blocks_storage();
 
         let repository = RepositoryImpl::new(
@@ -2086,7 +2130,7 @@ pub mod tests {
             BlockStateRepository::test(PathBuf::from("./tests-data/test_remove/block-state"));
         let accounts_repository =
             AccountsRepository::new(PathBuf::from("./tests-data/test_remove"), Some(0), 1);
-        let message_db = MessageDurableStorage::as_noop();
+        let message_db = MessageDurableStorage::mem();
         let finalized_blocks = finalized_blocks_storage();
 
         let repository = RepositoryImpl::new(

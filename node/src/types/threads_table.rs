@@ -30,7 +30,6 @@ pub type ThreadsTable = crate::bitmask::table::BitmasksTable<AccountRouting, Thr
 
 impl ThreadsTable {
     pub fn merge(&mut self, another_table: &ThreadsTable) -> anyhow::Result<()> {
-        tracing::trace!("ThreadsTable::merge start");
         let mut merged_table = ThreadsTable::default();
         let mut self_rows = self.rows().cloned().collect::<Vec<_>>();
         let mut another_table_rows = another_table.rows().cloned().collect::<Vec<_>>();
@@ -75,7 +74,6 @@ impl ThreadsTable {
             tracing::trace!("Threads table was updated after merge: {merged_table:?}");
         }
         *self = merged_table;
-        tracing::trace!("ThreadsTable::merge finish");
         Ok(())
     }
 

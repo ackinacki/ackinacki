@@ -83,7 +83,7 @@ services:
         --network-my-ed-key-path=/bk-configs/{{ NODE_OWNER_KEY | basename }}
         --keys-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
         --block-keeper-seed-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
-        --signing-keys=config/block_keeper{{ NODE_ID }}_signing.keys.json
+        --signing-keys=/bk-configs/{{ NODE_OWNER_KEY | basename }}
         --zerostate-path=/bk-configs/zerostate
         --thread-load-threshold {{ THREAD_LOAD_THRESHOLD }}
         --parallelization-level {{ PARALLELIZATION_LEVEL }}
@@ -92,6 +92,9 @@ services:
         --thread-load-window-size {{ THREAD_LOAD_WINDOW_SIZE }}
         --chitchat-cluster-id "{{ NETWORK_NAME }}"
         --block-keeper-epoch-code-hash {{ CODE_HASH }}
+{% if HAS_BK_SET_FILE is defined and HAS_BK_SET_FILE %}
+        --bk-set-update-path=/bk-configs/bk_set.json
+{% endif %}
 {% if PROXIES is defined %}
         --network-proxies {{ PROXIES | join(',') }}
 {% endif %}

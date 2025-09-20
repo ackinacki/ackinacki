@@ -33,8 +33,8 @@ impl NetworkConfig {
         my_cert: CertFile,
         my_key: PrivateKeyFile,
         my_ed_keys: &[transport_layer::SigningKey],
-        peer_certs: CertStore,
-        peer_ed_pubkeys: HashSet<transport_layer::VerifyingKey>,
+        trusted_certs: CertStore,
+        trusted_pubkeys: HashSet<transport_layer::VerifyingKey>,
         subscribe: Vec<Vec<SocketAddr>>,
         proxies: Vec<SocketAddr>,
         tls_cert_cache: Option<TlsCertCache>,
@@ -44,8 +44,8 @@ impl NetworkConfig {
         let credential = NetCredential {
             my_certs,
             my_key,
-            trusted_ed_pubkeys: peer_ed_pubkeys,
-            trusted_cert_hashes: peer_certs.cert_hashes(),
+            trusted_pubkeys,
+            trusted_cert_hashes: trusted_certs.cert_hashes(),
         };
         Ok(Self { bind, credential, subscribe, proxies })
     }

@@ -10,6 +10,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use parking_lot::Mutex;
+use tracing::instrument;
 use tvm_types::UInt256;
 
 use super::rules;
@@ -251,6 +252,7 @@ fn calculate_v_parameter(
 }
 
 #[allow(non_snake_case, clippy::too_many_arguments)]
+#[instrument(skip_all)]
 fn process_candidate_block(
     security_guarantee: SecurityGuarantee,
     node_id: NodeIdentifier,

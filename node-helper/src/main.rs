@@ -149,6 +149,11 @@ struct Config {
     #[arg(long, env)]
     pub zerostate_path: Option<PathBuf>,
 
+    /// Path to init bk set file.
+    /// File must be a json and match `/v2/bk_set_update` API output.
+    #[arg(long, env)]
+    pub bk_set_update_path: Option<PathBuf>,
+
     /// Local shared path where to store files for sync.
     #[arg(long, env)]
     pub external_state_share_local_base_dir: Option<PathBuf>,
@@ -340,6 +345,10 @@ fn main() -> anyhow::Result<()> {
 
             if let Some(zerostate_path) = config_cmd.zerostate_path {
                 config.local.zerostate_path = zerostate_path;
+            }
+
+            if let Some(bk_set_update_path) = config_cmd.bk_set_update_path {
+                config.local.bk_set_update_path = Some(bk_set_update_path);
             }
 
             if let Some(external_state_share_local_base_dir) =

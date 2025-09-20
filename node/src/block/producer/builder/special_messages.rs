@@ -26,6 +26,7 @@ use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::types::AccountAddress;
+use crate::types::AccountRouting;
 
 impl BlockBuilder {
     pub(super) fn execute_dapp_config_messages(
@@ -58,10 +59,9 @@ impl BlockBuilder {
                             anyhow::format_err!("Failed to create config touch message: {e}")
                         })?;
 
-                let dst_addr = message.dst().expect("must be set").address().clone().into();
-                let destination_routing = self
-                    .initial_optimistic_state
-                    .get_account_routing(&dst_addr, Some(&self.dapp_id_table_change_set));
+                let dst_addr: AccountAddress =
+                    message.dst().expect("must be set").address().clone().into();
+                let destination_routing = AccountRouting(key.clone(), dst_addr.clone());
 
                 let wrapped_message = WrappedMessage { message: message.clone() };
                 if self

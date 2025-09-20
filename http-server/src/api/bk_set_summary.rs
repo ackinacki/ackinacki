@@ -17,16 +17,38 @@ use salvo::Response;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::ApiBk;
+use crate::ApiBkSet;
 use crate::ResolvingResult;
 use crate::WebServer;
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
-pub struct BlockKeeperSetUpdate {
-    pub seq_no: u32,
+pub struct BkSetSummary {
+    pub seq_no: u64,
     #[serde(with = "bk_vec_serde")]
-    pub current: Vec<(String, [u8; 32], u32)>,
+    pub current: Vec<(String, [u8; 32], u64)>,
     #[serde(with = "bk_vec_serde")]
-    pub future: Vec<(String, [u8; 32], u32)>,
+    pub future: Vec<(String, [u8; 32], u64)>,
+}
+
+impl BkSetSummary {
+    pub fn new(bk_set: &ApiBkSet) -> Self {
+        fn collect_node_id_owner_pk(bk_set: &[ApiBk]) -> Vec<(String, [u8; 32], u64)> {
+            bk_set
+                .iter()
+                .map(|x| {
+                    let node_id = x.owner_address;
+                    let node_as_string = hex::encode(node_id.0);
+                    (node_as_string, x.owner_pubkey.0, x.epoch_finish_seq_no.unwrap_or_default())
+                })
+                .collect()
+        }
+        Self {
+            seq_no: bk_set.seq_no,
+            current: collect_node_id_owner_pk(&bk_set.current),
+            future: collect_node_id_owner_pk(&bk_set.future),
+        }
+    }
 }
 
 mod bk_vec_serde {
@@ -35,7 +57,7 @@ mod bk_vec_serde {
     use serde::Serializer;
 
     pub fn serialize<S>(
-        vec: &Vec<(String, [u8; 32], u32)>,
+        vec: &Vec<(String, [u8; 32], u64)>,
         serializer: S,
     ) -> Result<S::Ok, S::Error>
     where
@@ -49,25 +71,25 @@ mod bk_vec_serde {
     }
 }
 
-pub struct BkSetSnapshot {
+pub struct BkSetSummarySnapshot {
     update_time: SystemTime,
-    seq_no: u32,
-    nodes: Vec<(String, [u8; 32], u32)>,
-    future_nodes: Vec<(String, [u8; 32], u32)>,
+    seq_no: u64,
+    nodes: Vec<(String, [u8; 32], u64)>,
+    future_nodes: Vec<(String, [u8; 32], u64)>,
 }
 
-impl Default for BkSetSnapshot {
+impl Default for BkSetSummarySnapshot {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl BkSetSnapshot {
+impl BkSetSummarySnapshot {
     pub fn new() -> Self {
         Self { update_time: UNIX_EPOCH, seq_no: 0, nodes: vec![], future_nodes: vec![] }
     }
 
-    pub fn update(&mut self, bk_update: BlockKeeperSetUpdate) {
+    pub fn replace(&mut self, bk_update: BkSetSummary) {
         self.seq_no = bk_update.seq_no;
         self.nodes = bk_update.current;
         self.future_nodes = bk_update.future;
@@ -76,32 +98,32 @@ impl BkSetSnapshot {
 }
 
 #[derive(Serialize, Clone, Debug, Default)]
-pub struct BkSetResponse {
-    result: Option<BkSetResult>,
-    error: Option<BkSetError>,
+pub struct BkSetSummaryResponse {
+    result: Option<BkSetSummaryResult>,
+    error: Option<BkSetSummaryError>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct BkInfo {
+pub struct BkSummary {
     pub node_id: String,
     pub node_owner_pk: String,
-    pub epoch_start_seq_no: u32,
+    pub epoch_start_seq_no: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct BkSetResult {
-    pub bk_set: Vec<BkInfo>,
-    pub future_bk_set: Vec<BkInfo>,
-    pub seq_no: u32,
+pub struct BkSetSummaryResult {
+    pub bk_set: Vec<BkSummary>,
+    pub future_bk_set: Vec<BkSummary>,
+    pub seq_no: u64,
 }
 
-impl From<&BkSetSnapshot> for BkSetResult {
-    fn from(value: &BkSetSnapshot) -> Self {
+impl From<&BkSetSummarySnapshot> for BkSetSummaryResult {
+    fn from(value: &BkSetSummarySnapshot) -> Self {
         Self {
             bk_set: value
                 .nodes
                 .iter()
-                .map(|(node_id, node_owner_pk, epoch_start_seq_no)| BkInfo {
+                .map(|(node_id, node_owner_pk, epoch_start_seq_no)| BkSummary {
                     node_id: node_id.clone(),
                     node_owner_pk: hex::encode(node_owner_pk),
                     epoch_start_seq_no: *epoch_start_seq_no,
@@ -111,7 +133,7 @@ impl From<&BkSetSnapshot> for BkSetResult {
             future_bk_set: value
                 .future_nodes
                 .iter()
-                .map(|(node_id, node_owner_pk, epoch_start_seq_no)| BkInfo {
+                .map(|(node_id, node_owner_pk, epoch_start_seq_no)| BkSummary {
                     node_id: node_id.clone(),
                     node_owner_pk: hex::encode(node_owner_pk),
                     epoch_start_seq_no: *epoch_start_seq_no,
@@ -124,12 +146,12 @@ impl From<&BkSetSnapshot> for BkSetResult {
 }
 
 #[derive(Serialize, Clone, Debug, Default)]
-pub struct BkSetError {
+pub struct BkSetSummaryError {
     code: String,
     message: String,
 }
 
-pub struct BkSetHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>(
+pub struct BkSetSummaryHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>(
     PhantomData<TMessage>,
     PhantomData<TMsgConverter>,
     PhantomData<TBPResolver>,
@@ -138,7 +160,7 @@ pub struct BkSetHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, 
 );
 
 impl<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
-    BkSetHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
+    BkSetSummaryHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
 {
     pub fn new() -> Self {
         Self(PhantomData, PhantomData, PhantomData, PhantomData, PhantomData)
@@ -147,7 +169,7 @@ impl<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
 
 #[async_trait]
 impl<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter> Handler
-    for BkSetHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
+    for BkSetSummaryHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
 where
     TMessage: Clone + Send + Sync + 'static + std::fmt::Debug,
     TMsgConverter: Clone
@@ -189,14 +211,14 @@ where
             return;
         };
         let (result, update_time) = {
-            let bk_set = web_server_state.bk_set.read();
+            let bk_set = web_server_state.bk_set_summary.read();
             if let Some(if_modified_since) = if_modified_since {
                 if bk_set.update_time <= if_modified_since {
                     res.status_code(StatusCode::NOT_MODIFIED);
                     return;
                 }
             }
-            (BkSetResult::from(bk_set.deref()), bk_set.update_time)
+            (BkSetSummaryResult::from(bk_set.deref()), bk_set.update_time)
         };
         res.status_code(StatusCode::OK);
         let _ = res.add_header("Last-Modified", httpdate::fmt_http_date(update_time), true);
@@ -205,9 +227,9 @@ where
 }
 
 fn render_error_response(res: &mut Response, code: &str, message: Option<&str>) {
-    res.render(Json(BkSetResponse {
+    res.render(Json(BkSetSummaryResponse {
         result: None,
-        error: Some(BkSetError {
+        error: Some(BkSetSummaryError {
             code: code.to_string(),
             message: message.unwrap_or(code).to_string(),
         }),

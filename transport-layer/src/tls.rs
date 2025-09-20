@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use ed25519_dalek::Signer;
 use ed25519_dalek::Verifier;
+use ed25519_dalek::VerifyingKey;
 use rcgen::CertificateParams;
 use rcgen::CustomExtension;
 use rustls::client::danger::HandshakeSignatureValid;
@@ -25,6 +26,7 @@ use rustls_pki_types::UnixTime;
 use serde::Deserialize;
 use x509_parser::nom::AsBytes;
 
+use crate::msquic::msquic_async::connection::StartError;
 use crate::CertHash;
 use crate::NetCredential;
 
@@ -178,7 +180,7 @@ pub fn generate_self_signed_cert(
 ) -> anyhow::Result<(PrivateKeyDer<'static>, CertificateDer<'static>)> {
     let key_pair = rcgen::KeyPair::generate()?;
     let key = PrivateKeyDer::<'static>::try_from(key_pair.serialize_der())
-        .map_err(|err| anyhow::anyhow!("Failed to generate TLS key: {}", err.to_string()))?
+        .map_err(|err| anyhow::anyhow!("Failed to generate TLS key: {err}"))?
         .clone_key();
     create_self_signed_cert_with_ed_signatures(subjects, &key, ed_signing_keys)
 }
@@ -204,16 +206,18 @@ pub fn create_self_signed_cert_with_ed_signatures(
     Ok((tls_key.clone_key(), cert_der))
 }
 
-pub fn get_ed_pubkeys_from_cert_der(
+pub fn get_pubkeys_from_cert_der(
     cert: &CertificateDer<'static>,
-) -> anyhow::Result<Vec<ed25519_dalek::VerifyingKey>> {
-    let (_, x509) = x509_parser::parse_x509_certificate(cert.as_ref())?;
-    get_ed_pubkeys_from_cert(&x509)
+) -> Result<Vec<VerifyingKey>, StartError> {
+    let (_, x509) = x509_parser::parse_x509_certificate(cert.as_ref()).map_err(|err| {
+        StartError::BadCertificate(format!("TLS certificate has malformed X509 data: {err}"))
+    })?;
+    get_pubkeys_from_cert(&x509)
 }
 
-pub fn get_ed_pubkeys_from_cert(
+pub fn get_pubkeys_from_cert(
     cert: &x509_parser::certificate::X509Certificate,
-) -> anyhow::Result<Vec<ed25519_dalek::VerifyingKey>> {
+) -> Result<Vec<VerifyingKey>, StartError> {
     let Some(ext) = cert.extensions().iter().find(|e| e.oid == ED_SIGNATURE_OID) else {
         return Ok(vec![]);
     };
@@ -225,92 +229,105 @@ pub fn get_ed_pubkeys_from_cert(
         offset += 32;
         let sig_bytes = &ext.value[offset..(offset + 64)];
         offset += 64;
-        let ed_pub = ed25519_dalek::VerifyingKey::from_bytes(pubkey_bytes.try_into()?)?;
-        let ed_sig = ed25519_dalek::Signature::from_bytes(sig_bytes.try_into()?);
+        let pubkey = VerifyingKey::from_bytes(pubkey_bytes.try_into().map_err(|err| {
+            StartError::BadCertificate(format!("TLS certificate has malformed ED pubkey: {err}"))
+        })?)
+        .map_err(|err| {
+            StartError::BadCertificate(format!("TLS certificate has malformed ED pubkey: {err}"))
+        })?;
+        let signature =
+            ed25519_dalek::Signature::from_bytes(sig_bytes.try_into().map_err(|err| {
+                StartError::BadCertificate(format!(
+                    "TLS certificate has malformed ED signature: {err}"
+                ))
+            })?);
 
-        ed_pub.verify(tls_pub_der, &ed_sig)?;
-        pubkeys.push(ed_pub);
+        pubkey.verify(tls_pub_der, &signature).map_err(|err| {
+            StartError::BadCertificate(format!("TLS certificate has invalid ED signature: {err}"))
+        })?;
+        pubkeys.push(pubkey);
     }
 
     Ok(pubkeys)
 }
 
-pub fn verify_cert_or_ed_pubkeys_is_trusted(
-    cert_hash: &CertHash,
-    ed_pub_keys: &[ed25519_dalek::VerifyingKey],
-    trusted_cert_hashes: &HashSet<CertHash>,
-    trusted_ed_pubkeys: &HashSet<ed25519_dalek::VerifyingKey>,
-) -> bool {
-    let is_trusted_cert_hash = || trusted_cert_hashes.contains(cert_hash);
-    let is_trusted_ed_pub_key = || ed_pub_keys.iter().any(|x| trusted_ed_pubkeys.contains(x));
-    match (!trusted_cert_hashes.is_empty(), !trusted_ed_pubkeys.is_empty()) {
-        (false, false) => true,
-        (false, true) => is_trusted_cert_hash(),
-        (true, false) => is_trusted_ed_pub_key(),
-        (true, true) => is_trusted_cert_hash() || is_trusted_ed_pub_key(),
-    }
-}
-
-pub fn verify_is_valid_cert(
+pub fn verify_cert(
     cert: &CertificateDer<'static>,
-    trusted_cert_hashes: &HashSet<CertHash>,
-    trusted_ed_pubkeys: &HashSet<crate::VerifyingKey>,
-) -> bool {
-    let Some((_, x509)) = x509_parser::parse_x509_certificate(cert.as_ref()).ok() else {
-        return false;
-    };
-
-    if x509.verify_signature(None).is_err() {
-        tracing::warn!("Failed to verify signature of certificate");
-        return false;
-    }
-
-    match (!trusted_cert_hashes.is_empty(), !trusted_ed_pubkeys.is_empty()) {
-        (false, false) => true,
-        (false, true) => is_valid_with_trusted_ed_pub_keys(&x509, trusted_ed_pubkeys),
-        (true, false) => is_valid_with_cert_hashes(cert, trusted_cert_hashes),
-        (true, true) => {
-            is_valid_with_trusted_ed_pub_keys(&x509, trusted_ed_pubkeys)
-                || is_valid_with_cert_hashes(cert, trusted_cert_hashes)
-        }
-    }
+    trusted_hashes: &HashSet<CertHash>,
+    trusted_pubkeys: &HashSet<VerifyingKey>,
+) -> Result<(), StartError> {
+    let (_, x509) = x509_parser::parse_x509_certificate(cert.as_ref())
+        .map_err(|err| StartError::BadCertificate(err.to_string()))?;
+    x509.verify_signature(None).map_err(|err| StartError::BadCertificate(err.to_string()))?;
+    let hash = CertHash::from(cert);
+    let pubkeys = get_pubkeys_from_cert(&x509)?;
+    verify_cert_hash_and_pubkeys(&hash, &pubkeys, trusted_hashes, trusted_pubkeys)
 }
 
-fn is_valid_with_cert_hashes(
-    cert: &CertificateDer<'static>,
-    cert_hashes: &HashSet<CertHash>,
-) -> bool {
-    if cert_hashes.contains(&CertHash::from(cert)) {
-        true
-    } else {
-        tracing::warn!("TLS certificated is not trusted");
-        false
-    }
-}
-
-fn is_valid_with_trusted_ed_pub_keys(
-    cert: &x509_parser::certificate::X509Certificate,
-    trusted_ed_pubkeys: &HashSet<crate::VerifyingKey>,
-) -> bool {
-    match get_ed_pubkeys_from_cert(cert) {
-        Ok(pubkeys) => {
-            for pubkey in &pubkeys {
-                if trusted_ed_pubkeys.contains(pubkey) {
-                    return true;
+pub fn verify_cert_hash_and_pubkeys(
+    hash: &CertHash,
+    pubkeys: &[VerifyingKey],
+    trusted_hashes: &HashSet<CertHash>,
+    trusted_pubkeys: &HashSet<VerifyingKey>,
+) -> Result<(), StartError> {
+    match (as_option(trusted_hashes), as_option(trusted_pubkeys)) {
+        (None, None) => Ok(()),
+        (None, Some(trusted_pubkeys)) => verify_cert_pubkeys(pubkeys, trusted_pubkeys),
+        (Some(trusted_hashes), None) => verify_cert_hash(hash, trusted_hashes),
+        (Some(trusted_hashes), Some(trusted_pubkeys)) => {
+            verify_cert_pubkeys(pubkeys, trusted_pubkeys).or_else(|pubkey_err| {
+                if verify_cert_hash(hash, trusted_hashes).is_ok() {
+                    Ok(())
+                } else {
+                    Err(pubkey_err)
                 }
-            }
-            if !pubkeys.is_empty() {
-                tracing::warn!("TLS certificate has no trusted ED pubkeys");
-            } else {
-                tracing::warn!("TLS certificate is not signed with ED key");
-            }
-            false
-        }
-        Err(err) => {
-            tracing::warn!("TLS certificate has invalid ED signature: {}", err);
-            false
+            })
         }
     }
+}
+
+fn as_option<T>(set: &HashSet<T>) -> Option<&HashSet<T>> {
+    (!set.is_empty()).then_some(set)
+}
+
+fn verify_cert_hash(hash: &CertHash, trusted: &HashSet<CertHash>) -> Result<(), StartError> {
+    if trusted.contains(hash) {
+        Ok(())
+    } else {
+        Err(StartError::BadCertificate("TLS certificate hash is not trusted".to_string()))
+    }
+}
+
+fn verify_cert_pubkeys(
+    pubkeys: &[VerifyingKey],
+    trusted: &HashSet<VerifyingKey>,
+) -> Result<(), StartError> {
+    if pubkeys.iter().any(|x| trusted.contains(x)) {
+        return Ok(());
+    }
+    Err(StartError::BadCertificate(if !pubkeys.is_empty() {
+        format!(
+            "TLS certificate signed by untrusted ED pubkeys [{}]. Trusted pubkeys are [{}].",
+            pubkeys_info(pubkeys, 4),
+            pubkeys_info(trusted, 4)
+        )
+    } else {
+        "TLS certificate is not signed with ED key".to_string()
+    }))
+}
+
+pub(crate) fn pubkeys_info<'a>(
+    pubkeys: impl IntoIterator<Item = &'a VerifyingKey>,
+    len: usize,
+) -> String {
+    let mut s = String::new();
+    for pubkey in pubkeys {
+        if !s.is_empty() {
+            s.push(',');
+        }
+        s.push_str(&hex::encode(&pubkey.as_bytes()[0..len]));
+    }
+    s
 }
 
 pub fn build_pkcs12(credential: &NetCredential) -> anyhow::Result<Vec<u8>> {
@@ -483,13 +500,14 @@ mod tests {
     use rustls_pki_types::CertificateDer;
 
     use crate::generate_self_signed_cert;
-    use crate::verify_is_valid_cert;
+    use crate::msquic::msquic_async::connection::StartError;
+    use crate::verify_cert;
 
-    fn is_trusted<const N: usize>(
+    fn verify<const N: usize>(
         cert: &CertificateDer<'static>,
         trusted_pubkeys: [VerifyingKey; N],
-    ) -> bool {
-        verify_is_valid_cert(cert, &[].into(), &trusted_pubkeys.into())
+    ) -> Result<(), StartError> {
+        verify_cert(cert, &[].into(), &trusted_pubkeys.into())
     }
 
     fn gen_key() -> (SigningKey, VerifyingKey) {
@@ -507,15 +525,15 @@ mod tests {
         let ((k1, v1), (k2, v2), (_, v3)) = (gen_key(), gen_key(), gen_key());
 
         let cert = gen_cert([k1.clone()]);
-        assert!(is_trusted(&cert, [v1]));
+        assert!(verify(&cert, [v1]).is_ok());
 
         let cert = gen_cert([k1, k2]);
-        assert!(is_trusted(&cert, [v1, v2, v3]));
-        assert!(is_trusted(&cert, [v1, v2]));
-        assert!(is_trusted(&cert, [v1, v3]));
-        assert!(is_trusted(&cert, [v2, v3]));
-        assert!(is_trusted(&cert, [v1]));
-        assert!(is_trusted(&cert, [v2]));
-        assert!(!is_trusted(&cert, [v3]));
+        assert!(verify(&cert, [v1, v2, v3]).is_ok());
+        assert!(verify(&cert, [v1, v2]).is_ok());
+        assert!(verify(&cert, [v1, v3]).is_ok());
+        assert!(verify(&cert, [v2, v3]).is_ok());
+        assert!(verify(&cert, [v1]).is_ok());
+        assert!(verify(&cert, [v2]).is_ok());
+        assert!(verify(&cert, [v3]).is_err());
     }
 }

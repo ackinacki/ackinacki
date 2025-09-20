@@ -5,12 +5,11 @@ use std::sync::Arc;
 
 use tracing::instrument;
 use tvm_block::Augmentation;
+use tvm_types::AccountId;
 
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::repository::accounts::AccountsRepository;
-use crate::repository::dapp_id_table::DAppIdTable;
-use crate::repository::dapp_id_table::DAppIdTableChangeSet;
 use crate::repository::optimistic_shard_state::OptimisticShardState;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
@@ -44,11 +43,9 @@ pub fn postprocess(
         AccountRouting,
         Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
     >,
-    new_dapp_id_table: DAppIdTable,
     block_info: BlockInfo,
     thread_id: ThreadIdentifier,
     threads_table: ThreadsTable,
-    changed_dapp_ids: DAppIdTableChangeSet,
     block_accounts: HashSet<AccountAddress>,
     accounts_repo: AccountsRepository,
     db: MessageDurableStorage,
@@ -112,6 +109,32 @@ pub fn postprocess(
             let account_inbox =
                 initial_optimistic_state.messages.account_inbox(&routing.1).cloned();
             outbound_accounts.insert(routing.clone(), (account.clone(), account_inbox));
+        }
+    }
+    if !outbound_accounts.is_empty() {
+        let shard_state = new_state.into_shard_state().as_ref().clone();
+        let mut shard_accounts = shard_state
+            .read_accounts()
+            .map_err(|e| anyhow::format_err!("Failed to read accounts from shard state: {e}"))?;
+        for (account_routing, (_, _)) in &outbound_accounts {
+            let account_id = account_routing.1 .0.clone();
+            // let default_account_routing = AccountRouting(
+            //     DAppIdentifier(account_routing.1.clone()),
+            //     account_routing.1.clone(),
+            // );
+            // if initial_optimistic_state.does_routing_belong_to_the_state(&default_account_routing) {
+            tracing::info!(target: "node", "replace account with redirect: {:?}", account_routing);
+            let acc_id: AccountId = account_id.clone().into();
+            if shard_accounts
+                .account(&acc_id)
+                .map_err(|e| anyhow::format_err!("Failed to check account: {e}"))?
+                .is_some()
+            {
+                shard_accounts.replace_with_redirect(&account_id).map_err(|e| {
+                    anyhow::format_err!("Failed to insert stub to shard state: {e}")
+                })?;
+            }
+            // }
         }
     }
 
@@ -184,7 +207,7 @@ pub fn postprocess(
     }
 
     #[cfg(feature = "monitor-accounts-number")]
-    let mut new_state = OptimisticStateImpl::builder()
+    let new_state = OptimisticStateImpl::builder()
         .block_seq_no(block_seq_no)
         .block_id(block_id.clone())
         .shard_state(new_state)
@@ -193,16 +216,12 @@ pub fn postprocess(
         .threads_table(threads_table.clone())
         .thread_id(thread_id)
         .block_info(block_info)
-        .dapp_id_table(new_dapp_id_table)
         .thread_refs_state(new_thread_refs)
         .cropped(initial_optimistic_state.cropped)
         .changed_accounts(changed_accounts)
         .cached_accounts(cached_accounts)
         .accounts_number(updated_accounts_number)
         .build();
-
-    // merge with update from block
-    new_state.update_dapp_id_table(&changed_dapp_ids);
 
     #[cfg(not(feature = "monitor-accounts-number"))]
     let new_state = OptimisticStateImpl::builder()
@@ -214,7 +233,6 @@ pub fn postprocess(
         .threads_table(threads_table.clone())
         .thread_id(thread_id)
         .block_info(block_info)
-        .dapp_id_table(new_dapp_id_table)
         .thread_refs_state(new_thread_refs)
         .cropped(initial_optimistic_state.cropped)
         .changed_accounts(changed_accounts)
@@ -225,7 +243,6 @@ pub fn postprocess(
         .block_identifier(block_id.clone())
         .block_seq_no(block_seq_no)
         .block_thread_identifier(thread_id)
-        .dapp_id_table_diff(changed_dapp_ids)
         .outbound_messages(produced_internal_messages_to_other_threads)
         .outbound_accounts(outbound_accounts)
         .threads_table(threads_table.clone())

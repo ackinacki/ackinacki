@@ -1,0 +1,72 @@
+---
+- name: Query BK set sequence number
+  uri:
+    url: "http://{{ HOST_PUBLIC_IP }}:{{ BIND_API_PORT }}/v2/bk_set"
+    return_content: yes
+  register: api_response
+  until: api_response.status == 200
+  retries: 30
+  delay: 3
+
+- name: Set bootstrap flag based on sequence number
+  set_fact:
+    WANT_BOOTSTRAP: "{{ api_response.json.seq_no == 0 }}"
+
+- name: Exit if bootstrap is not needed
+  meta: end_host
+  when: not WANT_BOOTSTRAP
+
+- name: Get public wallet key
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}/bk-configs/"
+    cmd: "cat {{ NODE_OWNER_KEY | basename }} | jq -r '.public'"
+  register: BK_PUBLIC_KEY_OUTPUT
+
+- name: Register public wallet key
+  ansible.builtin.set_fact:
+    BK_OWNER_WALLET_PUBKEY: "{{ BK_PUBLIC_KEY_OUTPUT.stdout }}"
+
+- name: Wait 5 seconds before checking BK set
+  pause:
+    seconds: 5
+
+- name: Wait for our public key to appear in BK set update
+  uri:
+    url: "{{ BOOTSTRAP_BK_SET_URL }}"
+    method: GET
+    return_content: true
+    status_code: 200
+  register: resp
+  until: resp is succeeded and (BK_OWNER_WALLET_PUBKEY in resp.content)
+  retries: 60
+  delay: 5
+
+- name: Install collected BK set
+  copy:
+    content: "{{ resp.content }}"
+    dest: "{{ BK_DIR }}/bk-configs/bk_set.json"
+
+- name: Set HAS_BK_SET_FILE fact
+  ansible.builtin.set_fact:
+    HAS_BK_SET_FILE: true
+
+- name: Node graceful shutdown step 1
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}"
+    cmd: docker compose exec "node{{ NODE_ID }}" pkill node
+
+- name: Node graceful shutdown step 2
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}"
+    cmd: docker compose stop "node{{ NODE_ID }}" -t {{ STOP_TIMEOUT }}
+
+- name: Production compose
+  ansible.builtin.template:
+    src: templates/docker-compose.j2
+    dest: "{{ BK_DIR }}/docker-compose.yaml"
+    mode: "0644"
+
+- name: Compose up
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}"
+    cmd: docker compose up -d --remove-orphans

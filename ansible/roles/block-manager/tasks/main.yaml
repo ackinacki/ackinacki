@@ -1,4 +1,8 @@
 ---
+- name: BM ID check
+  include_tasks: bm-id-check.yaml
+  run_once: true
+
 - name: Block Manager stop
   include_tasks: stop-bm.yaml
   when: DO_STOP

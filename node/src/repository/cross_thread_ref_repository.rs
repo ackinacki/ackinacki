@@ -148,7 +148,6 @@ impl CrossThreadRefDataRepository {
                     outbound_accounts_len = cross_thread_ref_data.outbound_accounts().len(),
                     block_identifier = format!("{:?}", cross_thread_ref_data.block_identifier()),
                     block_seq_no = format!("{}", cross_thread_ref_data.block_seq_no()),
-                    dapp_id_table_diff_len = cross_thread_ref_data.dapp_id_table_diff().len(),
                 )
                 .in_scope(|| {
                     if cfg!(feature = "messages_db") {

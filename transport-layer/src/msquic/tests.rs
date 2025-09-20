@@ -63,11 +63,11 @@ mod unit_tests {
     use std::collections::HashSet;
     use std::net::SocketAddr;
     use std::pin::Pin;
-    use std::task::Context;
     use std::task::Poll;
     use std::time::Duration;
     use std::vec;
 
+    use anyhow::Context;
     use bytes::Bytes;
     use futures::AsyncWriteExt;
     use msquic::BufferRef;
@@ -106,7 +106,7 @@ mod unit_tests {
         let mut client_cred =
             NetCredential::generate_self_signed(None, std::slice::from_ref(&client_ed_key))
                 .unwrap();
-        server_cred.trusted_ed_pubkeys.insert(client_ed_key.verifying_key());
+        server_cred.trusted_pubkeys.insert(client_ed_key.verifying_key());
         client_cred.trusted_cert_hashes.insert(CertHash::from(&server_cred.my_certs[0]));
         let server_cred_clone = server_cred.clone();
         let client_cred_clone = client_cred.clone();
@@ -121,9 +121,9 @@ mod unit_tests {
 
             let incoming_request = listener.accept().await.unwrap();
             let connection = incoming_request.accept().await.unwrap();
-            let message = connection.recv().await.unwrap().0;
+            let message = String::from_utf8_lossy(&connection.recv().await.unwrap().0).to_string();
             assert_eq!(client_cred_clone.identity(), connection.remote_identity());
-            assert_eq!(message.len(), 5);
+            assert_eq!(message, "hello");
             println!("{message:?}");
         });
 
@@ -143,6 +143,119 @@ mod unit_tests {
             connection.send("hello".as_bytes()).await.unwrap();
         });
         tasks.join_all().await;
+    }
+
+    struct CertTest {
+        server_trusted: bool,
+        client_trusted: bool,
+        server_send: bool,
+    }
+
+    impl CertTest {
+        async fn run(self) {
+            let unknown_ed_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+            let server_ed_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+            let mut server_cred =
+                NetCredential::generate_self_signed(None, std::slice::from_ref(&server_ed_key))
+                    .unwrap();
+            let client_ed_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+            let mut client_cred =
+                NetCredential::generate_self_signed(None, std::slice::from_ref(&client_ed_key))
+                    .unwrap();
+            server_cred.trusted_pubkeys.insert(if self.client_trusted {
+                client_ed_key.verifying_key()
+            } else {
+                unknown_ed_key.verifying_key()
+            });
+            client_cred.trusted_pubkeys.insert(if self.server_trusted {
+                server_ed_key.verifying_key()
+            } else {
+                unknown_ed_key.verifying_key()
+            });
+            let server_cred_clone = server_cred.clone();
+            let client_cred_clone = client_cred.clone();
+            let mut tasks = JoinSet::new();
+            let server_send = self.server_send;
+            async fn send_recv(send: bool, connection: &impl NetConnection) -> anyhow::Result<()> {
+                if send {
+                    connection.send("hello".as_bytes()).await.context("send")?;
+                } else {
+                    let message = connection.recv().await.context("recv")?.0;
+                    let message = String::from_utf8_lossy(&message).to_string();
+                    assert_eq!(message, "hello");
+                }
+                Ok(())
+            }
+            tasks.spawn(async move {
+                let f = async move {
+                    let transport = MsQuicTransport::new();
+                    let server_addr = SocketAddr::from(([127, 0, 0, 1], 5555));
+                    let listener = transport
+                        .create_listener(
+                            server_addr,
+                            &["yy1", "zzz", "bbb", "ccc"],
+                            server_cred_clone,
+                        )
+                        .await
+                        .context("create listener")?;
+
+                    let incoming_request = listener.accept().await.context("accept 1")?;
+                    let connection = incoming_request.accept().await.context("accept 2")?;
+                    assert_eq!(client_cred_clone.identity(), connection.remote_identity());
+                    send_recv(server_send, &connection).await?;
+                    Ok::<_, anyhow::Error>(())
+                };
+                ("server", f.await)
+            });
+
+            let server_cred_clone = server_cred.clone();
+            let client_cred_clone = client_cred.clone();
+            let client_send = !self.server_send;
+            tasks.spawn(async move {
+                let f = async move {
+                    let server_addr = SocketAddr::from(([127, 0, 0, 1], 5555));
+                    let transport = MsQuicTransport::new();
+                    let connection = transport
+                        .connect(server_addr, &["xxx", "yyy", "bbb", "ccc"], client_cred_clone)
+                        .await
+                        .context("connect")?;
+
+                    // Check negotiated alpn
+                    assert_eq!(connection.alpn_negotiated(), Some("bbb".to_string()));
+                    assert_eq!(connection.remote_identity(), server_cred_clone.identity());
+                    send_recv(client_send, &connection).await?;
+                    Ok::<_, anyhow::Error>(())
+                };
+                ("client", f.await)
+            });
+            let result = tasks.join_all().await;
+            println!(
+                "server trusted {}, client trusted {}, server send {}",
+                self.server_trusted, self.client_trusted, self.server_send
+            );
+            for (peer, result) in result {
+                println!(
+                    "{peer} -> {}",
+                    match result {
+                        Ok(()) => "ok".to_string(),
+                        Err(err) => format!("{:?}", err).replace("\n", " ").replace("\r", ""),
+                    }
+                );
+            }
+            println!();
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_cert_rejection() {
+        init_logs();
+        CertTest { server_trusted: true, client_trusted: true, server_send: true }.run().await;
+        CertTest { server_trusted: false, client_trusted: true, server_send: true }.run().await;
+        CertTest { server_trusted: true, client_trusted: false, server_send: true }.run().await;
+        CertTest { server_trusted: true, client_trusted: true, server_send: false }.run().await;
+        CertTest { server_trusted: false, client_trusted: true, server_send: false }.run().await;
+        CertTest { server_trusted: true, client_trusted: false, server_send: false }.run().await;
     }
 
     #[tokio::test]
@@ -229,7 +342,7 @@ mod unit_tests {
     impl AsyncRead for MockAsyncReader {
         fn poll_read(
             mut self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
+            _cx: &mut std::task::Context<'_>,
             buf: &mut ReadBuf<'_>,
         ) -> Poll<std::io::Result<()>> {
             if self.current >= self.chunks.len() {
@@ -314,7 +427,7 @@ mod unit_tests {
         impl AsyncRead for ZeroReader {
             fn poll_read(
                 mut self: Pin<&mut Self>,
-                _cx: &mut Context<'_>,
+                _cx: &mut std::task::Context<'_>,
                 buf: &mut ReadBuf<'_>,
             ) -> Poll<std::io::Result<()>> {
                 if self.zero_read_counter > 0 {
@@ -359,7 +472,7 @@ mod unit_tests {
             my_key: key,
             my_certs: vec![cert],
             trusted_cert_hashes: HashSet::new(),
-            trusted_ed_pubkeys: HashSet::new(),
+            trusted_pubkeys: HashSet::new(),
         };
         let reg = Registration::new(&RegistrationConfig::default()).unwrap();
         let alpn = ["qtest"];

@@ -79,6 +79,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         _licenseRoot = licenseRoot;
         _stakesCnt = stakesCnt;
         _walletTouch = walletTouch;
+        _signing_pubkey = _owner_pubkey;
     }
 
     function setSigningPubkey(uint256 pubkey) public onlyOwnerPubkey(_owner_pubkey) accept {

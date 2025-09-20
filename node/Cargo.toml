@@ -1,6 +1,6 @@
 [package]
 name = "node"
-version = "0.7.5"
+version = "0.7.6"
 edition.workspace = true
 rust-version.workspace = true
 build = 'build.rs'
@@ -68,6 +68,7 @@ rand = { version = "0.8.5", features = ["small_rng"] }
 reqwest = { version = "0.12.22", default-features = false, features = ["rustls-tls", "gzip", "stream", "blocking"] }
 serde_yaml = "0.9.33"
 signal-hook = "0.3.17"
+tempfile.workspace = true
 thiserror = "2.0.3"
 tracing-test = "0.1"
 typed-builder = "0.20.0"

@@ -212,7 +212,7 @@ impl AttestationSendService {
         let mut next_deadline = std::time::Instant::now() + PULSE_IDLE_TIMEOUT * 2;
         let mut tracking = self.tracking.clone();
         for (_block_id, state) in tracking.iter_mut() {
-            tracing::trace!("AttestationSendService: process: {_block_id:?}");
+            // tracing::trace!("AttestationSendService: process: {_block_id:?}");
             let trace_skip = |reason: &str| {
                 tracing::trace!("skip send attestation: {reason}");
                 block_flow_trace(
@@ -420,9 +420,9 @@ impl AttestationSendService {
             //         e.block_height().clone().unwrap(),
             //     )
             // });
-            tracing::trace!(
-                "AttestationSendService: start waiting for try_lock_send_attestation_action"
-            );
+            // tracing::trace!(
+            //     "AttestationSendService: start waiting for try_lock_send_attestation_action"
+            // );
             match self
                 .authority
                 .guarded_mut(|e| e.get_thread_authority(&thread_id))

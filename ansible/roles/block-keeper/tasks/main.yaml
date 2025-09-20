@@ -1,8 +1,7 @@
 ---
-
 - name: Get Epoch code hash
   ansible.builtin.set_fact:
-    CODE_HASH: "{{ lookup('ansible.builtin.file', 'BlockKeeperEpochContract.code.hash') }}"
+    CODE_HASH: "{{ lookup('ansible.builtin.file', '../contracts/bksystem/BlockKeeperEpochContract.code.hash') }}"
   when: [not FAST_UPDATE, CODE_HASH is not defined]
 
 - name: Ensure required directories exist
@@ -40,3 +39,9 @@
 - name: Start block keeper
   include_tasks: start-bk.yaml
   when: DO_START or UPGRADE is defined
+
+- name: Bootstrap BK set
+  include_tasks: bootstrap-bk-set.yaml
+  when:
+    - BOOTSTRAP_BK_SET_URL is defined and BOOTSTRAP_BK_SET_URL
+    - DO_START or UPGRADE is defined or (DO_BOOTSTRAP is defined and DO_BOOTSTRAP)

@@ -8,7 +8,12 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::ops::AddAssign;
+use std::str::FromStr;
 
+use http_server::ApiBk;
+use http_server::ApiBkStatus;
+use http_server::ApiPubKey;
+use http_server::ApiUInt256;
 use num_bigint::BigUint;
 use num_traits::Zero;
 use serde::Deserialize;
@@ -45,6 +50,7 @@ pub enum BlockKeeperStatus {
 pub struct BlockKeeperData {
     pub pubkey: PubKey,
     pub epoch_finish_seq_no: Option<u64>,
+    pub wait_step: u64,
     pub status: BlockKeeperStatus,
     pub address: String,
     pub stake: BigUint,
@@ -61,6 +67,7 @@ impl Default for BlockKeeperData {
         BlockKeeperData {
             pubkey: PubKey::default(),
             epoch_finish_seq_no: None,
+            wait_step: 0,
             status: BlockKeeperStatus::Active,
             address: "".to_string(),
             stake: BigUint::zero(),
@@ -226,5 +233,76 @@ impl Debug for BlockKeeperSlashData {
             .field("address", &self.addr)
             .field("slash_type", &self.slash_type)
             .finish()
+    }
+}
+
+impl From<ApiBk> for BlockKeeperData {
+    fn from(value: ApiBk) -> Self {
+        Self {
+            pubkey: PubKey::from(value.pubkey.0),
+            epoch_finish_seq_no: value.epoch_finish_seq_no,
+            wait_step: value.wait_step,
+            status: value.status.into(),
+            address: value.address,
+            stake: BigUint::from_str(&value.stake).unwrap_or_default(),
+            owner_address: AccountAddress(value.owner_address.0.into()),
+            signer_index: value.signer_index as SignerIndex,
+            owner_pubkey: value.owner_pubkey.0,
+        }
+    }
+}
+
+impl From<BlockKeeperData> for ApiBk {
+    fn from(value: BlockKeeperData) -> Self {
+        Self {
+            pubkey: ApiPubKey(value.pubkey.as_ref().to_bytes()),
+            epoch_finish_seq_no: value.epoch_finish_seq_no,
+            wait_step: value.wait_step,
+            status: value.status.into(),
+            address: value.address,
+            stake: value.stake.to_string(),
+            owner_address: ApiUInt256(*value.owner_address.0.as_array()),
+            signer_index: value.signer_index as usize,
+            owner_pubkey: ApiUInt256(value.owner_pubkey),
+            ttl_seq_no: None,
+        }
+    }
+}
+
+impl From<BlockKeeperStatus> for ApiBkStatus {
+    fn from(value: BlockKeeperStatus) -> Self {
+        match value {
+            BlockKeeperStatus::Active => Self::Active,
+            BlockKeeperStatus::CalledToFinish => Self::CalledToFinish,
+            BlockKeeperStatus::Expired => Self::Expired,
+            BlockKeeperStatus::PreEpoch => Self::PreEpoch,
+        }
+    }
+}
+
+impl From<ApiBkStatus> for BlockKeeperStatus {
+    fn from(value: ApiBkStatus) -> Self {
+        match value {
+            ApiBkStatus::Active => Self::Active,
+            ApiBkStatus::CalledToFinish => Self::CalledToFinish,
+            ApiBkStatus::Expired => Self::Expired,
+            ApiBkStatus::PreEpoch => Self::PreEpoch,
+        }
+    }
+}
+
+impl From<&BlockKeeperSet> for Vec<ApiBk> {
+    fn from(value: &BlockKeeperSet) -> Self {
+        value.by_signer.values().map(|x| x.clone().into()).collect()
+    }
+}
+
+impl From<Vec<ApiBk>> for BlockKeeperSet {
+    fn from(value: Vec<ApiBk>) -> Self {
+        let mut set = BlockKeeperSet::new();
+        for bk in value {
+            set.insert(bk.signer_index as SignerIndex, bk.into());
+        }
+        set
     }
 }

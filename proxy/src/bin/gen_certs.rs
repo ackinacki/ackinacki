@@ -136,7 +136,7 @@ mod tests {
     use rustls::pki_types::PrivateKeyDer;
     use rustls::pki_types::UnixTime;
     use rustls::server::WebPkiClientVerifier;
-    use transport_layer::verify_is_valid_cert;
+    use transport_layer::verify_cert;
 
     use crate::generate_certs;
 
@@ -185,16 +185,18 @@ mod tests {
             .with_single_cert(vec![server_cert.clone()], server_key)
             .expect("server config");
 
-        assert!(verify_is_valid_cert(
+        assert!(verify_cert(
             &client_cert,
             &HashSet::default(),
             &HashSet::from_iter([client_ed_sign_key.verifying_key()].into_iter())
-        ));
-        assert!(!verify_is_valid_cert(
+        )
+        .is_ok());
+        assert!(verify_cert(
             &client_cert,
             &HashSet::default(),
             &HashSet::from_iter([unknown_ed_sign_key.verifying_key()].into_iter())
-        ));
+        )
+        .is_err());
         assert!(client_auth.verify_client_cert(&client_cert, &[], UnixTime::now()).is_ok());
     }
 }

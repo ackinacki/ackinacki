@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.6] - 2025-09-18
+
+### New
+- `:8600/v2/bk_set_update` BK endpoint with the full bk set info
+- Ability to specify BK set in `NodeConfig.bk_set_update_path`
+- BK and Proxy deployment scripts now download the latest bk set from the specified BK node and gracefully restart the node with this BK set
+
+### Improvements
+- DappId table removed
+- Proxy paragraph updated in README.md
+  
+### Fixed
+- Node runs out of ephemeral ports
+
 ## [0.7.5] - 2025-09-16
 
 ### Fixed

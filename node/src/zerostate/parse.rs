@@ -8,6 +8,9 @@ use account_inbox::storage::DurableStorageRead;
 use account_inbox::storage::LoadErr;
 use serde::Serialize;
 use tvm_block::GetRepresentationHash;
+use tvm_block::Serializable;
+use tvm_types::base64_encode;
+use tvm_types::write_boc;
 
 use super::ZeroState;
 use crate::message::identifier::MessageIdentifier;
@@ -49,6 +52,7 @@ pub struct ZeroStateMessage {
     value: u128,
     ecc: HashMap<u32, String>,
     src_dapp_id: Option<String>,
+    boc: String,
 }
 
 #[derive(Serialize)]
@@ -106,7 +110,9 @@ impl ZeroState {
                 let (message, _) =
                     msg.map_err(|e| anyhow::format_err!("Failed to unpack message: {e:?}"))?;
                 let message = message.message.clone();
-
+                let message_cell = message.serialize().map_err(|e| anyhow::format_err!("{e}"))?;
+                let byes = write_boc(&message_cell).map_err(|e| anyhow::format_err!("{e}"))?;
+                let boc = base64_encode(&byes);
                 zs_messages.push(ZeroStateMessage {
                     source: message
                         .get_int_src_account_id()
@@ -134,6 +140,7 @@ impl ZeroState {
                     src_dapp_id: message
                         .int_header()
                         .and_then(|hdr| hdr.src_dapp_id.clone().map(|val| val.to_hex_string())),
+                    boc,
                 });
             }
         }

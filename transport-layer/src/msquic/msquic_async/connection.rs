@@ -87,6 +87,16 @@ impl Connection {
         ConnectionAccept { conn: self }
     }
 
+    pub(crate) fn certificate_error(&self) -> Option<String> {
+        if let Some(Err(StartError::BadCertificate(msg))) =
+            &self.0.exclusive.lock().unwrap().certificate
+        {
+            Some(msg.clone())
+        } else {
+            None
+        }
+    }
+
     /// Poll to start the connection.
     fn poll_accept(&self, cx: &mut Context<'_>) -> Poll<Result<(), StartError>> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
@@ -95,9 +105,8 @@ impl Connection {
             ConnectionState::Connecting => {}
             ConnectionState::Connected => return Poll::Ready(Ok(())),
             ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {
-                return Poll::Ready(Err(StartError::ConnectionLost(
-                    exclusive.error.as_ref().expect("error").clone(),
-                )));
+                let err = exclusive.error.as_ref().expect("error").clone();
+                return Poll::Ready(Err(StartError::ConnectionLost(err)));
             }
         }
         exclusive.start_waiters.push(cx.waker().clone());
@@ -145,7 +154,7 @@ impl Connection {
     ) -> Poll<Result<CertificateDer<'static>, StartError>> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         if let Some(cert) = &exclusive.certificate {
-            return Poll::Ready(Ok(cert.clone()));
+            return Poll::Ready(cert.clone());
         }
         match exclusive.state {
             ConnectionState::Open | ConnectionState::Connecting | ConnectionState::Connected => {}
@@ -438,6 +447,10 @@ impl Connection {
             .map_err(ConnectionError::OtherError)
     }
 
+    pub fn get_credential(&self) -> &NetCredential {
+        &self.0.credential
+    }
+
     /// Get the remote address of the connection.
     pub fn get_remote_addr(&self) -> Result<SocketAddr, ConnectionError> {
         self.0
@@ -449,12 +462,20 @@ impl Connection {
 
     /// Get the remote certificate hash of the connection.
     pub fn get_remote_certificate_hash(&self) -> Option<[u8; 32]> {
-        self.0.exclusive.lock().unwrap().certificate.as_ref().map(|x| CertHash::from(x).0)
+        if let Some(Ok(cert)) = &self.0.exclusive.lock().unwrap().certificate {
+            Some(CertHash::from(cert).0)
+        } else {
+            None
+        }
     }
 
     /// Get the remote certificate of the connection.
     pub fn get_remote_certificate(&self) -> Option<CertificateDer<'static>> {
-        self.0.exclusive.lock().unwrap().certificate.clone()
+        if let Some(Ok(cert)) = &self.0.exclusive.lock().unwrap().certificate {
+            Some(cert.clone())
+        } else {
+            None
+        }
     }
 }
 
@@ -496,7 +517,7 @@ struct ConnectionInnerExclusive {
     write_pool: Vec<WriteBuffer>,
     shutdown_waiters: Vec<Waker>,
     negotiates_alpn: Vec<u8>,
-    certificate: Option<CertificateDer<'static>>,
+    certificate: Option<Result<CertificateDer<'static>, StartError>>,
 }
 
 impl ConnectionInner {
@@ -708,22 +729,26 @@ impl ConnectionInner {
         _deferred_status: msquic::Status,
         _chain: *mut msquic::ffi::QUIC_CERTIFICATE_CHAIN,
     ) -> Result<(), msquic::Status> {
-        if certificate.is_null() {
-            return Ok(());
-        }
-        let cert_buffer = certificate as *const msquic::ffi::QUIC_BUFFER;
-        let cert_slice = unsafe {
-            std::slice::from_raw_parts((*cert_buffer).Buffer, (*cert_buffer).Length as usize)
+        let result = if certificate.is_null() {
+            Err(StartError::BadCertificate("certificate is missing".to_string()))
+        } else {
+            let cert_buffer = certificate as *const msquic::ffi::QUIC_BUFFER;
+            let cert_slice = unsafe {
+                std::slice::from_raw_parts((*cert_buffer).Buffer, (*cert_buffer).Length as usize)
+            };
+            let cert = CertificateDer::from(cert_slice.to_vec());
+            self.credential.verify_cert(&cert).map(|_| cert)
         };
-        let cert = CertificateDer::from(cert_slice.to_vec());
-        if !self.credential.verify_is_valid_cert(&cert) {
-            return Err(msquic::Status::from(msquic::StatusCode::QUIC_STATUS_BAD_CERTIFICATE));
-        }
+        let is_valid = result.is_ok();
         let mut exclusive = self.exclusive.lock().unwrap();
-        exclusive.certificate = Some(cert.clone());
+        exclusive.certificate = Some(result);
         exclusive.certificate_waiters.drain(..).for_each(|waker| waker.wake());
         trace!("Connection({:p}) Peer certificate received", self);
-        Ok(())
+        if is_valid {
+            Ok(())
+        } else {
+            Err(msquic::Status::from(msquic::StatusCode::QUIC_STATUS_BAD_CERTIFICATE))
+        }
     }
 
     fn callback_handler_impl(
@@ -847,6 +872,8 @@ pub enum StartError {
     ConnectionLost(#[from] ConnectionError),
     #[error("other error: status {0:?}")]
     OtherError(msquic::Status),
+    #[error("certificate validation failed {0}")]
+    BadCertificate(String),
 }
 
 /// Errors that can occur when shutdowning a connection.

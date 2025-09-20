@@ -28,7 +28,7 @@ use ::node::repository::repository_impl::RepositoryImpl;
 use clap::Parser;
 use ext_messages_auth::auth::AccountRequest;
 use gossip::GossipConfig;
-use http_server::BlockKeeperSetUpdate;
+use http_server::ApiBkSet;
 use http_server::ResolvingResult;
 use message_router::message_router::MessageRouter;
 use message_router::message_router::MessageRouterConfig;
@@ -194,61 +194,6 @@ async fn tokio_main() {
     exit(exit_code);
 }
 
-fn bk_set_update(
-    seq_no: u32,
-    current: Option<&BlockKeeperSet>,
-    future: Option<&BlockKeeperSet>,
-    prev_update: Option<&BlockKeeperSetUpdate>,
-    added_nodes: (HashSet<NodeIdentifier>, HashSet<NodeIdentifier>),
-) -> BlockKeeperSetUpdate {
-    // Transorm Vector to HashMap for fast searches
-    let prev_current: Option<HashMap<&String, u32>> = prev_update.map(|update| {
-        update.current.iter().map(|(id, _, epoch_start_seq_no)| (id, *epoch_start_seq_no)).collect()
-    });
-    let prev_future: Option<HashMap<&String, u32>> = prev_update.map(|update| {
-        update.future.iter().map(|(id, _, epoch_start_seq_no)| (id, *epoch_start_seq_no)).collect()
-    });
-    BlockKeeperSetUpdate {
-        seq_no,
-        current: collect_node_id_owner_pk(seq_no, current, &prev_current, added_nodes.0),
-        future: collect_node_id_owner_pk(seq_no, future, &prev_future, added_nodes.1),
-    }
-}
-
-fn collect_node_id_owner_pk(
-    seq_no: u32,
-    bk_set: Option<&BlockKeeperSet>,
-    prev_update: &Option<HashMap<&String, u32>>,
-    added_nodes: HashSet<NodeIdentifier>,
-) -> Vec<(String, [u8; 32], u32)> {
-    let Some(bk_set) = bk_set else {
-        return vec![];
-    };
-
-    bk_set
-        .iter_node_ids()
-        .filter_map(|node_id| {
-            bk_set.get_by_node_id(node_id).map(|x| {
-                let node_as_string = node_id.to_string();
-                let epoch_start_seq_no = if let Some(prev_update) = &prev_update {
-                    // If `node_id` was found among just added nodes, its epoch just started
-                    if added_nodes.contains(node_id) {
-                        &seq_no
-                    } else {
-                        // otherwise copy already saved `seq_no` value
-                        prev_update.get(&node_as_string).unwrap_or(&seq_no)
-                    }
-                } else {
-                    // this node just appeared in current bk set
-                    &seq_no
-                };
-
-                (node_as_string, x.owner_pubkey, *epoch_start_seq_no)
-            })
-        })
-        .collect()
-}
-
 fn verify_zerostate(zs: &ZeroState, message_db: &MessageDurableStorage) -> anyhow::Result<()> {
     let mut messages = HashSet::new();
     for state in zs.states().values() {
@@ -299,32 +244,33 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         std::env::var("AEROSPIKE_SOCKET_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
     let set_prefix = std::env::var("AEROSPIKE_SET_PREFIX").unwrap_or_else(|_| "node".to_string());
 
+    let durable_store = AerospikeStore::new(socket_address, node_metrics.clone())?;
+    let durable_set = |suffix: &str| format!("{set_prefix}-{suffix}");
+
     let num_cached_entries = std::env::var("AEROSPIKE_CACHE_MESSAGE_MAX_ENTRIES")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(DEFAULT_AEROSPIKE_MESSAGE_CACHE_MAX_ENTRIES);
 
-    let aerospike_store = AerospikeStore::new(socket_address, node_metrics.clone())?;
-
     let cache = LruSizedCache::new(num_cached_entries);
-    let aerospike_cached_store = CachedStore::new(aerospike_store.clone(), cache);
-    let message_db = MessageDurableStorage::new(aerospike_cached_store, &format!("m-{set_prefix}"));
+    let cached_store = CachedStore::new(durable_store.clone(), cache);
 
-    // These two dbs do not need cache (some cache is implemented in the code yet).
-    // Aerospike store can be shared among different store types.
-    let crossref_db = CrossRefStorage::new(aerospike_store.clone(), &format!("c-{set_prefix}"));
-    let action_lock_db = ActionLockStorage::new(aerospike_store, &format!("a-{set_prefix}"));
+    let message_db = MessageDurableStorage::new(cached_store, &durable_set("msg"));
+    let crossref_db = CrossRefStorage::new(durable_store.clone(), &durable_set("ref"));
+    let action_lock_db = ActionLockStorage::new(durable_store.clone(), &durable_set("lck"));
 
     let zerostate =
         ZeroState::load_from_file(&config.local.zerostate_path).expect("Failed to open zerostate");
     verify_zerostate(&zerostate, &message_db)?;
-    let bk_set = zerostate.get_block_keeper_set()?;
+    let bk_set = if let Some(bk_set_update_path) = &config.local.bk_set_update_path {
+        serde_json::from_slice::<ApiBkSet>(&std::fs::read(bk_set_update_path)?)?
+    } else {
+        ApiBkSet { seq_no: 0, current: (&zerostate.get_block_keeper_set()?).into(), future: vec![] }
+    };
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let initial_bk_set_update =
-        bk_set_update(0, Some(&bk_set), None, None, (HashSet::new(), HashSet::new()));
     let (bk_set_update_async_tx, bk_set_update_async_rx) =
-        tokio::sync::watch::channel(initial_bk_set_update.clone());
+        tokio::sync::watch::channel(bk_set.clone());
     let (watch_gossip_config_tx, watch_gossip_config_rx) =
         tokio::sync::watch::channel(WatchGossipConfig { trusted_pubkeys: HashSet::default() });
     let (config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
@@ -540,6 +486,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     state.guarded_mut(|state_in| -> anyhow::Result<()> {
         if !state_in.is_stored() {
             state_in.set_thread_identifier(ThreadIdentifier::default())?;
+            let bk_set = BlockKeeperSet::from(bk_set.current.clone());
             let first_node_id = bk_set.iter_node_ids().next().unwrap().clone();
             state_in.set_producer(first_node_id)?;
             state_in.set_block_seq_no(BlockSeqNo::default())?;
@@ -1080,11 +1027,11 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
     let account_request_handle = tokio::spawn(async move {
         while let Some(AccountRequest { address, response }) = account_request_rx.recv().await {
-            tracing::trace!("incoming account ({address}) request");
+            tracing::trace!(target: "node", "incoming account ({address}) request");
             let result = get_account_from_shard_state(repo.clone(), &address)
                 .map(|(acc, _dapp_id)| Some(acc));
 
-            tracing::trace!("incoming account ({address}) request result: {result:?}");
+            tracing::trace!(target: "node", "incoming account ({address}) request result: {result:?}");
 
             let _ = response.send(result);
         }
@@ -1094,18 +1041,10 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         .name("BK set update handler".to_string())
         .spawn(move || {
             tracing::info!("BK set update handler started");
-            let mut bk_set = initial_bk_set_update;
+            let mut bk_set = bk_set;
             while let Ok(update) = bk_set_update_rx.recv() {
-                let new_bk_set = bk_set_update(
-                    update.seq_no,
-                    update.current.as_ref().map(|x| x.as_ref()),
-                    update.future.as_ref().map(|x| x.as_ref()),
-                    Some(&bk_set),
-                    update.added_nodes,
-                );
-                if new_bk_set != bk_set {
-                    tracing::trace!("new bk set update: {:?}", new_bk_set);
-                    bk_set = new_bk_set;
+                if bk_set.update(&ApiBkSet::from(update)) {
+                    tracing::trace!("new bk set update: {:?}", bk_set);
                     bk_set_update_async_tx.send_replace(bk_set.clone());
                 }
             }
@@ -1134,8 +1073,10 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             },
             // This closure resolves account addresses to tuple: (BOC, Option<dapp_id_as_hex_string>)
             move |address| {
-                let (account, dapp_id) =
-                    get_account_from_shard_state(repo_clone_0.clone(), &address)?;
+                tracing::trace!(target: "http_server", "Start get_boc_by_addr");
+                let result = get_account_from_shard_state(repo_clone_0.clone(), &address);
+                tracing::trace!(target: "http_server", "get_boc_by_addr result: {result:?}");
+                let (account, dapp_id) = result?;
                 let boc = account.write_to_bytes().map_err(|e| anyhow::anyhow!("{e}"))?;
                 let tuple = (
                     base64_encode(&boc), //
@@ -1342,12 +1283,12 @@ async fn dispatch_hot_reload(
     tls_cert_cache: TlsCertCache,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     mut config_rx: tokio::sync::watch::Receiver<node::config::Config>,
-    mut bk_set_rx: tokio::sync::watch::Receiver<BlockKeeperSetUpdate>,
+    mut bk_set_rx: tokio::sync::watch::Receiver<ApiBkSet>,
     network_config_tx: tokio::sync::watch::Sender<NetworkConfig>,
     gossip_config_tx: tokio::sync::watch::Sender<GossipConfig>,
     watch_gossip_config_tx: tokio::sync::watch::Sender<WatchGossipConfig>,
 ) {
-    let mut bk_set_update = bk_set_rx.borrow().clone();
+    let mut bk_set = bk_set_rx.borrow().clone();
     let mut config = config_rx.borrow().clone();
     tracing::trace!(
         "Hot reload initial node config: {}",
@@ -1355,23 +1296,24 @@ async fn dispatch_hot_reload(
     );
     tracing::trace!(
         "Hot reload initial bk_set: {}",
-        serde_json::to_string(&bk_set_update).unwrap_or_default()
+        serde_json::to_string(&bk_set).unwrap_or_default()
     );
     loop {
         match config.network_config(Some(tls_cert_cache.clone())) {
             Ok(mut network_config) => {
-                network_config.credential.trusted_ed_pubkeys =
+                network_config.credential.trusted_pubkeys =
                     HashSet::<transport_layer::VerifyingKey>::from_iter(
-                        bk_set_update
+                        bk_set
                             .current
                             .iter()
-                            .map(|x| &x.1)
-                            .chain(bk_set_update.future.iter().map(|x| &x.1))
+                            .map(|x| &x.owner_pubkey.0)
+                            .chain(bk_set.future.iter().map(|x| &x.owner_pubkey.0))
                             .filter_map(|x| transport_layer::VerifyingKey::from_bytes(x).ok())
-                            .chain(network_config.credential.trusted_ed_pubkeys.iter().cloned()),
+                            .chain(network_config.credential.trusted_pubkeys.iter().cloned())
+                            .chain(network_config.credential.my_cert_pubkeys().unwrap_or_default()),
                     );
                 watch_gossip_config_tx.send_replace(WatchGossipConfig {
-                    trusted_pubkeys: network_config.credential.trusted_ed_pubkeys.clone(),
+                    trusted_pubkeys: network_config.credential.trusted_pubkeys.clone(),
                 });
                 network_config_tx.send_replace(network_config);
             }
@@ -1402,11 +1344,12 @@ async fn dispatch_hot_reload(
                 break;
             },
             sender = bk_set_rx.changed() => if sender.is_ok() {
-                bk_set_update = bk_set_rx.borrow().clone();
-                tracing::trace!(
-                    "Hot reload changed bk_set: {}",
-                    serde_json::to_string(&bk_set_update).unwrap_or_default()
-                );
+                if bk_set.update(&bk_set_rx.borrow()) {
+                    tracing::trace!(
+                        "Hot reload changed bk_set: {}",
+                        serde_json::to_string(&bk_set).unwrap_or_default()
+                    );
+                }
             } else {
                 break;
             }

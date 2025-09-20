@@ -38,6 +38,16 @@ impl std::convert::From<ThreadMessageQueueStateDiff> for anyhow::Result<ThreadMe
     #[instrument(skip_all)]
     fn from(val: ThreadMessageQueueStateDiff) -> Self {
         tracing::trace!("from ThreadMessageQueueStateDiff start");
+        tracing::trace!(
+            target: "builder",
+            "from ThreadMessageQueueStateDiff consumed_messages: {:?}",
+            val.consumed_messages
+        );
+        tracing::trace!(
+            target: "builder",
+            "from ThreadMessageQueueStateDiff produced_messages: {:?}",
+            val.produced_messages
+        );
         let state = val.initial_state;
         // TODO: fix this:
         // Note: dirty solution
@@ -74,7 +84,14 @@ impl std::convert::From<ThreadMessageQueueStateDiff> for anyhow::Result<ThreadMe
         trace_span!("add messages", addresses_count = val.produced_messages.len(),).in_scope(
             || {
                 for (addr, mut messages) in val.produced_messages.into_iter() {
-                    messages.retain(|(message_id, _)| !intersection.contains(message_id));
+                    messages.retain(|(message_id, message)| {
+                        !intersection.contains(message_id)
+                            || message
+                                .message
+                                .int_header()
+                                .map(|hdr| hdr.is_redirect)
+                                .unwrap_or(false)
+                    });
                     if messages.is_empty() {
                         continue;
                     }
@@ -223,7 +240,7 @@ mod tests {
         let mut added_accounts = BTreeMap::new();
         let account_inbox: AccountInbox = MessagesRange::empty();
         added_accounts.insert(account_address.clone(), account_inbox);
-        let storage = MessageDurableStorage::as_noop();
+        let storage = MessageDurableStorage::mem();
         let state_diff = ThreadMessageQueueStateDiff {
             initial_state,
             consumed_messages: HashMap::new(),
@@ -242,7 +259,7 @@ mod tests {
         let account_address = AccountAddress::default();
         let mut initial_state = create_empty_state();
         initial_state.messages.insert(account_address.clone(), MessagesRange::empty());
-        let storage = MessageDurableStorage::as_noop();
+        let storage = MessageDurableStorage::mem();
         let state_diff = ThreadMessageQueueStateDiff {
             initial_state,
             consumed_messages: HashMap::new(),
@@ -310,7 +327,7 @@ mod tests {
 
         let mut consumed_messages = HashMap::new();
         consumed_messages.insert(account_address.clone(), HashSet::from([message_id]));
-        let storage = MessageDurableStorage::as_noop();
+        let storage = MessageDurableStorage::mem();
         let state_diff = ThreadMessageQueueStateDiff {
             initial_state,
             consumed_messages,
@@ -354,7 +371,7 @@ mod tests {
             account_address.clone(),
             messages.iter().take(4).map(|(id, _)| id.clone()).collect::<HashSet<_>>(),
         );
-        let storage = MessageDurableStorage::as_noop();
+        let storage = MessageDurableStorage::mem();
         let state_diff = ThreadMessageQueueStateDiff {
             initial_state,
             consumed_messages,

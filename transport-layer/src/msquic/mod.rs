@@ -11,6 +11,7 @@ use std::time::Instant;
 use msquic::BufferRef;
 use msquic::Registration;
 use msquic::RegistrationConfig;
+use msquic::StatusCode::QUIC_STATUS_BAD_CERTIFICATE;
 use msquic_async::Connection;
 use msquic_async::Listener;
 use rustls_pki_types::CertificateDer;
@@ -19,6 +20,7 @@ use tokio::io::AsyncReadExt;
 use crate::msquic::msquic_async::send_stream::SendStream;
 use crate::msquic::msquic_async::stream::ReadStream;
 use crate::msquic::quic_settings::ConfigFactory;
+use crate::tls::pubkeys_info;
 use crate::CertHash;
 use crate::NetConnection;
 use crate::NetCredential;
@@ -86,7 +88,18 @@ impl NetTransport for MsQuicTransport {
 
         let host = addr.ip().to_string();
         let port = addr.port();
-        conn.start(&config, &host, port).await?;
+        let connect_result = conn.start(&config, &host, port).await;
+        if let Err(msquic_async::connection::StartError::ConnectionLost(err)) = &connect_result {
+            if let Some(cert_err) = conn.certificate_error() {
+                return Err(anyhow::anyhow!(
+                    "Peer ({}) certificate rejected: {}",
+                    conn.get_remote_addr().map(|x| x.to_string()).unwrap_or_default(),
+                    cert_err
+                ));
+            }
+            return Err(resolve_bad_certificate(err, &conn));
+        }
+        connect_result?;
         let remote_cert = conn.receive_remote_certificate().await?;
         let remote_identity = CertHash::from(&remote_cert).to_string();
         Ok(MsQuicNetConnection::new(conn, local_identity, remote_identity))
@@ -124,7 +137,20 @@ impl NetIncomingRequest for MsQuicNetIncomingRequest {
     type Connection = MsQuicNetConnection;
 
     async fn accept(self) -> anyhow::Result<Self::Connection> {
-        self.connection.accept().await?;
+        let accept_result = self.connection.accept().await;
+        if let Err(err) = &accept_result {
+            if let Some(cert_err) = self.connection.certificate_error() {
+                return Err(anyhow::anyhow!(
+                    "Peer ({}) certificate rejected: {}",
+                    self.connection.get_remote_addr().map(|x| x.to_string()).unwrap_or_default(),
+                    cert_err
+                ));
+            }
+            if let msquic_async::connection::StartError::ConnectionLost(err) = err {
+                return Err(resolve_bad_certificate(err, &self.connection));
+            }
+        }
+        accept_result?;
         let remote_cert = self.connection.receive_remote_certificate().await?;
         let remote_identity = CertHash::from(&remote_cert).to_string();
         Ok(MsQuicNetConnection::new(self.connection, self.local_identity, remote_identity))
@@ -159,7 +185,13 @@ impl StreamPool {
                 match tokio::time::timeout(STREAM_OP_TIMEOUT, connection.inner.open_send_stream())
                     .await
                 {
-                    Ok(stream) => stream?,
+                    Ok(stream) => {
+                        if let Err(msquic_async::stream::StartError::ConnectionLost(err)) = &stream
+                        {
+                            return Err(resolve_bad_certificate(err, &connection.inner));
+                        }
+                        stream?
+                    }
                     Err(_) => {
                         anyhow::bail!("Timeout opening stream: took more {STREAM_OP_TIMEOUT:?}")
                     }
@@ -175,8 +207,11 @@ impl StreamPool {
     ) -> anyhow::Result<tokio::sync::MutexGuard<'_, Option<ReadStream>>> {
         let mut stream_lock = self.recv.lock().await;
         if stream_lock.is_none() {
-            let stream = connection.inner.accept_inbound_uni_stream().await?;
-            stream_lock.replace(stream);
+            let result = connection.inner.accept_inbound_uni_stream().await;
+            if let Err(msquic_async::stream::StartError::ConnectionLost(err)) = &result {
+                return Err(resolve_bad_certificate(err, &connection.inner));
+            }
+            stream_lock.replace(result?);
         }
         Ok(stream_lock)
     }
@@ -217,7 +252,7 @@ impl NetConnection for MsQuicNetConnection {
     async fn send(&self, bytes: &[u8]) -> anyhow::Result<()> {
         let mut stream = self.stream_pool.acquire_send(self).await?;
         let result = if let Some(stream) = stream.as_mut() {
-            write_buffer_to_stream(bytes, stream).await
+            write_buffer_to_stream(bytes, stream, self).await
         } else {
             Err(anyhow::anyhow!("Unexpectedly missing send stream"))
         };
@@ -251,13 +286,22 @@ impl NetConnection for MsQuicNetConnection {
     }
 }
 
-async fn write_buffer_to_stream(bytes: &[u8], stream: &mut SendStream) -> anyhow::Result<()> {
+async fn write_buffer_to_stream(
+    bytes: &[u8],
+    stream: &mut SendStream,
+    connection: &MsQuicNetConnection,
+) -> anyhow::Result<()> {
     let len = bytes.len() as u32;
     let mut encoded = Vec::with_capacity(4 + bytes.len());
     encoded.extend_from_slice(&len.to_be_bytes());
     encoded.extend_from_slice(bytes);
     match tokio::time::timeout(STREAM_OP_TIMEOUT, stream.send(encoded)).await {
-        Ok(result) => result?,
+        Ok(result) => {
+            if let Err(msquic_async::send_stream::WriteError::ConnectionLost(err)) = &result {
+                return Err(resolve_bad_certificate(err, &connection.inner));
+            }
+            result?
+        }
         Err(_) => anyhow::bail!(
             "Timeout writing stream: took more {STREAM_OP_TIMEOUT:?}, {}",
             stream.debug_id()
@@ -288,4 +332,25 @@ pub async fn read_exact<S: tokio::io::AsyncRead + Unpin>(
         offset += read_len;
     }
     Ok(())
+}
+
+fn resolve_bad_certificate(
+    err: &msquic_async::connection::ConnectionError,
+    connection: &Connection,
+) -> anyhow::Error {
+    if let msquic_async::connection::ConnectionError::ShutdownByTransport(status, _) = err {
+        if status.0 == QUIC_STATUS_BAD_CERTIFICATE as u32 {
+            let pubkeys = if let Some(cert) = connection.get_credential().my_certs.first() {
+                crate::tls::get_pubkeys_from_cert_der(cert).unwrap_or_default()
+            } else {
+                vec![]
+            };
+            let peer_addr = connection.get_remote_addr().map(|x| x.to_string()).unwrap_or_default();
+            return anyhow::anyhow!(
+                "My certificate rejected by peer ({peer_addr}). My certificate signed by ED pubkeys [{}].",
+                pubkeys_info(&pubkeys, 4)
+            );
+        }
+    }
+    err.clone().into()
 }

@@ -356,6 +356,10 @@ all:
     NODE_CONFIGS:
       - "zerostate"
       - "blockchain.conf.json"
+    # Remove this variable from the inventory before upgrading nodes to avoid unnecessary steps.
+    # However, it is required when starting new nodes without existing data,
+    # especially if they are running behind your own proxy servers.
+    BOOTSTRAP_BK_SET_URL: http://shellnet0.ackinacki.org:8600/v2/bk_set_update
 
 block_keepers:
   hosts:
@@ -368,22 +372,21 @@ block_keepers:
         - PROXY_IP:8085
 ```
 
-`LOG_ROTATE_SPEC` is the rotation schedule in cron "minute hour" format.
+`BOOTSTRAP_BK_SET_URL` should be set to the provided URL to correctly retrieve the initial BK set, ensuring that the node connects properly to the network and proxy server. When upgrading, this variable should be removed to avoid unnecessary logic execution.
 
-For example, default `"0 *"` value means that the log files will be rotated every hour on the 0th minute.
+`LOG_ROTATE_SPEC` defines the log rotation schedule in cron format (`minute hour`).
 
-In case rotated log files are too large, you might want to decrease the period of rotation.
+For example, the default value `"0 *"` means that log files will be rotated every hour at the 0th minute.
 
-For example, `"*/5 *"` value means that the log files will be rotated every 5 minutes.
+If rotated log files are too large, you may want to shorten the rotation period.
 
+For example, the value `"*/5 *"` means that log files will be rotated every 5 minutes.
 
-`NODE_GROUP_ID`, `OTEL_COLLECTOR` and `OTEL_SERVICE_NAME` are optional and related to node metrics integration.
+`NODE_GROUP_ID`, `OTEL_COLLECTOR`, and `OTEL_SERVICE_NAME` are optional and related to node metrics integration.
 
-They can be used to send metrics to the specified collector server. `NODE_GROUP_ID` should be used to identify the node group
-and should be the same for all nodes in your deployment.
+They can be used to send metrics to a specified collector server. `NODE_GROUP_ID` identifies the node group and should be the same across all nodes in your deployment.
 
-
-Ensure your configuration data is added to the inventory before running the playbook.
+Make sure to add your configuration data to the inventory before running the playbook.
 
 For testing, you can use an Ansible dry run:
 
@@ -845,37 +848,37 @@ Follow these steps to restore the node (it will resync):
 
 **Steps**
 
-1) **Stop the BK node**  
-Run the following command to stop the BK node and staking  
+1) **Stop the BK node**
+Run the following command to stop the BK node and staking
 (staking will stop automatically with the node):
     ```bash
     docker compose down node{{ NODE_ID }}
     ```
 
-1) **Stop Aerospike**  
+1) **Stop Aerospike**
     ```bash
     docker compose down aerospike
     ```
 
-2) **Remove corrupted state directories**  
+2) **Remove corrupted state directories**
 Navigate to the Block Keeper data directory `{{ BK_DATA_DIR }}` and remove the following folders:
     ```bash
     rm -rf aerospike/ share/ workdir/
     ```
 
-1) **Restart services**  
+1) **Restart services**
 Go back to the Block Keeper directory `{{ BK_DIR }}` where the `docker-compose.yml` file is located, and start the services again:
     ```bash
     docker compose up -d
     ```
 
-1) **Verify service status**  
+1) **Verify service status**
 Ensure that node, staking, and aerospike services are running without restarts or crashes:
     ```bash
     docker compose ps
     ```
 
-    Ensure the following containers are running (status: UP):  
+    Ensure the following containers are running (status: UP):
     ```
     teamgosh/ackinacki-node
     teamgosh/ackinacki-gql-server
@@ -883,23 +886,23 @@ Ensure that node, staking, and aerospike services are running without restarts o
     aerospike/aerospike-server:latest
     ```
 
-1) **Check the node logs**  
+1) **Check the node logs**
 Verify that the node logs are active and contain no errors:
     ```bash
     tail -f $MNT_DATA/logs-block-keeper/node.log
     ```
-    Additionally, you can check the container logs:  
+    Additionally, you can check the container logs:
 
     ```bash
     docker compose logs -f node{{ NODE_ID }}
     ```
 
-1) **Check staking logs**  
+1) **Check staking logs**
 Review the staking logs. They must not contain errors and should display information about stakes, Epochs, and related activities:
     ```bash
     tail -f $MNT_DATA/logs-block-keeper/staking.log
     ```
-    
+
     Additionally, you can check the container logs:
     ```bash
     docker compose logs -f staking
@@ -908,10 +911,10 @@ Review the staking logs. They must not contain errors and should display informa
 1) **Wait for synchronization**
 It may take around 20+ minutes for synchronization. Once complete, the `seq_no` should begin to increase, indicating successful recovery.
 
-    🚨 **Important:**  
+    🚨 **Important:**
     If the node does not synchronize, it usually means there was an incorrect setup. Possible causes include:
-    - Misconfigured config file  
-    - Incorrect or corrupted key files  
+    - Misconfigured config file
+    - Incorrect or corrupted key files
 
 
 # Block Manager Documentation
@@ -1114,30 +1117,41 @@ Below is an example of a basic Ansible inventory for deploying a Proxy:
 ```yaml
 all:
   vars:
-    PROXY_IMAGE: "docker/ackinacki-proxy:proxy_version"
+    PROXY_IMAGE: "teamgosh/ackinacki-proxy:proxy_version"
     PROXY_PORT: 8085
     PROXY_DIR: /opt/depl/proxy
     NETWORK_NAME: shellnet
+    PROXY_BK_ADDRS:
+    - Your_first_BK_IP:8600
+    - Your_second_BK_IP:8600
+    - Your_third_BK_IP:8600
+    SEEDS:
+    - shellnet0.ackinacki.org:10000
+    - shellnet1.ackinacki.org:10000
+    - shellnet2.ackinacki.org:10000
+    - shellnet3.ackinacki.org:10000
+    - shellnet4.ackinacki.org:10000
 
 proxy:
   hosts:
-    proxy:
-      SEEDS:
-      - shellnet0.ackinacki.org:10000
-      - shellnet1.ackinacki.org:10000
-      - shellnet2.ackinacki.org:10000
-      - shellnet3.ackinacki.org:10000
-      - shellnet4.ackinacki.org:10000
+    YOUR-PROXY-HOST:
+      HOST_PUBLIC_IP: HOST_IP_PUBLIC
       # Add signing keys to proxy for generating certificates
+      # Use several for reliability, but different set for each proxy
       PROXY_SIGNING_KEYS:
       - "block-keeper-1.keys.json"
       - "block-keeper-2.keys.json"
+      - "block-keeper-3.keys.json"
 ```
+
+`PROXY_SIGNING_KEYS` list contains path to Block Keeper keys. Better to store them in the same folder with proxy deployment playbook. Also you can specify absolute path.
+Note that the `PROXY_BK_ADDRS` variable must include at least several of your Block Keepers, but not too many, because
+it will periodically request an actual BK set from _all_ Block Keepers in the list.
 
 To test the deployment with a dry run:
 
 ```bash
-ansible-playbook -i test-inventory.yaml ansible/deploy-proxy.yml --check --diff
+ansible-playbook -i test-inventory.yaml ansible/proxy-deployment.yaml --check --diff
 ```
 
 ### Run the Ansible Playbook
@@ -1145,7 +1159,7 @@ ansible-playbook -i test-inventory.yaml ansible/deploy-proxy.yml --check --diff
 If everything looks correct, proceed with the actual deployment:
 
 ```bash
-ansible-playbook -i test-inventory.yaml ansible/deploy-proxy.yml
+ansible-playbook -i test-inventory.yaml ansible/proxy-deployment.yaml
 ```
 
 To view the Proxy logs:
@@ -1153,3 +1167,4 @@ To view the Proxy logs:
 ```bash
 tail -f $PROXY_DIR/logs-proxy/proxy.log
 ```
+

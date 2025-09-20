@@ -72,6 +72,7 @@ impl FileSavingService {
                     Some(producer_selector),
                     Some(block_height),
                     Some(prefinalization_proof),
+                    Some(future_bk_set),
                 ) = block_state.guarded(|e| {
                     (
                         e.bk_set().clone(),
@@ -80,6 +81,7 @@ impl FileSavingService {
                         e.producer_selector_data().clone(),
                         *e.block_height(),
                         e.prefinalization_proof().clone(),
+                        e.future_bk_set().clone(),
                     )
                 })
                 else {
@@ -92,6 +94,7 @@ impl FileSavingService {
                     .db_messages(db_messages)
                     .finalized_block(finalized_block.deref().clone())
                     .bk_set(bk_set.deref().clone())
+                    .future_bk_set(future_bk_set.deref().clone())
                     .finalized_block_stats(finalized_block_stats)
                     .attestation_target(attestation_target)
                     .producer_selector(producer_selector)

@@ -9,6 +9,9 @@ use tvm_types::UInt256;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
+use crate::types::AccountAddress;
+use crate::types::AccountRouting;
+use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 
 pub fn get_account_from_shard_state(
@@ -23,20 +26,25 @@ pub fn get_account_from_shard_state(
         .last_finalized_optimistic_state(&ThreadIdentifier::default())
         .ok_or_else(|| anyhow::anyhow!("Shard state not found"))?;
 
-    let acc_id = tvm_types::AccountId::from_string(account_address)
+    let acc_id: AccountAddress = tvm_types::AccountId::from_string(account_address)
         .map_err(|_| anyhow::anyhow!("Invalid account address"))?
         .into();
 
-    let thread_id =
-        state.get_thread_for_account(&acc_id).map_err(|_| anyhow::anyhow!("Account not found"))?;
+    let default_state = repo
+        .last_finalized_optimistic_state(&ThreadIdentifier::default())
+        .ok_or_else(|| anyhow::anyhow!("Shard state for deafault thread not found"))?;
 
-    let shard_state = repo
-        .last_finalized_optimistic_state(&thread_id)
-        .ok_or_else(|| anyhow::anyhow!("Shard state for thread_id {thread_id} not found"))?
-        .get_shard_state()
-        .clone();
+    let default_routing = AccountRouting(DAppIdentifier(acc_id.clone()), acc_id.clone());
+    tracing::trace!("get_account_from_shard_state: default_routing={default_routing:?}");
+    let potential_thread = default_state.threads_table.find_match(&default_routing);
+    tracing::trace!("get_account_from_shard_state: potential_thread={potential_thread:?}");
+    let no_dapp_state = repo
+        .last_finalized_optimistic_state(&potential_thread)
+        .ok_or_else(|| anyhow::anyhow!("Failed to load no dapp state"))?
+        .get_shard_state();
+    tracing::trace!("Loaded no_dapp_state");
 
-    let accounts = shard_state
+    let accounts = no_dapp_state
         .read_accounts()
         .map_err(|e| anyhow::anyhow!("Can't read accounts from shard state: {e}"))?;
 
@@ -44,8 +52,34 @@ pub fn get_account_from_shard_state(
         .account(&acc_id.clone().into())
         .map_err(|e| anyhow::anyhow!("Can't find account in shard state: {e}"))?
         .ok_or_else(|| anyhow::anyhow!("Can't find account in shard state"))?;
+    tracing::trace!("Loaded acc from no_dapp_state");
+    if acc.is_redirect() {
+        tracing::trace!("Account is redirect");
+        let actual_dapp_id = acc
+            .get_dapp_id()
+            .ok_or(anyhow::format_err!("DApp ID must be set for redirect account"))?;
+        let actual_routing = AccountRouting(actual_dapp_id.clone().into(), acc_id.clone());
+        tracing::trace!("get_account_from_shard_state: actual_routing={actual_routing:?}");
+        let actual_thread = default_state.threads_table.find_match(&actual_routing);
+        tracing::trace!("get_account_from_shard_state: actual_thread={actual_thread:?}");
+        let actual_state = repo
+            .last_finalized_optimistic_state(&actual_thread)
+            .ok_or_else(|| anyhow::anyhow!("Failed to load no dapp state"))?
+            .get_shard_state();
+
+        let accounts = actual_state
+            .read_accounts()
+            .map_err(|e| anyhow::anyhow!("Can't read accounts from shard state: {e}"))?;
+
+        acc = accounts
+            .account(&acc_id.clone().into())
+            .map_err(|e| anyhow::anyhow!("Can't find account in shard state: {e}"))?
+            .ok_or_else(|| anyhow::anyhow!("Can't find account in shard state"))?;
+    }
+    tracing::trace!("Loaded acc");
 
     if acc.is_external() {
+        tracing::trace!("Account is external");
         // TODO:
         // verify with @vasily. It does seem like a bug
         // I guess it must be account_thread_state
@@ -57,13 +91,21 @@ pub fn get_account_from_shard_state(
                 acc.last_trans_lt(),
             )?,
         };
-        if root.repr_hash() != acc.account_cell().repr_hash() {
+        if root.repr_hash()
+            != acc
+                .account_cell()
+                .map_err(|e| anyhow::format_err!("Failed to load account cell: {e}"))?
+                .repr_hash()
+        {
             anyhow::bail!("External account cell hash mismatch");
         }
-        acc.set_account_cell(root);
+        acc.set_account_cell(root)
+            .map_err(|e| anyhow::format_err!("Failed to set account cell: {e}"))?;
     }
     let dapp_id = acc.get_dapp_id().cloned();
+    tracing::trace!("get_account_from_shard_state: dapp_id={dapp_id:?}");
     let account =
         acc.read_account().and_then(|acc| acc.as_struct()).map_err(|e| anyhow::anyhow!("{e}"))?;
+    tracing::trace!("return acc");
     Ok((account, dapp_id))
 }

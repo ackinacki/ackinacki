@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use aerospike::as_bin;
 use aerospike::as_key;
-use aerospike::BatchRead;
 use aerospike::Bins;
 use aerospike::Key;
 use aerospike::Value;
@@ -14,10 +13,8 @@ use tvm_block::GetRepresentationHash;
 use crate::helper::metrics::AEROSPIKE_OBJECT_TYPE_INT_MESSAGES;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
-use crate::storage::AerospikeStore;
-use crate::storage::CachedStore;
+use crate::storage::mem::MemStore;
 use crate::storage::KeyValueStore;
-use crate::storage::LruSizedCache;
 use crate::storage::BIN_BLOB;
 use crate::storage::BIN_HASH;
 use crate::storage::BIN_SEQ;
@@ -30,26 +27,22 @@ use crate::types::AccountAddress;
 
 #[derive(Clone)]
 pub struct MessageDurableStorage {
-    store: Option<Arc<CachedStore<AerospikeStore, LruSizedCache>>>,
+    store: Arc<dyn KeyValueStore>,
     set_prefix: String,
     seq: Arc<Mutex<HashMap<String, i64>>>,
 }
 
 impl MessageDurableStorage {
-    pub fn new(store: CachedStore<AerospikeStore, LruSizedCache>, set_prefix: &str) -> Self {
+    pub fn new(store: impl KeyValueStore + 'static, set_prefix: &str) -> Self {
         Self {
-            store: Some(Arc::new(store)),
+            store: Arc::new(store),
             set_prefix: set_prefix.to_string(),
             seq: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    fn get_store(&self) -> Option<&CachedStore<AerospikeStore, LruSizedCache>> {
-        self.store.as_ref().map(AsRef::as_ref)
-    }
-
-    pub fn as_noop() -> Self {
-        Self { store: None, set_prefix: "".to_string(), seq: Arc::new(Mutex::new(HashMap::new())) }
+    pub fn mem() -> Self {
+        Self::new(MemStore::new(), "")
     }
 
     fn message_key(&self, hash: &str) -> Key {
@@ -71,14 +64,6 @@ impl MessageDurableStorage {
             return Ok(());
         }
 
-        let Some(store) = self.get_store() else {
-            #[cfg(test)]
-            return Ok(());
-
-            #[cfg(not(test))]
-            panic!("Storage instance was not created properly, use new() to create it.");
-        };
-
         for (addr, messages) in messages {
             let dest = addr.0.to_hex_string();
             for message in messages {
@@ -96,7 +81,7 @@ impl MessageDurableStorage {
 
                 // write message
                 let key = self.message_key(&hash);
-                store.put(
+                self.store.put(
                     &key,
                     &[as_bin!(BIN_BLOB, blob), as_bin!(BIN_SEQ, &next_seq)],
                     true,
@@ -105,7 +90,7 @@ impl MessageDurableStorage {
 
                 // write index
                 let idx_key = self.index_key(&dest, next_seq);
-                store.put(
+                self.store.put(
                     &idx_key,
                     &[as_bin!(BIN_HASH, &hash)],
                     true,
@@ -122,13 +107,10 @@ impl MessageDurableStorage {
         if !cfg!(feature = "messages_db") {
             return Ok(None);
         }
-        let Some(store) = self.get_store() else {
-            return Ok(None);
-        };
 
         let key = self.message_key(hash);
         if let Some(bins) =
-            store.get(&key, &[BIN_SEQ, BIN_BLOB], AEROSPIKE_OBJECT_TYPE_INT_MESSAGES)?
+            self.store.get(&key, &[BIN_SEQ, BIN_BLOB].into(), AEROSPIKE_OBJECT_TYPE_INT_MESSAGES)?
         {
             let seq = match bins.get(BIN_SEQ) {
                 Some(Value::Int(s)) => *s,
@@ -159,22 +141,18 @@ impl MessageDurableStorage {
         }
         let mut ret_val = vec![];
 
-        let Some(store) = self.get_store() else {
-            return Ok(vec![]);
-        };
-
         let num_messages = hashes.len();
 
-        let bins = Bins::from([BIN_SEQ, BIN_BLOB]);
-        let mut batch_reads: Vec<BatchRead<'_>> = vec![];
+        let mut batch_gets: Vec<(Key, Bins)> = vec![];
 
         for hash in hashes {
             let key = self.message_key(&hash);
-            batch_reads.push(BatchRead::new(key, &bins));
+            batch_gets.push((key, [BIN_SEQ, BIN_BLOB].into()));
         }
 
-        let batch_results = store
-            .batch_get(batch_reads)
+        let batch_results = self
+            .store
+            .batch_get(batch_gets, AEROSPIKE_OBJECT_TYPE_INT_MESSAGES)
             .map_err(|e| anyhow::anyhow!("Error executing batch request: {}", e))?;
 
         for record in batch_results.into_iter().flatten() {
@@ -199,22 +177,17 @@ impl MessageDurableStorage {
         if !cfg!(feature = "messages_db") {
             return Ok(vec![]);
         }
-        let Some(store) = self.get_store() else {
-            return Ok(vec![]);
-        };
-
         let mut ret_val = vec![];
 
-        let bins = Bins::from([BIN_HASH]);
-        let mut batch_reads = vec![];
+        let mut batch_gets = vec![];
 
         for seq in seqs.clone() {
-            let key = self.index_key(dest, seq);
-            batch_reads.push(BatchRead::new(key, &bins));
+            batch_gets.push((self.index_key(dest, seq), [BIN_HASH].into()));
         }
 
-        let batch_results = store
-            .batch_get(batch_reads)
+        let batch_results = self
+            .store
+            .batch_get(batch_gets, AEROSPIKE_OBJECT_TYPE_INT_MESSAGES)
             .map_err(|e| anyhow::anyhow!("Error executing batch request: {}", e))?;
 
         for record in batch_results.into_iter().flatten() {
@@ -255,6 +228,16 @@ impl MessageDurableStorage {
         let last_seq = xs.last().map(|x| x.0);
         let messages = xs.into_iter().map(|x| x.1).collect();
         Ok((messages, last_seq))
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn db_reads(&self) -> usize {
+        self.store.db_reads()
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn db_writes(&self) -> usize {
+        self.store.db_writes()
     }
 }
 

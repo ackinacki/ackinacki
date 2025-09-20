@@ -261,7 +261,6 @@ impl BlockVerifier for TVMBlockVerifier {
                 block.get_common_section().refs.clone(),
                 // Skip checking load balancer actions.
                 block.get_common_section().threads_table.clone(),
-                block.get_common_section().changed_dapp_ids.clone(),
                 block.get_common_section().round,
                 block.get_common_section().block_height,
                 #[cfg(feature = "monitor-accounts-number")]

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ed25519_dalek::VerifyingKey;
-use transport_layer::get_ed_pubkeys_from_cert_der;
+use transport_layer::get_pubkeys_from_cert_der;
 use transport_layer::CertHash;
 use transport_layer::NetConnection;
 use transport_layer::NetTransport;
@@ -47,7 +47,7 @@ pub struct ConnectionInfo {
     pub remote_host_id_prefix: String,
     pub remote_is_proxy: bool,
     pub remote_cert_hash: CertHash,
-    pub remote_ed_pubkeys: Vec<VerifyingKey>,
+    pub remote_cert_pubkeys: Vec<VerifyingKey>,
 }
 
 impl ConnectionInfo {
@@ -117,7 +117,7 @@ impl<Connection: NetConnection> ConnectionWrapper<Connection> {
                 remote_host_id_prefix,
                 remote_is_proxy,
                 remote_cert_hash: CertHash::from(&cert),
-                remote_ed_pubkeys: get_ed_pubkeys_from_cert_der(&cert)?,
+                remote_cert_pubkeys: get_pubkeys_from_cert_der(&cert)?,
                 role,
             }),
             connection,

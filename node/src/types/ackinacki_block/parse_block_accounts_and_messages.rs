@@ -51,12 +51,18 @@ impl AckiNackiBlock {
                     .read_message()?
                     .ok_or(tvm_types::error!("Failed to read block out message"))?;
                 if let Some(dest_account_id) = msg.int_dst_account_id() {
-                    // TODO: check that message dst belongs to this thread
-                    let addr = initial_optimistic_state.get_account_routing(&dest_account_id, None);
-                    let wrapped_message = WrappedMessage { message: msg };
-                    let message_identifier = MessageIdentifier::from(&wrapped_message);
-                    let entry = produced_internal_messages.entry(addr.clone()).or_default();
-                    entry.push((message_identifier, Arc::new(wrapped_message)));
+                    if let Some(header) = msg.int_header() {
+                        let dest_dapp_id = header
+                            .dest_dapp_id
+                            .clone()
+                            .map(|d| d.into())
+                            .unwrap_or(DAppIdentifier(dest_account_id.clone().into()));
+                        let routing = AccountRouting(dest_dapp_id, dest_account_id.into());
+                        let wrapped_message = WrappedMessage { message: msg };
+                        let message_identifier = MessageIdentifier::from(&wrapped_message);
+                        let entry = produced_internal_messages.entry(routing).or_default();
+                        entry.push((message_identifier, Arc::new(wrapped_message)));
+                    }
                 }
                 Ok(true)
             })
@@ -78,33 +84,51 @@ impl AckiNackiBlock {
                 Ok(true)
             })
             .map_err(|e| anyhow::format_err!("Failed to iter in msgs: {e}"))?;
+        // TODO: need change set in common section
         let shard_state = updated_shard_state
             .read_accounts()
             .map_err(|e| anyhow::format_err!("Failed to read accounts: {e}"))?;
-        for (addr, (new_dapp_id, _)) in self.get_common_section().changed_dapp_ids.iter() {
-            match new_dapp_id {
-                Some(new_dapp_id) => {
-                    let account = shard_state
-                        .account(&addr.into())
-                        .map_err(|e| anyhow::format_err!("Failed to read account: {e}"))?
-                        .expect("account must exist");
-                    accounts_that_changed_their_dapp_id.insert(
-                        AccountRouting(new_dapp_id.clone(), addr.clone()),
-                        Some(WrappedAccount {
-                            account_id: addr.clone(),
-                            aug: account.aug().map_err(|e| {
-                                anyhow::format_err!("Failed to get account aug: {e}")
-                            })?,
-                            account,
-                        }),
-                    );
+        self.block
+            .read_extra()
+            .map_err(|e| anyhow::format_err!("Failed to read block extra: {e}"))?
+            .read_account_blocks()
+            .map_err(|e| anyhow::format_err!("Failed to read account blocks: {e}"))?
+            .iterate_objects(|account_block| {
+                // tracing::trace!(target: "node", "get_data_for_postprocessing: parse {}", account_block.account_id().to_hex_string());
+                if account_block.dapp_id_changed() {
+                    // tracing::trace!(target: "node", "get_data_for_postprocessing: dapp id changed {}", account_block.account_id().to_hex_string());
+                    let acc_id = account_block.account_id();
+                    let addr: AccountAddress = acc_id.clone().into();
+                    if let Some(account) = shard_state.account(acc_id)? {
+                        match account.get_dapp_id() {
+                            Some(new_dapp_id) => {
+                                accounts_that_changed_their_dapp_id.insert(
+                                    AccountRouting(new_dapp_id.clone().into(), addr.clone()),
+                                    Some(WrappedAccount {
+                                        account_id: addr.clone(),
+                                        aug: account.aug()?,
+                                        account,
+                                    }),
+                                );
+                            }
+                            None => {
+                                accounts_that_changed_their_dapp_id.insert(
+                                    AccountRouting(DAppIdentifier(addr.clone()), addr.clone()),
+                                    None,
+                                );
+                            }
+                        }
+                    } else {
+                        accounts_that_changed_their_dapp_id.insert(
+                            AccountRouting(DAppIdentifier(addr.clone()), addr.clone()),
+                            None,
+                        );
+                    }
                 }
-                None => {
-                    accounts_that_changed_their_dapp_id
-                        .insert(AccountRouting(DAppIdentifier(addr.clone()), addr.clone()), None);
-                }
-            }
-        }
+                Ok(true)
+            })
+            .map_err(|e| anyhow::format_err!("Failed to iterate account blocks: {e}"))?;
+
         let mut produced_internal_messages_to_the_current_thread: HashMap<
             AccountAddress,
             Vec<(MessageIdentifier, Arc<WrappedMessage>)>,

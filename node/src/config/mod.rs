@@ -132,6 +132,11 @@ pub struct NodeConfig {
     #[builder(default = PathBuf::from("zerostate"))]
     pub zerostate_path: PathBuf,
 
+    /// Optional path to init bk set. If omitted, uses bk set from zerostate.
+    /// Bk set file format must match `/v2/bk_set_update` API output.
+    #[builder(default)]
+    pub bk_set_update_path: Option<PathBuf>,
+
     /// Local directory path which will be shared to other nodes.
     #[builder(default = PathBuf::from("/tmp"))]
     pub external_state_share_local_base_dir: PathBuf,
@@ -200,9 +205,9 @@ impl Default for GlobalConfig {
             sync_delay_milliseconds: 500,
             save_state_frequency: 200,
             block_keeper_epoch_code_hash:
-                "ad2647fa7fe0540f656b9fc137f0bcfc18fc7750c0197e789230f8e28c437df6".to_string(),
+                "38e808c45328c915cf36d1337968912e1164817a7b209833b7fa52e55ee178e1".to_string(),
             block_keeper_preepoch_code_hash:
-                "aad416360eaf1d667e1470e5d4c9f56b7f55810e43cb5fa239bde4cec3454a72".to_string(),
+                "292a73d0ea7439226a5f50d6e663f2a4908035dc61ec0367211519d92ead93f8".to_string(),
             thread_count_soft_limit: 100,
             thread_load_window_size: 100,
             thread_load_threshold: 5000,
@@ -267,6 +272,7 @@ impl Default for NodeConfig {
             blockchain_config_path: PathBuf::from("blockchain_config.json"),
             key_path: "block_keeper.keys.json".to_string(),
             zerostate_path: PathBuf::from("zerostate"),
+            bk_set_update_path: None,
             external_state_share_local_base_dir: PathBuf::from("/tmp"),
             parallelization_level: 20,
             block_keeper_seed_path: "block_keeper.keys.json".to_string(),

@@ -35,8 +35,6 @@ mod serialize;
 
 pub use hash::compare_hashes;
 
-use crate::repository::dapp_id_table::DAppIdTableChangeSet;
-
 const BLOCK_SUFFIX_LEN: usize = 32;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -82,7 +80,7 @@ impl AckiNackiBlock {
         verify_complexity: SignerIndex,
         refs: Vec<BlockIdentifier>,
         threads_table: Option<ThreadsTable>,
-        changed_dapp_ids: DAppIdTableChangeSet,
+        // changed_dapp_ids: DAppIdTableChangeSet,
         round: BlockRound,
         block_height: BlockHeight,
         #[cfg(feature = "monitor-accounts-number")] accounts_number_diff: i64,
@@ -100,7 +98,7 @@ impl AckiNackiBlock {
                 verify_complexity,
                 refs,
                 threads_table,
-                changed_dapp_ids,
+                // changed_dapp_ids,
                 block_height,
                 #[cfg(feature = "monitor-accounts-number")]
                 accounts_number_diff,

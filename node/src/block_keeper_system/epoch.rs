@@ -25,6 +25,7 @@ use crate::node::SignerIndex;
 
 const BLS_PUBKEY_TOKEN_KEY: &str = "_bls_pubkey";
 const EPOCH_FINISH_TOKEN_KEY: &str = "_seqNoFinish";
+const WAIT_STEP_TOKEN_KEY: &str = "_waitStep";
 const STAKE_TOKEN_KEY: &str = "_stake";
 const OWNER_TOKEN_KEY: &str = "_owner_address";
 const PREEPOCH_OWNER_TOKEN_KEY: &str = "_wallet";
@@ -55,6 +56,7 @@ pub fn decode_epoch_data(
             .map_err(|e| anyhow::format_err!("Failed to decode epoch storage: {e}"))?;
         let mut block_keeper_bls_key = None;
         let mut block_keeper_epoch_finish = None;
+        let mut block_keeper_wait_step = None;
         let mut block_keeper_stake = None;
         let mut wallet_address = None;
         let mut signer_index = None;
@@ -72,6 +74,15 @@ pub fn decode_epoch_data(
                         0
                     } else {
                         epoch_finish.number.to_u64_digits()[0]
+                    });
+                }
+            } else if token.name == WAIT_STEP_TOKEN_KEY {
+                if let TokenValue::Uint(value) = token.value {
+                    tracing::trace!("decoded wait step: {value:?}");
+                    block_keeper_wait_step = Some(if value.number.is_zero() {
+                        0
+                    } else {
+                        value.number.to_u64_digits()[0]
                     });
                 }
             } else if token.name == STAKE_TOKEN_KEY {
@@ -114,6 +125,7 @@ pub fn decode_epoch_data(
         if let (
             Some(block_keeper_bls_key),
             Some(block_keeper_epoch_finish),
+            Some(block_keeper_wait_step),
             Some(block_keeper_stake),
             Some(wallet_address),
             Some(signer_index),
@@ -121,6 +133,7 @@ pub fn decode_epoch_data(
         ) = (
             block_keeper_bls_key,
             block_keeper_epoch_finish,
+            block_keeper_wait_step,
             block_keeper_stake,
             wallet_address,
             signer_index,
@@ -132,6 +145,7 @@ pub fn decode_epoch_data(
                 BlockKeeperData {
                     pubkey: block_keeper_bls_key,
                     epoch_finish_seq_no: Some(block_keeper_epoch_finish),
+                    wait_step: block_keeper_wait_step,
                     status: BlockKeeperStatus::Active,
                     // TODO: better fix pure unwrap for address
                     address: account.get_addr().unwrap().to_string(),
@@ -165,6 +179,7 @@ pub fn decode_preepoch_data(
         let mut wallet_address = None;
         let mut signer_index = None;
         let mut owner_pubkey = None;
+        let mut block_keeper_wait_step = None;
         tracing::trace!("decoded preepoch data: {decoded_data:?}");
         for token in decoded_data {
             if token.name == BLS_PUBKEY_TOKEN_KEY {
@@ -176,6 +191,15 @@ pub fn decode_preepoch_data(
                     tracing::trace!("decoded preepoch stake: {stake:?}");
                     block_keeper_stake =
                         Some(if stake.is_zero() { BigUint::zero() } else { stake });
+                }
+            } else if token.name == WAIT_STEP_TOKEN_KEY {
+                if let TokenValue::Uint(value) = token.value {
+                    tracing::trace!("decoded wait step: {value:?}");
+                    block_keeper_wait_step = Some(if value.number.is_zero() {
+                        0
+                    } else {
+                        value.number.to_u64_digits()[0]
+                    });
                 }
             } else if token.name == PREEPOCH_OWNER_TOKEN_KEY {
                 if let TokenValue::Address(addr) = token.value {
@@ -211,17 +235,24 @@ pub fn decode_preepoch_data(
         if let (
             Some(block_keeper_bls_key),
             Some(block_keeper_stake),
+            Some(block_keeper_wait_step),
             Some(wallet_address),
             Some(signer_index),
             Some(owner_pubkey),
-        ) =
-            (block_keeper_bls_key, block_keeper_stake, wallet_address, signer_index, owner_pubkey)
-        {
+        ) = (
+            block_keeper_bls_key,
+            block_keeper_stake,
+            block_keeper_wait_step,
+            wallet_address,
+            signer_index,
+            owner_pubkey,
+        ) {
             return Ok(Some((
                 signer_index,
                 BlockKeeperData {
                     pubkey: block_keeper_bls_key,
                     epoch_finish_seq_no: None,
+                    wait_step: block_keeper_wait_step,
                     status: BlockKeeperStatus::PreEpoch,
                     // TODO: better fix pure unwrap for address
                     address: account.get_addr().unwrap().to_string(),

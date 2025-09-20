@@ -60,11 +60,11 @@ trigger_stopping_staking () {
   EPOCH_FINISH=$(echo $EPOCH_DETAILS | jq -r '.seqNoFinish')
   log "Current epoch address $EPOCH_ADDRESS and epoch seqNo finish $EPOCH_FINISH"
 
-  CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo. Returning..." >&2 ; return 1 ;})
+  CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq -e -r '.[0].seq_no | select(. != null)' || { log "Error with getting current block seqNo. Returning..." >&2 ; return 1 ;})
   while [ "$(echo "$EPOCH_FINISH < $CUR_BLOCK_SEQ" | bc)" -ne 1 ]; do
     log "Current block seq_no is less than epoch finishing block seq_no. Waiting..."
     sleep 2
-    CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo. Returning..." >&2 ; return 1 ;})
+    CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq -e -r '.[0].seq_no | select(. != null)' || { log "Error with getting current block seqNo. Returning..." >&2 ; return 1 ;})
   done
 
   log "Current epoch $EPOCH_ADDRESS is ready to be touched"
@@ -409,14 +409,14 @@ process_epoch () {
     case $ACTIVE_STAKES_CASE in
       0)
         log "Pre Epoch - $k"
-        CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo" >&2 ; return 1 ;})
+        CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq -e -r '.[0].seq_no | select(. != null)' || { log "Error with getting current block seqNo" >&2 ; return 1 ;})
         PRE_EPOCH_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperPreEpochAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$ACTIVE_STAKES_SEQ\"}" | jq -r -e '.preEpochAddress' || { log "Error with getting pre-epoch address" >&2 ; return 1 ;})
         log "PreEpoch contract address \"$PRE_EPOCH_ADDRESS\" and sequence start is \"$ACTIVE_STAKES_SEQ\" and current sequence is \"$CUR_BLOCK_SEQ\""
         IS_EPOCH_ACTIVE=false
         while [ "$(echo "$ACTIVE_STAKES_SEQ < $CUR_BLOCK_SEQ" | bc)" -ne 1 ]; do
           log "Current block seq_no is less than starting block seq_no. Waiting..."
           sleep 1
-          CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo" >&2 ; return 1 ;})
+          CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq -e -r '.[0].seq_no | select(. != null)' || { log "Error with getting current block seqNo" >&2 ; return 1 ;})
         done
         log "Touching preEpoch contract"
         tvm-cli -j callx --abi $PRE_EPOCH_ABI --addr $PRE_EPOCH_ADDRESS -m touch
@@ -431,7 +431,7 @@ process_epoch () {
         SEQNO=$ACTIVE_STAKES_SEQ
         EPOCH_SEQNO_START=$(echo $EPOCH_DETAILS | jq -r '.seqNoStart')
         EPOCH_SEQNO_FINISH=$(echo $EPOCH_DETAILS | jq -r '.seqNoFinish')
-        CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq -r '.[0].seq_no' || { log "Error with getting current block seqNo" >&2 ; return 1 ;})
+        CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq -e -r '.[0].seq_no | select(. != null)' || { log "Error with getting current block seqNo" >&2 ; return 1 ;})
         if [ "$IS_EPOCH_CONTINUE" = false ] && [ "$WILL_EPOCH_CONTINUE" = true ] && [ "$(echo "($EPOCH_SEQNO_FINISH - $EPOCH_SEQNO_START) * 0.3 + $EPOCH_SEQNO_START < $CUR_BLOCK_SEQ" | bc)" -eq 1 ]; then
           # if tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -e '.activeStakes | .[] | select(.status == "2")' > /dev/null 2>&1; then
           #   log "There is active Cooler in stakes"
@@ -442,7 +442,7 @@ process_epoch () {
         fi
         IS_EPOCH_CONTINUE=$(echo $EPOCH_DETAILS | jq -r '.isContinue')
         log "Epoch with address \"$EPOCH_ADDRESS\" is being continued: $IS_EPOCH_CONTINUE"
-        CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo" >&2 ; return 1 ;})
+        CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq -e -r '.[0].seq_no | select(. != null)' || { log "Error with getting current block seqNo" >&2 ; return 1 ;})
         if [ "$(echo $EPOCH_DETAILS | jq -r '.seqNoFinish')" -le $CUR_BLOCK_SEQ ]; then
           log "Current epoch $EPOCH_ADDRESS is ready to be touched"
           tvm-cli -j callx --abi $EPOCH_ABI --addr $EPOCH_ADDRESS -m touch

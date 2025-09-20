@@ -65,7 +65,7 @@ impl SharedServices {
             100,
             rate,
             1,
-            CrossRefStorage::as_noop(),
+            CrossRefStorage::mem(),
         )
     }
 

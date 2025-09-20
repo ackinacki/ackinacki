@@ -67,6 +67,7 @@ use tvm_vm::executor::EngineTraceInfo;
 
 use super::ActiveThread;
 use super::BlockBuilder;
+use super::ExecuteError;
 use super::PreparedBlock;
 use super::ThreadResult;
 use crate::block::postprocessing::postprocess;
@@ -89,7 +90,6 @@ use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::repository::accounts::AccountsRepository;
-use crate::repository::dapp_id_table::DAppIdTableChangeSet;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
@@ -99,7 +99,6 @@ use crate::types::thread_message_queue::account_messages_iterator::AccountMessag
 use crate::types::thread_message_queue::ThreadMessageQueueState;
 use crate::types::AccountAddress;
 use crate::types::AccountRouting;
-use crate::types::BlockEndLT;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::DAppIdentifier;
@@ -154,14 +153,10 @@ impl BlockBuilder {
 
         let base_config_stateinit = StateInit::construct_from_bytes(DAPP_CONFIG_TVC)
             .map_err(|e| anyhow::format_err!("Failed to construct DAPP config tvc: {e}"))?;
-
-        let dapp_id_table = initial_optimistic_state.get_dapp_id_table().clone();
-
         #[cfg(not(feature = "monitor-accounts-number"))]
         let builder = BlockBuilder {
             thread_id,
             shard_state,
-            // out_queue_info, // TODO: Change to ThreadMessageQueueState, get it from Optimistic
             from_prev_blk: accounts.full_balance().clone(),
             in_msg_descr: Default::default(),
             initial_accounts: accounts.clone(),
@@ -188,13 +183,11 @@ impl BlockBuilder {
             // transaction_traces: Default::default(),
             tx_cnt: 0,
             dapp_minted_map: Default::default(),
-            dapp_id_table,
             accounts_repository,
             consumed_internal_messages: Default::default(),
             produced_internal_messages_to_the_current_thread: Default::default(),
             produced_internal_messages_to_other_threads,
             accounts_that_changed_their_dapp_id: Default::default(),
-            dapp_id_table_change_set: Default::default(),
             metrics,
             is_stop_requested: false,
             wasm_cache,
@@ -204,7 +197,6 @@ impl BlockBuilder {
         let builder = BlockBuilder {
             thread_id,
             shard_state,
-            // out_queue_info, // TODO: Change to ThreadMessageQueueState, get it from Optimistic
             from_prev_blk: accounts.full_balance().clone(),
             in_msg_descr: Default::default(),
             initial_accounts: accounts.clone(),
@@ -228,16 +220,13 @@ impl BlockBuilder {
             dapp_credit_map: Default::default(),
             new_messages: Default::default(),
             out_msg_descr: Default::default(),
-            // transaction_traces: Default::default(),
             tx_cnt: 0,
             dapp_minted_map: Default::default(),
-            dapp_id_table,
             accounts_repository,
             consumed_internal_messages: Default::default(),
             produced_internal_messages_to_the_current_thread: Default::default(),
             produced_internal_messages_to_other_threads,
             accounts_that_changed_their_dapp_id: Default::default(),
-            dapp_id_table_change_set: Default::default(),
             metrics,
             is_stop_requested: false,
             wasm_cache,
@@ -499,7 +488,6 @@ impl BlockBuilder {
                 .entry(acc_id.clone())
                 .or_default()
                 .push((account_routing, None));
-            self.dapp_id_table_change_set.insert(acc_id.clone(), None, BlockEndLT(self.end_lt));
         } else {
             let mut result_dapp_id = thread_result.initial_dapp_id.clone();
             if transaction.end_status == AccountStatus::AccStateActive
@@ -533,6 +521,7 @@ impl BlockBuilder {
                     "DApp Id has changed and account was not deleted, It should not be None",
                 );
                 let new_account_routing = AccountRouting(new_dapp_id.clone(), acc_id.clone());
+
                 self.accounts_that_changed_their_dapp_id.entry(acc_id.clone()).or_default().push((
                     new_account_routing,
                     Some(WrappedAccount {
@@ -543,11 +532,6 @@ impl BlockBuilder {
                             .map_err(|e| anyhow::format_err!("Failed to get account aug: {e}"))?,
                     }),
                 ));
-                self.dapp_id_table_change_set.insert(
-                    acc_id.clone(),
-                    Some(new_dapp_id),
-                    BlockEndLT(self.end_lt),
-                );
             } else if self.accounts_that_changed_their_dapp_id.contains_key(&acc_id) {
                 let history = self.accounts_that_changed_their_dapp_id.get_mut(&acc_id).unwrap();
                 let prev_routing = history.last().expect("Can't be empty").0.clone();
@@ -567,7 +551,9 @@ impl BlockBuilder {
                 .insert(&acc_id.0, &shard_acc)
                 .map_err(|e| anyhow::format_err!("Failed to save account: {e}"))?;
         }
-        if let Err(err) = self.add_raw_transaction(transaction, tr_cell) {
+        if let Err(err) =
+            self.add_raw_transaction(transaction, tr_cell, thread_result.in_msg.clone())
+        {
             tracing::warn!(target: "builder", "Error append transaction {:?}", err);
             // TODO log error, write to transaction DB about error
         }
@@ -584,43 +570,40 @@ impl BlockBuilder {
         Ok(())
     }
 
-    fn get_available_balance(
-        &mut self,
-        acc_id: AccountAddress,
-    ) -> anyhow::Result<(i128, Option<DAppIdentifier>)> {
+    fn get_available_balance(&mut self, dapp_id: &DAppIdentifier) -> anyhow::Result<i128> {
+        tracing::trace!(target: "builder", "Getting available balance: {:?}", dapp_id);
         let mut available_balance = 0;
-        let dapp_id_opt = match self.dapp_id_table_change_set.get_value(&acc_id) {
-            Some((change_set_dapp_id, _)) => change_set_dapp_id.clone(),
-            None => self.dapp_id_table.get(&acc_id).and_then(|(dapp_id, _)| dapp_id.clone()),
-        };
-        if let Some(dapp_id) = dapp_id_opt.clone() {
-            if !self.dapp_credit_map.contains_key(&dapp_id.clone()) {
-                let addr = calculate_dapp_config_address(
-                    dapp_id.clone(),
-                    self.base_config_stateinit.clone(),
-                )
-                .map_err(|e| anyhow::format_err!("Failed to calculate dapp config address: {e}"))?;
-                let acc_id = AccountAddress(addr);
-                if let Some(acc) = self.get_account(&acc_id)? {
-                    let acc_d = acc
-                        .read_account()
-                        .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?
-                        .as_struct()
-                        .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?;
-                    let data = decode_dapp_config_data(&acc_d)?;
+        if !self.dapp_credit_map.contains_key(dapp_id) {
+            tracing::trace!(target: "builder", "Dapp not in cache: {:?}", dapp_id);
+            let addr =
+                calculate_dapp_config_address(dapp_id.clone(), self.base_config_stateinit.clone())
+                    .map_err(|e| {
+                        anyhow::format_err!("Failed to calculate dapp config address: {e}")
+                    })?;
+            let acc_id = AccountAddress(addr);
+            tracing::trace!(target: "builder", "Dapp config addr: {:?}", acc_id);
+            if let Some(acc) = self.get_account(&acc_id)? {
+                tracing::trace!(target: "builder", "account found");
+                assert!(!acc.is_redirect(), "DApp config account is redirect");
+                let acc_d = acc
+                    .read_account()
+                    .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?
+                    .as_struct()
+                    .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?;
+                let data = decode_dapp_config_data(&acc_d)?;
 
-                    if let Some(configdata) = data {
-                        available_balance = get_available_balance_from_config(configdata.clone());
-                        self.dapp_credit_map.insert(dapp_id, configdata);
-                    }
+                if let Some(configdata) = data {
+                    available_balance = get_available_balance_from_config(configdata.clone());
+                    self.dapp_credit_map.insert(dapp_id.clone(), configdata);
                 }
-            } else {
-                available_balance =
-                    get_available_balance_from_config(self.dapp_credit_map[&dapp_id].clone());
             }
+        } else {
+            tracing::trace!(target: "builder", "Dapp in cache: {:?}", dapp_id);
+            available_balance =
+                get_available_balance_from_config(self.dapp_credit_map[dapp_id].clone());
         }
-
-        Ok((available_balance, dapp_id_opt))
+        tracing::trace!(target: "builder", "Dapp balance: {:?} {}", dapp_id, available_balance);
+        Ok(available_balance)
     }
 
     fn get_account(&mut self, acc_id: &AccountAddress) -> anyhow::Result<Option<ShardAccount>> {
@@ -631,6 +614,9 @@ impl BlockBuilder {
             .map_err(|e| anyhow::format_err!("Failed to get account: {e}"))?
         {
             Some(mut acc) => {
+                if acc.is_redirect() {
+                    return Ok(Some(acc));
+                }
                 if acc.is_external() {
                     tracing::trace!(target: "builder", "account is external {}", acc_id.to_hex_string());
                     let root = match self.initial_optimistic_state.cached_accounts.get(acc_id) {
@@ -641,10 +627,16 @@ impl BlockBuilder {
                             acc.last_trans_lt(),
                         )?,
                     };
-                    if root.repr_hash() != acc.account_cell().repr_hash() {
+                    if root.repr_hash()
+                        != acc
+                            .account_cell()
+                            .map_err(|e| anyhow::format_err!("Failed to load account cell: {e}"))?
+                            .repr_hash()
+                    {
                         return Err(anyhow::format_err!("External account cell hash mismatch"));
                     }
-                    acc.set_account_cell(root);
+                    acc.set_account_cell(root)
+                        .map_err(|e| anyhow::format_err!("Failed to set account cell: {e}"))?;
                     self.accounts
                         .insert(&acc_id.0, &acc)
                         .map_err(|e| anyhow::format_err!("Failed to save account: {e}"))?;
@@ -658,10 +650,51 @@ impl BlockBuilder {
         }
     }
 
+    fn reroute_message(
+        &mut self,
+        message: Message,
+        dest_dapp_id: Option<UInt256>,
+        acc_id: &AccountAddress,
+    ) -> anyhow::Result<()> {
+        tracing::trace!(target: "builder",
+            "Reroute message for another thread: {}",
+            message.hash().unwrap().to_hex_string()
+        );
+        let info = message.int_header().unwrap();
+        let fwd_fee = info.fwd_fee();
+        let msg_cell = message
+            .serialize()
+            .map_err(|e| anyhow::format_err!("failed to serialize message: {e}"))?;
+        let env = MsgEnvelope::with_message_and_fee(&message, *fwd_fee)
+            .map_err(|e| anyhow::format_err!("failed to make envelope: {e}"))?;
+        let enq = EnqueuedMsg::with_param(info.created_lt, &env)
+            .map_err(|e| anyhow::format_err!("failed to enqueue message: {e}"))?;
+        let out_msg = OutMsg::new(enq.out_msg_cell(), Cell::default());
+
+        self.out_msg_descr
+            .set(
+                &msg_cell.repr_hash(),
+                &out_msg,
+                &out_msg.aug().map_err(|e| anyhow::format_err!("failed to calc aug: {e}"))?,
+            )
+            .map_err(|e| anyhow::format_err!("failed to update out msg descr: {e}"))?;
+
+        let wrapped_message = WrappedMessage { message };
+        let dapp_id = dest_dapp_id.map(AccountAddress).unwrap_or(acc_id.clone());
+        let destination_routing: AccountRouting =
+            (Some(DAppIdentifier(dapp_id)), acc_id.clone()).into();
+        let entry = self
+            .produced_internal_messages_to_other_threads
+            .entry(destination_routing)
+            .or_default();
+        entry.push((MessageIdentifier::from(&wrapped_message), Arc::new(wrapped_message)));
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn execute(
         &mut self,
-        message: Message,
+        mut message: Message,
         blockchain_config: &BlockchainConfig,
         acc_id: &AccountAddress,
         block_unixtime: u32,
@@ -670,19 +703,63 @@ impl BlockBuilder {
         time_limits: &ExecutionTimeLimits,
     ) -> anyhow::Result<ActiveThread> {
         let message_hash = message.hash().unwrap();
-        tracing::debug!(target: "builder", "Start msg execution: {:?}", message_hash);
+        tracing::debug!(target: "builder", "Start msg execution: addr={:?} {:?}", acc_id.0.to_hex_string(), message_hash);
         #[cfg(feature = "timing")]
         let start = std::time::Instant::now();
         let shard_acc = self.get_account(acc_id)?;
-        let (available_balance, dapp_id_opt) = self
-            .get_available_balance(acc_id.clone())
-            .map_err(|e| anyhow::format_err!("Failed to get available credit: {e}"))?;
+        let shard_acc = shard_acc.unwrap_or_default();
+        let dapp_id_opt = shard_acc.get_dapp_id().map(|dapp_id| dapp_id.clone().into());
+        let account_routing = AccountRouting(
+            dapp_id_opt.clone().unwrap_or(DAppIdentifier(acc_id.clone())),
+            acc_id.clone(),
+        );
+        if shard_acc.is_redirect() {
+            tracing::debug!(target: "builder", "account was replaced with redirect");
+            let dest_dapp_id = shard_acc
+                .get_dapp_id()
+                .cloned()
+                .ok_or(anyhow::format_err!("Account stub must have DApp ID set"))?;
+            let orig_message_cell = message.serialize().map_err(|e| anyhow::format_err!("{e}"))?;
+            let orig_message = message.clone();
+            let do_reroute = if let Some(header) = message.int_header_mut() {
+                tracing::debug!(target: "builder", "header: {header:?}");
+                let tr = Transaction::default();
+                self.add_msg_to_in_msg_descr(
+                    orig_message_cell,
+                    tr.serialize().unwrap(),
+                    Some(orig_message),
+                )?;
+                header.set_dest_dapp_id(Some(dest_dapp_id.clone()));
+                true
+            } else {
+                false
+            };
+            if do_reroute {
+                self.reroute_message(message, Some(dest_dapp_id), acc_id)?;
+                anyhow::bail!(ExecuteError::AccountWasMovedRerouteInternalMessage)
+            } else {
+                anyhow::bail!(ExecuteError::AccountWasMovedIgnoreExternalMessage)
+            }
+        }
+        if !self.initial_optimistic_state.does_routing_belong_to_the_state(&account_routing) {
+            anyhow::bail!(ExecuteError::WrongDestinationThread(account_routing));
+        }
+
+        tracing::trace!(target: "builder", "dapp_id_opt={dapp_id_opt:?}");
+        let available_balance = if let Some(dapp_id) = &dapp_id_opt {
+            self.get_available_balance(dapp_id)
+                .map_err(|e| anyhow::format_err!("Failed to get available credit: {e}"))?
+        } else {
+            0
+        };
+        tracing::trace!(target: "builder", "DApp config available balance: {available_balance}");
         tracing::debug!(target: "builder", "Execute available credit: {}", available_balance);
         tracing::debug!(target: "builder", "Read account: {}", acc_id.to_hex_string());
-        let shard_acc = shard_acc.unwrap_or_default();
         #[cfg(feature = "timing")]
         tracing::trace!(target: "builder", "Execute: read account time {} ms", start.elapsed().as_millis());
-        let mut acc_root = shard_acc.account_cell();
+        let mut acc_root = shard_acc
+            .account_cell()
+            .map_err(|e| anyhow::format_err!("Failed to load account cell: {e}"))?;
         let executor = OrdinaryTransactionExecutor::new((*blockchain_config).clone());
 
         let mut last_lt = std::cmp::max(self.end_lt, shard_acc.last_trans_lt() + 1);
@@ -837,6 +914,7 @@ impl BlockBuilder {
         message_db: MessageDurableStorage,
         time_limits: &ExecutionTimeLimits,
     ) -> anyhow::Result<bool> {
+        tracing::debug!(target: "builder", "Executing internal messages: {:?}", message_queue);
         let (block_unixtime, block_lt) = self.at_and_lt();
         // let out_queue = self.out_queue_info.out_queue().clone();
         // let msg_count = out_queue
@@ -979,22 +1057,37 @@ impl BlockBuilder {
                 let mut started_accounts: HashMap<AccountAddress, MessagesRangeIterator<MessageIdentifier, Arc<WrappedMessage>, MessageDurableStorage>> = HashMap::new();
 
                 // Start first message execution separately because we must wait for it to finish
-                let mut first_thread_and_key = match get_next_int_message(check_messages_map, &self.initial_optimistic_state, &self.dapp_id_table_change_set, &mut started_accounts, &active_int_destinations, &mut internal_messages_iter)? {
-                    Some((message, key)) => {
-                        executed_int_messages_cnt += 1;
-                        let first_acc_id = message.int_dst_account_id().expect("Failed to get int_dst_account_id").into();
-                        let first_thread = self.execute(
-                            message,
-                            blockchain_config,
-                            &first_acc_id,
-                            block_unixtime,
-                            block_lt,
-                            check_messages_map,
-                            time_limits,
-                        )?;
-                        Some((first_thread, key))
-                    },
-                    None => None
+                let mut first_thread_and_key = loop {
+                     match self.get_next_int_message(check_messages_map, &mut started_accounts, &active_int_destinations, &mut internal_messages_iter)? {
+                        Some((message, key)) => {
+                            executed_int_messages_cnt += 1;
+                            let first_acc_id = message.int_dst_account_id().expect("Failed to get int_dst_account_id").into();
+                            let first_thread = self.execute(
+                                message,
+                                blockchain_config,
+                                &first_acc_id,
+                                block_unixtime,
+                                block_lt,
+                                check_messages_map,
+                                time_limits,
+                            );
+                            if let Err(error) = &first_thread {
+                                if let Some(error) = error.downcast_ref::<ExecuteError>() {
+                                    tracing::trace!("ExecuteError: {error}");
+                                    if let ExecuteError::WrongDestinationThread(_account_routing) = error {
+                                        started_accounts.remove(&first_acc_id);
+                                    }
+                                    continue;
+                                }
+                            }
+                            let first_thread = first_thread?;
+                            break Some((first_thread, key))
+                        },
+                        None => {
+                            tracing::trace!(target: "builder", "get_next_int_message returned Ok(None)");
+                            break None
+                        }
+                    };
                 };
 
                 tracing::info!(target: "builder", "Internal messages execution start");
@@ -1004,7 +1097,7 @@ impl BlockBuilder {
                         // If active pool is not full add threads
                         let mut message_queue_is_empty = false;
                         while active_threads.len() < self.parallelization_level {
-                            let thread_and_key = match get_next_int_message(check_messages_map, &self.initial_optimistic_state, &self.dapp_id_table_change_set, &mut started_accounts, &active_int_destinations, &mut internal_messages_iter)? {
+                            let thread_and_key = match self.get_next_int_message(check_messages_map, &mut started_accounts, &active_int_destinations, &mut internal_messages_iter)? {
                                 Some((message, key)) => {
                                     pause_to_avoid_busy_loop = false;
                                     executed_int_messages_cnt += 1;
@@ -1017,10 +1110,23 @@ impl BlockBuilder {
                                         block_lt,
                                         check_messages_map,
                                         time_limits
-                                    )?;
+                                    );
+                                    if let Err(error) = &thread {
+                                        if let Some(error) = error.downcast_ref::<ExecuteError>() {
+                                            tracing::trace!("ExecuteError: {error}");
+                                            if let ExecuteError::WrongDestinationThread(_account_routing) = error {
+                                                started_accounts.remove(&acc_id);
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                    let thread = thread?;
                                     Some((thread, key))
                                 },
-                                None => None
+                                None => {
+                                    tracing::trace!(target: "builder", "get_next_int_message returned Ok(None)");
+                                    None
+                                }
                             };
                             if let Some((thread, key)) = thread_and_key {
                                 active_threads.push((key, thread));
@@ -1043,14 +1149,6 @@ impl BlockBuilder {
                             let acc_id = thread_result.account_id.clone();
 
                             self.after_transaction(thread_result)?;
-                            let destination_routing = self
-                                .initial_optimistic_state
-                                .get_account_routing(&acc_id, Some(&self.dapp_id_table_change_set));
-                            if !self
-                                .initial_optimistic_state
-                                .does_routing_belong_to_the_state(&destination_routing) {
-                                started_accounts.remove(&acc_id);
-                            }
 
                             active_int_destinations.lock().remove(&acc_id);
                             //
@@ -1086,14 +1184,7 @@ impl BlockBuilder {
                                 // } else {
                                     tracing::trace!(target: "builder", "parallel int message finished dest: {}, key: {}", acc_id.to_hex_string(), key.inner().hash.to_hex_string());
                                     self.after_transaction(thread_result)?;
-                                    let destination_routing = self
-                                        .initial_optimistic_state
-                                        .get_account_routing(&acc_id, Some(&self.dapp_id_table_change_set));
-                                    if !self
-                                        .initial_optimistic_state
-                                        .does_routing_belong_to_the_state(&destination_routing) {
-                                        started_accounts.remove(&acc_id);
-                                    }
+
                                     // self.out_queue_info
                                     //     .out_queue_mut()
                                     //     .remove(
@@ -1227,7 +1318,31 @@ impl BlockBuilder {
                             block_lt,
                             &mut check_messages_map,
                             time_limits,
-                        )?;
+                        );
+                        if let Err(error) = &thread {
+                            if let Some(error) = error.downcast_ref::<ExecuteError>() {
+                                tracing::trace!("ExecuteError: {error}");
+                                if let ExecuteError::WrongDestinationThread(account_routing) = error {
+                                    tracing::trace!(target: "builder", "remove new message: {}", index);
+                                    self.new_messages.remove(&index);
+                                    tracing::trace!(target: "builder",
+                                        "New message for another thread: {}",
+                                        message.hash().unwrap().to_hex_string()
+                                    );
+                                    let wrapped_message = WrappedMessage { message: message.clone() };
+                                    let entry = self
+                                        .produced_internal_messages_to_other_threads
+                                        .entry(account_routing.clone())
+                                        .or_default();
+                                    entry.push((
+                                        MessageIdentifier::from(&wrapped_message),
+                                        Arc::new(wrapped_message),
+                                    ));
+                                }
+                                continue;
+                            }
+                        }
+                        let thread = thread?;
                         active_threads.push((key, thread));
                         active_destinations.insert(acc_id, index);
                     }
@@ -1331,11 +1446,58 @@ impl BlockBuilder {
         Ok((prepared_block, processed_stamps, ext_message_feedbacks))
     }
 
+    fn add_msg_to_in_msg_descr(
+        &mut self,
+        msg_cell: Cell,
+        tr_cell: Cell,
+        msg: Option<Message>,
+    ) -> anyhow::Result<()> {
+        let msg = msg.unwrap_or(
+            Message::construct_from_cell(msg_cell.clone())
+                .map_err(|e| anyhow::format_err!("Failed to construct message: {e}"))?,
+        );
+        let in_msg = if let Some(hdr) = msg.int_header() {
+            let fee = hdr.fwd_fee();
+            let env = MsgEnvelope::with_message_and_fee(&msg, *fee)
+                .map_err(|e| anyhow::format_err!("Failed to envelope message: {e}"))?;
+
+            let acc_id = hdr.dst.address().into();
+
+            let wrapped_message = WrappedMessage { message: msg.clone() };
+            let entry = self.consumed_internal_messages.entry(acc_id).or_default();
+            entry.insert(MessageIdentifier::from(&wrapped_message));
+
+            InMsg::immediate(
+                env.serialize()
+                    .map_err(|e| anyhow::format_err!("Failed to serialize msg envelope: {e}"))?,
+                tr_cell.clone(),
+                *fee,
+            )
+        } else {
+            InMsg::external(msg_cell.clone(), tr_cell.clone())
+        };
+
+        tracing::debug!(target: "builder", "Add in message to in_msg_descr: {}", msg_cell.repr_hash().to_hex_string());
+        assert!(
+            self.in_msg_descr
+                .set_return_prev(
+                    &msg_cell.repr_hash(),
+                    &in_msg,
+                    &in_msg.aug().map_err(|e| anyhow::format_err!("Failed to get msg aug: {e}"))?,
+                )
+                .map_err(|e| anyhow::format_err!("Failed to add in msg descr: {e}"))?
+                .is_none(),
+            "State had messages with equal hash"
+        );
+        Ok(())
+    }
+
     /// Add transaction to block
     fn add_raw_transaction(
         &mut self,
         transaction: Transaction,
         tr_cell: Cell,
+        in_message: Message,
     ) -> anyhow::Result<()> {
         tracing::debug!(
             target: "builder",
@@ -1354,44 +1516,8 @@ impl BlockBuilder {
         }
 
         if let Some(msg_cell) = transaction.in_msg_cell() {
-            let msg = Message::construct_from_cell(msg_cell.clone())
-                .map_err(|e| anyhow::format_err!("Failed to construct message: {e}"))?;
-            let in_msg = if let Some(hdr) = msg.int_header() {
-                let fee = hdr.fwd_fee();
-                let env = MsgEnvelope::with_message_and_fee(&msg, *fee)
-                    .map_err(|e| anyhow::format_err!("Failed to envelope message: {e}"))?;
-
-                let acc_id = hdr.dst.address().into();
-
-                let wrapped_message = WrappedMessage { message: msg.clone() };
-                let entry = self.consumed_internal_messages.entry(acc_id).or_default();
-                entry.insert(MessageIdentifier::from(&wrapped_message));
-
-                InMsg::immediate(
-                    env.serialize().map_err(|e| {
-                        anyhow::format_err!("Failed to serialize msg envelope: {e}")
-                    })?,
-                    tr_cell.clone(),
-                    *fee,
-                )
-            } else {
-                InMsg::external(msg_cell.clone(), tr_cell.clone())
-            };
-
-            tracing::debug!(target: "builder", "Add in message to in_msg_descr: {}", msg_cell.repr_hash().to_hex_string());
-            assert!(
-                self.in_msg_descr
-                    .set_return_prev(
-                        &msg_cell.repr_hash(),
-                        &in_msg,
-                        &in_msg
-                            .aug()
-                            .map_err(|e| anyhow::format_err!("Failed to get msg aug: {e}"))?,
-                    )
-                    .map_err(|e| anyhow::format_err!("Failed to add in msg descr: {e}"))?
-                    .is_none(),
-                "State had messages with equal hash"
-            );
+            // TODO: pass in_msg from thread_result
+            self.add_msg_to_in_msg_descr(msg_cell, tr_cell.clone(), Some(in_message))?;
         }
         transaction
             .iterate_out_msgs(|mut msg| {
@@ -1417,6 +1543,7 @@ impl BlockBuilder {
                     let dest_account_id = msg
                         .int_dst_account_id()
                         .expect("Internal message must have valid internal destination");
+                    let dest_dapp_id = msg.int_header().unwrap().dest_dapp_id.clone();
                     let info = msg.int_header().unwrap();
                     let fwd_fee = info.fwd_fee();
                     let msg_cell = msg.serialize()?;
@@ -1426,9 +1553,13 @@ impl BlockBuilder {
 
                     self.out_msg_descr.set(&msg_cell.repr_hash(), &out_msg, &out_msg.aug()?)?;
 
-                    let destination_routing = self.initial_optimistic_state.get_account_routing(
-                        &dest_account_id,
-                        Some(&self.dapp_id_table_change_set),
+                    let destination_routing = AccountRouting(
+                        DAppIdentifier(
+                            dest_dapp_id
+                                .map(AccountAddress)
+                                .unwrap_or(dest_account_id.clone().into()),
+                        ),
+                        dest_account_id.into(),
                     );
                     if self
                         .initial_optimistic_state
@@ -1442,8 +1573,9 @@ impl BlockBuilder {
                     } else {
                         // If internal message destination doesn't match current thread, save it directly to the out msg descr of the block
                         tracing::trace!(target: "builder",
-                            "New message for another thread: {}",
-                            msg.hash().unwrap().to_hex_string()
+                            "New message for another thread: {} to {:?}",
+                            msg.hash().unwrap().to_hex_string(),
+                            destination_routing
                         );
                         let wrapped_message = WrappedMessage { message: msg.clone() };
                         let entry = self
@@ -1484,8 +1616,7 @@ impl BlockBuilder {
     fn finish_block(
         mut self,
         message_db: MessageDurableStorage,
-    ) -> anyhow::Result<(Block, OptimisticStateImpl, CrossThreadRefData, DAppIdTableChangeSet)>
-    {
+    ) -> anyhow::Result<(Block, OptimisticStateImpl, CrossThreadRefData)> {
         tracing::trace!(target: "builder", "finish_block");
         let mut new_shard_state = self.shard_state.deref().clone();
         tracing::info!(target: "builder", "finish block: seq_no: {:?}", self.block_info.seq_no());
@@ -1510,6 +1641,21 @@ impl BlockBuilder {
             "finish block new_shard_state hash: {:?}",
             new_shard_state.hash().unwrap().to_hex_string()
         );
+
+        let accounts_that_changed_their_dapp_id: HashMap<AccountRouting, Option<WrappedAccount>> =
+            HashMap::from_iter(
+                self.accounts_that_changed_their_dapp_id
+                    .values()
+                    .map(|v| v.last().unwrap().clone()),
+            );
+        for (routing, _) in accounts_that_changed_their_dapp_id.iter() {
+            tracing::trace!(target: "node", "set_dapp_id_changed_for_account for {routing:?}");
+            self.account_blocks
+                .set_dapp_id_changed_for_account(&routing.1 .0.clone().into())
+                .map_err(|e| {
+                    anyhow::format_err!("Failed to set dapp id changed for {routing:?} {e}")
+                })?;
+        }
 
         let block_extra = trace_span!("block extra").in_scope(|| {
             let mut block_extra = BlockExtra::default();
@@ -1614,13 +1760,6 @@ impl BlockBuilder {
             (current_thread_id, block_id.clone(), BlockSeqNo::from(block_info.seq_no()));
         new_thread_refs.update(current_thread_id, current_thread_last_block.clone());
 
-        let accounts_that_changed_their_dapp_id: HashMap<AccountRouting, Option<WrappedAccount>> =
-            HashMap::from_iter(
-                self.accounts_that_changed_their_dapp_id
-                    .values()
-                    .map(|v| v.last().unwrap().clone()),
-            );
-
         let mut changed_accounts = HashSet::new();
         self.account_blocks
             .iterate_with_keys(|addr, _| {
@@ -1628,6 +1767,7 @@ impl BlockBuilder {
                 Ok(true)
             })
             .map_err(|e| anyhow::format_err!("Failed to iterate account blocks: {e}"))?;
+        tracing::info!(target: "builder", "finish_block: changed_accounts: {changed_accounts:?}");
         let thread_id = *self.initial_optimistic_state.get_thread_id();
         let threads_table = self.initial_optimistic_state.get_produced_threads_table().clone();
         #[cfg(feature = "monitor-accounts-number")]
@@ -1642,11 +1782,9 @@ impl BlockBuilder {
             BlockSeqNo::from(block_info.seq_no()),
             (new_shard_state, new_ss_root).into(),
             self.produced_internal_messages_to_other_threads.clone(),
-            self.dapp_id_table.clone(),
             prev_block_info.into(),
             thread_id,
             threads_table,
-            self.dapp_id_table_change_set.clone(),
             changed_accounts,
             self.accounts_repository,
             message_db.clone(),
@@ -1655,7 +1793,7 @@ impl BlockBuilder {
         )?;
 
         tracing::info!(target: "builder", "Finish block: {:?}", block.hash().unwrap().to_hex_string());
-        Ok((block, new_state, cross_thread_ref_data, self.dapp_id_table_change_set.clone()))
+        Ok((block, new_state, cross_thread_ref_data))
     }
 
     // TODO: remove Option from tr_cell arg
@@ -1779,7 +1917,7 @@ impl BlockBuilder {
         #[cfg(feature = "monitor-accounts-number")]
         let accounts_number_diff = self.accounts_number_diff;
 
-        let (block, new_state, cross_thread_ref_data, changed_dapp_ids) = self
+        let (block, new_state, cross_thread_ref_data) = self
             .finish_block(message_db)
             .map_err(|e| anyhow::format_err!("Failed to finish block: {e}"))?;
 
@@ -1795,7 +1933,6 @@ impl BlockBuilder {
             remain_fees,
             block_keeper_set_changes,
             cross_thread_ref_data,
-            changed_dapp_ids,
             #[cfg(feature = "monitor-accounts-number")]
             accounts_number_diff,
         };
@@ -1829,11 +1966,15 @@ impl BlockBuilder {
                 }
             }
             *there_are_no_new_messages_for_verify_block = false;
-
-            if !self
-                .initial_optimistic_state
-                .does_account_belong_to_the_state(&acc_id, Some(&self.dapp_id_table_change_set))
-            {
+            let dest_dapp_id = message
+                .int_header()
+                .cloned()
+                .expect("New message must be internal")
+                .dest_dapp_id
+                .unwrap_or(acc_id.0.clone());
+            let dest_routing =
+                AccountRouting(DAppIdentifier(AccountAddress(dest_dapp_id)), acc_id.clone());
+            if !self.initial_optimistic_state.does_routing_belong_to_the_state(&dest_routing) {
                 // TODO: message is skipped, but it can prevent loop from stop
                 // need to save it to out msg descr and remove from new messages
                 continue;
@@ -1854,6 +1995,30 @@ impl BlockBuilder {
         }
 
         Ok(None)
+    }
+
+    fn get_potential_thread(
+        &self,
+        account_address: &AccountAddress,
+    ) -> tvm_types::Result<Option<ThreadIdentifier>> {
+        tracing::trace!(target: "builder", "get_potential_thread: {account_address:?}");
+        let dapp_id =
+            if let Some(account) = self.accounts.account(&account_address.clone().into())? {
+                tracing::trace!(target: "builder", "get_potential_thread: got account");
+                let dapp_id = account
+                    .get_dapp_id()
+                    .map(|dapp_id| dapp_id.clone().into())
+                    .unwrap_or(DAppIdentifier(account_address.clone()));
+                tracing::trace!(target: "builder", "get_potential_thread: {dapp_id:?}");
+                dapp_id
+            } else {
+                tracing::trace!(target: "builder", "get_potential_thread: no account");
+                DAppIdentifier(account_address.clone())
+            };
+        Ok(self
+            .initial_optimistic_state
+            .get_thread_for_account(&AccountRouting(dapp_id, account_address.clone()))
+            .ok())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1891,16 +2056,17 @@ impl BlockBuilder {
             if active_destinations.contains(&acc_id) {
                 continue;
             }
+            let potential_thread = self
+                .get_potential_thread(&acc_id)
+                .map_err(|e| anyhow::format_err!("Failed to get potential thread: {e}"))?;
 
-            if !self
-                .initial_optimistic_state
-                .does_account_belong_to_the_state(&acc_id, Some(&self.dapp_id_table_change_set))
-            {
+            if !potential_thread.map(|thread| thread == self.thread_id).unwrap_or(false) {
                 if let Some(mut q) = ext_messages_queue.remove(&acc_id) {
                     // If message destination doesn't belong to the current thread, remove it from the queue
-                    let acc_thread =
-                        self.initial_optimistic_state.get_thread_for_account(&acc_id).ok();
-                    tracing::debug!(target: "ext_messages", "thread mismatch for <dst:{}>. skipped", acc_id.to_hex_string());
+                    let acc_thread = self
+                        .get_potential_thread(&acc_id)
+                        .map_err(|e| anyhow::format_err!("Failed to get potential thread: {e}"))?;
+                    tracing::debug!(target: "ext_messages", "thread mismatch for <dst:{}>. skipped, acc_thread={acc_thread:?}", acc_id.to_hex_string());
 
                     while let Some((stamp, msg)) = q.pop_front() {
                         processed_stamps.push(stamp);
@@ -1934,7 +2100,14 @@ impl BlockBuilder {
                         block_lt,
                         check_messages_map,
                         time_limits,
-                    )?;
+                    );
+                    if let Err(error) = &thread {
+                        if let Some(error) = error.downcast_ref::<ExecuteError>() {
+                            tracing::trace!("ExecuteError: {error}");
+                            continue;
+                        }
+                    }
+                    let thread = thread?;
                     drop(span_guard);
 
                     active_ext_threads.push_back((stamp.clone(), thread));
@@ -2000,7 +2173,8 @@ impl BlockBuilder {
             let feedback = create_feedback(
                 thread.message,
                 Some(thread_result.transaction.clone()),
-                self.initial_optimistic_state.get_thread_for_account(&acc_id).ok(),
+                self.get_potential_thread(&acc_id)
+                    .map_err(|e| anyhow::format_err!("Failed to get potential thread: {e}"))?,
                 None,
             )?;
 
@@ -2090,6 +2264,182 @@ impl BlockBuilder {
         tracing::Span::current().record("messages.count", processed_stamps.len() as i64);
 
         Ok((ext_message_feedbacks, processed_stamps, block_full, queue_len(&ext_messages_queue)))
+    }
+
+    fn get_next_int_message<'a>(
+        &mut self,
+        check_messages_map: &Option<HashMap<AccountAddress, BTreeMap<u64, UInt256>>>,
+        started_accounts: &mut HashMap<
+            AccountAddress,
+            MessagesRangeIterator<
+                'a,
+                MessageIdentifier,
+                Arc<WrappedMessage>,
+                MessageDurableStorage,
+            >,
+        >,
+        active_int_destinations: &parking_lot::Mutex<HashSet<AccountAddress>>,
+        internal_messages_iter: &mut impl Iterator<
+            Item = MessagesRangeIterator<
+                'a,
+                MessageIdentifier,
+                Arc<WrappedMessage>,
+                MessageDurableStorage,
+            >,
+        >,
+    ) -> anyhow::Result<Option<(Message, MessageIdentifier)>> {
+        Ok::<_, anyhow::Error>(loop {
+            {
+                if let Some(checker) = check_messages_map.as_ref() {
+                    if checker.is_empty() {
+                        break None;
+                    }
+                }
+
+                let mut guarded = active_int_destinations.lock();
+                let started_keys: Vec<AccountAddress> = started_accounts.keys().cloned().collect();
+                for acc_id in started_keys {
+                    if !guarded.contains(&acc_id) {
+                        let next_message = loop {
+                            let value = started_accounts.get_mut(&acc_id).unwrap();
+                            match value.next() {
+                                Some(Ok((message, key))) => {
+                                    tracing::trace!(target: "builder", "get_next_int_message: Got message from queue iter: {:?}", message);
+                                    let Some(acc_id) =
+                                        message.message.int_dst_account_id().map(|x| x.into())
+                                    else {
+                                        // TODO: We expect only messages with internal destination, skip it
+                                        // check if it should be deleted from out_queue_info
+                                        tracing::trace!(target: "builder", "get_next_int_message: skip ext: {:?}", message);
+                                        continue;
+                                    };
+                                    tracing::trace!(target: "builder", "get_next_int_message: Got message from queue iter acc_id: {:?}", acc_id);
+                                    if let Some(checker) = check_messages_map.as_ref() {
+                                        tracing::trace!(target: "builder", "get_next_int_message: checker is some");
+                                        if let Some(acc_messages) = checker.get(&acc_id) {
+                                            let Some((_, next_message)) =
+                                                acc_messages.first_key_value()
+                                            else {
+                                                // For verify block we assume iter returns messages in the same order
+                                                break None;
+                                            };
+                                            ensure!(
+                                                *next_message == message.message.hash().unwrap(),
+                                                "Wrong int messages order"
+                                            );
+                                        } else {
+                                            // For verify block we assume iter returns messages in the same order
+                                            break None;
+                                        }
+                                    }
+                                    tracing::trace!(target: "builder", "get_next_int_message: Got message from queue iter: {:?} {:?}", acc_id, message);
+                                    // TODO: check that message destination belongs to this thread
+                                    guarded.insert(acc_id.clone());
+
+                                    tracing::trace!(target: "builder", "get_next_int_message: return: {:?}", message);
+                                    break Some((message.message.clone(), key));
+                                }
+                                Some(Err(_)) => {
+                                    // TODO: we have received an error while fetching a message, skip it for now, but it needs check
+                                    // TODO: print error, it needs some traits
+                                    tracing::warn!(target: "builder", "Failed to get next internal message");
+                                    break None;
+                                }
+                                None => {
+                                    tracing::trace!(target: "builder", "internal message queue is empty");
+                                    break None;
+                                }
+                            }
+                        };
+                        if next_message.is_none() {
+                            // Account iter is empty
+                            started_accounts.remove(&acc_id);
+                        } else {
+                            return Ok(next_message);
+                        }
+                    }
+                }
+            }
+            match internal_messages_iter.next() {
+                Some(mut account_msgs_iter) => {
+                    match account_msgs_iter.next() {
+                        Some(Ok((message, key))) => {
+                            tracing::trace!(target: "builder", "get_next_int_message: Got message from queue iter: {:?}", message);
+                            let Some(acc_id): Option<AccountAddress> =
+                                message.message.int_dst_account_id().map(|x| x.into())
+                            else {
+                                // TODO: We expect only messages with internal destination, skip it
+                                // check if it should be deleted from out_queue_info
+                                tracing::trace!(target: "builder", "get_next_int_message: skip ext: {:?}", message);
+                                continue;
+                            };
+                            let Some(_header) = message.message.int_header() else {
+                                tracing::trace!(target: "builder", "get_next_int_message: skip not internal msg: {:?}", message);
+                                continue;
+                            };
+                            // let dest_dapp_id = header.dest_dapp_id.clone().unwrap_or(acc_id.0.clone());
+                            // let destination_routing =
+                            //     AccountRouting(dest_dapp_id.clone().into(), acc_id.clone());
+                            // if !self.initial_optimistic_state.does_routing_belong_to_the_state(&destination_routing)
+                            // {
+                            //     tracing::trace!(target: "builder", "get_next_int_message: msg not to this state: {:?}", destination_routing);
+                            //     // TODO: reroute all messages here
+                            //     self.reroute_message(message.message.clone(), Some(dest_dapp_id.clone()), &acc_id)?;
+                            //     continue;
+                            // }
+                            if let Some(checker) = check_messages_map.as_ref() {
+                                if let Some(acc_messages) = checker.get(&acc_id) {
+                                    let Some((_, next_message)) = acc_messages.first_key_value()
+                                    else {
+                                        // For verify block we assume iter returns messages in the same order
+                                        continue;
+                                    };
+                                    ensure!(
+                                        *next_message == message.message.hash().unwrap(),
+                                        "Wrong int messages order"
+                                    );
+                                } else {
+                                    // For verify block we assume iter returns messages in the same order
+                                    continue;
+                                }
+                            }
+                            tracing::trace!(target: "builder", "get_next_int_message: Got message from queue iter: {:?} {:?}", acc_id, message);
+                            // TODO: check that message destination belongs to this thread
+                            let mut guarded = active_int_destinations.lock();
+                            if guarded.contains(&acc_id) {
+                                // TODO: for now assume that accounts should not repeat it iter
+                                unreachable!(
+                                    "Iter should not return the same account several times"
+                                );
+                                // TODO: skip account that is already executed
+                                // tracing::trace!(target: "builder", "get_next_int_message: Skip due to account busy: {:?} {:?}", first_acc_id, first_message);
+                                // skipped_messages.entry(acc_id).or_default().push((first_message.message.clone(), key));
+                                // continue;
+                            }
+                            guarded.insert(acc_id.clone());
+                            started_accounts.insert(acc_id, account_msgs_iter);
+
+                            tracing::trace!(target: "builder", "get_next_int_message: return: {:?}", message);
+                            break Some((message.message.clone(), key));
+                        }
+                        Some(Err(_)) => {
+                            // TODO: we have received an error while fetching a message, skip it for now, but it needs check
+                            // TODO: print error, it needs some traits
+                            tracing::warn!(target: "builder", "Failed to get next internal message");
+                            continue;
+                        }
+                        None => {
+                            tracing::trace!(target: "builder", "get_next_int_message: account iter has no new messages");
+                            break None;
+                        }
+                    }
+                }
+                None => {
+                    tracing::trace!(target: "builder", "get_next_int_message: iter has no new accounts");
+                    break None;
+                }
+            }
+        })
     }
 }
 
@@ -2204,162 +2554,4 @@ pub fn create_queue_overflow_feedback(
 
 fn queue_len(map: &HashMap<AccountAddress, VecDeque<(Stamp, Message)>>) -> usize {
     map.values().map(|queue| queue.len()).sum()
-}
-
-fn get_next_int_message<'a>(
-    check_messages_map: &Option<HashMap<AccountAddress, BTreeMap<u64, UInt256>>>,
-    optimistic_state: &OptimisticStateImpl,
-    change_set: &DAppIdTableChangeSet,
-    started_accounts: &mut HashMap<
-        AccountAddress,
-        MessagesRangeIterator<'a, MessageIdentifier, Arc<WrappedMessage>, MessageDurableStorage>,
-    >,
-    active_int_destinations: &parking_lot::Mutex<HashSet<AccountAddress>>,
-    internal_messages_iter: &mut impl Iterator<
-        Item = MessagesRangeIterator<
-            'a,
-            MessageIdentifier,
-            Arc<WrappedMessage>,
-            MessageDurableStorage,
-        >,
-    >,
-) -> anyhow::Result<Option<(Message, MessageIdentifier)>> {
-    Ok::<_, anyhow::Error>(loop {
-        {
-            if let Some(checker) = check_messages_map.as_ref() {
-                if checker.is_empty() {
-                    break None;
-                }
-            }
-
-            let mut guarded = active_int_destinations.lock();
-            let started_keys: Vec<AccountAddress> = started_accounts.keys().cloned().collect();
-            for acc_id in started_keys {
-                if !guarded.contains(&acc_id) {
-                    let next_message = loop {
-                        let value = started_accounts.get_mut(&acc_id).unwrap();
-                        match value.next() {
-                            Some(Ok((message, key))) => {
-                                tracing::trace!(target: "builder", "get_next_int_message: Got message from queue iter: {:?}", message);
-                                let Some(acc_id) =
-                                    message.message.int_dst_account_id().map(|x| x.into())
-                                else {
-                                    // TODO: We expect only messages with internal destination, skip it
-                                    // check if it should be deleted from out_queue_info
-                                    tracing::trace!(target: "builder", "get_next_int_message: skip ext: {:?}", message);
-                                    continue;
-                                };
-                                if let Some(checker) = check_messages_map.as_ref() {
-                                    if let Some(acc_messages) = checker.get(&acc_id) {
-                                        let Some((_, next_message)) =
-                                            acc_messages.first_key_value()
-                                        else {
-                                            // For verify block we assume iter returns messages in the same order
-                                            break None;
-                                        };
-                                        ensure!(
-                                            *next_message == message.message.hash().unwrap(),
-                                            "Wrong int messages order"
-                                        );
-                                    } else {
-                                        // For verify block we assume iter returns messages in the same order
-                                        break None;
-                                    }
-                                }
-                                tracing::trace!(target: "builder", "get_next_int_message: Got message from queue iter: {:?} {:?}", acc_id, message);
-                                // TODO: check that message destination belongs to this thread
-                                guarded.insert(acc_id.clone());
-
-                                tracing::trace!(target: "builder", "get_next_int_message: return: {:?}", message);
-                                break Some((message.message.clone(), key));
-                            }
-                            Some(Err(_)) => {
-                                // TODO: we have received an error while fetching a message, skip it for now, but it needs check
-                                // TODO: print error, it needs some traits
-                                tracing::warn!(target: "builder", "Failed to get next internal message");
-                                break None;
-                            }
-                            None => {
-                                tracing::trace!(target: "builder", "internal message queue is empty");
-                                break None;
-                            }
-                        }
-                    };
-                    if next_message.is_none() {
-                        // Account iter is empty
-                        started_accounts.remove(&acc_id);
-                    } else {
-                        return Ok(next_message);
-                    }
-                }
-            }
-        }
-        match internal_messages_iter.next() {
-            Some(mut account_msgs_iter) => {
-                match account_msgs_iter.next() {
-                    Some(Ok((message, key))) => {
-                        tracing::trace!(target: "builder", "get_next_int_message: Got message from queue iter: {:?}", message);
-                        let Some(acc_id) = message.message.int_dst_account_id().map(|x| x.into())
-                        else {
-                            // TODO: We expect only messages with internal destination, skip it
-                            // check if it should be deleted from out_queue_info
-                            tracing::trace!(target: "builder", "get_next_int_message: skip ext: {:?}", message);
-                            continue;
-                        };
-                        let destination_routing =
-                            optimistic_state.get_account_routing(&acc_id, Some(change_set));
-                        if !optimistic_state.does_routing_belong_to_the_state(&destination_routing)
-                        {
-                            continue;
-                        }
-                        if let Some(checker) = check_messages_map.as_ref() {
-                            if let Some(acc_messages) = checker.get(&acc_id) {
-                                let Some((_, next_message)) = acc_messages.first_key_value() else {
-                                    // For verify block we assume iter returns messages in the same order
-                                    continue;
-                                };
-                                ensure!(
-                                    *next_message == message.message.hash().unwrap(),
-                                    "Wrong int messages order"
-                                );
-                            } else {
-                                // For verify block we assume iter returns messages in the same order
-                                continue;
-                            }
-                        }
-                        tracing::trace!(target: "builder", "get_next_int_message: Got message from queue iter: {:?} {:?}", acc_id, message);
-                        // TODO: check that message destination belongs to this thread
-                        let mut guarded = active_int_destinations.lock();
-                        if guarded.contains(&acc_id) {
-                            // TODO: for now assume that accounts should not repeat it iter
-                            unreachable!("Iter should not return the same account several times");
-                            // TODO: skip account that is already executed
-                            // tracing::trace!(target: "builder", "get_next_int_message: Skip due to account busy: {:?} {:?}", first_acc_id, first_message);
-                            // skipped_messages.entry(acc_id).or_default().push((first_message.message.clone(), key));
-                            // continue;
-                        }
-                        guarded.insert(acc_id.clone());
-                        started_accounts.insert(acc_id, account_msgs_iter);
-
-                        tracing::trace!(target: "builder", "get_next_int_message: return: {:?}", message);
-                        break Some((message.message.clone(), key));
-                    }
-                    Some(Err(_)) => {
-                        // TODO: we have received an error while fetching a message, skip it for now, but it needs check
-                        // TODO: print error, it needs some traits
-                        tracing::warn!(target: "builder", "Failed to get next internal message");
-                        continue;
-                    }
-                    None => {
-                        tracing::trace!(target: "builder", "get_next_int_message: account iter has no new messages");
-                        break None;
-                    }
-                }
-            }
-            None => {
-                tracing::trace!(target: "builder", "get_next_int_message: iter has no new accounts");
-                break None;
-            }
-        }
-    })
 }

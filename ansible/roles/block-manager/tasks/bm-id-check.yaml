@@ -1,0 +1,15 @@
+---
+- name: Verify single block manager or nonzero BM_ID presence
+  fail:
+    msg: "Multiple block managers require unique nonzero BM_ID for each instance"
+  when: >
+    groups['block_manager'] | length > 1 and
+    groups['block_manager'] | map('extract', hostvars, 'BM_ID') | select() | list | length != groups['block_manager'] | length
+
+- name: Verify BM_ID uniqueness
+  fail:
+    msg: "Duplicate BM_ID found. Each block manager must have a unique BM_ID"
+  when: >
+    groups['block_manager'] | length > 1 and
+    groups['block_manager'] | map('extract', hostvars, 'BM_ID') | select() | list | unique | list | length !=
+    groups['block_manager'] | map('extract', hostvars, 'BM_ID') | select() | list | length

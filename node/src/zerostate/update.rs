@@ -36,12 +36,8 @@ use crate::bls::gosh_bls::PubKey;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::node::SignerIndex;
-use crate::repository::dapp_id_table::DAppIdTableChangeSet;
 use crate::storage::MessageDurableStorage;
 use crate::types::thread_message_queue::ThreadMessageQueueState;
-use crate::types::AccountAddress;
-use crate::types::BlockEndLT;
-use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::zerostate::ZeroState;
 
@@ -110,18 +106,6 @@ impl ZeroState {
         {
             let state = self.state_mut(thread_identifier)?;
             state.accounts_number += 1;
-        }
-        // Add account to dapp_id cache for all threads
-        if let Some(dapp_id) = dapp_id {
-            for state in self.states_mut().values_mut() {
-                let mut change_set = DAppIdTableChangeSet::default();
-                change_set.insert(
-                    AccountAddress(account_id.clone()),
-                    Some(DAppIdentifier(AccountAddress(dapp_id.clone()))),
-                    BlockEndLT(0),
-                );
-                state.update_dapp_id_table(&change_set);
-            }
         }
         Ok(account_id.to_hex_string())
     }
@@ -196,7 +180,7 @@ impl ZeroState {
             let dest = message.int_dst_account_id().map(From::from).unwrap();
             let message = WrappedMessage { message };
             let message_key = MessageIdentifier::from(&message);
-            let message_db = MessageDurableStorage::as_noop();
+            let message_db = MessageDurableStorage::mem();
             optimistic_state.messages = ThreadMessageQueueState::build_next()
                 .with_initial_state(optimistic_state.messages.clone())
                 .with_consumed_messages(HashMap::new())
@@ -249,6 +233,7 @@ impl ZeroState {
         wallet_address: String,
         pubkey: String,
         epoch_finish_seq_no: u64,
+        wait_step: u64,
         stake: BigUint,
         thread_id: ThreadIdentifier,
         signer_index: SignerIndex,
@@ -262,6 +247,7 @@ impl ZeroState {
             BlockKeeperData {
                 pubkey: PubKey::from_str(&pubkey).expect("Failed to load pubkey from str"),
                 epoch_finish_seq_no: Some(epoch_finish_seq_no),
+                wait_step,
                 status: BlockKeeperStatus::Active,
                 address: String::new(),
                 stake,

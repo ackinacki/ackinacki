@@ -59,7 +59,7 @@ services:
         BLOCK_MANAGER_API: 0.0.0.0:{{ BM_API_PORT }}
         DEFAULT_BP: {{ NODE_IP }}:{{ BM_NODE_PORT }}
         BM_OWNER_WALLET_PUBKEY: {{ BM_OWNER_WALLET_PUBKEY }}
-        BM_ISSUER_KEYS_FILE: /bm-configs/block_manager_signing.keys.json
+        BM_ISSUER_KEYS_FILE: /bm-configs/{{ BM_SIGNER_KEYS }}
         TOKEN_TTL: {{ BM_TOKEN_TTL }}
         BK_API_TOKEN: {{ BK_API_TOKEN }}
         REST_API: 0.0.0.0:8600

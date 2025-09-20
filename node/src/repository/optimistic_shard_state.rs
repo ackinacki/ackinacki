@@ -32,9 +32,16 @@ pub enum OptimisticShardStateRepresentation {
 
 impl AllowGuardedMut for OptimisticShardStateRepresentation {}
 
-#[derive(Clone, TypedBuilder)]
+#[derive(TypedBuilder)]
 pub struct OptimisticShardState {
     data: Arc<Mutex<OptimisticShardStateRepresentation>>,
+}
+
+impl Clone for OptimisticShardState {
+    fn clone(&self) -> Self {
+        let data_clone = self.data.guarded(|v| v.clone());
+        Self { data: Arc::new(Mutex::new(data_clone)) }
+    }
 }
 
 impl Debug for OptimisticShardState {

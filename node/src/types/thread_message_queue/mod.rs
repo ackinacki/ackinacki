@@ -1,3 +1,6 @@
+use std::fmt::Debug;
+use std::fmt::Formatter;
+
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -16,6 +19,15 @@ pub struct ThreadMessageQueueState {
     pub messages: std::collections::BTreeMap<AccountAddress, AccountInbox>,
     order_set: order_set::OrderSet,
     cursor: usize,
+}
+
+impl Debug for ThreadMessageQueueState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ThreadMessageQueueState")
+            .field("messages", &self.messages)
+            .field("order_set", &self.order_set)
+            .finish()
+    }
 }
 
 impl ThreadMessageQueueState {

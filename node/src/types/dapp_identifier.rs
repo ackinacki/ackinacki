@@ -8,11 +8,18 @@ use serde::Deserialize;
 use serde::Serialize;
 use tvm_block::Serializable;
 use tvm_types::BuilderData;
+use tvm_types::UInt256;
 
 use crate::types::AccountAddress;
 
 #[derive(Clone, Eq, Hash, PartialEq, Serialize, Deserialize, Default)]
 pub struct DAppIdentifier(pub AccountAddress);
+
+impl From<UInt256> for DAppIdentifier {
+    fn from(dapp: UInt256) -> Self {
+        Self(AccountAddress(dapp))
+    }
+}
 
 impl Debug for DAppIdentifier {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {

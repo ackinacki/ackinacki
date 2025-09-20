@@ -304,14 +304,11 @@ fn dispatch_configs(
         }
     };
     let mut bk_set = bk_set_rx.borrow().clone();
-    bk_set.extend(network_config.credential.trusted_ed_pubkeys.iter().cloned());
-    let trusted_ed_pubkeys = bk_set.into_iter().collect::<HashSet<_>>();
-    network_config.credential.trusted_ed_pubkeys = trusted_ed_pubkeys.clone();
-    Some((
-        network_config,
-        config.gossip.clone(),
-        WatchGossipConfig { trusted_pubkeys: trusted_ed_pubkeys },
-    ))
+    bk_set.extend(network_config.credential.trusted_pubkeys.iter().cloned());
+    bk_set.extend(network_config.credential.my_cert_pubkeys().unwrap_or_default());
+    let trusted_pubkeys = bk_set.clone();
+    network_config.credential.trusted_pubkeys = trusted_pubkeys.clone();
+    Some((network_config, config.gossip.clone(), WatchGossipConfig { trusted_pubkeys }))
 }
 
 async fn message_multiplexor(

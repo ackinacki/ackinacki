@@ -21,7 +21,6 @@ use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
-use crate::repository::dapp_id_table::DAppIdTableChangeSet;
 use crate::types::bp_selector::ProducerSelector;
 use crate::types::BlockHeight;
 use crate::types::BlockIdentifier;
@@ -64,7 +63,6 @@ pub struct CommonSection {
     // This field must be set, but it is option, because we can't set it up on block creation and update it later
     pub producer_selector: Option<ProducerSelector>,
 
-    pub changed_dapp_ids: DAppIdTableChangeSet,
     #[cfg(feature = "monitor-accounts-number")]
     pub accounts_number_diff: i64,
 }
@@ -79,7 +77,6 @@ impl CommonSection {
         verify_complexity: SignerIndex,
         refs: Vec<BlockIdentifier>,
         threads_table: Option<ThreadsTable>,
-        changed_dapp_ids: DAppIdTableChangeSet,
         block_height: BlockHeight,
         #[cfg(feature = "monitor-accounts-number")] accounts_number_diff: i64,
     ) -> Self {
@@ -97,7 +94,6 @@ impl CommonSection {
             acks: vec![],
             nacks: vec![],
             producer_selector: None,
-            changed_dapp_ids,
             #[cfg(feature = "monitor-accounts-number")]
             accounts_number_diff,
         }
@@ -129,7 +125,6 @@ impl CommonSection {
                 thread_identifier: self.thread_id,
                 refs: self.refs.clone(),
                 threads_table: self.threads_table.clone(),
-                changed_dapp_ids: self.changed_dapp_ids.clone(),
                 block_height: self.block_height,
                 accounts_number_diff: self.accounts_number_diff,
             }
@@ -182,7 +177,6 @@ impl CommonSection {
                 refs: data.refs,
                 thread_id: data.thread_identifier,
                 threads_table: data.threads_table,
-                changed_dapp_ids: data.changed_dapp_ids,
                 block_height: data.block_height,
             }
         }
@@ -201,7 +195,6 @@ impl CommonSection {
                 refs: data.refs,
                 thread_id: data.thread_identifier,
                 threads_table: data.threads_table,
-                changed_dapp_ids: data.changed_dapp_ids,
                 block_height: data.block_height,
                 accounts_number_diff: data.accounts_number_diff,
             }
@@ -223,7 +216,6 @@ struct WrappedCommonSection {
     pub thread_identifier: ThreadIdentifier,
     pub refs: Vec<BlockIdentifier>,
     pub threads_table: Option<ThreadsTable>,
-    pub changed_dapp_ids: DAppIdTableChangeSet,
     pub block_height: BlockHeight,
     #[cfg(feature = "monitor-accounts-number")]
     pub accounts_number_diff: i64,
@@ -283,7 +275,6 @@ impl Debug for CommonSection {
                 .field("producer_selector", &self.producer_selector)
                 .field("refs", &self.refs)
                 .field("threads_table", &self.threads_table)
-                .field("changed_dapp_ids.len", &self.changed_dapp_ids.len())
                 .field("accounts_number_diff", &self.accounts_number_diff)
                 .finish()
         }

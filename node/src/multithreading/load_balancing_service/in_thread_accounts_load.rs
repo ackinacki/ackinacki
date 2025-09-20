@@ -83,11 +83,10 @@ impl InThreadAccountsLoad {
     pub fn append_from<TOptimisticState>(
         &mut self,
         block: &AckiNackiBlock,
-        block_state: Arc<TOptimisticState>,
+        _block_state: Arc<TOptimisticState>,
     ) where
         TOptimisticState: OptimisticState,
     {
-        let dapps = block_state.get_dapp_id_table();
         let _ = block
             .tvm_block()
             .read_extra()
@@ -98,20 +97,20 @@ impl InThreadAccountsLoad {
                 let Ok(message) = in_msg.read_message() else {
                     return Ok(true);
                 };
-                let Some(destination) = message.int_dst_account_id() else {
+                let Some(source) = message.get_int_src_account_id() else {
                     return Ok(true);
                 };
-                let destination = destination.into();
-                let Some(dapp_id) = dapps.get(&destination).and_then(|e| e.0.clone()).or(message
-                    .int_header()
-                    .and_then(|hdr| hdr.src_dapp_id.clone())
-                    .map(|dapp_uint| DAppIdentifier(AccountAddress(dapp_uint))))
-                else {
-                    return Ok(true);
-                };
+                let source: AccountAddress = source.into();
+                let dapp_id = DAppIdentifier(
+                    message
+                        .int_header()
+                        .and_then(|hdr| hdr.src_dapp_id.clone())
+                        .map(AccountAddress)
+                        .unwrap_or(source.clone()),
+                );
 
                 // Calculate messages from existing dapps only.
-                let route = AccountRouting::from((Some(dapp_id), destination));
+                let route = AccountRouting::from((Some(dapp_id), source));
                 let bits: [[bool; 256]; 2] = route.into();
                 for outer in 0..bits.len() {
                     for inner in 0..bits[outer].len() {

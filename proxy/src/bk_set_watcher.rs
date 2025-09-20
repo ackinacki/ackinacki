@@ -3,14 +3,13 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use futures::future::join_all;
-use hex::FromHex;
-use http_server::BkInfo;
-use http_server::BkSetResult;
+use http_server::ApiBk;
+use http_server::ApiBkSet;
 
 use crate::config::ProxyConfig;
 
 fn get_bk_set_url(addr: SocketAddr) -> String {
-    format!("http://{addr}/v2/bk_set")
+    format!("http://{addr}/v2/bk_set_update")
 }
 
 pub async fn run(
@@ -19,23 +18,24 @@ pub async fn run(
     client: reqwest::Client,
     bk_set_watch_interval_sec: u64,
 ) {
-    let mut bk_set = HashSet::<transport_layer::VerifyingKey>::new();
+    let mut bk_set = ApiBkSet { seq_no: 0, current: vec![], future: vec![] };
+    let mut bk_owner_pubkeys = HashSet::<transport_layer::VerifyingKey>::new();
     loop {
         let ProxyConfig { bk_addrs, .. } = config_rx.borrow().clone();
 
-        let mut tasks: Vec<tokio::task::JoinHandle<anyhow::Result<BkSetResult>>> = Vec::new();
+        let mut tasks: Vec<tokio::task::JoinHandle<anyhow::Result<ApiBkSet>>> = Vec::new();
 
         for addr in bk_addrs {
             let client = client.clone();
             tasks.push(tokio::spawn(async move {
                 let request = client.get(get_bk_set_url(addr)).build()?;
                 let response = client.execute(request).await?;
-                Ok(response.json::<BkSetResult>().await?)
+                Ok(response.json::<ApiBkSet>().await?)
             }));
         }
         let results = join_all(tasks).await;
 
-        let mut winner: Option<BkSetResult> = None;
+        let mut winner: Option<ApiBkSet> = None;
 
         for res in results {
             match res {
@@ -52,22 +52,23 @@ pub async fn run(
             }
         }
 
-        fn bk_info_to_pubkey(info: BkInfo) -> Option<transport_layer::VerifyingKey> {
-            let pubkey = <[u8; 32]>::from_hex(&info.node_owner_pk).ok()?;
-            transport_layer::VerifyingKey::from_bytes(&pubkey).ok()
+        fn bk_owner_pubkey(bk: &ApiBk) -> Option<transport_layer::VerifyingKey> {
+            transport_layer::VerifyingKey::from_bytes(&bk.owner_pubkey.0).ok()
         }
 
         if let Some(winner) = winner {
-            let new_bk_set = HashSet::<transport_layer::VerifyingKey>::from_iter(
-                winner
-                    .bk_set
-                    .into_iter()
-                    .filter_map(bk_info_to_pubkey)
-                    .chain(winner.future_bk_set.into_iter().filter_map(bk_info_to_pubkey)),
-            );
-            if new_bk_set != bk_set {
-                bk_set = new_bk_set;
-                bk_set_tx.send_replace(bk_set.clone());
+            if bk_set.update(&winner) {
+                let new_bk_owner_pubkeys = HashSet::<transport_layer::VerifyingKey>::from_iter(
+                    bk_set
+                        .current
+                        .iter()
+                        .filter_map(bk_owner_pubkey)
+                        .chain(bk_set.future.iter().filter_map(bk_owner_pubkey)),
+                );
+                if new_bk_owner_pubkeys != bk_owner_pubkeys {
+                    bk_owner_pubkeys = new_bk_owner_pubkeys;
+                    bk_set_tx.send_replace(bk_owner_pubkeys.clone());
+                }
             }
         }
         tokio::time::sleep(Duration::from_secs(bk_set_watch_interval_sec)).await;
@@ -75,7 +76,7 @@ pub async fn run(
 }
 
 // This function compares the current BkSetResult with a candidate and returns the one with the higher seq_no.
-fn get_winner_bk_set(current: Option<BkSetResult>, candidate: BkSetResult) -> Option<BkSetResult> {
+fn get_winner_bk_set(current: Option<ApiBkSet>, candidate: ApiBkSet) -> Option<ApiBkSet> {
     match current {
         Some(current_bk_set) => {
             if candidate.seq_no > current_bk_set.seq_no {
@@ -95,15 +96,18 @@ mod tests {
     #[test]
     fn test_get_winner_bk_set() {
         let current = None;
-        let candidate = BkSetResult { seq_no: 1, ..Default::default() };
+        fn bk_set(seq_no: u64) -> ApiBkSet {
+            ApiBkSet { seq_no, future: vec![], current: vec![] }
+        }
+        let candidate = bk_set(1);
         assert_eq!(get_winner_bk_set(current, candidate).unwrap().seq_no, 1);
 
-        let current = Some(BkSetResult { seq_no: 1, ..Default::default() });
-        let candidate = BkSetResult { seq_no: 2, ..Default::default() };
+        let current = Some(bk_set(1));
+        let candidate = bk_set(2);
         assert_eq!(get_winner_bk_set(current, candidate).unwrap().seq_no, 2);
 
-        let current = Some(BkSetResult { seq_no: 3, ..Default::default() });
-        let candidate = BkSetResult { seq_no: 2, ..Default::default() };
+        let current = Some(bk_set(3));
+        let candidate = bk_set(2);
         assert_eq!(get_winner_bk_set(current, candidate).unwrap().seq_no, 3);
     }
 }

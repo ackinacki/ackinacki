@@ -12,7 +12,6 @@ use tvm_types::HashmapRemover;
 use tvm_types::HashmapType;
 
 use crate::multithreading::account::get_account_routing_for_account;
-use crate::repository::dapp_id_table::DAppIdTable;
 use crate::types::AccountAddress;
 use crate::types::AccountRouting;
 use crate::types::BlockIdentifier;
@@ -32,7 +31,6 @@ pub(crate) fn crop_shard_state_based_on_threads_table<F>(
     shard_state: Arc<ShardStateUnsplit>,
     threads_table: &ThreadsTable,
     thread_id: ThreadIdentifier,
-    dapp_id_table: &DAppIdTable,
     // TODO: remove
     _block_id: BlockIdentifier,
     optimization_skip_shard_accounts_crop: bool,
@@ -42,6 +40,7 @@ pub(crate) fn crop_shard_state_based_on_threads_table<F>(
 where
     F: FnMut(&AccountId),
 {
+    tracing::trace!(target: "node", "crop_shard_state_based_on_threads_table: {thread_id:?} {threads_table:?}");
     let mut shard_state = shard_state.deref().clone();
     // Get accounts from the shard state
     let mut shard_accounts = shard_state
@@ -67,13 +66,8 @@ where
             // check message
             if let Some(header) = message.int_header() {
                 let dest_address = header.dst.address().clone().into();
-                let dest_account_routing = if let Some((dapp_id, _)) =
-                    dapp_id_table.get(&dest_address)
-                {
-                    match dapp_id {
-                        Some(dapp_id) => AccountRouting(dapp_id.clone(), dest_address),
-                        None => AccountRouting(DAppIdentifier(dest_address.clone()), dest_address),
-                    }
+                let dest_account_routing = if let Some(dapp_id) = header.dest_dapp_id.clone() {
+                    AccountRouting(dapp_id.clone().into(), dest_address)
                 } else {
                     AccountRouting(DAppIdentifier(dest_address.clone()), dest_address)
                 };
@@ -126,9 +120,29 @@ where
             .extend(keys_to_remove_from_state.iter().map(|addr| AccountAddress(addr.clone())));
         // Clear removed accounts from the state
         for key in keys_to_remove_from_state {
-            shard_accounts.remove(&key).map_err(|e| {
-                anyhow::format_err!("Failed to remove account from shard state: {e}")
-            })?;
+            let default_account_routing =
+                AccountRouting(key.clone().into(), AccountAddress(key.clone()));
+            let (mask, _) = threads_table
+                .rows()
+                .find(|(_, thread)| thread == &thread_id)
+                .expect("Failed to find thread mask in table");
+            if !mask.is_match(&default_account_routing) {
+                tracing::info!(target: "node", "remove account: {:?}", default_account_routing);
+                shard_accounts.remove(&key).map_err(|e| {
+                    anyhow::format_err!("Failed to remove account from shard state: {e}")
+                })?;
+            } else {
+                tracing::info!(target: "node", "replace account with redirect: {:?}", default_account_routing);
+                shard_accounts.replace_with_redirect(&key).map_err(|e| {
+                    anyhow::format_err!("Failed to replace account with redirect: {e}")
+                })?;
+                let acc = shard_accounts.account(&key.into()).map_err(|e| {
+                    anyhow::format_err!("Failed to load redirect account from shard state: {e}")
+                })?;
+                assert!(acc.is_some());
+                assert!(acc.unwrap().is_redirect());
+                tracing::info!(target: "node", "successful replace account with redirect: {:?}", default_account_routing);
+            }
         }
         shard_state.write_accounts(&shard_accounts).map_err(|e| {
             anyhow::format_err!("Failed to write accounts to filtered shard state: {e}")

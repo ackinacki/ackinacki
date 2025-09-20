@@ -16,14 +16,15 @@ use rustls_pki_types::CertificateDer;
 use rustls_pki_types::PrivateKeyDer;
 use sha2::Digest;
 
+use crate::msquic::msquic_async::connection::StartError;
 pub use crate::tls::create_self_signed_cert_with_ed_signatures;
 pub use crate::tls::generate_self_signed_cert;
-pub use crate::tls::get_ed_pubkeys_from_cert_der;
+pub use crate::tls::get_pubkeys_from_cert_der;
 pub use crate::tls::hex_verifying_key;
 pub use crate::tls::hex_verifying_keys;
 pub use crate::tls::resolve_signing_keys;
-use crate::tls::verify_cert_or_ed_pubkeys_is_trusted;
-pub use crate::tls::verify_is_valid_cert;
+pub use crate::tls::verify_cert;
+use crate::tls::verify_cert_hash_and_pubkeys;
 pub use crate::tls::TlsCertCache;
 
 pub mod msquic;
@@ -54,7 +55,7 @@ pub struct NetCredential {
     pub my_key: PrivateKeyDer<'static>,
     pub my_certs: Vec<CertificateDer<'static>>,
     pub trusted_cert_hashes: HashSet<CertHash>,
-    pub trusted_ed_pubkeys: HashSet<VerifyingKey>,
+    pub trusted_pubkeys: HashSet<VerifyingKey>,
 }
 
 impl NetCredential {
@@ -67,7 +68,7 @@ impl NetCredential {
             my_key,
             my_certs: vec![my_cert],
             trusted_cert_hashes: HashSet::new(),
-            trusted_ed_pubkeys: HashSet::new(),
+            trusted_pubkeys: HashSet::new(),
         })
     }
 
@@ -87,23 +88,29 @@ impl NetCredential {
         }
     }
 
-    pub fn any_cert_are_trusted(&self) -> bool {
-        self.trusted_cert_hashes.is_empty() && self.trusted_ed_pubkeys.is_empty()
+    pub fn verify_cert(&self, cert: &CertificateDer<'static>) -> Result<(), StartError> {
+        verify_cert(cert, &self.trusted_cert_hashes, &self.trusted_pubkeys)
     }
 
-    pub fn verify_is_valid_cert(&self, cert: &CertificateDer<'static>) -> bool {
-        self.any_cert_are_trusted()
-            || verify_is_valid_cert(cert, &self.trusted_cert_hashes, &self.trusted_ed_pubkeys)
+    pub fn verify_cert_hash_and_pubkeys(
+        &self,
+        hash: &CertHash,
+        pubkeys: &[VerifyingKey],
+    ) -> Result<(), StartError> {
+        verify_cert_hash_and_pubkeys(
+            hash,
+            pubkeys,
+            &self.trusted_cert_hashes,
+            &self.trusted_pubkeys,
+        )
     }
 
-    pub fn is_trusted(&self, cert_hash: &CertHash, ed_pubkeys: &[VerifyingKey]) -> bool {
-        self.any_cert_are_trusted()
-            || verify_cert_or_ed_pubkeys_is_trusted(
-                cert_hash,
-                ed_pubkeys,
-                &self.trusted_cert_hashes,
-                &self.trusted_ed_pubkeys,
-            )
+    pub fn my_cert_pubkeys(&self) -> anyhow::Result<HashSet<VerifyingKey>> {
+        let mut pubkeys = HashSet::new();
+        for cert in &self.my_certs {
+            pubkeys.extend(get_pubkeys_from_cert_der(cert)?);
+        }
+        Ok(pubkeys)
     }
 }
 
@@ -113,7 +120,7 @@ impl Clone for NetCredential {
             my_key: self.my_key.clone_key(),
             my_certs: self.my_certs.clone(),
             trusted_cert_hashes: self.trusted_cert_hashes.clone(),
-            trusted_ed_pubkeys: self.trusted_ed_pubkeys.clone(),
+            trusted_pubkeys: self.trusted_pubkeys.clone(),
         }
     }
 }

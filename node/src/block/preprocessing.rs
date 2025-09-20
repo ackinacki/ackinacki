@@ -22,6 +22,7 @@ use crate::types::AccountAddress;
 use crate::types::AccountInbox;
 use crate::types::AccountRouting;
 use crate::types::BlockIdentifier;
+use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
@@ -117,7 +118,6 @@ where
     compile_error!("need to merge state threads table and DAPP table with other threads");
     let mut preprocessed_state = trace_span!("merge dapp id tables").in_scope(|| {
         for block_referenced in all_referenced_blocks.iter() {
-            preprocessed_state.update_dapp_id_table(block_referenced.dapp_id_table_diff());
             preprocessed_state.threads_table.merge(block_referenced.threads_table())?;
         }
         Ok::<_, anyhow::Error>(preprocessed_state)
@@ -145,7 +145,7 @@ where
         AccountAddress,
         Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
     > = HashMap::new();
-    let mut redirected_messages: HashMap<
+    let redirected_messages: HashMap<
         AccountRouting,
         Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
     > = HashMap::new();
@@ -157,20 +157,20 @@ where
                 }
                 // It is possible that this message should be forwarded with the updated route.
                 let account_address: AccountAddress = route.1.clone();
-                let actual_route = preprocessed_state.get_account_routing(&account_address, None);
-                if &actual_route != route {
-                    // Forward with the new route
-                    redirected_messages
-                        .entry(actual_route)
-                        .and_modify(|e| e.extend_from_slice(messages))
-                        .or_insert(messages.clone());
-                } else {
-                    // Settle
-                    settled_messages
-                        .entry(account_address)
-                        .and_modify(|e| e.extend_from_slice(messages))
-                        .or_insert(messages.clone());
-                }
+                // let actual_route = preprocessed_state.get_account_routing(&account_address, None);
+                // if &actual_route != route {
+                //     // Forward with the new route
+                //     redirected_messages
+                //         .entry(actual_route)
+                //         .and_modify(|e| e.extend_from_slice(messages))
+                //         .or_insert(messages.clone());
+                // } else {
+                // Settle
+                settled_messages
+                    .entry(account_address)
+                    .and_modify(|e| e.extend_from_slice(messages))
+                    .or_insert(messages.clone());
+                // }
             }
         }
         Ok::<_, anyhow::Error>(())
@@ -265,16 +265,35 @@ fn import_migrating_accounts_with_their_inboxes(
     message_db: MessageDurableStorage,
     metrics: Option<BlockProductionMetrics>,
 ) -> anyhow::Result<State> {
+    tracing::trace!(target: "node", "preprocess: {:?} {:?}", state.block_id, state.thread_id);
     let mut migrated_accounts = vec![];
     let mut migrated_inboxes: BTreeMap<AccountAddress, AccountInbox> = BTreeMap::new();
     let mut outbound_accounts_number = 0;
+    let mut removed_accounts = vec![];
     for block_referenced in all_referenced_blocks.iter() {
         for (route, (account_state, inbox)) in block_referenced.outbound_accounts().iter() {
+            if account_state.is_none() {
+                let default_routing =
+                    AccountRouting(DAppIdentifier(route.1.clone()), route.1.clone());
+                let (mask, _) = in_table
+                    .rows()
+                    .find(|(_, thread)| thread == &state.thread_id)
+                    .expect("Failed to find thread mask in table");
+                if mask.is_match(&default_routing) {
+                    tracing::trace!(target: "node", "add to removed");
+                    removed_accounts.push(route.1.clone());
+                    continue;
+                }
+            }
             if !in_table.is_match(route, *descendant_thread_identifier) {
                 continue;
             }
             let account_address: AccountAddress = route.1.clone();
-            let actual_route = state.get_account_routing(&account_address, None);
+            let actual_dapp_id = account_state
+                .clone()
+                .and_then(|acc| acc.account.clone().get_dapp_id().cloned())
+                .unwrap_or(account_address.clone().0);
+            let actual_route = AccountRouting(actual_dapp_id.into(), account_address.clone());
             assert!(
                 &actual_route == route,
                 concat!(
@@ -297,7 +316,7 @@ fn import_migrating_accounts_with_their_inboxes(
         m.report_outbound_accounts(outbound_accounts_number, descendant_thread_identifier)
     }
 
-    settle_accounts(&mut state.shard_state, migrated_accounts)?;
+    settle_accounts(&mut state.shard_state, migrated_accounts, removed_accounts)?;
     let x = state.messages;
     let y = ThreadMessageQueueState::build_next()
         .with_initial_state(x)
@@ -314,8 +333,9 @@ fn import_migrating_accounts_with_their_inboxes(
 fn settle_accounts(
     shard_state: &mut OptimisticShardState,
     migrated_accounts: Vec<WrappedAccount>,
+    removed_accounts: Vec<AccountAddress>,
 ) -> anyhow::Result<()> {
-    if migrated_accounts.is_empty() {
+    if migrated_accounts.is_empty() && removed_accounts.is_empty() {
         return Ok(());
     }
     let mut binding = shard_state.into_shard_state();
@@ -324,6 +344,7 @@ fn settle_accounts(
         .read_accounts()
         .map_err(|e| anyhow::format_err!("Failed to read accounts: {e}"))?;
     for wrapped_account in migrated_accounts.into_iter() {
+        tracing::trace!("migrate account: {}", wrapped_account.account_id.to_hex_string());
         existing_accounts
             .insert_with_aug(
                 &wrapped_account.account_id.0,
@@ -331,6 +352,12 @@ fn settle_accounts(
                 &wrapped_account.aug,
             )
             .map_err(|e| anyhow::format_err!("Failed to save account: {e}"))?;
+    }
+    for acc_id in removed_accounts.iter() {
+        tracing::trace!("removed account: {:?}", acc_id);
+        existing_accounts
+            .remove(&acc_id.0)
+            .map_err(|e| anyhow::format_err!("Failed to remove acc: {acc_id} {e}"))?;
     }
     existing_state
         .write_accounts(&existing_accounts)

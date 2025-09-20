@@ -40,7 +40,6 @@ use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollect
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::repository_impl::RepositoryMetadata;
 
-pub mod dapp_id_table;
 pub mod load_saved_blocks;
 mod optimistic_state_save_service;
 #[cfg(test)]

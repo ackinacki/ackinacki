@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
@@ -39,13 +40,24 @@ pub async fn handle_subscriptions<Transport: NetTransport + 'static>(
 ) -> anyhow::Result<()> {
     tracing::trace!("Subscription loop started");
     let mut reason = "starting".to_string();
-    let mut subscriptions = subscribe_rx.borrow().clone();
+    let mut publishers = subscribe_rx.borrow().clone();
+    let mut last_closed_addrs = HashMap::<SocketAddr, Instant>::new();
     loop {
-        let count = subscriptions.iter().flatten().count();
+        let count = publishers.iter().flatten().count();
         metrics.as_ref().inspect(|m| m.report_subscribers_count(count));
 
+        last_closed_addrs.retain(|_, close_time| close_time.elapsed().as_millis() < 200);
+        let subscriptions = publishers
+            .iter()
+            .filter_map(|addrs| {
+                let mut addrs = addrs.clone();
+                addrs.retain(|addr| !last_closed_addrs.contains_key(addr));
+                (!addrs.is_empty()).then_some(addrs)
+            })
+            .collect::<Vec<_>>();
+
         let (should_be_subscribed, should_be_unsubscribed) =
-            { pub_sub.schedule_subscriptions(&subscriptions) };
+            pub_sub.schedule_subscriptions(&subscriptions);
 
         tracing::trace!(
             "Update subscriptions{} because of {reason}",
@@ -109,9 +121,11 @@ pub async fn handle_subscriptions<Transport: NetTransport + 'static>(
         let sleep_duration = if successfully_subscribed < should_be_subscribed_len {
             // Retry sleep
             Duration::from_millis(100)
+        } else if !last_closed_addrs.is_empty() {
+            Duration::from_millis(200)
         } else {
             // Infinite sleep
-            Duration::from_secs(60 * 60)
+            Duration::from_secs(1000000)
         };
 
         // Waiting for one of:
@@ -130,16 +144,17 @@ pub async fn handle_subscriptions<Transport: NetTransport + 'static>(
                     tracing::trace!("Subscription loop finished");
                     return Ok(());
                 } else {
-                    let new_subscriptions = subscribe_rx.borrow().clone();
-                    if new_subscriptions != subscriptions {
-                        subscriptions = new_subscriptions;
+                    let new_publishers = subscribe_rx.borrow().clone();
+                    if new_publishers != publishers {
+                        publishers = new_publishers;
                         reason = "subscribe changed".to_string();
                     } else {
                         continue;
                     }
                 },
                 _ = tokio::time::sleep(sleep_duration) => {
-                    reason = format!("{} failed to subscribe", should_be_subscribed_len - successfully_subscribed);
+                    let failed = should_be_subscribed_len - successfully_subscribed + last_closed_addrs.len();
+                    reason = format!("{failed} failed to subscribe");
                 }
                 connection = connection_closed_rx.recv() => {
                     if let Some(connection) = connection {
@@ -147,6 +162,7 @@ pub async fn handle_subscriptions<Transport: NetTransport + 'static>(
                         if !connection.is_subscriber() {
                             continue;
                         }
+                        last_closed_addrs.insert(connection.remote_addr, Instant::now());
                     }
                     reason = "connection closed".to_string();
                 }

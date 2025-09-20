@@ -9,6 +9,7 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use telemetry_utils::mpsc::InstrumentedReceiver;
+use thiserror::Error;
 use tvm_block::Block;
 use tvm_block::BlockInfo;
 use tvm_block::CopyleftRewards;
@@ -33,8 +34,6 @@ use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::repository::accounts::AccountsRepository;
-use crate::repository::dapp_id_table::DAppIdTable;
-use crate::repository::dapp_id_table::DAppIdTableChangeSet;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::types::account::WrappedAccount;
@@ -58,7 +57,6 @@ pub struct PreparedBlock {
     pub tx_cnt: usize,
     pub block_keeper_set_changes: Vec<BlockKeeperSetChange>,
     pub cross_thread_ref_data: CrossThreadRefData,
-    pub changed_dapp_ids: DAppIdTableChangeSet,
     #[cfg(feature = "monitor-accounts-number")]
     pub accounts_number_diff: i64,
 }
@@ -133,7 +131,6 @@ pub struct BlockBuilder {
     pub(crate) base_config_stateinit: StateInit,
     pub(crate) dapp_credit_map: HashMap<DAppIdentifier, DappConfig>,
     pub(crate) dapp_minted_map: HashMap<DAppIdentifier, i128>,
-    pub(crate) dapp_id_table: DAppIdTable,
     pub(crate) accounts_repository: AccountsRepository,
 
     // part used to update local state
@@ -146,7 +143,6 @@ pub struct BlockBuilder {
         HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     pub(crate) accounts_that_changed_their_dapp_id:
         HashMap<AccountAddress, Vec<(AccountRouting, Option<WrappedAccount>)>>,
-    pub(crate) dapp_id_table_change_set: DAppIdTableChangeSet,
     metrics: Option<BlockProductionMetrics>,
 
     // cached resources used for wasm execution
@@ -177,4 +173,14 @@ impl BlockBuilder {
             false
         }
     }
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum ExecuteError {
+    #[error("Account was moved to another thread, move internal message to the out queue")]
+    AccountWasMovedRerouteInternalMessage,
+    #[error("Account was moved to another thread, ignore external message")]
+    AccountWasMovedIgnoreExternalMessage,
+    #[error("Dest account does not match thread state")]
+    WrongDestinationThread(AccountRouting),
 }

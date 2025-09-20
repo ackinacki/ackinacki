@@ -661,18 +661,6 @@ impl ThreadAuthority {
             tracing::trace!("start_next_round: parent block descendant bk set is not set");
             return OnBlockProducerStalledResult::retry_later(Some(block_height));
         };
-
-        let parent_prefinalization_proof =
-            match parent_block.guarded(|e| e.prefinalization_proof().clone()) {
-                Some(prefinalization_proof) => Some(prefinalization_proof),
-                None => {
-                    if parent_block.block_identifier() == &BlockIdentifier::default() {
-                        None
-                    } else {
-                        panic!("prefinalization_proof must be set");
-                    }
-                }
-            };
         let Some(parent_block_time) = parent_block.guarded(|e| *e.block_time_ms()) else {
             tracing::trace!("start_next_round: parent block time is not set");
             return OnBlockProducerStalledResult::retry_later(Some(block_height));
@@ -690,6 +678,7 @@ impl ThreadAuthority {
         let CalculateRoundResult { round: local_round, round_remaining_time } = self
             .round_buckets
             .calculate_round(duration_from_parent_block, bk_set.len().try_into().unwrap());
+
         if local_round == 0 {
             tracing::warn!("start_next_round: (failed) still in the round zero.");
             return OnBlockProducerStalledResult {
@@ -698,6 +687,19 @@ impl ThreadAuthority {
                 block_height: Some(block_height),
             };
         }
+
+        let parent_prefinalization_proof =
+            match parent_block.guarded(|e| e.prefinalization_proof().clone()) {
+                Some(prefinalization_proof) => Some(prefinalization_proof),
+                None => {
+                    if parent_block.block_identifier() == &BlockIdentifier::default() {
+                        None
+                    } else {
+                        panic!("prefinalization_proof must be set");
+                    }
+                }
+            };
+
         // TODO: check that the next candidate can be used with the current round.
         // May be we should move the lock accordingly.
         let mut was_lock_updated = false;
@@ -762,6 +764,49 @@ impl ThreadAuthority {
             .move_index(local_round as usize, bk_set.len());
         let next_producer_node_id = next_producer_selector.get_producer_node_id(&bk_set).unwrap();
         let next_candidate_ref = current_lock_snapshot.locked_block().clone().map(|e| e.1);
+
+        if !bk_set.contains_node(&self.node_identifier) {
+            let Some(future_bk_set) =
+                parent_block.guarded(|e| e.descendant_future_bk_set().clone())
+            else {
+                tracing::trace!(
+                    "start_next_round: parent block descendant future bk set is not set"
+                );
+                return OnBlockProducerStalledResult::retry_later(Some(block_height));
+            };
+            if !future_bk_set.contains_node(&self.node_identifier) {
+                tracing::trace!("start_next_round: parent block future bk set is not set");
+            }
+            // TODO: Try requesting blocks directly. Count attempts
+            // Do full sync if it reached max attempts count.
+
+            if self.last_node_joining_sent.elapsed() > self.node_joining_timeout {
+                self.last_node_joining_sent = std::time::Instant::now();
+                let thread_id = parent_block
+                    .guarded(|e| *e.thread_identifier())
+                    .expect("Thread id must be set for parent block");
+                let _ = self
+                    .network_broadcast_tx
+                    .send(NetworkMessage::NodeJoining((self.node_identifier.clone(), thread_id)));
+                let _ = self.self_node_authority_tx.as_ref().map(|e| {
+                    e.send(WrappedItem {
+                        payload: (
+                            NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::RejectTooOld(
+                                self.thread_id,
+                            )),
+                            self.self_addr,
+                        ),
+                        label: self.thread_id.to_string(),
+                    })
+                });
+                return OnBlockProducerStalledResult::retry_after(
+                    Some(block_height),
+                    self.node_joining_timeout,
+                );
+            }
+            return OnBlockProducerStalledResult::retry_later(Some(block_height));
+        }
+
         let mut has_all_attestations_locked = true;
         let (block, attestations) = match next_candidate_ref {
             Some(candidate_ref) => {
@@ -938,30 +983,6 @@ impl ThreadAuthority {
                 tracing::warn!("Failed to sign a lock: {}", e);
             })
         else {
-            if self.last_node_joining_sent.elapsed() > self.node_joining_timeout {
-                self.last_node_joining_sent = std::time::Instant::now();
-                let thread_id = parent_block
-                    .guarded(|e| *e.thread_identifier())
-                    .expect("Thread id must be set for parent block");
-                let _ = self
-                    .network_broadcast_tx
-                    .send(NetworkMessage::NodeJoining((self.node_identifier.clone(), thread_id)));
-                let _ = self.self_node_authority_tx.as_ref().map(|e| {
-                    e.send(WrappedItem {
-                        payload: (
-                            NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::RejectTooOld(
-                                self.thread_id,
-                            )),
-                            self.self_addr,
-                        ),
-                        label: self.thread_id.to_string(),
-                    })
-                });
-                return OnBlockProducerStalledResult::retry_after(
-                    Some(block_height),
-                    self.node_joining_timeout,
-                );
-            }
             return OnBlockProducerStalledResult::retry_later(Some(block_height));
         };
         tracing::trace!(

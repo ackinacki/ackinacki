@@ -1,0 +1,38 @@
+---
+- name: Verify NODE_ID presence for each BK
+  fail:
+    msg: "Each block keeper must define a non-empty NODE_ID (number or string)"
+  when: >
+    (
+      groups['block_keepers']
+      | map('extract', hostvars, 'NODE_ID')
+      | select('equalto', none)
+      | list
+      | length
+    ) > 0
+    or
+    (
+      groups['block_keepers']
+      | map('extract', hostvars, 'NODE_ID')
+      | map('string')
+      | map('trim')
+      | select('equalto', '')
+      | list
+      | length
+    ) > 0
+
+- name: Verify NODE_ID uniqueness for each BK
+  fail:
+    msg: "Duplicate NODE_ID found. Each block keeper must have a unique NODE_ID"
+  when: >
+    (
+      groups['block_keepers']
+      | map('extract', hostvars, 'NODE_ID')
+      | map('string')
+      | map('trim')
+      | unique
+      | list
+      | length
+    )
+    !=
+    (groups['block_keepers'] | length)

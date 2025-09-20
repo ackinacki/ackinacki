@@ -28,8 +28,6 @@ use crate::node::services::sync::StateSyncService;
 use crate::node::shared_services::SharedServices;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::NodeIdentifier;
-use crate::repository::dapp_id_table::DAppIdTable;
-use crate::repository::dapp_id_table::DAppIdTableChangeSet;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
@@ -124,34 +122,14 @@ impl OptimisticState for OptimisticStateStub {
         todo!()
     }
 
-    fn get_account_routing<T: Into<AccountAddress> + Clone>(
-        &self,
-        _account_id: &T,
-        _change_set: Option<&DAppIdTableChangeSet>,
-    ) -> AccountRouting {
-        todo!()
-    }
-
     fn get_thread_for_account(
         &self,
-        _account_id: &AccountAddress,
+        _account_routing: &AccountRouting,
     ) -> anyhow::Result<ThreadIdentifier> {
         todo!()
     }
 
     fn does_routing_belong_to_the_state(&self, _account_routing: &AccountRouting) -> bool {
-        todo!()
-    }
-
-    fn does_account_belong_to_the_state(
-        &mut self,
-        _account_id: &AccountAddress,
-        _change_set: Option<&DAppIdTableChangeSet>,
-    ) -> bool {
-        todo!()
-    }
-
-    fn get_dapp_id_table(&self) -> &DAppIdTable {
         todo!()
     }
 

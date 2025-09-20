@@ -839,7 +839,7 @@ mod tests {
             crate::node::block_state::repository::BlockStateRepository::test(
                 root_dir.join("block-state"),
             );
-        let message_db = MessageDurableStorage::as_noop();
+        let message_db = MessageDurableStorage::mem();
         let finalized_blocks =
             crate::repository::repository_impl::tests::finalized_blocks_storage();
 
@@ -855,7 +855,7 @@ mod tests {
                 config.global.thread_load_window_size,
                 u32::MAX,
                 1,
-                CrossRefStorage::as_noop(),
+                CrossRefStorage::mem(),
             ),
             Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
             false,
@@ -891,7 +891,7 @@ mod tests {
                 config.global.thread_load_window_size,
                 config.local.rate_limit_on_incoming_block_req,
                 config.global.thread_count_soft_limit,
-                CrossRefStorage::as_noop(),
+                CrossRefStorage::mem(),
             ))
             .block_produce_timeout(Arc::new(Mutex::new(Duration::from_millis(
                 config.global.time_to_produce_block_millis,

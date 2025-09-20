@@ -112,7 +112,7 @@ tvm-cli -j callx --addr $ROOT --abi $ABI --method deployAckiNackiBlockKeeperNode
 
 WALLET_ADDR=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeperNodeWalletAddress "$NODE_OWNER_PUB_KEY" | jq -r '.wallet')
 
-echo Wallet $WALLET_ADDR is deployed.
+echo "Wallet $WALLET_ADDR is deployed."
 
 IFS="," ; for license in $LICENSE_NUMBERS; do
   LICENSE_ADDR=$(tvm-cli -j runx --abi $LICENSE_ROOT_ABI --addr $LICENSE_ROOT_ADDR -m getLicenseAddress "{\"num\": $license}" | jq -r '.license_address')
@@ -135,9 +135,8 @@ done
 
 echo "Checking wallet balance..."
 WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails)
-echo $WALLET_DETAILS
-echo $WALLET_DETAILS | jq -r '.balance' | xargs printf "Current wallet balance: %d\n"
-
-echo $WALLET_ADDR | cut -d ':' -f2 | xargs printf "Node ID: %s\n"
+echo "$WALLET_DETAILS"
+echo "$WALLET_DETAILS" | jq -r '.balance' | xargs printf "Current wallet balance: %d\n"
+echo "$WALLET_ADDR" | cut -d ':' -f2 | xargs printf "Node ID: %s\n"
 
 printf "Initial steps have been done. Save your node id\n"

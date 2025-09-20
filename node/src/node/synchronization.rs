@@ -353,6 +353,7 @@ where
                         if initial_state_shared_resource_address.is_none() {
                             tracing::trace!("[synchronizing] start loading shared state");
                             initial_state_shared_resource_address = Some(address.clone());
+                            last_node_join_message_time = Instant::now();
                             initial_state = Some((identifier.clone(), seq_no));
                             self.state_sync_service.add_load_state_task(
                                 address,

@@ -152,7 +152,7 @@ impl Account {
                     data,
                     dapp_id: got_acc.dapp_id,
                     last_paid: acc.last_paid() as u64,
-                    last_trans_lt: acc.last_tr_time().map_or("".to_owned(), |v| format!("{:x}", v)),
+                    last_trans_lt: acc.last_tr_time().map_or("".to_owned(), |v| format!("{v:x}")),
                     // Next properties left not initialized
                     rowid: 0,
                     prev_code_hash: None,

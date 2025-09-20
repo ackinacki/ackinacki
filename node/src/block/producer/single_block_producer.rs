@@ -315,7 +315,6 @@ impl BlockProducer for TVMBlockProducer {
                     DEFAULT_VERIFY_COMPLEXITY,
                     ref_ids,
                     forward_table,
-                    prepared_block.changed_dapp_ids,
                     block_round,
                     block_height,
                     #[cfg(feature = "monitor-accounts-number")]

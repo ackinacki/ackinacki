@@ -1,5 +1,14 @@
 ---
 
+- name: Check if bk_set.json exists
+  ansible.builtin.stat:
+    path: "{{ BK_DIR }}/bk-configs/bk_set.json"
+  register: bk_set_file_stat
+
+- name: Set HAS_BK_SET_FILE fact
+  ansible.builtin.set_fact:
+    HAS_BK_SET_FILE: "{{ bk_set_file_stat.stat.exists }}"
+
 - name: Production compose
   ansible.builtin.template:
     src: templates/docker-compose.j2

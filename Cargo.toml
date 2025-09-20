@@ -26,7 +26,7 @@ members = [
     "tvm_contracts",
 ]
 
-package.version = "0.7.5"
+package.version = "0.7.6"
 package.edition = "2021"
 package.rust-version = "1.86.0"
 package.license = "Acki Nacki Node License"
@@ -76,6 +76,7 @@ serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.114"
 serde_with = "3.12.0"
 signal-hook = "0.3.18"
+tempfile = { version = "3.21.0" }
 thiserror = "2.0.3"
 tokio = { version = "1.44.2", features = ["full"] }
 tokio-retry = { version = "0.3.0" }
@@ -83,20 +84,29 @@ tracing = "0.1.40"
 tracing-appender = "0.2.3"
 tracing-opentelemetry = "0.28"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tvm_abi = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.22.1.an' }
+tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.22.1.an' }
+tvm_block_json = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.22.1.an' }
+tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.22.1.an', default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
+tvm_executor = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.22.1.an', features = ['signature_with_id'] }
+tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.22.1.an' }
+tvm_tl_codegen = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.22.1.an', default-features = false }
+tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.22.1.an' }
+tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.22.1.an', features = ['gosh'] }
 url = { version = "2.5.0", features = ["serde"] }
 wasmtime = "35.0.0"
 wtransport = { version = "0.6.0", features = ["dangerous-configuration", "quinn"] }
 zstd = { version = "0.13.3" }
 
-tvm_abi = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an' }
-tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an' }
-tvm_block_json = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an' }
-tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an', default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
-tvm_executor = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an', features = ['signature_with_id'] }
-tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an' }
-tvm_tl_codegen = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an', default-features = false }
-tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an' }
-tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.21.2.an', features = ['gosh'] }
+#tvm_abi = { path = "../tvm-sdk/tvm_abi" }
+#tvm_block = { path = "../tvm-sdk/tvm_block" }
+#tvm_block_json = { path = "../tvm-sdk/tvm_block_json" }
+#tvm_client = { path = "../tvm-sdk/tvm_client", default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
+#tvm_executor = { path = "../tvm-sdk/tvm_executor", features = ['signature_with_id'] }
+#tvm_sdk = { path = "../tvm-sdk/tvm_sdk" }
+#tvm_tl_codegen = { path = "../tvm-sdk/tvm_tl_codegen", default-features = false }
+#tvm_types = { path = "../tvm-sdk/tvm_types" }
+#tvm_vm = { path = "../tvm-sdk/tvm_vm", features = ['gosh'] }
 
 chitchat = { path = "chitchat" }
 database = { path = "database" }
