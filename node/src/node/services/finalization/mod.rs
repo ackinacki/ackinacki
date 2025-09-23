@@ -14,6 +14,7 @@ use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::helper::block_flow_trace;
 use crate::helper::metrics::BlockProductionMetrics;
+use crate::helper::SHUTDOWN_FINALIZATION_FLAG;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::block_state::tools::invalidate_branch;
 use crate::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
@@ -53,6 +54,10 @@ pub fn finalization_loop(
     tracing::trace!("try_finalize_blocks start");
     let state_sync_service = Arc::new(state_sync_service);
     loop {
+        if SHUTDOWN_FINALIZATION_FLAG.get() == Some(&true) {
+            tracing::trace!("break finalization loop");
+            return;
+        }
         let before = unprocessed_blocks_cache.notifications().stamp();
 
         #[allow(clippy::mutable_key_type)]
@@ -98,7 +103,8 @@ pub fn finalization_loop(
 
         let mut height_cutoff = max_child_deadline + 1 + *last_finalized_block_height.height() + 1;
         for (block_state, _candidate_block) in unprocessed_blocks.blocks().values() {
-            if SHUTDOWN_FLAG.get() == Some(&true) {
+            if SHUTDOWN_FINALIZATION_FLAG.get() == Some(&true) {
+                tracing::trace!("break finalization loop");
                 return;
             }
             if block_state.guarded(|e| *e.block_height()).map(|h| *h.height()).unwrap_or_default()

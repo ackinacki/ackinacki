@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * GOSH contracts
- *
- * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
- */
+ * Copyright (c) GOSH Technology Ltd. All rights reserved.
+ * 
+ * Acki Nacki and GOSH are either registered trademarks or trademarks of GOSH
+ * 
+ * Licensed under the ANNL. See License.txt in the project root for license information.
+*/
 pragma gosh-solidity >=0.76.1;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
@@ -25,7 +26,7 @@ contract BlockKeeperContractRoot is Modifiers {
     uint64 _epochCliff = 25920;
     uint64 _waitStep = 12960;
     uint128 _minBlockKeepers = 12;
-    uint128 _totalStake = 0;
+    uint256 _totalStake = 0;
     address _licenseRoot;
     uint8 _walletTouch = 200;
 
@@ -37,44 +38,28 @@ contract BlockKeeperContractRoot is Modifiers {
     uint128 _needNumberOfActiveBlockKeepers = 10000;
     bool _isNeedNumberOfActiveBlockKeepers = false;
 
-    uint128 _reward_adjustment = 0;
-    uint32 _reward_last_time = 0; 
-    uint32 _min_reward_period = 432000;
-    uint32 _reward_period = 432000;
-    uint32 _calc_reward_num = 0;
-
-    uint128 _reputationCoefAvg = MIN_REP_COEF;
     uint128 _reward_sum = 0;
     uint128 _slash_sum = 0;
     uint128 _nlinit = 5000;
+
+    uint128 _mbkOld = 0;
 
     bool _is_close_owner = false;
 
     optional(address) _owner_wallet;
 
+    uint256 _Gparam = 0;
+    uint256 _REMparam = 0; 
+    uint32 _Bparam = 0;
+
     constructor (
-        address licenseRoot,
-        uint128 reward_adjustment
+        address licenseRoot
     ) {
         _networkStart = block.timestamp;
         _licenseRoot = licenseRoot;
-        _reward_last_time = block.timestamp;
-        _reward_adjustment = reward_adjustment;
-    }
-
-    function decreaseRepCoef(uint128 rep_coef_old, uint128 local_stake) private {
-        _reputationCoefAvg = (_reputationCoefAvg * _totalStake - rep_coef_old * local_stake) / (_totalStake - local_stake);
-
-    }
-
-    function increaseRepCoef(uint128 rep_coef_new, uint128 local_stake) private {
-        _reputationCoefAvg = uint128((_reputationCoefAvg * (_totalStake - local_stake) + rep_coef_new * local_stake) / _totalStake);
     }
 
     function ensureBalance() private {
-        if (_reward_last_time + _min_reward_period < block.timestamp) {
-            calcRewardAdjustment();
-        }
         if (block.seqno != _block_seqno) {
             _block_seqno = block.seqno;
             _numberOfActiveBlockKeepersAtBlockStart = _numberOfActiveBlockKeepers;
@@ -83,13 +68,20 @@ contract BlockKeeperContractRoot is Modifiers {
         gosh.mintshellq(ROOT_BALANCE);
     }
 
-    function calcRewardAdjustment() private returns (uint128) {
-        uint32 time = block.timestamp - _networkStart;
-        _reward_period = (_reward_period * _calc_reward_num + block.timestamp - _reward_last_time) / (_calc_reward_num + 1);
-        _reward_last_time = block.timestamp;
-        _calc_reward_num += 1;
-        _reward_adjustment = gosh.calcbkrewardadj(_reward_sum, _reputationCoefAvg / MAX_LICENSE_NUMBER, _reward_period, _reward_adjustment, uint128(time));
+    function calcParams() private {
+        if (block.seqno == 0) { return; }
+        uint128 time = block.timestamp - _networkStart;
+        uint128 mbk = gosh.calcmbk(time);
+        if (mbk > _mbkOld) {
+            _REMparam = _REMparam + (mbk - _mbkOld) * uint256(SCALEparam);
+            _mbkOld = mbk;
+        }
+        if (_totalStake == 0) { return; }
+        (uint256 resdiv, uint256 newREM) = math.divmod(_REMparam, _totalStake);
+        _Gparam += resdiv;
+        _REMparam = newREM;
     }
+
 
     function setOwner(address wallet) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept {
         require(_is_close_owner == false, ERR_SENDER_NO_ALLOWED);
@@ -102,41 +94,29 @@ contract BlockKeeperContractRoot is Modifiers {
         ensureBalance();
     }
 
-    function setConfig(uint64 epochDuration, uint128 minBlockKeepers, uint32 min_reward_period, uint32 reward_period, uint32 reward_last_time, uint32 calc_reward_num, bool isNeedNumberOfActiveBlockKeepers, uint128 needNumberOfActiveBlockKeepers, uint8 walletTouch, uint128 nlinit) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept {
+    function setConfig(uint64 epochDuration, uint128 minBlockKeepers, bool isNeedNumberOfActiveBlockKeepers, uint128 needNumberOfActiveBlockKeepers, uint8 walletTouch, uint128 nlinit) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept {
         require(_is_close_owner == false, ERR_SENDER_NO_ALLOWED);
         ensureBalance();
         _epochDuration = epochDuration;
         _epochCliff = epochDuration / CONFIG_CLIFF_DENOMINATOR;
         _waitStep = epochDuration / CONFIG_WAIT_DENOMINATOR;
         _minBlockKeepers = minBlockKeepers;
-        _reward_period = reward_period;
-        _min_reward_period = min_reward_period;
-        _calc_reward_num = calc_reward_num;
         _isNeedNumberOfActiveBlockKeepers = isNeedNumberOfActiveBlockKeepers;
         _needNumberOfActiveBlockKeepers = needNumberOfActiveBlockKeepers;
-        uint32 time = block.timestamp - _networkStart;
         _walletTouch = walletTouch;
         _nlinit = nlinit;
-        _reward_last_time = reward_last_time;
-        _reward_adjustment = gosh.calcbkrewardadj(_reward_sum, _reputationCoefAvg / MAX_LICENSE_NUMBER, _reward_period, _reward_adjustment, uint128(time));
     }
 
-    function setConfigNode(uint64 epochDuration, uint128 minBlockKeepers, uint32 min_reward_period, uint32 reward_period, uint32 reward_last_time, uint32 calc_reward_num, bool isNeedNumberOfActiveBlockKeepers, uint128 needNumberOfActiveBlockKeepers, uint8 walletTouch, uint128 nlinit) public senderIs(address(this)) accept {
+    function setConfigNode(uint64 epochDuration, uint128 minBlockKeepers, bool isNeedNumberOfActiveBlockKeepers, uint128 needNumberOfActiveBlockKeepers, uint8 walletTouch, uint128 nlinit) public senderIs(address(this)) accept {
         ensureBalance();
         _epochDuration = epochDuration;
         _epochCliff = epochDuration / CONFIG_CLIFF_DENOMINATOR;
         _waitStep = epochDuration / CONFIG_WAIT_DENOMINATOR;
         _minBlockKeepers = minBlockKeepers;
-        _reward_period = reward_period;
-        _min_reward_period = min_reward_period;
-        _calc_reward_num = calc_reward_num;
         _isNeedNumberOfActiveBlockKeepers = isNeedNumberOfActiveBlockKeepers;
         _needNumberOfActiveBlockKeepers = needNumberOfActiveBlockKeepers;
         _walletTouch = walletTouch;
-        _reward_last_time = reward_last_time;
-        uint32 time = block.timestamp - _networkStart;
         _nlinit = nlinit;
-        _reward_adjustment = gosh.calcbkrewardadj(_reward_sum, _reputationCoefAvg / MAX_LICENSE_NUMBER, _reward_period, _reward_adjustment, uint128(time));
     }
 
     function deployAckiNackiBlockKeeperNodeWallet(uint256 pubkey, mapping(uint256 => bool) whiteListLicense) public accept {
@@ -154,28 +134,14 @@ contract BlockKeeperContractRoot is Modifiers {
         }
     }
 
-    function decreaseStakes(uint256 pubkey, uint64 seqNoStart, uint128 slash_stake) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], address(this), pubkey, seqNoStart)) accept {
+    function decreaseStakes(uint256 pubkey, uint64 seqNoStart, uint128 slash_stake, uint128 rep_coef) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], address(this), pubkey, seqNoStart)) accept {
         ensureBalance();
-        _totalStake -= slash_stake;
+        if (_totalStake != 0) {
+            calcParams();
+            _totalStake -= slash_stake * rep_coef;
+        }
         _slash_sum += uint128(msg.currencies[CURRENCIES_ID]);
-    }
 
-    function changeReputation(uint256 pubkey, uint64 seqNoStart, uint128 stake, optional(uint128) virtualStake, uint128 rep_coef_old, uint128 rep_coef_new) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], address(this), pubkey, seqNoStart)) accept {
-        ensureBalance();
-        uint128 local_stake = stake;
-        if (virtualStake.hasValue()) {
-            local_stake = virtualStake.get();
-        }
-        if (_totalStake == local_stake) {
-            _reputationCoefAvg = MIN_REP_COEF;
-        } else {
-            decreaseRepCoef(rep_coef_old, local_stake);
-        }
-        if (_totalStake == 0) {
-            _reputationCoefAvg = MIN_REP_COEF;
-        } else {
-            increaseRepCoef(rep_coef_new, local_stake);
-        }
     }
 
     function increaseActiveBlockKeeperNumber(uint256 pubkey, uint64 seqNoStart, uint128 stake, uint128 rep_coef, optional(uint128) virtualStake) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], address(this), pubkey, seqNoStart)) accept {
@@ -184,18 +150,17 @@ contract BlockKeeperContractRoot is Modifiers {
         if (virtualStake.hasValue()) {
             local_stake = virtualStake.get();
         }
-        _totalStake += local_stake;
+        calcParams();
+        _totalStake += local_stake * rep_coef;
         _numberOfActiveBlockKeepers += 1;
-        if (_totalStake == 0) {
-            _reputationCoefAvg = MIN_REP_COEF;
-        } else {
-            increaseRepCoef(rep_coef, local_stake);
-        }
-        BlockKeeperEpoch(msg.sender).setStake{value: 0.1 vmshell, flag: 1}(_totalStake, _numberOfActiveBlockKeepersAtBlockStart);
+        BlockKeeperEpoch(msg.sender).setStake{value: 0.1 vmshell, flag: 1}(_numberOfActiveBlockKeepersAtBlockStart, _Gparam);
     }
 
     function receiveBlockKeeperRequestWithStakeFromWallet(uint256 pubkey, bytes bls_pubkey, uint16 signerIndex, uint128 rep_coef, bool is_min, mapping(uint8 => string) ProxyList, string myIp) public senderIs(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)) accept {
         ensureBalance();
+        if (_epochDuration * CLOSE_EPOCH_NUMBER > block.seqno) {
+            AckiNackiBlockKeeperNodeWallet(msg.sender).stakeNotAccepted{value: 0.1 vmshell, currencies: msg.currencies, flag: 1}(_epochDuration);
+        }
         optional(uint128) virtualStake;
         uint128 diff = 0;
         if (_reward_sum > _slash_sum) {
@@ -203,14 +168,14 @@ contract BlockKeeperContractRoot is Modifiers {
         }
         uint128 minStake = 0;
         if (_isNeedNumberOfActiveBlockKeepers) {
-            minStake = gosh.calcminstake(diff, block.timestamp - _networkStart + uint128(_epochCliff / BLOCKS_PER_SECOND), _numberOfActiveBlockKeepersAtBlockStart, _needNumberOfActiveBlockKeepers);
+            minStake = gosh.calcminstake(diff, block.timestamp - _networkStart + uint128(_epochCliff * BLOCKS_PER_SECOND_DENOMINATOR / BLOCKS_PER_SECOND), _numberOfActiveBlockKeepersAtBlockStart, _needNumberOfActiveBlockKeepers);
         } else {
-            minStake = gosh.calcminstake(diff, block.timestamp - _networkStart + uint128(_epochCliff / BLOCKS_PER_SECOND), _numberOfActiveBlockKeepersAtBlockStart, _numberOfActiveBlockKeepersAtBlockStart);
+            minStake = gosh.calcminstake(diff, block.timestamp - _networkStart + uint128(_epochCliff * BLOCKS_PER_SECOND_DENOMINATOR / BLOCKS_PER_SECOND), _numberOfActiveBlockKeepersAtBlockStart, _numberOfActiveBlockKeepersAtBlockStart);
         }
         uint128 stake = uint128(msg.currencies[CURRENCIES_ID]);
         if (stake < minStake) {
             if (is_min == false) {
-                AckiNackiBlockKeeperNodeWallet(msg.sender).stakeNotAccepted{value: 0.1 vmshell, currencies: msg.currencies, flag: 1}();
+                AckiNackiBlockKeeperNodeWallet(msg.sender).stakeNotAccepted{value: 0.1 vmshell, currencies: msg.currencies, flag: 1}(_epochDuration);
                 return;
             } else {
                 virtualStake = minStake;
@@ -237,7 +202,7 @@ contract BlockKeeperContractRoot is Modifiers {
         mapping(uint32 => varuint32) data_cur;
         data_cur[CURRENCIES_ID] = varuint32(stake);
         if (isNotOk == true) {
-            AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)).stakeNotAccepted{value: 0.1 vmshell, currencies: data_cur, flag: 1}();
+            AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)).stakeNotAccepted{value: 0.1 vmshell, currencies: data_cur, flag: 1}(_epochDuration);
             return;
         }
         TvmCell data = BlockKeeperLib.composeSignerIndexStateInit(_code[m_SignerIndexCode], signerIndex, address(this));
@@ -250,11 +215,11 @@ contract BlockKeeperContractRoot is Modifiers {
         mapping(uint32 => varuint32) data_cur;
         data_cur[CURRENCIES_ID] = varuint32(stake);
         if (isNotOk == true) {
-            AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)).stakeNotAccepted{value: 0.1 vmshell, currencies: data_cur, flag: 1}();
+            AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)).stakeNotAccepted{value: 0.1 vmshell, currencies: data_cur, flag: 1}(_epochDuration);
             BLSKeyIndex(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_pubkey, address(this))).destroyRoot{value: 0.1 vmshell, flag: 1}();
             return;
         }
-        AckiNackiBlockKeeperNodeWallet(wallet).deployPreEpochContract{value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET + 0.5 vmshell), currencies: data_cur, flag: 1}(_epochDuration, _walletTouch, _epochCliff, _waitStep, bls_pubkey, signerIndex, rep_coef, virtualStake, ProxyList, _reward_sum, myIp, _reward_adjustment);
+        AckiNackiBlockKeeperNodeWallet(wallet).deployPreEpochContract{value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET + 0.5 vmshell), currencies: data_cur, flag: 1}(_epochDuration, _walletTouch, _epochCliff, _waitStep, bls_pubkey, signerIndex, rep_coef, virtualStake, ProxyList, _reward_sum, myIp);
     }
 
     function calculateMaxStake(uint128 diff) private view returns(uint128) {
@@ -270,14 +235,14 @@ contract BlockKeeperContractRoot is Modifiers {
         }
         uint128 minStake;
         if (_isNeedNumberOfActiveBlockKeepers) {
-            minStake = gosh.calcminstake(diff, block.timestamp - _networkStart + uint128((seqNoFinish - block.seqno) / BLOCKS_PER_SECOND), _numberOfActiveBlockKeepersAtBlockStart, _needNumberOfActiveBlockKeepers);
+            minStake = gosh.calcminstake(diff, block.timestamp - _networkStart + uint128((seqNoFinish - block.seqno) * BLOCKS_PER_SECOND_DENOMINATOR / BLOCKS_PER_SECOND), _numberOfActiveBlockKeepersAtBlockStart, _needNumberOfActiveBlockKeepers);
         } else {
-            minStake = gosh.calcminstake(diff, block.timestamp - _networkStart + uint128((seqNoFinish - block.seqno) / BLOCKS_PER_SECOND), _numberOfActiveBlockKeepersAtBlockStart, _numberOfActiveBlockKeepersAtBlockStart);
+            minStake = gosh.calcminstake(diff, block.timestamp - _networkStart + uint128((seqNoFinish - block.seqno) * BLOCKS_PER_SECOND_DENOMINATOR / BLOCKS_PER_SECOND), _numberOfActiveBlockKeepersAtBlockStart, _numberOfActiveBlockKeepersAtBlockStart);
         }
         optional(uint128) virtualStake;
         if (stake < minStake) {
             if (is_min == false) {
-                AckiNackiBlockKeeperNodeWallet(msg.sender).stakeNotAcceptedContinue{value: 0.1 vmshell, currencies: msg.currencies, flag: 1}();
+                AckiNackiBlockKeeperNodeWallet(msg.sender).stakeNotAcceptedContinue{value: 0.1 vmshell, currencies: msg.currencies, flag: 1}(_epochDuration);
                 return;
             } else {
                 virtualStake = minStake;
@@ -303,7 +268,7 @@ contract BlockKeeperContractRoot is Modifiers {
         mapping(uint32 => varuint32) data_cur;
         data_cur[CURRENCIES_ID] = varuint32(stake);
         if (isNotOk == true) {
-            AckiNackiBlockKeeperNodeWallet(wallet).stakeNotAcceptedContinue{value: 0.1 vmshell, currencies: data_cur, flag: 1}();
+            AckiNackiBlockKeeperNodeWallet(wallet).stakeNotAcceptedContinue{value: 0.1 vmshell, currencies: data_cur, flag: 1}(_epochDuration);
             return;
         }
         TvmCell data = BlockKeeperLib.composeSignerIndexStateInit(_code[m_SignerIndexCode], signerIndex, address(this));
@@ -316,7 +281,7 @@ contract BlockKeeperContractRoot is Modifiers {
         mapping(uint32 => varuint32) data_cur;
         data_cur[CURRENCIES_ID] = varuint32(stake);
         if (isNotOk == true) {
-            AckiNackiBlockKeeperNodeWallet(wallet).stakeNotAcceptedContinue{value: 0.1 vmshell, currencies: data_cur, flag: 1}();
+            AckiNackiBlockKeeperNodeWallet(wallet).stakeNotAcceptedContinue{value: 0.1 vmshell, currencies: data_cur, flag: 1}(_epochDuration);
             BLSKeyIndex(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_pubkey, address(this))).destroyRoot{value: 0.1 vmshell, flag: 1}();
             return;
         }
@@ -339,13 +304,9 @@ contract BlockKeeperContractRoot is Modifiers {
         uint128 rep_coef,
         uint64 seqNoStart,
         uint128 stake,
-        uint256 totalStakeOld,
-        uint128 numberOfActiveBlockKeepers,
-        uint128 time,
         optional(uint128) virtualStake,
         uint128 reward_sum,
-        uint128 licenseCount,
-        uint128 reward_adjustment,
+        uint256 gparam,
         bool isSlash
     ) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], address(this), pubkey, seqNoStart)) accept {
         ensureBalance();
@@ -354,39 +315,46 @@ contract BlockKeeperContractRoot is Modifiers {
             stakeToUse = virtualStake.get();
         }
         if ((isSlash) || (_numberOfActiveBlockKeepers - 1 >= _minBlockKeepers)) {
-            if (_totalStake == stakeToUse) {
-                _reputationCoefAvg = MIN_REP_COEF;
-            } else {
-                decreaseRepCoef(rep_coef, stakeToUse);
-            }
-            _totalStake -= stakeToUse;
+            calcParams();
+            _totalStake -= stakeToUse * rep_coef;
         }
         if (isSlash) {
             _numberOfActiveBlockKeepers -= 1;
-            _nlinit -= licenseCount;
             _slash_sum += uint128(stake); 
             return;
         }
         if (_numberOfActiveBlockKeepers - 1 >= _minBlockKeepers) {
             _numberOfActiveBlockKeepers -= 1;
-            uint128 reward = gosh.calcbkreward(
-                reward_adjustment,
-                numberOfActiveBlockKeepers,
+            (uint128 reward, uint256 rewardRem) = calcBKReward(
                 reward_sum,
-                block.timestamp - time,
-                uint128(totalStakeOld),
+                rep_coef,
                 uint128(stakeToUse),
-                rep_coef / licenseCount
-            ) / MAX_LICENSE_NUMBER * licenseCount;
+                gparam
+            );
+            _REMparam = _REMparam + rewardRem;
             _reward_sum += reward;
             mapping(uint32 => varuint32) data_cur;
             data_cur[CURRENCIES_ID] = varuint32(reward);
             gosh.mintecc(uint64(reward), CURRENCIES_ID);
-            BlockKeeperEpoch(msg.sender).canDelete{value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_COOLER_WALLET + 1 vmshell), currencies: data_cur, flag: 1}(reward, _epochDuration, _waitStep, _reward_adjustment, _reward_sum);
+            BlockKeeperEpoch(msg.sender).canDelete{value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_COOLER_WALLET + 1 vmshell), currencies: data_cur, flag: 1}(reward, _epochDuration, _waitStep, _reward_sum);
         } else {
             BlockKeeperEpoch(msg.sender).cantDelete{value: 0.1 vmshell, flag: 1}();
         }
     }
+
+    function calcBKReward(
+        uint128 reward_sum,
+        uint128 rep_coef, 
+        uint128 stake,
+        uint256 gparam
+        ) private view returns (uint128, uint256) {
+        if (reward_sum > BK_TOTAL_SUPPLY) {
+            return (0, 0);
+        }
+        (uint256 res, uint256 rewardRem)= math.divmod(uint256(stake) * uint256(rep_coef) * (_Gparam - gparam), SCALEparam);
+        return (uint128(res), rewardRem);
+    }
+
 
     function updateCode(TvmCell newcode, TvmCell cell) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept {
         ensureBalance();
@@ -446,9 +414,9 @@ contract BlockKeeperContractRoot is Modifiers {
             diff = _reward_sum - _slash_sum;
         }
         if (_isNeedNumberOfActiveBlockKeepers) {
-            minStake = gosh.calcminstake(diff, block.timestamp - _networkStart + uint128(_epochCliff / BLOCKS_PER_SECOND), _numberOfActiveBlockKeepersAtBlockStart, _needNumberOfActiveBlockKeepers);
+            minStake = gosh.calcminstake(diff, block.timestamp - _networkStart + uint128(_epochCliff * BLOCKS_PER_SECOND_DENOMINATOR / BLOCKS_PER_SECOND), _numberOfActiveBlockKeepersAtBlockStart, _needNumberOfActiveBlockKeepers);
         } else {
-            minStake = gosh.calcminstake(diff, block.timestamp - _networkStart + uint128(_epochCliff / BLOCKS_PER_SECOND), _numberOfActiveBlockKeepersAtBlockStart, _numberOfActiveBlockKeepersAtBlockStart);
+            minStake = gosh.calcminstake(diff, block.timestamp - _networkStart + uint128(_epochCliff * BLOCKS_PER_SECOND_DENOMINATOR / BLOCKS_PER_SECOND), _numberOfActiveBlockKeepersAtBlockStart, _numberOfActiveBlockKeepersAtBlockStart);
         }
         return (minStake, _numberOfActiveBlockKeepers);
     }
@@ -462,15 +430,18 @@ contract BlockKeeperContractRoot is Modifiers {
     }
 
     function getRewardOut(
-        uint128 reward_adjustment,
-        uint128 numberOfActiveBlockKeepers,
-        uint128 stake,
-        uint128 totalStake,
         uint128 reward_sum,
-        uint128 timeepoch,
-        uint128 reputationTime
-        ) external pure returns(uint128 reward) {
-        return gosh.calcbkreward(reward_adjustment, numberOfActiveBlockKeepers, reward_sum, timeepoch, totalStake, stake, reputationTime);
+        uint128 rep_coef,
+        uint256 gparam,
+        uint128 stake
+        ) external view returns(uint128 reward) {
+        (uint128 res, ) = calcBKReward(
+            reward_sum,
+            rep_coef,
+            stake,
+            gparam
+        );
+        return res;
     }     
 
     function getProxyListCode() external view returns(TvmCell code) {
@@ -482,8 +453,15 @@ contract BlockKeeperContractRoot is Modifiers {
     }
 
     function getRewardNow(
-        ) external view returns(uint128 reward) {
-        return gosh.calcbkreward(_reward_adjustment, _numberOfActiveBlockKeepers, _reward_sum, uint128(block.timestamp - _networkStart), uint128(_totalStake), uint128(_totalStake), uint128(0));
+        uint128 rep_coef,
+        uint128 stake) external view returns(uint128 reward) {
+        (uint128 res,) = calcBKReward(
+            _reward_sum,
+            rep_coef,
+            stake,
+            _Gparam
+        );
+        return res;
     }     
 
     function getMinStakeNow() external view returns(uint128 minstake) {
@@ -493,9 +471,9 @@ contract BlockKeeperContractRoot is Modifiers {
         }
         uint128 minStake;
         if (_isNeedNumberOfActiveBlockKeepers) {
-            minStake = gosh.calcminstake(diff, block.timestamp - _networkStart + uint128(_epochCliff / BLOCKS_PER_SECOND), _numberOfActiveBlockKeepersAtBlockStart, _needNumberOfActiveBlockKeepers);
+            minStake = gosh.calcminstake(diff, block.timestamp - _networkStart + uint128(_epochCliff * BLOCKS_PER_SECOND_DENOMINATOR / BLOCKS_PER_SECOND), _numberOfActiveBlockKeepersAtBlockStart, _needNumberOfActiveBlockKeepers);
         } else {
-            minStake = gosh.calcminstake(diff, block.timestamp - _networkStart + uint128(_epochCliff / BLOCKS_PER_SECOND), _numberOfActiveBlockKeepersAtBlockStart, _numberOfActiveBlockKeepersAtBlockStart);
+            minStake = gosh.calcminstake(diff, block.timestamp - _networkStart + uint128(_epochCliff * BLOCKS_PER_SECOND_DENOMINATOR / BLOCKS_PER_SECOND), _numberOfActiveBlockKeepersAtBlockStart, _numberOfActiveBlockKeepersAtBlockStart);
         }
         return minStake;  
     }

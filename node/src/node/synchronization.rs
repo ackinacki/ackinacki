@@ -12,6 +12,7 @@ use tokio::time::Instant;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::helper::block_flow_trace;
+use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::SynchronizationResult;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
@@ -52,6 +53,13 @@ where
         let mut recieved_sync_from = None;
 
         loop {
+            if *SHUTDOWN_FLAG.get().unwrap_or(&false) {
+                let blocks_queue = self.unprocessed_blocks_cache.clone_queue();
+                tracing::trace!("Stop execution: {}", blocks_queue.blocks().len());
+                self.repository.dump_unfinalized_blocks(blocks_queue);
+                tracing::trace!("Stop execution");
+                return Ok(SynchronizationResult::Interrupted);
+            }
             // We have already synced with some nodes before launching the execution, but we
             // could have not reached the producer and possibly should send
             // NodeJoin again

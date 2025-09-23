@@ -6,8 +6,7 @@
 		{
 			"name": "constructor",
 			"inputs": [
-				{"name":"licenseRoot","type":"address"},
-				{"name":"reward_adjustment","type":"uint128"}
+				{"name":"licenseRoot","type":"address"}
 			],
 			"outputs": [
 			]
@@ -32,10 +31,6 @@
 			"inputs": [
 				{"name":"epochDuration","type":"uint64"},
 				{"name":"minBlockKeepers","type":"uint128"},
-				{"name":"min_reward_period","type":"uint32"},
-				{"name":"reward_period","type":"uint32"},
-				{"name":"reward_last_time","type":"uint32"},
-				{"name":"calc_reward_num","type":"uint32"},
 				{"name":"isNeedNumberOfActiveBlockKeepers","type":"bool"},
 				{"name":"needNumberOfActiveBlockKeepers","type":"uint128"},
 				{"name":"walletTouch","type":"uint8"},
@@ -49,10 +44,6 @@
 			"inputs": [
 				{"name":"epochDuration","type":"uint64"},
 				{"name":"minBlockKeepers","type":"uint128"},
-				{"name":"min_reward_period","type":"uint32"},
-				{"name":"reward_period","type":"uint32"},
-				{"name":"reward_last_time","type":"uint32"},
-				{"name":"calc_reward_num","type":"uint32"},
 				{"name":"isNeedNumberOfActiveBlockKeepers","type":"bool"},
 				{"name":"needNumberOfActiveBlockKeepers","type":"uint128"},
 				{"name":"walletTouch","type":"uint8"},
@@ -86,20 +77,8 @@
 			"inputs": [
 				{"name":"pubkey","type":"uint256"},
 				{"name":"seqNoStart","type":"uint64"},
-				{"name":"slash_stake","type":"uint128"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "changeReputation",
-			"inputs": [
-				{"name":"pubkey","type":"uint256"},
-				{"name":"seqNoStart","type":"uint64"},
-				{"name":"stake","type":"uint128"},
-				{"name":"virtualStake","type":"optional(uint128)"},
-				{"name":"rep_coef_old","type":"uint128"},
-				{"name":"rep_coef_new","type":"uint128"}
+				{"name":"slash_stake","type":"uint128"},
+				{"name":"rep_coef","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -238,13 +217,9 @@
 				{"name":"rep_coef","type":"uint128"},
 				{"name":"seqNoStart","type":"uint64"},
 				{"name":"stake","type":"uint128"},
-				{"name":"totalStakeOld","type":"uint256"},
-				{"name":"numberOfActiveBlockKeepers","type":"uint128"},
-				{"name":"time","type":"uint128"},
 				{"name":"virtualStake","type":"optional(uint128)"},
 				{"name":"reward_sum","type":"uint128"},
-				{"name":"licenseCount","type":"uint128"},
-				{"name":"reward_adjustment","type":"uint128"},
+				{"name":"gparam","type":"uint256"},
 				{"name":"isSlash","type":"bool"}
 			],
 			"outputs": [
@@ -351,13 +326,10 @@
 		{
 			"name": "getRewardOut",
 			"inputs": [
-				{"name":"reward_adjustment","type":"uint128"},
-				{"name":"numberOfActiveBlockKeepers","type":"uint128"},
-				{"name":"stake","type":"uint128"},
-				{"name":"totalStake","type":"uint128"},
 				{"name":"reward_sum","type":"uint128"},
-				{"name":"timeepoch","type":"uint128"},
-				{"name":"reputationTime","type":"uint128"}
+				{"name":"rep_coef","type":"uint128"},
+				{"name":"gparam","type":"uint256"},
+				{"name":"stake","type":"uint128"}
 			],
 			"outputs": [
 				{"name":"reward","type":"uint128"}
@@ -383,6 +355,8 @@
 		{
 			"name": "getRewardNow",
 			"inputs": [
+				{"name":"rep_coef","type":"uint128"},
+				{"name":"stake","type":"uint128"}
 			],
 			"outputs": [
 				{"name":"reward","type":"uint128"}
@@ -473,7 +447,7 @@
 		{"init":false,"name":"_epochCliff","type":"uint64"},
 		{"init":false,"name":"_waitStep","type":"uint64"},
 		{"init":false,"name":"_minBlockKeepers","type":"uint128"},
-		{"init":false,"name":"_totalStake","type":"uint128"},
+		{"init":false,"name":"_totalStake","type":"uint256"},
 		{"init":false,"name":"_licenseRoot","type":"address"},
 		{"init":false,"name":"_walletTouch","type":"uint8"},
 		{"init":false,"name":"_networkStart","type":"uint32"},
@@ -482,16 +456,14 @@
 		{"init":false,"name":"_numberOfActiveBlockKeepersAtBlockStart","type":"uint128"},
 		{"init":false,"name":"_needNumberOfActiveBlockKeepers","type":"uint128"},
 		{"init":false,"name":"_isNeedNumberOfActiveBlockKeepers","type":"bool"},
-		{"init":false,"name":"_reward_adjustment","type":"uint128"},
-		{"init":false,"name":"_reward_last_time","type":"uint32"},
-		{"init":false,"name":"_min_reward_period","type":"uint32"},
-		{"init":false,"name":"_reward_period","type":"uint32"},
-		{"init":false,"name":"_calc_reward_num","type":"uint32"},
-		{"init":false,"name":"_reputationCoefAvg","type":"uint128"},
 		{"init":false,"name":"_reward_sum","type":"uint128"},
 		{"init":false,"name":"_slash_sum","type":"uint128"},
 		{"init":false,"name":"_nlinit","type":"uint128"},
+		{"init":false,"name":"_mbkOld","type":"uint128"},
 		{"init":false,"name":"_is_close_owner","type":"bool"},
-		{"init":false,"name":"_owner_wallet","type":"optional(address)"}
+		{"init":false,"name":"_owner_wallet","type":"optional(address)"},
+		{"init":false,"name":"_Gparam","type":"uint256"},
+		{"init":false,"name":"_REMparam","type":"uint256"},
+		{"init":false,"name":"_Bparam","type":"uint32"}
 	]
 }

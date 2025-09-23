@@ -2,14 +2,13 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Instant;
 
 use transport_layer::NetTransport;
 
 use crate::config::NetworkConfig;
+use crate::direct_sender::peer_info;
 use crate::direct_sender::peer_sender::PeerSender;
-use crate::direct_sender::DirectPeer;
 use crate::direct_sender::PeerEvent;
 use crate::direct_sender::RESOLVE_RETRY_TIMEOUT;
 use crate::message::NetMessage;
@@ -36,9 +35,10 @@ where
         tokio::sync::mpsc::UnboundedReceiver<(DirectReceiver<PeerId>, NetMessage, Instant)>,
     outgoing_reply_tx: tokio::sync::broadcast::Sender<OutgoingMessage>,
     incoming_reply_tx: IncomingSender,
-    peer_resolver_rx: tokio::sync::watch::Receiver<HashMap<PeerId, PeerData>>,
-    peers_by_id: HashMap<PeerId, Arc<DirectPeer<PeerId>>>,
-    peers_by_addr: HashMap<SocketAddr, Arc<DirectPeer<PeerId>>>,
+    peer_resolver_rx: tokio::sync::watch::Receiver<HashMap<PeerId, Vec<PeerData>>>,
+    unresolved_peers: HashMap<PeerId, Vec<(NetMessage, Instant)>>,
+    resolved_peers:
+        HashMap<PeerId, Vec<(SocketAddr, tokio::sync::mpsc::Sender<(NetMessage, Instant)>)>>,
     peer_events_tx: tokio::sync::mpsc::UnboundedSender<PeerEvent<PeerId>>,
     peer_events_rx: tokio::sync::mpsc::UnboundedReceiver<PeerEvent<PeerId>>,
 }
@@ -61,7 +61,7 @@ where
         )>,
         outgoing_reply_tx: tokio::sync::broadcast::Sender<OutgoingMessage>,
         incoming_reply_tx: IncomingSender,
-        peer_resolver_rx: tokio::sync::watch::Receiver<HashMap<PeerId, PeerData>>,
+        peer_resolver_rx: tokio::sync::watch::Receiver<HashMap<PeerId, Vec<PeerData>>>,
     ) -> Self {
         let network_config = network_config_rx.borrow().clone();
         let (peer_events_tx, peer_events_rx) =
@@ -76,16 +76,11 @@ where
             outgoing_reply_tx,
             incoming_reply_tx,
             peer_resolver_rx,
-            peers_by_id: HashMap::new(),
-            peers_by_addr: HashMap::new(),
+            unresolved_peers: HashMap::new(),
+            resolved_peers: HashMap::new(),
             peer_events_tx,
             peer_events_rx,
         }
-    }
-
-    fn remove_peer(&mut self, peer: Arc<DirectPeer<PeerId>>) {
-        self.peers_by_id.retain(|_, x| !Arc::ptr_eq(&peer, x));
-        self.peers_by_addr.retain(|_, x| !Arc::ptr_eq(&peer, x));
     }
 
     pub(crate) async fn run(&mut self) {
@@ -139,15 +134,22 @@ where
         );
         match receiver {
             DirectReceiver::Peer(id) => {
-                let peer = if let Some(peer) = self.peers_by_id.get(&id) {
-                    peer.clone()
+                if let Some(resolved) = self.resolved_peers.get(&id) {
+                    for (addr, sender) in resolved {
+                        self.try_send_to_peer(
+                            &id,
+                            *addr,
+                            sender,
+                            net_message.clone(),
+                            buffer_duration,
+                        );
+                    }
+                } else if let Some(unresolved) = self.unresolved_peers.get_mut(&id) {
+                    unresolved.push((net_message, buffer_duration));
                 } else {
-                    let peer = Arc::new(DirectPeer::new(Some(id.clone()), None));
-                    self.peers_by_id.insert(id.clone(), peer.clone());
-                    self.start_peer_resolver(peer.clone(), id);
-                    peer
+                    self.unresolved_peers.insert(id.clone(), vec![(net_message, buffer_duration)]);
+                    self.start_peer_resolver(id);
                 };
-                self.try_send_to_peer(&peer, net_message, buffer_duration);
             }
             DirectReceiver::Addr(addr) => {
                 let _ = self.outgoing_reply_tx.send(OutgoingMessage {
@@ -161,44 +163,49 @@ where
 
     fn handle_peer_event(&mut self, event: PeerEvent<PeerId>) {
         match event {
-            PeerEvent::AddrResolved(peer, id, addr) => {
-                if let Some(other_peer) = self.peers_by_addr.get(&addr).cloned() {
-                    other_peer.state.lock().id = Some(id.clone());
-                    self.peers_by_id.insert(id, other_peer.clone());
-                    self.move_messages(&peer, &other_peer);
-                } else {
-                    peer.state.lock().addr = Some(addr);
-                    self.peers_by_addr.insert(addr, peer.clone());
-                    self.start_peer_sender(peer, addr);
+            PeerEvent::AddrsResolved(id, addrs) => {
+                let Some(messages) = self.unresolved_peers.remove(&id) else {
+                    return;
+                };
+                let mut resolved = Vec::new();
+                for addr in addrs {
+                    let tx = self.start_peer_sender(id.clone(), addr);
+                    for message in &messages {
+                        self.try_send_to_peer(&id, addr, &tx, message.0.clone(), message.1)
+                    }
+                    resolved.push((addr, tx));
                 }
+                self.resolved_peers.insert(id.clone(), resolved);
             }
-            PeerEvent::SenderStopped(peer) => {
-                tracing::trace!(peer_id = peer.to_string(), "Peer sender stopped");
-                self.remove_peer(peer);
-            }
-        }
-    }
-
-    fn move_messages(&mut self, from: &Arc<DirectPeer<PeerId>>, to: &Arc<DirectPeer<PeerId>>) {
-        if let Some(mut rx) = from.state.lock().messages_rx.take() {
-            while let Ok((message, buffer_duration)) = rx.try_recv() {
-                self.try_send_to_peer(to, message, buffer_duration);
+            PeerEvent::SenderStopped(id, addr) => {
+                tracing::trace!(peer = peer_info(&id, addr), "Peer sender stopped");
+                let remove = if let Some(peers) = self.resolved_peers.get_mut(&id) {
+                    peers.retain(|(x, _)| *x != addr);
+                    peers.is_empty()
+                } else {
+                    false
+                };
+                if remove {
+                    self.resolved_peers.remove(&id);
+                }
             }
         }
     }
 
     fn try_send_to_peer(
-        &mut self,
-        peer: &Arc<DirectPeer<PeerId>>,
+        &self,
+        id: &PeerId,
+        addr: SocketAddr,
+        tx: &tokio::sync::mpsc::Sender<(NetMessage, Instant)>,
         message: NetMessage,
         buffer_duration: Instant,
     ) {
         let label = message.label.clone();
-        let is_sent = match peer.messages_tx.try_send((message, buffer_duration)) {
+        let is_sent = match tx.try_send((message, buffer_duration)) {
             Ok(()) => true,
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                 tracing::error!(
-                    peer = peer.to_string(),
+                    peer = peer_info(id, addr),
                     msg_type = label,
                     broadcast = false,
                     "Message delivery: forwarding to peer sender failed, sender is lagged"
@@ -206,7 +213,7 @@ where
                 false
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                let _ = self.peer_events_tx.send(PeerEvent::SenderStopped(peer.clone()));
+                let _ = self.peer_events_tx.send(PeerEvent::SenderStopped(id.clone(), addr));
                 false
             }
         };
@@ -223,11 +230,10 @@ where
         }
     }
 
-    fn start_peer_resolver(&self, peer: Arc<DirectPeer<PeerId>>, id: PeerId) {
+    fn start_peer_resolver(&self, id: PeerId) {
         spawn_critical_task(
             "Direct peer resolver",
             peer_resolver(
-                peer.clone(),
                 id,
                 self.shutdown_rx.clone(),
                 self.peer_resolver_rx.clone(),
@@ -236,9 +242,14 @@ where
         );
     }
 
-    fn start_peer_sender(&self, peer: Arc<DirectPeer<PeerId>>, addr: SocketAddr) {
+    fn start_peer_sender(
+        &self,
+        id: PeerId,
+        addr: SocketAddr,
+    ) -> tokio::sync::mpsc::Sender<(NetMessage, Instant)> {
+        let (tx, rx) = tokio::sync::mpsc::channel::<(NetMessage, Instant)>(100);
         let mut sender = PeerSender::new(
-            peer.clone(),
+            id,
             addr,
             self.shutdown_rx.clone(),
             self.transport.clone(),
@@ -247,47 +258,47 @@ where
             self.peer_events_tx.clone(),
             self.incoming_reply_tx.clone(),
         );
-        spawn_critical_task("Direct peer sender", async move { sender.run().await });
+        spawn_critical_task("Direct peer sender", async move { sender.run(rx).await });
+        tx
     }
 }
 
 async fn peer_resolver<PeerId>(
-    peer: Arc<DirectPeer<PeerId>>,
     id: PeerId,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    mut peers_rx: tokio::sync::watch::Receiver<HashMap<PeerId, PeerData>>,
+    mut peers_rx: tokio::sync::watch::Receiver<HashMap<PeerId, Vec<PeerData>>>,
     peer_events_tx: tokio::sync::mpsc::UnboundedSender<PeerEvent<PeerId>>,
 ) where
     PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
 {
-    tracing::trace!(peer = peer.to_string(), "Peer resolver loop started");
+    tracing::trace!(peer = id.to_string(), "Peer resolver loop started");
     loop {
         tokio::select! {
             sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
-                tracing::trace!(peer = peer.to_string(), "Peer resolver loop finished");
+                tracing::trace!(peer = id.to_string(), "Peer resolver loop finished");
                 break;
             } else {
                 continue;
             },
-            addr = resolve_peer_addr(&mut peers_rx, id.clone()) => {
-                let _ = peer_events_tx.send(PeerEvent::AddrResolved(peer, id, addr));
+            addrs = resolve_peer_addrs(&mut peers_rx, id.clone()) => {
+                let _ = peer_events_tx.send(PeerEvent::AddrsResolved(id.clone(), addrs));
                 break;
             },
         }
     }
 }
 
-async fn resolve_peer_addr<PeerId>(
-    peers_rx: &mut tokio::sync::watch::Receiver<HashMap<PeerId, PeerData>>,
+async fn resolve_peer_addrs<PeerId>(
+    peers_rx: &mut tokio::sync::watch::Receiver<HashMap<PeerId, Vec<PeerData>>>,
     id: PeerId,
-) -> SocketAddr
+) -> Vec<SocketAddr>
 where
     PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
 {
     let mut attempt = 0;
     loop {
         if let Some(peer_data) = peers_rx.borrow().get(&id) {
-            return peer_data.peer_addr;
+            return peer_data.iter().map(|x| x.peer_addr).collect();
         }
         tracing::warn!(peer_id = id.to_string(), attempt, "Failed to resolve peer addr");
         tokio::time::sleep(RESOLVE_RETRY_TIMEOUT).await;

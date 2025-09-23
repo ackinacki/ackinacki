@@ -10,7 +10,7 @@ use transport_layer::NetCredential;
 use transport_layer::NetTransport;
 
 use crate::detailed;
-use crate::direct_sender::DirectPeer;
+use crate::direct_sender::peer_info;
 use crate::direct_sender::PeerEvent;
 use crate::message::NetMessage;
 use crate::metrics::NetMetrics;
@@ -31,7 +31,7 @@ where
     Transport: NetTransport,
     Transport::Connection: 'static,
 {
-    peer: Arc<DirectPeer<PeerId>>,
+    id: PeerId,
     addr: SocketAddr,
     connection: Option<Arc<ConnectionWrapper<Transport::Connection>>>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -54,7 +54,7 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        peer: Arc<DirectPeer<PeerId>>,
+        id: PeerId,
         addr: SocketAddr,
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
         transport: Transport,
@@ -65,7 +65,7 @@ where
     ) -> Self {
         let (transfer_result_tx, transfer_result_rx) = tokio::sync::mpsc::channel(10);
         Self {
-            peer,
+            id,
             addr,
             connection: None,
             shutdown_rx,
@@ -79,12 +79,12 @@ where
         }
     }
 
-    pub(crate) async fn run(&mut self) {
-        let Some(mut messages_rx) = self.peer.state.lock().messages_rx.take() else {
-            return;
-        };
-
-        tracing::trace!(peer = self.peer.to_string(), "Peer sender loop started");
+    pub(crate) async fn run(
+        &mut self,
+        mut outgoing_rx: tokio::sync::mpsc::Receiver<(NetMessage, Instant)>,
+    ) {
+        let peer_info = peer_info(&self.id, self.addr);
+        tracing::trace!(peer = peer_info, "Peer sender loop started");
         let mut shutdown_rx = self.shutdown_rx.clone();
         'main: loop {
             tokio::select! {
@@ -99,7 +99,7 @@ where
                     },
                     Err(err) => {
                         tracing::error!(
-                            peer = self.peer.to_string(),
+                            peer = peer_info,
                             "Failed to connect to peer: {err}"
                         );
                         continue;
@@ -112,7 +112,7 @@ where
                     sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
                         break 'main;
                     },
-                    result = messages_rx.recv() => {
+                    result = outgoing_rx.recv() => {
                         if let Some((net_message, buffer_duration)) = result {
                             self.start_transfer_message(net_message,buffer_duration);
                         } else {
@@ -132,8 +132,8 @@ where
                 }
             }
         }
-        tracing::trace!(peer = self.peer.to_string(), "Peer sender loop finished");
-        let _ = self.peer_events_tx.send(PeerEvent::SenderStopped(self.peer.clone()));
+        tracing::trace!(peer = peer_info, "Peer sender loop finished");
+        let _ = self.peer_events_tx.send(PeerEvent::SenderStopped(self.id.clone(), self.addr));
     }
 
     async fn connect_to_peer(&self) -> anyhow::Result<ConnectionWrapper<Transport::Connection>>
@@ -172,7 +172,7 @@ where
                 Err(e) => {
                     tracing::warn!(
                         broadcast = false,
-                        peer = self.peer.to_string(),
+                        peer = peer_info(&self.id, self.addr),
                         attempt,
                         "Failed to establish outgoing connection: {}",
                         detailed(&e)

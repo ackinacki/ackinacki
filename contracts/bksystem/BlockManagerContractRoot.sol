@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * GOSH contracts
- *
- * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
- */
+ * Copyright (c) GOSH Technology Ltd. All rights reserved.
+ * 
+ * Acki Nacki and GOSH are either registered trademarks or trademarks of GOSH
+ * 
+ * Licensed under the ANNL. See License.txt in the project root for license information.
+*/
 pragma gosh-solidity >=0.76.1;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
@@ -21,11 +22,11 @@ contract BlockManagerContractRoot is Modifiers {
     uint128 _numberOfActiveBlockManagers = 0;
     optional(address) _owner_wallet;
     uint32 _networkStart;
-    uint32 _epochDuration;
+    uint64 _epochDuration;
     uint64 _waitStep;
     uint32 _prevEpochDuration;
     uint32 _epochStart;
-    uint32 _epochEnd;
+    uint64 _epochEnd;
     uint128 _numberOfActiveBlockManagersAtEpochStart = 0;
     uint128 _numberOfActiveBlockManagersAtPrevEpochStart = 0;
     uint128 _reward_adjustment = 0;
@@ -42,7 +43,7 @@ contract BlockManagerContractRoot is Modifiers {
 
     constructor (
         address licenseBMRoot,
-        uint32 epochDuration,
+        uint64 epochDuration,
         uint64 waitStep,
         uint128 reward_adjustment,
         uint8 walletTouch
@@ -52,13 +53,13 @@ contract BlockManagerContractRoot is Modifiers {
         _epochStart = _networkStart;
         _reward_last_time = block.timestamp;
         _epochDuration = epochDuration;
-        _epochEnd = _epochStart + _epochDuration;
+        _epochEnd = block.seqno + _epochDuration;
         _reward_adjustment = reward_adjustment;
         _waitStep = waitStep;
         _walletTouch = walletTouch;
     } 
 
-    function setConfig(uint32 epochDuration, uint64 waitStep, uint32 reward_period, uint32 min_reward_period, uint32 calc_reward_num, uint8 walletTouch) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept {
+    function setConfig(uint64 epochDuration, uint64 waitStep, uint32 reward_period, uint32 min_reward_period, uint32 calc_reward_num, uint8 walletTouch) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept {
         require(_is_close_owner == false, ERR_SENDER_NO_ALLOWED);
         ensureBalance();
         _epochDuration = epochDuration;
@@ -70,7 +71,7 @@ contract BlockManagerContractRoot is Modifiers {
         _reward_adjustment = gosh.calcbmmvrewardadj(_reward_sum, _reward_period, _reward_adjustment, uint128(block.timestamp - _networkStart), true);
     }
 
-    function setConfigNode(uint32 epochDuration, uint64 waitStep, uint32 reward_period, uint32 min_reward_period, uint32 calc_reward_num, uint8 walletTouch) public senderIs(address(this)) accept {
+    function setConfigNode(uint64 epochDuration, uint64 waitStep, uint32 reward_period, uint32 min_reward_period, uint32 calc_reward_num, uint8 walletTouch) public senderIs(address(this)) accept {
         ensureBalance();
         _epochDuration = epochDuration;
         _waitStep = waitStep;
@@ -106,10 +107,10 @@ contract BlockManagerContractRoot is Modifiers {
     }
 
     function ensureBalance() private {
-        if (block.timestamp >= _epochEnd) {
+        if (block.seqno >= _epochEnd) {
             _prevEpochDuration = block.timestamp - _epochStart;
             _epochStart = block.timestamp;
-            _epochEnd = block.timestamp + _epochDuration;
+            _epochEnd = block.seqno + _epochDuration;
             _numberOfActiveBlockManagersAtPrevEpochStart = _numberOfActiveBlockManagersAtEpochStart;
             _numberOfActiveBlockManagersAtEpochStart = _numberOfActiveBlockManagers;
             _reward_adjustment_prev_epoch = _reward_adjustment;
@@ -134,9 +135,11 @@ contract BlockManagerContractRoot is Modifiers {
         new AckiNackiBlockManagerNodeWallet {stateInit: data, value: varuint16(FEE_DEPLOY_BLOCK_MANAGER_WALLET), wid: 0, flag: 1}(_code[m_LicenseBMCode], whiteListLicense, _licenseBMRoot, _networkStart, _waitStep, signerPubkey, _walletTouch);
     }
 
-    function slashed(uint256 pubkey) public senderIs(BlockKeeperLib.calculateBlockManagerWalletAddress(_code[m_AckiNackiBlockManagerNodeWalletCode], address(this), pubkey)) accept {
+    function slashed(uint256 pubkey, bool isWorking) public senderIs(BlockKeeperLib.calculateBlockManagerWalletAddress(_code[m_AckiNackiBlockManagerNodeWalletCode], address(this), pubkey)) accept {
         ensureBalance();
-        _numberOfActiveBlockManagers -= 1;
+        if (isWorking) {
+            _numberOfActiveBlockManagers -= 1;
+        }
         _slash_sum += uint128(msg.currencies[CURRENCIES_ID]);
     }
 

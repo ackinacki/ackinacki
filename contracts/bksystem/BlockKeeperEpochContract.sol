@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * GOSH contracts
- *
- * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
- */
+ * Copyright (c) GOSH Technology Ltd. All rights reserved.
+ * 
+ * Acki Nacki and GOSH are either registered trademarks or trademarks of GOSH
+ * 
+ * Licensed under the ANNL. See License.txt in the project root for license information.
+*/
 pragma gosh-solidity >=0.76.1;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
@@ -28,7 +29,6 @@ contract BlockKeeperEpoch is Modifiers {
     bool _isContinue = false;
     uint64 _waitStep;
     uint128 _stake;
-    uint256 _totalStake;
     address _owner_address;
 
     bytes _bls_pubkeyContinue;
@@ -36,7 +36,6 @@ contract BlockKeeperEpoch is Modifiers {
     uint128 _numberOfActiveBlockKeepers;
     uint32 _unixtimeStart;
 
-    uint128 _reward_adjustment;
 
     uint128 _sumReputationCoef; 
     uint128 _sumReputationCoefContinue;
@@ -59,6 +58,8 @@ contract BlockKeeperEpoch is Modifiers {
     bool _is_touching = false;
     optional(uint8) _slash_type;
 
+    uint256 _gparam;
+
     constructor (
         uint64 waitStep,
         uint64 epochDuration,
@@ -71,7 +72,6 @@ contract BlockKeeperEpoch is Modifiers {
         uint128 reward_sum,
         string myIp,
         bool isContinue,
-        uint128 reward_adjustment,
         optional(uint32) timeStart
     ) {
         _code = code;
@@ -111,15 +111,14 @@ contract BlockKeeperEpoch is Modifiers {
         _virtualStake = virtualStake;
         _reward_sum = reward_sum;
         _myIp = myIp;
-        _reward_adjustment = reward_adjustment;
         BlockKeeperContractRoot(_root).increaseActiveBlockKeeperNumber{value: 0.1 vmshell, flag: 1}(_owner_pubkey, _seqNoStart, _stake, _sumReputationCoef, _virtualStake);
         AckiNackiBlockKeeperNodeWallet(_owner_address).updateLockStake{value: 0.1 vmshell, flag: 1}(_seqNoStart, _seqNoFinish, msg.currencies[CURRENCIES_ID], _bls_pubkey, _signerIndex, _licenses);
     }
 
-    function setStake(uint256 totalStake, uint128 numberOfActiveBlockKeepers) public senderIs(_root) accept {
+    function setStake(uint128 numberOfActiveBlockKeepers, uint256 gparam) public senderIs(_root) accept {
         ensureBalance();
-        _totalStake = totalStake;
-        _numberOfActiveBlockKeepers = numberOfActiveBlockKeepers;
+        _numberOfActiveBlockKeepers = numberOfActiveBlockKeepers; 
+        _gparam = gparam;
     } 
 
     function ensureBalance() private pure {
@@ -160,7 +159,6 @@ contract BlockKeeperEpoch is Modifiers {
 
     function changeReputation(uint128 value) public senderIs(_owner_address) accept {
         ensureBalance();
-        BlockKeeperContractRoot(_root).changeReputation{value:0.1 vmshell, flag: 1}(_owner_pubkey, _seqNoStart, _stake, _virtualStake, _sumReputationCoef, _sumReputationCoef - value);
         if (value <= _sumReputationCoef) {
             _sumReputationCoef -= value;
         } else {
@@ -193,7 +191,7 @@ contract BlockKeeperEpoch is Modifiers {
         if (_is_full_slashing) { return; }
         _is_touching = true;
         _busy_seqno = block.seqno;
-        BlockKeeperContractRoot(_root).decreaseActiveBlockKeeper{value: 0.1 vmshell, flag: 1}(_owner_pubkey, _sumReputationCoef, _seqNoStart, _stake, _totalStake, _numberOfActiveBlockKeepers, _unixtimeStart, _virtualStake, _reward_sum, uint128(_licenses.length), _reward_adjustment, false);
+        BlockKeeperContractRoot(_root).decreaseActiveBlockKeeper{value: 0.1 vmshell, flag: 1}(_owner_pubkey, _sumReputationCoef, _seqNoStart, _stake, _virtualStake, _reward_sum, _gparam, false);
     }
 
     function cantDelete() public senderIs(_root) accept {  
@@ -211,13 +209,13 @@ contract BlockKeeperEpoch is Modifiers {
         }
     }
 
-    function canDelete(uint256 reward, uint64 epochDuration, uint64 waitStep, uint128 reward_adjustment, uint128 reward_sum) public view senderIs(_root) accept {  
+    function canDelete(uint256 reward, uint64 epochDuration, uint64 waitStep, uint128 reward_sum) public view senderIs(_root) accept {  
         ensureBalance();
         reward;
-        this.destroy{value: 0.1 vmshell, flag: 1}(epochDuration, waitStep, reward_adjustment, reward_sum);
+        this.destroy{value: 0.1 vmshell, flag: 1}(epochDuration, waitStep, reward_sum);
     }
 
-    function destroy(uint64 epochDurationContinue, uint64 waitStepContinue, uint128 reward_adjustment_continue, uint128 reward_sum_continue) public view senderIs(address(this)) accept {   
+    function destroy(uint64 epochDurationContinue, uint64 waitStepContinue, uint128 reward_sum_continue) public view senderIs(address(this)) accept {   
         ensureBalance();
         TvmCell data = BlockKeeperLib.composeBlockKeeperCoolerEpochStateInit(_code[m_BlockKeeperEpochCoolerCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _code[m_BlockKeeperEpochCode], _root, _owner_pubkey, _seqNoStart);
         if (_isContinue){
@@ -231,7 +229,7 @@ contract BlockKeeperEpoch is Modifiers {
             wid: 0, 
             flag: 161,
             bounce: false
-        } (_waitStep, _owner_address, _root, _signerIndex, _licenses, _stake, _isContinue, _stakeContinue, epochDurationContinue, waitStepContinue, _bls_pubkeyContinue, _signerIndexContinue, _licensesContinue, _virtualStakeContinue, reward_sum_continue, _myIp, _unixtimeStart, reward_adjustment_continue, _sumReputationCoefContinue, _slash_type); 
+        } (_waitStep, _owner_address, _root, _signerIndex, _licenses, _stake, _isContinue, _stakeContinue, epochDurationContinue, waitStepContinue, _bls_pubkeyContinue, _signerIndexContinue, _licensesContinue, _virtualStakeContinue, reward_sum_continue, _myIp, _unixtimeStart, _sumReputationCoefContinue, _slash_type); 
     }
 
     function destroy_full_slash() public view senderIs(address(this)) accept {      
@@ -240,7 +238,7 @@ contract BlockKeeperEpoch is Modifiers {
         data_cur[CURRENCIES_ID] = varuint32(_stakeContinue);
         AckiNackiBlockKeeperNodeWallet(_owner_address).slashStake{value: 0.1 vmshell, currencies: data_cur, flag: 1}(_seqNoStart, FULL_STAKE_SLASH, 0, _licenses, _isContinue, _bls_pubkeyContinue, _signerIndexContinue, _licensesContinue);
         BlockKeeperEpochProxyList(BlockKeeperLib.calculateBlockKeeperEpochProxyListAddress(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], _owner_pubkey, _root)).destroy{value: 0.1 vmshell, flag: 1}(_seqNoStart); 
-        BlockKeeperContractRoot(_root).decreaseActiveBlockKeeper{value: 0.1 vmshell, flag: 161, bounce: false}(_owner_pubkey, _sumReputationCoef, _seqNoStart, _stake, _totalStake, _numberOfActiveBlockKeepers, _unixtimeStart, _virtualStake, _reward_sum, uint128(_licenses.length), _reward_adjustment, true);
+        BlockKeeperContractRoot(_root).decreaseActiveBlockKeeper{value: 0.1 vmshell, flag: 161, bounce: false}(_owner_pubkey, _sumReputationCoef, _seqNoStart, _stake, _virtualStake, _reward_sum, _gparam, true);
     }
 
     function part_slash(uint8 slash_type) private {            
@@ -259,7 +257,7 @@ contract BlockKeeperEpoch is Modifiers {
             value -= slash_stake;
             _virtualStake = value;
         }
-        BlockKeeperContractRoot(_root).decreaseStakes{value: 0.1 vmshell, currencies: data, flag: 1}(_owner_pubkey, _seqNoStart, slash_stake);
+        BlockKeeperContractRoot(_root).decreaseStakes{value: 0.1 vmshell, currencies: data, flag: 1}(_owner_pubkey, _seqNoStart, slash_stake, _sumReputationCoef);
         if (_isContinue) {
             _isContinue = false;
             _stakeContinue = 0;

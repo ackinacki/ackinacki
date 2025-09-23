@@ -8,7 +8,8 @@
 			"inputs": [
 				{"name":"pubkey","type":"uint256"},
 				{"name":"walletCode","type":"cell"},
-				{"name":"rootElection","type":"address"}
+				{"name":"rootElection","type":"address"},
+				{"name":"isPrivileged","type":"bool"}
 			],
 			"outputs": [
 			]
@@ -89,7 +90,6 @@
 		{
 			"name": "toWithdrawToken",
 			"inputs": [
-				{"name":"to","type":"address"},
 				{"name":"value","type":"uint128"}
 			],
 			"outputs": [

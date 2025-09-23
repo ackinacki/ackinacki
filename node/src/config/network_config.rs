@@ -154,6 +154,12 @@ pub struct NetworkConfig {
     /// Chitchat cluster id for gossip
     #[serde(default = "default_chitchat_cluster_id")]
     pub chitchat_cluster_id: String,
+
+    /// Number of max nodes in gossip with the same id
+    /// Defaults to 5
+    #[builder(default = 5)]
+    #[serde(default = "default_max_nodes_with_same_id")]
+    pub max_nodes_with_same_id: u8,
 }
 
 fn default_bind() -> SocketAddr {
@@ -182,6 +188,10 @@ fn default_shared_state_max_download_tries() -> u8 {
 
 fn default_chitchat_cluster_id() -> String {
     "acki_nacki".to_string()
+}
+
+fn default_max_nodes_with_same_id() -> u8 {
+    5
 }
 
 impl NetworkConfig {

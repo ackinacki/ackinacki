@@ -8,7 +8,7 @@
 {%- endif -%}
 
 services:
-  aerospike:
+  aerospike{{ NODE_ID if (NUMBERED_SERVICES | default(true)) else "" }}:
     image: {{ AEROSPIKE_IMAGE }}
     volumes:
       - {{ BK_DIR }}/aerospike-config:/opt/aerospike/etc
@@ -21,6 +21,7 @@ services:
       retries: 10
       start_period: 10s
     restart: unless-stopped
+    stop_grace_period: 300s
     ports:
       - 127.0.0.1:{{ AEROSPIKE_PORT }}:{{ AEROSPIKE_PORT }}
     networks:
@@ -80,7 +81,7 @@ services:
         node-helper config
         -c acki-nacki.conf.yaml -d
         --blockchain-config=/bk-configs/blockchain.conf.json
-        --network-my-ed-key-path=/bk-configs/{{ NODE_OWNER_KEY | basename }}
+        --network-my-ed-key-path=/bk-configs/{{ NODE_OWNER_KEY | mandatory | basename }}
         --keys-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
         --block-keeper-seed-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
         --signing-keys=/bk-configs/{{ NODE_OWNER_KEY | basename }}
@@ -100,7 +101,7 @@ services:
 {% endif %}
 {% include 'extra/block-keeper-cmd.j2' ignore missing %}
         && cat acki-nacki.conf.yaml
-        && {% if NUMACTL %} numactl {{ NUMACTL }} -- {% endif %}
+        && exec {% if NUMACTL %} numactl {{ NUMACTL }} -- {% endif %}
         {{ NODE_BINARY | default('node') }} -c acki-nacki.conf.yaml >> /logsdir/node.log 2>&1
     volumes:
       - {{ BK_DATA_DIR }}/share:/share
@@ -109,8 +110,9 @@ services:
       - {{ BK_DIR }}/bk-binaries:/workdir/config
       - {{ BK_LOGS_DIR }}:/logsdir
     network_mode: "host"
+    stop_grace_period: 60s
     depends_on:
-      aerospike:
+      aerospike{{ NODE_ID if (NUMBERED_SERVICES | default(true)) else "" }}:
         condition: service_healthy
 
 {% if DISABLE_STAKING is not defined or not DISABLE_STAKING %}

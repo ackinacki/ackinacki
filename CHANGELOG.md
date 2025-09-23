@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.7] - 2025-09-23
+
+### New
+- Ability to run several instances with the same NodeID (for upgrade purpose)
+
+### Improvements
+- MV system updates
+- Staking updates
+
+### Fixed
+- BK signal handling
+- Sync fixes
+- Graceful shutdown fixes
+
+
 ## [0.7.6] - 2025-09-18
 
 ### New

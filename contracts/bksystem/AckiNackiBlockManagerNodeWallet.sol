@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * GOSH contracts
- *
- * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
- */
+ * Copyright (c) GOSH Technology Ltd. All rights reserved.
+ * 
+ * Acki Nacki and GOSH are either registered trademarks or trademarks of GOSH
+ * 
+ * Licensed under the ANNL. See License.txt in the project root for license information.
+*/
 pragma gosh-solidity >=0.76.1;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
@@ -32,7 +33,7 @@ contract AckiNackiBlockManagerNodeWallet is Modifiers {
     uint64 _waitStep;
     uint32 _rewarded;
     uint32 _epochStart;
-    uint32 _epochEnd;
+    uint64 _epochEnd;
     uint64 _walletLastTouch;
     bool _isSlashing = false;
     uint32 _tryReward;
@@ -121,7 +122,13 @@ contract AckiNackiBlockManagerNodeWallet is Modifiers {
         if (_tryReward + MANAGER_REWARD_WAIT > block.seqno) {
             return;
         }
-        if (block.timestamp < _epochEnd) {
+        if (_start_bm.hasValue() == false) {
+            if (_tryReward == 0) {
+                finalSlash();
+            }
+            return;
+        }
+        if (block.seqno < _epochEnd) {
             finalSlash();
             return;
         }
@@ -146,7 +153,7 @@ contract AckiNackiBlockManagerNodeWallet is Modifiers {
         data_cur[CURRENCIES_ID] = varuint32(slash_value);
         _slashSum += slash_value;
         _isSlashing = false;
-        BlockManagerContractRoot(_root).slashed{value: 0.1 vmshell, currencies: data_cur, flag: 1}(_owner_pubkey);
+        BlockManagerContractRoot(_root).slashed{value: 0.1 vmshell, currencies: data_cur, flag: 1}(_owner_pubkey, _start_bm.hasValue());
     }
 
     function withdrawToken(address to, varuint32 value) public view senderIs(BlockKeeperLib.calculateLicenseBMAddress(_code[m_LicenseBMCode], _license_num.get(), _licenseBMRoot)) accept {
@@ -180,7 +187,7 @@ contract AckiNackiBlockManagerNodeWallet is Modifiers {
         require(_license_num.hasValue(), ERR_LICENSE_NOT_EXIST);
         require(_start_bm.hasValue(), ERR_ALREADY_CONFIRMED);
         if (_epochEnd != 0) {        
-            require(block.timestamp > _epochEnd, ERR_ALREADY_REWARDED);
+            require(block.seqno > _epochEnd, ERR_ALREADY_REWARDED);
         }
         require(block.seqno > _walletLastTouch + _walletTouch, ERR_WALLET_BUSY);
         _walletLastTouch = block.seqno;
@@ -189,7 +196,7 @@ contract AckiNackiBlockManagerNodeWallet is Modifiers {
         BlockManagerContractRoot(_root).getReward{value: 0.1 vmshell, flag: 1}(_owner_pubkey, _signing_pubkey, address(this), _rewarded, _start_bm.get(), false);
     }
 
-    function takeReward(uint8 walletTouch, uint64 waitStep, uint32 epochStart, uint32 epochEnd) public senderIs(_root) accept {
+    function takeReward(uint8 walletTouch, uint64 waitStep, uint32 epochStart, uint64 epochEnd) public senderIs(_root) accept {
         ensureBalance();
         _walletTouch = walletTouch;
         _waitStep = waitStep;

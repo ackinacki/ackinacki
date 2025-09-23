@@ -57,7 +57,7 @@ use crate::utilities::guarded::GuardedMut;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
 use crate::utilities::FixedSizeHashSet;
 
-const MAX_ATTESTATION_TARGET_BETA: usize = 30;
+pub const MAX_ATTESTATION_TARGET_BETA: usize = 30;
 // const ALLOWED_BLOCK_PRODUCTION_TIME_LAG_MS: u64 = 50;
 
 use network::channel::NetBroadcastSender;
@@ -65,6 +65,7 @@ use network::channel::NetDirectSender;
 use telemetry_utils::mpsc::InstrumentedSender;
 use telemetry_utils::now_ms;
 
+use crate::helper::start_shutdown;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::services::sync::ExternalFileSharesBased;
 use crate::node::services::sync::StateSyncService;
@@ -527,7 +528,7 @@ fn process_candidate_block(
                         })?;
                     }
                 } else {
-                    SHUTDOWN_FLAG.set(true).expect("");
+                    start_shutdown();
                     tracing::error!("Node does not have valid key which was used to deploy epoch: pubkey={pubkey:?}");
                 }
             }

@@ -14,6 +14,33 @@
 			]
 		},
 		{
+			"name": "setNewCode",
+			"inputs": [
+				{"name":"id","type":"uint8"},
+				{"name":"code","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setNewOwner",
+			"inputs": [
+				{"name":"owner","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "addValuePopit",
+			"inputs": [
+				{"name":"name","type":"string"},
+				{"name":"id","type":"uint256"},
+				{"name":"value","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "popCoinRootDeployed",
 			"inputs": [
 				{"name":"name","type":"string"}
@@ -30,29 +57,6 @@
 			]
 		},
 		{
-			"name": "updateGameCodeForWallet",
-			"inputs": [
-				{"name":"name","type":"string"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "updateGameCode",
-			"inputs": [
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "setGameCode",
-			"inputs": [
-				{"name":"GameCode","type":"cell"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "setMbiCur",
 			"inputs": [
 				{"name":"mbiCur","type":"uint64"}
@@ -61,26 +65,19 @@
 			]
 		},
 		{
-			"name": "deployGame",
-			"inputs": [
-				{"name":"name","type":"string"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "deployPopCoinWallet",
 			"inputs": [
 				{"name":"name","type":"string"},
-				{"name":"value","type":"uint128"}
+				{"name":"value","type":"uint64"}
 			],
 			"outputs": [
 			]
 		},
 		{
-			"name": "gameDestroyed",
+			"name": "deployPopCoinWalletOldTransfer",
 			"inputs": [
-				{"name":"name","type":"string"}
+				{"name":"name","type":"string"},
+				{"name":"value","type":"uint64"}
 			],
 			"outputs": [
 			]
@@ -90,6 +87,15 @@
 			"inputs": [
 				{"name":"value","type":"uint128"},
 				{"name":"to","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"},
+				{"name":"cell","type":"cell"}
 			],
 			"outputs": [
 			]
@@ -156,8 +162,6 @@
 		{"init":false,"name":"_startTime","type":"uint32"},
 		{"init":false,"name":"_root_pubkey","type":"uint256"},
 		{"init":false,"name":"_boost","type":"address"},
-		{"init":false,"name":"_rewards","type":"uint128"},
-		{"init":false,"name":"_locked","type":"uint128"},
-		{"init":false,"name":"_countPlay","type":"uint128"}
+		{"init":false,"name":"_rewards","type":"uint128"}
 	]
 }

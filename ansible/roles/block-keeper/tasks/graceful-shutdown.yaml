@@ -1,0 +1,23 @@
+---
+
+- name: Send graceful shutdown request
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}"
+    cmd: docker compose exec "node{{ NODE_ID }}" pkill node
+  ignore_errors: true
+
+- name: Wait for container to stop or shutdown to finish
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}"
+    cmd: |
+      (docker compose ps "node{{ NODE_ID }}" -q | wc -l | grep -q "0") || (tail -n "{{ NODE_STOP_TEST_OUTER_TAIL }}" "{{ BK_LOGS_DIR }}/node.log" | grep -v -e TRACE -e pub_sub | tail -n "{{ NODE_STOP_TEST_INNER_TAIL }}" | grep -q "monit: Shutdown finished")
+  register: container_check
+  until: container_check is success
+  retries: "{{ GS_WAIT | default(WAIT_FOR_NODE_STOP_SECS) }}"
+  delay: 1
+  when: GS_WAIT is not defined or GS_WAIT
+
+- name: Stop node container if the process still lingering
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}"
+    cmd: docker compose stop "node{{ NODE_ID }}" -t 5

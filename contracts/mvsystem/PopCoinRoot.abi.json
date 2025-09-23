@@ -20,6 +20,15 @@
 			]
 		},
 		{
+			"name": "setNewCode",
+			"inputs": [
+				{"name":"id","type":"uint8"},
+				{"name":"code","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "setIsPublic",
 			"inputs": [
 				{"name":"isPublic","type":"bool"}
@@ -96,10 +105,18 @@
 			]
 		},
 		{
+			"name": "destroyUpgrade",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "mintValue",
 			"inputs": [
 				{"name":"owner","type":"address"},
-				{"name":"value","type":"uint128"}
+				{"name":"value","type":"uint64"},
+				{"name":"mbiCur","type":"uint64"}
 			],
 			"outputs": [
 			]
@@ -109,7 +126,8 @@
 			"inputs": [
 				{"name":"owner","type":"address"},
 				{"name":"dataId","type":"uint256"},
-				{"name":"dataValue","type":"uint128"}
+				{"name":"dataValue","type":"uint64"},
+				{"name":"mbiCur","type":"uint64"}
 			],
 			"outputs": [
 			]
@@ -118,7 +136,7 @@
 			"name": "mintValueOld",
 			"inputs": [
 				{"name":"owner","type":"address"},
-				{"name":"value","type":"uint128"}
+				{"name":"value","type":"uint64"}
 			],
 			"outputs": [
 			]
@@ -127,8 +145,9 @@
 			"name": "isReady",
 			"inputs": [
 				{"name":"owner","type":"address"},
-				{"name":"value","type":"uint128"},
-				{"name":"popitGameAddress","type":"address"}
+				{"name":"value","type":"uint64"},
+				{"name":"popitGameAddress","type":"address"},
+				{"name":"mbi","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -140,7 +159,17 @@
 				{"name":"indexRoot","type":"uint16"},
 				{"name":"candidateId","type":"uint256"},
 				{"name":"candidateValue","type":"uint128"},
-				{"name":"popitGameAddress","type":"address"}
+				{"name":"popitGameAddress","type":"address"},
+				{"name":"mbi","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"},
+				{"name":"cell","type":"cell"}
 			],
 			"outputs": [
 			]
@@ -154,10 +183,10 @@
 				{"name":"name","type":"string"},
 				{"name":"totalSupply","type":"uint128"},
 				{"name":"maxPopitIndex","type":"uint16"},
-				{"components":[{"name":"rewards","type":"uint128"},{"name":"value","type":"uint128"},{"name":"leftValue","type":"uint128"}],"name":"popits_value","type":"map(uint16,tuple)"},
+				{"components":[{"name":"rewards","type":"uint128"},{"name":"value","type":"uint64"},{"name":"leftTaps","type":"uint128"},{"name":"leftRewards","type":"uint128"},{"name":"MBNLst","type":"uint64[]"},{"name":"TAPLst","type":"uint64[]"},{"name":"BCLst","type":"uint64[]"}],"name":"popits_value","type":"map(uint16,tuple)"},
 				{"components":[{"name":"media","type":"string"},{"name":"id","type":"uint256"},{"name":"protopopit","type":"optional(uint32)"}],"name":"popits_media","type":"map(uint16,tuple)"},
 				{"name":"rewards","type":"uint128"},
-				{"components":[{"name":"value","type":"uint128"},{"name":"media","type":"string"},{"name":"protopopit","type":"optional(uint32)"},{"name":"time","type":"uint32"}],"name":"popits_candidate","type":"map(uint256,tuple)"},
+				{"components":[{"name":"value","type":"uint64"},{"name":"media","type":"string"},{"name":"protopopit","type":"optional(uint32)"},{"name":"time","type":"uint32"},{"name":"MBNLst","type":"uint64[]"},{"name":"TAPLst","type":"uint64[]"},{"name":"BCLst","type":"uint64[]"}],"name":"popits_candidate","type":"map(uint256,tuple)"},
 				{"name":"isReadyStatus","type":"bool"},
 				{"name":"popitGameOwner","type":"address"},
 				{"name":"description","type":"string"}
@@ -187,13 +216,16 @@
 		{"init":false,"name":"_isPublic","type":"bool"},
 		{"init":false,"name":"_totalSupply","type":"uint128"},
 		{"init":false,"name":"_maxPopitIndex","type":"uint16"},
-		{"components":[{"name":"rewards","type":"uint128"},{"name":"value","type":"uint128"},{"name":"leftValue","type":"uint128"}],"init":false,"name":"_popits_value","type":"map(uint16,tuple)"},
+		{"components":[{"name":"rewards","type":"uint128"},{"name":"value","type":"uint64"},{"name":"leftTaps","type":"uint128"},{"name":"leftRewards","type":"uint128"},{"name":"MBNLst","type":"uint64[]"},{"name":"TAPLst","type":"uint64[]"},{"name":"BCLst","type":"uint64[]"}],"init":false,"name":"_popits_value","type":"map(uint16,tuple)"},
 		{"components":[{"name":"media","type":"string"},{"name":"id","type":"uint256"},{"name":"protopopit","type":"optional(uint32)"}],"init":false,"name":"_popits_media","type":"map(uint16,tuple)"},
-		{"components":[{"name":"value","type":"uint128"},{"name":"media","type":"string"},{"name":"protopopit","type":"optional(uint32)"},{"name":"time","type":"uint32"}],"init":false,"name":"_popits_candidate","type":"map(uint256,tuple)"},
+		{"components":[{"name":"value","type":"uint64"},{"name":"media","type":"string"},{"name":"protopopit","type":"optional(uint32)"},{"name":"time","type":"uint32"},{"name":"MBNLst","type":"uint64[]"},{"name":"TAPLst","type":"uint64[]"},{"name":"BCLst","type":"uint64[]"}],"init":false,"name":"_popits_candidate","type":"map(uint256,tuple)"},
 		{"init":false,"name":"_root_pubkey","type":"uint256"},
 		{"init":false,"name":"_description","type":"string"},
 		{"init":false,"name":"_rewards","type":"uint128"},
-		{"init":false,"name":"_basicValue","type":"uint128"},
-		{"init":false,"name":"_popitGameOwner","type":"address"}
+		{"init":false,"name":"_basicRewards","type":"uint128"},
+		{"init":false,"name":"_popitGameOwner","type":"address"},
+		{"init":false,"name":"_MBNLst","type":"uint64[]"},
+		{"init":false,"name":"_TAPLst","type":"uint64[]"},
+		{"init":false,"name":"_BCLst","type":"uint64[]"}
 	]
 }

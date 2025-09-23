@@ -14,13 +14,13 @@ use crate::node::NodeIdentifier;
 use crate::repository::repository_impl::RepositoryImpl;
 
 pub struct BPResolverImpl {
-    peers_rx: tokio::sync::watch::Receiver<HashMap<NodeIdentifier, PeerData>>,
+    peers_rx: tokio::sync::watch::Receiver<HashMap<NodeIdentifier, Vec<PeerData>>>,
     repository: Arc<Mutex<RepositoryImpl>>,
 }
 
 impl BPResolverImpl {
     pub fn new(
-        peers_rx: tokio::sync::watch::Receiver<HashMap<NodeIdentifier, PeerData>>,
+        peers_rx: tokio::sync::watch::Receiver<HashMap<NodeIdentifier, Vec<PeerData>>>,
         repository: Arc<Mutex<RepositoryImpl>>,
     ) -> Self {
         Self { peers_rx, repository }
@@ -43,10 +43,12 @@ impl BPResolver for BPResolverImpl {
             .into_iter()
             .filter_map(|(thread, bp_id)| {
                 if target_thread.as_ref().is_none_or(|t| &thread == t) {
-                    bp_id.and_then(|bp_node_id| peers.get(&bp_node_id)).map(|peer_data| {
-                        let mut addr = peer_data.peer_addr;
-                        addr.set_port(DEFAULT_NODE_URL_PORT);
-                        addr
+                    bp_id.and_then(|bp_node_id| peers.get(&bp_node_id)).and_then(|peers| {
+                        peers.first().map(|peer_data| {
+                            let mut addr = peer_data.peer_addr;
+                            addr.set_port(DEFAULT_NODE_URL_PORT);
+                            addr
+                        })
                     })
                 } else {
                     None

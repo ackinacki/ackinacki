@@ -50,15 +50,8 @@
   ansible.builtin.set_fact:
     HAS_BK_SET_FILE: true
 
-- name: Node graceful shutdown step 1
-  ansible.builtin.shell:
-    chdir: "{{ BK_DIR }}"
-    cmd: docker compose exec "node{{ NODE_ID }}" pkill node
-
-- name: Node graceful shutdown step 2
-  ansible.builtin.shell:
-    chdir: "{{ BK_DIR }}"
-    cmd: docker compose stop "node{{ NODE_ID }}" -t {{ STOP_TIMEOUT }}
+- name: Node graceful shutdown
+  include_tasks: graceful-shutdown.yaml
 
 - name: Production compose
   ansible.builtin.template:

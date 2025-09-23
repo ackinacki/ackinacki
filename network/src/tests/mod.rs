@@ -123,7 +123,10 @@ impl<Transport: NetTransport + 'static> Proxy<Transport> {
         tokio::spawn(Self::message_multiplexor(incoming_messages_rx, outgoing_messages_tx.clone()));
 
         let (watch_gossip_config_tx, watch_gossip_config_rx) =
-            tokio::sync::watch::channel(WatchGossipConfig { trusted_pubkeys: HashSet::new() });
+            tokio::sync::watch::channel(WatchGossipConfig {
+                max_nodes_with_same_id: 5,
+                trusted_pubkeys: HashSet::new(),
+            });
         let (subscribe_tx, subscribe_rx) = tokio::sync::watch::channel(Vec::new());
         let (peers_tx, _) = tokio::sync::watch::channel(HashMap::new());
         tokio::spawn(watch_gossip(
@@ -307,7 +310,7 @@ pub struct NodeChannels {
     pub(crate) direct_tx: NetDirectSender<String, Message>,
     pub(crate) broadcast_tx: NetBroadcastSender<Message>,
     pub(crate) incoming_rx: InstrumentedReceiver<IncomingMessage>,
-    pub(crate) peers_rx: tokio::sync::watch::Receiver<HashMap<String, PeerData>>,
+    pub(crate) peers_rx: tokio::sync::watch::Receiver<HashMap<String, Vec<PeerData>>>,
 }
 
 impl<Transport: NetTransport + 'static> Drop for Node<Transport> {
@@ -329,7 +332,10 @@ impl<Transport: NetTransport + 'static> Node<Transport> {
         let (gossip_config_tx, _gossip_config_rx) =
             tokio::sync::watch::channel(config.gossip.clone());
         let (watch_gossip_config_tx, watch_gossip_config_rx) =
-            tokio::sync::watch::channel(WatchGossipConfig { trusted_pubkeys: HashSet::new() });
+            tokio::sync::watch::channel(WatchGossipConfig {
+                max_nodes_with_same_id: 5,
+                trusted_pubkeys: HashSet::new(),
+            });
         tokio::spawn(split_config(
             shutdown_rx.clone(),
             config_rx,

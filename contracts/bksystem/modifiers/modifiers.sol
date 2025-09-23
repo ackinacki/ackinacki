@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * GOSH contracts
- *
- * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
- */
+ * Copyright (c) GOSH Technology Ltd. All rights reserved.
+ * 
+ * Acki Nacki and GOSH are either registered trademarks or trademarks of GOSH
+ * 
+ * Licensed under the ANNL. See License.txt in the project root for license information.
+*/
 pragma gosh-solidity >=0.76.1;
 
 import "./errors.sol";
@@ -47,6 +48,9 @@ abstract contract Modifiers is Errors {
     uint8 constant MAX_LICENSE_NUMBER_WHITELIST_BK = 20;
     uint8 constant MAX_LICENSE_NUMBER_WHITELIST_BM = 5;
     uint128 constant MIN_REP_COEF = 1000000000 * uint128(MAX_LICENSE_NUMBER);
+    uint128 constant BK_TOTAL_SUPPLY = 10400000000000000000;
+    uint128 constant SCALEparam = 1000000000000000000000000000000;
+    uint128 constant CLOSE_EPOCH_NUMBER = 11;
 
     uint8 constant PRE_EPOCH_DEPLOYED = 0;
     uint8 constant EPOCH_DEPLOYED = 1;
@@ -75,7 +79,8 @@ abstract contract Modifiers is Errors {
     uint8 constant PRE_EPOCH_DESTRUCT_MULT = 19;
     uint8 constant CONFIG_CLIFF_DENOMINATOR = 10;
     uint8 constant CONFIG_WAIT_DENOMINATOR = 20;
-    uint8 constant BLOCKS_PER_SECOND = 3;
+    uint128 constant BLOCKS_PER_SECOND = 3030303;
+    uint128 constant BLOCKS_PER_SECOND_DENOMINATOR = 1000000;
 
     uint8 constant MANAGER_REWARD_WAIT = 10;
 

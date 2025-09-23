@@ -141,6 +141,7 @@
 		{
 			"name": "stakeNotAccepted",
 			"inputs": [
+				{"name":"epochDuration","type":"uint64"}
 			],
 			"outputs": [
 			]
@@ -148,6 +149,7 @@
 		{
 			"name": "stakeNotAcceptedContinue",
 			"inputs": [
+				{"name":"epochDuration","type":"uint64"}
 			],
 			"outputs": [
 			]
@@ -215,8 +217,7 @@
 				{"name":"virtualStake","type":"optional(uint128)"},
 				{"name":"ProxyList","type":"map(uint8,string)"},
 				{"name":"reward_sum","type":"uint128"},
-				{"name":"myIp","type":"string"},
-				{"name":"reward_adjustment","type":"uint128"}
+				{"name":"myIp","type":"string"}
 			],
 			"outputs": [
 			]
@@ -267,7 +268,6 @@
 				{"name":"virtualStake","type":"optional(uint128)"},
 				{"name":"reward_sum","type":"uint128"},
 				{"name":"myIp","type":"string"},
-				{"name":"reward_adjustment","type":"uint128"},
 				{"name":"reputationCoef","type":"uint128"},
 				{"name":"delta_time","type":"uint128"}
 			],
@@ -327,7 +327,6 @@
 			"name": "withdrawToken",
 			"inputs": [
 				{"name":"license_number","type":"uint256"},
-				{"name":"to","type":"address"},
 				{"name":"value","type":"varuint32"}
 			],
 			"outputs": [

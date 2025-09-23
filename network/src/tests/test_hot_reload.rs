@@ -20,7 +20,7 @@ pub struct HotReloadNode {
     _node: Node<MsQuicTransport>,
     _direct_tx: NetDirectSender<String, Message>,
     broadcast_tx: NetBroadcastSender<Message>,
-    _peers_rx: tokio::sync::watch::Receiver<HashMap<String, PeerData>>,
+    _peers_rx: tokio::sync::watch::Receiver<HashMap<String, Vec<PeerData>>>,
     received_messages: Arc<std::sync::Mutex<Vec<Message>>>,
     _receiver_task: std::thread::JoinHandle<()>,
 }

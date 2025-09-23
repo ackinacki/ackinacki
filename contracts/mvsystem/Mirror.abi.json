@@ -14,6 +14,15 @@
 			]
 		},
 		{
+			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"},
+				{"name":"cell","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "setNewIndex",
 			"inputs": [
 				{"name":"index","type":"uint128"}

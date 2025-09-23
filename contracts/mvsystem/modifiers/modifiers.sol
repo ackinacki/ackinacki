@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * GOSH contracts
- *
- * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
- */
+ * Copyright (c) GOSH Technology Ltd. All rights reserved.
+ * 
+ * Acki Nacki and GOSH are either registered trademarks or trademarks of GOSH
+ * 
+ * Licensed under the ANNL. See License.txt in the project root for license information.
+*/
 pragma gosh-solidity >=0.76.1;
 
 import "./structs/structs.sol";
@@ -15,7 +16,6 @@ abstract contract Modifiers is Errors {
     //TvmCell constants
     uint8 constant m_PopitGame = 1;
     uint8 constant m_PopCoinWallet = 2;
-    uint8 constant m_Game = 3;
     uint8 constant m_PopCoinRoot = 4;
     uint8 constant m_MvMultifactor = 5;
     uint8 constant m_Indexer = 6;
@@ -24,7 +24,6 @@ abstract contract Modifiers is Errors {
     //Deploy constants
     uint64 constant FEE_DEPLOY_POPIT_GAME_WALLET = 51 vmshell;
     uint64 constant FEE_DEPLOY_POP_COIN_WALLET = 12 vmshell;
-    uint64 constant FEE_DEPLOY_GAME = 13 vmshell;
     uint64 constant FEE_DEPLOY_POP_COIN_ROOT = 14 vmshell;
     uint64 constant FEE_DEPLOY_MULTIFACTOR = 15 vmshell;
     uint64 constant FEE_DEPLOY_INDEXER = 16 vmshell;
@@ -111,21 +110,5 @@ abstract contract Modifiers is Errors {
     modifier minBalance(uint128 val) {
         require(address(this).balance > val + 1 vmshell, ERR_LOW_BALANCE);
         _;
-    }
-
-    function checkName(string name) internal pure returns(bool) {
-        bytes bStr = bytes(name);
-        if (bStr.length == 0) { return false; }
-        if (bStr.length > 39) { return false; }
-        for (uint i = 0; i < bStr.length; i++) {
-            if ((uint8(bStr[i]) >= 97) && (uint8(bStr[i]) <= 122)) { continue; }
-            if ((uint8(bStr[i]) >= 48) && (uint8(bStr[i]) <= 57)) { continue; }
-            if (i != 0) {
-            	if ((uint8(bStr[i]) == 95) && (uint8(bStr[i - 1]) != 95)) { continue; }
-            	if ((uint8(bStr[i]) == 45) && (uint8(bStr[i - 1]) != 45)) {  continue; }
-            }
-            return false;
-        }
-        return true;
     }
 }

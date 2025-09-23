@@ -18,6 +18,21 @@
     dest: "{{ PROXY_CERTS_DIR }}"
     src: "{{ item }}"
   with_list: "{{ PROXY_SIGNING_KEYS | mandatory(msg='Proxy signing key variable is required') }}"
+  when: GENERATE_CERT
+
+- name: Check that proxy certificate exists
+  ansible.builtin.stat:
+    path: "{{ PROXY_CERTS_DIR }}/proxy.ca.pem"
+  when: not GENERATE_CERT
+  register: proxy_ca_exists
+  failed_when: not proxy_ca_exists.stat.exists
+
+- name: Check that proxy key exists
+  ansible.builtin.stat:
+    path: "{{ PROXY_CERTS_DIR }}/proxy.key.pem"
+  when: not GENERATE_CERT
+  register: proxy_key_exists
+  failed_when: not proxy_key_exists.stat.exists
 
 - name: Production compose
   ansible.builtin.template:
@@ -43,6 +58,34 @@
     chdir: "{{ PROXY_DIR }}"
     cmd: docker compose pull
 
+- name: Make sure proxy is stopped
+  ansible.builtin.shell:
+    chdir: "{{ PROXY_DIR }}"
+    cmd: docker compose down -v
+  when: GENERATE_CERT
+
+- name: Check if proxy certificate exists for backup
+  ansible.builtin.stat:
+    path: "{{ PROXY_CERTS_DIR }}/proxy.ca.pem"
+  register: proxy_ca_backup
+  when: GENERATE_CERT
+
+- name: Backup existing proxy certificate
+  ansible.builtin.command:
+    cmd: mv "{{ PROXY_CERTS_DIR }}/proxy.ca.pem" "{{ PROXY_CERTS_DIR }}/proxy.ca.pem.old"
+  when: GENERATE_CERT and proxy_ca_backup.stat.exists
+
+- name: Check if proxy key exists for backup
+  ansible.builtin.stat:
+    path: "{{ PROXY_CERTS_DIR }}/proxy.key.pem"
+  register: proxy_key_backup
+  when: GENERATE_CERT
+
+- name: Backup existing proxy key
+  ansible.builtin.command:
+    cmd: mv "{{ PROXY_CERTS_DIR }}/proxy.key.pem" "{{ PROXY_CERTS_DIR }}/proxy.key.pem.old"
+  when: GENERATE_CERT and proxy_key_backup.stat.exists
+
 - name: Compose up
   ansible.builtin.shell:
     chdir: "{{ PROXY_DIR }}"
@@ -55,28 +98,42 @@
   when:
     - logrotate.changed
 
+# Do these steps always to make sure that the proxy keys generated successfully
+
 - name: Wait for proxy certificate to be available
   ansible.builtin.wait_for:
     path: "{{ PROXY_CERTS_DIR }}/proxy.ca.pem"
     timeout: 300
-  when: CLEANUP_KEYS
+  when: GENERATE_CERT
 
 - name: Wait for proxy key to be available
   ansible.builtin.wait_for:
     path: "{{ PROXY_CERTS_DIR }}/proxy.key.pem"
     timeout: 300
-  when: CLEANUP_KEYS
+  when: GENERATE_CERT
+
+- name: Remove existing proxy certificate backup
+  ansible.builtin.file:
+    path: "{{ PROXY_CERTS_DIR }}/proxy.ca.pem.old"
+    state: absent
+  when: GENERATE_CERT
+
+- name: Remove existing proxy key backup
+  ansible.builtin.file:
+    path: "{{ PROXY_CERTS_DIR }}/proxy.key.pem.old"
+    state: absent
+  when: GENERATE_CERT
 
 - name: Securely shred Block Keeper keys before removal
   ansible.builtin.command:
     cmd: "shred -u '{{ PROXY_CERTS_DIR }}/{{ item | basename }}'"
   with_list: "{{ PROXY_SIGNING_KEYS }}"
   ignore_errors: yes
-  when: CLEANUP_KEYS
+  when: CLEANUP_BK_KEYS and GENERATE_CERT
 
 - name: Remove Block Keeper keys after deployment
   ansible.builtin.file:
     dest: "{{ PROXY_CERTS_DIR }}/{{ item | basename }}"
     state: absent
   with_list: "{{ PROXY_SIGNING_KEYS }}"
-  when: CLEANUP_KEYS
+  when: CLEANUP_BK_KEYS and GENERATE_CERT

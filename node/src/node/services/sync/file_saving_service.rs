@@ -73,6 +73,9 @@ impl FileSavingService {
                     Some(block_height),
                     Some(prefinalization_proof),
                     Some(future_bk_set),
+                    Some(descendant_bk_set),
+                    Some(descendant_future_bk_set),
+                    Some(ancestor_blocks_finalization_checkpoints),
                 ) = block_state.guarded(|e| {
                     (
                         e.bk_set().clone(),
@@ -82,10 +85,13 @@ impl FileSavingService {
                         *e.block_height(),
                         e.prefinalization_proof().clone(),
                         e.future_bk_set().clone(),
+                        e.descendant_bk_set().clone(),
+                        e.descendant_future_bk_set().clone(),
+                        e.ancestor_blocks_finalization_checkpoints().clone(),
                     )
                 })
                 else {
-                    anyhow::bail!("Failed to get block data");
+                    anyhow::bail!("Failed to get block data for sync");
                 };
 
                 let shared_thread_state = ThreadSnapshot::builder()
@@ -100,6 +106,11 @@ impl FileSavingService {
                     .producer_selector(producer_selector)
                     .block_height(block_height)
                     .prefinalization_proof(prefinalization_proof)
+                    .descendant_bk_set(descendant_bk_set.deref().clone())
+                    .descendant_future_bk_set(descendant_future_bk_set.deref().clone())
+                    .ancestor_blocks_finalization_checkpoints(
+                        ancestor_blocks_finalization_checkpoints,
+                    )
                     .build();
 
                 let bytes = bincode::serialize(&shared_thread_state)?;

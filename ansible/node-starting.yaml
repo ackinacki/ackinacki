@@ -1,9 +1,10 @@
-- name: Block keeper deployment
+- name: Block keeper starting
   hosts: '{{ target | default("block_keepers") }}'
   gather_facts: no
   become: yes
   vars:
     DELETE_DATA: no
     DO_START: yes
+    FAST_UPDATE: yes
   roles:
     - block-keeper

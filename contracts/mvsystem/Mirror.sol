@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * GOSH contracts
- *
- * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
- */
+ * Copyright (c) GOSH Technology Ltd. All rights reserved.
+ * 
+ * Acki Nacki and GOSH are either registered trademarks or trademarks of GOSH
+ * 
+ * Licensed under the ANNL. See License.txt in the project root for license information.
+*/
 pragma gosh-solidity >=0.76.1;
 pragma ignoreIntOverflow;
 pragma AbiHeader expire;
@@ -30,9 +31,21 @@ contract Mirror is Modifiers {
         uint128 index,
         uint256 rootPubkey
     ) {
+        require(index >= 0, ERR_WRONG_DATA);
+        require(index < MAX_MIRROR_INDEX, ERR_WRONG_DATA);
         _root = root;
         _index = index;
         _rootPubkey = rootPubkey;
+    }
+
+    function updateCode(TvmCell newcode, TvmCell cell) public view onlyOwnerPubkey(_rootPubkey) accept  {
+        ensureBalance();
+        tvm.setcode(newcode);
+        tvm.setCurrentCode(newcode);
+        onCodeUpgrade(cell);
+    }
+
+    function onCodeUpgrade(TvmCell cell) private pure {
     }
 
     function ensureBalance() private pure {
@@ -58,7 +71,6 @@ contract Mirror is Modifiers {
         mapping(uint8 => TvmCell) code;
         code[m_PopCoinRoot] = _code[m_PopCoinRoot];
         code[m_PopitGame] = _code[m_PopitGame];
-        code[m_Game] = _code[m_Game];
         code[m_PopCoinWallet] = _code[m_PopCoinWallet];
         code[m_Boost] = _code[m_Boost];
         new PopitGame {stateInit: data, value: varuint16(FEE_DEPLOY_POPIT_GAME_WALLET), wid: 0, flag: 1}(code, _rootPubkey, _index);
@@ -84,7 +96,7 @@ contract Mirror is Modifiers {
         ensureBalance();
         (, uint256 modulus) = math.divmod(owner_pubkey, MAX_MIRROR_INDEX);
         require(modulus == _index, ERR_WRONG_MIRROR_INDEX);
-        require(checkName(name), ERR_WRONG_NAME);
+        require(VerifiersLib.checkName(name), ERR_WRONG_NAME);
         require(owner_pubkey != 0 && pub_recovery_key != 0 && epk != 0, ERR_ZERO_PUBKEY);
         require(pub_recovery_key != owner_pubkey && pub_recovery_key != epk && owner_pubkey != epk, ERR_REPEATING_KEY);
         require(tvm.checkSign(pub_recovery_key, TvmSlice(pub_recovery_key_sig), pub_recovery_key), ERR_INVALID_SIGNATURE);
@@ -138,7 +150,7 @@ contract Mirror is Modifiers {
         ensureBalance();
         if (!ready) { return; }
         TvmCell data = VerifiersLib.composeMultifactorStateInit(_code[m_MvMultifactor], owner_pubkey, _root);
-        new Multifactor {stateInit: data, value: varuint16(FEE_DEPLOY_MULTIFACTOR), wid: 0, flag: 1}(name, zkid, proof, epk, epk_sig, epk_expire_at, jwk_modulus, kid, jwk_modulus_expire_at, index_mod_4, iss_base_64, header_base_64, pub_recovery_key, pub_recovery_key_sig,root_provider_certificates, _index);
+        new Multifactor {stateInit: data, value: varuint16(FEE_DEPLOY_MULTIFACTOR), wid: 0, flag: 1}(name, zkid, proof, epk, epk_sig, epk_expire_at, jwk_modulus, kid, jwk_modulus_expire_at, index_mod_4, iss_base_64, header_base_64, pub_recovery_key, pub_recovery_key_sig,root_provider_certificates, _index, _rootPubkey);
     }
 
     function updateWhiteList(uint256 pubkey, uint8 index, string name) public view senderIs(VerifiersLib.calculateMultifactorAddress(_code[m_MvMultifactor], pubkey, _root)) accept {
@@ -147,11 +159,6 @@ contract Mirror is Modifiers {
         if (index == m_Boost) {
             address popitGameAddress = VerifiersLib.calculatePopitGameAddress(_code[m_PopitGame], _root, msg.sender);
             new_addr = VerifiersLib.calculateBoostAddress(_code[m_Boost], popitGameAddress, _root);
-        }
-        if (index == m_Game) {
-            address popcoinroot = VerifiersLib.calculatePopCoinRootAddress(_code[m_PopCoinRoot], _root, name);
-            address popcoinwallet = VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], tvm.hash(_code[m_PopitGame]), _root, name, msg.sender);
-            new_addr = VerifiersLib.calculateGameAddress(_code[m_Game], _root, msg.sender, popcoinroot, popcoinwallet);
         }
         if (index == m_PopCoinWallet) {
             new_addr = VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], tvm.hash(_code[m_PopitGame]), _root, name, msg.sender);

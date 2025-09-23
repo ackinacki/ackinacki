@@ -21,7 +21,17 @@
 				{"name":"pub_recovery_key","type":"uint256"},
 				{"name":"pub_recovery_key_sig","type":"bytes"},
 				{"name":"root_provider_certificates","type":"map(uint256,bytes)"},
-				{"name":"index","type":"uint128"}
+				{"name":"index","type":"uint128"},
+				{"name":"mv_root_pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"},
+				{"name":"cell","type":"cell"}
 			],
 			"outputs": [
 			]
@@ -562,6 +572,7 @@
 		{"init":false,"name":"_root","type":"address"},
 		{"init":false,"name":"_name","type":"string"},
 		{"init":true,"name":"_owner_pubkey","type":"uint256"},
+		{"init":false,"name":"_mv_root_pubkey","type":"uint256"},
 		{"components":[{"name":"value0","type":"uint256"},{"name":"value1","type":"uint64"}],"init":false,"name":"_candidate_new_owner_pubkey_and_expiration","type":"optional(tuple)"},
 		{"init":false,"name":"_pub_recovery_key","type":"uint256"},
 		{"init":false,"name":"_root_provider_certificates","type":"map(uint256,bytes)"},

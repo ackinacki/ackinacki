@@ -643,6 +643,14 @@ has_cross_thread_ref_data_prepared={:?}\
         self.known_children.get(child_block_thread_identifier)
     }
 
+    pub fn known_children_for_all_threads(&self) -> HashSet<BlockIdentifier> {
+        let mut result = HashSet::new();
+        for thread_set in self.known_children.values() {
+            result.extend(thread_set.clone().into_iter());
+        }
+        result
+    }
+
     pub fn get_signer_index_for_node_id(&self, node_id: &NodeIdentifier) -> Option<SignerIndex> {
         if let Some(bk_set) = &self.bk_set {
             bk_set.get_by_node_id(node_id).map(|x| x.signer_index)

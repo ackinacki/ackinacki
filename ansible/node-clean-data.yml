@@ -1,0 +1,11 @@
+- name: reset block keeper services data
+  gather_facts: no
+  hosts: '{{ target | default("block_keepers") }}'
+  become: yes
+  any_errors_fatal: true
+  vars:
+    DELETE_DATA: yes
+    DO_START: no
+    FAST_UPDATE: yes
+  roles:
+    - block-keeper

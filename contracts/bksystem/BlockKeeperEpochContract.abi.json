@@ -17,7 +17,6 @@
 				{"name":"reward_sum","type":"uint128"},
 				{"name":"myIp","type":"string"},
 				{"name":"isContinue","type":"bool"},
-				{"name":"reward_adjustment","type":"uint128"},
 				{"name":"timeStart","type":"optional(uint32)"}
 			],
 			"outputs": [
@@ -26,8 +25,8 @@
 		{
 			"name": "setStake",
 			"inputs": [
-				{"name":"totalStake","type":"uint256"},
-				{"name":"numberOfActiveBlockKeepers","type":"uint128"}
+				{"name":"numberOfActiveBlockKeepers","type":"uint128"},
+				{"name":"gparam","type":"uint256"}
 			],
 			"outputs": [
 			]
@@ -88,7 +87,6 @@
 				{"name":"reward","type":"uint256"},
 				{"name":"epochDuration","type":"uint64"},
 				{"name":"waitStep","type":"uint64"},
-				{"name":"reward_adjustment","type":"uint128"},
 				{"name":"reward_sum","type":"uint128"}
 			],
 			"outputs": [
@@ -99,7 +97,6 @@
 			"inputs": [
 				{"name":"epochDurationContinue","type":"uint64"},
 				{"name":"waitStepContinue","type":"uint64"},
-				{"name":"reward_adjustment_continue","type":"uint128"},
 				{"name":"reward_sum_continue","type":"uint128"}
 			],
 			"outputs": [
@@ -171,13 +168,11 @@
 		{"init":false,"name":"_isContinue","type":"bool"},
 		{"init":false,"name":"_waitStep","type":"uint64"},
 		{"init":false,"name":"_stake","type":"uint128"},
-		{"init":false,"name":"_totalStake","type":"uint256"},
 		{"init":false,"name":"_owner_address","type":"address"},
 		{"init":false,"name":"_bls_pubkeyContinue","type":"bytes"},
 		{"init":false,"name":"_stakeContinue","type":"uint128"},
 		{"init":false,"name":"_numberOfActiveBlockKeepers","type":"uint128"},
 		{"init":false,"name":"_unixtimeStart","type":"uint32"},
-		{"init":false,"name":"_reward_adjustment","type":"uint128"},
 		{"init":false,"name":"_sumReputationCoef","type":"uint128"},
 		{"init":false,"name":"_sumReputationCoefContinue","type":"uint128"},
 		{"init":false,"name":"_signerIndex","type":"uint16"},
@@ -192,6 +187,7 @@
 		{"init":false,"name":"_busy_seqno","type":"uint64"},
 		{"init":false,"name":"_is_full_slashing","type":"bool"},
 		{"init":false,"name":"_is_touching","type":"bool"},
-		{"init":false,"name":"_slash_type","type":"optional(uint8)"}
+		{"init":false,"name":"_slash_type","type":"optional(uint8)"},
+		{"init":false,"name":"_gparam","type":"uint256"}
 	]
 }

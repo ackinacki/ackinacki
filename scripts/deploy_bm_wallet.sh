@@ -4,7 +4,7 @@ NET=localhost
 
 BM_ROOT=0:6666666666666666666666666666666666666666666666666666666666666666
 BM_ROOT_ABI=contracts/bksystem/BlockManagerContractRoot.abi.json
-BM_ROOT_KEYS=config/BlockKeeperContractRoot.keys.json
+BM_ROOT_KEYS=config/BlockManagerContractRoot.keys.json
 
 BM_WALLET_ABI=contracts/bksystem/AckiNackiBlockManagerNodeWallet.abi.json
 BM_WALLET_KEYS=config/block_manager.keys.json

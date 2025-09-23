@@ -238,7 +238,7 @@ mod unit_tests {
                     "{peer} -> {}",
                     match result {
                         Ok(()) => "ok".to_string(),
-                        Err(err) => format!("{:?}", err).replace("\n", " ").replace("\r", ""),
+                        Err(err) => format!("{err:?}").replace("\n", " ").replace("\r", ""),
                     }
                 );
             }

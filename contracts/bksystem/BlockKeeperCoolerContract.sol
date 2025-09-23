@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * GOSH contracts
- *
- * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
- */
+ * Copyright (c) GOSH Technology Ltd. All rights reserved.
+ * 
+ * Acki Nacki and GOSH are either registered trademarks or trademarks of GOSH
+ * 
+ * Licensed under the ANNL. See License.txt in the project root for license information.
+*/
 pragma gosh-solidity >=0.76.1;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
@@ -44,7 +45,6 @@ contract BlockKeeperCooler is Modifiers {
         uint128 reward_sum_continue,
         string myIp,
         uint32 unixtimeStart,
-        uint128 reward_adjustment,
         uint128 sumReputationCoefContinue,
         optional(uint8) slash_type
     ) {
@@ -62,7 +62,7 @@ contract BlockKeeperCooler is Modifiers {
         if ((isContinue) && (!slash_type.hasValue())) {
             mapping(uint32 => varuint32) data_cur;
             data_cur[CURRENCIES_ID] = varuint32(stakeContinue);
-            AckiNackiBlockKeeperNodeWallet(_owner).deployBlockKeeperContractContinueAfterDestroy{value: 0.1 vmshell, flag: 1, currencies: data_cur}(epochDurationContinue, waitStepContinue, bls_pubkeyContinue, _seqNoStart, signerIndexContinue, licensesContinue, _licenses, virtualStakeContinue, reward_sum_continue, myIp, reward_adjustment, sumReputationCoefContinue, block.timestamp - unixtimeStart);
+            AckiNackiBlockKeeperNodeWallet(_owner).deployBlockKeeperContractContinueAfterDestroy{value: 0.1 vmshell, flag: 1, currencies: data_cur}(epochDurationContinue, waitStepContinue, bls_pubkeyContinue, _seqNoStart, signerIndexContinue, licensesContinue, _licenses, virtualStakeContinue, reward_sum_continue, myIp, sumReputationCoefContinue, block.timestamp - unixtimeStart);
         }
         if (slash_type.hasValue()) {
             this.slash{value: 0.1 vmshell, flag: 1}(slash_type.get(), true);

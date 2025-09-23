@@ -69,7 +69,7 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
         NetDirectSender<PeerId, Message>,
         NetBroadcastSender<Message>,
         InstrumentedReceiver<IncomingMessage>,
-        tokio::sync::watch::Receiver<HashMap<PeerId, PeerData>>,
+        tokio::sync::watch::Receiver<HashMap<PeerId, Vec<PeerData>>>,
     )>
     where
         Message:

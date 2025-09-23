@@ -137,7 +137,10 @@ impl CliArgs {
             tokio::sync::watch::channel(config.gossip.clone());
 
         let (watch_gossip_config_tx, watch_gossip_config_rx) =
-            tokio::sync::watch::channel(WatchGossipConfig { trusted_pubkeys: HashSet::new() });
+            tokio::sync::watch::channel(WatchGossipConfig {
+                max_nodes_with_same_id: 5,
+                trusted_pubkeys: HashSet::new(),
+            });
         let (subscribe_tx, subscribe_rx) = tokio::sync::watch::channel(Vec::new());
         let (peers_tx, _) = tokio::sync::watch::channel(HashMap::new());
 
@@ -306,9 +309,13 @@ fn dispatch_configs(
     let mut bk_set = bk_set_rx.borrow().clone();
     bk_set.extend(network_config.credential.trusted_pubkeys.iter().cloned());
     bk_set.extend(network_config.credential.my_cert_pubkeys().unwrap_or_default());
-    let trusted_pubkeys = bk_set.clone();
+    let trusted_pubkeys = bk_set.into_iter().collect::<HashSet<_>>();
     network_config.credential.trusted_pubkeys = trusted_pubkeys.clone();
-    Some((network_config, config.gossip.clone(), WatchGossipConfig { trusted_pubkeys }))
+    Some((
+        network_config,
+        config.gossip.clone(),
+        WatchGossipConfig { max_nodes_with_same_id: 5, trusted_pubkeys },
+    ))
 }
 
 async fn message_multiplexor(

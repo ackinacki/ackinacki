@@ -1,0 +1,12 @@
+- name: Deploy proxy service
+  gather_facts: no
+  # hosts: proxy[5:14]
+  # hosts: proxy
+  hosts: "{{ proxy_target | default('proxy') }}"
+  become: yes
+  any_errors_fatal: true
+  vars:
+    PROXY_UP: no
+    PROXY_STOP: yes
+  roles:
+    - proxy

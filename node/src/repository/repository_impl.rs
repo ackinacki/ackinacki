@@ -304,12 +304,15 @@ pub struct ThreadSnapshot {
     db_messages: Vec<Vec<Arc<WrappedMessage>>>,
     finalized_block: Envelope<GoshBLS, AckiNackiBlock>,
     bk_set: BlockKeeperSet,
+    descendant_bk_set: BlockKeeperSet,
     future_bk_set: BlockKeeperSet,
+    descendant_future_bk_set: BlockKeeperSet,
     finalized_block_stats: BlockStatistics,
     attestation_target: AttestationTargets,
     producer_selector: ProducerSelector,
     block_height: BlockHeight,
     prefinalization_proof: Envelope<GoshBLS, AttestationData>,
+    ancestor_blocks_finalization_checkpoints: AncestorBlocksFinalizationCheckpoints,
 }
 
 impl<TMessage> Default for ExtMessages<TMessage>
@@ -1104,13 +1107,15 @@ impl RepositoryImpl {
 
     pub fn dump_state(&self) {
         tracing::trace!("start dumping state");
+        let res = Self::save_metadata(&self.data_dir, self.metadatas.clone());
+        // get last fin blokc from meta
+        tracing::trace!("dump_state: save metadata res: {:?}", res);
+
         for (_, finalized_state) in self.thread_last_finalized_state.guarded(|e| e.clone()).iter() {
+            // check that it matches metadata
             let res = self.store_optimistic(finalized_state.clone());
             tracing::trace!("dump_state: Store optimistic state res: {:?}", res);
         }
-
-        let res = Self::save_metadata(&self.data_dir, self.metadatas.clone());
-        tracing::trace!("dump_state: save metadata res: {:?}", res);
 
         let root_path = self.get_blocks_dir_path();
         for (_thread, blocks) in self.finalized_blocks.guarded(|e| e.buffer.clone()).iter() {
@@ -1619,25 +1624,21 @@ impl Repository for RepositoryImpl {
                     state.set_applied(Instant::now(), Instant::now())?;
                     state.set_signatures_verified()?;
                     state.set_stored(&thread_snapshot.finalized_block)?;
-                    let bk_set = Arc::new(thread_snapshot.bk_set.clone());
-                    state.set_bk_set(bk_set.clone())?;
-                    let future_bk_set = Arc::new(thread_snapshot.future_bk_set.clone());
-                    state.set_future_bk_set(future_bk_set.clone())?;
-                    state.set_descendant_bk_set(bk_set)?;
-                    // TODO: need to sync future BK set
-                    state.set_descendant_future_bk_set(future_bk_set)?;
+                    state.set_bk_set(Arc::new(thread_snapshot.bk_set.clone()))?;
+                    state.set_future_bk_set(Arc::new(thread_snapshot.future_bk_set.clone()))?;
+                    state.set_descendant_bk_set(Arc::new(
+                        thread_snapshot.descendant_bk_set.clone(),
+                    ))?;
+                    state.set_descendant_future_bk_set(Arc::new(
+                        thread_snapshot.descendant_future_bk_set.clone(),
+                    ))?;
                     state.set_block_stats(thread_snapshot.finalized_block_stats.clone())?;
                     state.set_block_height(thread_snapshot.block_height)?;
                     state.set_ancestor_blocks_finalization_checkpoints(
-                        AncestorBlocksFinalizationCheckpoints::builder()
-                            .primary(HashMap::new())
-                            .fallback(HashMap::new())
-                            .build(),
+                        thread_snapshot.ancestor_blocks_finalization_checkpoints.clone(),
                     )?;
                     state.set_attestation_target(thread_snapshot.attestation_target)?;
                     state.set_prefinalized(thread_snapshot.prefinalization_proof.clone())?;
-                    // TODO: check with alexander.s if it was some kind of fix
-                    // state.set_attestation_target(thread_snapshot.attestation_target)?;
                     state.set_producer_selector_data(thread_snapshot.producer_selector.clone())?;
                     state.set_finalizes_blocks(HashSet::new())?;
                     Ok::<Option<HashSet<_>>, anyhow::Error>(
@@ -1831,6 +1832,7 @@ impl Repository for RepositoryImpl {
         let root_path = self.get_optimistic_state_path();
         let path = self.get_path(root_path, block_id.to_string());
         if path.exists() {
+            tracing::trace!("Skip save optimistic {block_id:?}: path exists.");
             return Ok(());
         }
         let saved_states_clone = self.saved_states.clone();

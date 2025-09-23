@@ -1,30 +1,18 @@
 ---
 
 - name: Node graceful shutdown step 1
-  ansible.builtin.shell:
-    chdir: "{{ BK_DIR }}"
-    cmd: docker compose exec "node{{ NODE_ID }}" pkill node
-  ignore_errors: true
-  when:
-    - ('compose' in UPGRADE and compose is defined and compose.changed) or 'node' in UPGRADE
+  include_tasks: graceful-shutdown.yaml
 
-- name: Node graceful shutdown step 2 (node upgrade)
+- name: Node graceful shutdown step 2 (for compose upgrade)
   ansible.builtin.shell:
     chdir: "{{ BK_DIR }}"
-    cmd: docker compose stop "node{{ NODE_ID }}" -t {{ STOP_TIMEOUT }}
-  when:
-    - ('node' in UPGRADE)
-
-- name: Node graceful shutdown step 2 (compose upgrade)
-  ansible.builtin.shell:
-    chdir: "{{ BK_DIR }}"
-    cmd: docker compose down "node{{ NODE_ID }}" -t {{ STOP_TIMEOUT }}
+    cmd: docker compose down "node{{ NODE_ID }}"
   when:
     - ('compose' in UPGRADE and compose is defined and compose.changed)
 
 - name: Aerospike shutdown for upgrade
   ansible.builtin.shell:
     chdir: "{{ BK_DIR }}"
-    cmd: docker compose stop aerospike -t {{ STOP_TIMEOUT }}
+    cmd: docker compose stop aerospike
   when:
     - ('aerospike' in UPGRADE and aerospike is defined and aerospike.changed)

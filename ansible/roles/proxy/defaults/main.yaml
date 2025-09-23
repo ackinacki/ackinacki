@@ -14,4 +14,9 @@ PROXY_BK_ADDRS: []
 PROXY_UP: yes
 PROXY_STOP: no
 
-CLEANUP_KEYS: yes
+GENERATE_CERT: yes
+
+CLEANUP_BK_KEYS: yes
+
+COMMIT_HASH: commit_unknown
+TEST_NAME: test_unknown

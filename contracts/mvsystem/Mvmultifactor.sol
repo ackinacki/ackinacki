@@ -54,6 +54,7 @@ contract Multifactor is Modifiers {
     address _root;
     string public _name;
     uint256 static _owner_pubkey; //seed phrase
+    uint256 _mv_root_pubkey;
 
     optional(uint256, uint64) _candidate_new_owner_pubkey_and_expiration;
 
@@ -99,8 +100,11 @@ contract Multifactor is Modifiers {
         uint256 pub_recovery_key,
         bytes pub_recovery_key_sig,
         mapping(uint256 => bytes) root_provider_certificates,
-        uint128 index
+        uint128 index,
+        uint256 mv_root_pubkey
     ) {
+        require(index >= 0, ERR_WRONG_DATA);
+        require(index < MAX_MIRROR_INDEX, ERR_WRONG_DATA);
         require(_owner_pubkey != 0 && pub_recovery_key != 0 && epk != 0, ERR_ZERO_PUBKEY); 
         require(pub_recovery_key != _owner_pubkey && pub_recovery_key != epk, ERR_REPEATING_KEY);
         require(tvm.checkSign(pub_recovery_key, TvmSlice(pub_recovery_key_sig), pub_recovery_key), ERR_INVALID_SIGNATURE);
@@ -121,6 +125,7 @@ contract Multifactor is Modifiers {
             require(msg.sender == expectedAddress, ERR_INVALID_SENDER);
         }
         tvm.accept();
+        _mv_root_pubkey = mv_root_pubkey;
         _zkid = zkid;
         _index_mod_4 = index_mod_4;
         _iss_base_64 = iss_base_64;
@@ -133,6 +138,16 @@ contract Multifactor is Modifiers {
         _force_remove_oldest = false;
         _name = name;
         _whiteListOfAddress[_root] = true;
+    }
+
+    function updateCode(TvmCell newcode, TvmCell cell) public view onlyOwnerPubkey(_mv_root_pubkey) accept  {
+        ensureBalance();
+        tvm.setcode(newcode);
+        tvm.setCurrentCode(newcode);
+        onCodeUpgrade(cell);
+    }
+
+    function onCodeUpgrade(TvmCell cell) private pure {
     }
 
     function ensureBalance() private pure {
@@ -164,6 +179,8 @@ contract Multifactor is Modifiers {
     }
 
     function setWhiteList(address new_addr, uint128 index) public accept {
+        require(index >= 0, ERR_WRONG_DATA);
+        require(index < MAX_MIRROR_INDEX, ERR_WRONG_DATA);
         ensureBalance();
         uint256 addrValue = BASE_PART * SHIFT + index + 1;
         address expectedAddress = address.makeAddrStd(0, addrValue);

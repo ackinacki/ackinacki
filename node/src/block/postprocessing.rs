@@ -112,7 +112,7 @@ pub fn postprocess(
         }
     }
     if !outbound_accounts.is_empty() {
-        let shard_state = new_state.into_shard_state().as_ref().clone();
+        let mut shard_state = new_state.into_shard_state().as_ref().clone();
         let mut shard_accounts = shard_state
             .read_accounts()
             .map_err(|e| anyhow::format_err!("Failed to read accounts from shard state: {e}"))?;
@@ -123,19 +123,24 @@ pub fn postprocess(
             //     account_routing.1.clone(),
             // );
             // if initial_optimistic_state.does_routing_belong_to_the_state(&default_account_routing) {
-            tracing::info!(target: "node", "replace account with redirect: {:?}", account_routing);
+
             let acc_id: AccountId = account_id.clone().into();
             if shard_accounts
                 .account(&acc_id)
                 .map_err(|e| anyhow::format_err!("Failed to check account: {e}"))?
                 .is_some()
             {
+                tracing::info!(target: "node", "replace account with redirect: {:?}", account_routing);
                 shard_accounts.replace_with_redirect(&account_id).map_err(|e| {
                     anyhow::format_err!("Failed to insert stub to shard state: {e}")
                 })?;
             }
             // }
         }
+        shard_state
+            .write_accounts(&shard_accounts)
+            .map_err(|e| anyhow::format_err!("Failed to write accounts to shard state: {e}"))?;
+        new_state = shard_state.into();
     }
 
     let messages = ThreadMessageQueueState::build_next()

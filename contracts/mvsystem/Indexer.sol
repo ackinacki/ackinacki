@@ -38,7 +38,7 @@ contract NameIndex is Modifiers {
 
     function ensureBalance() private pure {
         if (address(this).balance > CONTRACT_BALANCE) { return; }
-        gosh.mintshell(CONTRACT_BALANCE);
+        gosh.mintshellq(CONTRACT_BALANCE);
     }
 
     function isOwner(
@@ -59,6 +59,8 @@ contract NameIndex is Modifiers {
         mapping(uint256 => bytes) root_provider_certificates,
         uint256 owner_pubkey,
         uint128 index) public view accept {
+        require(index >= 0, ERR_WRONG_DATA);
+        require(index < MAX_MIRROR_INDEX, ERR_WRONG_DATA);
         uint256 addrValue = BASE_PART * SHIFT + index + 1;
         address expectedAddress = address.makeAddrStd(0, addrValue);
         require(msg.sender == expectedAddress, ERR_INVALID_SENDER);
@@ -101,10 +103,11 @@ contract NameIndex is Modifiers {
         uint256 pub_recovery_key,
         bytes pub_recovery_key_sig,
         mapping(uint256 => bytes) root_provider_certificates,
-        uint256 owner_pubkey) public onlyOwnerPubkey(_rootPubkey) accept {
+        uint256 owner_pubkey,
+        address mirror) public onlyOwnerPubkey(_rootPubkey) accept {
         ensureBalance();
         _wallet = wallet;
-        MobileVerifiersContractRoot(_root).isDeployMultifactor{value: 0.1 vmshell, flag: 1}(
+        Mirror(mirror).isDeployMultifactor{value: 0.1 vmshell, flag: 1}(
             _name, 
             true,
             zkid,

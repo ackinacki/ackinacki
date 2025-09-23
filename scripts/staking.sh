@@ -197,13 +197,23 @@ place_stake () {
   local WALLET_BALANCE_HEX=$(echo "$WALLET_DETAILS_JSON" | jq -r '.balance' | cut -d'x' -f 2 | tr '[:lower:]' '[:upper:]')
   local WALLET_BALANCE=$(echo "ibase=16; ${WALLET_BALANCE_HEX}" | bc)
   local TOTAL_AVAILABLE=0
+  local LICENSE_PRIVILEGED="true"
 
   local LICENSES_JSON=$(echo "$WALLET_DETAILS_JSON" | jq -c '.licenses')
+  local LICENSES_COUNT=$(echo "$WALLET_DETAILS_JSON" | jq '.licenses | map(select(.isLockToStakeByWallet != true and .isLockToStake != true and .isLockBecauseOfSlashing != true)) | length')
   local LICENSES_KEYS=$(echo "$LICENSES_JSON" | jq -r 'keys[]')
+
+  if [ $LICENSES_COUNT -eq 0 ]; then
+    log "No active licenses have been found"
+    return 1
+  fi
+
   for key in $LICENSES_KEYS; do
     local LICENSE=$(echo "$LICENSES_JSON" | jq -r ".[\"$key\"]")
     local isLockToStake=$(echo "$LICENSE" | jq -r '.isLockToStake')
+    local isPrivileged=$(echo "$LICENSE" | jq -r '.isPrivileged')
     local isLockToStakeByWallet=$(echo "$LICENSE" | jq -r '.isLockToStakeByWallet')
+    local isLockBecauseOfSlashing=$(echo "$LICENSE" | jq -r '.isLockBecauseOfSlashing')
     if [ "$isLockToStake" = "true" ]; then
       log "License $key is locked for staking, skipping"
       continue
@@ -211,6 +221,14 @@ place_stake () {
     if [ "$isLockToStakeByWallet" = "true" ]; then
       log "License $key is locked for staking by Wallet, skipping"
       continue
+    fi
+    if [ "$isLockBecauseOfSlashing" = "true" ]; then
+      log "License $key is locked for staking by Wallet, skipping"
+      continue
+    fi
+    if [ "$isPrivileged" = "false" ]; then
+      LICENSE_PRIVILEGED="false"
+      log "License $key is not privileged"
     fi
     local balance=$(echo "$LICENSE" | jq -r '.balance')
     local lockStake=$(echo "$LICENSE" | jq -r '.lockStake')
@@ -230,10 +248,13 @@ place_stake () {
   log "Current wallet $WALLET_ADDR balance: $WALLET_BALANCE"
   log "Sending stake: $WALLET_STAKE"
 
-  compare=$(echo "$WALLET_BALANCE < $WALLET_STAKE" | bc)
-  if [ "$compare" -eq 1 ]; then
-    log "Not enough token's on the wallet"
-    return 1
+  if [ "$LICENSE_PRIVILEGED" = "false" ]; then
+    MIN_STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake')
+    compare=$(echo "$MIN_STAKE > $WALLET_STAKE" | bc)
+    if [ "$compare" -eq 1 ]; then
+      log "Not enough token's on the wallet for the stake"
+      return 1
+    fi
   fi
 
   # Get signer index
@@ -261,9 +282,9 @@ place_stake () {
   ACTIVE_STAKES=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '.activeStakes | length' || { log "Error with getting active stakes" >&2 ; return 1 ;})
   STAKES_WAIT_COUNT=0
 
-  while [ $ACTIVE_STAKES -eq 0 ] && [ $STAKES_WAIT_COUNT -lt 15 ]; do
+  while [ $ACTIVE_STAKES -eq 0 ] && [ $STAKES_WAIT_COUNT -lt 5 ]; do
     log "New stakes haven't been found. Current stakes - $ACTIVE_STAKES. Waiting..."
-    sleep 5
+    sleep 2
     ACTIVE_STAKES=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '.activeStakes | length' || { log "Error with getting active stakes" >&2 ; return 1 ;})
     STAKES_WAIT_COUNT=$(( STAKES_WAIT_COUNT + 1 ))
   done
@@ -273,7 +294,7 @@ place_stake () {
     log "Stake request failed..."
     return 0
   fi
-  log "Stake request successfuly accepted..."
+  log "Stake request successfuly accepted with signer index $SIGNER_INDEX"
 }
 
 place_continue_stake () {
@@ -288,11 +309,21 @@ place_continue_stake () {
   local TOTAL_AVAILABLE=0
 
   local LICENSES_JSON=$(echo "$WALLET_DETAILS_JSON" | jq -c '.licenses')
+  local LICENSES_COUNT=$(echo "$WALLET_DETAILS_JSON" | jq '.licenses | map(select(.isLockToStakeByWallet != true and .isLockToStake != true and .isLockBecauseOfSlashing != true)) | length')
   local LICENSES_KEYS=$(echo "$LICENSES_JSON" | jq -r 'keys[]')
+  local LICENSE_PRIVILEGED="true"
+
+  if [ $LICENSES_COUNT -eq 0 ]; then
+    log "No active licenses have been found"
+    return 1
+  fi
+
   for key in $LICENSES_KEYS; do
     local LICENSE=$(echo "$LICENSES_JSON" | jq -r ".[\"$key\"]")
     local isLockToStake=$(echo "$LICENSE" | jq -r '.isLockToStake')
+    local isPrivileged=$(echo "$LICENSE" | jq -r '.isPrivileged')
     local isLockToStakeByWallet=$(echo "$LICENSE" | jq -r '.isLockToStakeByWallet')
+    local isLockBecauseOfSlashing=$(echo "$LICENSE" | jq -r '.isLockBecauseOfSlashing')
     if [ "$isLockToStake" = "true" ]; then
       log "License $key is locked for staking, skipping"
       continue
@@ -300,6 +331,14 @@ place_continue_stake () {
     if [ "$isLockToStakeByWallet" = "true" ]; then
       log "License $key is locked for staking by Wallet, skipping"
       continue
+    fi
+    if [ "$isLockBecauseOfSlashing" = "true" ]; then
+      log "License $key is locked for staking by Wallet, skipping"
+      continue
+    fi
+    if [ "$isPrivileged" = "false" ]; then
+      LICENSE_PRIVILEGED="false"
+      log "License $key is not privileged"
     fi
     local balance=$(echo "$LICENSE" | jq -r '.balance')
     local lockStake=$(echo "$LICENSE" | jq -r '.lockStake')
@@ -320,6 +359,15 @@ place_continue_stake () {
   #   log "Not enough token's to continue staking. Skipping placing..."
   #   return 0
   # fi
+
+  if [ "$LICENSE_PRIVILEGED" = "false" ]; then
+    MIN_STAKE=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails | jq -r '.minStake')
+    compare=$(echo "$MIN_STAKE > $TOTAL_AVAILABLE" | bc)
+    if [ "$compare" -eq 1 ]; then
+      log "Not enough token's on the wallet for continue staking"
+      return 1
+    fi
+  fi
 
   # Get signer index
   for i in `seq $SIGN_INDEX_START $SIGN_INDEX_END`; do

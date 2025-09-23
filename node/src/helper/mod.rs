@@ -8,6 +8,8 @@ pub mod metrics;
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 
 use opentelemetry::global::ObjectSafeSpan;
@@ -36,6 +38,8 @@ use crate::types::BlockIdentifier;
 
 pub const TIMING_TARGET: &str = "timing";
 
+pub static SHUTDOWN_FINALIZATION_FLAG: OnceLock<bool> = OnceLock::new();
+pub static FINALIZATION_LOOPS_COUNTER: AtomicU32 = AtomicU32::new(0);
 pub static SHUTDOWN_FLAG: OnceLock<bool> = OnceLock::new();
 
 fn verbose_filter() -> tracing_subscriber::EnvFilter {
@@ -195,4 +199,21 @@ pub fn get_temp_file_path(parent_path: &Path) -> PathBuf {
         path.exists()
     } {}
     path
+}
+
+pub fn start_shutdown() {
+    tracing::info!("starting shutdown");
+    SHUTDOWN_FINALIZATION_FLAG.set(true).expect("Failed to set shutdown finalization flag");
+    loop {
+        {
+            let counter = FINALIZATION_LOOPS_COUNTER.load(Ordering::Relaxed);
+            tracing::trace!("FINALIZATION_LOOPS_COUNTER = {}", counter);
+            if counter == 0 {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    tracing::info!("set shutdown flag");
+    SHUTDOWN_FLAG.set(true).expect("Failed to set shutdown flag");
 }

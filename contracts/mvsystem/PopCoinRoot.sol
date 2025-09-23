@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * GOSH contracts
- *
- * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
- */
+ * Copyright (c) GOSH Technology Ltd. All rights reserved.
+ * 
+ * Acki Nacki and GOSH are either registered trademarks or trademarks of GOSH
+ * 
+ * Licensed under the ANNL. See License.txt in the project root for license information.
+*/
 pragma gosh-solidity >=0.76.1;
 pragma ignoreIntOverflow;
 pragma AbiHeader expire;
@@ -31,8 +32,12 @@ contract PopCoinRoot is Modifiers {
     uint256 _root_pubkey;
     string _description;
     uint128 _rewards;
-    uint128 _basicValue;
+    uint128 _basicRewards;
     address _popitGameOwner;
+
+    uint64[] _MBNLst;
+    uint64[] _TAPLst;
+    uint64[] _BCLst;
 
     constructor (
         TvmCell PopCoinWalletCode,
@@ -62,7 +67,15 @@ contract PopCoinRoot is Modifiers {
         _description = description;
         _maxPopitIndex = maxPopitIndex;
         _popitGameOwner = popitGameOwner;
+        _MBNLst = new uint64[](vectorSize);
+        _TAPLst = new uint64[](vectorSize);
+        _BCLst = new uint64[](vectorSize);
         PopitGame(_popitGameOwner).popCoinRootDeployed{value: 0.1 vmshell, flag: 1}(_name);
+    }
+
+    function setNewCode(uint8 id, TvmCell code) public onlyOwnerPubkey(_root_pubkey) accept {
+        ensureBalance();
+        _code[id] = code;
     }
 
     function setIsPublic(bool isPublic) public onlyOwnerPubkey(_root_pubkey) accept {
@@ -105,7 +118,8 @@ contract PopCoinRoot is Modifiers {
         b.store(block.timestamp);
         uint256 id = tvm.hash(b.toCell());
         require(_popits_candidate.exists(id) == false, ERR_ALREADY_EXIST);
-        _popits_candidate[id] = PopitCandidateWithMedia(0, media, protopopit, block.timestamp);
+        uint64[] empty = new uint64[](vectorSize);
+        _popits_candidate[id] = PopitCandidateWithMedia(0, media, protopopit, block.timestamp, empty, empty, empty);
     }
 
     function ensureBalance() private pure {
@@ -115,8 +129,8 @@ contract PopCoinRoot is Modifiers {
 
     function activate(bool isOld) public onlyOwnerPubkey(_root_pubkey) accept {
         ensureBalance();
+        if (_isReady == true) { return; }
         _isReady = true;
-        _basicValue = _totalSupply;
         if (!isOld) {
             MobileVerifiersContractRoot(_root).sendTapRewards{value: 0.1 vmshell, flag: 1}(_name);
         }
@@ -143,7 +157,7 @@ contract PopCoinRoot is Modifiers {
             _popits_media[_maxPopitIndex] = PopitMedia(_popits_candidate[id].media, id, _popits_candidate[id].protopopit);
         }
         if (reward != 0) {
-            _popits_value[_maxPopitIndex] = Popit(reward, _popits_candidate[id].value, _popits_candidate[id].value);
+            _popits_value[_maxPopitIndex] = Popit(reward, _popits_candidate[id].value, _popits_candidate[id].value, reward, _popits_candidate[id].MBNLst, _popits_candidate[id].TAPLst, _popits_candidate[id].BCLst);
         }
         _totalSupply += _popits_candidate[id].value;
         delete _popits_candidate[id];
@@ -154,49 +168,81 @@ contract PopCoinRoot is Modifiers {
         MobileVerifiersContractRoot(_root).popCoinRootDestroyed{value: 0.1 vmshell, flag: 161, bounce: false}(_name);
     }
 
-    function mintValue(address owner, uint128 value) public senderIs(VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], _popitgamehash, _root, _name, owner)) accept {
+    function destroyUpgrade() public onlyOwnerPubkey(_root_pubkey) accept {
+        selfdestruct(_root);
+    }
+
+    function mintValue(address owner, uint64 value, uint64 mbiCur) public senderIs(VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], _popitgamehash, _root, _name, owner)) accept {
         ensureBalance();
         _totalSupply += value;
+        _MBNLst[mbiCur] += 1;
+        _TAPLst[mbiCur] += value + 1;
         if (_isReady == true) {
             PopCoinWallet(msg.sender).setReady{value: 0.1 vmshell, flag: 1}();
         }
     }
 
-    function mintValuePopit(address owner, uint256 dataId, uint128 dataValue) public senderIs(VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], _popitgamehash, _root, _name, owner)) accept {
+    function mintValuePopit(address owner, uint256 dataId, uint64 dataValue, uint64 mbiCur) public senderIs(VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], _popitgamehash, _root, _name, owner)) accept {
         ensureBalance();
         require(_popits_candidate.exists(dataId) == true, ERR_NOT_READY);
+        _popits_candidate[dataId].MBNLst[mbiCur] += 1;
+        _popits_candidate[dataId].TAPLst[mbiCur] += dataValue + 1;
         _popits_candidate[dataId].value += dataValue;
     }
 
-    function mintValueOld(address owner, uint128 value) public senderIs(VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], _popitgamehash, _root, _name, owner)) accept {
+    function mintValueOld(address owner, uint64 value) public senderIs(VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], _popitgamehash, _root, _name, owner)) accept {
         ensureBalance();
         _totalSupply += value;
     }
     
-    function isReady(address owner, uint128 value, address popitGameAddress) public view senderIs(VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], _popitgamehash, _root, _name, owner)) accept {
+    function isReady(address owner, uint64 value, address popitGameAddress, uint128 mbi) public senderIs(VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], _popitgamehash, _root, _name, owner)) accept {
         ensureBalance();
         if (_isReady == false) { return; }
         PopCoinWallet(msg.sender).setReady{value: 0.1 vmshell, flag: 1}();
-        if (_basicValue == 0) {
+        if (_basicRewards == 0) {
             return;
         }
         mapping(uint32 => varuint32) data_cur;
-        data_cur[CURRENCIES_ID] = varuint32(_rewards * value / _basicValue);
+        TvmCell data1 = abi.encode(_TAPLst);
+        TvmCell data2 = abi.encode(_MBNLst);
+        uint128 reward = gosh.calcmvreward(mbi, data2, data1, value + 1, _basicRewards);
+        if (reward > _rewards) {
+            reward = _rewards;
+        }
+        _rewards -= reward;
+        data_cur[CURRENCIES_ID] = varuint32(reward);
         popitGameAddress.transfer({value: 0.1 vmshell, flag: 1, currencies: data_cur});
     }
 
-    function isReadyPopit(address owner, uint16 indexRoot, uint256 candidateId, uint128 candidateValue, address popitGameAddress) public senderIs(VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], _popitgamehash, _root, _name, owner)) accept {
+    function isReadyPopit(address owner, uint16 indexRoot, uint256 candidateId, uint128 candidateValue, address popitGameAddress, uint128 mbi) public senderIs(VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], _popitgamehash, _root, _name, owner)) accept {
         ensureBalance();
         if (_popits_media[indexRoot].id != candidateId) { return; }
         PopCoinWallet(msg.sender).setReadyPopit{value: 0.1 vmshell, flag: 1}(candidateId);
-        if (_popits_value[indexRoot].leftValue == 0) { return; }
+        if (_popits_value[indexRoot].leftRewards == 0) { return; }
         mapping(uint32 => varuint32) data_cur;
-        data_cur[CURRENCIES_ID] = varuint32(_popits_value[indexRoot].rewards * candidateValue / _popits_value[indexRoot].value);
+        TvmCell data1 = abi.encode(_popits_value[indexRoot].TAPLst);
+        TvmCell data2 = abi.encode(_popits_value[indexRoot].MBNLst);
+        uint128 reward = gosh.calcmvreward(mbi, data2, data1, candidateValue + 1, _popits_value[indexRoot].rewards);
+        if (reward > _popits_value[indexRoot].leftRewards) {
+            reward = _popits_value[indexRoot].leftRewards;
+        }
+        _popits_value[indexRoot].leftRewards -= reward;
+        _popits_value[indexRoot].leftTaps -= candidateValue;
+        data_cur[CURRENCIES_ID] = varuint32(reward);
         popitGameAddress.transfer({value: 0.1 vmshell, flag: 1, currencies: data_cur});
-        _popits_value[indexRoot].leftValue -= candidateValue;
-        if (_popits_value[indexRoot].leftValue == 0) {
+        if (_popits_value[indexRoot].leftTaps == 0) {
             delete _popits_value[indexRoot];
         }
+    }
+
+    function updateCode(TvmCell newcode, TvmCell cell) public view onlyOwnerPubkey(_root_pubkey) accept  {
+        ensureBalance();
+        tvm.setcode(newcode);
+        tvm.setCurrentCode(newcode);
+        onCodeUpgrade(cell);
+    }
+
+    function onCodeUpgrade(TvmCell cell) private pure {
     }
     
     //Fallback/Receive
@@ -205,6 +251,7 @@ contract PopCoinRoot is Modifiers {
         tvm.accept();
         if ((msg.sender == _root) && (_rewards == 0)) {
             _rewards += uint128(msg.currencies[CURRENCIES_ID]);
+            _basicRewards = _rewards;
         }
     }
 

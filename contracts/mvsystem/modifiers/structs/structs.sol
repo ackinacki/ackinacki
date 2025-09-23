@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * GOSH contracts
- *
- * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
- */
+ * Copyright (c) GOSH Technology Ltd. All rights reserved.
+ * 
+ * Acki Nacki and GOSH are either registered trademarks or trademarks of GOSH
+ * 
+ * Licensed under the ANNL. See License.txt in the project root for license information.
+*/
 pragma gosh-solidity >=0.76.1;
 
 //Structs
@@ -20,13 +21,20 @@ struct PopitMedia {
 
 struct Popit {
         uint128 rewards;
-        uint128 value;
-        uint128 leftValue;
+        uint64 value;
+        uint128 leftTaps;
+        uint128 leftRewards;
+        uint64[] MBNLst;
+        uint64[] TAPLst;
+        uint64[] BCLst;
 }
 
 struct PopitCandidateWithMedia {
-        uint128 value;
+        uint64 value;
         string media;
         optional(uint32) protopopit;
         uint32 time;
+        uint64[] MBNLst;
+        uint64[] TAPLst;
+        uint64[] BCLst;
 }

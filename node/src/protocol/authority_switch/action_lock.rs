@@ -31,6 +31,7 @@ use crate::bls::gosh_bls::PubKey;
 use crate::bls::gosh_bls::Secret;
 use crate::bls::BLSSignatureScheme;
 use crate::bls::GoshBLS;
+use crate::helper::start_shutdown;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::AttestationTargetType;
@@ -166,6 +167,7 @@ pub struct Authority {
     action_lock_db: ActionLockStorage,
     max_lookback_block_height_distance: usize,
     self_addr: SocketAddr,
+    action_lock_collections: HashMap<ThreadIdentifier, ActionLockCollection>,
 }
 
 impl Authority {
@@ -178,10 +180,12 @@ impl Authority {
                 ThreadAuthority::builder()
                     .thread_id(*thread_id)
                     .round_buckets(self.round_buckets.clone())
-                    .action_lock_data_dir(
-                        self.data_dir.clone().join(format!("{thread_id:?}")),
-                        self.action_lock_db.clone(),
-                    )
+                    .action_lock(self.action_lock_collections.remove(thread_id).unwrap_or(
+                        ActionLockCollection::new(
+                            self.data_dir.clone().join(format!("{thread_id:?}")),
+                            self.action_lock_db.clone(),
+                        ),
+                    ))
                     .node_identifier(self.node_identifier.clone())
                     .bls_keys_map(self.bls_keys_map.clone())
                     .block_repository(self.block_repository.clone())
@@ -324,10 +328,10 @@ pub struct ThreadAuthority {
     bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
 
     // TODO: load on restart
-    #[builder(setter(
-        suffix="_data_dir",
-        transform = |data_dir: PathBuf, action_lock_db: ActionLockStorage| ActionLockCollection::new(data_dir, action_lock_db)
-    ))]
+    // #[builder(setter(
+    //     suffix="_data_dir",
+    //     transform = |data_dir: PathBuf, action_lock_db: ActionLockStorage| ActionLockCollection::new(data_dir, action_lock_db)
+    // ))]
     action_lock: ActionLockCollection,
 
     // This field contains NACKs sent/confirmed by THIS node.
@@ -1439,7 +1443,7 @@ impl ThreadAuthority {
                     .requests_aggregated(proof_of_valid_round)
                     .build(),
             ) else {
-                SHUTDOWN_FLAG.set(true).expect("");
+                start_shutdown();
                 tracing::error!("Node does not have valid key to sign message");
                 return OnNextRoundIncomingRequestResult::DoNothing;
             };

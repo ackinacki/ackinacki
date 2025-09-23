@@ -56,7 +56,8 @@
 				{"name":"pub_recovery_key","type":"uint256"},
 				{"name":"pub_recovery_key_sig","type":"bytes"},
 				{"name":"root_provider_certificates","type":"map(uint256,bytes)"},
-				{"name":"owner_pubkey","type":"uint256"}
+				{"name":"owner_pubkey","type":"uint256"},
+				{"name":"mirror","type":"address"}
 			],
 			"outputs": [
 			]

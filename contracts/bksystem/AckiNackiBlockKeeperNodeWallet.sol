@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * GOSH contracts
- *
- * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
- */
+ * Copyright (c) GOSH Technology Ltd. All rights reserved.
+ * 
+ * Acki Nacki and GOSH are either registered trademarks or trademarks of GOSH
+ * 
+ * Licensed under the ANNL. See License.txt in the project root for license information.
+*/
 pragma gosh-solidity >=0.76.1;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
@@ -84,6 +85,8 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
 
     function setSigningPubkey(uint256 pubkey) public onlyOwnerPubkey(_owner_pubkey) accept {
         ensureBalance();
+        require(block.seqno > _walletLastTouch + _walletTouch, ERR_WALLET_BUSY);
+        _walletLastTouch = block.seqno;
         _signing_pubkey = pubkey;
     }
 
@@ -175,7 +178,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         _balance -= _licenses[license_number].balance;
         mapping(uint32 => varuint32) data;
         data[CURRENCIES_ID] = _licenses[license_number].balance;       
-        LicenseContract(msg.sender).destroyLicense{value: 0.1 vmshell, currencies: data, flag: 1}();
+        LicenseContract(BlockKeeperLib.calculateLicenseAddress(_code[m_LicenseCode], license_number, _licenseRoot)).destroyLicense{value: 0.1 vmshell, currencies: data, flag: 1}();
         delete _licenses[license_number];
     }
 
@@ -275,15 +278,17 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         _activeStakes[stakeHash] = Stake(stake, seqNoStart, seqNoFinish, bls_key, EPOCH_DEPLOYED, signerIndex);
     }
 
-    function stakeNotAccepted() public senderIs(_root) accept {
+    function stakeNotAccepted(uint64 epochDuration) public senderIs(_root) accept {
         ensureBalance();
         _stakesCnt -= 1;
         _isWaitStake = false;
+        _epochDuration = epochDuration;
     }
 
-    function stakeNotAcceptedContinue() public senderIs(_root) accept {
+    function stakeNotAcceptedContinue(uint64 epochDuration) public senderIs(_root) accept {
         ensureBalance();
         _isWaitStake = false;
+        _epochDuration = epochDuration;
     }
 
     function sendBlockKeeperRequestWithStakeHelperFirst(uint256 num, uint128 sumBalance, bool is_ok, uint128 sumreputationCoef, uint8 num_licenses) private returns(uint128, bool, uint128, uint8){
@@ -304,7 +309,9 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         return (sumBalance, is_ok, sumreputationCoef, num_licenses);
     }
 
-    function tryCooler() public view onlyOwnerPubkey(_owner_pubkey) accept {
+    function tryCooler() public onlyOwnerPubkey(_owner_pubkey) accept {
+        require(block.seqno > _walletLastTouch + _walletTouch, ERR_WALLET_BUSY);
+        _walletLastTouch = block.seqno;
         bool isCooler = checkCooler();
         isCooler;
     }
@@ -336,11 +343,8 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         for ((uint256 num,) : _licenses) {
             (sumBalance, is_ok, sumreputationCoef, num_licenses) = sendBlockKeeperRequestWithStakeHelperFirst(num, sumBalance, is_ok, sumreputationCoef, num_licenses);
         }
-        if ((stake < sumBalance) || (_freeLicense < block.timestamp)) {
-            is_ok = false;
-        }
         require(num_licenses > 0, ERR_TOO_LOW_LICENSES);
-        require(stake <= sumBalance, ERR_LOW_VALUE);
+        require(stake <= sumBalance / 2, ERR_LOW_VALUE);
         _isWaitStake = true;
         BlockKeeperContractRoot(_root).receiveBlockKeeperRequestWithStakeFromWallet{value: 0.1 vmshell, currencies: data_cur, flag: 1} (_owner_pubkey, bls_pubkey, signerIndex, sumreputationCoef, is_ok, ProxyList, myIp);
     } 
@@ -421,7 +425,6 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         require(_activeStakes.exists(stakeHash) == true, ERR_STAKE_DIDNT_EXIST);
         require(_activeStakes[stakeHash].status == EPOCH_DEPLOYED, ERR_STAKE_STATUS_NOT_EPOCH);
         require(_activeStakes[stakeHash].seqNoFinish > block.seqno + _epochDuration / EPOCH_DENOMINATOR_CONTINUE, ERR_TOO_LATE);
-        require(block.seqno + _epochDuration > _activeStakes[stakeHash].seqNoFinish + _epochDuration / EPOCH_DENOMINATOR_START_CONTINUE, ERR_TOO_LATE);
         require(bls_pubkey.length == BLS_PUBKEY_LENGTH, ERR_WRONG_BLS_PUBKEY);
         require(stake <= address(this).currencies[CURRENCIES_ID], ERR_LOW_VALUE);
         require(_stakesCnt == 1, ERR_STAKE_EXIST);
@@ -470,7 +473,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         return licenses;
     }
 
-    function deployPreEpochContract(uint64 epochDuration, uint8 walletTouch, uint64 epochCliff, uint64 waitStep, bytes bls_pubkey, uint16 signerIndex, uint128 rep_coef, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, uint128 reward_sum, string myIp, uint128 reward_adjustment) public senderIs(_root) accept  {
+    function deployPreEpochContract(uint64 epochDuration, uint8 walletTouch, uint64 epochCliff, uint64 waitStep, bytes bls_pubkey, uint16 signerIndex, uint128 rep_coef, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, uint128 reward_sum, string myIp) public senderIs(_root) accept  {
         ensureBalance();       
         if (_isSlashing == true) {
             BLSKeyIndex(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_pubkey, _root)).destroy{value: 0.1 vmshell, flag: 1}();
@@ -500,7 +503,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
             currencies: data_cur,
             wid: 0, 
             flag: 1
-        } (waitStep, epochDuration, bls_pubkey, _code, signerIndex, rep_coef, licenses, virtualStake, ProxyList, reward_sum, myIp, epochCliff, reward_adjustment);
+        } (waitStep, epochDuration, bls_pubkey, _code, signerIndex, rep_coef, licenses, virtualStake, ProxyList, reward_sum, myIp, epochCliff);
     }
 
     function deployBlockKeeperContractContinueHelper(uint256 num, LicenseStake[] licenses, uint128 sumBalance, varuint32 stake, address epoch_addr) private returns(LicenseStake[]){
@@ -593,7 +596,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         return reputationCoef;
     }
 
-    function deployBlockKeeperContractContinueAfterDestroy(uint64 epochDuration, uint64 waitStep, bytes bls_pubkey, uint64 seqNoStartOld, uint16 signerIndex, LicenseStake[] licenses_continue, LicenseStake[] licenses, optional(uint128) virtualStake, uint128 reward_sum, string myIp, uint128 reward_adjustment, uint128 reputationCoef, uint128 delta_time) public senderIs(BlockKeeperLib.calculateBlockKeeperCoolerEpochAddress(_code[m_BlockKeeperEpochCoolerCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _code[m_BlockKeeperEpochCode], _root, _owner_pubkey, seqNoStartOld)) accept  {
+    function deployBlockKeeperContractContinueAfterDestroy(uint64 epochDuration, uint64 waitStep, bytes bls_pubkey, uint64 seqNoStartOld, uint16 signerIndex, LicenseStake[] licenses_continue, LicenseStake[] licenses, optional(uint128) virtualStake, uint128 reward_sum, string myIp, uint128 reputationCoef, uint128 delta_time) public senderIs(BlockKeeperLib.calculateBlockKeeperCoolerEpochAddress(_code[m_BlockKeeperEpochCoolerCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _code[m_BlockKeeperEpochCode], _root, _owner_pubkey, seqNoStartOld)) accept  {
         ensureBalance();
         uint64 seqNoStart = block.seqno;
         mapping(uint256 => bool) licensesMap;
@@ -612,7 +615,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
             currencies: msg.currencies,
             wid: 0,
             flag: 1
-        } (waitStep, epochDuration, bls_pubkey, _code, reputationCoef, signerIndex, licenses_continue, virtualStake, reward_sum, myIp, true, reward_adjustment, null);
+        } (waitStep, epochDuration, bls_pubkey, _code, reputationCoef, signerIndex, licenses_continue, virtualStake, reward_sum, myIp, true, null);
     }
 
     function updateLockStakeCoolerHelper(LicenseStake value, uint32 addReputationTime) private {
@@ -829,7 +832,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         SignerIndex(BlockKeeperLib.calculateSignerIndexAddress(_code[m_SignerIndexCode], signerIndex_continue, _root)).destroy{value: 0.1 vmshell, flag: 1}();
     } 
 
-    function withdrawToken(uint256 license_number, address to, varuint32 value) public senderIs(BlockKeeperLib.calculateLicenseAddress(_code[m_LicenseCode], license_number, _licenseRoot)) accept {
+    function withdrawToken(uint256 license_number, varuint32 value) public senderIs(BlockKeeperLib.calculateLicenseAddress(_code[m_LicenseCode], license_number, _licenseRoot)) accept {
         ensureBalance();
         require(_isWaitStake == false, ERR_WAIT_STAKE); 
         require(value <= address(this).currencies[CURRENCIES_ID], ERR_LOW_VALUE);
@@ -841,7 +844,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         _licenses[license_number].balance -= uint128(value);
         _licenses[license_number].isPrivileged = false;
         _balance -= uint128(value);
-        to.transfer({value: 0.1 vmshell, currencies: data, flag: 1});
+        msg.sender.transfer({value: 0.1 vmshell, currencies: data, flag: 1});
     }
 
     function withdrawWalletTokenHelper(LicenseData value, uint128 sumLock) private pure returns(uint128){
@@ -864,8 +867,10 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         to.transfer({value: 0.1 vmshell, currencies: data_cur, flag: 1});
     }
 
-    function resetWallet() public view onlyOwnerPubkey(_owner_pubkey) accept {
+    function resetWallet() public onlyOwnerPubkey(_owner_pubkey) accept {
         ensureBalance();
+        require(block.seqno > _walletLastTouch + _walletTouch, ERR_WALLET_BUSY);
+        _walletLastTouch = block.seqno;
         require(_isWaitStake == false, ERR_WAIT_STAKE);
         for ((, LicenseData value): _licenses) {
             if ((value.status == PRE_EPOCH_DEPLOYED) && (value.stakeController.hasValue())) {

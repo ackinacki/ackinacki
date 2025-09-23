@@ -94,7 +94,7 @@
 				{"name":"walletTouch","type":"uint8"},
 				{"name":"waitStep","type":"uint64"},
 				{"name":"epochStart","type":"uint32"},
-				{"name":"epochEnd","type":"uint32"}
+				{"name":"epochEnd","type":"uint64"}
 			],
 			"outputs": [
 			]
@@ -149,7 +149,7 @@
 		{"init":false,"name":"_waitStep","type":"uint64"},
 		{"init":false,"name":"_rewarded","type":"uint32"},
 		{"init":false,"name":"_epochStart","type":"uint32"},
-		{"init":false,"name":"_epochEnd","type":"uint32"},
+		{"init":false,"name":"_epochEnd","type":"uint64"},
 		{"init":false,"name":"_walletLastTouch","type":"uint64"},
 		{"init":false,"name":"_isSlashing","type":"bool"},
 		{"init":false,"name":"_tryReward","type":"uint32"},

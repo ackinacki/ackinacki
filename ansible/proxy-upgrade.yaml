@@ -1,0 +1,12 @@
+- name: Upgrade proxy service (without regenerating cert)
+  gather_facts: no
+  hosts: '{{ target | default("proxy") }}'
+  become: yes
+  any_errors_fatal: true
+  vars:
+    PROXY_STOP: yes
+    PROXY_UP: yes
+    GENERATE_CERT: no
+  roles:
+    - proxy
+

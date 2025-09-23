@@ -3,6 +3,13 @@ services:
     image: {{ PROXY_IMAGE }}
     environment:
       RUST_LOG: {{ PROXY_LOG_LEVEL }}
+{% set otel_node_id = PROXY_ID | default("unk") %}{% if NODE_GROUP_ID is defined and NODE_GROUP_ID %}{% set otel_node_id = NODE_GROUP_ID ~ '-' ~ otel_node_id %}{% endif %}
+      OTEL_RESOURCE_ATTRIBUTES: proxy={{ otel_node_id }},service.namespace={{ NETWORK_NAME }}_proxy,service.instance.id={{ otel_node_id }},host.name={{ OTEL_MY_HOST_NAME | default(inventory_hostname) | default(ansible_host) }}
+{% if OTEL_COLLECTOR is defined and OTEL_COLLECTOR %}
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: {{ OTEL_COLLECTOR }}
+      OTEL_EXPORTER_OTLP_METRICS_PROTOCOL: {{ OTEL_COLLECTOR_PROTO | default('grpc') }}
+{% endif %}
+      OTEL_SERVICE_NAME: {{ OTEL_SERVICE_NAME | default(TEST_NAME ~ '-' ~ COMMIT_HASH) }}
 {# Adding service section #}
 {% include 'extra/proxy-env.j2' ignore missing +%}
     network_mode: host

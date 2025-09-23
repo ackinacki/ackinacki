@@ -174,7 +174,7 @@ impl<Transport: NetTransport + 'static> NodeTest<Transport> {
         state: Arc<NodeState>,
         direct_tx: NetDirectSender<String, Message>,
         incoming_rx: InstrumentedReceiver<IncomingMessage>,
-        _peers_rx: tokio::sync::watch::Receiver<HashMap<String, PeerData>>,
+        _peers_rx: tokio::sync::watch::Receiver<HashMap<String, Vec<PeerData>>>,
     ) -> anyhow::Result<()> {
         tracing::info!("Consumer started");
         while let Ok(message) = incoming_rx.recv() {

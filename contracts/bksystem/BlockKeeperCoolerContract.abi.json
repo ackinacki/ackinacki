@@ -23,7 +23,6 @@
 				{"name":"reward_sum_continue","type":"uint128"},
 				{"name":"myIp","type":"string"},
 				{"name":"unixtimeStart","type":"uint32"},
-				{"name":"reward_adjustment","type":"uint128"},
 				{"name":"sumReputationCoefContinue","type":"uint128"},
 				{"name":"slash_type","type":"optional(uint8)"}
 			],

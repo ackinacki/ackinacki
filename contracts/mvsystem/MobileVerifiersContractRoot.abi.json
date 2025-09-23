@@ -29,30 +29,6 @@
 			]
 		},
 		{
-			"name": "addGameNumber",
-			"inputs": [
-				{"name":"owner","type":"address"},
-				{"name":"popcoinroot","type":"address"},
-				{"name":"popcoinwallet","type":"address"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "sendRewards",
-			"inputs": [
-				{"name":"owner","type":"address"},
-				{"name":"popCoinWallet","type":"address"},
-				{"name":"popcoinroot","type":"address"},
-				{"name":"mbiCur","type":"uint64"},
-				{"name":"mbiPrev","type":"uint64"},
-				{"name":"gCur","type":"uint64"},
-				{"name":"gPrev","type":"uint64"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "sendTapRewards",
 			"inputs": [
 				{"name":"name","type":"string"}
@@ -66,38 +42,6 @@
 				{"name":"name","type":"string"},
 				{"name":"key","type":"uint256"},
 				{"name":"media","type":"optional(string)"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "updateGameCode",
-			"inputs": [
-				{"name":"owner","type":"address"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "isDeployMultifactor",
-			"inputs": [
-				{"name":"name","type":"string"},
-				{"name":"ready","type":"bool"},
-				{"name":"zkid","type":"string"},
-				{"name":"proof","type":"bytes"},
-				{"name":"epk","type":"uint256"},
-				{"name":"epk_sig","type":"bytes"},
-				{"name":"epk_expire_at","type":"uint64"},
-				{"name":"jwk_modulus","type":"bytes"},
-				{"name":"kid","type":"bytes"},
-				{"name":"jwk_modulus_expire_at","type":"uint64"},
-				{"name":"index_mod_4","type":"uint8"},
-				{"name":"iss_base_64","type":"string"},
-				{"name":"header_base_64","type":"string"},
-				{"name":"pub_recovery_key","type":"uint256"},
-				{"name":"pub_recovery_key_sig","type":"bytes"},
-				{"name":"root_provider_certificates","type":"map(uint256,bytes)"},
-				{"name":"owner_pubkey","type":"uint256"}
 			],
 			"outputs": [
 			]
@@ -171,6 +115,19 @@
 				{"name":"value0","type":"string"},
 				{"name":"value1","type":"string"}
 			]
+		},
+		{
+			"name": "getReward",
+			"inputs": [
+				{"name":"mbi","type":"uint128"},
+				{"name":"MBNLst","type":"uint64[]"},
+				{"name":"TAPLst","type":"uint64[]"},
+				{"name":"value","type":"uint64"},
+				{"name":"basicRewards","type":"uint128"}
+			],
+			"outputs": [
+				{"name":"value0","type":"uint128"}
+			]
 		}
 	],
 	"events": [
@@ -192,8 +149,6 @@
 		{"init":false,"name":"_epochStart","type":"uint32"},
 		{"init":false,"name":"_epochEnd","type":"uint32"},
 		{"init":false,"name":"_prevEpochDuration","type":"uint128"},
-		{"init":false,"name":"_numberOfActiveGameAtPrevEpoch","type":"uint128"},
-		{"init":false,"name":"_numberOfActiveGameAtEpoch","type":"uint128"},
 		{"init":false,"name":"_reward_sum","type":"uint128"},
 		{"init":false,"name":"_reward_adjustment","type":"uint128"},
 		{"init":false,"name":"_reward_adjustment_prev_epoch","type":"uint128"},

@@ -6,7 +6,6 @@
   vars:
     DELETE_DATA: no
     DO_START: yes
-    FAIL_FAST: yes
     FAST_UPDATE: yes
     UPGRADE:
       - node       # grsh + stop + up

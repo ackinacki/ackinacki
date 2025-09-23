@@ -1,15 +1,12 @@
 ---
 
 - name: Graceful shutdown request before stop
-  ansible.builtin.shell:
-    chdir: "{{ BK_DIR }}"
-    cmd: docker compose exec "node{{ NODE_ID }}" pkill node
-  ignore_errors: true
+  include_tasks: graceful-shutdown.yaml
 
 - name: Compose stop
   ansible.builtin.shell:
     chdir: "{{ BK_DIR }}"
-    cmd: docker compose stop -t {{ STOP_TIMEOUT }}
+    cmd: docker compose stop
 
 - name: Compose stop (hard)
   ansible.builtin.shell:

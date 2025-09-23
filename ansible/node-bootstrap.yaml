@@ -1,9 +1,11 @@
-- name: Block keeper deployment
+- name: Block keeper bootstrap BK set (on running node)
   hosts: '{{ target | default("block_keepers") }}'
   gather_facts: no
   become: yes
   vars:
     DELETE_DATA: no
-    DO_START: yes
+    DO_START: no
+    DO_BOOTSTRAP: yes
+    FAST_UPDATE: yes
   roles:
     - block-keeper

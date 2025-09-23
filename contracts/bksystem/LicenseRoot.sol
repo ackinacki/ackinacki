@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * GOSH contracts
- *
- * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
- */
+ * Copyright (c) GOSH Technology Ltd. All rights reserved.
+ * 
+ * Acki Nacki and GOSH are either registered trademarks or trademarks of GOSH
+ * 
+ * Licensed under the ANNL. See License.txt in the project root for license information.
+*/
 pragma gosh-solidity >=0.76.1;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
@@ -48,14 +49,14 @@ contract LicenseRoot is Modifiers {
         require(block.timestamp > _timeUnlock, ERR_NOT_READY);
         TvmCell data = BlockKeeperLib.composeLicenseStateInit(_code[m_LicenseCode], _license_number, address(this));
         _license_number += 1;
-        new LicenseContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection);
+        new LicenseContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, false);
     }
  
-    function deployLicenseOwner(uint256 pubkey) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  {
+    function deployLicenseOwner(uint256 pubkey, bool isPrivileged) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  {
         ensureBalance();
         TvmCell data = BlockKeeperLib.composeLicenseStateInit(_code[m_LicenseCode], _license_number, address(this));
         _license_number += 1;
-        new LicenseContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection);
+        new LicenseContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, isPrivileged);
     }
 
     function deployLicenseBM(uint256 pubkey) public accept {
@@ -81,13 +82,6 @@ contract LicenseRoot is Modifiers {
     function setOwner(address wallet) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  {
         ensureBalance();
         _owner_wallet = wallet;
-    }
-
-    function updateCode(TvmCell newcode, TvmCell cell) public view onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  {
-        ensureBalance();
-        tvm.setcode(newcode);
-        tvm.setCurrentCode(newcode);
-        onCodeUpgrade(cell);
     }
 
     function onCodeUpgrade(TvmCell cell) private pure {

@@ -7,7 +7,7 @@
 			"name": "constructor",
 			"inputs": [
 				{"name":"licenseBMRoot","type":"address"},
-				{"name":"epochDuration","type":"uint32"},
+				{"name":"epochDuration","type":"uint64"},
 				{"name":"waitStep","type":"uint64"},
 				{"name":"reward_adjustment","type":"uint128"},
 				{"name":"walletTouch","type":"uint8"}
@@ -18,7 +18,7 @@
 		{
 			"name": "setConfig",
 			"inputs": [
-				{"name":"epochDuration","type":"uint32"},
+				{"name":"epochDuration","type":"uint64"},
 				{"name":"waitStep","type":"uint64"},
 				{"name":"reward_period","type":"uint32"},
 				{"name":"min_reward_period","type":"uint32"},
@@ -31,7 +31,7 @@
 		{
 			"name": "setConfigNode",
 			"inputs": [
-				{"name":"epochDuration","type":"uint32"},
+				{"name":"epochDuration","type":"uint64"},
 				{"name":"waitStep","type":"uint64"},
 				{"name":"reward_period","type":"uint32"},
 				{"name":"min_reward_period","type":"uint32"},
@@ -86,7 +86,8 @@
 		{
 			"name": "slashed",
 			"inputs": [
-				{"name":"pubkey","type":"uint256"}
+				{"name":"pubkey","type":"uint256"},
+				{"name":"isWorking","type":"bool"}
 			],
 			"outputs": [
 			]
@@ -161,11 +162,11 @@
 		{"init":false,"name":"_numberOfActiveBlockManagers","type":"uint128"},
 		{"init":false,"name":"_owner_wallet","type":"optional(address)"},
 		{"init":false,"name":"_networkStart","type":"uint32"},
-		{"init":false,"name":"_epochDuration","type":"uint32"},
+		{"init":false,"name":"_epochDuration","type":"uint64"},
 		{"init":false,"name":"_waitStep","type":"uint64"},
 		{"init":false,"name":"_prevEpochDuration","type":"uint32"},
 		{"init":false,"name":"_epochStart","type":"uint32"},
-		{"init":false,"name":"_epochEnd","type":"uint32"},
+		{"init":false,"name":"_epochEnd","type":"uint64"},
 		{"init":false,"name":"_numberOfActiveBlockManagersAtEpochStart","type":"uint128"},
 		{"init":false,"name":"_numberOfActiveBlockManagersAtPrevEpochStart","type":"uint128"},
 		{"init":false,"name":"_reward_adjustment","type":"uint128"},

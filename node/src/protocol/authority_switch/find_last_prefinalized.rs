@@ -32,7 +32,7 @@ pub(super) fn find_next_prefinalized(
     candidate
 }
 
-pub(super) fn find_last_prefinalized(
+pub fn find_last_prefinalized(
     thread_identifier: &ThreadIdentifier,
     block_repository: &RepositoryImpl,
     block_state_repository: &BlockStateRepository,

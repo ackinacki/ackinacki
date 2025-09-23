@@ -6,7 +6,6 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::hash::Hash;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -65,7 +64,7 @@ pub async fn run_direct_sender<Transport, PeerId>(
     )>,
     outgoing_reply_tx: tokio::sync::broadcast::Sender<OutgoingMessage>,
     incoming_reply_tx: IncomingSender,
-    peers_rx: tokio::sync::watch::Receiver<HashMap<PeerId, PeerData>>,
+    peers_rx: tokio::sync::watch::Receiver<HashMap<PeerId, Vec<PeerData>>>,
 ) where
     Transport: NetTransport + 'static,
     PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
@@ -84,62 +83,17 @@ pub async fn run_direct_sender<Transport, PeerId>(
     .await;
 }
 
-struct DirectPeer<PeerId>
-where
-    PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
-{
-    state: parking_lot::Mutex<DirectPeerState<PeerId>>,
-    messages_tx: tokio::sync::mpsc::Sender<(NetMessage, Instant)>,
-}
-
-struct DirectPeerState<PeerId>
-where
-    PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
-{
-    id: Option<PeerId>,
-    addr: Option<SocketAddr>,
-    messages_rx: Option<tokio::sync::mpsc::Receiver<(NetMessage, Instant)>>,
-}
-
-impl<PeerId> DirectPeer<PeerId>
-where
-    PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
-{
-    fn new(id: Option<PeerId>, addr: Option<SocketAddr>) -> Self {
-        let (messages_tx, messages_rx) = tokio::sync::mpsc::channel(100);
-        Self {
-            state: parking_lot::Mutex::new(DirectPeerState {
-                id,
-                addr,
-                messages_rx: Some(messages_rx),
-            }),
-            messages_tx,
-        }
-    }
-}
-
-impl<PeerId> Display for DirectPeer<PeerId>
-where
-    PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
-{
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let state = self.state.lock();
-        if let Some(id) = &state.id {
-            f.write_str(&id.to_string())?;
-            if let Some(addr) = state.addr {
-                write!(f, " ({addr})")?;
-            }
-        } else if let Some(addr) = state.addr {
-            f.write_str(&addr.to_string())?;
-        }
-        Ok(())
-    }
-}
-
 enum PeerEvent<PeerId>
 where
     PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
 {
-    AddrResolved(Arc<DirectPeer<PeerId>>, PeerId, SocketAddr),
-    SenderStopped(Arc<DirectPeer<PeerId>>),
+    AddrsResolved(PeerId, Vec<SocketAddr>),
+    SenderStopped(PeerId, SocketAddr),
+}
+
+fn peer_info<PeerId>(id: &PeerId, addr: SocketAddr) -> String
+where
+    PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
+{
+    format!("{id} ({addr})")
 }

@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * GOSH contracts
- *
- * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
- */
+ * Copyright (c) GOSH Technology Ltd. All rights reserved.
+ * 
+ * Acki Nacki and GOSH are either registered trademarks or trademarks of GOSH
+ * 
+ * Licensed under the ANNL. See License.txt in the project root for license information.
+*/
 pragma gosh-solidity >=0.76.1;
 pragma ignoreIntOverflow;
 pragma AbiHeader expire;
@@ -26,8 +27,6 @@ contract PopitGame is Modifiers {
     uint256 _root_pubkey;
     address _boost;
     uint128 _rewards;
-    uint128 _locked;
-    uint128 _countPlay;
     event PopCoinRootReceived(string name);
     event PopCoinWalletReceived(string name);
 
@@ -51,6 +50,20 @@ contract PopitGame is Modifiers {
         _boost = new Boost {stateInit: data, value: varuint16(FEE_DEPLOY_BOOST), wid: 0, flag: 1}(_owner, _root_pubkey);
     }
 
+    function setNewCode(uint8 id, TvmCell code) public onlyOwnerPubkey(_root_pubkey) accept {
+        ensureBalance();
+        _code[id] = code;
+    }
+
+    function setNewOwner(address owner) public onlyOwnerPubkey(_root_pubkey) accept {
+        ensureBalance();
+        _owner = owner;
+    }
+
+    function addValuePopit(string name, uint256 id, uint64 value) public view senderIs(VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], tvm.hash(_code[m_PopitGame]), _root, name, _owner)) accept {
+        PopCoinWallet(msg.sender).addValuePopitGame{value: 0.1 vmshell, flag: 1}(id, value, _mbiCur);
+    }
+
     function popCoinRootDeployed(string name) public view senderIs(VerifiersLib.calculatePopCoinRootAddress(_code[m_PopCoinRoot], _root, name)) accept {
         ensureBalance();
         address addrExtern = address.makeAddrExtern(0, 0);
@@ -63,21 +76,6 @@ contract PopitGame is Modifiers {
         emit PopCoinWalletReceived{dest: addrExtern}(name);
     }
 
-    function updateGameCodeForWallet(string name) public view senderIs(VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], tvm.hash(_code[m_PopitGame]), _root, name, _owner)) accept {
-        ensureBalance();
-        PopCoinWallet(msg.sender).setGameCode{value: 0.1 vmshell, flag: 1}(_code[m_Game]);
-    }
-
-    function updateGameCode() public view senderIs(_owner) accept {
-        ensureBalance();
-        MobileVerifiersContractRoot(_root).updateGameCode{value: 0.1 vmshell, flag: 1}(_owner);
-    }
-
-    function setGameCode(TvmCell GameCode) public senderIs(_root) accept {
-        ensureBalance();
-        _code[m_Game] = GameCode;
-    }
-
     function ensureBalance() private pure {
         if (address(this).balance > CONTRACT_BALANCE) { return; }
         gosh.mintshellq(CONTRACT_BALANCE);
@@ -88,44 +86,37 @@ contract PopitGame is Modifiers {
         _mbiCur = mbiCur;
     }
 
-    function deployGame(string name) public senderIs(VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], tvm.hash(_code[m_PopitGame]), _root, name, _owner)) accept {
+    function deployPopCoinWallet(string name, uint64 value) public view onlyOwnerPubkey(_root_pubkey) accept {
         ensureBalance();
-        uint128 lock = gosh.calcminstakebm(_rewards, block.timestamp - _startTime);
-        require(lock <= address(this).currencies[CURRENCIES_ID], ERR_LOW_VALUE);
-        if (lock > _locked) {
-            _locked = lock;
-        }
-        _countPlay += 1;
-        PopCoinWallet(msg.sender).deployGameFinal{value: 0.1 vmshell, flag: 1}(_mbiCur);
+        require(_mbiCur != 0, ERR_WRONG_DATA);
+        TvmCell data = VerifiersLib.composePopCoinWalletStateInit(_code[m_PopCoinWallet], tvm.hash(_code[m_PopitGame]), _root, name, _owner);
+        new PopCoinWallet {stateInit: data, value: varuint16(FEE_DEPLOY_POP_COIN_WALLET), wid: 0, flag: 1}(_code[m_PopitGame], value, VerifiersLib.calculatePopCoinRootAddress(_code[m_PopCoinRoot], _root, name), _root_pubkey, _mbiCur);
     }
 
-
-    function deployPopCoinWallet(string name, uint128 value) public view onlyOwnerPubkey(_root_pubkey) accept {
+    function deployPopCoinWalletOldTransfer(string name, uint64 value) public view onlyOwnerPubkey(_root_pubkey) accept {
         ensureBalance();
         TvmCell data = VerifiersLib.composePopCoinWalletStateInit(_code[m_PopCoinWallet], tvm.hash(_code[m_PopitGame]), _root, name, _owner);
-        new PopCoinWallet {stateInit: data, value: varuint16(FEE_DEPLOY_POP_COIN_WALLET), wid: 0, flag: 1}(_code[m_PopitGame], _code[m_Game], value, VerifiersLib.calculatePopCoinRootAddress(_code[m_PopCoinRoot], _root, name), _root_pubkey);
-    }
-
-    function gameDestroyed(string name) public senderIs(VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], tvm.hash(_code[m_PopitGame]), _root, name, _owner)) accept {
-        ensureBalance();
-        if (_countPlay == 0) { return; }
-        _countPlay -= 1;
-        if (_countPlay == 0) {
-            _locked = 0;
-        }
+        new PopCoinWallet {stateInit: data, value: varuint16(FEE_DEPLOY_POP_COIN_WALLET), wid: 0, flag: 1}(_code[m_PopitGame], value, VerifiersLib.calculatePopCoinRootAddress(_code[m_PopCoinRoot], _root, name), _root_pubkey, _mbiCur);
     }
 
     function withdraw(uint128 value, address to) public senderIs(_owner) {
         ensureBalance();
-        if (_countPlay != 0) {
-            _locked = gosh.calcminstakebm(_rewards, block.timestamp - _startTime);
-        }
-        require(value + _locked <= address(this).currencies[CURRENCIES_ID], ERR_LOW_VALUE);   
+        require(value <= address(this).currencies[CURRENCIES_ID], ERR_LOW_VALUE);   
         mapping(uint32 => varuint32) data_cur;
         data_cur[CURRENCIES_ID] = varuint32(value);
         to.transfer({value: 0.1 vmshell, currencies: data_cur, flag: 1});
         _mbiCur = 0;
         Boost(_boost).deleteMbiCur{value: 0.1 vmshell, flag: 1}();
+    }
+
+    function updateCode(TvmCell newcode, TvmCell cell) public view onlyOwnerPubkey(_root_pubkey) accept  {
+        ensureBalance();
+        tvm.setcode(newcode);
+        tvm.setCurrentCode(newcode);
+        onCodeUpgrade(cell);
+    }
+
+    function onCodeUpgrade(TvmCell cell) private pure {
     }
     
     //Fallback/Receive

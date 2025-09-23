@@ -3,6 +3,7 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::num::NonZero;
 use std::path::PathBuf;
@@ -40,6 +41,8 @@ use network::resolver::sign_gossip_node;
 use network::resolver::WatchGossipConfig;
 use node::block::producer::wasm::WasmNodeCache;
 use node::block_keeper_system::BlockKeeperSet;
+use node::bls::envelope::BLSSignedEnvelope;
+use node::bls::envelope::Envelope;
 use node::config::load_blockchain_config;
 use node::config::load_config_from_file;
 use node::external_messages::ExternalMessagesThreadState;
@@ -49,11 +52,13 @@ use node::helper::metrics::Metrics;
 use node::helper::metrics::BLOCK_STATE_SAVE_CHANNEL;
 use node::helper::metrics::OPTIMISTIC_STATE_SAVE_CHANNEL;
 use node::helper::shutdown_tracing;
+use node::helper::start_shutdown;
 use node::helper::SHUTDOWN_FLAG;
 use node::multithreading::routing::service::Command;
 use node::multithreading::routing::service::RoutingService;
 use node::node::block_request_service::BlockRequestService;
 use node::node::block_state::attestation_target_checkpoints::AncestorBlocksFinalizationCheckpoints;
+use node::node::block_state::repository::BlockState;
 use node::node::block_state::repository::BlockStateRepository;
 use node::node::block_state::start_state_save_service;
 use node::node::block_state::state::AttestationTarget;
@@ -62,6 +67,7 @@ use node::node::services::attestations_target::service::AttestationTargetsServic
 use node::node::services::authority_switch::AuthoritySwitchService;
 use node::node::services::block_processor::service::BlockProcessorService;
 use node::node::services::block_processor::service::SecurityGuarantee;
+use node::node::services::block_processor::service::MAX_ATTESTATION_TARGET_BETA;
 use node::node::services::send_attestations::AttestationSendService;
 use node::node::services::send_attestations::AttestationSendServiceHandler;
 use node::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
@@ -72,7 +78,9 @@ use node::node::services::validation::service::ValidationService;
 use node::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use node::node::NodeIdentifier;
 use node::protocol::authority_switch;
+use node::protocol::authority_switch::action_lock::ActionLockCollection;
 use node::protocol::authority_switch::action_lock::Authority;
+use node::protocol::authority_switch::find_last_prefinalized::find_last_prefinalized;
 use node::repository::accounts::AccountsRepository;
 use node::repository::load_saved_blocks::SavedBlocksLoader;
 use node::repository::start_optimistic_state_save_service;
@@ -89,6 +97,7 @@ use node::storage::DEFAULT_AEROSPIKE_MESSAGE_CACHE_MAX_ENTRIES;
 use node::types::bp_selector::ProducerSelector;
 use node::types::calculate_hash;
 use node::types::thread_message_queue::account_messages_iterator::AccountMessagesIterator;
+use node::types::AckiNackiBlock;
 use node::types::BlockHeight;
 use node::types::BlockIdentifier;
 use node::types::BlockSeqNo;
@@ -134,6 +143,9 @@ lazy_static::lazy_static!(
 struct Args {
     #[arg(short, long)]
     config_path: PathBuf,
+    #[arg(long)]
+    #[arg(default_value = "true")]
+    clear_missing_block_locks: bool,
 }
 
 #[cfg(feature = "rayon_affinity")]
@@ -238,6 +250,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     tracing::info!("Node config: {}", serde_json::to_string_pretty(&config)?);
     tracing::info!("Gossip seeds expanded: {:?}", gossip_config.seeds);
     tracing::info!("Gossip advertise addr: {:?}", gossip_config.advertise_addr);
+    tracing::info!("Clear missing block locks: {}", args.clear_missing_block_locks);
 
     let node_metrics = metrics.as_ref().map(|m| m.node.clone());
     let socket_address =
@@ -272,7 +285,10 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let (bk_set_update_async_tx, bk_set_update_async_rx) =
         tokio::sync::watch::channel(bk_set.clone());
     let (watch_gossip_config_tx, watch_gossip_config_rx) =
-        tokio::sync::watch::channel(WatchGossipConfig { trusted_pubkeys: HashSet::default() });
+        tokio::sync::watch::channel(WatchGossipConfig {
+            max_nodes_with_same_id: config.network.max_nodes_with_same_id as usize,
+            trusted_pubkeys: HashSet::default(),
+        });
     let (config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
     let (gossip_config_tx, gossip_config_rx) = tokio::sync::watch::channel(gossip_config);
     let (network_config_tx, network_config_rx) = tokio::sync::watch::channel(network_config);
@@ -343,9 +359,10 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let block_manager_handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
         transport_layer::server::LiteServer::new(block_manager_listen_addr)
             .start(raw_block_receiver, move |node_id| {
-                let node_addr =
-                    nodes_rx_clone.borrow().get(&node_id).map(|x| x.peer_addr.ip().to_string());
-
+                let node_addr = nodes_rx_clone
+                    .borrow()
+                    .get(&node_id)
+                    .map(|x| x.first().map(|x| x.peer_addr.ip().to_string()).unwrap_or_default());
                 node_addr
             })
             .await?;
@@ -638,6 +655,19 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             services.thread_sync.on_block_finalized(&last_finalized_id, thread_id).unwrap();
         });
     }
+
+    let action_lock_collections = if args.clear_missing_block_locks {
+        clear_missing_block_locks(
+            &repository,
+            &block_state_repo,
+            &unprocessed_blocks,
+            action_lock_db.clone(),
+            repo_path.join("action-locks"),
+        )?
+    } else {
+        HashMap::new()
+    };
+
     let ackinackisender = AckiNackiSend::builder()
         .node_id(config.local.node_id.clone())
         .bls_keys_map(bls_keys_map.clone())
@@ -670,6 +700,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         .action_lock_db(action_lock_db)
         .max_lookback_block_height_distance(finalized_block_storage_size)
         .self_addr(config.network.node_advertise_addr)
+        .action_lock_collections(action_lock_collections)
         .build(),
     ));
 
@@ -1144,7 +1175,9 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     // unreachable!("sigint handler thread never returns")
 
                     tracing::info!(target: "monit", "Start shutdown");
-                    SHUTDOWN_FLAG.set(true).expect("");
+
+                    start_shutdown();
+
                     repository.dump_state();
 
                     // Note: vec of rx can be locked because we don't expect new threads to start
@@ -1227,7 +1260,7 @@ fn into_external_message(
 fn resolve_bp(
     thread_id: ThreadIdentifier,
     repo: &Mutex<RepositoryImpl>,
-    nodes_rx: &mut tokio::sync::watch::Receiver<HashMap<NodeIdentifier, PeerData>>,
+    nodes_rx: &mut tokio::sync::watch::Receiver<HashMap<NodeIdentifier, Vec<PeerData>>>,
     node_id: &NodeIdentifier,
 ) -> ResolvingResult {
     let bp_map = repo.lock().get_nodes_by_threads();
@@ -1242,6 +1275,7 @@ fn resolve_bp(
     let list = nodes_rx
         .borrow()
         .get(bp_id)
+        .and_then(|peers| peers.first())
         .map(|peer| match &peer.bk_api_socket {
             Some(socket) => socket.to_string(),
             None => peer.peer_addr.to_string(),
@@ -1313,6 +1347,7 @@ async fn dispatch_hot_reload(
                             .chain(network_config.credential.my_cert_pubkeys().unwrap_or_default()),
                     );
                 watch_gossip_config_tx.send_replace(WatchGossipConfig {
+                    max_nodes_with_same_id: config.network.max_nodes_with_same_id as usize,
                     trusted_pubkeys: network_config.credential.trusted_pubkeys.clone(),
                 });
                 network_config_tx.send_replace(network_config);
@@ -1355,4 +1390,124 @@ async fn dispatch_hot_reload(
             }
         }
     }
+}
+
+fn clear_missing_block_locks(
+    repository_impl: &RepositoryImpl,
+    block_state_repository: &BlockStateRepository,
+    unfinalized_blocks: &HashMap<
+        ThreadIdentifier,
+        Vec<(BlockState, Arc<Envelope<GoshBLS, AckiNackiBlock>>)>,
+    >,
+    action_lock_db: ActionLockStorage,
+    action_lock_data_dir: PathBuf,
+) -> anyhow::Result<HashMap<ThreadIdentifier, ActionLockCollection>> {
+    let mut result = HashMap::new();
+    for (thread_id, _metadata) in repository_impl.get_all_metadata().guarded(|e| e.clone()) {
+        let mut action_lock_collection = ActionLockCollection::new(
+            action_lock_data_dir.join(format!("{thread_id:?}")),
+            action_lock_db.clone(),
+        );
+        let last_prefinalized =
+            find_last_prefinalized(&thread_id, repository_impl, block_state_repository)?;
+        let (prefinalized_block_height, children) = last_prefinalized.guarded(|e| {
+            (
+                (*e.block_height()).expect("Prefinalized block must have block height set"),
+                e.known_children_for_all_threads(),
+            )
+        });
+
+        let mut cur_thread_heights = HashSet::new();
+        let mut cursor = prefinalized_block_height;
+        let check_distance = MAX_ATTESTATION_TARGET_BETA * 2;
+        for _ in 0..check_distance {
+            cur_thread_heights.insert(cursor);
+            cursor = cursor.next(&thread_id);
+        }
+
+        let mut children = VecDeque::from_iter(children);
+        for _ in 0..check_distance {
+            let mut next_children = VecDeque::new();
+            let mut same_thread_child_height = None;
+            for child in children.iter() {
+                let child_state = block_state_repository.get(child)?;
+                let (block_height, all_children) = child_state
+                    .guarded(|e| (*e.block_height(), e.known_children_for_all_threads()));
+                if let Some(height) = block_height {
+                    if prefinalized_block_height.signed_distance_to(&height).is_some() {
+                        // Child is from the same thread, save height and child to check lock after
+                        same_thread_child_height = Some(height);
+                        next_children.extend(all_children);
+                    } else {
+                        // Child from the other thread, check block but not parse children
+                        if let Some(child_thread_id) =
+                            child_state.guarded(|e| *e.thread_identifier())
+                        {
+                            if !unfinalized_blocks
+                                .get(&child_thread_id)
+                                .map(|v| {
+                                    v.iter().any(|(_, block)| block.data().identifier() == *child)
+                                })
+                                .unwrap_or(false)
+                            {
+                                tracing::trace!(
+                                    "clear_missing_block_locks: remove lock for: {height:?}"
+                                );
+                                action_lock_collection.remove(&height);
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(height) = same_thread_child_height {
+                let do_remove = if let Some(lock) =
+                    action_lock_collection.get(&height, block_state_repository)
+                {
+                    tracing::trace!("clear_missing_block_locks: found lock: {lock:?}");
+                    if let Some((_, locked_block_ref)) = lock.locked_block() {
+                        let block_id = locked_block_ref.block_identifier();
+                        !unfinalized_blocks
+                            .get(&thread_id)
+                            .map(|v| {
+                                v.iter().any(|(_, block)| block.data().identifier() == *block_id)
+                            })
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if do_remove {
+                    cur_thread_heights.remove(&height);
+                    tracing::trace!("clear_missing_block_locks: remove lock for: {height:?}");
+                    action_lock_collection.remove(&height);
+                }
+            }
+            if next_children.is_empty() {
+                break;
+            }
+            children = next_children;
+        }
+
+        for height in cur_thread_heights {
+            if let Some(lock) = action_lock_collection.get(&height, block_state_repository) {
+                tracing::trace!("clear_missing_block_locks: found lock: {lock:?}");
+                if let Some((_, locked_block_ref)) = lock.locked_block() {
+                    let block_id = locked_block_ref.block_identifier();
+                    if !unfinalized_blocks
+                        .get(&thread_id)
+                        .map(|v| v.iter().any(|(_, block)| block.data().identifier() == *block_id))
+                        .unwrap_or(false)
+                    {
+                        tracing::trace!("clear_missing_block_locks: remove lock: {lock:?}");
+                        action_lock_collection.remove(&height);
+                    }
+                }
+            }
+        }
+
+        result.insert(thread_id, action_lock_collection);
+    }
+    Ok(result)
 }

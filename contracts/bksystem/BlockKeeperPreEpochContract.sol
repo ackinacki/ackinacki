@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * GOSH contracts
- *
- * Copyright (C) 2022 Serhii Horielyshev, GOSH pubkey 0xd060e0375b470815ea99d6bb2890a2a726c5b0579b83c742f5bb70e10a771a04
- */
+ * Copyright (c) GOSH Technology Ltd. All rights reserved.
+ * 
+ * Acki Nacki and GOSH are either registered trademarks or trademarks of GOSH
+ * 
+ * Licensed under the ANNL. See License.txt in the project root for license information.
+*/
 pragma gosh-solidity >=0.76.1;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
@@ -34,7 +35,6 @@ contract BlockKeeperPreEpoch is Modifiers {
     optional(uint128) _virtualStake;
     uint128 _reward_sum;
     string _myIp;
-    uint128 _reward_adjustment;
     bool isDestroy = false;
 
     constructor (
@@ -49,8 +49,7 @@ contract BlockKeeperPreEpoch is Modifiers {
         mapping(uint8 => string) ProxyList,
         uint128 reward_sum,
         string myIp,
-        uint64 epochCliff,
-        uint128 reward_adjustment
+        uint64 epochCliff
     ) {
         _code = code;
         TvmBuilder b;
@@ -75,7 +74,6 @@ contract BlockKeeperPreEpoch is Modifiers {
         _reward_sum = reward_sum;
         _wallet = msg.sender;
         _myIp = myIp;
-        _reward_adjustment = reward_adjustment;
         mapping(uint8 => TvmCell) code_for_proxy;
         code_for_proxy[m_AckiNackiBlockKeeperNodeWalletCode] = _code[m_AckiNackiBlockKeeperNodeWalletCode];
         code_for_proxy[m_BlockKeeperPreEpochCode] = _code[m_BlockKeeperPreEpochCode];
@@ -123,7 +121,7 @@ contract BlockKeeperPreEpoch is Modifiers {
             wid: 0, 
             flag: 161, 
             bounce: false
-        } (_waitStep, _epochDuration, _bls_pubkey, _code, _sumReputationCoef, _signerIndex, _licenses, _virtualStake, _reward_sum, _myIp, false, _reward_adjustment, null);
+        } (_waitStep, _epochDuration, _bls_pubkey, _code, _sumReputationCoef, _signerIndex, _licenses, _virtualStake, _reward_sum, _myIp, false, null);
     }
 
     function cancelPreEpoch() public senderIs(_wallet) accept {     

@@ -23,7 +23,12 @@
     - [Prepare Your Inventory](#prepare-your-inventory)
     - [Run the Ansible Playbook](#run-the-ansible-playbook)
     - [Run Multiple BK Nodes on a Single Server](#run-multiple-bk-nodes-on-a-single-server)
+  - [Block Keeper Node Management](#block-keeper-node-management)
     - [Graceful Shutdown of a BK Node](#graceful-shutdown-of-a-bk-node)
+    - [Graceful shutdown using Ansible playbook](#graceful-shutdown-using-ansible-playbook)
+    - [Upgrading Block Keeper to a new image or configuration](#upgrading-block-keeper-to-a-new-image-or-configuration)
+    - [Stopping node with data cleanup](#stopping-node-with-data-cleanup)
+    - [Starting back a stopped node without configuration changes](#starting-back-a-stopped-node-without-configuration-changes)
   - [Running Staking with Ansible](#running-staking-with-ansible)
     - [Prerequisites](#prerequisites-2)
     - [Run the Script](#run-the-script)
@@ -58,6 +63,7 @@
     - [Key Variables](#key-variables-1)
     - [Prepare Your Inventory](#prepare-your-inventory-1)
     - [Run the Ansible Playbook](#run-the-ansible-playbook-2)
+    - [Upgrading proxy configuration or image](#upgrading-proxy-configuration-or-image)
 
 # Block Keeper System Requirements
 
@@ -129,7 +135,7 @@ At network launch, the Zerostate will include:
 
 ## Stage 3. Launch After the GOSH Team Signal
 
-The Gosh team will announce the exact network launch time in advance (including day, hour, minute).
+The Gosh team has announced the exact network launch time ([day, hour, minute](https://t.me/ackinackinews/472)).
 So, either set up an automatic launch of the deployment scripts and staking on each server where the Igniter was running,
 or launch them manually at the specified time
   - [BK deployment instructions ](#block-keeper-deployment-and-running-staking-with-ansible)
@@ -142,6 +148,10 @@ You can change a node’s ip-adress after the network launch.
 [see instruction](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#changing-the-ip-address-of-a-bk-node)
 
 *A guide for Proxy IP migration will be added soon.*
+
+🚨 **Important:**
+If BK did not submit an application to continue staking, they can rejoin the network only from Epoch 12.
+(The duration of one Epoch is 259,200 blocks ≈ 24 hours.)
 
 # (Next Phase) Joining the Acki Nacki Network After Launch
 
@@ -193,6 +203,15 @@ If you run multiple nodes and your network card is under 2 Gbps, set up a Proxy 
 **Step 4.**
 Start the node and staking:
 After at least one license is delegated, the Node Owner deploys BK software and starts staking on the server [using the instruction](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#block-keeper-deployment-with-ansible).
+
+🚨 **Important:**
+If a ВК did not participate from the network launch, they can join only from Epoch 12.
+(The duration of one Epoch is 259,200 blocks ≈ 24 hours.)
+
+* Get the current network `seq_no`:
+```bash
+tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no'
+```
 
 **Step 5.**
 [Check the node status](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#check-node-status).
@@ -404,7 +423,10 @@ ansible-playbook -i test-inventory.yaml ansible/node-deployment.yaml
 
 Upon completion of the script, BLS keys will be generated and saved in the file `block_keeper{{ NODE_ID }}_bls.keys.json` in the `{{ BK_DIR }}/bk-configs/` folder on the remote server, along with the node.
 
-**`BLS keys`** - the keys used by Block Keeper (BK) to sign blocks. The keys have a lifespan of one Epoch. Each BK maintains a list of BLS public keys from other BKs (for the current Epoch), which are used to verify attestations on blocks.
+**`BLS keys`** - the keys used by Block Keeper (BK) to sign blocks. The keys have a lifespan of one Epoch. New BLS keys are generated during restaking. Each BK maintains a list of BLS public keys from other BKs (for the current Epoch), which are used to verify attestations on blocks.
+
+🚨 **Important:**
+**Back up your BLS keys every time they are regenerated.**
 
 During the deployment of a BK node, the staking script will also be automatically started.
 
@@ -419,9 +441,9 @@ docker compose ps
 Verify that the containers using the specified images are in the UP status:
 ```
 teamgosh/ackinacki-node
-teamgosh/ackinacki-gql-server
 teamgosh/ackinacki-staking
-aerospike/aerospike-server:latest
+aerospike/aerospike-server
+stakater/logrotate
 ```
 
 Check node logs
@@ -432,7 +454,7 @@ tail -f $MNT_DATA/logs-block-keeper/node.log
 
 ### Run Multiple BK Nodes on a Single Server
 
-**Inportant:**
+**Important:**
 Make sure your server has enough resources to run multiple BK nodes.
 
 To run multiple BK nodes on a single server, assign each BK node to a different ports and create a separate Docker Compose configuration for each one.
@@ -495,6 +517,9 @@ block_keepers:
       BIND_MESSAGE_ROUTER_PORT: 8700
       BIND_GOSSIP_PORT: 10000
       BLOCK_MANAGER_PORT: 12000
+      AEROSPIKE_PORT: 4000
+      AEROSPIKE_FABRIC_PORT: 4001
+      AEROSPIKE_HEARTBEAT_PORT: 4002
       NODE_OWNER_KEY: PATH_TO_NODE_OWNER_KEY
 
     YOUR-NODE-NAME-2:
@@ -506,8 +531,13 @@ block_keepers:
       BIND_MESSAGE_ROUTER_PORT: 8701
       BIND_GOSSIP_PORT: 10001
       BLOCK_MANAGER_PORT: 12001
+      AEROSPIKE_PORT: 4010
+      AEROSPIKE_FABRIC_PORT: 4011
+      AEROSPIKE_HEARTBEAT_PORT: 4012
       NODE_OWNER_KEY: PATH_TO_NODE_OWNER_KEY_2
 ```
+
+## Block Keeper Node Management
 
 ### Graceful Shutdown of a BK Node
 
@@ -545,7 +575,7 @@ docker compose exec node{{ NODE_ID }} pkill node
 You should see a message similar to:
 
 ```yaml
-2025-08-21T11:21:08.761169Z TRACE ThreadId(01) node: Shutdown finished
+2025-08-21T11:21:08.761169Z TRACE ThreadId(01) monit: Shutdown finished
 ```
 
 and no new logs should appear afterward.
@@ -554,6 +584,57 @@ and no new logs should appear afterward.
 
 ```
 docker compose down node{{ NODE_ID }}
+```
+
+### Graceful shutdown using Ansible playbook
+
+Alternatively, you can perform a graceful shutdown using the Ansible playbook. It is recommended to use this when it is
+required to perform graceful shutdown of many nodes at once. To do this, you can use the following command:
+
+```bash
+ansible-playbook -i test-inventory.yaml ansible/node-stopping.yml
+```
+
+Keep an eye on the output of the command to make sure that everything was successful and nothing timed out.
+
+### Upgrading Block Keeper to a new image or configuration
+
+To upgrade the node or config vars to the new version, update the inventory correspondingly and use the following command:
+
+```bash
+ansible-playbook -i test-inventory.yaml ansible/node-upgrading.yml
+```
+
+However, **it is strongly recommended** to check the output first:
+
+```bash
+ansible-playbook -i test-inventory.yaml ansible/node-upgrading.yml --check --diff
+```
+
+Make sure that nothing in the docker compose or configuration files changed that was not intended to be changed. For example,
+if you only upgrade the image, make sure that configuration variables have not changed.
+
+### Stopping node with data cleanup
+
+If you need to clean up a node database because of data corruption or if some upgrade explicitly requires it,
+you can use the following command to stop the node and clean up the data:
+
+```bash
+ansible-playbook -i test-inventory.yaml ansible/node-clean-data.yml
+```
+
+Afterward, you can use the [node upgrading script](#upgrading-block-keeper-to-a-new-image-or-configuration) or
+[node startup script](#starting-back-a-stopped-node-without-configuration-changes) as necessary. If you have all
+required keys on hand, then you can use [main BK deployment script](#run-the-ansible-playbook)
+(using `--check --diff` first is recommended).
+
+### Starting back a stopped node without configuration changes
+
+If you stopped a node for some reason (with or without data clean), and want to just restart it without any configuration
+changes (or if you do not have the necessary keys or other files on hand), you can use the following command:
+
+```bash
+ansible-playbook -i test-inventory.yaml ansible/node-starting.yml
 ```
 
 ## Running Staking with Ansible
@@ -1131,13 +1212,17 @@ all:
     - shellnet2.ackinacki.org:10000
     - shellnet3.ackinacki.org:10000
     - shellnet4.ackinacki.org:10000
+    NODE_GROUP_ID: ""
+    OTEL_COLLECTOR: no
+    OTEL_SERVICE_NAME: ""
 
 proxy:
   hosts:
     YOUR-PROXY-HOST:
+      PROXY_ID: 1
       HOST_PUBLIC_IP: HOST_IP_PUBLIC
       # Add signing keys to proxy for generating certificates
-      # Use several for reliability, but different set for each proxy
+      # Use several for reliability, but using different set for each proxy is recommended
       PROXY_SIGNING_KEYS:
       - "block-keeper-1.keys.json"
       - "block-keeper-2.keys.json"
@@ -1145,8 +1230,12 @@ proxy:
 ```
 
 `PROXY_SIGNING_KEYS` list contains path to Block Keeper keys. Better to store them in the same folder with proxy deployment playbook. Also you can specify absolute path.
-Note that the `PROXY_BK_ADDRS` variable must include at least several of your Block Keepers, but not too many, because
-it will periodically request an actual BK set from _all_ Block Keepers in the list.
+
+Note that the `PROXY_BK_ADDRS` variable must include at least several of your Block Keepers.
+Actually, updating the BK set is not a computationally intensive operation, so it is recommended to include all your Block Keepers in the list.
+
+To publish metrics to your collector, you should set the variables `OTEL_COLLECTOR`, `OTEL_SERVICE_NAME` and `NODE_GROUP_ID` to similar ones as in the Block Keeper deployment.
+Also, in such case, make sure that each host has a unique `PROXY_ID` variable set.
 
 To test the deployment with a dry run:
 
@@ -1168,3 +1257,19 @@ To view the Proxy logs:
 tail -f $PROXY_DIR/logs-proxy/proxy.log
 ```
 
+### Upgrading proxy configuration or image
+
+Depending on whether you need to regenerate the proxy certificate (for example, if you changed the `PROXY_SIGNING_KEYS` variable),
+you need to use either `ansible/proxy-deployment.yaml` or `ansible/proxy-upgrade.yaml` playbook.`
+
+If you need to regenerate the proxy certificate, you need to run the `ansible/proxy-deployment.yaml` playbook.
+
+If you need to upgrade the proxy image or other parameters without changing the keys (regenerating certificates), you need to run the `ansible/proxy-upgrade.yaml` playbook.
+
+```bash
+# This will regenerate the proxy certificate and requires BK keys
+ansible-playbook -i test-inventory.yaml ansible/proxy-deployment.yaml
+
+# This will stop, update compose and config, and restart proxy WITHOUT regenerating keys
+ansible-playbook -i test-inventory.yaml ansible/proxy-upgrade.yaml
+```

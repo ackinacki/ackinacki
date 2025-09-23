@@ -24,14 +24,6 @@
 			]
 		},
 		{
-			"name": "acceptTransfer",
-			"inputs": [
-				{"name":"payload","type":"bytes"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "sendTransaction",
 			"inputs": [
 				{"name":"dest","type":"address"},

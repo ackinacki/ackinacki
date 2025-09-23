@@ -19,6 +19,7 @@ pub enum SubscribeStrategy<PeerId> {
 
 #[derive(Clone, PartialEq)]
 pub struct WatchGossipConfig {
+    pub max_nodes_with_same_id: usize,
     pub trusted_pubkeys: HashSet<transport_layer::VerifyingKey>,
 }
 
@@ -28,7 +29,7 @@ pub async fn watch_gossip<PeerId>(
     strategy: SubscribeStrategy<PeerId>,
     chitchat: ChitchatRef,
     subscribe_tx: tokio::sync::watch::Sender<Vec<Vec<SocketAddr>>>,
-    peers_tx: tokio::sync::watch::Sender<HashMap<PeerId, PeerData>>,
+    peers_tx: tokio::sync::watch::Sender<HashMap<PeerId, Vec<PeerData>>>,
     metrics: Option<NetMetrics>,
 ) where
     PeerId: Clone + Display + Send + Sync + Hash + Eq + FromStr<Err: Display> + 'static,
@@ -47,10 +48,17 @@ pub async fn watch_gossip<PeerId>(
         }
 
         let new_subscribe_to_send = subscribe.keys().cloned().collect::<Vec<_>>();
-        let new_peers_to_send = peers
-            .iter()
-            .map(|(peer_id, (peer_data, _))| (peer_id.clone(), peer_data.clone()))
-            .collect();
+        let mut new_peers_to_send = HashMap::<PeerId, Vec<PeerData>>::new();
+        for ((id, _), (peer_data, _)) in &peers {
+            new_peers_to_send
+                .entry(id.clone())
+                .and_modify(|x| {
+                    if x.len() < config.max_nodes_with_same_id {
+                        x.push(peer_data.clone());
+                    }
+                })
+                .or_insert_with(|| vec![peer_data.clone()]);
+        }
         let subscribe_to_send_changed = new_subscribe_to_send != subscribe_to_send;
         let peers_to_send_changed = new_peers_to_send != peers_to_send;
         if subscribe_to_send_changed || peers_to_send_changed {
@@ -92,7 +100,7 @@ fn refresh<PeerId>(
     strategy: &SubscribeStrategy<PeerId>,
     chitchat: &ChitchatRef,
     subscribe: &mut HashMap<Vec<SocketAddr>, HashSet<transport_layer::VerifyingKey>>,
-    peers: &mut HashMap<PeerId, (PeerData, HashSet<transport_layer::VerifyingKey>)>,
+    peers: &mut HashMap<(PeerId, SocketAddr), (PeerData, HashSet<transport_layer::VerifyingKey>)>,
     config: &WatchGossipConfig,
 ) -> usize
 where
@@ -137,12 +145,12 @@ where
         if !subscribe_addrs.is_empty() && !subscribe.contains_key(&subscribe_addrs) {
             subscribe.insert(subscribe_addrs.clone(), HashSet::new());
         }
-        if let Some((peer_data, _)) = peers.get_mut(&peer.id) {
+        if let Some((peer_data, _)) = peers.get_mut(&(peer.id.clone(), peer.advertise_addr)) {
             peer_data.peer_addr = peer.advertise_addr;
             peer_data.bk_api_socket = peer.bk_api_socket;
         } else {
             peers.insert(
-                peer.id.clone(),
+                (peer.id.clone(), peer.advertise_addr),
                 (
                     PeerData { peer_addr: peer.advertise_addr, bk_api_socket: peer.bk_api_socket },
                     HashSet::new(),
@@ -155,7 +163,13 @@ where
             if !subscribe_addrs.is_empty() {
                 verify_pubkey_in(subscribe, &subscribe_addrs, pubkey, is_trusted, |v| v);
             }
-            verify_pubkey_in(peers, &peer.id, pubkey, is_trusted, |(_, x)| x);
+            verify_pubkey_in(
+                peers,
+                &(peer.id.clone(), peer.advertise_addr),
+                pubkey,
+                is_trusted,
+                |(_, x)| x,
+            );
         }
     }
     live_nodes_len
@@ -206,14 +220,11 @@ fn subscribe_info(
     subscribe.keys().map(|addrs| format!("[{}]", addrs.iter().join(","))).join(",")
 }
 
-fn peers_info<P>(peers: &HashMap<P, (PeerData, HashSet<transport_layer::VerifyingKey>)>) -> String
+fn peers_info<P>(
+    peers: &HashMap<(P, SocketAddr), (PeerData, HashSet<transport_layer::VerifyingKey>)>,
+) -> String
 where
     P: Display,
 {
-    peers
-        .iter()
-        .map(|(id, (peer_data, _))| {
-            format!("{}: {}", &id.to_string().as_str()[0..4], peer_data.peer_addr)
-        })
-        .join(",")
+    peers.keys().map(|(id, addr)| format!("{}: {addr}", &id.to_string().as_str()[0..4])).join(",")
 }

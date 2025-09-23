@@ -3,12 +3,8 @@ pragma ignoreIntOverflow;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
 
-interface IAccept {
-    function acceptTransfer(bytes payload) external;
-}
-
 /// @title Multisignature wallet with setcode and exchange ecc.
-contract UpdateCustodianMultisigWallet is IAccept {
+contract UpdateCustodianMultisigWallet {
 
     /*
      *  Storage
@@ -266,14 +262,6 @@ contract UpdateCustodianMultisigWallet is IAccept {
     /*
      * Public functions
      */
-
-    /// @dev A payable method for accepting incoming funds. Generates
-    /// an event with incoming payload.
-    /// @param payload Payload from message body.
-    function acceptTransfer(bytes payload) external override {
-        emit TransferAccepted(payload);
-    }
-
     /// @dev Allows custodian if she is the only owner of multisig to transfer funds with minimal fees.
     /// @param dest Transfer target address.
     /// @param value Amount of funds to transfer.

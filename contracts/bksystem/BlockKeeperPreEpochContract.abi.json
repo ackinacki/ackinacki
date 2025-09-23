@@ -17,8 +17,7 @@
 				{"name":"ProxyList","type":"map(uint8,string)"},
 				{"name":"reward_sum","type":"uint128"},
 				{"name":"myIp","type":"string"},
-				{"name":"epochCliff","type":"uint64"},
-				{"name":"reward_adjustment","type":"uint128"}
+				{"name":"epochCliff","type":"uint64"}
 			],
 			"outputs": [
 			]
@@ -95,7 +94,6 @@
 		{"init":false,"name":"_virtualStake","type":"optional(uint128)"},
 		{"init":false,"name":"_reward_sum","type":"uint128"},
 		{"init":false,"name":"_myIp","type":"string"},
-		{"init":false,"name":"_reward_adjustment","type":"uint128"},
 		{"init":false,"name":"isDestroy","type":"bool"}
 	]
 }

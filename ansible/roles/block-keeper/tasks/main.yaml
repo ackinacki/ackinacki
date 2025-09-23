@@ -2,7 +2,7 @@
 - name: Get Epoch code hash
   ansible.builtin.set_fact:
     CODE_HASH: "{{ lookup('ansible.builtin.file', '../contracts/bksystem/BlockKeeperEpochContract.code.hash') }}"
-  when: [not FAST_UPDATE, CODE_HASH is not defined]
+  when: CODE_HASH is not defined
 
 - name: Ensure required directories exist
   include_tasks: ensure-dirs.yaml
@@ -35,6 +35,10 @@
 - name: Stop and delete logs
   include_tasks: stop-delete-logs.yaml
   when: DELETE_LOGS
+
+- name: Ensure required directories exist after deleting something
+  include_tasks: ensure-dirs.yaml
+  when: DELETE_DATA or DELETE_LOGS
 
 - name: Start block keeper
   include_tasks: start-bk.yaml

@@ -31,6 +31,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicI32;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -72,6 +73,7 @@ use crate::block::producer::ProducerService;
 use crate::bls::gosh_bls::PubKey;
 use crate::bls::gosh_bls::Secret;
 use crate::external_messages::ExternalMessagesThreadState;
+use crate::helper::FINALIZATION_LOOPS_COUNTER;
 pub use crate::node::associated_types::NodeIdentifier;
 use crate::node::block_state::repository::BlockState;
 use crate::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
@@ -269,6 +271,9 @@ where
                     let node_id = config.local.node_id.clone();
                     let authority = authority_state.clone();
                     move || {
+                        {
+                            FINALIZATION_LOOPS_COUNTER.fetch_add(1, Ordering::Relaxed);
+                        }
                         crate::node::services::finalization::finalization_loop(
                             repository_clone,
                             block_state_repository_clone,
@@ -284,6 +289,9 @@ where
                             chain_pulse_monitor_clone,
                             thread_id_clone,
                         );
+                        {
+                            FINALIZATION_LOOPS_COUNTER.fetch_sub(1, Ordering::Relaxed);
+                        }
                         Ok(())
                     }
                 })

@@ -13,6 +13,7 @@ use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::BLSSignatureScheme;
 use crate::bls::GoshBLS;
+use crate::helper::start_shutdown;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::NackData;
@@ -137,7 +138,7 @@ impl AckiNackiSend {
         })?;
         let node_epoch_secret = self.bls_keys_map.guarded(|e| e.get(&node_epoch_pubkey).cloned());
         if node_epoch_secret.is_none() {
-            SHUTDOWN_FLAG.set(true).expect("");
+            start_shutdown();
             tracing::error!("Node does not have valid key which was used to deploy epoch: pubkey={node_epoch_pubkey:?}");
         }
         let node_epoch_secret = node_epoch_secret?.0;
