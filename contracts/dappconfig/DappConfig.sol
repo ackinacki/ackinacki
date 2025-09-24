@@ -58,6 +58,12 @@ contract DappConfig is Modifiers {
         _data.available_balance -= value;
     }
 
+    function setNewUnlimit(
+        bool is_unlimit
+    ) public internalMsg senderIs(address(this)) {
+        _data.is_unlimit = is_unlimit;
+    }
+
     /**
      * @dev Handles incoming transfers to the contract. Updates the available balance
      *      with the amount of `ECC_SHELL` currency received.

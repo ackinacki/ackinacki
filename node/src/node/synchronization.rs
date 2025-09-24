@@ -34,7 +34,7 @@ where
     pub(crate) fn execute_synchronizing(
         &mut self,
     ) -> anyhow::Result<SynchronizationResult<(NetworkMessage, SocketAddr)>> {
-        tracing::trace!("Start synchronization");
+        tracing::trace!(target: "monit", "Start synchronization");
         self.state_sync_service.reset_sync();
         let (synchronization_tx, synchronization_rx) = instrumented_channel(
             self.metrics.clone(),

@@ -157,6 +157,7 @@ contract BlockKeeperContractRoot is Modifiers {
         ensureBalance();
         if (_epochDuration * CLOSE_EPOCH_NUMBER > block.seqno) {
             AckiNackiBlockKeeperNodeWallet(msg.sender).stakeNotAccepted{value: 0.1 vmshell, currencies: msg.currencies, flag: 1}(_epochDuration);
+            return;
         }
         optional(uint128) virtualStake;
         uint128 diff = 0;

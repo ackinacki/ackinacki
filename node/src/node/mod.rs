@@ -20,6 +20,7 @@ pub mod block_request_service;
 mod network_message;
 
 mod send;
+pub(crate) use send::broadcast_node_joining;
 pub mod services;
 mod synchronization;
 mod threads;

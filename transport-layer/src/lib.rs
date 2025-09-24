@@ -22,6 +22,7 @@ pub use crate::tls::generate_self_signed_cert;
 pub use crate::tls::get_pubkeys_from_cert_der;
 pub use crate::tls::hex_verifying_key;
 pub use crate::tls::hex_verifying_keys;
+pub use crate::tls::pubkeys_info;
 pub use crate::tls::resolve_signing_keys;
 pub use crate::tls::verify_cert;
 use crate::tls::verify_cert_hash_and_pubkeys;

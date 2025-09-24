@@ -9,7 +9,6 @@ use async_trait::async_trait;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 use tracing::debug;
-use tracing::info;
 
 use crate::serialize::Deserializable;
 use crate::serialize::Serializable;
@@ -133,7 +132,7 @@ impl ChannelTransport {
     }
 
     fn close(&self, addr: SocketAddr) {
-        info!(addr=%addr, "close");
+        debug!(addr=%addr, "close");
         let mut inner_lock = self.inner.lock();
         inner_lock.send_channels.remove(&addr);
     }

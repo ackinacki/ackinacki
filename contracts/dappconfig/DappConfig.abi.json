@@ -22,6 +22,14 @@
 			]
 		},
 		{
+			"name": "setNewUnlimit",
+			"inputs": [
+				{"name":"is_unlimit","type":"bool"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "getDetails",
 			"inputs": [
 			],

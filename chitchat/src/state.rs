@@ -16,7 +16,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::watch;
 use tokio::time::Instant;
-use tracing::info;
 use tracing::warn;
 
 use crate::delta::Delta;
@@ -154,7 +153,7 @@ impl NodeState {
             // This delta is coming from the future.
             // We probably experienced a reset and this delta is not usable for us anymore.
             // This is not a bug, it can happen, but we just need to ignore it!
-            info!(
+            tracing::debug!(
                 node=?node_delta.chitchat_id,
                 from_version=node_delta.from_version_excluded,
                 last_gc_version=node_delta.last_gc_version,
@@ -215,7 +214,7 @@ impl NodeState {
         }
 
         // We are out of sync. This delta is an invitation to `reset` our state.
-        info!(
+        tracing::debug!(
             node=?node_delta.chitchat_id,
             last_gc_version=node_delta.last_gc_version,
             current_last_gc_version=self.last_gc_version,

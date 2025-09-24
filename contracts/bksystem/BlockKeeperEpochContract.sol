@@ -157,18 +157,6 @@ contract BlockKeeperEpoch is Modifiers {
         _stakeContinue = 0;
     }
 
-    function changeReputation(uint128 value) public senderIs(_owner_address) accept {
-        ensureBalance();
-        if (value <= _sumReputationCoef) {
-            _sumReputationCoef -= value;
-        } else {
-            _sumReputationCoef = (MIN_REP_COEF / MAX_LICENSE_NUMBER) * uint128(_licenses.length);
-        }
-        if (_isContinue) {
-            cancelContinueStakeIn();
-        }
-    }
-
     function slash(uint8 slash_type) public senderIs(_owner_address) accept {
         ensureBalance();
         if (_is_touching) {

@@ -143,7 +143,7 @@ async fn connection_handler(
         tracing::trace!("Received {} bytes for {peer}", data.len());
         match connection.send(&data).await {
             Ok(_) => {
-                tracing::info!("Sent {} bytes to {peer}", data.len())
+                tracing::debug!("Sent {} bytes to {peer}", data.len())
             }
             Err(err) => {
                 tracing::error!("Can't {} bytes to {peer}: {err}", data.len());
@@ -175,7 +175,7 @@ where
         let node_addr = bp_resolver(node_id);
         match outgoing_message_tx.send(Arc::new(bincode::serialize(&(node_addr, message))?)) {
             Ok(number_subscribers) => {
-                tracing::info!("Message forwarded to {} broadcast senders", number_subscribers);
+                tracing::debug!("Message forwarded to {} broadcast senders", number_subscribers);
             }
             Err(_err) => {
                 tracing::warn!("Message not forwarded: no broadcast senders");

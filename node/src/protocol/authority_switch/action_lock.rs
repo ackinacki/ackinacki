@@ -38,6 +38,7 @@ use crate::node::associated_types::AttestationTargetType;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::block_state::tools::invalidate_branch;
+use crate::node::broadcast_node_joining;
 use crate::node::services::send_attestations::AttestationSendService;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::NetBlock;
@@ -789,9 +790,12 @@ impl ThreadAuthority {
                 let thread_id = parent_block
                     .guarded(|e| *e.thread_identifier())
                     .expect("Thread id must be set for parent block");
-                let _ = self
-                    .network_broadcast_tx
-                    .send(NetworkMessage::NodeJoining((self.node_identifier.clone(), thread_id)));
+                let _ = broadcast_node_joining(
+                    &self.network_broadcast_tx,
+                    self.block_repository.get_metrics(),
+                    self.node_identifier.clone(),
+                    thread_id,
+                );
                 let _ = self.self_node_authority_tx.as_ref().map(|e| {
                     e.send(WrappedItem {
                         payload: (

@@ -78,7 +78,7 @@ pub struct NextRoundFailed {
     requests_aggregated: Vec<Envelope<GoshBLS, Lock>>,
 }
 
-#[derive(Clone, Serialize, Deserialize, Getters, TypedBuilder)]
+#[derive(Clone, Serialize, Deserialize, Getters, TypedBuilder, Debug)]
 pub struct NextRoundReject {
     thread_identifier: ThreadIdentifier,
     prefinalized_block: NetBlock,

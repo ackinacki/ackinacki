@@ -76,7 +76,7 @@ async fn execute(args: cli::CliArgs) -> anyhow::Result<()> {
             }
         };
 
-        tracing::info!("Connection {:?} {:?}", connection.stable_id(), connection.session_id());
+        tracing::info!("Connected to {:?} {:?}", connection.stable_id(), connection.session_id());
 
         // dummy reader
         tokio::spawn({

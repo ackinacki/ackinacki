@@ -94,7 +94,7 @@ impl<Transport: NetTransport + 'static> TransportLayerSocket<Transport> {
         let task = tokio::spawn(handle_outgoing_connection(message_rx, connection));
         let new_connection = Arc::new(OutgoingConnection { message_tx, task });
         self.outgoing_connections.insert(to_addr, new_connection.clone());
-        info!(open_connections = self.open_connections(), "open connections");
+        debug!(open_connections = self.open_connections(), "open connections");
         Ok(new_connection)
     }
 
@@ -163,7 +163,7 @@ impl<Transport: NetTransport + 'static> Socket for TransportLayerSocket<Transpor
                 if self.incoming_message_rx.len() >= SOFT_LEN_THRESHOLD
                     && received_at.elapsed() > MESSAGE_SOFT_TTL
                 {
-                    info!(
+                    debug!(
                         "Incoming message expired by soft ttl, queue len: {}, received: {:?}",
                         self.incoming_message_rx.len(),
                         received_at.elapsed()
@@ -174,7 +174,7 @@ impl<Transport: NetTransport + 'static> Socket for TransportLayerSocket<Transpor
             }
         };
 
-        info!("chitchat recv message from {}", from_addr);
+        debug!("chitchat recv message from {}", from_addr);
 
         Ok((from_addr, message))
     }
@@ -214,7 +214,7 @@ async fn handle_incoming_connection<IncomingRequest: NetIncomingRequest + 'stati
 ) -> anyhow::Result<()> {
     let connection = connection_request.accept().await?;
     let from_addr = connection.remote_addr();
-    info!("new connection from {from_addr}");
+    info!("New connection from {from_addr}");
     loop {
         let (message, duration) = connection.recv().await?;
         let len = message.len();

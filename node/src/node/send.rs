@@ -3,9 +3,11 @@
 
 use std::collections::HashMap;
 
+use network::channel::NetBroadcastSender;
 use network::channel::NetDirectSender;
 
 use crate::bls::envelope::BLSSignedEnvelope;
+use crate::helper::metrics::BlockProductionMetrics;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::NodeAssociatedTypes;
 use crate::node::services::sync::StateSyncService;
@@ -53,29 +55,40 @@ pub fn send_blocks_range_request(
     Ok(())
 }
 
+pub(crate) fn broadcast_node_joining(
+    network_broadcast_tx: &NetBroadcastSender<NetworkMessage>,
+    metrics: Option<&BlockProductionMetrics>,
+    node_id: NodeIdentifier,
+    thread_id: ThreadIdentifier,
+) -> anyhow::Result<()> {
+    tracing::info!(target: "monit", "Broadcast NetworkMessage::NodeJoining");
+    match network_broadcast_tx.send(NetworkMessage::NodeJoining((node_id, thread_id))) {
+        Ok(_) => {
+            if let Some(m) = metrics {
+                m.report_broadcast_join(&thread_id);
+            }
+        }
+        Err(e) => {
+            if SHUTDOWN_FLAG.get() != Some(&true) {
+                anyhow::bail!("Failed to broadcast node joining: {e}");
+            }
+        }
+    }
+    Ok(())
+}
+
 impl<TStateSyncService, TRandomGenerator> Node<TStateSyncService, TRandomGenerator>
 where
     TStateSyncService: StateSyncService<Repository = RepositoryImpl>,
     TRandomGenerator: rand::Rng,
 {
     pub(crate) fn broadcast_node_joining(&self) -> anyhow::Result<()> {
-        tracing::info!(target: "monit", "Broadcast NetworkMessage::NodeJoining");
-        match self
-            .network_broadcast_tx
-            .send(NetworkMessage::NodeJoining((self.config.local.node_id.clone(), self.thread_id)))
-        {
-            Ok(_) => {
-                if let Some(m) = &self.metrics {
-                    m.report_broadcast_join(&self.thread_id);
-                }
-            }
-            Err(e) => {
-                if SHUTDOWN_FLAG.get() != Some(&true) {
-                    anyhow::bail!("Failed to broadcast node joining: {e}");
-                }
-            }
-        }
-        Ok(())
+        broadcast_node_joining(
+            &self.network_broadcast_tx,
+            self.metrics.as_ref(),
+            self.config.local.node_id.clone(),
+            self.thread_id,
+        )
     }
 
     pub(crate) fn send_block_request(

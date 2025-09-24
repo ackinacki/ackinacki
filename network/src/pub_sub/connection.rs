@@ -298,7 +298,7 @@ impl IncomingMessage {
         };
         match self.message.delivery_duration_ms() {
             Ok(delivery_duration_ms) => {
-                tracing::info!(
+                tracing::debug!(
                     "Received incoming {}, peer {}, duration {}",
                     self.message.label,
                     self.connection_info.remote_info(),
@@ -316,7 +316,7 @@ impl IncomingMessage {
                 if let Some(metrics) = metrics.as_ref() {
                     metrics.report_error("in_msg_dur_na");
                 }
-                tracing::info!(
+                tracing::debug!(
                     "Received incoming {}, peer {}, duration N/A",
                     self.message.label,
                     self.connection_info.remote_info(),

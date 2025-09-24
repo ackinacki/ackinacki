@@ -316,10 +316,7 @@ fn verify_cert_pubkeys(
     }))
 }
 
-pub(crate) fn pubkeys_info<'a>(
-    pubkeys: impl IntoIterator<Item = &'a VerifyingKey>,
-    len: usize,
-) -> String {
+pub fn pubkeys_info<'a>(pubkeys: impl IntoIterator<Item = &'a VerifyingKey>, len: usize) -> String {
     let mut s = String::new();
     for pubkey in pubkeys {
         if !s.is_empty() {

@@ -54,6 +54,7 @@ impl AuthoritySwitchService {
                     match msg {
                         NetworkMessage::AuthoritySwitchProtocol(auth_switch) => match auth_switch {
                             AuthoritySwitch::Request(next_round) => {
+                                tracing::trace!(target: "monit", "Incoming AuthoritySwitch::Request lock={:?}", next_round.lock());
                                 tracing::trace!("Received NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Request: {next_round:?})");
 
                                 if let Some(attestation) =
@@ -152,6 +153,7 @@ impl AuthoritySwitchService {
                                 }
                             }
                             AuthoritySwitch::Switched(next_round_success) => {
+                                tracing::trace!(target: "monit", "Incoming AuthoritySwitch::Switched {:?}", next_round_success.data());
                                 //
                                 let Ok(proposed_block) =
                                     next_round_success.data().proposed_block().get_envelope()
@@ -211,6 +213,7 @@ impl AuthoritySwitchService {
                                 self.on_authority_switch_success(next_round_success)?;
                             }
                             AuthoritySwitch::Reject(rejection_reason) => {
+                                tracing::trace!(target: "monit", "Incoming AuthoritySwitch::Reject {:?}", rejection_reason);
                                 let net_block = rejection_reason.prefinalized_block();
                                 tracing::trace!(
                                     "Received: AuthoritySwitch::Reject: {} {} {:?}",
@@ -344,6 +347,7 @@ impl AuthoritySwitchService {
                                 });
                             }
                             AuthoritySwitch::RejectTooOld(_) => {
+                                tracing::trace!(target: "monit", "Incoming AuthoritySwitch::RejectTooOld");
                                 if last_state_sync_executed.elapsed() > self.sync_timeout_duration {
                                     last_state_sync_executed = std::time::Instant::now();
                                     let _ = self.self_node_tx.send(WrappedItem {
@@ -356,6 +360,7 @@ impl AuthoritySwitchService {
                                 }
                             }
                             AuthoritySwitch::Failed(e) => {
+                                tracing::trace!(target: "monit", "Incoming AuthoritySwitch::Failed");
                                 let net_block = e.data().proposed_block();
                                 // self.on_incoming_candidate_block(net_block, None)?;
                                 let _ = self.self_node_tx.send(WrappedItem {

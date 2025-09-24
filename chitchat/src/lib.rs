@@ -28,7 +28,6 @@ pub use serialize::Serializable;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tracing::error;
-use tracing::info;
 use tracing::warn;
 
 pub use self::configuration::ChitchatConfig;
@@ -126,7 +125,7 @@ impl Chitchat {
         });
         if has_reset {
             if let Some(catchup_callback) = &self.config.catchup_callback {
-                info!("executing catch-up callback");
+                tracing::debug!("executing catch-up callback");
                 catchup_callback();
             }
         }

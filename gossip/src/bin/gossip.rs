@@ -129,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
                     .map(|n| n.node_id.clone())
                     .filter(|node_id| *node_id != chitchat_guard.self_chitchat_id().node_id)
                     .collect::<HashSet<_>>();
-                tracing::info!("Live nodes: {live_nodes:?}");
+                tracing::debug!("Live nodes: {live_nodes:?}");
                 let binds = chitchat_guard
                     .state_snapshot()
                     .node_states
@@ -138,7 +138,7 @@ async fn main() -> anyhow::Result<()> {
                     .filter_map(|snapshot| snapshot.get("bind"))
                     .filter_map(|bind| SocketAddr::from_str(bind).ok())
                     .collect::<Vec<_>>();
-                tracing::info!("Binds: {binds:?}");
+                tracing::debug!("Binds: {binds:?}");
             }
             sleep(Duration::from_secs(1)).await;
         }

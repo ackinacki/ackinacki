@@ -5,6 +5,7 @@ use std::time::Duration;
 use futures::future::join_all;
 use http_server::ApiBk;
 use http_server::ApiBkSet;
+use transport_layer::pubkeys_info;
 
 use crate::config::ProxyConfig;
 
@@ -57,6 +58,19 @@ pub async fn run(
         }
 
         if let Some(winner) = winner {
+            if winner.seq_no >= bk_set.seq_no {
+                tracing::info!(
+                    "Update bk set to received {} from {}.",
+                    winner.seq_no,
+                    bk_set.seq_no
+                );
+            } else {
+                tracing::info!(
+                    "Skip received bk set {} because of less than {}.",
+                    winner.seq_no,
+                    bk_set.seq_no
+                );
+            }
             if bk_set.update(&winner) {
                 let new_bk_owner_pubkeys = HashSet::<transport_layer::VerifyingKey>::from_iter(
                     bk_set
@@ -66,6 +80,11 @@ pub async fn run(
                         .chain(bk_set.future.iter().filter_map(bk_owner_pubkey)),
                 );
                 if new_bk_owner_pubkeys != bk_owner_pubkeys {
+                    tracing::info!(
+                        "Update trusted pubkeys to [{}] from [{}].",
+                        pubkeys_info(&new_bk_owner_pubkeys, 4),
+                        pubkeys_info(&bk_owner_pubkeys, 4)
+                    );
                     bk_owner_pubkeys = new_bk_owner_pubkeys;
                     bk_set_tx.send_replace(bk_owner_pubkeys.clone());
                 }

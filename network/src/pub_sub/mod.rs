@@ -239,19 +239,19 @@ impl<Transport: NetTransport> PubSub<Transport> {
         );
         match conn.role {
             ConnectionRole::Subscriber => {
-                tracing::info!(
+                tracing::debug!(
                     publisher = conn.remote_addr.to_string(),
                     "Disconnected from publisher"
                 );
             }
             ConnectionRole::Publisher => {
-                tracing::info!(
+                tracing::debug!(
                     subscriber = conn.remote_addr.to_string(),
                     "Subscriber disconnected"
                 );
             }
             ConnectionRole::DirectReceiver => {
-                tracing::info!(
+                tracing::debug!(
                     subscriber = conn.remote_addr.to_string(),
                     "Disconnected from direct sender"
                 );

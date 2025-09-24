@@ -116,7 +116,7 @@ async fn spawn_dns_refresh_loop(seeds: &[String]) -> watch::Receiver<HashSet<Soc
     let initial_seed_addrs: HashSet<SocketAddr> =
         seed_addrs_not_requiring_resolution.union(&first_round_seed_resolution).cloned().collect();
 
-    info!(initial_seed_addrs=?initial_seed_addrs);
+    debug!(initial_seed_addrs=?initial_seed_addrs);
 
     let (seed_addrs_tx, seed_addrs_rx) = watch::channel(initial_seed_addrs);
     if !seed_requiring_dns.is_empty() {
@@ -259,7 +259,7 @@ impl Server {
                     }
                 },
                 _ = gossip_interval.tick() => {
-                    info!("gossip");
+                    debug!("gossip");
                     self.gossip_multiple().await
                 },
                 command = self.command_rx.recv() => match command {
@@ -337,7 +337,7 @@ impl Server {
             result
         };
 
-        info!(selected_nodes=?selected_nodes, "gossip");
+        debug!(selected_nodes=?selected_nodes, "gossip");
         for node in selected_nodes {
             if let Err(error) = self.gossip(node).await {
                 info!(error=?error, node_address=%node, "Failed to gossip with live node.");

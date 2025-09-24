@@ -753,6 +753,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let node_metrics_clone = node_metrics.clone();
     let stop_result_rx_vec = Arc::new(Mutex::new(vec![]));
     let stop_result_rx_vec_clone = stop_result_rx_vec.clone();
+    let bk_set_update_async_rx_clone = bk_set_update_async_rx.clone();
     let (routing, _inner_service_thread) = RoutingService::start(
         (routing, routing_rx),
         metrics.as_ref().map(|m| m.node.clone()),
@@ -830,6 +831,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 blob_sync_service.interface(),
                 file_saving_service,
                 chitchat.clone(),
+                bk_set_update_async_rx_clone.clone(),
             );
             sync_state_service.static_storages = config.network.static_storages.clone();
             sync_state_service.max_download_tries = config.network.shared_state_max_download_tries;

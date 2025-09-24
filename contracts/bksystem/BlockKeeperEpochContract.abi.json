@@ -52,14 +52,6 @@
 			]
 		},
 		{
-			"name": "changeReputation",
-			"inputs": [
-				{"name":"value","type":"uint128"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "slash",
 			"inputs": [
 				{"name":"slash_type","type":"uint8"}

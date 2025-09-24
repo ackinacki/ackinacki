@@ -59,7 +59,7 @@ where
         res: &mut Response,
         _ctrl: &mut FlowCtrl,
     ) {
-        tracing::info!(target: "http_server", "Rest service: request got!");
+        tracing::debug!(target: "http_server", "Rest service: request got!");
         let moment = Instant::now();
         let Ok(mut web_server) = depot.obtain::<WebServer<
             TMessage,

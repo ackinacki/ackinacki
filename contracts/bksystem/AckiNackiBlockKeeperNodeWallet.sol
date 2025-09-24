@@ -680,16 +680,12 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         delete _activeStakes[hash];
     }
 
-    function slashCoolerFirstHelper(LicenseStake value, bool is_preepoch_cancel, uint128 diff, address epoch, address epochcontinue) private returns(bool, uint128, address, address) {
+    function slashCoolerFirstHelper(LicenseStake value, bool is_preepoch_cancel, address epochcontinue) private returns(bool, address) {
         if (_licenses.exists(value.num)) {
             if (is_preepoch_cancel == false) {
                 if (_licenses[value.num].status == LICENSE_PRE_EPOCH) {
                     BlockKeeperPreEpoch(_licenses[value.num].stakeController.get()).cancelPreEpoch{value: 0.1 vmshell, flag: 1}();
                     is_preepoch_cancel = true;
-                } else 
-                if (_licenses[value.num].status == LICENSE_EPOCH) {
-                    diff += gosh.calcrepcoef(_licenses[value.num].reputationTime) - gosh.calcrepcoef(0);
-                    epoch = _licenses[value.num].stakeController.get();
                 } else 
                 if (_licenses[value.num].status == LICENSE_CONTINUE) {
                     epochcontinue = _licenses[value.num].stakeController.get();
@@ -703,7 +699,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
             _licenses[value.num].coolerCount -= 1;
             _licenses[value.num].isLockBecauseOfSlashing = true;
         }
-        return (is_preepoch_cancel, diff, epoch, epochcontinue);
+        return (is_preepoch_cancel, epochcontinue);
     }
 
     function slashCoolerSecondHelper(LicenseStake value, uint8 slash_type) private {
@@ -726,14 +722,9 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         require(licenses.length <= MAX_LICENSE_NUMBER, ERR_NOT_SUPPORT);
         require(licenses.length > 0, ERR_NOT_SUPPORT);
         bool is_preepoch_cancel;
-        uint128 diff;
-        address epoch;
         address epochcontinue;
         for (LicenseStake value: licenses) {
-            (is_preepoch_cancel, diff, epoch, epochcontinue) = slashCoolerFirstHelper(value, is_preepoch_cancel, diff, epoch, epochcontinue);   
-        }
-        if (diff != 0) {
-            BlockKeeperEpoch(epoch).changeReputation{value: 0.1 vmshell, flag: 1}(diff);
+            (is_preepoch_cancel, epochcontinue) = slashCoolerFirstHelper(value, is_preepoch_cancel, epochcontinue);   
         }
         if (epochcontinue != address.makeAddrStd(0, 0)) {
             BlockKeeperEpoch(epochcontinue).cancelContinueStake{value: 0.1 vmshell, flag: 1}();

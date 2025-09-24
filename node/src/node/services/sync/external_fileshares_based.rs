@@ -4,24 +4,29 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use chitchat::ChitchatRef;
+use http_server::ApiBkSet;
 use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedSender;
+use tvm_types::UInt256;
 use url::Url;
 
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::services::sync::FileSavingService;
 use crate::node::services::sync::StateSyncService;
 use crate::node::services::sync::GOSSIP_API_ADVERTISE_ADDR_KEY;
+use crate::node::NodeIdentifier;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::services::blob_sync::external_fileshares_based::ServiceInterface;
 use crate::services::blob_sync::BlobSyncService;
+use crate::types::AccountAddress;
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
@@ -36,6 +41,7 @@ pub struct ExternalFileSharesBased {
     file_saving_service: FileSavingService,
     state_load_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     chitchat: ChitchatRef,
+    bk_set_rx: tokio::sync::watch::Receiver<ApiBkSet>,
 }
 
 impl ExternalFileSharesBased {
@@ -43,6 +49,7 @@ impl ExternalFileSharesBased {
         blob_sync: ServiceInterface,
         file_saving_service: FileSavingService,
         chitchat: ChitchatRef,
+        bk_set_rx: tokio::sync::watch::Receiver<ApiBkSet>,
     ) -> Self {
         // TODO: move to config
         Self {
@@ -54,8 +61,16 @@ impl ExternalFileSharesBased {
             file_saving_service,
             state_load_thread: Arc::new(Mutex::new(None)),
             chitchat,
+            bk_set_rx,
         }
     }
+}
+
+fn get_node_id_and_download_url_from_gossip(
+    entry: &chitchat::NodeState,
+) -> Option<(NodeIdentifier, &str)> {
+    let node_id = entry.get("node_id").map(NodeIdentifier::from_str)?.ok()?;
+    entry.get(GOSSIP_API_ADVERTISE_ADDR_KEY).map(|url| (node_id, url))
 }
 
 impl StateSyncService for ExternalFileSharesBased {
@@ -88,6 +103,13 @@ impl StateSyncService for ExternalFileSharesBased {
         let repo = Arc::new(Mutex::new(repository.clone()));
         tracing::trace!("add_load_state_task: adding {resource_address:?}");
         let checker = Arc::new(Mutex::new(resource_address.clone()));
+        let current_bk_set_node_ids = self
+            .bk_set_rx
+            .borrow()
+            .current
+            .iter()
+            .map(|bk| NodeIdentifier::from(AccountAddress(UInt256::with_array(bk.owner_address.0))))
+            .collect::<HashSet<_>>();
         for (thread_id, block_id) in resource_address {
             let output_clone = output.clone();
             let checker_clone = checker.clone();
@@ -101,7 +123,10 @@ impl StateSyncService for ExternalFileSharesBased {
                     .state_snapshot()
                     .node_states
                     .iter()
-                    .flat_map(|node| node.get(GOSSIP_API_ADVERTISE_ADDR_KEY))
+                    .flat_map(|node| {
+                        let (node_id, url) = get_node_id_and_download_url_from_gossip(node)?;
+                        current_bk_set_node_ids.contains(&node_id).then_some(url)
+                    })
                     .flat_map(|raw_url| Url::parse(raw_url).ok())
                     // TODO: make it connected to http-server settings so that it's not hardcoded
                     .flat_map(|url| url.join("v2/storage/").ok()),
