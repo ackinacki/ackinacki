@@ -21,6 +21,8 @@ import "./SignerIndex.sol";
 contract BlockKeeperContractRoot is Modifiers {
     string constant version = "1.0.0";
 
+    string public _notion = "We can forget about existing money and existing banks, and gradually open a system of accounts which will displace the government money. - Friedrich A. Hayek";
+
     mapping(uint8 => TvmCell) _code;
     uint64 _epochDuration = 259200;
     uint64 _epochCliff = 25920;

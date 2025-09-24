@@ -432,6 +432,14 @@
 				{"name":"value0","type":"string"},
 				{"name":"value1","type":"string"}
 			]
+		},
+		{
+			"name": "_notion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_notion","type":"string"}
+			]
 		}
 	],
 	"events": [
@@ -440,6 +448,7 @@
 		{"init":true,"name":"_pubkey","type":"uint256"},
 		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_notion","type":"string"},
 		{"init":false,"name":"_code","type":"map(uint8,cell)"},
 		{"init":false,"name":"_epochDuration","type":"uint64"},
 		{"init":false,"name":"_epochCliff","type":"uint64"},
