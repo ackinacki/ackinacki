@@ -126,12 +126,9 @@ contract BlockKeeperContractRoot is Modifiers {
         new AckiNackiBlockKeeperNodeWallet {stateInit: data, value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_WALLET), wid: 0, flag: 1}(_code[m_BlockKeeperPreEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperEpochCoolerCode], _code[m_BlockKeeperEpochProxyListCode], _code[m_BLSKeyCode], _code[m_SignerIndexCode], _code[m_LicenseCode], _epochDuration, _networkStart + UNLOCK_LICENSES, whiteListLicense, _licenseRoot, 0, _walletTouch);
     }
 
-    function coolerSlash(uint64 seqNoStart, uint256 pubkey, uint128 licenseCount, bool isFull) public senderIs(BlockKeeperLib.calculateBlockKeeperCoolerEpochAddress(_code[m_BlockKeeperEpochCoolerCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _code[m_BlockKeeperEpochCode], address(this), pubkey, seqNoStart)) accept {
+    function coolerSlash(uint64 seqNoStart, uint256 pubkey) public senderIs(BlockKeeperLib.calculateBlockKeeperCoolerEpochAddress(_code[m_BlockKeeperEpochCoolerCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _code[m_BlockKeeperEpochCode], address(this), pubkey, seqNoStart)) accept {
         ensureBalance();
         _slash_sum += uint128(msg.currencies[CURRENCIES_ID]);
-        if (isFull) {
-            _nlinit -= licenseCount;
-        }
     }
 
     function decreaseStakes(uint256 pubkey, uint64 seqNoStart, uint128 slash_stake, uint128 rep_coef) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], address(this), pubkey, seqNoStart)) accept {

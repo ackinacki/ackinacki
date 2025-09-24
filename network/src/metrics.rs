@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,6 +37,8 @@ pub struct NetMetrics {
     sent_to_outgoing_buffer_bytes: Counter<u64>,
     sent_bytes: Counter<u64>,
     received_bytes: Counter<u64>,
+    errors: Counter<u64>,
+    warns: Counter<u64>,
 
     // It's usual for observable instruments to be prefixed with underscore
     _incoming_buffer_size: ObservableGauge<u64>,
@@ -162,6 +165,8 @@ impl NetMetrics {
                 .build(),
             sent_bytes: meter.u64_counter("node_network_sent_bytes").build(),
             received_bytes: meter.u64_counter("node_network_received_bytes").build(),
+            errors: meter.u64_counter("node_network_errors").build(),
+            warns: meter.u64_counter("node_network_warns").build(),
             outgoing_transfer_error: meter
                 .u64_counter("node_network_outgoing_transfer_error")
                 .build(),
@@ -256,6 +261,16 @@ impl NetMetrics {
         self.received_bytes.add(bytes as u64, &attrs(msg_type, send_mode));
     }
 
+    pub fn report_warn(&self, kind: impl Into<Cow<'static, str>>) {
+        let kind = kind.into(); // Cow owns String or borrows &'static str
+        self.warns.add(1, &[KeyValue::new("kind", kind)]);
+    }
+
+    pub fn report_error(&self, kind: impl Into<Cow<'static, str>>) {
+        let kind = kind.into(); // Cow owns String or borrows &'static str
+        self.errors.add(1, &[KeyValue::new("kind", kind)]);
+    }
+
     pub fn start_delivery_phase(
         &self,
         phase: DeliveryPhase,
@@ -331,6 +346,16 @@ fn gen_boundaries(low: u32, high: u32, step: u32) -> Vec<f64> {
         }
     }
     result
+}
+
+pub fn to_label_kind<S: Into<Cow<'static, str>>>(input: S) -> String {
+    let s: Cow<'static, str> = input.into();
+    s.chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' => c.to_ascii_lowercase(),
+            _ => '_', // replace spaces and invalid chars
+        })
+        .collect()
 }
 
 #[cfg(test)]

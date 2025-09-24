@@ -38,7 +38,7 @@ contract Multifactor is Modifiers {
     /*
      *  Constants
      */
-    string constant version = "1.0.0";
+    string constant version = "1.0.1";
 
     /*
      *  Send flags
@@ -60,7 +60,7 @@ contract Multifactor is Modifiers {
 
     uint256 public _pub_recovery_key;
 
-    mapping(uint256 => bytes) public _root_provider_certificates;
+    mapping(uint256 => bytes) public _root_provider_certificates; //cert serial number -> cert bytes, related to provider (Google etc), so it may be updated after _zkid was updated, 
 
     mapping(uint256 => JWKData) public _jwk_modulus_data;
     uint8 public _jwk_modulus_data_len;
@@ -111,9 +111,6 @@ contract Multifactor is Modifiers {
         require(tvm.checkSign(epk, TvmSlice(epk_sig), epk), ERR_INVALID_SIGNATURE);
         require(uint64(block.timestamp + MIN_EPK_LIFE_TIME) < epk_expire_at, ERR_FACTOR_EXPIRED); 
         require(uint64(block.timestamp + MIN_JWK_LIFE_TIME) < jwk_modulus_expire_at, ERR_JWK_EXPIRED);
-        //require(epk_expire_at < uint64(block.timestamp + MAX_EPK_LIFE_TIME), ERR_FACTOR_TIMESTAMPT_TOO_BIG);
-        //TODO: jwk_modulus_expire_at is not too big
-        //TODO: should we control validate TLS data for jwk_modulus (and jwk_modulus_expire_at) to fully check wallet setup or this is too cumbersome?
         bytes ph = gosh.poseidon(index_mod_4, epk_expire_at, epk, jwk_modulus, iss_base_64, header_base_64, zkid);
         require(gosh.vergrth16(proof, ph, 0), ERR_INVALID_PROOF);
         TvmCell data = abi.codeSalt(tvm.code()).get();
@@ -140,23 +137,12 @@ contract Multifactor is Modifiers {
         _whiteListOfAddress[_root] = true;
     }
 
-    function updateCode(TvmCell newcode, TvmCell cell) public view onlyOwnerPubkey(_mv_root_pubkey) accept  {
-        ensureBalance();
-        tvm.setcode(newcode);
-        tvm.setCurrentCode(newcode);
-        onCodeUpgrade(cell);
-    }
-
-    function onCodeUpgrade(TvmCell cell) private pure {
-    }
-
     function ensureBalance() private pure {
         if (address(this).balance > CONTRACT_BALANCE) { return; }
         gosh.mintshellq(CONTRACT_BALANCE);
     }
 
     function cleanWhiteList(uint32 epk_expire_at) public {
-        //require(!_use_security_card, ERR_CARD_IS_TURNED_ON);
         require(block.timestamp < epk_expire_at, ERR_FACTOR_EXPIRED);
         uint256 key = generateIdBasedOnTimestampAndUintData(epk_expire_at, msg.pubkey());
         require(_factors_ordered_by_timestamp.exists(key) && _factors_ordered_by_timestamp[key] == msg.pubkey(), ERR_INVALID_SIGNATURE);
@@ -167,7 +153,6 @@ contract Multifactor is Modifiers {
     }
 
     function updateWhiteList(uint32 epk_expire_at, uint8 index, string name, uint128 indexMirror) public view {
-        //require(!_use_security_card, ERR_CARD_IS_TURNED_ON);
         uint256 addrValue = BASE_PART * SHIFT + indexMirror + 1;
         address expectedAddress = address.makeAddrStd(0, addrValue);
         require(block.timestamp < epk_expire_at, ERR_FACTOR_EXPIRED);
@@ -194,7 +179,7 @@ contract Multifactor is Modifiers {
     }
 
     /** Functions to add check and delete JWK keys  */
-    bytes _wasm_hash = hex"25dc3d80d7e4d8f27dfadc9c2faf9cf2d8dea0a9e08a692da2db7e34d74d66e1";
+    bytes public _wasm_hash = hex"d4a067079c3ff4e0b0b6f579ef2d1b9a1d8fc21a0076162503ff46a6e8fca2e5";
     string _wasm_module = "docs:tlschecker/tls-check-interface@0.1.0";
     string _wasm_function = "tlscheck";
     bytes _wasm_binary = "";
@@ -209,7 +194,13 @@ contract Multifactor is Modifiers {
         abi.encode(stamp), 
         abi.encode(_wasm_function), abi.encode(_wasm_module), abi.encode(_wasm_binary));
         bytes wasm_result = abi.decode(wasm_result_cell, bytes);
-        require(wasm_result[0] == 0x01, ERR_TLS_DATA);
+        if (wasm_result.length == 3 && wasm_result[0] == 0x00){
+            uint16 wasm_err_code = 0;
+            wasm_err_code |= uint16(uint8(wasm_result[2])) << 0; 
+            wasm_err_code |= uint16(uint8(wasm_result[1])) << 8;
+            require(false, wasm_err_code);
+        }
+        require(wasm_result.length > 9 && wasm_result[0] == 0x01, ERR_TLS_DATA);
         uint64 jwk_modulus_expire_at_new = 0;
         jwk_modulus_expire_at_new |= uint64(uint8(wasm_result[8])) << 0;  
         jwk_modulus_expire_at_new |= uint64(uint8(wasm_result[7])) << 8;  
@@ -311,7 +302,6 @@ contract Multifactor is Modifiers {
         require(uint64(block.timestamp + MIN_JWK_LIFE_TIME) < _jwk_modulus_data[jwk_hash].modulus_expire_at, ERR_JWK_EXPIRED);
         bytes ph = gosh.poseidon(_index_mod_4, epk_expire_at, epk, _jwk_modulus_data[jwk_hash].modulus, _iss_base_64, header_base_64, _zkid);
         require(gosh.vergrth16(proof, ph, 0), ERR_INVALID_PROOF);
-        //TODO: be careful that poseidon and vergrth16 can be done before tvm.accept, gas price issue is not resolved yet?
         tvm.accept();
         uint8 num_iter = NUMBER_OF_FACTORS_TO_CLEAR;
         if (_factors_len < NUMBER_OF_FACTORS_TO_CLEAR) {
@@ -330,6 +320,7 @@ contract Multifactor is Modifiers {
     }
 
     function deleteZKPfactorByItself(uint64 epk_expire_at) public {
+        ensureBalance();
         uint256 key = generateIdBasedOnTimestampAndUintData(epk_expire_at, msg.pubkey());
         require(_factors_ordered_by_timestamp.exists(key) && _factors_ordered_by_timestamp[key] == msg.pubkey(), ERR_INVALID_SIGNATURE);
         tvm.accept();
@@ -375,6 +366,12 @@ contract Multifactor is Modifiers {
 
 
     /** Functions to change/delete keys, jwks and zkp factors via master owner pubkey */
+
+    function setWasmHash(bytes wasm_hash) public onlyOwnerPubkey(_owner_pubkey)  {
+        tvm.accept();
+        ensureBalance();
+        _wasm_hash = wasm_hash;
+    }
 
 	function setForceRemoveOldest(bool flag) public onlyOwnerPubkey(_owner_pubkey) {
         tvm.accept();
@@ -444,10 +441,7 @@ contract Multifactor is Modifiers {
         require(tvm.checkSign(epk, TvmSlice(epk_sig), epk), ERR_INVALID_SIGNATURE);
         require(uint64(block.timestamp + MIN_EPK_LIFE_TIME) < epk_expire_at, ERR_FACTOR_EXPIRED); 
         require(uint64(block.timestamp + MIN_JWK_LIFE_TIME) < jwk_modulus_expire_at, ERR_JWK_EXPIRED);
-        //require(epk_expire_at < uint64(block.timestamp + MAX_EPK_LIFE_TIME), ERR_FACTOR_TIMESTAMPT_TOO_BIG);
         ensureBalance();
-        //TODO: jwk_modulus_expire_at is not too big
-        //TODO: should we control validate TLS data for jwk_modulus (and jwk_modulus_expire_at) to fully check wallet setup or this is too cumbersome?
         bytes ph = gosh.poseidon(index_mod_4, epk_expire_at, epk, jwk_modulus, iss_base_64, header_base_64, zkid);
         require(gosh.vergrth16(proof, ph, 0), ERR_INVALID_PROOF);
         tvm.accept();
@@ -523,14 +517,16 @@ contract Multifactor is Modifiers {
         _candidate_new_owner_pubkey_and_expiration = (new_owner_pubkey, epk_expire_at);
     }
 
-    function acceptCandidateSeedPhrase(uint256 new_owner_pubkey) public onlyOwnerPubkey(_pub_recovery_key) {
-        require(_candidate_new_owner_pubkey_and_expiration.hasValue(),ERR_SEED_PHRASE_NEW_CANDIDATE_NOT_FOUND);
-        (uint256 _new_owner_pubkey, uint64 _epk_expire_at) = _candidate_new_owner_pubkey_and_expiration.get();
-        require(_new_owner_pubkey == new_owner_pubkey, ERR_SEED_PHRASE_NEW_CANDIDATE_NOT_FOUND);
-        require(block.timestamp < _epk_expire_at, ERR_FACTOR_EXPIRED);
+
+
+    function acceptCandidateSeedPhrase(uint256 new_owner_pubkey) public onlyOwnerPubkey(_pub_recovery_key)  {
+        require(_candidate_new_owner_pubkey_and_expiration.hasValue(), ERR_SEED_PHRASE_NEW_CANDIDATE_NOT_FOUND);
+        (uint256 new_owner_pubkey_, uint64 epk_expire_at_) = _candidate_new_owner_pubkey_and_expiration.get();
+        require(new_owner_pubkey_ == new_owner_pubkey, ERR_SEED_PHRASE_NEW_CANDIDATE_NOT_FOUND);
+        require(block.timestamp < epk_expire_at_, ERR_FACTOR_EXPIRED);
         tvm.accept();
         ensureBalance();
-        _owner_pubkey = _new_owner_pubkey;
+        _owner_pubkey = new_owner_pubkey_;
         _candidate_new_owner_pubkey_and_expiration = null;
     }
 
@@ -617,14 +613,6 @@ contract Multifactor is Modifiers {
         return dest;
     }
 
-    
-    /// @dev Allows custodian to submit and confirm new transaction.
-    /// @param dest Transfer target address.
-    /// @param value Nanograms value to transfer.
-    /// @param bounce Bounce flag. Set true if need to transfer grams to existing account; set false to create new account.
-    /// @param allBalance Set true if need to transfer all remaining balance.
-    /// @param payload Tree of cells used as body of outbound internal message.
-    /// @return transId Transaction ID.
     function submitTransaction(
         uint64 epk_expire_at,
         address dest,
@@ -656,8 +644,7 @@ contract Multifactor is Modifiers {
         }
     }
 
-    /// @dev Allows security card to confirm a transaction.
-    /// @param transactionId Transaction ID.
+    
     function confirmTransaction(uint64 transactionId) public {
         require(_use_security_card, ERR_CARD_IS_TURNED_OFF);     
         require(_m_security_cards.exists(msg.pubkey()), ERR_INVALID_SIGNATURE);
@@ -796,11 +783,10 @@ contract Multifactor is Modifiers {
     }
 
     function get_epk_expire_at(uint256 epk) public view returns (uint64) {
-        tvm.accept();
         optional(uint256, uint256) pair = _factors_ordered_by_timestamp.min();
         while(pair.hasValue()) {
-            (uint256 key, uint256 _epk) = pair.get();
-            if (epk == _epk) {
+            (uint256 key, uint256 epk_) = pair.get();
+            if (epk == epk_) {
                 uint64 epk_expire_at = uint64(key >> 192);
                 return epk_expire_at;
             }

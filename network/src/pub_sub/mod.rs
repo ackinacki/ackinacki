@@ -29,6 +29,7 @@ use transport_layer::NetCredential;
 use transport_layer::NetTransport;
 
 use crate::detailed;
+use crate::metrics::to_label_kind;
 use crate::metrics::NetMetrics;
 use crate::pub_sub::connection::connection_remote_host_id;
 use crate::pub_sub::connection::ConnectionInfo;
@@ -143,6 +144,9 @@ impl<Transport: NetTransport> PubSub<Transport> {
                         break 'connect (connection, host_id, publisher_addr);
                     }
                     Err(err) => {
+                        if let Some(metrics) = metrics.as_ref() {
+                            metrics.report_error("pub_sub_fail_con_peer");
+                        }
                         tracing::error!(
                             addr = publisher_addr.to_string(),
                             "Failed to connect to peer: {err}"
@@ -276,51 +280,66 @@ pub fn trace_task_result(
     result
 }
 
-pub fn spawn_critical_task(name: &'static str, task: impl Future<Output = ()> + Send + 'static) {
-    monitor_critical_task(name, tokio::spawn(task));
+pub fn spawn_critical_task(
+    name: &'static str,
+    task: impl Future<Output = ()> + Send + 'static,
+    metrics: Option<NetMetrics>,
+) {
+    monitor_critical_task(name, tokio::spawn(task), metrics);
 }
 
-pub fn monitor_critical_task(name: &'static str, task: JoinHandle<()>) {
+pub fn monitor_critical_task(
+    name: &'static str,
+    task: JoinHandle<()>,
+    metrics: Option<NetMetrics>,
+) {
     tokio::spawn(async move {
         match &task.await {
             Ok(_) => tracing::info!("{name} task finished"),
             Err(err) => {
-                tracing::error!("Critical: {name} task panicked: {}", detailed(err))
-            }
-        }
-    });
-}
-
-pub fn start_critical_task_ex<Key: Send + 'static>(
-    name: &'static str,
-    key: Key,
-    stopped_tx: mpsc::UnboundedSender<Key>,
-    task: impl Future<Output = anyhow::Result<()>> + Send + 'static,
-) {
-    monitor_critical_task_ex(name, key, stopped_tx, tokio::spawn(task))
-}
-
-pub fn monitor_critical_task_ex<Key: Send + 'static>(
-    name: &'static str,
-    key: Key,
-    stopped_tx: mpsc::UnboundedSender<Key>,
-    task: JoinHandle<anyhow::Result<()>>,
-) {
-    tokio::spawn(async move {
-        match &task.await {
-            Ok(result) => match result {
-                Ok(_) => tracing::info!("{name} task finished"),
-                Err(err) => {
-                    tracing::error!("Critical: {name} task failed: {}", detailed(err))
+                if let Some(metrics) = metrics.as_ref() {
+                    let kind = to_label_kind(format!("monit_crit_panic_{name}"));
+                    metrics.report_error(kind);
                 }
-            },
-            Err(err) => {
+
                 tracing::error!("Critical: {name} task panicked: {}", detailed(err))
             }
         }
-        let _ = stopped_tx.send(key);
     });
 }
+
+// This code is unused
+//
+// pub fn start_critical_task_ex<Key: Send + 'static>(
+//     name: &'static str,
+//     key: Key,
+//     stopped_tx: mpsc::UnboundedSender<Key>,
+//     task: impl Future<Output = anyhow::Result<()>> + Send + 'static,
+// ) {
+//     monitor_critical_task_ex(name, key, stopped_tx, tokio::spawn(task))
+// }
+
+// pub fn monitor_critical_task_ex<Key: Send + 'static>(
+//     name: &'static str,
+//     key: Key,
+//     stopped_tx: mpsc::UnboundedSender<Key>,
+//     task: JoinHandle<anyhow::Result<()>>,
+// ) {
+//     tokio::spawn(async move {
+//         match &task.await {
+//             Ok(result) => match result {
+//                 Ok(_) => tracing::info!("{name} task finished"),
+//                 Err(err) => {
+//                     tracing::error!("Critical: {name} task failed: {}", detailed(err))
+//                 }
+//             },
+//             Err(err) => {
+//                 tracing::error!("Critical: {name} task panicked: {}", detailed(err))
+//             }
+//         }
+//         let _ = stopped_tx.send(key);
+//     });
+// }
 
 fn diff<Addr: Hash + Eq + Clone, Conn: Clone>(
     original: impl Iterator<Item = (Addr, Conn)>,

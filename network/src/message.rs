@@ -67,6 +67,7 @@ impl NetMessage {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
         let id = now.as_nanos().to_string();
         if compress_time + serialize_time > 50 || compress_time > 10 {
+            // TODO: metrics
             tracing::warn!(
                 msg_id = id,
                 msg_type = label,
@@ -122,6 +123,7 @@ impl NetMessage {
         };
         let deserialize_time = start.elapsed().as_millis() as usize;
         if decompress_time + deserialize_time > 100 {
+            // TODO: metrics
             tracing::warn!(
                 msg_id = self.id,
                 msg_type = self.label,

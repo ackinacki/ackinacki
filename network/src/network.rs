@@ -109,6 +109,7 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
                 peers_tx,
                 metrics.clone(),
             ),
+            metrics.clone(),
         );
 
         // listen for pub/sub connections
@@ -118,23 +119,31 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
         let shutdown_rx_clone = self.shutdown_tx.subscribe();
         let config_rx_clone = self.config_rx.clone();
         let incoming_tx_clone = IncomingSender::SyncUnbounded(incoming_tx.clone());
-        spawn_critical_task("Pub/Sub", async move {
-            if let Err(e) = crate::pub_sub::run(
-                shutdown_rx_clone,
-                config_rx_clone,
-                transport_clone,
-                is_proxy,
-                metrics_clone,
-                DEFAULT_MAX_CONNECTIONS,
-                subscribe_rx,
-                outgoing_broadcast_tx_clone,
-                incoming_tx_clone,
-            )
-            .await
-            {
-                tracing::warn!("pub/sub run task failed: {}", detailed(&e));
-            }
-        });
+        spawn_critical_task(
+            "pub_sub",
+            async move {
+                let metrics = metrics_clone.clone();
+                if let Err(e) = crate::pub_sub::run(
+                    shutdown_rx_clone,
+                    config_rx_clone,
+                    transport_clone,
+                    is_proxy,
+                    metrics_clone,
+                    DEFAULT_MAX_CONNECTIONS,
+                    subscribe_rx,
+                    outgoing_broadcast_tx_clone,
+                    incoming_tx_clone,
+                )
+                .await
+                {
+                    if let Some(metrics) = metrics.as_ref() {
+                        metrics.report_warn("pub_sub_spawn_crit");
+                    }
+                    tracing::warn!("pub/sub run task failed: {}", detailed(&e));
+                }
+            },
+            metrics.clone(),
+        );
 
         // listen for outgoing directed messages
         let peers_rx_clone = peers_rx.clone();
@@ -154,6 +163,7 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
                 incoming_reply_tx_clone,
                 peers_rx_clone,
             ),
+            metrics.clone(),
         );
 
         Ok((

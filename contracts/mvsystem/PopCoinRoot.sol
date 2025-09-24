@@ -39,6 +39,8 @@ contract PopCoinRoot is Modifiers {
     uint64[] _TAPLst;
     uint64[] _BCLst;
 
+    uint64 _deployed;
+
     constructor (
         TvmCell PopCoinWalletCode,
         uint256 popitgamehash,
@@ -59,6 +61,7 @@ contract PopCoinRoot is Modifiers {
         if (msg.sender != _root) {
             require(msg.sender == expectedAddress, ERR_INVALID_SENDER);
         }
+        _deployed = block.seqno;
         _code[m_PopCoinWallet] = PopCoinWalletCode;
         _popitgamehash = popitgamehash;
         _popits_media = popits_media;
@@ -267,9 +270,10 @@ contract PopCoinRoot is Modifiers {
         mapping(uint256 => PopitCandidateWithMedia) popits_candidate,
         bool isReadyStatus,
         address popitGameOwner,
-        string description
+        string description,
+        uint64 deployed
     ) {
-        return (_root, _name, _totalSupply, _maxPopitIndex, _popits_value, _popits_media, _rewards, _popits_candidate, _isReady, _popitGameOwner, _description);
+        return (_root, _name, _totalSupply, _maxPopitIndex, _popits_value, _popits_media, _rewards, _popits_candidate, _isReady, _popitGameOwner, _description, _deployed);
     }
 
     function getVersion() external pure returns(string, string) {

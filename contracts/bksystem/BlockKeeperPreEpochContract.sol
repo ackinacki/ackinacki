@@ -94,7 +94,7 @@ contract BlockKeeperPreEpoch is Modifiers {
 
     function destroy(bool isProxyDelete) public view senderIs(address(this)) accept {
         if (isProxyDelete) {
-            BlockKeeperEpochProxyList(BlockKeeperLib.calculateBlockKeeperEpochProxyListAddress(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], _owner_pubkey, _root)).destroy{value: 0.1 vmshell, flag: 1}(_seqNoStart);
+            BlockKeeperEpochProxyList(BlockKeeperLib.calculateBlockKeeperEpochProxyListAddress(_code[m_BlockKeeperEpochProxyListCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperEpochCode], _code[m_BlockKeeperPreEpochCode], _owner_pubkey, _root)).destroyPreEpoch{value: 0.1 vmshell, flag: 1}(_seqNoStart);
         }
         AckiNackiBlockKeeperNodeWallet(_wallet).deleteLockStake{value: 0.1 vmshell, flag: 161, bounce: false}(_seqNoStart, _bls_pubkey, _signerIndex, _licenses);
     }

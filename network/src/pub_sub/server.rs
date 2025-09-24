@@ -94,6 +94,9 @@ where
                     request,
                 ));
             } else {
+                if let Some(metrics) = metrics.as_ref() {
+                    metrics.report_error("max_conn_reached");
+                }
                 tracing::error!(
                     "Max connections reached {} of {}",
                     pub_sub.open_connections(),
@@ -118,6 +121,9 @@ pub async fn handle_incoming_connection<Transport: NetTransport>(
     let connection = match incoming_request.accept().await {
         Ok(connection) => connection,
         Err(err) => {
+            if let Some(metrics) = metrics.as_ref() {
+                metrics.report_error("fail_accept_in_con");
+            }
             tracing::error!("Failed to accept incoming connection: {}", detailed(&err));
             return;
         }
@@ -152,5 +158,8 @@ pub async fn handle_incoming_connection<Transport: NetTransport>(
         role,
     ) {
         tracing::error!("Error adding connection: {}", detailed(&err));
+        if let Some(metrics) = metrics.as_ref() {
+            metrics.report_error("err_add_con");
+        }
     }
 }

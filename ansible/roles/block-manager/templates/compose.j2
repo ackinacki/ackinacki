@@ -84,6 +84,24 @@ services:
     networks:
       - ackinacki-net
 
+  staking_bm:
+    image: {{ STAKING_BM_IMAGE }}
+    restart: unless-stopped
+    entrypoint: []
+    command:
+      - /bin/bash
+      - -c
+      - >
+        tvm-cli config -g --url "{{ TVM_ENDPOINT }}"
+        && chmod 755 /staking/bm_staking.sh
+        && exec /staking/bm_staking.sh -p {{ STAKING_TIME }} /bm-configs/{{ BM_WALLET_KEYS | basename }}
+    volumes:
+      - {{ BM_DIR }}/bm-configs:/bm-configs
+    depends_on:
+      - block_manager
+    networks:
+      - ackinacki-net
+
   logrotate:
     image: {{ LOGROTATE_IMAGE }}
     restart: unless-stopped

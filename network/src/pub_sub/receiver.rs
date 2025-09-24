@@ -59,6 +59,9 @@ async fn receive_message<Connection: NetConnection + 'static>(
                 Ok(msg) => msg,
                 Err(err) => {
                     tracing::error!("Failed to deserialize net message: {}", err);
+                    if let Some(metrics) = metrics.as_ref() {
+                        metrics.report_error("fail_deser_msg_2");
+                    }
                     receiver_stop_tx.send_replace(true);
                     return;
                 }
@@ -112,6 +115,9 @@ async fn receive_message<Connection: NetConnection + 'static>(
                 "Incoming transfer failed: {}",
                 detailed(&err)
             );
+            if let Some(metrics) = metrics.as_ref() {
+                metrics.report_error("in_transfer_fail");
+            }
             // finish the receiver loop because we have a problem with this connection
             receiver_stop_tx.send_replace(true);
         }

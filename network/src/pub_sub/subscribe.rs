@@ -98,6 +98,9 @@ pub async fn handle_subscriptions<Transport: NetTransport + 'static>(
                     match task {
                         Ok((_task_id, Ok(()))) => successfully_subscribed += 1,
                         Ok((task_id, Err(err))) => {
+                            if let Some(metrics) = metrics.as_ref() {
+                                metrics.report_error("sub_to_peer_failed");
+                            }
                             tracing::error!(
                                 addrs = task_addrs(&addrs_by_task_id, task_id),
                                 "Subscribe to peer failed: {}",
@@ -105,6 +108,9 @@ pub async fn handle_subscriptions<Transport: NetTransport + 'static>(
                             );
                         }
                         Err(err) => {
+                            if let Some(metrics) = metrics.as_ref() {
+                                metrics.report_error("sub_to_peer_panic");
+                            }
                             tracing::error!(
                                 addrs = task_addrs(&addrs_by_task_id, err.id()),
                                 "Subscribe to peer panic: {}",

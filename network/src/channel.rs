@@ -220,6 +220,9 @@ where
                 receiver_count
             }
             Err(_) => {
+                if let Some(metrics) = self.metrics.as_ref() {
+                    metrics.report_warn("no_brd_senders");
+                }
                 tracing::warn!("There are no broadcast senders. {} was not forwarded.", label);
                 0
             }

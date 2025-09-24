@@ -86,7 +86,6 @@ contract LicenseContract is Modifiers {
     function deleteWallet(uint128 reputationTime, bool isPrivileged, uint64 last_touch) public {
         require(_bkwallet.hasValue(), ERR_WALLET_NOT_EXIST);
         require(msg.sender == _bkwallet.get(), ERR_INVALID_SENDER);
-        require(block.seqno > _licenseLastTouch + LICENSE_TOUCH, ERR_LICENSE_BUSY);
         _licenseLastTouch = block.seqno;
         tvm.accept();
         ensureBalance();

@@ -65,9 +65,7 @@
 			"name": "coolerSlash",
 			"inputs": [
 				{"name":"seqNoStart","type":"uint64"},
-				{"name":"pubkey","type":"uint256"},
-				{"name":"licenseCount","type":"uint128"},
-				{"name":"isFull","type":"bool"}
+				{"name":"pubkey","type":"uint256"}
 			],
 			"outputs": [
 			]

@@ -78,7 +78,7 @@ contract BlockKeeperCooler is Modifiers {
         ensureBalance();
         if (slash_type == FULL_STAKE_SLASH) {
             AckiNackiBlockKeeperNodeWallet(_owner).slashCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, slash_type, 0, _licenses, isFromEpoch);
-            BlockKeeperContractRoot(_root).coolerSlash{value: 0.1 vmshell, flag: 161, bounce: false}(_seqNoStart, _owner_pubkey, uint128(_licenses.length), true);       
+            BlockKeeperContractRoot(_root).coolerSlash{value: 0.1 vmshell, flag: 161, bounce: false}(_seqNoStart, _owner_pubkey);       
             return;
         }                
         uint128 reward = uint128(address(this).currencies[CURRENCIES_ID]) - _stake;
@@ -91,7 +91,7 @@ contract BlockKeeperCooler is Modifiers {
         mapping(uint32 => varuint32) data_cur; 
         data_cur[CURRENCIES_ID] = varuint32(slash_stake + slash_stake_reward);
         AckiNackiBlockKeeperNodeWallet(_owner).slashCooler{value: 0.1 vmshell, flag: 1}(_seqNoStart, slash_type, slash_stake, _licenses, isFromEpoch);    
-        BlockKeeperContractRoot(_root).coolerSlash{value: 0.1 vmshell, currencies: data_cur, flag: 1}(_seqNoStart, _owner_pubkey, uint128(_licenses.length), false);       
+        BlockKeeperContractRoot(_root).coolerSlash{value: 0.1 vmshell, currencies: data_cur, flag: 1}(_seqNoStart, _owner_pubkey);       
     }
 
     function slashPartHelper(uint i, uint8 slash_type, uint128 slash_stake) private returns(uint128) {

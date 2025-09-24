@@ -189,7 +189,8 @@
 				{"components":[{"name":"value","type":"uint64"},{"name":"media","type":"string"},{"name":"protopopit","type":"optional(uint32)"},{"name":"time","type":"uint32"},{"name":"MBNLst","type":"uint64[]"},{"name":"TAPLst","type":"uint64[]"},{"name":"BCLst","type":"uint64[]"}],"name":"popits_candidate","type":"map(uint256,tuple)"},
 				{"name":"isReadyStatus","type":"bool"},
 				{"name":"popitGameOwner","type":"address"},
-				{"name":"description","type":"string"}
+				{"name":"description","type":"string"},
+				{"name":"deployed","type":"uint64"}
 			]
 		},
 		{
@@ -226,6 +227,7 @@
 		{"init":false,"name":"_popitGameOwner","type":"address"},
 		{"init":false,"name":"_MBNLst","type":"uint64[]"},
 		{"init":false,"name":"_TAPLst","type":"uint64[]"},
-		{"init":false,"name":"_BCLst","type":"uint64[]"}
+		{"init":false,"name":"_BCLst","type":"uint64[]"},
+		{"init":false,"name":"_deployed","type":"uint64"}
 	]
 }

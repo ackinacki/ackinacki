@@ -56,7 +56,9 @@ pub async fn sender<Connection: NetConnection + 'static>(
                                 SendMode::Broadcast,
                                 std::time::Duration::from_millis(0),
                             );
+                            x.report_error("out_sender_lagged");
                         });
+
                         continue;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {

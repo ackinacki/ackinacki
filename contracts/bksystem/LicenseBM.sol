@@ -72,7 +72,6 @@ contract LicenseBMContract is Modifiers {
     function deleteWallet(uint128 reward, uint128 slashSum) public accept {
         require(_bmwallet.hasValue(), ERR_WALLET_NOT_EXIST);
         require(msg.sender == _bmwallet.get(), ERR_INVALID_SENDER);
-        require(block.seqno > _licenseLastTouch + LICENSE_TOUCH, ERR_LICENSE_BUSY);
         _licenseLastTouch = block.seqno;
         ensureBalance();
         _rewarded = reward;

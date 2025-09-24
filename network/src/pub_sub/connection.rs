@@ -12,6 +12,7 @@ use transport_layer::NetTransport;
 use crate::detailed;
 use crate::host_id_prefix;
 use crate::message::NetMessage;
+use crate::metrics::to_label_kind;
 use crate::metrics::NetMetrics;
 use crate::pub_sub::receiver;
 use crate::pub_sub::sender;
@@ -159,7 +160,7 @@ pub async fn connection_supervisor<Transport: NetTransport + 'static>(
                     sender_stop_tx.clone(),
                     sender_stop_rx,
                     outgoing_messages_rx)
-                ) => trace_connection_task_result(result, "Sender", &connection.info),
+                ) => trace_connection_task_result(result, "Sender", &connection.info, &metrics),
                 result = tokio::spawn(receiver::receiver(
                     shutdown_rx.clone(),
                     metrics.clone(),
@@ -167,7 +168,7 @@ pub async fn connection_supervisor<Transport: NetTransport + 'static>(
                     receiver_stop_tx.clone(),
                     receiver_stop_rx,
                     incoming_messages_tx)
-                ) => trace_connection_task_result(result, "Receiver", &connection.info)
+                ) => trace_connection_task_result(result, "Receiver", &connection.info, &metrics)
             }
         }
         (Some(incoming_messages_tx), None) => {
@@ -179,7 +180,12 @@ pub async fn connection_supervisor<Transport: NetTransport + 'static>(
                 receiver_stop_rx,
                 incoming_messages_tx,
             );
-            trace_connection_task_result(tokio::spawn(receiver).await, "Receiver", &connection.info)
+            trace_connection_task_result(
+                tokio::spawn(receiver).await,
+                "Receiver",
+                &connection.info,
+                &metrics,
+            )
         }
         (None, Some(outgoing_messages_rx)) => {
             let sender = sender::sender(
@@ -190,7 +196,12 @@ pub async fn connection_supervisor<Transport: NetTransport + 'static>(
                 sender_stop_rx,
                 outgoing_messages_rx,
             );
-            trace_connection_task_result(tokio::spawn(sender).await, "Sender", &connection.info)
+            trace_connection_task_result(
+                tokio::spawn(sender).await,
+                "Sender",
+                &connection.info,
+                &metrics,
+            )
         }
         (None, None) => Ok(Ok(())),
     };
@@ -206,6 +217,7 @@ fn trace_connection_task_result(
     result: Result<anyhow::Result<()>, tokio::task::JoinError>,
     name: &str,
     connection_info: &ConnectionInfo,
+    metrics: &Option<NetMetrics>,
 ) -> Result<anyhow::Result<()>, tokio::task::JoinError> {
     match &result {
         Ok(result) => match result {
@@ -218,6 +230,10 @@ fn trace_connection_task_result(
                     "{name} task error: {}",
                     detailed(err)
                 );
+                if let Some(metrics) = metrics.as_ref() {
+                    let kind = to_label_kind(format!("trace_conn_{name}"));
+                    metrics.report_error(kind);
+                }
             }
         },
         Err(err) => {
@@ -225,7 +241,11 @@ fn trace_connection_task_result(
                 peer = connection_info.remote_info(),
                 "Critical: {name} task panicked: {}",
                 detailed(err)
-            )
+            );
+            if let Some(metrics) = metrics.as_ref() {
+                let kind = to_label_kind(format!("trace_conn_crit_{name}"));
+                metrics.report_error(kind);
+            }
         }
     }
     result
@@ -263,6 +283,9 @@ impl IncomingMessage {
             Ok(message) => message,
             Err(err) => {
                 tracing::error!("Failed decoding incoming message: {}", err);
+                if let Some(metrics) = metrics.as_ref() {
+                    metrics.report_error("fail_decode_in_msg");
+                }
                 tracing::debug!(
                     host_id = self.connection_info.remote_host_id_prefix,
                     msg_id = self.message.id,
@@ -290,6 +313,9 @@ impl IncomingMessage {
             }
             Err(reason) => {
                 tracing::error!("{}", reason);
+                if let Some(metrics) = metrics.as_ref() {
+                    metrics.report_error("in_msg_dur_na");
+                }
                 tracing::info!(
                     "Received incoming {}, peer {}, duration N/A",
                     self.message.label,

@@ -310,6 +310,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
     }
 
     function tryCooler() public onlyOwnerPubkey(_owner_pubkey) accept {
+        ensureBalance();
         require(block.seqno > _walletLastTouch + _walletTouch, ERR_WALLET_BUSY);
         _walletLastTouch = block.seqno;
         bool isCooler = checkCooler();

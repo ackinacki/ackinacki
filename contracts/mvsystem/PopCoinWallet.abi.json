@@ -133,7 +133,8 @@
 				{"name":"value","type":"uint64"},
 				{"name":"isReady","type":"bool"},
 				{"name":"popits_candidate","type":"map(uint256,uint64)"},
-				{"name":"popits_mbi","type":"map(uint256,uint64)"}
+				{"name":"popits_mbi","type":"map(uint256,uint64)"},
+				{"name":"deployed","type":"uint64"}
 			]
 		},
 		{
@@ -163,6 +164,7 @@
 		{"init":false,"name":"_popitGame","type":"address"},
 		{"init":false,"name":"_isReady","type":"bool"},
 		{"init":false,"name":"_root_pubkey","type":"uint256"},
-		{"init":false,"name":"_mbiCurBase","type":"uint64"}
+		{"init":false,"name":"_mbiCurBase","type":"uint64"},
+		{"init":false,"name":"_deployed","type":"uint64"}
 	]
 }

@@ -68,4 +68,14 @@ abstract contract Errors {
     uint16 constant ERR_CARD_EXISTS = 703;
     uint16 constant ERR_CARD_IS_TURNED_OFF = 704;
     uint16 constant ERR_CARD_NOT_FOUND = 705;
+
+    /**Extra wasm tls errors */
+    uint16 constant ERR_INSUFFICIENT_LEN = 801; // 0x03, 0x21
+    uint16 constant ERR_CLIENT_HELLO_NOT_FOUND = 802; // 0x03, 0x22
+    uint16 constant ERR_SERVER_HELLO_NOT_FOUND = 803; // 0x03, 0x23
+    uint16 constant ERR_ENCRYPTED_SERVER_HANDSHAKE_NOT_FOUND = 804; // 0x03, 0x24
+    uint16 constant ERR_SIGNATURE_NOT_FOUND = 805; // 0x03, 0x25
+    uint16 constant ERR_NOT_SUPPORTED_TYPE_OF_SIGNATURE = 806; // 0x03, 0x26
+    uint16 constant ERR_INVALID_CERTIFICATES_CHAIN = 807; // 0x03, 0x27
+    uint16 constant ERR_KID_NOT_FOUND = 811; // 0x03, 0x2b
 }

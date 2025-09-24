@@ -83,6 +83,14 @@
 			]
 		},
 		{
+			"name": "setWasmHash",
+			"inputs": [
+				{"name":"wasm_hash","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "setForceRemoveOldest",
 			"inputs": [
 				{"name":"flag","type":"bool"}
@@ -556,6 +564,14 @@
 			],
 			"outputs": [
 				{"name":"_force_remove_oldest","type":"bool"}
+			]
+		},
+		{
+			"name": "_wasm_hash",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_wasm_hash","type":"bytes"}
 			]
 		}
 	],

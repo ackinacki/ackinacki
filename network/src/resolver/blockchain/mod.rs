@@ -69,6 +69,7 @@ where
             }
         };
         if let Err(err) = collect_bk_set(account_provider, &bk, &mut bk_set) {
+            // TODO: metrics
             tracing::error!("Failed to collect publishers: {err}");
         }
     }

@@ -35,12 +35,13 @@ contract Multifactor is Modifiers {
     /*
      *  Constants
      */
-    string constant version = "1.0.0";
+    string constant version = "1.0.1";
+    
     uint8   constant MAX_QUEUED_REQUESTS =  20;
     uint64  constant EXPIRATION_TIME = 3601; // lifetime is 1 hour
-    uint64  constant MIN_EPK_LIFE_TIME = 300; //5 min             //60; // lifetime is 1 min
-    uint64  constant MAX_EPK_LIFE_TIME = 2592000; // 30 days      //3601; // 
-    uint64  constant MIN_JWK_LIFE_TIME = 300;  // 5 min          //3601; 
+    uint64  constant MIN_EPK_LIFE_TIME = 300; //5 min           
+    uint64  constant MAX_EPK_LIFE_TIME = 2592000; // 30 days      
+    uint64  constant MIN_JWK_LIFE_TIME = 300;  // 5 min          
     uint8   constant MAX_CARDS = 5;
     uint8   constant MAX_NUM_OF_FACTORS = 10;
     uint8   constant NUMBER_OF_FACTORS_TO_CLEAR = 5;
@@ -55,8 +56,6 @@ contract Multifactor is Modifiers {
     // Tells node to send all remaining balance.
     uint8 constant FLAG_SEND_ALL_REMAINING = 128;
 
-    //mapping(uint256 => uint64) public _factors; // key --> ephemeral pk (epk), value --> expiration timestamp 
-    //optional(uint256, uint64) _start_point_factors;
     mapping(uint256 => uint256) public _factors_ordered_by_timestamp;// key -->  64 most significant bits: expiration timestamp |  192 less significant bits of epk, value --> epk
     uint8 public _factors_len;
     
@@ -65,9 +64,8 @@ contract Multifactor is Modifiers {
 
     uint256 public _pub_recovery_key;
 
-    mapping(uint256 => bytes) public _root_provider_certificates;
+    mapping(uint256 => bytes) public _root_provider_certificates; //cert serial number -> cert bytes, related to provider (Google etc), so it may be updated after _zkid was updated, 
 
-    //bytes public _root_provider_certificate; //related to provider (Google etc), so it may be updated after _zkid was updated, 
     mapping(uint256 => JWKData) public _jwk_modulus_data;
     uint8 public _jwk_modulus_data_len;
     optional(uint256, JWKData) _start_point_jwk;
@@ -114,9 +112,6 @@ contract Multifactor is Modifiers {
         require(tvm.checkSign(epk, TvmSlice(epk_sig), epk), ERR_INVALID_SIGNATURE);
         require(uint64(block.timestamp + MIN_EPK_LIFE_TIME) < epk_expire_at, ERR_FACTOR_EXPIRED); 
         require(uint64(block.timestamp + MIN_JWK_LIFE_TIME) < jwk_modulus_expire_at, ERR_JWK_EXPIRED);
-        //require(epk_expire_at < uint64(block.timestamp + MAX_EPK_LIFE_TIME), ERR_FACTOR_TIMESTAMPT_TOO_BIG);
-        //TODO: jwk_modulus_expire_at is not too big
-        //TODO: should we control validate TLS data for jwk_modulus (and jwk_modulus_expire_at) to fully check wallet setup or this is too cumbersome?
         bytes ph = gosh.poseidon(index_mod_4, epk_expire_at, epk, jwk_modulus, iss_base_64, header_base_64, zkid);
         require(gosh.vergrth16(proof, ph, 0), ERR_INVALID_PROOF);
         tvm.accept();
@@ -139,8 +134,7 @@ contract Multifactor is Modifiers {
     }
 
     /** Functions to add check and delete JWK keys  */
-    bytes _wasm_hash = hex"25dc3d80d7e4d8f27dfadc9c2faf9cf2d8dea0a9e08a692da2db7e34d74d66e1";
-    //hex"f45dae3df26f2a45f006bd7e7d32f426e240dfd1391669953688cb40886aff11";
+    bytes public _wasm_hash = hex"d4a067079c3ff4e0b0b6f579ef2d1b9a1d8fc21a0076162503ff46a6e8fca2e5";
     string _wasm_module = "docs:tlschecker/tls-check-interface@0.1.0";
     string _wasm_function = "tlscheck";
     bytes _wasm_binary = "";
@@ -154,7 +148,13 @@ contract Multifactor is Modifiers {
         abi.encode(stamp), 
         abi.encode(_wasm_function), abi.encode(_wasm_module), abi.encode(_wasm_binary));
         bytes wasm_result = abi.decode(wasm_result_cell, bytes);
-        require(wasm_result[0] == 0x01, ERR_TLS_DATA);
+        if (wasm_result.length == 3 && wasm_result[0] == 0x00){
+            uint16 wasm_err_code = 0;
+            wasm_err_code |= uint16(uint8(wasm_result[2])) << 0; 
+            wasm_err_code |= uint16(uint8(wasm_result[1])) << 8;
+            require(false, wasm_err_code);
+        }
+        require(wasm_result.length > 9 && wasm_result[0] == 0x01, ERR_TLS_DATA);
         uint64 jwk_modulus_expire_at_new = 0;
         jwk_modulus_expire_at_new |= uint64(uint8(wasm_result[8])) << 0;  
         jwk_modulus_expire_at_new |= uint64(uint8(wasm_result[7])) << 8;  
@@ -230,7 +230,6 @@ contract Multifactor is Modifiers {
         _jwk_modulus_data_len = _jwk_modulus_data_len - 1;
     }
 
-
     /** Functions to add and clear zkp factors  */
 
     function addZKPfactor(
@@ -253,7 +252,6 @@ contract Multifactor is Modifiers {
         require(uint64(block.timestamp + MIN_JWK_LIFE_TIME) < _jwk_modulus_data[jwk_hash].modulus_expire_at, ERR_JWK_EXPIRED);
         bytes ph = gosh.poseidon(_index_mod_4, epk_expire_at, epk, _jwk_modulus_data[jwk_hash].modulus, _iss_base_64, header_base_64, _zkid);
         require(gosh.vergrth16(proof, ph, 0), ERR_INVALID_PROOF);
-        //TODO: be careful that poseidon and vergrth16 can be done before tvm.accept, gas price issue is not resolved yet?
         tvm.accept();
         uint8 num_iter = NUMBER_OF_FACTORS_TO_CLEAR;
         if (_factors_len < NUMBER_OF_FACTORS_TO_CLEAR) {
@@ -314,8 +312,12 @@ contract Multifactor is Modifiers {
         cleanExpiredZKPFactors(MAX_NUM_OF_FACTORS);
     }
 
-
     /** Functions to change/delete keys, jwks and zkp factors via master owner pubkey */
+
+    function setWasmHash(bytes wasm_hash) public onlyOwnerPubkey(_owner_pubkey)  {
+        tvm.accept();
+        _wasm_hash = wasm_hash;
+    }
 
     function setForceRemoveOldest(bool flag) public onlyOwnerPubkey(_owner_pubkey)  {
         tvm.accept();
@@ -378,9 +380,6 @@ contract Multifactor is Modifiers {
         require(tvm.checkSign(epk, TvmSlice(epk_sig), epk), ERR_INVALID_SIGNATURE);
         require(uint64(block.timestamp + MIN_EPK_LIFE_TIME) < epk_expire_at, ERR_FACTOR_EXPIRED); 
         require(uint64(block.timestamp + MIN_JWK_LIFE_TIME) < jwk_modulus_expire_at, ERR_JWK_EXPIRED);
-        //require(epk_expire_at < uint64(block.timestamp + MAX_EPK_LIFE_TIME), ERR_FACTOR_TIMESTAMPT_TOO_BIG);
-        //TODO: jwk_modulus_expire_at is not too big
-        //TODO: should we control validate TLS data for jwk_modulus (and jwk_modulus_expire_at) to fully check wallet setup or this is too cumbersome?
         bytes ph = gosh.poseidon(index_mod_4, epk_expire_at, epk, jwk_modulus, iss_base_64, header_base_64, zkid);
         require(gosh.vergrth16(proof, ph, 0), ERR_INVALID_PROOF);
         tvm.accept();
@@ -451,12 +450,12 @@ contract Multifactor is Modifiers {
     }
 
     function acceptCandidateSeedPhrase(uint256 new_owner_pubkey) public onlyOwnerPubkey(_pub_recovery_key)  {
-        require(_candidate_new_owner_pubkey_and_expiration.hasValue(),ERR_SEED_PHRASE_NEW_CANDIDATE_NOT_FOUND);
-        (uint256 _new_owner_pubkey, uint64 _epk_expire_at) = _candidate_new_owner_pubkey_and_expiration.get();
-        require(_new_owner_pubkey == new_owner_pubkey, ERR_SEED_PHRASE_NEW_CANDIDATE_NOT_FOUND);
-        require(block.timestamp < _epk_expire_at, ERR_FACTOR_EXPIRED);
+        require(_candidate_new_owner_pubkey_and_expiration.hasValue(), ERR_SEED_PHRASE_NEW_CANDIDATE_NOT_FOUND);
+        (uint256 new_owner_pubkey_, uint64 epk_expire_at_) = _candidate_new_owner_pubkey_and_expiration.get();
+        require(new_owner_pubkey_ == new_owner_pubkey, ERR_SEED_PHRASE_NEW_CANDIDATE_NOT_FOUND);
+        require(block.timestamp < epk_expire_at_, ERR_FACTOR_EXPIRED);
         tvm.accept();
-        _owner_pubkey = _new_owner_pubkey;
+        _owner_pubkey = new_owner_pubkey_;
         _candidate_new_owner_pubkey_and_expiration = null;
     }
 
@@ -513,6 +512,7 @@ contract Multifactor is Modifiers {
     }
 
     /** Value Transfer/Exchange functionality */
+
     function sendTransaction(
         uint64 epk_expire_at,
         address dest,
@@ -710,11 +710,10 @@ contract Multifactor is Modifiers {
     }
 
     function get_epk_expire_at(uint256 epk) public view returns (uint64) {
-        tvm.accept();
         optional(uint256, uint256) pair = _factors_ordered_by_timestamp.min();
         while(pair.hasValue()) {
-            (uint256 key, uint256 _epk) = pair.get();
-            if (epk == _epk) {
+            (uint256 key, uint256 epk_) = pair.get();
+            if (epk == epk_) {
                 uint64 epk_expire_at = uint64(key >> 192);
                 return epk_expire_at;
             }

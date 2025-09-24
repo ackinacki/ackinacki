@@ -33,6 +33,8 @@ contract PopCoinWallet is Modifiers {
     uint256 _root_pubkey;
     uint64 _mbiCurBase;
 
+    uint64 _deployed;
+
     constructor (
         TvmCell PopitGameCode,
         uint64 value,
@@ -44,6 +46,7 @@ contract PopCoinWallet is Modifiers {
         (string lib, address root, uint256 hash) = abi.decode(data, (string, address, uint256));
         require(VerifiersLib.versionLib == lib, ERR_INVALID_SENDER);
         require(hash == tvm.hash(PopitGameCode), ERR_INVALID_SENDER);
+        _deployed = block.seqno;
         _root = root;
         _popcoinroot = popcoinroot;
         _mbiCurBase = mbiCur;
@@ -161,9 +164,10 @@ contract PopCoinWallet is Modifiers {
         uint64 value,
         bool isReady,
         mapping(uint256 => uint64) popits_candidate,
-        mapping(uint256 => uint64) popits_mbi
+        mapping(uint256 => uint64) popits_mbi,
+        uint64 deployed
     ) {
-        return  (_popcoinroot, _name, _owner, _value, _isReady, _popits_candidate, _popits_mbi);
+        return  (_popcoinroot, _name, _owner, _value, _isReady, _popits_candidate, _popits_mbi, _deployed);
     }
 
     function getVersion() external pure returns(string, string) {

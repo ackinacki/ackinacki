@@ -82,6 +82,7 @@ where
     pub(crate) async fn run(
         &mut self,
         mut outgoing_rx: tokio::sync::mpsc::Receiver<(NetMessage, Instant)>,
+        metrics: Option<NetMetrics>,
     ) {
         let peer_info = peer_info(&self.id, self.addr);
         tracing::trace!(peer = peer_info, "Peer sender loop started");
@@ -102,6 +103,9 @@ where
                             peer = peer_info,
                             "Failed to connect to peer: {err}"
                         );
+                        if let Some(metrics) = metrics.as_ref() {
+                            metrics.report_error("fail_conn_to_peer");
+                        }
                         continue;
                     }
                 }
@@ -170,6 +174,9 @@ where
                     return Ok(wrapper);
                 }
                 Err(e) => {
+                    if let Some(metrics) = self.metrics.as_ref() {
+                        metrics.report_warn("fail_create_out_con");
+                    }
                     tracing::warn!(
                         broadcast = false,
                         peer = peer_info(&self.id, self.addr),
@@ -228,6 +235,9 @@ where
             if let Err(err) =
                 transfer_result_tx.send((transfer_result, net_message, transfer_duration)).await
             {
+                if let Some(metrics) = metrics.as_ref() {
+                    metrics.report_error("fail_report_delivery");
+                }
                 tracing::error!("Can not report message delivery result: {}", err);
             }
         });
@@ -292,6 +302,9 @@ async fn receive_message<Connection: NetConnection>(
                 Ok(msg) => msg,
                 Err(err) => {
                     tracing::error!("Failed to deserialize net message: {}", err);
+                    if let Some(metrics) = metrics.as_ref() {
+                        metrics.report_error("fail_deser_msg_1");
+                    }
                     return false;
                 }
             };
@@ -346,6 +359,9 @@ async fn receive_message<Connection: NetConnection>(
                 "Incoming transfer failed: {}",
                 detailed(&err)
             );
+            if let Some(metrics) = metrics.as_ref() {
+                metrics.report_error("in_transfer_fail");
+            }
             // finish the receiver loop because we have a problem with this connection
             false
         }

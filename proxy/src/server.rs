@@ -159,6 +159,7 @@ impl CliArgs {
                 peers_tx,
                 None,
             ),
+            net_metrics.clone(),
         );
 
         let (outgoing_messages_tx, _ /* we will subscribe() later */) =

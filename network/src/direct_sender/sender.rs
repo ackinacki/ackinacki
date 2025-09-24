@@ -210,10 +210,16 @@ where
                     broadcast = false,
                     "Message delivery: forwarding to peer sender failed, sender is lagged"
                 );
+                if let Some(metrics) = self.metrics.as_ref() {
+                    metrics.report_error("fwd_to_peer_lagged");
+                }
                 false
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 let _ = self.peer_events_tx.send(PeerEvent::SenderStopped(id.clone(), addr));
+                if let Some(metrics) = self.metrics.as_ref() {
+                    metrics.report_error("fwd_to_peer_closed");
+                }
                 false
             }
         };
@@ -231,6 +237,8 @@ where
     }
 
     fn start_peer_resolver(&self, id: PeerId) {
+        let metrics = self.metrics.clone();
+        let metrics_clone = self.metrics.clone();
         spawn_critical_task(
             "Direct peer resolver",
             peer_resolver(
@@ -238,7 +246,9 @@ where
                 self.shutdown_rx.clone(),
                 self.peer_resolver_rx.clone(),
                 self.peer_events_tx.clone(),
+                metrics_clone,
             ),
+            metrics,
         );
     }
 
@@ -258,7 +268,13 @@ where
             self.peer_events_tx.clone(),
             self.incoming_reply_tx.clone(),
         );
-        spawn_critical_task("Direct peer sender", async move { sender.run(rx).await });
+        let metrics = self.metrics.clone();
+        let metrics_clone = self.metrics.clone();
+        spawn_critical_task(
+            "Direct_peer_sender",
+            async move { sender.run(rx, metrics).await },
+            metrics_clone,
+        );
         tx
     }
 }
@@ -268,6 +284,7 @@ async fn peer_resolver<PeerId>(
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     mut peers_rx: tokio::sync::watch::Receiver<HashMap<PeerId, Vec<PeerData>>>,
     peer_events_tx: tokio::sync::mpsc::UnboundedSender<PeerEvent<PeerId>>,
+    metrics: Option<NetMetrics>,
 ) where
     PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
 {
@@ -280,7 +297,7 @@ async fn peer_resolver<PeerId>(
             } else {
                 continue;
             },
-            addrs = resolve_peer_addrs(&mut peers_rx, id.clone()) => {
+            addrs = resolve_peer_addrs(&mut peers_rx, id.clone(), &metrics) => {
                 let _ = peer_events_tx.send(PeerEvent::AddrsResolved(id.clone(), addrs));
                 break;
             },
@@ -291,6 +308,7 @@ async fn peer_resolver<PeerId>(
 async fn resolve_peer_addrs<PeerId>(
     peers_rx: &mut tokio::sync::watch::Receiver<HashMap<PeerId, Vec<PeerData>>>,
     id: PeerId,
+    metrics: &Option<NetMetrics>,
 ) -> Vec<SocketAddr>
 where
     PeerId: Display + Hash + Eq + Clone + Send + Sync + 'static,
@@ -301,6 +319,10 @@ where
             return peer_data.iter().map(|x| x.peer_addr).collect();
         }
         tracing::warn!(peer_id = id.to_string(), attempt, "Failed to resolve peer addr");
+        if let Some(metrics) = metrics.as_ref() {
+            metrics.report_error("fail_resolve_peer");
+        }
+
         tokio::time::sleep(RESOLVE_RETRY_TIMEOUT).await;
         attempt += 1;
     }
