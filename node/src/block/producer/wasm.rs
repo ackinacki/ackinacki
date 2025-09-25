@@ -60,6 +60,10 @@ impl WasmNodeCache {
             };
             whitelist.insert(hash);
         }
+        // let whitelist = tvm_vm::executor::Engine::extern_load_wasm_hash_whitelist_from_path(
+        //     "config/wasm.conf".to_string().to_owned(),
+        // )
+        // .unwrap();
         Ok(whitelist)
     }
 

@@ -1,6 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -31,6 +32,7 @@ use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
+use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 
 pub type SignerIndex = u16;
@@ -297,4 +299,11 @@ pub struct AttestationData {
     block_seq_no: BlockSeqNo,
     envelope_hash: AckiNackiEnvelopeHash,
     target_type: AttestationTargetType,
+}
+
+#[derive(TypedBuilder, Deserialize, Debug, Clone, Serialize, Getters)]
+pub struct SyncFinalizedData {
+    block_identifier: BlockIdentifier,
+    block_seq_no: BlockSeqNo,
+    thread_refs: BTreeMap<ThreadIdentifier, BlockIdentifier>,
 }

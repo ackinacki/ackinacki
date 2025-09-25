@@ -1,15 +1,20 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use network::channel::NetBroadcastSender;
 use network::channel::NetDirectSender;
 
+use crate::bls::create_signed::CreateSealed;
 use crate::bls::envelope::BLSSignedEnvelope;
+use crate::bls::envelope::Envelope;
+use crate::bls::GoshBLS;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::NodeAssociatedTypes;
+use crate::node::associated_types::SyncFinalizedData;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
 use crate::node::Node;
@@ -18,6 +23,7 @@ use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
+use crate::utilities::guarded::Guarded;
 
 pub fn send_blocks_range_request(
     network_direct_tx: &NetDirectSender<NodeIdentifier, NetworkMessage>,
@@ -127,12 +133,36 @@ where
             block_identifier,
             shared_res_address
         );
-        match self.network_broadcast_tx.send(NetworkMessage::SyncFinalized((
-            block_identifier,
-            block_seq_no,
-            shared_res_address,
-            self.thread_id,
-        ))) {
+        let shared_res_address = BTreeMap::from_iter(shared_res_address);
+        let data = SyncFinalizedData::builder()
+            .block_identifier(block_identifier.clone())
+            .block_seq_no(block_seq_no)
+            .thread_refs(shared_res_address)
+            .build();
+        let Ok(block_state) = self.block_state_repository.get(&block_identifier) else {
+            tracing::trace!("Failed to load block state. Skip broadcasting");
+            return Ok(());
+        };
+        let Some(bk_set) = block_state.guarded(|e| e.bk_set().clone()) else {
+            tracing::trace!("Failed to get bk_set from block state. Skip broadcasting");
+            return Ok(());
+        };
+
+        let secrets = self.bls_keys_map.guarded(|map| map.clone());
+
+        let Ok(envelope) = Envelope::<GoshBLS, SyncFinalizedData>::sealed(
+            &self.config.local.node_id,
+            &bk_set,
+            &secrets,
+            data,
+        ) else {
+            tracing::trace!("Failed to get sign SyncFinalized envelope. Skip broadcasting");
+            return Ok(());
+        };
+        match self
+            .network_broadcast_tx
+            .send(NetworkMessage::SyncFinalized((envelope, self.thread_id)))
+        {
             Ok(_) => {}
             Err(e) => {
                 if SHUTDOWN_FLAG.get() != Some(&true) {

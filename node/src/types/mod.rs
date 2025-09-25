@@ -15,7 +15,7 @@ pub mod bp_selector;
 mod dapp_identifier;
 mod message_storage;
 mod rnd_seed;
-mod thread_identifier;
+pub mod thread_identifier;
 pub mod thread_message_queue;
 pub use block_height::BlockHeight;
 mod block_round;

@@ -13,6 +13,8 @@ use serde_with::Bytes;
 
 use crate::types::BlockIdentifier;
 
+pub mod ord;
+
 // Note:
 // It must be possible to uniquely generate new thread id from any thread without
 // collisions. Therefore the u16 as an underlying type for thread identifier was changed.
@@ -22,7 +24,7 @@ use crate::types::BlockIdentifier;
 // be spawned simultaneously.
 
 #[serde_as]
-#[derive(Copy, Clone, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Serialize, Deserialize)]
 pub struct ThreadIdentifier(#[serde_as(as = "Bytes")] [u8; 34]);
 
 impl Default for ThreadIdentifier {
@@ -102,5 +104,25 @@ impl Debug for ThreadIdentifier {
 impl AsRef<[u8]> for ThreadIdentifier {
     fn as_ref(&self) -> &[u8] {
         &self.0
+    }
+}
+
+// Note:
+// std::cmp::Ord notes:
+// If you implement it manually, you should manually implement all four traits,
+// based on the implementation of Ord
+// And since there's a separate custom Ord implementation here is an implementation for the Eq
+// The same applies for Hash.
+impl PartialEq for ThreadIdentifier {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_ref() == other.as_ref()
+    }
+}
+
+impl Eq for ThreadIdentifier {}
+
+impl std::hash::Hash for ThreadIdentifier {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_ref().hash(state);
     }
 }

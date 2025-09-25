@@ -1,7 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::TryRecvError;
@@ -14,6 +14,7 @@ use crate::bls::envelope::BLSSignedEnvelope;
 use crate::helper::block_flow_trace;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::SynchronizationResult;
+use crate::node::network_message::Command;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
 use crate::node::Node;
@@ -42,7 +43,7 @@ where
         );
         let mut initial_state: Option<(BlockIdentifier, BlockSeqNo)> = None;
         let mut initial_state_shared_resource_address: Option<
-            HashMap<ThreadIdentifier, BlockIdentifier>,
+            BTreeMap<ThreadIdentifier, BlockIdentifier>,
         > = None;
         let mut last_node_join_message_time = Instant::now();
         // Broadcast NodeJoining only the first start of the node, do not broadcast it on split
@@ -73,17 +74,34 @@ where
             }
             if let Some(ref resource_address) = initial_state_shared_resource_address {
                 match synchronization_rx.try_recv() {
-                    Ok(Ok(())) => {
-                        let synced_block_id = resource_address
-                            .get(&self.thread_id)
-                            .cloned()
-                            .expect("We sync this thread, it must exist in the resources map");
-                        let synced_block_seq_no = self
+                    Ok(Ok(downloaded_resource_address)) => {
+                        if *resource_address != downloaded_resource_address {
+                            tracing::trace!(
+                                target = "monit",
+                                "Downloaded state is already outdated"
+                            );
+                            continue;
+                        }
+                        // Note: it is possible that there were a message to sync a finalized state
+                        // and the state is outdated. In this case set_state_from_snapshot will fail,
+                        // and the block state will not have an updated data.
+                        // aka: "Synced state is too old, skip it"
+                        let Some(synced_block_id) = resource_address.get(&self.thread_id).cloned()
+                        else {
+                            tracing::warn!("Thread to block is missing in the resources map");
+                            continue;
+                        };
+                        let Some(synced_block_seq_no) = self
                             .block_state_repository
                             .get(&synced_block_id)
-                            .expect("We have just synced this block")
+                            .expect("Block state access should not fail.")
                             .guarded(|e| *e.block_seq_no())
-                            .expect("We have just synced this block");
+                        else {
+                            tracing::trace!(
+                                "block_seq_no missing. Seems like we downloaded an outdated state"
+                            );
+                            continue;
+                        };
                         self.unprocessed_blocks_cache.retain(|e| {
                             e.guarded(|e| *e.block_seq_no())
                                 .map(|seq_no| seq_no >= synced_block_seq_no)
@@ -167,7 +185,7 @@ where
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Ok((msg, reply_to)) => match msg {
-                    NetworkMessage::StartSynchronization => {
+                    NetworkMessage::InnerCommand(Command::StartSynchronization) => {
                         continue;
                     }
                     NetworkMessage::AuthoritySwitchProtocol(_) => {
@@ -310,6 +328,12 @@ where
                             if let Some(resource_address) =
                                 envelope.data().directives().share_state_resources()
                             {
+                                let resource_address =
+                                    BTreeMap::from_iter(resource_address.iter().map(
+                                        |(k, v)| -> (ThreadIdentifier, BlockIdentifier) {
+                                            (*k, v.clone())
+                                        },
+                                    ));
                                 last_node_join_message_time = Instant::now();
                                 initial_state_shared_resource_address =
                                     Some(resource_address.clone());
@@ -351,7 +375,10 @@ where
                         initial_state = None;
                         recieved_sync_from = Some(seq_no_from);
                     }
-                    NetworkMessage::SyncFinalized((identifier, seq_no, address, _)) => {
+                    NetworkMessage::SyncFinalized((sync_finalized, _)) => {
+                        let identifier = sync_finalized.data().block_identifier().clone();
+                        let seq_no = *sync_finalized.data().block_seq_no();
+                        let address = sync_finalized.data().thread_refs().clone();
                         tracing::info!(
                             "[synchronizing] Received SyncFinalized: {:?} {:?} {:?}",
                             seq_no,

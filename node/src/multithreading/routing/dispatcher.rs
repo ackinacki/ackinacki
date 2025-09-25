@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use telemetry_utils::instrumented_channel_ext::WrappedItem;
 use telemetry_utils::instrumented_channel_ext::XInstrumentedSender;
 
+use crate::node::network_message::Command;
 use crate::node::NetworkMessage;
 use crate::protocol::authority_switch;
 use crate::types::ThreadIdentifier;
@@ -59,10 +60,11 @@ impl Dispatcher {
             NetworkMessage::BlockAttestation((_, thread_id)) => (false, *thread_id),
             NetworkMessage::NodeJoining((_, thread_id)) => (false, *thread_id),
             NetworkMessage::BlockRequest { thread_id, .. } => (false, *thread_id),
-            NetworkMessage::SyncFinalized((_, _, _, thread_id)) => (false, *thread_id),
+
+            NetworkMessage::SyncFinalized((_, thread_id)) => (false, *thread_id),
             NetworkMessage::SyncFrom((_, thread_id)) => (false, *thread_id),
             // ignore StartSynchronization it is used for local interaction
-            NetworkMessage::StartSynchronization => {
+            NetworkMessage::InnerCommand(Command::StartSynchronization) => {
                 return Ok(());
             }
         };

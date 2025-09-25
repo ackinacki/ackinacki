@@ -1,7 +1,7 @@
 {
 	"ABI version": 2,
 	"version": "2.4",
-	"header": ["time", "expire"],
+	"header": ["pubkey", "time", "expire"],
 	"functions": [
 		{
 			"name": "constructor",
@@ -98,6 +98,33 @@
 				{"name":"payload","type":"cell"}
 			],
 			"outputs": [
+			]
+		},
+		{
+			"name": "create_big_cell2",
+			"inputs": [
+				{"name":"iterations","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
+			"name": "create_big_cell",
+			"inputs": [
+				{"name":"iterations","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
+			"name": "create_deep_cell",
+			"inputs": [
+				{"name":"iterations","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
 			]
 		},
 		{

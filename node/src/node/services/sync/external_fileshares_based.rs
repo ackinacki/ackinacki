@@ -1,7 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -89,9 +89,9 @@ impl StateSyncService for ExternalFileSharesBased {
 
     fn add_load_state_task(
         &mut self,
-        resource_address: HashMap<ThreadIdentifier, BlockIdentifier>,
+        resource_address: BTreeMap<ThreadIdentifier, BlockIdentifier>,
         repository: RepositoryImpl,
-        output: InstrumentedSender<anyhow::Result<()>>,
+        output: InstrumentedSender<anyhow::Result<BTreeMap<ThreadIdentifier, BlockIdentifier>>>,
     ) -> anyhow::Result<()> {
         let mut thread = self.state_load_thread.lock();
         if let Some(thread) = thread.as_ref() {
@@ -110,7 +110,7 @@ impl StateSyncService for ExternalFileSharesBased {
             .iter()
             .map(|bk| NodeIdentifier::from(AccountAddress(UInt256::with_array(bk.owner_address.0))))
             .collect::<HashSet<_>>();
-        for (thread_id, block_id) in resource_address {
+        for (thread_id, block_id) in resource_address.clone() {
             let output_clone = output.clone();
             let checker_clone = checker.clone();
             let repo_clone = repo.clone();
@@ -178,7 +178,7 @@ impl StateSyncService for ExternalFileSharesBased {
                 }
                 let checker = checker.lock();
                 if checker.is_empty() {
-                    let _ = output.send(Ok(()));
+                    let _ = output.send(Ok(resource_address));
                     return Ok(());
                 }
                 drop(checker);

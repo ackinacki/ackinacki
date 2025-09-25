@@ -15,3 +15,8 @@
   ansible.builtin.file:
     path: "{{ BK_DATA_DIR }}"
     state: absent
+
+- name: Remove stored BK set
+  ansible.builtin.file:
+    path: "{{ BK_DIR }}/bk-configs/bk_set.json"
+    state: absent

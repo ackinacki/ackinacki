@@ -1,348 +1,172 @@
 {
-  "0243272785b47ca9082e570266f3ac6074a6b543e6e4efb53922ab66e8d64e6c": {
-    "0": {
-      "filename": "./hello_wasm.code",
-      "line": 122
-    },
-    "8": {
-      "filename": "./hello_wasm.code",
-      "line": 123
-    },
-    "24": {
-      "filename": "./hello_wasm.code",
-      "line": 124
-    },
-    "32": {
-      "filename": "./hello_wasm.code",
-      "line": 125
-    },
-    "48": {
-      "filename": "./hello_wasm.code",
-      "line": 128
-    },
-    "64": {
-      "filename": "./hello_wasm.code",
-      "line": 129
-    },
-    "80": {
-      "filename": "./hello_wasm.code",
-      "line": 130
-    },
-    "96": {
-      "filename": "./hello_wasm.code",
-      "line": 131
-    },
-    "104": {
-      "filename": "hello_wasm.sol",
-      "line": 22
-    },
-    "120": {
-      "filename": "hello_wasm.sol",
-      "line": 25
-    },
-    "136": {
-      "filename": "hello_wasm.sol",
-      "line": 25
-    },
-    "160": {
-      "filename": "hello_wasm.sol",
-      "line": 30
-    },
-    "176": {
-      "filename": "hello_wasm.sol",
-      "line": 33
-    },
-    "192": {
-      "filename": "hello_wasm.sol",
-      "line": 33
-    },
-    "208": {
-      "filename": "./hello_wasm.code",
-      "line": 143
-    },
-    "224": {
-      "filename": "./hello_wasm.code",
-      "line": 146
-    }
-  },
   "08899a87a7d1a079a87cb156204b3332ae7eac0fabdee2cf4bbe36293199c417": {
     "0": {
       "filename": "hello_wasm.sol",
-      "line": 75
+      "line": 76
     },
     "16": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "24": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "32": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "40": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "48": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "56": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "64": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "72": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "80": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "88": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "96": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "104": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "120": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "128": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "136": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "144": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "160": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "168": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "176": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "184": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "200": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "208": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "216": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "224": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "240": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "248": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "256": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "264": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "280": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "288": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "296": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "304": {
       "filename": "hello_wasm.sol",
-      "line": 80
+      "line": 81
     },
     "320": {
-      "filename": "hello_wasm.sol",
-      "line": 81
-    },
-    "336": {
-      "filename": "hello_wasm.sol",
-      "line": 81
-    },
-    "352": {
       "filename": "hello_wasm.sol",
       "line": 82
     },
+    "336": {
+      "filename": "hello_wasm.sol",
+      "line": 82
+    },
+    "352": {
+      "filename": "hello_wasm.sol",
+      "line": 83
+    },
     "496": {
       "filename": "hello_wasm.sol",
-      "line": 85
+      "line": 86
     },
     "504": {
       "filename": "hello_wasm.sol",
-      "line": 85
+      "line": 86
     },
     "512": {
       "filename": "hello_wasm.sol",
-      "line": 85
+      "line": 86
     },
     "520": {
       "filename": "hello_wasm.sol",
-      "line": 88
+      "line": 89
     },
     "528": {
       "filename": "hello_wasm.sol",
-      "line": 88
+      "line": 89
     },
     "544": {
       "filename": "hello_wasm.sol",
-      "line": 89
-    }
-  },
-  "0c3198fc7e90a2c06e067cf5a4a57f4768ef188161e13294fa7934328ddddfae": {
-    "0": {
-      "filename": "hello_wasm.sol",
-      "line": 144
-    },
-    "16": {
-      "filename": "hello_wasm.sol",
-      "line": 144
-    },
-    "24": {
-      "filename": "hello_wasm.sol",
-      "line": 144
-    },
-    "32": {
-      "filename": "hello_wasm.sol",
-      "line": 144
-    },
-    "40": {
-      "filename": "hello_wasm.sol",
-      "line": 144
-    },
-    "48": {
-      "filename": "hello_wasm.sol",
-      "line": 144
-    },
-    "56": {
-      "filename": "hello_wasm.sol",
-      "line": 144
-    },
-    "64": {
-      "filename": "hello_wasm.sol",
-      "line": 144
-    },
-    "80": {
-      "filename": "hello_wasm.sol",
-      "line": 144
-    },
-    "88": {
-      "filename": "hello_wasm.sol",
-      "line": 144
-    },
-    "112": {
-      "filename": "hello_wasm.sol",
-      "line": 145
-    },
-    "128": {
-      "filename": "hello_wasm.sol",
-      "line": 146
-    },
-    "144": {
-      "filename": "hello_wasm.sol",
-      "line": 148
-    },
-    "152": {
-      "filename": "hello_wasm.sol",
-      "line": 148
-    },
-    "168": {
-      "filename": "hello_wasm.sol",
-      "line": 148
-    },
-    "176": {
-      "filename": "hello_wasm.sol",
-      "line": 148
-    },
-    "184": {
-      "filename": "hello_wasm.sol",
-      "line": 148
-    },
-    "208": {
-      "filename": "hello_wasm.sol",
-      "line": 148
-    },
-    "224": {
-      "filename": "hello_wasm.sol",
-      "line": 148
-    },
-    "248": {
-      "filename": "hello_wasm.sol",
-      "line": 148
-    },
-    "256": {
-      "filename": "hello_wasm.sol",
-      "line": 148
-    },
-    "264": {
-      "filename": "hello_wasm.sol",
-      "line": 148
-    },
-    "280": {
-      "filename": "hello_wasm.sol",
-      "line": 148
-    },
-    "296": {
-      "filename": "hello_wasm.sol",
-      "line": 148
-    },
-    "312": {
-      "filename": "hello_wasm.sol",
-      "line": 148
-    },
-    "320": {
-      "filename": "hello_wasm.sol",
-      "line": 148
-    },
-    "328": {
-      "filename": "hello_wasm.sol",
-      "line": 148
+      "line": 90
     }
   },
   "105a7ffb9d8eec2d05e7513b2f42de3fe5f1fef29a929ff01912a792055d6be0": {
@@ -399,38 +223,286 @@
       "line": 14
     }
   },
-  "107acd87bca1480fdcae6320f012e7af0c44d41f94c38de72f610dcf4f252cb8": {
+  "15257c071f14a44a32ce2c77eb41644cfaa92b495e64ca1ada7513d019608d14": {
     "0": {
       "filename": "./hello_wasm.code",
-      "line": 341
+      "line": 328
     },
     "8": {
       "filename": "./hello_wasm.code",
-      "line": 342
+      "line": 329
     },
     "56": {
       "filename": "./hello_wasm.code",
-      "line": 343
+      "line": 330
     },
     "64": {
       "filename": "./hello_wasm.code",
-      "line": 344
+      "line": 331
     },
     "80": {
       "filename": "./hello_wasm.code",
-      "line": 347
+      "line": 334
     },
     "88": {
       "filename": "./hello_wasm.code",
-      "line": 348
+      "line": 335
     },
     "136": {
       "filename": "./hello_wasm.code",
-      "line": 349
+      "line": 336
     },
     "144": {
       "filename": "./hello_wasm.code",
-      "line": 350
+      "line": 337
+    },
+    "160": {
+      "filename": "./hello_wasm.code",
+      "line": 340
+    },
+    "168": {
+      "filename": "./hello_wasm.code",
+      "line": 341
+    },
+    "216": {
+      "filename": "./hello_wasm.code",
+      "line": 342
+    },
+    "224": {
+      "filename": "./hello_wasm.code",
+      "line": 343
+    },
+    "240": {
+      "filename": "./hello_wasm.code",
+      "line": 346
+    },
+    "248": {
+      "filename": "./hello_wasm.code",
+      "line": 347
+    },
+    "296": {
+      "filename": "./hello_wasm.code",
+      "line": 348
+    },
+    "304": {
+      "filename": "./hello_wasm.code",
+      "line": 349
+    }
+  },
+  "167cbcddb50e29cce7c28a14df73bae947a561cc10d9c38c298a1e02278eb4e6": {
+    "0": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "8": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "24": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "32": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "40": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "56": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "64": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "72": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "88": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "96": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "104": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "120": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "128": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "136": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "152": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "168": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "184": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "192": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    }
+  },
+  "1f7a1aa8d45d825ed30a6cac55b4dc8c6ab778569ff2eb23849f797930af1a4a": {
+    "0": {
+      "filename": "./hello_wasm.code",
+      "line": 122
+    },
+    "8": {
+      "filename": "./hello_wasm.code",
+      "line": 123
+    },
+    "24": {
+      "filename": "./hello_wasm.code",
+      "line": 124
+    },
+    "32": {
+      "filename": "./hello_wasm.code",
+      "line": 125
+    },
+    "48": {
+      "filename": "./hello_wasm.code",
+      "line": 128
+    },
+    "64": {
+      "filename": "./hello_wasm.code",
+      "line": 129
+    },
+    "80": {
+      "filename": "./hello_wasm.code",
+      "line": 130
+    },
+    "88": {
+      "filename": "./hello_wasm.code",
+      "line": 131
+    },
+    "96": {
+      "filename": "./hello_wasm.code",
+      "line": 132
+    },
+    "104": {
+      "filename": "./hello_wasm.code",
+      "line": 133
+    },
+    "112": {
+      "filename": "./hello_wasm.code",
+      "line": 134
+    },
+    "120": {
+      "filename": "./hello_wasm.code",
+      "line": 136
+    },
+    "128": {
+      "filename": "./hello_wasm.code",
+      "line": 137
+    },
+    "144": {
+      "filename": "./hello_wasm.code",
+      "line": 138
+    },
+    "152": {
+      "filename": "hello_wasm.sol",
+      "line": 23
+    },
+    "168": {
+      "filename": "hello_wasm.sol",
+      "line": 26
+    },
+    "184": {
+      "filename": "hello_wasm.sol",
+      "line": 26
+    },
+    "208": {
+      "filename": "hello_wasm.sol",
+      "line": 31
+    },
+    "224": {
+      "filename": "hello_wasm.sol",
+      "line": 34
+    },
+    "240": {
+      "filename": "hello_wasm.sol",
+      "line": 34
+    },
+    "256": {
+      "filename": "./hello_wasm.code",
+      "line": 150
+    },
+    "272": {
+      "filename": "./hello_wasm.code",
+      "line": 153
+    }
+  },
+  "235ad3115bd64fd70b48ec755193e7c7ca74cee505bded9be763722e4c3ed78c": {
+    "0": {
+      "filename": "hello_wasm.sol",
+      "line": 122
+    },
+    "16": {
+      "filename": "hello_wasm.sol",
+      "line": 123
+    },
+    "32": {
+      "filename": "hello_wasm.sol",
+      "line": 125
+    },
+    "48": {
+      "filename": "hello_wasm.sol",
+      "line": 125
+    }
+  },
+  "254b3d942744a2a5c732ed9ba3d3eecd5c2c3ff453a0b9a76b0f9fbcddf3ed2d": {
+    "0": {
+      "filename": "./hello_wasm.code",
+      "line": 279
+    },
+    "8": {
+      "filename": "./hello_wasm.code",
+      "line": 280
+    },
+    "56": {
+      "filename": "./hello_wasm.code",
+      "line": 281
+    },
+    "64": {
+      "filename": "./hello_wasm.code",
+      "line": 282
+    },
+    "80": {
+      "filename": "./hello_wasm.code",
+      "line": 324
+    },
+    "88": {
+      "filename": "./hello_wasm.code",
+      "line": 325
+    },
+    "136": {
+      "filename": "./hello_wasm.code",
+      "line": 326
+    },
+    "144": {
+      "filename": "./hello_wasm.code",
+      "line": 327
     },
     "160": {
       "filename": "./hello_wasm.code",
@@ -447,580 +519,192 @@
     "224": {
       "filename": "./hello_wasm.code",
       "line": 356
-    }
-  },
-  "167cbcddb50e29cce7c28a14df73bae947a561cc10d9c38c298a1e02278eb4e6": {
-    "0": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "8": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "24": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "32": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "40": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "56": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "64": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "72": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "88": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "96": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "104": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "120": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "128": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "136": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "152": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "168": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "184": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "192": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    }
-  },
-  "1d0bd3f87a9c36a18b4a848c0a44cab158466a01b620a3fa254269b4ac7362ed": {
-    "0": {
-      "filename": "hello_wasm.sol",
-      "line": 180
-    },
-    "16": {
-      "filename": "hello_wasm.sol",
-      "line": 181
-    },
-    "32": {
-      "filename": "hello_wasm.sol",
-      "line": 182
-    },
-    "40": {
-      "filename": "hello_wasm.sol",
-      "line": 182
-    },
-    "56": {
-      "filename": "hello_wasm.sol",
-      "line": 182
-    },
-    "64": {
-      "filename": "hello_wasm.sol",
-      "line": 182
-    },
-    "96": {
-      "filename": "hello_wasm.sol",
-      "line": 182
-    },
-    "112": {
-      "filename": "hello_wasm.sol",
-      "line": 182
-    },
-    "120": {
-      "filename": "hello_wasm.sol",
-      "line": 182
-    },
-    "128": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "136": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "152": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "160": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "168": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "192": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "200": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "208": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "224": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "232": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "256": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "280": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "296": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "312": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "328": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "336": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "344": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    },
-    "352": {
-      "filename": "hello_wasm.sol",
-      "line": 183
-    }
-  },
-  "235ad3115bd64fd70b48ec755193e7c7ca74cee505bded9be763722e4c3ed78c": {
-    "0": {
-      "filename": "hello_wasm.sol",
-      "line": 121
-    },
-    "16": {
-      "filename": "hello_wasm.sol",
-      "line": 122
-    },
-    "32": {
-      "filename": "hello_wasm.sol",
-      "line": 124
-    },
-    "48": {
-      "filename": "hello_wasm.sol",
-      "line": 124
-    }
-  },
-  "34e892964b48f4f3a4689ddd30466fa31ffcb0fd3567cdf7b80cc557a618560e": {
-    "0": {
-      "filename": "./hello_wasm.code",
-      "line": 460
-    },
-    "8": {
-      "filename": "./hello_wasm.code",
-      "line": 470
-    },
-    "24": {
-      "filename": "./hello_wasm.code",
-      "line": 471
-    },
-    "32": {
-      "filename": "./hello_wasm.code",
-      "line": 472
-    },
-    "48": {
-      "filename": "./hello_wasm.code",
-      "line": 475
-    },
-    "56": {
-      "filename": "./hello_wasm.code",
-      "line": 476
-    },
-    "72": {
-      "filename": "./hello_wasm.code",
-      "line": 477
-    },
-    "88": {
-      "filename": "./hello_wasm.code",
-      "line": 480
-    },
-    "96": {
-      "filename": "./hello_wasm.code",
-      "line": 481
-    },
-    "112": {
-      "filename": "./hello_wasm.code",
-      "line": 482
-    },
-    "128": {
-      "filename": "./hello_wasm.code",
-      "line": 485
-    }
-  },
-  "37379894cd2283db8dd672444f2efe7ed51facbebd37fd67d28523baae0b35cb": {
-    "0": {
-      "filename": "./hello_wasm.code",
-      "line": 172
-    },
-    "8": {
-      "filename": "./hello_wasm.code",
-      "line": 173
-    },
-    "24": {
-      "filename": "./hello_wasm.code",
-      "line": 174
-    },
-    "48": {
-      "filename": "./hello_wasm.code",
-      "line": 175
-    },
-    "64": {
-      "filename": "./hello_wasm.code",
-      "line": 176
-    },
-    "72": {
-      "filename": "./hello_wasm.code",
-      "line": 177
-    },
-    "88": {
-      "filename": "hello_wasm.sol",
-      "line": 143
-    },
-    "96": {
-      "filename": "hello_wasm.sol",
-      "line": 143
-    },
-    "104": {
-      "filename": "hello_wasm.sol",
-      "line": 143
-    },
-    "112": {
-      "filename": "hello_wasm.sol",
-      "line": 143
-    },
-    "120": {
-      "filename": "hello_wasm.sol",
-      "line": 143
-    },
-    "128": {
-      "filename": "hello_wasm.sol",
-      "line": 143
-    },
-    "136": {
-      "filename": "hello_wasm.sol",
-      "line": 143
-    },
-    "152": {
-      "filename": "hello_wasm.sol",
-      "line": 143
-    },
-    "168": {
-      "filename": "hello_wasm.sol",
-      "line": 143
-    },
-    "184": {
-      "filename": "hello_wasm.sol",
-      "line": 143
-    },
-    "192": {
-      "filename": "./hello_wasm.code",
-      "line": 193
-    },
-    "208": {
-      "filename": "./hello_wasm.code",
-      "line": 196
-    },
-    "224": {
-      "filename": "./hello_wasm.code",
-      "line": 199
-    }
-  },
-  "3e54532e5f3aafbe002acdc5ece34c680e21e90c3b12f370f897bd46c671f490": {
-    "0": {
-      "filename": "./hello_wasm.code",
-      "line": 312
-    },
-    "8": {
-      "filename": "./hello_wasm.code",
-      "line": 313
-    },
-    "56": {
-      "filename": "./hello_wasm.code",
-      "line": 314
-    },
-    "64": {
-      "filename": "./hello_wasm.code",
-      "line": 315
-    },
-    "80": {
-      "filename": "./hello_wasm.code",
-      "line": 318
-    },
-    "88": {
-      "filename": "./hello_wasm.code",
-      "line": 319
-    },
-    "136": {
-      "filename": "./hello_wasm.code",
-      "line": 320
-    },
-    "144": {
-      "filename": "./hello_wasm.code",
-      "line": 321
-    },
-    "160": {
-      "filename": "./hello_wasm.code",
-      "line": 324
-    },
-    "168": {
-      "filename": "./hello_wasm.code",
-      "line": 325
-    },
-    "216": {
-      "filename": "./hello_wasm.code",
-      "line": 326
-    },
-    "224": {
-      "filename": "./hello_wasm.code",
-      "line": 327
     },
     "240": {
       "filename": "./hello_wasm.code",
-      "line": 330
-    },
-    "248": {
-      "filename": "./hello_wasm.code",
-      "line": 331
-    },
-    "296": {
-      "filename": "./hello_wasm.code",
-      "line": 332
-    },
-    "304": {
-      "filename": "./hello_wasm.code",
-      "line": 333
-    }
-  },
-  "3fc88d13df5689896a818c88c31752c1c95e1a434ae60e98089f0fa45a261c11": {
-    "0": {
-      "filename": "./hello_wasm.code",
-      "line": 369
-    },
-    "8": {
-      "filename": "./hello_wasm.code",
-      "line": 370
-    },
-    "24": {
-      "filename": "./hello_wasm.code",
-      "line": 373
-    },
-    "40": {
-      "filename": "./hello_wasm.code",
-      "line": 374
-    },
-    "48": {
-      "filename": "./hello_wasm.code",
-      "line": 375
-    },
-    "64": {
-      "filename": "./hello_wasm.code",
       "line": 376
     },
-    "80": {
+    "248": {
       "filename": "./hello_wasm.code",
       "line": 377
     },
-    "96": {
+    "296": {
       "filename": "./hello_wasm.code",
       "line": 378
     },
-    "104": {
+    "304": {
       "filename": "./hello_wasm.code",
       "line": 379
+    }
+  },
+  "3a54ecde2be02d18b71b3ecef8a8b01b138040fd18a14ac8d1adc29d1261d748": {
+    "0": {
+      "filename": "hello_wasm.sol",
+      "line": 223
+    },
+    "16": {
+      "filename": "hello_wasm.sol",
+      "line": 226
+    },
+    "24": {
+      "filename": "hello_wasm.sol",
+      "line": 229
+    },
+    "32": {
+      "filename": "hello_wasm.sol",
+      "line": 229
+    },
+    "40": {
+      "filename": "hello_wasm.sol",
+      "line": 229
+    },
+    "56": {
+      "filename": "hello_wasm.sol",
+      "line": 229
+    },
+    "64": {
+      "filename": "hello_wasm.sol",
+      "line": 229
+    },
+    "80": {
+      "filename": "hello_wasm.sol",
+      "line": 230
+    },
+    "88": {
+      "filename": "hello_wasm.sol",
+      "line": 231
+    },
+    "96": {
+      "filename": "hello_wasm.sol",
+      "line": 231
+    },
+    "112": {
+      "filename": "hello_wasm.sol",
+      "line": 232
     },
     "120": {
-      "filename": "./hello_wasm.code",
-      "line": 380
-    },
-    "128": {
-      "filename": "./hello_wasm.code",
-      "line": 381
+      "filename": "hello_wasm.sol",
+      "line": 232
     },
     "136": {
-      "filename": "./hello_wasm.code",
-      "line": 382
+      "filename": "hello_wasm.sol",
+      "line": 233
     },
     "144": {
-      "filename": "./hello_wasm.code",
-      "line": 383
+      "filename": "hello_wasm.sol",
+      "line": 233
     },
-    "152": {
-      "filename": "./hello_wasm.code",
-      "line": 384
+    "160": {
+      "filename": "hello_wasm.sol",
+      "line": 234
     },
     "168": {
-      "filename": "./hello_wasm.code",
-      "line": 385
+      "filename": "hello_wasm.sol",
+      "line": 234
     },
-    "176": {
-      "filename": "./hello_wasm.code",
-      "line": 386
+    "184": {
+      "filename": "hello_wasm.sol",
+      "line": 235
     },
     "192": {
-      "filename": "./hello_wasm.code",
-      "line": 387
+      "filename": "hello_wasm.sol",
+      "line": 235
     },
     "200": {
+      "filename": "hello_wasm.sol",
+      "line": 229
+    },
+    "208": {
       "filename": "./hello_wasm.code",
-      "line": 388
+      "line": 191
     },
     "216": {
       "filename": "./hello_wasm.code",
-      "line": 389
+      "line": 192
     },
-    "232": {
+    "224": {
+      "filename": "hello_wasm.sol",
+      "line": 237
+    }
+  },
+  "4cb9e4d545a7eb541ad16e57448afd60ebda86e2dd7fc48038bfe4455af09bb5": {
+    "0": {
       "filename": "./hello_wasm.code",
-      "line": 390
+      "line": 503
     },
-    "248": {
+    "24": {
       "filename": "./hello_wasm.code",
-      "line": 392
+      "line": 504
     },
-    "256": {
+    "40": {
       "filename": "./hello_wasm.code",
-      "line": 393
+      "line": 505
+    }
+  },
+  "533d9d96db16a61906427e58883503a7c9baa21cc558189f4f261721c973eb5e": {
+    "0": {
+      "filename": "hello_wasm.sol",
+      "line": 241
     },
-    "272": {
+    "16": {
+      "filename": "hello_wasm.sol",
+      "line": 244
+    },
+    "24": {
+      "filename": "hello_wasm.sol",
+      "line": 246
+    },
+    "32": {
+      "filename": "hello_wasm.sol",
+      "line": 246
+    },
+    "40": {
+      "filename": "hello_wasm.sol",
+      "line": 246
+    },
+    "56": {
+      "filename": "hello_wasm.sol",
+      "line": 246
+    },
+    "64": {
+      "filename": "hello_wasm.sol",
+      "line": 246
+    },
+    "72": {
+      "filename": "hello_wasm.sol",
+      "line": 247
+    },
+    "80": {
+      "filename": "hello_wasm.sol",
+      "line": 248
+    },
+    "88": {
+      "filename": "hello_wasm.sol",
+      "line": 248
+    },
+    "104": {
+      "filename": "hello_wasm.sol",
+      "line": 249
+    },
+    "112": {
+      "filename": "hello_wasm.sol",
+      "line": 249
+    },
+    "120": {
+      "filename": "hello_wasm.sol",
+      "line": 246
+    },
+    "128": {
       "filename": "./hello_wasm.code",
-      "line": 394
+      "line": 352
     },
-    "280": {
-      "filename": "stdlib.sol",
-      "line": 22
-    },
-    "296": {
-      "filename": "stdlib.sol",
-      "line": 22
-    },
-    "304": {
-      "filename": "stdlib.sol",
-      "line": 22
-    },
-    "312": {
-      "filename": "stdlib.sol",
-      "line": 22
-    },
-    "328": {
-      "filename": "stdlib.sol",
-      "line": 23
-    },
-    "336": {
-      "filename": "stdlib.sol",
-      "line": 23
-    },
-    "352": {
-      "filename": "stdlib.sol",
-      "line": 23
-    },
-    "376": {
-      "filename": "stdlib.sol",
-      "line": 23
-    },
-    "384": {
-      "filename": "stdlib.sol",
-      "line": 23
-    },
-    "424": {
-      "filename": "stdlib.sol",
-      "line": 23
-    },
-    "432": {
-      "filename": "stdlib.sol",
-      "line": 23
-    },
-    "440": {
-      "filename": "stdlib.sol",
-      "line": 23
-    },
-    "456": {
-      "filename": "stdlib.sol",
-      "line": 24
-    },
-    "472": {
+    "136": {
       "filename": "./hello_wasm.code",
-      "line": 396
+      "line": 353
     },
-    "488": {
-      "filename": "./hello_wasm.code",
-      "line": 397
-    },
-    "496": {
-      "filename": "./hello_wasm.code",
-      "line": 398
-    },
-    "512": {
-      "filename": "./hello_wasm.code",
-      "line": 399
-    },
-    "520": {
-      "filename": "./hello_wasm.code",
-      "line": 400
-    },
-    "536": {
-      "filename": "./hello_wasm.code",
-      "line": 401
-    },
-    "552": {
-      "filename": "./hello_wasm.code",
-      "line": 402
-    },
-    "560": {
-      "filename": "./hello_wasm.code",
-      "line": 403
-    },
-    "576": {
-      "filename": "./hello_wasm.code",
-      "line": 406
+    "144": {
+      "filename": "hello_wasm.sol",
+      "line": 251
     }
   },
   "535c79cd363215de9ef9f5aef2721b24e186a87312020f979f10629128f52251": {
@@ -1073,22 +757,248 @@
       "line": 29
     }
   },
+  "5392b3aa5106ac7488b5f776529efe0a0776c8a8d01bcf1907ecfcc596d97683": {
+    "0": {
+      "filename": "hello_wasm.sol",
+      "line": 181
+    },
+    "16": {
+      "filename": "hello_wasm.sol",
+      "line": 182
+    },
+    "32": {
+      "filename": "hello_wasm.sol",
+      "line": 183
+    },
+    "40": {
+      "filename": "hello_wasm.sol",
+      "line": 183
+    },
+    "56": {
+      "filename": "hello_wasm.sol",
+      "line": 183
+    },
+    "64": {
+      "filename": "hello_wasm.sol",
+      "line": 183
+    },
+    "96": {
+      "filename": "hello_wasm.sol",
+      "line": 183
+    },
+    "112": {
+      "filename": "hello_wasm.sol",
+      "line": 183
+    },
+    "120": {
+      "filename": "hello_wasm.sol",
+      "line": 183
+    },
+    "128": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "136": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "152": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "160": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "168": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "192": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "200": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "208": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "224": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "232": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "256": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "280": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "296": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "312": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "328": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "336": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "344": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    },
+    "352": {
+      "filename": "hello_wasm.sol",
+      "line": 184
+    }
+  },
   "560c49c6e62cd07f08e8537520999669e5d0355447d180a9961892fc28424929": {},
   "5caee95a682e070080ab6872ac03c4ff2f165f3f1ea150a7dcedcaefaa1ebf3b": {
     "0": {
       "filename": "hello_wasm.sol",
-      "line": 39
+      "line": 40
     },
     "16": {
       "filename": "hello_wasm.sol",
-      "line": 40
+      "line": 41
     },
     "32": {
       "filename": "hello_wasm.sol",
-      "line": 41
+      "line": 42
     }
   },
-  "5ed7dd21f56b48e892d7ba1ab4db71e8fd420366ad6631bb216d8883a3a98a0b": {
+  "5f0e5d3c83df15af6d70700cca23e693055a80c35f1de7ab868e38c99efe0074": {
+    "0": {
+      "filename": "./hello_wasm.code",
+      "line": 546
+    },
+    "8": {
+      "filename": "./hello_wasm.code",
+      "line": 547
+    },
+    "24": {
+      "filename": "./hello_wasm.code",
+      "line": 548
+    },
+    "48": {
+      "filename": "hello_wasm.sol",
+      "line": 47
+    },
+    "56": {
+      "filename": "./hello_wasm.code",
+      "line": 552
+    },
+    "72": {
+      "filename": "./hello_wasm.code",
+      "line": 555
+    },
+    "80": {
+      "filename": "./hello_wasm.code",
+      "line": 556
+    },
+    "96": {
+      "filename": "./hello_wasm.code",
+      "line": 557
+    },
+    "104": {
+      "filename": "./hello_wasm.code",
+      "line": 558
+    },
+    "112": {
+      "filename": "./hello_wasm.code",
+      "line": 559
+    },
+    "128": {
+      "filename": "./hello_wasm.code",
+      "line": 560
+    },
+    "144": {
+      "filename": "./hello_wasm.code",
+      "line": 561
+    },
+    "152": {
+      "filename": "./hello_wasm.code",
+      "line": 562
+    },
+    "160": {
+      "filename": "./hello_wasm.code",
+      "line": 563
+    },
+    "168": {
+      "filename": "./hello_wasm.code",
+      "line": 564
+    },
+    "192": {
+      "filename": "./hello_wasm.code",
+      "line": 565
+    },
+    "200": {
+      "filename": "./hello_wasm.code",
+      "line": 566
+    },
+    "248": {
+      "filename": "./hello_wasm.code",
+      "line": 567
+    },
+    "272": {
+      "filename": "./hello_wasm.code",
+      "line": 568
+    },
+    "280": {
+      "filename": "./hello_wasm.code",
+      "line": 569
+    },
+    "288": {
+      "filename": "./hello_wasm.code",
+      "line": 570
+    },
+    "296": {
+      "filename": "./hello_wasm.code",
+      "line": 571
+    },
+    "312": {
+      "filename": "./hello_wasm.code",
+      "line": 573
+    },
+    "320": {
+      "filename": "./hello_wasm.code",
+      "line": 574
+    },
+    "328": {
+      "filename": "./hello_wasm.code",
+      "line": 576
+    },
+    "336": {
+      "filename": "./hello_wasm.code",
+      "line": 577
+    },
+    "352": {
+      "filename": "./hello_wasm.code",
+      "line": 580
+    }
+  },
+  "62d2227e63567dc6680c75a1275b6ced96282694e03777bfd6860c0f8be98bce": {
+    "0": {
+      "filename": "hello_wasm.sol",
+      "line": 48
+    }
+  },
+  "6a738aebdb60af492a965bb105897590d679a609d094c63817e7bd9181445b2d": {
     "0": {
       "filename": "./hello_wasm.code",
       "line": 93
@@ -1115,35 +1025,35 @@
     },
     "88": {
       "filename": "hello_wasm.sol",
-      "line": 129
+      "line": 130
     },
     "96": {
       "filename": "hello_wasm.sol",
-      "line": 129
+      "line": 130
     },
     "104": {
       "filename": "hello_wasm.sol",
-      "line": 129
+      "line": 130
     },
     "112": {
       "filename": "hello_wasm.sol",
-      "line": 129
+      "line": 130
     },
     "120": {
       "filename": "hello_wasm.sol",
-      "line": 129
+      "line": 130
     },
     "128": {
       "filename": "hello_wasm.sol",
-      "line": 129
+      "line": 130
     },
     "136": {
       "filename": "hello_wasm.sol",
-      "line": 129
+      "line": 130
     },
     "152": {
       "filename": "hello_wasm.sol",
-      "line": 129
+      "line": 130
     },
     "160": {
       "filename": "./hello_wasm.code",
@@ -1158,129 +1068,484 @@
       "line": 118
     }
   },
-  "5f0e5d3c83df15af6d70700cca23e693055a80c35f1de7ab868e38c99efe0074": {
+  "8b2c15e44783ed6899762dd054de81f7c4950fc0d7fe115723ff0cfc3d35964b": {
     "0": {
-      "filename": "./hello_wasm.code",
-      "line": 264
-    },
-    "8": {
-      "filename": "./hello_wasm.code",
-      "line": 265
-    },
-    "24": {
-      "filename": "./hello_wasm.code",
-      "line": 266
-    },
-    "48": {
-      "filename": "hello_wasm.sol",
-      "line": 46
-    },
-    "56": {
-      "filename": "./hello_wasm.code",
-      "line": 270
-    },
-    "72": {
-      "filename": "./hello_wasm.code",
-      "line": 273
-    },
-    "80": {
-      "filename": "./hello_wasm.code",
-      "line": 274
-    },
-    "96": {
-      "filename": "./hello_wasm.code",
-      "line": 275
-    },
-    "104": {
-      "filename": "./hello_wasm.code",
-      "line": 276
-    },
-    "112": {
-      "filename": "./hello_wasm.code",
-      "line": 277
-    },
-    "128": {
-      "filename": "./hello_wasm.code",
-      "line": 278
-    },
-    "144": {
-      "filename": "./hello_wasm.code",
-      "line": 279
-    },
-    "152": {
-      "filename": "./hello_wasm.code",
-      "line": 280
-    },
-    "160": {
-      "filename": "./hello_wasm.code",
-      "line": 281
-    },
-    "168": {
-      "filename": "./hello_wasm.code",
-      "line": 282
-    },
-    "192": {
-      "filename": "./hello_wasm.code",
-      "line": 283
-    },
-    "200": {
-      "filename": "./hello_wasm.code",
-      "line": 284
-    },
-    "248": {
-      "filename": "./hello_wasm.code",
-      "line": 285
-    },
-    "272": {
-      "filename": "./hello_wasm.code",
-      "line": 286
-    },
-    "280": {
       "filename": "./hello_wasm.code",
       "line": 287
     },
-    "288": {
+    "8": {
       "filename": "./hello_wasm.code",
       "line": 288
     },
-    "296": {
+    "24": {
       "filename": "./hello_wasm.code",
       "line": 289
     },
-    "312": {
-      "filename": "./hello_wasm.code",
-      "line": 291
-    },
-    "320": {
+    "40": {
       "filename": "./hello_wasm.code",
       "line": 292
     },
-    "328": {
+    "48": {
+      "filename": "./hello_wasm.code",
+      "line": 293
+    },
+    "96": {
       "filename": "./hello_wasm.code",
       "line": 294
     },
-    "336": {
+    "104": {
       "filename": "./hello_wasm.code",
       "line": 295
     },
-    "352": {
+    "120": {
       "filename": "./hello_wasm.code",
       "line": 298
+    },
+    "128": {
+      "filename": "./hello_wasm.code",
+      "line": 299
+    },
+    "176": {
+      "filename": "./hello_wasm.code",
+      "line": 300
+    },
+    "184": {
+      "filename": "./hello_wasm.code",
+      "line": 301
     }
   },
-  "62d2227e63567dc6680c75a1275b6ced96282694e03777bfd6860c0f8be98bce": {
-    "0": {
-      "filename": "hello_wasm.sol",
-      "line": 47
-    }
-  },
-  "6616336dd6a9cd25bbac1cb6f8dc41f64a1ae6c2e3f9899866214cf10c09f7a4": {
+  "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7": {},
+  "977c6367f43d154924fff4ab44e3f59bed16cb4f1c5414c679de16087cdf99e3": {
     "0": {
       "filename": "./hello_wasm.code",
-      "line": 467
+      "line": 281
+    },
+    "8": {
+      "filename": "./hello_wasm.code",
+      "line": 282
+    },
+    "24": {
+      "filename": "./hello_wasm.code",
+      "line": 283
+    },
+    "48": {
+      "filename": "hello_wasm.sol",
+      "line": 202
+    },
+    "56": {
+      "filename": "hello_wasm.sol",
+      "line": 202
+    },
+    "64": {
+      "filename": "hello_wasm.sol",
+      "line": 202
+    },
+    "72": {
+      "filename": "hello_wasm.sol",
+      "line": 202
+    },
+    "80": {
+      "filename": "hello_wasm.sol",
+      "line": 202
+    },
+    "88": {
+      "filename": "hello_wasm.sol",
+      "line": 202
+    },
+    "96": {
+      "filename": "hello_wasm.sol",
+      "line": 202
+    },
+    "112": {
+      "filename": "hello_wasm.sol",
+      "line": 202
+    },
+    "120": {
+      "filename": "./hello_wasm.code",
+      "line": 295
+    },
+    "136": {
+      "filename": "./hello_wasm.code",
+      "line": 298
+    },
+    "144": {
+      "filename": "./hello_wasm.code",
+      "line": 299
+    },
+    "160": {
+      "filename": "./hello_wasm.code",
+      "line": 300
+    },
+    "168": {
+      "filename": "./hello_wasm.code",
+      "line": 301
+    },
+    "176": {
+      "filename": "./hello_wasm.code",
+      "line": 302
+    },
+    "192": {
+      "filename": "./hello_wasm.code",
+      "line": 303
+    },
+    "208": {
+      "filename": "./hello_wasm.code",
+      "line": 304
+    },
+    "216": {
+      "filename": "./hello_wasm.code",
+      "line": 305
+    },
+    "224": {
+      "filename": "./hello_wasm.code",
+      "line": 306
+    },
+    "232": {
+      "filename": "./hello_wasm.code",
+      "line": 307
+    },
+    "256": {
+      "filename": "./hello_wasm.code",
+      "line": 308
+    },
+    "264": {
+      "filename": "./hello_wasm.code",
+      "line": 309
+    },
+    "312": {
+      "filename": "./hello_wasm.code",
+      "line": 310
+    },
+    "336": {
+      "filename": "./hello_wasm.code",
+      "line": 311
+    },
+    "344": {
+      "filename": "./hello_wasm.code",
+      "line": 312
+    },
+    "352": {
+      "filename": "./hello_wasm.code",
+      "line": 313
+    },
+    "360": {
+      "filename": "./hello_wasm.code",
+      "line": 314
+    },
+    "376": {
+      "filename": "./hello_wasm.code",
+      "line": 316
+    },
+    "384": {
+      "filename": "./hello_wasm.code",
+      "line": 317
+    },
+    "392": {
+      "filename": "./hello_wasm.code",
+      "line": 319
+    },
+    "400": {
+      "filename": "./hello_wasm.code",
+      "line": 320
+    },
+    "416": {
+      "filename": "./hello_wasm.code",
+      "line": 323
     }
   },
-  "70b28cffd93a72b6412933478babe3a196f450b9f2894b2b81c899579bc67788": {
+  "a1de7d9ae687f6cccddbb76ca557c9228b4d90909615f3b1c4056ce9f66d1f6a": {
+    "0": {
+      "filename": "hello_wasm.sol",
+      "line": 192
+    },
+    "16": {
+      "filename": "hello_wasm.sol",
+      "line": 192
+    },
+    "32": {
+      "filename": "hello_wasm.sol",
+      "line": 192
+    },
+    "88": {
+      "filename": "hello_wasm.sol",
+      "line": 192
+    },
+    "96": {
+      "filename": "hello_wasm.sol",
+      "line": 192
+    },
+    "104": {
+      "filename": "hello_wasm.sol",
+      "line": 195
+    },
+    "160": {
+      "filename": "hello_wasm.sol",
+      "line": 195
+    }
+  },
+  "a2c3061038d96c942d60076071cfbfb80a953ea05d7b77d88a5e1d32455ae56c": {
+    "0": {
+      "filename": "./hello_wasm.code",
+      "line": 452
+    },
+    "16": {
+      "filename": "./hello_wasm.code",
+      "line": 453
+    },
+    "24": {
+      "filename": "./hello_wasm.code",
+      "line": 454
+    },
+    "48": {
+      "filename": "./hello_wasm.code",
+      "line": 455
+    },
+    "64": {
+      "filename": "./hello_wasm.code",
+      "line": 456
+    },
+    "88": {
+      "filename": "./hello_wasm.code",
+      "line": 457
+    },
+    "104": {
+      "filename": "./hello_wasm.code",
+      "line": 458
+    },
+    "112": {
+      "filename": "./hello_wasm.code",
+      "line": 459
+    },
+    "120": {
+      "filename": "./hello_wasm.code",
+      "line": 460
+    },
+    "144": {
+      "filename": "./hello_wasm.code",
+      "line": 461
+    },
+    "168": {
+      "filename": "./hello_wasm.code",
+      "line": 462
+    },
+    "176": {
+      "filename": "./hello_wasm.code",
+      "line": 463
+    },
+    "184": {
+      "filename": "./hello_wasm.code",
+      "line": 464
+    },
+    "200": {
+      "filename": "./hello_wasm.code",
+      "line": 465
+    },
+    "216": {
+      "filename": "./hello_wasm.code",
+      "line": 469
+    },
+    "224": {
+      "filename": "./hello_wasm.code",
+      "line": 470
+    },
+    "248": {
+      "filename": "./hello_wasm.code",
+      "line": 471
+    },
+    "264": {
+      "filename": "./hello_wasm.code",
+      "line": 472
+    },
+    "272": {
+      "filename": "./hello_wasm.code",
+      "line": 473
+    },
+    "288": {
+      "filename": "./hello_wasm.code",
+      "line": 477
+    },
+    "296": {
+      "filename": "./hello_wasm.code",
+      "line": 478
+    },
+    "312": {
+      "filename": "./hello_wasm.code",
+      "line": 481
+    }
+  },
+  "a5917aa2923272d05f9e8f92d573e945cc412ec1928c53baa2e41e54e496bdb6": {
+    "0": {
+      "filename": "./hello_wasm.code",
+      "line": 369
+    },
+    "8": {
+      "filename": "./hello_wasm.code",
+      "line": 370
+    },
+    "24": {
+      "filename": "./hello_wasm.code",
+      "line": 371
+    },
+    "48": {
+      "filename": "hello_wasm.sol",
+      "line": 240
+    },
+    "56": {
+      "filename": "hello_wasm.sol",
+      "line": 240
+    },
+    "64": {
+      "filename": "hello_wasm.sol",
+      "line": 240
+    },
+    "72": {
+      "filename": "hello_wasm.sol",
+      "line": 240
+    },
+    "80": {
+      "filename": "hello_wasm.sol",
+      "line": 240
+    },
+    "88": {
+      "filename": "hello_wasm.sol",
+      "line": 240
+    },
+    "96": {
+      "filename": "hello_wasm.sol",
+      "line": 240
+    },
+    "112": {
+      "filename": "hello_wasm.sol",
+      "line": 240
+    },
+    "120": {
+      "filename": "./hello_wasm.code",
+      "line": 383
+    },
+    "136": {
+      "filename": "./hello_wasm.code",
+      "line": 386
+    },
+    "144": {
+      "filename": "./hello_wasm.code",
+      "line": 387
+    },
+    "160": {
+      "filename": "./hello_wasm.code",
+      "line": 388
+    },
+    "168": {
+      "filename": "./hello_wasm.code",
+      "line": 389
+    },
+    "176": {
+      "filename": "./hello_wasm.code",
+      "line": 390
+    },
+    "192": {
+      "filename": "./hello_wasm.code",
+      "line": 391
+    },
+    "208": {
+      "filename": "./hello_wasm.code",
+      "line": 392
+    },
+    "216": {
+      "filename": "./hello_wasm.code",
+      "line": 393
+    },
+    "224": {
+      "filename": "./hello_wasm.code",
+      "line": 394
+    },
+    "232": {
+      "filename": "./hello_wasm.code",
+      "line": 395
+    },
+    "256": {
+      "filename": "./hello_wasm.code",
+      "line": 396
+    },
+    "264": {
+      "filename": "./hello_wasm.code",
+      "line": 397
+    },
+    "312": {
+      "filename": "./hello_wasm.code",
+      "line": 398
+    },
+    "336": {
+      "filename": "./hello_wasm.code",
+      "line": 399
+    },
+    "344": {
+      "filename": "./hello_wasm.code",
+      "line": 400
+    },
+    "352": {
+      "filename": "./hello_wasm.code",
+      "line": 401
+    },
+    "360": {
+      "filename": "./hello_wasm.code",
+      "line": 402
+    },
+    "376": {
+      "filename": "./hello_wasm.code",
+      "line": 404
+    },
+    "384": {
+      "filename": "./hello_wasm.code",
+      "line": 405
+    },
+    "392": {
+      "filename": "./hello_wasm.code",
+      "line": 407
+    },
+    "400": {
+      "filename": "./hello_wasm.code",
+      "line": 408
+    },
+    "416": {
+      "filename": "./hello_wasm.code",
+      "line": 411
+    }
+  },
+  "abc34e90c9c5f40dfcd4ac709a027359d15851e664aaae5e55d46eddf82ea982": {
+    "0": {
+      "filename": "./hello_wasm.code",
+      "line": 380
+    },
+    "8": {
+      "filename": "./hello_wasm.code",
+      "line": 381
+    },
+    "56": {
+      "filename": "./hello_wasm.code",
+      "line": 382
+    },
+    "64": {
+      "filename": "./hello_wasm.code",
+      "line": 383
+    },
+    "80": {
+      "filename": "./hello_wasm.code",
+      "line": 386
+    },
+    "88": {
+      "filename": "./hello_wasm.code",
+      "line": 387
+    },
+    "136": {
+      "filename": "./hello_wasm.code",
+      "line": 388
+    },
+    "144": {
+      "filename": "./hello_wasm.code",
+      "line": 389
+    }
+  },
+  "b714694dd089497fa540bb33391da3403e0c9ff16e2ed1b6e0e39572577b2bcd": {
     "0": {
       "filename": "./hello_wasm.code",
       "line": 104
@@ -1307,39 +1572,39 @@
     },
     "88": {
       "filename": "hello_wasm.sol",
-      "line": 154
+      "line": 155
     },
     "96": {
       "filename": "hello_wasm.sol",
-      "line": 154
+      "line": 155
     },
     "104": {
       "filename": "hello_wasm.sol",
-      "line": 154
+      "line": 155
     },
     "112": {
       "filename": "hello_wasm.sol",
-      "line": 154
+      "line": 155
     },
     "120": {
       "filename": "hello_wasm.sol",
-      "line": 154
+      "line": 155
     },
     "128": {
       "filename": "hello_wasm.sol",
-      "line": 154
+      "line": 155
     },
     "136": {
       "filename": "hello_wasm.sol",
-      "line": 154
+      "line": 155
     },
     "152": {
       "filename": "hello_wasm.sol",
-      "line": 154
+      "line": 155
     },
     "168": {
       "filename": "hello_wasm.sol",
-      "line": 154
+      "line": 155
     },
     "176": {
       "filename": "./hello_wasm.code",
@@ -1354,297 +1619,270 @@
       "line": 130
     }
   },
-  "7f94a511db711e7e99b29164ac31e9966987c215ecea946518ec9c6d4ede0317": {
+  "b7e102bb063418655d32a11dd599a251485be59f6ad51121956ced53ce33bc03": {
     "0": {
       "filename": "./hello_wasm.code",
-      "line": 239
+      "line": 498
     },
-    "8": {
+    "1": {
       "filename": "./hello_wasm.code",
-      "line": 240
+      "line": 499
     },
-    "24": {
+    "2": {
       "filename": "./hello_wasm.code",
-      "line": 241
+      "line": 500
     },
-    "48": {
-      "filename": "hello_wasm.sol",
-      "line": 38
-    },
-    "64": {
-      "filename": "hello_wasm.sol",
-      "line": 38
-    },
-    "72": {
+    "3": {
       "filename": "./hello_wasm.code",
-      "line": 246
+      "line": 529
     },
-    "88": {
+    "4": {
       "filename": "./hello_wasm.code",
-      "line": 249
-    },
-    "104": {
-      "filename": "./hello_wasm.code",
-      "line": 252
+      "line": 533
     }
   },
-  "80f960bfbffcf4dd9fb6a551e4bf5a87a285132ba01770657c36318811156b0b": {
-    "0": {
-      "filename": "./hello_wasm.code",
-      "line": 208
-    },
-    "8": {
-      "filename": "./hello_wasm.code",
-      "line": 209
-    },
-    "24": {
-      "filename": "./hello_wasm.code",
-      "line": 210
-    },
-    "48": {
-      "filename": "hello_wasm.sol",
-      "line": 172
-    },
-    "56": {
-      "filename": "hello_wasm.sol",
-      "line": 172
-    },
-    "72": {
-      "filename": "hello_wasm.sol",
-      "line": 172
-    },
-    "80": {
-      "filename": "hello_wasm.sol",
-      "line": 172
-    },
-    "88": {
-      "filename": "./hello_wasm.code",
-      "line": 217
-    },
-    "104": {
-      "filename": "./hello_wasm.code",
-      "line": 220
-    },
-    "120": {
-      "filename": "./hello_wasm.code",
-      "line": 223
-    }
-  },
-  "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7": {},
-  "97cf6c63ffbcfc526118806001fb06214550b6eb2881c3a318cfdc63037b978e": {
-    "0": {
-      "filename": "./hello_wasm.code",
-      "line": 410
-    },
-    "16": {
-      "filename": "./hello_wasm.code",
-      "line": 411
-    },
-    "24": {
-      "filename": "./hello_wasm.code",
-      "line": 412
-    },
-    "48": {
-      "filename": "./hello_wasm.code",
-      "line": 413
-    },
-    "64": {
-      "filename": "./hello_wasm.code",
-      "line": 414
-    },
-    "88": {
-      "filename": "./hello_wasm.code",
-      "line": 415
-    },
-    "104": {
-      "filename": "./hello_wasm.code",
-      "line": 416
-    },
-    "112": {
-      "filename": "./hello_wasm.code",
-      "line": 417
-    },
-    "120": {
-      "filename": "./hello_wasm.code",
-      "line": 418
-    },
-    "144": {
-      "filename": "./hello_wasm.code",
-      "line": 419
-    },
-    "168": {
-      "filename": "./hello_wasm.code",
-      "line": 420
-    },
-    "176": {
-      "filename": "./hello_wasm.code",
-      "line": 421
-    },
-    "184": {
-      "filename": "./hello_wasm.code",
-      "line": 422
-    },
-    "200": {
-      "filename": "./hello_wasm.code",
-      "line": 423
-    },
-    "216": {
-      "filename": "./hello_wasm.code",
-      "line": 427
-    },
-    "224": {
-      "filename": "./hello_wasm.code",
-      "line": 428
-    },
-    "248": {
-      "filename": "./hello_wasm.code",
-      "line": 429
-    },
-    "264": {
-      "filename": "./hello_wasm.code",
-      "line": 430
-    },
-    "272": {
-      "filename": "./hello_wasm.code",
-      "line": 431
-    },
-    "288": {
-      "filename": "./hello_wasm.code",
-      "line": 435
-    },
-    "296": {
-      "filename": "./hello_wasm.code",
-      "line": 436
-    },
-    "312": {
-      "filename": "./hello_wasm.code",
-      "line": 439
-    }
-  },
-  "a1de7d9ae687f6cccddbb76ca557c9228b4d90909615f3b1c4056ce9f66d1f6a": {
+  "baba43e27ef32375dd2766b461422b81d4ee06ad8986b470c8ba0eb9f1ddb955": {
     "0": {
       "filename": "hello_wasm.sol",
-      "line": 191
+      "line": 156
     },
     "16": {
       "filename": "hello_wasm.sol",
-      "line": 191
+      "line": 156
+    },
+    "24": {
+      "filename": "hello_wasm.sol",
+      "line": 156
     },
     "32": {
       "filename": "hello_wasm.sol",
-      "line": 191
-    },
-    "88": {
-      "filename": "hello_wasm.sol",
-      "line": 191
-    },
-    "96": {
-      "filename": "hello_wasm.sol",
-      "line": 191
-    },
-    "104": {
-      "filename": "hello_wasm.sol",
-      "line": 194
-    },
-    "160": {
-      "filename": "hello_wasm.sol",
-      "line": 194
-    }
-  },
-  "b60b6d4b7551b366b02456c9576a50e3e2c58f968b5bf8d34a5f1f17aa32b2b1": {
-    "0": {
-      "filename": "./hello_wasm.code",
-      "line": 461
-    },
-    "24": {
-      "filename": "./hello_wasm.code",
-      "line": 462
-    },
-    "40": {
-      "filename": "./hello_wasm.code",
-      "line": 463
-    }
-  },
-  "b92ac95113bc6135883a2dd28b2d97bf47d2002b3014e918b68dc79f80457b1e": {
-    "0": {
-      "filename": "hello_wasm.sol",
-      "line": 132
-    },
-    "16": {
-      "filename": "hello_wasm.sol",
-      "line": 132
-    },
-    "24": {
-      "filename": "hello_wasm.sol",
-      "line": 132
-    },
-    "32": {
-      "filename": "hello_wasm.sol",
-      "line": 132
+      "line": 156
     },
     "40": {
       "filename": "hello_wasm.sol",
-      "line": 132
+      "line": 156
     },
     "48": {
       "filename": "hello_wasm.sol",
-      "line": 132
+      "line": 156
     },
     "56": {
       "filename": "hello_wasm.sol",
-      "line": 132
+      "line": 156
     },
     "64": {
       "filename": "hello_wasm.sol",
-      "line": 132
+      "line": 156
     },
     "80": {
       "filename": "hello_wasm.sol",
-      "line": 132
+      "line": 156
     },
     "88": {
       "filename": "hello_wasm.sol",
-      "line": 132
+      "line": 156
     },
     "112": {
       "filename": "hello_wasm.sol",
-      "line": 133
+      "line": 157
     },
     "128": {
       "filename": "hello_wasm.sol",
-      "line": 134
+      "line": 158
     },
     "144": {
       "filename": "hello_wasm.sol",
-      "line": 135
+      "line": 162
     },
     "152": {
       "filename": "hello_wasm.sol",
-      "line": 135
+      "line": 162
     },
-    "176": {
+    "160": {
       "filename": "hello_wasm.sol",
-      "line": 135
+      "line": 162
+    },
+    "168": {
+      "filename": "hello_wasm.sol",
+      "line": 162
     },
     "184": {
       "filename": "hello_wasm.sol",
-      "line": 135
+      "line": 162
     },
-    "376": {
+    "200": {
       "filename": "hello_wasm.sol",
-      "line": 135
+      "line": 162
+    },
+    "208": {
+      "filename": "hello_wasm.sol",
+      "line": 162
+    },
+    "224": {
+      "filename": "hello_wasm.sol",
+      "line": 162
+    },
+    "240": {
+      "filename": "hello_wasm.sol",
+      "line": 164
+    },
+    "248": {
+      "filename": "hello_wasm.sol",
+      "line": 164
+    },
+    "256": {
+      "filename": "hello_wasm.sol",
+      "line": 164
+    },
+    "280": {
+      "filename": "hello_wasm.sol",
+      "line": 164
+    },
+    "288": {
+      "filename": "hello_wasm.sol",
+      "line": 164
+    },
+    "312": {
+      "filename": "hello_wasm.sol",
+      "line": 164
+    },
+    "328": {
+      "filename": "hello_wasm.sol",
+      "line": 164
+    },
+    "336": {
+      "filename": "hello_wasm.sol",
+      "line": 164
+    },
+    "360": {
+      "filename": "hello_wasm.sol",
+      "line": 164
+    },
+    "368": {
+      "filename": "hello_wasm.sol",
+      "line": 164
+    },
+    "384": {
+      "filename": "hello_wasm.sol",
+      "line": 164
     },
     "392": {
       "filename": "hello_wasm.sol",
-      "line": 135
+      "line": 164
     },
     "400": {
       "filename": "hello_wasm.sol",
-      "line": 135
-    },
-    "408": {
+      "line": 164
+    }
+  },
+  "be474c30e576b87e2de124440a12133f6aff58bf01eb989ee519ba75703176fb": {
+    "0": {
       "filename": "hello_wasm.sol",
-      "line": 135
+      "line": 244
+    }
+  },
+  "be9cfea52fd009db0ef4422972b8945d703ec8dce5fa9a7cc0d7351988b420bd": {
+    "0": {
+      "filename": "./hello_wasm.code",
+      "line": 514
+    },
+    "8": {
+      "filename": "./hello_wasm.code",
+      "line": 515
+    },
+    "24": {
+      "filename": "./hello_wasm.code",
+      "line": 516
+    },
+    "48": {
+      "filename": "hello_wasm.sol",
+      "line": 39
+    },
+    "56": {
+      "filename": "hello_wasm.sol",
+      "line": 39
+    },
+    "64": {
+      "filename": "hello_wasm.sol",
+      "line": 39
+    },
+    "72": {
+      "filename": "hello_wasm.sol",
+      "line": 39
+    },
+    "80": {
+      "filename": "hello_wasm.sol",
+      "line": 39
+    },
+    "88": {
+      "filename": "hello_wasm.sol",
+      "line": 39
+    },
+    "96": {
+      "filename": "hello_wasm.sol",
+      "line": 39
+    },
+    "112": {
+      "filename": "hello_wasm.sol",
+      "line": 39
+    },
+    "120": {
+      "filename": "./hello_wasm.code",
+      "line": 528
+    },
+    "136": {
+      "filename": "./hello_wasm.code",
+      "line": 531
+    },
+    "152": {
+      "filename": "./hello_wasm.code",
+      "line": 534
+    }
+  },
+  "bff9969c8c62b26b205abcba480c75dcb56ff1be8afa13021c425d45a31a0413": {
+    "0": {
+      "filename": "./hello_wasm.code",
+      "line": 502
+    },
+    "8": {
+      "filename": "./hello_wasm.code",
+      "line": 512
+    },
+    "24": {
+      "filename": "./hello_wasm.code",
+      "line": 513
+    },
+    "32": {
+      "filename": "./hello_wasm.code",
+      "line": 514
+    },
+    "48": {
+      "filename": "./hello_wasm.code",
+      "line": 517
+    },
+    "56": {
+      "filename": "./hello_wasm.code",
+      "line": 518
+    },
+    "72": {
+      "filename": "./hello_wasm.code",
+      "line": 519
+    },
+    "88": {
+      "filename": "./hello_wasm.code",
+      "line": 522
+    },
+    "96": {
+      "filename": "./hello_wasm.code",
+      "line": 523
+    },
+    "112": {
+      "filename": "./hello_wasm.code",
+      "line": 524
+    },
+    "128": {
+      "filename": "./hello_wasm.code",
+      "line": 527
     }
   },
   "c0fb78e16642bc7c1aa3a92806ac664df7dc956e536f3f16ea5b43a5cd16de47": {
@@ -1674,7 +1912,7 @@
     },
     "88": {
       "filename": "hello_wasm.sol",
-      "line": 119
+      "line": 120
     },
     "96": {
       "filename": "./hello_wasm.code",
@@ -1689,138 +1927,436 @@
       "line": 254
     }
   },
-  "c36c8dad61adb2381c473efcfc24393da6a50037a153c38862c7453988e66227": {
+  "c2e15f5fb8ede673db95fc2660b35dc19e0a78785559548a061273b7c5ac6591": {
     "0": {
       "filename": "hello_wasm.sol",
-      "line": 155
+      "line": 203
     },
     "16": {
       "filename": "hello_wasm.sol",
-      "line": 155
+      "line": 206
     },
     "24": {
       "filename": "hello_wasm.sol",
-      "line": 155
+      "line": 209
     },
     "32": {
       "filename": "hello_wasm.sol",
-      "line": 155
+      "line": 209
     },
     "40": {
       "filename": "hello_wasm.sol",
-      "line": 155
-    },
-    "48": {
-      "filename": "hello_wasm.sol",
-      "line": 155
+      "line": 209
     },
     "56": {
       "filename": "hello_wasm.sol",
-      "line": 155
+      "line": 209
     },
     "64": {
       "filename": "hello_wasm.sol",
-      "line": 155
+      "line": 209
+    },
+    "72": {
+      "filename": "hello_wasm.sol",
+      "line": 210
     },
     "80": {
       "filename": "hello_wasm.sol",
-      "line": 155
+      "line": 211
     },
     "88": {
       "filename": "hello_wasm.sol",
-      "line": 155
+      "line": 211
+    },
+    "104": {
+      "filename": "hello_wasm.sol",
+      "line": 213
     },
     "112": {
       "filename": "hello_wasm.sol",
-      "line": 156
+      "line": 213
     },
     "128": {
       "filename": "hello_wasm.sol",
-      "line": 157
+      "line": 217
+    },
+    "136": {
+      "filename": "hello_wasm.sol",
+      "line": 217
     },
     "144": {
       "filename": "hello_wasm.sol",
-      "line": 161
+      "line": 209
     },
     "152": {
-      "filename": "hello_wasm.sol",
-      "line": 161
+      "filename": "./hello_wasm.code",
+      "line": 273
     },
     "160": {
-      "filename": "hello_wasm.sol",
-      "line": 161
+      "filename": "./hello_wasm.code",
+      "line": 274
     },
     "168": {
       "filename": "hello_wasm.sol",
-      "line": 161
+      "line": 219
+    }
+  },
+  "c5645feef75e157dbbd0147f1c8a6bbc3964bde857374d519f68e9d545d7271f": {
+    "0": {
+      "filename": "./hello_wasm.code",
+      "line": 396
+    },
+    "8": {
+      "filename": "./hello_wasm.code",
+      "line": 397
+    },
+    "24": {
+      "filename": "./hello_wasm.code",
+      "line": 400
+    },
+    "40": {
+      "filename": "./hello_wasm.code",
+      "line": 401
+    },
+    "48": {
+      "filename": "./hello_wasm.code",
+      "line": 402
+    },
+    "64": {
+      "filename": "./hello_wasm.code",
+      "line": 403
+    },
+    "80": {
+      "filename": "./hello_wasm.code",
+      "line": 404
+    },
+    "96": {
+      "filename": "./hello_wasm.code",
+      "line": 405
+    },
+    "104": {
+      "filename": "./hello_wasm.code",
+      "line": 406
+    },
+    "120": {
+      "filename": "./hello_wasm.code",
+      "line": 407
+    },
+    "128": {
+      "filename": "./hello_wasm.code",
+      "line": 408
+    },
+    "136": {
+      "filename": "./hello_wasm.code",
+      "line": 409
+    },
+    "144": {
+      "filename": "./hello_wasm.code",
+      "line": 410
+    },
+    "152": {
+      "filename": "./hello_wasm.code",
+      "line": 411
+    },
+    "168": {
+      "filename": "./hello_wasm.code",
+      "line": 412
+    },
+    "176": {
+      "filename": "./hello_wasm.code",
+      "line": 413
+    },
+    "192": {
+      "filename": "./hello_wasm.code",
+      "line": 414
+    },
+    "200": {
+      "filename": "./hello_wasm.code",
+      "line": 415
+    },
+    "208": {
+      "filename": "./hello_wasm.code",
+      "line": 416
+    },
+    "224": {
+      "filename": "./hello_wasm.code",
+      "line": 417
+    },
+    "240": {
+      "filename": "./hello_wasm.code",
+      "line": 419
+    },
+    "248": {
+      "filename": "./hello_wasm.code",
+      "line": 420
+    },
+    "256": {
+      "filename": "./hello_wasm.code",
+      "line": 421
+    },
+    "272": {
+      "filename": "./hello_wasm.code",
+      "line": 423
+    },
+    "280": {
+      "filename": "./hello_wasm.code",
+      "line": 424
+    },
+    "288": {
+      "filename": "./hello_wasm.code",
+      "line": 425
+    },
+    "304": {
+      "filename": "./hello_wasm.code",
+      "line": 426
+    },
+    "320": {
+      "filename": "./hello_wasm.code",
+      "line": 427
+    },
+    "336": {
+      "filename": "./hello_wasm.code",
+      "line": 429
+    },
+    "344": {
+      "filename": "./hello_wasm.code",
+      "line": 430
+    },
+    "360": {
+      "filename": "./hello_wasm.code",
+      "line": 431
+    },
+    "368": {
+      "filename": "./hello_wasm.code",
+      "line": 432
+    },
+    "384": {
+      "filename": "./hello_wasm.code",
+      "line": 434
+    },
+    "392": {
+      "filename": "./hello_wasm.code",
+      "line": 435
+    },
+    "408": {
+      "filename": "./hello_wasm.code",
+      "line": 436
+    },
+    "416": {
+      "filename": "stdlib.sol",
+      "line": 22
+    },
+    "432": {
+      "filename": "stdlib.sol",
+      "line": 22
+    },
+    "440": {
+      "filename": "stdlib.sol",
+      "line": 22
+    },
+    "448": {
+      "filename": "stdlib.sol",
+      "line": 22
+    },
+    "464": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "472": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "488": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "512": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "520": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "560": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "568": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "576": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "592": {
+      "filename": "stdlib.sol",
+      "line": 24
+    },
+    "608": {
+      "filename": "./hello_wasm.code",
+      "line": 438
+    },
+    "624": {
+      "filename": "./hello_wasm.code",
+      "line": 439
+    },
+    "632": {
+      "filename": "./hello_wasm.code",
+      "line": 440
+    },
+    "648": {
+      "filename": "./hello_wasm.code",
+      "line": 441
+    },
+    "656": {
+      "filename": "./hello_wasm.code",
+      "line": 442
+    },
+    "672": {
+      "filename": "./hello_wasm.code",
+      "line": 443
+    },
+    "688": {
+      "filename": "./hello_wasm.code",
+      "line": 444
+    },
+    "696": {
+      "filename": "./hello_wasm.code",
+      "line": 445
+    },
+    "712": {
+      "filename": "./hello_wasm.code",
+      "line": 448
+    }
+  },
+  "cbf9786ec2e99c31fe6e8701e18a4e840b34e8ec9ada8c4c67bcb5766572c71c": {
+    "0": {
+      "filename": "./hello_wasm.code",
+      "line": 357
+    },
+    "8": {
+      "filename": "./hello_wasm.code",
+      "line": 358
+    },
+    "56": {
+      "filename": "./hello_wasm.code",
+      "line": 359
+    },
+    "64": {
+      "filename": "./hello_wasm.code",
+      "line": 360
+    },
+    "80": {
+      "filename": "./hello_wasm.code",
+      "line": 363
+    },
+    "88": {
+      "filename": "./hello_wasm.code",
+      "line": 364
+    },
+    "136": {
+      "filename": "./hello_wasm.code",
+      "line": 365
+    },
+    "144": {
+      "filename": "./hello_wasm.code",
+      "line": 366
+    },
+    "160": {
+      "filename": "./hello_wasm.code",
+      "line": 369
+    },
+    "168": {
+      "filename": "./hello_wasm.code",
+      "line": 370
+    },
+    "216": {
+      "filename": "./hello_wasm.code",
+      "line": 371
+    },
+    "224": {
+      "filename": "./hello_wasm.code",
+      "line": 372
+    }
+  },
+  "ceeadd1dbf870003bf8276a8421ca8e25f8fc6ea8298da32fc9d26a5835a65b8": {
+    "0": {
+      "filename": "./hello_wasm.code",
+      "line": 172
+    },
+    "8": {
+      "filename": "./hello_wasm.code",
+      "line": 173
+    },
+    "24": {
+      "filename": "./hello_wasm.code",
+      "line": 174
+    },
+    "48": {
+      "filename": "./hello_wasm.code",
+      "line": 175
+    },
+    "64": {
+      "filename": "./hello_wasm.code",
+      "line": 176
+    },
+    "72": {
+      "filename": "./hello_wasm.code",
+      "line": 177
+    },
+    "88": {
+      "filename": "hello_wasm.sol",
+      "line": 144
+    },
+    "96": {
+      "filename": "hello_wasm.sol",
+      "line": 144
+    },
+    "104": {
+      "filename": "hello_wasm.sol",
+      "line": 144
+    },
+    "112": {
+      "filename": "hello_wasm.sol",
+      "line": 144
+    },
+    "120": {
+      "filename": "hello_wasm.sol",
+      "line": 144
+    },
+    "128": {
+      "filename": "hello_wasm.sol",
+      "line": 144
+    },
+    "136": {
+      "filename": "hello_wasm.sol",
+      "line": 144
+    },
+    "152": {
+      "filename": "hello_wasm.sol",
+      "line": 144
+    },
+    "168": {
+      "filename": "hello_wasm.sol",
+      "line": 144
     },
     "184": {
       "filename": "hello_wasm.sol",
-      "line": 161
+      "line": 144
     },
-    "200": {
-      "filename": "hello_wasm.sol",
-      "line": 161
+    "192": {
+      "filename": "./hello_wasm.code",
+      "line": 193
     },
     "208": {
-      "filename": "hello_wasm.sol",
-      "line": 161
+      "filename": "./hello_wasm.code",
+      "line": 196
     },
     "224": {
-      "filename": "hello_wasm.sol",
-      "line": 161
-    },
-    "240": {
-      "filename": "hello_wasm.sol",
-      "line": 163
-    },
-    "248": {
-      "filename": "hello_wasm.sol",
-      "line": 163
-    },
-    "256": {
-      "filename": "hello_wasm.sol",
-      "line": 163
-    },
-    "280": {
-      "filename": "hello_wasm.sol",
-      "line": 163
-    },
-    "288": {
-      "filename": "hello_wasm.sol",
-      "line": 163
-    },
-    "312": {
-      "filename": "hello_wasm.sol",
-      "line": 163
-    },
-    "328": {
-      "filename": "hello_wasm.sol",
-      "line": 163
-    },
-    "336": {
-      "filename": "hello_wasm.sol",
-      "line": 163
-    },
-    "360": {
-      "filename": "hello_wasm.sol",
-      "line": 163
-    },
-    "368": {
-      "filename": "hello_wasm.sol",
-      "line": 163
-    },
-    "384": {
-      "filename": "hello_wasm.sol",
-      "line": 163
-    },
-    "392": {
-      "filename": "hello_wasm.sol",
-      "line": 163
-    },
-    "400": {
-      "filename": "hello_wasm.sol",
-      "line": 163
+      "filename": "./hello_wasm.code",
+      "line": 199
     }
   },
   "cf153bffa1e156c168161d9095739957b6c7324b0ed0dafc960782433b129b7d": {
@@ -1850,63 +2386,63 @@
     },
     "88": {
       "filename": "hello_wasm.sol",
-      "line": 73
+      "line": 74
     },
     "96": {
       "filename": "hello_wasm.sol",
-      "line": 73
+      "line": 74
     },
     "104": {
       "filename": "hello_wasm.sol",
-      "line": 73
+      "line": 74
     },
     "112": {
       "filename": "hello_wasm.sol",
-      "line": 73
+      "line": 74
     },
     "120": {
       "filename": "hello_wasm.sol",
-      "line": 73
+      "line": 74
     },
     "128": {
       "filename": "hello_wasm.sol",
-      "line": 73
+      "line": 74
     },
     "136": {
       "filename": "hello_wasm.sol",
-      "line": 73
+      "line": 74
     },
     "144": {
       "filename": "hello_wasm.sol",
-      "line": 73
+      "line": 74
     },
     "152": {
       "filename": "hello_wasm.sol",
-      "line": 73
+      "line": 74
     },
     "160": {
       "filename": "hello_wasm.sol",
-      "line": 73
+      "line": 74
     },
     "168": {
       "filename": "hello_wasm.sol",
-      "line": 73
+      "line": 74
     },
     "176": {
       "filename": "hello_wasm.sol",
-      "line": 73
+      "line": 74
     },
     "184": {
       "filename": "hello_wasm.sol",
-      "line": 73
+      "line": 74
     },
     "192": {
       "filename": "hello_wasm.sol",
-      "line": 73
+      "line": 74
     },
     "200": {
       "filename": "hello_wasm.sol",
-      "line": 73
+      "line": 74
     },
     "208": {
       "filename": "./hello_wasm.code",
@@ -2028,39 +2564,39 @@
     },
     "88": {
       "filename": "hello_wasm.sol",
-      "line": 53
+      "line": 54
     },
     "96": {
       "filename": "hello_wasm.sol",
-      "line": 53
+      "line": 54
     },
     "104": {
       "filename": "hello_wasm.sol",
-      "line": 53
+      "line": 54
     },
     "112": {
       "filename": "hello_wasm.sol",
-      "line": 53
+      "line": 54
     },
     "120": {
       "filename": "hello_wasm.sol",
-      "line": 53
+      "line": 54
     },
     "128": {
       "filename": "hello_wasm.sol",
-      "line": 53
+      "line": 54
     },
     "136": {
       "filename": "hello_wasm.sol",
-      "line": 53
+      "line": 54
     },
     "144": {
       "filename": "hello_wasm.sol",
-      "line": 53
+      "line": 54
     },
     "152": {
       "filename": "hello_wasm.sol",
-      "line": 53
+      "line": 54
     },
     "160": {
       "filename": "./hello_wasm.code",
@@ -2155,70 +2691,142 @@
       "line": 48
     }
   },
-  "d1a2ebebb1521f610bbb8428191b1dffb4cd4b336c894c79ec5a9ebba4ac8a90": {
+  "dd6cd2d9922b9f17a747ab0535100ebd47b3ae371e41efe0467091bdd80db7e4": {
     "0": {
       "filename": "./hello_wasm.code",
-      "line": 279
+      "line": 199
     },
     "8": {
       "filename": "./hello_wasm.code",
-      "line": 280
+      "line": 200
+    },
+    "24": {
+      "filename": "./hello_wasm.code",
+      "line": 201
+    },
+    "48": {
+      "filename": "hello_wasm.sol",
+      "line": 222
     },
     "56": {
-      "filename": "./hello_wasm.code",
-      "line": 281
+      "filename": "hello_wasm.sol",
+      "line": 222
     },
     "64": {
-      "filename": "./hello_wasm.code",
-      "line": 282
+      "filename": "hello_wasm.sol",
+      "line": 222
+    },
+    "72": {
+      "filename": "hello_wasm.sol",
+      "line": 222
     },
     "80": {
-      "filename": "./hello_wasm.code",
-      "line": 308
+      "filename": "hello_wasm.sol",
+      "line": 222
     },
     "88": {
+      "filename": "hello_wasm.sol",
+      "line": 222
+    },
+    "96": {
+      "filename": "hello_wasm.sol",
+      "line": 222
+    },
+    "112": {
+      "filename": "hello_wasm.sol",
+      "line": 222
+    },
+    "120": {
       "filename": "./hello_wasm.code",
-      "line": 309
+      "line": 213
     },
     "136": {
       "filename": "./hello_wasm.code",
-      "line": 310
+      "line": 216
     },
     "144": {
       "filename": "./hello_wasm.code",
-      "line": 311
+      "line": 217
     },
     "160": {
       "filename": "./hello_wasm.code",
-      "line": 337
+      "line": 218
     },
     "168": {
       "filename": "./hello_wasm.code",
-      "line": 338
+      "line": 219
+    },
+    "176": {
+      "filename": "./hello_wasm.code",
+      "line": 220
+    },
+    "192": {
+      "filename": "./hello_wasm.code",
+      "line": 221
+    },
+    "208": {
+      "filename": "./hello_wasm.code",
+      "line": 222
     },
     "216": {
       "filename": "./hello_wasm.code",
-      "line": 339
+      "line": 223
     },
     "224": {
       "filename": "./hello_wasm.code",
-      "line": 340
+      "line": 224
     },
-    "240": {
+    "232": {
       "filename": "./hello_wasm.code",
-      "line": 360
+      "line": 225
     },
-    "248": {
+    "256": {
       "filename": "./hello_wasm.code",
-      "line": 361
+      "line": 226
     },
-    "296": {
+    "264": {
       "filename": "./hello_wasm.code",
-      "line": 362
+      "line": 227
     },
-    "304": {
+    "312": {
       "filename": "./hello_wasm.code",
-      "line": 363
+      "line": 228
+    },
+    "336": {
+      "filename": "./hello_wasm.code",
+      "line": 229
+    },
+    "344": {
+      "filename": "./hello_wasm.code",
+      "line": 230
+    },
+    "352": {
+      "filename": "./hello_wasm.code",
+      "line": 231
+    },
+    "360": {
+      "filename": "./hello_wasm.code",
+      "line": 232
+    },
+    "376": {
+      "filename": "./hello_wasm.code",
+      "line": 234
+    },
+    "384": {
+      "filename": "./hello_wasm.code",
+      "line": 235
+    },
+    "392": {
+      "filename": "./hello_wasm.code",
+      "line": 237
+    },
+    "400": {
+      "filename": "./hello_wasm.code",
+      "line": 238
+    },
+    "416": {
+      "filename": "./hello_wasm.code",
+      "line": 241
     }
   },
   "df931a3b71f39c0fdefe693a72d26b9e1f63f04e0ae37e87019dcf557a7b4f00": {
@@ -2337,42 +2945,102 @@
       "line": 89
     }
   },
-  "e6ad4f4b4f334ccd3d934456b68187a0e6d82f5159b36f1c90b21cfabcd38ead": {
-    "0": {
-      "filename": "./hello_wasm.code",
-      "line": 456
-    },
-    "1": {
-      "filename": "./hello_wasm.code",
-      "line": 457
-    },
-    "2": {
-      "filename": "./hello_wasm.code",
-      "line": 458
-    },
-    "3": {
-      "filename": "./hello_wasm.code",
-      "line": 487
-    },
-    "4": {
-      "filename": "./hello_wasm.code",
-      "line": 491
-    }
-  },
   "f24e1e7aa04d89aad2945816b6e9b921f2b3892da9ba53e2383c148351b96d0c": {
     "0": {
       "filename": "./hello_wasm.code",
-      "line": 424
+      "line": 466
     },
     "16": {
       "filename": "./hello_wasm.code",
-      "line": 425
+      "line": 467
+    }
+  },
+  "f3b1558a628f5ea6ec4f02cb1f5ea25c4e3293c3a66742bb60a2a1094f714366": {
+    "0": {
+      "filename": "hello_wasm.sol",
+      "line": 133
+    },
+    "16": {
+      "filename": "hello_wasm.sol",
+      "line": 133
+    },
+    "24": {
+      "filename": "hello_wasm.sol",
+      "line": 133
+    },
+    "32": {
+      "filename": "hello_wasm.sol",
+      "line": 133
+    },
+    "40": {
+      "filename": "hello_wasm.sol",
+      "line": 133
+    },
+    "48": {
+      "filename": "hello_wasm.sol",
+      "line": 133
+    },
+    "56": {
+      "filename": "hello_wasm.sol",
+      "line": 133
+    },
+    "64": {
+      "filename": "hello_wasm.sol",
+      "line": 133
+    },
+    "80": {
+      "filename": "hello_wasm.sol",
+      "line": 133
+    },
+    "88": {
+      "filename": "hello_wasm.sol",
+      "line": 133
+    },
+    "112": {
+      "filename": "hello_wasm.sol",
+      "line": 134
+    },
+    "128": {
+      "filename": "hello_wasm.sol",
+      "line": 135
+    },
+    "144": {
+      "filename": "hello_wasm.sol",
+      "line": 136
+    },
+    "152": {
+      "filename": "hello_wasm.sol",
+      "line": 136
+    },
+    "176": {
+      "filename": "hello_wasm.sol",
+      "line": 136
+    },
+    "184": {
+      "filename": "hello_wasm.sol",
+      "line": 136
+    },
+    "376": {
+      "filename": "hello_wasm.sol",
+      "line": 136
+    },
+    "392": {
+      "filename": "hello_wasm.sol",
+      "line": 136
+    },
+    "400": {
+      "filename": "hello_wasm.sol",
+      "line": 136
+    },
+    "408": {
+      "filename": "hello_wasm.sol",
+      "line": 136
     }
   },
   "f4097089fcc20ee1bbbb173e5b89767eb66a8c26eb0888f61c6909ddb7c31545": {
     "0": {
       "filename": "hello_wasm.sol",
-      "line": 47
+      "line": 48
     }
   },
   "f5265a20b78fcf4949867fa2a2bb948142bc426a750bcf35d9afd7f2aef332e1": {
@@ -2437,129 +3105,319 @@
       "line": 275
     }
   },
-  "f7e387706a08c875bcf11f5b693059bac41bae08e1bab9925ff78e8765376440": {
+  "f721f161be3508fa8babc5c3a63d937837c837729a34171068af274daa7f3028": {
+    "0": {
+      "filename": "./hello_wasm.code",
+      "line": 509
+    }
+  },
+  "f7855b24df7d9c234cf7edff1751e7c716c433dd6d5ef01186a8d32b42b4b29e": {
     "0": {
       "filename": "hello_wasm.sol",
-      "line": 55
+      "line": 145
     },
     "16": {
       "filename": "hello_wasm.sol",
-      "line": 60
+      "line": 145
     },
     "24": {
       "filename": "hello_wasm.sol",
-      "line": 60
+      "line": 145
     },
     "32": {
       "filename": "hello_wasm.sol",
-      "line": 60
+      "line": 145
     },
     "40": {
       "filename": "hello_wasm.sol",
-      "line": 60
+      "line": 145
     },
     "48": {
       "filename": "hello_wasm.sol",
-      "line": 60
+      "line": 145
     },
     "56": {
       "filename": "hello_wasm.sol",
-      "line": 60
+      "line": 145
     },
     "64": {
       "filename": "hello_wasm.sol",
-      "line": 60
-    },
-    "72": {
-      "filename": "hello_wasm.sol",
-      "line": 60
+      "line": 145
     },
     "80": {
       "filename": "hello_wasm.sol",
-      "line": 60
+      "line": 145
     },
     "88": {
       "filename": "hello_wasm.sol",
-      "line": 60
+      "line": 145
     },
-    "96": {
+    "112": {
       "filename": "hello_wasm.sol",
-      "line": 60
-    },
-    "104": {
-      "filename": "hello_wasm.sol",
-      "line": 60
-    },
-    "120": {
-      "filename": "hello_wasm.sol",
-      "line": 60
+      "line": 146
     },
     "128": {
       "filename": "hello_wasm.sol",
-      "line": 60
-    },
-    "136": {
-      "filename": "hello_wasm.sol",
-      "line": 60
+      "line": 147
     },
     "144": {
       "filename": "hello_wasm.sol",
-      "line": 60
+      "line": 149
     },
-    "160": {
+    "152": {
       "filename": "hello_wasm.sol",
-      "line": 60
+      "line": 149
     },
     "168": {
       "filename": "hello_wasm.sol",
-      "line": 60
+      "line": 149
     },
     "176": {
       "filename": "hello_wasm.sol",
-      "line": 60
+      "line": 149
     },
     "184": {
       "filename": "hello_wasm.sol",
-      "line": 60
+      "line": 149
+    },
+    "208": {
+      "filename": "hello_wasm.sol",
+      "line": 149
+    },
+    "224": {
+      "filename": "hello_wasm.sol",
+      "line": 149
+    },
+    "248": {
+      "filename": "hello_wasm.sol",
+      "line": 149
+    },
+    "256": {
+      "filename": "hello_wasm.sol",
+      "line": 149
+    },
+    "264": {
+      "filename": "hello_wasm.sol",
+      "line": 149
+    },
+    "280": {
+      "filename": "hello_wasm.sol",
+      "line": 149
+    },
+    "296": {
+      "filename": "hello_wasm.sol",
+      "line": 149
+    },
+    "312": {
+      "filename": "hello_wasm.sol",
+      "line": 149
+    },
+    "320": {
+      "filename": "hello_wasm.sol",
+      "line": 149
+    },
+    "328": {
+      "filename": "hello_wasm.sol",
+      "line": 149
+    }
+  },
+  "f786e15c1383676dfb13cf070bc498a9957ec687b32469151399cebdfe9f0acb": {
+    "0": {
+      "filename": "./hello_wasm.code",
+      "line": 473
+    },
+    "8": {
+      "filename": "./hello_wasm.code",
+      "line": 474
+    },
+    "24": {
+      "filename": "./hello_wasm.code",
+      "line": 475
+    },
+    "48": {
+      "filename": "hello_wasm.sol",
+      "line": 173
+    },
+    "56": {
+      "filename": "hello_wasm.sol",
+      "line": 173
+    },
+    "64": {
+      "filename": "hello_wasm.sol",
+      "line": 173
+    },
+    "72": {
+      "filename": "hello_wasm.sol",
+      "line": 173
+    },
+    "80": {
+      "filename": "hello_wasm.sol",
+      "line": 173
+    },
+    "88": {
+      "filename": "hello_wasm.sol",
+      "line": 173
+    },
+    "96": {
+      "filename": "hello_wasm.sol",
+      "line": 173
+    },
+    "104": {
+      "filename": "hello_wasm.sol",
+      "line": 173
+    },
+    "112": {
+      "filename": "hello_wasm.sol",
+      "line": 173
+    },
+    "120": {
+      "filename": "hello_wasm.sol",
+      "line": 173
+    },
+    "136": {
+      "filename": "hello_wasm.sol",
+      "line": 173
+    },
+    "144": {
+      "filename": "hello_wasm.sol",
+      "line": 173
+    },
+    "152": {
+      "filename": "./hello_wasm.code",
+      "line": 492
+    },
+    "168": {
+      "filename": "./hello_wasm.code",
+      "line": 495
+    },
+    "184": {
+      "filename": "./hello_wasm.code",
+      "line": 498
+    }
+  },
+  "f7e387706a08c875bcf11f5b693059bac41bae08e1bab9925ff78e8765376440": {
+    "0": {
+      "filename": "hello_wasm.sol",
+      "line": 56
+    },
+    "16": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "24": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "32": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "40": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "48": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "56": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "64": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "72": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "80": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "88": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "96": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "104": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "120": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "128": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "136": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "144": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "160": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "168": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "176": {
+      "filename": "hello_wasm.sol",
+      "line": 61
+    },
+    "184": {
+      "filename": "hello_wasm.sol",
+      "line": 61
     },
     "200": {
       "filename": "hello_wasm.sol",
-      "line": 61
+      "line": 62
     },
     "216": {
       "filename": "hello_wasm.sol",
-      "line": 61
+      "line": 62
     },
     "232": {
       "filename": "hello_wasm.sol",
-      "line": 62
+      "line": 63
     },
     "376": {
       "filename": "hello_wasm.sol",
-      "line": 65
+      "line": 66
     },
     "384": {
       "filename": "hello_wasm.sol",
-      "line": 65
+      "line": 66
     },
     "392": {
       "filename": "hello_wasm.sol",
-      "line": 65
+      "line": 66
     },
     "400": {
       "filename": "hello_wasm.sol",
-      "line": 68
+      "line": 69
     },
     "408": {
       "filename": "hello_wasm.sol",
-      "line": 68
+      "line": 69
     },
     "424": {
       "filename": "hello_wasm.sol",
-      "line": 69
+      "line": 70
     }
   },
-  "f8ee62b8a2f5fa68552adf838d3397d321f041e648fe64be10011f7b44e302b2": {
+  "f9525bff02e57a04ae5538fd7b96adb1401492a9749c1be55a6bd60b4cf1d4c4": {
     "0": {
       "filename": "./hello_wasm.code",
       "line": 283
@@ -2578,51 +3436,51 @@
     },
     "80": {
       "filename": "./hello_wasm.code",
-      "line": 289
+      "line": 305
     },
     "88": {
       "filename": "./hello_wasm.code",
-      "line": 290
+      "line": 306
     },
     "136": {
       "filename": "./hello_wasm.code",
-      "line": 291
+      "line": 307
     },
     "144": {
       "filename": "./hello_wasm.code",
-      "line": 292
+      "line": 308
     },
     "160": {
       "filename": "./hello_wasm.code",
-      "line": 295
+      "line": 311
     },
     "168": {
       "filename": "./hello_wasm.code",
-      "line": 296
+      "line": 312
     },
     "216": {
       "filename": "./hello_wasm.code",
-      "line": 297
+      "line": 313
     },
     "224": {
       "filename": "./hello_wasm.code",
-      "line": 298
+      "line": 314
     },
     "240": {
       "filename": "./hello_wasm.code",
-      "line": 301
+      "line": 317
     },
     "248": {
       "filename": "./hello_wasm.code",
-      "line": 302
+      "line": 318
     },
     "296": {
       "filename": "./hello_wasm.code",
-      "line": 303
+      "line": 319
     },
     "304": {
       "filename": "./hello_wasm.code",
-      "line": 304
+      "line": 320
     }
   }
 }

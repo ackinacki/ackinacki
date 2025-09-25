@@ -16,6 +16,7 @@ use crate::helper::block_flow_trace;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::helper::SHUTDOWN_FINALIZATION_FLAG;
 use crate::helper::SHUTDOWN_FLAG;
+use crate::node::block_state::tools::connect;
 use crate::node::block_state::tools::invalidate_branch;
 use crate::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
 use crate::node::services::sync::StateSyncService;
@@ -77,6 +78,7 @@ pub fn finalization_loop(
         let last_finalized_block_height = last_finalized_block
             .guarded(|e| *e.block_height())
             .expect("Finalized block height must be set");
+        let next_height = last_finalized_block_height.next(&thread_identifier);
         let last_finalized_block_children_ids = last_finalized_block
             .guarded(|e| e.known_children(&thread_identifier).cloned())
             .unwrap_or_default();
@@ -107,10 +109,26 @@ pub fn finalization_loop(
                 tracing::trace!("break finalization loop");
                 return;
             }
-            if block_state.guarded(|e| *e.block_height()).map(|h| *h.height()).unwrap_or_default()
-                > height_cutoff
-            {
-                break;
+            if let Some(height) = block_state.guarded(|e| *e.block_height()) {
+                if height == next_height {
+                    if let Some(parent) =
+                        block_state.guarded(|e| e.parent_block_identifier().clone())
+                    {
+                        let Ok(parent_block_state) = block_state_repository.get(&parent) else {
+                            continue;
+                        };
+                        connect!(
+                            parent = parent_block_state,
+                            child = block_state,
+                            &block_state_repository
+                        );
+                    }
+                }
+                if *height.height() > height_cutoff {
+                    break;
+                }
+            } else {
+                continue;
             }
             if let Some(new_border) = try_finalize(
                 block_state,

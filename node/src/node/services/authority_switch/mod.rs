@@ -17,6 +17,7 @@ use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::block_state::repository::BlockStateRepository;
+use crate::node::network_message::Command;
 use crate::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::AuthoritySwitch;
@@ -352,7 +353,9 @@ impl AuthoritySwitchService {
                                     last_state_sync_executed = std::time::Instant::now();
                                     let _ = self.self_node_tx.send(WrappedItem {
                                         payload: (
-                                            NetworkMessage::StartSynchronization,
+                                            NetworkMessage::InnerCommand(
+                                                Command::StartSynchronization,
+                                            ),
                                             self.self_addr,
                                         ),
                                         label: self.thread_id.to_string(),

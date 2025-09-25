@@ -27,7 +27,7 @@ services:
       - {{ PROXY_LOGS }}:/logsdir
 
   logrotate:
-    image: stakater/logrotate:3.13.0
+    image: {{ LOGROTATE_IMAGE }}
     restart: unless-stopped
     environment:
       - CRON_SCHEDULE="58 * * * *"

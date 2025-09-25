@@ -1586,9 +1586,9 @@ impl Repository for RepositoryImpl {
         .map_err(|e| anyhow::format_err!("Failed to deserialize state: {e}"))?;
         tracing::debug!("set_state_from_snapshot2");
         let thread_id = state.thread_id;
-        tracing::debug!("set_state_from_snapshot: {:?} {:?}", state.thread_id, state.block_id);
-        self.store_optimistic(state.clone())?;
         let seq_no = thread_snapshot.finalized_block.data().seq_no();
+        tracing::debug!(target: "monit", "set_state_from_snapshot: {:?} {:?} {}", state.thread_id, state.block_id, seq_no);
+        self.store_optimistic(state.clone())?;
 
         if &thread_id == cur_thread_id {
             // TODO: need to store for other threads
@@ -1677,6 +1677,8 @@ impl Repository for RepositoryImpl {
                     .guarded_mut(|e| e.insert(thread_id, Arc::new(state.clone())));
                 self.sync_accounts_from_state(shard_state)?;
                 update_block_state()?;
+            } else {
+                tracing::debug!(target: "monit", "Synced state is too old, skip it");
             }
         } else {
             self.thread_last_finalized_state

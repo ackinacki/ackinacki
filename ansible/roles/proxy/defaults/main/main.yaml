@@ -20,3 +20,5 @@ CLEANUP_BK_KEYS: yes
 
 COMMIT_HASH: commit_unknown
 TEST_NAME: test_unknown
+
+LOGROTATE_IMAGE: "stakater/logrotate:3.13.0"

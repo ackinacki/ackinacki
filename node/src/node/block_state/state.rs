@@ -467,7 +467,7 @@ has_cross_thread_ref_data_prepared={:?}\
     }
 
     pub(super) fn set_invalidated(&mut self) -> anyhow::Result<()> {
-        tracing::trace!("{:?} Call setter: set_invalidated", &self);
+        tracing::trace!(target: "monit", "{:?} Call setter: set_invalidated", &self);
         self.invalidated = Some(true);
         self.notify_changed()
     }

@@ -30,20 +30,20 @@
 }
 
 .fragment getTokens_aa6ca808_internal, {
-	.loc hello_wasm.sol, 191
+	.loc hello_wasm.sol, 192
 	GETPARAM 7
 	FIRST
 	PUSHINT 100000000000
 	GREATER
 	IFRET
-	.loc hello_wasm.sol, 194
+	.loc hello_wasm.sol, 195
 	PUSHINT 100000000000
 	MINTSHELLQ
 	.loc hello_wasm.sol, 0
 }
 
 .fragment callExtTouch_347a50dc_internal, {
-	.loc hello_wasm.sol, 132
+	.loc hello_wasm.sol, 133
 	GETGLOB 5
 	DUP
 	ISNULL
@@ -55,17 +55,17 @@
 	GETGLOB 2
 	EQUAL
 	THROWIFNOT 102
-	.loc hello_wasm.sol, 133
-	ACCEPT
 	.loc hello_wasm.sol, 134
+	ACCEPT
+	.loc hello_wasm.sol, 135
 	CALLREF {
 		.inline getTokens_aa6ca808_internal
 	}
-	.loc hello_wasm.sol, 135
+	.loc hello_wasm.sol, 136
 	NEWC
 	STSLICECONST x62_
 	STSLICE
-	PUSHSLICE x39896800000000000000000000000000001b989722c_
+	PUSHSLICE x398968000000000000000000000000000006e625c8b_
 	STSLICER
 	ENDC
 	PUSHINT 0
@@ -98,7 +98,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc hello_wasm.sol, 129
+	.loc hello_wasm.sol, 130
 	OVER
 	PUSHCONT {
 		LDREF
@@ -127,16 +127,23 @@
 	}
 	GETGLOB 6
 	THROWIF 51
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
 	LDU 64
 	ENDS
-	.loc hello_wasm.sol, 22
+	.loc hello_wasm.sol, 23
 	CNVRTSHELLQ
-	.loc hello_wasm.sol, 25
+	.loc hello_wasm.sol, 26
 	GETGLOB 2
 	THROWIFNOT 101
-	.loc hello_wasm.sol, 30
+	.loc hello_wasm.sol, 31
 	ACCEPT
-	.loc hello_wasm.sol, 33
+	.loc hello_wasm.sol, 34
 	NOW
 	SETGLOB 10
 	.loc hello_wasm.sol, 0
@@ -146,14 +153,272 @@
 	THROW 0
 }
 
-.fragment deployNewContract_e6e22826_internal, {
-	.loc hello_wasm.sol, 180
+.fragment create_big_cell_23900e82_internal, {
+	.loc hello_wasm.sol, 223
 	ACCEPT
+	.loc hello_wasm.sol, 226
+	PUSHREF {
+		.blob x0000000000000000000000000000000000000000000000000000000000000064
+	}
+	.loc hello_wasm.sol, 229
+	PUSHINT 0
+	PUSHCONT {
+		PUSH2 S0, S2
+		LESS
+	}
+	PUSHCONT {
+		.loc hello_wasm.sol, 230
+		NEWC
+		.loc hello_wasm.sol, 231
+		PUSH S2
+		STREFR
+		.loc hello_wasm.sol, 232
+		PUSH S2
+		STREFR
+		.loc hello_wasm.sol, 233
+		PUSH S2
+		STREFR
+		.loc hello_wasm.sol, 234
+		PUSH S2
+		STREFR
+		.loc hello_wasm.sol, 235
+		ENDC
+		POP S2
+		.loc hello_wasm.sol, 229
+		INC
+		.loc hello_wasm.sol, 0
+	}
+	WHILE
+	DROP
+	.loc hello_wasm.sol, 237
+	NIP
+	.loc hello_wasm.sol, 0
+}
+
+.fragment create_big_cell, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	.loc hello_wasm.sol, 222
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	ENDS
+	.loc hello_wasm.sol, 0
+	CALLREF {
+		.inline create_big_cell_23900e82_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 2884696404
+		STUR 130
+		STREF
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment create_big_cell2_83934023_internal, {
+	.loc hello_wasm.sol, 203
+	ACCEPT
+	.loc hello_wasm.sol, 206
+	PUSHREF {
+		.blob x0000000000000000000000000000000000000000000000000000000000000064
+	}
+	.loc hello_wasm.sol, 209
+	PUSHINT 0
+	PUSHCONT {
+		PUSH2 S0, S2
+		LESS
+	}
+	PUSHCONT {
+		.loc hello_wasm.sol, 210
+		NEWC
+		.loc hello_wasm.sol, 211
+		PUSH S2
+		STREFR
+		.loc hello_wasm.sol, 213
+		PUSH S2
+		STREFR
+		.loc hello_wasm.sol, 217
+		ENDC
+		POP S2
+		.loc hello_wasm.sol, 209
+		INC
+		.loc hello_wasm.sol, 0
+	}
+	WHILE
+	DROP
+	.loc hello_wasm.sol, 219
+	NIP
+	.loc hello_wasm.sol, 0
+}
+
+.fragment create_big_cell2, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	.loc hello_wasm.sol, 202
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	ENDS
+	.loc hello_wasm.sol, 0
+	CALLREF {
+		.inline create_big_cell2_83934023_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 2500168363
+		STUR 130
+		STREF
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment create_deep_cell_3f53e021_internal, {
+	.loc hello_wasm.sol, 241
+	ACCEPT
+	.loc hello_wasm.sol, 244
+	PUSHREF {
+		.blob x0000000000000000000000000000000000000000000000000000000000000064
+	}
+	.loc hello_wasm.sol, 246
+	PUSHINT 0
+	PUSHCONT {
+		PUSH2 S0, S2
+		LESS
+	}
+	PUSHCONT {
+		.loc hello_wasm.sol, 247
+		NEWC
+		.loc hello_wasm.sol, 248
+		PUSH S2
+		STREFR
+		.loc hello_wasm.sol, 249
+		ENDC
+		POP S2
+		.loc hello_wasm.sol, 246
+		INC
+		.loc hello_wasm.sol, 0
+	}
+	WHILE
+	DROP
+	.loc hello_wasm.sol, 251
+	NIP
+	.loc hello_wasm.sol, 0
+}
+
+.fragment create_cell_4d78b63b_internal, {
+	.loc hello_wasm.sol, 199
+	PUSHINT 700
+	CALLREF {
+		.inline create_deep_cell_3f53e021_internal
+	}
+	.loc hello_wasm.sol, 0
+}
+
+.fragment create_deep_cell, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	.loc hello_wasm.sol, 240
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	ENDS
+	.loc hello_wasm.sol, 0
+	CALLREF {
+		.inline create_deep_cell_3f53e021_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 3051550502
+		STUR 130
+		STREF
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment deployNewContract_e6e22826_internal, {
 	.loc hello_wasm.sol, 181
+	ACCEPT
+	.loc hello_wasm.sol, 182
 	CALLREF {
 		.inline getTokens_aa6ca808_internal
 	}
-	.loc hello_wasm.sol, 182
+	.loc hello_wasm.sol, 183
 	PUSH S2
 	HASHCU
 	NEWC
@@ -161,7 +426,7 @@
 	STU 256
 	ENDC
 	CTOS
-	.loc hello_wasm.sol, 183
+	.loc hello_wasm.sol, 184
 	ROT
 	UFITS 120
 	SWAP
@@ -171,7 +436,7 @@
 	SWAP
 	STGRAMS
 	PUSHINT 3
-	STUR 109
+	STUR 111
 	XC2PU S0, S2, S0
 	CALLREF {
 		CTOS
@@ -208,8 +473,18 @@
 	DROP
 	GETGLOB 6
 	THROWIFNOT 76
-	.loc hello_wasm.sol, 172
-	LDREF
+	.loc hello_wasm.sol, 173
+	OVER
+	PUSHCONT {
+		LDREF
+		LDREF
+		ENDS
+		CTOS
+	}
+	PUSHCONT {
+		LDREF
+	}
+	IFELSE
 	LDU 128
 	LDREF
 	ENDS
@@ -224,13 +499,13 @@
 }
 
 .fragment exchangeToken_53d168e3_internal, {
-	.loc hello_wasm.sol, 39
-	ACCEPT
 	.loc hello_wasm.sol, 40
+	ACCEPT
+	.loc hello_wasm.sol, 41
 	CALLREF {
 		.inline getTokens_aa6ca808_internal
 	}
-	.loc hello_wasm.sol, 41
+	.loc hello_wasm.sol, 42
 	CNVRTSHELLQ
 	.loc hello_wasm.sol, 0
 }
@@ -239,7 +514,14 @@
 	DROP
 	GETGLOB 6
 	THROWIFNOT 76
-	.loc hello_wasm.sol, 38
+	.loc hello_wasm.sol, 39
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
 	LDU 64
 	ENDS
 	.loc hello_wasm.sol, 0
@@ -253,7 +535,7 @@
 }
 
 .fragment renderHelloWorld_942ae0a7_internal, {
-	.loc hello_wasm.sol, 47
+	.loc hello_wasm.sol, 48
 	PUSHREF {
 		.blob x68656c6c6f576f726c64
 	}
@@ -264,7 +546,7 @@
 	DROP
 	GETGLOB 6
 	THROWIFNOT 76
-	.loc hello_wasm.sol, 46
+	.loc hello_wasm.sol, 47
 	ENDS
 	.loc hello_wasm.sol, 0
 	CALLREF {
@@ -299,11 +581,11 @@
 }
 
 .fragment runWasm_449543f3_internal, {
-	.loc hello_wasm.sol, 55
+	.loc hello_wasm.sol, 56
 	CALLREF {
 		.inline getTokens_aa6ca808_internal
 	}
-	.loc hello_wasm.sol, 60
+	.loc hello_wasm.sol, 61
 	NEWC
 	STREF
 	ENDC
@@ -324,21 +606,21 @@
 	STREF
 	ENDC
 	RUNWASM
-	.loc hello_wasm.sol, 61
+	.loc hello_wasm.sol, 62
 	CALLREF {
 		.inline c7_to_c4
 	}
 	COMMIT
-	.loc hello_wasm.sol, 62
+	.loc hello_wasm.sol, 63
 	PRINTSTR x726573756c74206163717569726564
-	.loc hello_wasm.sol, 65
+	.loc hello_wasm.sol, 66
 	CTOS
 	LDREF
 	ENDS
-	.loc hello_wasm.sol, 68
+	.loc hello_wasm.sol, 69
 	DUP
 	SETGLOB 11
-	.loc hello_wasm.sol, 69
+	.loc hello_wasm.sol, 70
 	ACCEPT
 	.loc hello_wasm.sol, 0
 }
@@ -352,7 +634,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc hello_wasm.sol, 53
+	.loc hello_wasm.sol, 54
 	LDREF
 	LDREF
 	LDREF
@@ -395,11 +677,11 @@
 }
 
 .fragment runWasmConcatMultiarg_be417fbd_internal, {
-	.loc hello_wasm.sol, 75
+	.loc hello_wasm.sol, 76
 	CALLREF {
 		.inline getTokens_aa6ca808_internal
 	}
-	.loc hello_wasm.sol, 80
+	.loc hello_wasm.sol, 81
 	NEWC
 	STREF
 	ENDC
@@ -432,21 +714,21 @@
 	STREF
 	ENDC
 	RUNWASMCONCATMULTIARG
-	.loc hello_wasm.sol, 81
+	.loc hello_wasm.sol, 82
 	CALLREF {
 		.inline c7_to_c4
 	}
 	COMMIT
-	.loc hello_wasm.sol, 82
+	.loc hello_wasm.sol, 83
 	PRINTSTR x726573756c74206163717569726564
-	.loc hello_wasm.sol, 85
+	.loc hello_wasm.sol, 86
 	CTOS
 	LDREF
 	ENDS
-	.loc hello_wasm.sol, 88
+	.loc hello_wasm.sol, 89
 	DUP
 	SETGLOB 11
-	.loc hello_wasm.sol, 89
+	.loc hello_wasm.sol, 90
 	ACCEPT
 	.loc hello_wasm.sol, 0
 }
@@ -460,7 +742,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc hello_wasm.sol, 73
+	.loc hello_wasm.sol, 74
 	LDREF
 	LDREF
 	LDREF
@@ -509,7 +791,7 @@
 }
 
 .fragment sendShell_77e2a3b5_internal, {
-	.loc hello_wasm.sol, 155
+	.loc hello_wasm.sol, 156
 	GETGLOB 5
 	DUP
 	ISNULL
@@ -521,13 +803,13 @@
 	GETGLOB 2
 	EQUAL
 	THROWIFNOT 102
-	.loc hello_wasm.sol, 156
-	ACCEPT
 	.loc hello_wasm.sol, 157
+	ACCEPT
+	.loc hello_wasm.sol, 158
 	CALLREF {
 		.inline getTokens_aa6ca808_internal
 	}
-	.loc hello_wasm.sol, 161
+	.loc hello_wasm.sol, 162
 	PUSHINT 2
 	NULL
 	NEWC
@@ -536,7 +818,7 @@
 	ROTREV
 	PUSHINT 32
 	DICTUSETB
-	.loc hello_wasm.sol, 163
+	.loc hello_wasm.sol, 164
 	SWAP
 	NEWC
 	STSLICECONST x62_
@@ -544,7 +826,7 @@
 	STSLICECONST x0
 	STDICT
 	PUSHINT 1
-	STUR 108
+	STUR 110
 	PUSHREF {
 	}
 	STREFR
@@ -563,7 +845,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc hello_wasm.sol, 154
+	.loc hello_wasm.sol, 155
 	OVER
 	PUSHCONT {
 		LDREF
@@ -585,7 +867,7 @@
 }
 
 .fragment sendVMShell_e1519e7b_internal, {
-	.loc hello_wasm.sol, 144
+	.loc hello_wasm.sol, 145
 	GETGLOB 5
 	DUP
 	ISNULL
@@ -597,13 +879,13 @@
 	GETGLOB 2
 	EQUAL
 	THROWIFNOT 102
-	.loc hello_wasm.sol, 145
-	ACCEPT
 	.loc hello_wasm.sol, 146
+	ACCEPT
+	.loc hello_wasm.sol, 147
 	CALLREF {
 		.inline getTokens_aa6ca808_internal
 	}
-	.loc hello_wasm.sol, 148
+	.loc hello_wasm.sol, 149
 	SWAP
 	UFITS 120
 	ROTREV
@@ -614,7 +896,7 @@
 	STSLICE
 	SWAP
 	STGRAMS
-	PUSHINT 109
+	PUSHINT 111
 	STZEROES
 	ENDC
 	PUSHINT 0
@@ -631,7 +913,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc hello_wasm.sol, 143
+	.loc hello_wasm.sol, 144
 	OVER
 	PUSHCONT {
 		LDREF
@@ -675,13 +957,13 @@
 }
 
 .fragment touch_a55526db_internal, {
-	.loc hello_wasm.sol, 121
-	ACCEPT
 	.loc hello_wasm.sol, 122
+	ACCEPT
+	.loc hello_wasm.sol, 123
 	CALLREF {
 		.inline getTokens_aa6ca808_internal
 	}
-	.loc hello_wasm.sol, 124
+	.loc hello_wasm.sol, 125
 	NOW
 	SETGLOB 10
 	.loc hello_wasm.sol, 0
@@ -696,7 +978,7 @@
 	IFREF {
 		.inline c4_to_c7
 	}
-	.loc hello_wasm.sol, 119
+	.loc hello_wasm.sol, 120
 	ENDS
 	.loc hello_wasm.sol, 0
 	CALLREF {
@@ -735,10 +1017,26 @@
 	LEQ
 	IFJMPREF {
 		DUP
-		PUSHINT 120859722
-		EQUAL
+		PUSHINT 352684715
+		LEQ
 		IFJMPREF {
-			.inline renderHelloWorld
+			DUP
+			EQINT 1
+			IFJMPREF {
+				.inline constructor
+			}
+			DUP
+			PUSHINT 120859722
+			EQUAL
+			IFJMPREF {
+				.inline renderHelloWorld
+			}
+			DUP
+			PUSHINT 352684715
+			EQUAL
+			IFJMPREF {
+				.inline create_big_cell2
+			}
 		}
 		DUP
 		PUSHINT 508100433
@@ -760,9 +1058,21 @@
 		}
 	}
 	DUP
-	PUSHINT 1799946329
+	PUSHINT 1078453156
 	LEQ
 	IFJMPREF {
+		DUP
+		PUSHINT 737212756
+		EQUAL
+		IFJMPREF {
+			.inline create_big_cell
+		}
+		DUP
+		PUSHINT 904066854
+		EQUAL
+		IFJMPREF {
+			.inline create_deep_cell
+		}
 		DUP
 		PUSHINT 925969989
 		EQUAL
@@ -775,6 +1085,11 @@
 		IFJMPREF {
 			.inline wasmResSaved
 		}
+	}
+	DUP
+	PUSHINT 1907266780
+	LEQ
+	IFJMPREF {
 		DUP
 		PUSHINT 1746396469
 		EQUAL
@@ -787,35 +1102,29 @@
 		IFJMPREF {
 			.inline sendVMShell
 		}
-	}
-	DUP
-	PUSHINT 1993511324
-	LEQ
-	IFJMPREF {
-		DUP
-		PUSHINT 1883103951
-		EQUAL
-		IFJMPREF {
-			.inline constructor
-		}
 		DUP
 		PUSHINT 1907266780
 		EQUAL
 		IFJMPREF {
 			.inline runWasmConcatMultiarg
 		}
+	}
+	DUP
+	PUSHINT 2090498174
+	LEQ
+	IFJMPREF {
 		DUP
 		PUSHINT 1993511324
 		EQUAL
 		IFJMPREF {
 			.inline callExtTouch
 		}
-	}
-	DUP
-	PUSHINT 2090498174
-	EQUAL
-	IFJMPREF {
-		.inline exchangeToken
+		DUP
+		PUSHINT 2090498174
+		EQUAL
+		IFJMPREF {
+			.inline exchangeToken
+		}
 	}
 }
 
@@ -836,14 +1145,29 @@
 		STSLICE
 		ENDC
 		HASHCU
-		ROT
-		GETGLOB 2
+		SWAP
+		LDU 1 ; signatureSlice hashMsgSlice hasPubkey msgSlice
+		SWAP
+		PUSHCONT {
+			LDU 256 ; signatureSlice hashMsgSlice pubkey msgSlice
+			XCHG2 S3, S3
+		}
+		PUSHCONT {
+			XCHG S2
+			GETGLOB 2
+		}
+		IFELSE
 		DUP
 		SETGLOB 5
 		CHKSIGNU
 		THROWIFNOT 40
 	}
-	IF
+	PUSHCONT {
+		LDU 1 ; hasPubkey msgSlice
+		SWAP
+		THROWIF 58
+	}
+	IFELSE
 	LDU 64 ; timestamp msgSlice
 	SWAP
 	.inline __replayProtection
@@ -918,7 +1242,7 @@
 		.code-dict-cell 32, {
 		}
 		.cell { ; version
-			.blob x736f6c20302e37382e32 ; sol 0.78.2
+			.blob x736f6c20302e37392e32 ; sol 0.79.2
 		}
 	}
 	POPCTR c3

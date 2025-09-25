@@ -17,7 +17,7 @@ use telemetry_utils::instrumented_channel_ext::XInstrumentedSender;
 
 use crate::utilities::guarded::GuardedMut;
 pub mod block_request_service;
-mod network_message;
+pub mod network_message;
 
 mod send;
 pub(crate) use send::broadcast_node_joining;
@@ -100,7 +100,7 @@ where
     network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
     network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
     raw_block_tx: InstrumentedSender<(NodeIdentifier, Vec<u8>)>,
-    // bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
+    bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
     last_block_attestations: Arc<Mutex<CollectedAttestations>>,
     pub received_acks: Arc<Mutex<Vec<Envelope<GoshBLS, AckData>>>>,
     sent_acks: BTreeMap<BlockSeqNo, Envelope<GoshBLS, AckData>>,
@@ -242,7 +242,7 @@ where
             network_broadcast_tx: network_broadcast_tx.clone(),
             network_direct_tx: network_direct_tx.clone(),
             raw_block_tx: raw_block_tx.clone(),
-            // bls_keys_map: bls_keys_map.clone(),
+            bls_keys_map: bls_keys_map.clone(),
             last_block_attestations: last_block_attestations.clone(),
             config: config.clone(),
             received_attestations: Default::default(),

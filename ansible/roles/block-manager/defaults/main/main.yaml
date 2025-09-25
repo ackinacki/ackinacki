@@ -15,4 +15,7 @@ NGINX_PORT: 8080
 
 LOGROTATE_IMAGE: "stakater/logrotate:3.13.0"
 
+BM_API_BIND: 0.0.0.0
+BM_REST_API_BIND: 0.0.0.0
+
 BM_ID: 1

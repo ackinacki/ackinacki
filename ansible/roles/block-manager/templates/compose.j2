@@ -62,7 +62,7 @@ services:
         BM_ISSUER_KEYS_FILE: /bm-configs/{{ BM_SIGNER_KEYS }}
         TOKEN_TTL: {{ BM_TOKEN_TTL }}
         BK_API_TOKEN: {{ BK_API_TOKEN }}
-        REST_API: 0.0.0.0:8600
+        REST_API: 0.0.0.0:{{ BM_REST_API_PORT }}
 {# Adding service section #}
 {% include 'extra/block-manager-env.j2' ignore missing +%}
     command:
@@ -75,8 +75,8 @@ services:
     expose:
       - {{ BM_API_PORT }}
     ports:
-      - {{ BM_API_PORT }}:{{ BM_API_PORT }}
-      - "8600:8600/tcp"
+      - "{{ BM_API_BIND }}:{{ BM_API_PORT }}:{{ BM_API_PORT }}/tcp"
+      - "{{ BM_REST_API_BIND }}:{{ BM_REST_API_PORT }}:{{ BM_REST_API_PORT }}/tcp"
     volumes:
       - {{ BM_DATA_DIR }}/workdir:/workdir/data
       - {{ BM_DIR }}/bm-configs:/bm-configs

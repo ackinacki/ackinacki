@@ -1,5 +1,6 @@
-pragma tvm-solidity >=0.76.1;
+pragma gosh-solidity >=0.76.1;
 pragma AbiHeader expire;
+pragma AbiHeader pubkey;
 
 interface IHelloWorld {
     function touch() external;
@@ -194,5 +195,60 @@ contract helloWorld {
         gosh.mintshellq(100000000000);                   // 100 VMSHELL
     }
 
+    function create_cell() private pure returns (TvmCell) {
+        return create_deep_cell(700);
+    }
+
+    function create_big_cell2(uint256 iterations) public pure returns (TvmCell) {
+        tvm.accept();
+        TvmBuilder b;
+        uint256 n = 100;
+        b.store(n);
+        TvmCell c = b.toCell();
+
+        for (uint256 i = 0; i < iterations; i++) {
+            TvmBuilder b2;
+            b2.storeRef(c);
+            /* if (i % 2 == 0) b2.storeRef(c); */
+            b2.storeRef(c);
+            /* 
+            b2.storeRef(c);
+            b2.storeRef(c); */
+            c = b2.toCell();
+        }
+        return c;
+    }
+
+    function create_big_cell(uint256 iterations) public pure returns (TvmCell) {
+        tvm.accept();
+        TvmBuilder b;
+        uint256 n = 100;
+        b.store(n);
+        TvmCell c = b.toCell();
+
+        for (uint256 i = 0; i < iterations; i++) {
+            TvmBuilder b2;
+            b2.storeRef(c);
+            b2.storeRef(c);
+            b2.storeRef(c);
+            b2.storeRef(c);
+            c = b2.toCell();
+        }
+        return c;
+    }
+
+    function create_deep_cell(uint256 iterations) public pure returns (TvmCell) {
+        tvm.accept();
+        TvmBuilder b1;
+        uint256 n = 100;
+        b1.store(n);
+        TvmCell c = b1.toCell();
+        for (uint256 i = 0; i < iterations; i++) {
+            TvmBuilder b2;
+            b2.storeRef(c);
+            c = b2.toCell();
+        }
+        return c;
+    }
 }
 

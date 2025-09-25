@@ -11,11 +11,10 @@ NUMACTL: no
 
 OTEL_MY_HOST_NAME: "{{ inventory_hostname }}"
 
-AEROSPIKE_IMAGE: "aerospike/aerospike-server:latest"
-
 EXT_MESSAGE_AUTH_REQUIRED: no
 AUTH_TOKEN: some-secret-auth-token
 
+AEROSPIKE_IMAGE: "aerospike/aerospike-server:8.1.0.1"
 LOGROTATE_IMAGE: "stakater/logrotate:3.13.0"
 
 COMMIT_HASH: commit_unknown

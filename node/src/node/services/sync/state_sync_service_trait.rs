@@ -1,7 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use telemetry_utils::mpsc::InstrumentedSender;
@@ -27,9 +27,9 @@ pub trait StateSyncService {
 
     fn add_load_state_task(
         &mut self,
-        resource_address: HashMap<ThreadIdentifier, BlockIdentifier>,
+        resource_address: BTreeMap<ThreadIdentifier, BlockIdentifier>,
         repository: RepositoryImpl,
-        output: InstrumentedSender<anyhow::Result<()>>,
+        output: InstrumentedSender<anyhow::Result<BTreeMap<ThreadIdentifier, BlockIdentifier>>>,
     ) -> anyhow::Result<()>;
 
     fn reset_sync(&self);

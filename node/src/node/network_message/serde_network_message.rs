@@ -44,17 +44,17 @@ impl Serialize for NetworkMessage {
                 "BlockRequest",
                 &(inclusive_from, exclusive_to, requester, thread_id, at_least_n_blocks),
             ),
-            SyncFrom(e) => serializer.serialize_newtype_variant(TYPE, 7, "SyncFrom", &e),
+
             SyncFinalized(e) => serializer.serialize_newtype_variant(TYPE, 8, "SyncFinalized", &e),
+            SyncFrom(e) => serializer.serialize_newtype_variant(TYPE, 7, "SyncFrom", &e),
+
             ResentCandidate(e) => {
                 serializer.serialize_newtype_variant(TYPE, 9, "ResentCandidate", &e)
             }
             AuthoritySwitchProtocol(e) => {
                 serializer.serialize_newtype_variant(TYPE, 10, "AuthoritySwitchProtocol", &e)
             }
-            StartSynchronization => {
-                serializer.serialize_newtype_variant(TYPE, 11, "StartSynchronization", &())
-            }
+            InnerCommand(_) => unreachable!("Inner commands must be non-serializable"),
         }
     }
 }
@@ -122,6 +122,7 @@ impl<'de> de::Visitor<'de> for NetworkMessageVisitor {
                     at_least_n_blocks,
                 }
             }),
+
             (7, v) => v.newtype_variant().map(SyncFrom),
             (8, v) => v.newtype_variant().map(SyncFinalized),
             (9, v) => v.newtype_variant().map(ResentCandidate),

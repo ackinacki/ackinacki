@@ -1,7 +1,6 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -17,6 +16,7 @@ use crate::message::WrappedMessage;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
+use crate::node::associated_types::SyncFinalizedData;
 use crate::node::NodeIdentifier;
 use crate::protocol::authority_switch::network_message::AuthoritySwitch;
 use crate::types::bp_selector::ProducerSelector;
@@ -77,6 +77,12 @@ impl Debug for NetBlock {
 }
 
 #[derive(Clone)]
+pub enum Command {
+    // Inner command from authority switch service
+    StartSynchronization,
+}
+
+#[derive(Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum NetworkMessage {
     Candidate(NetBlock),
@@ -106,18 +112,18 @@ pub enum NetworkMessage {
         at_least_n_blocks: Option<usize>,
     },
 
+    // Note:
+    // SyncFinalized was intended to be used in case of a disaster to restart (continue) the network
+    // SyncFinalized is broadcasted when network is not running.
+    SyncFinalized((Envelope<GoshBLS, SyncFinalizedData>, ThreadIdentifier)),
+    // Also, SyncFrom is redundant due to the authority switch mechanism.
+    // However keeping it for the review. (less security risk)
     SyncFrom((BlockSeqNo, ThreadIdentifier)),
-
-    // SyncFinalized is broadcasted when network is not running to restart
-    // it from the same state.
-    SyncFinalized(
-        (BlockIdentifier, BlockSeqNo, HashMap<ThreadIdentifier, BlockIdentifier>, ThreadIdentifier),
-    ),
 
     AuthoritySwitchProtocol(AuthoritySwitch),
 
-    // Local command from authority switch service
-    StartSynchronization,
+    // Local commands
+    InnerCommand(Command),
 }
 
 impl NetworkMessage {
@@ -146,6 +152,7 @@ impl Debug for NetworkMessage {
                 NodeJoining(_) => f.write_str("NodeJoining"),
                 BlockAttestation(_) => f.write_str("BlockAttestation"),
                 BlockRequest { .. } => f.write_str("BlockRequest"),
+
                 SyncFinalized(_) => f.write_str("SyncFinalized"),
                 SyncFrom(_) => f.write_str("SyncFrom"),
                 AuthoritySwitchProtocol(AuthoritySwitch::Request(_)) => {
@@ -163,7 +170,7 @@ impl Debug for NetworkMessage {
                 AuthoritySwitchProtocol(AuthoritySwitch::Failed(_)) => {
                     f.write_str("AuthoritySwitch::Failed")
                 }
-                StartSynchronization => f.write_str("StartSynchronization"),
+                InnerCommand(Command::StartSynchronization) => f.write_str("StartSynchronization"),
             }
         } else {
             let enum_type = match self {
@@ -180,6 +187,7 @@ impl Debug for NetworkMessage {
                 NodeJoining(_) => "NodeJoining",
                 BlockAttestation(_) => "BlockAttestation",
                 BlockRequest { .. } => "BlockRequest",
+
                 SyncFinalized(_) => "SyncFinalized",
                 SyncFrom(_) => "SyncFrom",
                 AuthoritySwitchProtocol(AuthoritySwitch::Request(_)) => "AuthoritySwitch::Request",
@@ -189,7 +197,7 @@ impl Debug for NetworkMessage {
                 }
                 AuthoritySwitchProtocol(AuthoritySwitch::Switched(_)) => "AuthoritySwitch::Success",
                 AuthoritySwitchProtocol(AuthoritySwitch::Failed(_)) => "AuthoritySwitch::Failed",
-                StartSynchronization => "StartSynchronization",
+                InnerCommand(Command::StartSynchronization) => "StartSynchronization",
             };
             write!(f, "NetworkMessage::{enum_type}")
         }

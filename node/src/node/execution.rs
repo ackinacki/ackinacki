@@ -16,6 +16,7 @@ use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::ExecutionResult;
 use crate::node::associated_types::SynchronizationResult;
 use crate::node::block_request_service::BlockRequestParams;
+use crate::node::network_message::Command;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
 use crate::node::Node;
@@ -203,7 +204,7 @@ where
                     self.producer_service.touch();
                 }
                 Ok((msg, _)) => match msg {
-                    NetworkMessage::StartSynchronization => {
+                    NetworkMessage::InnerCommand(Command::StartSynchronization) => {
                         tracing::info!("Received StartSynchronization");
                         return Ok(ExecutionResult::SynchronizationRequired);
                     }
@@ -232,6 +233,7 @@ where
                                 .repository
                                 .select_thread_last_finalized_block(&thread_id)?
                                 .expect("Must be known here");
+
                             if self.stalled_threads.guarded(|e| e.contains(&self.thread_id))
                                 || last_finalized_seq_no == BlockSeqNo::default()
                             {
@@ -403,7 +405,10 @@ where
                             return Ok(ExecutionResult::SynchronizationRequired);
                         }
                     }
-                    NetworkMessage::SyncFinalized((identifier, seq_no, address, _)) => {
+                    NetworkMessage::SyncFinalized((sync_finalized, _)) => {
+                        let identifier = sync_finalized.data().block_identifier().clone();
+                        let seq_no = *sync_finalized.data().block_seq_no();
+                        let address = sync_finalized.data().thread_refs().clone();
                         // TODO: we'd better check that this node is up to date and does not need to sync
                         tracing::info!(
                             "Received SyncFinalized: {:?} {:?} {:?}",
