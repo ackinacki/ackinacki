@@ -14,6 +14,7 @@ use crate::bls::envelope::BLSSignedEnvelope;
 use crate::helper::block_flow_trace;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::SynchronizationResult;
+use crate::node::execution::TIME_TO_ENABLE_SYNC_FINALIZED;
 use crate::node::network_message::Command;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
@@ -55,7 +56,7 @@ where
 
         loop {
             if *SHUTDOWN_FLAG.get().unwrap_or(&false) {
-                let blocks_queue = self.unprocessed_blocks_cache.clone_queue();
+                let (blocks_queue, _) = self.unprocessed_blocks_cache.clone_queue();
                 tracing::trace!("Stop execution: {}", blocks_queue.blocks().len());
                 self.repository.dump_unfinalized_blocks(blocks_queue);
                 tracing::trace!("Stop execution");
@@ -376,6 +377,11 @@ where
                         recieved_sync_from = Some(seq_no_from);
                     }
                     NetworkMessage::SyncFinalized((sync_finalized, _)) => {
+                        let duration_since_last_finalization =
+                            self.shared_services.duration_since_last_finalization();
+                        if duration_since_last_finalization < TIME_TO_ENABLE_SYNC_FINALIZED {
+                            continue;
+                        }
                         let identifier = sync_finalized.data().block_identifier().clone();
                         let seq_no = *sync_finalized.data().block_seq_no();
                         let address = sync_finalized.data().thread_refs().clone();

@@ -60,7 +60,7 @@ impl MessageDurableStorage {
         &self,
         messages: HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     ) -> anyhow::Result<()> {
-        if !cfg!(feature = "messages_db") {
+        if !cfg!(feature = "messages_db") || cfg!(feature = "disable_db_for_messages") {
             return Ok(());
         }
 
@@ -104,7 +104,7 @@ impl MessageDurableStorage {
     }
 
     pub fn read_message(&self, hash: &str) -> anyhow::Result<Option<(i64, WrappedMessage)>> {
-        if !cfg!(feature = "messages_db") {
+        if !cfg!(feature = "messages_db") || cfg!(feature = "disable_db_for_messages") {
             return Ok(None);
         }
 
@@ -136,7 +136,7 @@ impl MessageDurableStorage {
         &self,
         hashes: Vec<String>,
     ) -> anyhow::Result<Vec<(i64, WrappedMessage)>> {
-        if !cfg!(feature = "messages_db") {
+        if !cfg!(feature = "messages_db") || cfg!(feature = "disable_db_for_messages") {
             return Ok(vec![]);
         }
         let mut ret_val = vec![];
@@ -174,7 +174,7 @@ impl MessageDurableStorage {
     }
 
     fn batch_get_hashes_by_rowid(&self, dest: &str, seqs: Vec<i64>) -> anyhow::Result<Vec<String>> {
-        if !cfg!(feature = "messages_db") {
+        if !cfg!(feature = "messages_db") || cfg!(feature = "disable_db_for_messages") {
             return Ok(vec![]);
         }
         let mut ret_val = vec![];
@@ -205,7 +205,7 @@ impl MessageDurableStorage {
         start_cursor: i64,
         limit: usize,
     ) -> anyhow::Result<(Vec<WrappedMessage>, Option<i64>)> {
-        if !cfg!(feature = "messages_db") {
+        if !cfg!(feature = "messages_db") || cfg!(feature = "disable_db_for_messages") {
             return Ok((vec![], None));
         }
         // Gather all message hashes

@@ -181,7 +181,7 @@ impl BlockRequestService {
             .select_thread_last_finalized_block(thread_id)?
             .expect("Must be known here");
         #[allow(clippy::mutable_key_type)]
-        let unprocessed_blocks_cache = self.unprocessed_blocks_cache.clone_queue();
+        let (unprocessed_blocks_cache, _) = self.unprocessed_blocks_cache.clone_queue();
         if last_finalized_block_seq_no > from_inclusive {
             let count = self.resend_finalized(
                 thread_id,

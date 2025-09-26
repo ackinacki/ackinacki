@@ -31,7 +31,7 @@ use crate::node::services::block_processor::chain_pulse::events::ChainPulseEvent
 use crate::node::services::block_processor::chain_pulse::ChainPulse;
 use crate::node::services::validation::feedback::AckiNackiSend;
 use crate::node::shared_services::SharedServices;
-use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
+use crate::node::unprocessed_blocks_collection::FilterPrehistoric;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::NetworkMessage;
 use crate::node::NodeIdentifier;
@@ -168,7 +168,7 @@ impl BlockProcessorService {
 
                         unprocessed_blocks_cache.remove_old_blocks(&last_finalized_seq_no);
                         #[allow(clippy::mutable_key_type)]
-                        let blocks_to_process: UnfinalizedBlocksSnapshot =
+                        let (blocks_to_process, filter) =
                             unprocessed_blocks_cache.clone_queue();
 
                         shared_services.metrics.as_ref().inspect(|m| {
@@ -218,6 +218,7 @@ impl BlockProcessorService {
                                 &chain_pulse_monitor,
                                 &mut cross_thread_ref_data_availability_synchronization_service,
                                 &save_optimistic_service_sender,
+                                &filter
                             )?;
                         }
                     }
@@ -273,6 +274,7 @@ fn process_candidate_block(
     chain_pulse_monitor: &Sender<ChainPulseEvent>,
     cross_thread_ref_data_availability_synchronization_service: &mut CrossThreadRefDataAvailabilitySynchronizationServiceInterface,
     save_optimistic_service_sender: &InstrumentedSender<Arc<OptimisticStateImpl>>,
+    filter_prehistoric: &FilterPrehistoric,
 ) -> anyhow::Result<()> {
     // if block_state.guarded(|e| e.is_block_already_applied()) {
     //     // This is the last flag this method sets. Skip this block checks if it is already set.
@@ -356,7 +358,7 @@ fn process_candidate_block(
                 }
             });
         } else {
-            invalidate_branch(block_state.clone(), block_state_repository);
+            invalidate_branch(block_state.clone(), block_state_repository, filter_prehistoric);
             let _ = send.send_nack_bad_block(block_state.clone(), candidate_block.clone());
             return Ok(());
         }
@@ -372,7 +374,7 @@ fn process_candidate_block(
     if let Some(status) = result {
         if !status {
             tracing::trace!("Process block candidate: blocks signature is invalid, invalidate it");
-            invalidate_branch(block_state.clone(), block_state_repository);
+            invalidate_branch(block_state.clone(), block_state_repository, filter_prehistoric);
             return Ok(());
         }
         if !block_state.guarded(|e| e.is_signatures_verified()) {
@@ -627,6 +629,7 @@ fn process_candidate_block(
         candidate_block,
         validation_service,
         chain_pulse_monitor,
+        filter_prehistoric,
     )? {
         tracing::trace!("Process block candidate: can't process_block_attestations, skip it");
         return Ok(());
@@ -748,7 +751,11 @@ fn process_candidate_block(
                         Some(RepositoryError::BlockNotFound(_)) => Ok(()),
                         Some(RepositoryError::DepthSearchMinStateLimitReached) => {
                             tracing::trace!("A block from an abandoned branch");
-                            invalidate_branch(block_state.clone(), block_state_repository);
+                            invalidate_branch(
+                                block_state.clone(),
+                                block_state_repository,
+                                filter_prehistoric,
+                            );
                             Ok(())
                         }
                         Some(RepositoryError::DepthSearchBlockCountLimitReached) => Err(err),
@@ -768,7 +775,11 @@ fn process_candidate_block(
                 Ok(cross_thread_ref_data) => cross_thread_ref_data,
                 Err(e) => {
                     tracing::error!("Failed to apply candidate block: {e}");
-                    invalidate_branch(block_state.clone(), block_state_repository);
+                    invalidate_branch(
+                        block_state.clone(),
+                        block_state_repository,
+                        filter_prehistoric,
+                    );
                     return Ok(());
                 }
             };
@@ -1029,6 +1040,7 @@ fn process_block_attestations(
     candidate_block: &Envelope<GoshBLS, AckiNackiBlock>,
     validation_service: &ValidationServiceInterface,
     chain_pulse_monitor: &Sender<ChainPulseEvent>,
+    filter_prehistoric: &FilterPrehistoric,
 ) -> anyhow::Result<bool> {
     if block_state.guarded(|e| e.has_block_attestations_processed() == &Some(true)) {
         return Ok(true);
@@ -1055,7 +1067,7 @@ fn process_block_attestations(
 
     if !failed.is_empty() {
         tracing::trace!("process_block_attestations: attestations_target was not reached, block is considered as invalid {:?}. Missing attestations for: {failed:?}", block_state.block_identifier());
-        invalidate_branch(block_state.clone(), block_state_repository);
+        invalidate_branch(block_state.clone(), block_state_repository, filter_prehistoric);
         return Ok(false);
     }
     let mut max_finalized_ancestor: Option<(BlockSeqNo, BlockIdentifier)> = None;

@@ -59,6 +59,7 @@ use crate::node::services::statistics::median_descendants_chain_length_to_meet_t
 use crate::node::services::sync::ExternalFileSharesBased;
 use crate::node::services::sync::StateSyncService;
 use crate::node::shared_services::SharedServices;
+use crate::node::unprocessed_blocks_collection::FilterPrehistoric;
 use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::NodeIdentifier;
@@ -1353,7 +1354,7 @@ impl Repository for RepositoryImpl {
                 self.thread_last_finalized_state
                     .guarded_mut(|e| e.insert(thread_id, saved_state.clone()));
 
-                #[cfg(feature = "messages_db")]
+                #[cfg(all(feature = "messages_db", not(feature = "disable_db_for_messages")))]
                 {
                     let mut last_message_guard = self.last_message_for_acc.lock();
                     let btree = &saved_state.messages.messages;
@@ -1579,14 +1580,24 @@ impl Repository for RepositoryImpl {
         tracing::debug!("set_state_from_snapshot");
         let thread_snapshot: ThreadSnapshot = bincode::deserialize(&snapshot)
             .map_err(|e| anyhow::format_err!("Failed to deserialize snapshot: {e}"))?;
-        tracing::debug!("set_state_from_snapshot1");
+
         let state = <Self as Repository>::OptimisticState::deserialize_from_buf(
             thread_snapshot.optimistic_state(),
         )
         .map_err(|e| anyhow::format_err!("Failed to deserialize state: {e}"))?;
-        tracing::debug!("set_state_from_snapshot2");
         let thread_id = state.thread_id;
         let seq_no = thread_snapshot.finalized_block.data().seq_no();
+
+        let opt_collection = self.unfinalized_blocks.guarded(|m| m.get(cur_thread_id).cloned());
+        if let Some(unfinalized) = opt_collection {
+            tracing::trace!(
+                "Update filter_prehistoric for thread={cur_thread_id:?}, seq_no={seq_no:?}"
+            );
+            let res = unfinalized
+                .update_filter(FilterPrehistoric::builder().block_seq_no(seq_no).build());
+            tracing::trace!("Update filter_prehistoric res: {res}");
+        }
+
         tracing::debug!(target: "monit", "set_state_from_snapshot: {:?} {:?} {}", state.thread_id, state.block_id, seq_no);
         self.store_optimistic(state.clone())?;
 
@@ -1933,7 +1944,7 @@ impl Repository for RepositoryImpl {
     }
 }
 
-#[cfg(feature = "messages_db")]
+#[cfg(all(feature = "messages_db", not(feature = "disable_db_for_messages")))]
 fn extract_new_messages<T>(
     btree: &BTreeMap<
         AccountAddress,
@@ -2163,7 +2174,7 @@ pub mod tests {
     }
 }
 
-#[cfg(all(test, feature = "messages_db"))]
+#[cfg(all(test, feature = "messages_db", not(feature = "disable_db_for_messages")))]
 mod extract_new_messages_tests {
     use std::collections::VecDeque;
 

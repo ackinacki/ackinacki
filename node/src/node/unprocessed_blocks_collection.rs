@@ -6,6 +6,7 @@ use std::sync::Arc;
 use derive_debug::Dbg;
 use derive_getters::Getters;
 use parking_lot::Mutex;
+use typed_builder::TypedBuilder;
 
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
@@ -34,9 +35,15 @@ struct UnfinalizedBlocksData {
     #[dbg(skip)]
     main_map: UnfinalizedBlocksSnapshot,
     identifier_to_seqno: HashMap<BlockIdentifier, BlockSeqNo>,
+    filter: FilterPrehistoric,
 }
 
 impl UnfinalizedBlocksData {
+    fn set_filter(&mut self, filter: FilterPrehistoric) {
+        self.filter = filter.clone();
+        self.retain(|index, _| index.block_seq_no() > filter.block_seq_no());
+    }
+
     fn insert(
         &mut self,
         index: BlockIndex,
@@ -65,6 +72,11 @@ impl UnfinalizedBlocksData {
             self.main_map.block_id_set.remove(&block_id);
         }
     }
+}
+
+#[derive(Default, Clone, PartialEq, Eq, Getters, TypedBuilder, Dbg)]
+pub struct FilterPrehistoric {
+    block_seq_no: BlockSeqNo,
 }
 
 #[allow(clippy::mutable_key_type)]
@@ -106,14 +118,17 @@ impl UnfinalizedCandidateBlockCollection {
     }
 
     #[allow(clippy::mutable_key_type)]
-    pub fn clone_queue(&self) -> UnfinalizedBlocksSnapshot {
+    pub fn clone_queue(&self) -> (UnfinalizedBlocksSnapshot, FilterPrehistoric) {
         self.candidates.guarded(|e| {
             let notifications_stamp = self.notifications.stamp();
-            UnfinalizedBlocksSnapshot {
-                blocks: e.main_map.blocks().clone(),
-                notifications_stamp,
-                block_id_set: e.main_map.block_id_set.clone(),
-            }
+            (
+                UnfinalizedBlocksSnapshot {
+                    blocks: e.main_map.blocks().clone(),
+                    notifications_stamp,
+                    block_id_set: e.main_map.block_id_set.clone(),
+                },
+                e.filter.clone(),
+            )
         })
     }
 
@@ -172,5 +187,17 @@ impl UnfinalizedCandidateBlockCollection {
 
     pub fn touch(&mut self) {
         self.notifications.touch();
+    }
+
+    pub fn update_filter(&self, filter_prehistoric: FilterPrehistoric) -> bool {
+        self.candidates.guarded_mut(|e| {
+            let old_filter = e.filter.clone();
+            if old_filter.block_seq_no() < filter_prehistoric.block_seq_no() {
+                e.set_filter(filter_prehistoric);
+                true
+            } else {
+                false
+            }
+        })
     }
 }

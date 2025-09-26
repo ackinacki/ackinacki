@@ -62,7 +62,7 @@ pub fn finalization_loop(
         let before = unprocessed_blocks_cache.notifications().stamp();
 
         #[allow(clippy::mutable_key_type)]
-        let unprocessed_blocks = { unprocessed_blocks_cache.clone_queue() };
+        let (unprocessed_blocks, _) = { unprocessed_blocks_cache.clone_queue() };
         let Ok(Some((last_finalized_block_id, _))) =
             repository.select_thread_last_finalized_block(&thread_identifier)
         else {
@@ -206,7 +206,7 @@ fn try_finalize(
             .cmp(&b.guarded(|e| (*e.block_seq_no()).unwrap()))
     });
 
-    let mut max_finalized_seq_no = BlockSeqNo::default();
+    let mut max_finalized_seq_no_before_snapshot = BlockSeqNo::default();
     for block_state in blocks_finalized_by_parent {
         if block_state.guarded(|e| !e.is_finalized() && e.can_be_finalized()) {
             let (Some(block_height), Some(block_seq_no), Some(attestation_target)) = block_state
@@ -218,8 +218,8 @@ fn try_finalize(
                 );
                 continue;
             };
-            if block_seq_no > max_finalized_seq_no {
-                max_finalized_seq_no = block_seq_no;
+            if block_seq_no > max_finalized_seq_no_before_snapshot {
+                max_finalized_seq_no_before_snapshot = block_seq_no;
             }
             let Some(candidate_block) =
                 unprocessed_blocks_cache.get_block_by_id(block_state.block_identifier())
@@ -265,18 +265,18 @@ fn try_finalize(
             });
         }
     }
-    if max_finalized_seq_no != BlockSeqNo::default() {
-        let snapshot = unprocessed_blocks_cache.clone_queue();
+    if max_finalized_seq_no_before_snapshot != BlockSeqNo::default() {
+        let (snapshot, filter) = unprocessed_blocks_cache.clone_queue();
         for (block, _) in snapshot.blocks().values() {
             if !block.guarded(|e| e.is_finalized()) {
                 let Some(block_seq_no) = block_state.guarded(|e| *e.block_seq_no()) else {
                     continue;
                 };
-                if block_seq_no <= max_finalized_seq_no {
+                if block_seq_no <= max_finalized_seq_no_before_snapshot {
                     tracing::trace!(
                         "Invalidate block, a block with greater or equal seq_no was finalized"
                     );
-                    invalidate_branch(block.clone(), block_state_repository);
+                    invalidate_branch(block.clone(), block_state_repository, &filter);
                 } else {
                     break;
                 }

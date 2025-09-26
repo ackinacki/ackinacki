@@ -28,6 +28,7 @@ use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
 pub const LOOP_PAUSE_DURATION: Duration = Duration::from_millis(10);
+pub const TIME_TO_ENABLE_SYNC_FINALIZED: Duration = Duration::from_secs(1200);
 
 impl<TStateSyncService, TRandomGenerator> Node<TStateSyncService, TRandomGenerator>
 where
@@ -137,7 +138,7 @@ where
             );
 
             if *SHUTDOWN_FLAG.get().unwrap_or(&false) {
-                let blocks_queue = self.unprocessed_blocks_cache.clone_queue();
+                let (blocks_queue, _) = self.unprocessed_blocks_cache.clone_queue();
                 tracing::trace!("Stop execution: {}", blocks_queue.blocks().len());
                 self.repository.dump_unfinalized_blocks(blocks_queue);
                 tracing::trace!("Stop execution");
@@ -406,6 +407,11 @@ where
                         }
                     }
                     NetworkMessage::SyncFinalized((sync_finalized, _)) => {
+                        let duration_since_last_finalization =
+                            self.shared_services.duration_since_last_finalization();
+                        if duration_since_last_finalization < TIME_TO_ENABLE_SYNC_FINALIZED {
+                            continue;
+                        }
                         let identifier = sync_finalized.data().block_identifier().clone();
                         let seq_no = *sync_finalized.data().block_seq_no();
                         let address = sync_finalized.data().thread_refs().clone();

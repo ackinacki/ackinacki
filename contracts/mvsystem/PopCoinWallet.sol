@@ -44,7 +44,7 @@ contract PopCoinWallet is Modifiers {
     ) {
         TvmCell data = abi.codeSalt(tvm.code()).get();
         (string lib, address root, uint256 hash) = abi.decode(data, (string, address, uint256));
-        require(VerifiersLib.versionLib == lib, ERR_INVALID_SENDER);
+        require(VerifiersLib.versionLib == lib, ERR_WRONG_DATA);
         require(hash == tvm.hash(PopitGameCode), ERR_INVALID_SENDER);
         _deployed = block.seqno;
         _root = root;

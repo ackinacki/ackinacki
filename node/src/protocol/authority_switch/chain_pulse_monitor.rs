@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -28,17 +29,17 @@ pub struct Deadline {
 pub struct ChainPulseMonitor {
     _handler: JoinHandle<()>,
     monitor: Sender<ChainPulseEvent>,
-    stalled_threads: Arc<Mutex<Vec<ThreadIdentifier>>>,
+    stalled_threads: Arc<Mutex<HashSet<ThreadIdentifier>>>,
 }
 
-impl AllowGuardedMut for Vec<ThreadIdentifier> {}
+impl AllowGuardedMut for HashSet<ThreadIdentifier> {}
 
 impl ChainPulseMonitor {
     pub fn monitor(&mut self) -> Sender<ChainPulseEvent> {
         self.monitor.clone()
     }
 
-    pub fn stalled_threads(&self) -> Arc<Mutex<Vec<ThreadIdentifier>>> {
+    pub fn stalled_threads(&self) -> Arc<Mutex<HashSet<ThreadIdentifier>>> {
         self.stalled_threads.clone()
     }
 }
@@ -63,7 +64,7 @@ fn move_deadline(
 
 pub fn bind(authority: Arc<Mutex<Authority>>) -> ChainPulseMonitor {
     let (tx, rx) = std::sync::mpsc::channel();
-    let stalled_threads = Arc::new(Mutex::new(Vec::new()));
+    let stalled_threads = Arc::new(Mutex::new(HashSet::new()));
     let stalled_threads_clone = stalled_threads.clone();
     let chain_pulse_binding = std::thread::Builder::new()
         .name("ChainPulse to Authority binding".to_string())
@@ -110,10 +111,10 @@ pub fn bind(authority: Arc<Mutex<Authority>>) -> ChainPulseMonitor {
                 let now = Instant::now();
                 match next_event {
                     None => {
-                        let mut stalled = vec![];
+                        let mut stalled = HashSet::new();
                         for (thread, deadline) in deadlines.iter_mut() {
                             if now >= *deadline.timestamp() {
-                                stalled.push(*thread);
+                                stalled.insert(*thread);
                                 // TODO:
                                 // It requires to send chain events on new block candidates,
                                 // so this monitor would know that BP has not stalled.
@@ -144,6 +145,7 @@ pub fn bind(authority: Arc<Mutex<Authority>>) -> ChainPulseMonitor {
                         }
                     }
                     Some(ChainPulseEvent::BlockFinalized(e)) => {
+                        stalled_threads_clone.guarded_mut(|set| set.remove(e.thread_identifier()));
                         // TODO: config
                         move_deadline(
                             &mut deadlines,
@@ -155,6 +157,7 @@ pub fn bind(authority: Arc<Mutex<Authority>>) -> ChainPulseMonitor {
                         );
                     }
                     Some(ChainPulseEvent::BlockPrefinalized(e)) => {
+                        stalled_threads_clone.guarded_mut(|set| set.remove(e.thread_identifier()));
                         // TODO: config
                         move_deadline(
                             &mut deadlines,
@@ -166,6 +169,7 @@ pub fn bind(authority: Arc<Mutex<Authority>>) -> ChainPulseMonitor {
                         );
                     }
                     Some(ChainPulseEvent::StartThread { thread_id, block_candidates }) => {
+                        stalled_threads_clone.guarded_mut(|set| set.remove(&thread_id));
                         block_collections.insert(thread_id, block_candidates);
                         move_deadline(
                             &mut deadlines,
@@ -177,6 +181,7 @@ pub fn bind(authority: Arc<Mutex<Authority>>) -> ChainPulseMonitor {
                         );
                     }
                     Some(ChainPulseEvent::BlockApplied(e)) => {
+                        stalled_threads_clone.guarded_mut(|set| set.remove(e.thread_identifier()));
                         // TODO: config
                         move_deadline(
                             &mut deadlines,

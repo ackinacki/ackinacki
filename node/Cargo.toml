@@ -1,6 +1,6 @@
 [package]
 name = "node"
-version = "0.8.2"
+version = "0.8.4"
 edition.workspace = true
 rust-version.workspace = true
 build = 'build.rs'
@@ -98,6 +98,7 @@ default = [
     "rayon_affinity",
     "messages_db",
     "monitor-accounts-number",
+    "disable_db_for_messages",
 ]
 # Use automocks in binaries
 use_automocks = []
@@ -106,6 +107,7 @@ allow-threads-merge = []
 deadlock-detection = []
 fail-fast = []
 messages_db = []
+disable_db_for_messages = []
 delay-references = []
 
 fail_on_long_lock = []

@@ -121,7 +121,6 @@ trap trigger_stopping_staking SIGINT SIGTERM
 
 NODE_OWNER_KEY=$1
 BLS_KEYS_FILE=$2
-TEMP_BLS_KEYS_FILE="$(dirname $2)/temp_bls.keys.json"
 NODE_IP=$3
 
 if [[ ! -f $NODE_OWNER_KEY ]]; then
@@ -169,30 +168,17 @@ INIT_ACTIVE_STAKES=$(echo $INIT_WALLET_STATE | jq '.activeStakes | length')
 log "Wallet address: $WALLET_ADDR"
 log "Count of stake: $INIT_ACTIVE_STAKES"
 
-create_new_bls_keys () {
+update_bls_keys () {
   if ! type -t node-helper > /dev/null 2>&1
   then
     log "node-helper: command not found"
     exit 1
   fi
-  echo '[]' > $TEMP_BLS_KEYS_FILE
-  UPD_BLS_PUBLIC_KEY=$(node-helper bls --path $TEMP_BLS_KEYS_FILE | jq -r '.pubkey')
-  if [ -z $UPD_BLS_PUBLIC_KEY ]; then
-    log "Failed to create new BLS key. Exiting..."
-    exit 1
-  fi
-}
 
-update_bls_keys () {
   local KEY_LENGTH=$(jq '. | length' $1)
-  # Get accepted key
-  FROM_TEMP_BLS_KEY=$(cat $TEMP_BLS_KEYS_FILE | jq '.[0]')
-  # Add new key to BLS list
-  UPDATED_BLS_KEY_LIST=$(jq ". += [$FROM_TEMP_BLS_KEY]" $1)
-  # Write updated keys
-  echo "$UPDATED_BLS_KEY_LIST" > $1
+  UPD_BLS_PUBLIC_KEY=$(node-helper bls --path $1 | jq -r '.pubkey')
   local UPD_KEY_LENGTH=$(jq '. | length' $1)
-  if [ $KEY_LENGTH -ge $UPD_KEY_LENGTH ] || [ -z $FROM_TEMP_BLS_KEY ]; then
+  if [ $KEY_LENGTH -ge $UPD_KEY_LENGTH ] || [ -z $UPD_BLS_PUBLIC_KEY ]; then
     log "BLS key update failed. Exiting..."
     exit 1
   fi
@@ -400,15 +386,10 @@ place_continue_stake () {
     fi
   done
 
+  update_bls_keys $BLS_KEYS_FILE
   log "Sending continue stake - $TOTAL_AVAILABLE"
-  local UPDATE_BLS=true
-  create_new_bls_keys
   CONT_STAKING="{\"bls_pubkey\": \"$UPD_BLS_PUBLIC_KEY\", \"stake\": $TOTAL_AVAILABLE, \"seqNoStartOld\": \"$1\", \"signerIndex\": $SIGNER_INDEX, \"ProxyList\": {}}"
-  tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $NODE_OWNER_KEY --method sendBlockKeeperRequestWithStakeContinue "$CONT_STAKING" || { UPDATE_BLS=false ; log "Error with sending continue stake request. Go to the next step" >&2 ;}  
-  # If the continue request wasn't successful do not update BLS key
-  if [[ "$UPDATE_BLS" == true ]]; then
-    update_bls_keys $BLS_KEYS_FILE
-  fi
+  tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $NODE_OWNER_KEY --method sendBlockKeeperRequestWithStakeContinue "$CONT_STAKING" || { log "Error with sending continue stake request. Go to the next step" >&2 ;}
 }
 
 calculate_reward () {

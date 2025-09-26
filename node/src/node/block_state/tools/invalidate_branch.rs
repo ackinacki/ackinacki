@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::collections::VecDeque;
 
+use crate::node::unprocessed_blocks_collection::FilterPrehistoric;
 use crate::node::BlockState;
 use crate::node::BlockStateRepository;
 use crate::utilities::guarded::Guarded;
@@ -9,7 +10,13 @@ use crate::utilities::guarded::GuardedMut;
 pub fn invalidate_branch(
     branch_root_block_state: BlockState,
     block_state_repository: &BlockStateRepository,
+    filter: &FilterPrehistoric,
 ) {
+    if let Some(seq_no) = branch_root_block_state.guarded(|e| *e.block_seq_no()) {
+        if *filter.block_seq_no() >= seq_no {
+            return;
+        }
+    }
     let mut to_process = VecDeque::from([branch_root_block_state]);
     while let Some(next) = to_process.pop_front() {
         assert!(!next.guarded(|e| e.is_finalized()));

@@ -141,6 +141,6 @@ contract NameIndex is Modifiers {
     }
 
     function getVersion() external pure returns(string, string) {
-        return (version, "Multifactor");
+        return (version, "Indexer");
     } 
 }

@@ -40,6 +40,7 @@ use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::block_state::tools::invalidate_branch;
 use crate::node::broadcast_node_joining;
 use crate::node::services::send_attestations::AttestationSendService;
+use crate::node::unprocessed_blocks_collection::FilterPrehistoric;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::NetBlock;
 use crate::node::NetworkMessage;
@@ -1653,7 +1654,11 @@ impl ThreadAuthority {
                 .block_state_repository
                 .get(&abandoned_by_majority_block_ref.1.block_identifier)
                 .unwrap();
-            invalidate_branch(abandoned_by_majority_block, &self.block_state_repository);
+            invalidate_branch(
+                abandoned_by_majority_block,
+                &self.block_state_repository,
+                &FilterPrehistoric::builder().block_seq_no(BlockSeqNo::default()).build(),
+            );
         }
         // Note:
         // todo!("Push the proposed block for processing");

@@ -1,5 +1,7 @@
 use std::num::NonZeroU32;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -28,6 +30,7 @@ pub struct SharedServices {
     container: Arc<Mutex<Container>>,
     pub metrics: Option<BlockProductionMetrics>,
     limiter: Arc<DefaultKeyedRateLimiter<NodeIdentifier>>,
+    pub last_finalization_timestamp: Arc<AtomicU64>,
 }
 
 #[allow(dead_code, non_snake_case)]
@@ -80,7 +83,7 @@ impl SharedServices {
         thread_cnt_soft_limit: usize,
         crossref_db: CrossRefStorage,
     ) -> Self {
-        Self {
+        let res = Self {
             container: Arc::new(Mutex::new(Container {
                 router,
                 thread_sync: ThreadSyncService::start(()),
@@ -106,7 +109,31 @@ impl SharedServices {
                 NonZeroU32::new(rate_limit_on_incoming_block_req.max(1))
                     .expect("Rate limit is non-zero"),
             ))),
-        }
+            last_finalization_timestamp: Arc::new(AtomicU64::new(0)),
+        };
+        res.update_last_finalization_timestamp();
+        res
+    }
+
+    fn update_last_finalization_timestamp(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("Time from unix epoch can not fail")
+            .as_millis() as u64;
+        let _ = self.last_finalization_timestamp.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |prev| if prev < now { Some(now) } else { None },
+        );
+    }
+
+    pub fn duration_since_last_finalization(&self) -> std::time::Duration {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("Time from unix epoch can not fail")
+            .as_millis() as u64;
+        let last_finalized = self.last_finalization_timestamp.load(Ordering::Relaxed);
+        std::time::Duration::from_millis(now.saturating_sub(last_finalized))
     }
 
     pub fn exec<F, R>(&mut self, f: F) -> R
@@ -142,7 +169,7 @@ impl SharedServices {
         let thread_identifier: ThreadIdentifier = block.get_common_section().thread_id;
         let threads_table = state.get_produced_threads_table().clone();
         tracing::trace!("handling on_block_finalized: {:?}", &block_identifier);
-
+        self.update_last_finalization_timestamp();
         self.exec(|services| {
             if services.dirty_hack__finalized_blocks.contains(&block_identifier) {
                 return;

@@ -18,6 +18,9 @@ macro_rules! connect {
 
 pub(crate) use connect;
 
+use crate::node::unprocessed_blocks_collection::FilterPrehistoric;
+use crate::types::BlockSeqNo;
+
 pub struct Link {
     pub parent: BlockState,
     pub child: BlockState,
@@ -38,7 +41,11 @@ pub fn do_link(link: Link, block_state_repository: &BlockStateRepository) {
         panic!("Critical: wrong block state. Block {parent_block_identifier:?} is invalidated and finalized at the same time");
     }
     if is_parent_invalidated {
-        invalidate_branch(child.clone(), block_state_repository);
+        invalidate_branch(
+            child.clone(),
+            block_state_repository,
+            &FilterPrehistoric::builder().block_seq_no(BlockSeqNo::default()).build(),
+        );
     }
 
     child.guarded_mut(|e| {

@@ -1304,6 +1304,9 @@ fn debug_used_features() {
     if cfg!(feature = "messages_db") {
         eprintln!("  messages_db");
     }
+    if cfg!(feature = "disable_db_for_messages") {
+        eprintln!("  disable_db_for_messages");
+    }
     if std::env::var("NODE_VERBOSE").is_ok() {
         eprintln!("  NODE_VERBOSE");
     }

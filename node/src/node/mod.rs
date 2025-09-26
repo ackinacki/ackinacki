@@ -139,7 +139,7 @@ where
     unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
     stop_result_tx: Sender<()>,
 
-    stalled_threads: Arc<Mutex<Vec<ThreadIdentifier>>>,
+    stalled_threads: Arc<Mutex<HashSet<ThreadIdentifier>>>,
     last_synced_state:
         Option<(BlockIdentifier, BlockSeqNo, HashMap<ThreadIdentifier, BlockIdentifier>)>,
     chain_pulse_monitor: Sender<ChainPulseEvent>,
@@ -186,7 +186,7 @@ where
         authority_state: Arc<Mutex<Authority>>,
         unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
         stop_result_tx: Sender<()>,
-        stalled_threads: Arc<Mutex<Vec<ThreadIdentifier>>>,
+        stalled_threads: Arc<Mutex<HashSet<ThreadIdentifier>>>,
         chain_pulse_monitor: Sender<ChainPulseEvent>,
         authority_handler: JoinHandle<()>,
         self_authority_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,

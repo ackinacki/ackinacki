@@ -22,6 +22,7 @@ use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::block_state::tools::invalidate_branch;
 use crate::node::services::validation::feedback::AckiNackiSend;
 use crate::node::shared_services::SharedServices;
+use crate::node::unprocessed_blocks_collection::FilterPrehistoric;
 // use std::thread::sleep;
 use crate::node::BlockState;
 use crate::protocol::authority_switch::action_lock::Authority;
@@ -30,6 +31,7 @@ use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
 use crate::storage::MessageDurableStorage;
 use crate::types::AckiNackiBlock;
+use crate::types::BlockSeqNo;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
@@ -175,7 +177,11 @@ pub(super) fn inner_loop(
                 }
             });
             if !verify_res {
-                invalidate_branch(state.clone(), &block_state_repo);
+                invalidate_branch(
+                    state.clone(),
+                    &block_state_repo,
+                    &FilterPrehistoric::builder().block_seq_no(BlockSeqNo::default()).build(),
+                );
             }
             if SHUTDOWN_FLAG.get() == Some(&true) {
                 return;

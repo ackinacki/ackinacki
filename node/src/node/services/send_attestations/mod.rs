@@ -889,8 +889,7 @@ impl AttestationSendServiceHandler {
                     }
                     let notifications = block_state_repository.notifications().stamp();
                     #[allow(clippy::mutable_key_type)]
-                    let blocks_to_process: UnfinalizedBlocksSnapshot =
-                        unprocessed_blocks_cache.clone_queue();
+                    let (blocks_to_process, _) = unprocessed_blocks_cache.clone_queue();
                     attestation_deadline = attestation_sender_service.evaluate(
                         &blocks_to_process,
                         last_block_attestations.clone(),
