@@ -72,7 +72,7 @@ impl ZeroState {
         let accounts = self.get_shard_state(thread_identifier)?.read_accounts();
         if let Ok(accounts) = accounts {
             accounts
-                .iterate_accounts(|_, v, _| {
+                .iterate_accounts(|_, v| {
                     let account = v.read_account().unwrap().as_struct()?;
                     zs_accounts.push(ZeroStateAccount {
                         address: account

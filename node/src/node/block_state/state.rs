@@ -1,6 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::num::NonZeroUsize;
@@ -31,6 +32,7 @@ use crate::types::notification::Notification;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockHeight;
 use crate::types::BlockIdentifier;
+use crate::types::BlockIndex;
 use crate::types::BlockRound;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
@@ -130,7 +132,7 @@ pub struct AckiNackiBlockState {
     // Flag indicates that block was validated and validation result.
     validated: Option<bool>,
 
-    finalizes_blocks: Option<HashSet<BlockIdentifier>>,
+    finalizes_blocks: Option<BTreeSet<BlockIndex>>,
 
     moves_attestation_list_cutoff: Option<(BlockSeqNo, BlockIdentifier)>,
 

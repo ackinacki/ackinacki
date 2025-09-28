@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 
 use derive_getters::Getters;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
@@ -9,7 +11,7 @@ use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 
-#[derive(Debug, Clone, Eq, PartialEq, Getters)]
+#[derive(Debug, Clone, Eq, PartialEq, Getters, Serialize, Deserialize)]
 pub struct BlockIndex {
     block_seq_no: BlockSeqNo, // TODO: change to block height
     block_identifier: BlockIdentifier,

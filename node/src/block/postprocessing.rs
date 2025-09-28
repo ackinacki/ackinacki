@@ -4,7 +4,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use tracing::instrument;
-use tvm_block::Augmentation;
 use tvm_types::AccountId;
 
 use crate::message::identifier::MessageIdentifier;
@@ -186,13 +185,11 @@ pub fn postprocess(
                         account_id = account_id.to_hex_string(),
                         "Unloading account from state"
                     );
-                    let aug =
-                        account.aug().map_err(|e| anyhow::format_err!("Failed to get aug: {e}"))?;
                     let cell = account
                         .replace_with_external()
                         .map_err(|e| anyhow::format_err!("Failed to set account external: {e}"))?;
                     cached_accounts.insert(account_id.clone(), (block_seq_no, cell));
-                    shard_accounts.insert_with_aug(&account_id.0, &account, &aug).map_err(|e| {
+                    shard_accounts.insert(&account_id.0, &account).map_err(|e| {
                         anyhow::format_err!("Failed to insert account into shard state: {e}")
                     })?;
                 } else {

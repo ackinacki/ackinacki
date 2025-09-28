@@ -76,6 +76,8 @@ impl FileSavingService {
                     Some(descendant_bk_set),
                     Some(descendant_future_bk_set),
                     Some(ancestor_blocks_finalization_checkpoints),
+                    Some(finalizes_blocks),
+                    Some(parent_id),
                 ) = block_state.guarded(|e| {
                     (
                         e.bk_set().clone(),
@@ -88,10 +90,18 @@ impl FileSavingService {
                         e.descendant_bk_set().clone(),
                         e.descendant_future_bk_set().clone(),
                         e.ancestor_blocks_finalization_checkpoints().clone(),
+                        e.finalizes_blocks().clone(),
+                        e.parent_block_identifier().clone(),
                     )
                 })
                 else {
                     anyhow::bail!("Failed to get block data for sync");
+                };
+                let parent_block_state = block_state_repository.get(&parent_id)?;
+                let Some(parent_ancestor_blocks_finalization_checkpoints) = parent_block_state
+                    .guarded(|e| e.ancestor_blocks_finalization_checkpoints().clone())
+                else {
+                    anyhow::bail!("Failed to get parent block data for sync");
                 };
 
                 let shared_thread_state = ThreadSnapshot::builder()
@@ -110,6 +120,10 @@ impl FileSavingService {
                     .descendant_future_bk_set(descendant_future_bk_set.deref().clone())
                     .ancestor_blocks_finalization_checkpoints(
                         ancestor_blocks_finalization_checkpoints,
+                    )
+                    .finalizes_blocks(finalizes_blocks)
+                    .parent_ancestor_blocks_finalization_checkpoints(
+                        parent_ancestor_blocks_finalization_checkpoints,
                     )
                     .build();
 

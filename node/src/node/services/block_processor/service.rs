@@ -1,6 +1,7 @@
 // 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
@@ -18,6 +19,7 @@ use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::config::must_save_state_on_seq_no;
+use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::AttestationTargetType;
 use crate::node::block_state::attestation_target_checkpoints::inherit_ancestor_blocks_finalization_distances;
 use crate::node::block_state::attestation_target_checkpoints::AncestorBlocksFinalizationCheckpointsConstructorResults;
@@ -49,6 +51,7 @@ use crate::services::cross_thread_ref_data_availability_synchronization::CrossTh
 use crate::types::bp_selector::BlockGap;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
+use crate::types::BlockIndex;
 use crate::types::BlockSeqNo;
 use crate::types::RndSeed;
 use crate::types::ThreadIdentifier;
@@ -431,14 +434,7 @@ fn process_candidate_block(
             let mut blocks_finalized_by_parent: Vec<(BlockSeqNo, BlockIdentifier)> =
                 blocks_finalized_by_parent
                     .iter()
-                    .map(|id| {
-                        let block_seq_no = block_state_repository
-                            .get(id)
-                            .unwrap()
-                            .guarded(|e| *e.block_seq_no())
-                            .unwrap();
-                        (block_seq_no, id.clone())
-                    })
+                    .map(|index| (*index.block_seq_no(), index.block_identifier().clone()))
                     .collect();
             blocks_finalized_by_parent.sort_by(|a, b| a.0.cmp(&b.0));
             let finalized_block_distances_sorted_by_seq_no = if blocks_finalized_by_parent
@@ -1189,11 +1185,23 @@ fn process_block_attestations(
         });
     }
 
-    let finalizes_blocks =
-        HashSet::from_iter(passed_fallback.iter().cloned().chain(passed_primary.iter().cloned()));
+    let mut finalizes_blocks_with_indexes = BTreeSet::new();
+    let block_attestations: Vec<Envelope<GoshBLS, AttestationData>> =
+        candidate_block.data().get_common_section().block_attestations.clone();
+    for block_id in passed_fallback.iter().cloned().chain(passed_primary.iter().cloned()) {
+        let attn_data = block_attestations.iter().find(|attestation| { *attestation.data().block_id() == block_id }).expect("Failed to find attestation for ancestor block that is finalized by the current candidate");
+        finalizes_blocks_with_indexes.insert(BlockIndex::new(
+            *attn_data.data().block_seq_no(),
+            attn_data.data().block_id().clone(),
+        ));
+    }
     block_state.guarded_mut(|e| -> anyhow::Result<()> {
-        if e.finalizes_blocks().clone().map(|value| value != finalizes_blocks).unwrap_or(true) {
-            e.set_finalizes_blocks(finalizes_blocks)?;
+        if e.finalizes_blocks()
+            .clone()
+            .map(|value| value != finalizes_blocks_with_indexes)
+            .unwrap_or(true)
+        {
+            e.set_finalizes_blocks(finalizes_blocks_with_indexes)?;
             if let Some(cutoff) = max_finalized_ancestor {
                 e.set_moves_attestation_list_cutoff(cutoff)?;
             }

@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use tvm_block::Augmentation;
 use tvm_block::HashmapAugType;
 use tvm_block::ShardStateUnsplit;
 
@@ -104,11 +103,7 @@ impl AckiNackiBlock {
                             Some(new_dapp_id) => {
                                 accounts_that_changed_their_dapp_id.insert(
                                     AccountRouting(new_dapp_id.clone().into(), addr.clone()),
-                                    Some(WrappedAccount {
-                                        account_id: addr.clone(),
-                                        aug: account.aug()?,
-                                        account,
-                                    }),
+                                    Some(WrappedAccount { account_id: addr.clone(), account }),
                                 );
                             }
                             None => {

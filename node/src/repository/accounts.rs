@@ -100,7 +100,7 @@ impl AccountsRepository {
         cut_lt: u64,
     ) {
         relevant_state
-            .iterate_accounts(|account_id, account, _| {
+            .iterate_accounts(|account_id, account| {
                 let path = self.data_dir.join(account_id.to_hex_string());
                 if let Ok(states) = std::fs::read_dir(path) {
                     for state in states.flatten() {

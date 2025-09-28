@@ -36,17 +36,22 @@ contract Multifactor is Modifiers {
      *  Constants
      */
     string constant version = "1.0.1";
+
+    string constant WASM_MODULE = "docs:tlschecker/tls-check-interface@0.1.0";
+    string constant WASM_FUNCTION = "tlscheck";
+    bytes constant WASM_BINARY = "";
     
     uint8   constant MAX_QUEUED_REQUESTS =  20;
     uint64  constant EXPIRATION_TIME = 3601; // lifetime is 1 hour
     uint64  constant MIN_EPK_LIFE_TIME = 300; //5 min           
-    uint64  constant MAX_EPK_LIFE_TIME = 2592000; // 30 days      
+    uint64  constant MAX_EPK_LIFE_TIME = 15552000; // 180 days      
     uint64  constant MIN_JWK_LIFE_TIME = 300;  // 5 min          
+    uint64  constant MAX_JWK_LIFE_TIME = 21600;  // 6 hours  
     uint8   constant MAX_CARDS = 5;
     uint8   constant MAX_NUM_OF_FACTORS = 10;
     uint8   constant NUMBER_OF_FACTORS_TO_CLEAR = 5;
-    uint8   constant NUMBER_OF_JWK_TO_CLEAR = 5;
     uint8   constant MAX_NUM_OF_JWK = 12;
+    uint8   constant MAX_LEN = 50;
 
     /*
      *  Send flags
@@ -63,6 +68,7 @@ contract Multifactor is Modifiers {
     optional(uint256, uint64) _candidate_new_owner_pubkey_and_expiration;
 
     uint256 public _pub_recovery_key;
+    uint256 public _jwk_update_key;
 
     mapping(uint256 => bytes) public _root_provider_certificates; //cert serial number -> cert bytes, related to provider (Google etc), so it may be updated after _zkid was updated, 
 
@@ -73,6 +79,7 @@ contract Multifactor is Modifiers {
     string public _zkid;
     uint8 public _index_mod_4; // is constant for the same provider and _zkid
     string public _iss_base_64; // is constant for the same provider and _zkid
+    bytes public _lv_provider_bytes;
 
     bool public _use_security_card = false;
     mapping(uint256 => bool) public _m_security_cards; // security_card pub_key -> 
@@ -98,22 +105,30 @@ contract Multifactor is Modifiers {
         uint64 jwk_modulus_expire_at,
         uint8 index_mod_4, 
         string iss_base_64, 
+        string provider,
         string header_base_64,
         uint256 pub_recovery_key,
         bytes pub_recovery_key_sig,
+        uint256 jwk_update_key,
+        bytes jwk_update_key_sig,
         uint64 value,
         mapping(uint256 => bytes) root_provider_certificates
     ) {
         gosh.cnvrtshellq(value);
-        require(tvm.pubkey() != 0 && pub_recovery_key != 0 && epk != 0, ERR_ZERO_PUBKEY);
+        require(tvm.pubkey() != 0 && pub_recovery_key != 0 && epk != 0 && jwk_update_key != 0, ERR_ZERO_PUBKEY);
         require(msg.pubkey() == tvm.pubkey(), ERR_NOT_OWNER); 
-        require(pub_recovery_key != msg.pubkey() && pub_recovery_key != epk && msg.pubkey() != epk, ERR_REPEATING_KEY);
+        require(pub_recovery_key != msg.pubkey() && pub_recovery_key != epk && pub_recovery_key != jwk_update_key && msg.pubkey() != epk && msg.pubkey() != jwk_update_key && epk != jwk_update_key, ERR_REPEATING_KEY);
         require(tvm.checkSign(pub_recovery_key, TvmSlice(pub_recovery_key_sig), pub_recovery_key), ERR_INVALID_SIGNATURE);
         require(tvm.checkSign(epk, TvmSlice(epk_sig), epk), ERR_INVALID_SIGNATURE);
+        require(tvm.checkSign(jwk_update_key, TvmSlice(jwk_update_key_sig), jwk_update_key), ERR_INVALID_SIGNATURE);
         require(uint64(block.timestamp + MIN_EPK_LIFE_TIME) < epk_expire_at, ERR_FACTOR_EXPIRED); 
         require(uint64(block.timestamp + MIN_JWK_LIFE_TIME) < jwk_modulus_expire_at, ERR_JWK_EXPIRED);
+        require(epk_expire_at < uint64(block.timestamp + MAX_EPK_LIFE_TIME), ERR_FACTOR_TIMESTAMP_TOO_BIG);
+        require(jwk_modulus_expire_at < uint64(block.timestamp + MAX_JWK_LIFE_TIME), ERR_JWK_TIMESTAMP_TOO_BIG);
+        //TODO: should we control validate TLS data for jwk_modulus (and jwk_modulus_expire_at) to fully check wallet setup or this is too cumbersome?
         bytes ph = gosh.poseidon(index_mod_4, epk_expire_at, epk, jwk_modulus, iss_base_64, header_base_64, zkid);
         require(gosh.vergrth16(proof, ph, 0), ERR_INVALID_PROOF);
+        require(provider.byteLength() < MAX_LEN, ERR_BAD_LEN);
         tvm.accept();
         _zkid = zkid;
         _index_mod_4 = index_mod_4;
@@ -122,8 +137,12 @@ contract Multifactor is Modifiers {
         _pub_recovery_key = pub_recovery_key;
         _factors_ordered_by_timestamp[generateIdBasedOnTimestampAndUintData(epk_expire_at, epk)] = epk;
         _factors_len = 1;
+        _jwk_update_key = jwk_update_key;
         _jwk_modulus_data[tvm.hash(kid)] = JWKData(jwk_modulus, jwk_modulus_expire_at);
         _jwk_modulus_data_len = 1;
+        _lv_provider_bytes = bytes(bytes1(uint8(provider.byteLength())));
+        bytes tail = provider;
+        _lv_provider_bytes.append(tail);
         _root_provider_certificates = root_provider_certificates;
         _force_remove_oldest = false;
     }
@@ -134,19 +153,18 @@ contract Multifactor is Modifiers {
     }
 
     /** Functions to add check and delete JWK keys  */
-    bytes public _wasm_hash = hex"d4a067079c3ff4e0b0b6f579ef2d1b9a1d8fc21a0076162503ff46a6e8fca2e5";
-    string _wasm_module = "docs:tlschecker/tls-check-interface@0.1.0";
-    string _wasm_function = "tlscheck";
-    bytes _wasm_binary = "";
-    function addJwkModulus(uint256 root_cert_sn, bytes lv_kid, bytes tls_data) public returns (bool success) {
+    bytes public _wasm_hash = hex"7670910579bb17bf986de6e318c6f5a8bf7e148b3fb8e0cbf03479fb9eb8c948";
+    function addJwkModulus(uint256 root_cert_sn, bytes lv_kid, bytes tls_data) public onlyOwnerPubkey(_jwk_update_key) returns (bool success) {
         require(_root_provider_certificates.exists(root_cert_sn), ERR_CERT_NOT_FOUND);
         bytes stamp = bytes(bytes4(block.timestamp & 0xFFFFFFFF));
+        bytes stamp_lv_provider_bytes = stamp;
+        stamp_lv_provider_bytes.append(_lv_provider_bytes);
         TvmCell wasm_result_cell = gosh.runwasmconcatmultiarg(abi.encode(_wasm_hash), 
         abi.encode(tls_data), 
         abi.encode(_root_provider_certificates[root_cert_sn]), 
         abi.encode(lv_kid), 
-        abi.encode(stamp), 
-        abi.encode(_wasm_function), abi.encode(_wasm_module), abi.encode(_wasm_binary));
+        abi.encode(stamp_lv_provider_bytes /*stamp*/), 
+        abi.encode(WASM_FUNCTION), abi.encode(WASM_MODULE), abi.encode(WASM_BINARY));
         bytes wasm_result = abi.decode(wasm_result_cell, bytes);
         if (wasm_result.length == 3 && wasm_result[0] == 0x00){
             uint16 wasm_err_code = 0;
@@ -242,9 +260,9 @@ contract Multifactor is Modifiers {
     {
         require(epk != 0, ERR_ZERO_PUBKEY);
         require(msg.pubkey() == epk, ERR_INVALID_SIGNATURE); 
-        require(_pub_recovery_key != epk && _owner_pubkey != epk, ERR_REPEATING_KEY);
+        require(_pub_recovery_key != epk && _owner_pubkey != epk && _jwk_update_key != epk, ERR_REPEATING_KEY);
         require(uint64(block.timestamp + MIN_EPK_LIFE_TIME) < epk_expire_at, ERR_FACTOR_EXPIRED);
-        require(epk_expire_at < uint64(block.timestamp + MAX_EPK_LIFE_TIME), ERR_FACTOR_TIMESTAMPT_TOO_BIG);
+        require(epk_expire_at < uint64(block.timestamp + MAX_EPK_LIFE_TIME), ERR_FACTOR_TIMESTAMP_TOO_BIG);
         uint256 key = generateIdBasedOnTimestampAndUintData(epk_expire_at, epk);
         require(!_factors_ordered_by_timestamp.exists(key), ERR_REPEATING_KEY);
         uint256 jwk_hash = tvm.hash(kid);
@@ -269,6 +287,14 @@ contract Multifactor is Modifiers {
         return true; 
     }
 
+    function deleteZKPfactorByItself(uint64 epk_expire_at) public {
+        uint256 key = generateIdBasedOnTimestampAndUintData(epk_expire_at, msg.pubkey());
+        require(_factors_ordered_by_timestamp.exists(key) && _factors_ordered_by_timestamp[key] == msg.pubkey(), ERR_INVALID_SIGNATURE);
+        tvm.accept();
+        delete _factors_ordered_by_timestamp[key];
+        _factors_len = _factors_len - 1;
+    }
+
     function cleanExpiredZKPFactors(uint8 num_iter) inline private {
         optional(uint256, uint256) pair = _factors_ordered_by_timestamp.min();
         uint8 iter = 0;
@@ -285,14 +311,6 @@ contract Multifactor is Modifiers {
                 break;
             }
         }
-    }
-
-    function deleteZKPfactorByItself(uint64 epk_expire_at) public {
-        uint256 key = generateIdBasedOnTimestampAndUintData(epk_expire_at, msg.pubkey());
-        require(_factors_ordered_by_timestamp.exists(key) && _factors_ordered_by_timestamp[key] == msg.pubkey(), ERR_INVALID_SIGNATURE);
-        tvm.accept();
-        delete _factors_ordered_by_timestamp[key];
-        _factors_len = _factors_len - 1;
     }
 
     function cleanOldestZKPFactor() inline private {
@@ -361,6 +379,14 @@ contract Multifactor is Modifiers {
         _pub_recovery_key = new_pub_recovery_key;
     }
 
+    function updateJwkUpdateKey(uint256 new_jwk_update_key, bytes new_jwk_update_key_sig) public onlyOwnerPubkey(_owner_pubkey) {
+        require(new_jwk_update_key != 0, ERR_ZERO_PUBKEY);
+        require(new_jwk_update_key != _jwk_update_key, ERR_REPEATING_KEY);
+        require(tvm.checkSign(new_jwk_update_key, TvmSlice(new_jwk_update_key_sig), new_jwk_update_key), ERR_INVALID_SIGNATURE);
+        tvm.accept();
+        _jwk_update_key = new_jwk_update_key;
+    }
+
     function updateZkid(
         string zkid, 
         bytes proof,
@@ -373,15 +399,23 @@ contract Multifactor is Modifiers {
         string iss_base_64, 
         string header_base_64,
         uint64 epk_expire_at,
+        uint256 jwk_update_key,
+        bytes jwk_update_key_sig,
+        string provider,
         mapping(uint256 => bytes) root_provider_certificates
     ) public onlyOwnerPubkey(_owner_pubkey) {
-        require(epk != 0, ERR_ZERO_PUBKEY);
-        require(_pub_recovery_key != epk && _owner_pubkey != epk, ERR_REPEATING_KEY);
+        require(epk != 0 && jwk_update_key != 0, ERR_ZERO_PUBKEY);
+        require(_pub_recovery_key != epk && _owner_pubkey != epk && _pub_recovery_key != jwk_update_key && _owner_pubkey != jwk_update_key &&  epk != jwk_update_key, ERR_REPEATING_KEY);
         require(tvm.checkSign(epk, TvmSlice(epk_sig), epk), ERR_INVALID_SIGNATURE);
+        require(tvm.checkSign(jwk_update_key, TvmSlice(jwk_update_key_sig), jwk_update_key), ERR_INVALID_SIGNATURE);
         require(uint64(block.timestamp + MIN_EPK_LIFE_TIME) < epk_expire_at, ERR_FACTOR_EXPIRED); 
         require(uint64(block.timestamp + MIN_JWK_LIFE_TIME) < jwk_modulus_expire_at, ERR_JWK_EXPIRED);
+        require(epk_expire_at < uint64(block.timestamp + MAX_EPK_LIFE_TIME), ERR_FACTOR_TIMESTAMP_TOO_BIG);
+        require(jwk_modulus_expire_at < uint64(block.timestamp + MAX_JWK_LIFE_TIME), ERR_JWK_TIMESTAMP_TOO_BIG);
+        //TODO: should we control validate TLS data for jwk_modulus (and jwk_modulus_expire_at) to fully check wallet setup or this is too cumbersome?
         bytes ph = gosh.poseidon(index_mod_4, epk_expire_at, epk, jwk_modulus, iss_base_64, header_base_64, zkid);
         require(gosh.vergrth16(proof, ph, 0), ERR_INVALID_PROOF);
+        require(provider.byteLength() < MAX_LEN, ERR_BAD_LEN);
         tvm.accept();
         delete _root_provider_certificates;
         _root_provider_certificates = root_provider_certificates;
@@ -394,6 +428,11 @@ contract Multifactor is Modifiers {
         delete _jwk_modulus_data;
         _jwk_modulus_data[tvm.hash(kid)] = JWKData(jwk_modulus, jwk_modulus_expire_at);
         _jwk_modulus_data_len = 1;
+        _lv_provider_bytes = bytes(bytes1(uint8(provider.byteLength())));
+        bytes tail = provider;
+        _lv_provider_bytes.append(tail);
+        _jwk_update_key = jwk_update_key;
+        _start_point_jwk = null;
     }
 
     function updateSeedPhrase(uint256 new_owner_pubkey, bytes new_owner_pubkey_sig) public onlyOwnerPubkey(_owner_pubkey) {
@@ -512,7 +551,6 @@ contract Multifactor is Modifiers {
     }
 
     /** Value Transfer/Exchange functionality */
-
     function sendTransaction(
         uint64 epk_expire_at,
         address dest,

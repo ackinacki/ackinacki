@@ -114,6 +114,8 @@
 		{"init":false,"name":"_license_number","type":"uint256"},
 		{"init":false,"name":"_license_number_bm","type":"uint256"},
 		{"init":false,"name":"_rootElection","type":"address"},
-		{"init":false,"name":"_rootBM","type":"address"}
+		{"init":false,"name":"_rootBM","type":"address"},
+		{"init":false,"name":"_licenseLeft","type":"uint128"},
+		{"init":false,"name":"_licenseBMLeft","type":"uint128"}
 	]
 }

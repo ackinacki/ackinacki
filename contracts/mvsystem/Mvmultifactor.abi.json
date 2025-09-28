@@ -17,12 +17,14 @@
 				{"name":"jwk_modulus_expire_at","type":"uint64"},
 				{"name":"index_mod_4","type":"uint8"},
 				{"name":"iss_base_64","type":"string"},
+				{"name":"provider","type":"string"},
 				{"name":"header_base_64","type":"string"},
 				{"name":"pub_recovery_key","type":"uint256"},
 				{"name":"pub_recovery_key_sig","type":"bytes"},
+				{"name":"jwk_update_key","type":"uint256"},
+				{"name":"jwk_update_key_sig","type":"bytes"},
 				{"name":"root_provider_certificates","type":"map(uint256,bytes)"},
-				{"name":"index","type":"uint128"},
-				{"name":"mv_root_pubkey","type":"uint256"}
+				{"name":"index","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -176,6 +178,15 @@
 			]
 		},
 		{
+			"name": "updateJwkUpdateKey",
+			"inputs": [
+				{"name":"new_jwk_update_key","type":"uint256"},
+				{"name":"new_jwk_update_key_sig","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "updateZkid",
 			"inputs": [
 				{"name":"zkid","type":"string"},
@@ -189,6 +200,9 @@
 				{"name":"iss_base_64","type":"string"},
 				{"name":"header_base_64","type":"string"},
 				{"name":"epk_expire_at","type":"uint64"},
+				{"name":"jwk_update_key","type":"uint256"},
+				{"name":"jwk_update_key_sig","type":"bytes"},
+				{"name":"provider","type":"string"},
 				{"name":"root_provider_certificates","type":"map(uint256,bytes)"}
 			],
 			"outputs": [
@@ -448,6 +462,14 @@
 			]
 		},
 		{
+			"name": "_jwk_update_key",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_jwk_update_key","type":"uint256"}
+			]
+		},
+		{
 			"name": "_root_provider_certificates",
 			"inputs": [
 			],
@@ -493,6 +515,14 @@
 			],
 			"outputs": [
 				{"name":"_iss_base_64","type":"string"}
+			]
+		},
+		{
+			"name": "_lv_provider_bytes",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_lv_provider_bytes","type":"bytes"}
 			]
 		},
 		{
@@ -579,9 +609,9 @@
 		{"init":false,"name":"_root","type":"address"},
 		{"init":false,"name":"_name","type":"string"},
 		{"init":true,"name":"_owner_pubkey","type":"uint256"},
-		{"init":false,"name":"_mv_root_pubkey","type":"uint256"},
 		{"components":[{"name":"value0","type":"uint256"},{"name":"value1","type":"uint64"}],"init":false,"name":"_candidate_new_owner_pubkey_and_expiration","type":"optional(tuple)"},
 		{"init":false,"name":"_pub_recovery_key","type":"uint256"},
+		{"init":false,"name":"_jwk_update_key","type":"uint256"},
 		{"init":false,"name":"_root_provider_certificates","type":"map(uint256,bytes)"},
 		{"components":[{"name":"modulus","type":"bytes"},{"name":"modulus_expire_at","type":"uint64"}],"init":false,"name":"_jwk_modulus_data","type":"map(uint256,tuple)"},
 		{"init":false,"name":"_jwk_modulus_data_len","type":"uint8"},
@@ -589,6 +619,7 @@
 		{"init":false,"name":"_zkid","type":"string"},
 		{"init":false,"name":"_index_mod_4","type":"uint8"},
 		{"init":false,"name":"_iss_base_64","type":"string"},
+		{"init":false,"name":"_lv_provider_bytes","type":"bytes"},
 		{"init":false,"name":"_use_security_card","type":"bool"},
 		{"init":false,"name":"_m_security_cards","type":"map(uint256,bool)"},
 		{"init":false,"name":"_m_security_cards_len","type":"uint8"},
@@ -598,9 +629,6 @@
 		{"init":false,"name":"_max_cleanup_txns","type":"uint256"},
 		{"init":false,"name":"_force_remove_oldest","type":"bool"},
 		{"init":false,"name":"_whiteListOfAddress","type":"map(address,bool)"},
-		{"init":false,"name":"_wasm_hash","type":"bytes"},
-		{"init":false,"name":"_wasm_module","type":"string"},
-		{"init":false,"name":"_wasm_function","type":"string"},
-		{"init":false,"name":"_wasm_binary","type":"bytes"}
+		{"init":false,"name":"_wasm_hash","type":"bytes"}
 	]
 }

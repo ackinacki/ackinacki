@@ -22,7 +22,8 @@ import "DappConfig.sol";
 contract DappRoot is Modifiers {
     string constant version = "1.0.0";
     
-    mapping(uint8 => TvmCell) _codeStorage;    
+    mapping(uint8 => TvmCell) _codeStorage;  
+    bool _is_close_owner = false;  
 
     /**
      * @dev Initializes the contract by setting the owner to a default address
@@ -41,6 +42,11 @@ contract DappRoot is Modifiers {
      * - Only callable by the contract owner.
      */
     function setNewCode(uint8 id, TvmCell code) public onlyOwnerPubkey(tvm.pubkey()) accept { 
+        ensureBalance();
+        _codeStorage[id] = code;
+    }
+
+    function setNewCodeNode(uint8 id, TvmCell code) public senderIs(address(this)) accept { 
         ensureBalance();
         _codeStorage[id] = code;
     }
@@ -84,8 +90,19 @@ contract DappRoot is Modifiers {
         bool is_unlimit,
         int128 available_balance
     ) public view onlyOwnerPubkey(tvm.pubkey()) accept {
+        require(_is_close_owner == false, ERR_NOT_READY);
         ensureBalance();
         require(available_balance >= 0, ERR_WRONG_DATA);
+        CreditConfig info = CreditConfig(is_unlimit, available_balance);
+        deployConfig(dapp_id, info);
+    }
+
+    function deployNewConfigNode(
+        uint256 dapp_id,
+        bool is_unlimit,
+        int128 available_balance
+    ) public view senderIs(address(this)) accept {
+        ensureBalance();
         CreditConfig info = CreditConfig(is_unlimit, available_balance);
         deployConfig(dapp_id, info);
     }
@@ -106,6 +123,11 @@ contract DappRoot is Modifiers {
         require(_codeStorage.exists(m_ConfigCode), ERR_NO_DATA);
         TvmCell data = DappLib.composeDappConfigStateInit(_codeStorage[m_ConfigCode], dapp_id);
         new DappConfig {stateInit: data, value: varuint16(FEE_DEPLOY_CONFIG), wid: 0, flag: 1}(dapp_id, info);
+    }
+
+    function closeRoot() public onlyOwnerPubkey(tvm.pubkey()) accept {
+        _is_close_owner = true;
+        ensureBalance();
     }
 
     /**

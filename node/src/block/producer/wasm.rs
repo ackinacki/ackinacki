@@ -45,6 +45,7 @@ impl WasmNodeCache {
             "25dc3d80d7e4d8f27dfadc9c2faf9cf2d8dea0a9e08a692da2db7e34d74d66e1",
             "d4a067079c3ff4e0b0b6f579ef2d1b9a1d8fc21a0076162503ff46a6e8fca2e5",
             "f6b0cc30d023d266819b16dafa5a6a6ad25b97246bbbca80abac2df974939b87",
+            "7670910579bb17bf986de6e318c6f5a8bf7e148b3fb8e0cbf03479fb9eb8c948",
         ];
         let mut whitelist = HashSet::<[u8; 32]>::new();
         for hash_str in hash_strs {

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::ops::Deref;
+use std::str::FromStr;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -104,6 +105,8 @@ use crate::types::BlockSeqNo;
 use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 
+const BK_SYSTEM_DAPP_ID: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
 impl BlockBuilder {
     /// Initialize BlockBuilder
     #[allow(clippy::too_many_arguments)]
@@ -197,7 +200,6 @@ impl BlockBuilder {
         let builder = BlockBuilder {
             thread_id,
             shard_state,
-            from_prev_blk: accounts.full_balance().clone(),
             in_msg_descr: Default::default(),
             initial_accounts: accounts.clone(),
             accounts,
@@ -438,39 +440,105 @@ impl BlockBuilder {
             if code_hash_str == self.block_keeper_epoch_code_hash
                 || code_hash_str == self.block_keeper_preepoch_code_hash
             {
-                tracing::info!(target: "builder", "after_transaction tx statuses: {:?} {:?}", transaction.orig_status, transaction.end_status);
-                if transaction.orig_status == AccountStatus::AccStateNonexist {
-                    if code_hash_str == self.block_keeper_epoch_code_hash {
-                        tracing::info!(target: "builder", "Epoch contract was deployed");
-                        if let Some((id, block_keeper_data)) = decode_epoch_data(&acc)
-                            .map_err(|e| anyhow::format_err!("Failed to decode epoch data: {e}"))?
-                        {
-                            self.block_keeper_set_changes.push(
-                                BlockKeeperSetChange::BlockKeeperAdded((id, block_keeper_data)),
-                            );
+                let in_msg_was_sent_by_bk_system_contract =
+                    if let Some(header) = thread_result.in_msg.int_header() {
+                        if let Some(src_dapp_id) = header.src_dapp_id.clone() {
+                            src_dapp_id
+                                == UInt256::from_str(BK_SYSTEM_DAPP_ID)
+                                    .expect("Failed to construct BK system DApp ID")
                         } else {
-                            anyhow::bail!("Failed to decode epoch contract");
+                            false
                         }
-                    }
-                    if code_hash_str == self.block_keeper_preepoch_code_hash {
-                        tracing::info!(target: "builder", "PreEpoch contract was deployed");
-                        if let Some((id, block_keeper_data)) =
-                            decode_preepoch_data(&acc).map_err(|e| {
-                                anyhow::format_err!("Failed to decode preepoch data: {e}")
-                            })?
-                        {
-                            self.block_keeper_set_changes.push(
-                                BlockKeeperSetChange::FutureBlockKeeperAdded((
-                                    id,
-                                    block_keeper_data,
-                                )),
-                            );
-                        } else {
-                            anyhow::bail!("Failed to decode preepoch contract");
+                    } else {
+                        false
+                    };
+                if in_msg_was_sent_by_bk_system_contract && !is_tx_aborted {
+                    tracing::info!(target: "builder", "after_transaction tx statuses: {:?} {:?}", transaction.orig_status, transaction.end_status);
+                    if transaction.orig_status == AccountStatus::AccStateNonexist {
+                        if code_hash_str == self.block_keeper_epoch_code_hash {
+                            tracing::info!(target: "builder", "Epoch contract was deployed");
+                            if let Some((id, block_keeper_data)) =
+                                decode_epoch_data(&acc).map_err(|e| {
+                                    anyhow::format_err!("Failed to decode epoch data: {e}")
+                                })?
+                            {
+                                self.block_keeper_set_changes.push(
+                                    BlockKeeperSetChange::BlockKeeperAdded((id, block_keeper_data)),
+                                );
+                            } else {
+                                anyhow::bail!("Failed to decode epoch contract");
+                            }
+                        }
+                        if code_hash_str == self.block_keeper_preepoch_code_hash {
+                            tracing::info!(target: "builder", "PreEpoch contract was deployed");
+                            if let Some((id, block_keeper_data)) = decode_preepoch_data(&acc)
+                                .map_err(|e| {
+                                    anyhow::format_err!("Failed to decode preepoch data: {e}")
+                                })?
+                            {
+                                self.block_keeper_set_changes.push(
+                                    BlockKeeperSetChange::FutureBlockKeeperAdded((
+                                        id,
+                                        block_keeper_data,
+                                    )),
+                                );
+                            } else {
+                                anyhow::bail!("Failed to decode preepoch contract");
+                            }
                         }
                     }
                 }
             }
+        }
+
+        {
+            #[cfg(feature = "timing")]
+            let account_start = std::time::Instant::now();
+            if let Some(code_hash) = thread_result.initial_code_hash {
+                let code_hash_str = code_hash.to_hex_string();
+                tracing::trace!(target: "builder", "Start acc code hash: {}", code_hash_str);
+                // Note: we assume that epoch contract can't be deployed by any other way than by the block keeper system
+                if code_hash_str == self.block_keeper_epoch_code_hash {
+                    tracing::trace!(target: "builder", "Message src: {:?}, dst: {:?}", thread_result.in_msg.src(), thread_result.in_msg.dst());
+                    let in_msg_was_sent_by_bk_system_contract =
+                        if let Some(header) = thread_result.in_msg.int_header() {
+                            if let Some(src_dapp_id) = header.src_dapp_id.clone() {
+                                src_dapp_id
+                                    == UInt256::from_str(BK_SYSTEM_DAPP_ID)
+                                        .expect("Failed to construct BK system DApp ID")
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                    if thread_result.in_msg.src() == thread_result.in_msg.dst()
+                        && !is_tx_aborted
+                        && in_msg_was_sent_by_bk_system_contract
+                    {
+                        tracing::trace!(target: "builder", "Epoch destroy message");
+                        tracing::trace!(target: "builder", "tx status: {:?}", transaction.end_status);
+                        if let Some(acc) = thread_result.initial_account {
+                            if let Some((id, block_keeper_data)) =
+                                decode_epoch_data(&acc).map_err(|e| {
+                                    anyhow::format_err!("Failed to decode epoch data: {e}")
+                                })?
+                            {
+                                self.block_keeper_set_changes.push(
+                                    BlockKeeperSetChange::BlockKeeperRemoved((
+                                        id,
+                                        block_keeper_data,
+                                    )),
+                                );
+                            } else {
+                                anyhow::bail!("Failed to decode epoch contract");
+                            }
+                        }
+                    }
+                }
+            }
+            #[cfg(feature = "timing")]
+            tracing::trace!(target: "builder", "Start acc code hash elapsed: {}", account_start.elapsed().as_millis());
         }
 
         // let initial_account_routing = AccountRouting(thread_result.initial_dapp_id.clone().unwrap_or(DAppIdentifier(account_address.clone())), account_address.clone());
@@ -524,26 +592,14 @@ impl BlockBuilder {
 
                 self.accounts_that_changed_their_dapp_id.entry(acc_id.clone()).or_default().push((
                     new_account_routing,
-                    Some(WrappedAccount {
-                        account: shard_acc.clone(),
-                        account_id: acc_id.clone(),
-                        aug: shard_acc
-                            .aug()
-                            .map_err(|e| anyhow::format_err!("Failed to get account aug: {e}"))?,
-                    }),
+                    Some(WrappedAccount { account: shard_acc.clone(), account_id: acc_id.clone() }),
                 ));
             } else if self.accounts_that_changed_their_dapp_id.contains_key(&acc_id) {
                 let history = self.accounts_that_changed_their_dapp_id.get_mut(&acc_id).unwrap();
                 let prev_routing = history.last().expect("Can't be empty").0.clone();
                 history.push((
                     prev_routing,
-                    Some(WrappedAccount {
-                        account: shard_acc.clone(),
-                        account_id: acc_id.clone(),
-                        aug: shard_acc
-                            .aug()
-                            .map_err(|e| anyhow::format_err!("Failed to get account aug: {e}"))?,
-                    }),
+                    Some(WrappedAccount { account: shard_acc.clone(), account_id: acc_id.clone() }),
                 ));
             }
             tracing::trace!(target: "builder", "Update account data: {}", acc_id.to_hex_string());
@@ -778,39 +834,22 @@ impl BlockBuilder {
         let vm_execution_is_block_related = Arc::new(Mutex::new(false));
         let acc_id = acc_id.clone();
 
-        {
-            #[cfg(feature = "timing")]
-            let account_start = std::time::Instant::now();
+        let (initial_code_hash, initial_account) =
             if let Ok(account) = Account::construct_from_cell(acc_root.clone()) {
-                if let Some(code_hash) = account.get_code_hash() {
+                let code_hash = account.get_code_hash();
+                if let Some(code_hash) = code_hash {
                     let code_hash_str = code_hash.to_hex_string();
-                    tracing::trace!(target: "builder", "Start acc code hash: {}", code_hash_str);
-                    // Note: we assume that epoch contract can't be deployed by any other way than by the block keeper system
                     if code_hash_str == self.block_keeper_epoch_code_hash {
-                        tracing::trace!(target: "builder", "Message src: {:?}, dst: {:?}", message.src(), message.dst());
-                        if message.src() == message.dst() {
-                            tracing::trace!(target: "builder", "Epoch destroy message");
-                            if let Some((id, block_keeper_data)) = decode_epoch_data(&account)
-                                .map_err(|e| {
-                                    anyhow::format_err!("Failed to decode epoch data: {e}")
-                                })?
-                            {
-                                self.block_keeper_set_changes.push(
-                                    BlockKeeperSetChange::BlockKeeperRemoved((
-                                        id,
-                                        block_keeper_data,
-                                    )),
-                                );
-                            } else {
-                                anyhow::bail!("Failed to decode epoch contract");
-                            }
-                        }
+                        (Some(code_hash), Some(account))
+                    } else {
+                        (Some(code_hash), None)
                     }
+                } else {
+                    (None, None)
                 }
-                #[cfg(feature = "timing")]
-                tracing::trace!(target: "builder", "Start acc code hash elapsed: {}", account_start.elapsed().as_millis());
-            }
-        }
+            } else {
+                (None, None)
+            };
         let termination_deadline = time_limits.block_deadline();
         let execution_timeout = time_limits.get_message_timeout(&message_hash);
         let execute_params = if cfg!(feature = "tvm_tracing") {
@@ -892,6 +931,8 @@ impl BlockBuilder {
                         initial_dapp_id: dapp_id_opt,
                         in_msg_is_ext: is_ext_message,
                         in_msg: message,
+                        initial_code_hash,
+                        initial_account,
                     }
                 },
             ));
@@ -1676,8 +1717,6 @@ impl BlockBuilder {
             fees_collected: self.account_blocks.root_extra().clone(),
             imported: self.in_msg_descr.root_extra().value_imported.clone(),
             exported: self.out_msg_descr.root_extra().clone(),
-            from_prev_blk: self.from_prev_blk,
-            to_next_blk: self.accounts.full_balance().clone(),
             copyleft_rewards: self.copyleft_rewards,
             ..Default::default()
         };

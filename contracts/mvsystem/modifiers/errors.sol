@@ -34,6 +34,7 @@ abstract contract Errors {
     /** Public keys general errors */
     uint16 constant ERR_ZERO_PUBKEY  = 101;
     uint16 constant ERR_REPEATING_KEY  = 102;
+    uint16 constant ERR_BAD_LEN = 103;
 
     /** Incorrect Values errors */
     uint16 constant ERR_TOO_SMALL_VALUE = 200;
@@ -53,9 +54,10 @@ abstract contract Errors {
     uint16 constant ERR_JWK_NOT_FOUND = 508;
     uint16 constant ERR_INVALID_JWK = 509;
     uint16 constant ERR_TLS_DATA = 510;
-    uint16 constant ERR_FACTOR_TIMESTAMPT_TOO_BIG = 511;
+    uint16 constant ERR_FACTOR_TIMESTAMP_TOO_BIG = 511;
     uint16 constant ERR_REPEATING_CERT = 512;
     uint16 constant ERR_CERT_NOT_FOUND = 513;
+    uint16 constant ERR_JWK_TIMESTAMP_TOO_BIG = 514;
 
     /** Wallet Access Recovery related errors */
     uint16 constant ERR_SEED_PHRASE_NEW_CANDIDATE_EXISTS = 600;

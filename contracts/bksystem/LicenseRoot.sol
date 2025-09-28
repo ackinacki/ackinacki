@@ -25,6 +25,9 @@ contract LicenseRoot is Modifiers {
     address _rootElection;
     address _rootBM;
 
+    uint128 _licenseLeft = 10000;
+    uint128 _licenseBMLeft = 10000;
+
     constructor (
         uint32 timeUnlock,
         uint256 license_number,
@@ -54,6 +57,8 @@ contract LicenseRoot is Modifiers {
  
     function deployLicenseOwner(uint256 pubkey, bool isPrivileged) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  {
         ensureBalance();
+        require(_licenseLeft >= 1, ERR_TOO_LOW_LICENSES);
+        _licenseLeft -= 1;
         TvmCell data = BlockKeeperLib.composeLicenseStateInit(_code[m_LicenseCode], _license_number, address(this));
         _license_number += 1;
         new LicenseContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, isPrivileged);
@@ -69,6 +74,8 @@ contract LicenseRoot is Modifiers {
  
     function deployLicenseBMOwner(uint256 pubkey) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  {
         ensureBalance();
+        require(_licenseBMLeft >= 1, ERR_TOO_LOW_LICENSES);
+        _licenseBMLeft -= 1;
         TvmCell data = BlockKeeperLib.composeLicenseBMStateInit(_code[m_LicenseBMCode], _license_number_bm, address(this));
         _license_number_bm += 1;
         new LicenseBMContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE_BM), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockManagerNodeWalletCode], _rootBM);

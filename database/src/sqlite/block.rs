@@ -24,11 +24,9 @@ pub struct BlockValueFlow {
     exported: Option<String>,
     fees_collected: Option<String>,
     fees_imported: Option<String>,
-    from_prev_blk: Option<String>,
     imported: Option<String>,
     minted: Option<String>,
     recovered: Option<String>,
-    to_next_blk: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -254,11 +252,9 @@ fn serialize_value_flow(value_flow: tvm_block::ValueFlow) -> BlockValueFlow {
         exported: Some(format!("{:x}", value_flow.exported.grams.as_u128())),
         fees_collected: Some(format!("{:x}", value_flow.fees_collected.grams.as_u128())),
         fees_imported: Some(format!("{:x}", value_flow.fees_imported.grams.as_u128())),
-        from_prev_blk: Some(format!("{:x}", value_flow.from_prev_blk.grams.as_u128())),
         imported: Some(format!("{:x}", value_flow.imported.grams.as_u128())),
         minted: Some(format!("{:x}", value_flow.minted.grams.as_u128())),
         recovered: Some(format!("{:x}", value_flow.recovered.grams.as_u128())),
-        to_next_blk: Some(format!("{:x}", value_flow.to_next_blk.grams.as_u128())),
     }
 }
 

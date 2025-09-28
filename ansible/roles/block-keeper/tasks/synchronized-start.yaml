@@ -1,0 +1,21 @@
+---
+
+- name: Get current timestamp
+  ansible.builtin.shell: date +%s
+  register: current_timestamp
+  delegate_to: localhost
+  run_once: true
+
+- name: Print timestamps
+  debug:
+    msg: "Current timestamp: {{ current_timestamp.stdout }}, Synchronized start: {{ SYNCHRONIZED_START }}, need to wait {{ SYNCHRONIZED_START - current_timestamp.stdout | int }} seconds"
+  delegate_to: localhost
+  run_once: true
+
+- name: Wait for synchronized start
+  delegate_to: localhost
+  run_once: true
+  ansible.builtin.pause:
+    seconds: "{{ SYNCHRONIZED_START - current_timestamp.stdout | int }}"
+  when:
+    - current_timestamp.stdout | int < SYNCHRONIZED_START

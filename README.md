@@ -370,7 +370,6 @@ all:
       - shellnet2.ackinacki.org:10000
       - shellnet3.ackinacki.org:10000
       - shellnet4.ackinacki.org:10000
-      - YOUR-NODE-ADDRESS:10000
     NODE_OWNER_KEY: PATH_TO_NODE_OWNER_KEY
     NODE_CONFIGS:
       - "zerostate"
@@ -496,7 +495,6 @@ all:
       - shellnet2.ackinacki.org:10000
       - shellnet3.ackinacki.org:10000
       - shellnet4.ackinacki.org:10000
-      - YOUR-NODE-ADDRESS:10000
     NODE_CONFIGS:
       - "zerostate"
       - "blockchain.conf.json"

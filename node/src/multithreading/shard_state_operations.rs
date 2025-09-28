@@ -99,7 +99,7 @@ where
         // Prepare buffer for account keys that will be removed from the shard state
         let mut keys_to_remove_from_state = vec![];
         shard_accounts
-            .iterate_accounts(|address, shard_account, _| {
+            .iterate_accounts(|address, shard_account| {
                 let address_id = AccountId::from(&address);
                 // Calculate current account routing
                 let account_routing = get_account_routing_for_account(

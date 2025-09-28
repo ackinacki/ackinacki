@@ -10,10 +10,10 @@ use std::sync::Mutex;
 use serde::Serialize;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use thiserror::Error;
+use tvm_block::Account;
 use tvm_block::Block;
 use tvm_block::BlockInfo;
 use tvm_block::CopyleftRewards;
-use tvm_block::CurrencyCollection;
 use tvm_block::Grams;
 use tvm_block::InMsgDescr;
 use tvm_block::Message;
@@ -69,6 +69,9 @@ pub struct ThreadResult {
     pub account_id: AccountAddress,
     pub minted_shell: i128,
     pub initial_dapp_id: Option<DAppIdentifier>,
+    pub initial_code_hash: Option<UInt256>,
+    // Note: initial_account field is initialized only for epoch contracts
+    pub initial_account: Option<Account>,
     pub in_msg_is_ext: bool,
     pub in_msg: Message,
 }
@@ -106,7 +109,6 @@ pub struct BlockBuilder {
     pub(crate) rand_seed: UInt256,
     // Mapping of messages generated while execution
     pub(crate) new_messages: BTreeMap<MessageIndex, (Message, Option<Cell>)>,
-    pub(crate) from_prev_blk: CurrencyCollection,
     pub(crate) in_msg_descr: InMsgDescr,
     pub(crate) out_msg_descr: OutMsgDescr,
     // pub(crate) out_queue_info: OutMsgQueueInfo,

@@ -92,15 +92,6 @@
 			]
 		},
 		{
-			"name": "updateCode",
-			"inputs": [
-				{"name":"newcode","type":"cell"},
-				{"name":"cell","type":"cell"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "getPopCoinWalletAddress",
 			"inputs": [
 				{"name":"name","type":"string"}

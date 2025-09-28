@@ -42,16 +42,21 @@ abstract contract Modifiers is Errors {
     uint32 constant vectorSize = 200;
     uint32 constant TAP_DENOMINATOR = 100;
 
+    string constant WASM_MODULE = "docs:tlschecker/tls-check-interface@0.1.0";
+    string constant WASM_FUNCTION = "tlscheck";
+    bytes constant WASM_BINARY = "";
+
     uint8   constant MAX_QUEUED_REQUESTS =  20;
     uint64  constant EXPIRATION_TIME = 3601; // lifetime is 1 hour
     uint64  constant MIN_EPK_LIFE_TIME = 300; //5 min             //60; // lifetime is 1 min
-    uint64  constant MAX_EPK_LIFE_TIME = 2592000; // 30 days      //3601; //
+    uint64  constant MAX_EPK_LIFE_TIME = 15552000; // 180 days 
     uint64  constant MIN_JWK_LIFE_TIME = 300;  // 5 min          //3601;
+    uint64  constant MAX_JWK_LIFE_TIME = 21600;  // 6 hours 
     uint8   constant MAX_CARDS = 5;
     uint8   constant MAX_NUM_OF_FACTORS = 10;
     uint8   constant NUMBER_OF_FACTORS_TO_CLEAR = 5;
-    uint8   constant NUMBER_OF_JWK_TO_CLEAR = 5;
     uint8   constant MAX_NUM_OF_JWK = 12;
+    uint8   constant MAX_LEN = 50;
     uint128 constant MAX_MIRROR_INDEX = 1000;
 
 

@@ -3,6 +3,7 @@
 
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
@@ -32,7 +33,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use telemetry_utils::mpsc::InstrumentedSender;
 use telemetry_utils::now_ms;
-use tvm_block::Augmentation;
 use tvm_block::ShardStateUnsplit;
 use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
@@ -76,6 +76,7 @@ use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockHeight;
 use crate::types::BlockIdentifier;
+use crate::types::BlockIndex;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::AllowGuardedMut;
@@ -314,6 +315,8 @@ pub struct ThreadSnapshot {
     block_height: BlockHeight,
     prefinalization_proof: Envelope<GoshBLS, AttestationData>,
     ancestor_blocks_finalization_checkpoints: AncestorBlocksFinalizationCheckpoints,
+    finalizes_blocks: BTreeSet<BlockIndex>,
+    parent_ancestor_blocks_finalization_checkpoints: AncestorBlocksFinalizationCheckpoints,
 }
 
 impl<TMessage> Default for ExtMessages<TMessage>
@@ -1505,7 +1508,7 @@ impl Repository for RepositoryImpl {
         let mut shard_accounts = shard_state
             .read_accounts()
             .map_err(|e| anyhow::format_err!("Failed to read shard accounts: {e}"))?;
-        shard_accounts.clone().iterate_accounts(|tvm_account_id, mut shard_acc, aug| {
+        shard_accounts.clone().iterate_accounts(|tvm_account_id, mut shard_acc| {
             let account_id = AccountAddress(tvm_account_id.clone());
                 if shard_acc.is_external() {
                     let acc_root = match state.cached_accounts.get(&account_id) {
@@ -1518,7 +1521,7 @@ impl Repository for RepositoryImpl {
                         return Err(tvm_types::error!("External account {tvm_account_id} cell hash mismatch: required: {}, actual: {}", acc_root.repr_hash(), shard_acc.account_cell()?.repr_hash()));
                     }
                     shard_acc.set_account_cell(acc_root)?;
-                    shard_accounts.insert_with_aug(&tvm_account_id, &shard_acc, &aug)?;
+                    shard_accounts.insert(&tvm_account_id, &shard_acc)?;
                 }
                 Ok(true)
             })
@@ -1651,13 +1654,19 @@ impl Repository for RepositoryImpl {
                     state.set_attestation_target(thread_snapshot.attestation_target)?;
                     state.set_prefinalized(thread_snapshot.prefinalization_proof.clone())?;
                     state.set_producer_selector_data(thread_snapshot.producer_selector.clone())?;
-                    state.set_finalizes_blocks(HashSet::new())?;
+                    state.set_finalizes_blocks(thread_snapshot.finalizes_blocks.clone())?;
                     Ok::<Option<HashSet<_>>, anyhow::Error>(
                         state.known_children(cur_thread_id).cloned(),
                     )
                 })?
                 .unwrap_or_default();
-
+            let parent_id = thread_snapshot.finalized_block.data().parent();
+            let parent_state = block_state_repo_clone.get(&parent_id)?;
+            parent_state.guarded_mut(|e| {
+                e.set_ancestor_blocks_finalization_checkpoints(
+                    thread_snapshot.parent_ancestor_blocks_finalization_checkpoints.clone(),
+                )
+            })?;
             for child in children {
                 block_state_repo_clone
                     .get(&child)?
@@ -1764,7 +1773,7 @@ impl Repository for RepositoryImpl {
         let mut arch_accounts: Vec<ArchAccount> = vec![];
         let accounts = shard_state.read_accounts().map_err(|e| anyhow::format_err!("{e}"))?;
         accounts
-            .iterate_accounts(|acc_id, v, _| {
+            .iterate_accounts(|acc_id, v| {
                 let last_trans_hash = v.last_trans_hash().clone();
                 let Ok(account) = v.read_account() else {
                     return Ok(true);
@@ -1867,8 +1876,6 @@ impl Repository for RepositoryImpl {
                     .account(&(&account_id).into())
                     .map_err(|e| anyhow::format_err!("Failed to read account: {e}"))?
                 {
-                    let aug =
-                        account.aug().map_err(|e| anyhow::format_err!("Failed to get aug: {e}"))?;
                     let account_root = account
                         .replace_with_external()
                         .map_err(|e| anyhow::format_err!("Failed to set account external: {e}"))?;
@@ -1879,7 +1886,7 @@ impl Repository for RepositoryImpl {
                         account_root,
                     )?;
                     accounts
-                        .insert_with_aug(&account_id.0, &account, &aug)
+                        .insert(&account_id.0, &account)
                         .map_err(|e| anyhow::format_err!("Failed to insert account: {e}"))?;
                 }
             }

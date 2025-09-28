@@ -30,6 +30,10 @@
     creates: "{{ BK_DIR }}/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json"
   when: '"block_keeper" ~ NODE_ID ~ "_bls.keys.json" not in OTHER_KEYS'
 
+- name: Synchronize network startup
+  include_tasks: synchronized-start.yaml
+  when: SYNCHRONIZED_START is defined
+
 - name: Compose up
   ansible.builtin.shell:
     chdir: "{{ BK_DIR }}"

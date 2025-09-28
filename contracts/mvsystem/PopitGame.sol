@@ -109,16 +109,6 @@ contract PopitGame is Modifiers {
         _mbiCur = 0;
         Boost(_boost).deleteMbiCur{value: 0.1 vmshell, flag: 1}();
     }
-
-    function updateCode(TvmCell newcode, TvmCell cell) public view onlyOwnerPubkey(_root_pubkey) accept  {
-        ensureBalance();
-        tvm.setcode(newcode);
-        tvm.setCurrentCode(newcode);
-        onCodeUpgrade(cell);
-    }
-
-    function onCodeUpgrade(TvmCell cell) private pure {
-    }
     
     //Fallback/Receive
     receive() external {

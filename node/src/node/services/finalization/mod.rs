@@ -199,7 +199,9 @@ fn try_finalize(
     }
     let mut blocks_finalized_by_parent = blocks_finalized_by_parent
         .into_iter()
-        .map(|id| block_state_repository.get(&id).expect("Failed to get block state"))
+        .map(|index| {
+            block_state_repository.get(index.block_identifier()).expect("Failed to get block state")
+        })
         .collect::<Vec<_>>();
     blocks_finalized_by_parent.sort_by(|a, b| {
         a.guarded(|e| (*e.block_seq_no()).unwrap())

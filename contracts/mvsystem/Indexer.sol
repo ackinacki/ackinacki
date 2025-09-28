@@ -53,9 +53,12 @@ contract NameIndex is Modifiers {
         uint64 jwk_modulus_expire_at,
         uint8 index_mod_4, 
         string iss_base_64, 
+        string provider,
         string header_base_64,
         uint256 pub_recovery_key,
         bytes pub_recovery_key_sig,
+        uint256 jwk_update_key,
+        bytes jwk_update_key_sig,
         mapping(uint256 => bytes) root_provider_certificates,
         uint256 owner_pubkey,
         uint128 index) public view accept {
@@ -79,9 +82,12 @@ contract NameIndex is Modifiers {
             jwk_modulus_expire_at,
             index_mod_4, 
             iss_base_64,
+            provider,
             header_base_64, 
             pub_recovery_key,
             pub_recovery_key_sig,
+            jwk_update_key,
+            jwk_update_key_sig,
             root_provider_certificates,
             owner_pubkey
         );
@@ -99,9 +105,12 @@ contract NameIndex is Modifiers {
         uint64 jwk_modulus_expire_at,
         uint8 index_mod_4, 
         string iss_base_64, 
+        string provider,
         string header_base_64,
         uint256 pub_recovery_key,
         bytes pub_recovery_key_sig,
+        uint256 jwk_update_key,
+        bytes jwk_update_key_sig,
         mapping(uint256 => bytes) root_provider_certificates,
         uint256 owner_pubkey,
         address mirror) public onlyOwnerPubkey(_rootPubkey) accept {
@@ -120,9 +129,12 @@ contract NameIndex is Modifiers {
             jwk_modulus_expire_at,
             index_mod_4, 
             iss_base_64,
+            provider,
             header_base_64, 
             pub_recovery_key,
             pub_recovery_key_sig,
+            jwk_update_key,
+            jwk_update_key_sig,
             root_provider_certificates,
             owner_pubkey
         );

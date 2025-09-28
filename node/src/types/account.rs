@@ -14,7 +14,6 @@ use crate::types::AccountAddress;
 pub struct WrappedAccount {
     pub account_id: AccountAddress,
     pub account: tvm_block::ShardAccount,
-    pub aug: tvm_block::DepthBalanceInfo,
 }
 
 impl Debug for WrappedAccount {
@@ -27,7 +26,6 @@ impl Debug for WrappedAccount {
 struct WrappedAccountData {
     account_id: AccountAddress,
     data: Vec<u8>,
-    aug: Vec<u8>,
 }
 
 impl WrappedAccount {
@@ -35,7 +33,6 @@ impl WrappedAccount {
         WrappedAccountData {
             account_id: self.account_id.clone(),
             data: self.account.write_to_bytes().unwrap(),
-            aug: self.aug.write_to_bytes().unwrap(),
         }
     }
 
@@ -43,7 +40,6 @@ impl WrappedAccount {
         Self {
             account_id: data.account_id.clone(),
             account: tvm_block::ShardAccount::construct_from_bytes(&data.data).unwrap(),
-            aug: tvm_block::DepthBalanceInfo::construct_from_bytes(&data.aug).unwrap(),
         }
     }
 }

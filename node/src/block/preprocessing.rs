@@ -346,11 +346,7 @@ fn settle_accounts(
     for wrapped_account in migrated_accounts.into_iter() {
         tracing::trace!("migrate account: {}", wrapped_account.account_id.to_hex_string());
         existing_accounts
-            .insert_with_aug(
-                &wrapped_account.account_id.0,
-                &wrapped_account.account,
-                &wrapped_account.aug,
-            )
+            .insert(&wrapped_account.account_id.0, &wrapped_account.account)
             .map_err(|e| anyhow::format_err!("Failed to save account: {e}"))?;
     }
     for acc_id in removed_accounts.iter() {

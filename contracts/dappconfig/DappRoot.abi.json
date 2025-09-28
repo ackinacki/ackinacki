@@ -20,6 +20,15 @@
 			]
 		},
 		{
+			"name": "setNewCodeNode",
+			"inputs": [
+				{"name":"id","type":"uint8"},
+				{"name":"code","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "deployNewConfigCustom",
 			"inputs": [
 				{"name":"dapp_id","type":"uint256"}
@@ -33,6 +42,23 @@
 				{"name":"dapp_id","type":"uint256"},
 				{"name":"is_unlimit","type":"bool"},
 				{"name":"available_balance","type":"int128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployNewConfigNode",
+			"inputs": [
+				{"name":"dapp_id","type":"uint256"},
+				{"name":"is_unlimit","type":"bool"},
+				{"name":"available_balance","type":"int128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "closeRoot",
+			"inputs": [
 			],
 			"outputs": [
 			]
@@ -53,6 +79,7 @@
 		{"init":true,"name":"_pubkey","type":"uint256"},
 		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
-		{"init":false,"name":"_codeStorage","type":"map(uint8,cell)"}
+		{"init":false,"name":"_codeStorage","type":"map(uint8,cell)"},
+		{"init":false,"name":"_is_close_owner","type":"bool"}
 	]
 }
