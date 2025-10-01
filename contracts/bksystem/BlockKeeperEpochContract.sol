@@ -60,6 +60,9 @@ contract BlockKeeperEpoch is Modifiers {
 
     uint256 _gparam;
 
+    optional(string) _nodeVersion;
+    optional(string) _nodeVersionContinue;
+
     constructor (
         uint64 waitStep,
         uint64 epochDuration,
@@ -72,7 +75,8 @@ contract BlockKeeperEpoch is Modifiers {
         uint128 reward_sum,
         string myIp,
         bool isContinue,
-        optional(uint32) timeStart
+        optional(uint32) timeStart,
+        optional(string) nodeVersion
     ) {
         _code = code;
         TvmCell data = abi.codeSalt(tvm.code()).get();
@@ -111,6 +115,7 @@ contract BlockKeeperEpoch is Modifiers {
         _virtualStake = virtualStake;
         _reward_sum = reward_sum;
         _myIp = myIp;
+        _nodeVersion = nodeVersion;
         BlockKeeperContractRoot(_root).increaseActiveBlockKeeperNumber{value: 0.1 vmshell, flag: 1}(_owner_pubkey, _seqNoStart, _stake, _sumReputationCoef, _virtualStake);
         AckiNackiBlockKeeperNodeWallet(_owner_address).updateLockStake{value: 0.1 vmshell, flag: 1}(_seqNoStart, _seqNoFinish, msg.currencies[CURRENCIES_ID], _bls_pubkey, _signerIndex, _licenses);
     }
@@ -126,12 +131,13 @@ contract BlockKeeperEpoch is Modifiers {
         gosh.mintshellq(FEE_DEPLOY_BLOCK_KEEPER_EPOCHE_WALLET);
     }
 
-    function continueStake(bytes bls_pubkey, uint16 signerIndex, LicenseStake[] licenses, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, uint128 sumReputationCoef) public senderIs(_owner_address) accept {
+    function continueStake(bytes bls_pubkey, uint16 signerIndex, LicenseStake[] licenses, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, uint128 sumReputationCoef, optional(string) nodeVersionContinue) public senderIs(_owner_address) accept {
         ensureBalance();
         if (_isContinue == true) {
             AckiNackiBlockKeeperNodeWallet(msg.sender).continueStakeNotAccept{value: 0.1 vmshell, flag: 1}(_seqNoStart, bls_pubkey, signerIndex, licenses);
             return;
         }
+        _nodeVersionContinue = nodeVersionContinue;
         _bls_pubkeyContinue = bls_pubkey;
         _isContinue = true;
         _signerIndexContinue = signerIndex;
@@ -217,7 +223,7 @@ contract BlockKeeperEpoch is Modifiers {
             wid: 0, 
             flag: 161,
             bounce: false
-        } (_waitStep, _owner_address, _root, _signerIndex, _licenses, _stake, _isContinue, _stakeContinue, epochDurationContinue, waitStepContinue, _bls_pubkeyContinue, _signerIndexContinue, _licensesContinue, _virtualStakeContinue, reward_sum_continue, _myIp, _unixtimeStart, _sumReputationCoefContinue, _slash_type); 
+        } (_waitStep, _owner_address, _root, _signerIndex, _licenses, _stake, _isContinue, _stakeContinue, epochDurationContinue, waitStepContinue, _bls_pubkeyContinue, _signerIndexContinue, _licensesContinue, _virtualStakeContinue, reward_sum_continue, _myIp, _unixtimeStart, _sumReputationCoefContinue, _nodeVersionContinue, _slash_type); 
     }
 
     function destroy_full_slash() public view senderIs(address(this)) accept {      

@@ -148,6 +148,10 @@ const ALPN_HEADER_NAME: &str = "Acki-Nacki-ALPN";
 impl NetIncomingRequest for WTransportIncomingRequest {
     type Connection = WTransportConnection;
 
+    fn remote_addr(&self) -> anyhow::Result<SocketAddr> {
+        Ok(self.request.remote_address())
+    }
+
     async fn accept(self) -> anyhow::Result<Self::Connection> {
         let request = self.request.await?;
         let alpn_supported = self.alpn_supported;

@@ -36,6 +36,7 @@ contract BlockKeeperPreEpoch is Modifiers {
     uint128 _reward_sum;
     string _myIp;
     bool isDestroy = false;
+    optional(string) _nodeVersion;
 
     constructor (
         uint64 waitStep,
@@ -49,7 +50,8 @@ contract BlockKeeperPreEpoch is Modifiers {
         mapping(uint8 => string) ProxyList,
         uint128 reward_sum,
         string myIp,
-        uint64 epochCliff
+        uint64 epochCliff,
+        optional(string) nodeVersion
     ) {
         _code = code;
         TvmBuilder b;
@@ -74,6 +76,7 @@ contract BlockKeeperPreEpoch is Modifiers {
         _reward_sum = reward_sum;
         _wallet = msg.sender;
         _myIp = myIp;
+        _nodeVersion = nodeVersion;
         mapping(uint8 => TvmCell) code_for_proxy;
         code_for_proxy[m_AckiNackiBlockKeeperNodeWalletCode] = _code[m_AckiNackiBlockKeeperNodeWalletCode];
         code_for_proxy[m_BlockKeeperPreEpochCode] = _code[m_BlockKeeperPreEpochCode];
@@ -121,7 +124,7 @@ contract BlockKeeperPreEpoch is Modifiers {
             wid: 0, 
             flag: 161, 
             bounce: false
-        } (_waitStep, _epochDuration, _bls_pubkey, _code, _sumReputationCoef, _signerIndex, _licenses, _virtualStake, _reward_sum, _myIp, false, null);
+        } (_waitStep, _epochDuration, _bls_pubkey, _code, _sumReputationCoef, _signerIndex, _licenses, _virtualStake, _reward_sum, _myIp, false, null, _nodeVersion);
     }
 
     function cancelPreEpoch() public senderIs(_wallet) accept {     

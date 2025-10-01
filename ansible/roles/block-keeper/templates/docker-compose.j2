@@ -65,6 +65,7 @@ services:
       OTEL_SERVICE_NAME: {{ OTEL_SERVICE_NAME | default(TEST_NAME ~ '-' ~ COMMIT_HASH) }}
 {# Adding service section #}
 {% include 'extra/block-keeper-env.j2' ignore missing +%}
+{% include 'extra/block-keeper-test.j2' ignore missing +%}
     entrypoint: []
     init: true
 {% if NUMACTL %}

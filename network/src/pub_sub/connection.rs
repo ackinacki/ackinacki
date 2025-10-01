@@ -274,6 +274,7 @@ impl IncomingMessage {
         });
         tracing::debug!(
             host_id = self.connection_info.remote_host_id_prefix,
+            addr = self.connection_info.remote_addr.to_string(),
             msg_id = self.message.id,
             msg_type = self.message.label,
             broadcast = self.connection_info.is_broadcast(),
@@ -288,6 +289,7 @@ impl IncomingMessage {
                 }
                 tracing::debug!(
                     host_id = self.connection_info.remote_host_id_prefix,
+                    addr = self.connection_info.remote_addr.to_string(),
                     msg_id = self.message.id,
                     msg_type = self.message.label,
                     broadcast = self.connection_info.is_broadcast(),
@@ -325,6 +327,7 @@ impl IncomingMessage {
         }
         tracing::debug!(
             host_id = self.connection_info.remote_host_id_prefix,
+            addr = self.connection_info.remote_addr.to_string(),
             msg_id = self.message.id,
             msg_type = self.message.label,
             broadcast = self.connection_info.is_broadcast(),

@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.0] - 2025-10-01
+
+### New
+- Metrics: `finalized_block_attestations_cnt`, `node_block_req_recv`, `node_block_req_exec`, error kinds `load_blob_fail`, `load_blob_error`
+- Log NACK reason
+
+### Improvements
+- Proxy docs and scripts improved
+- Zerostate checks added
+- Default log level in Proxy is `Info`
+
+### Fixed
+- Block verification issue
+
 ## [0.8.2] - 2025-09-25
 
 ### Fixed

@@ -55,6 +55,7 @@ struct BlockProductionMetricsInner {
     attn_target_descendant_generations: Histogram<u64>,
     blocks_requested: Counter<u64>,
     unfinalized_blocks_queue: Gauge<u64>,
+    finalized_block_attestations_cnt: Gauge<u64>,
     bk_set_size: Gauge<u64>,
     internal_message_queue_length: Gauge<u64>,
     aerospike_messages_write_busy: Counter<u64>,
@@ -74,6 +75,8 @@ struct BlockProductionMetricsInner {
     last_prefinalized_seqno: Gauge<u64>,
     next_round_block_height: Gauge<u64>,
     authority_switch_direct_resent: Counter<u64>,
+    block_request: Counter<u64>,
+    errors: Counter<u64>,
 }
 
 pub const BK_SET_UPDATE_CHANNEL: &str = "bk_set_update";
@@ -197,6 +200,9 @@ impl BlockProductionMetrics {
             blocks_requested: meter.u64_counter("node_blocks_requested").build(),
 
             unfinalized_blocks_queue: meter.u64_gauge("node_unfinalized_blocks_queue").build(),
+            finalized_block_attestations_cnt: meter
+                .u64_gauge("node_finalized_block_attestations_cnt")
+                .build(),
 
             bk_set_size: meter.u64_gauge("node_bk_set_size").build(),
             store_block_on_disk: meter
@@ -276,6 +282,8 @@ impl BlockProductionMetrics {
             last_prefinalized_seqno: meter.u64_gauge("node_last_prefinalized_seqno").build(),
             next_round_block_height: meter.u64_gauge("node_next_round_block_height").build(),
             authority_switch_direct_resent: meter.u64_counter("node_auth_sw_dir_resent").build(),
+            block_request: meter.u64_counter("node_block_req_exec").build(),
+            errors: meter.u64_counter("node_errors").build(),
         }))
     }
 
@@ -410,6 +418,14 @@ impl BlockProductionMetrics {
         self.0.unfinalized_blocks_queue.record(value, &[thread_id_attr(thread_id)]);
     }
 
+    pub fn report_finalized_block_attestations_cnt(
+        &self,
+        value: u64,
+        thread_id: &ThreadIdentifier,
+    ) {
+        self.0.finalized_block_attestations_cnt.record(value, &[thread_id_attr(thread_id)]);
+    }
+
     pub fn report_bk_set_size(&self, value: u64, thread_id: &ThreadIdentifier) {
         self.0.bk_set_size.record(value, &[thread_id_attr(thread_id)]);
     }
@@ -533,6 +549,14 @@ impl BlockProductionMetrics {
 
     pub fn report_authority_switch_direct_resent(&self, thread_id: &ThreadIdentifier) {
         self.0.authority_switch_direct_resent.add(1, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_block_request(&self) {
+        self.0.block_request.add(1, &[]);
+    }
+
+    pub fn report_error(&self, kind: &'static str) {
+        self.0.errors.add(1, &[KeyValue::new("kind", kind)]);
     }
 }
 

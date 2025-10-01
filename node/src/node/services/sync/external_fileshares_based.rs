@@ -100,6 +100,7 @@ impl StateSyncService for ExternalFileSharesBased {
                 return Ok(());
             }
         }
+        let metrics = repository.get_metrics().cloned();
         let repo = Arc::new(Mutex::new(repository.clone()));
         tracing::trace!("add_load_state_task: adding {resource_address:?}");
         let checker = Arc::new(Mutex::new(resource_address.clone()));
@@ -133,6 +134,12 @@ impl StateSyncService for ExternalFileSharesBased {
                 );
                 services.drain().collect()
             };
+            if let Some(m) = metrics.as_ref() {
+                m.report_block_request()
+            }
+            let metrics_on_success = metrics.clone();
+            let metrics_on_error = metrics.clone();
+
             self.blob_sync.load_blob(
                 block_id.to_string(),
                 external_blob_share_services,
@@ -157,6 +164,9 @@ impl StateSyncService for ExternalFileSharesBased {
                                 checker_clone.lock().remove(&thread_id);
                             }
                             Err(e) => {
+                                if let Some(m) = metrics_on_success {
+                                    m.report_error("load_blob_fail");
+                                }
                                 let _ = output_clone.send(Err(e.into()));
                             }
                         }
@@ -167,6 +177,9 @@ impl StateSyncService for ExternalFileSharesBased {
                     move |e| {
                         // Handle error
                         let _ = output_clone.send(Err(e));
+                        if let Some(m) = metrics_on_error {
+                            m.report_error("load_blob_error");
+                        }
                     }
                 },
             )?;

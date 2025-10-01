@@ -69,6 +69,14 @@
 			]
 		},
 		{
+			"name": "deleteJwkModulusByUpdateJwkKey",
+			"inputs": [
+				{"name":"kid","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "cleanAllExpiredJwks",
 			"inputs": [
 				{"name":"epk_expire_at","type":"uint64"}

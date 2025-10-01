@@ -317,7 +317,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         isCooler;
     }
 
-    function sendBlockKeeperRequestWithStake(bytes bls_pubkey, varuint32 stake, uint16 signerIndex, mapping(uint8 => string) ProxyList, string myIp) public  onlyOwnerPubkey(_owner_pubkey) accept {
+    function sendBlockKeeperRequestWithStake(bytes bls_pubkey, varuint32 stake, uint16 signerIndex, mapping(uint8 => string) ProxyList, string myIp, optional(string) nodeVersion) public  onlyOwnerPubkey(_owner_pubkey) accept {
         ensureBalance();
         require(bls_pubkey.length == BLS_PUBKEY_LENGTH, ERR_WRONG_BLS_PUBKEY);
         require(stake <= address(this).currencies[CURRENCIES_ID], ERR_LOW_VALUE);
@@ -347,7 +347,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         require(num_licenses > 0, ERR_TOO_LOW_LICENSES);
         require(stake <= sumBalance / 2, ERR_LOW_VALUE);
         _isWaitStake = true;
-        BlockKeeperContractRoot(_root).receiveBlockKeeperRequestWithStakeFromWallet{value: 0.1 vmshell, currencies: data_cur, flag: 1} (_owner_pubkey, bls_pubkey, signerIndex, sumreputationCoef, is_ok, ProxyList, myIp);
+        BlockKeeperContractRoot(_root).receiveBlockKeeperRequestWithStakeFromWallet{value: 0.1 vmshell, currencies: data_cur, flag: 1} (_owner_pubkey, bls_pubkey, signerIndex, sumreputationCoef, is_ok, ProxyList, myIp, nodeVersion);
     } 
 
     function sendBlockKeeperRequestWithCancelStakeContinue(uint64 seqNoStartOld) public onlyOwnerPubkey(_owner_pubkey) accept {
@@ -404,7 +404,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         return (sumreputationCoef, sumBalance, is_ok, num_licenses);
     }
 
-    function sendBlockKeeperRequestWithStakeContinue(bytes bls_pubkey, varuint32 stake, uint64 seqNoStartOld, uint16 signerIndex, mapping(uint8 => string) ProxyList) public onlyOwnerPubkey(_owner_pubkey) accept {
+    function sendBlockKeeperRequestWithStakeContinue(bytes bls_pubkey, varuint32 stake, uint64 seqNoStartOld, uint16 signerIndex, mapping(uint8 => string) ProxyList, optional(string) nodeVersion) public onlyOwnerPubkey(_owner_pubkey) accept {
         ensureBalance();
         require(_licenses_count > 0, ERR_TOO_LOW_LICENSES);
         require(_isWaitStake == false, ERR_WAIT_STAKE);
@@ -445,7 +445,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         require(num_licenses > 0, ERR_TOO_LOW_LICENSES);
         require(stake <= sumBalance, ERR_LOW_VALUE);
         _isWaitStake = true;
-        BlockKeeperContractRoot(_root).receiveBlockKeeperRequestWithStakeFromWalletContinue{value: 0.1 vmshell, currencies: data_cur, flag: 1} (_owner_pubkey, bls_pubkey, seqNoStartOld, signerIndex, is_ok, ProxyList, _activeStakes[stakeHash].seqNoFinish, sumreputationCoef);
+        BlockKeeperContractRoot(_root).receiveBlockKeeperRequestWithStakeFromWalletContinue{value: 0.1 vmshell, currencies: data_cur, flag: 1} (_owner_pubkey, bls_pubkey, seqNoStartOld, signerIndex, is_ok, ProxyList, _activeStakes[stakeHash].seqNoFinish, sumreputationCoef, nodeVersion);
     } 
 
     function calcSumBalanceHelper(uint256 num, uint128 sumBalance) private view returns(uint128){
@@ -474,7 +474,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         return licenses;
     }
 
-    function deployPreEpochContract(uint64 epochDuration, uint8 walletTouch, uint64 epochCliff, uint64 waitStep, bytes bls_pubkey, uint16 signerIndex, uint128 rep_coef, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, uint128 reward_sum, string myIp) public senderIs(_root) accept  {
+    function deployPreEpochContract(uint64 epochDuration, uint8 walletTouch, uint64 epochCliff, uint64 waitStep, bytes bls_pubkey, uint16 signerIndex, uint128 rep_coef, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, uint128 reward_sum, string myIp, optional(string) nodeVersion) public senderIs(_root) accept  {
         ensureBalance();       
         if (_isSlashing == true) {
             BLSKeyIndex(BlockKeeperLib.calculateBLSKeyAddress(_code[m_BLSKeyCode], bls_pubkey, _root)).destroy{value: 0.1 vmshell, flag: 1}();
@@ -504,7 +504,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
             currencies: data_cur,
             wid: 0, 
             flag: 1
-        } (waitStep, epochDuration, bls_pubkey, _code, signerIndex, rep_coef, licenses, virtualStake, ProxyList, reward_sum, myIp, epochCliff);
+        } (waitStep, epochDuration, bls_pubkey, _code, signerIndex, rep_coef, licenses, virtualStake, ProxyList, reward_sum, myIp, epochCliff, nodeVersion);
     }
 
     function deployBlockKeeperContractContinueHelper(uint256 num, LicenseStake[] licenses, uint128 sumBalance, varuint32 stake, address epoch_addr) private returns(LicenseStake[]){
@@ -530,7 +530,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         return licenses;
     }
 
-    function deployBlockKeeperContractContinue(uint8 walletTouch, uint64 seqNoStartold, bytes bls_pubkey, uint16 signerIndex, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, uint128 sumReputationCoef) public senderIs(_root) accept  {
+    function deployBlockKeeperContractContinue(uint8 walletTouch, uint64 seqNoStartold, bytes bls_pubkey, uint16 signerIndex, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, uint128 sumReputationCoef, optional(string) nodeVersion) public senderIs(_root) accept  {
         ensureBalance();
         _walletTouch = walletTouch;
         uint128 stake = uint128(msg.currencies[CURRENCIES_ID]);
@@ -559,7 +559,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
             SignerIndex(BlockKeeperLib.calculateSignerIndexAddress(_code[m_SignerIndexCode], signerIndex, _root)).destroy{value: 0.1 vmshell, flag: 1}();
             return;
         }
-        BlockKeeperEpoch(epoch_addr).continueStake{value: 0.1 vmshell, flag: 1, currencies: data_cur}(bls_pubkey, signerIndex, licenses, virtualStake, ProxyList, sumReputationCoef);    
+        BlockKeeperEpoch(epoch_addr).continueStake{value: 0.1 vmshell, flag: 1, currencies: data_cur}(bls_pubkey, signerIndex, licenses, virtualStake, ProxyList, sumReputationCoef, nodeVersion);    
     }
 
     function continueStakeNotAccept(uint64 seqNoStartOld, bytes bls_key, uint16 signerIndex, LicenseStake[] licenses) public senderIs(BlockKeeperLib.calculateBlockKeeperEpochAddress(_code[m_BlockKeeperEpochCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _root, _owner_pubkey, seqNoStartOld)) accept {
@@ -597,7 +597,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
         return reputationCoef;
     }
 
-    function deployBlockKeeperContractContinueAfterDestroy(uint64 epochDuration, uint64 waitStep, bytes bls_pubkey, uint64 seqNoStartOld, uint16 signerIndex, LicenseStake[] licenses_continue, LicenseStake[] licenses, optional(uint128) virtualStake, uint128 reward_sum, string myIp, uint128 reputationCoef, uint128 delta_time) public senderIs(BlockKeeperLib.calculateBlockKeeperCoolerEpochAddress(_code[m_BlockKeeperEpochCoolerCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _code[m_BlockKeeperEpochCode], _root, _owner_pubkey, seqNoStartOld)) accept  {
+    function deployBlockKeeperContractContinueAfterDestroy(uint64 epochDuration, uint64 waitStep, bytes bls_pubkey, uint64 seqNoStartOld, uint16 signerIndex, LicenseStake[] licenses_continue, LicenseStake[] licenses, optional(uint128) virtualStake, uint128 reward_sum, string myIp, uint128 reputationCoef, uint128 delta_time, optional(string) nodeVersion) public senderIs(BlockKeeperLib.calculateBlockKeeperCoolerEpochAddress(_code[m_BlockKeeperEpochCoolerCode], _code[m_AckiNackiBlockKeeperNodeWalletCode], _code[m_BlockKeeperPreEpochCode], _code[m_BlockKeeperEpochCode], _root, _owner_pubkey, seqNoStartOld)) accept  {
         ensureBalance();
         uint64 seqNoStart = block.seqno;
         mapping(uint256 => bool) licensesMap;
@@ -616,7 +616,7 @@ contract AckiNackiBlockKeeperNodeWallet is Modifiers {
             currencies: msg.currencies,
             wid: 0,
             flag: 1
-        } (waitStep, epochDuration, bls_pubkey, _code, reputationCoef, signerIndex, licenses_continue, virtualStake, reward_sum, myIp, true, null);
+        } (waitStep, epochDuration, bls_pubkey, _code, reputationCoef, signerIndex, licenses_continue, virtualStake, reward_sum, myIp, true, null, nodeVersion);
     }
 
     function updateLockStakeCoolerHelper(LicenseStake value, uint32 addReputationTime) private {

@@ -9,6 +9,7 @@ use account_inbox::storage::LoadErr;
 use serde::Serialize;
 use tvm_block::GetRepresentationHash;
 use tvm_block::Serializable;
+use tvm_block::StateInit;
 use tvm_types::base64_encode;
 use tvm_types::write_boc;
 
@@ -53,6 +54,7 @@ pub struct ZeroStateMessage {
     ecc: HashMap<u32, String>,
     src_dapp_id: Option<String>,
     boc: String,
+    state_init: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -111,8 +113,14 @@ impl ZeroState {
                     msg.map_err(|e| anyhow::format_err!("Failed to unpack message: {e:?}"))?;
                 let message = message.message.clone();
                 let message_cell = message.serialize().map_err(|e| anyhow::format_err!("{e}"))?;
-                let byes = write_boc(&message_cell).map_err(|e| anyhow::format_err!("{e}"))?;
-                let boc = base64_encode(&byes);
+                let bytes = write_boc(&message_cell).map_err(|e| anyhow::format_err!("{e}"))?;
+                let boc = base64_encode(&bytes);
+                let state_init = message
+                    .state_init()
+                    .map(|state: &StateInit| {
+                        state.serialize().expect("Failed to serialize state init")
+                    })
+                    .map(|cell| base64_encode(write_boc(&cell).expect("Failed to serialize cell")));
                 zs_messages.push(ZeroStateMessage {
                     source: message
                         .get_int_src_account_id()
@@ -141,6 +149,7 @@ impl ZeroState {
                         .int_header()
                         .and_then(|hdr| hdr.src_dapp_id.clone().map(|val| val.to_hex_string())),
                     boc,
+                    state_init,
                 });
             }
         }

@@ -110,7 +110,7 @@ impl<Transport: NetTransport> PubSub<Transport> {
             untrusted
         };
         for connection in untrusted {
-            tracing::trace!(peer = connection.info.remote_info(), "Disconnect untrusted");
+            tracing::info!(peer = connection.info.remote_info(), "Disconnect untrusted");
             connection.connection.close(0).await;
             self.remove_connection(&connection.info);
         }
@@ -221,6 +221,7 @@ impl<Transport: NetTransport> PubSub<Transport> {
             connection_count = inner.connections.len(),
             peer = connection.info.remote_info(),
             host_id = connection.info.remote_host_id_prefix,
+            addr = connection.info.remote_addr.to_string(),
             "Added new connection"
         );
         Ok(())
@@ -235,6 +236,7 @@ impl<Transport: NetTransport> PubSub<Transport> {
             connection_count = inner.connections.len(),
             peer = conn.remote_info(),
             host_id = conn.remote_host_id_prefix,
+            addr = conn.remote_addr.to_string(),
             "Removed connection"
         );
         match conn.role {

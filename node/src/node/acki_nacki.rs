@@ -48,7 +48,7 @@ where
     ) -> anyhow::Result<()> {
         // TODO: check signatures.
         match &nack.data().reason {
-            NackReason::BadBlock { envelope } => {
+            NackReason::BadBlock { envelope } | NackReason::TooComplexExecution { envelope } => {
                 let block_state = self.block_state_repository.get(&envelope.data().identifier())?;
                 block_state.guarded_mut(|e| {
                     e.add_suspicious(

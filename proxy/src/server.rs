@@ -163,7 +163,7 @@ impl CliArgs {
         );
 
         let (outgoing_messages_tx, _ /* we will subscribe() later */) =
-            tokio::sync::broadcast::channel(100);
+            tokio::sync::broadcast::channel(config.broadcast_buffer_len);
         let (incoming_messages_tx, incoming_messages_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let config_reload_handle: JoinHandle<anyhow::Result<()>> =

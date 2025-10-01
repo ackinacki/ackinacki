@@ -275,9 +275,7 @@ fn try_finalize(
                     continue;
                 };
                 if block_seq_no <= max_finalized_seq_no_before_snapshot {
-                    tracing::trace!(
-                        "Invalidate block, a block with greater or equal seq_no was finalized"
-                    );
+                    tracing::trace!(target: "monit", "{block_state:?} Invalidate block, a block with greater or equal seq_no was finalized");
                     invalidate_branch(block.clone(), block_state_repository, &filter);
                 } else {
                     break;

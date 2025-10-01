@@ -40,6 +40,14 @@
 			]
 		},
 		{
+			"name": "deleteJwkModulusByUpdateJwkKey",
+			"inputs": [
+				{"name":"kid","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "cleanAllExpiredJwks",
 			"inputs": [
 				{"name":"epk_expire_at","type":"uint64"}
@@ -81,6 +89,14 @@
 			"name": "cleanAllExpiredZKPFactors",
 			"inputs": [
 				{"name":"epk_expire_at","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setVerificationKeyIndex",
+			"inputs": [
+				{"name":"verification_key_index","type":"uint32"}
 			],
 			"outputs": [
 			]
@@ -578,6 +594,14 @@
 			]
 		},
 		{
+			"name": "_verification_key_index",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_verification_key_index","type":"uint32"}
+			]
+		},
+		{
 			"name": "_wasm_hash",
 			"inputs": [
 			],
@@ -614,6 +638,7 @@
 		{"init":false,"name":"_min_value","type":"uint128"},
 		{"init":false,"name":"_max_cleanup_txns","type":"uint256"},
 		{"init":false,"name":"_force_remove_oldest","type":"bool"},
+		{"init":false,"name":"_verification_key_index","type":"uint32"},
 		{"init":false,"name":"_wasm_hash","type":"bytes"}
 	]
 }

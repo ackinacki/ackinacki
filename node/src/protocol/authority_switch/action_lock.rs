@@ -1166,7 +1166,6 @@ impl ThreadAuthority {
             return OnNextRoundIncomingRequestResult::DoNothing;
         };
 
-        // TODO: add signature verification of the request. Low pri: hard to tell what is cheaper for the node: reply to all of malicious request and spam another node or to spend cpu verifying signatures.
         let prefinalized =
             find_next_prefinalized(&parent_state, thread_identifier, &self.block_state_repository);
         if let Some(prefinalized) = prefinalized {
@@ -1357,6 +1356,18 @@ impl ThreadAuthority {
         let proof_of_valid_round = vec![];
 
         tracing::trace!("on_next_round_incoming_request: max_locked_block: {max_locked_block:?}");
+
+        if let Some(max_locked_block_parent) =
+            max_locked_block.as_ref().map(|block| block.data().parent())
+        {
+            let lock_parent = lock.parent_block().clone();
+            if lock_parent != max_locked_block_parent {
+                tracing::error!(
+                        "on_next_round_incoming_request: there is a quorum already. However max locked block seems to be invalid. Its parent doest not match Lock.",
+                    );
+                return OnNextRoundIncomingRequestResult::DoNothing;
+            }
+        }
 
         let number_of_threads_this_node_currently_produces =
             self.bp_production_count.load(Ordering::Relaxed);
@@ -1654,6 +1665,7 @@ impl ThreadAuthority {
                 .block_state_repository
                 .get(&abandoned_by_majority_block_ref.1.block_identifier)
                 .unwrap();
+            tracing::trace!(target: "monit", "{abandoned_by_majority_block:?} Another block has won authority switch");
             invalidate_branch(
                 abandoned_by_majority_block,
                 &self.block_state_repository,

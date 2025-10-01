@@ -81,7 +81,10 @@ where
                     continue;
                 }
             };
-            tracing::info!("New session incoming");
+            tracing::info!(
+                addr = request.remote_addr().map(|x| x.to_string()).unwrap_or_default(),
+                "New incoming connection request"
+            );
             if pub_sub.open_connections() < max_connections {
                 // It is not critical task because it serves single incoming connection request
                 tokio::spawn(handle_incoming_connection(

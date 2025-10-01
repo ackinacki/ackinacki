@@ -69,7 +69,6 @@ contract Multifactor is Modifiers {
     string public _zkid;
     uint8 public _index_mod_4; // is constant for the same provider and _zkid
     string public _iss_base_64; // is constant for the same provider and _zkid
-
     bytes public _lv_provider_bytes;
 
     bool public _use_security_card = false;
@@ -192,7 +191,7 @@ contract Multifactor is Modifiers {
     }
 
     /** Functions to add check and delete JWK keys  */
-    bytes public _wasm_hash = hex"7670910579bb17bf986de6e318c6f5a8bf7e148b3fb8e0cbf03479fb9eb8c948";
+    bytes public _wasm_hash = hex"b8891b913656ae35d9ffff371f0f03e4f1f869d0e17556a8c273750313884b0a";
     function addJwkModulus(uint256 root_cert_sn, bytes lv_kid, bytes tls_data) public onlyOwnerPubkey(_jwk_update_key) returns (bool success) {
         require(_root_provider_certificates.exists(root_cert_sn), ERR_CERT_NOT_FOUND);
         ensureBalance();
@@ -242,6 +241,15 @@ contract Multifactor is Modifiers {
         _jwk_modulus_data[jwk_hash] = JWKData(jwk_modulus, jwk_modulus_expire_at_new);
 
         return true;
+    }
+
+    function deleteJwkModulusByUpdateJwkKey(bytes kid) public onlyOwnerPubkey(_jwk_update_key) {
+        ensureBalance();
+        uint256 jwk_hash = tvm.hash(kid);
+        require(_jwk_modulus_data.exists(jwk_hash), ERR_JWK_NOT_FOUND);
+        tvm.accept();
+        delete _jwk_modulus_data[jwk_hash];
+        _jwk_modulus_data_len = _jwk_modulus_data_len - 1;
     }
 
     function cleanExpiredJwks(uint8 num_iter) inline private {
@@ -428,7 +436,7 @@ contract Multifactor is Modifiers {
     function updateRecoveryPhrase(uint256 new_pub_recovery_key, bytes new_pub_recovery_key_sig) public onlyOwnerPubkey(_owner_pubkey) {
         ensureBalance();
         require(new_pub_recovery_key != 0, ERR_ZERO_PUBKEY);
-        require(new_pub_recovery_key != _owner_pubkey, ERR_REPEATING_KEY);
+        require(_pub_recovery_key != new_pub_recovery_key && new_pub_recovery_key != _owner_pubkey && new_pub_recovery_key != _jwk_update_key, ERR_REPEATING_KEY);
         require(tvm.checkSign(new_pub_recovery_key, TvmSlice(new_pub_recovery_key_sig),new_pub_recovery_key), ERR_INVALID_SIGNATURE);
         tvm.accept();
         _pub_recovery_key = new_pub_recovery_key;
@@ -437,7 +445,7 @@ contract Multifactor is Modifiers {
     function updateJwkUpdateKey(uint256 new_jwk_update_key, bytes new_jwk_update_key_sig) public onlyOwnerPubkey(_owner_pubkey) {
         ensureBalance();
         require(new_jwk_update_key != 0, ERR_ZERO_PUBKEY);
-        require(new_jwk_update_key != _jwk_update_key, ERR_REPEATING_KEY);
+        require(new_jwk_update_key != _jwk_update_key && new_jwk_update_key != _owner_pubkey && new_jwk_update_key != _pub_recovery_key, ERR_REPEATING_KEY);
         require(tvm.checkSign(new_jwk_update_key, TvmSlice(new_jwk_update_key_sig), new_jwk_update_key), ERR_INVALID_SIGNATURE);
         tvm.accept();
         _jwk_update_key = new_jwk_update_key;
@@ -461,7 +469,7 @@ contract Multifactor is Modifiers {
         mapping(uint256 => bytes) root_provider_certificates
     ) public onlyOwnerPubkey(_owner_pubkey) {
         require(epk != 0 && jwk_update_key != 0, ERR_ZERO_PUBKEY);
-        require(_pub_recovery_key != epk && _owner_pubkey != epk && _pub_recovery_key != jwk_update_key, ERR_REPEATING_KEY);
+        require(_pub_recovery_key != epk && _owner_pubkey != epk && _pub_recovery_key != jwk_update_key && _owner_pubkey != jwk_update_key &&  epk != jwk_update_key, ERR_REPEATING_KEY);
         require(tvm.checkSign(epk, TvmSlice(epk_sig), epk), ERR_INVALID_SIGNATURE);
         require(tvm.checkSign(jwk_update_key, TvmSlice(jwk_update_key_sig), jwk_update_key), ERR_INVALID_SIGNATURE);
         require(uint64(block.timestamp + MIN_EPK_LIFE_TIME) < epk_expire_at, ERR_FACTOR_EXPIRED); 
@@ -494,6 +502,7 @@ contract Multifactor is Modifiers {
 
     function updateSeedPhrase(uint256 new_owner_pubkey, bytes new_owner_pubkey_sig) public onlyOwnerPubkey(_owner_pubkey) {
         require(new_owner_pubkey != 0, ERR_ZERO_PUBKEY);
+        require(new_owner_pubkey != _jwk_update_key && new_owner_pubkey != _owner_pubkey && new_owner_pubkey != _pub_recovery_key, ERR_REPEATING_KEY);
         require(tvm.checkSign(new_owner_pubkey, TvmSlice(new_owner_pubkey_sig), new_owner_pubkey), ERR_INVALID_SIGNATURE);
         tvm.accept();
         ensureBalance();
@@ -540,7 +549,8 @@ contract Multifactor is Modifiers {
 
     function changeSeedPhrase (
        uint64 epk_expire_at, uint256 new_owner_pubkey, bytes new_owner_pubkey_sig) public {
-        require(new_owner_pubkey != 0, ERR_ZERO_PUBKEY); 
+        require(new_owner_pubkey != 0, ERR_ZERO_PUBKEY);
+        require(new_owner_pubkey != _jwk_update_key && new_owner_pubkey != _owner_pubkey && new_owner_pubkey != _pub_recovery_key, ERR_REPEATING_KEY);
         require(tvm.checkSign(new_owner_pubkey, TvmSlice(new_owner_pubkey_sig), new_owner_pubkey), ERR_INVALID_SIGNATURE);   
         require(block.timestamp < epk_expire_at, ERR_FACTOR_EXPIRED);
         uint256 key = generateIdBasedOnTimestampAndUintData(epk_expire_at, msg.pubkey());

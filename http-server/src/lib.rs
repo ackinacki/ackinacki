@@ -121,6 +121,7 @@ where
             .get(api::StorageLatestHandler::new(self.local_storage_dir.clone()));
         // Returns selected shard state
         let storage_router = Router::with_path("storage/{*path}")
+            .hoop(report_block_request)
             .get(StaticDir::new([&self.local_storage_dir]).auto_list(true));
 
         let bk_set_router = Router::with_path("bk_set").get(api::BkSetSummaryHandler::<
@@ -174,18 +175,21 @@ where
         // v2/messages
         // v2/account?address=<address>
         // v2/default_thread_seqno
-
-        Router::new().hoop(Logger::new()).hoop(affix_state::inject(self.clone())).push(
-            Router::new()
-                .path("v2")
-                .push(router_account)
-                .push(router_ext_messages)
-                .push(bk_set_router)
-                .push(bk_set_update_router)
-                .push(router_seqno)
-                .push(storage_latest_router)
-                .push(storage_router),
-        )
+        Router::new()
+            .hoop(Logger::new())
+            .hoop(affix_state::inject(self.clone()))
+            .hoop(affix_state::inject(self.metrics.clone()))
+            .push(
+                Router::new()
+                    .path("v2")
+                    .push(router_account)
+                    .push(router_ext_messages)
+                    .push(bk_set_router)
+                    .push(bk_set_update_router)
+                    .push(router_seqno)
+                    .push(storage_latest_router)
+                    .push(storage_router),
+            )
     }
 
     #[must_use = "server run must be awaited twice (first await is to prepare run call)"]
@@ -256,6 +260,19 @@ pub fn rustls_config() -> RustlsConfig {
 
     let keycert = Keycert::new().cert(cert.pem()).key(key_pair.serialize_pem());
     RustlsConfig::new(keycert)
+}
+
+#[handler]
+pub async fn report_block_request(
+    req: &mut Request,
+    res: &mut Response,
+    depot: &mut Depot,
+    ctrl: &mut FlowCtrl,
+) {
+    if let Ok(Some(metrics)) = depot.obtain::<Option<RoutingMetrics>>() {
+        metrics.report_block_request();
+    };
+    ctrl.call_next(req, depot, res).await;
 }
 
 #[handler]

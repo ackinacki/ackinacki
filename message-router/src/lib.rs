@@ -12,7 +12,7 @@ pub use defaults::DEFAULT_URL_PATH;
 use serde::Deserialize;
 
 // todo prevent printing the secret key into the log
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct KeyPair {
     pub public: String,
     pub secret: String,

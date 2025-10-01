@@ -28,7 +28,6 @@ use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
 pub const LOOP_PAUSE_DURATION: Duration = Duration::from_millis(10);
-pub const TIME_TO_ENABLE_SYNC_FINALIZED: Duration = Duration::from_secs(1200);
 
 impl<TStateSyncService, TRandomGenerator> Node<TStateSyncService, TRandomGenerator>
 where
@@ -207,6 +206,14 @@ where
                 Ok((msg, _)) => match msg {
                     NetworkMessage::InnerCommand(Command::StartSynchronization) => {
                         tracing::info!("Received StartSynchronization");
+                        let duration_since_last_finalization =
+                            self.shared_services.duration_since_last_finalization();
+                        if duration_since_last_finalization
+                            < self.config.global.time_to_enable_sync_finalized
+                        {
+                            tracing::trace!("duration_since_last_finalization({} ms) is too low to start synchronization", duration_since_last_finalization.as_millis());
+                            continue;
+                        }
                         return Ok(ExecutionResult::SynchronizationRequired);
                     }
                     NetworkMessage::AuthoritySwitchProtocol(_auth_switch) => {
@@ -380,6 +387,14 @@ where
                     NetworkMessage::SyncFrom((seq_no_from, _)) => {
                         // while normal execution we ignore sync messages
                         log::info!("Received SyncFrom: {seq_no_from:?}");
+                        let duration_since_last_finalization =
+                            self.shared_services.duration_since_last_finalization();
+                        if duration_since_last_finalization
+                            < self.config.global.time_to_enable_sync_finalized
+                        {
+                            tracing::trace!("duration_since_last_finalization({} ms) is too low to start synchronization", duration_since_last_finalization.as_millis());
+                            continue;
+                        }
                         let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
                         log::info!(
                             "Received SyncFrom: elapsed from last sync ms: {}",
@@ -409,7 +424,10 @@ where
                     NetworkMessage::SyncFinalized((sync_finalized, _)) => {
                         let duration_since_last_finalization =
                             self.shared_services.duration_since_last_finalization();
-                        if duration_since_last_finalization < TIME_TO_ENABLE_SYNC_FINALIZED {
+                        if duration_since_last_finalization
+                            < self.config.global.time_to_enable_sync_finalized
+                        {
+                            tracing::trace!("duration_since_last_finalization({} ms) is too low to start synchronization", duration_since_last_finalization.as_millis());
                             continue;
                         }
                         let identifier = sync_finalized.data().block_identifier().clone();

@@ -32,23 +32,23 @@ contract SignerIndex is Modifiers {
         gosh.mintshellq(FEE_DEPLOY_SIGNER_INDEX);
     }
 
-    function isSignerIndexAccept(address wallet, bytes blsKey, uint256 pubkey, uint128 rep_coef, uint128 stake, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, string myIp) public senderIs(_root) accept {
+    function isSignerIndexAccept(address wallet, bytes blsKey, uint256 pubkey, uint128 rep_coef, uint128 stake, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, string myIp, optional(string) nodeVersion) public senderIs(_root) accept {
         ensureBalance();
         if (_wallet == wallet) {
-            BlockKeeperContractRoot(_root).isSignerIndexAccepted{value: 0.1 vmshell, flag: 1}(wallet, pubkey, blsKey, stake, _ready, _signerIndex, rep_coef, virtualStake, ProxyList, myIp);
+            BlockKeeperContractRoot(_root).isSignerIndexAccepted{value: 0.1 vmshell, flag: 1}(wallet, pubkey, blsKey, stake, _ready, _signerIndex, rep_coef, virtualStake, ProxyList, myIp, nodeVersion);
             _ready = true;
         } else {
-            BlockKeeperContractRoot(_root).isSignerIndexAccepted{value: 0.1 vmshell, flag: 1}(wallet, pubkey, blsKey, stake, true, _signerIndex, rep_coef, virtualStake, ProxyList, myIp);
+            BlockKeeperContractRoot(_root).isSignerIndexAccepted{value: 0.1 vmshell, flag: 1}(wallet, pubkey, blsKey, stake, true, _signerIndex, rep_coef, virtualStake, ProxyList, myIp, nodeVersion);
         }
     }
 
-    function isSignerIndexAcceptContinue(address wallet, bytes blsKey, uint256 pubkey, uint64 seqNoStartOld, uint128 stake, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, uint128 sumReputationCoef) public senderIs(_root) accept {
+    function isSignerIndexAcceptContinue(address wallet, bytes blsKey, uint256 pubkey, uint64 seqNoStartOld, uint128 stake, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, uint128 sumReputationCoef, optional(string) nodeVersion) public senderIs(_root) accept {
         ensureBalance();
         if (_wallet == wallet) {
-            BlockKeeperContractRoot(_root).isSignerIndexContinue{value: 0.1 vmshell, flag: 1}(wallet, pubkey, blsKey, stake, _ready, seqNoStartOld, _signerIndex, virtualStake, ProxyList, sumReputationCoef);
+            BlockKeeperContractRoot(_root).isSignerIndexContinue{value: 0.1 vmshell, flag: 1}(wallet, pubkey, blsKey, stake, _ready, seqNoStartOld, _signerIndex, virtualStake, ProxyList, sumReputationCoef, nodeVersion);
             _ready = true;
         } else {
-            BlockKeeperContractRoot(_root).isSignerIndexContinue{value: 0.1 vmshell, flag: 1}(wallet, pubkey, blsKey, stake, true, seqNoStartOld, _signerIndex, virtualStake, ProxyList, sumReputationCoef);
+            BlockKeeperContractRoot(_root).isSignerIndexContinue{value: 0.1 vmshell, flag: 1}(wallet, pubkey, blsKey, stake, true, seqNoStartOld, _signerIndex, virtualStake, ProxyList, sumReputationCoef, nodeVersion);
         }
     }
 

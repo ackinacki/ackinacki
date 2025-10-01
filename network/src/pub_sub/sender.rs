@@ -44,6 +44,7 @@ pub async fn sender<Connection: NetConnection + 'static>(
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(lagged)) => {
                         tracing::error!(
                             host_id = connection.info.remote_host_id_prefix,
+                            addr = connection.info.remote_addr.to_string(),
                             broadcast = true,
                             lagged,
                             "Outgoing sender lagged"
@@ -103,6 +104,7 @@ async fn send_message<Connection: NetConnection + 'static>(
     let connection = connection.clone();
     tracing::debug!(
         host_id = connection.info.remote_host_id_prefix,
+        addr = connection.info.remote_addr.to_string(),
         msg_id = outgoing.message.id,
         msg_type = outgoing.message.label,
         broadcast = true,
@@ -119,6 +121,7 @@ async fn send_message<Connection: NetConnection + 'static>(
     });
     tracing::debug!(
         host_id = connection.info.remote_host_id_prefix,
+        addr = connection.info.remote_addr.to_string(),
         msg_id = outgoing.message.id,
         msg_type = outgoing.message.label,
         broadcast = true,
@@ -140,6 +143,7 @@ async fn send_message<Connection: NetConnection + 'static>(
         Ok(bytes_sent) => {
             tracing::debug!(
                 host_id = connection.info.remote_host_id_prefix,
+                addr = connection.info.remote_addr.to_string(),
                 msg_id = outgoing.message.id,
                 msg_type = outgoing.message.label,
                 broadcast = true,
@@ -153,6 +157,7 @@ async fn send_message<Connection: NetConnection + 'static>(
         Err(err) => {
             tracing::error!(
                 host_id = connection.info.remote_host_id_prefix,
+                addr = connection.info.remote_addr.to_string(),
                 msg_id = outgoing.message.id,
                 msg_type = outgoing.message.label,
                 broadcast = true,

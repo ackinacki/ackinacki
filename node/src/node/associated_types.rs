@@ -113,11 +113,13 @@ pub enum NackReason {
     // second_envelope: Envelope<GoshBLS, AckiNackiBlock>,
     // },
     BadBlock { envelope: Envelope<GoshBLS, AckiNackiBlock> },
+    TooComplexExecution { envelope: Envelope<GoshBLS, AckiNackiBlock> },
     WrongNack { nack_data_envelope: Arc<Envelope<GoshBLS, NackData>> },
 }
 
 impl NackReason {
     pub fn get_hash_nack(&self) -> anyhow::Result<UInt256> {
+        // TODO: revise this code, Nack hash seems to be unused
         match self {
             // NackReason::SameHeightBlock { first_envelope, second_envelope } => {
             // let mut hasher = Sha256::new();
@@ -127,6 +129,7 @@ impl NackReason {
             // let combined_hash: [u8; 32] = result_hash;
             // Ok(combined_hash.into())
             // }
+            NackReason::TooComplexExecution { envelope } => Ok(envelope.data().get_hash().into()),
             NackReason::BadBlock { envelope } => Ok(envelope.data().get_hash().into()),
             NackReason::WrongNack { nack_data_envelope: _ } => {
                 tracing::trace!("WrongNack nack");
@@ -159,6 +162,17 @@ impl NackReason {
                 }
             }
             */
+            NackReason::TooComplexExecution { envelope } => {
+                nack_target_node_id = envelope.data().get_common_section().producer_id.clone();
+                // TODO: think of possible attacks base on impossibility of finding BK key
+                let state = block_state_repository.get(&envelope.data().parent()).unwrap();
+                let bk_set = state.guarded(|e| e.bk_set().clone()).unwrap();
+                if let Some(data) = bk_set.get_by_node_id(&nack_target_node_id) {
+                    nack_key = data.pubkey.clone();
+                    nack_wallet_addr = data.owner_address.clone();
+                    return Some((nack_target_node_id, nack_key, nack_wallet_addr));
+                }
+            }
             NackReason::BadBlock { envelope } => {
                 nack_target_node_id = envelope.data().get_common_section().producer_id.clone();
                 // TODO: think of possible attacks base on impossibility of finding BK key
@@ -195,6 +209,9 @@ impl Debug for NackReason {
             // }
             NackReason::BadBlock { envelope: block } => {
                 format!("BadBlock {block:?}")
+            }
+            NackReason::TooComplexExecution { envelope } => {
+                format!("TooComplexExecution {envelope:?}")
             }
             NackReason::WrongNack { nack_data_envelope: nack } => {
                 format!("nack {nack:?}")

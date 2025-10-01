@@ -60,19 +60,14 @@ contract DappRoot is Modifiers {
         gosh.mintshellq(MIN_BALANCE);
     }
 
-    /**
-     * @dev Deploys a new DApp configuration with default parameters.
-     * @param dapp_id The unique identifier for the DApp.
-     *
-     * Requirements:
-     * - `dapp_id` must not conflict with an existing configuration.
-     */
     function deployNewConfigCustom(
-        uint256 dapp_id
-    ) public view accept {
+        optional(address) authorityAddress
+    ) public view internalMsg accept {
         ensureBalance();
-        CreditConfig info = CreditConfig(false, 100 vmshell);
-        deployConfig(dapp_id, info);
+        require(msg.currencies[CURRENCIES_ID_SHELL] >= MIN_BALANCE_DEPLOY, ERR_LOW_BALANCE);
+        gosh.burnecc(0, CURRENCIES_ID_SHELL);
+        CreditConfig info = CreditConfig(false, int128(msg.currencies[CURRENCIES_ID_SHELL]));
+        deployConfig(msg.sender.value, info, authorityAddress);
     }
 
     /**
@@ -88,23 +83,25 @@ contract DappRoot is Modifiers {
     function deployNewConfig(
         uint256 dapp_id,
         bool is_unlimit,
-        int128 available_balance
+        int128 available_balance,
+        optional(address) authorityAddress
     ) public view onlyOwnerPubkey(tvm.pubkey()) accept {
         require(_is_close_owner == false, ERR_NOT_READY);
         ensureBalance();
         require(available_balance >= 0, ERR_WRONG_DATA);
         CreditConfig info = CreditConfig(is_unlimit, available_balance);
-        deployConfig(dapp_id, info);
+        deployConfig(dapp_id, info, authorityAddress);
     }
 
     function deployNewConfigNode(
         uint256 dapp_id,
         bool is_unlimit,
-        int128 available_balance
+        int128 available_balance,
+        optional(address) authorityAddress
     ) public view senderIs(address(this)) accept {
         ensureBalance();
         CreditConfig info = CreditConfig(is_unlimit, available_balance);
-        deployConfig(dapp_id, info);
+        deployConfig(dapp_id, info, authorityAddress);
     }
 
     /**
@@ -118,11 +115,12 @@ contract DappRoot is Modifiers {
      */
     function deployConfig(
         uint256 dapp_id,
-        CreditConfig info
+        CreditConfig info,
+        optional(address) authorityAddress
     ) private view {
         require(_codeStorage.exists(m_ConfigCode), ERR_NO_DATA);
         TvmCell data = DappLib.composeDappConfigStateInit(_codeStorage[m_ConfigCode], dapp_id);
-        new DappConfig {stateInit: data, value: varuint16(FEE_DEPLOY_CONFIG), wid: 0, flag: 1}(dapp_id, info);
+        new DappConfig {stateInit: data, value: varuint16(FEE_DEPLOY_CONFIG), wid: 0, flag: 1}(dapp_id, info, authorityAddress);
     }
 
     function closeRoot() public onlyOwnerPubkey(tvm.pubkey()) accept {
@@ -137,5 +135,9 @@ contract DappRoot is Modifiers {
      */
     function getConfigAddr(uint256 dapp_id) external view returns(address config) {
         return DappLib.calculateDappConfigAddress(_codeStorage[m_ConfigCode], dapp_id);
+    }            
+
+    function getDappConfigCode(uint256 dapp_id) external view returns(TvmCell code) {
+        return DappLib.buildDappConfigCode(_codeStorage[m_ConfigCode], dapp_id);
     }            
 }

@@ -45,9 +45,13 @@ use node::bls::envelope::BLSSignedEnvelope;
 use node::bls::envelope::Envelope;
 use node::config::load_blockchain_config;
 use node::config::load_config_from_file;
+use node::creditconfig::abi::DAPP_CONFIG_TVC;
+use node::creditconfig::dappconfig::calculate_dapp_config_address;
+use node::creditconfig::dappconfig::decode_dapp_config_data;
 use node::external_messages::ExternalMessagesThreadState;
 use node::helper::account_boc_loader::get_account_from_shard_state;
 use node::helper::bp_resolver::BPResolverImpl;
+use node::helper::calc_file_hash;
 use node::helper::metrics::Metrics;
 use node::helper::metrics::BLOCK_STATE_SAVE_CHANNEL;
 use node::helper::metrics::OPTIMISTIC_STATE_SAVE_CHANNEL;
@@ -97,11 +101,13 @@ use node::storage::DEFAULT_AEROSPIKE_MESSAGE_CACHE_MAX_ENTRIES;
 use node::types::bp_selector::ProducerSelector;
 use node::types::calculate_hash;
 use node::types::thread_message_queue::account_messages_iterator::AccountMessagesIterator;
+use node::types::AccountAddress;
 use node::types::AckiNackiBlock;
 use node::types::BlockHeight;
 use node::types::BlockIdentifier;
 use node::types::BlockSeqNo;
 use node::types::CollectedAttestations;
+use node::types::DAppIdentifier;
 use node::types::ThreadIdentifier;
 use node::utilities::guarded::Guarded;
 use node::utilities::guarded::GuardedMut;
@@ -119,9 +125,12 @@ use telemetry_utils::mpsc::instrumented_channel;
 use tokio::task::JoinHandle;
 use transport_layer::msquic::MsQuicTransport;
 use transport_layer::TlsCertCache;
+use tvm_block::Deserializable;
 use tvm_block::GetRepresentationHash;
 use tvm_block::Serializable;
+use tvm_block::StateInit;
 use tvm_types::base64_encode;
+use tvm_types::UInt256;
 
 // const ALIVE_NODES_WAIT_TIMEOUT_MILLIS: u64 = 100;
 const MINIMUM_NUMBER_OF_CORES: usize = 8;
@@ -146,6 +155,9 @@ struct Args {
     #[arg(long)]
     #[arg(default_value = "true")]
     clear_missing_block_locks: bool,
+    #[arg(long)]
+    #[arg(default_value = "true")]
+    check_zerostate_validity: bool,
 }
 
 #[cfg(feature = "rayon_affinity")]
@@ -207,6 +219,7 @@ async fn tokio_main() {
 }
 
 fn verify_zerostate(zs: &ZeroState, message_db: &MessageDurableStorage) -> anyhow::Result<()> {
+    tracing::trace!("Verifying ZeroState");
     let mut messages = HashSet::new();
     for state in zs.states().values() {
         let messages_queue = state.messages().clone();
@@ -233,6 +246,103 @@ fn verify_zerostate(zs: &ZeroState, message_db: &MessageDurableStorage) -> anyho
             }
         }
     }
+
+    let base_config_stateinit = StateInit::construct_from_bytes(DAPP_CONFIG_TVC)
+        .map_err(|e| anyhow::format_err!("Failed to construct DAPP config tvc: {e}"))?;
+
+    let addr = calculate_dapp_config_address(
+        DAppIdentifier(AccountAddress(UInt256::ZERO)),
+        base_config_stateinit.clone(),
+    )
+    .map_err(|e| anyhow::format_err!("Failed to calculate DAPP config address: {e}"))?;
+    let account_addr = AccountAddress(addr);
+    tracing::trace!("zero config address: {:?}", account_addr);
+    let zero_thread_state = zs.state(&ThreadIdentifier::default())?;
+    let accounts = zero_thread_state
+        .get_shard_state()
+        .read_accounts()
+        .map_err(|e| anyhow::format_err!("Failed to read accounts: {e}"))?;
+
+    match accounts.account(&account_addr.clone().into()) {
+        Ok(Some(acc)) => {
+            tracing::trace!(target: "builder", "account found");
+            let acc_d = acc
+                .read_account()
+                .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?
+                .as_struct()
+                .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?;
+            let data = decode_dapp_config_data(&acc_d)?;
+            match data {
+                Some(configdata) if configdata.is_unlimit => {
+                    // OK - continue
+                }
+                Some(_) => {
+                    return Err(anyhow::format_err!(
+                        "Incorrect unlimit in 0 DappConfig: expected true, got false"
+                    ));
+                }
+                None => {
+                    return Err(anyhow::format_err!(
+                        "No config data found for DAppIdentifier::ZERO"
+                    ));
+                }
+            }
+        }
+        Ok(None) => {
+            return Err(anyhow::format_err!(
+                "Account for DAppIdentifier::ZERO not found at address: {:?}",
+                account_addr
+            ));
+        }
+        Err(e) => {
+            return Err(anyhow::format_err!("Failed to get account for DAppIdentifier::ZERO: {e}"));
+        }
+    }
+    // Note: DAppIdentifier::ONE config is not always deployed in test networks. Skip check (Could be returned under condition)
+
+    // let addr = calculate_dapp_config_address(
+    //     DAppIdentifier(AccountAddress(UInt256::from_be_bytes(&[1]))),
+    //     base_config_stateinit,
+    // )
+    // .map_err(|e| anyhow::format_err!("Failed to calculate DAPP config address: {e}"))?;
+    // let account_addr = AccountAddress(addr);
+    // tracing::trace!("DAppIdentifier::ONE config address: {:?}", account_addr);
+    //
+    // match accounts.account(&account_addr.clone().into()) {
+    //     Ok(Some(acc)) => {
+    //         tracing::trace!(target: "builder", "account found");
+    //         let acc_d = acc
+    //             .read_account()
+    //             .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?
+    //             .as_struct()
+    //             .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?;
+    //         let data = decode_dapp_config_data(&acc_d)?;
+    //         match data {
+    //             Some(configdata) if configdata.is_unlimit => {
+    //                 // OK - continue
+    //             }
+    //             Some(_) => {
+    //                 return Err(anyhow::format_err!(
+    //                     "Incorrect unlimit in 1 DappConfig: expected true, got false"
+    //                 ));
+    //             }
+    //             None => {
+    //                 return Err(anyhow::format_err!(
+    //                     "No config data found for DAppIdentifier::ONE"
+    //                 ));
+    //             }
+    //         }
+    //     }
+    //     Ok(None) => {
+    //         return Err(anyhow::format_err!(
+    //             "Account for DAppIdentifier::ONE not found at address: {:?}",
+    //             account_addr
+    //         ));
+    //     }
+    //     Err(e) => {
+    //         return Err(anyhow::format_err!("Failed to get account for DAppIdentifier::ONE: {e}"));
+    //     }
+    // }
     Ok(())
 }
 
@@ -274,7 +384,14 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
     let zerostate =
         ZeroState::load_from_file(&config.local.zerostate_path).expect("Failed to open zerostate");
-    verify_zerostate(&zerostate, &message_db)?;
+
+    let zerostate_hash =
+        calc_file_hash(&config.local.zerostate_path).expect("Failed to calculate zerostate hash");
+    tracing::info!(target: "monit", "zerostate hash: {zerostate_hash}");
+
+    if args.check_zerostate_validity {
+        verify_zerostate(&zerostate, &message_db)?;
+    }
     let bk_set = if let Some(bk_set_update_path) = &config.local.bk_set_update_path {
         serde_json::from_slice::<ApiBkSet>(&std::fs::read(bk_set_update_path)?)?
     } else {
@@ -776,10 +893,10 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 .unfinalized_blocks()
                 .guarded_mut(|e| e.insert(*thread_id, block_collection.clone()));
             // HACK!
-            if parent_block_id.is_some()
-                && parent_block_id.as_ref().unwrap() != &BlockIdentifier::default()
-            {
-                repository.init_thread(thread_id, parent_block_id.as_ref().unwrap())?;
+            if let Some(ref parent_block_id) = parent_block_id {
+                if parent_block_id != &BlockIdentifier::default() {
+                    repository.init_thread(thread_id, parent_block_id)?;
+                }
             }
             // END OF HACK
             let producer_election_rng = {
@@ -970,7 +1087,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             let chain_pulse_monitor_clone = chain_pulse_monitor.clone();
             let thread_id_clone = *thread_id;
             let authority_handler = std::thread::Builder::new()
-                .name("routing_service_network_messages_forwarding_loop".to_string())
+                .name(format!("AuthoritySwitchService for {thread_id_clone:?}"))
                 .spawn_critical(move || {
                     let mut authority_service = AuthoritySwitchService::builder()
                         .self_addr(config.network.node_advertise_addr)

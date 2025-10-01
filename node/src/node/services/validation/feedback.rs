@@ -24,7 +24,6 @@ use crate::node::NodeIdentifier;
 use crate::node::PubKey;
 use crate::node::Secret;
 use crate::node::SignerIndex;
-use crate::types::AckiNackiBlock;
 use crate::types::RndSeed;
 use crate::utilities::guarded::Guarded;
 
@@ -92,10 +91,11 @@ impl AckiNackiSend {
         Ok(())
     }
 
-    pub fn send_nack_bad_block(
+    pub fn send_nack(
         &self,
         block_state: BlockState,
-        envelope: Envelope<GoshBLS, AckiNackiBlock>,
+        // envelope: Envelope<GoshBLS, AckiNackiBlock>,
+        reason: NackReason,
     ) -> anyhow::Result<()> {
         let (block_id, Some(block_seq_no), Some(thread_id)) = block_state
             .guarded(|e| (e.block_identifier().clone(), *e.block_seq_no(), *e.thread_identifier()))
@@ -108,7 +108,7 @@ impl AckiNackiSend {
             return Ok(());
         };
 
-        let reason = NackReason::BadBlock { envelope };
+        // let reason = NackReason::BadBlock { envelope };
         let nack_data = NackData { block_id: block_id.clone(), block_seq_no, reason };
         let signature = <GoshBLS as BLSSignatureScheme>::sign(&node_epoch_secret, &nack_data)?;
         let mut signature_occurrences = HashMap::new();

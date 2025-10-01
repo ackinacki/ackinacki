@@ -17,7 +17,8 @@
 				{"name":"reward_sum","type":"uint128"},
 				{"name":"myIp","type":"string"},
 				{"name":"isContinue","type":"bool"},
-				{"name":"timeStart","type":"optional(uint32)"}
+				{"name":"timeStart","type":"optional(uint32)"},
+				{"name":"nodeVersion","type":"optional(string)"}
 			],
 			"outputs": [
 			]
@@ -39,7 +40,8 @@
 				{"components":[{"name":"num","type":"uint256"},{"name":"stake","type":"uint128"}],"name":"licenses","type":"tuple[]"},
 				{"name":"virtualStake","type":"optional(uint128)"},
 				{"name":"ProxyList","type":"map(uint8,string)"},
-				{"name":"sumReputationCoef","type":"uint128"}
+				{"name":"sumReputationCoef","type":"uint128"},
+				{"name":"nodeVersionContinue","type":"optional(string)"}
 			],
 			"outputs": [
 			]
@@ -180,6 +182,8 @@
 		{"init":false,"name":"_is_full_slashing","type":"bool"},
 		{"init":false,"name":"_is_touching","type":"bool"},
 		{"init":false,"name":"_slash_type","type":"optional(uint8)"},
-		{"init":false,"name":"_gparam","type":"uint256"}
+		{"init":false,"name":"_gparam","type":"uint256"},
+		{"init":false,"name":"_nodeVersion","type":"optional(string)"},
+		{"init":false,"name":"_nodeVersionContinue","type":"optional(string)"}
 	]
 }

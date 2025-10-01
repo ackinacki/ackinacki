@@ -136,6 +136,12 @@ pub struct MsQuicNetIncomingRequest {
 impl NetIncomingRequest for MsQuicNetIncomingRequest {
     type Connection = MsQuicNetConnection;
 
+    fn remote_addr(&self) -> anyhow::Result<SocketAddr> {
+        self.connection
+            .get_remote_addr()
+            .map_err(|err| anyhow::anyhow!("Failed to get remote address: {err}"))
+    }
+
     async fn accept(self) -> anyhow::Result<Self::Connection> {
         let accept_result = self.connection.accept().await;
         if let Err(err) = &accept_result {

@@ -20,10 +20,13 @@ abstract contract Modifiers is Errors {
     uint128 constant FEE_DEPLOY_CONFIG = 15 vmshell;
     uint64 constant MIN_BALANCE = 100000 vmshell;
     uint64 constant BALANCE_ECC = 100000 vmshell;
+    uint64 constant MIN_BALANCE_DEPLOY = 100 vmshell;
 
 
     uint32 constant CURRENCIES_ID = 1;
     uint32 constant CURRENCIES_ID_SHELL = 2;
+
+    uint128 constant MAX_SIZE_OF_KEYS = 15;
             
     modifier onlyOwnerPubkeyOptional(optional(uint256) rootpubkey) {
         require(rootpubkey.hasValue() == true, ERR_NOT_OWNER);

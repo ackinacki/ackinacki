@@ -41,6 +41,12 @@ pub struct ProxyConfig {
         deserialize_with = "network::deserialize_subscribe"
     )]
     pub subscribe: Vec<Vec<SocketAddr>>,
+    #[serde(default = "default_broadcast_buffer_len")]
+    pub broadcast_buffer_len: usize,
+}
+
+fn default_broadcast_buffer_len() -> usize {
+    2000
 }
 
 impl ProxyConfig {

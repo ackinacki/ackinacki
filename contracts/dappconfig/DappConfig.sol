@@ -24,6 +24,9 @@ contract DappConfig is Modifiers {
     CreditConfig _data;
     address _owner;
     uint256 _dapp_id;
+    optional(address) public _authorityAddress;
+
+    uint256[] public _keys;
 
     /**
      * @dev Initializes the DappConfig contract with a unique DApp ID and its credit configuration.
@@ -34,7 +37,8 @@ contract DappConfig is Modifiers {
      */
     constructor (
         uint256 dapp_id,
-        CreditConfig data
+        CreditConfig data,
+        optional(address) authorityAddress
     ) {
         dapp_id;
         TvmCell salt = abi.codeSalt(tvm.code()).get();
@@ -43,7 +47,13 @@ contract DappConfig is Modifiers {
         _dapp_id = dapp_id_salt;
         require(msg.sender == _owner, ERR_INVALID_SENDER);
         _data = data;
+        _authorityAddress = authorityAddress;
     }
+
+    function appendPubkey(uint256 pubkey) public senderIs(_authorityAddress.get()) accept {
+        if (_keys.length == MAX_SIZE_OF_KEYS) { return; }
+        _keys.push(pubkey);
+    } 
 
     /**
      * @dev Updates the configuration by deducting minted tokens from the available balance.
@@ -91,5 +101,5 @@ contract DappConfig is Modifiers {
 
     function getDetails() external view returns(uint256 dapp_id, CreditConfig data) {
         return (_dapp_id, _data);
-    }          
+    }         
 }

@@ -21,6 +21,7 @@ use crate::bls::GoshBLS;
 use crate::config::must_save_state_on_seq_no;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::AttestationTargetType;
+use crate::node::associated_types::NackReason;
 use crate::node::block_state::attestation_target_checkpoints::inherit_ancestor_blocks_finalization_distances;
 use crate::node::block_state::attestation_target_checkpoints::AncestorBlocksFinalizationCheckpointsConstructorResults;
 use crate::node::block_state::repository::BlockState;
@@ -361,8 +362,12 @@ fn process_candidate_block(
                 }
             });
         } else {
+            tracing::trace!(target: "monit", "{block_state:?} failed to pass common checks");
             invalidate_branch(block_state.clone(), block_state_repository, filter_prehistoric);
-            let _ = send.send_nack_bad_block(block_state.clone(), candidate_block.clone());
+            let _ = send.send_nack(
+                block_state.clone(),
+                NackReason::BadBlock { envelope: candidate_block.clone() },
+            );
             return Ok(());
         }
     }
@@ -377,6 +382,7 @@ fn process_candidate_block(
     if let Some(status) = result {
         if !status {
             tracing::trace!("Process block candidate: blocks signature is invalid, invalidate it");
+            tracing::trace!(target: "monit", "{block_state:?} signatures verification failed");
             invalidate_branch(block_state.clone(), block_state_repository, filter_prehistoric);
             return Ok(());
         }
@@ -626,6 +632,7 @@ fn process_candidate_block(
         validation_service,
         chain_pulse_monitor,
         filter_prehistoric,
+        shared_services,
     )? {
         tracing::trace!("Process block candidate: can't process_block_attestations, skip it");
         return Ok(());
@@ -746,7 +753,7 @@ fn process_candidate_block(
                     return match err.downcast_ref::<RepositoryError>() {
                         Some(RepositoryError::BlockNotFound(_)) => Ok(()),
                         Some(RepositoryError::DepthSearchMinStateLimitReached) => {
-                            tracing::trace!("A block from an abandoned branch");
+                            tracing::trace!(target: "monit", "{block_state:?} A block from an abandoned branch");
                             invalidate_branch(
                                 block_state.clone(),
                                 block_state_repository,
@@ -770,7 +777,7 @@ fn process_candidate_block(
             ) {
                 Ok(cross_thread_ref_data) => cross_thread_ref_data,
                 Err(e) => {
-                    tracing::error!("Failed to apply candidate block: {e}");
+                    tracing::trace!(target: "monit", "{block_state:?} Failed to apply candidate block: {e}");
                     invalidate_branch(
                         block_state.clone(),
                         block_state_repository,
@@ -1029,6 +1036,7 @@ fn check_common_block_params(
     candidate_block.data().check_hash()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_block_attestations(
     block_state: &BlockState,
     parent_block_state: &BlockState,
@@ -1037,10 +1045,15 @@ fn process_block_attestations(
     validation_service: &ValidationServiceInterface,
     chain_pulse_monitor: &Sender<ChainPulseEvent>,
     filter_prehistoric: &FilterPrehistoric,
+    shared_services: &SharedServices,
 ) -> anyhow::Result<bool> {
     if block_state.guarded(|e| e.has_block_attestations_processed() == &Some(true)) {
         return Ok(true);
     }
+    let Some(thread_id) = block_state.guarded(|e| *e.thread_identifier()) else {
+        tracing::trace!("Thread id is not ready");
+        return Ok(false);
+    };
     let verified_attestations = block_state.guarded(|e| e.verified_attestations().clone());
 
     let Ok(ancestor_distances) =
@@ -1062,7 +1075,7 @@ fn process_block_attestations(
         .update(verified_attestations.into_iter().map(|(k, v)| (k, v.len())).collect());
 
     if !failed.is_empty() {
-        tracing::trace!("process_block_attestations: attestations_target was not reached, block is considered as invalid {:?}. Missing attestations for: {failed:?}", block_state.block_identifier());
+        tracing::trace!(target: "monit", "process_block_attestations: attestations_target was not reached, block is considered as invalid {:?}. Missing attestations for: {failed:?}", block_state);
         invalidate_branch(block_state.clone(), block_state_repository, filter_prehistoric);
         return Ok(false);
     }
@@ -1101,6 +1114,15 @@ fn process_block_attestations(
                     })
                     .cloned()
                     .expect("Attestation must be here, it is present in the verified list");
+                shared_services.metrics.as_ref().inspect(|m| {
+                    m.report_finalized_block_attestations_cnt(
+                        HashSet::<SignerIndex>::from_iter(
+                            attestation.clone_signature_occurrences().keys().cloned(),
+                        )
+                        .len() as u64,
+                        &thread_id,
+                    );
+                });
                 e.set_primary_finalization_proof(attestation).unwrap();
             }
             if e.has_primary_attestation_target_met().is_none() {
@@ -1169,6 +1191,15 @@ fn process_block_attestations(
                     })
                     .cloned()
                     .expect("Attestation must be here, it is present in the verified list");
+                shared_services.metrics.as_ref().inspect(|m| {
+                    m.report_finalized_block_attestations_cnt(
+                        HashSet::<SignerIndex>::from_iter(
+                            attestation.clone_signature_occurrences().keys().cloned(),
+                        )
+                        .len() as u64,
+                        &thread_id,
+                    );
+                });
                 e.set_fallback_finalization_proof(attestation).unwrap();
             }
             if e.has_fallback_attestation_target_met().is_none() {

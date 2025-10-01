@@ -108,6 +108,9 @@ pub struct GlobalConfig {
     pub round_min_time_millis: u64,
     pub round_step_millis: u64,
     pub round_max_time_millis: u64,
+
+    ///  Security parameter. Minimal time after the last finalization to enable Synchronization start
+    pub time_to_enable_sync_finalized: Duration,
 }
 
 /// Node interaction settings
@@ -205,9 +208,9 @@ impl Default for GlobalConfig {
             sync_delay_milliseconds: 500,
             save_state_frequency: 200,
             block_keeper_epoch_code_hash:
-                "320b740c89707cc0378ccc46b1fbcd6508f73500049e591be1e0a6a6e72d1a7e".to_string(),
+                "39f6474d90aaa66ddb215e5151ce35f8312fa996d06cd77c6955d3ac99a1c07a".to_string(),
             block_keeper_preepoch_code_hash:
-                "de1dbddad4c73f67d17fcf45e0ca1b59bb297269d330ddbb9b2f4100df2bad8d".to_string(),
+                "16a24f490bfb03836ac3679d6699afc3b56059baaecf5de189633940ae75c4a6".to_string(),
             thread_count_soft_limit: 100,
             thread_load_window_size: 100,
             thread_load_threshold: 5000,
@@ -215,6 +218,7 @@ impl Default for GlobalConfig {
             round_min_time_millis: 10000,
             round_step_millis: 1000,
             round_max_time_millis: 30000,
+            time_to_enable_sync_finalized: Duration::from_secs(1200),
         }
     }
 }

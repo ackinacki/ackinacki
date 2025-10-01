@@ -41,6 +41,7 @@ pub fn do_link(link: Link, block_state_repository: &BlockStateRepository) {
         panic!("Critical: wrong block state. Block {parent_block_identifier:?} is invalidated and finalized at the same time");
     }
     if is_parent_invalidated {
+        tracing::trace!(target: "monit", "do_link(parent={:?},child={:?}): parent is invalidated. Invalidate branch.", parent, child);
         invalidate_branch(
             child.clone(),
             block_state_repository,

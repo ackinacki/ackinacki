@@ -14,7 +14,6 @@ use crate::bls::envelope::BLSSignedEnvelope;
 use crate::helper::block_flow_trace;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::SynchronizationResult;
-use crate::node::execution::TIME_TO_ENABLE_SYNC_FINALIZED;
 use crate::node::network_message::Command;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
@@ -379,7 +378,9 @@ where
                     NetworkMessage::SyncFinalized((sync_finalized, _)) => {
                         let duration_since_last_finalization =
                             self.shared_services.duration_since_last_finalization();
-                        if duration_since_last_finalization < TIME_TO_ENABLE_SYNC_FINALIZED {
+                        if duration_since_last_finalization
+                            < self.config.global.time_to_enable_sync_finalized
+                        {
                             continue;
                         }
                         let identifier = sync_finalized.data().block_identifier().clone();

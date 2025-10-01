@@ -5,6 +5,7 @@ use tvm_block::ExtBlkRef;
 use tvm_block::GetRepresentationHash;
 use tvm_block::HashmapAugType;
 use tvm_executor::BlockchainConfig;
+use tvm_executor::ExecutorError;
 use tvm_types::UInt256;
 
 use crate::block::producer::errors::VerifyError;
@@ -26,6 +27,19 @@ use crate::storage::MessageDurableStorage;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockInfo;
 
+#[derive(PartialEq)]
+pub enum VerificationResult {
+    ValidBlock,
+    BadBlock,
+    TooComplexExecution,
+}
+
+impl VerificationResult {
+    pub fn is_valid(&self) -> bool {
+        *self == VerificationResult::ValidBlock
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn verify_block(
     block_candidate: &AckiNackiBlock,
@@ -40,7 +54,7 @@ pub fn verify_block(
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
     message_db: MessageDurableStorage,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<VerificationResult> {
     #[cfg(feature = "timing")]
     let start = std::time::Instant::now();
     tracing::trace!(
@@ -77,8 +91,15 @@ pub fn verify_block(
             // TODO: need to set Nack reason in this case
             tracing::trace!("verify block generation returned VerifyError: {verify_error:?}");
             if verify_error.code == BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK {
-                return Ok(false);
+                return Ok(VerificationResult::BadBlock);
             }
+        }
+    }
+
+    if let Err(error) = &verification_block_production_result {
+        if let Some(ExecutorError::TerminationDeadlineReached) = error.downcast_ref() {
+            tracing::trace!("verify block generation returned TerminationDeadlineReached");
+            return Ok(VerificationResult::TooComplexExecution);
         }
     }
 
@@ -177,11 +198,13 @@ pub fn verify_block(
             tracing::trace!("Verification failed");
             tracing::trace!("{:?}", verify_block.tvm_block());
             tracing::trace!("{:?}", block_candidate.tvm_block());
+            return Ok(VerificationResult::BadBlock);
         }
 
         // In this case block hashes are not equal so set up verify state block id to match parent id
         verify_state.block_id = block_candidate.identifier();
         verify_state.block_info = prepare_prev_block_info(block_candidate);
+        return Ok(VerificationResult::ValidBlock);
     }
 
     *prev_block_optimistic_state = verify_state;
@@ -192,7 +215,7 @@ pub fn verify_block(
         block_candidate.identifier(),
         start.elapsed().as_millis()
     );
-    Ok(res)
+    Ok(VerificationResult::ValidBlock)
 }
 
 pub fn prepare_prev_block_info(block_candidate: &AckiNackiBlock) -> BlockInfo {

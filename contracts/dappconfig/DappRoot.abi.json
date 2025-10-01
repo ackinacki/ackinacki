@@ -31,7 +31,7 @@
 		{
 			"name": "deployNewConfigCustom",
 			"inputs": [
-				{"name":"dapp_id","type":"uint256"}
+				{"name":"authorityAddress","type":"optional(address)"}
 			],
 			"outputs": [
 			]
@@ -41,7 +41,8 @@
 			"inputs": [
 				{"name":"dapp_id","type":"uint256"},
 				{"name":"is_unlimit","type":"bool"},
-				{"name":"available_balance","type":"int128"}
+				{"name":"available_balance","type":"int128"},
+				{"name":"authorityAddress","type":"optional(address)"}
 			],
 			"outputs": [
 			]
@@ -51,7 +52,8 @@
 			"inputs": [
 				{"name":"dapp_id","type":"uint256"},
 				{"name":"is_unlimit","type":"bool"},
-				{"name":"available_balance","type":"int128"}
+				{"name":"available_balance","type":"int128"},
+				{"name":"authorityAddress","type":"optional(address)"}
 			],
 			"outputs": [
 			]
@@ -70,6 +72,15 @@
 			],
 			"outputs": [
 				{"name":"config","type":"address"}
+			]
+		},
+		{
+			"name": "getDappConfigCode",
+			"inputs": [
+				{"name":"dapp_id","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"code","type":"cell"}
 			]
 		}
 	],

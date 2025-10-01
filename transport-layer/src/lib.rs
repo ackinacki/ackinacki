@@ -154,6 +154,7 @@ pub trait NetListener: Send + Sync {
 #[async_trait]
 pub trait NetIncomingRequest: Send + Sync {
     type Connection: NetConnection;
+    fn remote_addr(&self) -> anyhow::Result<SocketAddr>;
     async fn accept(self) -> anyhow::Result<Self::Connection>;
 }
 

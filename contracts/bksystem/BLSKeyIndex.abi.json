@@ -21,7 +21,8 @@
 				{"name":"stake","type":"uint128"},
 				{"name":"virtualStake","type":"optional(uint128)"},
 				{"name":"ProxyList","type":"map(uint8,string)"},
-				{"name":"myIp","type":"string"}
+				{"name":"myIp","type":"string"},
+				{"name":"nodeVersion","type":"optional(string)"}
 			],
 			"outputs": [
 			]
@@ -36,7 +37,8 @@
 				{"name":"stake","type":"uint128"},
 				{"name":"virtualStake","type":"optional(uint128)"},
 				{"name":"ProxyList","type":"map(uint8,string)"},
-				{"name":"sumReputationCoef","type":"uint128"}
+				{"name":"sumReputationCoef","type":"uint128"},
+				{"name":"nodeVersion","type":"optional(string)"}
 			],
 			"outputs": [
 			]

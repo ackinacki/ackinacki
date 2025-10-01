@@ -267,6 +267,11 @@ struct Config {
     /// BP rotation round max time in millis
     #[arg(long, env)]
     pub round_max_time_millis: Option<u64>,
+
+    /// Timout to enable synchronization from an arbitrary block
+    #[arg(long, env)]
+    #[arg(value_parser = parse_duration::parse)]
+    pub time_to_enable_sync_finalized: Option<Duration>,
 }
 
 const DEFAULT_NODE_PORT: u16 = 8500;
@@ -532,6 +537,9 @@ fn main() -> anyhow::Result<()> {
             }
             if let Some(round_max_time_millis) = config_cmd.round_max_time_millis {
                 config.global.round_max_time_millis = round_max_time_millis;
+            }
+            if let Some(time_to_enable_sync_finalized) = config_cmd.time_to_enable_sync_finalized {
+                config.global.time_to_enable_sync_finalized = time_to_enable_sync_finalized;
             }
 
             save_config_to_file(&config, &config_cmd.config_file_path)

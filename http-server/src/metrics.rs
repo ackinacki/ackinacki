@@ -1,3 +1,4 @@
+use opentelemetry::metrics::Counter;
 use opentelemetry::metrics::Histogram;
 use opentelemetry::metrics::Meter;
 use opentelemetry::KeyValue;
@@ -8,6 +9,7 @@ pub struct RoutingMetrics {
     ext_msg_delivery_duration: Histogram<u64>,
     ext_msg_processing_duration: Histogram<u64>,
     boc_by_address_response: Histogram<u64>,
+    block_request: Counter<u64>,
 }
 
 impl RoutingMetrics {
@@ -28,6 +30,7 @@ impl RoutingMetrics {
                 .u64_histogram("node_boc_by_address_response")
                 .with_boundaries(boundaries)
                 .build(),
+            block_request: meter.u64_counter("node_block_req_recv").build(),
         }
     }
 
@@ -45,5 +48,9 @@ impl RoutingMetrics {
     pub fn report_boc_by_address_response(&self, value: u64, http_code: u16) {
         out_of_bounds_guard!(value, "boc_by_address_response");
         self.boc_by_address_response.record(value, &[KeyValue::new("code", http_code.to_string())]);
+    }
+
+    pub fn report_block_request(&self) {
+        self.block_request.add(1, &[]);
     }
 }

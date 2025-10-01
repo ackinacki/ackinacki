@@ -12,12 +12,14 @@ use tvm_executor::BlockchainConfig;
 
 use crate::block::producer::wasm::WasmNodeCache;
 use crate::block::verify::verify_block;
+use crate::block::verify::VerificationResult;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::config::Config;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::helper::SHUTDOWN_FLAG;
+use crate::node::associated_types::NackReason;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::block_state::tools::invalidate_branch;
 use crate::node::services::validation::feedback::AckiNackiSend;
@@ -168,32 +170,45 @@ pub(super) fn inner_loop(
                 message_db.clone(),
             )
             .expect("Failed to verify block");
-            if !verify_res {
+            if !verify_res.is_valid() {
                 tracing::warn!("Block verification failed: {:?}", block_identifier);
             }
             state.guarded_mut(|e| {
                 if e.validated().is_none() {
-                    let _ = e.set_validated(verify_res);
+                    let _ = e.set_validated(verify_res.is_valid());
                 }
             });
-            if !verify_res {
-                invalidate_branch(
-                    state.clone(),
-                    &block_state_repo,
-                    &FilterPrehistoric::builder().block_seq_no(BlockSeqNo::default()).build(),
-                );
-            }
             if SHUTDOWN_FLAG.get() == Some(&true) {
                 return;
             }
-            if verify_res {
+            if verify_res.is_valid() {
                 let _ = send.send_ack(state.clone());
             } else {
                 let thread_id = next_block.get_common_section().thread_id;
                 authority
                     .guarded_mut(|e| e.get_thread_authority(&thread_id))
                     .guarded_mut(|e| e.on_bad_block_nack_confirmed(state.clone()));
-                let _ = send.send_nack_bad_block(state.clone(), next_envelope.clone());
+                match verify_res {
+                    VerificationResult::TooComplexExecution => {
+                        // TODO: send Nack here
+                        tracing::warn!("Verification failed: TooComplexExectuion");
+                    }
+                    VerificationResult::BadBlock => {
+                        tracing::trace!(target: "monit", "{state:?} Block verification failed");
+                        invalidate_branch(
+                            state.clone(),
+                            &block_state_repo,
+                            &FilterPrehistoric::builder()
+                                .block_seq_no(BlockSeqNo::default())
+                                .build(),
+                        );
+                        let nack_reason = NackReason::BadBlock { envelope: next_envelope.clone() };
+                        let _ = send.send_nack(state.clone(), nack_reason);
+                    }
+                    VerificationResult::ValidBlock => {
+                        unreachable!();
+                    }
+                };
             }
         }
     }

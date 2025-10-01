@@ -34,23 +34,23 @@ contract BLSKeyIndex is Modifiers {
         gosh.mintshellq(FEE_DEPLOY_BLS_KEY);
     }
 
-    function isBLSKeyAccept(address wallet, uint16 signerIndex, uint256 pubkey, uint128 rep_coef, uint128 stake, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, string myIp) public senderIs(_root) accept {
+    function isBLSKeyAccept(address wallet, uint16 signerIndex, uint256 pubkey, uint128 rep_coef, uint128 stake, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, string myIp, optional(string) nodeVersion) public senderIs(_root) accept {
         ensureBalance();
         if (wallet == _wallet) { 
-            BlockKeeperContractRoot(_root).isBLSAccepted{value: 0.1 vmshell, flag: 1}(wallet, pubkey, _bls, stake, _ready, signerIndex, rep_coef, virtualStake, ProxyList, myIp);
+            BlockKeeperContractRoot(_root).isBLSAccepted{value: 0.1 vmshell, flag: 1}(wallet, pubkey, _bls, stake, _ready, signerIndex, rep_coef, virtualStake, ProxyList, myIp, nodeVersion);
             _ready = true;
         } else {
-            BlockKeeperContractRoot(_root).isBLSAccepted{value: 0.1 vmshell, flag: 1}(wallet, pubkey, _bls, stake, true, signerIndex, rep_coef, virtualStake, ProxyList, myIp);
+            BlockKeeperContractRoot(_root).isBLSAccepted{value: 0.1 vmshell, flag: 1}(wallet, pubkey, _bls, stake, true, signerIndex, rep_coef, virtualStake, ProxyList, myIp, nodeVersion);
         }
     }
 
-    function isBLSKeyAcceptContinue(address wallet, uint16 signerIndex, uint256 pubkey, uint64 seqNoStartOld, uint128 stake, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, uint128 sumReputationCoef) public senderIs(_root) accept {
+    function isBLSKeyAcceptContinue(address wallet, uint16 signerIndex, uint256 pubkey, uint64 seqNoStartOld, uint128 stake, optional(uint128) virtualStake, mapping(uint8 => string) ProxyList, uint128 sumReputationCoef, optional(string) nodeVersion) public senderIs(_root) accept {
         ensureBalance();
         if (wallet == _wallet) { 
-            BlockKeeperContractRoot(_root).isBLSAcceptedContinue{value: 0.1 vmshell, flag: 1}(wallet, pubkey, _bls, stake, _ready, seqNoStartOld, signerIndex, virtualStake, ProxyList, sumReputationCoef);
+            BlockKeeperContractRoot(_root).isBLSAcceptedContinue{value: 0.1 vmshell, flag: 1}(wallet, pubkey, _bls, stake, _ready, seqNoStartOld, signerIndex, virtualStake, ProxyList, sumReputationCoef, nodeVersion);
             _ready = true;
         } else {          
-            BlockKeeperContractRoot(_root).isBLSAcceptedContinue{value: 0.1 vmshell, flag: 1}(wallet, pubkey, _bls, stake, true, seqNoStartOld, signerIndex, virtualStake, ProxyList, sumReputationCoef);
+            BlockKeeperContractRoot(_root).isBLSAcceptedContinue{value: 0.1 vmshell, flag: 1}(wallet, pubkey, _bls, stake, true, seqNoStartOld, signerIndex, virtualStake, ProxyList, sumReputationCoef, nodeVersion);
         }
     }
 

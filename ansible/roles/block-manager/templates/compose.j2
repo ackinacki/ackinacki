@@ -8,7 +8,7 @@ services:
       - MESSAGE_ROUTER_ADDRESS=block_manager:{{ BM_API_PORT }}
       - Q_SERVER_ADDRESS=q_server_bm:3000
       - NODE_API_ADDRESS=block_manager:{{ BM_API_PORT }}
-      - BLOCK_MANAGER_API=block_manager::{{ BM_API_PORT }}
+      - BLOCK_MANAGER_API=block_manager:{{ BM_API_PORT }}
     ports:
       - target: 80
 {% if NGINX_IP == "public" %}

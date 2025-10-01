@@ -316,6 +316,7 @@ async fn receive_message<Connection: NetConnection>(
                 msg_id = net_message.id,
                 peer = info.remote_info(),
                 host_id = info.remote_host_id_prefix,
+                addr = info.remote_addr.to_string(),
                 size = net_message.data.len(),
                 duration = duration.as_millis(),
                 "Message delivery: incoming transfer finished",

@@ -106,6 +106,10 @@ pub struct QuinnIncomingRequest {
 impl NetIncomingRequest for QuinnIncomingRequest {
     type Connection = QuinnConnection;
 
+    fn remote_addr(&self) -> anyhow::Result<SocketAddr> {
+        Ok(self.incoming.remote_address())
+    }
+
     async fn accept(self) -> anyhow::Result<Self::Connection> {
         let connecting = self.incoming.accept()?;
         let connection = connecting.await?;

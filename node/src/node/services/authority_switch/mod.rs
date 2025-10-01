@@ -407,7 +407,6 @@ impl AuthoritySwitchService {
         next_round_success: Envelope<GoshBLS, NextRoundSuccess>,
     ) -> anyhow::Result<()> {
         tracing::trace!("Received NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched({next_round_success:?}))");
-        // TODO: check signatures.
         let next_round_success = next_round_success.data();
         let proposed_block = next_round_success.proposed_block().clone();
         // let resend_node_id = Some(next_round_success.node_identifier().clone());
@@ -423,12 +422,32 @@ impl AuthoritySwitchService {
                 if attestation.clone_signature_occurrences().len()
                     >= *attestation_target.fallback().required_attestation_count()
                 {
-                    // TODO: check attestations before going further
+                    let block = proposed_block.get_envelope()?;
+                    let parent_id = block.data().parent();
+                    let parent_block_state = self.block_state_repository.get(&parent_id)?;
+                    let Some(bk_set) =
+                        parent_block_state.guarded(|e| e.descendant_bk_set().clone())
+                    else {
+                        tracing::error!("Failed to load parent BK set to check next round success");
+                        return Ok(());
+                    };
+                    match attestation.verify_signatures(bk_set.get_pubkeys_by_signers()) {
+                        Ok(false) => {
+                            tracing::error!("Invalid attestation signature in next round success");
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            tracing::error!("Next round success attestation signature verification failed: {e:?}");
+                            return Ok(());
+                        }
+                        Ok(true) => {}
+                    };
+
                     block_state.guarded_mut(|e| {
                         e.set_prefinalized(attestation.clone())?;
                         anyhow::Ok(())
                     })?;
-                    let block = proposed_block.get_envelope()?;
+
                     let _ = self.chain_pulse_monitor.send(ChainPulseEvent::block_prefinalized(
                         block.data().get_common_section().thread_id,
                         Some(block.data().get_common_section().block_height),

@@ -24,6 +24,7 @@
 				{"name":"myIp","type":"string"},
 				{"name":"unixtimeStart","type":"uint32"},
 				{"name":"sumReputationCoefContinue","type":"uint128"},
+				{"name":"nodeVersionContinue","type":"optional(string)"},
 				{"name":"slash_type","type":"optional(uint8)"}
 			],
 			"outputs": [

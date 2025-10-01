@@ -46,6 +46,7 @@ contract BlockKeeperCooler is Modifiers {
         string myIp,
         uint32 unixtimeStart,
         uint128 sumReputationCoefContinue,
+        optional(string) nodeVersionContinue,
         optional(uint8) slash_type
     ) {
         TvmCell data = abi.codeSalt(tvm.code()).get();
@@ -62,7 +63,7 @@ contract BlockKeeperCooler is Modifiers {
         if ((isContinue) && (!slash_type.hasValue())) {
             mapping(uint32 => varuint32) data_cur;
             data_cur[CURRENCIES_ID] = varuint32(stakeContinue);
-            AckiNackiBlockKeeperNodeWallet(_owner).deployBlockKeeperContractContinueAfterDestroy{value: 0.1 vmshell, flag: 1, currencies: data_cur}(epochDurationContinue, waitStepContinue, bls_pubkeyContinue, _seqNoStart, signerIndexContinue, licensesContinue, _licenses, virtualStakeContinue, reward_sum_continue, myIp, sumReputationCoefContinue, block.timestamp - unixtimeStart);
+            AckiNackiBlockKeeperNodeWallet(_owner).deployBlockKeeperContractContinueAfterDestroy{value: 0.1 vmshell, flag: 1, currencies: data_cur}(epochDurationContinue, waitStepContinue, bls_pubkeyContinue, _seqNoStart, signerIndexContinue, licensesContinue, _licenses, virtualStakeContinue, reward_sum_continue, myIp, sumReputationCoefContinue, block.timestamp - unixtimeStart, nodeVersionContinue);
         }
         if (slash_type.hasValue()) {
             this.slash{value: 0.1 vmshell, flag: 1}(slash_type.get(), true);

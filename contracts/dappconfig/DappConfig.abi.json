@@ -7,7 +7,16 @@
 			"name": "constructor",
 			"inputs": [
 				{"name":"dapp_id","type":"uint256"},
-				{"components":[{"name":"is_unlimit","type":"bool"},{"name":"available_balance","type":"int128"}],"name":"data","type":"tuple"}
+				{"components":[{"name":"is_unlimit","type":"bool"},{"name":"available_balance","type":"int128"}],"name":"data","type":"tuple"},
+				{"name":"authorityAddress","type":"optional(address)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "appendPubkey",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
 			],
 			"outputs": [
 			]
@@ -37,6 +46,22 @@
 				{"name":"dapp_id","type":"uint256"},
 				{"components":[{"name":"is_unlimit","type":"bool"},{"name":"available_balance","type":"int128"}],"name":"data","type":"tuple"}
 			]
+		},
+		{
+			"name": "_authorityAddress",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_authorityAddress","type":"optional(address)"}
+			]
+		},
+		{
+			"name": "_keys",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"_keys","type":"uint256[]"}
+			]
 		}
 	],
 	"events": [
@@ -47,6 +72,8 @@
 		{"init":false,"name":"_constructorFlag","type":"bool"},
 		{"components":[{"name":"is_unlimit","type":"bool"},{"name":"available_balance","type":"int128"}],"init":false,"name":"_data","type":"tuple"},
 		{"init":false,"name":"_owner","type":"address"},
-		{"init":false,"name":"_dapp_id","type":"uint256"}
+		{"init":false,"name":"_dapp_id","type":"uint256"},
+		{"init":false,"name":"_authorityAddress","type":"optional(address)"},
+		{"init":false,"name":"_keys","type":"uint256[]"}
 	]
 }

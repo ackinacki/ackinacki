@@ -74,6 +74,7 @@ async fn receive_message<Connection: NetConnection + 'static>(
                 msg_id = net_message.id,
                 peer = info.remote_info(),
                 host_id = info.remote_host_id_prefix,
+                addr = info.remote_addr.to_string(),
                 size = net_message.data.len(),
                 duration = duration.as_millis(),
                 "Message delivery: incoming transfer finished",
@@ -109,14 +110,20 @@ async fn receive_message<Connection: NetConnection + 'static>(
             }
         }
         Err(err) => {
+            let err_str = detailed(&err);
             tracing::error!(
                 broadcast = info.is_broadcast(),
                 peer = info.remote_info(),
-                "Incoming transfer failed: {}",
-                detailed(&err)
+                "Incoming transfer failed: {err_str}",
             );
+
             if let Some(metrics) = metrics.as_ref() {
-                metrics.report_error("in_transfer_fail");
+                let keywords = ["Custom", "ConnectionAborted", "ConnectionLost", "ShutdownByLocal"];
+                if keywords.iter().all(|&key| err_str.contains(key)) {
+                    metrics.report_error("conn_aborted");
+                } else {
+                    metrics.report_error("in_transfer_fail");
+                }
             }
             // finish the receiver loop because we have a problem with this connection
             receiver_stop_tx.send_replace(true);

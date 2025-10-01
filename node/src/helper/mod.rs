@@ -31,6 +31,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
+use tvm_types::Sha256;
 
 use crate::helper::metrics::Metrics;
 use crate::node::NodeIdentifier;
@@ -216,4 +217,11 @@ pub fn start_shutdown() {
     }
     tracing::info!("set shutdown flag");
     SHUTDOWN_FLAG.set(true).expect("Failed to set shutdown flag");
+}
+
+pub fn calc_file_hash<P: AsRef<Path>>(path: P) -> anyhow::Result<String> {
+    let bytes = std::fs::read(path.as_ref())?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(hex::encode(hasher.finalize()))
 }
