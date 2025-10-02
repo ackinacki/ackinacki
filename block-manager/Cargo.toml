@@ -37,7 +37,7 @@ url.workspace = true
 reqwest = { version = "0.12.22", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rustls-pki-types = { version = "1.8.0" }
 
-tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.23.1.an" }
+tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.23.2.an" }
 
 
 dotenvy = "0"

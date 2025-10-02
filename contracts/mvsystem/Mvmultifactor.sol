@@ -85,6 +85,8 @@ contract Multifactor is Modifiers {
     bool public _force_remove_oldest;
     mapping(address => bool) _whiteListOfAddress;
 
+    uint32 public _verification_key_index = 1;
+
     constructor (
         string name,
         string zkid,
@@ -119,7 +121,7 @@ contract Multifactor is Modifiers {
         require(jwk_modulus_expire_at < uint64(block.timestamp + MAX_JWK_LIFE_TIME), ERR_JWK_TIMESTAMP_TOO_BIG);
         //TODO: should we control validate TLS data for jwk_modulus (and jwk_modulus_expire_at) to fully check wallet setup or this is too cumbersome?
         bytes ph = gosh.poseidon(index_mod_4, epk_expire_at, epk, jwk_modulus, iss_base_64, header_base_64, zkid);
-        require(gosh.vergrth16(proof, ph, 0), ERR_INVALID_PROOF);
+        require(gosh.vergrth16(proof, ph, _verification_key_index), ERR_INVALID_PROOF);
         require(provider.byteLength() < MAX_LEN, ERR_BAD_LEN);
         TvmCell data = abi.codeSalt(tvm.code()).get();
         (address root) = abi.decode(data, (address));
@@ -321,7 +323,7 @@ contract Multifactor is Modifiers {
         require(_jwk_modulus_data.exists(jwk_hash), ERR_JWK_NOT_FOUND);
         require(uint64(block.timestamp + MIN_JWK_LIFE_TIME) < _jwk_modulus_data[jwk_hash].modulus_expire_at, ERR_JWK_EXPIRED);
         bytes ph = gosh.poseidon(_index_mod_4, epk_expire_at, epk, _jwk_modulus_data[jwk_hash].modulus, _iss_base_64, header_base_64, _zkid);
-        require(gosh.vergrth16(proof, ph, 0), ERR_INVALID_PROOF);
+        require(gosh.vergrth16(proof, ph, _verification_key_index), ERR_INVALID_PROOF);
         tvm.accept();
         uint8 num_iter = NUMBER_OF_FACTORS_TO_CLEAR;
         if (_factors_len < NUMBER_OF_FACTORS_TO_CLEAR) {
@@ -479,7 +481,7 @@ contract Multifactor is Modifiers {
         //TODO: should we control validate TLS data for jwk_modulus (and jwk_modulus_expire_at) to fully check wallet setup or this is too cumbersome?
         ensureBalance();
         bytes ph = gosh.poseidon(index_mod_4, epk_expire_at, epk, jwk_modulus, iss_base_64, header_base_64, zkid);
-        require(gosh.vergrth16(proof, ph, 0), ERR_INVALID_PROOF);
+        require(gosh.vergrth16(proof, ph, _verification_key_index), ERR_INVALID_PROOF);
         require(provider.byteLength() < MAX_LEN, ERR_BAD_LEN);
         tvm.accept();
         delete _root_provider_certificates;

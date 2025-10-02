@@ -94,14 +94,6 @@
 			]
 		},
 		{
-			"name": "setVerificationKeyIndex",
-			"inputs": [
-				{"name":"verification_key_index","type":"uint32"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "setWasmHash",
 			"inputs": [
 				{"name":"wasm_hash","type":"bytes"}

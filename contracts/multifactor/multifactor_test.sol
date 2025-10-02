@@ -92,7 +92,7 @@ contract Multifactor is Modifiers {
 
     bool public _force_remove_oldest;
 
-    uint32 public _verification_key_index = 0;
+    uint32 public _verification_key_index = 1;
 
     constructor (
         string zkid,
@@ -339,11 +339,6 @@ contract Multifactor is Modifiers {
     }
 
     /** Functions to change/delete keys, jwks and zkp factors via master owner pubkey */
-
-    function setVerificationKeyIndex(uint32 verification_key_index) public onlyOwnerPubkey(_owner_pubkey)  {
-        tvm.accept();
-        _verification_key_index = verification_key_index;
-    }
 
     function setWasmHash(bytes wasm_hash) public onlyOwnerPubkey(_owner_pubkey)  {
         tvm.accept();
