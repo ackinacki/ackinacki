@@ -58,14 +58,6 @@
 			]
 		},
 		{
-			"name": "setOwner",
-			"inputs": [
-				{"name":"wallet","type":"address"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "getLastLicenseNum",
 			"inputs": [
 			],
@@ -108,7 +100,6 @@
 		{"init":true,"name":"_pubkey","type":"uint256"},
 		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
-		{"init":false,"name":"_owner_wallet","type":"optional(address)"},
 		{"init":false,"name":"_code","type":"map(uint8,cell)"},
 		{"init":false,"name":"_timeUnlock","type":"uint32"},
 		{"init":false,"name":"_license_number","type":"uint256"},

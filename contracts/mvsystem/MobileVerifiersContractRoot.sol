@@ -66,9 +66,13 @@ contract MobileVerifiersContractRoot is Modifiers {
         emit PopCoinRootDestroyed{dest: addrExtern}(name);
     }
 
-    function setNewCode(uint8 id, TvmCell code) public onlyOwner accept {
+    function setNewCode(uint8 id, TvmCell code) public senderIs(address(this)) accept {
         ensureBalance();
         _code[id] = code;
+    }
+
+    function destroyNode() public senderIs(address(this)) accept {
+        selfdestruct(address(this));
     }
 
     function tapReward() private returns(uint128) {

@@ -50,16 +50,6 @@ contract PopitGame is Modifiers {
         _boost = new Boost {stateInit: data, value: varuint16(FEE_DEPLOY_BOOST), wid: 0, flag: 1}(_owner, _root_pubkey);
     }
 
-    function setNewCode(uint8 id, TvmCell code) public onlyOwnerPubkey(_root_pubkey) accept {
-        ensureBalance();
-        _code[id] = code;
-    }
-
-    function setNewOwner(address owner) public onlyOwnerPubkey(_root_pubkey) accept {
-        ensureBalance();
-        _owner = owner;
-    }
-
     function addValuePopit(string name, uint256 id, uint64 value) public view senderIs(VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], tvm.hash(_code[m_PopitGame]), _root, name, _owner)) accept {
         ensureBalance();
         PopCoinWallet(msg.sender).addValuePopitGame{value: 0.1 vmshell, flag: 1}(id, value, _mbiCur);

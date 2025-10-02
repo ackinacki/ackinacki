@@ -62,16 +62,6 @@ contract PopCoinWallet is Modifiers {
         PopitGame(_popitGame).popCoinWalletDeployed{value: 0.1 vmshell, flag: 1}(_name);
     }
 
-    function setNewOwner(address owner) public onlyOwnerPubkey(_root_pubkey) accept {
-        ensureBalance();
-        _owner = owner;
-    }
-
-    function setNewCode(uint8 id, TvmCell code) public onlyOwnerPubkey(_root_pubkey) accept {
-        ensureBalance();
-        _code[id] = code;
-    }
-
     function deleteCandidate(uint256 index) public senderIs(_owner) accept {
         ensureBalance();
         delete _popits_candidate[index];
@@ -142,14 +132,8 @@ contract PopCoinWallet is Modifiers {
         selfdestruct(_popitGame);
     }
 
-    function updateCode(TvmCell newcode, TvmCell cell) public view onlyOwnerPubkey(_root_pubkey) accept  {
-        ensureBalance();
-        tvm.setcode(newcode);
-        tvm.setCurrentCode(newcode);
-        onCodeUpgrade(cell);
-    }
-
-    function onCodeUpgrade(TvmCell cell) private pure {
+    function destroyNode() public senderIs(address(this)) accept {
+        selfdestruct(address(this));
     }
     
     //Fallback/Receive

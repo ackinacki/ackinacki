@@ -85,6 +85,13 @@
 			]
 		},
 		{
+			"name": "destroyNode",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "getDetails",
 			"inputs": [
 			],

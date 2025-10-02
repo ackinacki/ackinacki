@@ -41,12 +41,7 @@ contract DappRoot is Modifiers {
      * Requirements:
      * - Only callable by the contract owner.
      */
-    function setNewCode(uint8 id, TvmCell code) public onlyOwnerPubkey(tvm.pubkey()) accept { 
-        ensureBalance();
-        _codeStorage[id] = code;
-    }
-
-    function setNewCodeNode(uint8 id, TvmCell code) public senderIs(address(this)) accept { 
+    function setNewCode(uint8 id, TvmCell code) public senderIs(address(this)) accept { 
         ensureBalance();
         _codeStorage[id] = code;
     }

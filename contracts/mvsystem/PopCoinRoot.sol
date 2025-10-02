@@ -76,11 +76,6 @@ contract PopCoinRoot is Modifiers {
         PopitGame(_popitGameOwner).popCoinRootDeployed{value: 0.1 vmshell, flag: 1}(_name);
     }
 
-    function setNewCode(uint8 id, TvmCell code) public onlyOwnerPubkey(_root_pubkey) accept {
-        ensureBalance();
-        _code[id] = code;
-    }
-
     function setIsPublic(bool isPublic) public onlyOwnerPubkey(_root_pubkey) accept {
         ensureBalance();
         _isPublic = isPublic;
@@ -238,14 +233,8 @@ contract PopCoinRoot is Modifiers {
         }
     }
 
-    function updateCode(TvmCell newcode, TvmCell cell) public view onlyOwnerPubkey(_root_pubkey) accept  {
-        ensureBalance();
-        tvm.setcode(newcode);
-        tvm.setCurrentCode(newcode);
-        onCodeUpgrade(cell);
-    }
-
-    function onCodeUpgrade(TvmCell cell) private pure {
+    function destroyNode() public senderIs(address(this)) accept {
+        selfdestruct(address(this));
     }
     
     //Fallback/Receive

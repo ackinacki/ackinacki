@@ -38,29 +38,23 @@ contract Mirror is Modifiers {
         _rootPubkey = rootPubkey;
     }
 
-    function updateCode(TvmCell newcode, TvmCell cell) public view onlyOwnerPubkey(_rootPubkey) accept  {
-        ensureBalance();
-        tvm.setcode(newcode);
-        tvm.setCurrentCode(newcode);
-        onCodeUpgrade(cell);
-    }
-
-    function onCodeUpgrade(TvmCell cell) private pure {
-    }
-
     function ensureBalance() private pure {
         if (address(this).balance > CONTRACT_BALANCE) { return; }
         gosh.mintshellq(CONTRACT_BALANCE);
     }
 
-    function setNewIndex(uint128 index) public onlyOwnerPubkey(_rootPubkey) accept {
+    function setNewIndex(uint128 index) public senderIs(address(this)) accept {
         ensureBalance();
         _index = index;
     }
 
-    function setNewCode(uint8 id, TvmCell code) public onlyOwnerPubkey(_rootPubkey) accept {
+    function setNewCode(uint8 id, TvmCell code) public senderIs(address(this)) accept {
         ensureBalance();
         _code[id] = code;
+    }
+
+    function destroyNode() public senderIs(address(this)) accept {
+        selfdestruct(address(this));
     }
 
     function deployPopitGame(address multifactor) public view accept {

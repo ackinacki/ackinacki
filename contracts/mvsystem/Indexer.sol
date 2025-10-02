@@ -148,6 +148,10 @@ contract NameIndex is Modifiers {
         _wallet = wallet;
     }
 
+    function destroyNode() public senderIs(address(this)) accept {
+        selfdestruct(address(this));
+    }
+
     function getDetails() external view returns(string name, address wallet) {
         return (_name, _wallet);
     }

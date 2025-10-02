@@ -17,7 +17,6 @@ import "./LicenseBM.sol";
 contract LicenseRoot is Modifiers {
     string constant version = "1.0.0";
 
-    optional(address) _owner_wallet;
     mapping(uint8 => TvmCell) _code;
     uint32 _timeUnlock;
     uint256 _license_number;
@@ -55,7 +54,7 @@ contract LicenseRoot is Modifiers {
         new LicenseContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockKeeperNodeWalletCode], _rootElection, false);
     }
  
-    function deployLicenseOwner(uint256 pubkey, bool isPrivileged) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  {
+    function deployLicenseOwner(uint256 pubkey, bool isPrivileged) public onlyOwner accept  {
         ensureBalance();
         require(_licenseLeft >= 1, ERR_TOO_LOW_LICENSES);
         _licenseLeft -= 1;
@@ -72,7 +71,7 @@ contract LicenseRoot is Modifiers {
         new LicenseBMContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE_BM), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockManagerNodeWalletCode], _rootBM);
     }
  
-    function deployLicenseBMOwner(uint256 pubkey) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  {
+    function deployLicenseBMOwner(uint256 pubkey) public onlyOwner accept  {
         ensureBalance();
         require(_licenseBMLeft >= 1, ERR_TOO_LOW_LICENSES);
         _licenseBMLeft -= 1;
@@ -81,17 +80,9 @@ contract LicenseRoot is Modifiers {
         new LicenseBMContract {stateInit: data, value: varuint16(FEE_DEPLOY_LICENSE_BM), wid: 0, flag: 1}(pubkey, _code[m_AckiNackiBlockManagerNodeWalletCode], _rootBM);
     }
 
-    function setNewCode(uint8 id, TvmCell code) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  { 
+    function setNewCode(uint8 id, TvmCell code) public senderIs(address(this)) accept  { 
         ensureBalance();
         _code[id] = code;
-    }
-
-    function setOwner(address wallet) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  {
-        ensureBalance();
-        _owner_wallet = wallet;
-    }
-
-    function onCodeUpgrade(TvmCell cell) private pure {
     }
     
     //Fallback/Receive

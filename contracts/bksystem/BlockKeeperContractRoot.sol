@@ -48,8 +48,6 @@ contract BlockKeeperContractRoot is Modifiers {
 
     bool _is_close_owner = false;
 
-    optional(address) _owner_wallet;
-
     uint256 _Gparam = 0;
     uint256 _REMparam = 0; 
     uint32 _Bparam = 0;
@@ -84,19 +82,12 @@ contract BlockKeeperContractRoot is Modifiers {
         _REMparam = newREM;
     }
 
-
-    function setOwner(address wallet) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept {
-        require(_is_close_owner == false, ERR_SENDER_NO_ALLOWED);
-        ensureBalance();
-        _owner_wallet = wallet;
-    }
-
-    function closeRoot() public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept {
+    function closeRoot() public onlyOwner accept {
         _is_close_owner = true;
         ensureBalance();
     }
 
-    function setConfig(uint64 epochDuration, uint128 minBlockKeepers, bool isNeedNumberOfActiveBlockKeepers, uint128 needNumberOfActiveBlockKeepers, uint8 walletTouch, uint128 nlinit) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept {
+    function setConfig(uint64 epochDuration, uint128 minBlockKeepers, bool isNeedNumberOfActiveBlockKeepers, uint128 needNumberOfActiveBlockKeepers, uint8 walletTouch, uint128 nlinit) public onlyOwner accept {
         require(_is_close_owner == false, ERR_SENDER_NO_ALLOWED);
         ensureBalance();
         _epochDuration = epochDuration;
@@ -288,13 +279,7 @@ contract BlockKeeperContractRoot is Modifiers {
         AckiNackiBlockKeeperNodeWallet(BlockKeeperLib.calculateBlockKeeperWalletAddress(_code[m_AckiNackiBlockKeeperNodeWalletCode] ,address(this), pubkey)).deployBlockKeeperContractContinue{value: varuint16(FEE_DEPLOY_BLOCK_KEEPER_PRE_EPOCHE_WALLET + 0.5 vmshell), currencies: data_cur, flag: 1}(_walletTouch, seqNoStartOld, bls_pubkey, signerIndex, virtualStake, ProxyList, sumReputationCoef, nodeVersion);
     }
 
-    function setNewCode(uint8 id, TvmCell code) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept { 
-        require(_is_close_owner == false, ERR_SENDER_NO_ALLOWED);
-        ensureBalance();
-        _code[id] = code;
-    }
-
-    function setNewCodeNode(uint8 id, TvmCell code) public senderIs(address(this)) accept { 
+    function setNewCode(uint8 id, TvmCell code) public senderIs(address(this)) accept { 
         ensureBalance();
         _code[id] = code;
     }
@@ -353,25 +338,6 @@ contract BlockKeeperContractRoot is Modifiers {
         }
         (uint256 res, uint256 rewardRem)= math.divmod(uint256(stake) * uint256(rep_coef) * (_Gparam - gparam), SCALEparam);
         return (uint128(res), rewardRem);
-    }
-
-
-    function updateCode(TvmCell newcode, TvmCell cell) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept {
-        ensureBalance();
-        require(_is_close_owner == false, ERR_SENDER_NO_ALLOWED);
-        tvm.setcode(newcode);
-        tvm.setCurrentCode(newcode);
-        onCodeUpgrade(cell);
-    }
-
-    function updateCodeNode(TvmCell newcode, TvmCell cell) public senderIs(address(this)) accept {
-        ensureBalance();
-        tvm.setcode(newcode);
-        tvm.setCurrentCode(newcode);
-        onCodeUpgrade(cell);
-    }
-
-    function onCodeUpgrade(TvmCell cell) private pure {
     }
     
     //Fallback/Receive

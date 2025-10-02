@@ -29,6 +29,13 @@
 			]
 		},
 		{
+			"name": "destroyNode",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "sendTapRewards",
 			"inputs": [
 				{"name":"name","type":"string"}

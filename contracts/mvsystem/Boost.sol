@@ -46,6 +46,20 @@ contract Boost is Modifiers {
         PopitGame(_popitGame).setMbiCur{value: 0.1 vmshell, flag: 1}(mbiCur);
     }
 
+    function updateCode(TvmCell newcode, TvmCell cell) public view onlyOwnerPubkey(_rootPubkey) accept {
+        ensureBalance();
+        tvm.setcode(newcode);
+        tvm.setCurrentCode(newcode);
+        onCodeUpgrade(cell);
+    }
+
+    function onCodeUpgrade(TvmCell cell) private pure {
+    }
+
+    function destroyNode() public senderIs(address(this)) accept {
+        selfdestruct(address(this));
+    }
+
     function getDetails() external view returns(uint64 mbiCur, address wallet) {
         return (_mbiCur, _wallet);
     }

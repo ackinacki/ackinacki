@@ -59,7 +59,7 @@ contract BlockManagerContractRoot is Modifiers {
         _walletTouch = walletTouch;
     } 
 
-    function setConfig(uint64 epochDuration, uint64 waitStep, uint32 reward_period, uint32 min_reward_period, uint32 calc_reward_num, uint8 walletTouch) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept {
+    function setConfig(uint64 epochDuration, uint64 waitStep, uint32 reward_period, uint32 min_reward_period, uint32 calc_reward_num, uint8 walletTouch) public onlyOwner accept {
         require(_is_close_owner == false, ERR_SENDER_NO_ALLOWED);
         ensureBalance();
         _epochDuration = epochDuration;
@@ -82,19 +82,12 @@ contract BlockManagerContractRoot is Modifiers {
         _reward_adjustment = gosh.calcbmmvrewardadj(_reward_sum, _reward_period, _reward_adjustment, uint128(block.timestamp - _networkStart), true);
     }
 
-    function setOwner(address wallet) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  {
-        require(_is_close_owner == false, ERR_SENDER_NO_ALLOWED);
-        ensureBalance();
-        _owner_wallet = wallet;
-    }
-
-    function closeRoot() public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  {
+    function closeRoot() public onlyOwner accept  {
         _is_close_owner = true;
         ensureBalance();
     }
 
-    function setNewCode(uint8 id, TvmCell code) public onlyOwnerWallet(_owner_wallet, tvm.pubkey()) accept  { 
-        require(_is_close_owner == false, ERR_SENDER_NO_ALLOWED);
+    function setNewCode(uint8 id, TvmCell code) public senderIs(address(this)) accept  { 
         ensureBalance();
         _code[id] = code;
     }

@@ -20,15 +20,6 @@
 			]
 		},
 		{
-			"name": "setNewCodeNode",
-			"inputs": [
-				{"name":"id","type":"uint8"},
-				{"name":"code","type":"cell"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "deployNewConfigCustom",
 			"inputs": [
 				{"name":"authorityAddress","type":"optional(address)"}

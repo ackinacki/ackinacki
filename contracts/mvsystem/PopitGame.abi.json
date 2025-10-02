@@ -14,23 +14,6 @@
 			]
 		},
 		{
-			"name": "setNewCode",
-			"inputs": [
-				{"name":"id","type":"uint8"},
-				{"name":"code","type":"cell"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "setNewOwner",
-			"inputs": [
-				{"name":"owner","type":"address"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "addValuePopit",
 			"inputs": [
 				{"name":"name","type":"string"},

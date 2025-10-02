@@ -14,15 +14,6 @@
 			]
 		},
 		{
-			"name": "updateCode",
-			"inputs": [
-				{"name":"newcode","type":"cell"},
-				{"name":"cell","type":"cell"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "setNewIndex",
 			"inputs": [
 				{"name":"index","type":"uint128"}
@@ -35,6 +26,13 @@
 			"inputs": [
 				{"name":"id","type":"uint8"},
 				{"name":"code","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "destroyNode",
+			"inputs": [
 			],
 			"outputs": [
 			]

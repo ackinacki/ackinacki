@@ -12,14 +12,6 @@
 			]
 		},
 		{
-			"name": "setOwner",
-			"inputs": [
-				{"name":"wallet","type":"address"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "closeRoot",
 			"inputs": [
 			],
@@ -206,15 +198,6 @@
 			]
 		},
 		{
-			"name": "setNewCodeNode",
-			"inputs": [
-				{"name":"id","type":"uint8"},
-				{"name":"code","type":"cell"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "decreaseActiveBlockKeeper",
 			"inputs": [
 				{"name":"pubkey","type":"uint256"},
@@ -225,24 +208,6 @@
 				{"name":"reward_sum","type":"uint128"},
 				{"name":"gparam","type":"uint256"},
 				{"name":"isSlash","type":"bool"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "updateCode",
-			"inputs": [
-				{"name":"newcode","type":"cell"},
-				{"name":"cell","type":"cell"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "updateCodeNode",
-			"inputs": [
-				{"name":"newcode","type":"cell"},
-				{"name":"cell","type":"cell"}
 			],
 			"outputs": [
 			]
@@ -474,7 +439,6 @@
 		{"init":false,"name":"_nlinit","type":"uint128"},
 		{"init":false,"name":"_mbkOld","type":"uint128"},
 		{"init":false,"name":"_is_close_owner","type":"bool"},
-		{"init":false,"name":"_owner_wallet","type":"optional(address)"},
 		{"init":false,"name":"_Gparam","type":"uint256"},
 		{"init":false,"name":"_REMparam","type":"uint256"},
 		{"init":false,"name":"_Bparam","type":"uint32"}
