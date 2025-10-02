@@ -76,7 +76,7 @@ where
                 }
                 //     }
             };
-            tracing::trace!("Synchronization finished: {:?}", synchronization_result);
+            tracing::trace!(target: "monit", "Synchronization finished: {:?}", synchronization_result);
             let exec_result = match synchronization_result {
                 SynchronizationResult::Ok => self.execute_normal(),
                 SynchronizationResult::Forward(network_message) => {
@@ -301,6 +301,7 @@ where
                     }
                     NetworkMessage::Nack((nack, _)) => {
                         tracing::info!(
+                            target: "monit",
                             "Nack block: {:?}, signatures: {:?}",
                             nack.data(),
                             nack.clone_signature_occurrences()

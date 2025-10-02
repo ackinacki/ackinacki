@@ -476,7 +476,6 @@ impl AttestationSendService {
         self.tracking = tracking;
         for (awaiting_destinations, attestation) in to_send.into_iter() {
             tracing::trace!(
-                target: "monit",
                 "AttestationSendService: pulse: send attestation: {:?} {:?}",
                 attestation,
                 awaiting_destinations

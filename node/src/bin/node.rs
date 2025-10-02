@@ -357,7 +357,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let gossip_config = config.gossip_config()?;
     tracing::info!("Loaded config");
 
-    tracing::info!("Node config: {}", serde_json::to_string_pretty(&config)?);
+    tracing::info!(target: "monit", "Node config: {}", serde_json::to_string_pretty(&config)?);
     tracing::info!("Gossip seeds expanded: {:?}", gossip_config.seeds);
     tracing::info!("Gossip advertise addr: {:?}", gossip_config.advertise_addr);
     tracing::info!("Clear missing block locks: {}", args.clear_missing_block_locks);

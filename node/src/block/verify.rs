@@ -89,7 +89,7 @@ pub fn verify_block(
     if let Err(error) = &verification_block_production_result {
         if let Some(verify_error) = error.downcast_ref::<VerifyError>() {
             // TODO: need to set Nack reason in this case
-            tracing::trace!("verify block generation returned VerifyError: {verify_error:?}");
+            tracing::error!("verify block generation returned VerifyError: {verify_error:?}");
             if verify_error.code == BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK {
                 return Ok(VerificationResult::BadBlock);
             }
@@ -107,14 +107,14 @@ pub fn verify_block(
     // TODO: validate common section
     let mut res = verify_block.tvm_block() == block_candidate.tvm_block();
     if !res {
-        tracing::trace!("Verify block is not equal to the incoming, do the partial eq check");
+        tracing::trace!(target: "monit", "Verify block is not equal to the incoming, do the partial eq check");
         // There could be a special case when blocks have slightly different state
         // updates with the same result. So change blocks without state updates
         // and result state.
         let mut partial_compare_res = true;
         if verify_block.tvm_block().global_id != block_candidate.tvm_block().global_id {
             partial_compare_res = false;
-            tracing::trace!(
+            tracing::trace!(target: "monit",
                 "Unequal global id: {} {}",
                 verify_block.tvm_block().global_id,
                 block_candidate.tvm_block().global_id,
@@ -123,7 +123,7 @@ pub fn verify_block(
 
         if verify_block.tvm_block().info != block_candidate.tvm_block().info {
             partial_compare_res = false;
-            tracing::trace!(
+            tracing::trace!(target: "monit",
                 "Unequal info: {:?} {:?}",
                 verify_block.tvm_block().read_info().expect("failed to read block info"),
                 block_candidate.tvm_block().read_info().expect("failed to read block info"),
@@ -131,7 +131,7 @@ pub fn verify_block(
         }
         if verify_block.tvm_block().value_flow != block_candidate.tvm_block().value_flow {
             partial_compare_res = false;
-            tracing::trace!(
+            tracing::trace!(target: "monit",
                 "Unequal value_flow: {:?} {:?}",
                 verify_block.tvm_block().read_value_flow().expect("failed to read block info"),
                 block_candidate.tvm_block().read_value_flow().expect("failed to read block info"),
@@ -141,7 +141,7 @@ pub fn verify_block(
             != block_candidate.tvm_block().out_msg_queue_updates
         {
             partial_compare_res = false;
-            tracing::trace!(
+            tracing::trace!(target: "monit",
                 "Unequal out_msg_queue_updates: {:?} {:?}",
                 verify_block.tvm_block().out_msg_queue_updates,
                 block_candidate.tvm_block().out_msg_queue_updates,
@@ -149,7 +149,7 @@ pub fn verify_block(
         }
         if verify_block.tvm_block().extra != block_candidate.tvm_block().extra {
             partial_compare_res = false;
-            tracing::trace!(
+            tracing::trace!(target: "monit",
                 "Unequal extra: {:?} {:?}",
                 verify_block.tvm_block().read_extra().expect("failed to read block info"),
                 block_candidate.tvm_block().read_extra().expect("failed to read block info"),
@@ -166,7 +166,7 @@ pub fn verify_block(
 
         if candidate_block_state_update.new_hash != verify_block_state_update.new_hash {
             partial_compare_res = false;
-            tracing::trace!(
+            tracing::trace!(target: "monit",
                 "Unequal update new_hash: {:?} {:?}",
                 verify_block_state_update.new_hash,
                 candidate_block_state_update.new_hash,
@@ -174,7 +174,7 @@ pub fn verify_block(
         }
         if candidate_block_state_update.old_hash != verify_block_state_update.old_hash {
             partial_compare_res = false;
-            tracing::trace!(
+            tracing::trace!(target: "monit",
                 "Unequal update old_hash: {:?} {:?}",
                 verify_block_state_update.old_hash,
                 candidate_block_state_update.old_hash,
@@ -182,14 +182,14 @@ pub fn verify_block(
         }
 
         if verify_block.tx_cnt() != block_candidate.tx_cnt() {
-            tracing::trace!(
+            tracing::trace!(target: "monit",
                 "Unequal tx_cnt: verify: {:?} candidate: {:?}",
                 verify_block.tx_cnt(),
                 block_candidate.tx_cnt()
             );
-            tracing::trace!("Candidate txns:");
+            tracing::trace!(target: "monit","Candidate txns:");
             display_block_transactions(block_candidate);
-            tracing::trace!("verify block txns:");
+            tracing::trace!(target: "monit","verify block txns:");
             display_block_transactions(&verify_block);
         }
 
@@ -236,32 +236,32 @@ pub fn prepare_prev_block_info(block_candidate: &AckiNackiBlock) -> BlockInfo {
 
 fn display_block_transactions(block: &AckiNackiBlock) {
     let Ok(extra) = block.tvm_block().read_extra() else {
-        tracing::trace!("failed to read block extra");
+        tracing::error!("failed to read block extra");
         return;
     };
     let Ok(account_blocks) = extra.read_account_blocks() else {
-        tracing::trace!("failed to read account blocks");
+        tracing::error!("failed to read account blocks");
         return;
     };
     let Ok(_) = account_blocks.iterate_objects(|account_block| {
         let account_id = account_block.account_id().clone().to_hex_string();
         let Ok(_) = account_block.transactions().iterate_objects(|transaction| {
             let Ok(in_msg) = transaction.read_in_msg() else {
-                tracing::trace!("failed to read in msg");
+                tracing::error!("failed to read in msg");
                 return Ok(true);
             };
-            tracing::trace!(
+            tracing::trace!(target: "monit",
                 "Acc: {account_id} message_hash: {:?} message: {in_msg:?} tx: {transaction:?}",
                 in_msg.as_ref().map(|msg| msg.hash().unwrap().to_hex_string())
             );
             Ok(true)
         }) else {
-            tracing::trace!("failed to iterate block txns");
+            tracing::error!("failed to iterate block txns");
             return Ok(true);
         };
         Ok(true)
     }) else {
-        tracing::trace!("failed to iterate account blocks");
+        tracing::error!("failed to iterate account blocks");
         return;
     };
 }
