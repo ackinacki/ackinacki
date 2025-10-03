@@ -69,14 +69,6 @@
 			]
 		},
 		{
-			"name": "setNewWalletRoot",
-			"inputs": [
-				{"name":"wallet","type":"address"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "setNewWallet",
 			"inputs": [
 				{"name":"wallet","type":"address"}

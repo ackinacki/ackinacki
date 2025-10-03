@@ -134,7 +134,6 @@
 		{"init":true,"name":"_pubkey","type":"uint256"},
 		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
-		{"init":false,"name":"_code","type":"map(uint8,cell)"},
 		{"init":false,"name":"_popcoinroot","type":"address"},
 		{"init":true,"name":"_name","type":"string"},
 		{"init":true,"name":"_owner","type":"address"},

@@ -120,6 +120,7 @@ pub struct NodeConfig {
     pub node_id: NodeIdentifier,
 
     /// Path to the file with blockchain config.
+    /// Config is deprecated (it is unused and will be removed soon)
     #[builder(default = PathBuf::from("blockchain_config.json"))]
     pub blockchain_config_path: PathBuf,
 

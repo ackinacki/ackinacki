@@ -6,7 +6,6 @@
  * Licensed under the ANNL. See License.txt in the project root for license information.
 */
 pragma gosh-solidity >=0.76.1;
-pragma ignoreIntOverflow;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
 
@@ -18,7 +17,6 @@ import "./MobileVerifiersContractRoot.sol";
 
 contract PopCoinWallet is Modifiers {
     string constant version = "1.0.0";
-    mapping(uint8 => TvmCell) _code;
 
     address _popcoinroot;
     string static _name;

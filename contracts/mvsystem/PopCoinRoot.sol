@@ -6,7 +6,6 @@
  * Licensed under the ANNL. See License.txt in the project root for license information.
 */
 pragma gosh-solidity >=0.76.1;
-pragma ignoreIntOverflow;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
 
@@ -164,10 +163,6 @@ contract PopCoinRoot is Modifiers {
     function destroy() public view onlyOwnerPubkey(_root_pubkey) accept {
         require(_isReady == false, ERR_ALREADY_READY);
         MobileVerifiersContractRoot(_root).popCoinRootDestroyed{value: 0.1 vmshell, flag: 161, bounce: false}(_name);
-    }
-
-    function destroyUpgrade() public onlyOwnerPubkey(_root_pubkey) accept {
-        selfdestruct(_root);
     }
 
     function mintValue(address owner, uint64 value, uint64 mbiCur) public senderIs(VerifiersLib.calculatePopCoinWalletAddress(_code[m_PopCoinWallet], _popitgamehash, _root, _name, owner)) accept {

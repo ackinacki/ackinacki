@@ -1,7 +1,6 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::path::Path;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -56,8 +55,7 @@ impl ValidationService {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn new<P: AsRef<Path>>(
-        blockchain_config_path: P,
+    pub fn new(
         repository: RepositoryImpl,
         node_config: Config,
         shared_services: SharedServices,
@@ -71,7 +69,7 @@ impl ValidationService {
         let (tx, rx) =
             instrumented_channel(metrics.clone(), crate::helper::metrics::BLOCK_STATE_CHANNEL);
         let interface = ValidationServiceInterface { send_tx: tx };
-        let blockchain_config = load_blockchain_config(&blockchain_config_path.as_ref().into())?;
+        let blockchain_config = load_blockchain_config()?;
 
         let handler: std::thread::JoinHandle<()> = std::thread::Builder::new()
             .name("Block validation service".to_string())

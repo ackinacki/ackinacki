@@ -40,7 +40,7 @@
 		{
 			"name": "deployPopitGame",
 			"inputs": [
-				{"name":"multifactor","type":"address"}
+				{"name":"pubkey","type":"uint256"}
 			],
 			"outputs": [
 			]
@@ -65,8 +65,7 @@
 				{"name":"pub_recovery_key_sig","type":"bytes"},
 				{"name":"jwk_update_key","type":"uint256"},
 				{"name":"jwk_update_key_sig","type":"bytes"},
-				{"name":"root_provider_certificates","type":"map(uint256,bytes)"},
-				{"name":"owner_pubkey","type":"uint256"}
+				{"name":"root_provider_certificates","type":"map(uint256,bytes)"}
 			],
 			"outputs": [
 			]

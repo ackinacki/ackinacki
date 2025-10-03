@@ -75,7 +75,7 @@ struct BlockProductionMetricsInner {
     last_prefinalized_seqno: Gauge<u64>,
     next_round_block_height: Gauge<u64>,
     authority_switch_direct_resent: Counter<u64>,
-    block_request: Counter<u64>,
+    state_request: Counter<u64>,
     errors: Counter<u64>,
 }
 
@@ -282,7 +282,7 @@ impl BlockProductionMetrics {
             last_prefinalized_seqno: meter.u64_gauge("node_last_prefinalized_seqno").build(),
             next_round_block_height: meter.u64_gauge("node_next_round_block_height").build(),
             authority_switch_direct_resent: meter.u64_counter("node_auth_sw_dir_resent").build(),
-            block_request: meter.u64_counter("node_block_req_exec").build(),
+            state_request: meter.u64_counter("node_state_req_exec").build(),
             errors: meter.u64_counter("node_errors").build(),
         }))
     }
@@ -551,8 +551,8 @@ impl BlockProductionMetrics {
         self.0.authority_switch_direct_resent.add(1, &[thread_id_attr(thread_id)]);
     }
 
-    pub fn report_block_request(&self) {
-        self.0.block_request.add(1, &[]);
+    pub fn report_state_request(&self) {
+        self.0.state_request.add(1, &[]);
     }
 
     pub fn report_error(&self, kind: &'static str) {

@@ -1023,9 +1023,18 @@ It may take around 20+ minutes for synchronization. Once complete, the `seq_no` 
 
 ### Generate Keys and Deploy Block Manager Wallet
 
-Before deploying a Block Manager, you must create two key pair files and then deploy the Block Manager wallet:
+Before deploying a Block Manager, you need to obtain your BM license number from the GOSH team representative, then create two key pairs, and finally deploy the Block Manager wallet:
+
 * One key pair will be used to operate the Block Manager wallet.
 * The other will be used to sign external message authentication tokens.
+
+You can create a wallet with keys and a license number by running:
+
+```bash
+create_block_manager_wallet.sh block_manager_wallet.keys.json block_manager_wallet_signing.keys.json 1 tvm-endpoint-address.org
+```
+
+Alternatively, you can manually generate the keys and deploy the wallet:
 
 ```bash
 tvm-cli genphrase --dump block_manager.keys.json
@@ -1033,10 +1042,16 @@ tvm-cli genphrase --dump block_manager_signing.keys.json
 ```
 
 Specify these keys to your inventory file.
-To deploy the Block Manager wallet, extract your keys from the files created above and run:
+To deploy the Block Manager wallet, extract the keys from the files created above and run:
 
 ```bash
 tvm-cli --abi ../contracts/bksystem/BlockManagerContractRoot.abi.json --addr 0:6666666666666666666666666666666666666666666666666666666666666666 -m deployAckiNackiBlockManagerNodeWallet '{"pubkey": "0xYOUR_PUB_KEY", "signerPubkey": "0xYOUR_SIGNING_KEY", "whiteListLicense": {"YOUR_LICENSE_NUMBER": true}}'
+```
+
+Finally, don’t forget to add the Block Manager wallet to your license:
+
+```bash
+tvm-cli -j callx --addr LICENSE_ADDR --abi contracts/bksystem/LicenseBM.abi.json --keys BM_LICENSE_OWNER.keys.json --method addBMWallet '{"pubkey": "0xBM_WALLET_PUB_KEY"}'
 ```
 
 ### Create an Ansible Inventory

@@ -135,7 +135,7 @@ impl StateSyncService for ExternalFileSharesBased {
                 services.drain().collect()
             };
             if let Some(m) = metrics.as_ref() {
-                m.report_block_request()
+                m.report_state_request()
             }
             let metrics_on_success = metrics.clone();
             let metrics_on_error = metrics.clone();
@@ -165,7 +165,7 @@ impl StateSyncService for ExternalFileSharesBased {
                             }
                             Err(e) => {
                                 if let Some(m) = metrics_on_success {
-                                    m.report_error("load_blob_fail");
+                                    m.report_error("load_state_fail");
                                 }
                                 let _ = output_clone.send(Err(e.into()));
                             }
@@ -178,7 +178,7 @@ impl StateSyncService for ExternalFileSharesBased {
                         // Handle error
                         let _ = output_clone.send(Err(e));
                         if let Some(m) = metrics_on_error {
-                            m.report_error("load_blob_error");
+                            m.report_error("load_state_error");
                         }
                     }
                 },

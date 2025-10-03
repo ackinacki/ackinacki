@@ -879,9 +879,7 @@ mod tests {
             .block_keeper_epoch_code_hash(config.global.block_keeper_epoch_code_hash.clone())
             .block_keeper_preepoch_code_hash(config.global.block_keeper_preepoch_code_hash.clone())
             .producer_node_id(config.local.node_id.clone())
-            .blockchain_config(Arc::new(load_blockchain_config(
-                &config.local.blockchain_config_path,
-            )?))
+            .blockchain_config(Arc::new(load_blockchain_config()?))
             .parallelization_level(config.local.parallelization_level)
             .shared_services(SharedServices::start(
                 router,

@@ -6,7 +6,6 @@
  * Licensed under the ANNL. See License.txt in the project root for license information.
 */
 pragma gosh-solidity >=0.76.1;
-pragma ignoreIntOverflow;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
 
@@ -57,11 +56,9 @@ contract Mirror is Modifiers {
         selfdestruct(address(this));
     }
 
-    function deployPopitGame(address multifactor) public view accept {
+    function deployPopitGame(uint256 pubkey) public view senderIs(VerifiersLib.calculateMultifactorAddress(_code[m_MvMultifactor], pubkey, _root)) accept {
         ensureBalance();
-        (, uint256 modulus) = math.divmod(multifactor.value, MAX_MIRROR_INDEX);
-        require(modulus == _index, ERR_WRONG_MIRROR_INDEX);
-        TvmCell data = VerifiersLib.composePopitGameStateInit(_code[m_PopitGame], _root, multifactor);
+        TvmCell data = VerifiersLib.composePopitGameStateInit(_code[m_PopitGame], _root, msg.sender);
         mapping(uint8 => TvmCell) code;
         code[m_PopCoinRoot] = _code[m_PopCoinRoot];
         code[m_PopitGame] = _code[m_PopitGame];
@@ -88,9 +85,9 @@ contract Mirror is Modifiers {
         bytes pub_recovery_key_sig,
         uint256 jwk_update_key,
         bytes jwk_update_key_sig,
-        mapping(uint256 => bytes) root_provider_certificates,
-        uint256 owner_pubkey) public view accept {
+        mapping(uint256 => bytes) root_provider_certificates) public view accept {
         ensureBalance();
+        uint256 owner_pubkey = msg.pubkey();
         (, uint256 modulus) = math.divmod(owner_pubkey, MAX_MIRROR_INDEX);
         require(modulus == _index, ERR_WRONG_MIRROR_INDEX);
         require(VerifiersLib.checkName(name), ERR_WRONG_NAME);
@@ -104,7 +101,7 @@ contract Mirror is Modifiers {
         require(epk_expire_at < uint64(block.timestamp + MAX_EPK_LIFE_TIME), ERR_FACTOR_TIMESTAMP_TOO_BIG);
         require(jwk_modulus_expire_at < uint64(block.timestamp + MAX_JWK_LIFE_TIME), ERR_JWK_TIMESTAMP_TOO_BIG);
         bytes ph = gosh.poseidon(index_mod_4, epk_expire_at, epk, jwk_modulus, iss_base_64, header_base_64, zkid);
-        require(gosh.vergrth16(proof, ph, 0), ERR_INVALID_PROOF);
+        require(gosh.vergrth16(proof, ph, 1), ERR_INVALID_PROOF);
         require(provider.byteLength() < MAX_LEN, ERR_BAD_LEN);
         TvmCell data = VerifiersLib.composeIndexerStateInit(_code[m_Indexer], name);
         address wallet = VerifiersLib.calculateMultifactorAddress(_code[m_MvMultifactor], owner_pubkey, _root);

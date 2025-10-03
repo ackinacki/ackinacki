@@ -6,7 +6,6 @@
  * Licensed under the ANNL. See License.txt in the project root for license information.
 */
 pragma gosh-solidity >=0.76.1;
-pragma ignoreIntOverflow;
 pragma AbiHeader expire;
 pragma AbiHeader pubkey;
 

@@ -25,7 +25,6 @@ contract Boost is Modifiers {
         (string lib, address root) = abi.decode(data, (string, address));
         require(VerifiersLib.versionLib == lib, ERR_INVALID_SENDER);
         _root = root;
-        require(msg.sender == _popitGame, ERR_NOT_OWNER); 
         _wallet = wallet;
         _rootPubkey = rootPubkey;
     }

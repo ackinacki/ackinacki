@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.1] - 2025-10-03
+
+### New
+- State sync request metrics
+- Block Manager staking scripts
+
+### Improvements
+- MV contract system updates
+
+## [0.10.0] - 2025-10-01
+
+### Improvements
+- MV contract system updates
+
 ## [0.9.0] - 2025-10-01
 
 ### New

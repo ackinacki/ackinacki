@@ -28,11 +28,11 @@ impl Display for VerifyError {
 }
 
 impl VerifyError {
-    pub(crate) fn new(code: u8) -> Self {
+    pub(crate) fn _new(code: u8) -> Self {
         Self { code }
     }
 }
 
-pub(crate) fn verify_error(code: u8) -> anyhow::Error {
-    anyhow!(VerifyError::new(code))
+pub(crate) fn _verify_error(code: u8) -> anyhow::Error {
+    anyhow!(VerifyError::_new(code))
 }

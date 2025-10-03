@@ -822,7 +822,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     ));
 
     let validation_service = ValidationService::new(
-        &config.local.blockchain_config_path,
         repository.clone(),
         config.clone(),
         node_shared_services.clone(),
@@ -965,9 +964,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     config.global.block_keeper_preepoch_code_hash.clone(),
                 )
                 .producer_node_id(config.local.node_id.clone())
-                .blockchain_config(Arc::new(load_blockchain_config(
-                    &config.local.blockchain_config_path,
-                )?))
+                .blockchain_config(Arc::new(load_blockchain_config()?))
                 .parallelization_level(config.local.parallelization_level)
                 .shared_services(node_shared_services.clone())
                 .block_produce_timeout(Arc::new(Mutex::new(Duration::from_millis(

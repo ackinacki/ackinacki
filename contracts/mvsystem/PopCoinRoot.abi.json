@@ -96,13 +96,6 @@
 			]
 		},
 		{
-			"name": "destroyUpgrade",
-			"inputs": [
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "mintValue",
 			"inputs": [
 				{"name":"owner","type":"address"},

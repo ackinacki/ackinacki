@@ -140,10 +140,6 @@ contract NameIndex is Modifiers {
         );
     }
 
-    function setNewWalletRoot(address wallet) public onlyOwnerPubkey(_rootPubkey) accept {
-        _wallet = wallet;
-    }
-
     function setNewWallet(address wallet) public senderIs(_wallet) accept {
         _wallet = wallet;
     }

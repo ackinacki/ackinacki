@@ -270,7 +270,7 @@ pub async fn report_block_request(
     ctrl: &mut FlowCtrl,
 ) {
     if let Ok(Some(metrics)) = depot.obtain::<Option<RoutingMetrics>>() {
-        metrics.report_block_request();
+        metrics.report_state_request();
     };
     ctrl.call_next(req, depot, res).await;
 }

@@ -148,6 +148,7 @@ contract Multifactor is Modifiers {
         _lv_provider_bytes = bytes(bytes1(uint8(provider.byteLength())));
         bytes tail = provider;
         _lv_provider_bytes.append(tail);
+        Mirror(msg.sender).deployPopitGame{value: 0.1 vmshell}(_owner_pubkey);
     }
 
     function ensureBalance() private pure {
@@ -672,6 +673,9 @@ contract Multifactor is Modifiers {
         uint256 key = generateIdBasedOnTimestampAndUintData(epk_expire_at, msg.pubkey());
         require(_factors_ordered_by_timestamp.exists(key) && _factors_ordered_by_timestamp[key] == msg.pubkey(), ERR_INVALID_SIGNATURE);
         require(value >= _min_value, ERR_TOO_SMALL_VALUE);
+        if (payload != TvmCell()) {
+            require(_whiteListOfAddress[dest] == true, ERR_WRONG_ADDRESS);
+        }
         removeExpiredTransactions();
         require(_m_transactions_len < MAX_QUEUED_REQUESTS, ERR_TRX_WAITLIST_OVERFLOWED);
         tvm.accept(); //TODO: check what if remove this
