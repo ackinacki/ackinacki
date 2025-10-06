@@ -109,7 +109,6 @@ impl BlockProcessorService {
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         send_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
         broadcast_tx: NetBroadcastSender<NetworkMessage>,
-        skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
         block_gap: BlockGap,
         validation_service: ValidationServiceInterface,
         share_service: ExternalFileSharesBased,
@@ -213,7 +212,6 @@ impl BlockProcessorService {
                                 &repository,
                                 &mut shared_services,
                                 nack_set_cache.clone(),
-                                &skipped_attestation_ids,
                                 block,
                                 &validation_service,
                                 &time_to_produce_block,
@@ -269,7 +267,6 @@ fn process_candidate_block(
     repository: &RepositoryImpl,
     shared_services: &mut SharedServices,
     nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
-    skipped_attestation_ids: &Arc<Mutex<HashSet<BlockIdentifier>>>,
     candidate_block: &Envelope<GoshBLS, AckiNackiBlock>,
     validation_service: &ValidationServiceInterface,
     time_to_produce_block: &Duration,
@@ -372,12 +369,7 @@ fn process_candidate_block(
         }
     }
 
-    let result = verify_all_block_signatures(
-        block_state_repository,
-        candidate_block,
-        block_state,
-        skipped_attestation_ids,
-    );
+    let result = verify_all_block_signatures(block_state_repository, candidate_block, block_state);
 
     if let Some(status) = result {
         if !status {
@@ -845,7 +837,6 @@ pub(crate) fn verify_all_block_signatures(
     block_state_repository: &BlockStateRepository,
     candidate_block: &Envelope<GoshBLS, AckiNackiBlock>,
     block_state: &BlockState,
-    skipped_attestation_ids: &Arc<Mutex<HashSet<BlockIdentifier>>>,
 ) -> Option<bool> {
     // TODO: verify acks and nacks in the common section
 
@@ -899,7 +890,6 @@ pub(crate) fn verify_all_block_signatures(
     if previously_verified_attestations.len()
         != candidate_block.data().get_common_section().block_attestations.len()
     {
-        let skipped_attestation_ids = skipped_attestation_ids.lock().clone();
         let mut is_all_success = true;
         let mut verified_attestations = vec![];
         for attestation in candidate_block.data().get_common_section().block_attestations.iter() {
@@ -913,9 +903,6 @@ pub(crate) fn verify_all_block_signatures(
             else {
                 continue;
             };
-            if skipped_attestation_ids.contains(attestation.data().block_id()) {
-                continue;
-            }
             let (is_parent_invalidated, attestation_signers_map) =
                 ancestor_block_state.guarded(|e| (e.is_invalidated(), e.bk_set().clone()));
             if is_parent_invalidated {
@@ -964,6 +951,14 @@ pub(crate) fn verify_all_block_signatures(
             check_failed
         }) {
             // DO NOT collapse this if statement.
+            is_all_success = false;
+        }
+
+        let previously_verified_attestations: HashSet<(BlockIdentifier, AttestationTargetType)> =
+            block_state.guarded(|e| HashSet::from_iter(e.verified_attestations().keys().cloned()));
+        if previously_verified_attestations.len()
+            != candidate_block.data().get_common_section().block_attestations.len()
+        {
             is_all_success = false;
         }
         return if is_all_success { Some(true) } else { None };

@@ -21,12 +21,12 @@ enum MTarget<'a> {
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// The path to the DB file (bm-archive.db). Creates and
+    /// The path to the DB file (bm-schema.db). Creates and
     /// inits to the latest version if they are missing
     #[arg(short = 'p')]
     db_path: String,
 
-    /// Migrate the bm-archive.db to the specified DB schema version (default: latest)
+    /// Migrate the bm-schema.db to the specified DB schema version (default: latest)
     #[arg(long = "block-manager", value_name = "SCHEMA_VERSION", num_args = 0..=1, default_missing_value = "latest")]
     bm: Option<String>,
 }
@@ -81,7 +81,7 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    let db_file = db_path.join("bm-archive.db");
+    let db_file = db_path.join("bm-schema.db");
     let mut conn = Connection::open(db_file.clone())?;
     let current_version =
         conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap_or(0);
@@ -96,7 +96,7 @@ fn main() -> anyhow::Result<()> {
         r"
         db path: {}
 
-        bm-archive.db:
+        bm-schema.db:
           schema version: {current_version}
           latest migration version: {m_version}
     ",
@@ -111,14 +111,20 @@ fn main() -> anyhow::Result<()> {
     let migrate_to =
         parse_version(args.bm.clone(), MTarget::BlockManager(migrations_block_manager.clone()))?;
     if current_version == migrate_to {
-        println!("`bm-archive.db` is up to date");
+        println!("`bm-schema.db` is up to date");
     } else if args.bm.is_some() {
         if current_version < migrate_to {
-            print!("Upgrading `bm-archive.db` to the schema version {migrate_to:?}... ");
+            println!("Upgrading `bm-schema.db` to the schema version {migrate_to:?}... ");
         } else {
-            print!("Downgrading `bm-archive.db` to the schema version {migrate_to:?}... ");
+            println!("Downgrading `bm-schema.db` to the schema version {migrate_to:?}... ");
         }
         migrations_block_manager.to_version(&mut conn, migrate_to as usize)?;
+        // conn.execute_batch(
+        //     "
+        //     PRAGMA page_size=16384;
+        //     VACUUM;
+        //     PRAGMA optimize=0x10002;
+        // ")?;
     }
 
     Ok(())

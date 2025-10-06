@@ -43,6 +43,8 @@ impl Debug for Directives {
 pub struct CommonSection {
     pub block_height: BlockHeight,
     pub directives: Directives,
+    // TODO: we assume that all attestations are aggregated and there are no duplicates on (block_id, attestation_target_type)
+    // otherwise it may break block processing cycle
     pub block_attestations: Vec<Envelope<GoshBLS, AttestationData>>,
     pub round: BlockRound,
     pub producer_id: NodeIdentifier,

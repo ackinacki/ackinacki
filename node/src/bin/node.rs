@@ -1052,7 +1052,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 nack_set_cache.clone(),
                 direct_tx.clone(),
                 broadcast_tx.clone(),
-                skipped_attestation_ids.clone(),
                 block_gap.clone(),
                 validation_service.interface(),
                 sync_state_service.clone(),

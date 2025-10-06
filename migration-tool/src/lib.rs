@@ -19,7 +19,7 @@ pub struct DbInfo {
 
 impl DbInfo {
     pub const BM_ARCHIVE: Self = Self {
-        name: "bm-archive",
+        name: "bm-schema",
         migrations: include_dir!("$CARGO_MANIFEST_DIR/migrations/bm-archive"),
     };
 }

@@ -70,7 +70,7 @@ services:
       - -c
       - >
         migration-tool -p ./data --block-manager
-        && cp ./data/bm-archive.db ./data/bm-schema.db
+        && cp ./data/bm-schema.db ./data/bm-archive.db
         && exec {{ BM_BINARY }} >> /logsdir/block-manager.log 2>&1
     expose:
       - {{ BM_API_PORT }}
