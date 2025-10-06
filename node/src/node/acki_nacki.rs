@@ -50,13 +50,16 @@ where
         match &nack.data().reason {
             NackReason::BadBlock { envelope } | NackReason::TooComplexExecution { envelope } => {
                 let block_state = self.block_state_repository.get(&envelope.data().identifier())?;
-                block_state.guarded_mut(|e| {
+                let already_validated = block_state.guarded_mut(|e| {
                     e.add_suspicious(
                         nack.clone_signature_occurrences(),
                         nack.aggregated_signature().clone(),
-                    )
+                    )?;
+                    Ok::<bool, anyhow::Error>(e.validated().is_some())
                 })?;
-                self.validation_service.send((block_state, envelope.clone()));
+                if !already_validated {
+                    self.validation_service.send((block_state, envelope.clone()));
+                }
             }
             _ => {
                 tracing::warn!("Unimplemented. Should not be possible to reach.");

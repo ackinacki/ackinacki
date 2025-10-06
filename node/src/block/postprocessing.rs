@@ -89,6 +89,7 @@ pub fn postprocess(
         AccountRouting,
         (Option<WrappedAccount>, Option<AccountInbox>),
     > = HashMap::new();
+
     let messages = ThreadMessageQueueState::build_next()
         .with_initial_state(initial_optimistic_state.messages)
         .with_consumed_messages(consumed_internal_messages)

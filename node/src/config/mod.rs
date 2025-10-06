@@ -205,7 +205,7 @@ impl Default for GlobalConfig {
             attestation_resend_timeout: Duration::from_secs(3),
             producer_change_gap_size: 6,
             node_joining_timeout: Duration::from_secs(300),
-            sync_gap: 32,
+            sync_gap: 64,
             sync_delay_milliseconds: 500,
             save_state_frequency: 200,
             block_keeper_epoch_code_hash:

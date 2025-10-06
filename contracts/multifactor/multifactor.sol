@@ -36,17 +36,15 @@ contract Multifactor is Modifiers {
      *  Constants
      */
     string constant version = "1.0.1";
-
     string constant WASM_MODULE = "docs:tlschecker/tls-check-interface@0.1.0";
     string constant WASM_FUNCTION = "tlscheck";
     bytes constant WASM_BINARY = "";
-    
     uint8   constant MAX_QUEUED_REQUESTS =  20;
     uint64  constant EXPIRATION_TIME = 3601; // lifetime is 1 hour
     uint64  constant MIN_EPK_LIFE_TIME = 300; //5 min           
     uint64  constant MAX_EPK_LIFE_TIME = 15552000; // 180 days      
     uint64  constant MIN_JWK_LIFE_TIME = 300;  // 5 min          
-    uint64  constant MAX_JWK_LIFE_TIME = 21600;  // 6 hours  
+    uint64  constant MAX_JWK_LIFE_TIME = 21600;  // 6 hours
     uint8   constant MAX_CARDS = 5;
     uint8   constant MAX_NUM_OF_FACTORS = 10;
     uint8   constant NUMBER_OF_FACTORS_TO_CLEAR = 5;
@@ -74,13 +72,12 @@ contract Multifactor is Modifiers {
 
     mapping(uint256 => JWKData) public _jwk_modulus_data;
     uint8 public _jwk_modulus_data_len;
-    optional(uint256, JWKData) _start_point_jwk;
+    optional(uint256, JWKData) public _start_point_jwk;
 
     string public _zkid;
     uint8 public _index_mod_4; // is constant for the same provider and _zkid
     string public _iss_base_64; // is constant for the same provider and _zkid
     bytes public _lv_provider_bytes;
-
     bool public _use_security_card = false;
     mapping(uint256 => bool) public _m_security_cards; // security_card pub_key -> 
     uint8 public _m_security_cards_len = 0;
@@ -94,7 +91,7 @@ contract Multifactor is Modifiers {
 
     bool public _force_remove_oldest;
 
-    uint32 public _verification_key_index = 1;
+    uint32 public _verification_key_index = 1; // In the past there were multiple verification keys inside TVM: indices 0 and 2 corresponded unsecure keys, index 1 corresponded to secure key. At the present moment we deleted unsecure keys, there is only one secure verification key (related index 1). So _verification_key_index argument is really not used inside vergrth16 instruction and its value does not matter.
 
     constructor (
         string zkid,
@@ -147,6 +144,7 @@ contract Multifactor is Modifiers {
         _lv_provider_bytes.append(tail);
         _root_provider_certificates = root_provider_certificates;
         _force_remove_oldest = false;
+        _start_point_jwk = _jwk_modulus_data.min();
     }
 
     function generateIdBasedOnTimestampAndUintData(uint64 expire_at, uint256 data_) inline private pure returns (uint256) {
@@ -156,7 +154,6 @@ contract Multifactor is Modifiers {
 
     /** Functions to add check and delete JWK keys  */
     bytes public _wasm_hash = hex"b8891b913656ae35d9ffff371f0f03e4f1f869d0e17556a8c273750313884b0a";
-    //hex"7070910579bb17bf986de6e318c6f5a8bf7e148b3fb8e0cbf03479fb9eb8c948";
     function addJwkModulus(uint256 root_cert_sn, bytes lv_kid, bytes tls_data) public onlyOwnerPubkey(_jwk_update_key) returns (bool success) {
         require(_root_provider_certificates.exists(root_cert_sn), ERR_CERT_NOT_FOUND);
         bytes stamp = bytes(bytes4(block.timestamp & 0xFFFFFFFF));
@@ -203,7 +200,12 @@ contract Multifactor is Modifiers {
             _jwk_modulus_data_len = _jwk_modulus_data_len + 1;
         }
         _jwk_modulus_data[jwk_hash] = JWKData(jwk_modulus, jwk_modulus_expire_at_new);
-
+        if (_start_point_jwk.hasValue()) {
+            (uint256 hash_, ) = _start_point_jwk.get();
+            if (hash_ == jwk_hash) {
+                _start_point_jwk = _jwk_modulus_data.min();
+            }
+        }
         return true;
     }
 
@@ -213,6 +215,7 @@ contract Multifactor is Modifiers {
         tvm.accept();
         delete _jwk_modulus_data[jwk_hash];
         _jwk_modulus_data_len = _jwk_modulus_data_len - 1;
+        _start_point_jwk = _jwk_modulus_data.min();
     }
 
     function cleanExpiredJwks(uint8 num_iter) inline private {
@@ -223,7 +226,7 @@ contract Multifactor is Modifiers {
         uint8 iter = 0;
         while(pair.hasValue() && iter < num_iter) {
             (uint256 hash_, JWKData data_) = pair.get();
-            if (block.timestamp > data_.modulus_expire_at) {
+            if ((block.timestamp > data_.modulus_expire_at) && _jwk_modulus_data.exists(hash_)) {
                 delete _jwk_modulus_data[hash_];
                 _jwk_modulus_data_len = _jwk_modulus_data_len - 1;
             }
@@ -257,6 +260,7 @@ contract Multifactor is Modifiers {
         tvm.accept();
         delete _jwk_modulus_data[hash_];
         _jwk_modulus_data_len = _jwk_modulus_data_len - 1;
+        _start_point_jwk = _jwk_modulus_data.min();
     }
 
     /** Functions to add and clear zkp factors  */
@@ -374,6 +378,7 @@ contract Multifactor is Modifiers {
         tvm.accept();
         delete _jwk_modulus_data;
         _jwk_modulus_data_len = 0;
+        _start_point_jwk = null;
     }
 
     function cleanAllZKPFactors() public onlyOwnerPubkey(_owner_pubkey) {
@@ -443,7 +448,7 @@ contract Multifactor is Modifiers {
         bytes tail = provider;
         _lv_provider_bytes.append(tail);
         _jwk_update_key = jwk_update_key;
-        _start_point_jwk = null;
+        _start_point_jwk = _jwk_modulus_data.min();
     }
 
     function updateSeedPhrase(uint256 new_owner_pubkey, bytes new_owner_pubkey_sig) public onlyOwnerPubkey(_owner_pubkey) {
@@ -460,6 +465,7 @@ contract Multifactor is Modifiers {
         tvm.accept();
         delete _jwk_modulus_data[jwk_hash];
         _jwk_modulus_data_len = _jwk_modulus_data_len - 1;
+        _start_point_jwk = _jwk_modulus_data.min();
     }
 
     function deleteZKPfactor(uint64 epk_expire_at, uint256 epk) public onlyOwnerPubkey(_owner_pubkey) {

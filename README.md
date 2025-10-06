@@ -373,7 +373,6 @@ all:
     NODE_OWNER_KEY: PATH_TO_NODE_OWNER_KEY
     NODE_CONFIGS:
       - "zerostate"
-      - "blockchain.conf.json"
     # Remove this variable from the inventory before upgrading nodes to avoid unnecessary steps.
     # However, it is required when starting new nodes without existing data,
     # especially if they are running behind your own proxy servers.

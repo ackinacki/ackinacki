@@ -66,7 +66,6 @@ impl AckiNackiBlock {
                 Ok(true)
             })
             .map_err(|e| anyhow::format_err!("Failed to iter out msgs: {e}"))?;
-
         let in_msg_descr = block_extra
             .read_in_msg_descr()
             .map_err(|e| anyhow::format_err!("Failed to read in msg descr: {e}"))?;
@@ -132,11 +131,17 @@ impl AckiNackiBlock {
             AccountRouting,
             Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
         > = HashMap::new();
-        for (routing, data) in produced_internal_messages {
+        for (routing, mut data) in produced_internal_messages {
             if initial_optimistic_state.does_routing_belong_to_the_state(&routing) {
-                produced_internal_messages_to_the_current_thread.insert(routing.1, data);
+                produced_internal_messages_to_the_current_thread
+                    .entry(routing.1)
+                    .or_default()
+                    .append(&mut data);
             } else {
-                produced_internal_messages_to_other_threads.insert(routing, data);
+                produced_internal_messages_to_other_threads
+                    .entry(routing)
+                    .or_default()
+                    .append(&mut data);
             }
         }
 

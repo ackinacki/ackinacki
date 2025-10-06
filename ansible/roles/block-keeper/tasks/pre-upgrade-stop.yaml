@@ -1,5 +1,12 @@
 ---
 
+- name: Compose pull before pre-upgrade stop
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}"
+    cmd: docker compose pull
+  when:
+    - compose is defined and compose.changed
+
 - name: Node graceful shutdown step 1
   include_tasks: graceful-shutdown.yaml
 

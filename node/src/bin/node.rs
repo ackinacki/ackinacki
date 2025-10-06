@@ -75,6 +75,7 @@ use node::node::services::block_processor::service::MAX_ATTESTATION_TARGET_BETA;
 use node::node::services::send_attestations::AttestationSendService;
 use node::node::services::send_attestations::AttestationSendServiceHandler;
 use node::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
+use node::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BLOCK_STATISTICS_INITIAL_WINDOW_SIZE;
 use node::node::services::sync::ExternalFileSharesBased;
 use node::node::services::sync::FileSavingService;
 use node::node::services::validation::feedback::AckiNackiSend;
@@ -352,7 +353,9 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
     tracing::info!("Loading config");
     let tls_cert_cache = TlsCertCache::new()?;
-    let config = load_config_from_file(&args.config_path)?.ensure_min_cpu(MINIMUM_NUMBER_OF_CORES);
+    let config = load_config_from_file(&args.config_path)?
+        .ensure_min_cpu(MINIMUM_NUMBER_OF_CORES)
+        .ensure_min_sync_gap();
     let network_config = config.network_config(Some(tls_cert_cache.clone()))?;
     let gossip_config = config.gossip_config()?;
     tracing::info!("Loaded config");
@@ -489,6 +492,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     if cfg!(feature = "fail-fast") {
         let orig_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |panic_info| {
+            eprintln!("thread id: {:?}", std::thread::current().id());
             // invoke the default handler and exit the process
             if let Some(location) = panic_info.location() {
                 eprintln!("panic occurred in file '{}'", location.file());
@@ -641,7 +645,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             state_in.set_future_bk_set(Arc::new(BlockKeeperSet::new()))?;
             state_in.set_descendant_future_bk_set(Arc::new(BlockKeeperSet::new()))?;
             state_in.set_block_stats(BlockStatistics::zero(
-                NonZero::new(15).unwrap(),
+                NonZero::new(BLOCK_STATISTICS_INITIAL_WINDOW_SIZE).unwrap(),
                 NonZero::new(3).unwrap(),
             ))?;
             state_in.set_attestation_target(

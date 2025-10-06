@@ -1,4 +1,5 @@
 use super::Config;
+use crate::node::services::block_processor::service::MAX_ATTESTATION_TARGET_BETA;
 
 impl Config {
     pub fn ensure_min_cpu(mut self, min_number_of_cores: usize) -> Self {
@@ -10,6 +11,14 @@ impl Config {
         );
         tracing::trace!("Set parallelization level to number of cpu cores: {cpu_cnt}");
         self.local.parallelization_level = cpu_cnt;
+        self
+    }
+
+    pub fn ensure_min_sync_gap(mut self) -> Self {
+        if self.global.sync_gap < MAX_ATTESTATION_TARGET_BETA as u64 * 2 + 1 {
+            tracing::trace!("Too low sync gap. Change it to MAX_ATTESTATION_TARGET_BETA * 2 + 1");
+            self.global.sync_gap = MAX_ATTESTATION_TARGET_BETA as u64 * 2 + 1;
+        }
         self
     }
 

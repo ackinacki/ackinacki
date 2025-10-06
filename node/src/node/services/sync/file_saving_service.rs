@@ -8,15 +8,19 @@ use typed_builder::TypedBuilder;
 
 use crate::helper::get_temp_file_path;
 use crate::node::block_state::repository::BlockStateRepository;
+use crate::node::services::block_processor::service::MAX_ATTESTATION_TARGET_BETA;
+use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BLOCK_STATISTICS_INITIAL_WINDOW_SIZE;
 use crate::node::shared_services::SharedServices;
-use crate::repository::cross_thread_ref_repository::CrossThreadRefDataHistory;
 use crate::repository::optimistic_state::OptimisticStateImpl;
+use crate::repository::repository_impl::AncestorBlockData;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::repository_impl::ThreadSnapshot;
 use crate::repository::CrossThreadRefData;
+use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
 use crate::storage::MessageDurableStorage;
 use crate::types::thread_message_queue::account_messages_iterator::AccountMessagesIterator;
+use crate::types::BlockIdentifier;
 use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
@@ -32,6 +36,66 @@ pub struct FileSavingService {
     block_state_repository: BlockStateRepository,
     shared_services: SharedServices,
     message_db: MessageDurableStorage,
+}
+
+fn get_ancestor_blocks_data(
+    starting_block_id: &BlockIdentifier,
+    block_state_repository: &BlockStateRepository,
+    shared_services: &mut SharedServices,
+) -> anyhow::Result<Vec<AncestorBlockData>> {
+    let mut history = vec![];
+    let history_length = std::cmp::max(
+        std::cmp::max(
+            2 * MAX_ATTESTATION_TARGET_BETA + MAX_ATTESTATION_TARGET_BETA,
+            2 * MAX_ATTESTATION_TARGET_BETA + 2,
+        ),
+        BLOCK_STATISTICS_INITIAL_WINDOW_SIZE,
+    ) + 1;
+    let mut cursor = starting_block_id.clone();
+    for _ in 0..history_length {
+        if cursor == BlockIdentifier::default() {
+            break;
+        }
+        let cross_thread_ref_data =
+            shared_services.exec(|e| -> anyhow::Result<CrossThreadRefData> {
+                e.cross_thread_ref_data_service.get_cross_thread_ref_data(&cursor)
+            })?;
+        let block_state = block_state_repository.get(&cursor)?;
+        let (
+            Some(block_seq_no),
+            Some(thread_identifier),
+            Some(bk_set),
+            Some(future_bk_set),
+            Some(envelope_hash),
+            Some(parent_block_identifier),
+        ) = block_state.guarded(|e| {
+            (
+                *e.block_seq_no(),
+                *e.thread_identifier(),
+                e.bk_set().clone(),
+                e.future_bk_set().clone(),
+                e.envelope_hash().clone(),
+                e.parent_block_identifier().clone(),
+            )
+        })
+        else {
+            anyhow::bail!("Failed to get ancestor block data");
+        };
+        history.push(
+            AncestorBlockData::builder()
+                .block_identifier(cursor.clone())
+                .block_seq_no(block_seq_no)
+                .thread_identifier(thread_identifier)
+                .cross_thread_ref_data(cross_thread_ref_data)
+                .bk_set(bk_set.deref().clone())
+                .future_bk_set(future_bk_set.deref().clone())
+                .envelope_hash(envelope_hash)
+                .parent_block_identifier(parent_block_identifier.clone())
+                .build(),
+        );
+        cursor = parent_block_identifier;
+    }
+    Ok(history)
 }
 
 impl FileSavingService {
@@ -56,10 +120,11 @@ impl FileSavingService {
                     .map(|range| range.remaining_messages_from_db().unwrap_or_default())
                     .collect();
                 let serialized_state = bincode::serialize(&state)?;
-                let cross_thread_ref_data_history =
-                    shared_services.exec(|e| -> anyhow::Result<Vec<CrossThreadRefData>> {
-                        e.cross_thread_ref_data_service.get_history_tail(&block_id)
-                    })?;
+                let ancestor_blocks_data = get_ancestor_blocks_data(
+                    &block_id,
+                    &block_state_repository,
+                    &mut shared_services,
+                )?;
                 let finalized_block = repository
                     .get_finalized_block(&block_id)?
                     .ok_or(anyhow::format_err!("Failed to get block"))?;
@@ -106,7 +171,7 @@ impl FileSavingService {
 
                 let shared_thread_state = ThreadSnapshot::builder()
                     .optimistic_state(serialized_state)
-                    .cross_thread_ref_data(cross_thread_ref_data_history)
+                    .ancestor_blocks_data(ancestor_blocks_data)
                     .db_messages(db_messages)
                     .finalized_block(finalized_block.deref().clone())
                     .bk_set(bk_set.deref().clone())

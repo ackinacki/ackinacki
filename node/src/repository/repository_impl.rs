@@ -72,6 +72,7 @@ use crate::repository::RepositoryError;
 use crate::storage::MessageDBWriterService;
 use crate::storage::MessageDurableStorage;
 use crate::types::bp_selector::ProducerSelector;
+use crate::types::envelope_hash::AckiNackiEnvelopeHash;
 use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockHeight;
@@ -299,10 +300,22 @@ pub struct ExtMessages<TMessage: Clone> {
     pub queue: Vec<WrappedExtMessage<TMessage>>,
 }
 
+#[derive(TypedBuilder, Serialize, Deserialize, Getters, Clone)]
+pub struct AncestorBlockData {
+    block_identifier: BlockIdentifier,
+    block_seq_no: BlockSeqNo,
+    thread_identifier: ThreadIdentifier,
+    cross_thread_ref_data: CrossThreadRefData,
+    bk_set: BlockKeeperSet,
+    future_bk_set: BlockKeeperSet,
+    envelope_hash: AckiNackiEnvelopeHash,
+    parent_block_identifier: BlockIdentifier,
+}
+
 #[derive(TypedBuilder, Serialize, Deserialize, Getters)]
 pub struct ThreadSnapshot {
     optimistic_state: Vec<u8>,
-    cross_thread_ref_data: Vec<CrossThreadRefData>,
+    ancestor_blocks_data: Vec<AncestorBlockData>,
     db_messages: Vec<Vec<Arc<WrappedMessage>>>,
     finalized_block: Envelope<GoshBLS, AckiNackiBlock>,
     bk_set: BlockKeeperSet,
@@ -1736,23 +1749,46 @@ impl Repository for RepositoryImpl {
             .collect();
         self.message_storage_service.write(db_messages)?;
 
-        let mut blocks_with_cross_thread_ref_data_set = vec![];
         self.shared_services.exec(|services| {
-            for ref_data in thread_snapshot.cross_thread_ref_data.clone().into_iter() {
-                blocks_with_cross_thread_ref_data_set.push(ref_data.block_identifier().clone());
+            for ancestor_block_data in
+                thread_snapshot.ancestor_blocks_data.clone().into_iter().rev()
+            {
+                let ref_data = ancestor_block_data.cross_thread_ref_data.clone();
                 services
                     .cross_thread_ref_data_service
                     .set_cross_thread_ref_data(ref_data)
                     .expect("Failed to load cross-thread-ref-data");
+
+                let block_state =
+                    block_state_repo_clone.get(ancestor_block_data.block_identifier())?;
+                block_state.guarded_mut(|e| {
+                    if e.has_cross_thread_ref_data_prepared().is_none() {
+                        e.set_has_cross_thread_ref_data_prepared()?;
+                    }
+                    if e.block_seq_no().is_none() {
+                        e.set_block_seq_no(*ancestor_block_data.block_seq_no())?;
+                    }
+                    if e.thread_identifier().is_none() {
+                        e.set_thread_identifier(*ancestor_block_data.thread_identifier())?;
+                    }
+                    if e.bk_set().is_none() {
+                        e.set_bk_set(Arc::new(ancestor_block_data.bk_set().clone()))?;
+                    }
+                    if e.future_bk_set().is_none() {
+                        e.set_future_bk_set(Arc::new(ancestor_block_data.future_bk_set().clone()))?;
+                    }
+                    if e.envelope_hash().is_none() {
+                        e.set_envelope_hash(ancestor_block_data.envelope_hash().clone())?;
+                    }
+                    Ok::<(), anyhow::Error>(())
+                })?;
+
+                let parent_block_state =
+                    block_state_repo_clone.get(ancestor_block_data.parent_block_identifier())?;
+                connect!(parent = parent_block_state, child = block_state, &block_state_repo_clone);
             }
-        });
-        for block_id in blocks_with_cross_thread_ref_data_set.into_iter() {
-            block_state_repo_clone.get(&block_id).unwrap().guarded_mut(|e| {
-                if e.has_cross_thread_ref_data_prepared().is_none() {
-                    e.set_has_cross_thread_ref_data_prepared().unwrap();
-                }
-            });
-        }
+            Ok::<(), anyhow::Error>(())
+        })?;
 
         self.finalize_synced_block(&thread_snapshot, &state)?;
 

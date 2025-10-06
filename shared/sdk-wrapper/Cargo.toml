@@ -9,6 +9,5 @@ license-file.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 tvm_client.workspace = true
+tvm_sdk.workspace = true
 tvm_types.workspace = true
-
-tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.23.2.an" }

@@ -31,13 +31,12 @@ tracing-subscriber.workspace = true
 transport-layer.workspace = true
 tvm_block.workspace = true
 tvm_client.workspace = true
+tvm_sdk.workspace = true
 tvm_types.workspace = true
 url.workspace = true
 
 reqwest = { version = "0.12.22", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rustls-pki-types = { version = "1.8.0" }
-
-tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = "v2.23.2.an" }
 
 
 dotenvy = "0"

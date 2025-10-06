@@ -891,6 +891,9 @@ impl BlockBuilder {
             };
             ensure!(next_message_hash == message_hash, "Wrong message order for verify block");
             last_lt = lt;
+            if messages.is_empty() {
+                check_messages_map.remove(acc_id);
+            }
         }
         let lt = Arc::new(AtomicU64::new(last_lt));
         // let trace = Arc::new(lockfree::queue::Queue::new());
@@ -1395,9 +1398,9 @@ impl BlockBuilder {
 
         trace_span!("execute new messages", messages.count = self.new_messages.len() as i64).in_scope(||{
             // Fourth step: execute new messages if block is not full
-            tracing::info!(target: "builder", "Start new messages execution");
 
-            if !block_full {
+            if !block_full && check_messages_map.as_ref().map(|map| !map.is_empty()).unwrap_or(true) {
+                tracing::info!(target: "builder", "Start new messages execution");
                 let mut active_destinations = HashMap::new();
                 loop {
                     let mut there_are_no_new_messages_for_verify_block = true;
@@ -1664,7 +1667,11 @@ impl BlockBuilder {
                     let env = MsgEnvelope::with_message_and_fee(&msg, *fwd_fee)?;
                     let enq = EnqueuedMsg::with_param(info.created_lt, &env)?;
                     let out_msg = OutMsg::new(enq.out_msg_cell(), tr_cell.clone());
-
+                    tracing::debug!(
+                        target: "builder",
+                        "Inserting message to out_msg_descr {}",
+                        msg_cell.repr_hash().to_hex_string()
+                    );
                     self.out_msg_descr.set(&msg_cell.repr_hash(), &out_msg, &out_msg.aug()?)?;
 
                     let destination_routing = AccountRouting(
@@ -2451,6 +2458,7 @@ impl BlockBuilder {
                                             let Some((_, next_message)) =
                                                 acc_messages.first_key_value()
                                             else {
+                                                *verify_block_contains_missing_messages_from_prev_state = true;
                                                 // For verify block we assume iter returns messages in the same order
                                                 break None;
                                             };
@@ -2524,6 +2532,8 @@ impl BlockBuilder {
                                     let Some((_, next_message)) = acc_messages.first_key_value()
                                     else {
                                         // For verify block we assume iter returns messages in the same order
+                                        *verify_block_contains_missing_messages_from_prev_state =
+                                            true;
                                         continue;
                                     };
                                     ensure!(

@@ -28,7 +28,6 @@ DISABLE_STAKING: no
 NUMBERED_SERVICES: yes
 
 NODE_CONFIGS:
-  - blockchain.conf.json
   - zerostate
 
 OTHER_KEYS: []

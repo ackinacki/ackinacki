@@ -3,6 +3,8 @@ use std::num::NonZeroUsize;
 use serde::Deserialize;
 use serde::Serialize;
 
+pub const BLOCK_STATISTICS_INITIAL_WINDOW_SIZE: usize = 15;
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 pub struct BlockStatistics {
     // window_size: usize, <- Note: stats.len is enough
