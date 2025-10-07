@@ -44,9 +44,3 @@
   with_list:
     - "{{ BK_DIR }}/aerospike"
     - "{{ BK_DIR }}/aerospike-config"
-
-- name: "Ensures WASM binaries dir exists: {{ BK_DIR }}/bk-binaries/wasm"
-  ansible.builtin.file:
-    path: "{{ BK_DIR }}/bk-binaries/wasm"
-    state: directory
-    mode: u=rwx,g=rx,o=rx

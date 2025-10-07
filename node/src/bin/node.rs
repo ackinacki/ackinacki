@@ -39,6 +39,7 @@ use network::network::BasicNetwork;
 use network::network::PeerData;
 use network::resolver::sign_gossip_node;
 use network::resolver::WatchGossipConfig;
+use node::block::producer::wasm::check_node_mandatory_wasm_available;
 use node::block::producer::wasm::WasmNodeCache;
 use node::block_keeper_system::BlockKeeperSet;
 use node::bls::envelope::BLSSignedEnvelope;
@@ -450,6 +451,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let network = BasicNetwork::new(shutdown_tx, network_config_rx, MsQuicTransport::default());
     let chitchat = gossip_handle.chitchat();
 
+    // Panics if node mandatory wasm files not present;
+    check_node_mandatory_wasm_available();
     let wasm_cache = WasmNodeCache::new()?;
 
     let (ext_messages_sender, ext_messages_receiver) = instrumented_channel(

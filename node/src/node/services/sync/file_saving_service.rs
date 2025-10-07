@@ -113,6 +113,7 @@ impl FileSavingService {
         let thread = std::thread::Builder::new()
             .name(format!("Saving state: {}", path.display()))
             .spawn(move || {
+                tracing::trace!(target: "node", "Saving state to {}", path.display());
                 let block_id = state.block_id.clone();
                 let db_messages = state
                     .messages
@@ -195,7 +196,8 @@ impl FileSavingService {
                 let bytes = bincode::serialize(&shared_thread_state)?;
                 let tmp_file_path = get_temp_file_path(&parent_dir);
                 std::fs::write(tmp_file_path.clone(), bytes)?;
-                std::fs::rename(tmp_file_path, path)?;
+                std::fs::rename(tmp_file_path, &path)?;
+                tracing::trace!(target: "node", "Successfully saved state to {}", path.display());
                 Ok(())
             })?;
         self.threads.guarded_mut(|threads| {

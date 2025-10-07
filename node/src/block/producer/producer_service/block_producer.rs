@@ -19,6 +19,7 @@ use telemetry_utils::mpsc::InstrumentedSender;
 use typed_builder::TypedBuilder;
 
 use crate::block::producer::process::TVMBlockProducerProcess;
+use crate::block::producer::process::FORCE_SYNC_STATE_BLOCK_FREQUENCY;
 use crate::block::producer::producer_service::memento::BlockProducerMemento;
 use crate::bls::create_signed::CreateSealed;
 use crate::bls::envelope::BLSSignedEnvelope;
@@ -399,13 +400,11 @@ impl BlockProducer {
                 return Ok((false, None));
             }
             let share_resulting_state = self.is_state_sync_requested.guarded(|e| *e);
-            let share_state_ids = if let Some(seq_no) = &share_resulting_state {
-                if seq_no == &block.seq_no() {
-                    tracing::trace!("Node should share state for last block");
-                    Some(produced_block.optimistic_state().get_share_stare_refs())
-                } else {
-                    None
-                }
+            let share_state_ids = if share_resulting_state == Some(block.seq_no())
+                || (<u32>::from(block.seq_no()) % FORCE_SYNC_STATE_BLOCK_FREQUENCY == 0)
+            {
+                tracing::trace!("Node should share state for last block");
+                Some(produced_block.optimistic_state().get_share_stare_refs())
             } else {
                 None
             };

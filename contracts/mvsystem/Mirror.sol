@@ -101,7 +101,7 @@ contract Mirror is Modifiers {
         require(epk_expire_at < uint64(block.timestamp + MAX_EPK_LIFE_TIME), ERR_FACTOR_TIMESTAMP_TOO_BIG);
         require(jwk_modulus_expire_at < uint64(block.timestamp + MAX_JWK_LIFE_TIME), ERR_JWK_TIMESTAMP_TOO_BIG);
         bytes ph = gosh.poseidon(index_mod_4, epk_expire_at, epk, jwk_modulus, iss_base_64, header_base_64, zkid);
-        require(gosh.vergrth16(proof, ph, 1), ERR_INVALID_PROOF);
+        require(gosh.vergrth16(proof, ph), ERR_INVALID_PROOF);
         require(provider.byteLength() < MAX_LEN, ERR_BAD_LEN);
         TvmCell data = VerifiersLib.composeIndexerStateInit(_code[m_Indexer], name);
         address wallet = VerifiersLib.calculateMultifactorAddress(_code[m_MvMultifactor], owner_pubkey, _root);

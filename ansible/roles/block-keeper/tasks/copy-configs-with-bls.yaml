@@ -1,0 +1,31 @@
+---
+
+- name: Backup existing BLS key file
+  copy:
+    src: "{{ BK_DIR }}/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json"
+    dest: "{{ BK_DIR }}/bk-configs/backup_block_keeper{{ NODE_ID }}_bls.keys.json"
+    remote_src: yes
+
+- name: Copy configs files
+  copy:
+    dest: "{{ BK_DIR }}/bk-configs/"
+    src: "{{ item }}"
+  with_items:
+    - "{{ NODE_CONFIGS }}"
+    - "{{ NODE_OWNER_KEY }}"
+    - "{{ OTHER_KEYS }}"
+
+- name: Extract any public key from new BLS file
+  shell: "grep public {{ BK_DIR }}/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json | head -n 1 | cut -d'\"' -f4"
+  register: new_public_key
+
+- name: Check public key in backup file
+  shell: "grep '{{ new_public_key.stdout }}' {{ BK_DIR }}/bk-configs/backup_block_keeper{{ NODE_ID }}_bls.keys.json"
+  register: key_check
+
+- name: Restore BLS key file from backup if public key is found
+  copy:
+    src: "{{ BK_DIR }}/bk-configs/backup_block_keeper{{ NODE_ID }}_bls.keys.json"
+    dest: "{{ BK_DIR }}/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json"
+    remote_src: yes
+  when: key_check.rc == 0

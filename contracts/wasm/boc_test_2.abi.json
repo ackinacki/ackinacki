@@ -1,0 +1,55 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"value","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "runAdd",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "add",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "get",
+			"inputs": [
+				{"name":"answerId","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
+			"name": "data",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"data","type":"cell"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"data","type":"cell"},
+		{"init":false,"name":"c","type":"uint16"}
+	]
+}

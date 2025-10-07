@@ -108,7 +108,6 @@ services:
       - {{ BK_DATA_DIR }}/share:/share
       - {{ BK_DATA_DIR }}/workdir:/workdir/data
       - {{ BK_DIR }}/bk-configs:/bk-configs
-      - {{ BK_DIR }}/bk-binaries:/workdir/config
       - {{ BK_LOGS_DIR }}:/logsdir
     network_mode: "host"
     stop_grace_period: 60s
@@ -144,6 +143,7 @@ services:
       - CRON_SCHEDULE="58 * * * *"
     volumes:
       - {{ BK_LOGS_DIR }}:/logsdir
+      - {{ BK_DATA_DIR }}/workdir:/workdir
       - ./logrotate.sh:/logrotate.sh
     command: [ "/bin/bash", "/logrotate.sh" ]
     init: true

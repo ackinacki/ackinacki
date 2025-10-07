@@ -1,0 +1,880 @@
+{
+  "011a12a66f0d75d90b5b007822c6b4ba54c1934a8ccf265a27774a3440897d9e": {
+    "0": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 152
+    },
+    "8": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 153
+    },
+    "24": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 154
+    },
+    "40": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 157
+    },
+    "48": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 158
+    },
+    "96": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 159
+    },
+    "104": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 160
+    },
+    "120": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 163
+    },
+    "128": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 164
+    },
+    "176": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 165
+    },
+    "184": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 166
+    }
+  },
+  "10ad2a8488c7b0c50afbc951ad7170d55cf39cafb0ebebac56cf3ff7e1746b8b": {
+    "0": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 172
+    },
+    "8": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 173
+    },
+    "24": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 176
+    },
+    "40": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 177
+    },
+    "48": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 178
+    },
+    "64": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 179
+    },
+    "80": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 180
+    },
+    "96": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 181
+    },
+    "104": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 182
+    },
+    "120": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 183
+    },
+    "128": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 184
+    },
+    "136": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 185
+    },
+    "144": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 186
+    },
+    "152": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 187
+    },
+    "168": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 188
+    },
+    "176": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 189
+    },
+    "192": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 190
+    },
+    "200": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 191
+    },
+    "208": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 192
+    },
+    "224": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 193
+    },
+    "240": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 195
+    },
+    "248": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 196
+    },
+    "256": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 197
+    },
+    "272": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 199
+    },
+    "280": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 200
+    },
+    "296": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 201
+    },
+    "312": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 203
+    },
+    "320": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 204
+    },
+    "336": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 205
+    },
+    "344": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 206
+    },
+    "360": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 208
+    },
+    "368": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 209
+    },
+    "384": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 210
+    },
+    "392": {
+      "filename": "stdlib.sol",
+      "line": 22
+    },
+    "408": {
+      "filename": "stdlib.sol",
+      "line": 22
+    },
+    "416": {
+      "filename": "stdlib.sol",
+      "line": 22
+    },
+    "424": {
+      "filename": "stdlib.sol",
+      "line": 22
+    },
+    "440": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "448": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "464": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "488": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "496": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "536": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "544": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "552": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "568": {
+      "filename": "stdlib.sol",
+      "line": 24
+    },
+    "584": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 212
+    },
+    "600": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 213
+    },
+    "608": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 214
+    },
+    "624": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 215
+    },
+    "632": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 216
+    },
+    "648": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 217
+    },
+    "664": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 218
+    },
+    "672": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 219
+    },
+    "688": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 222
+    }
+  },
+  "3bbdcdf334609cdcd1c7e86a8a557183b71a85251cae050d5fe005f30eedaf66": {
+    "0": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 226
+    },
+    "16": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 227
+    },
+    "24": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 228
+    },
+    "48": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 229
+    },
+    "64": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 230
+    },
+    "88": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 231
+    },
+    "104": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 232
+    },
+    "112": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 233
+    },
+    "120": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 234
+    },
+    "144": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 235
+    },
+    "168": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 236
+    },
+    "176": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 237
+    },
+    "184": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 238
+    },
+    "200": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 239
+    },
+    "216": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 243
+    },
+    "224": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 244
+    },
+    "248": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 245
+    },
+    "264": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 246
+    },
+    "272": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 247
+    },
+    "288": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 251
+    },
+    "296": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 252
+    },
+    "312": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 255
+    }
+  },
+  "4cb9e4d545a7eb541ad16e57448afd60ebda86e2dd7fc48038bfe4455af09bb5": {
+    "0": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 293
+    },
+    "24": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 294
+    },
+    "40": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 295
+    }
+  },
+  "55d50016f39cb9cf6cecfd778cc38907fdda0be0d99e742c5d4ca7126daa1ff2": {
+    "0": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 292
+    },
+    "8": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 302
+    },
+    "24": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 303
+    },
+    "32": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 304
+    },
+    "48": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 307
+    },
+    "56": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 308
+    },
+    "72": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 309
+    },
+    "88": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 312
+    },
+    "96": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 313
+    },
+    "112": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 314
+    },
+    "128": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 317
+    }
+  },
+  "743b22f54ea3bf13f7460182a2c7d65184a6c43afb2b72dbc32217d2c6730687": {
+    "0": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 16
+    },
+    "16": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 17
+    },
+    "32": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 18
+    },
+    "48": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 19
+    },
+    "56": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 20
+    },
+    "72": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 21
+    },
+    "88": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 22
+    },
+    "104": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 23
+    },
+    "112": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 24
+    },
+    "120": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 25
+    }
+  },
+  "82a429f9eefb387f490d8fd1c83889e95c03a41d2e1a51e7b3bc135599f010d9": {},
+  "8542c762eb687aed9d50128bfed839d38795070aedec2f74d4cb1358427a7af6": {
+    "0": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 74
+    },
+    "8": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 75
+    },
+    "16": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 76
+    },
+    "32": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 79
+    },
+    "48": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 80
+    },
+    "56": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 81
+    },
+    "72": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 82
+    },
+    "232": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 83
+    },
+    "240": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 84
+    },
+    "248": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 85
+    },
+    "256": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 86
+    },
+    "264": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 87
+    },
+    "272": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 88
+    },
+    "288": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 90
+    },
+    "296": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 91
+    }
+  },
+  "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7": {},
+  "ad6281da6152854c7b44bac5d8d7a6f13ccfa4dcca449372df8da89d89a337be": {
+    "0": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 29
+    },
+    "8": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 30
+    },
+    "24": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 31
+    },
+    "32": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 32
+    },
+    "48": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 35
+    },
+    "64": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 36
+    },
+    "80": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 37
+    },
+    "88": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 38
+    },
+    "96": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 39
+    },
+    "104": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 40
+    },
+    "112": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 41
+    },
+    "120": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 43
+    },
+    "128": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 44
+    },
+    "144": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 45
+    },
+    "152": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 11
+    },
+    "168": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 13
+    },
+    "184": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 13
+    },
+    "208": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 14
+    },
+    "224": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 15
+    },
+    "240": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 15
+    },
+    "248": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 15
+    },
+    "256": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 15
+    },
+    "280": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 15
+    },
+    "296": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 15
+    },
+    "320": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 15
+    },
+    "328": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 15
+    },
+    "376": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 15
+    },
+    "400": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 15
+    },
+    "408": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 15
+    },
+    "424": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 15
+    },
+    "440": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 67
+    },
+    "456": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 70
+    }
+  },
+  "af3e2ff76fd79701ead1f4ac2bb97d29f5bf76d76a031321df56fe1afa691d79": {
+    "0": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 20
+    },
+    "16": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 22
+    },
+    "24": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 22
+    },
+    "32": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 22
+    },
+    "40": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 23
+    },
+    "56": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 23
+    },
+    "64": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 24
+    },
+    "80": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 24
+    },
+    "88": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 25
+    },
+    "96": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 26
+    },
+    "104": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 26
+    },
+    "120": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 28
+    },
+    "136": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 28
+    },
+    "144": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 28
+    },
+    "152": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 28
+    },
+    "176": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 28
+    },
+    "192": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 28
+    },
+    "216": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 28
+    },
+    "224": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 28
+    },
+    "272": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 28
+    },
+    "296": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 28
+    },
+    "304": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 28
+    },
+    "320": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 28
+    },
+    "336": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 30
+    }
+  },
+  "c4ecdeea35ba96af14ebe153c0ed530df7990688af320d3dfc1b696cec918be3": {
+    "0": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 131
+    },
+    "8": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 132
+    },
+    "24": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 133
+    },
+    "48": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 134
+    },
+    "64": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 135
+    },
+    "72": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 136
+    },
+    "88": {
+      "filename": "boc_test_undeployable.sol",
+      "line": 19
+    },
+    "96": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 142
+    },
+    "112": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 145
+    },
+    "128": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 148
+    }
+  },
+  "f07c77d50282e2afae26e655b19fed0965ce1e88cccc55aa30940343514681d1": {
+    "0": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 288
+    },
+    "1": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 289
+    },
+    "2": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 290
+    },
+    "3": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 319
+    },
+    "4": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 323
+    }
+  },
+  "f24e1e7aa04d89aad2945816b6e9b921f2b3892da9ba53e2383c148351b96d0c": {
+    "0": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 240
+    },
+    "16": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 241
+    }
+  },
+  "f721f161be3508fa8babc5c3a63d937837c837729a34171068af274daa7f3028": {
+    "0": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 299
+    }
+  },
+  "fe1a212c2dc415d7cd4b7b012b708ccfd3262fe6cde7add5e8e7c5b91ecfe75d": {
+    "0": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 2
+    },
+    "16": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 3
+    },
+    "24": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 4
+    },
+    "40": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 5
+    },
+    "56": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 6
+    },
+    "72": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 7
+    },
+    "80": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 8
+    },
+    "88": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 9
+    },
+    "104": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 10
+    },
+    "120": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 11
+    },
+    "136": {
+      "filename": "./boc_test_undeployable.code",
+      "line": 12
+    }
+  }
+}

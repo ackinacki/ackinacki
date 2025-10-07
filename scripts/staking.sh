@@ -182,7 +182,7 @@ update_bls_keys () {
     log "BLS key update failed. Exiting..."
     exit 1
   fi
-  NODE_PID=$(pgrep -f "^node.* -c acki-nacki.conf.yaml$" || { log "Error with getting Node PID" >&2 ; exit 1 ;})
+  NODE_PID=$(pgrep -f "^node.* -c acki-nacki.conf.yaml$" || { log "Error with getting Node PID" >&2 ; return ;})
   kill -1 $NODE_PID
 }
 

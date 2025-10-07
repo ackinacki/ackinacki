@@ -72,7 +72,7 @@ contract Multifactor is Modifiers {
 
     mapping(uint256 => JWKData) public _jwk_modulus_data;
     uint8 public _jwk_modulus_data_len;
-    optional(uint256, JWKData) public _start_point_jwk;
+    optional(uint256, JWKData) _start_point_jwk;
 
     string public _zkid;
     uint8 public _index_mod_4; // is constant for the same provider and _zkid
@@ -91,7 +91,7 @@ contract Multifactor is Modifiers {
 
     bool public _force_remove_oldest;
 
-    uint32 public _verification_key_index = 1; // In the past there were multiple verification keys inside TVM: indices 0 and 2 corresponded unsecure keys, index 1 corresponded to secure key. At the present moment we deleted unsecure keys, there is only one secure verification key (related index 1). So _verification_key_index argument is really not used inside vergrth16 instruction and its value does not matter.
+    uint32 public _verification_key_index = 1;
 
     constructor (
         string zkid,
@@ -126,7 +126,7 @@ contract Multifactor is Modifiers {
         require(jwk_modulus_expire_at < uint64(block.timestamp + MAX_JWK_LIFE_TIME), ERR_JWK_TIMESTAMP_TOO_BIG);
         //TODO: should we control validate TLS data for jwk_modulus (and jwk_modulus_expire_at) to fully check wallet setup or this is too cumbersome?
         bytes ph = gosh.poseidon(index_mod_4, epk_expire_at, epk, jwk_modulus, iss_base_64, header_base_64, zkid);
-        require(gosh.vergrth16(proof, ph, _verification_key_index), ERR_INVALID_PROOF);
+        require(gosh.vergrth16(proof, ph), ERR_INVALID_PROOF);
         require(provider.byteLength() < MAX_LEN, ERR_BAD_LEN);
         tvm.accept();
         _zkid = zkid;
@@ -284,7 +284,7 @@ contract Multifactor is Modifiers {
         require(_jwk_modulus_data.exists(jwk_hash), ERR_JWK_NOT_FOUND);
         require(uint64(block.timestamp + MIN_JWK_LIFE_TIME) < _jwk_modulus_data[jwk_hash].modulus_expire_at, ERR_JWK_EXPIRED);
         bytes ph = gosh.poseidon(_index_mod_4, epk_expire_at, epk, _jwk_modulus_data[jwk_hash].modulus, _iss_base_64, header_base_64, _zkid);
-        require(gosh.vergrth16(proof, ph, _verification_key_index), ERR_INVALID_PROOF);
+        require(gosh.vergrth16(proof, ph), ERR_INVALID_PROOF);
         tvm.accept();
         uint8 num_iter = NUMBER_OF_FACTORS_TO_CLEAR;
         if (_factors_len < NUMBER_OF_FACTORS_TO_CLEAR) {
@@ -430,7 +430,7 @@ contract Multifactor is Modifiers {
         require(jwk_modulus_expire_at < uint64(block.timestamp + MAX_JWK_LIFE_TIME), ERR_JWK_TIMESTAMP_TOO_BIG);
         //TODO: should we control validate TLS data for jwk_modulus (and jwk_modulus_expire_at) to fully check wallet setup or this is too cumbersome?
         bytes ph = gosh.poseidon(index_mod_4, epk_expire_at, epk, jwk_modulus, iss_base_64, header_base_64, zkid);
-        require(gosh.vergrth16(proof, ph, _verification_key_index), ERR_INVALID_PROOF);
+        require(gosh.vergrth16(proof, ph), ERR_INVALID_PROOF);
         require(provider.byteLength() < MAX_LEN, ERR_BAD_LEN);
         tvm.accept();
         delete _root_provider_certificates;

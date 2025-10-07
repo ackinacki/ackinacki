@@ -209,9 +209,9 @@ impl Default for GlobalConfig {
             sync_delay_milliseconds: 500,
             save_state_frequency: 200,
             block_keeper_epoch_code_hash:
-                "39f6474d90aaa66ddb215e5151ce35f8312fa996d06cd77c6955d3ac99a1c07a".to_string(),
+                "2a7dd92c9d5617625bf1fbba27fc56cdebe8e3dfa844ecce0cf824818ece41a4".to_string(),
             block_keeper_preepoch_code_hash:
-                "16a24f490bfb03836ac3679d6699afc3b56059baaecf5de189633940ae75c4a6".to_string(),
+                "cd342c55f7e669738889c85858e0b065f61641d8e683b5ddd1ce5d3fe981e92a".to_string(),
             thread_count_soft_limit: 100,
             thread_load_window_size: 100,
             thread_load_threshold: 5000,

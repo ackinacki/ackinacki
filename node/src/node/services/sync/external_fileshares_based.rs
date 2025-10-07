@@ -159,9 +159,12 @@ impl StateSyncService for ExternalFileSharesBased {
                                 tracing::trace!(
                                     "add_load_state_task: for {thread_id:?} res={res:?}"
                                 );
-                                res.expect("Failed to set state from snapshot");
-                                tracing::trace!("add_load_state_task: done for {thread_id:?}");
-                                checker_clone.lock().remove(&thread_id);
+                                if let Err(e) = res {
+                                    let _ = output_clone.send(Err(e));
+                                } else {
+                                    tracing::trace!("add_load_state_task: done for {thread_id:?}");
+                                    checker_clone.lock().remove(&thread_id);
+                                }
                             }
                             Err(e) => {
                                 if let Some(m) = metrics_on_success {

@@ -59,6 +59,8 @@ use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
 
+pub const FORCE_SYNC_STATE_BLOCK_FREQUENCY: u32 = 20_000;
+
 #[derive(TypedBuilder)]
 pub struct TVMBlockProducerProcess {
     node_config: Config,
@@ -289,7 +291,10 @@ impl TVMBlockProducerProcess {
         if let Some(share_service) = &share_service {
             let state_share_was_requested = {
                 let flag = is_state_sync_requested.lock();
-                *flag == Some(next_seq_no(initial_state.block_seq_no))
+                let force_sync = <u32>::from(next_seq_no(initial_state.block_seq_no))
+                    % FORCE_SYNC_STATE_BLOCK_FREQUENCY
+                    == 0;
+                (*flag == Some(next_seq_no(initial_state.block_seq_no))) || force_sync
             };
             if state_share_was_requested {
                 for block_ref in &refs {
@@ -415,7 +420,10 @@ impl TVMBlockProducerProcess {
         if let Some(share_service) = &share_service {
             let state_share_was_requested = {
                 let flag = is_state_sync_requested.lock();
-                *flag == Some(initial_state.block_seq_no)
+                let force_sync = <u32>::from(next_seq_no(initial_state.block_seq_no))
+                    % FORCE_SYNC_STATE_BLOCK_FREQUENCY
+                    == 0;
+                (*flag == Some(next_seq_no(initial_state.block_seq_no))) || force_sync
             };
             if state_share_was_requested {
                 let block_id = initial_state.block_id.clone();

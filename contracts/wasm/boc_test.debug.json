@@ -1,0 +1,832 @@
+{
+  "12b7a79bd0e4754de9db9e46ddd7cf087e65fdd0612f48ab073ccea5876e7b5a": {
+    "0": {
+      "filename": "./boc_test.code",
+      "line": 275
+    },
+    "1": {
+      "filename": "./boc_test.code",
+      "line": 276
+    },
+    "2": {
+      "filename": "./boc_test.code",
+      "line": 277
+    },
+    "3": {
+      "filename": "./boc_test.code",
+      "line": 306
+    },
+    "4": {
+      "filename": "./boc_test.code",
+      "line": 310
+    }
+  },
+  "30d98b64dbf635f3160e8c5810e023abe40b618bf8775943b09587a96480744b": {
+    "0": {
+      "filename": "./boc_test.code",
+      "line": 279
+    },
+    "8": {
+      "filename": "./boc_test.code",
+      "line": 289
+    },
+    "24": {
+      "filename": "./boc_test.code",
+      "line": 290
+    },
+    "32": {
+      "filename": "./boc_test.code",
+      "line": 291
+    },
+    "48": {
+      "filename": "./boc_test.code",
+      "line": 294
+    },
+    "56": {
+      "filename": "./boc_test.code",
+      "line": 295
+    },
+    "72": {
+      "filename": "./boc_test.code",
+      "line": 296
+    },
+    "88": {
+      "filename": "./boc_test.code",
+      "line": 299
+    },
+    "96": {
+      "filename": "./boc_test.code",
+      "line": 300
+    },
+    "112": {
+      "filename": "./boc_test.code",
+      "line": 301
+    },
+    "128": {
+      "filename": "./boc_test.code",
+      "line": 304
+    }
+  },
+  "4cb9e4d545a7eb541ad16e57448afd60ebda86e2dd7fc48038bfe4455af09bb5": {
+    "0": {
+      "filename": "./boc_test.code",
+      "line": 280
+    },
+    "24": {
+      "filename": "./boc_test.code",
+      "line": 281
+    },
+    "40": {
+      "filename": "./boc_test.code",
+      "line": 282
+    }
+  },
+  "743b22f54ea3bf13f7460182a2c7d65184a6c43afb2b72dbc32217d2c6730687": {
+    "0": {
+      "filename": "./boc_test.code",
+      "line": 16
+    },
+    "16": {
+      "filename": "./boc_test.code",
+      "line": 17
+    },
+    "32": {
+      "filename": "./boc_test.code",
+      "line": 18
+    },
+    "48": {
+      "filename": "./boc_test.code",
+      "line": 19
+    },
+    "56": {
+      "filename": "./boc_test.code",
+      "line": 20
+    },
+    "72": {
+      "filename": "./boc_test.code",
+      "line": 21
+    },
+    "88": {
+      "filename": "./boc_test.code",
+      "line": 22
+    },
+    "104": {
+      "filename": "./boc_test.code",
+      "line": 23
+    },
+    "112": {
+      "filename": "./boc_test.code",
+      "line": 24
+    },
+    "120": {
+      "filename": "./boc_test.code",
+      "line": 25
+    }
+  },
+  "82a429f9eefb387f490d8fd1c83889e95c03a41d2e1a51e7b3bc135599f010d9": {},
+  "8542c762eb687aed9d50128bfed839d38795070aedec2f74d4cb1358427a7af6": {
+    "0": {
+      "filename": "./boc_test.code",
+      "line": 61
+    },
+    "8": {
+      "filename": "./boc_test.code",
+      "line": 62
+    },
+    "16": {
+      "filename": "./boc_test.code",
+      "line": 63
+    },
+    "32": {
+      "filename": "./boc_test.code",
+      "line": 66
+    },
+    "48": {
+      "filename": "./boc_test.code",
+      "line": 67
+    },
+    "56": {
+      "filename": "./boc_test.code",
+      "line": 68
+    },
+    "72": {
+      "filename": "./boc_test.code",
+      "line": 69
+    },
+    "232": {
+      "filename": "./boc_test.code",
+      "line": 70
+    },
+    "240": {
+      "filename": "./boc_test.code",
+      "line": 71
+    },
+    "248": {
+      "filename": "./boc_test.code",
+      "line": 72
+    },
+    "256": {
+      "filename": "./boc_test.code",
+      "line": 73
+    },
+    "264": {
+      "filename": "./boc_test.code",
+      "line": 74
+    },
+    "272": {
+      "filename": "./boc_test.code",
+      "line": 75
+    },
+    "288": {
+      "filename": "./boc_test.code",
+      "line": 77
+    },
+    "296": {
+      "filename": "./boc_test.code",
+      "line": 78
+    }
+  },
+  "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7": {},
+  "ae967c044964bbecbedaedde3d7db77446437745121c063a4de9287437dfc776": {
+    "0": {
+      "filename": "./boc_test.code",
+      "line": 139
+    },
+    "8": {
+      "filename": "./boc_test.code",
+      "line": 140
+    },
+    "24": {
+      "filename": "./boc_test.code",
+      "line": 141
+    },
+    "40": {
+      "filename": "./boc_test.code",
+      "line": 144
+    },
+    "48": {
+      "filename": "./boc_test.code",
+      "line": 145
+    },
+    "96": {
+      "filename": "./boc_test.code",
+      "line": 146
+    },
+    "104": {
+      "filename": "./boc_test.code",
+      "line": 147
+    },
+    "120": {
+      "filename": "./boc_test.code",
+      "line": 150
+    },
+    "128": {
+      "filename": "./boc_test.code",
+      "line": 151
+    },
+    "176": {
+      "filename": "./boc_test.code",
+      "line": 152
+    },
+    "184": {
+      "filename": "./boc_test.code",
+      "line": 153
+    }
+  },
+  "af3e2ff76fd79701ead1f4ac2bb97d29f5bf76d76a031321df56fe1afa691d79": {
+    "0": {
+      "filename": "boc_test.sol",
+      "line": 20
+    },
+    "16": {
+      "filename": "boc_test.sol",
+      "line": 22
+    },
+    "24": {
+      "filename": "boc_test.sol",
+      "line": 22
+    },
+    "32": {
+      "filename": "boc_test.sol",
+      "line": 22
+    },
+    "40": {
+      "filename": "boc_test.sol",
+      "line": 23
+    },
+    "56": {
+      "filename": "boc_test.sol",
+      "line": 23
+    },
+    "64": {
+      "filename": "boc_test.sol",
+      "line": 24
+    },
+    "80": {
+      "filename": "boc_test.sol",
+      "line": 24
+    },
+    "88": {
+      "filename": "boc_test.sol",
+      "line": 25
+    },
+    "96": {
+      "filename": "boc_test.sol",
+      "line": 26
+    },
+    "104": {
+      "filename": "boc_test.sol",
+      "line": 26
+    },
+    "120": {
+      "filename": "boc_test.sol",
+      "line": 28
+    },
+    "136": {
+      "filename": "boc_test.sol",
+      "line": 28
+    },
+    "144": {
+      "filename": "boc_test.sol",
+      "line": 28
+    },
+    "152": {
+      "filename": "boc_test.sol",
+      "line": 28
+    },
+    "176": {
+      "filename": "boc_test.sol",
+      "line": 28
+    },
+    "192": {
+      "filename": "boc_test.sol",
+      "line": 28
+    },
+    "216": {
+      "filename": "boc_test.sol",
+      "line": 28
+    },
+    "224": {
+      "filename": "boc_test.sol",
+      "line": 28
+    },
+    "272": {
+      "filename": "boc_test.sol",
+      "line": 28
+    },
+    "296": {
+      "filename": "boc_test.sol",
+      "line": 28
+    },
+    "304": {
+      "filename": "boc_test.sol",
+      "line": 28
+    },
+    "320": {
+      "filename": "boc_test.sol",
+      "line": 28
+    },
+    "336": {
+      "filename": "boc_test.sol",
+      "line": 30
+    }
+  },
+  "b8b7f78ab5af8916c2434d10c0ae179a612faa264323862368de5b406d8af4e2": {
+    "0": {
+      "filename": "./boc_test.code",
+      "line": 159
+    },
+    "8": {
+      "filename": "./boc_test.code",
+      "line": 160
+    },
+    "24": {
+      "filename": "./boc_test.code",
+      "line": 163
+    },
+    "40": {
+      "filename": "./boc_test.code",
+      "line": 164
+    },
+    "48": {
+      "filename": "./boc_test.code",
+      "line": 165
+    },
+    "64": {
+      "filename": "./boc_test.code",
+      "line": 166
+    },
+    "80": {
+      "filename": "./boc_test.code",
+      "line": 167
+    },
+    "96": {
+      "filename": "./boc_test.code",
+      "line": 168
+    },
+    "104": {
+      "filename": "./boc_test.code",
+      "line": 169
+    },
+    "120": {
+      "filename": "./boc_test.code",
+      "line": 170
+    },
+    "128": {
+      "filename": "./boc_test.code",
+      "line": 171
+    },
+    "136": {
+      "filename": "./boc_test.code",
+      "line": 172
+    },
+    "144": {
+      "filename": "./boc_test.code",
+      "line": 173
+    },
+    "152": {
+      "filename": "./boc_test.code",
+      "line": 174
+    },
+    "168": {
+      "filename": "./boc_test.code",
+      "line": 175
+    },
+    "176": {
+      "filename": "./boc_test.code",
+      "line": 176
+    },
+    "192": {
+      "filename": "./boc_test.code",
+      "line": 177
+    },
+    "200": {
+      "filename": "./boc_test.code",
+      "line": 178
+    },
+    "208": {
+      "filename": "./boc_test.code",
+      "line": 179
+    },
+    "224": {
+      "filename": "./boc_test.code",
+      "line": 180
+    },
+    "240": {
+      "filename": "./boc_test.code",
+      "line": 182
+    },
+    "248": {
+      "filename": "./boc_test.code",
+      "line": 183
+    },
+    "256": {
+      "filename": "./boc_test.code",
+      "line": 184
+    },
+    "272": {
+      "filename": "./boc_test.code",
+      "line": 186
+    },
+    "280": {
+      "filename": "./boc_test.code",
+      "line": 187
+    },
+    "296": {
+      "filename": "./boc_test.code",
+      "line": 188
+    },
+    "312": {
+      "filename": "./boc_test.code",
+      "line": 190
+    },
+    "320": {
+      "filename": "./boc_test.code",
+      "line": 191
+    },
+    "336": {
+      "filename": "./boc_test.code",
+      "line": 192
+    },
+    "344": {
+      "filename": "./boc_test.code",
+      "line": 193
+    },
+    "360": {
+      "filename": "./boc_test.code",
+      "line": 195
+    },
+    "368": {
+      "filename": "./boc_test.code",
+      "line": 196
+    },
+    "384": {
+      "filename": "./boc_test.code",
+      "line": 197
+    },
+    "392": {
+      "filename": "stdlib.sol",
+      "line": 22
+    },
+    "408": {
+      "filename": "stdlib.sol",
+      "line": 22
+    },
+    "416": {
+      "filename": "stdlib.sol",
+      "line": 22
+    },
+    "424": {
+      "filename": "stdlib.sol",
+      "line": 22
+    },
+    "440": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "448": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "464": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "488": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "496": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "536": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "544": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "552": {
+      "filename": "stdlib.sol",
+      "line": 23
+    },
+    "568": {
+      "filename": "stdlib.sol",
+      "line": 24
+    },
+    "584": {
+      "filename": "./boc_test.code",
+      "line": 199
+    },
+    "600": {
+      "filename": "./boc_test.code",
+      "line": 200
+    },
+    "608": {
+      "filename": "./boc_test.code",
+      "line": 201
+    },
+    "624": {
+      "filename": "./boc_test.code",
+      "line": 202
+    },
+    "632": {
+      "filename": "./boc_test.code",
+      "line": 203
+    },
+    "648": {
+      "filename": "./boc_test.code",
+      "line": 204
+    },
+    "664": {
+      "filename": "./boc_test.code",
+      "line": 205
+    },
+    "672": {
+      "filename": "./boc_test.code",
+      "line": 206
+    },
+    "688": {
+      "filename": "./boc_test.code",
+      "line": 209
+    }
+  },
+  "ba24dbf6b9b67dae772a10d4497cec63c5f9040fa4a190047c5071b3d4339060": {
+    "0": {
+      "filename": "./boc_test.code",
+      "line": 213
+    },
+    "16": {
+      "filename": "./boc_test.code",
+      "line": 214
+    },
+    "24": {
+      "filename": "./boc_test.code",
+      "line": 215
+    },
+    "48": {
+      "filename": "./boc_test.code",
+      "line": 216
+    },
+    "64": {
+      "filename": "./boc_test.code",
+      "line": 217
+    },
+    "88": {
+      "filename": "./boc_test.code",
+      "line": 218
+    },
+    "104": {
+      "filename": "./boc_test.code",
+      "line": 219
+    },
+    "112": {
+      "filename": "./boc_test.code",
+      "line": 220
+    },
+    "120": {
+      "filename": "./boc_test.code",
+      "line": 221
+    },
+    "144": {
+      "filename": "./boc_test.code",
+      "line": 222
+    },
+    "168": {
+      "filename": "./boc_test.code",
+      "line": 223
+    },
+    "176": {
+      "filename": "./boc_test.code",
+      "line": 224
+    },
+    "184": {
+      "filename": "./boc_test.code",
+      "line": 225
+    },
+    "200": {
+      "filename": "./boc_test.code",
+      "line": 226
+    },
+    "216": {
+      "filename": "./boc_test.code",
+      "line": 230
+    },
+    "224": {
+      "filename": "./boc_test.code",
+      "line": 231
+    },
+    "248": {
+      "filename": "./boc_test.code",
+      "line": 232
+    },
+    "264": {
+      "filename": "./boc_test.code",
+      "line": 233
+    },
+    "272": {
+      "filename": "./boc_test.code",
+      "line": 234
+    },
+    "288": {
+      "filename": "./boc_test.code",
+      "line": 238
+    },
+    "296": {
+      "filename": "./boc_test.code",
+      "line": 239
+    },
+    "312": {
+      "filename": "./boc_test.code",
+      "line": 242
+    }
+  },
+  "c4ecdeea35ba96af14ebe153c0ed530df7990688af320d3dfc1b696cec918be3": {
+    "0": {
+      "filename": "./boc_test.code",
+      "line": 118
+    },
+    "8": {
+      "filename": "./boc_test.code",
+      "line": 119
+    },
+    "24": {
+      "filename": "./boc_test.code",
+      "line": 120
+    },
+    "48": {
+      "filename": "./boc_test.code",
+      "line": 121
+    },
+    "64": {
+      "filename": "./boc_test.code",
+      "line": 122
+    },
+    "72": {
+      "filename": "./boc_test.code",
+      "line": 123
+    },
+    "88": {
+      "filename": "boc_test.sol",
+      "line": 19
+    },
+    "96": {
+      "filename": "./boc_test.code",
+      "line": 129
+    },
+    "112": {
+      "filename": "./boc_test.code",
+      "line": 132
+    },
+    "128": {
+      "filename": "./boc_test.code",
+      "line": 135
+    }
+  },
+  "c6732320998da40082e3c19cd58bd4aa711e02dc92b03a1cc4c2978499508d10": {
+    "0": {
+      "filename": "./boc_test.code",
+      "line": 29
+    },
+    "8": {
+      "filename": "./boc_test.code",
+      "line": 30
+    },
+    "24": {
+      "filename": "./boc_test.code",
+      "line": 31
+    },
+    "32": {
+      "filename": "./boc_test.code",
+      "line": 32
+    },
+    "48": {
+      "filename": "./boc_test.code",
+      "line": 35
+    },
+    "64": {
+      "filename": "./boc_test.code",
+      "line": 36
+    },
+    "80": {
+      "filename": "./boc_test.code",
+      "line": 37
+    },
+    "88": {
+      "filename": "./boc_test.code",
+      "line": 38
+    },
+    "96": {
+      "filename": "./boc_test.code",
+      "line": 39
+    },
+    "104": {
+      "filename": "./boc_test.code",
+      "line": 40
+    },
+    "112": {
+      "filename": "./boc_test.code",
+      "line": 41
+    },
+    "120": {
+      "filename": "./boc_test.code",
+      "line": 43
+    },
+    "128": {
+      "filename": "./boc_test.code",
+      "line": 44
+    },
+    "144": {
+      "filename": "./boc_test.code",
+      "line": 45
+    },
+    "152": {
+      "filename": "boc_test.sol",
+      "line": 11
+    },
+    "168": {
+      "filename": "boc_test.sol",
+      "line": 13
+    },
+    "184": {
+      "filename": "boc_test.sol",
+      "line": 13
+    },
+    "208": {
+      "filename": "boc_test.sol",
+      "line": 14
+    },
+    "224": {
+      "filename": "./boc_test.code",
+      "line": 54
+    },
+    "240": {
+      "filename": "./boc_test.code",
+      "line": 57
+    }
+  },
+  "f24e1e7aa04d89aad2945816b6e9b921f2b3892da9ba53e2383c148351b96d0c": {
+    "0": {
+      "filename": "./boc_test.code",
+      "line": 227
+    },
+    "16": {
+      "filename": "./boc_test.code",
+      "line": 228
+    }
+  },
+  "f721f161be3508fa8babc5c3a63d937837c837729a34171068af274daa7f3028": {
+    "0": {
+      "filename": "./boc_test.code",
+      "line": 286
+    }
+  },
+  "fe1a212c2dc415d7cd4b7b012b708ccfd3262fe6cde7add5e8e7c5b91ecfe75d": {
+    "0": {
+      "filename": "./boc_test.code",
+      "line": 2
+    },
+    "16": {
+      "filename": "./boc_test.code",
+      "line": 3
+    },
+    "24": {
+      "filename": "./boc_test.code",
+      "line": 4
+    },
+    "40": {
+      "filename": "./boc_test.code",
+      "line": 5
+    },
+    "56": {
+      "filename": "./boc_test.code",
+      "line": 6
+    },
+    "72": {
+      "filename": "./boc_test.code",
+      "line": 7
+    },
+    "80": {
+      "filename": "./boc_test.code",
+      "line": 8
+    },
+    "88": {
+      "filename": "./boc_test.code",
+      "line": 9
+    },
+    "104": {
+      "filename": "./boc_test.code",
+      "line": 10
+    },
+    "120": {
+      "filename": "./boc_test.code",
+      "line": 11
+    },
+    "136": {
+      "filename": "./boc_test.code",
+      "line": 12
+    }
+  }
+}

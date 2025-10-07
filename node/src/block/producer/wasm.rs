@@ -4,6 +4,19 @@ use std::collections::HashSet;
 use anyhow::anyhow;
 use tvm_vm::executor::Engine;
 
+const WASM_BINARY_ROOT_PATH: &str = "./config/wasm";
+const NODE_MANDATORY_HASHES: [&str; 1] =
+    ["b8891b913656ae35d9ffff371f0f03e4f1f869d0e17556a8c273750313884b0a"];
+
+pub fn check_node_mandatory_wasm_available() {
+    for hash in NODE_MANDATORY_HASHES {
+        let filename = format!("{WASM_BINARY_ROOT_PATH}/{hash}");
+        log::debug!("Getting file {filename:?}");
+        // Panics if no wasm file
+        assert!(std::fs::exists(filename).unwrap());
+    }
+}
+
 #[derive(Clone)]
 pub struct WasmNodeCache {
     // cached resources used for wasm execution
@@ -15,7 +28,7 @@ pub struct WasmNodeCache {
 
 impl WasmNodeCache {
     pub fn new() -> anyhow::Result<Self> {
-        let wasm_binary_root_path = "./config/wasm".to_owned();
+        let wasm_binary_root_path = WASM_BINARY_ROOT_PATH.to_owned();
         let wasm_hash_whitelist = match Self::get_wasm_hash_whitelist(){
             Ok(r) => r,
             Err(e) => Err(anyhow!("Couldn't create Node Wasm Hash Whitelist. This is a misconfiguration or a bug. Caused by: {:?}", e))?,
@@ -36,6 +49,7 @@ impl WasmNodeCache {
     }
 
     pub fn get_wasm_hash_whitelist() -> anyhow::Result<HashSet<[u8; 32]>> {
+        // Hashes that are allowed for execution. These include mandatory wasm binaries, test binaries and ALL other allowed binaries.
         let hash_strs = [
             "c5b3fe1a4fa391e9660a13d55ca2200f9343d5b1d18473ebbee19d8219e3ddc1",
             "7b7f96a857a4ada292d7c6b1f47940dde33112a2c2bc15b577dff9790edaeef2",
