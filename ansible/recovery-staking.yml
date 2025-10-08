@@ -1,0 +1,35 @@
+- name: Run staking
+  hosts: block_keepers
+  gather_facts: no
+  become: yes
+  vars:
+    LOG_FILE: staking-recovery.log
+    NODE_KEY: "{{ NODE_OWNER_KEY | default('block_keeper' ~ NODE_ID ~ '.keys.json') }}"
+
+  tasks:
+    - name: Run staking script once
+      ansible.builtin.shell:
+        executable: /bin/bash
+        chdir: "{{ BK_DIR | default(ROOT_DIR ~ '/block-keeper') }}"
+        # There is sed command to get unbrakable staking
+        cmd: |
+          docker run --rm --entrypoint '' -v {{ BK_DIR | default(ROOT_DIR ~ '/block-keeper') }}/bk-configs:/staking/configs -v {{ BK_LOGS_DIR | default(MNT_DATA ~ '/logs-block-keeper') }}:/staking/logs {{ STAKING_IMAGE }} /bin/bash -c "$(cat <<EOF
+          sed -i 's/-eEuo/-Euo/g' /staking/staking.sh
+          tvm-cli config -g --url {{ TVM_ENDPOINT | default(groups['block_manager'][0]) }} && /staking/staking.sh -l /staking/logs/{{ LOG_FILE }} /staking/configs/{{ NODE_KEY | basename }} /staking/configs/block_keeper{{ NODE_ID }}_bls.keys.json {{ HOST_PUBLIC_IP }}
+          EOF
+          )"
+      register: staking_output
+      
+    - name: Get latest staking recovery log
+      ansible.builtin.shell:
+        executable: /bin/bash
+        chdir: "{{ BK_LOGS_DIR | default(MNT_DATA ~ '/logs-block-keeper') }}"
+        cmd: |
+          cat {{ LOG_FILE }}
+      register: staking_log_output
+
+    - name: Print staking output
+      ansible.builtin.debug:
+        msg:
+          - "Staking output: {{ staking_output.stdout }}"
+          - "Staking log: {{ staking_log_output.stdout }}"

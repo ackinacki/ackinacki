@@ -627,13 +627,8 @@ impl ThreadAuthority {
     }
 
     pub fn on_bad_block_nack_confirmed(&mut self, block: BlockState) {
-        let (Some(parent_block_identifier), Some(block_height)) =
-            block.guarded(|e| (e.parent_block_identifier().clone(), *e.block_height()))
-        else {
-            panic!("Somehow we got a block confirmed to be malicious yet some of the mandatory state fields missing.")
-        };
-        let parent = self.block_state_repository.get(&parent_block_identifier).unwrap();
-        let _ = self.start_next_round(parent, block_height);
+        tracing::trace!(target: "monit", "on_bad_block_nack_confirmed: {block:?}");
+        let _ = self.on_block_producer_stalled();
     }
 
     fn start_next_round(

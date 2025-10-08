@@ -185,9 +185,6 @@ pub(super) fn inner_loop(
                 let _ = send.send_ack(state.clone());
             } else {
                 let thread_id = next_block.get_common_section().thread_id;
-                authority
-                    .guarded_mut(|e| e.get_thread_authority(&thread_id))
-                    .guarded_mut(|e| e.on_bad_block_nack_confirmed(state.clone()));
                 match verify_res {
                     VerificationResult::TooComplexExecution => {
                         // TODO: send Nack here
@@ -204,6 +201,9 @@ pub(super) fn inner_loop(
                         );
                         let nack_reason = NackReason::BadBlock { envelope: next_envelope.clone() };
                         let _ = send.send_nack(state.clone(), nack_reason);
+                        authority
+                            .guarded_mut(|e| e.get_thread_authority(&thread_id))
+                            .guarded_mut(|e| e.on_bad_block_nack_confirmed(state.clone()));
                     }
                     VerificationResult::ValidBlock => {
                         unreachable!();
