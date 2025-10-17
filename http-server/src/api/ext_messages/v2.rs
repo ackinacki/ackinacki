@@ -21,25 +21,24 @@ use crate::helpers::extract_ext_msg_sent_time;
 use crate::ExternalMessage;
 use crate::WebServer;
 
-pub struct ExtMessagesHandler<TMesssage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>(
+pub struct ExtMessagesHandler<TMesssage, TMsgConverter, TBPResolver, TSeqnoGetter>(
     PhantomData<TMesssage>,
     PhantomData<TMsgConverter>,
     PhantomData<TBPResolver>,
-    PhantomData<TBocByAddrGetter>,
     PhantomData<TSeqnoGetter>,
 );
 
-impl<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
-    ExtMessagesHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
+impl<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
+    ExtMessagesHandler<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
 {
     pub fn new() -> Self {
-        Self(PhantomData, PhantomData, PhantomData, PhantomData, PhantomData)
+        Self(PhantomData, PhantomData, PhantomData, PhantomData)
     }
 }
 
 #[async_trait]
-impl<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter> Handler
-    for ExtMessagesHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
+impl<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter> Handler
+    for ExtMessagesHandler<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
 where
     TMessage: Clone + Send + Sync + 'static + std::fmt::Debug,
     TMsgConverter: Clone
@@ -48,8 +47,6 @@ where
         + 'static
         + Fn(tvm_block::Message, [u8; 34]) -> anyhow::Result<TMessage>,
     TBPResolver: Clone + Send + Sync + 'static + FnMut([u8; 34]) -> ResolvingResult,
-    TBocByAddrGetter:
-        Clone + Send + Sync + 'static + Fn(String) -> anyhow::Result<(String, Option<String>)>,
     TSeqnoGetter: Clone + Send + Sync + 'static + Fn() -> anyhow::Result<u32>,
 {
     async fn handle(
@@ -61,13 +58,9 @@ where
     ) {
         tracing::debug!(target: "http_server", "Rest service: request got!");
         let moment = Instant::now();
-        let Ok(mut web_server) = depot.obtain::<WebServer<
-            TMessage,
-            TMsgConverter,
-            TBPResolver,
-            TBocByAddrGetter,
-            TSeqnoGetter,
-        >>() else {
+        let Ok(mut web_server) =
+            depot.obtain::<WebServer<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>>()
+        else {
             return render_error(
                 res,
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -95,7 +88,7 @@ where
                 );
             };
 
-            let account_request_tx = web_server.signing_pubkey_request_senber.clone();
+            let account_request_tx = web_server.account_request_sender.clone();
             match token.authorize(account_request_tx).await {
                 TokenVerificationResult::Ok => {
                     tracing::debug!("Token verification passed");

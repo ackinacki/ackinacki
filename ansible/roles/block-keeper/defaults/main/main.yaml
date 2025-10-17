@@ -4,7 +4,10 @@ LOG_ROTATE_SIZE: 5G
 LOG_ROTATE_SPEC: "*/2 *"
 
 OPT_STATE_CLEANUP_SPEC: "0 *" # hourly
-OPT_STATE_KEEP_AMOUNT: 100
+OPT_STATE_KEEP_AMOUNT: 100 # should not be less than 100
+
+BLK_STATE_CLEANUP_SPEC: "0 *" # hourly
+BLK_STATE_KEEP_AMOUNT: 100000 # less than 1000 may be dangerous, 100k should be safe and reasonable space wise
 
 NODE_BINARY: node
 FAIL_FAST: yes

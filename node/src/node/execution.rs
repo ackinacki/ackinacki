@@ -204,8 +204,8 @@ where
                     self.producer_service.touch();
                 }
                 Ok((msg, _)) => match msg {
-                    NetworkMessage::InnerCommand(Command::StartSynchronization) => {
-                        tracing::info!("Received StartSynchronization");
+                    NetworkMessage::InnerCommand(Command::TryStartSynchronization) => {
+                        tracing::info!("Received TryStartSynchronization");
                         let duration_since_last_finalization =
                             self.shared_services.duration_since_last_finalization();
                         if duration_since_last_finalization

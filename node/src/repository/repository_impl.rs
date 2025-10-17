@@ -15,7 +15,6 @@ use std::ops::Add;
 use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -485,33 +484,33 @@ impl RepositoryImpl {
             last_message_for_acc: Arc::new(Mutex::new(HashMap::new())),
         };
 
-        let optimistic_dir = format!(
-            "{}/{}/",
-            repo_impl.data_dir.clone().to_str().unwrap(),
-            repo_impl.get_optimistic_state_path(),
-        );
-        if let Ok(paths) = std::fs::read_dir(optimistic_dir) {
-            for state_path in paths {
-                if let Ok(path) = state_path.map(|de| de.path()) {
-                    if let Some(id_str) = path.file_name().and_then(|os_str| os_str.to_str()) {
-                        if let Ok(block_id) = BlockIdentifier::from_str(id_str) {
-                            tracing::trace!(
-                                "RepositoryImpl::new reading optimistic state: {block_id:?}"
-                            );
-                            if let Ok(state) = OptimisticStateImpl::load_from_file(&path) {
-                                let seq_no = state.get_block_info().prev1().unwrap().seq_no;
-                                {
-                                    let mut all_states = repo_impl.saved_states.lock();
-                                    let saved_states =
-                                        all_states.entry(state.thread_id).or_default();
-                                    saved_states.insert(BlockSeqNo::from(seq_no), block_id);
-                                }
-                            };
-                        }
-                    }
-                }
-            }
-        }
+        // let optimistic_dir = format!(
+        //     "{}/{}/",
+        //     repo_impl.data_dir.clone().to_str().unwrap(),
+        //     repo_impl.get_optimistic_state_path(),
+        // );
+        // if let Ok(paths) = std::fs::read_dir(optimistic_dir) {
+        //     for state_path in paths {
+        //         if let Ok(path) = state_path.map(|de| de.path()) {
+        //             if let Some(id_str) = path.file_name().and_then(|os_str| os_str.to_str()) {
+        //                 if let Ok(block_id) = BlockIdentifier::from_str(id_str) {
+        //                     tracing::trace!(
+        //                         "RepositoryImpl::new reading optimistic state: {block_id:?}"
+        //                     );
+        //                     if let Ok(state) = OptimisticStateImpl::load_from_file(&path) {
+        //                         let seq_no = state.get_block_info().prev1().unwrap().seq_no;
+        //                         {
+        //                             let mut all_states = repo_impl.saved_states.lock();
+        //                             let saved_states =
+        //                                 all_states.entry(state.thread_id).or_default();
+        //                             saved_states.insert(BlockSeqNo::from(seq_no), block_id);
+        //                         }
+        //                     };
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
         {
             let states = &repo_impl.saved_states.lock();
             tracing::trace!("Repo saved states: {:?}", states);
@@ -525,6 +524,10 @@ impl RepositoryImpl {
                     .get_optimistic_state(&metadata.last_finalized_block_id, thread_id, None)
                     .expect("Failed to get last finalized state")
                     .expect("Failed to load last finalized state");
+
+                let mut all_states = repo_impl.saved_states.lock();
+                let saved_states = all_states.entry(state.thread_id).or_default();
+                saved_states.insert(*state.get_block_seq_no(), state.get_block_id().clone());
                 repo_impl.thread_last_finalized_state.guarded_mut(|e| e.insert(*thread_id, state));
             }
         }

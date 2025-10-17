@@ -14,7 +14,6 @@ use tvm_block::GetRepresentationHash;
 use tvm_block::HashmapAugType;
 use tvm_block::TrComputePhase;
 use tvm_block::TransactionDescr;
-use tvm_executor::BlockchainConfig;
 use tvm_types::ExceptionCode;
 use tvm_types::HashmapType;
 use tvm_types::UInt256;
@@ -29,6 +28,7 @@ use crate::block_keeper_system::BlockKeeperSlashData;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
+use crate::config::BlockchainConfigRead;
 use crate::config::Config;
 use crate::external_messages::Stamp;
 use crate::helper::metrics::BlockProductionMetrics;
@@ -65,7 +65,7 @@ pub trait BlockVerifier {
 #[derive(TypedBuilder)]
 #[allow(dead_code)]
 pub struct TVMBlockVerifier {
-    blockchain_config: Arc<BlockchainConfig>,
+    blockchain_config: BlockchainConfigRead,
     node_config: Config,
     // TODO: need to fill this data for verifier
     epoch_block_keeper_data: Vec<BlockKeeperData>,
@@ -210,7 +210,8 @@ impl BlockVerifier for TVMBlockVerifier {
                 .push_back((stamp, msg));
         }
 
-        let block_gas_limit = self.blockchain_config.get_gas_config(false).block_gas_limit;
+        let blockchain_config = self.blockchain_config.get(&block.seq_no());
+        let block_gas_limit = blockchain_config.get_gas_config(false).block_gas_limit;
 
         tracing::debug!(target: "node", "PARENT block: {:?}", preprocessing_result.state.get_block_info());
 
@@ -232,7 +233,7 @@ impl BlockVerifier for TVMBlockVerifier {
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (verify_block, _, _) = producer.build_block(
             grouped_ext_messages,
-            &self.blockchain_config,
+            &blockchain_config,
             vec![],
             Some(check_messages_map),
             white_list_of_slashing_messages_hashes,

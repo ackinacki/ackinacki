@@ -116,6 +116,7 @@ impl From<ExtMsgFeedback> for ExtMsgResponse {
                     message_hash: feedback.message_hash,
                     block_hash,
                     tx_hash,
+                    state_timestamp: feedback.now,
                     ext_out_msgs,
                     aborted: feedback.aborted,
                     current_time,
@@ -149,6 +150,7 @@ pub struct ExtMsgResult {
     message_hash: String,
     block_hash: String,
     tx_hash: String,
+    state_timestamp: Option<u32>,
     ext_out_msgs: Vec<String>,
     aborted: bool, /* We still need this field as some aborted transactions from ExtInMsg are still included into block */
     exit_code: i32, /* To see the exit code of aborted transaction included into block. 0 for success */
@@ -261,6 +263,7 @@ pub struct ExtMsgFeedback {
     pub message_hash: String,
     pub tx_hash: Option<String>,
     pub block_hash: Option<String>,
+    pub now: Option<u32>,
     pub aborted: bool,
     pub exit_code: i32,
     pub thread_id: Option<[u8; 34]>,

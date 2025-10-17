@@ -15,6 +15,7 @@
         cmd: |
           docker run --rm --entrypoint '' -v {{ BK_DIR | default(ROOT_DIR ~ '/block-keeper') }}/bk-configs:/staking/configs -v {{ BK_LOGS_DIR | default(MNT_DATA ~ '/logs-block-keeper') }}:/staking/logs {{ STAKING_IMAGE }} /bin/bash -c "$(cat <<EOF
           sed -i 's/-eEuo/-Euo/g' /staking/staking.sh
+          sed -i 's/0\.3/0\.07/g' /staking/staking.sh
           tvm-cli config -g --url {{ TVM_ENDPOINT | default(groups['block_manager'][0]) }} && /staking/staking.sh -l /staking/logs/{{ LOG_FILE }} /staking/configs/{{ NODE_KEY | basename }} /staking/configs/block_keeper{{ NODE_ID }}_bls.keys.json {{ HOST_PUBLIC_IP }}
           EOF
           )"

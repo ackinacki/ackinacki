@@ -77,6 +77,8 @@ struct BlockProductionMetricsInner {
     authority_switch_direct_resent: Counter<u64>,
     state_request: Counter<u64>,
     errors: Counter<u64>,
+    build_info: Gauge<u64>,
+    missed_blocks: Counter<u64>,
 }
 
 pub const BK_SET_UPDATE_CHANNEL: &str = "bk_set_update";
@@ -284,6 +286,8 @@ impl BlockProductionMetrics {
             authority_switch_direct_resent: meter.u64_counter("node_auth_sw_dir_resent").build(),
             state_request: meter.u64_counter("node_state_req_exec").build(),
             errors: meter.u64_counter("node_errors").build(),
+            build_info: meter.u64_gauge("node_build_info").build(),
+            missed_blocks: meter.u64_counter("node_missed_blocks").build(),
         }))
     }
 
@@ -557,6 +561,18 @@ impl BlockProductionMetrics {
 
     pub fn report_error(&self, kind: &'static str) {
         self.0.errors.add(1, &[KeyValue::new("kind", kind)]);
+    }
+
+    pub fn report_build_info(&self) {
+        let version = env!("CARGO_PKG_VERSION");
+        let commit = env!("BUILD_GIT_COMMIT");
+        self.0
+            .build_info
+            .record(1, &[KeyValue::new("version", version), KeyValue::new("commit", commit)]);
+    }
+
+    pub fn report_missed_blocks(&self, value: u32, thread_id: &ThreadIdentifier) {
+        self.0.missed_blocks.add(value as u64, &[thread_id_attr(thread_id)]);
     }
 }
 

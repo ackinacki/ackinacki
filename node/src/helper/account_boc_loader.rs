@@ -6,6 +6,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tvm_types::UInt256;
 
+use crate::bls::envelope::BLSSignedEnvelope;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
@@ -17,14 +18,10 @@ use crate::types::ThreadIdentifier;
 pub fn get_account_from_shard_state(
     repository: Arc<Mutex<RepositoryImpl>>,
     account_address: &str,
-) -> anyhow::Result<(tvm_block::Account, Option<UInt256>)> {
+) -> anyhow::Result<(tvm_block::Account, Option<UInt256>, u64)> {
     tracing::trace!("get_account_from_shard_state: address={account_address}");
 
     let repo = repository.lock();
-
-    let state = repo
-        .last_finalized_optimistic_state(&ThreadIdentifier::default())
-        .ok_or_else(|| anyhow::anyhow!("Shard state not found"))?;
 
     let acc_id: AccountAddress = tvm_types::AccountId::from_string(account_address)
         .map_err(|_| anyhow::anyhow!("Invalid account address"))?
@@ -32,7 +29,7 @@ pub fn get_account_from_shard_state(
 
     let default_state = repo
         .last_finalized_optimistic_state(&ThreadIdentifier::default())
-        .ok_or_else(|| anyhow::anyhow!("Shard state for deafault thread not found"))?;
+        .ok_or_else(|| anyhow::anyhow!("Shard state for default thread not found"))?;
 
     let default_routing = AccountRouting(DAppIdentifier(acc_id.clone()), acc_id.clone());
     tracing::trace!("get_account_from_shard_state: default_routing={default_routing:?}");
@@ -40,10 +37,10 @@ pub fn get_account_from_shard_state(
     tracing::trace!("get_account_from_shard_state: potential_thread={potential_thread:?}");
     let no_dapp_state = repo
         .last_finalized_optimistic_state(&potential_thread)
-        .ok_or_else(|| anyhow::anyhow!("Failed to load no dapp state"))?
-        .get_shard_state();
+        .ok_or_else(|| anyhow::anyhow!("Failed to load no dapp state"))?;
     tracing::trace!("Loaded no_dapp_state");
-
+    let mut final_state = no_dapp_state;
+    let no_dapp_state = final_state.get_shard_state();
     let accounts = no_dapp_state
         .read_accounts()
         .map_err(|e| anyhow::anyhow!("Can't read accounts from shard state: {e}"))?;
@@ -52,7 +49,12 @@ pub fn get_account_from_shard_state(
         .account(&acc_id.clone().into())
         .map_err(|e| anyhow::anyhow!("Can't find account in shard state: {e}"))?
         .ok_or_else(|| anyhow::anyhow!("Can't find account in shard state"))?;
-    tracing::trace!("Loaded acc from no_dapp_state");
+
+    let state_timestamp = repo
+        .get_block_from_repo_or_archive(&default_state.block_id, &default_state.thread_id)?
+        .data()
+        .time()?;
+    tracing::trace!("Loaded acc from no_dapp_state (timestamp: {state_timestamp})");
     if acc.is_redirect() {
         tracing::trace!("Account is redirect");
         let actual_dapp_id = acc
@@ -64,9 +66,9 @@ pub fn get_account_from_shard_state(
         tracing::trace!("get_account_from_shard_state: actual_thread={actual_thread:?}");
         let actual_state = repo
             .last_finalized_optimistic_state(&actual_thread)
-            .ok_or_else(|| anyhow::anyhow!("Failed to load no dapp state"))?
-            .get_shard_state();
-
+            .ok_or_else(|| anyhow::anyhow!("Failed to load no dapp state"))?;
+        final_state = actual_state;
+        let actual_state = final_state.get_shard_state();
         let accounts = actual_state
             .read_accounts()
             .map_err(|e| anyhow::anyhow!("Can't read accounts from shard state: {e}"))?;
@@ -83,7 +85,7 @@ pub fn get_account_from_shard_state(
         // TODO:
         // verify with @vasily. It does seem like a bug
         // I guess it must be account_thread_state
-        let root = match state.cached_accounts.get(&acc_id) {
+        let root = match final_state.cached_accounts.get(&acc_id) {
             Some((_, acc_root)) => acc_root.clone(),
             None => repo.accounts_repository().load_account(
                 &acc_id,
@@ -107,5 +109,10 @@ pub fn get_account_from_shard_state(
     let account =
         acc.read_account().and_then(|acc| acc.as_struct()).map_err(|e| anyhow::anyhow!("{e}"))?;
     tracing::trace!("return acc");
-    Ok((account, dapp_id))
+    tracing::trace!(
+        "account source state data: {:?} {:?}",
+        final_state.get_block_seq_no(),
+        final_state.get_block_id()
+    );
+    Ok((account, dapp_id, state_timestamp))
 }

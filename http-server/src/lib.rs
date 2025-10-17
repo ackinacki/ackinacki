@@ -51,32 +51,29 @@ const PASS_UNAUTHORIZED_KEY: &str = "pass_unauthorized";
 const AUTHORIZED_BY_BK_KEY: &str = "authorized_by_bk_token";
 
 #[derive(Clone)]
-pub struct WebServer<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter> {
+pub struct WebServer<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter> {
     pub addr: String,
     pub local_storage_dir: PathBuf,
     pub incoming_message_sender:
         InstrumentedSender<(TMessage, Option<oneshot::Sender<ExtMsgFeedback>>)>,
-    pub signing_pubkey_request_senber: mpsc::Sender<AccountRequest>,
+    pub account_request_sender: mpsc::Sender<AccountRequest>,
     pub bk_set_summary: Arc<parking_lot::RwLock<BkSetSummarySnapshot>>,
     pub bk_set: Arc<parking_lot::RwLock<ApiBkSetSnapshot>>,
     pub into_external_message: TMsgConverter,
     pub bp_resolver: TBPResolver,
-    pub get_boc_by_addr: TBocByAddrGetter,
     pub get_default_thread_seqno: TSeqnoGetter,
     pub owner_wallet_pubkey: Option<String>,
     pub signing_keys: Option<KeyPair>,
     pub metrics: Option<RoutingMetrics>,
 }
 
-impl<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
-    WebServer<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
+impl<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
+    WebServer<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
 where
     TMessage: Send + Sync + Clone + 'static + std::fmt::Debug,
     TMsgConverter:
         Send + Sync + Clone + 'static + Fn(Message, [u8; 34]) -> anyhow::Result<TMessage>,
     TBPResolver: Send + Sync + Clone + 'static + FnMut([u8; 34]) -> ResolvingResult,
-    TBocByAddrGetter:
-        Send + Sync + Clone + 'static + Fn(String) -> anyhow::Result<(String, Option<String>)>,
     TSeqnoGetter: Send + Sync + Clone + 'static + Fn() -> anyhow::Result<u32>,
 {
     #[allow(clippy::too_many_arguments)]
@@ -87,10 +84,9 @@ where
             TMessage,
             Option<oneshot::Sender<ExtMsgFeedback>>,
         )>,
-        signing_pubkey_request_senber: mpsc::Sender<AccountRequest>,
+        account_request_sender: mpsc::Sender<AccountRequest>,
         into_external_message: TMsgConverter,
         bp_resolver: TBPResolver,
-        get_boc_by_addr: TBocByAddrGetter,
         get_default_thread_seqno: TSeqnoGetter,
         owner_wallet_pubkey: Option<String>,
         signing_keys_path: Option<String>,
@@ -102,12 +98,11 @@ where
             addr: addr.as_ref().to_string(),
             local_storage_dir: local_storage_dir.as_ref().to_path_buf(),
             incoming_message_sender,
-            signing_pubkey_request_senber,
+            account_request_sender,
             into_external_message,
             bp_resolver,
             bk_set_summary: Arc::new(parking_lot::RwLock::new(BkSetSummarySnapshot::new())),
             bk_set: Arc::new(parking_lot::RwLock::new(ApiBkSetSnapshot::new())),
-            get_boc_by_addr,
             get_default_thread_seqno,
             owner_wallet_pubkey,
             signing_keys,
@@ -128,7 +123,6 @@ where
             TMessage,
             TMsgConverter,
             TBPResolver,
-            TBocByAddrGetter,
             TSeqnoGetter,
         >::new());
 
@@ -136,7 +130,6 @@ where
             TMessage,
             TMsgConverter,
             TBPResolver,
-            TBocByAddrGetter,
             TSeqnoGetter,
         >::new());
 
@@ -148,7 +141,6 @@ where
                 TMessage,
                 TMsgConverter,
                 TBPResolver,
-                TBocByAddrGetter,
                 TSeqnoGetter,
             >::new());
 
@@ -157,7 +149,6 @@ where
                 TMessage,
                 TMsgConverter,
                 TBPResolver,
-                TBocByAddrGetter,
                 TSeqnoGetter,
             >::new());
 
@@ -166,7 +157,6 @@ where
                 TMessage,
                 TMsgConverter,
                 TBPResolver,
-                TBocByAddrGetter,
                 TSeqnoGetter,
             >::new());
 

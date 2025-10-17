@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedReceiver;
-use tvm_executor::BlockchainConfig;
 
 use crate::block::producer::wasm::WasmNodeCache;
 use crate::block::verify::verify_block;
@@ -16,6 +15,7 @@ use crate::block::verify::VerificationResult;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
+use crate::config::BlockchainConfigRead;
 use crate::config::Config;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::helper::SHUTDOWN_FLAG;
@@ -67,7 +67,7 @@ pub(super) fn inner_loop(
     mut rx: InstrumentedReceiver<(BlockState, Envelope<GoshBLS, AckiNackiBlock>)>,
     block_state_repo: BlockStateRepository,
     repository: RepositoryImpl,
-    blockchain_config: Arc<BlockchainConfig>,
+    blockchain_config: BlockchainConfigRead,
     node_config: Config,
     mut shared_services: SharedServices,
     send: AckiNackiSend,

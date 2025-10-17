@@ -151,25 +151,24 @@ pub struct BkSetSummaryError {
     message: String,
 }
 
-pub struct BkSetSummaryHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>(
+pub struct BkSetSummaryHandler<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>(
     PhantomData<TMessage>,
     PhantomData<TMsgConverter>,
     PhantomData<TBPResolver>,
-    PhantomData<TBocByAddrGetter>,
     PhantomData<TSeqnoGetter>,
 );
 
-impl<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
-    BkSetSummaryHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
+impl<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
+    BkSetSummaryHandler<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
 {
     pub fn new() -> Self {
-        Self(PhantomData, PhantomData, PhantomData, PhantomData, PhantomData)
+        Self(PhantomData, PhantomData, PhantomData, PhantomData)
     }
 }
 
 #[async_trait]
-impl<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter> Handler
-    for BkSetSummaryHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
+impl<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter> Handler
+    for BkSetSummaryHandler<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
 where
     TMessage: Clone + Send + Sync + 'static + std::fmt::Debug,
     TMsgConverter: Clone
@@ -178,8 +177,6 @@ where
         + 'static
         + Fn(tvm_block::Message, [u8; 34]) -> anyhow::Result<TMessage>,
     TBPResolver: Clone + Send + Sync + 'static + FnMut([u8; 34]) -> ResolvingResult,
-    TBocByAddrGetter:
-        Clone + Send + Sync + 'static + Fn(String) -> anyhow::Result<(String, Option<String>)>,
     TSeqnoGetter: Clone + Send + Sync + 'static + Fn() -> anyhow::Result<u32>,
 {
     async fn handle(
@@ -189,13 +186,9 @@ where
         res: &mut Response,
         _ctrl: &mut FlowCtrl,
     ) {
-        let Ok(web_server_state) = depot.obtain::<WebServer<
-            TMessage,
-            TMsgConverter,
-            TBPResolver,
-            TBocByAddrGetter,
-            TSeqnoGetter,
-        >>() else {
+        let Ok(web_server_state) =
+            depot.obtain::<WebServer<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>>()
+        else {
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
             render_error_response(
                 res,

@@ -30,6 +30,7 @@ chmod 755 /logsdir
 
 echo "{{ LOG_ROTATE_SPEC | default('0 *') }} * * * /bin/chmod 755 /logsdir; /usr/sbin/logrotate -v /etc/logrotate.conf" > /etc/crontabs/root
 echo "{{ OPT_STATE_CLEANUP_SPEC | default('0 *') }} * * * cd /workdir/optimistic_state && ls -tp | grep -v '/$' | tail -n +{{ (OPT_STATE_KEEP_AMOUNT | default(100)) + 1 }} | tr '\n' '\0' | xargs -r -0 rm --" >> /etc/crontabs/root
+echo "{{ BLK_STATE_CLEANUP_SPEC | default('0 *') }} * * * cd /workdir/blocks-states && ls -tp | grep -v '/$' | tail -n +{{ (BLK_STATE_KEEP_AMOUNT | default(100000)) + 1 }} | tr '\n' '\0' | xargs -r -0 rm --" >> /etc/crontabs/root
 
 echo "Starting crond"
 

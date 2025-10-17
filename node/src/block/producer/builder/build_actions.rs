@@ -65,6 +65,7 @@ use tvm_types::UInt256;
 use tvm_types::UsageTree;
 use tvm_vm::executor::Engine;
 use tvm_vm::executor::EngineTraceInfo;
+use tvm_vm::executor::MVConfig;
 
 use super::ActiveThread;
 use super::BlockBuilder;
@@ -72,6 +73,7 @@ use super::ExecuteError;
 use super::PreparedBlock;
 use super::ThreadResult;
 use crate::block::postprocessing::postprocess;
+use crate::block::producer::builder::engine_version::get_engine_version;
 use crate::block::producer::builder::trace::simple_trace_callback;
 use crate::block::producer::execution_time::ExecutionTimeLimits;
 use crate::block::producer::wasm::WasmNodeCache;
@@ -88,6 +90,8 @@ use crate::external_messages::Stamp;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
+use crate::mvconfig::abi::MV_CONFIG_CONTRACT_ADDR;
+use crate::mvconfig::mvconfig::decode_mv_config_data;
 use crate::repository::accounts::AccountsRepository;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
@@ -820,6 +824,7 @@ impl BlockBuilder {
         block_lt: u64,
         check_messages_map: &mut Option<HashMap<AccountAddress, BTreeMap<u64, UInt256>>>,
         time_limits: &ExecutionTimeLimits,
+        mv_config: MVConfig,
     ) -> anyhow::Result<ActiveThread> {
         let message_hash = message.hash().unwrap();
         tracing::debug!(target: "builder", "Start msg execution: addr={:?} {:?}", acc_id.0.to_hex_string(), message_hash);
@@ -918,6 +923,7 @@ impl BlockBuilder {
             };
         let termination_deadline = time_limits.block_deadline();
         let execution_timeout = time_limits.get_message_timeout(&message_hash);
+
         let execute_params = if cfg!(feature = "tvm_tracing") {
             // let trace_copy = trace.clone();
             let callback = move |engine: &Engine, info: &EngineTraceInfo| {
@@ -942,7 +948,9 @@ impl BlockBuilder {
                 wasm_hash_whitelist: self.wasm_cache.wasm_hash_whitelist.clone(),
                 wasm_engine: Some(self.wasm_cache.wasm_engine.clone()),
                 wasm_component_cache: self.wasm_cache.wasm_component_cache.clone(),
-                ..Default::default()
+                mvconfig: mv_config,
+                engine_version: get_engine_version(self.block_info.seq_no()),
+                ..Default::default() // TODO: remove default
             }
         } else {
             ExecuteParams {
@@ -963,7 +971,9 @@ impl BlockBuilder {
                 wasm_hash_whitelist: self.wasm_cache.wasm_hash_whitelist.clone(),
                 wasm_engine: Some(self.wasm_cache.wasm_engine.clone()),
                 wasm_component_cache: self.wasm_cache.wasm_component_cache.clone(),
-                ..Default::default()
+                mvconfig: mv_config,
+                engine_version: get_engine_version(self.block_info.seq_no()),
+                ..Default::default() // TODO: remove default
             }
         };
 
@@ -1012,6 +1022,7 @@ impl BlockBuilder {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn execute_internal_messages(
         &mut self,
         blockchain_config: &BlockchainConfig,
@@ -1020,6 +1031,7 @@ impl BlockBuilder {
         message_queue: ThreadMessageQueueState,
         message_db: MessageDurableStorage,
         time_limits: &ExecutionTimeLimits,
+        mv_config: MVConfig,
     ) -> anyhow::Result<(bool, bool)> {
         let mut verify_block_contains_missing_messages_from_prev_state = false;
         tracing::debug!(target: "builder", "Executing internal messages: {:?}", message_queue);
@@ -1178,6 +1190,7 @@ impl BlockBuilder {
                                 block_lt,
                                 check_messages_map,
                                 time_limits,
+                                mv_config.clone()
                             );
                             if let Err(error) = &first_thread {
                                 if let Some(error) = error.downcast_ref::<ExecuteError>() {
@@ -1217,7 +1230,8 @@ impl BlockBuilder {
                                         block_unixtime,
                                         block_lt,
                                         check_messages_map,
-                                        time_limits
+                                        time_limits,
+                                        mv_config.clone()
                                     );
                                     if let Err(error) = &thread {
                                         if let Some(error) = error.downcast_ref::<ExecuteError>() {
@@ -1366,6 +1380,21 @@ impl BlockBuilder {
         // Second step: Take outbound internal messages from previous state, execute internal
         // messages that have destination in the current state and remove others from state.
 
+        let mut mvconfig = MVConfig::default();
+        let acc_id = AccountAddress::from_str(MV_CONFIG_CONTRACT_ADDR)
+            .map_err(|e| anyhow::format_err!("Failed to calc mvconfig address: {e}"))?;
+        if let Some(acc) = self.get_account_from_initial_state(&acc_id)? {
+            assert!(!acc.is_redirect(), "MVConfig account is redirect");
+            let acc_d = acc
+                .read_account()
+                .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?
+                .as_struct()
+                .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?;
+            if let Ok(config) = decode_mv_config_data(&acc_d) {
+                mvconfig = config;
+            }
+        }
+
         let (mut block_full, verify_block_contains_missing_messages_from_prev_state) = self
             .execute_all_internal_messages(
                 blockchain_config,
@@ -1373,6 +1402,7 @@ impl BlockBuilder {
                 white_list_of_slashing_messages_hashes,
                 message_db.clone(),
                 time_limits,
+                mvconfig.clone(),
             )?;
 
         // Third step: execute external messages if block is not full
@@ -1386,6 +1416,7 @@ impl BlockBuilder {
                         block_lt,
                         &mut check_messages_map,
                         time_limits,
+                        mvconfig.clone(),
                     )?;
                 block_full = is_full;
                 (feedbacks, processed_stamps, unprocessed)
@@ -1433,6 +1464,7 @@ impl BlockBuilder {
                             block_lt,
                             &mut check_messages_map,
                             time_limits,
+                            mvconfig.clone()
                         );
                         if let Err(error) = &thread {
                             if let Some(error) = error.downcast_ref::<ExecuteError>() {
@@ -1498,6 +1530,7 @@ impl BlockBuilder {
             block_unixtime,
             block_lt,
             &mut check_messages_map,
+            mvconfig.clone(),
         )
         .map_err(|e| anyhow::format_err!("Failed to execute dapp config messages: {e}"))?;
 
@@ -1962,6 +1995,7 @@ impl BlockBuilder {
         white_list_of_slashing_messages_hashes: HashSet<UInt256>,
         message_db: MessageDurableStorage,
         time_limits: &ExecutionTimeLimits,
+        mvconfig: MVConfig,
     ) -> anyhow::Result<(bool, bool)> {
         let (mut block_full, mut verify_block_contains_missing_messages_from_prev_state) = self
             .execute_internal_messages(
@@ -1971,6 +2005,7 @@ impl BlockBuilder {
                 self.initial_optimistic_state.high_priority_messages.clone(),
                 message_db.clone(),
                 time_limits,
+                mvconfig.clone(),
             )?;
 
         if !block_full && !verify_block_contains_missing_messages_from_prev_state {
@@ -1982,6 +2017,7 @@ impl BlockBuilder {
                     self.initial_optimistic_state.messages.clone(),
                     message_db,
                     time_limits,
+                    mvconfig,
                 )?;
         }
 
@@ -2161,6 +2197,7 @@ impl BlockBuilder {
         block_lt: u64,
         check_messages_map: &mut Option<HashMap<AccountAddress, BTreeMap<u64, UInt256>>>,
         time_limits: &ExecutionTimeLimits,
+        mvconfig: MVConfig,
     ) -> anyhow::Result<()> {
         if active_ext_threads.len() >= self.parallelization_level || ext_messages_queue.is_empty() {
             return Ok(());
@@ -2227,6 +2264,7 @@ impl BlockBuilder {
                         block_lt,
                         check_messages_map,
                         time_limits,
+                        mvconfig.clone(),
                     );
                     if let Err(error) = &thread {
                         if let Some(error) = error.downcast_ref::<ExecuteError>() {
@@ -2320,6 +2358,7 @@ impl BlockBuilder {
         Ok(true)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn execute_external_messages(
         &mut self,
         blockchain_config: &BlockchainConfig,
@@ -2328,6 +2367,7 @@ impl BlockBuilder {
         block_lt: u64,
         check_messages_map: &mut Option<HashMap<AccountAddress, BTreeMap<u64, UInt256>>>,
         time_limits: &ExecutionTimeLimits,
+        mvconfig: MVConfig,
     ) -> anyhow::Result<(ExtMsgFeedbackList, Vec<Stamp>, bool, usize)> {
         let incoming_queue_len: usize = queue_len(&ext_messages_queue);
 
@@ -2363,6 +2403,7 @@ impl BlockBuilder {
                 block_lt,
                 check_messages_map,
                 time_limits,
+                mvconfig.clone(),
             )?;
 
             if !self.process_completed_ext_msg_threads(
@@ -2603,6 +2644,7 @@ fn create_feedback(
     };
 
     if let Some(t) = transaction {
+        feedback.now = Some(t.now());
         feedback.tx_hash = Some(t.hash().map_err(|e| anyhow::format_err!("{e}"))?.to_hex_string());
 
         let tr_desc = t.read_description().map_err(|e| anyhow::format_err!("{e}"))?;

@@ -145,6 +145,7 @@ where
     chain_pulse_monitor: Sender<ChainPulseEvent>,
 
     authority_handler: JoinHandle<()>,
+    last_processed_block_seq_no: Option<u32>,
 }
 
 impl<TStateSyncService, TRandomGenerator> Node<TStateSyncService, TRandomGenerator>
@@ -336,6 +337,7 @@ where
             last_synced_state: None,
             chain_pulse_monitor,
             authority_handler,
+            last_processed_block_seq_no: Default::default(),
         }
     }
 }

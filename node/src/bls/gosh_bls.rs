@@ -137,12 +137,6 @@ impl Secret {
     }
 }
 
-impl Debug for Secret {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", hex::encode(self.0.to_bytes()))
-    }
-}
-
 #[cfg(test)]
 impl Default for Secret {
     fn default() -> Self {
@@ -184,7 +178,6 @@ impl BLSSignatureScheme for GoshBLS {
         data: &TData,
     ) -> anyhow::Result<Self::Signature> {
         let buffer = bincode::serialize(&data)?;
-        tracing::trace!("Sign data: {:?}", secret);
         anyhow::Ok(Signature(secret.0.sign(&buffer, &DST, &[])))
     }
 

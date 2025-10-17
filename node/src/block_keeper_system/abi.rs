@@ -7,6 +7,8 @@ pub static EPOCH_ABI: &str =
 pub static PREEPOCH_ABI: &str =
     include_str!("../../../contracts/bksystem/BlockKeeperPreEpochContract.abi.json");
 
+pub static BLOCK_KEEPER_COOLER_ABI: &str =
+    include_str!("../../../contracts/bksystem/BlockKeeperCoolerContract.abi.json");
 pub static BLOCK_KEEPER_WALLET_ABI: &str =
     include_str!("../../../contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json");
 pub static BLOCK_KEEPER_WALLET_TVC: &[u8] =

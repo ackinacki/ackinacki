@@ -129,9 +129,7 @@ use transport_layer::msquic::MsQuicTransport;
 use transport_layer::TlsCertCache;
 use tvm_block::Deserializable;
 use tvm_block::GetRepresentationHash;
-use tvm_block::Serializable;
 use tvm_block::StateInit;
-use tvm_types::base64_encode;
 use tvm_types::UInt256;
 
 // const ALIVE_NODES_WAIT_TIMEOUT_MILLIS: u64 = 100;
@@ -367,6 +365,9 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     tracing::info!("Clear missing block locks: {}", args.clear_missing_block_locks);
 
     let node_metrics = metrics.as_ref().map(|m| m.node.clone());
+    if let Some(m) = node_metrics.as_ref() {
+        m.report_build_info();
+    }
     let socket_address =
         std::env::var("AEROSPIKE_SOCKET_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
     let set_prefix = std::env::var("AEROSPIKE_SET_PREFIX").unwrap_or_else(|_| "node".to_string());
@@ -552,11 +553,15 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         let config_path = args.config_path.clone();
         std::thread::Builder::new().name("signal handler".to_string()).spawn(move || {
             for sig in signals.forever() {
-                tracing::info!("Received signal {:?}", sig);
+                tracing::info!(target: "monit", "Received signal {:?}", sig);
                 match sig {
                     SIGHUP => {
-                        let new_key_map = key_pairs_from_file::<GoshBLS>(&blk_key_path);
+                        let new_key_map: HashMap<
+                            node::bls::gosh_bls::PubKey,
+                            (node::bls::gosh_bls::Secret, node::types::RndSeed),
+                        > = key_pairs_from_file::<GoshBLS>(&blk_key_path);
                         tracing::trace!(
+                            target: "monit",
                             "Insert key pair, pubkeys: {:?}",
                             new_key_map.keys().collect::<Vec<_>>()
                         );
@@ -971,7 +976,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     config.global.block_keeper_preepoch_code_hash.clone(),
                 )
                 .producer_node_id(config.local.node_id.clone())
-                .blockchain_config(Arc::new(load_blockchain_config()?))
+                .blockchain_config(load_blockchain_config()?)
                 .parallelization_level(config.local.parallelization_level)
                 .shared_services(node_shared_services.clone())
                 .block_produce_timeout(Arc::new(Mutex::new(Duration::from_millis(
@@ -1103,9 +1108,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                         .network_broadcast_tx(broadcast_tx_clone)
                         .block_state_repository(block_state_repo_clone)
                         .chain_pulse_monitor(chain_pulse_monitor_clone)
-                        .sync_timeout_duration(
-                            config.global.min_time_between_state_publish_directives,
-                        )
                         .build();
                     authority_service.run()
                 })
@@ -1181,8 +1183,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let account_request_handle = tokio::spawn(async move {
         while let Some(AccountRequest { address, response }) = account_request_rx.recv().await {
             tracing::trace!(target: "node", "incoming account ({address}) request");
-            let result = get_account_from_shard_state(repo.clone(), &address)
-                .map(|(acc, _dapp_id)| Some(acc));
+            let result = get_account_from_shard_state(repo.clone(), &address);
 
             tracing::trace!(target: "node", "incoming account ({address}) request result: {result:?}");
 
@@ -1223,19 +1224,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 let repo = repo_clone_0.clone();
                 let node_id = config.local.node_id.clone();
                 move |thread_id| resolve_bp(thread_id.into(), &repo, &mut nodes_rx_clone, &node_id)
-            },
-            // This closure resolves account addresses to tuple: (BOC, Option<dapp_id_as_hex_string>)
-            move |address| {
-                tracing::trace!(target: "http_server", "Start get_boc_by_addr");
-                let result = get_account_from_shard_state(repo_clone_0.clone(), &address);
-                tracing::trace!(target: "http_server", "get_boc_by_addr result: {result:?}");
-                let (account, dapp_id) = result?;
-                let boc = account.write_to_bytes().map_err(|e| anyhow::anyhow!("{e}"))?;
-                let tuple = (
-                    base64_encode(&boc), //
-                    dapp_id.map(|id| id.as_hex_string()),
-                );
-                Ok(tuple)
             },
             // This closure returns last seq_no for default thread
             move || {
@@ -1414,6 +1402,18 @@ fn debug_used_features() {
     }
     if cfg!(feature = "timing") {
         eprintln!("  timing");
+    }
+    if cfg!(feature = "verify_all_blocks") {
+        eprintln!("  verify_all_blocks");
+    }
+    if cfg!(feature = "delay_attestation") {
+        eprintln!("  delay_attestation");
+    }
+    if cfg!(feature = "low_verification_time") {
+        eprintln!("  low_verification_time");
+    }
+    if cfg!(feature = "rotate_after_sync") {
+        eprintln!("  rotate_after_sync");
     }
     if cfg!(feature = "allow-dappid-thread-split") {
         eprintln!("  allow-dappid-thread-split");

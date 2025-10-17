@@ -523,6 +523,14 @@ fn process_candidate_block(
                             }
                         })?;
                     }
+                    #[cfg(feature = "verify_all_blocks")]
+                    block_state.guarded_mut(|e| {
+                        if e.must_be_validated() != &Some(true) {
+                            e.set_must_be_validated()
+                        } else {
+                            anyhow::Ok(())
+                        }
+                    })?;
                 } else {
                     start_shutdown();
                     tracing::error!("Node does not have valid key which was used to deploy epoch: pubkey={pubkey:?}");

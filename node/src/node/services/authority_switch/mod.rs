@@ -1,8 +1,6 @@
 use std::net::SocketAddr;
-use std::ops::Sub;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
-use std::time::Duration;
 
 use network::channel::NetBroadcastSender;
 use network::channel::NetDirectSender;
@@ -24,6 +22,8 @@ use crate::node::AuthoritySwitch;
 use crate::node::NetworkMessage;
 use crate::node::NodeIdentifier;
 use crate::protocol::authority_switch::action_lock::OnNextRoundIncomingRequestResult;
+use crate::protocol::authority_switch::action_lock::OnNextRoundSuccessOnUnableToProcessAction;
+use crate::protocol::authority_switch::action_lock::OnNextRoundSuccessResult;
 use crate::protocol::authority_switch::action_lock::ThreadAuthority;
 use crate::protocol::authority_switch::network_message::NextRoundSuccess;
 use crate::types::ThreadIdentifier;
@@ -42,13 +42,10 @@ pub struct AuthoritySwitchService {
     network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
     block_state_repository: BlockStateRepository,
     chain_pulse_monitor: Sender<ChainPulseEvent>,
-    sync_timeout_duration: Duration,
 }
 
 impl AuthoritySwitchService {
     pub fn run(&mut self) -> anyhow::Result<()> {
-        let mut last_state_sync_executed: std::time::Instant =
-            std::time::Instant::now().sub(self.sync_timeout_duration);
         loop {
             match self.rx.recv() {
                 Ok((msg, sender)) => {
@@ -171,6 +168,18 @@ impl AuthoritySwitchService {
                                     parent_block_state.guarded(|e| e.descendant_bk_set().clone())
                                 else {
                                     tracing::trace!("Failed to get descendant bk_set");
+
+                                    self.thread_authority.guarded_mut(|e| {
+                                        let block_height =
+                                            *next_round_success.data().block_height();
+                                        let block_round = *next_round_success.data().round();
+                                        OnNextRoundSuccessOnUnableToProcessAction::Save.act(
+                                            e,
+                                            block_height,
+                                            block_round,
+                                            next_round_success,
+                                        );
+                                    });
                                     continue;
                                 };
                                 match next_round_success
@@ -349,18 +358,15 @@ impl AuthoritySwitchService {
                             }
                             AuthoritySwitch::RejectTooOld(_) => {
                                 tracing::trace!(target: "monit", "Incoming AuthoritySwitch::RejectTooOld");
-                                if last_state_sync_executed.elapsed() > self.sync_timeout_duration {
-                                    last_state_sync_executed = std::time::Instant::now();
-                                    let _ = self.self_node_tx.send(WrappedItem {
-                                        payload: (
-                                            NetworkMessage::InnerCommand(
-                                                Command::StartSynchronization,
-                                            ),
-                                            self.self_addr,
+                                let _ = self.self_node_tx.send(WrappedItem {
+                                    payload: (
+                                        NetworkMessage::InnerCommand(
+                                            Command::TryStartSynchronization,
                                         ),
-                                        label: self.thread_id.to_string(),
-                                    });
-                                }
+                                        self.self_addr,
+                                    ),
+                                    label: self.thread_id.to_string(),
+                                });
                             }
                             AuthoritySwitch::Failed(e) => {
                                 tracing::trace!(target: "monit", "Incoming AuthoritySwitch::Failed");
@@ -404,10 +410,10 @@ impl AuthoritySwitchService {
 
     fn on_authority_switch_success(
         &mut self,
-        next_round_success: Envelope<GoshBLS, NextRoundSuccess>,
+        next_round_success_envelope: Envelope<GoshBLS, NextRoundSuccess>,
     ) -> anyhow::Result<()> {
-        tracing::trace!("Received NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched({next_round_success:?}))");
-        let next_round_success = next_round_success.data();
+        tracing::trace!("Received NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched({next_round_success_envelope:?}))");
+        let next_round_success = next_round_success_envelope.data().clone();
         let proposed_block = next_round_success.proposed_block().clone();
         // let resend_node_id = Some(next_round_success.node_identifier().clone());
         // self.on_incoming_candidate_block(&proposed_block, resend_node_id)?;
@@ -469,7 +475,27 @@ impl AuthoritySwitchService {
             });
         }
 
-        self.thread_authority.guarded_mut(|e| e.on_next_round_success(next_round_success));
+        let do_return = self.thread_authority.guarded_mut(|e| {
+            let res = e.on_next_round_success(&next_round_success);
+            match res {
+                OnNextRoundSuccessResult::CantBeProcessedNow => {
+                    let block_height = *next_round_success.block_height();
+                    let block_round = *next_round_success.round();
+                    OnNextRoundSuccessOnUnableToProcessAction::Save.act(
+                        e,
+                        block_height,
+                        block_round,
+                        next_round_success_envelope,
+                    );
+                    true
+                }
+                OnNextRoundSuccessResult::Failure => true,
+                OnNextRoundSuccessResult::Success => false,
+            }
+        });
+        if do_return {
+            return Ok(());
+        }
 
         let proposed_block_round =
             proposed_block.get_envelope().unwrap().data().get_common_section().round;

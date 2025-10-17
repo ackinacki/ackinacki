@@ -79,7 +79,7 @@ impl Debug for NetBlock {
 #[derive(Clone)]
 pub enum Command {
     // Inner command from authority switch service
-    StartSynchronization,
+    TryStartSynchronization,
 }
 
 #[derive(Clone)]
@@ -170,7 +170,9 @@ impl Debug for NetworkMessage {
                 AuthoritySwitchProtocol(AuthoritySwitch::Failed(_)) => {
                     f.write_str("AuthoritySwitch::Failed")
                 }
-                InnerCommand(Command::StartSynchronization) => f.write_str("StartSynchronization"),
+                InnerCommand(Command::TryStartSynchronization) => {
+                    f.write_str("TryStartSynchronization")
+                }
             }
         } else {
             let enum_type = match self {
@@ -197,7 +199,7 @@ impl Debug for NetworkMessage {
                 }
                 AuthoritySwitchProtocol(AuthoritySwitch::Switched(_)) => "AuthoritySwitch::Success",
                 AuthoritySwitchProtocol(AuthoritySwitch::Failed(_)) => "AuthoritySwitch::Failed",
-                InnerCommand(Command::StartSynchronization) => "StartSynchronization",
+                InnerCommand(Command::TryStartSynchronization) => "TryStartSynchronization",
             };
             write!(f, "NetworkMessage::{enum_type}")
         }

@@ -419,6 +419,7 @@ process_cooler_epoch () {
 process_epoch () {
   EPOCH_PARAMS=$(cat $NODE_OWNER_KEY | jq -e -r '.public' || { log "Error with reading node owner public key" >&2 ; return 0 ;})
   EPOCH_WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails || { log "Error with getting details $WALLET_ADDR" >&2 ; return 0 ;})
+  log "$EPOCH_WALLET_DETAILS"
   # readarray -t ACTIVE_STAKES_ARRAY < <(echo $EPOCH_WALLET_DETAILS | jq '.activeStakes | keys | .[]')
   ACTIVE_STAKES_ARRAY=( $(echo $EPOCH_WALLET_DETAILS | jq '.activeStakes | keys | .[]') )
   STAKES_LENGTH=$(echo $EPOCH_WALLET_DETAILS | jq '.activeStakes | length')
@@ -480,7 +481,7 @@ process_epoch () {
         EPOCH_SEQNO_START=$(echo $EPOCH_DETAILS | jq -r '.seqNoStart')
         EPOCH_SEQNO_FINISH=$(echo $EPOCH_DETAILS | jq -r '.seqNoFinish')
         CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq -e -r '.[0].seq_no | select(. != null)' || { log "Error with getting current block seqNo" >&2 ; return ;})
-        if [ "$IS_EPOCH_CONTINUE" = false ] && [ "$WILL_EPOCH_CONTINUE" = true ] && [ "$(echo "($EPOCH_SEQNO_FINISH - $EPOCH_SEQNO_START) * 0.3 + $EPOCH_SEQNO_START < $CUR_BLOCK_SEQ" | bc)" -eq 1 ]; then
+        if [ "$IS_EPOCH_CONTINUE" = false ] && [ "$WILL_EPOCH_CONTINUE" = true ] && [ "$(echo "($EPOCH_SEQNO_FINISH - $EPOCH_SEQNO_START) * 0.07 + $EPOCH_SEQNO_START < $CUR_BLOCK_SEQ" | bc)" -eq 1 ]; then
           # if tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -e '.activeStakes | .[] | select(.status == "2")' > /dev/null 2>&1; then
           #   log "There is active Cooler in stakes"
           #   continue

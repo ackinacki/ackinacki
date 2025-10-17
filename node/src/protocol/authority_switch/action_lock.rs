@@ -82,6 +82,13 @@ pub enum BlockRefTryFromBlockStateError {
     MissingRound,
 }
 
+#[derive(PartialEq)]
+pub enum OnNextRoundSuccessResult {
+    Success,
+    Failure,
+    CantBeProcessedNow,
+}
+
 impl std::convert::TryFrom<&BlockState> for BlockRef {
     type Error = BlockRefTryFromBlockStateError;
 
@@ -128,6 +135,31 @@ pub struct ActionLock {
     // Those nacks MUST be included into the block produced or it will not be attestated.
     locked_bad_block_nacks: HashSet<BlockIdentifier>,
     // current_round: BlockRound,
+}
+
+pub enum OnNextRoundSuccessOnUnableToProcessAction {
+    Skip,
+    Save,
+}
+impl OnNextRoundSuccessOnUnableToProcessAction {
+    pub fn act(
+        &self,
+        authority: &mut ThreadAuthority,
+        block_height: BlockHeight,
+        round: BlockRound,
+        message: Envelope<GoshBLS, NextRoundSuccess>,
+    ) {
+        match self {
+            OnNextRoundSuccessOnUnableToProcessAction::Skip => {}
+            OnNextRoundSuccessOnUnableToProcessAction::Save => {
+                authority.action_lock.try_save_last_unprocessed_success_message(
+                    &block_height,
+                    round,
+                    message,
+                );
+            }
+        }
+    }
 }
 
 fn trace_lock(action_lock: &ActionLock, message: &str) {
@@ -210,11 +242,44 @@ pub struct ActionLockCollection {
     preloaded: HashMap<BlockHeight, Option<ActionLock>>,
     data_dir: PathBuf,
     action_lock_db: ActionLockStorage,
+    unprocessed_success_message_buffer: HashMap<BlockHeight, AuthoritySwitchBufferedSuccess>,
+}
+
+pub struct AuthoritySwitchBufferedSuccess {
+    last_unprocessed_success_message: Option<(BlockRound, Envelope<GoshBLS, NextRoundSuccess>)>,
+}
+
+impl AuthoritySwitchBufferedSuccess {
+    pub fn try_update(
+        &mut self,
+        message: Envelope<GoshBLS, NextRoundSuccess>,
+        preparsed_round: BlockRound,
+    ) {
+        if let Some(existing) = &self.last_unprocessed_success_message {
+            if existing.0 >= preparsed_round {
+                return;
+            }
+        }
+        self.last_unprocessed_success_message = Some((preparsed_round, message));
+    }
+
+    pub fn take(&mut self) -> Option<Envelope<GoshBLS, NextRoundSuccess>> {
+        self.last_unprocessed_success_message.take().map(|e| e.1)
+    }
+
+    pub fn none() -> Self {
+        Self { last_unprocessed_success_message: None }
+    }
 }
 
 impl ActionLockCollection {
     pub fn new(data_dir: PathBuf, action_lock_db: ActionLockStorage) -> Self {
-        Self { data_dir, preloaded: HashMap::new(), action_lock_db }
+        Self {
+            data_dir,
+            preloaded: HashMap::new(),
+            action_lock_db,
+            unprocessed_success_message_buffer: Default::default(),
+        }
     }
 
     pub fn get_mut(
@@ -230,6 +295,26 @@ impl ActionLockCollection {
             None => None,
             Some(inner) => inner.as_mut(),
         }
+    }
+
+    pub fn take_last_unprocessed_success_message(
+        &mut self,
+        block_height: &BlockHeight,
+    ) -> Option<Envelope<GoshBLS, NextRoundSuccess>> {
+        self.unprocessed_success_message_buffer.get_mut(block_height).and_then(|e| e.take())
+    }
+
+    pub fn try_save_last_unprocessed_success_message(
+        &mut self,
+        block_height: &BlockHeight,
+        round: BlockRound,
+        message: Envelope<GoshBLS, NextRoundSuccess>,
+    ) {
+        tracing::trace!("Save unprocessed next round success message");
+        self.unprocessed_success_message_buffer
+            .entry(*block_height)
+            .or_insert(AuthoritySwitchBufferedSuccess::none())
+            .try_update(message, round);
     }
 
     pub fn get(
@@ -257,6 +342,10 @@ impl ActionLockCollection {
 
     pub fn drop_old_locks(&mut self, block_height: &BlockHeight) {
         self.preloaded.retain(|k, _| {
+            k.thread_identifier() != block_height.thread_identifier()
+                || k.height() >= block_height.height()
+        });
+        self.unprocessed_success_message_buffer.retain(|k, _| {
             k.thread_identifier() != block_height.thread_identifier()
                 || k.height() >= block_height.height()
         });
@@ -623,6 +712,26 @@ impl ThreadAuthority {
         }
 
         let block_height = parent_block_height.next(&thread_identifier);
+        if let Some(buffered_unprocessed_round_success_message) =
+            self.action_lock.take_last_unprocessed_success_message(&block_height)
+        {
+            tracing::trace!(
+                "on_block_producer_stalled: unprocessed next round round success message"
+            );
+            let _ = self.self_node_authority_tx.as_ref().map(|e| {
+                e.send(WrappedItem {
+                    payload: (
+                        NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched(
+                            buffered_unprocessed_round_success_message,
+                        )),
+                        self.self_addr,
+                    ),
+                    label: self.thread_id.to_string(),
+                })
+            });
+            return OnBlockProducerStalledResult::retry_later(None);
+        }
+
         self.start_next_round(parent_block, block_height)
     }
 
@@ -1549,12 +1658,17 @@ impl ThreadAuthority {
         todo!("Watch");
     }
 
-    pub fn on_next_round_success(&mut self, next_round_success: &NextRoundSuccess) {
+    // Returns true when message was successfully processed.
+    // Returns false in case message was incorrect or did not lead to any further execution.
+    pub fn on_next_round_success(
+        &mut self,
+        next_round_success: &NextRoundSuccess,
+    ) -> OnNextRoundSuccessResult {
         let block_height = next_round_success.block_height();
         let round = *next_round_success.round();
         let Ok(proposed_block) = next_round_success.proposed_block().get_envelope() else {
             tracing::error!("Incoming next round success contains invalid proposed block");
-            return;
+            return OnNextRoundSuccessResult::Failure;
         };
         let block_round = proposed_block.data().get_common_section().round;
         let parent_id = proposed_block.data().parent();
@@ -1569,7 +1683,7 @@ impl ThreadAuthority {
                     None
                 } else {
                     tracing::trace!("Incoming next round success failure: parent block ({parent_id:?}) has no prefinalization proof");
-                    return;
+                    return OnNextRoundSuccessResult::CantBeProcessedNow;
                 }
             }
         };
@@ -1578,7 +1692,7 @@ impl ThreadAuthority {
             parent_state.guarded(|e| e.producer_selector_data().clone())
         else {
             tracing::trace!("Incoming next round success failure: parent block ({parent_id:?}) has no producer_selector_data");
-            return;
+            return OnNextRoundSuccessResult::CantBeProcessedNow;
         };
 
         // TODO: check that proposed block envelope common section contains confirmed bad block nacks
@@ -1667,7 +1781,9 @@ impl ThreadAuthority {
                 &FilterPrehistoric::builder().block_seq_no(BlockSeqNo::default()).build(),
             );
         }
+        tracing::trace!("Successfully processed NextRoundSuccess");
         // Note:
         // todo!("Push the proposed block for processing");
+        OnNextRoundSuccessResult::Success
     }
 }

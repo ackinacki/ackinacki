@@ -185,7 +185,7 @@ where
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Ok((msg, reply_to)) => match msg {
-                    NetworkMessage::InnerCommand(Command::StartSynchronization) => {
+                    NetworkMessage::InnerCommand(Command::TryStartSynchronization) => {
                         continue;
                     }
                     NetworkMessage::AuthoritySwitchProtocol(_) => {

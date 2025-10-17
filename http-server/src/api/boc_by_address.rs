@@ -4,35 +4,32 @@
 use std::marker::PhantomData;
 use std::time::Instant;
 
+use ext_messages_auth::auth::AccountRequest;
 use salvo::prelude::*;
+use tokio::sync::oneshot;
+use tvm_block::Serializable;
+use tvm_types::base64_encode;
 
 use crate::ResolvingResult;
 use crate::WebServer;
-pub struct BocByAddressHandler<
-    TMesssage,
-    TMsgConverter,
-    TBPResolver,
-    TBocByAddrGetter,
-    TSeqnoGetter,
->(
+pub struct BocByAddressHandler<TMesssage, TMsgConverter, TBPResolver, TSeqnoGetter>(
     PhantomData<TMesssage>,
     PhantomData<TMsgConverter>,
     PhantomData<TBPResolver>,
-    PhantomData<TBocByAddrGetter>,
     PhantomData<TSeqnoGetter>,
 );
 
-impl<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
-    BocByAddressHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
+impl<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
+    BocByAddressHandler<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
 {
     pub fn new() -> Self {
-        Self(PhantomData, PhantomData, PhantomData, PhantomData, PhantomData)
+        Self(PhantomData, PhantomData, PhantomData, PhantomData)
     }
 }
 
 #[async_trait]
-impl<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter> Handler
-    for BocByAddressHandler<TMessage, TMsgConverter, TBPResolver, TBocByAddrGetter, TSeqnoGetter>
+impl<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter> Handler
+    for BocByAddressHandler<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
 where
     TMessage: Clone + Send + Sync + 'static + std::fmt::Debug,
     TMsgConverter: Clone
@@ -41,8 +38,6 @@ where
         + 'static
         + Fn(tvm_block::Message, [u8; 34]) -> anyhow::Result<TMessage>,
     TBPResolver: Clone + Send + Sync + 'static + FnMut([u8; 34]) -> ResolvingResult,
-    TBocByAddrGetter:
-        Clone + Send + Sync + 'static + Fn(String) -> anyhow::Result<(String, Option<String>)>,
     TSeqnoGetter: Clone + Send + Sync + 'static + Fn() -> anyhow::Result<u32>,
 {
     async fn handle(
@@ -52,55 +47,67 @@ where
         res: &mut Response,
         _ctrl: &mut FlowCtrl,
     ) {
-        let address: String = req.query("address").unwrap_or_default();
-        let address = address.trim_start_matches("0:").to_string();
+        let raw_addr: &str = match req.query::<&str>("address") {
+            Some(s) if !s.trim().is_empty() => s.trim(),
+            _ => {
+                res.status_code(StatusCode::BAD_REQUEST);
+                res.render("Address parameter required");
+                return;
+            }
+        };
+        let addr_stripped = raw_addr.strip_prefix("0:").unwrap_or(raw_addr);
+        let address = addr_stripped.to_owned();
 
-        if address.is_empty() {
-            res.status_code(StatusCode::BAD_REQUEST);
-            res.render("Address parameter required");
-            return;
-        }
         let moment = Instant::now();
 
-        let Ok(web_server) = depot.obtain::<WebServer<
-            TMessage,
-            TMsgConverter,
-            TBPResolver,
-            TBocByAddrGetter,
-            TSeqnoGetter,
-        >>() else {
+        let Ok(web_server) =
+            depot.obtain::<WebServer<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>>()
+        else {
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
             res.render("Internal server error: Web Server state not found");
             return;
         };
 
-        // This code is a bit repetitive, but it's easy to understand.
-        let http_code = match (web_server.get_boc_by_addr)(address) {
-            Ok((boc, None)) => {
-                res.render(Json(serde_json::json!({
-                    "boc": boc,
-                })));
-                StatusCode::OK
-            }
-            Ok((boc, Some(dapp_id))) => {
-                res.render(Json(serde_json::json!({
-                    "boc": boc,
-                    "dapp_id": dapp_id
-                })));
-                StatusCode::OK
-            }
-            Err(e) => {
-                res.status_code(StatusCode::NOT_FOUND);
-                res.render(format!("Original error: {e}"));
-                StatusCode::NOT_FOUND
-            }
+        let (response_tx, response_rx) = oneshot::channel();
+        let request = AccountRequest { address, response: response_tx };
+
+        if web_server.account_request_sender.send(request).await.is_err() {
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render("Internal server error: account request dispatch failed");
+            return;
+        }
+
+        let Ok(account_response) = response_rx.await else {
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            res.render("Internal server error: unable to retrieve the account");
+            return;
         };
 
-        web_server.metrics.as_ref().inspect(|m| {
-            m.report_boc_by_address_response(
-                moment.elapsed().as_millis() as u64,
-                http_code.as_u16(),
-            )
-        });
+        let (http_code, payload_or_err) =
+            match account_response.and_then(|(account, dapp_id, ts)| {
+                let boc = account.write_to_bytes().map_err(|e| anyhow::anyhow!("{e}"))?;
+                Ok((base64_encode(&boc), dapp_id.map(|id| id.as_hex_string()), ts))
+            }) {
+                Ok((boc, dapp_id_opt, state_timestamp)) => {
+                    let payload = serde_json::json!({
+                        "boc": boc,
+                        "dapp_id": dapp_id_opt,
+                        "state_timestamp": state_timestamp,
+                    });
+                    (StatusCode::OK, Ok(payload))
+                }
+                Err(e) => (StatusCode::NOT_FOUND, Err(format!("Original error: {e}"))),
+            };
+
+        res.status_code(http_code);
+        match payload_or_err {
+            Ok(payload) => res.render(Json(payload)),
+            Err(err) => res.render(err),
+        }
+
+        if let Some(m) = &web_server.metrics {
+            let millis = moment.elapsed().as_millis().min(u64::MAX as u128) as u64;
+            m.report_boc_by_address_response(millis, http_code.as_u16());
+        }
     }
 }

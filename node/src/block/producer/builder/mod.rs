@@ -43,6 +43,7 @@ use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 
 pub mod build_actions;
+mod engine_version;
 pub mod special_messages;
 pub mod trace;
 

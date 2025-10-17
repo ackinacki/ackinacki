@@ -194,9 +194,12 @@ pub struct Config {
 
 impl Default for GlobalConfig {
     fn default() -> Self {
+        let time_to_verify_block_millis = 330 * 4 / 3;
+        #[cfg(feature = "low_verification_time")]
+        let time_to_verify_block_millis = 33 * 4 / 3;
         Self {
             time_to_produce_block_millis: 330,
-            time_to_verify_block_millis: 330 * 4 / 3,
+            time_to_verify_block_millis,
             time_to_produce_transaction_millis: None,
             time_to_verify_transaction_millis: None,
             time_to_verify_transaction_aborted_with_execution_timeout_millis: None,

@@ -63,8 +63,8 @@ impl Dispatcher {
 
             NetworkMessage::SyncFinalized((_, thread_id)) => (false, *thread_id),
             NetworkMessage::SyncFrom((_, thread_id)) => (false, *thread_id),
-            // ignore StartSynchronization it is used for local interaction
-            NetworkMessage::InnerCommand(Command::StartSynchronization) => {
+            // ignore TryStartSynchronization it is used for local interaction
+            NetworkMessage::InnerCommand(Command::TryStartSynchronization) => {
                 return Ok(());
             }
         };

@@ -22,6 +22,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tvm_block::Serializable;
+use tvm_types::UInt256;
 
 use crate::normalize_address;
 use crate::now_plus_n_secs;
@@ -58,7 +59,7 @@ struct WalletAddress {
 
 pub struct AccountRequest {
     pub address: String,
-    pub response: oneshot::Sender<anyhow::Result<Option<tvm_block::Account>>>,
+    pub response: oneshot::Sender<anyhow::Result<(tvm_block::Account, Option<UInt256>, u64)>>,
 }
 
 // The token issuer for external message authorization.
@@ -163,7 +164,7 @@ async fn request_account(
     let request = AccountRequest { address: address.to_string(), response: response_tx };
 
     account_request_tx.send(request).await?;
-    response_rx.await?
+    response_rx.await?.map(|(acc, ..)| Some(acc))
 }
 
 async fn get_signing_pubkey(

@@ -296,6 +296,8 @@ impl AttestationSendService {
 
             let earliest_to_send_attestation = {
                 let first_pulse_multiplier = 0.8_f32 + distance_to_producer as f32;
+                #[cfg(feature = "delay_attestation")]
+                let first_pulse_multiplier = first_pulse_multiplier + 3.0;
                 let delay = self.pulse_timeout.mul_f32(first_pulse_multiplier);
                 let parent_sent_first_attestation: Option<std::time::Instant> =
                     first_sent.get(parent_block_state.block_identifier()).copied();

@@ -110,6 +110,35 @@ impl ZeroState {
         Ok(account_id.to_hex_string())
     }
 
+    pub fn add_account_to_zerostate(
+        &mut self,
+        thread_id: &ThreadIdentifier,
+        account: Account,
+        dapp_id: UInt256,
+    ) -> anyhow::Result<()> {
+        let account_id = account
+            .get_id()
+            .ok_or(anyhow::format_err!("Account does not have account id set"))?
+            .to_hex_string();
+        let account_id = UInt256::from_str(&account_id)
+            .map_err(|e| anyhow::format_err!("failed to convert account_id {e}"))?;
+        let shard_account =
+            ShardAccount::with_params(&account, UInt256::default(), 0, Some(dapp_id))
+                .map_err(|e| anyhow::format_err!("Failed to create shard account: {e}"))?;
+        // Add account to zerostate
+        let mut shard_state = self.get_shard_state(thread_id)?.deref().clone();
+        shard_state
+            .insert_account(&account_id, &shard_account)
+            .map_err(|e| anyhow::format_err!("Failed to insert account to shard state: {e}"))?;
+        self.state_mut(thread_id)?.set_shard_state(Arc::new(shard_state));
+        #[cfg(feature = "monitor-accounts-number")]
+        {
+            let state = self.state_mut(thread_id)?;
+            state.accounts_number += 1;
+        }
+        Ok(())
+    }
+
     pub fn add_message_from_zeroes(
         &mut self,
         dest: String,

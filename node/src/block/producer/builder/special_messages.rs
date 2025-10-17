@@ -17,6 +17,7 @@ use tvm_block::OutMsg;
 use tvm_block::Serializable;
 use tvm_executor::BlockchainConfig;
 use tvm_types::UInt256;
+use tvm_vm::executor::MVConfig;
 
 use super::BlockBuilder;
 use crate::block::producer::execution_time::ExecutionTimeLimits;
@@ -35,6 +36,7 @@ impl BlockBuilder {
         block_unixtime: u32,
         block_lt: u64,
         check_messages_map: &mut Option<HashMap<AccountAddress, BTreeMap<u64, UInt256>>>,
+        mvconfig: MVConfig,
     ) -> anyhow::Result<()> {
         tracing::trace!(target: "builder", "map of minted shell {:?}", self.dapp_minted_map);
         let mut config_messages: Vec<Message> = Vec::new();
@@ -141,6 +143,7 @@ impl BlockBuilder {
                                 block_lt,
                                 check_messages_map,
                                 &ExecutionTimeLimits::NO_LIMITS,
+                                mvconfig.clone(),
                             )?;
                             active_ext_threads.push_back(thread);
                             active_destinations.insert(acc_id);

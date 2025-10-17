@@ -1,6 +1,6 @@
 [package]
 name = "node"
-version = "0.11.1"
+version = "0.12.0"
 edition.workspace = true
 rust-version.workspace = true
 build = 'build.rs'
@@ -30,6 +30,7 @@ opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
 parking_lot.workspace = true
 rayon.workspace = true
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
@@ -99,6 +100,7 @@ default = [
     "messages_db",
     "monitor-accounts-number",
     "disable_db_for_messages",
+    "bk_wallets_repair",
 ]
 # Use automocks in binaries
 use_automocks = []
@@ -117,7 +119,6 @@ timing = []
 
 # Turn on TVM tracing
 tvm_tracing = []
-nack_test = []
 
 # Enable misbehaving
 misbehave = []
@@ -132,6 +133,17 @@ monitor-accounts-number = []
 
 # Enable the extraction and storage of raw blocks and external out messages (events) only
 store_events_only = []
+
+# Features for tests
+nack_test = []
+verify_all_blocks = []
+delay_attestation = []
+low_verification_time = []
+rotate_after_sync = []
+
+# Temporary feature for system repair
+bk_wallets_repair = []
+
 
 [[bench]]
 name = "on_block_finalized"

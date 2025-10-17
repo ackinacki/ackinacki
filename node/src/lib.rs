@@ -20,6 +20,7 @@ pub mod zerostate;
 pub mod block_keeper_system;
 pub mod creditconfig;
 pub mod multithreading;
+pub mod mvconfig;
 #[cfg(test)]
 mod tests;
 

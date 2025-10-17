@@ -37,7 +37,7 @@ pub struct ThreadMessageQueueStateDiff {
 impl std::convert::From<ThreadMessageQueueStateDiff> for anyhow::Result<ThreadMessageQueueState> {
     #[instrument(skip_all)]
     fn from(val: ThreadMessageQueueStateDiff) -> Self {
-        tracing::trace!("from ThreadMessageQueueStateDiff start");
+        // tracing::trace!("from ThreadMessageQueueStateDiff start");
         tracing::trace!(
             target: "builder",
             "from ThreadMessageQueueStateDiff consumed_messages: {:?}",
@@ -199,7 +199,7 @@ impl std::convert::From<ThreadMessageQueueStateDiff> for anyhow::Result<ThreadMe
             order_set: state_order,
             cursor: new_cursor,
         };
-        tracing::trace!("from ThreadMessageQueueStateDiff finish");
+        // tracing::trace!("from ThreadMessageQueueStateDiff finish");
         Ok(new_state)
     }
 }

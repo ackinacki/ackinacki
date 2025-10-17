@@ -1,10 +1,7 @@
-use std::sync::Arc;
-
 use tvm_block::BlkPrevInfo;
 use tvm_block::ExtBlkRef;
 use tvm_block::GetRepresentationHash;
 use tvm_block::HashmapAugType;
-use tvm_executor::BlockchainConfig;
 use tvm_executor::ExecutorError;
 use tvm_types::UInt256;
 
@@ -15,6 +12,7 @@ use crate::block::producer::BlockVerifier;
 use crate::block::producer::TVMBlockVerifier;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
+use crate::config::BlockchainConfigRead;
 use crate::config::Config;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::node::associated_types::NackData;
@@ -43,7 +41,7 @@ impl VerificationResult {
 #[allow(clippy::too_many_arguments)]
 pub fn verify_block(
     block_candidate: &AckiNackiBlock,
-    blockchain_config: Arc<BlockchainConfig>,
+    blockchain_config: BlockchainConfigRead,
     prev_block_optimistic_state: &mut OptimisticStateImpl,
     node_config: Config,
     refs: Vec<CrossThreadRefData>,

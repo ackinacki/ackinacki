@@ -12,7 +12,6 @@ use telemetry_utils::now_ms;
 use tracing::instrument;
 use tracing::trace_span;
 use tvm_block::GetRepresentationHash;
-use tvm_executor::BlockchainConfig;
 use tvm_types::Cell;
 use tvm_types::HashmapType;
 use typed_builder::TypedBuilder;
@@ -27,6 +26,7 @@ use crate::block_keeper_system::BlockKeeperSlashData;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
+use crate::config::BlockchainConfigRead;
 use crate::external_messages::Stamp;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::Message;
@@ -44,6 +44,7 @@ use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
+use crate::types::next_seq_no;
 use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockIdentifier;
@@ -88,7 +89,7 @@ pub trait BlockProducer {
 #[derive(TypedBuilder)]
 pub struct TVMBlockProducer {
     active_threads: Vec<(Cell, ActiveThread)>,
-    blockchain_config: Arc<BlockchainConfig>,
+    blockchain_config: BlockchainConfigRead,
     message_queue: HashMap<AccountAddress, VecDeque<(Stamp, tvm_block::Message)>>,
     producer_node_id: NodeIdentifier,
     thread_count_soft_limit: usize,
@@ -146,6 +147,7 @@ impl BlockProducer for TVMBlockProducer {
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
         CrossThreadRefData: 'a,
     {
+        let parent_block_seq_no = parent_state.block_seq_no;
         let (initial_state, in_table, white_list_of_slashing_messages_hashes, forwarded_messages) =
             trace_span!("pre processing").in_scope(|| {
                 tracing::trace!("Start production");
@@ -204,7 +206,9 @@ impl BlockProducer for TVMBlockProducer {
         let ref_ids: Vec<BlockIdentifier> =
             refs.into_iter().map(|ref_data| ref_data.block_identifier().clone()).collect();
         let active_threads = self.active_threads;
-        let block_gas_limit = self.blockchain_config.get_gas_config(false).block_gas_limit;
+
+        let blockchain_config = self.blockchain_config.get(&next_seq_no(parent_block_seq_no));
+        let block_gas_limit = blockchain_config.get_gas_config(false).block_gas_limit;
 
         tracing::debug!(target: "node", "PARENT block: {:?}", initial_state.get_block_info());
         tracing::trace!(target: "node", "ref_ids: {:?}", ref_ids);
@@ -229,7 +233,7 @@ impl BlockProducer for TVMBlockProducer {
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (mut prepared_block, processed_stamps, ext_message_feedbacks) = producer.build_block(
             std::mem::take(&mut self.message_queue),
-            &self.blockchain_config,
+            &blockchain_config,
             active_threads,
             None,
             white_list_of_slashing_messages_hashes,

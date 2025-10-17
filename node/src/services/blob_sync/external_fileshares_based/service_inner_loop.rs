@@ -68,6 +68,8 @@ pub(super) fn service_inner_loop(
                 std::thread::Builder::new()
                     .name(format!("load-{}", &resource_id))
                     .spawn_scoped(s, move || {
+                        #[cfg(feature = "rotate_after_sync")]
+                        std::thread::sleep(std::time::Duration::from_secs(100));
                         tracing::trace!("share_blob: loading {:?}", &resource_id);
                         let mut urls: Vec<url::Url> = known_external_file_shares
                             .into_iter()

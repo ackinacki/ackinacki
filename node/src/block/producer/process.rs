@@ -15,7 +15,6 @@ use telemetry_utils::mpsc::InstrumentedReceiver;
 use telemetry_utils::mpsc::InstrumentedSender;
 use tracing::instrument;
 use tracing::trace_span;
-use tvm_executor::BlockchainConfig;
 use tvm_types::Cell;
 use typed_builder::TypedBuilder;
 
@@ -31,6 +30,7 @@ use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::BLSSignatureScheme;
 use crate::bls::GoshBLS;
+use crate::config::BlockchainConfigRead;
 use crate::config::Config;
 use crate::external_messages::ExternalMessagesThreadState;
 use crate::helper::block_flow_trace;
@@ -64,7 +64,7 @@ pub const FORCE_SYNC_STATE_BLOCK_FREQUENCY: u32 = 20_000;
 #[derive(TypedBuilder)]
 pub struct TVMBlockProducerProcess {
     node_config: Config,
-    blockchain_config: Arc<BlockchainConfig>,
+    blockchain_config: BlockchainConfigRead,
     repository: RepositoryImpl,
     #[builder(default)]
     produced_blocks: Arc<Mutex<Vec<ProducedBlock>>>,
@@ -100,7 +100,7 @@ impl TVMBlockProducerProcess {
     fn produce_next(
         node_config: Config,
         initial_state: &mut OptimisticStateImpl,
-        blockchain_config: Arc<BlockchainConfig>,
+        blockchain_config: BlockchainConfigRead,
         producer_node_id: NodeIdentifier,
         thread_count_soft_limit: usize,
         parallelization_level: usize,
@@ -538,7 +538,7 @@ impl TVMBlockProducerProcess {
             }
         };
 
-        let blockchain_config = Arc::clone(&self.blockchain_config);
+        let blockchain_config = self.blockchain_config.clone();
 
         let repo_clone = self.repository.clone();
         let produced_blocks = self.produced_blocks.clone();
@@ -887,7 +887,7 @@ mod tests {
             .block_keeper_epoch_code_hash(config.global.block_keeper_epoch_code_hash.clone())
             .block_keeper_preepoch_code_hash(config.global.block_keeper_preepoch_code_hash.clone())
             .producer_node_id(config.local.node_id.clone())
-            .blockchain_config(Arc::new(load_blockchain_config()?))
+            .blockchain_config(load_blockchain_config()?)
             .parallelization_level(config.local.parallelization_level)
             .shared_services(SharedServices::start(
                 router,

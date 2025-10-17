@@ -78,7 +78,7 @@ impl ValidationService {
                     rx,
                     block_state_repo,
                     repository,
-                    blockchain_config.into(),
+                    blockchain_config,
                     node_config,
                     shared_services,
                     send,

@@ -67,6 +67,11 @@ use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
+#[cfg(feature = "rotate_after_sync")]
+lazy_static::lazy_static!(
+    static ref SHARED_STATE_SEQ_NO: Arc<Mutex<Option<BlockSeqNo>>> = Arc::new(Mutex::new(None));
+);
+
 #[derive(Debug)]
 struct ProductionStatus {
     init_params: StartBlockProducerThreadInitialParameters,
@@ -475,6 +480,22 @@ impl BlockProducer {
                     return Ok((false, None));
                 }
             };
+
+            #[cfg(feature = "rotate_after_sync")]
+            {
+                if block.get_common_section().directives.share_state_resources().is_some() {
+                    tracing::trace!("Save share state block seq_no: {:?}", block.seq_no());
+                    let mut shared_state_seq_no = SHARED_STATE_SEQ_NO.lock();
+                    *shared_state_seq_no = Some(block.seq_no());
+                }
+                if let Some(seq_no) = SHARED_STATE_SEQ_NO.lock().as_ref() {
+                    if <u32>::from(seq_no.clone()) + 100 == <u32>::from(block.seq_no().clone()) {
+                        self.production_process.stop_thread_production(&self.thread_id)?;
+                        *producer_tails = None;
+                        return Ok((false, None));
+                    }
+                }
+            }
 
             let parent_state = self.block_state_repository.get(&block.parent())?;
 

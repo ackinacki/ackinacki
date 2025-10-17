@@ -66,7 +66,22 @@ where
 
         let moment = std::time::Instant::now();
         self.metrics.as_ref().inspect(|m| {
-            m.report_store_block_on_disk(moment.elapsed().as_millis() as u64, &self.thread_id)
+            m.report_store_block_on_disk(moment.elapsed().as_millis() as u64, &self.thread_id);
+
+            // Save the maximum value of incoming seq_no and report if it increases non-monotonically.
+            let incoming_seq_no: u32 = net_block.seq_no.into();
+
+            let last_processed_block_seq_no =
+                self.last_processed_block_seq_no.get_or_insert(incoming_seq_no);
+            if incoming_seq_no > *last_processed_block_seq_no {
+                if incoming_seq_no > *last_processed_block_seq_no + 1 {
+                    m.report_missed_blocks(
+                        incoming_seq_no - *last_processed_block_seq_no - 1,
+                        &self.thread_id,
+                    );
+                }
+                *last_processed_block_seq_no = incoming_seq_no;
+            }
         });
 
         let parent_id = envelope.data().parent();
@@ -75,6 +90,7 @@ where
         let block_round = envelope.data().get_common_section().round;
         let block_height = envelope.data().get_common_section().block_height;
         let parent = self.block_state_repository.get(&parent_id).unwrap();
+
         // Initialize block state
         block_state.guarded_mut(|state| {
             state.set_stored(&envelope)?;
