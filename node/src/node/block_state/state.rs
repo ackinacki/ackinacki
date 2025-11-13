@@ -704,7 +704,7 @@ has_cross_thread_ref_data_prepared={:?}\
         tracing::trace!("block state touch duration: {:?}", start.elapsed().as_micros());
     }
 
-    pub fn set_prefinalized(
+    pub(super) fn set_prefinalized(
         &mut self,
         proof: Envelope<GoshBLS, AttestationData>,
     ) -> anyhow::Result<()> {

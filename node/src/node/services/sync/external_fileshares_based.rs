@@ -76,11 +76,15 @@ fn get_node_id_and_download_url_from_gossip(
 impl StateSyncService for ExternalFileSharesBased {
     type Repository = RepositoryImpl;
 
-    fn save_state_for_sharing(&self, state: Arc<OptimisticStateImpl>) -> anyhow::Result<()> {
-        let block_id = state.block_id.clone();
+    fn save_state_for_sharing(
+        &self,
+        block_id: &BlockIdentifier,
+        thread_id: &ThreadIdentifier,
+        min_state: Option<Arc<OptimisticStateImpl>>,
+    ) -> anyhow::Result<()> {
         tracing::trace!("save_state_for_sharing: {:?}", block_id);
         let file_name = PathBuf::from(block_id.to_string());
-        self.file_saving_service.save_object(state, file_name.clone())
+        self.file_saving_service.save_object(block_id, thread_id, min_state, file_name)
     }
 
     fn reset_sync(&self) {

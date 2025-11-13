@@ -54,6 +54,7 @@ use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::block_state::state::AttestationTargets;
 use crate::node::block_state::tools::connect;
+use crate::node::block_state::tools::try_set_prefinalized;
 use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
 use crate::node::services::sync::ExternalFileSharesBased;
 use crate::node::services::sync::StateSyncService;
@@ -751,7 +752,7 @@ impl RepositoryImpl {
         Ok(())
     }
 
-    pub(crate) fn load_block(
+    pub fn load_block(
         data_dir: &Path,
         block_id: &BlockIdentifier,
     ) -> anyhow::Result<Option<<RepositoryImpl as Repository>::CandidateBlock>> {
@@ -1423,10 +1424,11 @@ impl Repository for RepositoryImpl {
                 .is_some()
             {
                 if let Some(service) = state_sync_service {
-                    let full_state = self
-                        .get_full_optimistic_state(&block_id, &thread_id, Some(new_state.clone()))?
-                        .expect("Must be accessible");
-                    service.save_state_for_sharing(full_state)?;
+                    service.save_state_for_sharing(
+                        &block_id,
+                        &thread_id,
+                        Some(new_state.clone()),
+                    )?;
                 }
             }
 
@@ -1668,7 +1670,6 @@ impl Repository for RepositoryImpl {
                         thread_snapshot.ancestor_blocks_finalization_checkpoints.clone(),
                     )?;
                     state.set_attestation_target(thread_snapshot.attestation_target)?;
-                    state.set_prefinalized(thread_snapshot.prefinalization_proof.clone())?;
                     state.set_producer_selector_data(thread_snapshot.producer_selector.clone())?;
                     state.set_finalizes_blocks(thread_snapshot.finalizes_blocks.clone())?;
                     Ok::<Option<HashSet<_>>, anyhow::Error>(
@@ -1676,6 +1677,11 @@ impl Repository for RepositoryImpl {
                     )
                 })?
                 .unwrap_or_default();
+            try_set_prefinalized(
+                &block_state,
+                &block_state_repo_clone,
+                thread_snapshot.prefinalization_proof.clone(),
+            )?;
             let parent_id = thread_snapshot.finalized_block.data().parent();
             let parent_state = block_state_repo_clone.get(&parent_id)?;
             parent_state.guarded_mut(|e| {

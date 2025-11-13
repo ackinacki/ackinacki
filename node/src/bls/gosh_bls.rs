@@ -30,7 +30,7 @@ impl GoshBLS {
         match gosh_blst::min_pk::AggregateSignature::aggregate(sig_refs.as_slice(), true) {
             Ok(agg) => std::result::Result::Ok(Signature(agg.to_signature())),
             Err(err) => {
-                Err(anyhow::anyhow!("BLS signatures inner merge process has failed: {:?}", err))
+                Err(anyhow::anyhow!("BLS signatures inner merge process has failed: {err:?}"))
             }
         }
     }
@@ -116,7 +116,7 @@ impl FromStr for PubKey {
         hex::decode_to_slice(s, &mut pubkey)?;
         match gosh_blst::min_pk::PublicKey::from_bytes(&pubkey) {
             Ok(pk) => Ok(PubKey(pk)),
-            Err(err) => Err(anyhow::anyhow!("BLST can not parse pubkey: {:?}", err)),
+            Err(err) => Err(anyhow::anyhow!("BLST can not parse pubkey: {err:?}")),
         }
     }
 }
@@ -163,7 +163,7 @@ impl FromStr for Secret {
         hex::decode_to_slice(s, &mut secretkey)?;
         match gosh_blst::min_pk::SecretKey::from_bytes(&secretkey) {
             Ok(sk) => Ok(Secret(sk)),
-            Err(err) => Err(anyhow::anyhow!("BLST can not parse secretkey: {:?}", err)),
+            Err(err) => Err(anyhow::anyhow!("BLST can not parse secretkey: {err:?}")),
         }
     }
 }
@@ -200,7 +200,7 @@ impl BLSSignatureScheme for GoshBLS {
         tracing::trace!("signature verification: flatten pubkeys: {}", start.elapsed().as_millis());
         let aggregated_public_key =
             gosh_blst::min_pk::AggregatePublicKey::aggregate(&flattened_pubkeys, false).map_err(
-                |e| -> anyhow::Error { anyhow::anyhow!("Pubkey aggregation failed: {:?}", e) },
+                |e| -> anyhow::Error { anyhow::anyhow!("Pubkey aggregation failed: {e:?}") },
             )?;
         #[cfg(feature = "timing")]
         tracing::trace!(
@@ -227,7 +227,7 @@ impl BLSSignatureScheme for GoshBLS {
         let mut agg_sig = gosh_blst::min_pk::AggregateSignature::from_signature(&one.0);
         gosh_blst::min_pk::AggregateSignature::add_signature(&mut agg_sig, &another.0, false)
             .map_err(|e| -> anyhow::Error {
-                anyhow::anyhow!("BLS signatures inner merge process has failed: {:?}", e)
+                anyhow::anyhow!("BLS signatures inner merge process has failed: {e:?}")
             })?;
 
         Ok(Signature(agg_sig.to_signature()))

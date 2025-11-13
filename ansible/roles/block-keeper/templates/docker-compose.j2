@@ -143,6 +143,7 @@ services:
       - CRON_SCHEDULE="58 * * * *"
     volumes:
       - {{ BK_LOGS_DIR }}:/logsdir
+      - {{ BK_DATA_DIR }}/share:/share
       - {{ BK_DATA_DIR }}/workdir:/workdir
       - ./logrotate.sh:/logrotate.sh
     command: [ "/bin/bash", "/logrotate.sh" ]

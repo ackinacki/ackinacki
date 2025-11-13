@@ -31,14 +31,14 @@ impl WasmNodeCache {
         let wasm_binary_root_path = WASM_BINARY_ROOT_PATH.to_owned();
         let wasm_hash_whitelist = match Self::get_wasm_hash_whitelist(){
             Ok(r) => r,
-            Err(e) => Err(anyhow!("Couldn't create Node Wasm Hash Whitelist. This is a misconfiguration or a bug. Caused by: {:?}", e))?,
+            Err(e) => Err(anyhow!("Couldn't create Node Wasm Hash Whitelist. This is a misconfiguration or a bug. Caused by: {e:?}"))?,
         };
         let (wasm_engine, wasm_component_cache) = match Self::init_wasm_engine_and_precompile_components(
             wasm_hash_whitelist.clone(),
             wasm_binary_root_path.clone(),
         ){
             Ok(r) => r,
-            Err(e) => Err(anyhow!("Couldn't init Node Wasm Engine or Components. This is a misconfiguration or a bug. Caused by: {:?}", e))?,
+            Err(e) => Err(anyhow!("Couldn't init Node Wasm Engine or Components. This is a misconfiguration or a bug. Caused by: {e:?}"))?,
         };
         Ok(WasmNodeCache {
             wasm_engine,
@@ -71,7 +71,7 @@ impl WasmNodeCache {
             let hash: [u8; 32] = match hash.try_into() {
                 Ok(h) => h,
                 Err(e) => {
-                    return Err(anyhow::format_err!("hash whitelist has an invlid hash: {:?}", e))
+                    return Err(anyhow::format_err!("hash whitelist has an invlid hash: {e:?}"))
                 }
             };
             whitelist.insert(hash);
@@ -86,7 +86,7 @@ impl WasmNodeCache {
     pub fn init_wasm_engine() -> anyhow::Result<wasmtime::Engine> {
         match tvm_vm::executor::Engine::extern_wasm_engine_init() {
             Ok(en) => Ok(en),
-            Err(er) => Err(anyhow::format_err!("Could not initialise Wasm engine. Check your execution environment for compatibility. Original error: {:?}", er)),
+            Err(er) => Err(anyhow::format_err!("Could not initialise Wasm engine. Check your execution environment for compatibility. Original error: {er:?}")),
         }
     }
 

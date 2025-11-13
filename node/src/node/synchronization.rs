@@ -434,11 +434,7 @@ where
                 .ok_or(anyhow::format_err!("Failed to load finalized state"))?;
             let share_state_hint = finalized_state.get_share_stare_refs();
             for (thread_id, block_id) in &share_state_hint {
-                if let Some(state) =
-                    self.repository.get_full_optimistic_state(block_id, thread_id, None)?
-                {
-                    self.state_sync_service.save_state_for_sharing(state)?;
-                }
+                self.state_sync_service.save_state_for_sharing(block_id, thread_id, None)?;
             }
             self.last_synced_state = Some((
                 last_finalized_block_id.clone(),

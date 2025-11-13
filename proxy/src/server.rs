@@ -73,7 +73,7 @@ pub fn run() -> anyhow::Result<()> {
 
     tracing::debug!("Installing default crypto provider...");
     if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
-        anyhow::bail!("Failed to install default crypto provider: {:?}", err);
+        anyhow::bail!("Failed to install default crypto provider: {err:?}");
     }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

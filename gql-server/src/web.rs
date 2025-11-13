@@ -48,7 +48,7 @@ async fn open_db(db_path: PathBuf) -> anyhow::Result<Pool<Sqlite>> {
             Ok(pool) => break pool,
             Err(err) => {
                 if attempt >= 2 {
-                    anyhow::bail!("Failed to open DB file {}: timeout", db_path_str);
+                    anyhow::bail!("Failed to open DB file {db_path_str}: timeout");
                 } else {
                     tracing::error!("{err:?}")
                 }

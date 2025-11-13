@@ -153,7 +153,7 @@ impl MessageDurableStorage {
         let batch_results = self
             .store
             .batch_get(batch_gets, AEROSPIKE_OBJECT_TYPE_INT_MESSAGES)
-            .map_err(|e| anyhow::anyhow!("Error executing batch request: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Error executing batch request: {e}"))?;
 
         for record in batch_results.into_iter().flatten() {
             let Some(Value::Int(seq)) = record.get(BIN_SEQ) else {
@@ -188,7 +188,7 @@ impl MessageDurableStorage {
         let batch_results = self
             .store
             .batch_get(batch_gets, AEROSPIKE_OBJECT_TYPE_INT_MESSAGES)
-            .map_err(|e| anyhow::anyhow!("Error executing batch request: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Error executing batch request: {e}"))?;
 
         for record in batch_results.into_iter().flatten() {
             let Some(Value::String(hash)) = record.get(BIN_HASH) else {

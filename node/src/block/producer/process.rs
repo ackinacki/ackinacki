@@ -298,14 +298,11 @@ impl TVMBlockProducerProcess {
             };
             if state_share_was_requested {
                 for block_ref in &refs {
-                    let state = repository
-                        .get_full_optimistic_state(
-                            block_ref.block_identifier(),
-                            block_ref.block_thread_identifier(),
-                            None,
-                        )?
-                        .ok_or(anyhow::format_err!("Ref state must be present on BP"))?;
-                    share_service.save_state_for_sharing(state)?;
+                    share_service.save_state_for_sharing(
+                        block_ref.block_identifier(),
+                        block_ref.block_thread_identifier(),
+                        None,
+                    )?;
                 }
             }
         }
@@ -428,14 +425,11 @@ impl TVMBlockProducerProcess {
             if state_share_was_requested {
                 let block_id = initial_state.block_id.clone();
                 let thread_id = initial_state.thread_id;
-                let state = repository
-                    .get_full_optimistic_state(
-                        &block_id,
-                        &thread_id,
-                        Some(Arc::new(initial_state.clone())),
-                    )?
-                    .expect("Must be accessible");
-                share_service.save_state_for_sharing(state.clone())?;
+                share_service.save_state_for_sharing(
+                    &block_id,
+                    &thread_id,
+                    Some(Arc::new(initial_state.clone())),
+                )?;
             }
         }
 

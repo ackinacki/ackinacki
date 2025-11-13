@@ -162,7 +162,7 @@ impl std::convert::From<ThreadMessageQueueStateDiff> for anyhow::Result<ThreadMe
                     continue;
                 }
                 let Some(entry) = state_messages.get_mut(&addr) else {
-                    anyhow::bail!("Unexpected consumed message: {:?}", addr);
+                    anyhow::bail!("Unexpected consumed message: {addr:?}");
                 };
 
                 // tracing::trace!("entry {:?}", entry);

@@ -198,7 +198,7 @@ impl SharedServices {
 
     pub fn throttle(&self, node_id: &NodeIdentifier) -> anyhow::Result<()> {
         self.limiter.check_key(node_id).map_err(|error| {
-            anyhow::anyhow!("Rate limit exceeded for node {}, until {}", node_id, error)
+            anyhow::anyhow!("Rate limit exceeded for node {node_id}, until {error}")
         })
     }
 }

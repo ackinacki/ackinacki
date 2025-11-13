@@ -17,6 +17,10 @@
   delay: 1
   when: GS_WAIT is not defined or GS_WAIT
 
+- name: Delay for 3 seconds for process to properly stop
+  ansible.builtin.pause:
+    seconds: 3
+
 - name: Stop node container if the process still lingering
   ansible.builtin.shell:
     chdir: "{{ BK_DIR }}"

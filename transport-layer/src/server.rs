@@ -131,8 +131,7 @@ async fn connection_handler(
             Ok(data) => data,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(lagged)) => {
                 anyhow::bail!(
-                    "Connection handler failed: outgoing message receiver lagged by {} messages",
-                    lagged
+                    "Connection handler failed: outgoing message receiver lagged by {lagged} messages"
                 );
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => {

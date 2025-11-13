@@ -122,7 +122,7 @@ impl NetListener for MsQuicListener {
                 connection,
                 local_identity: self.local_identity.clone(),
             }),
-            Err(err) => anyhow::bail!("{:?}", err),
+            Err(err) => anyhow::bail!("{err:?}"),
         }
     }
 }

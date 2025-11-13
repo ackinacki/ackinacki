@@ -253,7 +253,7 @@ impl Account {
             query = query.bind(bind_code_hash);
         }
         let result: Result<Vec<Account>, anyhow::Error> =
-            query.fetch_all(pool).await.map_err(|e| anyhow::format_err!("{}", e));
+            query.fetch_all(pool).await.map_err(|e| anyhow::format_err!("{e}"));
 
         match result {
             Err(e) => {

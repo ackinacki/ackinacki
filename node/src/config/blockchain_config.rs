@@ -8,6 +8,8 @@ use crate::types::BlockSeqNo;
 pub static BLOCKCHAIN_CONFIG_OLD: &str = include_str!("../../old_blockchain.conf.json");
 pub static BLOCKCHAIN_CONFIG: &str = include_str!("../../blockchain.conf.json");
 pub static REPAIR_BK_WALLETS_BLOCK_SEQ_NO: u32 = 3_650_000;
+pub static FIX_STAKE_BLOCK_SEQ_NO: u32 = 7_793_010;
+pub static REPAIR_MIRRORS_BLOCK_SEQ_NO: u32 = 9_917_000;
 
 #[derive(Clone)]
 pub struct BlockchainConfigRead {

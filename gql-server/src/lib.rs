@@ -22,6 +22,6 @@ pub fn init_sdk(api_url: Option<String>) -> anyhow::Result<Arc<ClientContext>> {
 
     Ok(Arc::new(
         ClientContext::new(config)
-            .map_err(|e| anyhow::anyhow!("failed to create SDK client: {}", e))?,
+            .map_err(|e| anyhow::anyhow!("failed to create SDK client: {e}"))?,
     ))
 }

@@ -27,8 +27,11 @@ use tvm_types::UInt256;
 
 #[cfg(feature = "bk_wallets_repair")]
 use crate::block_keeper_system::abi::BLOCK_KEEPER_COOLER_ABI;
+use crate::config::FIX_STAKE_BLOCK_SEQ_NO;
 #[cfg(feature = "bk_wallets_repair")]
 use crate::config::REPAIR_BK_WALLETS_BLOCK_SEQ_NO;
+#[cfg(feature = "mirror_repair")]
+use crate::config::REPAIR_MIRRORS_BLOCK_SEQ_NO;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::repository::accounts::AccountsRepository;
@@ -76,6 +79,8 @@ pub static ACCOUNT_DATA_D875DF9CF418106D1407F60BE189ADC9E7C0E6DB430AE945FFA37448
 pub static ACCOUNT_DATA_D84BDFA753950541BAFAC1E8137BBA14FA6AA55409D9EE33252D442B4E3E682A: &[u8] = include_bytes!("./../../repair_accounts_data/d84bdfa753950541bafac1e8137bba14fa6aa55409d9ee33252d442b4e3e682a_f0583771a50f286e88e7d7dfdbf2fb807aecf9f2c5d54985ad8da92197cc6857");
 #[cfg(feature = "bk_wallets_repair")]
 pub static ACCOUNT_DATA_1033EA894040ADBA26F13680690FAF3E05F74987610E4F5D50B22142333A8787: &[u8] = include_bytes!("./../../repair_accounts_data/1033ea894040adba26f13680690faf3e05f74987610e4f5d50b22142333a8787_2f0f1240171f5ca39ad87df6410bc0e821aa94469a85075cdc5e145c5add4038");
+#[cfg(feature = "mirror_repair")]
+pub static MIRROR_TVC: &[u8] = include_bytes!("../../../contracts/mvsystem/Mirror.tvc");
 
 #[cfg(feature = "bk_wallets_repair")]
 lazy_static::lazy_static!(
@@ -143,6 +148,21 @@ lazy_static::lazy_static!(
     };
 );
 
+#[cfg(feature = "bm_license_repair")]
+lazy_static::lazy_static!(
+    static ref ACCOUNTS_LICENSES: HashMap<AccountAddress, (MsgAddressInt, String)> = {
+        let mut m = HashMap::new();
+        m.insert(AccountAddress::from_str("681bf89ec5837add54b329f8c7f32a1b97e8fed2964b39dcde8b102976d8ca60").unwrap(), (MsgAddressInt::from_str("b14eecbc0f43aa7186167fdeb985fe00f886a0d8e4b30d07dfb83db1d2ca00f0").unwrap(), "0x64eb087f078c11369731fb3c6ae9cc989d7bffc55ec85ecc2385b3cd051bb900".to_string()));
+        m.insert(AccountAddress::from_str("4060ad1a4a00cca47222246788f44d163cf94ff90c38aec70e754693b7bc536a").unwrap(), (MsgAddressInt::from_str("26f9191c1383573c122c97d91e982d897455aabcd4ae37d4860f56c91d4fa884").unwrap(), "0x13f2591b13a85c9c2fd3c2d043a988c90b0240b9eaa59de4ae6dc685ea273b86".to_string()));
+        m.insert(AccountAddress::from_str("e6e3c95463ee65c50116ad939582156cdf2c1fc2b0316f6c8214960cb404b95a").unwrap(), (MsgAddressInt::from_str("e2b7f9144ee83d247a2eb83f5099691ee6a0e1b176581206cfbfe901d62f5724").unwrap(), "0x69a453fcd052d779d42255aa73a02b55fbbf74d298c7cbcd99890dc0d9968042".to_string()));
+        m.insert(AccountAddress::from_str("0e4e5c47410d8d4e06e7be27f5a9f09e26d50852d2eaaa0c11a3d69552de0ef3").unwrap(), (MsgAddressInt::from_str("542ea7fd5a3413c3766a488a9cefff3215e36d77d518617bf6fbc1db660dd6e4").unwrap(), "0x2eaf65f32cd144943fb3e2e8412ccdd85b46f4734483dd7e42f7e532d54fd571".to_string()));
+        m.insert(AccountAddress::from_str("acdfeb444ab154dfdb742f66cec0f10d5b33fa1046842118b11f070b4d46514d").unwrap(), (MsgAddressInt::from_str("f0779f07d84cae9fd2275e7fa26b56cc6a8d9e30bfe93b892c035384eacbcf91").unwrap(), "0x54cb46c63df248ea7b1c959017cf4aba3f0ae7bb6213bd0d8b22e83f4f119e5d".to_string()));
+        m.insert(AccountAddress::from_str("0f1ace6db54840377395008a1456e08d9fd4dca4ad5045a14591bd983aeefe2d").unwrap(), (MsgAddressInt::from_str("ecacc3561b4ec562236a13dd495d4174b2af0f62bec774727427787c408bbe86").unwrap(), "0xba4bf55a5a74e22de3c6b9ba3960568380a42ad9831b4f74a34e2a8d343702f8".to_string()));
+        m.insert(AccountAddress::from_str("5cbd0371ef9ae39ebf7cabbfecd5389bb34fe8cdcb150bb63e97817049859865").unwrap(), (MsgAddressInt::from_str("1e91b51ce621cfe314542c8e132ce943b126ddd8441973e9bbfccc302b996931").unwrap(), "0x413db96e31993269c8116427b88a84f0f934a300ca3dd97b52eeb9fe676c1d19".to_string()));
+        m
+    };
+);
+
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all)]
 pub fn postprocess(
@@ -172,6 +192,15 @@ pub fn postprocess(
     {
         if <u32>::from(block_seq_no) == REPAIR_BK_WALLETS_BLOCK_SEQ_NO {
             add_messages_to_repair_coolers(&mut produced_internal_messages_to_the_current_thread);
+        }
+    }
+
+    #[cfg(feature = "bm_license_repair")]
+    {
+        if <u32>::from(block_seq_no) == FIX_STAKE_BLOCK_SEQ_NO {
+            add_messages_to_repair_bm_license(
+                &mut produced_internal_messages_to_the_current_thread,
+            );
         }
     }
 
@@ -351,6 +380,23 @@ pub fn postprocess(
         }
     }
 
+    #[cfg(feature = "mirror_repair")]
+    {
+        if <u32>::from(block_seq_no) == REPAIR_MIRRORS_BLOCK_SEQ_NO {
+            let mut shard_state = new_state.into_shard_state().as_ref().clone();
+            let mut shard_accounts = shard_state.read_accounts().map_err(|e| {
+                anyhow::format_err!("Failed to read accounts from shard state: {e}")
+            })?;
+
+            repair_mirror_accounts(&mut shard_accounts)?;
+
+            shard_state
+                .write_accounts(&shard_accounts)
+                .map_err(|e| anyhow::format_err!("Failed to write accounts: {e}"))?;
+            new_state = shard_state.into();
+        }
+    }
+
     #[cfg(feature = "monitor-accounts-number")]
     let new_state = OptimisticStateImpl::builder()
         .block_seq_no(block_seq_no)
@@ -483,4 +529,96 @@ fn add_messages_to_repair_coolers(
         let destination: AccountAddress = dest.address().into();
         buffer.entry(destination).or_default().push((message_id, Arc::new(wrapped_message)));
     }
+}
+
+#[cfg(feature = "bm_license_repair")]
+fn add_messages_to_repair_bm_license(
+    buffer: &mut HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+) {
+    for (src, (dest, wallet_owner_pubkey)) in ACCOUNTS_LICENSES.iter() {
+        let src = MsgAddressInt::AddrStd(MsgAddrStd::with_address(None, 0, src.0.clone().into()));
+        use tvm_block::CurrencyCollection;
+        use tvm_block::Grams;
+        use tvm_block::InternalMessageHeader;
+        use tvm_types::SliceData;
+
+        use crate::block_keeper_system::abi::BLOCK_MANAGER_LICENSE_ABI;
+
+        let parameters = format!(r#"{{"pubkey": "{wallet_owner_pubkey}"}}"#,);
+        let msg_body = tvm_abi::encode_function_call(
+            BLOCK_MANAGER_LICENSE_ABI,
+            "acceptLicense",
+            None,
+            &parameters,
+            true,
+            None,
+            None,
+        )
+        .expect("Failed to encode body");
+        let cc = CurrencyCollection::from_grams(Grams::new(100_000_000).unwrap());
+        let message_header = InternalMessageHeader::with_addresses(src.clone(), dest.clone(), cc);
+        let body =
+            SliceData::load_cell(msg_body.into_cell().expect("Failed serialize message body"))
+                .expect("Failed to serialize message body");
+        let message = Message::with_int_header_and_body(message_header, body);
+        let wrapped_message = WrappedMessage { message };
+        let message_id = MessageIdentifier::from(&wrapped_message);
+        let destination: AccountAddress = dest.address().into();
+        buffer.entry(destination).or_default().push((message_id, Arc::new(wrapped_message)));
+    }
+}
+
+#[cfg(feature = "mirror_repair")]
+fn repair_mirror_accounts(accounts: &mut ShardAccounts) -> anyhow::Result<()> {
+    use tvm_block::StateInit;
+
+    let mirror_stateinit = StateInit::construct_from_bytes(MIRROR_TVC)
+        .map_err(|e| anyhow::format_err!("Failed to construct mirror tvc: {e}"))?;
+
+    let mirror_code = mirror_stateinit
+        .code()
+        .ok_or_else(|| anyhow::format_err!("Mirror TVC doesn't contain code"))?
+        .clone();
+
+    for i in 1..=1000 {
+        let hex_part = format!("2{:063x}", i);
+        let address = format!("0:{}", hex_part);
+        let mirror_addr = AccountAddress::from_str(&address)
+            .map_err(|e| anyhow::format_err!("Failed to calculate mirror addr: {e}"))?;
+        let acc_id: AccountId = mirror_addr.clone().into();
+        let Some(shard_account) = accounts
+            .account(&acc_id)
+            .map_err(|e| anyhow::format_err!("Failed to read account from shard state: {e}"))?
+        else {
+            tracing::error!("mirror_repair: account was not found in state: {mirror_addr:?}");
+            continue;
+        };
+        let mut old_account = shard_account
+            .read_account()
+            .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {e}"))?
+            .as_struct()
+            .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {e}"))?;
+        if let Some(old_account_stateinit) = old_account.state_init_mut() {
+            old_account_stateinit.set_code(mirror_code.clone());
+        } else {
+            tracing::error!("mirror_repair: Failed to get old stateinit account");
+            continue;
+        }
+        let Ok(new_account_cell) = old_account.serialize() else {
+            tracing::error!("mirror_repair: Failed to serialize new account");
+            continue;
+        };
+        let new_shard_account = ShardAccount::with_account_root(
+            new_account_cell,
+            shard_account.last_trans_hash().clone(),
+            shard_account.last_trans_lt(),
+            shard_account.get_dapp_id().cloned(),
+        );
+        if let Err(e) = accounts.insert(&mirror_addr.0, &new_shard_account) {
+            tracing::error!("mirror_repair: Failed to insert new shard account: {e}");
+            continue;
+        }
+        tracing::error!("mirror_repair: Success: {mirror_addr:?}");
+    }
+    Ok(())
 }

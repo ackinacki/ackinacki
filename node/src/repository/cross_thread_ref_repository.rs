@@ -53,7 +53,7 @@ impl CrossThreadRefDataRead for CrossThreadRefDataRepository {
         if let Some(cross_thread_ref_data_state) = cross_thread_ref_data_cache.get(identifier) {
             match cross_thread_ref_data_state {
                 Some(cross_thread_ref_data) => return Ok(cross_thread_ref_data.clone()),
-                None => bail!("cross thread ref data was not set {}", identifier),
+                None => bail!("cross thread ref data was not set {identifier}"),
             }
         }
         let path = self.get_cross_thread_ref_data_path(identifier);
@@ -75,7 +75,7 @@ impl CrossThreadRefDataRead for CrossThreadRefDataRepository {
             Ok(cross_thread_ref_data)
         } else {
             cross_thread_ref_data_cache.put(identifier.clone(), None);
-            bail!("cross thread ref data was not set {}", identifier)
+            bail!("cross thread ref data was not set {identifier}")
         }
     }
 }

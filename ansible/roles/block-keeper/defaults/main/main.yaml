@@ -9,6 +9,9 @@ OPT_STATE_KEEP_AMOUNT: 100 # should not be less than 100
 BLK_STATE_CLEANUP_SPEC: "0 *" # hourly
 BLK_STATE_KEEP_AMOUNT: 100000 # less than 1000 may be dangerous, 100k should be safe and reasonable space wise
 
+SHARE_CLEANUP_SPEC: "0 *" # hourly
+SHARE_KEEP_AMOUNT: 3 # can be even 1, but better to use at least 2
+
 NODE_BINARY: node
 FAIL_FAST: yes
 STAKING_TIME: 60

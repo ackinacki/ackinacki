@@ -23,7 +23,12 @@ pub trait StateSyncService {
     // - accept a data storage as a parameters to be able to take state directly
     //   from there.
     // - use data storage to snapshot state and then publish it on ipfs.
-    fn save_state_for_sharing(&self, state: Arc<OptimisticStateImpl>) -> anyhow::Result<()>;
+    fn save_state_for_sharing(
+        &self,
+        block_id: &BlockIdentifier,
+        thread_id: &ThreadIdentifier,
+        min_state: Option<Arc<OptimisticStateImpl>>,
+    ) -> anyhow::Result<()>;
 
     fn add_load_state_task(
         &mut self,

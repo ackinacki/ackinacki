@@ -2316,7 +2316,7 @@ impl BlockBuilder {
                     Err(std::sync::mpsc::TryRecvError::Empty) => None,
                     Err(err) => {
                         tracing::trace!(target: "ext_messages", "Error receiving thread result: {err:?}");
-                        return Err(anyhow::anyhow!("Error receiving thread result: {:?}", err));
+                        return Err(anyhow::anyhow!("Error receiving thread result: {err:?}"));
                     }
                 }
             };

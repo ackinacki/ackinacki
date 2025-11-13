@@ -15,6 +15,7 @@ use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::block_state::repository::BlockStateRepository;
+use crate::node::block_state::tools::try_set_prefinalized;
 use crate::node::network_message::Command;
 use crate::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
@@ -310,10 +311,11 @@ impl AuthoritySwitchService {
                                     *attestation_target.fallback().required_attestation_count();
 
                                 if attestations.clone_signature_occurrences().len() >= target {
-                                    block_state.guarded_mut(|e| -> anyhow::Result<()> {
-                                        e.set_prefinalized(attestations.clone())?;
-                                        Ok(())
-                                    })?;
+                                    try_set_prefinalized(
+                                        &block_state,
+                                        &self.block_state_repository,
+                                        attestations.clone(),
+                                    )?;
                                     let _ = self.chain_pulse_monitor.send(
                                         ChainPulseEvent::block_prefinalized(
                                             *rejection_reason.thread_identifier(),
@@ -448,11 +450,11 @@ impl AuthoritySwitchService {
                         }
                         Ok(true) => {}
                     };
-
-                    block_state.guarded_mut(|e| {
-                        e.set_prefinalized(attestation.clone())?;
-                        anyhow::Ok(())
-                    })?;
+                    try_set_prefinalized(
+                        &block_state,
+                        &self.block_state_repository,
+                        attestation.clone(),
+                    )?;
 
                     let _ = self.chain_pulse_monitor.send(ChainPulseEvent::block_prefinalized(
                         block.data().get_common_section().thread_id,

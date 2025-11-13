@@ -28,7 +28,7 @@ impl StateDownloader {
                     self.event_pub.send(Event::StateDownloaded).expect("Failed to send event");
                 }
                 Err(err) => {
-                    anyhow::bail!("Fail to receive channel message {}", err);
+                    anyhow::bail!("Fail to receive channel message {err}");
                 }
             }
         }

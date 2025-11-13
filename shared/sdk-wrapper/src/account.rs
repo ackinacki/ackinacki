@@ -188,23 +188,23 @@ impl Account {
 
         let mut state_init = Cursor::new(tvc_bytes);
         let mut contract_image = ContractImage::from_state_init(&mut state_init)
-            .map_err(|e| anyhow::anyhow!("unable to load contract image: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("unable to load contract image: {e}"))?;
 
         let init_data = Self::insert_pubkey_to_init_data(&keys.public, None)?;
         let abi_str = abi.json_string()?;
         contract_image
             .update_data(false, &init_data, &abi_str)
-            .map_err(|e| anyhow::anyhow!("unable to update contract image data: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("unable to update contract image data: {e}"))?;
 
         let vec_bytes = contract_image
             .serialize()
-            .map_err(|e| anyhow::anyhow!("unable to serialize contract image: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("unable to serialize contract image: {e}"))?;
         state_init
             .seek(std::io::SeekFrom::Start(0))
-            .map_err(|e| anyhow::anyhow!("failed to access the tvc file: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to access the tvc file: {e}"))?;
         state_init
             .write_all(&vec_bytes)
-            .map_err(|e| anyhow::anyhow!("failed to update the tvc file: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to update the tvc file: {e}"))?;
         Ok(())
     }
 

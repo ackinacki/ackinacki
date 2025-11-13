@@ -64,8 +64,7 @@ impl std::str::FromStr for RndSeed {
                 anyhow::format_err!("Failed to decode UInt256 from base64 str: {e}")
             })?,
             _ => anyhow::bail!(
-                "invalid account ID string (32 bytes expected), but got string {}",
-                value
+                "invalid account ID string (32 bytes expected), but got string {value}"
             ),
         }
         Ok(Self(result))

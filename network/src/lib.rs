@@ -81,7 +81,7 @@ pub fn try_parse_socket_addr(s: impl AsRef<str>, default_port: u16) -> anyhow::R
     let addr = s
         .to_socket_addrs()?
         .next()
-        .ok_or_else(|| anyhow::anyhow!("failed to parse socket address: {}", s))?;
+        .ok_or_else(|| anyhow::anyhow!("failed to parse socket address: {s}"))?;
     Ok(addr)
 }
 

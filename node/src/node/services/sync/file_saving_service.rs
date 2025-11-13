@@ -21,6 +21,7 @@ use crate::repository::Repository;
 use crate::storage::MessageDurableStorage;
 use crate::types::thread_message_queue::account_messages_iterator::AccountMessagesIterator;
 use crate::types::BlockIdentifier;
+use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
@@ -101,7 +102,9 @@ fn get_ancestor_blocks_data(
 impl FileSavingService {
     pub fn save_object(
         &self,
-        state: Arc<OptimisticStateImpl>,
+        block_id: &BlockIdentifier,
+        thread_id: &ThreadIdentifier,
+        min_state: Option<Arc<OptimisticStateImpl>>,
         path: PathBuf,
     ) -> anyhow::Result<()> {
         let path = self.root_path.join(path);
@@ -110,11 +113,18 @@ impl FileSavingService {
         let mut shared_services = self.shared_services.clone();
         let block_state_repository = self.block_state_repository.clone();
         let repository = self.repository.clone();
+        let block_id = block_id.clone();
+        let thread_id = *thread_id;
         let thread = std::thread::Builder::new()
             .name(format!("Saving state: {}", path.display()))
             .spawn(move || {
                 tracing::trace!(target: "node", "Saving state to {}", path.display());
-                let block_id = state.block_id.clone();
+                let state = repository
+                    .get_full_optimistic_state(&block_id, &thread_id, min_state)?
+                    .ok_or(anyhow::format_err!("Failed to get full optimistic state"))?;
+
+                let mut state = Arc::unwrap_or_clone(state);
+                state.make_an_independent_copy();
                 let db_messages = state
                     .messages
                     .iter(&message_db)

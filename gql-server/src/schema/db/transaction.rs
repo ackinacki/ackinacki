@@ -182,11 +182,8 @@ impl Transaction {
         tracing::trace!(target: "blockchain_api", "SQL: {sql}");
 
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
-        let result: Result<Vec<Transaction>, anyhow::Error> = builder
-            .build_query_as()
-            .fetch_all(pool)
-            .await
-            .map_err(|e| anyhow::format_err!("{}", e));
+        let result: Result<Vec<Transaction>, anyhow::Error> =
+            builder.build_query_as().fetch_all(pool).await.map_err(|e| anyhow::format_err!("{e}"));
 
         if let Err(e) = result {
             anyhow::bail!("ERROR: {e}");
@@ -269,11 +266,8 @@ impl Transaction {
 
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
 
-        let result: Result<Vec<Transaction>, anyhow::Error> = builder
-            .build_query_as()
-            .fetch_all(pool)
-            .await
-            .map_err(|e| anyhow::format_err!("{}", e));
+        let result: Result<Vec<Transaction>, anyhow::Error> =
+            builder.build_query_as().fetch_all(pool).await.map_err(|e| anyhow::format_err!("{e}"));
 
         if let Err(e) = result {
             anyhow::bail!("ERROR: {e}");

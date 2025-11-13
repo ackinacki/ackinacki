@@ -157,7 +157,8 @@ contract Mirror is Modifiers {
         new Multifactor {stateInit: data, value: varuint16(FEE_DEPLOY_MULTIFACTOR), wid: 0, flag: 1}(name, zkid, proof, epk, epk_sig, epk_expire_at, jwk_modulus, kid, jwk_modulus_expire_at, index_mod_4, iss_base_64, provider, header_base_64, pub_recovery_key, pub_recovery_key_sig, jwk_update_key, jwk_update_key_sig, root_provider_certificates, _index);
     }
 
-    function updateWhiteList(uint256 pubkey, uint8 index, string name) public view senderIs(VerifiersLib.calculateMultifactorAddress(_code[m_MvMultifactor], pubkey, _root)) accept {
+    function updateWhiteList(uint256 pubkey, uint8 index, string name) public view accept {
+        pubkey;
         ensureBalance();
         optional(address) new_addr;
         if (index == m_Boost) {

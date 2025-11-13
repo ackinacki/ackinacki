@@ -290,8 +290,7 @@ fn verify_zerostate(zs: &ZeroState, message_db: &MessageDurableStorage) -> anyho
         }
         Ok(None) => {
             return Err(anyhow::format_err!(
-                "Account for DAppIdentifier::ZERO not found at address: {:?}",
-                account_addr
+                "Account for DAppIdentifier::ZERO not found at address: {account_addr:?}"
             ));
         }
         Err(e) => {
@@ -1635,4 +1634,853 @@ fn clear_missing_block_locks(
         result.insert(thread_id, action_lock_collection);
     }
     Ok(result)
+}
+
+#[tokio::test]
+async fn test_execute() -> anyhow::Result<()> {
+    use std::path::Path;
+    use std::str::FromStr;
+
+    use node::bls::create_signed::CreateSealed;
+    use node::helper::metrics::BlockProductionMetrics;
+    use node::node::NetBlock;
+    use node::protocol::authority_switch::network_message::AuthoritySwitch;
+    use node::protocol::authority_switch::network_message::NextRoundSuccess;
+    use node::storage::StoreStub;
+    use telemetry_utils::instrumented_channel_ext::WrappedItem;
+
+    let (_metrics, tracing_guard) = init_tracing();
+    let metrics: Option<Metrics> = None;
+    let node_metrics: Option<BlockProductionMetrics> = None;
+
+    let config_path = PathBuf::from("./tests/test_node_data0/acki-nacki.conf.yaml");
+    // println!("{:?}", std::env::current_dir());
+
+    let tls_cert_cache = TlsCertCache::new()?;
+    let config = load_config_from_file(&config_path)
+        .map_err(|e| anyhow::format_err!("Failed to open config file: {e}"))?
+        .ensure_min_cpu(MINIMUM_NUMBER_OF_CORES)
+        .ensure_min_sync_gap();
+
+    let zerostate =
+        ZeroState::load_from_file(&config.local.zerostate_path).expect("Failed to open zerostate");
+
+    let bk_set = if let Some(bk_set_update_path) = &config.local.bk_set_update_path {
+        serde_json::from_slice::<ApiBkSet>(&std::fs::read(bk_set_update_path)?)?
+    } else {
+        ApiBkSet { seq_no: 0, current: (&zerostate.get_block_keeper_set()?).into(), future: vec![] }
+    };
+
+    // Preload data
+    let bp_node_id = NodeIdentifier::from_str(
+        "ad19d38503bde647819890984603f658a52c53c07ba9847cc7d31081a542bec1",
+    )
+    .unwrap();
+    let cur_bk_set = BlockKeeperSet::from(bk_set.current.clone());
+    let keys_map = key_pairs_from_file::<GoshBLS>(
+        "./tests/test_node_data0/config/block_keeper1_bls.keys.json",
+    );
+
+    let first_chain_of_blocks = {
+        let id_list = vec![
+            "a59531701b1208a3ad40ca696d6c274a6b3282f8b1403ea0f417f095263b2b19",
+            "ef00a2686a982373b00f026960dbed32453f20d25a2ff3b961fca0462a903d13",
+        ];
+        let mut blocks = vec![];
+        for id in id_list {
+            let block_id = BlockIdentifier::from_str(id).unwrap();
+            let block =
+                RepositoryImpl::load_block(Path::new("./tests/test_node_data0/blocks"), &block_id)
+                    .unwrap()
+                    .unwrap();
+            blocks.push(block);
+        }
+        let next_round_success = NextRoundSuccess::builder()
+            .node_identifier(bp_node_id.clone())
+            .round(58744989)
+            .block_height(
+                BlockHeight::builder()
+                    .thread_identifier(ThreadIdentifier::default())
+                    .height(1)
+                    .build(),
+            )
+            .proposed_block(NetBlock::with_envelope(&blocks[0]).unwrap())
+            .attestations_aggregated(None)
+            .requests_aggregated(vec![])
+            .build();
+        let envelope = Envelope::<GoshBLS, NextRoundSuccess>::sealed(
+            &bp_node_id,
+            &cur_bk_set,
+            &keys_map,
+            next_round_success,
+        )
+        .unwrap();
+        let mut net_messages =
+            vec![NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched(envelope))];
+        net_messages.push(NetworkMessage::Candidate(NetBlock::with_envelope(&blocks[1]).unwrap()));
+        net_messages
+    };
+
+    let second_chain_of_blocks = {
+        let id_list = vec![
+            "8e1872de308f09a7370197957ba6ae20601cd4d0e3cec3c9050e3e9b5818bdb6",
+            "ef24a7756f587dd5e89c380870b00afd132a6aed6aa810b8bdb0e679978c1a61",
+        ];
+        let mut blocks = vec![];
+        for id in id_list {
+            let block_id = BlockIdentifier::from_str(id).unwrap();
+            let block =
+                RepositoryImpl::load_block(Path::new("./tests/test_node_data1/blocks"), &block_id)
+                    .unwrap()
+                    .unwrap();
+            blocks.push(block);
+        }
+        let attn = blocks[1]
+            .data()
+            .get_common_section()
+            .block_attestations
+            .clone()
+            .iter()
+            .find(|attn| attn.data().block_id() == &blocks[0].data().identifier())
+            .cloned();
+        let next_round_success = NextRoundSuccess::builder()
+            .node_identifier(bp_node_id.clone())
+            .round(58744989)
+            .block_height(
+                BlockHeight::builder()
+                    .thread_identifier(ThreadIdentifier::default())
+                    .height(1)
+                    .build(),
+            )
+            .proposed_block(NetBlock::with_envelope(&blocks[0]).unwrap())
+            .attestations_aggregated(attn)
+            .requests_aggregated(vec![])
+            .build();
+        let envelope = Envelope::<GoshBLS, NextRoundSuccess>::sealed(
+            &bp_node_id,
+            &cur_bk_set,
+            &keys_map,
+            next_round_success,
+        )
+        .unwrap();
+        vec![NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched(envelope))]
+    };
+
+    let network_config = config.network_config(Some(tls_cert_cache.clone()))?;
+    let gossip_config = config.gossip_config()?;
+    tracing::info!("Loaded config");
+
+    tracing::info!(target: "monit", "Node config: {}", serde_json::to_string_pretty(&config)?);
+    tracing::info!("Gossip seeds expanded: {:?}", gossip_config.seeds);
+    tracing::info!("Gossip advertise addr: {:?}", gossip_config.advertise_addr);
+
+    if let Some(m) = node_metrics.as_ref() {
+        m.report_build_info();
+    }
+
+    let set_prefix = std::env::var("AEROSPIKE_SET_PREFIX").unwrap_or_else(|_| "node".to_string());
+
+    // let durable_store = AerospikeStore::new(socket_address, node_metrics.clone())?;
+    let durable_store = StoreStub;
+    let durable_set = |suffix: &str| format!("{set_prefix}-{suffix}");
+
+    let num_cached_entries = std::env::var("AEROSPIKE_CACHE_MESSAGE_MAX_ENTRIES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_AEROSPIKE_MESSAGE_CACHE_MAX_ENTRIES);
+
+    let cache = LruSizedCache::new(num_cached_entries);
+    let cached_store = CachedStore::new(durable_store.clone(), cache);
+
+    let message_db = MessageDurableStorage::new(cached_store, &durable_set("msg"));
+    let crossref_db = CrossRefStorage::new(durable_store.clone(), &durable_set("ref"));
+    let action_lock_db = ActionLockStorage::new(durable_store.clone(), &durable_set("lck"));
+
+    let zerostate_hash =
+        calc_file_hash(&config.local.zerostate_path).expect("Failed to calculate zerostate hash");
+    tracing::info!(target: "monit", "zerostate hash: {zerostate_hash}");
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (_bk_set_update_async_tx, bk_set_update_async_rx) =
+        tokio::sync::watch::channel(bk_set.clone());
+    let (watch_gossip_config_tx, watch_gossip_config_rx) =
+        tokio::sync::watch::channel(WatchGossipConfig {
+            max_nodes_with_same_id: config.network.max_nodes_with_same_id as usize,
+            trusted_pubkeys: HashSet::default(),
+        });
+    let (_config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
+    let (gossip_config_tx, gossip_config_rx) = tokio::sync::watch::channel(gossip_config);
+    let (network_config_tx, network_config_rx) = tokio::sync::watch::channel(network_config);
+    tokio::spawn(dispatch_hot_reload(
+        tls_cert_cache.clone(),
+        shutdown_rx.clone(),
+        config_rx,
+        bk_set_update_async_rx.clone(),
+        network_config_tx,
+        gossip_config_tx,
+        watch_gossip_config_tx,
+    ));
+    let (gossip_handle, _gossip_rest_handle) =
+        gossip::run(shutdown_rx, gossip_config_rx, chitchat::transport::UdpTransport).await?;
+    let gossip_listen_addr_clone = config.network.gossip_listen_addr;
+    let gossip_advertise_addr =
+        config.network.gossip_advertise_addr.unwrap_or(gossip_listen_addr_clone);
+    tracing::info!("Gossip advertise addr: {:?}", gossip_advertise_addr);
+
+    let gossip_node = config.gossip_peer()?;
+    gossip_handle
+        .with_chitchat(|c| {
+            gossip_node.set_to(c.self_node_state());
+            c.self_node_state().set(
+                node::node::services::sync::GOSSIP_API_ADVERTISE_ADDR_KEY,
+                config.network.api_advertise_addr.to_string(),
+            );
+            if let Ok(keys) = transport_layer::resolve_signing_keys(
+                &config.network.my_ed_key_secret,
+                &config.network.my_ed_key_path,
+            ) {
+                if let Some(key) = keys.first() {
+                    sign_gossip_node(c.self_node_state(), key.clone());
+                }
+            }
+        })
+        .await;
+
+    let network = BasicNetwork::new(shutdown_tx, network_config_rx, MsQuicTransport::default());
+    let chitchat = gossip_handle.chitchat();
+
+    // Panics if node mandatory wasm files not present;
+    // check_node_mandatory_wasm_available();
+    let wasm_cache = WasmNodeCache::new()?;
+
+    let (_ext_messages_sender, ext_messages_receiver) = instrumented_channel(
+        metrics.as_ref().map(|x| x.node.clone()),
+        node::helper::metrics::INBOUND_EXT_CHANNEL,
+    );
+    let (direct_tx, broadcast_tx, incoming_rx, _nodes_rx) = network
+        .start(
+            watch_gossip_config_rx,
+            metrics.as_ref().map(|m| m.net.clone()),
+            metrics.as_ref().map(|m| m.node.clone()),
+            config.local.node_id.clone(),
+            config.network.node_advertise_addr,
+            false,
+            chitchat.clone(),
+        )
+        .await?;
+
+    let bp_thread_count = Arc::<AtomicI32>::default();
+    let (raw_block_sender, _raw_block_receiver) = instrumented_channel::<(NodeIdentifier, Vec<u8>)>(
+        node_metrics.clone(),
+        node::helper::metrics::RAW_BLOCK_CHANNEL,
+    );
+
+    if cfg!(feature = "fail-fast") {
+        let orig_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |panic_info| {
+            eprintln!("thread id: {:?}", std::thread::current().id());
+            // invoke the default handler and exit the process
+            if let Some(location) = panic_info.location() {
+                eprintln!("panic occurred in file '{}'", location.file());
+            } else {
+                eprintln!("panic occurred but can't get location information...");
+            }
+            eprintln!("{panic_info:?}");
+            orig_hook(panic_info);
+            std::process::exit(100);
+        }));
+    }
+
+    let zerostate_path = Some(config.local.zerostate_path.clone());
+
+    tracing::trace!(
+        "config.global.min_time_between_state_publish_directives={:?}",
+        config.global.min_time_between_state_publish_directives
+    );
+    let keys_map = key_pairs_from_file::<GoshBLS>(&config.local.key_path);
+    let bls_keys_map = Arc::new(Mutex::new(keys_map));
+
+    // node should sync with other nodes, but if there are
+    // no alive nodes, node should wait
+    // TODO: fix. single thread implementation
+    // let (block_id, _) = repository.select_thread_last_finalized_block(&ThreadIdentifier::new(0))?;
+    // if block_id == BlockIdentifier::default() {
+    //     loop {
+    //         // TODO: improve this code. Do not check length, check that all vals present.
+    //
+    //         if let Ok(true) =
+    //             network_config.alive_nodes(false).await.map(|v| {
+    //                 tracing::trace!(
+    //                 "[synchronizing] Waiting for sync with other nodes: other_nodes_cnt={nodes_cnt} alive_cnt={}", v.len()
+    //             );
+    //                 v.len() >= nodes_cnt
+    //             })
+    //         {
+    //             break;
+    //         }
+    //         sleep(Duration::from_millis(ALIVE_NODES_WAIT_TIMEOUT_MILLIS)).await;
+    //     }
+    // }
+
+    let seed_map = key_pairs_from_file::<GoshBLS>(&config.local.block_keeper_seed_path);
+    let secret_seed = seed_map.values().last().unwrap().clone().0;
+    let block_keeper_rng = SmallRng::from_seed(secret_seed.take_as_seed());
+
+    // let mut node_execute_handlers = JoinSet::new();
+    // TODO: check that inner_service_loop is active
+    let (routing, _routing_rx, _inner_service_loop, _inner_ext_messages_loop) = RoutingService::new(
+        incoming_rx,
+        ext_messages_receiver,
+        metrics.as_ref().map(|x| x.node.clone()),
+        metrics.as_ref().map(|x| x.net.clone()),
+    );
+
+    let repo_path = PathBuf::from("/tmp/node_data");
+    let _ = std::fs::remove_dir_all(&repo_path);
+    let node_cross_thread_ref_data_availability_synchronization_service =
+        CrossThreadRefDataAvailabilitySynchronizationService::new(
+            metrics.as_ref().map(|m| m.node.clone()),
+        )
+        .unwrap();
+
+    let mut node_shared_services = node::node::shared_services::SharedServices::start(
+        routing.clone(),
+        repo_path.clone(),
+        metrics.as_ref().map(|m| m.node.clone()),
+        config.global.thread_load_threshold,
+        config.global.thread_load_window_size,
+        config.local.rate_limit_on_incoming_block_req,
+        config.global.thread_count_soft_limit,
+        crossref_db,
+    );
+    let blob_sync_service =
+        blob_sync::external_fileshares_based::ExternalFileSharesBased::builder()
+            .local_storage_share_base_path(config.local.external_state_share_local_base_dir.clone())
+            .build()
+            .start(metrics.as_ref().map(|m| m.node.clone()))
+            .expect("Blob sync service start");
+    let nack_set_cache = Arc::new(Mutex::new(FixedSizeHashSet::new(DEFAULT_NACK_SIZE_CACHE)));
+    let (state_save_tx, _state_save_rx) =
+        instrumented_channel(node_metrics.clone(), BLOCK_STATE_SAVE_CHANNEL);
+
+    let block_state_repo =
+        BlockStateRepository::new(repo_path.clone().join("blocks-states"), Arc::new(state_save_tx));
+
+    let block_id = BlockIdentifier::default();
+    let state = block_state_repo.get(&block_id)?;
+    state.guarded_mut(|state_in| -> anyhow::Result<()> {
+        if !state_in.is_stored() {
+            state_in.set_thread_identifier(ThreadIdentifier::default())?;
+            let bk_set = BlockKeeperSet::from(bk_set.current.clone());
+            let first_node_id = bk_set.iter_node_ids().next().unwrap().clone();
+            state_in.set_producer(first_node_id)?;
+            state_in.set_block_seq_no(BlockSeqNo::default())?;
+            state_in.set_block_time_ms(0)?;
+            state_in.set_common_checks_passed()?;
+            state_in.set_finalized()?;
+            // state_in.set_prefinalized()?;
+            state_in.set_ancestors(vec![])?;
+            state_in.set_applied(
+                Instant::now() - Duration::from_millis(330),
+                Instant::now() - Duration::from_millis(330),
+            )?;
+            state_in.set_signatures_verified()?;
+            state_in.set_stored_zero_state()?;
+            let bk_set = Arc::new(bk_set.clone());
+            state_in.set_bk_set(bk_set.clone())?;
+            state_in.set_descendant_bk_set(bk_set)?;
+            state_in.set_future_bk_set(Arc::new(BlockKeeperSet::new()))?;
+            state_in.set_descendant_future_bk_set(Arc::new(BlockKeeperSet::new()))?;
+            state_in.set_block_stats(BlockStatistics::zero(
+                NonZero::new(BLOCK_STATISTICS_INITIAL_WINDOW_SIZE).unwrap(),
+                NonZero::new(3).unwrap(),
+            ))?;
+            state_in.set_attestation_target(
+                AttestationTargets::builder()
+                    .primary(
+                        AttestationTarget::builder()
+                            .generation_deadline(3)
+                            .required_attestation_count(0)
+                            .build(),
+                    )
+                    .fallback(
+                        AttestationTarget::builder()
+                            .generation_deadline(7)
+                            .required_attestation_count(0)
+                            .build(),
+                    )
+                    .build(),
+            )?;
+            state_in.set_producer_selector_data(
+                ProducerSelector::builder()
+                    .rng_seed_block_id(BlockIdentifier::default())
+                    .index(0)
+                    .build(),
+            )?;
+            state_in.set_ancestor_blocks_finalization_checkpoints(
+                AncestorBlocksFinalizationCheckpoints::builder()
+                    .primary(HashMap::new())
+                    .fallback(HashMap::new())
+                    .build(),
+            )?;
+            state_in.set_block_height(
+                BlockHeight::builder()
+                    .thread_identifier(ThreadIdentifier::default())
+                    .height(0)
+                    .build(),
+            )?;
+            state_in.set_block_round(0)?;
+        }
+        Ok(())
+    })?;
+    drop(state);
+    let accounts_repo = AccountsRepository::new(
+        repo_path.clone(),
+        config.local.unload_after,
+        config.global.save_state_frequency,
+    );
+    let finalized_block_storage_size =
+        1_usize + TryInto::<usize>::try_into(config.global.save_state_frequency * 2).unwrap();
+    let repository_blocks =
+        Arc::new(Mutex::new(FinalizedBlockStorage::new(finalized_block_storage_size)));
+
+    let (bk_set_update_tx, _bk_set_update_rx) =
+        instrumented_channel(node_metrics.clone(), node::helper::metrics::BK_SET_UPDATE_CHANNEL);
+
+    let mut repository = RepositoryImpl::new(
+        repo_path.clone(),
+        zerostate_path.clone(),
+        config.local.state_cache_size,
+        node_shared_services.clone(),
+        Arc::clone(&nack_set_cache),
+        config.local.unload_after.is_some(),
+        block_state_repo.clone(),
+        metrics.as_ref().map(|m| m.node.clone()),
+        accounts_repo,
+        message_db.clone(),
+        repository_blocks,
+        bk_set_update_tx,
+    );
+
+    let (optimistic_save_tx, _optimistic_save_rx) =
+        instrumented_channel(node_metrics.clone(), OPTIMISTIC_STATE_SAVE_CHANNEL);
+
+    let unprocessed_blocks = repository
+        .load_saved_blocks(&block_state_repo)
+        .map_err(|e| {
+            tracing::trace!("load_saved_blocks error: {e:?}");
+            e
+        })
+        .expect("Failed to init repository");
+
+    let zerostate_threads: Vec<ThreadIdentifier> = zerostate.list_threads().cloned().collect();
+
+    for thread_id in &zerostate_threads {
+        let (last_finalized_id, _) =
+            repository.select_thread_last_finalized_block(thread_id)?.unwrap();
+        tracing::trace!(
+            "init thread: thread_id={:?} last_finalized_id={:?}",
+            thread_id,
+            last_finalized_id
+        );
+        node_shared_services.exec(|services| {
+            // services.dependency_tracking.init_thread(*thread_id, BlockIdentifier::default());
+            // TODO: check if we have to pass all threads in set
+            services.threads_tracking.init_thread(
+                last_finalized_id.clone(),
+                HashSet::from_iter(vec![*thread_id].into_iter()),
+                &mut (&mut services.router, &mut services.load_balancing),
+            );
+            // TODO: the same must happen after a node sync.
+            services.thread_sync.on_block_finalized(&last_finalized_id, thread_id).unwrap();
+        });
+    }
+
+    let ackinackisender = AckiNackiSend::builder()
+        .node_id(config.local.node_id.clone())
+        .bls_keys_map(bls_keys_map.clone())
+        .ack_network_direct_tx(direct_tx.clone())
+        .nack_network_broadcast_tx(broadcast_tx.clone())
+        .build();
+    let action_lock_collections = HashMap::new();
+    let authority = Arc::new(Mutex::new(
+        Authority::builder()
+            .round_buckets(RoundTime::linear(
+                // min round time
+                Duration::from_millis(config.global.round_min_time_millis),
+                // step
+                Duration::from_millis(config.global.round_step_millis),
+                // max round time: 30 sec
+                Duration::from_millis(config.global.round_max_time_millis),
+            ))
+            .data_dir(repo_path.join("action-locks"))
+            .block_state_repository(block_state_repo.clone())
+            .block_repository(repository.clone())
+            .node_identifier(config.local.node_id.clone())
+            .bls_keys_map(bls_keys_map.clone())
+            // TODO: make it restored from disk
+            // .action_lock(HashMap::new())
+            .network_direct_tx(direct_tx.clone())
+            // .block_producers(HashMap::new())
+            .bp_production_count(bp_thread_count.clone())
+            .network_broadcast_tx(broadcast_tx.clone())
+            .node_joining_timeout(config.global.node_joining_timeout)
+            .action_lock_db(action_lock_db)
+            .max_lookback_block_height_distance(finalized_block_storage_size)
+            .self_addr(config.network.node_advertise_addr)
+            .action_lock_collections(action_lock_collections)
+            .build(),
+    ));
+
+    let validation_service = ValidationService::new(
+        repository.clone(),
+        config.clone(),
+        node_shared_services.clone(),
+        block_state_repo.clone(),
+        ackinackisender.clone(),
+        metrics.as_ref().map(|m| m.node.clone()),
+        wasm_cache.clone(),
+        message_db.clone(),
+        authority.clone(),
+    )
+    .expect("Failed to create validation process");
+
+    let repository_clone = repository.clone();
+    let (heartbeat_channel_tx, _heartbeat_channel_rx) = std::sync::mpsc::channel();
+
+    let mut chain_pulse_bind = authority_switch::chain_pulse_monitor::bind(authority.clone());
+    let chain_pulse_monitor = chain_pulse_bind.monitor();
+    let stalled_threads = chain_pulse_bind.stalled_threads();
+
+    let node_metrics = metrics.as_ref().map(|m| m.node.clone());
+    let node_metrics_clone = node_metrics.clone();
+    let stop_result_rx_vec = Arc::new(Mutex::new(vec![]));
+    let stop_result_rx_vec_clone = stop_result_rx_vec.clone();
+    let bk_set_update_async_rx_clone = bk_set_update_async_rx.clone();
+
+    let saved_thread_sender = Arc::new(Mutex::new(None));
+    let saved_thread_sender_clone = saved_thread_sender.clone();
+
+    let parent_block_id = Some(BlockIdentifier::default());
+    let thread_id = &ThreadIdentifier::default();
+    let (thread_authority_sender, thread_authority_receiver) =
+        telemetry_utils::instrumented_channel_ext::instrumented_channel(node_metrics.clone(), "");
+    let (thread_sender, thread_receiver) =
+        telemetry_utils::instrumented_channel_ext::instrumented_channel(node_metrics.clone(), "");
+    let (feedback_sender, _) = instrumented_channel(node_metrics.clone(), "");
+    let (_, ext_messages_rx) = instrumented_channel(node_metrics.clone(), "");
+
+    tracing::trace!("start node for thread: {thread_id:?}");
+    {
+        let mut sender = saved_thread_sender_clone.lock();
+        *sender = Some((thread_sender.clone(), thread_authority_sender.clone()));
+    }
+    let block_collection = UnfinalizedCandidateBlockCollection::new(
+        unprocessed_blocks.get(thread_id).cloned().unwrap_or_default().into_iter(),
+    );
+
+    let mut repository = repository_clone.clone();
+    repository.unfinalized_blocks().guarded_mut(|e| e.insert(*thread_id, block_collection.clone()));
+    // HACK!
+    if let Some(ref parent_block_id) = parent_block_id {
+        if parent_block_id != &BlockIdentifier::default() {
+            repository.init_thread(thread_id, parent_block_id)?;
+        }
+    }
+    // END OF HACK
+    let producer_election_rng = {
+        // Here is the problem!
+        // It takes the wrong block id.
+        // should take a parent block of the thread instead.
+        // Yet it requires an explanation why it was done like that
+        let last_block_id = repository.get_latest_block_id_with_producer_group_change(thread_id)?;
+        let mut seed_bytes = last_block_id.as_ref().to_vec();
+        seed_bytes.extend_from_slice(thread_id.as_ref());
+        let seed = calculate_hash(&seed_bytes)?;
+        SmallRng::from_seed(seed)
+    };
+    let external_messages = ExternalMessagesThreadState::builder()
+        .with_thread_id(*thread_id)
+        .with_report_metrics(node_metrics.clone())
+        .with_cache_size(config.local.ext_messages_cache_size)
+        .with_feedback_sender(feedback_sender.clone())
+        .build()?;
+
+    let external_messages_clone = external_messages.clone();
+    let ext_msg_receiver = std::thread::Builder::new()
+        .name("Ext message receiver".to_string())
+        .spawn_critical(move || {
+            loop {
+                match ext_messages_rx.recv() {
+                    Ok(message) => {
+                        external_messages_clone.push_external_messages(&[message])?;
+                    }
+                    Err(e) => {
+                        tracing::error!("Ext message receiver received an error: {e:?}");
+                        break;
+                    }
+                }
+            }
+            Ok(())
+        })?;
+
+    let file_saving_service = FileSavingService::builder()
+        .root_path(config.local.external_state_share_local_base_dir.clone())
+        .repository(repository.clone())
+        .block_state_repository(block_state_repo.clone())
+        .shared_services(node_shared_services.clone())
+        .message_db(message_db.clone())
+        .build();
+
+    let mut sync_state_service = ExternalFileSharesBased::new(
+        blob_sync_service.interface(),
+        file_saving_service,
+        chitchat.clone(),
+        bk_set_update_async_rx_clone.clone(),
+    );
+    sync_state_service.static_storages = config.network.static_storages.clone();
+    sync_state_service.max_download_tries = config.network.shared_state_max_download_tries;
+    sync_state_service.retry_download_timeout =
+        std::time::Duration::from_millis(config.network.shared_state_retry_download_timeout_millis);
+    sync_state_service.download_deadline_timeout = config.global.node_joining_timeout;
+    let production_process = TVMBlockProducerProcess::builder()
+        .metrics(node_metrics.clone())
+        .node_config(config.clone())
+        .repository(repository.clone())
+        .block_keeper_epoch_code_hash(config.global.block_keeper_epoch_code_hash.clone())
+        .block_keeper_preepoch_code_hash(config.global.block_keeper_preepoch_code_hash.clone())
+        .producer_node_id(config.local.node_id.clone())
+        .blockchain_config(load_blockchain_config()?)
+        .parallelization_level(config.local.parallelization_level)
+        .shared_services(node_shared_services.clone())
+        .block_produce_timeout(Arc::new(Mutex::new(Duration::from_millis(
+            config.global.time_to_produce_block_millis,
+        ))))
+        .thread_count_soft_limit(config.global.thread_count_soft_limit)
+        .share_service(Some(sync_state_service.clone()))
+        .wasm_cache(wasm_cache.clone())
+        .save_optimistic_service_sender(optimistic_save_tx.clone())
+        .build();
+
+    let attestation_sender_service = AttestationSendService::builder()
+        .pulse_timeout(std::time::Duration::from_millis(config.global.time_to_produce_block_millis))
+        .resend_attestation_timeout(config.global.attestation_resend_timeout)
+        .node_id(config.local.node_id.clone())
+        .thread_id(*thread_id)
+        .bls_keys_map(bls_keys_map.clone())
+        .block_state_repository(block_state_repo.clone())
+        .network_direct_tx(direct_tx.clone())
+        .metrics(node_metrics.clone())
+        .authority(authority.clone())
+        .build();
+    let last_block_attestations = Arc::new(Mutex::new(CollectedAttestations::default()));
+    let _ = heartbeat_channel_tx.send(Arc::clone(&last_block_attestations));
+
+    let skipped_attestation_ids = Arc::new(Mutex::new(HashSet::new()));
+    let block_gap = Arc::new(AtomicU32::new(0));
+    let attestation_send_service = AttestationSendServiceHandler::new(
+        attestation_sender_service,
+        repository.clone(),
+        last_block_attestations.clone(),
+        block_state_repo.clone(),
+        block_collection.clone(),
+    );
+    let chain_pulse_monitor = chain_pulse_monitor.clone();
+    match chain_pulse_monitor
+        .send(ChainPulseEvent::start_thread(*thread_id, block_collection.clone()))
+    {
+        Ok(()) => {}
+        _ => {
+            if SHUTDOWN_FLAG.get() != Some(&true) {
+                anyhow::bail!("Failed to send start thread message");
+            }
+        }
+    }
+    let block_height = if let Some(parent_block_id) = parent_block_id.as_ref() {
+        let parent_state = block_state_repo
+            .get(parent_block_id)
+            .expect("Failed to get block state of the block that has started a thread");
+        let block_height = parent_state
+            .guarded(|e| *e.block_height())
+            .expect("Block that starts a thread must have a block height set");
+        Some(block_height)
+    } else {
+        None
+    };
+    match chain_pulse_monitor.send(ChainPulseEvent::block_finalized(*thread_id, block_height)) {
+        Ok(()) => {}
+        _ => {
+            if SHUTDOWN_FLAG.get() != Some(&true) {
+                anyhow::bail!("Failed to send block finalized message");
+            }
+        }
+    }
+    let block_processing_service = BlockProcessorService::new(
+        SecurityGuarantee::from_chance_of_successful_attack(
+            config.global.chance_of_successful_attack,
+        ),
+        config.local.node_id.clone(),
+        std::time::Duration::from_millis(config.global.time_to_produce_block_millis),
+        config.global.save_state_frequency,
+        bls_keys_map.clone(),
+        *thread_id,
+        block_state_repo.clone(),
+        repository.clone(),
+        node_shared_services.clone(),
+        nack_set_cache.clone(),
+        direct_tx.clone(),
+        broadcast_tx.clone(),
+        block_gap.clone(),
+        validation_service.interface(),
+        sync_state_service.clone(),
+        ackinackisender.clone(),
+        chain_pulse_monitor.clone(),
+        block_collection.clone(),
+        node_cross_thread_ref_data_availability_synchronization_service.interface(),
+        optimistic_save_tx.clone(),
+    );
+
+    // TODO: save blk_req_join_handle
+    let (blk_req_tx, _blk_req_join_handle) = BlockRequestService::start(
+        config.clone(),
+        node_shared_services.clone(),
+        repository.clone(),
+        block_state_repo.clone(),
+        direct_tx.clone(),
+        node_metrics.clone(),
+        block_collection.clone(),
+    )?;
+
+    let (stop_result_tx, stop_result_rx) = std::sync::mpsc::channel();
+    {
+        stop_result_rx_vec_clone.lock().push(stop_result_rx);
+    }
+
+    let self_node_tx_clone = thread_sender.clone();
+    let direct_tx_clone = direct_tx.clone();
+    let block_collection_clone = block_collection.clone();
+    let thread_authority = authority.guarded_mut(|e| e.get_thread_authority(thread_id));
+    let block_state_repo_clone = block_state_repo.clone();
+    let broadcast_tx_clone = broadcast_tx.clone();
+    let chain_pulse_monitor_clone = chain_pulse_monitor.clone();
+    let thread_id_clone = *thread_id;
+    let authority_handler = std::thread::Builder::new()
+        .name(format!("AuthoritySwitchService for {thread_id_clone:?}"))
+        .spawn_critical(move || {
+            let mut authority_service = AuthoritySwitchService::builder()
+                .self_addr(config.network.node_advertise_addr)
+                .rx(thread_authority_receiver)
+                .self_node_tx(self_node_tx_clone)
+                .network_direct_tx(direct_tx_clone)
+                .thread_id(thread_id_clone)
+                .unprocessed_blocks_cache(block_collection_clone)
+                .thread_authority(thread_authority)
+                .network_broadcast_tx(broadcast_tx_clone)
+                .block_state_repository(block_state_repo_clone)
+                .chain_pulse_monitor(chain_pulse_monitor_clone)
+                .build();
+            authority_service.run()
+        })
+        .unwrap();
+
+    let mut node = Node::new(
+        node_shared_services.clone(),
+        sync_state_service,
+        production_process,
+        repository.clone(),
+        thread_receiver,
+        broadcast_tx.clone(),
+        direct_tx.clone(),
+        raw_block_sender.clone(),
+        bls_keys_map.clone(),
+        config.clone(),
+        block_keeper_rng.clone(),
+        producer_election_rng.clone(),
+        *thread_id,
+        feedback_sender,
+        parent_block_id.is_some(),
+        block_state_repo.clone(),
+        block_processing_service,
+        // attestations_target_service:
+        AttestationTargetsService::builder()
+            .block_state_repository(block_state_repo.clone())
+            .build(),
+        validation_service.interface(),
+        skipped_attestation_ids,
+        // block_gap,
+        node_metrics_clone.clone(),
+        thread_sender.clone(),
+        external_messages,
+        message_db.clone(),
+        last_block_attestations,
+        bp_thread_count.clone(),
+        // Channel (sender) for block requests
+        blk_req_tx.clone(),
+        attestation_send_service,
+        ext_msg_receiver,
+        authority.clone(),
+        block_collection.clone(),
+        stop_result_tx,
+        stalled_threads.clone(),
+        chain_pulse_monitor.clone(),
+        authority_handler,
+        thread_authority_sender,
+        optimistic_save_tx.clone(),
+    );
+
+    let thread = std::thread::Builder::new()
+        .name("node_thread".into())
+        .spawn(move || node.execute())
+        .unwrap();
+
+    // TODO: need to start routing execution and track its status
+    //    let router_execute_handler: JoinHandle<anyhow::Result<()>> =
+    //        tokio::task::spawn_blocking(move || network_message_router.execute());
+    for thread_id in zerostate_threads {
+        tracing::trace!("Send start thread message for thread from zs: {thread_id:?}");
+        routing.cmd_sender.send(Command::StartThread((thread_id, BlockIdentifier::default())))?;
+    }
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let (sender, authority_sender) = {
+        let sender = saved_thread_sender.lock();
+        assert!(sender.is_some());
+        sender.clone().unwrap()
+    };
+    let _ = authority_sender.send(WrappedItem {
+        payload: (first_chain_of_blocks[0].clone(), config.network.node_advertise_addr),
+        label: ThreadIdentifier::default().to_string(),
+    });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let _ = sender.send(WrappedItem {
+        payload: (first_chain_of_blocks[1].clone(), config.network.node_advertise_addr),
+        label: ThreadIdentifier::default().to_string(),
+    });
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    let _ = authority_sender.send(WrappedItem {
+        payload: (second_chain_of_blocks[0].clone(), config.network.node_advertise_addr),
+        label: ThreadIdentifier::default().to_string(),
+    });
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    assert!(!thread.is_finished());
+
+    start_shutdown();
+
+    repository.dump_state();
+
+    // Note: vec of rx can be locked because we don't expect new threads to start
+    // after shutdown.
+    let result_rx_vec = stop_result_rx_vec.lock();
+    for rx in result_rx_vec.iter() {
+        let _ = rx.recv();
+    }
+
+    // Note: reachable on SIGTERM
+    drop(chain_pulse_bind);
+
+    shutdown_tracing(tracing_guard);
+    // std::process::exit(0);
+    Ok(())
 }

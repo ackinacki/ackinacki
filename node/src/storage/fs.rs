@@ -42,6 +42,40 @@ impl FsStore {
     }
 }
 
+#[derive(Default, Clone)]
+pub struct StoreStub;
+
+impl KeyValueStore for StoreStub {
+    fn get(
+        &self,
+        _key: &Key,
+        _values: &Bins,
+        _label: &'static str,
+    ) -> anyhow::Result<Option<ValueMap>> {
+        Ok(None)
+    }
+
+    fn put(
+        &self,
+        _key: &Key,
+        _bins: &[Bin],
+        _until_success: bool,
+        _label: &'static str,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    #[cfg(debug_assertions)]
+    fn db_reads(&self) -> usize {
+        todo!()
+    }
+
+    #[cfg(debug_assertions)]
+    fn db_writes(&self) -> usize {
+        todo!()
+    }
+}
+
 impl KeyValueStore for FsStore {
     fn get(
         &self,
@@ -72,6 +106,7 @@ impl KeyValueStore for FsStore {
         _until: bool,
         _label: &'static str,
     ) -> anyhow::Result<()> {
+        // TODO: this fn seems to be broken
         let path = self.key_path(key);
         let bin_map =
             ValueMap::from_iter(bins.iter().map(|bin| (bin.name.to_string(), bin.value.clone())));

@@ -571,15 +571,15 @@ fn main() -> anyhow::Result<()> {
         Commands::GenKeys(gen_key_cmd) => {
             let client = Arc::new(
                 ClientContext::new(ClientConfig::default())
-                    .map_err(|e| anyhow::format_err!("failed to create sdk client: {}", e))?,
+                    .map_err(|e| anyhow::format_err!("failed to create sdk client: {e}"))?,
             );
             let key_pair = tvm_client::crypto::generate_random_sign_keys(client)
-                .map_err(|e| anyhow::format_err!("failed to generate keys: {}", e))?;
+                .map_err(|e| anyhow::format_err!("failed to generate keys: {e}"))?;
             let keys_json = serde_json::to_string_pretty(&key_pair)
-                .map_err(|e| anyhow::format_err!("failed to serialize the keypair: {}", e))?;
+                .map_err(|e| anyhow::format_err!("failed to serialize the keypair: {e}"))?;
             if let Some(keys_path) = gen_key_cmd.path {
                 std::fs::write(keys_path, &keys_json)
-                    .map_err(|e| anyhow::format_err!("failed to create file with keys: {}", e))?;
+                    .map_err(|e| anyhow::format_err!("failed to create file with keys: {e}"))?;
             } else {
                 println!("{keys_json}");
             }

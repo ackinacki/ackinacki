@@ -21,7 +21,12 @@ impl StateSyncService for StateSyncServiceStub {
         todo!()
     }
 
-    fn save_state_for_sharing(&self, _state: Arc<OptimisticStateImpl>) -> anyhow::Result<()> {
+    fn save_state_for_sharing(
+        &self,
+        _block_id: &BlockIdentifier,
+        _thread_id: &ThreadIdentifier,
+        _min_state: Option<Arc<OptimisticStateImpl>>,
+    ) -> anyhow::Result<()> {
         todo!()
     }
 

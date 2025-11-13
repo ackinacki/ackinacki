@@ -1,6 +1,6 @@
 [package]
 name = "node"
-version = "0.12.0"
+version = "0.12.3"
 edition.workspace = true
 rust-version.workspace = true
 build = 'build.rs'
@@ -101,6 +101,8 @@ default = [
     "monitor-accounts-number",
     "disable_db_for_messages",
     "bk_wallets_repair",
+    "bm_license_repair",
+    "mirror_repair",
 ]
 # Use automocks in binaries
 use_automocks = []
@@ -143,6 +145,8 @@ rotate_after_sync = []
 
 # Temporary feature for system repair
 bk_wallets_repair = []
+bm_license_repair = []
+mirror_repair = []
 
 
 [[bench]]

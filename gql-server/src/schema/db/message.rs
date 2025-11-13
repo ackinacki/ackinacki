@@ -241,11 +241,8 @@ impl Message {
 
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
 
-        let result = builder
-            .build_query_as()
-            .fetch_all(pool)
-            .await
-            .map_err(|e| anyhow::format_err!("{}", e));
+        let result =
+            builder.build_query_as().fetch_all(pool).await.map_err(|e| anyhow::format_err!("{e}"));
 
         match result {
             Err(e) => {
@@ -313,6 +310,6 @@ impl Message {
                 PaginateDirection::Forward => list,
                 PaginateDirection::Backward => list.into_iter().rev().collect(),
             })
-            .map_err(|e| anyhow::format_err!("{}", e))
+            .map_err(|e| anyhow::format_err!("{e}"))
     }
 }
