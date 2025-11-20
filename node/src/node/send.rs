@@ -15,11 +15,13 @@ use crate::helper::metrics::BlockProductionMetrics;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::NodeAssociatedTypes;
 use crate::node::associated_types::SyncFinalizedData;
+use crate::node::network_message::NodeJoiningWithLastFinalizedData;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
 use crate::node::Node;
 use crate::node::NodeIdentifier;
 use crate::repository::repository_impl::RepositoryImpl;
+use crate::repository::Repository;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
@@ -34,7 +36,7 @@ pub fn send_blocks_range_request(
     exclusive_to: BlockSeqNo,
     at_least_n_blocks: Option<usize>,
 ) -> anyhow::Result<()> {
-    tracing::info!(
+    tracing::debug!(
         "sending block request to node {} [{:?}, {:?}) + min_n: {:?}",
         destination_node_id,
         inclusive_from,
@@ -62,13 +64,20 @@ pub fn send_blocks_range_request(
 }
 
 pub(crate) fn broadcast_node_joining(
-    network_broadcast_tx: &NetBroadcastSender<NetworkMessage>,
+    network_broadcast_tx: &NetBroadcastSender<NodeIdentifier, NetworkMessage>,
     metrics: Option<&BlockProductionMetrics>,
     node_id: NodeIdentifier,
     thread_id: ThreadIdentifier,
+    last_finalized_block_seq_no: BlockSeqNo,
 ) -> anyhow::Result<()> {
-    tracing::info!(target: "monit", "Broadcast NetworkMessage::NodeJoining");
-    match network_broadcast_tx.send(NetworkMessage::NodeJoining((node_id, thread_id))) {
+    tracing::debug!(target: "monit", "Broadcast NetworkMessage::NodeJoining");
+    let node_joining_data = NodeJoiningWithLastFinalizedData::builder()
+        .node_identifier(node_id)
+        .last_finalized_block_seq_no(last_finalized_block_seq_no)
+        .build();
+    match network_broadcast_tx
+        .send(NetworkMessage::NodeJoiningWithLastFinalized((node_joining_data, thread_id)))
+    {
         Ok(_) => {
             if let Some(m) = metrics {
                 m.report_broadcast_join(&thread_id);
@@ -89,11 +98,17 @@ where
     TRandomGenerator: rand::Rng,
 {
     pub(crate) fn broadcast_node_joining(&self) -> anyhow::Result<()> {
+        let last_finalized_block_seq_no = self
+            .repository
+            .select_thread_last_finalized_block(&self.thread_id)?
+            .map(|(_, seq_no)| seq_no)
+            .unwrap_or_default();
         broadcast_node_joining(
             &self.network_broadcast_tx,
             self.metrics.as_ref(),
             self.config.local.node_id.clone(),
             self.thread_id,
+            last_finalized_block_seq_no,
         )
     }
 
@@ -127,7 +142,7 @@ where
         block_seq_no: BlockSeqNo,
         shared_res_address: HashMap<ThreadIdentifier, BlockIdentifier>,
     ) -> anyhow::Result<()> {
-        tracing::info!(
+        tracing::debug!(
             "broadcasting SyncFinalized {:?} {:?} {:?}",
             block_seq_no,
             block_identifier,
@@ -178,7 +193,7 @@ where
         node_id: NodeIdentifier,
         from_seq_no: BlockSeqNo,
     ) -> anyhow::Result<()> {
-        tracing::info!("sending syncFrom to node {}: {:?}", node_id, from_seq_no,);
+        tracing::debug!("sending syncFrom to node {}: {:?}", node_id, from_seq_no,);
         match self
             .network_direct_tx
             .send((node_id.into(), NetworkMessage::SyncFrom((from_seq_no, self.thread_id))))

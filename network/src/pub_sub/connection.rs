@@ -1,5 +1,9 @@
 use std::fmt::Debug;
+use std::fmt::Display;
+use std::hash::Hash;
 use std::net::SocketAddr;
+use std::ops::Deref;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -10,7 +14,6 @@ use transport_layer::NetConnection;
 use transport_layer::NetTransport;
 
 use crate::detailed;
-use crate::host_id_prefix;
 use crate::message::NetMessage;
 use crate::metrics::to_label_kind;
 use crate::metrics::NetMetrics;
@@ -18,6 +21,8 @@ use crate::pub_sub::receiver;
 use crate::pub_sub::sender;
 use crate::pub_sub::IncomingSender;
 use crate::pub_sub::PubSub;
+use crate::topology::NetEndpoint;
+use crate::topology::NetTopology;
 use crate::DeliveryPhase;
 use crate::SendMode;
 
@@ -39,38 +44,49 @@ impl ConnectionRole {
 }
 
 #[derive(Debug)]
-pub struct ConnectionInfo {
+pub struct ConnectionInfo<PeerId: Debug + Display> {
     pub id: u64,
     pub local_is_proxy: bool,
-    pub role: ConnectionRole,
+    pub local_role: ConnectionRole,
     pub remote_addr: SocketAddr,
-    pub remote_host_id: String,
-    pub remote_host_id_prefix: String,
-    pub remote_is_proxy: bool,
+    pub remote_endpoint: NetEndpoint<PeerId>,
     pub remote_cert_hash: CertHash,
+    pub remote_cert_hash_prefix: String,
     pub remote_cert_pubkeys: Vec<VerifyingKey>,
 }
 
-impl ConnectionInfo {
+impl<PeerId: Debug + Display> ConnectionInfo<PeerId> {
     pub fn remote_info(&self) -> String {
         self.remote_addr.to_string()
-            + match self.role {
+            + match self.local_role {
                 ConnectionRole::Subscriber => " (publisher)",
                 ConnectionRole::Publisher => " (subscriber)",
                 ConnectionRole::DirectReceiver => " (direct sender)",
             }
     }
 
-    pub fn is_publisher(&self) -> bool {
-        matches!(self.role, ConnectionRole::Publisher)
+    pub fn remote_is_proxy(&self) -> bool {
+        matches!(self.remote_endpoint, NetEndpoint::Proxy(_))
     }
 
-    pub fn is_subscriber(&self) -> bool {
-        matches!(self.role, ConnectionRole::Subscriber)
+    pub fn local_is_publisher(&self) -> bool {
+        matches!(self.local_role, ConnectionRole::Publisher)
+    }
+
+    pub fn local_is_subscriber(&self) -> bool {
+        matches!(self.local_role, ConnectionRole::Subscriber)
     }
 
     pub fn is_broadcast(&self) -> bool {
-        matches!(self.role, ConnectionRole::Subscriber | ConnectionRole::Publisher)
+        matches!(self.local_role, ConnectionRole::Subscriber | ConnectionRole::Publisher)
+    }
+
+    pub fn is_incoming(&self) -> bool {
+        match self.local_role {
+            ConnectionRole::Subscriber => false,
+            ConnectionRole::Publisher => true,
+            ConnectionRole::DirectReceiver => true,
+        }
     }
 
     pub fn send_mode(&self) -> SendMode {
@@ -80,73 +96,107 @@ impl ConnectionInfo {
             SendMode::Direct
         }
     }
+
+    pub fn remote_is_same_as(&self, other: &Self) -> bool {
+        self.remote_cert_hash == other.remote_cert_hash
+    }
 }
 
 #[derive(Debug)]
-pub struct ConnectionWrapper<Connection: NetConnection> {
-    pub info: Arc<ConnectionInfo>,
+pub struct ConnectionWrapper<PeerId: Debug + Display, Connection: NetConnection> {
+    pub info: Arc<ConnectionInfo<PeerId>>,
     pub connection: Connection,
 }
 
-pub fn connection_remote_host_id(connection: &impl NetConnection) -> String {
-    connection.remote_identity()
-}
-
-impl<Connection: NetConnection> ConnectionWrapper<Connection> {
+impl<
+        PeerId: Eq + PartialEq + Clone + Display + Debug + Hash + FromStr,
+        Connection: NetConnection,
+    > ConnectionWrapper<PeerId, Connection>
+{
     pub fn new(
         id: u64,
         local_is_proxy: bool,
-        remote_addr: Option<SocketAddr>,
-        remote_host_id: String,
-        remote_is_proxy: bool,
+        override_remote_addr: Option<SocketAddr>,
+        remote_endpoint: NetEndpoint<PeerId>,
         connection: Connection,
-        role: ConnectionRole,
+        local_role: ConnectionRole,
     ) -> anyhow::Result<Self> {
-        let remote_host_id_prefix = host_id_prefix(&remote_host_id).to_string();
         let cert =
             connection.remote_certificate().ok_or_else(|| anyhow::anyhow!("No certificate"))?;
+        let remote_cert_hash = CertHash::from(&cert);
+        let remote_cert_hash_prefix = remote_cert_hash.prefix();
         Ok(Self {
             info: Arc::new(ConnectionInfo {
                 id,
                 local_is_proxy,
-                remote_addr: if let Some(addr) = remote_addr {
+                remote_addr: if let Some(addr) = override_remote_addr {
                     addr
                 } else {
                     connection.remote_addr()
                 },
-                remote_host_id,
-                remote_host_id_prefix,
-                remote_is_proxy,
-                remote_cert_hash: CertHash::from(&cert),
+                remote_cert_hash,
+                remote_cert_hash_prefix,
+                remote_endpoint,
                 remote_cert_pubkeys: get_pubkeys_from_cert_der(&cert)?,
-                role,
+                local_role,
             }),
             connection,
         })
     }
 
-    pub fn allow_sending(&self, outgoing: &OutgoingMessage) -> bool {
-        if outgoing.message.last_sender_is_proxy && self.info.remote_is_proxy {
+    pub fn allow_sending(
+        &self,
+        outgoing: &OutgoingMessage<PeerId>,
+        topology: &NetTopology<PeerId>,
+    ) -> bool {
+        let connection = self.info.deref();
+        if outgoing.message.last_sender_is_proxy && connection.remote_is_proxy() {
             return false;
         }
-        match &outgoing.delivery {
-            MessageDelivery::Broadcast => self.info.is_publisher(),
-            MessageDelivery::BroadcastExcluding(excluding) => {
-                self.info.is_publisher() && self.info.remote_host_id != excluding.remote_host_id
+        if !topology.i_am_peer_behind_proxy() {
+            if let Some(direct_receiver_peer_id) =
+                outgoing.message.direct_receiver_peer_id::<PeerId>()
+            {
+                let allow = match &connection.remote_endpoint {
+                    NetEndpoint::Peer(remote_peer) => remote_peer.id == direct_receiver_peer_id,
+                    NetEndpoint::Proxy(addrs) => {
+                        topology.proxied_segment_contains_peer(addrs, &direct_receiver_peer_id)
+                    }
+                };
+                if !allow {
+                    return false;
+                }
             }
-            MessageDelivery::Addr(addr) => self.info.remote_addr == *addr,
+        }
+        let receiver_is_subscriber = connection.local_is_publisher();
+        match &outgoing.delivery {
+            MessageDelivery::Broadcast => receiver_is_subscriber,
+            MessageDelivery::BroadcastExcludingSender(sender) => {
+                receiver_is_subscriber && !connection.remote_is_same_as(sender)
+            }
+            MessageDelivery::BroadcastToMySegmentPeersExcludingSender(sender) => {
+                receiver_is_subscriber
+                    && !connection.remote_is_same_as(sender)
+                    && topology.endpoint_is_peer_from_my_segment(&connection.remote_endpoint)
+            }
+            MessageDelivery::Addr(addr) => connection.remote_addr == *addr,
         }
     }
 }
 
-pub async fn connection_supervisor<Transport: NetTransport + 'static>(
+#[allow(clippy::too_many_arguments)]
+pub async fn connection_supervisor<
+    PeerId: Clone + Debug + Display + PartialEq + Hash + Eq + Send + Sync + FromStr<Err: Display> + 'static,
+    Transport: NetTransport + 'static,
+>(
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    pub_sub: PubSub<Transport>,
+    topology_rx: tokio::sync::watch::Receiver<NetTopology<PeerId>>,
+    pub_sub: PubSub<PeerId, Transport>,
     metrics: Option<NetMetrics>,
-    connection: Arc<ConnectionWrapper<Transport::Connection>>,
-    incoming_messages_tx: Option<IncomingSender>,
-    outgoing_messages_rx: Option<tokio::sync::broadcast::Receiver<OutgoingMessage>>,
-    connection_closed_tx: tokio::sync::mpsc::Sender<Arc<ConnectionInfo>>,
+    connection: Arc<ConnectionWrapper<PeerId, Transport::Connection>>,
+    incoming_messages_tx: Option<IncomingSender<PeerId>>,
+    outgoing_messages_rx: Option<tokio::sync::broadcast::Receiver<OutgoingMessage<PeerId>>>,
+    connection_closed_tx: tokio::sync::mpsc::Sender<Arc<ConnectionInfo<PeerId>>>,
 ) -> anyhow::Result<()> {
     let (sender_stop_tx, sender_stop_rx) = tokio::sync::watch::channel(false);
     let (receiver_stop_tx, receiver_stop_rx) = tokio::sync::watch::channel(false);
@@ -155,6 +205,7 @@ pub async fn connection_supervisor<Transport: NetTransport + 'static>(
             tokio::select! {
                 result = tokio::spawn(sender::sender(
                     shutdown_rx.clone(),
+                    topology_rx,
                     metrics.clone(),
                     connection.clone(),
                     sender_stop_tx.clone(),
@@ -165,7 +216,6 @@ pub async fn connection_supervisor<Transport: NetTransport + 'static>(
                     shutdown_rx.clone(),
                     metrics.clone(),
                     connection.clone(),
-                    receiver_stop_tx.clone(),
                     receiver_stop_rx,
                     incoming_messages_tx)
                 ) => trace_connection_task_result(result, "Receiver", &connection.info, &metrics)
@@ -176,7 +226,6 @@ pub async fn connection_supervisor<Transport: NetTransport + 'static>(
                 shutdown_rx.clone(),
                 metrics.clone(),
                 connection.clone(),
-                receiver_stop_tx.clone(),
                 receiver_stop_rx,
                 incoming_messages_tx,
             );
@@ -190,6 +239,7 @@ pub async fn connection_supervisor<Transport: NetTransport + 'static>(
         (None, Some(outgoing_messages_rx)) => {
             let sender = sender::sender(
                 shutdown_rx.clone(),
+                topology_rx,
                 metrics.clone(),
                 connection.clone(),
                 sender_stop_tx.clone(),
@@ -213,10 +263,10 @@ pub async fn connection_supervisor<Transport: NetTransport + 'static>(
     result?
 }
 
-fn trace_connection_task_result(
+fn trace_connection_task_result<PeerId: Debug + Display>(
     result: Result<anyhow::Result<()>, tokio::task::JoinError>,
     name: &str,
-    connection_info: &ConnectionInfo,
+    connection_info: &ConnectionInfo<PeerId>,
     metrics: &Option<NetMetrics>,
 ) -> Result<anyhow::Result<()>, tokio::task::JoinError> {
     match &result {
@@ -252,13 +302,13 @@ fn trace_connection_task_result(
 }
 
 #[derive(Debug, Clone)]
-pub struct IncomingMessage {
-    pub connection_info: Arc<ConnectionInfo>,
+pub struct IncomingMessage<PeerId: Debug + Clone + Display> {
+    pub connection_info: Arc<ConnectionInfo<PeerId>>,
     pub message: NetMessage,
     pub duration_after_transfer: Instant,
 }
 
-impl IncomingMessage {
+impl<PeerId: Debug + Clone + Display> IncomingMessage<PeerId> {
     pub fn finish<Message>(&self, metrics: &Option<NetMetrics>) -> Option<(Message, SocketAddr)>
     where
         Message: Debug + for<'de> serde::Deserialize<'de> + Send + Sync + Clone + 'static,
@@ -273,7 +323,7 @@ impl IncomingMessage {
             );
         });
         tracing::debug!(
-            host_id = self.connection_info.remote_host_id_prefix,
+            host_id = self.connection_info.remote_cert_hash_prefix,
             addr = self.connection_info.remote_addr.to_string(),
             msg_id = self.message.id,
             msg_type = self.message.label,
@@ -288,7 +338,7 @@ impl IncomingMessage {
                     metrics.report_error("fail_decode_in_msg");
                 }
                 tracing::debug!(
-                    host_id = self.connection_info.remote_host_id_prefix,
+                    host_id = self.connection_info.remote_cert_hash_prefix,
                     addr = self.connection_info.remote_addr.to_string(),
                     msg_id = self.message.id,
                     msg_type = self.message.label,
@@ -326,7 +376,7 @@ impl IncomingMessage {
             }
         }
         tracing::debug!(
-            host_id = self.connection_info.remote_host_id_prefix,
+            host_id = self.connection_info.remote_cert_hash_prefix,
             addr = self.connection_info.remote_addr.to_string(),
             msg_id = self.message.id,
             msg_type = self.message.label,
@@ -340,15 +390,16 @@ impl IncomingMessage {
 }
 
 #[derive(Debug, Clone)]
-pub enum MessageDelivery {
+pub enum MessageDelivery<PeerId: Debug + Clone + Display> {
     Broadcast,
-    BroadcastExcluding(Arc<ConnectionInfo>),
+    BroadcastExcludingSender(Arc<ConnectionInfo<PeerId>>),
+    BroadcastToMySegmentPeersExcludingSender(Arc<ConnectionInfo<PeerId>>),
     Addr(SocketAddr),
 }
 
 #[derive(Debug, Clone)]
-pub struct OutgoingMessage {
-    pub delivery: MessageDelivery,
+pub struct OutgoingMessage<PeerId: Debug + Clone + Display> {
+    pub delivery: MessageDelivery<PeerId>,
     pub message: NetMessage,
     pub duration_before_transfer: Instant,
 }

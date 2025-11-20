@@ -17,6 +17,9 @@ pub mod cli;
 pub mod config;
 mod direct_sender;
 pub use direct_sender::*;
+
+use crate::config::SocketAddrSet;
+
 pub mod message;
 pub mod metrics;
 pub mod network;
@@ -24,8 +27,8 @@ pub mod pub_sub;
 pub mod resolver;
 #[cfg(test)]
 pub mod tests;
+pub mod topology;
 pub mod transfer;
-pub mod unix_signals;
 
 const ACKI_NACKI_DIRECT_PROTOCOL: &str = "acki-nacki-direct";
 const ACKI_NACKI_SUBSCRIPTION_FROM_NODE_PROTOCOL: &str = "acki-nacki-subscription-from-node";
@@ -67,10 +70,6 @@ impl Display for SendMode {
     }
 }
 
-pub fn host_id_prefix(s: &str) -> &str {
-    s.split_at_checked(6).map(|(first, _)| first).unwrap_or(s)
-}
-
 pub(crate) fn detailed(err: &impl Debug) -> String {
     format!("{err:#?}").replace("\n", "").replace("\r", "")
 }
@@ -87,7 +86,7 @@ pub fn try_parse_socket_addr(s: impl AsRef<str>, default_port: u16) -> anyhow::R
 
 #[derive(Clone, Debug)]
 pub struct PublisherConfig {
-    pub addrs: Vec<SocketAddr>,
+    pub addrs: SocketAddrSet,
 }
 pub fn parse_publisher_addr(s: impl AsRef<str>) -> anyhow::Result<SocketAddr> {
     try_parse_socket_addr(s, DEFAULT_PUBLISHER_PORT)
@@ -114,47 +113,59 @@ where
     })
 }
 
-pub fn serialize_subscribe<S>(
-    value: &Vec<Vec<SocketAddr>>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
+pub fn serialize_subscribe<S>(value: &Vec<SocketAddrSet>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
     let mut addrs = Vec::new();
     for publisher in value {
+        let mut s = String::new();
         for addr in publisher {
-            addrs.push(*addr);
+            if !s.is_empty() {
+                s.push(',');
+            }
+            s.push_str(&addr.to_string());
         }
+        addrs.push(s);
     }
     addrs.serialize(serializer)
 }
 
-pub fn deserialize_subscribe<'de, D>(deserializer: D) -> Result<Vec<Vec<SocketAddr>>, D::Error>
+pub fn deserialize_subscribe<'de, D>(deserializer: D) -> Result<Vec<SocketAddrSet>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let addrs = Vec::<String>::deserialize(deserializer)?;
+    let subscribe_str = Vec::<String>::deserialize(deserializer)?;
     let mut publishers = Vec::new();
-    for addr in addrs {
-        if !addr.is_empty() {
-            publishers.push(vec![parse_publisher_addr(addr)
-                .context("subscribe addrs")
-                .map_err(serde::de::Error::custom)?]);
+    for segment_str in subscribe_str {
+        if !segment_str.is_empty() {
+            let mut publisher = Vec::new();
+            for addr in segment_str.split(',') {
+                if !addr.trim().is_empty() {
+                    publisher.push(
+                        parse_publisher_addr(addr)
+                            .context("subscribe addrs")
+                            .map_err(serde::de::Error::custom)?,
+                    );
+                }
+            }
+            if !publisher.is_empty() {
+                publishers.push(SocketAddrSet::from(publisher));
+            }
         }
     }
     Ok(publishers)
 }
 
-pub fn deserialize_publisher_addrs<'de, D>(deserializer: D) -> Result<Vec<SocketAddr>, D::Error>
+pub fn deserialize_publisher_addrs<'de, D>(deserializer: D) -> Result<SocketAddrSet, D::Error>
 where
     D: Deserializer<'de>,
 {
     let addrs = Vec::<String>::deserialize(deserializer)?;
-    let mut publishers = Vec::new();
+    let mut publishers = SocketAddrSet::new();
     for addr in addrs {
         if !addr.is_empty() {
-            publishers.push(
+            publishers.insert(
                 parse_publisher_addr(addr)
                     .context("publisher urls")
                     .map_err(serde::de::Error::custom)?,

@@ -306,7 +306,7 @@ impl BlockBuilder {
             }
             Err(err) => {
                 if let Some(ExecutorError::TerminationDeadlineReached) = err.downcast_ref() {
-                    tracing::info!(target: "builder", "ExecutorError::TerminationDeadlineReached");
+                    tracing::debug!(target: "builder", "ExecutorError::TerminationDeadlineReached");
                     anyhow::bail!(ExecutorError::TerminationDeadlineReached);
                 }
                 let old_hash = acc_root.repr_hash();
@@ -456,10 +456,10 @@ impl BlockBuilder {
                         false
                     };
                 if in_msg_was_sent_by_bk_system_contract && !is_tx_aborted {
-                    tracing::info!(target: "builder", "after_transaction tx statuses: {:?} {:?}", transaction.orig_status, transaction.end_status);
+                    tracing::debug!(target: "builder", "after_transaction tx statuses: {:?} {:?}", transaction.orig_status, transaction.end_status);
                     if transaction.orig_status == AccountStatus::AccStateNonexist {
                         if code_hash_str == self.block_keeper_epoch_code_hash {
-                            tracing::info!(target: "builder", "Epoch contract was deployed");
+                            tracing::debug!(target: "builder", "Epoch contract was deployed");
                             if let Some((id, block_keeper_data)) =
                                 decode_epoch_data(&acc).map_err(|e| {
                                     anyhow::format_err!("Failed to decode epoch data: {e}")
@@ -473,7 +473,7 @@ impl BlockBuilder {
                             }
                         }
                         if code_hash_str == self.block_keeper_preepoch_code_hash {
-                            tracing::info!(target: "builder", "PreEpoch contract was deployed");
+                            tracing::debug!(target: "builder", "PreEpoch contract was deployed");
                             if let Some((id, block_keeper_data)) = decode_preepoch_data(&acc)
                                 .map_err(|e| {
                                     anyhow::format_err!("Failed to decode preepoch data: {e}")
@@ -1211,7 +1211,7 @@ impl BlockBuilder {
                     };
                 };
 
-                tracing::info!(target: "builder", "Internal messages execution start");
+                tracing::debug!(target: "builder", "Internal messages execution start");
                 if first_thread_and_key.is_some() {
                     loop {
                         let mut pause_to_avoid_busy_loop = true;
@@ -1349,9 +1349,9 @@ impl BlockBuilder {
                         }
                     }
                 }
-                tracing::info!(target: "builder", "Internal messages execution: executed_int_messages_cnt={}", executed_int_messages_cnt);
+                tracing::debug!(target: "builder", "Internal messages execution: executed_int_messages_cnt={}", executed_int_messages_cnt);
                 #[cfg(feature = "timing")]
-                tracing::info!(target: "builder", "Internal messages execution time {} ms", start.elapsed().as_millis());
+                tracing::debug!(target: "builder", "Internal messages execution time {} ms", start.elapsed().as_millis());
                 Ok::<_, anyhow::Error>(())
             })?;
         Ok((block_full, verify_block_contains_missing_messages_from_prev_state))
@@ -1372,8 +1372,8 @@ impl BlockBuilder {
         let _ =
             tracing::span!(tracing::Level::INFO, "build_block", seq_no = self.block_info.seq_no());
         active_threads.clear();
-        tracing::info!(target: "builder", "Start build of block: {} for {:?}", self.block_info.seq_no(), self.thread_id);
-        tracing::info!(target: "builder", "ext_messages_queue.len={}, active_threads.len={}, check_messages_map.len={:?}", queue_len(&ext_messages_queue), active_threads.len(), check_messages_map.as_ref().map(|map| map.len()));
+        tracing::debug!(target: "builder", "Start build of block: {} for {:?}", self.block_info.seq_no(), self.thread_id);
+        tracing::debug!(target: "builder", "ext_messages_queue.len={}, active_threads.len={}, check_messages_map.len={:?}", queue_len(&ext_messages_queue), active_threads.len(), check_messages_map.as_ref().map(|map| map.len()));
 
         let (block_unixtime, block_lt) = self.at_and_lt();
 
@@ -1499,23 +1499,23 @@ impl BlockBuilder {
                         && there_are_no_new_messages_for_verify_block
                         && active_threads.is_empty()
                     {
-                        tracing::info!(target: "builder", "Stop building verify block");
+                        tracing::debug!(target: "builder", "Stop building verify block");
                         break;
                     }
 
                     // Check active threads
                     if !self.process_completed_new_message_threads(&mut active_threads, &mut active_destinations, check_messages_map.is_some())? {
-                        tracing::info!(target: "builder", "New messages stop termination dealine was reached");
+                        tracing::debug!(target: "builder", "New messages stop termination dealine was reached");
                         break;
                     }
 
                     if check_messages_map.is_none() && self.is_limits_reached() {
-                        tracing::info!(target: "builder", "New messages stop because block is full");
+                        tracing::debug!(target: "builder", "New messages stop because block is full");
                         break;
                     }
 
                     if self.new_messages.is_empty() && active_threads.is_empty() {
-                        tracing::info!(target: "builder", "New messages stop");
+                        tracing::debug!(target: "builder", "New messages stop");
                         break;
                     }
                 }
@@ -1524,7 +1524,7 @@ impl BlockBuilder {
         })?;
 
         #[cfg(feature = "timing")]
-        tracing::info!(target: "builder", "New messages execution time {} ms", start.elapsed().as_millis());
+        tracing::debug!(target: "builder", "New messages execution time {} ms", start.elapsed().as_millis());
         self.execute_dapp_config_messages(
             blockchain_config,
             block_unixtime,
@@ -1590,7 +1590,7 @@ impl BlockBuilder {
         //     Ok::<_, anyhow::Error>(())
         // })?;
 
-        tracing::info!(target: "ext_messages", "unprocessed/processed/feedbacks={}/{}/{}", unprocessed_ext_msgs_cnt, processed_stamps.len(), ext_message_feedbacks.0.len());
+        tracing::debug!(target: "ext_messages", "unprocessed/processed/feedbacks={}/{}/{}", unprocessed_ext_msgs_cnt, processed_stamps.len(), ext_message_feedbacks.0.len());
 
         let prepared_block = self.finish_and_prepare_block(active_threads, message_db)?;
 
@@ -1790,7 +1790,7 @@ impl BlockBuilder {
         // new_shard_state
         //     .write_out_msg_queue_info(&self.out_queue_info)
         //     .map_err(|e| anyhow::format_err!("Failed to write out msg queue info: {e}"))?;
-        tracing::info!(
+        tracing::debug!(
             target: "builder",
             "finish block new_shard_state hash: {:?}",
             new_shard_state.hash().unwrap().to_hex_string()
@@ -1823,7 +1823,7 @@ impl BlockBuilder {
                 .write_account_blocks(&self.account_blocks)
                 .map_err(|e| anyhow::format_err!("Failed to write account blocks: {e}"))?;
             block_extra.rand_seed = self.rand_seed;
-            tracing::info!(target: "builder", "finish_block: prepare block extra");
+            tracing::debug!(target: "builder", "finish_block: prepare block extra");
             Ok::<BlockExtra, anyhow::Error>(block_extra)
         })?;
         let mut value_flow = ValueFlow {
@@ -1839,13 +1839,13 @@ impl BlockBuilder {
             .add(&self.in_msg_descr.root_extra().fees_collected)
             .map_err(|e| anyhow::format_err!("Failed to add fees: {e}"))?;
 
-        tracing::info!(target: "builder", "finish_block: prepare value flow");
+        tracing::debug!(target: "builder", "finish_block: prepare value flow");
 
         let (new_ss_root, state_update) = trace_span!("generate state update").in_scope(||{
             let new_ss_root = new_shard_state
                 .serialize()
                 .map_err(|e| anyhow::format_err!("Failed to serialize shard state: {e}"))?;
-            tracing::info!(target: "builder", "finish_block: serialize new state: {}", new_ss_root.repr_hash().to_hex_string());
+            tracing::debug!(target: "builder", "finish_block: serialize new state: {}", new_ss_root.repr_hash().to_hex_string());
             let mut old_ss = self.initial_optimistic_state.get_shard_state().deref().clone();
             old_ss.write_accounts(&self.initial_accounts).map_err(|e| {
                 anyhow::format_err!("Failed to write accounts to old shard state: {e}")
@@ -1853,7 +1853,7 @@ impl BlockBuilder {
             let old_ss_root = old_ss
                 .serialize()
                 .map_err(|e| anyhow::format_err!("Failed to serialize old shard state: {e}"))?;
-            tracing::info!(target: "builder", "finish_block: got old state: {}", old_ss_root.repr_hash().to_hex_string());
+            tracing::debug!(target: "builder", "finish_block: got old state: {}", old_ss_root.repr_hash().to_hex_string());
             // tracing::trace!(target: "builder", "finish_block: usage tree root: {:?}", self.usage_tree.root_cell());
             // tracing::trace!(target: "builder", "finish_block: usage tree set: {:?}", self.usage_tree.build_visited_set());
             // #[cfg(feature = "timing")]
@@ -1919,7 +1919,7 @@ impl BlockBuilder {
                 Ok(true)
             })
             .map_err(|e| anyhow::format_err!("Failed to iterate account blocks: {e}"))?;
-        tracing::info!(target: "builder", "finish_block: changed_accounts: {changed_accounts:?}");
+        tracing::debug!(target: "builder", "finish_block: changed_accounts: {changed_accounts:?}");
         let thread_id = *self.initial_optimistic_state.get_thread_id();
         let threads_table = self.initial_optimistic_state.get_produced_threads_table().clone();
         #[cfg(feature = "monitor-accounts-number")]
@@ -1944,7 +1944,7 @@ impl BlockBuilder {
             updated_accounts_number,
         )?;
 
-        tracing::info!(target: "builder", "Finish block: {:?}", block.hash().unwrap().to_hex_string());
+        tracing::debug!(target: "builder", "Finish block: {:?}", block.hash().unwrap().to_hex_string());
         Ok((block, new_state, cross_thread_ref_data))
     }
 
@@ -2437,7 +2437,7 @@ impl BlockBuilder {
         tracing::debug!(target: "builder", "processed per block (total/processed): {}/{}", incoming_queue_len, processed_stamps.len());
 
         // #[cfg(feature = "timing")]
-        tracing::info!(target: "builder", "External messages execution time {} ms", start.elapsed().as_millis());
+        tracing::debug!(target: "builder", "External messages execution time {} ms", start.elapsed().as_millis());
 
         tracing::Span::current().record("messages.count", processed_stamps.len() as i64);
 

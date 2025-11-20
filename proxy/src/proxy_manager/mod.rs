@@ -53,7 +53,8 @@ pub async fn proxy_manager(args: cli::CliArgs) -> anyhow::Result<()> {
             blockchain::get_proxy_list().await?.into_iter().collect();
         tracing::debug!("proxy set: {proxy_set:?}");
 
-        let subscribes: HashSet<SocketAddr> = config.subscribe.iter().map(|x| x[0]).collect();
+        let subscribes: HashSet<SocketAddr> =
+            config.subscribe.iter().map(|x| *x.iter().next().unwrap()).collect();
         tracing::debug!("subscribes: {subscribes:?}");
 
         if proxy_set != subscribes {
@@ -68,7 +69,7 @@ pub async fn proxy_manager(args: cli::CliArgs) -> anyhow::Result<()> {
 
             let mut config = config;
 
-            config.subscribe.retain(|s| proxy_set.contains(&s[0]));
+            config.subscribe.retain(|s| proxy_set.contains(s.iter().next().unwrap()));
             config.save(&args.proxy_config)?;
             tracing::info!("Updated config");
 

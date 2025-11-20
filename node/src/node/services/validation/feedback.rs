@@ -32,7 +32,7 @@ pub struct AckiNackiSend {
     node_id: NodeIdentifier,
     bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
     ack_network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
-    nack_network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
+    nack_network_broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
 }
 
 impl AckiNackiSend {

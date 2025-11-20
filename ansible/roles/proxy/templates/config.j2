@@ -37,3 +37,10 @@ gossip:
   - {{ seed }}
   {% endfor -%}
   cluster_id: {{ NETWORK_NAME }}
+
+{% if SEGMENT_BK is defined %}
+my_segment_addrs:
+{% for segment_addrs in SEGMENT_BK %}
+- {{ segment_addrs }}
+{% endfor %}
+{% endif %}

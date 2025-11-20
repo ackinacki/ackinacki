@@ -51,7 +51,7 @@ pub async fn run(
         .filter_map(|nr| base64_id_decode(&nr["id"]).ok().map(|id| (nr["id"].clone(), id)))
         .collect();
 
-    tracing::info!(target: "message_router", "Ext messages received: {:?}", nrs.iter().map(|nr| format!("{}", nr["id"])));
+    tracing::debug!(target: "message_router", "Ext messages received: {:?}", nrs.iter().map(|nr| format!("{}", nr["id"])));
 
     let recipients = message_router.bp_resolver.lock().resolve(Some(thread_id.clone()));
     tracing::trace!(target: "message_router", "Resolved BPs (thread={:?}): {:?}", thread_id, recipients);
@@ -77,7 +77,7 @@ pub async fn run(
 
     for recipient in recipients {
         let url = construct_url(recipient);
-        tracing::info!(target: "message_router", "Forwarding requests to: {url}");
+        tracing::debug!(target: "message_router", "Forwarding requests to: {url}");
 
         let request = client.post(&url).header("X-EXT-MSG-SENT", now_ms().to_string()).json(&nrs);
 
@@ -88,7 +88,7 @@ pub async fn run(
                 let body = response.text().await;
                 match body {
                     Ok(body_str) => {
-                        tracing::info!(target: "message_router", "response body (src={}): {:?}", recipient, body_str);
+                        tracing::debug!(target: "message_router", "response body (src={}): {:?}", recipient, body_str);
                         let mut response_json: serde_json::Value = serde_json::from_str(&body_str)?;
 
                         response_json["ext_message_token"] = json!(message_router.issue_token());

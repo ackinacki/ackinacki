@@ -15,6 +15,7 @@ use super::block_state_inner::BlockStateInner;
 use super::state::AckiNackiBlockState;
 #[cfg(test)]
 use crate::helper::metrics::BlockProductionMetrics;
+use crate::node::block_state::block_state_inner::StateSaveCommand;
 #[cfg(test)]
 use crate::node::block_state::start_state_save_service;
 use crate::types::notification::Notification;
@@ -27,7 +28,7 @@ pub struct BlockState {
     // to fix it everywhere
     block_identifier: BlockIdentifier,
     inner: Arc<BlockStateInner>,
-    save_sender: Arc<InstrumentedSender<Arc<BlockStateInner>>>,
+    save_sender: Arc<InstrumentedSender<StateSaveCommand>>,
 }
 
 impl std::ops::Drop for BlockState {
@@ -35,7 +36,7 @@ impl std::ops::Drop for BlockState {
         // add drop service for block state
         if Arc::strong_count(&self.inner) == 1 {
             // dropping the last ref.
-            let _ = self.save_sender.send(self.inner.clone());
+            let _ = self.save_sender.send(StateSaveCommand::Save(self.inner.clone()));
         }
     }
 }
@@ -82,7 +83,7 @@ pub struct BlockStateRepository {
     map: Arc<RwLock<WeakValueHashMap<BlockIdentifier, Weak<BlockStateInner>>>>,
     //    cache: Arc<Mutex<LruCache<BlockIdentifier, BlockState>>>,
     notifications: Notification,
-    save_service_sender: Arc<InstrumentedSender<Arc<BlockStateInner>>>,
+    save_service_sender: Arc<InstrumentedSender<StateSaveCommand>>,
 }
 
 impl PartialEq for BlockState {
@@ -105,7 +106,7 @@ impl Hash for BlockState {
 impl BlockStateRepository {
     pub fn new(
         block_state_repo_data_dir: PathBuf,
-        save_service_sender: Arc<InstrumentedSender<Arc<BlockStateInner>>>,
+        save_service_sender: Arc<InstrumentedSender<StateSaveCommand>>,
     ) -> Self {
         Self {
             block_state_repo_data_dir,

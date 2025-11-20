@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::hash::Hash;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -12,6 +11,7 @@ use tvm_block::Account;
 use tvm_contracts::TvmContract;
 use tvm_types::UInt256;
 
+use crate::config::SocketAddrSet;
 use crate::parse_publisher_addr;
 use crate::resolver::blockchain::AccountProvider;
 
@@ -42,8 +42,12 @@ where
 
 static ROOT: LazyLock<TvmContract> = LazyLock::new(|| {
     TvmContract::new(
-        include_str!("../../../../contracts/bksystem/BlockKeeperContractRoot.abi.json"),
-        include_bytes!("../../../../contracts/bksystem/BlockKeeperContractRoot.tvc"),
+        include_str!(
+            "../../../../contracts/0.79.3_compiled/bksystem/BlockKeeperContractRoot.abi.json"
+        ),
+        include_bytes!(
+            "../../../../contracts/0.79.3_compiled/bksystem/BlockKeeperContractRoot.tvc"
+        ),
     )
 });
 
@@ -57,8 +61,8 @@ impl Root {
 
 static BK: LazyLock<TvmContract> = LazyLock::new(|| {
     TvmContract::new(
-        include_str!("../../../../contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json"),
-        include_bytes!("../../../../contracts/bksystem/AckiNackiBlockKeeperNodeWallet.tvc"),
+        include_str!("../../../../contracts/0.79.3_compiled/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json"),
+        include_bytes!("../../../../contracts/0.79.3_compiled/bksystem/AckiNackiBlockKeeperNodeWallet.tvc"),
     )
 });
 
@@ -72,8 +76,12 @@ impl Bk {
 
 static EPOCH: LazyLock<TvmContract> = LazyLock::new(|| {
     TvmContract::new(
-        include_str!("../../../../contracts/bksystem/BlockKeeperEpochContract.abi.json"),
-        include_bytes!("../../../../contracts/bksystem/BlockKeeperEpochContract.tvc"),
+        include_str!(
+            "../../../../contracts/0.79.3_compiled/bksystem/BlockKeeperEpochContract.abi.json"
+        ),
+        include_bytes!(
+            "../../../../contracts/0.79.3_compiled/bksystem/BlockKeeperEpochContract.tvc"
+        ),
     )
 });
 
@@ -88,8 +96,12 @@ impl Epoch {
 
 static PROXY_LIST: LazyLock<TvmContract> = LazyLock::new(|| {
     TvmContract::new(
-        include_str!("../../../../contracts/bksystem/BlockKeeperEpochProxyList.abi.json"),
-        include_bytes!("../../../../contracts/bksystem/BlockKeeperEpochProxyList.tvc"),
+        include_str!(
+            "../../../../contracts/0.79.3_compiled/bksystem/BlockKeeperEpochProxyList.abi.json"
+        ),
+        include_bytes!(
+            "../../../../contracts/0.79.3_compiled/bksystem/BlockKeeperEpochProxyList.tvc"
+        ),
     )
 });
 
@@ -102,7 +114,7 @@ struct ProxyListEntry {
 }
 
 impl ProxyList {
-    pub fn get_proxy_list(&self) -> anyhow::Result<(Option<SocketAddr>, HashSet<SocketAddr>)> {
+    pub fn get_proxy_list(&self) -> anyhow::Result<(Option<SocketAddr>, SocketAddrSet)> {
         let details = PROXY_LIST.run_get(&self.0, "getDetails", None)?;
         let mut proxy_list = get_map::<u8, String>(&details, "ProxyList")?;
         if proxy_list.is_empty() {
@@ -120,7 +132,7 @@ impl ProxyList {
 pub fn collect_bk_set<PeerId>(
     accounts: &impl AccountProvider,
     bk: &Bk,
-    nodes: &mut HashMap<PeerId, (Option<SocketAddr>, HashSet<SocketAddr>)>,
+    nodes: &mut HashMap<PeerId, (Option<SocketAddr>, SocketAddrSet)>,
 ) -> anyhow::Result<()>
 where
     PeerId: Eq + Hash + From<UInt256>,

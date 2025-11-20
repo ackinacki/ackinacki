@@ -8,19 +8,20 @@ mod block_processing;
 pub mod block_state;
 mod crypto;
 use crate::helper::metrics::BlockProductionMetrics;
+use crate::repository::optimistic_state::OptimisticStateSaveCommand;
 mod execution;
 use block_request_service::BlockRequestParams;
 pub use execution::LOOP_PAUSE_DURATION;
 use http_server::ExtMsgFeedbackList;
 use telemetry_utils::instrumented_channel_ext::XInstrumentedReceiver;
 use telemetry_utils::instrumented_channel_ext::XInstrumentedSender;
+use transport_layer::server::RawBlockSaveCommand;
 
 use crate::utilities::guarded::GuardedMut;
 pub mod block_request_service;
 pub mod network_message;
 
 mod send;
-pub(crate) use send::broadcast_node_joining;
 pub mod services;
 mod synchronization;
 mod threads;
@@ -40,6 +41,7 @@ use std::time::Duration;
 pub use associated_types::SignerIndex;
 pub use network_message::NetBlock;
 pub use network_message::NetworkMessage;
+pub use network_message::NodeJoiningWithLastFinalizedData;
 use services::sync::StateSyncService;
 use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
@@ -82,7 +84,6 @@ use crate::node::services::block_processor::service::BlockProcessorService;
 use crate::node::services::send_attestations::AttestationSendServiceHandler;
 use crate::node::services::validation::service::ValidationServiceInterface;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
-use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::types::ThreadIdentifier;
 
 #[allow(dead_code)]
@@ -97,9 +98,9 @@ where
     state_sync_service: TStateSyncService,
     // TODO: @AleksandrS Add priority rx
     network_rx: XInstrumentedReceiver<(NetworkMessage, SocketAddr)>,
-    network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
+    network_broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
     network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
-    raw_block_tx: InstrumentedSender<(NodeIdentifier, Vec<u8>)>,
+    raw_block_tx: InstrumentedSender<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>,
     bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
     last_block_attestations: Arc<Mutex<CollectedAttestations>>,
     pub received_acks: Arc<Mutex<Vec<Envelope<GoshBLS, AckData>>>>,
@@ -160,9 +161,9 @@ where
         production_process: TVMBlockProducerProcess,
         repository: RepositoryImpl,
         network_rx: XInstrumentedReceiver<(NetworkMessage, SocketAddr)>,
-        network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
+        network_broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
         network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
-        raw_block_tx: InstrumentedSender<(NodeIdentifier, Vec<u8>)>,
+        raw_block_tx: InstrumentedSender<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>,
         bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
         config: Config,
         block_keeper_rng: TRandomGenerator,
@@ -191,7 +192,7 @@ where
         chain_pulse_monitor: Sender<ChainPulseEvent>,
         authority_handler: JoinHandle<()>,
         self_authority_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
-        save_optimistic_service_sender: InstrumentedSender<Arc<OptimisticStateImpl>>,
+        save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
     ) -> Self {
         tracing::trace!("Start node for thread: {thread_id:?}");
         if let Some(metrics) = &metrics {
@@ -225,7 +226,7 @@ where
 
         authority_state.guarded_mut(|e| e.get_thread_authority(&thread_id)).guarded_mut(|e| {
             e.register_block_producer(block_producer_control_tx);
-            e.register_self_node_authority_tx(self_authority_tx.clone());
+            e.register_self_node_txs(self_authority_tx.clone(), self_tx.clone());
         });
         let received_acks = Arc::new(Mutex::new(Vec::new()));
         let received_nacks = Arc::new(Mutex::new(Vec::new()));

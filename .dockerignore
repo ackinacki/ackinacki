@@ -6,6 +6,7 @@ Cargo.lock
 **/Cargo.lock
 tests
 !tests/rust
+!tests/test_transport
 meganet_logs
 ss_logs
 tests/rust/target

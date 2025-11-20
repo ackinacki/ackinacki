@@ -59,6 +59,7 @@ impl Dispatcher {
             NetworkMessage::Nack((_, thread_id)) => (false, *thread_id),
             NetworkMessage::BlockAttestation((_, thread_id)) => (false, *thread_id),
             NetworkMessage::NodeJoining((_, thread_id)) => (false, *thread_id),
+            NetworkMessage::NodeJoiningWithLastFinalized((_, thread_id)) => (false, *thread_id),
             NetworkMessage::BlockRequest { thread_id, .. } => (false, *thread_id),
 
             NetworkMessage::SyncFinalized((_, thread_id)) => (false, *thread_id),

@@ -23,14 +23,15 @@ members = [
     "shared/ext-messages-auth",
     "shared/sdk-wrapper",
     "telemetry_utils",
+    "tests/test_transport",
     "transport-layer",
     "tvm_contracts",
 ]
 
-package.version = "0.12.3"
+package.version = "0.12.4"
 package.edition = "2021"
 package.rust-version = "1.86.0"
-package.license = "Acki Nacki Node License"
+package.license = "LicenseRef-Acki-Nacki-Node-License"
 package.license-file = "LICENSE.md"
 
 

@@ -2,12 +2,12 @@
 
 set -eEuo pipefail
 
-WALLET_ABI=../contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json
-ABI=../contracts/bksystem/BlockKeeperContractRoot.abi.json
-PRE_EPOCH_ABI=../contracts/bksystem/BlockKeeperPreEpochContract.abi.json
-COOLER_ABI=../contracts/bksystem/BlockKeeperCoolerContract.abi.json
+WALLET_ABI=../contracts/0.79.3_compiled/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json
+ABI=../contracts/0.79.3_compiled/bksystem/BlockKeeperContractRoot.abi.json
+PRE_EPOCH_ABI=../contracts/0.79.3_compiled/bksystem/BlockKeeperPreEpochContract.abi.json
+COOLER_ABI=../contracts/0.79.3_compiled/bksystem/BlockKeeperCoolerContract.abi.json
 ROOT=0:7777777777777777777777777777777777777777777777777777777777777777
-EPOCH_ABI=../contracts/bksystem/BlockKeeperEpochContract.abi.json
+EPOCH_ABI=../contracts/0.79.3_compiled/bksystem/BlockKeeperEpochContract.abi.json
 
 IS_EPOCH_ACTIVE=false
 IS_EPOCH_CONTINUE=false
@@ -151,7 +151,6 @@ done
 
 while ! tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeperNodeWalletAddress "$NODE_OWNER_PUB_KEY" > /dev/null 2>&1; do
   log "Can't get wallet address. Checking again..."
-  tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeperNodeWalletAddress "$NODE_OWNER_PUB_KEY"
   sleep 5
 done
 
@@ -159,7 +158,6 @@ WALLET_ADDR=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeper
 
 while ! tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails > /dev/null 2>&1; do
   log "Can't get wallet details. Trying again..."
-  tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails
   sleep 5
 done
 
@@ -182,7 +180,7 @@ update_bls_keys () {
     log "BLS key update failed. Exiting..."
     exit 1
   fi
-  NODE_PID=$(pgrep -f "^node.* -c acki-nacki.conf.yaml$" || { log "Error with getting Node PID" >&2 ; return ;})
+  NODE_PID=$(pgrep -f "^node.* -c .*acki-nacki.conf.yaml$" || { log "Error with getting Node PID" >&2 ; return ;})
   kill -1 $NODE_PID
 }
 

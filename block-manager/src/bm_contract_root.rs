@@ -16,7 +16,7 @@ use tvm_client::ClientContext;
 const BM_CONTRACT_ROOT_ADDR: &str =
     "0:6666666666666666666666666666666666666666666666666666666666666666";
 static BM_CONTRACT_ROOT_ABI: &str =
-    include_str!("../../contracts/bksystem/BlockManagerContractRoot.abi.json");
+    include_str!("../../contracts/0.79.3_compiled/bksystem/BlockManagerContractRoot.abi.json");
 
 static BK_API_TOKEN: LazyLock<String> = LazyLock::new(|| {
     std::env::var("BK_API_TOKEN").expect("BK Account API token (BK_API_TOKEN) not found")

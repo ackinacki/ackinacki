@@ -127,12 +127,12 @@ where
                 .find(|(_, thread)| thread == &thread_id)
                 .expect("Failed to find thread mask in table");
             if !mask.is_match(&default_account_routing) {
-                tracing::info!(target: "node", "remove account: {:?}", default_account_routing);
+                tracing::debug!(target: "node", "remove account: {:?}", default_account_routing);
                 shard_accounts.remove(&key).map_err(|e| {
                     anyhow::format_err!("Failed to remove account from shard state: {e}")
                 })?;
             } else {
-                tracing::info!(target: "node", "replace account with redirect: {:?}", default_account_routing);
+                tracing::debug!(target: "node", "replace account with redirect: {:?}", default_account_routing);
                 shard_accounts.replace_with_redirect(&key).map_err(|e| {
                     anyhow::format_err!("Failed to replace account with redirect: {e}")
                 })?;
@@ -141,7 +141,7 @@ where
                 })?;
                 assert!(acc.is_some());
                 assert!(acc.unwrap().is_redirect());
-                tracing::info!(target: "node", "successful replace account with redirect: {:?}", default_account_routing);
+                tracing::debug!(target: "node", "successful replace account with redirect: {:?}", default_account_routing);
             }
         }
         shard_state.write_accounts(&shard_accounts).map_err(|e| {

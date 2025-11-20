@@ -51,6 +51,7 @@ fn verbose_filter() -> tracing_subscriber::EnvFilter {
             http_server=trace,\
             block_manager=trace,\
             node=trace,\
+            poem=debug,\
             executor={tvm_trace_level},\
             network=trace,\
             tvm={tvm_trace_level},\

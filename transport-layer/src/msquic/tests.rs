@@ -286,40 +286,44 @@ mod unit_tests {
 
         tokio::time::sleep(Duration::from_secs(1)).await;
 
-        let _ = std::thread::Builder::new().spawn(|| {
-            let reg = Registration::new(&RegistrationConfig::default()).unwrap();
-            let alpn = [BufferRef::from("qtest")];
-            let settings = ConfigFactory::Client.build_settings();
-            let configuration = Configuration::open(&reg, &alpn, Some(&settings)).unwrap();
+        let sender_thread = std::thread::Builder::new()
+            .spawn(|| {
+                let reg = Registration::new(&RegistrationConfig::default()).unwrap();
+                let alpn = [BufferRef::from("qtest")];
+                let settings = ConfigFactory::Client.build_settings();
+                let configuration = Configuration::open(&reg, &alpn, Some(&settings)).unwrap();
 
-            let cred_config = CredentialConfig::new_client()
-                .set_credential_flags(CredentialFlags::NO_CERTIFICATE_VALIDATION);
+                let cred_config = CredentialConfig::new_client()
+                    .set_credential_flags(CredentialFlags::NO_CERTIFICATE_VALIDATION);
 
-            configuration.load_credential(&cred_config).unwrap();
+                configuration.load_credential(&cred_config).unwrap();
 
-            let host = "127.0.0.1";
-            let port = 4444;
-            let conn = msquic_async::Connection::new(
-                &reg,
-                NetCredential::generate_self_signed(None, &[]).unwrap(),
-            )
+                let host = "127.0.0.1";
+                let port = 4444;
+                let conn = msquic_async::Connection::new(
+                    &reg,
+                    NetCredential::generate_self_signed(None, &[]).unwrap(),
+                )
+                .unwrap();
+                let rt = tokio::runtime::Runtime::new().unwrap();
+
+                rt.block_on(async {
+                    conn.start(&configuration, host, port).await.unwrap();
+                    let mut stream =
+                        conn.open_outbound_stream(Unidirectional, false).await.unwrap();
+                    stream.write_all("hello".as_bytes()).await.unwrap();
+                    stream.flush().await.unwrap();
+                    stream.close().await.unwrap();
+                });
+            })
             .unwrap();
-            let rt = tokio::runtime::Runtime::new().unwrap();
-
-            rt.block_on(async {
-                conn.start(&configuration, host, port).await.unwrap();
-                let mut stream = conn.open_outbound_stream(Unidirectional, false).await.unwrap();
-                stream.write_all("hello".as_bytes()).await.unwrap();
-                stream.flush().await.unwrap();
-                stream.close().await.unwrap();
-            });
-        });
 
         let conn = l.accept().await.unwrap();
         let mut stream = conn.accept_inbound_uni_stream().await.unwrap();
         let mut buf = [0u8; 5];
         let len = stream.read_exact(&mut buf).await.unwrap();
         let received_str = String::from_utf8_lossy(&buf[0..len]);
+        sender_thread.join().unwrap();
         println!("Received: {received_str}");
         assert_eq!(received_str, "hello");
     }

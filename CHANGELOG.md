@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.4] - 2025-11-14
+
+### New
+- Added the `node_network_publisher_count` metric to display the number of nodes or proxies the Node is subscribed to (will receive blocks from) 
+- `bm-archive-helper` tool that merges daily BM data, stores it in an archive and backups daily diffs to S3
+- Messages sent directly from BKs to BP such as as attestations, ACKs, NACKs are now additionally relayed via proxies for better fault-tolerance of the network.
+
+### Improvements
+- `node_sync_status.sh` script now displays sync time difference in minutes instead of hours
+- Added several network module logs to the `monit` target for better observability
+- Updated thread lifecycle handling: previously, some threads did not exit cleanly on SIGTERM; added proper coordination to guarantee graceful termination
+- Improved the stability of graceful-shutdown.yaml ansible task: tail 50000 lines instead of 5000 when searching for the `Shutdown finished` log entry
+- Node does not stop syncing when receiving old or equal state
+
+### Fixed
+- Block Producer now restarts block production in case previously produced block had an invalid (outdated) configuration, i.e. BK set was updated, block version changed (coming soon)
+- `node_network_subscriber_count` reported an incorrect number of subscribers
+- BK Node didnt update its network data in Gossip after receiving SIGHUP
+- Duplicate propagation of received blocks on nodes without proxies:  Proxy no longer resends data, received from other proxies, to nodes without proxies 
+- If a BK Node updated its IP and it had already been a Block Producer before it happened, the connection broke and did not reconnect
+- `outgoing_buffer_size` metric increased during disconnect but never decreased after reconnect
+
+## [0.12.3] - 2025-11-13
+
+### Fixed
+- Added additional check during block prefinalization and invalidation of blocks of lower round to avoid having 2 prefinalized blocks at the same height. 
+- Multifactor auth failed if the seed phrase was changed.
+
 ## [0.10.1] - 2025-10-03
 
 ### New

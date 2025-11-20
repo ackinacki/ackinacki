@@ -38,7 +38,7 @@ use crate::node::associated_types::AttestationTargetType;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::block_state::tools::invalidate_branch;
-use crate::node::broadcast_node_joining;
+use crate::node::network_message::Command;
 use crate::node::services::send_attestations::AttestationSendService;
 use crate::node::unprocessed_blocks_collection::FilterPrehistoric;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
@@ -196,7 +196,7 @@ pub struct Authority {
     block_state_repository: BlockStateRepository,
     network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
     bp_production_count: Arc<AtomicI32>,
-    network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
+    network_broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
     node_joining_timeout: Duration,
     action_lock_db: ActionLockStorage,
     max_lookback_block_height_distance: usize,
@@ -449,7 +449,7 @@ pub struct ThreadAuthority {
     network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
     bp_production_count: Arc<AtomicI32>,
 
-    network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
+    network_broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
     node_joining_timeout: Duration,
     #[builder(setter(skip))]
     #[builder(default = std::time::Instant::now().checked_sub(Duration::from_secs(10000)).unwrap())]
@@ -460,6 +460,10 @@ pub struct ThreadAuthority {
     #[builder(setter(skip))]
     #[builder(default = None)]
     self_node_authority_tx: Option<XInstrumentedSender<(NetworkMessage, SocketAddr)>>,
+
+    #[builder(setter(skip))]
+    #[builder(default = None)]
+    self_node_tx: Option<XInstrumentedSender<(NetworkMessage, SocketAddr)>>,
 
     self_addr: SocketAddr,
 }
@@ -679,12 +683,14 @@ impl ThreadAuthority {
         self.block_producers = Some(block_producer_control_tx);
     }
 
-    pub fn register_self_node_authority_tx(
+    pub fn register_self_node_txs(
         &mut self,
         self_node_authority_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
+        self_node_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
     ) {
-        tracing::trace!("register_self_node_authority_tx for {:?}", self.thread_id);
+        tracing::trace!("register_self_node_txs for {:?}", self.thread_id);
         self.self_node_authority_tx = Some(self_node_authority_tx);
+        self.self_node_tx = Some(self_node_tx);
     }
 
     pub fn on_block_producer_stalled(&mut self) -> OnBlockProducerStalledResult {
@@ -876,37 +882,33 @@ impl ThreadAuthority {
         let next_candidate_ref = current_lock_snapshot.locked_block().clone().map(|e| e.1);
 
         if !bk_set.contains_node(&self.node_identifier) {
-            let Some(future_bk_set) =
-                parent_block.guarded(|e| e.descendant_future_bk_set().clone())
-            else {
-                tracing::trace!(
-                    "start_next_round: parent block descendant future bk set is not set"
-                );
-                return OnBlockProducerStalledResult::retry_later(Some(block_height));
-            };
-            if !future_bk_set.contains_node(&self.node_identifier) {
-                tracing::trace!("start_next_round: parent block future bk set is not set");
-            }
+            // Note: this code will usually work when last prefinalized block was long ago and there
+            // is no sense to check future bk set. It will be useful only if bk set and future bk
+            // set are bootstrapped like in the network module.
+            // TODO: bootstrap current network bk set
+            // let Some(future_bk_set) =
+            //     parent_block.guarded(|e| e.descendant_future_bk_set().clone())
+            // else {
+            //     tracing::trace!(
+            //         "start_next_round: parent block descendant future bk set is not set"
+            //     );
+            //     return OnBlockProducerStalledResult::retry_later(Some(block_height));
+            // };
+            // if !future_bk_set.contains_node(&self.node_identifier) {
+            //     tracing::trace!(
+            //         "start_next_round: parent block future bk set does not contain this node ID"
+            //     );
+            // }
+
             // TODO: Try requesting blocks directly. Count attempts
             // Do full sync if it reached max attempts count.
 
             if self.last_node_joining_sent.elapsed() > self.node_joining_timeout {
                 self.last_node_joining_sent = std::time::Instant::now();
-                let thread_id = parent_block
-                    .guarded(|e| *e.thread_identifier())
-                    .expect("Thread id must be set for parent block");
-                let _ = broadcast_node_joining(
-                    &self.network_broadcast_tx,
-                    self.block_repository.get_metrics(),
-                    self.node_identifier.clone(),
-                    thread_id,
-                );
-                let _ = self.self_node_authority_tx.as_ref().map(|e| {
+                let _ = self.self_node_tx.as_ref().map(|e| {
                     e.send(WrappedItem {
                         payload: (
-                            NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::RejectTooOld(
-                                self.thread_id,
-                            )),
+                            NetworkMessage::InnerCommand(Command::TryStartSynchronization),
                             self.self_addr,
                         ),
                         label: self.thread_id.to_string(),

@@ -5,11 +5,15 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::Context;
+use ed25519_dalek::VerifyingKey;
 use gossip::GossipConfig;
 use network::config::NetworkConfig;
+use network::config::SocketAddrSet;
 use network::pub_sub::CertFile;
 use network::pub_sub::CertStore;
 use network::pub_sub::PrivateKeyFile;
+use network::resolver::WatchGossipConfig;
+use network::topology::NetEndpoint;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::signal::unix::signal;
@@ -29,18 +33,24 @@ pub struct ProxyConfig {
         deserialize_with = "addr_serde::opt_vec_deser",
         serialize_with = "addr_serde::opt_vec_ser"
     )]
-    pub my_addr: Option<Vec<SocketAddr>>,
+    pub my_addr: Option<SocketAddrSet>,
+    #[serde(
+        default,
+        deserialize_with = "addr_serde::opt_vec_deser",
+        serialize_with = "addr_serde::opt_vec_ser"
+    )]
+    pub my_segment_peers: Option<Vec<String>>,
     pub my_cert: CertFile,
     pub my_key: PrivateKeyFile,
     pub peer_certs: CertStore,
     #[serde(default, with = "transport_layer::hex_verifying_keys")]
     pub peer_ed_pubkeys: Vec<transport_layer::VerifyingKey>,
-    pub bk_addrs: Vec<SocketAddr>,
+    pub bk_addrs: SocketAddrSet,
     #[serde(
         serialize_with = "network::serialize_subscribe",
         deserialize_with = "network::deserialize_subscribe"
     )]
-    pub subscribe: Vec<Vec<SocketAddr>>,
+    pub subscribe: Vec<SocketAddrSet>,
     #[serde(default = "default_broadcast_buffer_len")]
     pub broadcast_buffer_len: usize,
 }
@@ -74,15 +84,33 @@ impl ProxyConfig {
             &[],
             self.peer_certs.clone(),
             HashSet::from_iter(self.peer_ed_pubkeys.clone()),
-            self.subscribe.clone(),
-            vec![],
             tls_cert_cache,
         )
+    }
+
+    pub fn watch_gossip_config(
+        &self,
+        trusted_pubkeys: HashSet<VerifyingKey>,
+    ) -> WatchGossipConfig<String> {
+        WatchGossipConfig {
+            endpoint: NetEndpoint::Proxy(
+                self.my_addr
+                    .clone()
+                    .unwrap_or(SocketAddrSet::with_addr(self.gossip.advertise_addr())),
+            ),
+            max_nodes_with_same_id: 5,
+            override_subscribe: self
+                .subscribe
+                .iter()
+                .map(|x| NetEndpoint::Proxy(x.clone()))
+                .collect(),
+            trusted_pubkeys,
+        }
     }
 }
 
 pub(crate) async fn config_reload_handler(
-    config_updates: tokio::sync::watch::Sender<ProxyConfig>,
+    config_tx: tokio::sync::watch::Sender<ProxyConfig>,
     config_path: PathBuf,
 ) -> anyhow::Result<()> {
     // 1. config error shouldn't be an error
@@ -94,7 +122,7 @@ pub(crate) async fn config_reload_handler(
 
         match ProxyConfig::from_file(&config_path) {
             Ok(new_config_state) => {
-                config_updates.send(new_config_state).expect("failed to send config")
+                config_tx.send(new_config_state).expect("failed to send config")
             }
             Err(err) => {
                 tracing::error!(
@@ -121,25 +149,38 @@ mod addr_serde {
         Many(Vec<T>),
     }
 
-    pub fn opt_vec_deser<'de, D>(de: D) -> Result<Option<Vec<SocketAddr>>, D::Error>
+    pub fn opt_vec_deser<'de, D, Addr: Deserialize<'de>, Cont>(
+        de: D,
+    ) -> Result<Option<Cont>, D::Error>
     where
         D: Deserializer<'de>,
+        Cont: From<Vec<Addr>>,
     {
-        let v = Option::<OneOrMany<SocketAddr>>::deserialize(de)?;
+        let v = Option::<OneOrMany<Addr>>::deserialize(de)?;
         Ok(v.map(|x| match x {
-            OneOrMany::One(x) => vec![x],
-            OneOrMany::Many(v) => v,
+            OneOrMany::One(x) => vec![x].into(),
+            OneOrMany::Many(v) => v.into(),
         }))
     }
 
-    pub fn opt_vec_ser<S>(v: &Option<Vec<SocketAddr>>, ser: S) -> Result<S::Ok, S::Error>
+    pub fn opt_vec_ser<'a, S, Addr: Serialize + Clone + 'a, Cont>(
+        v: &'a Option<Cont>,
+        ser: S,
+    ) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
+        &'a Cont: IntoIterator<Item = &'a Addr>,
     {
         match v {
             None => ser.serialize_none(),
-            Some(vec) if vec.len() == 1 => ser.serialize_some(&vec[0]),
-            Some(vec) => ser.serialize_some(vec),
+            Some(vec) => {
+                let vec = Vec::from_iter(vec.into_iter().cloned());
+                if vec.len() == 1 {
+                    ser.serialize_some(&vec[0])
+                } else {
+                    ser.serialize_some(&vec)
+                }
+            }
         }
     }
 }

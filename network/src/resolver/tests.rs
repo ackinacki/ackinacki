@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use itertools::Itertools;
-use tvm_types::AccountId;
+use tvm_types::UInt256;
 
 use crate::resolver::blockchain::watch_blockchain;
 use crate::resolver::blockchain::NodeDb;
@@ -12,7 +12,7 @@ fn node_db() -> NodeDb {
 
 #[tokio::test]
 async fn test_proxy_list() {
-    let self_peer_id = AccountId::from([0u8; 32]);
+    let self_peer_id = UInt256::with_array([1u8; 32]);
     let (subscribe_tx, subscribe_rx) = tokio::sync::watch::channel(Vec::new());
     let (peers_tx, _) = tokio::sync::watch::channel(HashMap::new());
     tokio::spawn(watch_blockchain(node_db(), node_db(), self_peer_id, subscribe_tx, peers_tx));
@@ -20,7 +20,7 @@ async fn test_proxy_list() {
     let subscribe = subscribe_rx.borrow().clone();
     let info = subscribe
         .into_iter()
-        .map(|x| x.into_iter().map(|x| x.to_string()).join(","))
+        .map(|x| x.subscribe_addrs().into_iter().map(|x| x.to_string()).join(","))
         .collect::<Vec<_>>();
     println!("{info:?}");
 }

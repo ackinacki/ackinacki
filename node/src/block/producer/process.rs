@@ -1,6 +1,7 @@
 // 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::mem;
 use std::sync::Arc;
@@ -21,6 +22,7 @@ use typed_builder::TypedBuilder;
 use crate::block::producer::builder::ActiveThread;
 use crate::block::producer::execution_time::ExecutionTimeLimits;
 use crate::block::producer::execution_time::ProductionTimeoutCorrection;
+use crate::block::producer::producer_service::memento::Assumptions;
 use crate::block::producer::producer_service::memento::ProducedBlock;
 use crate::block::producer::wasm::WasmNodeCache;
 use crate::block::producer::BlockProducer;
@@ -44,9 +46,12 @@ use crate::node::services::sync::ExternalFileSharesBased;
 use crate::node::services::sync::StateSyncService;
 use crate::node::shared_services::SharedServices;
 use crate::node::NodeIdentifier;
+#[cfg(feature = "restart_on_failing_assumptions")]
+use crate::node::SignerIndex;
 use crate::repository::accounts::AccountsRepository;
 use crate::repository::cross_thread_ref_repository::CrossThreadRefDataRead;
 use crate::repository::optimistic_state::OptimisticStateImpl;
+use crate::repository::optimistic_state::OptimisticStateSaveCommand;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
@@ -58,6 +63,11 @@ use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
+
+#[cfg(feature = "restart_on_failing_assumptions")]
+lazy_static::lazy_static!(
+    static ref BLOCK_SEQ_NO_TO_RESTART_PRODUCTION: Arc<Mutex<BlockSeqNo>> = Arc::new(Mutex::new(BlockSeqNo::from(100)));
+);
 
 pub const FORCE_SYNC_STATE_BLOCK_FREQUENCY: u32 = 20_000;
 
@@ -85,7 +95,7 @@ pub struct TVMBlockProducerProcess {
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
     share_service: Option<ExternalFileSharesBased>,
-    save_optimistic_service_sender: InstrumentedSender<Arc<OptimisticStateImpl>>,
+    save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
@@ -447,12 +457,32 @@ impl TVMBlockProducerProcess {
         trace_span!("save state").in_scope(|| {
             tracing::trace!("Save produced block");
             let mut blocks = produced_blocks.lock();
+
+            let assumptions = Assumptions::builder()
+                .new_to_bk_set(
+                    BTreeSet::new(), // TODO: set real value with preattestaions implementation
+                )
+                .build();
+
+            #[cfg(feature = "restart_on_failing_assumptions")]
+            let assumptions = {
+                let mut misbehave_block_seq_not = BLOCK_SEQ_NO_TO_RESTART_PRODUCTION.lock();
+                if block.seq_no() == *misbehave_block_seq_not {
+                    *misbehave_block_seq_not = 0.into();
+                    let mut new_to_bk_set = BTreeSet::new();
+                    new_to_bk_set.insert(SignerIndex::default());
+                    Assumptions::builder().new_to_bk_set(new_to_bk_set).build()
+                } else {
+                    assumptions
+                }
+            };
             let produced_data = ProducedBlock::builder()
                 .block(block)
                 .optimistic_state(Arc::new(initial_state.clone()))
                 .feedbacks(ext_msg_feedbacks)
                 .block_state(produced_block_state.clone())
                 .metrics_memento_init_time(None)
+                .assumptions(assumptions)
                 .build();
             blocks.push(produced_data);
         });
@@ -622,7 +652,8 @@ impl TVMBlockProducerProcess {
                         repo_clone
                             .store_optimistic_in_cache(initial_state.clone())
                             .expect("Failed to store optimistic state");
-                        let _ = save_state_sender.send(initial_state.clone());
+                        let _ = save_state_sender
+                            .send(OptimisticStateSaveCommand::Save(initial_state.clone()));
                         tracing::trace!("Stop production process: {}", &thread_id_clone);
                     });
                     #[cfg(not(feature = "fail-fast"))]
@@ -805,7 +836,7 @@ mod tests {
     use crate::node::associated_types::NodeIdentifier;
     use crate::node::shared_services::SharedServices;
     use crate::repository::accounts::AccountsRepository;
-    use crate::repository::optimistic_state::OptimisticStateImpl;
+    use crate::repository::optimistic_state::OptimisticStateSaveCommand;
     use crate::repository::repository_impl::BkSetUpdate;
     use crate::repository::repository_impl::RepositoryImpl;
     use crate::storage::CrossRefStorage;
@@ -870,7 +901,7 @@ mod tests {
         );
         let (router, _router_rx) = RoutingService::stub();
         let feedback_sender = router.feedback_sender.clone();
-        let (tx, _rx) = instrumented_channel::<Arc<OptimisticStateImpl>>(
+        let (tx, _rx) = instrumented_channel::<OptimisticStateSaveCommand>(
             None::<BlockProductionMetrics>,
             "test",
         );

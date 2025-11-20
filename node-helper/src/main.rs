@@ -11,6 +11,7 @@ use clap::Parser;
 use clap::Subcommand;
 use gosh_blst::gen_bls_key_pair;
 use gosh_blst::BLSKeyPair;
+use network::config::SocketAddrSet;
 use network::parse_publisher_addr;
 use network::try_parse_socket_addr;
 use node::bls::gosh_bls::PubKey;
@@ -380,7 +381,7 @@ fn main() -> anyhow::Result<()> {
             }
 
             if let Some(gossip_seeds) = config_cmd.gossip_seeds {
-                config.network.gossip_seeds = gossip_seeds;
+                config.network.gossip_seeds = gossip_seeds.into();
             }
 
             if let Some(block_manager_listen_addr) = config_cmd.block_manager_listen_addr {
@@ -476,14 +477,20 @@ fn main() -> anyhow::Result<()> {
                 config.network.my_key = key;
             }
 
-            if let Some(subscribe) = config_cmd.network_subscribe {
-                config.network.subscribe = subscribe
-                    .split(',')
-                    .filter_map(
-                        |x| if !x.is_empty() { Some(parse_publisher_addr(x)) } else { None },
-                    )
-                    .map(|x| x.map(|x| vec![x]))
-                    .collect::<Result<_, _>>()?;
+            if let Some(subscribe_arg) = config_cmd.network_subscribe {
+                let mut subscribe = Vec::new();
+                for segment_arg in subscribe_arg.split(';') {
+                    if !segment_arg.trim().is_empty() {
+                        let mut addrs = Vec::new();
+                        for addr_arg in segment_arg.split(',') {
+                            if !addr_arg.trim().is_empty() {
+                                addrs.push(parse_publisher_addr(addr_arg)?);
+                            }
+                        }
+                        subscribe.push(SocketAddrSet::from(addrs));
+                    }
+                }
+                config.network.subscribe = subscribe;
             }
 
             if let Some(proxies) = config_cmd.network_proxies {

@@ -121,6 +121,11 @@ pub struct CrossThreadMessageData {
     pub dest_account_routing: AccountRouting,
 }
 
+pub enum OptimisticStateSaveCommand {
+    Save(Arc<OptimisticStateImpl>),
+    Shutdown,
+}
+
 #[serde_as]
 #[derive(Clone, TypedBuilder, Serialize, Deserialize)]
 pub struct OptimisticStateImpl {

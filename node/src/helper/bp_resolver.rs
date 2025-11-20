@@ -1,29 +1,28 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use message_router::bp_resolver::BPResolver;
 use message_router::DEFAULT_NODE_URL_PORT;
-use network::network::PeerData;
+use network::topology::NetTopology;
 use parking_lot::Mutex;
 
 use crate::node::NodeIdentifier;
 use crate::repository::repository_impl::RepositoryImpl;
 
 pub struct BPResolverImpl {
-    peers_rx: tokio::sync::watch::Receiver<HashMap<NodeIdentifier, Vec<PeerData>>>,
+    net_topology_rx: tokio::sync::watch::Receiver<NetTopology<NodeIdentifier>>,
     repository: Arc<Mutex<RepositoryImpl>>,
 }
 
 impl BPResolverImpl {
     pub fn new(
-        peers_rx: tokio::sync::watch::Receiver<HashMap<NodeIdentifier, Vec<PeerData>>>,
+        net_topology_rx: tokio::sync::watch::Receiver<NetTopology<NodeIdentifier>>,
         repository: Arc<Mutex<RepositoryImpl>>,
     ) -> Self {
-        Self { peers_rx, repository }
+        Self { net_topology_rx, repository }
     }
 }
 
@@ -38,14 +37,14 @@ impl BPResolver for BPResolverImpl {
         tracing::debug!(target: "message_router", "bp_id_for_thread_map: {:?}", bp_id_for_thread_map);
 
         // TODO: this list of threads can change in runtime need to take smth like shared services
-        let peers = self.peers_rx.borrow();
+        let net = self.net_topology_rx.borrow();
         let mut nodes_vec: Vec<SocketAddr> = bp_id_for_thread_map
             .into_iter()
             .filter_map(|(thread, bp_id)| {
                 if target_thread.as_ref().is_none_or(|t| &thread == t) {
-                    bp_id.and_then(|bp_node_id| peers.get(&bp_node_id)).and_then(|peers| {
+                    bp_id.and_then(|bp_node_id| net.resolve_peer(&bp_node_id)).and_then(|peers| {
                         peers.first().map(|peer_data| {
-                            let mut addr = peer_data.peer_addr;
+                            let mut addr = peer_data.addr;
                             addr.set_port(DEFAULT_NODE_URL_PORT);
                             addr
                         })

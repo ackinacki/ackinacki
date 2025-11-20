@@ -48,7 +48,7 @@ impl<T> Debug for NetSendError<T> {
     }
 }
 
-impl<Message> std::fmt::Display for NetSendError<Message> {
+impl<Message> Display for NetSendError<Message> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message())
     }
@@ -118,13 +118,13 @@ where
             "Message delivery: started"
         );
 
-        let message_aprox_size = NetMessage::transfer_size(&net_message);
+        let message_approximately_size = NetMessage::transfer_size(&net_message);
 
         match self.inner.send((receiver.clone(), net_message, Instant::now())) {
             Ok(()) => {
                 self.metrics.as_ref().inspect(|metrics| {
                     metrics.report_sent_to_outgoing_buffer_bytes(
-                        message_aprox_size,
+                        message_approximately_size,
                         &label,
                         SendMode::Direct,
                     );
@@ -155,18 +155,18 @@ where
 }
 
 #[derive(Clone)]
-pub struct NetBroadcastSender<Message> {
-    inner: tokio::sync::broadcast::Sender<OutgoingMessage>,
+pub struct NetBroadcastSender<PeerId: Clone + Debug + Display, Message> {
+    inner: tokio::sync::broadcast::Sender<OutgoingMessage<PeerId>>,
     metrics: Option<NetMetrics>,
     _message_type: PhantomData<Message>,
 }
 
-impl<Message> NetBroadcastSender<Message>
+impl<PeerId: Debug + Display + Clone, Message> NetBroadcastSender<PeerId, Message>
 where
     Message: Debug + serde::Serialize + Send + Sync + Clone + 'static,
 {
     pub(crate) fn new(
-        inner: tokio::sync::broadcast::Sender<OutgoingMessage>,
+        inner: tokio::sync::broadcast::Sender<OutgoingMessage<PeerId>>,
         metrics: Option<NetMetrics>,
     ) -> Self {
         Self { inner, metrics, _message_type: PhantomData }
@@ -188,7 +188,7 @@ where
         );
 
         let label = net_message.label.clone();
-        let message_aprox_size = NetMessage::transfer_size(&net_message);
+        let message_approximately_size = NetMessage::transfer_size(&net_message);
 
         let received_count = match self.inner.send(OutgoingMessage {
             message: net_message,
@@ -206,7 +206,7 @@ where
                         );
 
                         x.report_sent_to_outgoing_buffer_bytes(
-                            message_aprox_size * receiver_count as u64,
+                            message_approximately_size * receiver_count as u64,
                             &label,
                             SendMode::Broadcast,
                         );

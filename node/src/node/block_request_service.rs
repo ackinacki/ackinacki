@@ -101,7 +101,7 @@ impl BlockRequestService {
         match self.inner(start, end, node_id.clone(), &thread_id, at_least_n_blocks) {
             Ok(()) => {}
             Err(e) => {
-                tracing::info!(
+                tracing::debug!(
                     "Request from {node_id} for blocks range [{:?},{:?}) failed with: {e:?}",
                     start,
                     end
@@ -251,7 +251,7 @@ impl BlockRequestService {
         thread_id: &ThreadIdentifier,
         from_seq_no: BlockSeqNo,
     ) -> anyhow::Result<()> {
-        tracing::info!("sending syncFrom to node {}: {:?}", node_id, from_seq_no,);
+        tracing::debug!("sending syncFrom to node {}: {:?}", node_id, from_seq_no,);
         let _ = self
             .network_direct_tx
             .send((node_id.into(), NetworkMessage::SyncFrom((from_seq_no, *thread_id))));
@@ -311,7 +311,7 @@ impl BlockRequestService {
         candidate_block: <Self as NodeAssociatedTypes>::CandidateBlock,
         node_id: NodeIdentifier,
     ) -> anyhow::Result<()> {
-        tracing::info!("sending block to node {node_id}:{}", candidate_block.data());
+        tracing::debug!("sending block to node {node_id}:{}", candidate_block.data());
         block_flow_trace(
             "direct sending candidate",
             &candidate_block.data().identifier(),

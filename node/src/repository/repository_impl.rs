@@ -430,7 +430,6 @@ impl RepositoryImpl {
         let message_storage_service =
             MessageDBWriterService::new(message_db.clone(), metrics.clone())
                 .expect("Failed to init message storage service");
-
         let metadata = Arc::new(Mutex::new({
             let metadata = Self::load_metadata(&data_dir)
                 .expect("Must be able to create or load repository metadata");
@@ -1469,13 +1468,13 @@ impl Repository for RepositoryImpl {
         thread_id: &ThreadIdentifier,
         min_state: Option<Arc<Self::OptimisticState>>,
     ) -> anyhow::Result<Option<Arc<Self::OptimisticState>>> {
-        log::info!("RepositoryImpl: get_optimistic_state: {block_id:?}");
+        log::debug!("RepositoryImpl: get_optimistic_state: {block_id:?}");
         if let Some(cached) = self.optimistic_state.guarded_mut(|e| e.get(block_id).map(Arc::clone))
         {
             return Ok(Some(cached));
         }
         let zero_block_id = <BlockIdentifier>::default();
-        log::info!("RepositoryImpl: get_optimistic_state: load {block_id:?}");
+        log::debug!("RepositoryImpl: get_optimistic_state: load {block_id:?}");
         if let Some(state) = self.thread_last_finalized_state.guarded(|e| {
             e.iter().find(|(_, state)| state.block_id == *block_id).map(|(_, state)| state.clone())
         }) {

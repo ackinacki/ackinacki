@@ -1,4 +1,6 @@
 use std::borrow::Cow;
+use std::fmt::Debug;
+use std::fmt::Display;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,6 +13,7 @@ use opentelemetry::metrics::UpDownCounter;
 use opentelemetry::KeyValue;
 use telemetry_utils::out_of_bounds_guard;
 
+use crate::pub_sub::connection::ConnectionInfo;
 use crate::transfer::TransportError;
 use crate::DeliveryPhase;
 use crate::SendMode;
@@ -28,6 +31,7 @@ pub struct NetMetrics {
     outgoing_transfer_duration: Histogram<u64>,
     outgoing_transfer_error: Counter<u64>,
     subscriber_count: Gauge<u64>,
+    publisher_count: Gauge<u64>,
     transfer_after_ser: Histogram<u64>,
     receive_before_deser: Histogram<u64>,
     original_message_size: Histogram<u64>,
@@ -171,6 +175,7 @@ impl NetMetrics {
                 .u64_counter("node_network_outgoing_transfer_error")
                 .build(),
             subscriber_count: meter.u64_gauge("node_network_subscriber_count").build(),
+            publisher_count: meter.u64_gauge("node_network_publisher_count").build(),
             _incoming_buffer_size: network_incoming_buffer_size,
             _outgoing_buffer_size: network_outgoing_buffer_size,
             _network_incoming_transfer_inflight: network_incoming_transfer_inflight,
@@ -205,8 +210,9 @@ impl NetMetrics {
         self.outgoing_transfer_error.add(1, &attrs);
     }
 
-    pub fn report_subscribers_count(&self, value: usize) {
-        self.subscriber_count.record(value as u64, &[]);
+    pub fn report_connections(&self, subscriber_count: usize, publisher_count: usize) {
+        self.subscriber_count.record(subscriber_count as u64, &[]);
+        self.publisher_count.record(publisher_count as u64, &[]);
     }
 
     pub fn report_transfer_after_ser(&self, value: u128) {
@@ -262,12 +268,12 @@ impl NetMetrics {
     }
 
     pub fn report_warn(&self, kind: impl Into<Cow<'static, str>>) {
-        let kind = kind.into(); // Cow owns String or borrows &'static str
+        let kind = kind.into();
         self.warns.add(1, &[KeyValue::new("kind", kind)]);
     }
 
     pub fn report_error(&self, kind: impl Into<Cow<'static, str>>) {
-        let kind = kind.into(); // Cow owns String or borrows &'static str
+        let kind = kind.into();
         self.errors.add(1, &[KeyValue::new("kind", kind)]);
     }
 
@@ -283,6 +289,16 @@ impl NetMetrics {
         if matches!(phase, DeliveryPhase::OutgoingBuffer) {
             self.outgoing_buffer_counter.add(msg_count as i64, &attrs(msg_type, send_mode));
         }
+    }
+
+    pub fn start_incoming_phase<PeerId: Debug + Display>(
+        &self,
+        data_len: usize,
+        msg_type: &str,
+        info: &ConnectionInfo<PeerId>,
+    ) {
+        self.report_received_bytes(data_len, msg_type, info.send_mode());
+        self.start_delivery_phase(DeliveryPhase::IncomingBuffer, 1, msg_type, info.send_mode());
     }
 
     pub fn finish_delivery_phase(

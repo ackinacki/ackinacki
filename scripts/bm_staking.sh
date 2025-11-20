@@ -2,8 +2,8 @@
 
 set -uo pipefail
 
-BM_ABI=../contracts/bksystem/AckiNackiBlockManagerNodeWallet.abi.json
-ABI=../contracts/bksystem/BlockManagerContractRoot.abi.json
+BM_ABI=../contracts/0.79.3_compiled/bksystem/AckiNackiBlockManagerNodeWallet.abi.json
+ABI=../contracts/0.79.3_compiled/bksystem/BlockManagerContractRoot.abi.json
 ROOT=0:6666666666666666666666666666666666666666666666666666666666666666
 
 while getopts 'p:' opts; do

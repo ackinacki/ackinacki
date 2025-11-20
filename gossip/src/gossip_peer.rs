@@ -6,8 +6,17 @@ use base64::Engine;
 use chitchat::NodeState;
 use ed25519_dalek::Signer;
 use ed25519_dalek::Verifier;
-use itertools::Itertools;
 
+use crate::bytes_to_sign;
+use crate::pubkey_signature_to_string;
+use crate::ADVERTISE_ADDR_KEY;
+use crate::BK_API_SOCKET_KEY;
+use crate::BM_API_SOCKET_KEY;
+use crate::ID_KEY;
+use crate::PROXIES_KEY;
+use crate::PUBKEY_SIGNATURE_KEY;
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct GossipPeer<PeerId> {
     pub id: PeerId,
     pub advertise_addr: SocketAddr,
@@ -16,14 +25,6 @@ pub struct GossipPeer<PeerId> {
     pub bk_api_socket: Option<SocketAddr>,
     pub pubkey_signature: Option<(transport_layer::VerifyingKey, transport_layer::Signature)>,
 }
-
-const ADVERTISE_ADDR_KEY: &str = "node_advertise_addr";
-const BK_API_SOCKET_KEY: &str = "bk_api_socket";
-const BM_API_SOCKET_KEY: &str = "bm_api_socket";
-const ID_KEY: &str = "node_id";
-const PROXIES_KEY: &str = "node_proxies";
-// pubkey_signature is base64 buf with (VerifyingKey([u8; 32]), Signature([u8; 64]))
-const PUBKEY_SIGNATURE_KEY: &str = "pubkey_signature";
 
 impl<PeerId> GossipPeer<PeerId>
 where
@@ -144,25 +145,6 @@ where
     }
 }
 
-fn bytes_to_sign<'kv>(key_values: impl Iterator<Item = (&'kv str, &'kv str)>) -> Vec<u8> {
-    let mut data = Vec::new();
-    for (k, v) in key_values.sorted_by_key(|x| x.0) {
-        if k != PUBKEY_SIGNATURE_KEY {
-            data.extend_from_slice(k.as_bytes());
-            data.push(0);
-            data.extend_from_slice(v.as_bytes());
-            data.push(0);
-        }
-    }
-    data
-}
-
-pub fn sign_gossip_node(node_state: &mut NodeState, key: transport_layer::SigningKey) {
-    let signature = key.sign(&bytes_to_sign(node_state.key_values()));
-    node_state
-        .set(PUBKEY_SIGNATURE_KEY, pubkey_signature_to_string(&key.verifying_key(), &signature));
-}
-
 fn parse_value<T: FromStr>(name: &str, value: &str) -> Option<T>
 where
     T::Err: Display,
@@ -172,16 +154,6 @@ where
             tracing::warn!("Invalid gossip value {value} for {name}: {err}");
         })
         .ok()
-}
-
-fn pubkey_signature_to_string(
-    pubkey: &transport_layer::VerifyingKey,
-    signature: &transport_layer::Signature,
-) -> String {
-    let mut buf = [0u8; 32 + 64];
-    buf[..32].copy_from_slice(&pubkey.as_bytes()[..]);
-    buf[32..].copy_from_slice(&signature.to_bytes()[..]);
-    base64::engine::general_purpose::STANDARD.encode(buf)
 }
 
 fn parse_pubkey_signature(

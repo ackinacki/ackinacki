@@ -42,6 +42,7 @@ use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
+use crate::types::next_seq_no;
 use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
 
@@ -124,6 +125,8 @@ impl BlockVerifier for TVMBlockVerifier {
                 white_list_of_slashing_messages_hashes.insert(msg.hash().unwrap());
             }
         }
+
+        let parent_block_seq_no = *parent_block_state.get_block_seq_no();
         let preprocessing_result = self.shared_services.exec(|container| {
             crate::block::preprocessing::preprocess(
                 parent_block_state,
@@ -210,7 +213,7 @@ impl BlockVerifier for TVMBlockVerifier {
                 .push_back((stamp, msg));
         }
 
-        let blockchain_config = self.blockchain_config.get(&block.seq_no());
+        let blockchain_config = self.blockchain_config.get(&next_seq_no(parent_block_seq_no));
         let block_gas_limit = blockchain_config.get_gas_config(false).block_gas_limit;
 
         tracing::debug!(target: "node", "PARENT block: {:?}", preprocessing_result.state.get_block_info());

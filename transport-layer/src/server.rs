@@ -4,6 +4,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use anyhow::Context;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 
 use crate::msquic::MsQuicNetIncomingRequest;
@@ -28,7 +29,7 @@ impl LiteServer {
 
     pub async fn start<TBPResolver, A>(
         self,
-        raw_block_receiver: InstrumentedReceiver<(A, Vec<u8>)>,
+        raw_block_receiver: InstrumentedReceiver<RawBlockSaveCommand<(A, Vec<u8>)>>,
         bp_resolver: TBPResolver,
     ) -> anyhow::Result<()>
     where
@@ -151,9 +152,12 @@ async fn connection_handler(
         }
     }
 }
-
+pub enum RawBlockSaveCommand<T> {
+    Save(T),
+    Shutdown,
+}
 fn message_multiplexor_handler<TBKAddrResolver, A>(
-    incoming_message_rx: InstrumentedReceiver<(A, Vec<u8>)>,
+    incoming_message_rx: InstrumentedReceiver<RawBlockSaveCommand<(A, Vec<u8>)>>,
     outgoing_message_tx: tokio::sync::broadcast::Sender<Arc<Vec<u8>>>,
     mut bp_resolver: TBKAddrResolver,
 ) -> anyhow::Result<()>
@@ -163,9 +167,14 @@ where
 {
     tracing::info!("Message multiplexor started");
     loop {
-        let Ok((node_id, message)) = incoming_message_rx.recv() else {
-            anyhow::bail!("Message multiplexor failed: incoming message sender was closed");
+        let (node_id, message) = match incoming_message_rx
+            .recv()
+            .context("Message multiplexor failed: incoming message sender was closed")?
+        {
+            RawBlockSaveCommand::Save((node_id, message)) => (node_id, message),
+            RawBlockSaveCommand::Shutdown => return Ok(()),
         };
+
         tracing::trace!(
             broadcast_channel_len = message.len(),
             message = format!("{:?}", &message[..10]),

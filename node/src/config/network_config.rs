@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use itertools::Itertools;
+use network::config::SocketAddrSet;
 use serde::Deserialize;
 use serde::Serialize;
 use typed_builder::TypedBuilder;
@@ -65,18 +66,18 @@ pub struct NetworkConfig {
         deserialize_with = "network::deserialize_subscribe"
     )]
     #[builder(default)]
-    pub subscribe: Vec<Vec<SocketAddr>>,
+    pub subscribe: Vec<SocketAddrSet>,
 
     /// Proxies.
     ///
     /// Node propagates this proxy list via gossip.
     #[serde(
         default,
-        skip_serializing_if = "Vec::is_empty",
+        skip_serializing_if = "SocketAddrSet::is_empty",
         deserialize_with = "network::deserialize_publisher_addrs"
     )]
     #[builder(default)]
-    pub proxies: Vec<SocketAddr>,
+    pub proxies: SocketAddrSet,
 
     /// Files and directories with TLS certificates (*.ca.pem), required to verify
     /// server certificate when node establish client connection to other node or proxy.
@@ -107,7 +108,7 @@ pub struct NetworkConfig {
 
     /// Gossip seed nodes socket addresses.
     #[builder(default)]
-    pub gossip_seeds: Vec<SocketAddr>,
+    pub gossip_seeds: SocketAddrSet,
 
     /// Socket to listen for lite node requests (QUIC UDP).
     #[builder(default = SocketAddr::from(([127,0,0,1],12000)))]

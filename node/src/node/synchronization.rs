@@ -175,7 +175,7 @@ where
                     Err(TryRecvError::Empty) => {}
                 };
             }
-            tracing::info!("[synchronizing]({:?}) waiting for a network message", self.thread_id);
+            tracing::debug!("[synchronizing]({:?}) waiting for a network message", self.thread_id);
             match self.network_rx.recv_timeout(Duration::from_millis(
                 self.config.global.time_to_produce_block_millis,
             )) {
@@ -195,8 +195,8 @@ where
                     }
                     NetworkMessage::Candidate(ref net_block)
                     | NetworkMessage::ResentCandidate((ref net_block, _)) => {
-                        tracing::info!("[synchronizing] Incoming candidate block");
-                        tracing::info!("[synchronizing] Incoming block candidate: {}", net_block,);
+                        tracing::debug!("[synchronizing] Incoming candidate block");
+                        tracing::debug!("[synchronizing] Incoming block candidate: {}", net_block,);
                         block_flow_trace(
                             "received candidate [synchronizing]",
                             &net_block.identifier,
@@ -213,7 +213,7 @@ where
                             self.on_incoming_candidate_block(net_block, resend_node_id)?;
 
                         if let Some((block_id, seq_no)) = initial_state.clone() {
-                            tracing::info!(
+                            tracing::debug!(
                                 "[synchronizing] initial_state block: {}, seqno: {}",
                                 block_id.clone(),
                                 seq_no.clone(),
@@ -328,6 +328,16 @@ where
                             if let Some(resource_address) =
                                 envelope.data().directives().share_state_resources()
                             {
+                                let last_finalized_block_seq_no = self
+                                    .repository
+                                    .select_thread_last_finalized_block(&self.thread_id)?
+                                    .map(|(_, seq_no)| seq_no)
+                                    .unwrap_or_default();
+                                if last_finalized_block_seq_no >= net_block.seq_no {
+                                    tracing::debug!("[synchronizing] Received block with shared state seq_no({:?} is less or equal to local last finalized seq_no ({last_finalized_block_seq_no:?}), skip it", net_block.seq_no);
+                                    continue;
+                                }
+
                                 let resource_address =
                                     BTreeMap::from_iter(resource_address.iter().map(
                                         |(k, v)| -> (ThreadIdentifier, BlockIdentifier) {
@@ -349,27 +359,30 @@ where
                         }
                     }
                     NetworkMessage::Ack(_ack) => {
-                        tracing::info!("[synchronizing] Received Ack block");
+                        tracing::debug!("[synchronizing] Received Ack block");
                     }
                     NetworkMessage::Nack(_nack) => {
                         // It seems we have joined in the middle of some big sht happening.
                         // Well. since there's no state we can't join any commitee, ignoring.
-                        tracing::info!("[synchronizing] Received Nack block");
+                        tracing::debug!("[synchronizing] Received Nack block");
                     }
                     NetworkMessage::NodeJoining(_) => {
-                        tracing::info!("[synchronizing] Received NodeJoining");
+                        tracing::debug!("[synchronizing] Received NodeJoining");
+                    }
+                    NetworkMessage::NodeJoiningWithLastFinalized(_) => {
+                        tracing::debug!("[synchronizing] Received NodeJoiningWithLastFinalized");
                     }
                     NetworkMessage::ExternalMessage(_) => {
-                        tracing::info!("[synchronizing] Received ExternalMessage");
+                        tracing::debug!("[synchronizing] Received ExternalMessage");
                     }
                     NetworkMessage::BlockAttestation(_) => {
-                        tracing::info!("[synchronizing] Received BlockAttestation");
+                        tracing::debug!("[synchronizing] Received BlockAttestation");
                     }
                     NetworkMessage::BlockRequest { .. } => {
-                        tracing::info!("[synchronizing] Received BlockRequest");
+                        tracing::debug!("[synchronizing] Received BlockRequest");
                     }
                     NetworkMessage::SyncFrom((seq_no_from, _)) => {
-                        tracing::info!("[synchronizing] Received SyncFrom: {:?}", seq_no_from);
+                        tracing::debug!("[synchronizing] Received SyncFrom: {:?}", seq_no_from);
                         // Clear previous waited
                         initial_state_shared_resource_address = None;
                         initial_state = None;
@@ -386,12 +399,21 @@ where
                         let identifier = sync_finalized.data().block_identifier().clone();
                         let seq_no = *sync_finalized.data().block_seq_no();
                         let address = sync_finalized.data().thread_refs().clone();
-                        tracing::info!(
+                        tracing::debug!(
                             "[synchronizing] Received SyncFinalized: {:?} {:?} {:?}",
                             seq_no,
                             identifier,
                             address
                         );
+                        let last_finalized_block_seq_no = self
+                            .repository
+                            .select_thread_last_finalized_block(&self.thread_id)?
+                            .map(|(_, seq_no)| seq_no)
+                            .unwrap_or_default();
+                        if last_finalized_block_seq_no >= seq_no {
+                            tracing::debug!("[synchronizing] Received SyncFinalized seq_no({seq_no:?} is less or equal to local last finalized seq_no ({last_finalized_block_seq_no:?}), skip it");
+                            continue;
+                        }
                         if initial_state_shared_resource_address.is_none() {
                             tracing::trace!("[synchronizing] start loading shared state");
                             initial_state_shared_resource_address = Some(address.clone());

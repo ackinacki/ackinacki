@@ -61,7 +61,8 @@ pub async fn transfer(
     net_message: &NetMessage,
     metrics: &Option<NetMetrics>,
 ) -> Result<usize, TransportError> {
-    let data = bincode::serialize(net_message)
+    let data = net_message
+        .serialize()
         .map_err(|err| TransportError::BincodeSerialization(err.to_string()))?;
 
     let moment = Instant::now();

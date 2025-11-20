@@ -16,12 +16,12 @@ TVM_ENDPOINT=$4
 
 MAX_LICENSES_PER_WALLET=20
 
-ABI="../../contracts/bksystem/BlockManagerContractRoot.abi.json"
-WALLET_ABI="../../contracts/bksystem/AckiNackiBlockManagerNodeWallet.abi.json"
+ABI="../../contracts/0.79.3_compiled/bksystem/BlockManagerContractRoot.abi.json"
+WALLET_ABI="../../contracts/0.79.3_compiled/bksystem/AckiNackiBlockManagerNodeWallet.abi.json"
 ROOT=0:7777777777777777777777777777777777777777777777777777777777777777
-LICENSE_ROOT_ABI=../../contracts/bksystem/LicenseRoot.abi.json
+LICENSE_ROOT_ABI=../../contracts/0.79.3_compiled/bksystem/LicenseRoot.abi.json
 LICENSE_ROOT_ADDR=0:4444444444444444444444444444444444444444444444444444444444444444
-LICENSE_ABI=../../contracts/bksystem/License.abi.json
+LICENSE_ABI=../../contracts/0.79.3_compiled/bksystem/License.abi.json
 BMSYSTEM_ROOT="0:6666666666666666666666666666666666666666666666666666666666666666"
 
 if [[ -z "$TVM_ENDPOINT" ]]; then

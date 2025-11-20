@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::bail;
 use rand::prelude::*;
 use tokio::net::lookup_host;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -25,6 +26,7 @@ use crate::ChitchatId;
 
 /// Number of nodes picked for random gossip.
 const GOSSIP_COUNT: usize = 3;
+const RESTART_MAX_ATTEMPTS: usize = 30;
 
 /// UDP Chitchat server handler.
 ///
@@ -34,12 +36,16 @@ pub struct ChitchatHandle {
     chitchat_id: ChitchatId,
     command_tx: UnboundedSender<Command>,
     chitchat: ChitchatRef,
-    pub join_handle: JoinHandle<Result<(), anyhow::Error>>,
+    join_handle: JoinHandle<Result<(), anyhow::Error>>,
 }
 
 impl ChitchatHandle {
     pub fn abort(&self) {
         self.join_handle.abort();
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.join_handle.is_finished()
     }
 }
 
@@ -142,7 +148,23 @@ pub async fn spawn_chitchat(
     let seed_addrs: watch::Receiver<HashSet<SocketAddr>> =
         spawn_dns_refresh_loop(&config.seed_nodes).await;
 
-    let socket = transport.open(config.listen_addr).await?;
+    // The server can be restarted on the same bind address, though it may take
+    // a short moment for the port to be released after the previous instance is killed.
+    let mut attempts = 0;
+    let socket = loop {
+        attempts += 1;
+        match transport.open(config.listen_addr).await {
+            Ok(sock) => break sock,
+            Err(err) => {
+                tracing::error!("Attempt {} failed: {:#?}", attempts, err);
+                if attempts >= RESTART_MAX_ATTEMPTS {
+                    bail!(err);
+                } else {
+                    tokio::time::sleep(Duration::from_secs(1)).await
+                }
+            }
+        }
+    };
     let chitchat_id = config.chitchat_id.clone();
 
     let chitchat = Chitchat::with_chitchat_id_and_seeds(

@@ -1,6 +1,7 @@
 // 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -20,6 +21,7 @@ use typed_builder::TypedBuilder;
 
 use crate::block::producer::process::TVMBlockProducerProcess;
 use crate::block::producer::process::FORCE_SYNC_STATE_BLOCK_FREQUENCY;
+use crate::block::producer::producer_service::memento::Assumptions;
 use crate::block::producer::producer_service::memento::BlockProducerMemento;
 use crate::bls::create_signed::CreateSealed;
 use crate::bls::envelope::BLSSignedEnvelope;
@@ -51,6 +53,7 @@ use crate::protocol::authority_switch::network_message::AuthoritySwitch;
 use crate::protocol::authority_switch::network_message::NextRoundSuccess;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
+use crate::repository::optimistic_state::OptimisticStateSaveCommand;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::as_signatures_map::AsSignaturesMap;
@@ -96,7 +99,7 @@ pub struct BlockProducer {
     attestations_target_service: AttestationTargetsService,
     self_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
     self_authority_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
-    broadcast_tx: NetBroadcastSender<NetworkMessage>,
+    broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
 
     node_identifier: NodeIdentifier,
     production_timeout: Duration,
@@ -114,7 +117,7 @@ pub struct BlockProducer {
     is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
     control_rx: std::sync::mpsc::Receiver<BlockProducerCommand>,
 
-    save_optimistic_service_sender: InstrumentedSender<Arc<OptimisticStateImpl>>,
+    save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -179,7 +182,7 @@ impl BlockProducer {
             self.block_state_repository.touch();
             let (broadcasted, cleared_memento, post_production_timestamp) =
                 if in_flight_productions.is_some() || memento.is_some() {
-                    tracing::info!("Cut off block producer");
+                    tracing::debug!("Cut off block producer");
 
                     // Cut off block producer. Send whatever it has
                     let post_production_timestamp = std::time::Instant::now();
@@ -221,7 +224,7 @@ impl BlockProducer {
         if let Some((block_id_to_continue, block_seq_no_to_continue, initial_round)) =
             self.find_thread_last_block_id_this_node_can_continue(next_bp_command)?
         {
-            tracing::info!(
+            tracing::debug!(
                 "Requesting producer to continue block id {:?}; seq_no {:?}, node_id {:?}",
                 block_id_to_continue,
                 block_seq_no_to_continue,
@@ -251,6 +254,50 @@ impl BlockProducer {
                 }
             };
         }
+        Ok(producer_tails)
+    }
+
+    pub fn restart_production(
+        &mut self,
+        parent_block_id: BlockIdentifier,
+        initial_round: BlockRound,
+    ) -> anyhow::Result<Option<(BlockIdentifier, BlockSeqNo)>> {
+        tracing::trace!("restart_block_production");
+        self.production_process.stop_thread_production(&self.thread_id)?;
+        let mut producer_tails = None;
+        let Some(parent_block_seq_no) =
+            self.block_state_repository.get(&parent_block_id)?.guarded(|e| *e.block_seq_no())
+        else {
+            tracing::warn!("Parent block for production restart has no seq_no set. Skipping");
+            return Ok(None);
+        };
+        tracing::info!(
+            "Requesting producer to restart production from block id {:?}",
+            parent_block_id,
+        );
+        match self.production_process.start_thread_production(
+            &self.thread_id,
+            &parent_block_id,
+            self.received_acks.clone(),
+            self.received_nacks.clone(),
+            self.block_state_repository.clone(),
+            self.external_messages.clone(),
+            self.is_state_sync_requested.clone(),
+            initial_round,
+        ) {
+            Ok(()) => {
+                tracing::info!("Producer started successfully");
+                let was_producer = self.producing_status;
+                self.producing_status = true;
+                if !was_producer {
+                    self.bp_production_count.fetch_add(1, Ordering::Relaxed);
+                }
+                producer_tails = Some((parent_block_id, parent_block_seq_no));
+            }
+            Err(e) => {
+                tracing::warn!("failed to start producer process: {e}");
+            }
+        };
         Ok(producer_tails)
     }
 
@@ -391,7 +438,7 @@ impl BlockProducer {
         while let Some(produced_block) = produced_data.produced_blocks().first() {
             let mut block = produced_block.block().clone();
             block_flow_trace("check produced", &block.identifier(), &self.node_identifier, []);
-            tracing::info!(
+            tracing::debug!(
                 "Got block from producer. id: {:?}; seq_no: {:?}, parent: {:?}",
                 block.identifier(),
                 block.seq_no(),
@@ -437,9 +484,9 @@ impl BlockProducer {
                     self.production_process.stop_thread_production(&self.thread_id)?;
                     self.repository
                         .store_optimistic_in_cache(produced_block.optimistic_state().clone())?;
-                    let _ = self
-                        .save_optimistic_service_sender
-                        .send(produced_block.optimistic_state().clone());
+                    let _ = self.save_optimistic_service_sender.send(
+                        OptimisticStateSaveCommand::Save(produced_block.optimistic_state().clone()),
+                    );
                     *producer_tails = None;
                     return Ok((false, Some(produced_data)));
                 }
@@ -464,14 +511,36 @@ impl BlockProducer {
                     return Ok((false, Some(produced_data)));
                 }
                 Ok(UpdateCommonSectionResult::Success) => {
-                    tracing::trace!("Speed up production");
-                    self.production_process.set_timeout(self.production_timeout);
-                    if let Some(seq_no) = share_resulting_state {
-                        if seq_no <= block.seq_no() {
-                            self.is_state_sync_requested.guarded_mut(|e| *e = None);
+                    let is_assumptions_correct =
+                        produced_block.assumptions().eq(&Assumptions::builder()
+                            .new_to_bk_set(
+                                BTreeSet::new(), // TODO: set real value with preattestaions implementation
+                            )
+                            .build());
+                    if is_assumptions_correct {
+                        tracing::trace!("Speed up production");
+                        self.production_process.set_timeout(self.production_timeout);
+                        if let Some(seq_no) = share_resulting_state {
+                            if seq_no <= block.seq_no() {
+                                self.is_state_sync_requested.guarded_mut(|e| *e = None);
+                            }
                         }
+                        produced_data.produced_blocks_mut().remove(0)
+                    } else {
+                        tracing::trace!("Assumptions were not met, restart production");
+                        self.production_process.set_timeout(self.production_timeout);
+                        if let Some(seq_no) = share_resulting_state {
+                            if seq_no < block.seq_no() {
+                                self.is_state_sync_requested.guarded_mut(|e| *e = None);
+                            }
+                        }
+                        produced_data.produced_blocks_mut().clear();
+                        let parent_block_id = block.parent();
+                        let block_round = block.get_common_section().round;
+                        *producer_tails = self.restart_production(parent_block_id, block_round)?;
+                        // Note: return broadcasted = true to reset wait timeout
+                        return Ok((true, None));
                     }
-                    produced_data.produced_blocks_mut().remove(0)
                 }
                 Ok(UpdateCommonSectionResult::AbortNotInBKSet) => {
                     tracing::trace!("Stop production: not in bk set");
@@ -509,9 +578,9 @@ impl BlockProducer {
             if must_save_state {
                 self.repository
                     .store_optimistic_in_cache(produced_block.optimistic_state().clone())?;
-                let _ = self
-                    .save_optimistic_service_sender
-                    .send(produced_block.optimistic_state().clone());
+                let _ = self.save_optimistic_service_sender.send(OptimisticStateSaveCommand::Save(
+                    produced_block.optimistic_state().clone(),
+                ));
             }
 
             // NOTE: Issue here: This blocks accepting new blocks!
@@ -889,7 +958,7 @@ impl BlockProducer {
         candidate_block: NetworkMessage,
         mut ext_msg_feedbacks: ExtMsgFeedbackList,
     ) -> anyhow::Result<()> {
-        tracing::info!("broadcasting block: {block_id}");
+        tracing::debug!("broadcasting block: {block_id}");
 
         block_flow_trace("broadcasting candidate", block_id, &self.node_identifier, []);
         match self.broadcast_tx.send(candidate_block) {
@@ -915,7 +984,7 @@ impl BlockProducer {
         &self,
         candidate_block: Envelope<GoshBLS, AckiNackiBlock>,
     ) -> anyhow::Result<()> {
-        tracing::info!("rebroadcasting block: {}", candidate_block,);
+        tracing::debug!("rebroadcasting block: {}", candidate_block,);
         self.broadcast_tx.send(NetworkMessage::resent_candidate(
             &candidate_block,
             self.node_identifier.clone(),

@@ -1,6 +1,6 @@
 [package]
 name = "node"
-version = "0.12.3"
+version = "0.12.4"
 edition.workspace = true
 rust-version.workspace = true
 build = 'build.rs'
@@ -142,6 +142,7 @@ verify_all_blocks = []
 delay_attestation = []
 low_verification_time = []
 rotate_after_sync = []
+restart_on_failing_assumptions = []
 
 # Temporary feature for system repair
 bk_wallets_repair = []

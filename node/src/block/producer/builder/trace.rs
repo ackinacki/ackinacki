@@ -34,42 +34,42 @@ impl From<&EngineTraceInfo<'_>> for EngineTraceInfoData {
 #[allow(dead_code)]
 pub fn simple_trace_callback(engine: &Engine, info: &EngineTraceInfo) {
     if info.info_type == EngineTraceInfoType::Dump {
-        tracing::info!(target: "tvm_op", "{}", info.cmd_str);
+        tracing::debug!(target: "tvm_op", "{}", info.cmd_str);
     } else if info.info_type == EngineTraceInfoType::Start {
         if engine.trace_bit(Engine::TRACE_CTRLS) {
             tracing::trace!(target: "tvm", "{}", engine.dump_ctrls(true));
         }
         if engine.trace_bit(Engine::TRACE_STACK) {
-            tracing::info!(target: "tvm", " [ {} ] \n", dump_stack_result(info.stack));
+            tracing::debug!(target: "tvm", " [ {} ] \n", dump_stack_result(info.stack));
         }
         if engine.trace_bit(Engine::TRACE_GAS) {
-            tracing::info!(target: "tvm", "gas - {}\n", info.gas_used);
+            tracing::debug!(target: "tvm", "gas - {}\n", info.gas_used);
         }
     } else if info.info_type == EngineTraceInfoType::Exception {
         if engine.trace_bit(Engine::TRACE_CODE) {
-            tracing::info!(target: "tvm", "{} ({}) BAD_CODE: {}\n", info.step, info.gas_cmd, info.cmd_str);
+            tracing::debug!(target: "tvm", "{} ({}) BAD_CODE: {}\n", info.step, info.gas_cmd, info.cmd_str);
         }
         if engine.trace_bit(Engine::TRACE_STACK) {
-            tracing::info!(target: "tvm", " [ {} ] \n", dump_stack_result(info.stack));
+            tracing::debug!(target: "tvm", " [ {} ] \n", dump_stack_result(info.stack));
         }
         if engine.trace_bit(Engine::TRACE_CTRLS) {
             tracing::trace!(target: "tvm", "{}", engine.dump_ctrls(true));
         }
         if engine.trace_bit(Engine::TRACE_GAS) {
-            tracing::info!(target: "tvm", "gas - {}\n", info.gas_used);
+            tracing::debug!(target: "tvm", "gas - {}\n", info.gas_used);
         }
     } else if info.has_cmd() {
         if engine.trace_bit(Engine::TRACE_CODE) {
-            tracing::info!(target: "tvm", "{}\n", info.cmd_str);
+            tracing::debug!(target: "tvm", "{}\n", info.cmd_str);
         }
         if engine.trace_bit(Engine::TRACE_STACK) {
-            tracing::info!(target: "tvm", " [ {} ] \n", dump_stack_result(info.stack));
+            tracing::debug!(target: "tvm", " [ {} ] \n", dump_stack_result(info.stack));
         }
         if engine.trace_bit(Engine::TRACE_CTRLS) {
             tracing::trace!(target: "tvm", "{}", engine.dump_ctrls(true));
         }
         if engine.trace_bit(Engine::TRACE_GAS) {
-            tracing::info!(target: "tvm", "gas - {}\n", info.gas_used);
+            tracing::debug!(target: "tvm", "gas - {}\n", info.gas_used);
         }
     }
 }

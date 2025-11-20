@@ -1,5 +1,12 @@
 ---
 
+- name: Get last shutdown log
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}"
+    cmd: |
+      tail -n "{{ NODE_STOP_TEST_OUTER_TAIL }}" "{{ BK_LOGS_DIR }}/node.log" | grep "monit: Shutdown finished" | tail -n 1 || true
+  register: last_shutdown
+
 - name: Send graceful shutdown request
   ansible.builtin.shell:
     chdir: "{{ BK_DIR }}"
@@ -10,7 +17,7 @@
   ansible.builtin.shell:
     chdir: "{{ BK_DIR }}"
     cmd: |
-      (docker compose ps "node{{ NODE_ID }}" -q | wc -l | grep -q "0") || (tail -n "{{ NODE_STOP_TEST_OUTER_TAIL }}" "{{ BK_LOGS_DIR }}/node.log" | grep -v -e TRACE -e pub_sub | tail -n "{{ NODE_STOP_TEST_INNER_TAIL }}" | grep -q "monit: Shutdown finished")
+      (docker compose ps "node{{ NODE_ID }}" -q | wc -l | grep -q "0") || [ "$(tail -n "{{ NODE_STOP_TEST_OUTER_TAIL }}" "{{ BK_LOGS_DIR }}/node.log" | grep "monit: Shutdown finished" | tail -n 1)" != "{{ last_shutdown.stdout }}" ]
   register: container_check
   until: container_check is success
   retries: "{{ GS_WAIT | default(WAIT_FOR_NODE_STOP_SECS) }}"

@@ -1,3 +1,8 @@
+use std::fmt::Debug;
+use std::fmt::Display;
+use std::hash::Hash;
+use std::ops::Deref;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -7,43 +12,60 @@ use crate::detailed;
 use crate::metrics::NetMetrics;
 use crate::pub_sub::connection::ConnectionWrapper;
 use crate::pub_sub::connection::OutgoingMessage;
+use crate::topology::NetTopology;
 use crate::transfer::transfer;
 use crate::DeliveryPhase;
 use crate::SendMode;
 
-pub async fn sender<Connection: NetConnection + 'static>(
+pub async fn sender<
+    PeerId: Clone + Display + Debug + PartialEq + Eq + Hash + FromStr<Err: Display>,
+    Connection: NetConnection + 'static,
+>(
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    topology_rx: tokio::sync::watch::Receiver<NetTopology<PeerId>>,
     metrics: Option<NetMetrics>,
-    connection: Arc<ConnectionWrapper<Connection>>,
+    connection: Arc<ConnectionWrapper<PeerId, Connection>>,
     stop_tx: tokio::sync::watch::Sender<bool>,
     mut stop_rx: tokio::sync::watch::Receiver<bool>,
-    mut outgoing_messages_rx: tokio::sync::broadcast::Receiver<OutgoingMessage>,
+    mut outgoing_messages_rx: tokio::sync::broadcast::Receiver<OutgoingMessage<PeerId>>,
 ) -> anyhow::Result<()> {
-    tracing::trace!(
+    tracing::info!(
         ident = &connection.connection.local_identity()[..6],
         local = connection.connection.local_addr().to_string(),
         peer = connection.info.remote_info(),
         "Sender loop started"
     );
-    loop {
+    let finish_reason = loop {
         tokio::select! {
-            sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
-                break;
+            shutdown_changed = shutdown_rx.changed() => if shutdown_changed.is_err() || *shutdown_rx.borrow() {
+                break "shutdown signal received";
             },
-            sender = stop_rx.changed() => if sender.is_err() || *stop_rx.borrow() {
-                break;
+            stop_changed = stop_rx.changed() => if stop_changed.is_err() || *stop_rx.borrow() {
+                break "stop signal received";
             },
-            _ = connection.connection.watch_close() => {
-                break;
+            _connection_closed = connection.connection.watch_close() => {
+                break "connection closed";
             },
             recv_result = outgoing_messages_rx.recv() => {
                 match recv_result {
-                    Ok(message) => {
-                        send_message(metrics.clone(), connection.clone(), message, stop_tx.clone()).await;
+                    Ok(outgoing) => {
+                        metrics.as_ref().inspect(|x| {
+                            x.finish_delivery_phase(
+                                DeliveryPhase::OutgoingBuffer,
+                                1,
+                                &outgoing.message.label,
+                                SendMode::Broadcast,
+                                outgoing.duration_before_transfer.elapsed(),
+                            );
+                        });
+                        if connection.allow_sending(&outgoing, topology_rx.borrow().deref()) {
+                            send_message(metrics.clone(), connection.clone(), outgoing, stop_tx.clone()).await;
+                        }
+
                     },
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(lagged)) => {
                         tracing::error!(
-                            host_id = connection.info.remote_host_id_prefix,
+                            host_id = connection.info.remote_cert_hash_prefix,
                             addr = connection.info.remote_addr.to_string(),
                             broadcast = true,
                             lagged,
@@ -64,46 +86,61 @@ pub async fn sender<Connection: NetConnection + 'static>(
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         // Finish sender loop if outgoing messages sender detached
-                        break;
+                        break "outgoing messages channel closed";
                     }
                 }
             }
         }
+    };
+    let mut unsent_messages = 0usize;
+    loop {
+        match outgoing_messages_rx.try_recv() {
+            Ok(_) => {
+                unsent_messages += 1;
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(lagged)) => {
+                unsent_messages += lagged as usize;
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed)
+            | Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                break;
+            }
+        }
     }
-    tracing::trace!(
+    if unsent_messages > 0 {
+        metrics.as_ref().inspect(|x| {
+            x.finish_delivery_phase(
+                DeliveryPhase::OutgoingBuffer,
+                unsent_messages,
+                crate::metrics::LAGGED,
+                SendMode::Broadcast,
+                std::time::Duration::from_millis(0),
+            );
+        });
+    }
+
+    tracing::info!(
         ident = &connection.connection.local_identity()[..6],
         local = connection.connection.local_addr().to_string(),
         peer = connection.info.remote_info(),
-        "Sender loop finished"
+        "Sender loop finished: {finish_reason}"
     );
     Ok(())
 }
 
-async fn send_message<Connection: NetConnection + 'static>(
+async fn send_message<PeerId: Debug + Clone + Display, Connection: NetConnection + 'static>(
     metrics: Option<NetMetrics>,
-    connection: Arc<ConnectionWrapper<Connection>>,
-    mut outgoing: OutgoingMessage,
+    connection: Arc<ConnectionWrapper<PeerId, Connection>>,
+    mut outgoing: OutgoingMessage<PeerId>,
     stop_tx: tokio::sync::watch::Sender<bool>,
 ) {
-    metrics.as_ref().inspect(|x| {
-        x.finish_delivery_phase(
-            DeliveryPhase::OutgoingBuffer,
-            1,
-            &outgoing.message.label,
-            SendMode::Broadcast,
-            outgoing.duration_before_transfer.elapsed(),
-        );
-    });
-    if !connection.allow_sending(&outgoing) {
-        return;
-    }
     outgoing.message.last_sender_is_proxy = connection.info.local_is_proxy;
     outgoing.message.id.push(':');
-    outgoing.message.id.push_str(&connection.info.remote_host_id_prefix);
+    outgoing.message.id.push_str(&connection.info.remote_cert_hash_prefix);
     let metrics = metrics.clone();
     let connection = connection.clone();
     tracing::debug!(
-        host_id = connection.info.remote_host_id_prefix,
+        host_id = connection.info.remote_cert_hash_prefix,
         addr = connection.info.remote_addr.to_string(),
         msg_id = outgoing.message.id,
         msg_type = outgoing.message.label,
@@ -120,7 +157,7 @@ async fn send_message<Connection: NetConnection + 'static>(
         );
     });
     tracing::debug!(
-        host_id = connection.info.remote_host_id_prefix,
+        host_id = connection.info.remote_cert_hash_prefix,
         addr = connection.info.remote_addr.to_string(),
         msg_id = outgoing.message.id,
         msg_type = outgoing.message.label,
@@ -142,7 +179,7 @@ async fn send_message<Connection: NetConnection + 'static>(
     match transfer_result {
         Ok(bytes_sent) => {
             tracing::debug!(
-                host_id = connection.info.remote_host_id_prefix,
+                host_id = connection.info.remote_cert_hash_prefix,
                 addr = connection.info.remote_addr.to_string(),
                 msg_id = outgoing.message.id,
                 msg_type = outgoing.message.label,
@@ -156,7 +193,7 @@ async fn send_message<Connection: NetConnection + 'static>(
         }
         Err(err) => {
             tracing::error!(
-                host_id = connection.info.remote_host_id_prefix,
+                host_id = connection.info.remote_cert_hash_prefix,
                 addr = connection.info.remote_addr.to_string(),
                 msg_id = outgoing.message.id,
                 msg_type = outgoing.message.label,

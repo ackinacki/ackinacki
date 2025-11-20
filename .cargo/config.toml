@@ -4,3 +4,6 @@ lint-all = "clippy --workspace --all-features --tests --examples --bins -- -Dcli
 
 [build]
 rustflags = ["--cfg", "tokio_unstable"]
+
+[net]
+git-fetch-with-cli = true

@@ -25,7 +25,7 @@ token_ttl: 30
 contracts:
   bm_root:
     address: 0:6666666666666666666666666666666666666666666666666666666666666666
-    abi: ../contracts/bksystem/BlockManagerContractRoot.abi.json
+    abi: ../contracts/0.79.3_compiled/bksystem/BlockManagerContractRoot.abi.json
 
   license:
-    abi: ../contracts/bksystem/LicenseBM.abi.json
+    abi: ../contracts/0.79.3_compiled/bksystem/LicenseBM.abi.json

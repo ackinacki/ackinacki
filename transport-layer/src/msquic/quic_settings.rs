@@ -40,7 +40,7 @@ impl ConfigFactory {
             .set_IdleTimeoutMs(0)
             .set_KeepAliveIntervalMs(500)
             .set_MaxAckDelayMs(1)
-            .set_SendIdleTimeoutMs(0)
+            .set_SendIdleTimeoutMs(3_600_000)// 1 hour of idle will reset cong params
             .set_InitialWindowPackets(100)
             .set_StreamRecvWindowDefault(268_435_456)
             .set_ConnFlowControlWindow(2_147_483_648)

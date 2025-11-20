@@ -10,16 +10,17 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use chitchat::ChitchatRef;
+use gossip::GOSSIP_API_ADVERTISE_ADDR_KEY;
 use http_server::ApiBkSet;
 use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedSender;
+use tokio::sync::watch::Receiver;
 use tvm_types::UInt256;
 use url::Url;
 
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::services::sync::FileSavingService;
 use crate::node::services::sync::StateSyncService;
-use crate::node::services::sync::GOSSIP_API_ADVERTISE_ADDR_KEY;
 use crate::node::NodeIdentifier;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
@@ -40,7 +41,7 @@ pub struct ExternalFileSharesBased {
     blob_sync: ServiceInterface,
     file_saving_service: FileSavingService,
     state_load_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
-    chitchat: ChitchatRef,
+    chitchat_rx: Receiver<Option<ChitchatRef>>,
     bk_set_rx: tokio::sync::watch::Receiver<ApiBkSet>,
 }
 
@@ -48,7 +49,7 @@ impl ExternalFileSharesBased {
     pub fn new(
         blob_sync: ServiceInterface,
         file_saving_service: FileSavingService,
-        chitchat: ChitchatRef,
+        chitchat_rx: Receiver<Option<ChitchatRef>>,
         bk_set_rx: tokio::sync::watch::Receiver<ApiBkSet>,
     ) -> Self {
         // TODO: move to config
@@ -60,7 +61,7 @@ impl ExternalFileSharesBased {
             blob_sync,
             file_saving_service,
             state_load_thread: Arc::new(Mutex::new(None)),
-            chitchat,
+            chitchat_rx,
             bk_set_rx,
         }
     }
@@ -123,7 +124,10 @@ impl StateSyncService for ExternalFileSharesBased {
                 let mut services = HashSet::<Url>::from_iter(self.static_storages.iter().cloned());
                 Extend::extend(
                     &mut services,
-                    self.chitchat
+                    self
+                    .chitchat_rx.borrow()
+                    .clone()
+                    .expect("ChitchatRef is guaranteed to have Some value")
                     .lock()
                     .state_snapshot()
                     .node_states

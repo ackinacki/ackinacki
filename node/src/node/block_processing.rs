@@ -23,7 +23,7 @@ where
         net_block: &NetBlock,
         resend_source_node_id: Option<NodeIdentifier>,
     ) -> anyhow::Result<Option<<Self as NodeAssociatedTypes>::CandidateBlock>> {
-        tracing::info!(
+        tracing::debug!(
             target: "monit",
             "Incoming block candidate: {}, resend_source_node_id: {:?}",
             net_block,
@@ -50,7 +50,7 @@ where
         };
 
         let envelope = net_block.get_envelope()?;
-        tracing::info!(
+        tracing::debug!(
             target: "monit",
             "Incoming block candidate: {}, signatures: {:?}, resend_source_node_id: {:?}",
             envelope.data(),
@@ -123,7 +123,7 @@ where
                 Some((envelope.data().identifier().clone(), envelope.data().seq_no(), hint));
         }
 
-        tracing::info!("Add candidate block state to cache: {:?}", net_block.identifier);
+        tracing::debug!("Add candidate block state to cache: {:?}", net_block.identifier);
         self.unprocessed_blocks_cache.insert(block_state.clone(), envelope.clone());
 
         // Update parent block state

@@ -11,6 +11,11 @@ use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 use crate::utilities::guarded::TryGuardedMut;
 
+pub enum StateSaveCommand {
+    Save(Arc<BlockStateInner>),
+    Shutdown,
+}
+
 pub struct BlockStateInner {
     pub(super) block_identifier: BlockIdentifier,
     pub(super) shared_access: RwLock<AckiNackiBlockState>,

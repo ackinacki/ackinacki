@@ -302,7 +302,7 @@ fn verify_cert_pubkeys(
     pubkeys: &[VerifyingKey],
     trusted: &HashSet<VerifyingKey>,
 ) -> Result<(), StartError> {
-    if pubkeys.iter().any(|x| trusted.contains(x)) {
+    if contains_any_pubkey(pubkeys, trusted) {
         return Ok(());
     }
     Err(StartError::BadCertificate(if !pubkeys.is_empty() {
@@ -409,6 +409,10 @@ impl TlsCertCache {
         inner.certs.insert(cache_key, (key.clone_key(), cert.clone()));
         Ok((key, cert))
     }
+}
+
+pub fn contains_any_pubkey(pubkeys: &[VerifyingKey], contains_in: &HashSet<VerifyingKey>) -> bool {
+    pubkeys.iter().any(|x| contains_in.contains(x))
 }
 
 pub mod hex_verifying_key {

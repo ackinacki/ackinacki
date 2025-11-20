@@ -44,7 +44,7 @@ use crate::node::Secret;
 use crate::node::SignerIndex;
 use crate::node::ValidationServiceInterface;
 use crate::repository::optimistic_state::OptimisticState;
-use crate::repository::optimistic_state::OptimisticStateImpl;
+use crate::repository::optimistic_state::OptimisticStateSaveCommand;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
@@ -109,7 +109,7 @@ impl BlockProcessorService {
         mut shared_services: SharedServices,
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         send_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
-        broadcast_tx: NetBroadcastSender<NetworkMessage>,
+        broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
         block_gap: BlockGap,
         validation_service: ValidationServiceInterface,
         share_service: ExternalFileSharesBased,
@@ -117,7 +117,7 @@ impl BlockProcessorService {
         chain_pulse_monitor: std::sync::mpsc::Sender<ChainPulseEvent>,
         mut unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
         mut cross_thread_ref_data_availability_synchronization_service: CrossThreadRefDataAvailabilitySynchronizationServiceInterface,
-        save_optimistic_service_sender: InstrumentedSender<Arc<OptimisticStateImpl>>,
+        save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
     ) -> Self {
         let chain_pulse_last_finalized_block_id: BlockIdentifier = repository
             .select_thread_last_finalized_block(&thread_identifier)
@@ -275,7 +275,7 @@ fn process_candidate_block(
     send: AckiNackiSend,
     chain_pulse_monitor: &Sender<ChainPulseEvent>,
     cross_thread_ref_data_availability_synchronization_service: &mut CrossThreadRefDataAvailabilitySynchronizationServiceInterface,
-    save_optimistic_service_sender: &InstrumentedSender<Arc<OptimisticStateImpl>>,
+    save_optimistic_service_sender: &InstrumentedSender<OptimisticStateSaveCommand>,
     filter_prehistoric: &FilterPrehistoric,
 ) -> anyhow::Result<()> {
     // if block_state.guarded(|e| e.is_block_already_applied()) {
@@ -806,7 +806,8 @@ fn process_candidate_block(
             let optimistic_state = Arc::new(optimistic_state);
             repository.store_optimistic_in_cache(optimistic_state.clone())?;
             if must_save_state && (common_section.producer_id != node_id) {
-                let _ = save_optimistic_service_sender.send(optimistic_state);
+                let _ = save_optimistic_service_sender
+                    .send(OptimisticStateSaveCommand::Save(optimistic_state));
             }
 
             if let Some(share_state) =

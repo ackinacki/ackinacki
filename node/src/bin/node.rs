@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::num::NonZero;
 use std::path::PathBuf;
-use std::process::exit;
+use std::process::ExitCode;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
@@ -26,9 +26,11 @@ use ::node::protocol::authority_switch::round_time::RoundTime;
 use ::node::repository::optimistic_state::OptimisticState;
 use ::node::repository::repository_impl::FinalizedBlockStorage;
 use ::node::repository::repository_impl::RepositoryImpl;
+use chitchat::transport::UdpTransport;
 use clap::Parser;
 use ext_messages_auth::auth::AccountRequest;
-use gossip::GossipConfig;
+use gossip::run_gossip_with_reload;
+use gossip::GossipReloadConfig;
 use http_server::ApiBkSet;
 use http_server::ResolvingResult;
 use message_router::message_router::MessageRouter;
@@ -36,9 +38,8 @@ use message_router::message_router::MessageRouterConfig;
 use message_router::read_keys_from_file;
 use network::config::NetworkConfig;
 use network::network::BasicNetwork;
-use network::network::PeerData;
-use network::resolver::sign_gossip_node;
 use network::resolver::WatchGossipConfig;
+use network::topology::NetTopology;
 use node::block::producer::wasm::check_node_mandatory_wasm_available;
 use node::block::producer::wasm::WasmNodeCache;
 use node::block_keeper_system::BlockKeeperSet;
@@ -63,6 +64,7 @@ use node::multithreading::routing::service::Command;
 use node::multithreading::routing::service::RoutingService;
 use node::node::block_request_service::BlockRequestService;
 use node::node::block_state::attestation_target_checkpoints::AncestorBlocksFinalizationCheckpoints;
+use node::node::block_state::block_state_inner::StateSaveCommand;
 use node::node::block_state::repository::BlockState;
 use node::node::block_state::repository::BlockStateRepository;
 use node::node::block_state::start_state_save_service;
@@ -89,6 +91,7 @@ use node::protocol::authority_switch::action_lock::Authority;
 use node::protocol::authority_switch::find_last_prefinalized::find_last_prefinalized;
 use node::repository::accounts::AccountsRepository;
 use node::repository::load_saved_blocks::SavedBlocksLoader;
+use node::repository::optimistic_state::OptimisticStateSaveCommand;
 use node::repository::start_optimistic_state_save_service;
 use node::repository::Repository;
 use node::services::blob_sync;
@@ -126,6 +129,7 @@ use signal_hook::iterator::Signals;
 use telemetry_utils::mpsc::instrumented_channel;
 use tokio::task::JoinHandle;
 use transport_layer::msquic::MsQuicTransport;
+use transport_layer::server::RawBlockSaveCommand;
 use transport_layer::TlsCertCache;
 use tvm_block::Deserializable;
 use tvm_block::GetRepresentationHash;
@@ -177,7 +181,12 @@ fn init_rayon() {
         .unwrap();
 }
 
-fn main() -> Result<(), std::io::Error> {
+pub enum HeartbeatCommand {
+    SendHeartbeat(Arc<Mutex<CollectedAttestations>>),
+    Shutdown,
+}
+
+fn main() -> ExitCode {
     eprintln!("Starting Acki-Nacki Node version: {}", *LONG_VERSION);
     debug_used_features();
     if cfg!(debug_assertions) {
@@ -194,12 +203,10 @@ fn main() -> Result<(), std::io::Error> {
         .thread_stack_size(100 * 1024 * 1024)
         .build()
         .expect("Failed to create Tokio runtime")
-        .block_on(async { tokio_main().await });
-
-    exit(0);
+        .block_on(tokio_main())
 }
 
-async fn tokio_main() {
+async fn tokio_main() -> ExitCode {
     let args = Args::parse();
     let (metrics, tracing_guard) = init_tracing();
     tracing::info!("Tracing and metrics initialized");
@@ -208,14 +215,14 @@ async fn tokio_main() {
     tracing::warn!("Node run with --feature misbehave set");
 
     let exit_code = match execute(args, metrics).await {
-        Ok(_) => 0,
+        Ok(_) => ExitCode::SUCCESS,
         Err(err) => {
             tracing::error!("{err:?}");
-            1
+            ExitCode::FAILURE
         }
     };
     shutdown_tracing(tracing_guard);
-    exit(exit_code);
+    exit_code
 }
 
 fn verify_zerostate(zs: &ZeroState, message_db: &MessageDurableStorage) -> anyhow::Result<()> {
@@ -355,7 +362,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         .ensure_min_cpu(MINIMUM_NUMBER_OF_CORES)
         .ensure_min_sync_gap();
     let network_config = config.network_config(Some(tls_cert_cache.clone()))?;
-    let gossip_config = config.gossip_config()?;
+    let gossip_config = config.gossip_config();
     tracing::info!("Loaded config");
 
     tracing::info!(target: "monit", "Node config: {}", serde_json::to_string_pretty(&config)?);
@@ -405,13 +412,22 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let (bk_set_update_async_tx, bk_set_update_async_rx) =
         tokio::sync::watch::channel(bk_set.clone());
+
+    // Signals from `dispatch_hot_reload` to `network` module
     let (watch_gossip_config_tx, watch_gossip_config_rx) =
-        tokio::sync::watch::channel(WatchGossipConfig {
-            max_nodes_with_same_id: config.network.max_nodes_with_same_id as usize,
-            trusted_pubkeys: HashSet::default(),
+        tokio::sync::watch::channel(config.watch_gossip_config(HashSet::default()));
+    // Signals from `dispatch_hot_reload` to `gossip` module
+    let (reload_gossip_config_tx, gossip_config_rx) =
+        tokio::sync::watch::channel(GossipReloadConfig {
+            gossip_config,
+            api_advertise_addr: config.network.api_advertise_addr.clone(),
+            my_ed_key_secret: config.network.my_ed_key_secret.clone(),
+            my_ed_key_path: config.network.my_ed_key_path.clone(),
+            peer_config: Some(config.gossip_peer()?),
         });
+
     let (config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
-    let (gossip_config_tx, gossip_config_rx) = tokio::sync::watch::channel(gossip_config);
+
     let (network_config_tx, network_config_rx) = tokio::sync::watch::channel(network_config);
     tokio::spawn(dispatch_hot_reload(
         tls_cert_cache.clone(),
@@ -419,37 +435,20 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         config_rx,
         bk_set_update_async_rx.clone(),
         network_config_tx,
-        gossip_config_tx,
+        reload_gossip_config_tx,
         watch_gossip_config_tx,
     ));
-    let (gossip_handle, gossip_rest_handle) =
-        gossip::run(shutdown_rx, gossip_config_rx, chitchat::transport::UdpTransport).await?;
+
+    let (chitchat_rx, run_gossip_handle) =
+        run_gossip_with_reload("node", shutdown_rx.clone(), gossip_config_rx, UdpTransport).await?;
+
     let gossip_listen_addr_clone = config.network.gossip_listen_addr;
     let gossip_advertise_addr =
         config.network.gossip_advertise_addr.unwrap_or(gossip_listen_addr_clone);
     tracing::info!("Gossip advertise addr: {:?}", gossip_advertise_addr);
 
-    let gossip_node = config.gossip_peer()?;
-    gossip_handle
-        .with_chitchat(|c| {
-            gossip_node.set_to(c.self_node_state());
-            c.self_node_state().set(
-                node::node::services::sync::GOSSIP_API_ADVERTISE_ADDR_KEY,
-                config.network.api_advertise_addr.to_string(),
-            );
-            if let Ok(keys) = transport_layer::resolve_signing_keys(
-                &config.network.my_ed_key_secret,
-                &config.network.my_ed_key_path,
-            ) {
-                if let Some(key) = keys.first() {
-                    sign_gossip_node(c.self_node_state(), key.clone());
-                }
-            }
-        })
-        .await;
-
-    let network = BasicNetwork::new(shutdown_tx, network_config_rx, MsQuicTransport::default());
-    let chitchat = gossip_handle.chitchat();
+    let network =
+        BasicNetwork::new(shutdown_tx.clone(), network_config_rx, MsQuicTransport::default());
 
     // Panics if node mandatory wasm files not present;
     check_node_mandatory_wasm_available();
@@ -459,7 +458,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         metrics.as_ref().map(|x| x.node.clone()),
         node::helper::metrics::INBOUND_EXT_CHANNEL,
     );
-    let (direct_tx, broadcast_tx, incoming_rx, nodes_rx) = network
+    let (direct_tx, broadcast_tx, incoming_rx, net_topology_rx) = network
         .start(
             watch_gossip_config_rx,
             metrics.as_ref().map(|m| m.net.clone()),
@@ -467,25 +466,27 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             config.local.node_id.clone(),
             config.network.node_advertise_addr,
             false,
-            chitchat.clone(),
+            chitchat_rx.clone(),
         )
         .await?;
 
     let bp_thread_count = Arc::<AtomicI32>::default();
-    let (raw_block_sender, raw_block_receiver) = instrumented_channel::<(NodeIdentifier, Vec<u8>)>(
-        node_metrics.clone(),
-        node::helper::metrics::RAW_BLOCK_CHANNEL,
-    );
+    let (raw_block_sender, raw_block_receiver) =
+        instrumented_channel::<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>(
+            node_metrics.clone(),
+            node::helper::metrics::RAW_BLOCK_CHANNEL,
+        );
+    let raw_block_sender_clone = raw_block_sender.clone();
 
     let block_manager_listen_addr = config.network.block_manager_listen_addr;
-    let nodes_rx_clone = nodes_rx.clone();
+    let net_topology_rx_clone = net_topology_rx.clone();
     let block_manager_handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
         transport_layer::server::LiteServer::new(block_manager_listen_addr)
             .start(raw_block_receiver, move |node_id| {
-                let node_addr = nodes_rx_clone
+                let node_addr = net_topology_rx_clone
                     .borrow()
-                    .get(&node_id)
-                    .map(|x| x.first().map(|x| x.peer_addr.ip().to_string()).unwrap_or_default());
+                    .resolve_peer(&node_id)
+                    .map(|x| x.first().map(|x| x.addr.ip().to_string()).unwrap_or_default());
                 node_addr
             })
             .await?;
@@ -550,6 +551,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         let mut signals = Signals::new([SIGHUP, SIGINT, SIGTERM])?;
         let blk_key_path = config_clone.local.key_path.clone();
         let config_path = args.config_path.clone();
+        let config_tx = config_tx.clone();
         std::thread::Builder::new().name("signal handler".to_string()).spawn(move || {
             for sig in signals.forever() {
                 tracing::info!(target: "monit", "Received signal {:?}", sig);
@@ -623,8 +625,10 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let state_save_service = std::thread::Builder::new()
         .name("State save service".to_string())
         .spawn_critical(move || start_state_save_service(state_save_rx))?;
-    let block_state_repo =
-        BlockStateRepository::new(repo_path.clone().join("blocks-states"), Arc::new(state_save_tx));
+    let block_state_repo = BlockStateRepository::new(
+        repo_path.clone().join("blocks-states"),
+        Arc::new(state_save_tx.clone()),
+    );
 
     let block_id = BlockIdentifier::default();
     let state = block_state_repo.get(&block_id)?;
@@ -743,8 +747,23 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let deadlock_detection_handle =
         std::thread::Builder::new().name("Deadlock detection".to_string()).spawn(move || {
             tracing::trace!("Spawn deadlock detector");
+            let check_interval = Duration::from_secs(10);
+            let mut last_check = std::time::Instant::now();
+
             loop {
-                std::thread::sleep(Duration::from_secs(10));
+                std::thread::sleep(Duration::from_millis(500));
+
+                if *shutdown_rx.borrow() {
+                    println!("Deadlock detector shutting down");
+                    break;
+                }
+
+                if last_check.elapsed() < check_interval {
+                    continue;
+                }
+
+                last_check = std::time::Instant::now();
+
                 let deadlocks = ::parking_lot::deadlock::check_deadlock();
                 if deadlocks.is_empty() {
                     continue;
@@ -847,6 +866,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
     let repository_clone = repository.clone();
     let (heartbeat_channel_tx, heartbeat_channel_rx) = std::sync::mpsc::channel();
+    let heartbeat_channel_tx_clone = heartbeat_channel_tx.clone();
     let heartbeat_thread_join_handle = {
         // This is a simple hack to allow time based triggers to work.
         // Without this hack it will go stale once it runs out of all
@@ -864,7 +884,13 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 }
                 'inner: loop {
                     match heartbeat_channel_rx.try_recv() {
-                        Ok(notifications) => attestation_notifications.push(notifications),
+                        Ok(HeartbeatCommand::SendHeartbeat(notifications)) => {
+                            attestation_notifications.push(notifications)
+                        }
+                        Ok(HeartbeatCommand::Shutdown) => {
+                            println!("Heartbeat thread shutting down");
+                            break 'outer;
+                        }
                         Err(TryRecvError::Empty) => break 'inner,
                         Err(TryRecvError::Disconnected) => break 'outer,
                     }
@@ -881,6 +907,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let stop_result_rx_vec = Arc::new(Mutex::new(vec![]));
     let stop_result_rx_vec_clone = stop_result_rx_vec.clone();
     let bk_set_update_async_rx_clone = bk_set_update_async_rx.clone();
+
+    let optimistic_save_tx_clone = optimistic_save_tx.clone();
     let (routing, _inner_service_thread) = RoutingService::start(
         (routing, routing_rx),
         metrics.as_ref().map(|m| m.node.clone()),
@@ -957,7 +985,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             let mut sync_state_service = ExternalFileSharesBased::new(
                 blob_sync_service.interface(),
                 file_saving_service,
-                chitchat.clone(),
+                chitchat_rx.clone(),
                 bk_set_update_async_rx_clone.clone(),
             );
             sync_state_service.static_storages = config.network.static_storages.clone();
@@ -1001,7 +1029,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 .authority(authority.clone())
                 .build();
             let last_block_attestations = Arc::new(Mutex::new(CollectedAttestations::default()));
-            let _ = heartbeat_channel_tx.send(Arc::clone(&last_block_attestations));
+            let _ = heartbeat_channel_tx
+                .send(HeartbeatCommand::SendHeartbeat(Arc::clone(&last_block_attestations)));
 
             let skipped_attestation_ids = Arc::new(Mutex::new(HashSet::new()));
             let block_gap = Arc::new(AtomicU32::new(0));
@@ -1208,7 +1237,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let config = config_clone;
     let repo_clone = repository.clone();
 
-    let mut nodes_rx_clone = nodes_rx.clone();
+    let mut net_topology_rx_clone = net_topology_rx.clone();
     let http_server_handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
         // Sync required by a bound in `salvo::Handler`
         let repo_clone_0 = Arc::new(Mutex::new(repo_clone));
@@ -1222,7 +1251,9 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             {
                 let repo = repo_clone_0.clone();
                 let node_id = config.local.node_id.clone();
-                move |thread_id| resolve_bp(thread_id.into(), &repo, &mut nodes_rx_clone, &node_id)
+                move |thread_id| {
+                    resolve_bp(thread_id.into(), &repo, &mut net_topology_rx_clone, &node_id)
+                }
             },
             // This closure returns last seq_no for default thread
             move || {
@@ -1245,7 +1276,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     if let Ok(bind_to) = std::env::var("MESSAGE_ROUTER") {
         tracing::trace!("start message router");
         let bp_resolver =
-            BPResolverImpl::new(nodes_rx.clone(), Arc::new(Mutex::new(repository.clone())));
+            BPResolverImpl::new(net_topology_rx.clone(), Arc::new(Mutex::new(repository.clone())));
         let config = MessageRouterConfig {
             bp_resolver: Arc::new(Mutex::new(bp_resolver)),
             owner_wallet_pubkey: None,
@@ -1258,11 +1289,9 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
     let wrapped_signals_join_handle =
         tokio::task::spawn_blocking(move || signals_join_handle.join());
+
     let wrapped_heartbeat_thread_join_handle =
         tokio::task::spawn_blocking(move || heartbeat_thread_join_handle.join());
-
-    // let wrapped_blk_req_join_handle =
-    //     tokio::task::spawn_blocking(move || blk_req_join_handle.join());
 
     let wrapped_deadlock_detector = tokio::task::spawn_blocking(move || {
         #[cfg(feature = "deadlock-detection")]
@@ -1271,7 +1300,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         std::thread::park();
         Ok::<(), Box<dyn Any + Send + 'static>>(())
     });
-
     let state_save_service_join_handle =
         tokio::task::spawn_blocking(move || state_save_service.join());
     let optimistic_save_service_join_handle =
@@ -1281,12 +1309,9 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         res = wrapped_signals_join_handle => {
              match res {
                 Ok(_) => {
-                    // unreachable!("sigint handler thread never returns")
-
                     tracing::info!(target: "monit", "Start shutdown");
-
                     start_shutdown();
-
+                    shutdown_tx.send_replace(true);
                     repository.dump_state();
 
                     // Note: vec of rx can be locked because we don't expect new threads to start
@@ -1295,6 +1320,10 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     for rx in result_rx_vec.iter() {
                         let _ = rx.recv();
                     }
+                    let _ = state_save_tx.send(StateSaveCommand::Shutdown);
+                    let _ = optimistic_save_tx_clone.send(OptimisticStateSaveCommand::Shutdown);
+                    let _ = raw_block_sender_clone.send(RawBlockSaveCommand::Shutdown);
+                    let _ = heartbeat_channel_tx_clone.send(HeartbeatCommand::Shutdown);
                     tracing::info!(target: "monit", "Shutdown finished");
                     Ok(())
                 }
@@ -1328,8 +1357,9 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         v = block_manager_handle => {
             anyhow::bail!("lite node failed: {v:?}");
         },
-        v = gossip_rest_handle => {
-            anyhow::bail!("gossip rest failed: {v:?}");
+
+        v = run_gossip_handle => {
+            anyhow::bail!("gossip thread failed: {v:?}");
         },
         v = wrapped_deadlock_detector => {
             match v {
@@ -1352,6 +1382,9 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         }
     };
 
+    // We must hold config_tx to supress early shutting down hot reload dispatcher
+    // and network module
+    drop(config_tx);
     // Note: reachable on SIGTERM
     drop(chain_pulse_bind);
     result
@@ -1369,7 +1402,7 @@ fn into_external_message(
 fn resolve_bp(
     thread_id: ThreadIdentifier,
     repo: &Mutex<RepositoryImpl>,
-    nodes_rx: &mut tokio::sync::watch::Receiver<HashMap<NodeIdentifier, Vec<PeerData>>>,
+    net_topology_rx: &mut tokio::sync::watch::Receiver<NetTopology<NodeIdentifier>>,
     node_id: &NodeIdentifier,
 ) -> ResolvingResult {
     let bp_map = repo.lock().get_nodes_by_threads();
@@ -1381,13 +1414,13 @@ fn resolve_bp(
 
     tracing::debug!(target: "http_server", "resolver: bp_id={:?}", bp_id);
 
-    let list = nodes_rx
+    let list = net_topology_rx
         .borrow()
-        .get(bp_id)
+        .resolve_peer(bp_id)
         .and_then(|peers| peers.first())
-        .map(|peer| match &peer.bk_api_socket {
+        .map(|peer| match &peer.bk_api_addr {
             Some(socket) => socket.to_string(),
-            None => peer.peer_addr.to_string(),
+            None => peer.addr.to_string(),
         })
         .map_or_else(Vec::new, |addr| vec![addr]);
 
@@ -1413,6 +1446,9 @@ fn debug_used_features() {
     }
     if cfg!(feature = "rotate_after_sync") {
         eprintln!("  rotate_after_sync");
+    }
+    if cfg!(feature = "restart_on_failing_assumptions") {
+        eprintln!("  restart_on_failing_assumptions");
     }
     if cfg!(feature = "allow-dappid-thread-split") {
         eprintln!("  allow-dappid-thread-split");
@@ -1443,8 +1479,8 @@ async fn dispatch_hot_reload(
     mut config_rx: tokio::sync::watch::Receiver<node::config::Config>,
     mut bk_set_rx: tokio::sync::watch::Receiver<ApiBkSet>,
     network_config_tx: tokio::sync::watch::Sender<NetworkConfig>,
-    gossip_config_tx: tokio::sync::watch::Sender<GossipConfig>,
-    watch_gossip_config_tx: tokio::sync::watch::Sender<WatchGossipConfig>,
+    reload_gossip_config_tx: tokio::sync::watch::Sender<GossipReloadConfig<NodeIdentifier>>,
+    watch_gossip_config_tx: tokio::sync::watch::Sender<WatchGossipConfig<NodeIdentifier>>,
 ) {
     let mut bk_set = bk_set_rx.borrow().clone();
     let mut config = config_rx.borrow().clone();
@@ -1456,7 +1492,7 @@ async fn dispatch_hot_reload(
         "Hot reload initial bk_set: {}",
         serde_json::to_string(&bk_set).unwrap_or_default()
     );
-    loop {
+    let stop_reason = loop {
         match config.network_config(Some(tls_cert_cache.clone())) {
             Ok(mut network_config) => {
                 network_config.credential.trusted_pubkeys =
@@ -1470,39 +1506,47 @@ async fn dispatch_hot_reload(
                             .chain(network_config.credential.trusted_pubkeys.iter().cloned())
                             .chain(network_config.credential.my_cert_pubkeys().unwrap_or_default()),
                     );
-                watch_gossip_config_tx.send_replace(WatchGossipConfig {
-                    max_nodes_with_same_id: config.network.max_nodes_with_same_id as usize,
-                    trusted_pubkeys: network_config.credential.trusted_pubkeys.clone(),
-                });
+                watch_gossip_config_tx.send_replace(
+                    config.watch_gossip_config(network_config.credential.trusted_pubkeys.clone()),
+                );
                 network_config_tx.send_replace(network_config);
             }
             Err(err) => {
                 tracing::error!("Failed to split network config: {err}");
             }
         }
-        match config_rx.borrow().gossip_config() {
-            Ok(gossip_config) => {
-                gossip_config_tx.send_replace(gossip_config);
-            }
-            Err(err) => {
-                tracing::error!("Failed to split gossip config: {err}");
-            }
-        }
         tokio::select! {
-            sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
+            shutdown_changed = shutdown_rx.changed() => if shutdown_changed.is_err() || *shutdown_rx.borrow() {
                 tracing::trace!("Hot reload: shutdown");
-                break;
+                break "shutdown signal received";
             },
-            sender = config_rx.changed() => if sender.is_ok() {
+            config_changed = config_rx.changed() => if config_changed.is_ok() {
                 config = config_rx.borrow().clone();
-                tracing::trace!(
-                    "Hot reload changed node config: {}",
-                    serde_json::to_string(&config).unwrap_or_default()
-                );
+                match config.gossip_peer() {
+                    Ok(peer) => {
+                        reload_gossip_config_tx.send_replace(
+                            GossipReloadConfig {
+                                gossip_config: config.gossip_config(),
+                                api_advertise_addr: config.network.api_advertise_addr.clone(),
+                                my_ed_key_secret: config.network.my_ed_key_secret.clone(),
+                                my_ed_key_path: config.network.my_ed_key_path.clone(),
+                                peer_config: Some(peer)
+                            }
+                        );
+                        tracing::trace!(
+                            "Hot reload changed node config: {}",
+                            serde_json::to_string(&config).unwrap_or_default()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("Hot reload: {e:?}");
+                        break "can not build gossip config from node config";
+                    }
+                }
             } else {
-                break;
+                break "node config channel sender closed";
             },
-            sender = bk_set_rx.changed() => if sender.is_ok() {
+            bk_set_changed = bk_set_rx.changed() => if bk_set_changed.is_ok() {
                 if bk_set.update(&bk_set_rx.borrow()) {
                     tracing::trace!(
                         "Hot reload changed bk_set: {}",
@@ -1510,10 +1554,11 @@ async fn dispatch_hot_reload(
                     );
                 }
             } else {
-                break;
+                break "bk_set channel sender closed";
             }
         }
-    }
+    };
+    tracing::info!("Hot reload config dispatcher stopped: {stop_reason}.");
 }
 
 fn clear_missing_block_locks(
@@ -1767,7 +1812,7 @@ async fn test_execute() -> anyhow::Result<()> {
     };
 
     let network_config = config.network_config(Some(tls_cert_cache.clone()))?;
-    let gossip_config = config.gossip_config()?;
+    let gossip_config = config.gossip_config();
     tracing::info!("Loaded config");
 
     tracing::info!(target: "monit", "Node config: {}", serde_json::to_string_pretty(&config)?);
@@ -1804,12 +1849,17 @@ async fn test_execute() -> anyhow::Result<()> {
     let (_bk_set_update_async_tx, bk_set_update_async_rx) =
         tokio::sync::watch::channel(bk_set.clone());
     let (watch_gossip_config_tx, watch_gossip_config_rx) =
-        tokio::sync::watch::channel(WatchGossipConfig {
-            max_nodes_with_same_id: config.network.max_nodes_with_same_id as usize,
-            trusted_pubkeys: HashSet::default(),
-        });
+        tokio::sync::watch::channel(config.watch_gossip_config(HashSet::default()));
     let (_config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
-    let (gossip_config_tx, gossip_config_rx) = tokio::sync::watch::channel(gossip_config);
+
+    let (gossip_config_tx, gossip_config_rx) = tokio::sync::watch::channel(GossipReloadConfig {
+        gossip_config,
+        api_advertise_addr: config.network.api_advertise_addr.clone(),
+        my_ed_key_secret: config.network.my_ed_key_secret.clone(),
+        my_ed_key_path: config.network.my_ed_key_path.clone(),
+        peer_config: Some(config.gossip_peer()?),
+    });
+
     let (network_config_tx, network_config_rx) = tokio::sync::watch::channel(network_config);
     tokio::spawn(dispatch_hot_reload(
         tls_cert_cache.clone(),
@@ -1820,34 +1870,17 @@ async fn test_execute() -> anyhow::Result<()> {
         gossip_config_tx,
         watch_gossip_config_tx,
     ));
-    let (gossip_handle, _gossip_rest_handle) =
-        gossip::run(shutdown_rx, gossip_config_rx, chitchat::transport::UdpTransport).await?;
+
+    let (chitchat_rx, _run_gossip_handle) =
+        run_gossip_with_reload("node", shutdown_rx.clone(), gossip_config_rx, UdpTransport).await?;
+
     let gossip_listen_addr_clone = config.network.gossip_listen_addr;
     let gossip_advertise_addr =
         config.network.gossip_advertise_addr.unwrap_or(gossip_listen_addr_clone);
     tracing::info!("Gossip advertise addr: {:?}", gossip_advertise_addr);
 
-    let gossip_node = config.gossip_peer()?;
-    gossip_handle
-        .with_chitchat(|c| {
-            gossip_node.set_to(c.self_node_state());
-            c.self_node_state().set(
-                node::node::services::sync::GOSSIP_API_ADVERTISE_ADDR_KEY,
-                config.network.api_advertise_addr.to_string(),
-            );
-            if let Ok(keys) = transport_layer::resolve_signing_keys(
-                &config.network.my_ed_key_secret,
-                &config.network.my_ed_key_path,
-            ) {
-                if let Some(key) = keys.first() {
-                    sign_gossip_node(c.self_node_state(), key.clone());
-                }
-            }
-        })
-        .await;
-
-    let network = BasicNetwork::new(shutdown_tx, network_config_rx, MsQuicTransport::default());
-    let chitchat = gossip_handle.chitchat();
+    let network =
+        BasicNetwork::new(shutdown_tx.clone(), network_config_rx, MsQuicTransport::default());
 
     // Panics if node mandatory wasm files not present;
     // check_node_mandatory_wasm_available();
@@ -1865,16 +1898,17 @@ async fn test_execute() -> anyhow::Result<()> {
             config.local.node_id.clone(),
             config.network.node_advertise_addr,
             false,
-            chitchat.clone(),
+            chitchat_rx.clone(),
         )
         .await?;
 
     let bp_thread_count = Arc::<AtomicI32>::default();
-    let (raw_block_sender, _raw_block_receiver) = instrumented_channel::<(NodeIdentifier, Vec<u8>)>(
-        node_metrics.clone(),
-        node::helper::metrics::RAW_BLOCK_CHANNEL,
-    );
 
+    let (raw_block_sender, _raw_block_receiver) =
+        instrumented_channel::<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>(
+            node_metrics.clone(),
+            node::helper::metrics::RAW_BLOCK_CHANNEL,
+        );
     if cfg!(feature = "fail-fast") {
         let orig_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |panic_info| {
@@ -2235,7 +2269,7 @@ async fn test_execute() -> anyhow::Result<()> {
     let mut sync_state_service = ExternalFileSharesBased::new(
         blob_sync_service.interface(),
         file_saving_service,
-        chitchat.clone(),
+        chitchat_rx.clone(),
         bk_set_update_async_rx_clone.clone(),
     );
     sync_state_service.static_storages = config.network.static_storages.clone();

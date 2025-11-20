@@ -21,6 +21,7 @@ use crate::bls::gosh_bls::PubKey;
 use crate::bls::gosh_bls::Secret;
 use crate::bls::GoshBLS;
 use crate::external_messages::ExternalMessagesThreadState;
+use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::NackData;
 use crate::node::block_state::repository::BlockStateRepository;
@@ -29,7 +30,7 @@ use crate::node::shared_services::SharedServices;
 use crate::node::NetworkMessage;
 use crate::node::NodeIdentifier;
 use crate::protocol::authority_switch::action_lock::BlockProducerCommand;
-use crate::repository::optimistic_state::OptimisticStateImpl;
+use crate::repository::optimistic_state::OptimisticStateSaveCommand;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::BlockSeqNo;
 use crate::types::CollectedAttestations;
@@ -62,7 +63,7 @@ impl ProducerService {
         attestations_target_service: AttestationTargetsService,
         self_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
         self_authority_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
-        broadcast_tx: NetBroadcastSender<NetworkMessage>,
+        broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
 
         node_identifier: NodeIdentifier,
         production_timeout: Duration,
@@ -71,7 +72,7 @@ impl ProducerService {
 
         is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
         bp_production_count: Arc<AtomicI32>,
-        save_optimistic_service_sender: InstrumentedSender<Arc<OptimisticStateImpl>>,
+        save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
     ) -> anyhow::Result<Self> {
         let mut producer = BlockProducer::builder()
             .self_addr(self_addr)
@@ -112,7 +113,9 @@ impl ProducerService {
     pub fn touch(&mut self) {
         if self.handler.as_ref().unwrap().is_finished() {
             let res = self.handler.take().unwrap().join().unwrap();
-            panic!("Producer service has finished with res: {res:?}");
+            if SHUTDOWN_FLAG.get() != Some(&true) {
+                panic!("Producer service has finished with res: {res:?}");
+            }
         }
     }
 }

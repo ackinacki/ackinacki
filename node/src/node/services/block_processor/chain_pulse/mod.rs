@@ -33,7 +33,7 @@ struct ChainPulseSettings {
 
     direct_send_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
 
-    broadcast_send_tx: NetBroadcastSender<NetworkMessage>,
+    broadcast_send_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
 
     #[builder(setter(strip_option), default=None)]
     trigger_attestation_resend_by_time: Option<Duration>,

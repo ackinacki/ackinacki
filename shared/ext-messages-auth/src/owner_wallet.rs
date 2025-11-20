@@ -10,10 +10,12 @@ use crate::auth::TokenIssuer;
 
 const OWNER_WALLET_SIGN_KEY: &str = "_signing_pubkey";
 
-pub static BK_OWNER_WALLET_ABI: &str =
-    include_str!("../../../contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json");
-pub static BM_OWNER_WALLET_ABI: &str =
-    include_str!("../../../contracts/bksystem/AckiNackiBlockManagerNodeWallet.abi.json");
+pub static BK_OWNER_WALLET_ABI: &str = include_str!(
+    "../../../contracts/0.79.3_compiled/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json"
+);
+pub static BM_OWNER_WALLET_ABI: &str = include_str!(
+    "../../../contracts/0.79.3_compiled/bksystem/AckiNackiBlockManagerNodeWallet.abi.json"
+);
 
 pub fn decode_signing_pubkey(
     account: &Account,

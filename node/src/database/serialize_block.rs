@@ -71,7 +71,7 @@ pub fn reflect_block_in_db(
     let add_proof = false;
     let block_id = &block_root.repr_hash();
     let block_id_hex = block_id.to_hex_string();
-    tracing::info!(target: "database", "reflect_block_in_db block_id: {}", block_id_hex);
+    tracing::debug!(target: "database", "reflect_block_in_db block_id: {}", block_id_hex);
     let file_hash = UInt256::calc_file_hash(&serialized_block);
     let block_extra =
         block.read_extra().map_err(|e| anyhow::format_err!("Failed to read block extra: {e}"))?;
@@ -144,7 +144,7 @@ pub fn reflect_block_in_db(
             Ok(true)
         })
         .map_err(|e| anyhow::format_err!("Failed to iterate account blocks: {e}"))?;
-    tracing::info!(target: "database",
+    tracing::debug!(target: "database",
         "TIME: preliminary prepare {} transactions {}ms;",
         tr_count,
         now.elapsed().as_millis(),
@@ -191,8 +191,8 @@ pub fn reflect_block_in_db(
             .put_transactions(transaction_docs)
             .map_err(|e| anyhow::format_err!("Failed to put tx: {e}"))?;
     }
-    tracing::info!(target: "database", "TIME: prepare {} transactions {}ms;", tr_count, now.elapsed().as_millis());
-    tracing::info!(target: "database",
+    tracing::debug!(target: "database", "TIME: prepare {} transactions {}ms;", tr_count, now.elapsed().as_millis());
+    tracing::debug!(target: "database",
         "Block seq_no: {}, tr_count: {}, id: {}",
         info.seq_no(),
         tr_count,
@@ -254,7 +254,7 @@ pub fn reflect_block_in_db(
             .put_accounts(account_docs)
             .map_err(|e| anyhow::format_err!("Failed to put account: {e}"))?;
     }
-    tracing::info!(target: "database", "TIME: accounts {} {}ms;", changed_acc.len(), now.elapsed().as_millis());
+    tracing::debug!(target: "database", "TIME: accounts {} {}ms;", changed_acc.len(), now.elapsed().as_millis());
 
     // Prepare messages
     let now = std::time::Instant::now();
@@ -266,7 +266,7 @@ pub fn reflect_block_in_db(
     if !arch_messages.is_empty() {
         archive.lock().put_messages(arch_messages).map_err(|e| anyhow::format_err!("{e}"))?;
     }
-    tracing::info!(target: "database", "TIME: prepare {} messages {}ms;", msg_count, now.elapsed().as_millis(),);
+    tracing::debug!(target: "database", "TIME: prepare {} messages {}ms;", msg_count, now.elapsed().as_millis(),);
 
     // Block
     let now = std::time::Instant::now();
@@ -279,8 +279,8 @@ pub fn reflect_block_in_db(
     )
     .map_err(|e| anyhow::format_err!("{e}"))?;
     archive.lock().put_block(item).map_err(|e| anyhow::format_err!("{e}"))?;
-    tracing::info!(target: "database", "TIME: block({}) {}ms;", block_id_hex, now.elapsed().as_millis());
-    tracing::info!(target: "database",
+    tracing::debug!(target: "database", "TIME: block({}) {}ms;", block_id_hex, now.elapsed().as_millis());
+    tracing::debug!(target: "database",
         "TIME: prepare & build jsons {}ms;   {}",
         now_all.elapsed().as_millis(),
         block_id_hex

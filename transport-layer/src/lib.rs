@@ -17,6 +17,7 @@ use rustls_pki_types::PrivateKeyDer;
 use sha2::Digest;
 
 use crate::msquic::msquic_async::connection::StartError;
+pub use crate::tls::contains_any_pubkey;
 pub use crate::tls::create_self_signed_cert_with_ed_signatures;
 pub use crate::tls::generate_self_signed_cert;
 pub use crate::tls::get_pubkeys_from_cert_der;
@@ -38,6 +39,12 @@ pub mod wtransport;
 
 #[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 pub struct CertHash(pub [u8; 32]);
+
+impl CertHash {
+    pub fn prefix(&self) -> String {
+        hex::encode(&self.0[0..3])
+    }
+}
 
 impl From<&CertificateDer<'static>> for CertHash {
     fn from(cert: &CertificateDer) -> Self {

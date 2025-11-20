@@ -21,6 +21,7 @@ itertools.workspace = true
 opentelemetry.workspace = true
 opentelemetry-otlp.workspace = true
 parking_lot.workspace = true
+rand.workspace = true
 rcgen.workspace = true
 rusqlite.workspace = true
 rustls.workspace = true
@@ -35,6 +36,7 @@ transport-layer.workspace = true
 tvm_block.workspace = true
 tvm_contracts.workspace = true
 tvm_types.workspace = true
+url.workspace = true
 wtransport.workspace = true
 zstd.workspace = true
 

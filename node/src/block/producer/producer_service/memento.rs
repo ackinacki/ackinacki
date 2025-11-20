@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -6,8 +7,18 @@ use http_server::ExtMsgFeedbackList;
 use typed_builder::TypedBuilder;
 
 use crate::node::block_state::repository::BlockState;
+use crate::node::SignerIndex;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::types::AckiNackiBlock;
+
+// Intentionally not allowing direct read of assumptions.
+// This way we force writing all assumptions to be listed
+// before it can be checked if assumed holds.
+#[derive(TypedBuilder, PartialEq, Eq)]
+pub struct Assumptions {
+    // Note: Stub for future preattestations impl
+    new_to_bk_set: BTreeSet<SignerIndex>,
+}
 
 #[derive(TypedBuilder, Getters)]
 pub struct BlockProducerMemento {
@@ -28,6 +39,7 @@ impl BlockProducerMemento {
 
 #[derive(TypedBuilder, Getters)]
 pub struct ProducedBlock {
+    assumptions: Assumptions,
     block: AckiNackiBlock,
     optimistic_state: Arc<OptimisticStateImpl>,
     feedbacks: ExtMsgFeedbackList,

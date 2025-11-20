@@ -265,10 +265,10 @@ pub fn update_ext_message_auth_flag_from_files() {
 
     if enabled {
         force_auth();
-        tracing::info!("EXT_MESSAGE_AUTH_REQUIRED updated to true");
+        tracing::debug!("EXT_MESSAGE_AUTH_REQUIRED updated to true");
     } else if disabled {
         disable_auth();
-        tracing::info!("EXT_MESSAGE_AUTH_REQUIRED updated to false");
+        tracing::debug!("EXT_MESSAGE_AUTH_REQUIRED updated to false");
     }
 }
 

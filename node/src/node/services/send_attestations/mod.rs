@@ -531,7 +531,7 @@ impl AttestationSendService {
     ) -> anyhow::Result<()> {
         match attestation {
             AttestationAction::ThisBlock(attestation) => {
-                tracing::info!(
+                tracing::debug!(
                     "sending attestation for thread {:?} to node {}: {:?}",
                     self.thread_id,
                     destination_node_id,

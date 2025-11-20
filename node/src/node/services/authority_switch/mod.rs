@@ -40,7 +40,7 @@ pub struct AuthoritySwitchService {
     thread_id: ThreadIdentifier,
     unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
     thread_authority: Arc<Mutex<ThreadAuthority>>,
-    network_broadcast_tx: NetBroadcastSender<NetworkMessage>,
+    network_broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
     block_state_repository: BlockStateRepository,
     chain_pulse_monitor: Sender<ChainPulseEvent>,
 }

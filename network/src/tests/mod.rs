@@ -1,9 +1,11 @@
+mod test_direct_broadcast;
 mod test_hot_reload;
 mod transport_test;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
@@ -13,7 +15,10 @@ use std::time::Instant;
 
 use chitchat::ChitchatHandle;
 use chitchat::ChitchatRef;
+use gossip::gossip_peer::GossipPeer;
+use gossip::run_gossip_with_reload;
 use gossip::GossipConfig;
+use gossip::GossipReloadConfig;
 use itertools::Itertools;
 use once_cell::sync::OnceCell;
 use serde::Deserialize;
@@ -25,12 +30,13 @@ use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::FmtSubscriber;
 use transport_layer::NetTransport;
+use url::Url;
 
 use crate::channel::NetBroadcastSender;
 use crate::channel::NetDirectSender;
 use crate::config::NetworkConfig;
+use crate::config::SocketAddrSet;
 use crate::network::BasicNetwork;
-use crate::network::PeerData;
 use crate::pub_sub::connection::IncomingMessage;
 use crate::pub_sub::connection::MessageDelivery;
 use crate::pub_sub::connection::OutgoingMessage;
@@ -39,21 +45,11 @@ use crate::pub_sub::CertStore;
 use crate::pub_sub::IncomingSender;
 use crate::pub_sub::PrivateKeyFile;
 use crate::resolver::watch_gossip;
-use crate::resolver::GossipPeer;
-use crate::resolver::SubscribeStrategy;
 use crate::resolver::WatchGossipConfig;
-
-fn make_addr(group: usize, index: usize) -> SocketAddr {
-    SocketAddr::from(([127, 0, 0, 1], (11000 + group * 10 + index) as u16))
-}
-
-pub fn node_addr(group: usize) -> SocketAddr {
-    make_addr(group, 0)
-}
-
-pub fn gossip_addr(group: usize) -> SocketAddr {
-    make_addr(group, 1)
-}
+use crate::topology::NetEndpoint;
+use crate::topology::NetPeer;
+use crate::topology::NetTopology;
+use crate::DirectReceiver;
 
 static LOG_INIT: OnceCell<()> = OnceCell::new();
 
@@ -73,6 +69,186 @@ pub fn init_logs() {
     });
 }
 
+const ADDR_FIELDS_PER_INSTANCE: usize = 10;
+fn make_instance_addr(instance: usize, field: usize) -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], (11000 + instance * ADDR_FIELDS_PER_INSTANCE + field) as u16))
+}
+
+pub fn instance_addr(instance: usize) -> SocketAddr {
+    make_instance_addr(instance, 0)
+}
+
+pub fn instance_gossip_addr(instance: usize) -> SocketAddr {
+    make_instance_addr(instance, 1)
+}
+pub fn generate_owner_keys(
+    count: usize,
+) -> (Vec<transport_layer::SigningKey>, HashSet<transport_layer::VerifyingKey>) {
+    let keys = (0..count)
+        .map(|_| transport_layer::SigningKey::generate(&mut rand::thread_rng()))
+        .collect::<Vec<_>>();
+    let pubkeys = HashSet::from_iter(keys.iter().map(|x| x.verifying_key()));
+    (keys, pubkeys)
+}
+
+fn network_config(
+    instance: usize,
+    owner_keys: &[transport_layer::SigningKey],
+    trusted_pubkeys: HashSet<transport_layer::VerifyingKey>,
+) -> NetworkConfig {
+    let key_file = PrivateKeyFile::default();
+    let cert_file = CertFile::default();
+    NetworkConfig::new(
+        instance_addr(instance),
+        cert_file,
+        key_file,
+        owner_keys,
+        CertStore::default(),
+        trusted_pubkeys,
+        None,
+    )
+    .unwrap()
+}
+
+fn gossip_config(instance: usize, seed_instances: &[usize]) -> GossipConfig {
+    GossipConfig {
+        advertise_addr: None,
+        listen_addr: instance_gossip_addr(instance),
+        seeds: seed_instances.iter().copied().map(instance_gossip_addr).collect(),
+        cluster_id: "transport_test".to_string(),
+    }
+}
+
+#[derive(Clone)]
+pub struct NodeConfig {
+    pub(crate) id: String,
+    network: NetworkConfig,
+    gossip: GossipConfig,
+    _owner_key: transport_layer::SigningKey,
+    proxies: SocketAddrSet,
+}
+
+impl NodeConfig {
+    pub fn new(
+        instance: usize,
+        owner_key: transport_layer::SigningKey,
+        proxy_instances: &[usize],
+        gossip_seed_instances: &[usize],
+        trusted_pubkeys: HashSet<transport_layer::VerifyingKey>,
+    ) -> Self {
+        Self {
+            id: instance.to_string(),
+            network: network_config(instance, std::slice::from_ref(&owner_key), trusted_pubkeys),
+            gossip: gossip_config(instance, gossip_seed_instances),
+            _owner_key: owner_key,
+            proxies: proxy_instances.iter().copied().map(instance_addr).collect(),
+        }
+    }
+
+    fn peer_endpoint(&self) -> NetEndpoint<String> {
+        NetEndpoint::Peer(NetPeer::with_id_and_addr(self.id.clone(), self.network.bind))
+    }
+}
+
+#[derive(Clone)]
+pub struct ProxyConfig {
+    _my_addrs: SocketAddrSet,
+    network: NetworkConfig,
+    gossip: GossipConfig,
+}
+
+impl ProxyConfig {
+    pub fn new(
+        instance: usize,
+        my_addrs: &[usize],
+        gossip_seed_instances: &[usize],
+        owner_keys: Vec<transport_layer::SigningKey>,
+        trusted_pubkeys: HashSet<transport_layer::VerifyingKey>,
+    ) -> Self {
+        Self {
+            _my_addrs: my_addrs.iter().copied().map(instance_addr).collect(),
+            network: network_config(instance, &owner_keys, trusted_pubkeys),
+            gossip: gossip_config(instance, gossip_seed_instances),
+        }
+    }
+}
+
+pub struct NetConfig {
+    proxies: Vec<ProxyConfig>,
+    nodes: Vec<NodeConfig>,
+}
+
+pub struct Net<Transport: NetTransport + 'static, Node> {
+    proxies: Vec<Proxy<Transport>>,
+    nodes: Vec<Node>,
+}
+
+impl NetConfig {
+    pub fn with_nodes(node_infos: Vec<Vec<usize>>) -> Self {
+        let mut nodes = Vec::new();
+        let mut proxies = Vec::new();
+        let mut next_proxy_instance = node_infos.len();
+        let mut proxy_info_by_id =
+            HashMap::<usize, (usize, Vec<transport_layer::SigningKey>)>::new();
+        let (owner_keys, trusted_pubkeys) = generate_owner_keys(node_infos.len());
+        let gossip_seed_instances = (0..node_infos.len()).take(3).collect::<Vec<_>>();
+        for (node_instance, proxy_ids) in node_infos.into_iter().enumerate() {
+            let mut proxy_instances = Vec::new();
+            let owner_key = &owner_keys[node_instance];
+            for proxy_id in proxy_ids {
+                let proxy_instance = if let Some((proxy_instance, owner_pubkeys)) =
+                    proxy_info_by_id.get_mut(&proxy_id)
+                {
+                    owner_pubkeys.push(owner_key.clone());
+                    *proxy_instance
+                } else {
+                    proxy_info_by_id
+                        .insert(proxy_id, (next_proxy_instance, vec![owner_key.clone()]));
+                    next_proxy_instance += 1;
+                    next_proxy_instance - 1
+                };
+                proxy_instances.push(proxy_instance);
+            }
+            nodes.push(NodeConfig::new(
+                node_instance,
+                owner_key.clone(),
+                &proxy_instances,
+                &gossip_seed_instances,
+                trusted_pubkeys.clone(),
+            ));
+        }
+        for (_, (instance, owner_keys)) in proxy_info_by_id.into_iter() {
+            proxies.push(ProxyConfig::new(
+                instance,
+                &[instance],
+                &gossip_seed_instances,
+                owner_keys,
+                trusted_pubkeys.clone(),
+            ));
+        }
+        Self { nodes, proxies }
+    }
+
+    pub async fn start<Transport: NetTransport + 'static, Node, N>(
+        &self,
+        transport: Transport,
+        start_node: impl Fn(Transport, NodeConfig) -> N,
+    ) -> Net<Transport, Node>
+    where
+        N: Future<Output = Node>,
+    {
+        let mut proxies = Vec::new();
+        for proxy_config in &self.proxies {
+            proxies.push(Proxy::start(transport.clone(), proxy_config.clone()).await.unwrap());
+        }
+        let mut nodes = Vec::new();
+        for node_config in &self.nodes {
+            nodes.push(start_node(transport.clone(), node_config.clone()).await);
+        }
+        Net { proxies, nodes }
+    }
+}
+
 pub struct NoChannelMetrics;
 
 impl InstrumentedChannelMetrics for NoChannelMetrics {
@@ -81,8 +257,8 @@ impl InstrumentedChannelMetrics for NoChannelMetrics {
 
 pub struct Proxy<Transport: NetTransport + 'static> {
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
-    pub config_tx: tokio::sync::watch::Sender<NodeConfig>,
-    pub watch_gossip_config_tx: tokio::sync::watch::Sender<WatchGossipConfig>,
+    pub config_tx: tokio::sync::watch::Sender<ProxyConfig>,
+    pub watch_gossip_config_tx: tokio::sync::watch::Sender<WatchGossipConfig<String>>,
     pub transport: Transport,
     pub chitchat: ChitchatRef,
     pub chitchat_handle: ChitchatHandle,
@@ -96,7 +272,7 @@ impl<Transport: NetTransport + 'static> Drop for Proxy<Transport> {
 }
 
 impl<Transport: NetTransport + 'static> Proxy<Transport> {
-    pub(crate) async fn start(config: NodeConfig, transport: Transport) -> anyhow::Result<Self> {
+    pub(crate) async fn start(transport: Transport, config: ProxyConfig) -> anyhow::Result<Self> {
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let (config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
         tracing::info!("Gossip advertise addr: {:?}", config.gossip.advertise_addr);
@@ -105,16 +281,20 @@ impl<Transport: NetTransport + 'static> Proxy<Transport> {
             tokio::sync::watch::channel(config.network.clone());
         let (gossip_config_tx, gossip_config_rx) =
             tokio::sync::watch::channel(config.gossip.clone());
-        tokio::spawn(split_config(
+        tokio::spawn(split_proxy_config(
             shutdown_rx.clone(),
             config_rx,
             network_config_tx,
             gossip_config_tx,
         ));
 
-        let (chitchat_handle, gossip_rest_handle) =
-            gossip::run(shutdown_rx.clone(), gossip_config_rx, chitchat::transport::UdpTransport)
-                .await?;
+        let (chitchat_handle, gossip_rest_handle) = gossip::run_gossip_no_reload(
+            "proxy",
+            shutdown_rx.clone(),
+            gossip_config_rx,
+            chitchat::transport::UdpTransport,
+        )
+        .await?;
 
         let (outgoing_messages_tx, _ /* we will subscribe() later */) =
             tokio::sync::broadcast::channel(100);
@@ -124,18 +304,17 @@ impl<Transport: NetTransport + 'static> Proxy<Transport> {
 
         let (watch_gossip_config_tx, watch_gossip_config_rx) =
             tokio::sync::watch::channel(WatchGossipConfig {
+                endpoint: NetEndpoint::Proxy(SocketAddrSet::with_addr(config.network.bind)),
                 max_nodes_with_same_id: 5,
+                override_subscribe: vec![],
                 trusted_pubkeys: HashSet::new(),
             });
-        let (subscribe_tx, subscribe_rx) = tokio::sync::watch::channel(Vec::new());
-        let (peers_tx, _) = tokio::sync::watch::channel(HashMap::new());
+        let (topology_tx, topology_rx) = tokio::sync::watch::channel(NetTopology::default());
         tokio::spawn(watch_gossip(
             shutdown_rx.clone(),
             watch_gossip_config_rx,
-            SubscribeStrategy::<String>::Proxy(vec![config.network.bind]),
             chitchat_handle.chitchat(),
-            subscribe_tx.clone(),
-            peers_tx,
+            topology_tx.clone(),
             None,
         ));
 
@@ -147,7 +326,7 @@ impl<Transport: NetTransport + 'static> Proxy<Transport> {
             true,
             None,
             10000,
-            subscribe_rx,
+            topology_rx,
             outgoing_messages_tx,
             IncomingSender::AsyncUnbounded(incoming_messages_tx),
         ));
@@ -165,8 +344,8 @@ impl<Transport: NetTransport + 'static> Proxy<Transport> {
     }
 
     async fn message_multiplexor(
-        mut incoming_messages: tokio::sync::mpsc::UnboundedReceiver<IncomingMessage>,
-        outgoing_messages: tokio::sync::broadcast::Sender<OutgoingMessage>,
+        mut incoming_messages: tokio::sync::mpsc::UnboundedReceiver<IncomingMessage<String>>,
+        outgoing_messages: tokio::sync::broadcast::Sender<OutgoingMessage<String>>,
     ) -> anyhow::Result<()> {
         tracing::info!("Proxy multiplexor bridge started");
         loop {
@@ -175,7 +354,9 @@ impl<Transport: NetTransport + 'static> Proxy<Transport> {
                     let label = incoming.message.label.clone();
                     tracing::debug!("Proxy multiplexor forwarded incoming {}", label);
                     if let Ok(_sent_count) = outgoing_messages.send(OutgoingMessage {
-                        delivery: MessageDelivery::BroadcastExcluding(incoming.connection_info),
+                        delivery: MessageDelivery::BroadcastExcludingSender(
+                            incoming.connection_info,
+                        ),
                         message: incoming.message,
                         duration_before_transfer: Instant::now(),
                     }) {}
@@ -195,51 +376,53 @@ impl<Transport: NetTransport + 'static> Proxy<Transport> {
     }
 }
 
-#[derive(Clone)]
-pub struct NodeConfig {
-    pub(crate) node_id: String,
-    network: NetworkConfig,
-    advertise_addr: SocketAddr,
-    gossip: GossipConfig,
-}
-
-impl NodeConfig {
-    pub fn new(
-        node_addr: SocketAddr,
-        gossip_addr: SocketAddr,
-        node_id: String,
-        gossip_seeds: Vec<SocketAddr>,
-    ) -> Self {
-        let key_file = PrivateKeyFile::default();
-        let cert_file = CertFile::default();
-        Self {
-            node_id,
-            network: NetworkConfig::new(
-                node_addr,
-                cert_file,
-                key_file,
-                &[],
-                CertStore::default(),
-                HashSet::new(),
-                vec![],
-                vec![],
-                None,
-            )
-            .unwrap(),
-            advertise_addr: node_addr,
-            gossip: GossipConfig {
-                advertise_addr: None,
-                listen_addr: gossip_addr,
-                seeds: gossip_seeds,
-                cluster_id: "transport_test".to_string(),
+pub async fn split_node_config(
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    mut config_rx: tokio::sync::watch::Receiver<NodeConfig>,
+    network_config_tx: tokio::sync::watch::Sender<NetworkConfig>,
+    gossip_reload_config_tx: tokio::sync::watch::Sender<GossipReloadConfig<String>>,
+    watch_gossip_config_tx: tokio::sync::watch::Sender<WatchGossipConfig<String>>,
+) {
+    loop {
+        tokio::select! {
+            sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
+                return;
             },
+            sender = config_rx.changed() => if sender.is_err() {
+                return;
+            } else {
+                let config = config_rx.borrow();
+                network_config_tx.send_replace(config.network.clone());
+                watch_gossip_config_tx.send_replace(WatchGossipConfig {
+                    endpoint: config.peer_endpoint(),
+                    max_nodes_with_same_id: 6,
+                    override_subscribe: Vec::new(),
+                    trusted_pubkeys: config.network.credential.trusted_pubkeys.clone(),
+                });
+                gossip_reload_config_tx.send_replace(
+                    GossipReloadConfig {
+                        gossip_config: config.gossip.clone(),
+                        api_advertise_addr: Url::parse(&format!("http://{}", config.network.bind)).unwrap(),
+                        my_ed_key_secret: vec![],
+                        my_ed_key_path: vec![],
+                        peer_config: Some(GossipPeer::new(
+                            config.id.clone(),
+                            config.network.bind,
+                            vec![],
+                            None,
+                            None,
+                            &[],
+                        ).unwrap())
+                    }
+                );
+            }
         }
     }
 }
 
-pub async fn split_config(
+pub async fn split_proxy_config(
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    mut config_rx: tokio::sync::watch::Receiver<NodeConfig>,
+    mut config_rx: tokio::sync::watch::Receiver<ProxyConfig>,
     network_config_tx: tokio::sync::watch::Sender<NetworkConfig>,
     gossip_config_tx: tokio::sync::watch::Sender<GossipConfig>,
 ) {
@@ -261,12 +444,12 @@ pub async fn split_config(
 pub struct Node<Transport: NetTransport + 'static> {
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
     pub config_tx: tokio::sync::watch::Sender<NodeConfig>,
-    pub watch_gossip_config_tx: tokio::sync::watch::Sender<WatchGossipConfig>,
     pub transport: Transport,
-    pub(crate) chitchat: ChitchatRef,
     pub(crate) state: Arc<NodeState>,
-    pub chitchat_handle: ChitchatHandle,
-    pub gossip_rest_handle: JoinHandle<anyhow::Result<()>>,
+    pub(crate) direct_tx: NetDirectSender<String, Message>,
+    pub(crate) broadcast_tx: NetBroadcastSender<String, Message>,
+    pub(crate) incoming_rx: Option<InstrumentedReceiver<IncomingMessage<String>>>,
+    pub(crate) net_topology_rx: tokio::sync::watch::Receiver<NetTopology<String>>,
 }
 
 pub struct NodeState {
@@ -289,28 +472,27 @@ impl Default for NodeState {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Eq, PartialEq)]
 pub enum Message {
     Data(String, u64, Vec<u8>),
     Ack(u64),
+}
+
+impl Message {
+    pub fn data<const N: usize>(sender: &str, id: u64, data: [u8; N]) -> Self {
+        Self::Data(sender.to_string(), id, data.to_vec())
+    }
 }
 
 impl Debug for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Message::Data(sender, id, data) => {
-                write!(f, "Data: {}, {}, {} bytes", sender, id, data.len())
+                write!(f, "Data({} bytes, sender:{}, id:{})", data.len(), sender, id)
             }
-            Message::Ack(id) => write!(f, "Ack: {id}"),
+            Message::Ack(id) => write!(f, "Ack({id})"),
         }
     }
-}
-
-pub struct NodeChannels {
-    pub(crate) direct_tx: NetDirectSender<String, Message>,
-    pub(crate) broadcast_tx: NetBroadcastSender<Message>,
-    pub(crate) incoming_rx: InstrumentedReceiver<IncomingMessage>,
-    pub(crate) peers_rx: tokio::sync::watch::Receiver<HashMap<String, Vec<PeerData>>>,
 }
 
 impl<Transport: NetTransport + 'static> Drop for Node<Transport> {
@@ -320,94 +502,118 @@ impl<Transport: NetTransport + 'static> Drop for Node<Transport> {
 }
 
 impl<Transport: NetTransport + 'static> Node<Transport> {
-    pub async fn start(
-        config: NodeConfig,
-        transport: Transport,
-    ) -> anyhow::Result<(Self, NodeChannels)> {
+    pub async fn start(config: NodeConfig, transport: Transport) -> anyhow::Result<Self> {
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let (config_tx, config_rx) = tokio::sync::watch::channel(config);
         let config = config_rx.borrow().clone();
         let (network_config_tx, network_config_rx) =
             tokio::sync::watch::channel(config.network.clone());
-        let (gossip_config_tx, _gossip_config_rx) =
-            tokio::sync::watch::channel(config.gossip.clone());
         let (watch_gossip_config_tx, watch_gossip_config_rx) =
             tokio::sync::watch::channel(WatchGossipConfig {
+                endpoint: config.peer_endpoint(),
                 max_nodes_with_same_id: 5,
+                override_subscribe: Vec::new(),
                 trusted_pubkeys: HashSet::new(),
             });
-        tokio::spawn(split_config(
+        tracing::info!("Gossip advertise addr: {:?}", config.gossip.advertise_addr);
+        let (gossip_reload_config_tx, gossip_reload_config_rx) =
+            tokio::sync::watch::channel(GossipReloadConfig {
+                gossip_config: config.gossip.clone(),
+                api_advertise_addr: Url::parse(&format!("http://{}", config.network.bind))?,
+                my_ed_key_secret: vec![],
+                my_ed_key_path: vec![],
+                peer_config: None,
+            });
+        tokio::spawn(split_node_config(
             shutdown_rx.clone(),
-            config_rx,
+            config_rx.clone(),
             network_config_tx,
-            gossip_config_tx,
+            gossip_reload_config_tx,
+            watch_gossip_config_tx,
         ));
 
-        tracing::info!("Gossip advertise addr: {:?}", config.gossip.advertise_addr);
+        let (chitchat_rx, _) = run_gossip_with_reload(
+            "node",
+            shutdown_rx.clone(),
+            gossip_reload_config_rx,
+            chitchat::transport::UdpTransport,
+        )
+        .await?;
 
-        let (_, gossip_config_rx) = tokio::sync::watch::channel(config.gossip.clone());
-        let (chitchat_handle, gossip_rest_handle) =
-            gossip::run(shutdown_rx.clone(), gossip_config_rx, chitchat::transport::UdpTransport)
-                .await?;
+        let chitchat_ref =
+            chitchat_rx.borrow().clone().expect("ChitchatRef is guaranteed to have Some value");
 
         let gossip_node = GossipPeer::new(
-            config.node_id.clone(),
+            config.id.clone(),
             config.network.bind,
-            config.network.proxies.clone(),
+            config.proxies.clone().into(),
             None,
             None,
             &[],
         )?;
-        chitchat_handle
-            .with_chitchat(|c| {
-                gossip_node.set_to(c.self_node_state());
-            })
-            .await;
 
+        {
+            let mut chitchat = chitchat_ref.lock();
+            gossip_node.set_to(chitchat.self_node_state());
+        }
         let network = BasicNetwork::new(shutdown_tx.clone(), network_config_rx, transport.clone());
-        let chitchat = chitchat_handle.chitchat();
 
-        let (direct_tx, broadcast_tx, incoming_rx, peers_rx) = network
+        let (direct_tx, broadcast_tx, incoming_rx, net_topology_rx) = network
             .start(
                 watch_gossip_config_rx,
                 None,
                 Option::<NoChannelMetrics>::None,
-                config.node_id.clone(),
-                config.advertise_addr,
+                config.id,
+                config.network.bind,
                 false,
-                chitchat.clone(),
+                chitchat_rx.clone(),
             )
             .await?;
 
         let state = Arc::new(NodeState::default());
 
-        Ok((
-            Self {
-                shutdown_tx,
-                config_tx,
-                watch_gossip_config_tx,
-                transport,
-                chitchat_handle,
-                gossip_rest_handle,
-                chitchat,
-                state,
-            },
-            NodeChannels { direct_tx, broadcast_tx, incoming_rx, peers_rx },
-        ))
+        Ok(Self {
+            shutdown_tx,
+            config_tx,
+            transport,
+            state,
+            direct_tx,
+            broadcast_tx,
+            incoming_rx: Some(incoming_rx),
+            net_topology_rx,
+        })
+    }
+}
+
+pub trait NodeWrapper<Transport: NetTransport + 'static> {
+    fn node(&self) -> &Node<Transport>;
+
+    fn broadcast(&self, message: Message) {
+        self.node().broadcast_tx.send(message).unwrap();
     }
 
-    pub(crate) fn print_stat(&self, node_count: usize) {
-        let unconfirmed = self.state.unconfirmed.lock().unwrap().values().sum::<usize>();
+    fn send_direct(&self, receiver: String, message: Message) {
+        self.node().direct_tx.send((DirectReceiver::Peer(receiver), message)).unwrap();
+    }
+
+    fn print_stat(&self, node_count: usize) {
+        let state = &*self.node().state;
+        let unconfirmed = state.unconfirmed.lock().unwrap().values().sum::<usize>();
         if unconfirmed <= node_count {
             return;
         }
-        let data_sent = self.state.data_sent.load(Ordering::Relaxed);
-        let data_received = self.state.data_received.load(Ordering::Relaxed);
-        let ack_sent = self.state.ack_sent.load(Ordering::Relaxed);
-        let ack_received = self.state.ack_received.load(Ordering::Relaxed);
-        let live_nodes = self.chitchat.lock().live_nodes().try_len().unwrap_or_default();
+        let data_sent = state.data_sent.load(Ordering::Relaxed);
+        let data_received = state.data_received.load(Ordering::Relaxed);
+        let ack_sent = state.ack_sent.load(Ordering::Relaxed);
+        let ack_received = state.ack_received.load(Ordering::Relaxed);
         println!(
-            "LiveNodes: {live_nodes} of {node_count}, Unconfirmed: {unconfirmed}, Data sent: {data_sent}, Data received: {data_received}, Ack sent: {ack_sent}, Ack received: {ack_received}"
+            "Node count: {node_count}, Unconfirmed: {unconfirmed}, Data sent: {data_sent}, Data received: {data_received}, Ack sent: {ack_sent}, Ack received: {ack_received}"
         );
+    }
+}
+
+impl<Transport: NetTransport + 'static> NodeWrapper<Transport> for Node<Transport> {
+    fn node(&self) -> &Node<Transport> {
+        self
     }
 }

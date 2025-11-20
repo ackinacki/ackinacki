@@ -1,4 +1,5 @@
 use std::fmt::Debug;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 use std::time::SystemTime;
@@ -11,7 +12,7 @@ use telemetry_utils::now_ms;
 
 const MAX_UNCOMPRESSED_SIZE: usize = 1000;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct NetMessage {
     pub delivery_start_timestamp_ms: u64,
     pub id: String,
@@ -19,13 +20,98 @@ pub struct NetMessage {
     pub compressed: bool,
     pub data: Arc<Vec<u8>>,
     pub last_sender_is_proxy: bool,
-    #[serde(skip)]
     pub received_at: u64,
+    pub direct_receiver: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct NetMessageV0 {
+    delivery_start_timestamp_ms: u64,
+    id: String,
+    label: String,
+    compressed: bool,
+    data: Arc<Vec<u8>>,
+    last_sender_is_proxy: bool,
+}
+
+#[derive(Deserialize)]
+struct NetMessageV1 {
+    delivery_start_timestamp_ms: u64,
+    id: String,
+    label: String,
+    compressed: bool,
+    data: Arc<Vec<u8>>,
+    last_sender_is_proxy: bool,
+    direct_receiver: Option<String>,
+}
+
+#[derive(Serialize)]
+struct NetMessageV1Ref<'a> {
+    delivery_start_timestamp_ms: u64,
+    id: &'a String,
+    label: &'a String,
+    compressed: bool,
+    data: &'a Arc<Vec<u8>>,
+    last_sender_is_proxy: bool,
+    direct_receiver: &'a Option<String>,
+}
+
+impl<'a> From<&'a NetMessage> for NetMessageV1Ref<'a> {
+    fn from(value: &'a NetMessage) -> Self {
+        Self {
+            delivery_start_timestamp_ms: value.delivery_start_timestamp_ms,
+            id: &value.id,
+            label: &value.label,
+            compressed: value.compressed,
+            data: &value.data,
+            last_sender_is_proxy: value.last_sender_is_proxy,
+            direct_receiver: &value.direct_receiver,
+        }
+    }
 }
 
 impl NetMessage {
+    const V1_TAG: [u8; 8] = [97, 99, 107, 110, 99, 107, 0, 1];
+
+    pub fn serialize(&self) -> anyhow::Result<Vec<u8>> {
+        let v1 = NetMessageV1Ref::from(self);
+        let mut buf = bincode::serialize(&v1)?;
+        buf.extend(Self::V1_TAG);
+        Ok(buf)
+    }
+
+    pub fn deserialize(bytes: &[u8]) -> anyhow::Result<Self> {
+        let message = if bytes.ends_with(&Self::V1_TAG) {
+            let v1 = bincode::deserialize::<NetMessageV1>(bytes)?;
+            Self {
+                delivery_start_timestamp_ms: v1.delivery_start_timestamp_ms,
+                id: v1.id,
+                label: v1.label,
+                compressed: v1.compressed,
+                data: v1.data,
+                last_sender_is_proxy: v1.last_sender_is_proxy,
+                received_at: 0,
+                direct_receiver: v1.direct_receiver,
+            }
+        } else {
+            let v0 = bincode::deserialize::<NetMessageV0>(bytes)?;
+            Self {
+                delivery_start_timestamp_ms: v0.delivery_start_timestamp_ms,
+                id: v0.id,
+                label: v0.label,
+                compressed: v0.compressed,
+                data: v0.data,
+                last_sender_is_proxy: v0.last_sender_is_proxy,
+                received_at: 0,
+                direct_receiver: None,
+            }
+        };
+        Ok(message)
+    }
+
     pub fn transfer_size(msg: &NetMessage) -> u64 {
-        bincode::serialized_size(msg)
+        let v1 = NetMessageV1Ref::from(msg);
+        bincode::serialized_size(&v1)
             .unwrap_or_else(|_| (8 + msg.id.len() + msg.label.len() + msg.data.len() + 1) as u64)
     }
 
@@ -90,6 +176,7 @@ impl NetMessage {
                 compressed,
                 last_sender_is_proxy: false,
                 received_at: u64::default(),
+                direct_receiver: None,
             },
             uncompressed_size,
         ))
@@ -137,5 +224,85 @@ impl NetMessage {
             );
         }
         Ok((message, decompress_time, deserialize_time))
+    }
+
+    pub fn direct_receiver_peer_id<PeerId: FromStr>(&self) -> Option<PeerId> {
+        self.direct_receiver.as_ref().and_then(|x| x.parse().ok())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serde::Deserialize;
+    use serde::Serialize;
+
+    use crate::message::NetMessage;
+
+    #[derive(Serialize, Deserialize)]
+    struct NetMessageV0 {
+        pub delivery_start_timestamp_ms: u64,
+        pub id: String,
+        pub label: String,
+        pub compressed: bool,
+        pub data: Arc<Vec<u8>>,
+        pub last_sender_is_proxy: bool,
+        #[serde(skip)]
+        pub received_at: u64,
+    }
+
+    #[test]
+    fn test_net_message_backward_compatibility() {
+        let original_v1 = NetMessage {
+            delivery_start_timestamp_ms: 1,
+            id: "id1".to_string(),
+            label: "label1".to_string(),
+            compressed: false,
+            data: Arc::new(vec![1, 2, 3]),
+            last_sender_is_proxy: false,
+            received_at: 2,
+            direct_receiver: Some("recipient1".to_string()),
+        };
+
+        let buf_v1 = original_v1.serialize().unwrap();
+        let v0 = bincode::deserialize::<NetMessageV0>(&buf_v1).unwrap();
+        assert_eq!(v0.delivery_start_timestamp_ms, original_v1.delivery_start_timestamp_ms);
+        assert_eq!(v0.id, original_v1.id);
+        assert_eq!(v0.label, original_v1.label);
+        assert_eq!(v0.compressed, original_v1.compressed);
+        assert_eq!(v0.data, original_v1.data);
+        assert_eq!(v0.last_sender_is_proxy, original_v1.last_sender_is_proxy);
+        assert_eq!(0, v0.received_at);
+
+        let v1 = NetMessage::deserialize(&buf_v1).unwrap();
+        assert_eq!(v1.delivery_start_timestamp_ms, original_v1.delivery_start_timestamp_ms);
+        assert_eq!(v1.id, original_v1.id);
+        assert_eq!(v1.label, original_v1.label);
+        assert_eq!(v1.compressed, original_v1.compressed);
+        assert_eq!(v1.data, original_v1.data);
+        assert_eq!(v1.last_sender_is_proxy, original_v1.last_sender_is_proxy);
+        assert_eq!(0, v1.received_at);
+        assert_eq!(v1.direct_receiver, original_v1.direct_receiver);
+
+        let buf_v0 = bincode::serialize(&v0).unwrap();
+        let v0 = bincode::deserialize::<NetMessageV0>(&buf_v0).unwrap();
+        assert_eq!(v0.delivery_start_timestamp_ms, original_v1.delivery_start_timestamp_ms);
+        assert_eq!(v0.id, original_v1.id);
+        assert_eq!(v0.label, original_v1.label);
+        assert_eq!(v0.compressed, original_v1.compressed);
+        assert_eq!(v0.data, original_v1.data);
+        assert_eq!(v0.last_sender_is_proxy, original_v1.last_sender_is_proxy);
+        assert_eq!(0, v0.received_at);
+
+        let v1 = NetMessage::deserialize(&buf_v0).unwrap();
+        assert_eq!(v1.delivery_start_timestamp_ms, original_v1.delivery_start_timestamp_ms);
+        assert_eq!(v1.id, original_v1.id);
+        assert_eq!(v1.label, original_v1.label);
+        assert_eq!(v1.compressed, original_v1.compressed);
+        assert_eq!(v1.data, original_v1.data);
+        assert_eq!(v1.last_sender_is_proxy, original_v1.last_sender_is_proxy);
+        assert_eq!(0, v1.received_at);
+        assert!(v1.direct_receiver.is_none());
     }
 }

@@ -2,13 +2,13 @@
 
 - [Acki Nacki Instructions](#acki-nacki-instructions)
 - [Block Keeper System Requirements](#block-keeper-system-requirements)
-- [(Current Phase) Joining the Acki Nacki Network from the Genesis Block](#current-phase-joining-the-acki-nacki-network-from-the-genesis-block)
+- [(Completed) Joining the Acki Nacki Network from the Genesis Block](#completed-joining-the-acki-nacki-network-from-the-genesis-block)
   - [Stage 1. Preparation Checklist](#stage-1-preparation-checklist)
     - [For License Owner](#for-license-owner)
     - [For Node Owner](#for-node-owner)
   - [Stage 2. Zerostate Formation](#stage-2-zerostate-formation)
   - [Stage 3. Launch After the GOSH Team Signal](#stage-3-launch-after-the-gosh-team-signal)
-- [(Next Phase) Joining the Acki Nacki Network After Launch](#next-phase-joining-the-acki-nacki-network-after-launch)
+- [(Current Phase) Joining the Acki Nacki Network After Launch](#current-phase-joining-the-acki-nacki-network-after-launch)
   - [Join As a License Owner](#join-as-a-license-owner)
   - [Join As a BK Node Owner](#join-as-a-bk-node-owner)
 - [Block Keeper Documentation](#block-keeper-documentation)
@@ -16,6 +16,7 @@
     - [Prerequisites](#prerequisites)
     - [Configure tvm-cli](#configure-tvm-cli)
     - [Deploy](#deploy)
+    - [Updating the license whitelist in the BK Node Wallet](#updating-the-license-whitelist-in-the-bk-node-wallet)
   - [Delegating License](#delegating-license)
   - [Block Keeper Deployment with Ansible](#block-keeper-deployment-with-ansible)
     - [Prerequisites](#prerequisites-1)
@@ -51,10 +52,13 @@
   - [Deployment with Ansible](#deployment-with-ansible)
     - [Prerequisites](#prerequisites-3)
     - [Generate Keys and Deploy Block Manager Wallet](#generate-keys-and-deploy-block-manager-wallet)
+      - [Manually (applies if you don’t have a license number)](#manually-applies-if-you-dont-have-a-license-number)
+      - [Using the Script (if you already have a license number)](#using-the-script-if-you-already-have-a-license-number)
     - [Create an Ansible Inventory](#create-an-ansible-inventory)
     - [Test the Ansible Playbook](#test-the-ansible-playbook)
     - [Run the Ansible Playbook](#run-the-ansible-playbook-1)
     - [Verify the Deployment](#verify-the-deployment)
+  - [Updating the Whitelist and Delegating the License to the BM Wallet](#updating-the-whitelist-and-delegating-the-license-to-the-bm-wallet)
 - [Proxy Documentation](#proxy-documentation)
   - [System Requirements](#system-requirements-1)
   - [Deployment with Ansible](#deployment-with-ansible-1)
@@ -74,7 +78,7 @@
 | Storage       | 1 TB of high performance NVMe SSD (PCIe Gen3 with 4 lanes or better)         |
 | Network       | The effective bandwidth may be limited to 1 Gbps full-duplex total traffic, meaning no more than 1 Gbps in each direction (ingress and egress). A 2.5 Gbps or better full-duplex network interface card (NIC) should be installed to support anticipated future load increases and avoid hardware replacement.                                                      |
 
-# (Current Phase) Joining the Acki Nacki Network from the Genesis Block
+# (Completed) Joining the Acki Nacki Network from the Genesis Block
 
 During this phase, information is being collected to form the Zerostate and nodes are being prepared for the network launch.
 If you want to join the network right from the start, you need to take part in this phase.
@@ -149,11 +153,7 @@ You can change a node’s ip-adress after the network launch.
 
 *A guide for Proxy IP migration will be added soon.*
 
-🚨 **Important:**
-If BK did not submit an application to continue staking, they can rejoin the network only from Epoch 12.
-(The duration of one Epoch is 259,200 blocks ≈ 24 hours.)
-
-# (Next Phase) Joining the Acki Nacki Network After Launch
+# (Current Phase) Joining the Acki Nacki Network After Launch
 
 In this phase, BK nodes that did not participate in the previous network launch phase will be able to join.
 
@@ -178,9 +178,14 @@ After confirmation from the Node Owner, delegate your license to the chosen BK u
 
 Now wait for your BK to add your stake to the staking pool.
 
+🚨 **Important:**
+**If you delegate to your own BK node, keep in mind that you have only half an epoch to submit the stake.**
+
 ℹ️ **Note:**
 To check your rewards:
-* Call `getDetails` in the BK wallet (see the balance field in the license mapping).
+* Call `getDetails` in the BK wallet (see the balance field in the license mapping)  
+[You can find more details here](https://docs.ackinacki.com/for-node-owners/protocol-participation/block-keeper/license/working-with-licenses)
+
 * You can also view your rewards using the [dashboard](https://dashboard.ackinacki.com).
 
 🚨 **Important:**
@@ -192,7 +197,7 @@ Condition for receiving the maximum reward: continuous operation and not locking
 To deploy a BK wallet with a whitelist (license numbers received from License Owners), [follow this guide](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#block-keeper-wallet-deployment).
 
 ℹ️ **Note:**
-The whitelist can be updated at any time.
+The whitelist [can be updated](#updating-the-license-whitelist-in-the-bk-node-wallet) at any time.
 
 **Step 2.**
 Share the BK wallet’s public key with the License Owner so they can delegate their licenses.
@@ -205,13 +210,7 @@ Start the node and staking:
 After at least one license is delegated, the Node Owner deploys BK software and starts staking on the server [using the instruction](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#block-keeper-deployment-with-ansible).
 
 🚨 **Important:**
-If a ВК did not participate from the network launch, they can join only from Epoch 12.
-(The duration of one Epoch is 259,200 blocks ≈ 24 hours.)
-
-* Get the current network `seq_no`:
-```bash
-tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no'
-```
+After delegating the license to the BK wallet, you have **only half an epoch to submit the stake**.
 
 **Step 5.**
 [Check the node status](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#check-node-status).
@@ -260,7 +259,8 @@ After the script completes successfully, make sure to save:
 
 These will be required later when running the Ansible playbook.
 
-ℹ️ **Note:**
+### Updating the license whitelist in the BK Node Wallet
+
 The Node Owner can update the license whitelist at any time. However, the changes will only take effect at the beginning of the next Epoch.
 
 To do this, call the `setLicenseWhiteList(mapping(uint256 => bool))` method in your Block Keeper Node Wallet contract, passing the license numbers received from the License Owners.
@@ -273,7 +273,7 @@ Example command:
 ```shell
 tvm-cli call <BK_NODE_WALLET_ADDR> setLicenseWhiteList \
   '{"whiteListLicense": {"1": true, "2": true, "5": true}}' \
-  --abi contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json \
+  --abi contracts/0.79.3_compiled/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json \
   --sign BK_NODE_OWNER_KEYS
 ```
 
@@ -284,18 +284,21 @@ However, no more than 20 (twenty) licenses can be delegated to a single node.
 
 Learn more about [working with licenses](https://docs.ackinacki.com//protocol-participation/license/working-with-licenses).
 
-If the BK Node Owner is also a License Owner, they must use the `addBKWallet(uint256 pubkey)` method in the [`License`](https://github.com/ackinacki/ackinacki/blob/main/contracts/bksystem/License.sol) contract to delegate their licenses to their node.
+If the BK Node Owner is also a License Owner, they must use the `addBKWallet(uint256 pubkey)` method in the [`License`](https://github.com/ackinacki/ackinacki/blob/main/contracts/0.79.3_compiled/bksystem/License.sol) contract to delegate their licenses to their node.
 (This must be done for each license contract).
 
 Where:
 * `pubkey` – the public key of the BK node wallet.
-* [`License.abi.json`](https://github.com/ackinacki/ackinacki/blob/main/contracts/bksystem/License.abi.json) – the ABI of the License contract.
+* [`License.abi.json`](https://github.com/ackinacki/ackinacki/blob/main/contracts/0.79.3_compiled/bksystem/License.abi.json) – the ABI of the License contract.
 * `License.keys.json` – the keys obtained by the License Owner during registration in the dashboard.
 
 For example:
 ```bash
-tvm-cli -j callx --addr 0:7f2f945faaae4cce286299afe74dac9460893dd5cba1ac273b9e91f55f1141ec --abi contracts/bksystem/License.abi.json --keys license_onwer/license.keys.json --method addBKWallet '{"pubkey": "0xfa4edc8b63c4e66241a57c11e0a522769ca4a4f106692512fc92f2d658169bcc"}'
+tvm-cli -j callx --addr 0:7f2f945faaae4cce286299afe74dac9460893dd5cba1ac273b9e91f55f1141ec --abi contracts/0.79.3_compiled/bksystem/License.abi.json --keys license_onwer/license.keys.json --method addBKWallet '{"pubkey": "0xfa4edc8b63c4e66241a57c11e0a522769ca4a4f106692512fc92f2d658169bcc"}'
 ```
+
+🚨 **Important:**
+**After delegating the license to the BK wallet, you have only half an epoch to submit the stake.**
 
 ## Block Keeper Deployment with Ansible
 
@@ -308,7 +311,7 @@ tvm-cli -j callx --addr 0:7f2f945faaae4cce286299afe74dac9460893dd5cba1ac273b9e91
 
 `AUTH_TOKEN`: This token is used to authorize access to the BK API. You can specify any arbitrary string.
 
-`Node ID`: The unique identifier of the Block Keeper within the network. It is required when creating a new Block Keeper. Use the value provided by the BK wallet deployment script.
+`Node ID`: The unique identifier of the Block Keeper within the network. It corresponds to the BK wallet address without the `0:` prefix. This identifier is required when creating a new Block Keeper.
 
 `HOST_PUBLIC_IP`: The public IP address of the host. Make sure that the ports do not conflict with other services.
 
@@ -538,35 +541,16 @@ block_keepers:
 
 ### Graceful Shutdown of a BK Node
 
-To stop a Block Keeper (BK) node safely without data corruption, follow the steps below.
+To safely stop a Block Keeper (BK) node without risking data corruption, you can perform a graceful shutdown using the Ansible playbook.
+This approach can also be used when you need to gracefully shut down multiple nodes at once.
 
-* Go to the Block Keeper directory
-
-```bash
-cd {{ ROOT_DIR }}/block-keeper
-```
-
-* To identify the service name of your node in Docker Compose, run:
+Use the following command to do this:
 
 ```bash
-docker compose ps
+ansible-playbook -i test-inventory.yaml ansible/node-stopping.yml
 ```
 
-You should see log entries similar to:
-
-```
-NAME                    IMAGE                          SERVICE                 CREATED
-
-block-keeper-node       teamgosh/ackinacki-node       node{{ NODE_ID }}       28 hours ago
-```
-
-* Make note of the `SERVICE` value (`node{{ NODE_ID }}` in the example).
-
-* Gracefully stop the node process by sending SIGTERM to the service:
-
-```bash
-docker compose exec node{{ NODE_ID }} pkill node
-```
+Keep an eye on the output of the command to make sure that everything was successful and nothing timed out.
 
 * Check the logs to ensure shutdown has completed.
 You should see a message similar to:
@@ -576,23 +560,6 @@ You should see a message similar to:
 ```
 
 and no new logs should appear afterward.
-
-* After shutdown, remove the container with the old configuration:
-
-```
-docker compose down node{{ NODE_ID }}
-```
-
-### Graceful shutdown using Ansible playbook
-
-Alternatively, you can perform a graceful shutdown using the Ansible playbook. It is recommended to use this when it is
-required to perform graceful shutdown of many nodes at once. To do this, you can use the following command:
-
-```bash
-ansible-playbook -i test-inventory.yaml ansible/node-stopping.yml
-```
-
-Keep an eye on the output of the command to make sure that everything was successful and nothing timed out.
 
 ### Upgrading Block Keeper to a new image or configuration
 
@@ -657,14 +624,14 @@ The staking container is part of the Docker Compose setup and runs alongside the
   To check the current minimum and maximum stake in the network, run the following commands:
 
   ```bash
-  tvm-cli -j run 0:7777777777777777777777777777777777777777777777777777777777777777 getMinStakeNow {} --abi contracts/bksystem/BlockKeeperContractRoot.abi.json
+  tvm-cli -j run 0:7777777777777777777777777777777777777777777777777777777777777777 getMinStakeNow {} --abi contracts/0.79.3_compiled/bksystem/BlockKeeperContractRoot.abi.json
   ```
 
   ```bash
-  tvm-cli -j run 0:7777777777777777777777777777777777777777777777777777777777777777 getMaxStakeNow {} --abi contracts/bksystem/BlockKeeperContractRoot.abi.json
+  tvm-cli -j run 0:7777777777777777777777777777777777777777777777777777777777777777 getMaxStakeNow {} --abi contracts/0.79.3_compiled/bksystem/BlockKeeperContractRoot.abi.json
   ```
 
-  You will need the ABI file [BlockKeeperContractRoot.abi.json](https://raw.githubusercontent.com/ackinacki/ackinacki/fa3c2685c5efaaded16aa370066a39ea12d0f899/contracts/bksystem/BlockKeeperContractRoot.abi.json) to run these commands.
+  You will need the ABI file [BlockKeeperContractRoot.abi.json](https://raw.githubusercontent.com/ackinacki/ackinacki/fa3c2685c5efaaded16aa370066a39ea12d0f899/contracts/0.79.3_compiled/bksystem/BlockKeeperContractRoot.abi.json) to run these commands.
 
 
 ### Prerequisites
@@ -738,10 +705,10 @@ To avoid losing rewards and your reputation score when stopping staking, you mus
 * Find `seqNoFinish` for the Epoch that is still active:
 
 ```bash
-tvm-cli -j runx --abi contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json --addr <BK_NODE_WALLET_ADDR> -m getDetails| jq -r '.activeStakes[] | select(.status == "1") | .seqNoFinish'
+tvm-cli -j runx --abi contracts/0.79.3_compiled/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json --addr <BK_NODE_WALLET_ADDR> -m getDetails| jq -r '.activeStakes[] | select(.status == "1") | .seqNoFinish'
 ```
 
-You will need the ABI file [AckiNackiBlockKeeperNodeWallet.abi.json](https://raw.githubusercontent.com/ackinacki/ackinacki/refs/heads/main/contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json) to run this command.
+You will need the ABI file [AckiNackiBlockKeeperNodeWallet.abi.json](https://raw.githubusercontent.com/ackinacki/ackinacki/refs/heads/main/contracts/0.79.3_compiled/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json) to run this command.
 
 ℹ️ **Note:**
   The address of the BK node wallet can be retrieved from the logs,
@@ -750,7 +717,7 @@ You will need the ABI file [AckiNackiBlockKeeperNodeWallet.abi.json](https://raw
 
   Example:
   ```bash
-  tvm-cli -j runx --abi ../contracts/bksystem/BlockKeeperContractRoot.abi.json --addr 0:7777777777777777777777777777777777777777777777777777777777777777 -m getAckiNackiBlockKeeperNodeWalletAddress '{"pubkey": "0x1093c528ac2976c6b7536ef25e1c126db9dc225f77cd596d2234613eb9cad9b9"}'
+  tvm-cli -j runx --abi ../contracts/0.79.3_compiled/bksystem/BlockKeeperContractRoot.abi.json --addr 0:7777777777777777777777777777777777777777777777777777777777777777 -m getAckiNackiBlockKeeperNodeWalletAddress '{"pubkey": "0x1093c528ac2976c6b7536ef25e1c126db9dc225f77cd596d2234613eb9cad9b9"}'
   ```
 
 * Get the current network `seq_no`:
@@ -771,7 +738,7 @@ These statuses indicate that the stake is either in the Pre-Epoch phase (0) or t
 
 To check the current state:
 ```bash
-tvm-cli -j runx --abi contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json --addr <BK_NODE_WALLET_ADDR> -m getDetails
+tvm-cli -j runx --abi contracts/0.79.3_compiled/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json --addr <BK_NODE_WALLET_ADDR> -m getDetails
 ```
 
 Example output when there are no active stakes:
@@ -786,7 +753,7 @@ Example output when there are no active stakes:
     "0x0000000000000000000000000000000000000000000000000000000000000000": {
       "reputationTime": "129",
       "status": "0",
-      "isPrivileged": false,
+      "isPrivileged": true,
       "stakeController": null,
       "last_touch": "1751275067",
       "balance": "0",
@@ -855,7 +822,7 @@ Step‑by‑Step Guide:
 
 * Find the address of the currently Epoch:
 ```bash
-tvm-cli -j runx --abi contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json --addr <BK_NODE_WALLET_ADDR> -m getEpochAddress| jq -r -e '.epochAddress'
+tvm-cli -j runx --abi contracts/0.79.3_compiled/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json --addr <BK_NODE_WALLET_ADDR> -m getEpochAddress| jq -r -e '.epochAddress'
 ```
 
 ℹ️ **Note:**
@@ -865,14 +832,14 @@ tvm-cli -j runx --abi contracts/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json
 
   Example:
   ```bash
-  tvm-cli -j runx --abi ../contracts/bksystem/BlockKeeperContractRoot.abi.json --addr 0:7777777777777777777777777777777777777777777777777777777777777777 -m getAckiNackiBlockKeeperNodeWalletAddress '{"pubkey": "0x1093c528ac2976c6b7536ef25e1c126db9dc225f77cd596d2234613eb9cad9b9"}'
+  tvm-cli -j runx --abi ../contracts/0.79.3_compiled/bksystem/BlockKeeperContractRoot.abi.json --addr 0:7777777777777777777777777777777777777777777777777777777777777777 -m getAckiNackiBlockKeeperNodeWalletAddress '{"pubkey": "0x1093c528a...............d9b9"}'
   ```
 
 #### 1.2  Determine the Epoch Length
 Query `getDetails` on the Epoch contract to obtain its approximate duration in seconds:
 ```bash
-tvm-cli -j run 0:6338d20a991247617c6beb9e22b0c36fa8f40d290c0e73f543e94f2ee43025fb \
---abi contracts/bksystem/BlockKeeperEpochContract.abi.json \
+tvm-cli -j run <epochAddress> \
+--abi contracts/0.79.3_compiled/bksystem/BlockKeeperEpochContract.abi.json \
 getDetails {} \
 | jq -r '((.seqNoFinish - .seqNoStart) * 3 / 10 | tostring) + " seconds"'
 ```
@@ -926,31 +893,18 @@ Follow these steps to restore the node (it will resync):
 
 **Steps**
 
-1) **Stop the BK node**
-Run the following command to stop the BK node and staking
-(staking will stop automatically with the node):
+1) **Stop the BK node and clean up the data**
     ```bash
-    docker compose down node{{ NODE_ID }}
+    ansible-playbook -i test-inventory.yaml ansible/node-clean-data.yml
     ```
 
-1) **Stop Aerospike**
+2) **Restart services**
+
     ```bash
-    docker compose down aerospike
+    ansible-playbook -i test-inventory.yaml ansible/node-starting.yml
     ```
 
-2) **Remove corrupted state directories**
-Navigate to the Block Keeper data directory `{{ BK_DATA_DIR }}` and remove the following folders:
-    ```bash
-    rm -rf aerospike/ share/ workdir/
-    ```
-
-1) **Restart services**
-Go back to the Block Keeper directory `{{ BK_DIR }}` where the `docker-compose.yml` file is located, and start the services again:
-    ```bash
-    docker compose up -d
-    ```
-
-1) **Verify service status**
+3) **Verify service status**
 Ensure that node, staking, and aerospike services are running without restarts or crashes:
     ```bash
     docker compose ps
@@ -964,18 +918,18 @@ Ensure that node, staking, and aerospike services are running without restarts o
     aerospike/aerospike-server:latest
     ```
 
-1) **Check the node logs**
+4) **Check the node logs**
 Verify that the node logs are active and contain no errors:
     ```bash
     tail -f $MNT_DATA/logs-block-keeper/node.log
     ```
+    
     Additionally, you can check the container logs:
-
     ```bash
     docker compose logs -f node{{ NODE_ID }}
     ```
 
-1) **Check staking logs**
+5) **Check staking logs**
 Review the staking logs. They must not contain errors and should display information about stakes, Epochs, and related activities:
     ```bash
     tail -f $MNT_DATA/logs-block-keeper/staking.log
@@ -986,7 +940,7 @@ Review the staking logs. They must not contain errors and should display informa
     docker compose logs -f staking
     ```
 
-1) **Wait for synchronization**
+6) **Wait for synchronization**
 It may take around 20+ minutes for synchronization. Once complete, the `seq_no` should begin to increase, indicating successful recovery.
 
     🚨 **Important:**
@@ -994,6 +948,24 @@ It may take around 20+ minutes for synchronization. Once complete, the `seq_no` 
     - Misconfigured config file
     - Incorrect or corrupted key files
 
+### Error with sending continue stake request
+
+If you notice an error like this in the logs:
+
+```bash
+[2025-09-25T03:58:04+00:00] Epoch with address "0:7f73cb8939cd302418b79b86e64837675c283af95c37aec9bff673011ce38fe1" is being continued: false [2025-09-25T03:59:05+00:00] Active Stakes - "0x5c5c7dc12c5cb21e6969a3d6c44173c682fd1e7dac8dcc9b1fb70ea64cf1678e" [2025-09-25T03:59:05+00:00] Stakes count - 1 [2025-09-25T03:59:05+00:00] Epoch in progress - "0x5c5c7dc12c5cb21e6969a3d6c44173c682fd1e7dac8dcc9b1fb70ea64cf1678e" [2025-09-25T03:59:06+00:00] There is active stake with epoch address "0:7f73cb8939cd302418b79b86e64837675c283af95c37aec9bff673011ce38fe1" [2025-09-25T03:59:06+00:00] Current epoch is not being continued. Sending continue stake... [2025-09-25T03:59:06+00:00] Trying signer index: 2577 [2025-09-25T03:59:07+00:00] Found proper signer index for continue: 2577 [2025-09-25T03:59:07+00:00] Sending continue stake - 10917648873105 { "Error": { "code": 621, "message": "Failed to execute the message. Error occurred during the compute phase.", "data": { "core_version": "2.22.3", "node_error": { "extensions": { "code": "TVM_ERROR", "message": "Failed to execute the message. Error occurred during the compute phase.", "details": { "producers": [ "94.156.233.53:8601" ], "message_hash": "2174189543433f1e1a2c77e078fc3cf53da8d99956fde1751eda1f941c65844f", "exit_code": 300, "current_time": "1758772748099", "thread_id": "00000000000000000000000000000000000000000000000000000000000000000000" } } }, "ext_message_token": null } } } [2025-09-25T03:59:08+00:00] Error with sending continue stake request. Go to the next step [2025-09-25T03:59:08+00:00] Epoch with address "0:7f73cb8939cd302418b79b86e64837675c283af95c37aec9bff673011ce38fe1" is being continued: false [2025-09-25T04:00:08+00:00] Active Stakes - "0x5c5c7dc12c5cb21e6969a3d6c44173c682fd1e7dac8dcc9b1fb70ea64cf1678e" [2025-09-25T04:00:08+00:00] Stakes count - 1 [2025-09-25T04:00:09+00:00] Epoch in progress - "0x5c5c7dc12c5cb21e6969a3d6c44173c682fd1e7dac8dcc9b1fb70ea64cf1678e" [2025-09-25T04:00:09+00:00] There is active stake with epoch address "0:7f73cb8939cd302418b79b86e64837675c283af95c37aec9bff673011ce38fe1" [2025-09-25T04:00:09+00:00] Current epoch is not being continued. Sending continue stake...
+```
+
+**This error occurs because messages are being sent to the wallet or license contract too frequently.**  
+When messages are sent too often, the system doesn’t have enough time to process previous transactions, leading to a compute-phase execution error `TVM_ERROR, exit_code = 300`.
+
+✅ What to Do
+
+1. Do nothing if this error appears occasionally — it will stabilize on its own.
+2. If the error occurs frequently:
+  * Ensure your node or script is not sending “continue stake” too often.
+  * Verify that the interval between messages is at least 200 blocks.
+3. Once the interval is adjusted, the error will disappear automatically.
 
 # Block Manager Documentation
 
@@ -1004,14 +976,24 @@ It may take around 20+ minutes for synchronization. Once complete, the `seq_no` 
 | Minimum       | 4c/8t       | 32        | 1 TB NVMe  | 1 Gbit synchronous unmetered Internet connection |
 | Recommended   | 8c/16t      | 64        | 2 TB NVMe  | 1 Gbit synchronous unmetered Internet connection |
 
-**Steps**
+🚨 **Important:**
+After purchasing a BM License, it must be delegated.
 
-1. Identify the Block Keeper your Block Manager service will work with and request the following information from its owner:
-  * Authorization Token (`BK_API_TOKEN`) – the access token required for interacting with the BK API.
+You can delegate it **to a Provider** via the [dashboard](https://dashboard.ackinacki.com/) by following [this instruction](https://docs.ackinacki.com/for-node-owners/protocol-participation/block-manager/licence/guide-to-bm-license-delegation).
+
+Alternatively, you can delegate it **to your own BM wallet** if you plan to deploy the BM service yourself.  
+In that case, you must first complete the BM License Pre-Deployment Verification using [this guide](https://docs.ackinacki.com/for-node-owners/network-participation/block-manager/licence/bm-license-pre-deployment-verification).
+Once the verification is complete, you will receive the address of license contract and number, which are required for the delegation process.
+
+**Steps for deploying the BM service:**
+
+1. Identify the Block Keeper that your Block Manager service will work with, and request the following information from its owner:
+  * Authorization Token (`BK_API_TOKEN`) – access token required for interacting with the BK API.
   * BK Public IP Address (`NODE_IP`)
-2. Deploy Block Manager Wallet
-2. Prepare an Ansible inventory file for Block Manager deployment, specifying all required variables (see example below).
-3. Run the Ansible playbook against your inventory to deploy the Block Manager node.
+  * The BK must also open a port for connections to the block streaming service
+2. Deploy the Block Manager Wallet
+3. Prepare an Ansible inventory file for the Block Manager deployment, specifying all required variables (see example below).
+4. Run the Ansible playbook against your inventory to deploy the Block Manager node.
 
 ## Deployment with Ansible
 
@@ -1020,43 +1002,44 @@ It may take around 20+ minutes for synchronization. Once complete, the `seq_no` 
 * A dedicated server for the Block Manager with SSH access.
 * Docker with the Compose plugin installed.
 
-### Generate Keys and Deploy Block Manager Wallet
+### Generate Keys and Deploy the Block Manager Wallet:
 
-Before deploying a Block Manager, you need to obtain your BM license number from the GOSH team representative, then create two key pairs, and finally deploy the Block Manager wallet:
+#### Manually (applies if you don’t have a license number)
 
-* One key pair will be used to operate the Block Manager wallet.
-* The other will be used to sign external message authentication tokens.
-
-You can create a wallet with keys and a license number by running:
-
-```bash
-create_block_manager_wallet.sh block_manager_wallet.keys.json block_manager_wallet_signing.keys.json 1 tvm-endpoint-address.org
-```
-
-Alternatively, you can manually generate the keys and deploy the wallet:
+You can manually generate the keys and deploy the wallet:
 
 ```bash
 tvm-cli genphrase --dump block_manager.keys.json
 tvm-cli genphrase --dump block_manager_signing.keys.json
 ```
 
-Specify these keys to your inventory file.
+You will need to specify these keys in the inventory file.  
 To deploy the Block Manager wallet, extract the keys from the files created above and run:
 
+ℹ️ **Note:**  
+if you don’t have a license number, leave the `whiteListLicense` field empty (`{}`).
+
 ```bash
-tvm-cli --abi ../contracts/bksystem/BlockManagerContractRoot.abi.json --addr 0:6666666666666666666666666666666666666666666666666666666666666666 -m deployAckiNackiBlockManagerNodeWallet '{"pubkey": "0xYOUR_PUB_KEY", "signerPubkey": "0xYOUR_SIGNING_KEY", "whiteListLicense": {"YOUR_LICENSE_NUMBER": true}}'
+tvm-cli --abi ../contracts/0.79.3_compiled/bksystem/BlockManagerContractRoot.abi.json --addr 0:6666666666666666666666666666666666666666666666666666666666666666 -m deployAckiNackiBlockManagerNodeWallet '{"pubkey": "0xYOUR_PUB_KEY", "signerPubkey": "0xYOUR_SIGNING_KEY", "whiteListLicense": {"YOUR_LICENSE_NUMBER": true}}'
 ```
 
-Finally, don’t forget to add the Block Manager wallet to your license:
+#### Using the Script (if you already have a license number)
+
+Before deploying a Block Manager, you need to create two key pairs:
+
+* One key pair for operating the Block Manager wallet..
+* Another for signing external message authentication tokens.
+
+If you already have your license number, create a wallet by running:
 
 ```bash
-tvm-cli -j callx --addr LICENSE_ADDR --abi contracts/bksystem/LicenseBM.abi.json --keys BM_LICENSE_OWNER.keys.json --method addBMWallet '{"pubkey": "0xBM_WALLET_PUB_KEY"}'
+create_block_manager_wallet.sh block_manager_wallet.keys.json block_manager_wallet_signing.keys.json 1 tvm-endpoint-address.org
 ```
 
 ### Create an Ansible Inventory
 
 Below is a sample inventory for Block Manager deployment.
-Make sure to include the b`lock_manager` host group.
+Make sure to include the `block_manager` host group.
 
 ```yaml
 all:
@@ -1125,6 +1108,21 @@ To follow Block Manager logs:
 
 ```bash
 tail -f $MNT_DATA/logs-block-manager/block-manager.log
+```
+
+## Updating the Whitelist and Delegating the License to the BM Wallet
+
+Before delegating, the license must be added to the BM wallet whitelist.  
+To do this, run:
+
+```bash
+tvm-cli -j callx --addr BM_WALLET_ADDR --abi contracts/bksystem/AckiNackiBlockManagerNodeWallet.abi.json --keys block_manager.keys.json --method setLicenseWhiteList '{"whiteListLicense": {"YOUR_LICENSE_NUMBER": true}}'
+```
+
+To delegate the license to the BM wallet, run:
+
+```bash
+tvm-cli -j callx --addr LICENSE_ADDR --abi contracts/bksystem/LicenseBM.abi.json --keys BM_LICENSE_OWNER.keys.json --method addBMWallet '{"pubkey": "0xBM_WALLET_PUB_KEY"}'
 ```
 
 # Proxy Documentation
@@ -1200,8 +1198,12 @@ block_keeper_host:
   PROXIES:
     - PROXY_IP:8085
 ```
-When the proxy service starts, a certificate will be created. The proxy requires a certificate to communicate with the Block Keepers.
+When the Proxy starts, a certificate is created for communication with Block Keepers.
 Specify the Block Keepers’ signing keys in your inventory. Block Keepers must be included in the Block Keeper set.
+
+🚨 **Important:**
+The Proxy certificate must be signed with the key of the BK located behind this Proxy.
+Using a key from another BK may disrupt routing and lead to data loss.
 
 ### Prepare Your Inventory
 

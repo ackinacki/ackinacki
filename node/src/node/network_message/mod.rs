@@ -6,8 +6,10 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
+use derive_getters::Getters;
 use serde::Deserialize;
 use serde::Serialize;
+use typed_builder::TypedBuilder;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
@@ -122,8 +124,16 @@ pub enum NetworkMessage {
 
     AuthoritySwitchProtocol(AuthoritySwitch),
 
+    NodeJoiningWithLastFinalized((NodeJoiningWithLastFinalizedData, ThreadIdentifier)),
+
     // Local commands
     InnerCommand(Command),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Getters, TypedBuilder)]
+pub struct NodeJoiningWithLastFinalizedData {
+    node_identifier: NodeIdentifier,
+    last_finalized_block_seq_no: BlockSeqNo,
 }
 
 impl NetworkMessage {
@@ -150,6 +160,7 @@ impl Debug for NetworkMessage {
                 Nack(_) => f.write_str("Nack"),
                 ExternalMessage(_) => f.write_str("ExternalMessage"),
                 NodeJoining(_) => f.write_str("NodeJoining"),
+                NodeJoiningWithLastFinalized(_) => f.write_str("NodeJoiningWithLastFinalized"),
                 BlockAttestation(_) => f.write_str("BlockAttestation"),
                 BlockRequest { .. } => f.write_str("BlockRequest"),
 
@@ -187,6 +198,9 @@ impl Debug for NetworkMessage {
                 Nack(_) => "Nack",
                 ExternalMessage((msg, _)) => &format!("ExternalMessage: {msg:?}"),
                 NodeJoining(_) => "NodeJoining",
+                NodeJoiningWithLastFinalized((data, _)) => {
+                    &format!("NodeJoiningWithLastFinalized({data:?})")
+                }
                 BlockAttestation(_) => "BlockAttestation",
                 BlockRequest { .. } => "BlockRequest",
 

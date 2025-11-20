@@ -18,7 +18,7 @@ pub struct PulseCandidateBlocks {
     node_id: NodeIdentifier,
     thread_identifier: ThreadIdentifier,
 
-    broadcast_tx: NetBroadcastSender<NetworkMessage>,
+    broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
 
     direct_send_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
 

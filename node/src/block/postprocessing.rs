@@ -80,7 +80,8 @@ pub static ACCOUNT_DATA_D84BDFA753950541BAFAC1E8137BBA14FA6AA55409D9EE33252D442B
 #[cfg(feature = "bk_wallets_repair")]
 pub static ACCOUNT_DATA_1033EA894040ADBA26F13680690FAF3E05F74987610E4F5D50B22142333A8787: &[u8] = include_bytes!("./../../repair_accounts_data/1033ea894040adba26f13680690faf3e05f74987610e4f5d50b22142333a8787_2f0f1240171f5ca39ad87df6410bc0e821aa94469a85075cdc5e145c5add4038");
 #[cfg(feature = "mirror_repair")]
-pub static MIRROR_TVC: &[u8] = include_bytes!("../../../contracts/mvsystem/Mirror.tvc");
+pub static MIRROR_TVC: &[u8] =
+    include_bytes!("../../../contracts/0.79.3_compiled/mvsystem/Mirror.tvc");
 
 #[cfg(feature = "bk_wallets_repair")]
 lazy_static::lazy_static!(
@@ -284,7 +285,7 @@ pub fn postprocess(
                 .map_err(|e| anyhow::format_err!("Failed to check account: {e}"))?
                 .is_some()
             {
-                tracing::info!(target: "node", "replace account with redirect: {:?}", account_routing);
+                tracing::debug!(target: "node", "replace account with redirect: {:?}", account_routing);
                 shard_accounts.replace_with_redirect(&account_id).map_err(|e| {
                     anyhow::format_err!("Failed to insert stub to shard state: {e}")
                 })?;
@@ -581,8 +582,8 @@ fn repair_mirror_accounts(accounts: &mut ShardAccounts) -> anyhow::Result<()> {
         .clone();
 
     for i in 1..=1000 {
-        let hex_part = format!("2{:063x}", i);
-        let address = format!("0:{}", hex_part);
+        let hex_part = format!("2{i:063x}");
+        let address = format!("0:{hex_part}");
         let mirror_addr = AccountAddress::from_str(&address)
             .map_err(|e| anyhow::format_err!("Failed to calculate mirror addr: {e}"))?;
         let acc_id: AccountId = mirror_addr.clone().into();

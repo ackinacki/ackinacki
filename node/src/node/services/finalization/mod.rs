@@ -8,6 +8,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedSender;
 use tracing::trace_span;
+use transport_layer::server::RawBlockSaveCommand;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
@@ -41,7 +42,7 @@ pub fn finalization_loop(
     mut repository: RepositoryImpl,
     block_state_repository: BlockStateRepository,
     mut shared_services: SharedServices,
-    mut raw_block_tx: InstrumentedSender<(NodeIdentifier, Vec<u8>)>,
+    mut raw_block_tx: InstrumentedSender<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>,
     state_sync_service: impl StateSyncService<Repository = RepositoryImpl>,
     metrics: Option<BlockProductionMetrics>,
     _message_db: MessageDurableStorage,
@@ -162,7 +163,7 @@ fn try_finalize(
     repository: &mut RepositoryImpl,
     block_state_repository: &BlockStateRepository,
     shared_services: &mut SharedServices,
-    raw_block_tx: &mut InstrumentedSender<(NodeIdentifier, Vec<u8>)>,
+    raw_block_tx: &mut InstrumentedSender<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>,
     metrics: &Option<BlockProductionMetrics>,
     node_id: &NodeIdentifier,
     authority: Arc<Mutex<Authority>>,
@@ -294,7 +295,7 @@ pub fn on_block_finalized(
     block: &Envelope<GoshBLS, AckiNackiBlock>,
     repository: &mut RepositoryImpl,
     block_state_repository: &BlockStateRepository,
-    raw_block_tx: &mut InstrumentedSender<(NodeIdentifier, Vec<u8>)>,
+    raw_block_tx: &mut InstrumentedSender<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>,
     state_sync_service: Arc<impl StateSyncService<Repository = RepositoryImpl>>,
     last_block_attestations: Arc<Mutex<CollectedAttestations>>,
 ) -> anyhow::Result<()> {
@@ -306,15 +307,15 @@ pub fn on_block_finalized(
             last_block_attestations.guarded_mut(|e| e.move_cutoff(cutoff.0, cutoff.1));
         }
         let thread_id = block.data().get_common_section().thread_id;
-        tracing::info!("on_block_finalized: {:?} {:?}", block_seq_no, block_id.clone());
+        tracing::debug!("on_block_finalized: {:?} {:?}", block_seq_no, block_id.clone());
         repository.mark_block_as_finalized(
             block,
             block_state_repository.get(&block_id)?,
             Some(state_sync_service),
         )?;
-        tracing::info!("Block marked as finalized: {:?} {:?} {:?}", block_seq_no, block_id, thread_id);
+        tracing::debug!("Block marked as finalized: {:?} {:?} {:?}", block_seq_no, block_id, thread_id);
         let producer_id = block.data().get_common_section().producer_id.clone();
-        tracing::info!(
+        tracing::debug!(
             target: "monit",
             "Last finalized block data: seq_no: {:?}, block_id: {:?}, producer_id: {}, signatures: {:?}, thread_id: {:?}, tx_cnt: {}, time: {}",
             block.data().seq_no(),
@@ -327,7 +328,7 @@ pub fn on_block_finalized(
         );
         let serialized_block = bincode::serialize(&block)?;
         let bm_bcast_set = (producer_id, serialized_block.clone());
-        match raw_block_tx.send(bm_bcast_set)  {
+        match raw_block_tx.send(RawBlockSaveCommand::Save(bm_bcast_set))  {
             Ok(()) => {},
             Err(e) => {
                 if SHUTDOWN_FLAG.get() != Some(&true) {

@@ -79,31 +79,9 @@ services:
 {% if NUMACTL %}
         (numactl -s || (apt-get update && apt-get install -y numactl && numactl -s)) &&
 {% endif %}
-        node-helper config
-        -c acki-nacki.conf.yaml -d
-        --blockchain-config=/bk-configs/blockchain.conf.json
-        --network-my-ed-key-path=/bk-configs/{{ NODE_OWNER_KEY | mandatory | basename }}
-        --keys-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
-        --block-keeper-seed-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
-        --signing-keys=/bk-configs/{{ NODE_OWNER_KEY | basename }}
-        --zerostate-path=/bk-configs/zerostate
-        --thread-load-threshold {{ THREAD_LOAD_THRESHOLD }}
-        --parallelization-level {{ PARALLELIZATION_LEVEL }}
-        --thread-count-soft-limit {{ THREAD_COUNT_SOFT_LIMIT }}
-        --shared-state-max-download-tries 30
-        --thread-load-window-size {{ THREAD_LOAD_WINDOW_SIZE }}
-        --chitchat-cluster-id "{{ NETWORK_NAME }}"
-        --block-keeper-epoch-code-hash {{ CODE_HASH }}
-{% if HAS_BK_SET_FILE is defined and HAS_BK_SET_FILE %}
-        --bk-set-update-path=/bk-configs/bk_set.json
-{% endif %}
-{% if PROXIES is defined %}
-        --network-proxies {{ PROXIES | join(',') }}
-{% endif %}
-{% include 'extra/block-keeper-cmd.j2' ignore missing %}
-        && cat acki-nacki.conf.yaml
+        cat /bk-configs/acki-nacki.conf.yaml
         && exec {% if NUMACTL %} numactl {{ NUMACTL }} -- {% endif %}
-        {{ NODE_BINARY | default('node') }} -c acki-nacki.conf.yaml >> /logsdir/node.log 2>&1
+        {{ NODE_BINARY | default('node') }} -c /bk-configs/acki-nacki.conf.yaml >> /logsdir/node.log 2>&1
     volumes:
       - {{ BK_DATA_DIR }}/share:/share
       - {{ BK_DATA_DIR }}/workdir:/workdir/data
@@ -114,6 +92,8 @@ services:
     depends_on:
       aerospike{{ NODE_ID if (NUMBERED_SERVICES | default(true)) else "" }}:
         condition: service_healthy
+      init-node-helper{{ NODE_ID if (NUMBERED_SERVICES | default(true)) else "" }}:
+        condition: service_completed_successfully
 
 {% if DISABLE_STAKING is not defined or not DISABLE_STAKING %}
   staking{{ NODE_ID if (NUMBERED_SERVICES | default(true)) else "" }}:
@@ -149,6 +129,71 @@ services:
     command: [ "/bin/bash", "/logrotate.sh" ]
     init: true
     network_mode: "none"
+
+  init-node-helper{{ NODE_ID if (NUMBERED_SERVICES | default(true)) else "" }}:
+    image: {{ NODE_IMAGE }}
+    restart: no
+    environment:
+      EXTERNAL_STATE_SHARE_LOCAL_BASE_DIR: /share
+      BIND: 0.0.0.0:{{ BIND_PORT }}
+      API_ADDR: 0.0.0.0:{{ BIND_API_PORT }}
+      MESSAGE_ROUTER: 0.0.0.0:{{ BIND_MESSAGE_ROUTER_PORT }}
+      AEROSPIKE_SOCKET_ADDR: 127.0.0.1:{{ AEROSPIKE_PORT }}
+      GOSSIP_SEEDS: {{ GOSSIP_SEEDS | join(',') }}
+      MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES: {{ MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES }}
+      NODE_JOINING_TIMEOUT: {{ NODE_JOINING_TIMEOUT }}
+      NODE_ID: {{ NI_PFX | default("") }}{{ NODE_ID }}
+{% if N_PFX is defined and N_PFX %}
+      NODE_WALLET_PUBKEY: {{ N_PFX ~ NODE_ID }}_WALLET_PUBKEY
+{% endif %}
+      NODE_ADVERTISE_ADDR: {{ HOST_PUBLIC_IP }}:{{ BIND_PORT }}
+      API_ADVERTISE_ADDR: http://{{ HOST_PUBLIC_IP }}:{{ BIND_API_PORT }}
+      GOSSIP_ADVERTISE_ADDR: {{ HOST_PUBLIC_IP }}:{{ BIND_GOSSIP_PORT }}
+      GOSSIP_LISTEN_ADDR: 0.0.0.0:{{ BIND_GOSSIP_PORT }}
+      BLOCK_MANAGER_LISTEN_ADDR: 0.0.0.0:{{ BLOCK_MANAGER_PORT }}
+      EXT_MESSAGE_AUTH_REQUIRED: {{ EXT_MESSAGE_AUTH_REQUIRED | lower }}
+      BK_API_SOCKET: {{ HOST_PUBLIC_IP }}:{{ BIND_API_PORT }}
+      BM_API_SOCKET: {{ HOST_PUBLIC_IP }}:{{ BIND_MESSAGE_ROUTER_PORT }}
+{# Adding service section #}
+{% include 'extra/block-keeper-env.j2' ignore missing +%}
+{% include 'extra/block-keeper-test.j2' ignore missing +%}
+    entrypoint: []
+    init: true
+    command:
+      - bash
+      - -c
+      - >
+        echo "[$(date -Is)] Creating Acki Nacki config file..."
+        && node-helper config
+        -c /bk-configs/acki-nacki.conf.yaml -d
+        --blockchain-config=/bk-configs/blockchain.conf.json
+        --network-my-ed-key-path=/bk-configs/{{ NODE_OWNER_KEY | mandatory | basename }}
+        --keys-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
+        --block-keeper-seed-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
+        --signing-keys=/bk-configs/{{ NODE_OWNER_KEY | basename }}
+        --zerostate-path=/bk-configs/zerostate
+        --thread-load-threshold {{ THREAD_LOAD_THRESHOLD }}
+        --parallelization-level {{ PARALLELIZATION_LEVEL }}
+        --thread-count-soft-limit {{ THREAD_COUNT_SOFT_LIMIT }}
+        --shared-state-max-download-tries 30
+        --thread-load-window-size {{ THREAD_LOAD_WINDOW_SIZE }}
+        --chitchat-cluster-id "{{ NETWORK_NAME }}"
+        --block-keeper-epoch-code-hash {{ CODE_HASH }}
+{% if HAS_BK_SET_FILE is defined and HAS_BK_SET_FILE %}
+        --bk-set-update-path=/bk-configs/bk_set.json
+{% endif %}
+{% if PROXIES is defined %}
+        --network-proxies {{ PROXIES | join(',') }}
+{% endif %}
+{% if SUBSCRIBE is defined %}
+        --network-subscribe '{{ SUBSCRIBE | join(',') }}'
+{% endif %}
+{% include 'extra/block-keeper-cmd.j2' ignore missing %}
+        && cat /bk-configs/acki-nacki.conf.yaml
+        && exit 0
+    network_mode: "none"
+    volumes:
+      - {{ BK_DIR }}/bk-configs:/bk-configs
 
 networks:
   ackinacki-net:

@@ -12,10 +12,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub use blockchain_config::*;
+use gossip::gossip_peer::GossipPeer;
 use network::pub_sub::CertFile;
 use network::pub_sub::CertStore;
 use network::pub_sub::PrivateKeyFile;
-use network::resolver::GossipPeer;
+use network::resolver::WatchGossipConfig;
+use network::topology::NetEndpoint;
+use network::topology::NetPeer;
 pub use network_config::NetworkConfig;
 use serde::Deserialize;
 use serde::Serialize;
@@ -228,20 +231,20 @@ impl Default for GlobalConfig {
 }
 
 impl Config {
-    pub fn gossip_config(&self) -> anyhow::Result<gossip::GossipConfig> {
-        Ok(gossip::GossipConfig {
+    pub fn gossip_config(&self) -> gossip::GossipConfig {
+        gossip::GossipConfig {
             listen_addr: self.network.gossip_listen_addr,
             advertise_addr: self.network.gossip_advertise_addr,
-            seeds: self.network.gossip_seeds.clone(),
+            seeds: self.network.gossip_seeds.clone().into(),
             cluster_id: self.network.chitchat_cluster_id.clone(),
-        })
+        }
     }
 
     pub fn gossip_peer(&self) -> anyhow::Result<GossipPeer<NodeIdentifier>> {
         GossipPeer::new(
             self.local.node_id.clone(),
             self.network.node_advertise_addr,
-            self.network.proxies.clone(),
+            self.network.proxies.clone().into(),
             self.network.bm_api_socket,
             self.network.bk_api_socket,
             &transport_layer::resolve_signing_keys(
@@ -249,6 +252,35 @@ impl Config {
                 &self.network.my_ed_key_path,
             )?,
         )
+    }
+
+    pub fn endpoint(&self) -> NetEndpoint<NodeIdentifier> {
+        NetEndpoint::Peer(NetPeer::with_id_and_addr(
+            self.local.node_id.clone(),
+            self.network.node_advertise_addr,
+        ))
+    }
+
+    pub fn watch_gossip_config(
+        &self,
+        trusted_pubkeys: HashSet<transport_layer::VerifyingKey>,
+    ) -> WatchGossipConfig<NodeIdentifier> {
+        WatchGossipConfig {
+            endpoint: self.endpoint(),
+            max_nodes_with_same_id: self.network.max_nodes_with_same_id as usize,
+            override_subscribe: self.override_subscribe(),
+            trusted_pubkeys,
+        }
+    }
+
+    pub fn override_subscribe(&self) -> Vec<NetEndpoint<NodeIdentifier>> {
+        if !self.network.subscribe.is_empty() {
+            self.network.subscribe.iter().map(|x| NetEndpoint::Proxy(x.clone())).collect()
+        } else if !self.network.proxies.is_empty() {
+            vec![NetEndpoint::Proxy(self.network.proxies.clone())]
+        } else {
+            Default::default()
+        }
     }
 
     pub fn network_config(
@@ -265,8 +297,6 @@ impl Config {
             )?,
             CertStore::try_new(&self.network.peer_certs)?,
             HashSet::from_iter(self.network.peer_ed_pubkeys.clone()),
-            self.network.subscribe.clone(),
-            self.network.proxies.clone(),
             tls_cert_cache,
         )
     }

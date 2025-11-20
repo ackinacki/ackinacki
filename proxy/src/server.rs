@@ -1,9 +1,5 @@
-use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fmt::Display;
-use std::fmt::Formatter;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::LazyLock;
 use std::time::Duration;
 use std::time::Instant;
@@ -21,8 +17,8 @@ use network::pub_sub::connection::OutgoingMessage;
 use network::pub_sub::spawn_critical_task;
 use network::pub_sub::IncomingSender;
 use network::resolver::watch_gossip;
-use network::resolver::SubscribeStrategy;
 use network::resolver::WatchGossipConfig;
+use network::topology::NetTopology;
 use network::DeliveryPhase;
 use network::SendMode;
 use opentelemetry::global;
@@ -105,23 +101,6 @@ async fn tokio_main() -> anyhow::Result<()> {
     result
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct NodeId(String);
-
-impl Display for NodeId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl FromStr for NodeId {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(s.to_string()))
-    }
-}
-
 impl CliArgs {
     async fn run(self, net_metrics: Option<NetMetrics>) -> anyhow::Result<()> {
         let tls_cert_cache = TlsCertCache::new()?;
@@ -137,26 +116,25 @@ impl CliArgs {
             tokio::sync::watch::channel(config.gossip.clone());
 
         let (watch_gossip_config_tx, watch_gossip_config_rx) =
-            tokio::sync::watch::channel(WatchGossipConfig {
-                max_nodes_with_same_id: 5,
-                trusted_pubkeys: HashSet::new(),
-            });
-        let (subscribe_tx, subscribe_rx) = tokio::sync::watch::channel(Vec::new());
-        let (peers_tx, _) = tokio::sync::watch::channel(HashMap::new());
+            tokio::sync::watch::channel(config.watch_gossip_config(HashSet::new()));
 
-        let (gossip_handle, gossip_rest_handle) =
-            gossip::run(shutdown_tx.subscribe(), gossip_config_rx, UdpTransport).await?;
+        let (gossip_handle, gossip_rest_handle) = gossip::run_gossip_no_reload(
+            "proxy",
+            shutdown_tx.subscribe(),
+            gossip_config_rx,
+            UdpTransport,
+        )
+        .await?;
+        let (net_topology_tx, net_topology_rx) =
+            tokio::sync::watch::channel(NetTopology::default());
+
         spawn_critical_task(
             "Gossip",
             watch_gossip(
                 shutdown_tx.subscribe(),
                 watch_gossip_config_rx,
-                SubscribeStrategy::<NodeId>::Proxy(
-                    config.my_addr.unwrap_or(vec![config.gossip.advertise_addr()]),
-                ),
                 gossip_handle.chitchat(),
-                subscribe_tx.clone(),
-                peers_tx,
+                net_topology_tx,
                 None,
             ),
             net_metrics.clone(),
@@ -173,6 +151,7 @@ impl CliArgs {
             net_metrics.clone(),
             incoming_messages_rx,
             outgoing_messages_tx.clone(),
+            net_topology_rx.clone(),
         ));
 
         let pub_sub_task = tokio::spawn(network::pub_sub::run(
@@ -182,7 +161,7 @@ impl CliArgs {
             true,
             net_metrics,
             self.max_connections,
-            subscribe_rx,
+            net_topology_rx,
             outgoing_messages_tx,
             IncomingSender::AsyncUnbounded(incoming_messages_tx),
         ));
@@ -248,6 +227,7 @@ impl CliArgs {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_hot_reload(
     tls_cert_cache: Option<TlsCertCache>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -255,7 +235,7 @@ async fn dispatch_hot_reload(
     mut bk_set_rx: tokio::sync::watch::Receiver<HashSet<VerifyingKey>>,
     network_config_tx: tokio::sync::watch::Sender<NetworkConfig>,
     gossip_config_tx: tokio::sync::watch::Sender<GossipConfig>,
-    watch_gossip_config_tx: tokio::sync::watch::Sender<WatchGossipConfig>,
+    watch_gossip_config_tx: tokio::sync::watch::Sender<WatchGossipConfig<String>>,
 ) {
     let Some((mut network_config, mut gossip_config, mut watch_gossip_config)) =
         dispatch_configs(&proxy_config_rx, &bk_set_rx, &tls_cert_cache)
@@ -281,13 +261,13 @@ async fn dispatch_hot_reload(
             watch_gossip_config_tx.send_replace(watch_gossip_config.clone());
         }
         tokio::select! {
-            sender = shutdown_rx.changed() => if sender.is_err() || *shutdown_rx.borrow() {
+            shutdown_changed = shutdown_rx.changed() => if shutdown_changed.is_err() || *shutdown_rx.borrow() {
                 return;
             },
-            sender = proxy_config_rx.changed() => if sender.is_err() {
+            proxy_config_changed = proxy_config_rx.changed() => if proxy_config_changed.is_err() {
                 return;
             },
-            sender = bk_set_rx.changed() => if sender.is_err() {
+            bk_set_changed = bk_set_rx.changed() => if bk_set_changed.is_err() {
                 return;
             },
         }
@@ -298,7 +278,7 @@ fn dispatch_configs(
     proxy_config_rx: &tokio::sync::watch::Receiver<ProxyConfig>,
     bk_set_rx: &tokio::sync::watch::Receiver<HashSet<VerifyingKey>>,
     tls_cert_cache: &Option<TlsCertCache>,
-) -> Option<(NetworkConfig, GossipConfig, WatchGossipConfig)> {
+) -> Option<(NetworkConfig, GossipConfig, WatchGossipConfig<String>)> {
     let config = proxy_config_rx.borrow();
     let mut network_config = match config.network_config(tls_cert_cache.clone()) {
         Ok(config) => config,
@@ -312,53 +292,70 @@ fn dispatch_configs(
     bk_set.extend(network_config.credential.my_cert_pubkeys().unwrap_or_default());
     let trusted_pubkeys = bk_set.into_iter().collect::<HashSet<_>>();
     network_config.credential.trusted_pubkeys = trusted_pubkeys.clone();
-    Some((
-        network_config,
-        config.gossip.clone(),
-        WatchGossipConfig { max_nodes_with_same_id: 5, trusted_pubkeys },
-    ))
+    let config = proxy_config_rx.borrow();
+    Some((network_config, config.gossip.clone(), config.watch_gossip_config(trusted_pubkeys)))
 }
 
 async fn message_multiplexor(
     metrics: Option<NetMetrics>,
-    mut incoming_messages: tokio::sync::mpsc::UnboundedReceiver<IncomingMessage>,
-    outgoing_messages: tokio::sync::broadcast::Sender<OutgoingMessage>,
+    mut incoming_messages: tokio::sync::mpsc::UnboundedReceiver<IncomingMessage<String>>,
+    outgoing_messages: tokio::sync::broadcast::Sender<OutgoingMessage<String>>,
+    mut net_topology_rx: tokio::sync::watch::Receiver<NetTopology<String>>,
 ) -> anyhow::Result<()> {
     tracing::info!("Proxy multiplexor bridge started");
+    let mut net_topology = net_topology_rx.borrow().clone();
     loop {
-        match incoming_messages.recv().await {
-            Some(incoming) => {
-                let label = incoming.message.label.clone();
-                tracing::debug!(
-                    msg_type = label,
-                    msg_id = incoming.message.id,
-                    "Proxy multiplexor forwarded incoming"
-                );
-                metrics.as_ref().inspect(|x| {
-                    x.finish_delivery_phase(
-                        DeliveryPhase::IncomingBuffer,
-                        1,
-                        &label,
-                        SendMode::Broadcast,
-                        incoming.duration_after_transfer.elapsed(),
-                    )
-                });
-                if let Ok(sent_count) = outgoing_messages.send(OutgoingMessage {
-                    delivery: MessageDelivery::BroadcastExcluding(incoming.connection_info),
-                    message: incoming.message,
-                    duration_before_transfer: Instant::now(),
-                }) {
+        tokio::select! {
+            incoming = incoming_messages.recv() => match incoming {
+                Some(incoming) => {
+                    let label = incoming.message.label.clone();
+                    tracing::debug!(
+                        msg_type = label,
+                        msg_id = incoming.message.id,
+                        "Proxy multiplexor forwarded incoming"
+                    );
                     metrics.as_ref().inspect(|x| {
-                        x.start_delivery_phase(
-                            DeliveryPhase::OutgoingBuffer,
-                            sent_count,
+                        x.finish_delivery_phase(
+                            DeliveryPhase::IncomingBuffer,
+                            1,
                             &label,
                             SendMode::Broadcast,
+                            incoming.duration_after_transfer.elapsed(),
                         )
                     });
+
+                    let is_from_my_segment =
+                        net_topology.endpoint_is_peer_from_my_segment(&incoming.connection_info.remote_endpoint);
+                    let delivery = if is_from_my_segment {
+                        MessageDelivery::BroadcastExcludingSender(incoming.connection_info)
+                    } else {
+                        MessageDelivery::BroadcastToMySegmentPeersExcludingSender(
+                            incoming.connection_info
+                        )
+                    };
+                    if let Ok(sent_count) = outgoing_messages.send(OutgoingMessage {
+                        delivery,
+                        message: incoming.message,
+                        duration_before_transfer: Instant::now(),
+                    }) {
+                        metrics.as_ref().inspect(|x| {
+                            x.start_delivery_phase(
+                                DeliveryPhase::OutgoingBuffer,
+                                sent_count,
+                                &label,
+                                SendMode::Broadcast,
+                            )
+                        });
+                    }
                 }
-            }
-            None => {
+                None => {
+                    tracing::info!("Proxy multiplexor bridge stopped");
+                    break;
+                }
+            },
+            net_topology_changed = net_topology_rx.changed() => if net_topology_changed.is_ok() {
+                net_topology = net_topology_rx.borrow().clone();
+            } else {
                 tracing::info!("Proxy multiplexor bridge stopped");
                 break;
             }

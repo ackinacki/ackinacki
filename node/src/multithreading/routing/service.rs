@@ -29,6 +29,7 @@ use crate::message::WrappedMessage;
 use crate::node::services::sync::ExternalFileSharesBased;
 use crate::node::NetworkMessage;
 use crate::node::Node as NodeImpl;
+use crate::node::NodeIdentifier;
 use crate::types::BlockIdentifier;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
@@ -68,7 +69,7 @@ pub struct RoutingService {
 
 impl RoutingService {
     pub fn new(
-        inbound_network_receiver: InstrumentedReceiver<IncomingMessage>,
+        inbound_network_receiver: InstrumentedReceiver<IncomingMessage<NodeIdentifier>>,
         inbound_ext_messages_receiver: InstrumentedReceiver<FeedbackMessage>,
         metrics: Option<BlockProductionMetrics>,
         net_metrics: Option<NetMetrics>,
@@ -375,7 +376,7 @@ impl RoutingService {
     }
 
     fn inner_network_messages_forwarding_loop(
-        inbound_network: InstrumentedReceiver<IncomingMessage>,
+        inbound_network: InstrumentedReceiver<IncomingMessage<NodeIdentifier>>,
         cmd_sender: InstrumentedSender<Command>,
         net_metrics: Option<NetMetrics>,
     ) -> anyhow::Result<()> {

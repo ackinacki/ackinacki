@@ -55,6 +55,9 @@ impl Serialize for NetworkMessage {
                 serializer.serialize_newtype_variant(TYPE, 10, "AuthoritySwitchProtocol", &e)
             }
             InnerCommand(_) => unreachable!("Inner commands must be non-serializable"),
+            NodeJoiningWithLastFinalized(e) => {
+                serializer.serialize_newtype_variant(TYPE, 11, "NodeJoiningWithLastFinalized", &e)
+            }
         }
     }
 }
@@ -127,6 +130,7 @@ impl<'de> de::Visitor<'de> for NetworkMessageVisitor {
             (8, v) => v.newtype_variant().map(SyncFinalized),
             (9, v) => v.newtype_variant().map(ResentCandidate),
             (10, v) => v.newtype_variant().map(AuthoritySwitchProtocol),
+            (11, v) => v.newtype_variant().map(NodeJoiningWithLastFinalized),
             _ => unreachable!(),
         }
     }

@@ -10,6 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use parking_lot::Mutex;
+
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::helper::block_flow_trace;
 use crate::helper::SHUTDOWN_FLAG;
@@ -20,6 +22,7 @@ use crate::node::network_message::Command;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
 use crate::node::Node;
+use crate::node::NodeIdentifier;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::next_seq_no;
@@ -130,7 +133,7 @@ where
         let sync_delay: Option<std::time::Instant> = None;
         // let mut memento = None;
         while !is_stop_signal_received {
-            tracing::info!("Execution iteration start on node for thread: {:?}", self.thread_id);
+            tracing::debug!("Execution iteration start on node for thread: {:?}", self.thread_id);
             tracing::trace!(
                 "Elapsed from last producer cut off: {:?}ms",
                 iteration_start.elapsed().as_millis()
@@ -196,16 +199,16 @@ where
             tracing::trace!("Node message receive result: {:?}", next);
             match next {
                 Err(RecvTimeoutError::Disconnected) => {
-                    tracing::info!("Disconnect signal received");
+                    tracing::debug!("Disconnect signal received");
                     is_stop_signal_received = true;
                 }
                 Err(RecvTimeoutError::Timeout) => {
-                    tracing::info!("Recv timeout");
+                    tracing::debug!("Recv timeout");
                     self.producer_service.touch();
                 }
                 Ok((msg, _)) => match msg {
                     NetworkMessage::InnerCommand(Command::TryStartSynchronization) => {
-                        tracing::info!("Received TryStartSynchronization");
+                        tracing::debug!("Received TryStartSynchronization");
                         let duration_since_last_finalization =
                             self.shared_services.duration_since_last_finalization();
                         if duration_since_last_finalization
@@ -220,63 +223,22 @@ where
                         panic!("This module should not receive authority messages");
                     }
                     NetworkMessage::NodeJoining((node_id, _)) => {
-                        tracing::info!("Received NodeJoining message({node_id})");
-                        tracing::trace!(
-                            "Stalled threads: {:?}",
-                            self.stalled_threads.guarded(|e| e.clone())
-                        );
-
-                        let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
-                        tracing::trace!(
-                            "Elapsed from the last state sync: {}ms",
-                            elapsed.as_millis()
-                        );
-                        if elapsed > self.config.global.min_time_between_state_publish_directives {
-                            {
-                                let mut guard = last_state_sync_executed.lock();
-                                *guard = std::time::Instant::now();
-                            }
-
-                            let (last_finalized_id, last_finalized_seq_no) = self
-                                .repository
-                                .select_thread_last_finalized_block(&thread_id)?
-                                .expect("Must be known here");
-
-                            if self.stalled_threads.guarded(|e| e.contains(&self.thread_id))
-                                || last_finalized_seq_no == BlockSeqNo::default()
-                            {
-                                // If node is stopped or this is init of network and some
-                                tracing::trace!("BP is stopped or has no finalized blocks, share last finalized state");
-                                self.share_finalized_state(
-                                    last_finalized_seq_no,
-                                    last_finalized_id,
-                                )?;
-                            } else {
-                                // Otherwise share state in one of the next blocks if we have not marked one block yet
-                                if self.is_state_sync_requested.guarded(|e| e.is_none()) {
-                                    // TODO check that we need to take finalized block, not stored
-                                    let (_, mut block_seq_no_with_sync) = self
-                                        .repository
-                                        .select_thread_last_finalized_block(&thread_id)?
-                                        .expect("Must be known here");
-                                    for _i in 0..self.config.global.sync_gap {
-                                        block_seq_no_with_sync =
-                                            next_seq_no(block_seq_no_with_sync);
-                                    }
-                                    tracing::trace!("Mark next block to share state: {block_seq_no_with_sync:?}");
-                                    self.send_sync_from(node_id, block_seq_no_with_sync)?;
-                                    self.is_state_sync_requested
-                                        .guarded_mut(|e| *e = Some(block_seq_no_with_sync));
-                                }
-                            }
-                        } else if let Some((id, seq_no, hint)) = self.last_synced_state.clone() {
-                            self.broadcast_sync_finalized(id, seq_no, hint)?;
-                        }
+                        self.on_node_joining_received(
+                            last_state_sync_executed.clone(),
+                            node_id,
+                            None,
+                        )?;
                     }
-
+                    NetworkMessage::NodeJoiningWithLastFinalized((data, _)) => {
+                        self.on_node_joining_received(
+                            last_state_sync_executed.clone(),
+                            data.node_identifier().clone(),
+                            Some(*data.last_finalized_block_seq_no()),
+                        )?;
+                    }
                     NetworkMessage::ResentCandidate((ref net_block, _))
                     | NetworkMessage::Candidate(ref net_block) => {
-                        tracing::info!("Incoming candidate block");
+                        tracing::debug!("Incoming candidate block");
                         let resend_node_id =
                             if let NetworkMessage::ResentCandidate((_, node_id)) = msg {
                                 Some(node_id)
@@ -292,7 +254,7 @@ where
                         self.on_incoming_candidate_block(net_block, resend_node_id)?;
                     }
                     NetworkMessage::Ack((ack, _)) => {
-                        tracing::info!(
+                        tracing::debug!(
                             "Ack block: {:?}, signatures: {:?}",
                             ack.data(),
                             ack.clone_signature_occurrences()
@@ -300,7 +262,7 @@ where
                         self.on_ack(&ack)?;
                     }
                     NetworkMessage::Nack((nack, _)) => {
-                        tracing::info!(
+                        tracing::debug!(
                             target: "monit",
                             "Nack block: {:?}, signatures: {:?}",
                             nack.data(),
@@ -312,7 +274,7 @@ where
                         panic!("This module should not receive ext messages");
                     }
                     NetworkMessage::BlockAttestation((attestation, _)) => {
-                        tracing::info!(
+                        tracing::debug!(
                             "Received block attestation for thread {:?} {attestation:?}",
                             self.thread_id
                         );
@@ -329,7 +291,7 @@ where
                         loop {
                             match self.network_rx.try_recv() {
                                 Ok((NetworkMessage::BlockAttestation((attestation, _)), _)) => {
-                                    tracing::info!(
+                                    tracing::debug!(
                                         "Received block attestation for thread {:?} {attestation:?}",
                                         self.thread_id
                                     );
@@ -363,7 +325,7 @@ where
                         thread_id: _,
                         at_least_n_blocks,
                     } => {
-                        tracing::info!(
+                        tracing::debug!(
                             "Received BlockRequest from {node_id}: [{:?},{:?}) + min_n: {:?}",
                             start,
                             end,
@@ -387,7 +349,7 @@ where
                     }
                     NetworkMessage::SyncFrom((seq_no_from, _)) => {
                         // while normal execution we ignore sync messages
-                        log::info!("Received SyncFrom: {seq_no_from:?}");
+                        log::debug!("Received SyncFrom: {seq_no_from:?}");
                         let duration_since_last_finalization =
                             self.shared_services.duration_since_last_finalization();
                         if duration_since_last_finalization
@@ -397,7 +359,7 @@ where
                             continue;
                         }
                         let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
-                        log::info!(
+                        log::debug!(
                             "Received SyncFrom: elapsed from last sync ms: {}",
                             elapsed.as_millis()
                         );
@@ -409,7 +371,7 @@ where
                             .block_processor_service
                             .missing_blocks_were_requested
                             .load(Ordering::Relaxed);
-                        log::info!(
+                        log::debug!(
                             "Received SyncFrom: blocks_were_requested={blocks_were_requested:?}"
                         );
                         if elapsed > self.config.global.min_time_between_state_publish_directives
@@ -435,7 +397,7 @@ where
                         let seq_no = *sync_finalized.data().block_seq_no();
                         let address = sync_finalized.data().thread_refs().clone();
                         // TODO: we'd better check that this node is up to date and does not need to sync
-                        tracing::info!(
+                        tracing::debug!(
                             "Received SyncFinalized: {:?} {:?} {:?}",
                             seq_no,
                             identifier,
@@ -465,5 +427,63 @@ where
             }
         }
         Ok(ExecutionResult::Disconnected)
+    }
+
+    fn on_node_joining_received(
+        &mut self,
+        last_state_sync_executed: Arc<Mutex<Instant>>,
+        node_id: NodeIdentifier,
+        joining_node_last_finalized_seq_no: Option<BlockSeqNo>,
+    ) -> anyhow::Result<()> {
+        tracing::debug!("Received NodeJoining message from {node_id}, min_seq_no: {joining_node_last_finalized_seq_no:?}");
+        tracing::trace!("Stalled threads: {:?}", self.stalled_threads.guarded(|e| e.clone()));
+
+        let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
+        tracing::trace!("Elapsed from the last state sync: {}ms", elapsed.as_millis());
+        if elapsed > self.config.global.min_time_between_state_publish_directives {
+            {
+                let mut guard = last_state_sync_executed.lock();
+                *guard = std::time::Instant::now();
+            }
+
+            let (last_finalized_id, last_finalized_seq_no) = self
+                .repository
+                .select_thread_last_finalized_block(&self.thread_id)?
+                .expect("Must be known here");
+            if let Some(remote_last_finalized_seq_no) = joining_node_last_finalized_seq_no {
+                if remote_last_finalized_seq_no >= last_finalized_seq_no {
+                    tracing::trace!("NodeJoining request seq_no({remote_last_finalized_seq_no:?}) is greater or equal to the local one({last_finalized_seq_no:?}), skip request");
+                    return Ok(());
+                }
+            }
+
+            if self.stalled_threads.guarded(|e| e.contains(&self.thread_id))
+                || last_finalized_seq_no == BlockSeqNo::default()
+            {
+                // If node is stopped or this is init of network and some
+                tracing::trace!(
+                    "BP is stopped or has no finalized blocks, share last finalized state"
+                );
+                self.share_finalized_state(last_finalized_seq_no, last_finalized_id)?;
+            } else {
+                // Otherwise share state in one of the next blocks if we have not marked one block yet
+                if self.is_state_sync_requested.guarded(|e| e.is_none()) {
+                    // TODO check that we need to take finalized block, not stored
+                    let (_, mut block_seq_no_with_sync) = self
+                        .repository
+                        .select_thread_last_finalized_block(&self.thread_id)?
+                        .expect("Must be known here");
+                    for _i in 0..self.config.global.sync_gap {
+                        block_seq_no_with_sync = next_seq_no(block_seq_no_with_sync);
+                    }
+                    tracing::trace!("Mark next block to share state: {block_seq_no_with_sync:?}");
+                    self.send_sync_from(node_id, block_seq_no_with_sync)?;
+                    self.is_state_sync_requested.guarded_mut(|e| *e = Some(block_seq_no_with_sync));
+                }
+            }
+        } else if let Some((id, seq_no, hint)) = self.last_synced_state.clone() {
+            self.broadcast_sync_finalized(id, seq_no, hint)?;
+        }
+        Ok(())
     }
 }
