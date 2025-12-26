@@ -7,7 +7,7 @@ use crate::types::BlockSeqNo;
 
 pub static BLOCKCHAIN_CONFIG_OLD: &str = include_str!("../../old_blockchain.conf.json");
 pub static BLOCKCHAIN_CONFIG: &str = include_str!("../../blockchain.conf.json");
-pub static UPDATE_MIRRORS_BLOCK_SEQ_NO: u32 = 21_220_000; 
+pub static UPDATE_MIRRORS_BLOCK_SEQ_NO: u32 = 21_220_000;
 
 #[derive(Clone)]
 pub struct BlockchainConfigRead {

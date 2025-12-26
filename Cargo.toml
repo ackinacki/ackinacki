@@ -88,14 +88,14 @@ wasmtime = "36.0.2"
 wtransport = { version = "0.6.0", features = ["dangerous-configuration", "quinn"] }
 zstd = { version = "0.13.3" }
 
-tvm_abi = { git = 'https://github.com/tvmlabs/tvm-sdk.git', rev = '3ccc2c5' }
-tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', rev = '3ccc2c5' }
-tvm_block_json = { git = 'https://github.com/tvmlabs/tvm-sdk.git', rev = '3ccc2c5' }
-tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', rev = '3ccc2c5', default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
-tvm_executor = { git = 'https://github.com/tvmlabs/tvm-sdk.git', rev = '3ccc2c5', features = ['signature_with_id'] }
-tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', rev = '3ccc2c5' }
-tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', rev = '3ccc2c5' }
-tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', rev = '3ccc2c5', features = ['gosh'] }
+tvm_abi = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.8.an' }
+tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.8.an' }
+tvm_block_json = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.8.an' }
+tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.8.an', default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
+tvm_executor = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.8.an', features = ['signature_with_id'] }
+tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.8.an' }
+tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.8.an' }
+tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.8.an', features = ['gosh'] }
 
 chitchat = { path = "chitchat" }
 database = { path = "database" }
