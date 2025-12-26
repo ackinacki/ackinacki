@@ -47,7 +47,7 @@ https://{{ host }} {
   tls /etc/caddy/{{ CERT_FILE | mandatory }} /etc/caddy/{{ CERT_KEY_FILE | mandatory }}
 {% endif -%}
   import cors {header.origin}
-  import reverse_proxy "{{ ansible_host }}" "{{ block_keeper[host].BK_PORT }}"
+  import reverse_proxy "{{ HOST_PUBLIC_IP }}" "{{ block_keeper[host].BK_PORT }}"
 }
 {% endfor -%}
 {% endfor -%}
