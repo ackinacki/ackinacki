@@ -36,17 +36,23 @@ use http_server::ResolvingResult;
 use message_router::message_router::MessageRouter;
 use message_router::message_router::MessageRouterConfig;
 use message_router::read_keys_from_file;
+use message_router::DEFAULT_BK_API_PORT;
 use network::config::NetworkConfig;
 use network::network::BasicNetwork;
 use network::resolver::WatchGossipConfig;
 use network::topology::NetTopology;
+#[cfg(feature = "test_upgrade")]
+use node::block::producer::process::DO_NOT_START_PRODUCTION_ON_THIS_NODE;
 use node::block::producer::wasm::check_node_mandatory_wasm_available;
 use node::block::producer::wasm::WasmNodeCache;
 use node::block_keeper_system::BlockKeeperSet;
 use node::bls::envelope::BLSSignedEnvelope;
 use node::bls::envelope::Envelope;
+use node::config::config_read::ConfigRead;
 use node::config::load_blockchain_config;
 use node::config::load_config_from_file;
+use node::config::Config;
+use node::config::GlobalConfig;
 use node::creditconfig::abi::DAPP_CONFIG_TVC;
 use node::creditconfig::dappconfig::calculate_dapp_config_address;
 use node::creditconfig::dappconfig::decode_dapp_config_data;
@@ -62,6 +68,7 @@ use node::helper::start_shutdown;
 use node::helper::SHUTDOWN_FLAG;
 use node::multithreading::routing::service::Command;
 use node::multithreading::routing::service::RoutingService;
+use node::node::associated_types::NodeCredentials;
 use node::node::block_request_service::BlockRequestService;
 use node::node::block_state::attestation_target_checkpoints::AncestorBlocksFinalizationCheckpoints;
 use node::node::block_state::block_state_inner::StateSaveCommand;
@@ -118,10 +125,13 @@ use node::utilities::guarded::Guarded;
 use node::utilities::guarded::GuardedMut;
 use node::utilities::thread_spawn_critical::SpawnCritical;
 use node::utilities::FixedSizeHashSet;
+use node::versioning::block_protocol_version_state::BlockProtocolVersionState;
+use node::versioning::ProtocolVersion;
 use node::zerostate::ZeroState;
 use parking_lot::Mutex;
 use rand::prelude::SeedableRng;
 use rand::prelude::SmallRng;
+use serde_json::json;
 use signal_hook::consts::SIGHUP;
 use signal_hook::consts::SIGINT;
 use signal_hook::consts::SIGTERM;
@@ -156,12 +166,18 @@ lazy_static::lazy_static!(
 struct Args {
     #[arg(short, long)]
     config_path: PathBuf,
+    #[arg(short, long)]
+    global_config_path: PathBuf,
+    #[arg(short, long)]
+    retired_global_config_path: Option<PathBuf>,
     #[arg(long)]
     #[arg(default_value = "true")]
     clear_missing_block_locks: bool,
     #[arg(long)]
     #[arg(default_value = "true")]
     check_zerostate_validity: bool,
+    #[arg(long)]
+    print_node_protocol_version_support: bool,
 }
 
 #[cfg(feature = "rayon_affinity")]
@@ -187,10 +203,16 @@ pub enum HeartbeatCommand {
 }
 
 fn main() -> ExitCode {
+    let args = Args::parse();
+    if args.print_node_protocol_version_support {
+        print_node_protocol_version_support(args).expect("Unable to print node protocol version");
+        std::process::exit(0);
+    }
+
     eprintln!("Starting Acki-Nacki Node version: {}", *LONG_VERSION);
     debug_used_features();
     if cfg!(debug_assertions) {
-        std::env::set_var("RUST_BACKTRACE", "1");
+        unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
     #[cfg(feature = "rayon_affinity")]
@@ -203,11 +225,10 @@ fn main() -> ExitCode {
         .thread_stack_size(100 * 1024 * 1024)
         .build()
         .expect("Failed to create Tokio runtime")
-        .block_on(tokio_main())
+        .block_on(tokio_main(args))
 }
 
-async fn tokio_main() -> ExitCode {
-    let args = Args::parse();
+async fn tokio_main(args: Args) -> ExitCode {
     let (metrics, tracing_guard) = init_tracing();
     tracing::info!("Tracing and metrics initialized");
 
@@ -357,23 +378,99 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     tracing::info!("Starting network");
 
     tracing::info!("Loading config");
-    let tls_cert_cache = TlsCertCache::new()?;
-    let config = load_config_from_file(&args.config_path)?
-        .ensure_min_cpu(MINIMUM_NUMBER_OF_CORES)
-        .ensure_min_sync_gap();
-    let network_config = config.network_config(Some(tls_cert_cache.clone()))?;
-    let gossip_config = config.gossip_config();
+    let config =
+        load_config_from_file::<Config>(&args.config_path)?.ensure_min_cpu(MINIMUM_NUMBER_OF_CORES);
+
+    let global_config =
+        load_config_from_file::<GlobalConfig>(&args.global_config_path)?.ensure_min_sync_gap();
+    let retired_global_config = args
+        .retired_global_config_path
+        .as_ref()
+        .map(load_config_from_file::<GlobalConfig>)
+        .transpose()?;
     tracing::info!("Loaded config");
 
-    tracing::info!(target: "monit", "Node config: {}", serde_json::to_string_pretty(&config)?);
-    tracing::info!("Gossip seeds expanded: {:?}", gossip_config.seeds);
-    tracing::info!("Gossip advertise addr: {:?}", gossip_config.advertise_addr);
-    tracing::info!("Clear missing block locks: {}", args.clear_missing_block_locks);
+    #[cfg(feature = "test_upgrade")]
+    {
+        if config.local.key_path.contains("block_keeper5_bls.keys.json") {
+            tracing::trace!("do not produce on this node");
+            let mut flag = DO_NOT_START_PRODUCTION_ON_THIS_NODE.lock();
+            *flag = true;
+        }
+    }
+
+    let preferred_protocol_version = node::versioning::ProtocolVersion::builder()
+        .canonical_config_hash(&global_config)
+        .tvm_engine_version(global_config.engine_version.clone())
+        .gossip_version(global_config.gossip_version)
+        // .node_software_version(semver::SemVer::new(
+        // u64::from_str(env!("CARGO_PKG_VERSION_MAJOR")).unwrap(),
+        // u64::from_str(env!("CARGO_PKG_VERSION_MINOR")).unwrap(),
+        // u64::from_str(env!("CARGO_PKG_VERSION_PATCH")).unwrap(),
+        // )
+        .build();
+    let (zero_block_version, node_protocol_version_support, config_read) =
+        if let Some(retired_version) = option_env!("RETIRED_VERSION") {
+            tracing::info!("RETIRED_VERSION={}", retired_version);
+            let retired_version = node::versioning::ProtocolVersion::parse(retired_version)?;
+            assert!(retired_global_config.is_some());
+            let old_config = retired_global_config.as_ref().unwrap();
+            let version_from_config = node::versioning::ProtocolVersion::builder()
+                .canonical_config_hash(old_config)
+                .tvm_engine_version(old_config.engine_version.clone())
+                .gossip_version(old_config.gossip_version)
+                .build();
+            if retired_version != ProtocolVersion::parse("None")? {
+                assert_eq!(version_from_config, retired_version);
+            }
+            (
+                BlockProtocolVersionState::Current(retired_version.clone()),
+                node::versioning::ProtocolVersionSupport::new(retired_version.clone())
+                    .transitioning_to(preferred_protocol_version.clone()),
+                ConfigRead::new(
+                    preferred_protocol_version,
+                    global_config.clone(),
+                    Some(retired_version),
+                    retired_global_config,
+                ),
+            )
+        } else {
+            (
+                BlockProtocolVersionState::Current(preferred_protocol_version.clone()),
+                node::versioning::ProtocolVersionSupport::new(preferred_protocol_version.clone()),
+                ConfigRead::new(preferred_protocol_version, global_config.clone(), None, None),
+            )
+        };
+
+    // Note: For first version in rolling update force node to use None version
+    // let (zero_block_version, node_protocol_version_support) = (
+    //     BlockProtocolVersionState::Current(ProtocolVersion::parse("None")?),
+    //     node::versioning::ProtocolVersionSupport::from_str("None")?,
+    // );
 
     let node_metrics = metrics.as_ref().map(|m| m.node.clone());
     if let Some(m) = node_metrics.as_ref() {
         m.report_build_info();
+        m.report_protocol_support_versions(&node_protocol_version_support);
     }
+    tracing::info!(target: "monit","Protocol version supported by the node: {}", &node_protocol_version_support);
+
+    tracing::info!("zero_block_version: {:?}", &zero_block_version);
+
+    tracing::info!(target: "monit", "Node config: {:?}", config_read);
+
+    let tls_cert_cache = TlsCertCache::new()?;
+    let network_config = config.network_config(Some(tls_cert_cache.clone()))?;
+    let gossip_config = config.gossip_config();
+
+    tracing::info!("Gossip seeds expanded: {:?}", gossip_config.seeds);
+    tracing::info!("Gossip advertise addr: {:?}", gossip_config.advertise_addr);
+    tracing::info!("Clear missing block locks: {}", args.clear_missing_block_locks);
+    let node_credentials = NodeCredentials::builder()
+        .node_id(config.local.node_id.clone())
+        .protocol_version_support(node_protocol_version_support)
+        .build();
+    tracing::info!("node_credentials: {node_credentials:?}");
     let socket_address =
         std::env::var("AEROSPIKE_SOCKET_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
     let set_prefix = std::env::var("AEROSPIKE_SET_PREFIX").unwrap_or_else(|_| "node".to_string());
@@ -417,14 +514,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let (watch_gossip_config_tx, watch_gossip_config_rx) =
         tokio::sync::watch::channel(config.watch_gossip_config(HashSet::default()));
     // Signals from `dispatch_hot_reload` to `gossip` module
-    let (reload_gossip_config_tx, gossip_config_rx) =
-        tokio::sync::watch::channel(GossipReloadConfig {
-            gossip_config,
-            api_advertise_addr: config.network.api_advertise_addr.clone(),
-            my_ed_key_secret: config.network.my_ed_key_secret.clone(),
-            my_ed_key_path: config.network.my_ed_key_path.clone(),
-            peer_config: Some(config.gossip_peer()?),
-        });
+    let (gossip_reload_config_tx, gossip_reload_config_rx) =
+        tokio::sync::watch::channel(config.gossip_reload_config()?);
 
     let (config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
 
@@ -435,12 +526,13 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         config_rx,
         bk_set_update_async_rx.clone(),
         network_config_tx,
-        reload_gossip_config_tx,
+        gossip_reload_config_tx,
         watch_gossip_config_tx,
     ));
 
     let (chitchat_rx, run_gossip_handle) =
-        run_gossip_with_reload("node", shutdown_rx.clone(), gossip_config_rx, UdpTransport).await?;
+        run_gossip_with_reload("node", shutdown_rx.clone(), gossip_reload_config_rx, UdpTransport)
+            .await?;
 
     let gossip_listen_addr_clone = config.network.gossip_listen_addr;
     let gossip_advertise_addr =
@@ -512,8 +604,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let zerostate_path = Some(config.local.zerostate_path.clone());
 
     tracing::trace!(
-        "config.global.min_time_between_state_publish_directives={:?}",
-        config.global.min_time_between_state_publish_directives
+        "global_config.min_time_between_state_publish_directives={:?}",
+        global_config.min_time_between_state_publish_directives
     );
     let keys_map = key_pairs_from_file::<GoshBLS>(&config.local.key_path);
     let bls_keys_map = Arc::new(Mutex::new(keys_map));
@@ -607,10 +699,10 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         routing.clone(),
         repo_path.clone(),
         metrics.as_ref().map(|m| m.node.clone()),
-        config.global.thread_load_threshold,
-        config.global.thread_load_window_size,
+        global_config.thread_load_threshold,
+        global_config.thread_load_window_size,
         config.local.rate_limit_on_incoming_block_req,
-        config.global.thread_count_soft_limit,
+        global_config.thread_count_soft_limit,
         crossref_db,
     );
     let blob_sync_service =
@@ -694,6 +786,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     .build(),
             )?;
             state_in.set_block_round(0)?;
+            state_in.set_block_version_state(zero_block_version)?;
         }
         Ok(())
     })?;
@@ -701,15 +794,18 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let accounts_repo = AccountsRepository::new(
         repo_path.clone(),
         config.local.unload_after,
-        config.global.save_state_frequency,
+        global_config.save_state_frequency,
     );
     let finalized_block_storage_size =
-        1_usize + TryInto::<usize>::try_into(config.global.save_state_frequency * 2).unwrap();
+        1_usize + TryInto::<usize>::try_into(global_config.save_state_frequency * 2).unwrap();
     let repository_blocks =
         Arc::new(Mutex::new(FinalizedBlockStorage::new(finalized_block_storage_size)));
 
     let (bk_set_update_tx, bk_set_update_rx) =
         instrumented_channel(node_metrics.clone(), node::helper::metrics::BK_SET_UPDATE_CHANNEL);
+
+    #[cfg(feature = "mirror_repair")]
+    let is_updated_mv = Arc::new(Mutex::new(false));
 
     let mut repository = RepositoryImpl::new(
         repo_path.clone(),
@@ -724,6 +820,9 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         message_db.clone(),
         repository_blocks,
         bk_set_update_tx,
+        #[cfg(feature = "mirror_repair")]
+        is_updated_mv.clone(),
+        config_read.clone(),
     );
 
     let (optimistic_save_tx, optimistic_save_rx) =
@@ -816,7 +915,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     };
 
     let ackinackisender = AckiNackiSend::builder()
-        .node_id(config.local.node_id.clone())
+        .node_credentials(node_credentials.clone())
         .bls_keys_map(bls_keys_map.clone())
         .ack_network_direct_tx(direct_tx.clone())
         .nack_network_broadcast_tx(broadcast_tx.clone())
@@ -826,16 +925,16 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         Authority::builder()
         .round_buckets(RoundTime::linear(
             // min round time
-            Duration::from_millis(config.global.round_min_time_millis),
+            Duration::from_millis(global_config.round_min_time_millis),
             // step
-            Duration::from_millis(config.global.round_step_millis),
+            Duration::from_millis(global_config.round_step_millis),
             // max round time: 30 sec
-            Duration::from_millis(config.global.round_max_time_millis),
+            Duration::from_millis(global_config.round_max_time_millis),
         ))
         .data_dir(repo_path.join("action-locks"))
         .block_state_repository(block_state_repo.clone())
         .block_repository(repository.clone())
-        .node_identifier(config.local.node_id.clone())
+        .node_credentials(node_credentials.clone())
         .bls_keys_map(bls_keys_map.clone())
         // TODO: make it restored from disk
         // .action_lock(HashMap::new())
@@ -843,7 +942,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         // .block_producers(HashMap::new())
         .bp_production_count(bp_thread_count.clone())
         .network_broadcast_tx(broadcast_tx.clone())
-        .node_joining_timeout(config.global.node_joining_timeout)
+        .node_joining_timeout(global_config.node_joining_timeout)
         .action_lock_db(action_lock_db)
         .max_lookback_block_height_distance(finalized_block_storage_size)
         .self_addr(config.network.node_advertise_addr)
@@ -854,6 +953,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let validation_service = ValidationService::new(
         repository.clone(),
         config.clone(),
+        config_read.clone(),
         node_shared_services.clone(),
         block_state_repo.clone(),
         ackinackisender.clone(),
@@ -907,6 +1007,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let stop_result_rx_vec = Arc::new(Mutex::new(vec![]));
     let stop_result_rx_vec_clone = stop_result_rx_vec.clone();
     let bk_set_update_async_rx_clone = bk_set_update_async_rx.clone();
+    let net_topology_rx_clone = net_topology_rx.clone();
 
     let optimistic_save_tx_clone = optimistic_save_tx.clone();
     let (routing, _inner_service_thread) = RoutingService::start(
@@ -985,7 +1086,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             let mut sync_state_service = ExternalFileSharesBased::new(
                 blob_sync_service.interface(),
                 file_saving_service,
-                chitchat_rx.clone(),
+                net_topology_rx_clone.clone(),
                 bk_set_update_async_rx_clone.clone(),
             );
             sync_state_service.static_storages = config.network.static_storages.clone();
@@ -993,23 +1094,15 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             sync_state_service.retry_download_timeout = std::time::Duration::from_millis(
                 config.network.shared_state_retry_download_timeout_millis,
             );
-            sync_state_service.download_deadline_timeout = config.global.node_joining_timeout;
+            sync_state_service.download_deadline_timeout = global_config.node_joining_timeout;
             let production_process = TVMBlockProducerProcess::builder()
                 .metrics(node_metrics.clone())
-                .node_config(config.clone())
+                .node_config_read(config_read.clone())
                 .repository(repository.clone())
-                .block_keeper_epoch_code_hash(config.global.block_keeper_epoch_code_hash.clone())
-                .block_keeper_preepoch_code_hash(
-                    config.global.block_keeper_preepoch_code_hash.clone(),
-                )
                 .producer_node_id(config.local.node_id.clone())
                 .blockchain_config(load_blockchain_config()?)
                 .parallelization_level(config.local.parallelization_level)
                 .shared_services(node_shared_services.clone())
-                .block_produce_timeout(Arc::new(Mutex::new(Duration::from_millis(
-                    config.global.time_to_produce_block_millis,
-                ))))
-                .thread_count_soft_limit(config.global.thread_count_soft_limit)
                 .share_service(Some(sync_state_service.clone()))
                 .wasm_cache(wasm_cache.clone())
                 .save_optimistic_service_sender(optimistic_save_tx.clone())
@@ -1017,10 +1110,10 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
             let attestation_sender_service = AttestationSendService::builder()
                 .pulse_timeout(std::time::Duration::from_millis(
-                    config.global.time_to_produce_block_millis,
+                    global_config.time_to_produce_block_millis,
                 ))
-                .resend_attestation_timeout(config.global.attestation_resend_timeout)
-                .node_id(config.local.node_id.clone())
+                .resend_attestation_timeout(global_config.attestation_resend_timeout)
+                .node_credentials(node_credentials.clone())
                 .thread_id(*thread_id)
                 .bls_keys_map(bls_keys_map.clone())
                 .block_state_repository(block_state_repo.clone())
@@ -1075,11 +1168,11 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             }
             let block_processing_service = BlockProcessorService::new(
                 SecurityGuarantee::from_chance_of_successful_attack(
-                    config.global.chance_of_successful_attack,
+                    global_config.chance_of_successful_attack,
                 ),
                 config.local.node_id.clone(),
-                std::time::Duration::from_millis(config.global.time_to_produce_block_millis),
-                config.global.save_state_frequency,
+                std::time::Duration::from_millis(global_config.time_to_produce_block_millis),
+                global_config.save_state_frequency,
                 bls_keys_map.clone(),
                 *thread_id,
                 block_state_repo.clone(),
@@ -1096,11 +1189,13 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 block_collection.clone(),
                 node_cross_thread_ref_data_availability_synchronization_service.interface(),
                 optimistic_save_tx.clone(),
+                config_read.clone(),
             );
 
             // TODO: save blk_req_join_handle
             let (blk_req_tx, _blk_req_join_handle) = BlockRequestService::start(
                 config.clone(),
+                global_config.clone(),
                 node_shared_services.clone(),
                 repository.clone(),
                 block_state_repo.clone(),
@@ -1152,6 +1247,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 raw_block_sender.clone(),
                 bls_keys_map.clone(),
                 config.clone(),
+                global_config.clone(),
                 block_keeper_rng.clone(),
                 producer_election_rng.clone(),
                 *thread_id,
@@ -1184,6 +1280,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 authority_handler,
                 thread_authority_sender,
                 optimistic_save_tx.clone(),
+                node_credentials.clone(),
             );
 
             Ok(node)
@@ -1311,6 +1408,10 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 Ok(_) => {
                     tracing::info!(target: "monit", "Start shutdown");
                     start_shutdown();
+                    let _ = state_save_tx.send(StateSaveCommand::Shutdown);
+                    let _ = optimistic_save_tx_clone.send(OptimisticStateSaveCommand::Shutdown);
+                    let _ = raw_block_sender_clone.send(RawBlockSaveCommand::Shutdown);
+                    let _ = heartbeat_channel_tx_clone.send(HeartbeatCommand::Shutdown);
                     shutdown_tx.send_replace(true);
                     repository.dump_state();
 
@@ -1320,10 +1421,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     for rx in result_rx_vec.iter() {
                         let _ = rx.recv();
                     }
-                    let _ = state_save_tx.send(StateSaveCommand::Shutdown);
-                    let _ = optimistic_save_tx_clone.send(OptimisticStateSaveCommand::Shutdown);
-                    let _ = raw_block_sender_clone.send(RawBlockSaveCommand::Shutdown);
-                    let _ = heartbeat_channel_tx_clone.send(HeartbeatCommand::Shutdown);
                     tracing::info!(target: "monit", "Shutdown finished");
                     Ok(())
                 }
@@ -1418,10 +1515,7 @@ fn resolve_bp(
         .borrow()
         .resolve_peer(bp_id)
         .and_then(|peers| peers.first())
-        .map(|peer| match &peer.bk_api_addr {
-            Some(socket) => socket.to_string(),
-            None => peer.addr.to_string(),
-        })
+        .map(|peer| peer.resolve_bk_host_port(DEFAULT_BK_API_PORT))
         .map_or_else(Vec::new, |addr| vec![addr]);
 
     ResolvingResult::new(node_id == bp_id, list)
@@ -1479,11 +1573,12 @@ async fn dispatch_hot_reload(
     mut config_rx: tokio::sync::watch::Receiver<node::config::Config>,
     mut bk_set_rx: tokio::sync::watch::Receiver<ApiBkSet>,
     network_config_tx: tokio::sync::watch::Sender<NetworkConfig>,
-    reload_gossip_config_tx: tokio::sync::watch::Sender<GossipReloadConfig<NodeIdentifier>>,
+    gossip_reload_config_tx: tokio::sync::watch::Sender<GossipReloadConfig<NodeIdentifier>>,
     watch_gossip_config_tx: tokio::sync::watch::Sender<WatchGossipConfig<NodeIdentifier>>,
 ) {
     let mut bk_set = bk_set_rx.borrow().clone();
     let mut config = config_rx.borrow().clone();
+    let mut gossip_reload_config = gossip_reload_config_tx.borrow().clone();
     tracing::trace!(
         "Hot reload initial node config: {}",
         serde_json::to_string(&config).unwrap_or_default()
@@ -1522,21 +1617,16 @@ async fn dispatch_hot_reload(
             },
             config_changed = config_rx.changed() => if config_changed.is_ok() {
                 config = config_rx.borrow().clone();
-                match config.gossip_peer() {
-                    Ok(peer) => {
-                        reload_gossip_config_tx.send_replace(
-                            GossipReloadConfig {
-                                gossip_config: config.gossip_config(),
-                                api_advertise_addr: config.network.api_advertise_addr.clone(),
-                                my_ed_key_secret: config.network.my_ed_key_secret.clone(),
-                                my_ed_key_path: config.network.my_ed_key_path.clone(),
-                                peer_config: Some(peer)
-                            }
-                        );
-                        tracing::trace!(
-                            "Hot reload changed node config: {}",
-                            serde_json::to_string(&config).unwrap_or_default()
-                        );
+                match config.gossip_reload_config() {
+                    Ok(new_gossip_reload_config) => {
+                        if new_gossip_reload_config != gossip_reload_config {
+                            gossip_reload_config = new_gossip_reload_config;
+                            gossip_reload_config_tx.send_replace(gossip_reload_config.clone());
+                            tracing::trace!(
+                                "Hot reload changed node config: {}",
+                                serde_json::to_string(&config).unwrap_or_default()
+                            );
+                        }
                     }
                     Err(e) => {
                         tracing::error!("Hot reload: {e:?}");
@@ -1681,6 +1771,39 @@ fn clear_missing_block_locks(
     Ok(result)
 }
 
+fn print_node_protocol_version_support(args: Args) -> anyhow::Result<()> {
+    let global_config =
+        load_config_from_file::<GlobalConfig>(&args.global_config_path)?.ensure_min_sync_gap();
+    let preferred_protocol_version = node::versioning::ProtocolVersion::builder()
+        .canonical_config_hash(&global_config)
+        .tvm_engine_version(global_config.engine_version.clone())
+        .gossip_version(global_config.gossip_version)
+        .build();
+    let (_zero_block_version, node_protocol_version_support) =
+        if let Some(retired_version) = option_env!("RETIRED_VERSION") {
+            let retired_version = node::versioning::ProtocolVersion::parse(retired_version)?;
+            (
+                BlockProtocolVersionState::Current(retired_version.clone()),
+                node::versioning::ProtocolVersionSupport::new(retired_version)
+                    .transitioning_to(preferred_protocol_version.clone()),
+            )
+        } else {
+            (
+                BlockProtocolVersionState::Current(preferred_protocol_version.clone()),
+                node::versioning::ProtocolVersionSupport::new(preferred_protocol_version),
+            )
+        };
+
+    // // Note: For first version in rolling update force node to use None version
+    // let (_zero_block_version, node_protocol_version_support) = (
+    //     BlockProtocolVersionState::Current(ProtocolVersion::parse("None")?),
+    //     node::versioning::ProtocolVersionSupport::from_str("None")?,
+    // );
+    let json_output = json!({"protocol_version_support": node_protocol_version_support});
+    println!("{}", serde_json::to_string_pretty(&json_output)?);
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_execute() -> anyhow::Result<()> {
     use std::path::Path;
@@ -1699,14 +1822,24 @@ async fn test_execute() -> anyhow::Result<()> {
     let node_metrics: Option<BlockProductionMetrics> = None;
 
     let config_path = PathBuf::from("./tests/test_node_data0/acki-nacki.conf.yaml");
-    // println!("{:?}", std::env::current_dir());
+    let global_config_path = PathBuf::from("./tests/test_node_data0/acki-nacki.global.conf.yaml");
 
     let tls_cert_cache = TlsCertCache::new()?;
-    let config = load_config_from_file(&config_path)
-        .map_err(|e| anyhow::format_err!("Failed to open config file: {e}"))?
-        .ensure_min_cpu(MINIMUM_NUMBER_OF_CORES)
+    // let config = load_config_from_file(&config_path)
+    //     .map_err(|e| anyhow::format_err!("Failed to open config file: {e}"))?
+    //     .ensure_min_cpu(MINIMUM_NUMBER_OF_CORES)
+    //     .ensure_min_sync_gap();
+
+    let config = load_config_from_file::<Config>(&config_path)
+        .map_err(|e| anyhow::format_err!("Failed to load config: {e}"))?
+        .ensure_min_cpu(MINIMUM_NUMBER_OF_CORES);
+
+    let global_config = load_config_from_file::<GlobalConfig>(&global_config_path)
+        .map_err(|e| anyhow::format_err!("Failed to load global config: {e}"))?
         .ensure_min_sync_gap();
 
+    let config_read =
+        ConfigRead::new(ProtocolVersion::parse("None")?, global_config.clone(), None, None);
     let zerostate =
         ZeroState::load_from_file(&config.local.zerostate_path).expect("Failed to open zerostate");
 
@@ -1717,10 +1850,17 @@ async fn test_execute() -> anyhow::Result<()> {
     };
 
     // Preload data
-    let bp_node_id = NodeIdentifier::from_str(
-        "ad19d38503bde647819890984603f658a52c53c07ba9847cc7d31081a542bec1",
-    )
-    .unwrap();
+    let bp_node_id = NodeCredentials::builder()
+        .node_id(
+            NodeIdentifier::from_str(
+                "ad19d38503bde647819890984603f658a52c53c07ba9847cc7d31081a542bec1",
+            )
+            .unwrap(),
+        )
+        .protocol_version_support(
+            node::versioning::ProtocolVersionSupport::from_str("None").unwrap(),
+        )
+        .build();
     let cur_bk_set = BlockKeeperSet::from(bk_set.current.clone());
     let keys_map = key_pairs_from_file::<GoshBLS>(
         "./tests/test_node_data0/config/block_keeper1_bls.keys.json",
@@ -1741,7 +1881,7 @@ async fn test_execute() -> anyhow::Result<()> {
             blocks.push(block);
         }
         let next_round_success = NextRoundSuccess::builder()
-            .node_identifier(bp_node_id.clone())
+            .node_identifier(bp_node_id.node_id().clone())
             .round(58744989)
             .block_height(
                 BlockHeight::builder()
@@ -1789,7 +1929,7 @@ async fn test_execute() -> anyhow::Result<()> {
             .find(|attn| attn.data().block_id() == &blocks[0].data().identifier())
             .cloned();
         let next_round_success = NextRoundSuccess::builder()
-            .node_identifier(bp_node_id.clone())
+            .node_identifier(bp_node_id.node_id().clone())
             .round(58744989)
             .block_height(
                 BlockHeight::builder()
@@ -1854,7 +1994,6 @@ async fn test_execute() -> anyhow::Result<()> {
 
     let (gossip_config_tx, gossip_config_rx) = tokio::sync::watch::channel(GossipReloadConfig {
         gossip_config,
-        api_advertise_addr: config.network.api_advertise_addr.clone(),
         my_ed_key_secret: config.network.my_ed_key_secret.clone(),
         my_ed_key_path: config.network.my_ed_key_path.clone(),
         peer_config: Some(config.gossip_peer()?),
@@ -1890,7 +2029,7 @@ async fn test_execute() -> anyhow::Result<()> {
         metrics.as_ref().map(|x| x.node.clone()),
         node::helper::metrics::INBOUND_EXT_CHANNEL,
     );
-    let (direct_tx, broadcast_tx, incoming_rx, _nodes_rx) = network
+    let (direct_tx, broadcast_tx, incoming_rx, net_topology_rx) = network
         .start(
             watch_gossip_config_rx,
             metrics.as_ref().map(|m| m.net.clone()),
@@ -1928,8 +2067,8 @@ async fn test_execute() -> anyhow::Result<()> {
     let zerostate_path = Some(config.local.zerostate_path.clone());
 
     tracing::trace!(
-        "config.global.min_time_between_state_publish_directives={:?}",
-        config.global.min_time_between_state_publish_directives
+        "global_config.min_time_between_state_publish_directives={:?}",
+        global_config.min_time_between_state_publish_directives
     );
     let keys_map = key_pairs_from_file::<GoshBLS>(&config.local.key_path);
     let bls_keys_map = Arc::new(Mutex::new(keys_map));
@@ -1981,10 +2120,10 @@ async fn test_execute() -> anyhow::Result<()> {
         routing.clone(),
         repo_path.clone(),
         metrics.as_ref().map(|m| m.node.clone()),
-        config.global.thread_load_threshold,
-        config.global.thread_load_window_size,
+        global_config.thread_load_threshold,
+        global_config.thread_load_window_size,
         config.local.rate_limit_on_incoming_block_req,
-        config.global.thread_count_soft_limit,
+        global_config.thread_count_soft_limit,
         crossref_db,
     );
     let blob_sync_service =
@@ -2071,15 +2210,18 @@ async fn test_execute() -> anyhow::Result<()> {
     let accounts_repo = AccountsRepository::new(
         repo_path.clone(),
         config.local.unload_after,
-        config.global.save_state_frequency,
+        global_config.save_state_frequency,
     );
     let finalized_block_storage_size =
-        1_usize + TryInto::<usize>::try_into(config.global.save_state_frequency * 2).unwrap();
+        1_usize + TryInto::<usize>::try_into(global_config.save_state_frequency * 2).unwrap();
     let repository_blocks =
         Arc::new(Mutex::new(FinalizedBlockStorage::new(finalized_block_storage_size)));
 
     let (bk_set_update_tx, _bk_set_update_rx) =
         instrumented_channel(node_metrics.clone(), node::helper::metrics::BK_SET_UPDATE_CHANNEL);
+
+    #[cfg(feature = "mirror_repair")]
+    let is_updated_mv = Arc::new(Mutex::new(false));
 
     let mut repository = RepositoryImpl::new(
         repo_path.clone(),
@@ -2094,6 +2236,9 @@ async fn test_execute() -> anyhow::Result<()> {
         message_db.clone(),
         repository_blocks,
         bk_set_update_tx,
+        #[cfg(feature = "mirror_repair")]
+        is_updated_mv,
+        config_read.clone(),
     );
 
     let (optimistic_save_tx, _optimistic_save_rx) =
@@ -2129,9 +2274,14 @@ async fn test_execute() -> anyhow::Result<()> {
             services.thread_sync.on_block_finalized(&last_finalized_id, thread_id).unwrap();
         });
     }
-
-    let ackinackisender = AckiNackiSend::builder()
+    let node_credentials = NodeCredentials::builder()
         .node_id(config.local.node_id.clone())
+        .protocol_version_support(
+            node::versioning::ProtocolVersionSupport::from_str("None").unwrap(),
+        )
+        .build();
+    let ackinackisender = AckiNackiSend::builder()
+        .node_credentials(node_credentials.clone())
         .bls_keys_map(bls_keys_map.clone())
         .ack_network_direct_tx(direct_tx.clone())
         .nack_network_broadcast_tx(broadcast_tx.clone())
@@ -2141,16 +2291,16 @@ async fn test_execute() -> anyhow::Result<()> {
         Authority::builder()
             .round_buckets(RoundTime::linear(
                 // min round time
-                Duration::from_millis(config.global.round_min_time_millis),
+                Duration::from_millis(global_config.round_min_time_millis),
                 // step
-                Duration::from_millis(config.global.round_step_millis),
+                Duration::from_millis(global_config.round_step_millis),
                 // max round time: 30 sec
-                Duration::from_millis(config.global.round_max_time_millis),
+                Duration::from_millis(global_config.round_max_time_millis),
             ))
             .data_dir(repo_path.join("action-locks"))
             .block_state_repository(block_state_repo.clone())
             .block_repository(repository.clone())
-            .node_identifier(config.local.node_id.clone())
+            .node_credentials(node_credentials.clone())
             .bls_keys_map(bls_keys_map.clone())
             // TODO: make it restored from disk
             // .action_lock(HashMap::new())
@@ -2158,7 +2308,7 @@ async fn test_execute() -> anyhow::Result<()> {
             // .block_producers(HashMap::new())
             .bp_production_count(bp_thread_count.clone())
             .network_broadcast_tx(broadcast_tx.clone())
-            .node_joining_timeout(config.global.node_joining_timeout)
+            .node_joining_timeout(global_config.node_joining_timeout)
             .action_lock_db(action_lock_db)
             .max_lookback_block_height_distance(finalized_block_storage_size)
             .self_addr(config.network.node_advertise_addr)
@@ -2169,6 +2319,7 @@ async fn test_execute() -> anyhow::Result<()> {
     let validation_service = ValidationService::new(
         repository.clone(),
         config.clone(),
+        config_read.clone(),
         node_shared_services.clone(),
         block_state_repo.clone(),
         ackinackisender.clone(),
@@ -2191,6 +2342,7 @@ async fn test_execute() -> anyhow::Result<()> {
     let stop_result_rx_vec = Arc::new(Mutex::new(vec![]));
     let stop_result_rx_vec_clone = stop_result_rx_vec.clone();
     let bk_set_update_async_rx_clone = bk_set_update_async_rx.clone();
+    let net_topology_rx_clone = net_topology_rx.clone();
 
     let saved_thread_sender = Arc::new(Mutex::new(None));
     let saved_thread_sender_clone = saved_thread_sender.clone();
@@ -2269,37 +2421,31 @@ async fn test_execute() -> anyhow::Result<()> {
     let mut sync_state_service = ExternalFileSharesBased::new(
         blob_sync_service.interface(),
         file_saving_service,
-        chitchat_rx.clone(),
+        net_topology_rx_clone.clone(),
         bk_set_update_async_rx_clone.clone(),
     );
     sync_state_service.static_storages = config.network.static_storages.clone();
     sync_state_service.max_download_tries = config.network.shared_state_max_download_tries;
     sync_state_service.retry_download_timeout =
         std::time::Duration::from_millis(config.network.shared_state_retry_download_timeout_millis);
-    sync_state_service.download_deadline_timeout = config.global.node_joining_timeout;
+    sync_state_service.download_deadline_timeout = global_config.node_joining_timeout;
     let production_process = TVMBlockProducerProcess::builder()
         .metrics(node_metrics.clone())
-        .node_config(config.clone())
+        .node_config_read(config_read.clone())
         .repository(repository.clone())
-        .block_keeper_epoch_code_hash(config.global.block_keeper_epoch_code_hash.clone())
-        .block_keeper_preepoch_code_hash(config.global.block_keeper_preepoch_code_hash.clone())
         .producer_node_id(config.local.node_id.clone())
         .blockchain_config(load_blockchain_config()?)
         .parallelization_level(config.local.parallelization_level)
         .shared_services(node_shared_services.clone())
-        .block_produce_timeout(Arc::new(Mutex::new(Duration::from_millis(
-            config.global.time_to_produce_block_millis,
-        ))))
-        .thread_count_soft_limit(config.global.thread_count_soft_limit)
         .share_service(Some(sync_state_service.clone()))
         .wasm_cache(wasm_cache.clone())
         .save_optimistic_service_sender(optimistic_save_tx.clone())
         .build();
 
     let attestation_sender_service = AttestationSendService::builder()
-        .pulse_timeout(std::time::Duration::from_millis(config.global.time_to_produce_block_millis))
-        .resend_attestation_timeout(config.global.attestation_resend_timeout)
-        .node_id(config.local.node_id.clone())
+        .pulse_timeout(std::time::Duration::from_millis(global_config.time_to_produce_block_millis))
+        .resend_attestation_timeout(global_config.attestation_resend_timeout)
+        .node_credentials(node_credentials.clone())
         .thread_id(*thread_id)
         .bls_keys_map(bls_keys_map.clone())
         .block_state_repository(block_state_repo.clone())
@@ -2351,11 +2497,11 @@ async fn test_execute() -> anyhow::Result<()> {
     }
     let block_processing_service = BlockProcessorService::new(
         SecurityGuarantee::from_chance_of_successful_attack(
-            config.global.chance_of_successful_attack,
+            global_config.chance_of_successful_attack,
         ),
         config.local.node_id.clone(),
-        std::time::Duration::from_millis(config.global.time_to_produce_block_millis),
-        config.global.save_state_frequency,
+        std::time::Duration::from_millis(global_config.time_to_produce_block_millis),
+        global_config.save_state_frequency,
         bls_keys_map.clone(),
         *thread_id,
         block_state_repo.clone(),
@@ -2372,11 +2518,13 @@ async fn test_execute() -> anyhow::Result<()> {
         block_collection.clone(),
         node_cross_thread_ref_data_availability_synchronization_service.interface(),
         optimistic_save_tx.clone(),
+        config_read.clone(),
     );
 
     // TODO: save blk_req_join_handle
     let (blk_req_tx, _blk_req_join_handle) = BlockRequestService::start(
         config.clone(),
+        global_config.clone(),
         node_shared_services.clone(),
         repository.clone(),
         block_state_repo.clone(),
@@ -2428,6 +2576,7 @@ async fn test_execute() -> anyhow::Result<()> {
         raw_block_sender.clone(),
         bls_keys_map.clone(),
         config.clone(),
+        global_config.clone(),
         block_keeper_rng.clone(),
         producer_election_rng.clone(),
         *thread_id,
@@ -2460,6 +2609,7 @@ async fn test_execute() -> anyhow::Result<()> {
         authority_handler,
         thread_authority_sender,
         optimistic_save_tx.clone(),
+        node_credentials.clone(),
     );
 
     let thread = std::thread::Builder::new()

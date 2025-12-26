@@ -1,0 +1,21 @@
+services:
+  caddy:
+    image: caddy:2.8.4
+    ports:
+      - "${HOST_PUBLIC_IP}:80:80"
+      - "${HOST_PUBLIC_IP}:443:443"
+    volumes:
+      - ./caddy:/etc/caddy
+      - ./data:/data
+    environment:
+      - CADDY_EMAIL=${CADDY_EMAIL}
+    restart: unless-stopped
+    networks:
+      - ackinacki-net
+
+networks:
+  ackinacki-net:
+    name: ackinacki-net
+{% if EXTERNAL_NET is defined and EXTERNAL_NET is true %}
+    external: true
+{% endif %}

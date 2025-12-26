@@ -54,6 +54,15 @@
 			]
 		},
 		{
+			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"},
+				{"name":"cell","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "getPopitGameAddress",
 			"inputs": [
 				{"name":"owner","type":"address"}

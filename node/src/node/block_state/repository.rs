@@ -203,11 +203,20 @@ impl BlockStateRepository {
     pub fn touch(&mut self) {
         self.notifications.touch();
     }
+
+    #[cfg(test)]
+    pub fn remove(&self, block_identifier: &BlockIdentifier) -> anyhow::Result<()> {
+        let mut guarded = self.map.write();
+        let _ = guarded.remove(block_identifier);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
+    use std::thread::sleep;
+    use std::time::Duration;
 
     use super::*;
     use crate::node::NodeIdentifier;
@@ -271,11 +280,43 @@ mod tests {
         value_a.guarded_mut(|e| e.set_finalized()).unwrap();
         assert!(value_a.guarded_mut(|e| e.is_finalized()));
         drop(value_a);
+        sleep(Duration::from_secs(1));
+        repository.remove(&some_block_id).unwrap();
         // ensure durable
         let value = repository.get(&some_block_id).unwrap();
         value.guarded(|e| {
             assert!(e.known_attestation_interested_parties().contains(&some_node_id));
             assert!(e.is_finalized());
+        })
+    }
+
+    #[test]
+    fn ensure_repository_saves_reloaded_values() {
+        let some_node_id = NodeIdentifier::some_id();
+        let some_block_id = BlockIdentifier::default();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let tmp_path = tmp_dir.path().to_owned();
+        assert!(tmp_path.exists());
+        let repository = BlockStateRepository::test(tmp_path);
+        let value_a = repository.get(&some_block_id).unwrap();
+        assert!(!value_a.guarded(|e| e.is_finalized()));
+        value_a.guarded_mut(|e| e.try_add_attestations_interest(some_node_id.clone())).unwrap();
+        value_a.guarded_mut(|e| e.set_finalized()).unwrap();
+        assert!(value_a.guarded_mut(|e| e.is_finalized()));
+        drop(value_a);
+        sleep(Duration::from_secs(1));
+        repository.remove(&some_block_id).unwrap();
+        let value_b = repository.get(&some_block_id).unwrap();
+        value_b.guarded_mut(|e| e.set_must_be_validated_in_fallback_case()).unwrap();
+        assert!(value_b.guarded(|e| e.must_be_validated_in_fallback_case() == &Some(true)));
+        drop(value_b);
+        sleep(Duration::from_secs(1));
+        repository.remove(&some_block_id).unwrap();
+        let value = repository.get(&some_block_id).unwrap();
+        value.guarded(|e| {
+            assert!(e.known_attestation_interested_parties().contains(&some_node_id));
+            assert!(e.is_finalized());
+            assert!(e.must_be_validated_in_fallback_case() == &Some(true));
         })
     }
 }

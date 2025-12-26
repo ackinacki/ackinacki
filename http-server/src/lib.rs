@@ -54,8 +54,7 @@ const AUTHORIZED_BY_BK_KEY: &str = "authorized_by_bk_token";
 pub struct WebServer<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter> {
     pub addr: String,
     pub local_storage_dir: PathBuf,
-    pub incoming_message_sender:
-        InstrumentedSender<(TMessage, Option<oneshot::Sender<ExtMsgFeedback>>)>,
+    pub incoming_message_sender: InstrumentedSender<(TMessage, oneshot::Sender<ExtMsgFeedback>)>,
     pub account_request_sender: mpsc::Sender<AccountRequest>,
     pub bk_set_summary: Arc<parking_lot::RwLock<BkSetSummarySnapshot>>,
     pub bk_set: Arc<parking_lot::RwLock<ApiBkSetSnapshot>>,
@@ -80,10 +79,7 @@ where
     pub fn new(
         addr: impl AsRef<str>,
         local_storage_dir: impl AsRef<Path>,
-        incoming_message_sender: InstrumentedSender<(
-            TMessage,
-            Option<oneshot::Sender<ExtMsgFeedback>>,
-        )>,
+        incoming_message_sender: InstrumentedSender<(TMessage, oneshot::Sender<ExtMsgFeedback>)>,
         account_request_sender: mpsc::Sender<AccountRequest>,
         into_external_message: TMsgConverter,
         bp_resolver: TBPResolver,

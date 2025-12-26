@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use database::documents_db::SerializedItem;
 use parking_lot::Mutex;
 use tvm_block::ShardStateUnsplit;
 use tvm_types::UInt256;
@@ -94,6 +93,8 @@ impl OptimisticState for OptimisticStateStub {
         _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         _accounts_repo: AccountsRepository,
         _message_db: MessageDurableStorage,
+        #[cfg(feature = "mirror_repair")] _is_updated_mv: Arc<parking_lot::Mutex<bool>>,
+        _is_block_of_retired_version: bool,
     ) -> anyhow::Result<(
         CrossThreadRefData,
         HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
@@ -313,21 +314,6 @@ impl Repository for RepositoryStub {
         _snapshot: Self::StateSnapshot,
         _thread_id: &ThreadIdentifier,
         _skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
-    ) -> anyhow::Result<()> {
-        todo!()
-    }
-
-    fn sync_accounts_from_state(
-        &mut self,
-        _shard_state: Arc<ShardStateUnsplit>,
-    ) -> anyhow::Result<()> {
-        todo!()
-    }
-
-    fn save_account_diffs(
-        &self,
-        _block_id: BlockIdentifier,
-        _accounts: HashMap<String, SerializedItem>,
     ) -> anyhow::Result<()> {
         todo!()
     }

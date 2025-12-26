@@ -1,0 +1,27 @@
+[package]
+name = "tvm_contracts"
+edition = "2021"
+version = "0.1.0"
+rust-version.workspace = true
+license-file.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tvm_abi.workspace = true
+tvm_block.workspace = true
+tvm_client.workspace = true
+tvm_executor.workspace = true
+tvm_types.workspace = true
+tvm_vm.workspace = true
+
+crc = "3.2.1"
+ed25519-dalek = "2.1.1"
+
+[features]
+# Use automocks in binaries
+use_automocks = []

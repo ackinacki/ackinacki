@@ -44,6 +44,7 @@ use crate::types::ThreadIdentifier;
 
 pub mod build_actions;
 mod engine_version;
+pub use engine_version::get_engine_version;
 pub mod special_messages;
 pub mod trace;
 
@@ -153,6 +154,9 @@ pub struct BlockBuilder {
 
     #[cfg(feature = "monitor-accounts-number")]
     pub(crate) accounts_number_diff: i64,
+
+    #[cfg(feature = "mirror_repair")]
+    pub(crate) is_updated_mv: Arc<parking_lot::Mutex<bool>>,
 }
 
 impl BlockBuilder {

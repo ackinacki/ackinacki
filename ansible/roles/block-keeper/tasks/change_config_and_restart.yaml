@@ -1,0 +1,24 @@
+---
+
+# - name: Change acki-nacki config
+#   ansible.builtin.shell:
+#     chdir: "{{ BK_DIR }}/bk-configs"
+#     cmd: |
+#       sed -i 's/chitchat_cluster_id: mainnet-30111200/chitchat_cluster_id: mainnet-07101500/g' bk-configs/acki-nacki.conf.yaml
+#   when: DO_START
+
+- name: Change acki-nacki config
+  ansible.builtin.lineinfile:
+    path: "{{ BK_DIR }}/bk-configs/acki-nacki.conf.yaml"
+    regexp: '^  chitchat_cluster_id: mainnet-07101500$'
+    line: '  chitchat_cluster_id: mainnet-30111200'
+    backup: yes
+  when: DO_START
+
+- name: Send SIGHUP to BK node
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}"
+    cmd: |
+      docker compose exec "node{{ NODE_ID }}" pkill -1 node
+  when: DO_START
+  ignore_errors: true

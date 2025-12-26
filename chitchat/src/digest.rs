@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::serialize::*;
-use crate::ChitchatId;
-use crate::Heartbeat;
-use crate::Version;
+use crate::{ChitchatId, Heartbeat, Version};
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub(crate) struct NodeDigest {
@@ -31,7 +29,11 @@ impl Deserializable for NodeDigest {
         let heartbeat = Heartbeat::deserialize(buf)?;
         let last_gc_version = Version::deserialize(buf)?;
         let max_version = Version::deserialize(buf)?;
-        Ok(NodeDigest { heartbeat, last_gc_version, max_version })
+        Ok(NodeDigest {
+            heartbeat,
+            last_gc_version,
+            max_version,
+        })
     }
 }
 
@@ -54,7 +56,11 @@ impl Digest {
         last_gc_version: Version,
         max_version: Version,
     ) {
-        let node_digest = NodeDigest { heartbeat, last_gc_version, max_version };
+        let node_digest = NodeDigest {
+            heartbeat,
+            last_gc_version,
+            max_version,
+        };
         self.node_digests.insert(node, node_digest);
     }
 }
@@ -91,11 +97,19 @@ impl Digest {
 
     fn deserialize_compressed(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let len = u32::deserialize(buf)? as usize;
+        if len > buf.len() {
+            anyhow::bail!(
+                "Compressed length {} exceeds buffer capacity {}",
+                len,
+                buf.len()
+            );
+        }
         let mut compressed = vec![0; len];
         let (compressed_part, rest) = buf.split_at(len);
         compressed.copy_from_slice(compressed_part);
         *buf = rest;
-        let uncompressed = zstd::decode_all(compressed.as_slice()).unwrap_or_else(|_| vec![]);
+        let uncompressed = zstd::decode_all(compressed.as_slice())
+            .map_err(|err| anyhow::anyhow!("Failed to decompress digest: {err}"))?;
         Self::deserialize_uncompressed(&mut uncompressed.as_slice())
     }
 }
@@ -120,16 +134,17 @@ impl Deserializable for Digest {
 
 #[cfg(test)]
 mod tests {
-    use crate::digest::Digest;
-    use crate::digest::NodeDigest;
+    use crate::digest::{Digest, NodeDigest};
     use crate::serialize::test_serdeser_aux;
-    use crate::ChitchatId;
-    use crate::Heartbeat;
+    use crate::{ChitchatId, Heartbeat};
 
     #[test]
     fn test_node_digest_serialization() {
-        let node_digest =
-            NodeDigest { heartbeat: crate::Heartbeat(100u64), last_gc_version: 2, max_version: 3 };
+        let node_digest = NodeDigest {
+            heartbeat: crate::Heartbeat(100u64),
+            last_gc_version: 2,
+            max_version: 3,
+        };
         test_serdeser_aux(&node_digest, 24);
     }
 

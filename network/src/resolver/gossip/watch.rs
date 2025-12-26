@@ -18,6 +18,7 @@ pub struct WatchGossipConfig<PeerId> {
     pub max_nodes_with_same_id: usize,
     pub override_subscribe: Vec<NetEndpoint<PeerId>>,
     pub trusted_pubkeys: HashSet<transport_layer::VerifyingKey>,
+    pub peer_ttl_seconds: u64,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -28,7 +29,8 @@ pub async fn watch_gossip<PeerId>(
     net_topology_tx: tokio::sync::watch::Sender<NetTopology<PeerId>>,
     metrics: Option<NetMetrics>,
 ) where
-    PeerId: Clone + Display + Debug + Send + Sync + Hash + Eq + FromStr<Err: Display> + 'static,
+    PeerId:
+        Clone + Display + Debug + Send + Sync + Hash + Eq + Ord + FromStr<Err: Display> + 'static,
 {
     let mut live_nodes_rx = chitchat.lock().live_nodes_watcher();
     let (peers, _) = collect_gossip_peers(&chitchat, &config_rx.borrow());

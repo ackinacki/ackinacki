@@ -2,11 +2,28 @@
 - name: BM ID check
   include_tasks: bm-id-check.yaml
   run_once: true
+  when: GQL_ARCHIVE is not defined or GQL_ARCHIVE is false
+
+- name: Block Manager graceful shutdown
+  include_tasks: graceful-shutdown.yaml
+  when: DO_STOP_GRACEFUL is defined and DO_STOP_GRACEFUL is true
 
 - name: Block Manager stop
   include_tasks: stop-bm.yaml
-  when: DO_STOP
+  when: DO_STOP and (GQL_ARCHIVE is not defined or GQL_ARCHIVE is false) and (DO_STOP_GRACEFUL is defined and DO_STOP_GRACEFUL is false)
+
+- name: Block Manager directories and necessary files
+  include_tasks: ensure-dirs-and-files.yaml
+  when: DO_START and (GQL_ARCHIVE is not defined or GQL_ARCHIVE is false) and (UPGRADE is not defined or 'block-manager' not in UPGRADE)
 
 - name: Block Manager start
   include_tasks: start-bm.yaml
-  when: DO_START
+  when: DO_START and (GQL_ARCHIVE is not defined or GQL_ARCHIVE is false)
+
+- name: Archive GQL server stop
+  include_tasks: stop-archive-gql.yaml
+  when: DO_STOP and (GQL_ARCHIVE is defined and GQL_ARCHIVE is true)
+
+- name: Archive GQL server start
+  include_tasks: start-archive-gql.yaml
+  when: DO_START and (GQL_ARCHIVE is defined and GQL_ARCHIVE is true)

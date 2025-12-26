@@ -57,6 +57,7 @@ use crate::types::BlockIndex;
 use crate::types::BlockSeqNo;
 use crate::types::RndSeed;
 use crate::types::ThreadIdentifier;
+use crate::utilities::all_elements_same::AllElementsSame;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
@@ -70,6 +71,7 @@ use network::channel::NetDirectSender;
 use telemetry_utils::mpsc::InstrumentedSender;
 use telemetry_utils::now_ms;
 
+use crate::config::config_read::ConfigRead;
 use crate::helper::start_shutdown;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::services::sync::ExternalFileSharesBased;
@@ -118,6 +120,7 @@ impl BlockProcessorService {
         mut unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
         mut cross_thread_ref_data_availability_synchronization_service: CrossThreadRefDataAvailabilitySynchronizationServiceInterface,
         save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
+        config_read: ConfigRead,
     ) -> Self {
         let chain_pulse_last_finalized_block_id: BlockIdentifier = repository
             .select_thread_last_finalized_block(&thread_identifier)
@@ -221,7 +224,8 @@ impl BlockProcessorService {
                                 &chain_pulse_monitor,
                                 &mut cross_thread_ref_data_availability_synchronization_service,
                                 &save_optimistic_service_sender,
-                                &filter
+                                &filter,
+                                &config_read,
                             )?;
                         }
                     }
@@ -277,6 +281,7 @@ fn process_candidate_block(
     cross_thread_ref_data_availability_synchronization_service: &mut CrossThreadRefDataAvailabilitySynchronizationServiceInterface,
     save_optimistic_service_sender: &InstrumentedSender<OptimisticStateSaveCommand>,
     filter_prehistoric: &FilterPrehistoric,
+    config_read: &ConfigRead,
 ) -> anyhow::Result<()> {
     // if block_state.guarded(|e| e.is_block_already_applied()) {
     //     // This is the last flag this method sets. Skip this block checks if it is already set.
@@ -395,8 +400,86 @@ fn process_candidate_block(
         return Ok(());
     }
 
+    // TODO: remove it after full migrating to 0.13.0
+    let optimistic_state = {
+        let thread_id = block_state.guarded(|e| e.thread_identifier().expect("Must be set"));
+        if block_state.guarded(|e| e.is_block_already_applied()) {
+            let state = repository
+                .get_optimistic_state(
+                    &block_id,
+                    &thread_id,
+                    repository.last_finalized_optimistic_state(&thread_id),
+                )?
+                .ok_or(anyhow::format_err!("Failed to load block optimistic state"))?;
+            Arc::unwrap_or_clone(state)
+        } else {
+            let parent_block_state = block_state_repository.get(&parent_id)?;
+            if parent_block_state.guarded(|e| e.is_block_already_applied()) {
+                let optimistic_state = match repository.get_optimistic_state(
+                    &parent_id,
+                    &thread_id,
+                    repository.last_finalized_optimistic_state(&thread_id),
+                ) {
+                    Ok(Some(optimistic_state)) => optimistic_state,
+                    Ok(None) => {
+                        panic!("Failed to load optimistic state for parent block");
+                    }
+                    Err(err) => {
+                        return match err.downcast_ref::<RepositoryError>() {
+                            Some(RepositoryError::BlockNotFound(_)) => Ok(()),
+                            Some(RepositoryError::DepthSearchMinStateLimitReached) => {
+                                tracing::trace!(target: "monit", "{block_state:?} A block from an abandoned branch");
+                                invalidate_branch(
+                                    block_state.clone(),
+                                    block_state_repository,
+                                    filter_prehistoric,
+                                );
+                                Ok(())
+                            }
+                            Some(RepositoryError::DepthSearchBlockCountLimitReached) => Err(err),
+                            _ => Err(err),
+                        }
+                    }
+                };
+                let mut optimistic_state = Arc::unwrap_or_clone(optimistic_state);
+                let (_cross_thread_ref_data, _messages) = match optimistic_state.apply_block(
+                    candidate_block.data(),
+                    shared_services,
+                    block_state_repository.clone(),
+                    nack_set_cache.clone(),
+                    repository.accounts_repository().clone(),
+                    repository.get_message_db().clone(),
+                    #[cfg(feature = "mirror_repair")]
+                    Arc::new(Mutex::new(true)), // Note: here we need just epoch contract state, so just pass const value to make apply as simple as possible
+                    false,
+                ) {
+                    Ok(cross_thread_ref_data) => cross_thread_ref_data,
+                    Err(e) => {
+                        tracing::trace!(target: "monit", "{block_state:?} Failed to apply candidate block: {e}");
+                        invalidate_branch(
+                            block_state.clone(),
+                            block_state_repository,
+                            filter_prehistoric,
+                        );
+                        return Ok(());
+                    }
+                };
+                optimistic_state
+            } else {
+                tracing::trace!(
+                    "Process block candidate: parent optimistic state is not ready, skip it"
+                );
+                return Ok(());
+            }
+        }
+    };
+
     if block_state.guarded(|e| e.descendant_bk_set().is_none() && e.is_signatures_verified()) {
-        rules::descendant_bk_set::set_descendant_bk_set(block_state, candidate_block);
+        rules::descendant_bk_set::set_descendant_bk_set(
+            block_state,
+            candidate_block,
+            &optimistic_state,
+        );
     }
 
     if block_state.guarded(|e| e.block_stats().is_none() && e.bk_set().is_some()) {
@@ -772,6 +855,9 @@ fn process_candidate_block(
                 }
             };
             let mut optimistic_state = Arc::unwrap_or_clone(optimistic_state);
+            let block_version =
+                block_state.guarded(|e| e.block_version_state().clone()).expect("Must be set");
+            let is_block_of_retired_version = config_read.is_retired(block_version.to_use());
             let (cross_thread_ref_data, _messages) = match optimistic_state.apply_block(
                 candidate_block.data(),
                 shared_services,
@@ -779,6 +865,9 @@ fn process_candidate_block(
                 nack_set_cache,
                 repository.accounts_repository().clone(),
                 repository.get_message_db().clone(),
+                #[cfg(feature = "mirror_repair")]
+                repository.is_updated_mv.clone(),
+                is_block_of_retired_version,
             ) {
                 Ok(cross_thread_ref_data) => cross_thread_ref_data,
                 Err(e) => {
@@ -1055,6 +1144,16 @@ fn process_block_attestations(
     if block_state.guarded(|e| e.has_block_attestations_processed() == &Some(true)) {
         return Ok(true);
     }
+    let Some(parent_block_version) =
+        parent_block_state.guarded(|e| e.block_version_state().clone())
+    else {
+        tracing::trace!("Parent version is not ready");
+        return Ok(false);
+    };
+    let Some(descendant_bk_set) = block_state.guarded(|e| e.descendant_bk_set().clone()) else {
+        tracing::trace!(" is not ready");
+        return Ok(false);
+    };
     let Some(thread_id) = block_state.guarded(|e| *e.thread_identifier()) else {
         tracing::trace!("Thread id is not ready");
         return Ok(false);
@@ -1084,6 +1183,19 @@ fn process_block_attestations(
         invalidate_branch(block_state.clone(), block_state_repository, filter_prehistoric);
         return Ok(false);
     }
+    let passed_checkpoints =
+        passed_primary.iter().chain(passed_fallback.iter()).cloned().collect::<Vec<_>>();
+    block_state.guarded_mut(|e| {
+        if e.block_version_state().is_none() {
+            e.set_block_version_state(parent_block_version.next(
+                block_state.block_identifier().clone(),
+                descendant_bk_set.iter().map(|e| e.protocol_support.clone()).all_elements_same(),
+                &passed_checkpoints,
+            ))?;
+        };
+        Ok::<(), anyhow::Error>(())
+    })?;
+
     let mut max_finalized_ancestor: Option<(BlockSeqNo, BlockIdentifier)> = None;
     for block_id in passed_primary.iter() {
         let ancestor_block_state = block_state_repository.get(block_id).unwrap();

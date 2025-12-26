@@ -30,6 +30,7 @@ use transport_layer::TlsCertCache;
 use crate::bk_set_watcher;
 use crate::config::config_reload_handler;
 use crate::config::ProxyConfig;
+use crate::metrics::ProxyMetrics;
 
 const BK_SET_WATCH_INTERVAL_SECS: u64 = 5;
 const BK_SET_REQUEST_TIMEOUT_SECS: u64 = 1;
@@ -90,6 +91,9 @@ async fn tokio_main() -> anyhow::Result<()> {
     let meter_provider = telemetry_utils::init_meter_provider();
     global::set_meter_provider(meter_provider.clone());
 
+    // Report package version and commit
+    ProxyMetrics::new(&global::meter("node")).report_build_info();
+
     // Create a NetMetrics instance using the meter provider
     let net_metrics = Some(NetMetrics::new(&global::meter("node")));
     let _tokio_metrics = TokioMetrics::new(&global::meter("node"));
@@ -135,7 +139,7 @@ impl CliArgs {
                 watch_gossip_config_rx,
                 gossip_handle.chitchat(),
                 net_topology_tx,
-                None,
+                net_metrics.clone(),
             ),
             net_metrics.clone(),
         );

@@ -24,6 +24,7 @@ use crate::external_messages::ExternalMessagesThreadState;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::NackData;
+use crate::node::associated_types::NodeCredentials;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::services::attestations_target::service::AttestationTargetsService;
 use crate::node::shared_services::SharedServices;
@@ -65,7 +66,6 @@ impl ProducerService {
         self_authority_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
         broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
 
-        node_identifier: NodeIdentifier,
         production_timeout: Duration,
         save_state_frequency: u32,
         external_messages: ExternalMessagesThreadState,
@@ -73,10 +73,13 @@ impl ProducerService {
         is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
         bp_production_count: Arc<AtomicI32>,
         save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
+        node_credentials: NodeCredentials,
+        #[cfg(feature = "mirror_repair")] is_updated_mv: Arc<Mutex<bool>>,
     ) -> anyhow::Result<Self> {
+        #[cfg(not(feature = "mirror_repair"))]
         let mut producer = BlockProducer::builder()
             .self_addr(self_addr)
-            .node_identifier(node_identifier)
+            .node_credentials(node_credentials)
             .self_tx(self_tx)
             .self_authority_tx(self_authority_tx)
             .attestations_target_service(attestations_target_service)
@@ -99,6 +102,35 @@ impl ProducerService {
             .bp_production_count(bp_production_count)
             .save_optimistic_service_sender(save_optimistic_service_sender)
             .build();
+
+        #[cfg(feature = "mirror_repair")]
+        let mut producer = BlockProducer::builder()
+            .self_addr(self_addr)
+            .node_credentials(node_credentials)
+            .self_tx(self_tx)
+            .self_authority_tx(self_authority_tx)
+            .attestations_target_service(attestations_target_service)
+            .production_timeout(production_timeout)
+            .block_state_repository(block_state_repository)
+            .shared_services(shared_services)
+            .repository(repository)
+            .last_block_attestations(last_block_attestations)
+            .thread_id(thread_id)
+            .broadcast_tx(broadcast_tx)
+            .control_rx(block_producer_control_rx)
+            .bls_keys_map(bls_keys_map)
+            .production_process(production_process)
+            .received_nacks(received_nacks)
+            .received_acks(received_acks)
+            .feedback_sender(feedback_sender)
+            .save_state_frequency(save_state_frequency)
+            .external_messages(external_messages)
+            .is_state_sync_requested(is_state_sync_requested)
+            .bp_production_count(bp_production_count)
+            .save_optimistic_service_sender(save_optimistic_service_sender)
+            .is_updated_mv(is_updated_mv)
+            .build();
+
         let handler =
             std::thread::Builder::new().name("ProducerService".to_string()).spawn(move || {
                 tracing::info!("Starting producer service for {:?} ", thread_id);

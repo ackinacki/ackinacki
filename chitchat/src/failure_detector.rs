@@ -1,10 +1,8 @@
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use serde::Deserialize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 use tracing::debug;
 
@@ -37,26 +35,31 @@ impl FailureDetector {
         &mut self,
         chitchat_id: &ChitchatId,
     ) -> &mut SamplingWindow {
-        self.node_samples.entry(chitchat_id.clone()).or_insert_with(|| {
-            SamplingWindow::new(
-                self.config.sampling_window_size,
-                self.config.max_interval,
-                self.config.initial_interval,
-            )
-        })
+        self.node_samples
+            .entry(chitchat_id.clone())
+            .or_insert_with(|| {
+                SamplingWindow::new(
+                    self.config.sampling_window_size,
+                    self.config.max_interval,
+                    self.config.initial_interval,
+                )
+            })
     }
 
     /// Reports node heartbeat.
     pub fn report_heartbeat(&mut self, chitchat_id: &ChitchatId) {
         debug!(node_id=%chitchat_id.node_id, "reporting node heartbeat.");
-        self.get_or_create_sampling_window(chitchat_id).report_heartbeat();
+        self.get_or_create_sampling_window(chitchat_id)
+            .report_heartbeat();
     }
 
     /// Marks the node as dead or alive based on the current phi value.
     pub fn update_node_liveness(&mut self, chitchat_id: &ChitchatId) {
         let phi_opt = self.phi(chitchat_id);
-        let is_alive =
-            self.phi(chitchat_id).map(|phi| phi <= self.config.phi_threshold).unwrap_or(false);
+        let is_alive = self
+            .phi(chitchat_id)
+            .map(|phi| phi <= self.config.phi_threshold)
+            .unwrap_or(false);
         debug!(node_id=%chitchat_id.node_id, phi=?phi_opt, is_alive=is_alive, "computing node liveness");
         if is_alive {
             self.live_nodes.insert(chitchat_id.clone());
@@ -106,13 +109,15 @@ impl FailureDetector {
         let half_dead_node_grace_period = self.config.dead_node_grace_period.div_f32(2.0f32);
         // Note: we can't just compute the threshold now - half_dead_node_grace_period, because it
         // would underflow on some platform (MacOS).
-        self.dead_nodes.iter().filter_map(move |(chitchat_id, time_of_death)| {
-            if *time_of_death + half_dead_node_grace_period < now {
-                Some(chitchat_id)
-            } else {
-                None
-            }
-        })
+        self.dead_nodes
+            .iter()
+            .filter_map(move |(chitchat_id, time_of_death)| {
+                if *time_of_death + half_dead_node_grace_period < now {
+                    Some(chitchat_id)
+                } else {
+                    None
+                }
+            })
     }
 
     /// Returns the current phi value of a node.
@@ -199,8 +204,10 @@ pub(crate) struct SamplingWindow {
 impl SamplingWindow {
     // Construct a new instance.
     pub fn new(window_size: usize, max_interval: Duration, prior_interval: Duration) -> Self {
-        let additive_smoothing =
-            AdditiveSmoothing { prior_mean: prior_interval.as_secs_f64(), prior_weight: 5.0f64 };
+        let additive_smoothing = AdditiveSmoothing {
+            prior_mean: prior_interval.as_secs_f64(),
+            prior_weight: 5.0f64,
+        };
         SamplingWindow {
             intervals: BoundedArrayStats::with_capacity(window_size),
             last_heartbeat: None,
@@ -308,11 +315,9 @@ mod tests {
 
     use rand::prelude::*;
 
-    use super::BoundedArrayStats;
-    use super::SamplingWindow;
-    use crate::failure_detector::FailureDetector;
-    use crate::failure_detector::FailureDetectorConfig;
+    use super::{BoundedArrayStats, SamplingWindow};
     use crate::ChitchatId;
+    use crate::failure_detector::{FailureDetector, FailureDetectorConfig};
 
     impl FailureDetector {
         pub fn contains_node(&self, chitchat_id: &ChitchatId) -> bool {
@@ -397,7 +402,10 @@ mod tests {
             .map(|chitchat_id| chitchat_id.node_id.as_str())
             .collect::<Vec<_>>();
         removed_nodes.sort_unstable();
-        assert_eq!(removed_nodes, vec!["node-10001", "node-10002", "node-10003"]);
+        assert_eq!(
+            removed_nodes,
+            vec!["node-10001", "node-10002", "node-10003"]
+        );
     }
 
     #[tokio::test]

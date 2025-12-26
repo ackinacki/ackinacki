@@ -1,12 +1,10 @@
 use std::io::BufRead;
 
-use anyhow::bail;
-use anyhow::Context;
+use anyhow::{Context, bail};
 
 use crate::delta::Delta;
 use crate::digest::Digest;
-use crate::serialize::Deserializable;
-use crate::serialize::Serializable;
+use crate::serialize::{Deserializable, Serializable};
 
 const MAGIC_NUMBER: u16 = 45_139;
 
@@ -25,9 +23,11 @@ pub enum ChitchatMessage {
     SynAck { digest: Digest, delta: Delta },
     /// Scuttlebutt ACK: node A returns a partial update for B.
     Ack { delta: Delta },
-
     /// Node B rejects the SYN message because node A and B belong to different clusters.
     BadCluster,
+    /// A message used by tests to trigger a panic
+    #[cfg(test)]
+    PanicForTest,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -56,6 +56,8 @@ enum MessageType {
     SynAck = 1u8,
     Ack = 2u8,
     BadCluster = 3u8,
+    #[cfg(test)]
+    PanicForTest = 255u8,
 }
 
 impl MessageType {
@@ -65,6 +67,8 @@ impl MessageType {
             1 => Some(Self::SynAck),
             2 => Some(Self::Ack),
             3 => Some(Self::BadCluster),
+            #[cfg(test)]
+            255 => Some(Self::PanicForTest),
             _ => None,
         }
     }
@@ -97,6 +101,10 @@ impl Serializable for ChitchatMessage {
             ChitchatMessage::BadCluster => {
                 buf.push(MessageType::BadCluster.to_code());
             }
+            #[cfg(test)]
+            ChitchatMessage::PanicForTest => {
+                buf.push(MessageType::PanicForTest.to_code());
+            }
         }
     }
 
@@ -111,6 +119,8 @@ impl Serializable for ChitchatMessage {
                 }
                 ChitchatMessage::Ack { delta } => 1 + delta.serialized_len(),
                 ChitchatMessage::BadCluster => 1,
+                #[cfg(test)]
+                ChitchatMessage::PanicForTest => 1,
             }
     }
 }
@@ -128,7 +138,10 @@ impl Deserializable for ChitchatMessage {
             ProtocolVersion::from_code(buf[2]).context("invalid protocol version")?;
 
         if protocol_version != ProtocolVersion::V0 {
-            bail!("unsupported protocol version `{}`", protocol_version.to_code())
+            bail!(
+                "unsupported protocol version `{}`",
+                protocol_version.to_code()
+            )
         }
         buf.consume(3);
 
@@ -155,6 +168,8 @@ impl Deserializable for ChitchatMessage {
                 Ok(Self::Ack { delta })
             }
             MessageType::BadCluster => Ok(Self::BadCluster),
+            #[cfg(test)]
+            MessageType::PanicForTest => Ok(Self::PanicForTest),
         }
     }
 }
@@ -162,11 +177,7 @@ impl Deserializable for ChitchatMessage {
 #[cfg(test)]
 mod tests {
     use crate::serialize::test_serdeser_aux;
-    use crate::ChitchatId;
-    use crate::ChitchatMessage;
-    use crate::Delta;
-    use crate::Digest;
-    use crate::Heartbeat;
+    use crate::{ChitchatId, ChitchatMessage, Delta, Digest, Heartbeat};
 
     #[test]
     fn test_syn() {
@@ -182,7 +193,10 @@ mod tests {
             let node = ChitchatId::for_local_test(10_001);
             digest.add_node(node, Heartbeat(0), 0, 0);
 
-            let syn = ChitchatMessage::Syn { cluster_id: "cluster-a".to_string(), digest };
+            let syn = ChitchatMessage::Syn {
+                cluster_id: "cluster-a".to_string(),
+                digest,
+            };
             test_serdeser_aux(&syn, 59);
         }
     }
@@ -190,8 +204,10 @@ mod tests {
     #[test]
     fn test_syn_ack() {
         {
-            let syn_ack =
-                ChitchatMessage::SynAck { digest: Digest::default(), delta: Delta::default() };
+            let syn_ack = ChitchatMessage::SynAck {
+                digest: Digest::default(),
+                delta: Delta::default(),
+            };
             // 2 (magic number) + 1 (protocol version) + 1 (message tag) + 2 (digest len) + 1 (delta
             // end op)
             test_serdeser_aux(&syn_ack, 20);

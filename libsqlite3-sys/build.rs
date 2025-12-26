@@ -96,6 +96,7 @@ mod build_bundled {
     use super::is_compiler;
     use super::win_target;
 
+    #[allow(clippy::assertions_on_constants)]
     pub fn main(out_dir: &str, out_path: &Path) {
         let lib_name = super::lib_name();
 

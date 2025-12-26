@@ -35,11 +35,13 @@ use crate::helper::start_shutdown;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::AttestationTargetType;
+use crate::node::associated_types::NodeCredentials;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::block_state::tools::invalidate_branch;
 use crate::node::network_message::Command;
 use crate::node::services::send_attestations::AttestationSendService;
+use crate::node::services::send_attestations::GenerateAttestationError;
 use crate::node::unprocessed_blocks_collection::FilterPrehistoric;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::NetBlock;
@@ -190,7 +192,7 @@ pub struct Authority {
     authorities: HashMap<ThreadIdentifier, Arc<Mutex<ThreadAuthority>>>,
     round_buckets: RoundTime,
     data_dir: PathBuf,
-    node_identifier: NodeIdentifier,
+    node_credentials: NodeCredentials,
     bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
     block_repository: RepositoryImpl,
     block_state_repository: BlockStateRepository,
@@ -220,7 +222,7 @@ impl Authority {
                             self.action_lock_db.clone(),
                         ),
                     ))
-                    .node_identifier(self.node_identifier.clone())
+                    .node_credentials(self.node_credentials.clone())
                     .bls_keys_map(self.bls_keys_map.clone())
                     .block_repository(self.block_repository.clone())
                     .block_state_repository(self.block_state_repository.clone())
@@ -415,7 +417,7 @@ impl ActionLockCollection {
 pub struct ThreadAuthority {
     thread_id: ThreadIdentifier,
     round_buckets: RoundTime,
-    node_identifier: NodeIdentifier,
+    node_credentials: NodeCredentials,
     bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
 
     // TODO: load on restart
@@ -881,7 +883,8 @@ impl ThreadAuthority {
         let next_producer_node_id = next_producer_selector.get_producer_node_id(&bk_set).unwrap();
         let next_candidate_ref = current_lock_snapshot.locked_block().clone().map(|e| e.1);
 
-        if !bk_set.contains_node(&self.node_identifier) {
+        if !bk_set.contains_node(self.node_credentials.node_id()) {
+            tracing::trace!("BK is not in bk set: retry later or try sync");
             // Note: this code will usually work when last prefinalized block was long ago and there
             // is no sense to check future bk set. It will be useful only if bk set and future bk
             // set are bootstrapped like in the network module.
@@ -1001,16 +1004,27 @@ impl ThreadAuthority {
                         Some(attestation) => attestation,
                         None => {
                             if ancestor_state.guarded(|e| e.is_finalized()) {
-                                let Ok(attestation) = AttestationSendService::generate_attestation(
+                                let attestation = match AttestationSendService::generate_attestation(
                                     self.bls_keys_map.clone(),
-                                    &self.node_identifier,
+                                    &self.node_credentials,
                                     &ancestor_state,
                                     AttestationTargetType::Fallback,
-                                ) else {
-                                    tracing::trace!("start_next_round: Failed to generate fallback attestation for {:?}", ancestor_state);
-                                    return OnBlockProducerStalledResult::retry_later(Some(
-                                        block_height,
-                                    ));
+                                ) {
+                                    Ok(attestation) => attestation,
+                                    Err(GenerateAttestationError::NodeIsNotInTheBKSet) => {
+                                        // Note: node can be absent in the ancestor bk set. If network stops just after this
+                                        // node was added to BK set, it won't be able to send next round request.
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        tracing::trace!(
+                                            "start_next_round: Failed to generate attestation for {:?}: {e}",
+                                            ancestor_state
+                                        );
+                                        return OnBlockProducerStalledResult::retry_later(Some(
+                                            block_height,
+                                        ));
+                                    }
                                 };
                                 ancestor_state.guarded_mut(|e| {
                                     if e.own_fallback_attestation().is_none() {
@@ -1041,19 +1055,27 @@ impl ThreadAuthority {
                         Some(attestation) => attestation,
                         None => {
                             if ancestor_state.guarded(|e| e.is_finalized()) {
-                                let Ok(attestation) = AttestationSendService::generate_attestation(
+                                let attestation = match AttestationSendService::generate_attestation(
                                     self.bls_keys_map.clone(),
-                                    &self.node_identifier,
+                                    &self.node_credentials,
                                     &ancestor_state,
                                     AttestationTargetType::Primary,
-                                ) else {
-                                    tracing::trace!(
-                                        "start_next_round: Failed to generate attestation for {:?}",
-                                        ancestor_state
-                                    );
-                                    return OnBlockProducerStalledResult::retry_later(Some(
-                                        block_height,
-                                    ));
+                                ) {
+                                    Ok(attestation) => attestation,
+                                    Err(GenerateAttestationError::NodeIsNotInTheBKSet) => {
+                                        // Note: node can be absent in the ancestor bk set. If network stops just after this
+                                        // node was added to BK set, it won't be able to send next round request.
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        tracing::trace!(
+                                            "start_next_round: Failed to generate attestation for {:?}: {e}",
+                                            ancestor_state
+                                        );
+                                        return OnBlockProducerStalledResult::retry_later(Some(
+                                            block_height,
+                                        ));
+                                    }
                                 };
                                 ancestor_state.guarded_mut(|e| {
                                     if e.own_attestation().is_none() {
@@ -1094,7 +1116,7 @@ impl ThreadAuthority {
             .build();
         let secrets = self.bls_keys_map.guarded(|map| map.clone());
         let Ok(lock) =
-            Envelope::sealed(&self.node_identifier, &bk_set, &secrets, lock).map_err(|e| {
+            Envelope::sealed(&self.node_credentials, &bk_set, &secrets, lock).map_err(|e| {
                 tracing::warn!("Failed to sign a lock: {}", e);
             })
         else {
@@ -1359,7 +1381,7 @@ impl ThreadAuthority {
             }
         }
 
-        if next_round_message.lock().data().next_auth_node_id() != &self.node_identifier {
+        if next_round_message.lock().data().next_auth_node_id() != self.node_credentials.node_id() {
             tracing::trace!(
                 "on_next_round_incoming_request: do nothing. request is not for this node"
             );
@@ -1553,11 +1575,11 @@ impl ThreadAuthority {
             // Block producer kicks in when there were no block in a previous round or the majority
             // of the block keepers had no block locked.
             let Ok(envelope) = Envelope::sealed(
-                &self.node_identifier,
+                &self.node_credentials,
                 &bk_set,
                 &secrets,
                 NextRoundSuccess::builder()
-                    .node_identifier(self.node_identifier.clone())
+                    .node_identifier(self.node_credentials.node_id().clone())
                     .round(*round)
                     .block_height(block_height)
                     .proposed_block(NetBlock::with_envelope(&block).unwrap())

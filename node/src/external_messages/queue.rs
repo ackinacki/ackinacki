@@ -22,36 +22,36 @@ pub struct ExternalMessagesQueue {
 }
 
 impl ExternalMessagesQueue {
-    pub fn empty() -> Self {
+    pub(super) fn empty() -> Self {
         Self { messages: BTreeMap::new(), last_index: 0 }
     }
 
-    pub fn erase_processed(&mut self, processed: &[Stamp]) {
+    pub(super) fn erase_processed(&mut self, processed: &[Stamp]) {
         let to_remove: BTreeSet<_> = processed.iter().cloned().collect();
         self.messages.retain(|stamp, _| !to_remove.contains(stamp));
     }
 
-    pub fn push_external_messages(
+    pub(super) fn push_external_messages(
         &mut self,
         messages: &[WrappedMessage],
         timestamp: DateTime<Utc>,
     ) {
         let mut cursor = self.last_index;
         for message in messages.iter() {
-            cursor += 1;
-            let stamp = Stamp { index: cursor, timestamp };
-            self.messages.insert(
-                stamp,
-                (
-                    AccountAddress::from(message.message.int_dst_account_id().unwrap()),
-                    message.clone(),
-                ),
-            );
+            // If an external message has no destination account ID, we just skip it
+            if let Some(acc_id) = message.message.int_dst_account_id() {
+                cursor += 1;
+                let stamp = Stamp { index: cursor, timestamp };
+                let address = AccountAddress::from(acc_id);
+                self.messages.insert(stamp, (address, message.clone()));
+            }
         }
         self.last_index = cursor;
     }
 
-    pub fn unprocessed_messages(&self) -> HashMap<AccountAddress, VecDeque<(Stamp, Message)>> {
+    pub(super) fn unprocessed_messages(
+        &self,
+    ) -> HashMap<AccountAddress, VecDeque<(Stamp, Message)>> {
         let mut grouped_by_acc: HashMap<AccountAddress, VecDeque<(Stamp, Message)>> =
             HashMap::new();
 

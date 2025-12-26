@@ -4,12 +4,9 @@ use anyhow::Context;
 use async_trait::async_trait;
 use tracing::warn;
 
-use crate::serialize::Deserializable;
-use crate::serialize::Serializable;
-use crate::transport::Socket;
-use crate::transport::Transport;
-use crate::ChitchatMessage;
-use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
+use crate::serialize::{Deserializable, Serializable};
+use crate::transport::{Socket, Transport};
+use crate::{ChitchatMessage, MAX_UDP_DATAGRAM_PAYLOAD_SIZE};
 
 pub struct UdpTransport;
 

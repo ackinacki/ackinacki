@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 use num_bigint::BigUint;
 use num_traits::Zero;
+use tvm_abi::contract::DecodedMessage;
 use tvm_abi::TokenValue;
 use tvm_block::Account;
 use tvm_block::ExternalInboundMessageHeader;
@@ -31,6 +32,9 @@ const OWNER_TOKEN_KEY: &str = "_owner_address";
 const PREEPOCH_OWNER_TOKEN_KEY: &str = "_wallet";
 const SIGNER_INDEX_KEY: &str = "_signerIndex";
 const OWNER_PUBKEY_KEY: &str = "_owner_pubkey";
+const NODE_PROTOCOL_SUPPORT_SWITCH_SOURCE: &str = "_isContinue";
+const NODE_CONTINUATION_PROTOCOL_SUPPORT_DECLARATION: &str = "_nodeVersionContinue";
+const NODE_BEGINNING_PROTOCOL_SUPPORT_DECLARATION: &str = "_nodeVersion";
 
 fn get_epoch_abi() -> tvm_client::abi::Abi {
     tvm_client::abi::Abi::Json(EPOCH_ABI.to_string())
@@ -61,67 +65,130 @@ pub fn decode_epoch_data(
         let mut wallet_address = None;
         let mut signer_index = None;
         let mut owner_pubkey = None;
+        let mut initial_protocol_support = None;
+        let mut continuation_protocol_support = None;
+        let mut protocol_select_switch = None;
         tracing::trace!("decoded epoch data: {decoded_data:?}");
         for token in decoded_data {
-            if token.name == BLS_PUBKEY_TOKEN_KEY {
-                if let TokenValue::Bytes(pubkey) = token.value {
-                    block_keeper_bls_key = Some(PubKey::from(pubkey.as_slice()));
+            match token.name.as_str() {
+                BLS_PUBKEY_TOKEN_KEY => {
+                    if let TokenValue::Bytes(pubkey) = token.value {
+                        block_keeper_bls_key = Some(PubKey::from(pubkey.as_slice()));
+                    }
                 }
-            } else if token.name == EPOCH_FINISH_TOKEN_KEY {
-                if let TokenValue::Uint(epoch_finish) = token.value {
-                    tracing::trace!("decoded epoch finish: {epoch_finish:?}");
-                    block_keeper_epoch_finish = Some(if epoch_finish.number.is_zero() {
-                        0
-                    } else {
-                        epoch_finish.number.to_u64_digits()[0]
-                    });
+                EPOCH_FINISH_TOKEN_KEY => {
+                    if let TokenValue::Uint(epoch_finish) = token.value {
+                        tracing::trace!("decoded epoch finish: {epoch_finish:?}");
+                        block_keeper_epoch_finish = Some(if epoch_finish.number.is_zero() {
+                            0
+                        } else {
+                            epoch_finish.number.to_u64_digits()[0]
+                        });
+                    }
                 }
-            } else if token.name == WAIT_STEP_TOKEN_KEY {
-                if let TokenValue::Uint(value) = token.value {
-                    tracing::trace!("decoded wait step: {value:?}");
-                    block_keeper_wait_step = Some(if value.number.is_zero() {
-                        0
-                    } else {
-                        value.number.to_u64_digits()[0]
-                    });
+                WAIT_STEP_TOKEN_KEY => {
+                    if let TokenValue::Uint(value) = token.value {
+                        tracing::trace!("decoded wait step: {value:?}");
+                        block_keeper_wait_step = Some(if value.number.is_zero() {
+                            0
+                        } else {
+                            value.number.to_u64_digits()[0]
+                        });
+                    }
                 }
-            } else if token.name == STAKE_TOKEN_KEY {
-                if let TokenValue::Uint(stake) = token.value {
-                    tracing::trace!("decoded epoch stake: {stake:?}");
-                    block_keeper_stake =
-                        Some(if stake.number.is_zero() { BigUint::zero() } else { stake.number });
+                STAKE_TOKEN_KEY => {
+                    if let TokenValue::Uint(stake) = token.value {
+                        tracing::trace!("decoded epoch stake: {stake:?}");
+                        block_keeper_stake = Some(if stake.number.is_zero() {
+                            BigUint::zero()
+                        } else {
+                            stake.number
+                        });
+                    }
                 }
-            } else if token.name == OWNER_PUBKEY_KEY {
-                if let TokenValue::Uint(pubkey) = token.value {
-                    tracing::trace!("decoded owner pubkey: {pubkey:?}");
-                    owner_pubkey =
-                        Some(UInt256::from_be_bytes(&pubkey.number.to_bytes_be()).inner());
+                OWNER_PUBKEY_KEY => {
+                    if let TokenValue::Uint(pubkey) = token.value {
+                        tracing::trace!("decoded owner pubkey: {pubkey:?}");
+                        owner_pubkey =
+                            Some(UInt256::from_be_bytes(&pubkey.number.to_bytes_be()).inner());
+                    }
                 }
-            } else if token.name == OWNER_TOKEN_KEY {
-                if let TokenValue::Address(addr) = token.value {
-                    tracing::trace!("decoded wallet address: {addr:?}");
-                    wallet_address = match addr {
-                        MsgAddress::AddrNone => None,
-                        MsgAddress::AddrExt(_) => None,
-                        MsgAddress::AddrStd(data) => {
-                            let addr = data.address;
-                            Some(addr)
+                OWNER_TOKEN_KEY => {
+                    if let TokenValue::Address(addr) = token.value {
+                        tracing::trace!("decoded wallet address: {addr:?}");
+                        wallet_address = match addr {
+                            MsgAddress::AddrNone => None,
+                            MsgAddress::AddrExt(_) => None,
+                            MsgAddress::AddrStd(data) => {
+                                let addr = data.address;
+                                Some(addr)
+                            }
+                            MsgAddress::AddrVar(_) => None,
+                        };
+                    }
+                }
+                SIGNER_INDEX_KEY => {
+                    if let TokenValue::Uint(index) = token.value {
+                        tracing::trace!("decoded signer index: {index:?}");
+                        signer_index = Some(if index.number.is_zero() {
+                            0
+                        } else {
+                            index.number.to_u32_digits()[0] as SignerIndex
+                        });
+                    }
+                }
+                NODE_PROTOCOL_SUPPORT_SWITCH_SOURCE => {
+                    if let TokenValue::Bool(flag) = token.value {
+                        tracing::trace!("decoded _isContinue: {flag}");
+                        protocol_select_switch = Some(flag);
+                    }
+                }
+                NODE_BEGINNING_PROTOCOL_SUPPORT_DECLARATION => {
+                    if let TokenValue::Optional(_, flag) = token.value {
+                        if let Some(TokenValue::String(flag)) = flag.map(|v| *v) {
+                            tracing::trace!("decoded _nodeVersion: {flag}");
+                            initial_protocol_support = Some(flag);
                         }
-                        MsgAddress::AddrVar(_) => None,
-                    };
+                    }
                 }
-            } else if token.name == SIGNER_INDEX_KEY {
-                if let TokenValue::Uint(index) = token.value {
-                    tracing::trace!("decoded signer index: {index:?}");
-                    signer_index = Some(if index.number.is_zero() {
-                        0
-                    } else {
-                        index.number.to_u32_digits()[0] as SignerIndex
-                    });
+                NODE_CONTINUATION_PROTOCOL_SUPPORT_DECLARATION => {
+                    if let TokenValue::Optional(_, flag) = token.value {
+                        if let Some(TokenValue::String(flag)) = flag.map(|v| *v) {
+                            tracing::trace!("decoded _nodeVersionContinue: {flag}");
+                            continuation_protocol_support = Some(flag);
+                        }
+                    }
+                }
+                _ => {
+                    // continue
                 }
             }
         }
-        tracing::trace!("decoded epoch data: {block_keeper_bls_key:?} {block_keeper_epoch_finish:?} {block_keeper_stake:?} {wallet_address:?} {signer_index:?} {owner_pubkey:?}");
+
+        let protocol_support = {
+            if protocol_select_switch.is_some() && continuation_protocol_support.is_some() {
+                continuation_protocol_support.ok_or(anyhow::format_err!(
+                    "Unsupported epoch contract state, failed to obtain final version"
+                ))?
+            } else {
+                // initial
+                initial_protocol_support.unwrap_or("None".to_string())
+            }
+        };
+        let Some(protocol_support) =
+            crate::versioning::ProtocolVersionSupport::from_str(&protocol_support)
+                .map_err(|e| {
+                    // TODO: check to error result returned.
+                    tracing::warn!("Protocol parsing error: {e:?}");
+                    e
+                })
+                .ok()
+        else {
+            tracing::warn!("Failed to get version support from epoch contract");
+            return Ok(None);
+        };
+
+        tracing::trace!("decoded epoch data: {block_keeper_bls_key:?} {block_keeper_epoch_finish:?} {block_keeper_stake:?} {wallet_address:?} {signer_index:?} {owner_pubkey:?} {protocol_support}");
         if let (
             Some(block_keeper_bls_key),
             Some(block_keeper_epoch_finish),
@@ -153,6 +220,7 @@ pub fn decode_epoch_data(
                     owner_address: wallet_address.into(),
                     signer_index,
                     owner_pubkey,
+                    protocol_support,
                 },
             )));
         }
@@ -180,57 +248,86 @@ pub fn decode_preepoch_data(
         let mut signer_index = None;
         let mut owner_pubkey = None;
         let mut block_keeper_wait_step = None;
+        let mut protocol_support = None;
         tracing::trace!("decoded preepoch data: {decoded_data:?}");
         for token in decoded_data {
-            if token.name == BLS_PUBKEY_TOKEN_KEY {
-                if let TokenValue::Bytes(pubkey) = token.value {
-                    block_keeper_bls_key = Some(PubKey::from(pubkey.as_slice()));
+            match token.name.as_str() {
+                BLS_PUBKEY_TOKEN_KEY => {
+                    if let TokenValue::Bytes(pubkey) = token.value {
+                        block_keeper_bls_key = Some(PubKey::from(pubkey.as_slice()));
+                    }
                 }
-            } else if token.name == STAKE_TOKEN_KEY {
-                if let TokenValue::VarUint(_len, stake) = token.value {
-                    tracing::trace!("decoded preepoch stake: {stake:?}");
-                    block_keeper_stake =
-                        Some(if stake.is_zero() { BigUint::zero() } else { stake });
+                STAKE_TOKEN_KEY => {
+                    if let TokenValue::VarUint(_len, stake) = token.value {
+                        tracing::trace!("decoded preepoch stake: {stake:?}");
+                        block_keeper_stake =
+                            Some(if stake.is_zero() { BigUint::zero() } else { stake });
+                    }
                 }
-            } else if token.name == WAIT_STEP_TOKEN_KEY {
-                if let TokenValue::Uint(value) = token.value {
-                    tracing::trace!("decoded wait step: {value:?}");
-                    block_keeper_wait_step = Some(if value.number.is_zero() {
-                        0
-                    } else {
-                        value.number.to_u64_digits()[0]
-                    });
+                WAIT_STEP_TOKEN_KEY => {
+                    if let TokenValue::Uint(value) = token.value {
+                        tracing::trace!("decoded wait step: {value:?}");
+                        block_keeper_wait_step = Some(if value.number.is_zero() {
+                            0
+                        } else {
+                            value.number.to_u64_digits()[0]
+                        });
+                    }
                 }
-            } else if token.name == PREEPOCH_OWNER_TOKEN_KEY {
-                if let TokenValue::Address(addr) = token.value {
-                    tracing::trace!("decoded wallet address: {addr:?}");
-                    wallet_address = match addr {
-                        MsgAddress::AddrNone => None,
-                        MsgAddress::AddrExt(_) => None,
-                        MsgAddress::AddrStd(data) => {
-                            let addr = data.address.into();
-                            Some(addr)
-                        }
-                        MsgAddress::AddrVar(_) => None,
-                    };
+                PREEPOCH_OWNER_TOKEN_KEY => {
+                    if let TokenValue::Address(addr) = token.value {
+                        tracing::trace!("decoded wallet address: {addr:?}");
+                        wallet_address = match addr {
+                            MsgAddress::AddrNone => None,
+                            MsgAddress::AddrExt(_) => None,
+                            MsgAddress::AddrStd(data) => {
+                                let addr = data.address.into();
+                                Some(addr)
+                            }
+                            MsgAddress::AddrVar(_) => None,
+                        };
+                    }
                 }
-            } else if token.name == OWNER_PUBKEY_KEY {
-                if let TokenValue::Uint(pubkey) = token.value {
-                    tracing::trace!("decoded owner pubkey: {pubkey:?}");
-                    owner_pubkey =
-                        Some(UInt256::from_be_bytes(&pubkey.number.to_bytes_be()).inner());
+                OWNER_PUBKEY_KEY => {
+                    if let TokenValue::Uint(pubkey) = token.value {
+                        tracing::trace!("decoded owner pubkey: {pubkey:?}");
+                        owner_pubkey =
+                            Some(UInt256::from_be_bytes(&pubkey.number.to_bytes_be()).inner());
+                    }
                 }
-            } else if token.name == SIGNER_INDEX_KEY {
-                if let TokenValue::Uint(index) = token.value {
-                    tracing::trace!("decoded signer index: {index:?}");
-                    signer_index = Some(if index.number.is_zero() {
-                        0
-                    } else {
-                        index.number.to_u32_digits()[0] as SignerIndex
-                    });
+                SIGNER_INDEX_KEY => {
+                    if let TokenValue::Uint(index) = token.value {
+                        tracing::trace!("decoded signer index: {index:?}");
+                        signer_index = Some(if index.number.is_zero() {
+                            0
+                        } else {
+                            index.number.to_u32_digits()[0] as SignerIndex
+                        });
+                    }
+                }
+                NODE_BEGINNING_PROTOCOL_SUPPORT_DECLARATION => {
+                    if let TokenValue::String(flag) = token.value {
+                        tracing::trace!("decoded _nodeVersion: {flag}");
+                        protocol_support = Some(flag);
+                    }
+                }
+                _ => {
+                    // continue
                 }
             }
         }
+        let protocol_support = protocol_support.unwrap_or("None".to_string());
+        let Some(protocol_support) =
+            crate::versioning::ProtocolVersionSupport::from_str(&protocol_support)
+                .map_err(|e| {
+                    // TODO: check to error result returned.
+                    tracing::warn!("Protocol parsing error: {e:?}");
+                    e
+                })
+                .ok()
+        else {
+            return Ok(None);
+        };
         tracing::trace!("decoded preepoch data: {block_keeper_bls_key:?} {block_keeper_stake:?} {wallet_address:?} {signer_index:?} {owner_pubkey:?}");
         if let (
             Some(block_keeper_bls_key),
@@ -260,6 +357,7 @@ pub fn decode_preepoch_data(
                     owner_address: wallet_address,
                     signer_index,
                     owner_pubkey,
+                    protocol_support,
                 },
             )));
         }
@@ -293,3 +391,27 @@ pub fn create_epoch_touch_message(data: &BlockKeeperData, time: u32) -> anyhow::
     .map_err(|e| anyhow::format_err!("Failed to serialize message body: {e}"))?;
     Ok(Message::with_ext_in_header_and_body(header, body))
 }
+
+pub fn decode_epoch_call_message(message: &Message) -> anyhow::Result<Option<DecodedMessage>> {
+    let abi = get_epoch_abi()
+        .abi()
+        .map_err(|e| anyhow::format_err!("Failed to get epoch AbiContract: {e}"))?;
+    let Some(body_slice) = message.body() else {
+        tracing::trace!("failed to decode_epoch_call_message: body is missing");
+        return Ok(None);
+    };
+    let decoded_data = abi
+        .decode_input(body_slice, message.is_internal(), false)
+        .map_err(|e| anyhow::format_err!("Failed to decode message body: {e}"))?;
+    Ok(Some(decoded_data))
+}
+
+// #[test]
+// fn test_decode_account() -> anyhow::Result<()> {
+//     use tvm_block::Deserializable;
+//     let path = "/tmp/account";
+//     let account = Account::construct_from_file(path).expect("Failed to load account");
+//     let data = decode_epoch_data(&account)?.unwrap().1;
+//     println!("{}", data);
+//     Ok(())
+// }

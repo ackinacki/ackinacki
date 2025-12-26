@@ -1,36 +1,28 @@
 use std::cmp::Ordering;
 use std::collections::btree_map::Entry;
-use std::collections::BTreeMap;
-use std::collections::HashSet;
-use std::fmt::Debug;
-use std::fmt::Formatter;
-use std::net::Ipv4Addr;
-use std::net::SocketAddr;
+use std::collections::{BTreeMap, HashSet};
+use std::fmt::{Debug, Formatter};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::ops::Bound;
 use std::time::Duration;
 
 use itertools::Itertools;
-use rand::prelude::SliceRandom;
+use lru::LruCache;
 use rand::Rng;
-use serde::Deserialize;
-use serde::Serialize;
+use rand::prelude::SliceRandom;
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::time::Instant;
 use tracing::warn;
 
-use crate::delta::Delta;
-use crate::delta::DeltaSerializer;
-use crate::delta::NodeDelta;
-use crate::digest::Digest;
-use crate::digest::NodeDigest;
+use crate::delta::{Delta, DeltaSerializer, NodeDelta};
+use crate::digest::{Digest, NodeDigest};
 use crate::listener::Listeners;
-use crate::types::DeletionStatus;
-use crate::types::DeletionStatusMutation;
-use crate::ChitchatId;
-use crate::Heartbeat;
-use crate::KeyChangeEvent;
-use crate::Version;
-use crate::VersionedValue;
+use crate::types::{DeletionStatus, DeletionStatusMutation};
+use crate::{
+    ChitchatId, GARBAGE_COLLECTED_NODE_HISTORY_SIZE, Heartbeat, KeyChangeEvent, Version,
+    VersionedValue,
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NodeState {
@@ -129,7 +121,9 @@ impl NodeState {
     /// Returns an iterator over keys matching the given predicate.
     /// Disclaimer: This also returns keys marked for deletion.
     pub fn key_values_including_deleted(&self) -> impl Iterator<Item = (&str, &VersionedValue)> {
-        self.key_values.iter().map(|(key, versioned_value)| (key.as_str(), versioned_value))
+        self.key_values
+            .iter()
+            .map(|(key, versioned_value)| (key.as_str(), versioned_value))
     }
 
     /// Returns an iterator over all of the (non-deleted) key-values.
@@ -317,13 +311,17 @@ impl NodeState {
         self.set_with_version(key, value, new_version);
     }
 
-    /// Sets a new value with a TTL.
+    /// Sets a new value that will be deleted after the grace period but visible
+    /// until then
     pub fn set_with_ttl(&mut self, key: impl ToString, value: impl ToString) {
         let key = key.to_string();
         let value = value.to_string();
         if let Some(previous_versioned_value) = self.get_versioned(&key) {
             if previous_versioned_value.value == value
-                && matches!(previous_versioned_value.status, DeletionStatus::DeleteAfterTtl(_))
+                && matches!(
+                    previous_versioned_value.status,
+                    DeletionStatus::DeleteAfterTtl(_)
+                )
             {
                 // No need to change anything, the value is already set!
                 return;
@@ -359,14 +357,11 @@ impl NodeState {
         versioned_value.status = DeletionStatusMutation::Delete.into_status(Instant::now());
     }
 
-    /// Contrary to `delete`, this does not delete an entry right away,
-    /// but rather schedules its deletion for after the grace period.
+    /// Similar to [`Self::delete`] but does not delete the entry right away,
+    /// instead it remains visible until the grace period is reached.
     ///
-    /// At the grace period, the entry will be really deleted just like a regular
-    /// tombstoned entry.
-    ///
-    /// Implementation wise, the only difference with `delete` is that it is
-    /// treated as if it was present during the grace period.``
+    /// At the end of the grace period, the entry will be deleted just like a
+    /// regular tombstoned entry.
     pub fn delete_after_ttl(&mut self, key: &str) {
         let Some(versioned_value) = self.key_values.get_mut(key) else {
             warn!(
@@ -416,21 +411,23 @@ impl NodeState {
     fn gc_keys_marked_for_deletion(&mut self, grace_period: Duration) {
         let now = Instant::now();
         let mut max_deleted_version = self.last_gc_version;
-        self.key_values.retain(|_, versioned_value: &mut VersionedValue| {
-            let Some(deleted_start_instant) =
-                versioned_value.status.time_of_start_scheduled_for_deletion()
-            else {
-                // The KV is not deleted. We keep it!
-                return true;
-            };
-            if now < deleted_start_instant + grace_period {
-                // We haved not passed the grace period yet. We keep it!
-                return true;
-            }
-            // We have exceeded the tombstone grace period. Time to remove it.
-            max_deleted_version = versioned_value.version.max(max_deleted_version);
-            false
-        });
+        self.key_values
+            .retain(|_, versioned_value: &mut VersionedValue| {
+                let Some(deleted_start_instant) = versioned_value
+                    .status
+                    .time_of_start_scheduled_for_deletion()
+                else {
+                    // The KV is not deleted. We keep it!
+                    return true;
+                };
+                if now < deleted_start_instant + grace_period {
+                    // We haved not passed the grace period yet. We keep it!
+                    return true;
+                }
+                // We have exceeded the tombstone grace period. Time to remove it.
+                max_deleted_version = versioned_value.version.max(max_deleted_version);
+                false
+            });
         self.last_gc_version = max_deleted_version;
     }
 
@@ -494,15 +491,22 @@ impl NodeState {
         assert!(version > self.max_version);
         self.set_versioned_value(
             key.to_string(),
-            VersionedValue { value: value.to_string(), version, status: DeletionStatus::Set },
+            VersionedValue {
+                value: value.to_string(),
+                version,
+                status: DeletionStatus::Set,
+            },
         );
     }
 }
 
 pub(crate) struct ClusterState {
-    pub(crate) node_states: BTreeMap<ChitchatId, NodeState>,
+    node_states: BTreeMap<ChitchatId, NodeState>,
     seed_addrs: watch::Receiver<HashSet<SocketAddr>>,
     pub(crate) listeners: Listeners,
+    // Memory of the recently garbage collected nodes to avoid recreating them
+    // if some other node is still sharing them.
+    garbage_collected_nodes: LruCache<ChitchatId, Heartbeat>,
 }
 
 impl Debug for ClusterState {
@@ -522,26 +526,49 @@ impl Default for ClusterState {
             node_states: Default::default(),
             seed_addrs: seed_addrs_rx,
             listeners: Default::default(),
+            garbage_collected_nodes: LruCache::new(GARBAGE_COLLECTED_NODE_HISTORY_SIZE),
         }
     }
 }
 
 impl ClusterState {
     pub fn with_seed_addrs(seed_addrs: watch::Receiver<HashSet<SocketAddr>>) -> ClusterState {
-        ClusterState { seed_addrs, node_states: BTreeMap::new(), listeners: Default::default() }
+        ClusterState {
+            seed_addrs,
+            node_states: BTreeMap::new(),
+            listeners: Default::default(),
+            garbage_collected_nodes: LruCache::new(GARBAGE_COLLECTED_NODE_HISTORY_SIZE),
+        }
     }
 
-    pub(crate) fn node_state_mut(&mut self, chitchat_id: &ChitchatId) -> &mut NodeState {
+    pub(crate) fn node_states(&self) -> &BTreeMap<ChitchatId, NodeState> {
+        &self.node_states
+    }
+
+    /// Get a mutable reference to the requested node state, or create and add a
+    /// new state if none was found.
+    pub(crate) fn node_state_mut_or_init(&mut self, chitchat_id: &ChitchatId) -> &mut NodeState {
         // TODO use the `hash_raw_entry` feature once it gets stabilized.
         // Most of the time the entry is already present. We avoid cloning chitchat_id with
         // this if statement.
-        self.node_states
-            .entry(chitchat_id.clone())
-            .or_insert_with(|| NodeState::new(chitchat_id.clone(), self.listeners.clone()))
+        let entry = self.node_states.entry(chitchat_id.clone());
+        match entry {
+            Entry::Occupied(value) => value.into_mut(),
+            Entry::Vacant(vacant) => {
+                self.garbage_collected_nodes.pop(chitchat_id);
+                let new_node_state = NodeState::new(chitchat_id.clone(), self.listeners.clone());
+                vacant.insert(new_node_state)
+            }
+        }
     }
 
     pub fn node_state(&self, chitchat_id: &ChitchatId) -> Option<&NodeState> {
         self.node_states.get(chitchat_id)
+    }
+
+    /// Get a mutable node state if it exists.
+    pub(crate) fn node_state_mut(&mut self, chitchat_id: &ChitchatId) -> Option<&mut NodeState> {
+        self.node_states.get_mut(chitchat_id)
     }
 
     pub fn nodes(&self) -> impl Iterator<Item = &ChitchatId> {
@@ -553,15 +580,20 @@ impl ClusterState {
     }
 
     pub(crate) fn remove_node(&mut self, chitchat_id: &ChitchatId) {
-        self.node_states.remove(chitchat_id);
+        let node_state = self.node_states.remove(chitchat_id);
+        if let Some(node_state) = node_state {
+            self.garbage_collected_nodes
+                .push(chitchat_id.clone(), node_state.heartbeat);
+        }
     }
 
     pub(crate) fn apply_delta(&mut self, delta: Delta) {
         let now = Instant::now();
         // Apply delta.
         for node_delta in delta.node_deltas {
-            let node_state = self.node_state_mut(&node_delta.chitchat_id);
-            node_state.apply_delta(node_delta, now);
+            if let Some(node_state) = self.node_state_mut(&node_delta.chitchat_id) {
+                node_state.apply_delta(node_delta, now);
+            }
         }
     }
 
@@ -657,6 +689,11 @@ impl ClusterState {
 
         delta_serializer.finish()
     }
+
+    /// Returns the last heartbeat if the node was deleted and already garbage collected.
+    pub fn last_heartbeat_if_deleted(&self, chitchat_id: &ChitchatId) -> Option<Heartbeat> {
+        self.garbage_collected_nodes.peek(chitchat_id).copied()
+    }
 }
 
 /// Score used to decide which member should be gossiped first.
@@ -726,7 +763,11 @@ fn staleness_score(node_state: &NodeState, floor_version: u64) -> Option<Stalene
     } else {
         node_state.stale_key_values(floor_version).count()
     };
-    Some(Staleness { is_unknown, max_version: node_state.max_version, num_stale_key_values })
+    Some(Staleness {
+        is_unknown,
+        max_version: node_state.max_version,
+        num_stale_key_values,
+    })
 }
 
 impl<'a> SortedStaleNodes<'a> {
@@ -743,8 +784,15 @@ impl<'a> SortedStaleNodes<'a> {
             // The node does not have any stale KV.
             return;
         };
-        let stale_node = StaleNode { chitchat_id, node_state, from_version_excluded };
-        self.stale_nodes.entry(staleness).or_default().push(stale_node);
+        let stale_node = StaleNode {
+            chitchat_id,
+            node_state,
+            from_version_excluded,
+        };
+        self.stale_nodes
+            .entry(staleness)
+            .or_default()
+            .push(stale_node);
     }
 
     /// Returns an iterator over the stale nodes sorted in decreasing order of staleness.
@@ -752,10 +800,13 @@ impl<'a> SortedStaleNodes<'a> {
     /// written into the delta.
     fn into_iter(self) -> impl Iterator<Item = StaleNode<'a>> {
         let mut rng = random_generator();
-        self.stale_nodes.into_values().rev().flat_map(move |mut stale_nodes| {
-            stale_nodes.shuffle(&mut rng);
-            stale_nodes.into_iter()
-        })
+        self.stale_nodes
+            .into_values()
+            .rev()
+            .flat_map(move |mut stale_nodes| {
+                stale_nodes.shuffle(&mut rng);
+                stale_nodes.into_iter()
+            })
     }
 }
 
@@ -785,7 +836,10 @@ pub struct ClusterStateSnapshot {
 impl From<&ClusterState> for ClusterStateSnapshot {
     fn from(cluster_state: &ClusterState) -> Self {
         let node_states = cluster_state.node_states.values().cloned().collect();
-        Self { node_states, seed_addrs: cluster_state.seed_addrs() }
+        Self {
+            node_states,
+            seed_addrs: cluster_state.seed_addrs(),
+        }
     }
 }
 
@@ -797,18 +851,17 @@ fn random_generator() -> impl Rng {
 // We use a deterministic random generator in tests.
 #[cfg(test)]
 fn random_generator() -> impl Rng {
-    use rand::prelude::StdRng;
     use rand::SeedableRng;
+    use rand::prelude::StdRng;
     StdRng::seed_from_u64(9u64)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serialize::Serializable;
-    use crate::types::DeletionStatusMutation;
-    use crate::types::KeyValueMutation;
     use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
+    use crate::serialize::Serializable;
+    use crate::types::{DeletionStatusMutation, KeyValueMutation};
 
     #[test]
     fn test_stale_node_iter_stale_key_values() {
@@ -875,8 +928,11 @@ mod tests {
         let mut node2_state = NodeState::for_test();
         node2_state.set_with_version("key_a", "value_a", 1);
         stale_nodes.offer(&node2, &node2_state, 0u64);
-        let expected_staleness =
-            Staleness { is_unknown: true, max_version: 1, num_stale_key_values: 0 };
+        let expected_staleness = Staleness {
+            is_unknown: true,
+            max_version: 1,
+            num_stale_key_values: 0,
+        };
         assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
 
         let mut node3_state = NodeState::for_test();
@@ -884,8 +940,11 @@ mod tests {
         node3_state.set_with_version("key_c", "value_c", 3);
 
         stale_nodes.offer(&node3, &node3_state, 0u64);
-        let expected_staleness =
-            Staleness { is_unknown: true, max_version: 3, num_stale_key_values: 3 };
+        let expected_staleness = Staleness {
+            is_unknown: true,
+            max_version: 3,
+            num_stale_key_values: 3,
+        };
         assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
     }
 
@@ -913,8 +972,11 @@ mod tests {
         node3_state.set_with_version("key_c", "value_c", 3);
         stale_nodes.offer(&node3, &node3_state, 1u64);
         assert_eq!(stale_nodes.stale_nodes.len(), 1);
-        let expected_staleness =
-            Staleness { is_unknown: false, max_version: 1, num_stale_key_values: 2 };
+        let expected_staleness = Staleness {
+            is_unknown: false,
+            max_version: 1,
+            num_stale_key_values: 2,
+        };
         assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
     }
 
@@ -984,59 +1046,87 @@ mod tests {
     #[test]
     fn test_cluster_state_first_version_is_one() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
+        let node_state = cluster_state.node_state_mut_or_init(&ChitchatId::for_local_test(10_001));
         node_state.set("key_a", "");
         assert_eq!(
             node_state.get_versioned("key_a").unwrap(),
-            &VersionedValue { value: "".to_string(), version: 1, status: DeletionStatus::Set }
+            &VersionedValue {
+                value: "".to_string(),
+                version: 1,
+                status: DeletionStatus::Set,
+            }
         );
     }
 
     #[test]
     fn test_cluster_state_set() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
+        let node_state = cluster_state.node_state_mut_or_init(&ChitchatId::for_local_test(10_001));
         node_state.set("key_a", "1");
         assert_eq!(
             node_state.get_versioned("key_a").unwrap(),
-            &VersionedValue { value: "1".to_string(), version: 1, status: DeletionStatus::Set }
+            &VersionedValue {
+                value: "1".to_string(),
+                version: 1,
+                status: DeletionStatus::Set,
+            }
         );
         node_state.set("key_b", "2");
         assert_eq!(
             node_state.get_versioned("key_a").unwrap(),
-            &VersionedValue { value: "1".to_string(), version: 1, status: DeletionStatus::Set }
+            &VersionedValue {
+                value: "1".to_string(),
+                version: 1,
+                status: DeletionStatus::Set,
+            }
         );
         assert_eq!(
             node_state.get_versioned("key_b").unwrap(),
-            &VersionedValue { value: "2".to_string(), version: 2, status: DeletionStatus::Set }
+            &VersionedValue {
+                value: "2".to_string(),
+                version: 2,
+                status: DeletionStatus::Set,
+            }
         );
         node_state.set("key_a", "3");
         assert_eq!(
             node_state.get_versioned("key_a").unwrap(),
-            &VersionedValue { value: "3".to_string(), version: 3, status: DeletionStatus::Set }
+            &VersionedValue {
+                value: "3".to_string(),
+                version: 3,
+                status: DeletionStatus::Set
+            }
         );
     }
 
     #[test]
     fn test_cluster_state_set_with_same_value_updates_version() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
+        let node_state = cluster_state.node_state_mut_or_init(&ChitchatId::for_local_test(10_001));
         node_state.set("key", "1");
         assert_eq!(
             node_state.get_versioned("key").unwrap(),
-            &VersionedValue { value: "1".to_string(), version: 1, status: DeletionStatus::Set }
+            &VersionedValue {
+                value: "1".to_string(),
+                version: 1,
+                status: DeletionStatus::Set
+            }
         );
         node_state.set("key", "1");
         assert_eq!(
             node_state.get_versioned("key").unwrap(),
-            &VersionedValue { value: "1".to_string(), version: 1, status: DeletionStatus::Set }
+            &VersionedValue {
+                value: "1".to_string(),
+                version: 1,
+                status: DeletionStatus::Set,
+            }
         );
     }
 
     #[test]
     fn test_cluster_state_set_and_mark_for_deletion() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
+        let node_state = cluster_state.node_state_mut_or_init(&ChitchatId::for_local_test(10_001));
         node_state.heartbeat = Heartbeat(10);
         node_state.set("key", "1");
         node_state.delete("key");
@@ -1046,7 +1136,12 @@ mod tests {
             assert_eq!(&versioned_value.value, "");
             assert_eq!(versioned_value.version, 2u64);
             assert!(versioned_value.is_deleted());
-            assert!(versioned_value.status.time_of_start_scheduled_for_deletion().is_some());
+            assert!(
+                versioned_value
+                    .status
+                    .time_of_start_scheduled_for_deletion()
+                    .is_some()
+            );
         }
 
         // Overriding the same key
@@ -1056,14 +1151,19 @@ mod tests {
             assert_eq!(&versioned_value.value, "2");
             assert_eq!(versioned_value.version, 3u64);
             assert!(!versioned_value.is_deleted());
-            assert!(versioned_value.status.time_of_start_scheduled_for_deletion().is_none());
+            assert!(
+                versioned_value
+                    .status
+                    .time_of_start_scheduled_for_deletion()
+                    .is_none()
+            );
         }
     }
 
     #[test]
     fn test_cluster_state_delete_after_ttl() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
+        let node_state = cluster_state.node_state_mut_or_init(&ChitchatId::for_local_test(10_001));
         node_state.heartbeat = Heartbeat(10);
         node_state.set("key", "1");
         node_state.delete_after_ttl("key");
@@ -1073,9 +1173,17 @@ mod tests {
             let versioned_value = node_state.get_versioned("key").unwrap();
             assert_eq!(&versioned_value.value, "1");
             assert_eq!(versioned_value.version, 2u64);
-            assert!(versioned_value.status.time_of_start_scheduled_for_deletion().is_some());
+            assert!(
+                versioned_value
+                    .status
+                    .time_of_start_scheduled_for_deletion()
+                    .is_some()
+            );
             assert!(!versioned_value.is_deleted());
-            assert!(matches!(versioned_value.status, DeletionStatus::DeleteAfterTtl(_)));
+            assert!(matches!(
+                versioned_value.status,
+                DeletionStatus::DeleteAfterTtl(_)
+            ));
         }
 
         // Overriding the same key
@@ -1085,7 +1193,12 @@ mod tests {
             assert_eq!(&versioned_value.value, "2");
             assert_eq!(versioned_value.version, 3u64);
             assert!(!versioned_value.is_deleted());
-            assert!(versioned_value.status.time_of_start_scheduled_for_deletion().is_none());
+            assert!(
+                versioned_value
+                    .status
+                    .time_of_start_scheduled_for_deletion()
+                    .is_none()
+            );
             assert!(matches!(versioned_value.status, DeletionStatus::Set));
         }
     }
@@ -1094,11 +1207,11 @@ mod tests {
     fn test_cluster_state_compute_digest() {
         let mut cluster_state = ClusterState::default();
         let node1 = ChitchatId::for_local_test(10_001);
-        let node1_state = cluster_state.node_state_mut(&node1);
+        let node1_state = cluster_state.node_state_mut_or_init(&node1);
         node1_state.set("key_a", "");
 
         let node2 = ChitchatId::for_local_test(10_002);
-        let node2_state = cluster_state.node_state_mut(&node2);
+        let node2_state = cluster_state.node_state_mut_or_init(&node2);
         node2_state.set_last_gc_version(10u64);
         node2_state.set("key_a", "");
         node2_state.set("key_b", "");
@@ -1117,7 +1230,7 @@ mod tests {
         tokio::time::pause();
         let mut cluster_state = ClusterState::default();
         let node1 = ChitchatId::for_local_test(10_001);
-        let node1_state = cluster_state.node_state_mut(&node1);
+        let node1_state = cluster_state.node_state_mut_or_init(&node1);
         node1_state.set("key_a", "1");
         node1_state.delete("key_a"); // Version 2. Tombstone set to heartbeat 100.
         tokio::time::advance(Duration::from_secs(5)).await;
@@ -1126,14 +1239,35 @@ mod tests {
         // No GC as tombstone is less than 10 secs old.
         cluster_state.gc_keys_marked_for_deletion(Duration::from_secs(10));
 
-        cluster_state.node_state(&node1).unwrap().key_values.get("key_a").unwrap();
-        cluster_state.node_state(&node1).unwrap().key_values.get("key_b").unwrap();
+        cluster_state
+            .node_state(&node1)
+            .unwrap()
+            .key_values
+            .get("key_a")
+            .unwrap();
+        cluster_state
+            .node_state(&node1)
+            .unwrap()
+            .key_values
+            .get("key_b")
+            .unwrap();
 
         // GC if tombstone (=100) + grace_period > heartbeat (=110).
         tokio::time::advance(Duration::from_secs(5)).await;
         cluster_state.gc_keys_marked_for_deletion(Duration::from_secs(10));
-        assert!(!cluster_state.node_state(&node1).unwrap().key_values.contains_key("key_a"));
-        cluster_state.node_state(&node1).unwrap().key_values.get("key_b").unwrap();
+        assert!(
+            !cluster_state
+                .node_state(&node1)
+                .unwrap()
+                .key_values
+                .contains_key("key_a")
+        );
+        cluster_state
+            .node_state(&node1)
+            .unwrap()
+            .key_values
+            .get("key_b")
+            .unwrap();
     }
 
     #[test]
@@ -1141,12 +1275,12 @@ mod tests {
         let mut cluster_state = ClusterState::default();
 
         let node1 = ChitchatId::for_local_test(10_001);
-        let node1_state = cluster_state.node_state_mut(&node1);
+        let node1_state = cluster_state.node_state_mut_or_init(&node1);
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node1_state.set_with_version("key_b".to_string(), "3".to_string(), 3); // 2
 
         let node2 = ChitchatId::for_local_test(10_002);
-        let node2_state = cluster_state.node_state_mut(&node2);
+        let node2_state = cluster_state.node_state_mut_or_init(&node2);
         node2_state.set_with_version("key_c".to_string(), "3".to_string(), 1); // 1
 
         let mut delta = Delta::default();
@@ -1162,19 +1296,31 @@ mod tests {
         let node1_state = cluster_state.node_state(&node1).unwrap();
         assert_eq!(
             node1_state.get_versioned("key_a").unwrap(),
-            &VersionedValue { value: "4".to_string(), version: 4, status: DeletionStatus::Set }
+            &VersionedValue {
+                value: "4".to_string(),
+                version: 4,
+                status: DeletionStatus::Set,
+            }
         );
         // We ignore stale values.
         assert_eq!(
             node1_state.get_versioned("key_b").unwrap(),
-            &VersionedValue { value: "3".to_string(), version: 3, status: DeletionStatus::Set }
+            &VersionedValue {
+                value: "3".to_string(),
+                version: 3,
+                status: DeletionStatus::Set,
+            }
         );
         // Check node 2 is reset and is only populated with the new `key_d`.
         let node2_state = cluster_state.node_state(&node2).unwrap();
         assert_eq!(node2_state.key_values.len(), 1);
         assert_eq!(
             node2_state.get_versioned("key_d").unwrap(),
-            &VersionedValue { value: "4".to_string(), version: 4, status: DeletionStatus::Set }
+            &VersionedValue {
+                value: "4".to_string(),
+                version: 4,
+                status: DeletionStatus::Set
+            }
         );
     }
 
@@ -1224,12 +1370,12 @@ mod tests {
         let mut cluster_state = ClusterState::default();
 
         let node1 = ChitchatId::for_local_test(10_001);
-        let node1_state = cluster_state.node_state_mut(&node1);
+        let node1_state = cluster_state.node_state_mut_or_init(&node1);
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node1_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 2
 
         let node2 = ChitchatId::for_local_test(10_002);
-        let node2_state = cluster_state.node_state_mut(&node2);
+        let node2_state = cluster_state.node_state_mut_or_init(&node2);
         node2_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node2_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 2
         node2_state.set_with_version("key_c".to_string(), "3".to_string(), 3); // 3
@@ -1318,7 +1464,10 @@ mod tests {
             &cluster_state,
             &digest,
             &dead_nodes,
-            &[(&node1, "key_a", "1", 1, false), (&node1, "key_b", "2", 2, false)],
+            &[
+                (&node1, "key_a", "1", 1, false),
+                (&node1, "key_b", "2", 2, false),
+            ],
         );
     }
 
@@ -1330,12 +1479,12 @@ mod tests {
         let node1 = ChitchatId::for_local_test(10_001);
         let node2 = ChitchatId::for_local_test(10_002);
         {
-            let node1_state = cluster_state.node_state_mut(&node1);
+            let node1_state = cluster_state.node_state_mut_or_init(&node1);
             node1_state.heartbeat = Heartbeat(10000);
             node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
             node1_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 2
 
-            let node2_state = cluster_state.node_state_mut(&node2);
+            let node2_state = cluster_state.node_state_mut_or_init(&node2);
             node2_state.set_with_version("key_c".to_string(), "3".to_string(), 2);
             // 2
         }
@@ -1357,7 +1506,10 @@ mod tests {
             assert_eq!(delta, expected_delta);
         }
 
-        cluster_state.node_state_mut(&node1).delete("key_a");
+        cluster_state
+            .node_state_mut(&node1)
+            .unwrap()
+            .delete("key_a");
         tokio::time::advance(Duration::from_secs(5)).await;
         cluster_state.gc_keys_marked_for_deletion(Duration::from_secs(10));
 
@@ -1383,7 +1535,10 @@ mod tests {
         const DELETE_GRACE_PERIOD: Duration = Duration::from_secs(10);
         // node1 / key a will be deleted here.
         tokio::time::advance(DELETE_GRACE_PERIOD).await;
-        cluster_state.node_state_mut(&node1).gc_keys_marked_for_deletion(DELETE_GRACE_PERIOD);
+        cluster_state
+            .node_state_mut(&node1)
+            .unwrap()
+            .gc_keys_marked_for_deletion(DELETE_GRACE_PERIOD);
 
         {
             let mut digest = Digest::default();
@@ -1415,8 +1570,10 @@ mod tests {
         node_state.set("Africa:Uganda", "");
         node_state.set("Oceania", "");
         node_state.delete("Europe:UK");
-        let node_states: Vec<&str> =
-            node_state.iter_prefix("Europe:").map(|(key, _v)| key).collect();
+        let node_states: Vec<&str> = node_state
+            .iter_prefix("Europe:")
+            .map(|(key, _v)| key)
+            .collect();
         assert_eq!(node_states, &["Europe:", "Europe:Italy"]);
     }
 
@@ -1603,7 +1760,10 @@ mod tests {
         node_state.set("key_a", "val_b");
         node_state.delete_after_ttl("key_a");
         node_state.set("key_a", "val_b2");
-        assert!(matches!(node_state.get_versioned("key_a").unwrap().status, DeletionStatus::Set));
+        assert!(matches!(
+            node_state.get_versioned("key_a").unwrap().status,
+            DeletionStatus::Set
+        ));
     }
 
     #[test]
@@ -1611,7 +1771,10 @@ mod tests {
         let mut node_state = NodeState::for_test();
         node_state.set_with_ttl("key_a", "val_b");
         let versioned_value = node_state.get_versioned("key_a").unwrap();
-        assert!(matches!(versioned_value.status, DeletionStatus::DeleteAfterTtl(_)));
+        assert!(matches!(
+            versioned_value.status,
+            DeletionStatus::DeleteAfterTtl(_)
+        ));
         assert_eq!(versioned_value.value, "val_b");
     }
 }

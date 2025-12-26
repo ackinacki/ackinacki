@@ -61,8 +61,12 @@ impl BlockBuilder {
                             anyhow::format_err!("Failed to create config touch message: {e}")
                         })?;
 
-                let dst_addr: AccountAddress =
-                    message.dst().expect("must be set").address().clone().into();
+                let dst_addr: AccountAddress = message
+                    .dst()
+                    .ok_or_else(|| anyhow::anyhow!("message.dst() is None"))?
+                    .address()
+                    .clone()
+                    .into();
                 let destination_routing = AccountRouting(key.clone(), dst_addr.clone());
 
                 let wrapped_message = WrappedMessage { message: message.clone() };
@@ -83,8 +87,8 @@ impl BlockBuilder {
                 } else {
                     // If message destination matches current thread, save it in cache to possibly execute in the current block
                     tracing::trace!(target: "builder",
-                        "New message for another thread: {}",
-                        message.hash().unwrap().to_hex_string()
+                        "New message for another thread: {:?}",
+                        message.hash().map(|h| h.to_hex_string())
                     );
                     let entry = self
                         .produced_internal_messages_to_other_threads
@@ -95,7 +99,8 @@ impl BlockBuilder {
                         Arc::new(wrapped_message),
                     ));
                 }
-                let info = message.int_header().unwrap();
+                let info =
+                    message.int_header().ok_or_else(|| anyhow::anyhow!("int_header() is None"))?;
                 let fwd_fee = info.fwd_fee();
                 let msg_cell = message.serialize().map_err(|e| {
                     anyhow::format_err!("Failed to serialize dapp config message: {e}")
@@ -133,7 +138,7 @@ impl BlockBuilder {
                     }
                     if let Some(acc_id) = config_messages[0].int_dst_account_id().map(From::from) {
                         if !active_destinations.contains(&acc_id) {
-                            let msg = config_messages.remove(0);
+                            let msg = config_messages.remove(0); // it's safe
                             tracing::trace!(target: "builder", "Parallel config message: {:?} to {:?}", msg.hash().unwrap(), acc_id.to_hex_string());
                             let thread = self.execute(
                                 msg,
@@ -151,19 +156,23 @@ impl BlockBuilder {
                             break;
                         }
                     } else {
+                        let msg = config_messages.remove(0);
                         tracing::warn!(
                             target: "builder",
-                            "Found dapp config msg with not valid internal destination: {:?}",
-                            config_messages.remove(0)
+                            "Found dapp config msg with not valid internal destination: {msg:?}",
                         );
                     }
                 }
             }
 
             while !active_ext_threads.is_empty() {
-                if let Ok(thread_result) = active_ext_threads.front().unwrap().result_rx.try_recv()
+                if let Ok(thread_result) = active_ext_threads
+                    .front()
+                    .expect("Already checked that front value is Some")
+                    .result_rx
+                    .try_recv()
                 {
-                    let _ = active_ext_threads.pop_front().unwrap();
+                    let _ = active_ext_threads.pop_front();
                     let thread_result = thread_result.map_err(|_| {
                         anyhow::format_err!("Failed to execute transaction in parallel")
                     })?;

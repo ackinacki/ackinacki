@@ -290,7 +290,7 @@ mod tests {
     fn dummy_signing_keypair() -> (String, String) {
         use ed25519_dalek::SigningKey;
 
-        let signing = SigningKey::generate(&mut rand::rngs::OsRng);
+        let signing = SigningKey::generate(&mut rand::thread_rng());
         let verifying = signing.verifying_key();
 
         let secret_hex = signing.to_bytes().encode_hex();

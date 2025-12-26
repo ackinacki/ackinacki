@@ -32,8 +32,9 @@ use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::BLSSignatureScheme;
 use crate::bls::GoshBLS;
+use crate::config::config_read::ConfigRead;
 use crate::config::BlockchainConfigRead;
-use crate::config::Config;
+use crate::config::GlobalConfig;
 use crate::external_messages::ExternalMessagesThreadState;
 use crate::helper::block_flow_trace;
 use crate::helper::block_flow_trace_with_time;
@@ -63,24 +64,29 @@ use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
+use crate::versioning::ProtocolVersion;
 
 #[cfg(feature = "restart_on_failing_assumptions")]
 lazy_static::lazy_static!(
     static ref BLOCK_SEQ_NO_TO_RESTART_PRODUCTION: Arc<Mutex<BlockSeqNo>> = Arc::new(Mutex::new(BlockSeqNo::from(100)));
 );
 
+#[cfg(feature = "test_upgrade")]
+lazy_static::lazy_static!(
+    pub static ref DO_NOT_START_PRODUCTION_ON_THIS_NODE: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+);
+
 pub const FORCE_SYNC_STATE_BLOCK_FREQUENCY: u32 = 20_000;
 
 #[derive(TypedBuilder)]
 pub struct TVMBlockProducerProcess {
-    node_config: Config,
+    node_config_read: ConfigRead,
     blockchain_config: BlockchainConfigRead,
     repository: RepositoryImpl,
     #[builder(default)]
     produced_blocks: Arc<Mutex<Vec<ProducedBlock>>>,
     #[builder(default)]
     active_producer_thread: Option<(JoinHandle<OptimisticStateImpl>, InstrumentedSender<()>)>,
-    block_produce_timeout: Arc<Mutex<Duration>>,
     #[builder(default)]
     optimistic_state_cache: Option<Arc<OptimisticStateImpl>>,
     #[builder(default)]
@@ -88,10 +94,7 @@ pub struct TVMBlockProducerProcess {
     shared_services: SharedServices,
 
     producer_node_id: NodeIdentifier,
-    thread_count_soft_limit: usize,
     parallelization_level: usize,
-    block_keeper_epoch_code_hash: String,
-    block_keeper_preepoch_code_hash: String,
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
     share_service: Option<ExternalFileSharesBased>,
@@ -108,16 +111,13 @@ impl TVMBlockProducerProcess {
     #[allow(clippy::too_many_arguments)]
     #[instrument(skip_all)]
     fn produce_next(
-        node_config: Config,
+        node_config_read: ConfigRead,
+        node_config: GlobalConfig,
         initial_state: &mut OptimisticStateImpl,
         blockchain_config: BlockchainConfigRead,
         producer_node_id: NodeIdentifier,
-        thread_count_soft_limit: usize,
         parallelization_level: usize,
-        block_keeper_epoch_code_hash: String,
-        block_keeper_preepoch_code_hash: String,
         produced_blocks: Arc<Mutex<Vec<ProducedBlock>>>,
-        timeout: Arc<Mutex<Duration>>,
         timeout_correction: &mut ProductionTimeoutCorrection,
         thread_id_clone: ThreadIdentifier,
         epoch_block_keeper_data_rx: &InstrumentedReceiver<BlockKeeperData>,
@@ -136,13 +136,15 @@ impl TVMBlockProducerProcess {
         share_service: Option<ExternalFileSharesBased>,
         round: BlockRound,
         parent_block_state: BlockState,
+        protocol_version: ProtocolVersion,
+        #[cfg(feature = "mirror_repair")] is_updated_mv: Arc<Mutex<bool>>,
     ) -> anyhow::Result<(ProcudeNextResult, BlockState)> {
         tracing::trace!("Start block production process iteration");
         let start_time = std::time::SystemTime::now();
         let production_time = Instant::now();
         let (message_queue, epoch_block_keeper_data, block_nack, aggregated_acks, aggregated_nacks) =
             trace_span!("read messages").in_scope(|| {
-                let message_queue = external_messages_queue.get_remaining_external_messages()?;
+                let message_queue = external_messages_queue.get_remaining_external_messages();
 
                 let mut received_acks_in = received_acks.lock();
                 let received_acks_copy = received_acks_in.clone();
@@ -172,15 +174,17 @@ impl TVMBlockProducerProcess {
                 ))
             })?;
 
+        #[cfg(not(feature = "mirror_repair"))]
         let producer = TVMBlockProducer::builder()
+            .node_config_read(node_config_read)
             .active_threads(mem::take(active_block_producer_threads))
             .blockchain_config(blockchain_config.clone())
             .message_queue(message_queue)
             .producer_node_id(producer_node_id.clone())
-            .thread_count_soft_limit(thread_count_soft_limit)
+            .thread_count_soft_limit(node_config.thread_count_soft_limit)
             .parallelization_level(parallelization_level)
-            .block_keeper_epoch_code_hash(block_keeper_epoch_code_hash)
-            .block_keeper_preepoch_code_hash(block_keeper_preepoch_code_hash)
+            .block_keeper_epoch_code_hash(node_config.block_keeper_epoch_code_hash.clone())
+            .block_keeper_preepoch_code_hash(node_config.block_keeper_preepoch_code_hash.clone())
             .epoch_block_keeper_data(epoch_block_keeper_data)
             .shared_services(shared_services.clone())
             .block_nack(block_nack.clone())
@@ -188,6 +192,27 @@ impl TVMBlockProducerProcess {
             .block_state_repository(block_state_repo.clone())
             .metrics(metrics.clone())
             .wasm_cache(wasm_cache)
+            .build();
+
+        #[cfg(feature = "mirror_repair")]
+        let producer = TVMBlockProducer::builder()
+            .node_config_read(node_config_read)
+            .active_threads(mem::take(active_block_producer_threads))
+            .blockchain_config(blockchain_config.clone())
+            .message_queue(message_queue)
+            .producer_node_id(producer_node_id.clone())
+            .thread_count_soft_limit(node_config.thread_count_soft_limit)
+            .parallelization_level(parallelization_level)
+            .block_keeper_epoch_code_hash(node_config.block_keeper_epoch_code_hash.clone())
+            .block_keeper_preepoch_code_hash(node_config.block_keeper_preepoch_code_hash.clone())
+            .epoch_block_keeper_data(epoch_block_keeper_data)
+            .shared_services(shared_services.clone())
+            .block_nack(block_nack.clone())
+            .accounts(accounts_repo)
+            .block_state_repository(block_state_repo.clone())
+            .metrics(metrics.clone())
+            .wasm_cache(wasm_cache)
+            .is_updated_mv(is_updated_mv.clone())
             .build();
 
         let (control_tx, control_rx) =
@@ -319,8 +344,9 @@ impl TVMBlockProducerProcess {
         let current_span = tracing::Span::current().clone();
         let db = repository.get_message_db();
 
-        let desired_timeout = { *timeout.lock() };
+        let desired_timeout = Duration::from_millis(node_config.time_to_produce_block_millis);
         let time_limits = ExecutionTimeLimits::production(desired_timeout, &node_config);
+        let protocol_version_clone = protocol_version.clone();
         let thread = std::thread::Builder::new()
             .name(format!("Produce block {}", &thread_id_clone))
             .stack_size(16 * 1024 * 1024)
@@ -347,6 +373,7 @@ impl TVMBlockProducerProcess {
                         &time_limits,
                         round,
                         parent_block_state,
+                        protocol_version_clone,
                     )?;
 
                 Ok::<_, anyhow::Error>((
@@ -390,9 +417,9 @@ impl TVMBlockProducerProcess {
             return Ok((ProcudeNextResult::Stopped, produced_block_state));
         }
         // Update common section
-        let mut common_section = block.get_common_section().clone();
-        common_section.acks = aggregated_acks;
-        common_section.nacks = aggregated_nacks.clone();
+        let mut common_section = block.get_common_section();
+        common_section.set_acks(aggregated_acks);
+        common_section.set_nacks(aggregated_nacks.clone());
         block.set_common_section(common_section, false)?;
         if !processed_stamps.is_empty() {
             external_messages_queue.erase_processed(&processed_stamps)?;
@@ -453,6 +480,7 @@ impl TVMBlockProducerProcess {
         drop(span_save_cross_thread_refs);
         let block_id = block.identifier();
         produced_block_state.guarded_mut(|e| e.set_has_cross_thread_ref_data_prepared())?;
+        // let actual_required_version = produced_block_state.guarded(|e| e.block_version_state().to_use().clone());
 
         trace_span!("save state").in_scope(|| {
             tracing::trace!("Save produced block");
@@ -462,6 +490,8 @@ impl TVMBlockProducerProcess {
                 .new_to_bk_set(
                     BTreeSet::new(), // TODO: set real value with preattestaions implementation
                 )
+                //.block_version(actual_required_version)
+                .block_version(protocol_version.clone())
                 .build();
 
             #[cfg(feature = "restart_on_failing_assumptions")]
@@ -471,7 +501,10 @@ impl TVMBlockProducerProcess {
                     *misbehave_block_seq_not = 0.into();
                     let mut new_to_bk_set = BTreeSet::new();
                     new_to_bk_set.insert(SignerIndex::default());
-                    Assumptions::builder().new_to_bk_set(new_to_bk_set).build()
+                    Assumptions::builder()
+                        .new_to_bk_set(new_to_bk_set)
+                        .block_version(protocol_version)
+                        .build()
                 } else {
                     assumptions
                 }
@@ -516,11 +549,20 @@ impl TVMBlockProducerProcess {
         mut external_messages: ExternalMessagesThreadState,
         is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
         initial_round: BlockRound,
+        block_version: ProtocolVersion,
+        #[cfg(feature = "mirror_repair")] is_updated_mv: Arc<Mutex<bool>>,
     ) -> anyhow::Result<()> {
+        #[cfg(feature = "test_upgrade")]
+        {
+            if *DO_NOT_START_PRODUCTION_ON_THIS_NODE.lock() {
+                return Ok(());
+            }
+        }
         tracing::trace!(
-            "BlockProducerProcess start production for thread: {:?}, initial_block_id:{:?}",
+            "BlockProducerProcess start production for thread: {:?}, initial_block_id:{:?}, block_version: {}",
             thread_id,
             prev_block_id,
+            block_version,
         );
         if self.active_producer_thread.is_some() {
             tracing::error!(
@@ -566,7 +608,6 @@ impl TVMBlockProducerProcess {
 
         let repo_clone = self.repository.clone();
         let produced_blocks = self.produced_blocks.clone();
-        let timeout = self.block_produce_timeout.clone();
         let thread_id_clone = *thread_id;
         let (control_tx, external_control_rx) = instrumented_channel(
             self.metrics.clone(),
@@ -578,17 +619,18 @@ impl TVMBlockProducerProcess {
         );
         let mut shared_services = self.shared_services.clone();
         let producer_node_id = self.producer_node_id.clone();
-        let thread_count_soft_limit = self.thread_count_soft_limit;
         let parallelization_level = self.parallelization_level;
-        let block_keeper_epoch_code_hash = self.block_keeper_epoch_code_hash.clone();
-        let block_keeper_preepoch_code_hash = self.block_keeper_preepoch_code_hash.clone();
         let metrics = self.repository.get_metrics().cloned();
         let wasm_cache = self.wasm_cache.clone();
         let accounts_repo = self.repository.accounts_repository().clone();
-        let node_config = self.node_config.clone();
         let share_service = self.share_service.clone();
         let prev_block_id = prev_block_id.clone();
         let save_state_sender = self.save_optimistic_service_sender.clone();
+        let node_config_read = self.node_config_read.clone();
+
+        let mut parent_block_state =
+            block_state_repository.get(&prev_block_id).expect("Failed to load parent block state");
+
         let produce = move || {
             let mut active_block_producer_threads = vec![];
             // Note:
@@ -601,22 +643,21 @@ impl TVMBlockProducerProcess {
             // TODO: think if it is the best solution given all circumstances
             let mut timeout_correction = ProductionTimeoutCorrection::default();
             let mut round = initial_round;
-            let mut parent_block_state = block_state_repository
-                .get(&prev_block_id)
-                .expect("Failed to load parent block state");
             loop {
+                let Some(node_config) = node_config_read.get(&block_version) else {
+                    tracing::trace!("Failed to get config for specified block version");
+                    return Ok(Arc::unwrap_or_clone(initial_state));
+                };
+                let node_config = Arc::unwrap_or_clone(node_config);
                 let mut state_in = Arc::unwrap_or_clone(initial_state);
                 let produce_res = Self::produce_next(
+                    node_config_read.clone(),
                     node_config.clone(),
                     &mut state_in,
                     blockchain_config.clone(),
                     producer_node_id.clone(),
-                    thread_count_soft_limit,
                     parallelization_level,
-                    block_keeper_epoch_code_hash.clone(),
-                    block_keeper_preepoch_code_hash.clone(),
                     produced_blocks.clone(),
-                    timeout.clone(),
                     &mut timeout_correction,
                     thread_id_clone,
                     &epoch_block_keeper_data_rx,
@@ -635,6 +676,9 @@ impl TVMBlockProducerProcess {
                     share_service.clone(),
                     round,
                     parent_block_state,
+                    block_version.clone(),
+                    #[cfg(feature = "mirror_repair")]
+                    is_updated_mv.clone(),
                 );
                 // Note:
                 // if stopped.is_ok() ... is skipped.
@@ -714,12 +758,6 @@ impl TVMBlockProducerProcess {
         }
         blocks.sort_by_key(|a| a.block().seq_no());
         blocks
-    }
-
-    pub fn set_timeout(&mut self, timeout: Duration) {
-        tracing::trace!("set timeout for production process: {timeout:?}");
-        let mut block_produce_timeout = self.block_produce_timeout.lock();
-        *block_produce_timeout = timeout;
     }
 
     pub fn send_epoch_message(&self, data: BlockKeeperData) {
@@ -828,7 +866,9 @@ mod tests {
 
     use crate::block::producer::process::TVMBlockProducerProcess;
     use crate::block::producer::wasm::WasmNodeCache;
+    use crate::config::config_read::ConfigRead;
     use crate::config::load_blockchain_config;
+    use crate::config::GlobalConfig;
     use crate::external_messages::ExternalMessagesThreadState;
     use crate::helper::metrics;
     use crate::helper::metrics::BlockProductionMetrics;
@@ -845,6 +885,7 @@ mod tests {
     use crate::types::BlockIdentifier;
     use crate::types::ThreadIdentifier;
     use crate::utilities::FixedSizeHashSet;
+    use crate::versioning::ProtocolVersion;
 
     fn mock_bk_set_updates_tx() -> InstrumentedSender<BkSetUpdate> {
         let (bk_set_updates_tx, _bk_set_updates_rx) = instrumented_channel::<BkSetUpdate>(
@@ -857,9 +898,15 @@ mod tests {
     #[test]
     #[ignore]
     fn test_producer() -> anyhow::Result<()> {
+        #[cfg(feature = "mirror_repair")]
+        let is_updated_mv = Arc::new(Mutex::new(false));
+
         let root_dir = testdir!();
         crate::tests::init_db(&root_dir).expect("Failed to init DB 1");
         let mut config = crate::tests::default_config(NodeIdentifier::test(1));
+        let global_config = GlobalConfig::default();
+        let config_read =
+            ConfigRead::new(ProtocolVersion::parse("None")?, global_config.clone(), None, None);
         let config_dir = project_root().join("node/tests/resources/config");
         config.local.blockchain_config_path = config_dir.join("blockchain.conf.json");
         config.local.key_path =
@@ -884,8 +931,8 @@ mod tests {
                 RoutingService::stub().0,
                 root_dir.clone(),
                 None,
-                config.global.thread_load_threshold,
-                config.global.thread_load_window_size,
+                global_config.thread_load_threshold,
+                global_config.thread_load_window_size,
                 u32::MAX,
                 1,
                 CrossRefStorage::mem(),
@@ -898,6 +945,9 @@ mod tests {
             message_db.clone(),
             finalized_blocks,
             mock_bk_set_updates_tx(),
+            #[cfg(feature = "mirror_repair")]
+            is_updated_mv.clone(),
+            ConfigRead::new(ProtocolVersion::parse("None")?, global_config.clone(), None, None),
         );
         let (router, _router_rx) = RoutingService::stub();
         let feedback_sender = router.feedback_sender.clone();
@@ -907,10 +957,8 @@ mod tests {
         );
         let mut production_process = TVMBlockProducerProcess::builder()
             .metrics(repository.get_metrics().cloned())
-            .node_config(config.clone())
+            .node_config_read(config_read.clone())
             .repository(repository.clone())
-            .block_keeper_epoch_code_hash(config.global.block_keeper_epoch_code_hash.clone())
-            .block_keeper_preepoch_code_hash(config.global.block_keeper_preepoch_code_hash.clone())
             .producer_node_id(config.local.node_id.clone())
             .blockchain_config(load_blockchain_config()?)
             .parallelization_level(config.local.parallelization_level)
@@ -918,16 +966,12 @@ mod tests {
                 router,
                 root_dir.clone(),
                 None,
-                config.global.thread_load_threshold,
-                config.global.thread_load_window_size,
+                global_config.thread_load_threshold,
+                global_config.thread_load_window_size,
                 config.local.rate_limit_on_incoming_block_req,
-                config.global.thread_count_soft_limit,
+                global_config.thread_count_soft_limit,
                 CrossRefStorage::mem(),
             ))
-            .block_produce_timeout(Arc::new(Mutex::new(Duration::from_millis(
-                config.global.time_to_produce_block_millis,
-            ))))
-            .thread_count_soft_limit(config.global.thread_count_soft_limit)
             .share_service(None)
             .wasm_cache(WasmNodeCache::new()?)
             .save_optimistic_service_sender(tx)
@@ -949,6 +993,9 @@ mod tests {
                 .build()?,
             Arc::new(Mutex::new(None)),
             0,
+            ProtocolVersion::parse("test")?,
+            #[cfg(feature = "mirror_repair")]
+            is_updated_mv.clone(),
         )?;
 
         let running_time = Instant::now();

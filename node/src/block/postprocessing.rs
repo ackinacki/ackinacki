@@ -1,37 +1,25 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
-#[cfg(feature = "bk_wallets_repair")]
 use std::str::FromStr;
 use std::sync::Arc;
 
+#[cfg(feature = "mirror_repair")]
+use parking_lot::Mutex;
 use tracing::instrument;
-#[cfg(feature = "bk_wallets_repair")]
+#[cfg(feature = "mirror_repair")]
+use tvm_abi::TokenValue;
+#[cfg(feature = "mirror_repair")]
 use tvm_block::Account;
-#[cfg(feature = "bk_wallets_repair")]
 use tvm_block::Deserializable;
-#[cfg(feature = "bk_wallets_repair")]
-use tvm_block::Message;
-use tvm_block::MsgAddrStd;
-#[cfg(feature = "bk_wallets_repair")]
-use tvm_block::MsgAddressInt;
-#[cfg(feature = "bk_wallets_repair")]
 use tvm_block::Serializable;
-#[cfg(feature = "bk_wallets_repair")]
 use tvm_block::ShardAccount;
-#[cfg(feature = "bk_wallets_repair")]
+#[cfg(feature = "mirror_repair")]
 use tvm_block::ShardAccounts;
 use tvm_types::AccountId;
-#[cfg(feature = "bk_wallets_repair")]
-use tvm_types::UInt256;
 
-#[cfg(feature = "bk_wallets_repair")]
-use crate::block_keeper_system::abi::BLOCK_KEEPER_COOLER_ABI;
-use crate::config::FIX_STAKE_BLOCK_SEQ_NO;
-#[cfg(feature = "bk_wallets_repair")]
-use crate::config::REPAIR_BK_WALLETS_BLOCK_SEQ_NO;
 #[cfg(feature = "mirror_repair")]
-use crate::config::REPAIR_MIRRORS_BLOCK_SEQ_NO;
+use crate::config::UPDATE_MIRRORS_BLOCK_SEQ_NO;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::repository::accounts::AccountsRepository;
@@ -51,118 +39,37 @@ use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
-#[cfg(feature = "bk_wallets_repair")]
-pub static ACCOUNT_DATA_85EEE8FE56E3F77470A982870DE2DAD0014AA355AAD4A052C17468DF945C31D3: &[u8] = include_bytes!("./../../repair_accounts_data/85eee8fe56e3f77470a982870de2dad0014aa355aad4a052c17468df945c31d3_cc63be63625a164dbd9888be1ba5d3f2d0c0f19b634f3592ae605684ed7005f6");
-#[cfg(feature = "bk_wallets_repair")]
-pub static ACCOUNT_DATA_7ABB85F52411C0EE3B372996BC54526BCFB7FC232236101AD9B9248E6E046D77: &[u8] = include_bytes!("./../../repair_accounts_data/7abb85f52411c0ee3b372996bc54526bcfb7fc232236101ad9b9248e6e046d77_8ef1880f91b6807ae998dcbf390e408dcf8ade189725a7868ed7704d00b56289");
-#[cfg(feature = "bk_wallets_repair")]
-pub static ACCOUNT_DATA_C0A07D04D40F719E02914F05918B389229D6CB6499DA8DFE86201AE07FB7B8C9: &[u8] = include_bytes!("./../../repair_accounts_data/c0a07d04d40f719e02914f05918b389229d6cb6499da8dfe86201ae07fb7b8c9_339fb0e3b582028680804bd10221d6f1d73ac92950ec899f38197408eb505938");
-#[cfg(feature = "bk_wallets_repair")]
-pub static ACCOUNT_DATA_BB89CF85F1A5C8521F879E9BAD83257DB4C9036CE26951C0AE1AA930B6DD1486: &[u8] = include_bytes!("./../../repair_accounts_data/bb89cf85f1a5c8521f879e9bad83257db4c9036ce26951c0ae1aa930b6dd1486_149b1168f982a62c477d58d02827838062b2fe80129809979077434408c31c8d");
-#[cfg(feature = "bk_wallets_repair")]
-pub static ACCOUNT_DATA_3DB40895E2CE599E425F810E768E7FF005526FA40DDE248E124D147904E6CC2C: &[u8] = include_bytes!("./../../repair_accounts_data/3db40895e2ce599e425f810e768e7ff005526fa40dde248e124d147904e6cc2c_a38a9060afd8572498976ddd9e289c255a3fd92d984889097acde75e9f477a81");
-#[cfg(feature = "bk_wallets_repair")]
-pub static ACCOUNT_DATA_2018A2548CE0B107774BDB623DC4FA30CCF38E7269288C2093C555F416FAD797: &[u8] = include_bytes!("./../../repair_accounts_data/2018a2548ce0b107774bdb623dc4fa30ccf38e7269288c2093c555f416fad797_6ea18bb25709c6763fd6182ad270b04b58d60a10171fd766c262b464df765fc5");
-#[cfg(feature = "bk_wallets_repair")]
-pub static ACCOUNT_DATA_16E4BB3531A5600BF654D89ED13C33F6E6B1B06A9210A6B367ECCBEC3C36CF21: &[u8] = include_bytes!("./../../repair_accounts_data/16e4bb3531a5600bf654d89ed13c33f6e6b1b06a9210a6b367eccbec3c36cf21_3cfbf27e3c23b497936d891ebcf67133cc433adbabe493ebf6b342fa63e0c75a");
-#[cfg(feature = "bk_wallets_repair")]
-pub static ACCOUNT_DATA_8A5A1110E1C873ABCEA15A8AB74AB08D5514CDCA5E3B507179E4D0F5AD532193: &[u8] = include_bytes!("./../../repair_accounts_data/8a5a1110e1c873abcea15a8ab74ab08d5514cdca5e3b507179e4d0f5ad532193_831fd0a8f629bd5673d8c0938ce982defe0a1bb0d6ed4081d282d44d69e453c6");
-#[cfg(feature = "bk_wallets_repair")]
-pub static ACCOUNT_DATA_F9734BF55DE573030097D12C6B95AF6525DD1EE9E44A6419F78D183C3B79D394: &[u8] = include_bytes!("./../../repair_accounts_data/f9734bf55de573030097d12c6b95af6525dd1ee9e44a6419f78d183c3b79d394_23f1dfbe7019649612e9e5f2550a340bf87ccb1cd5c4f771d2d6c675452718de");
-#[cfg(feature = "bk_wallets_repair")]
-pub static ACCOUNT_DATA_FF0E03891282FED4AAD30B1B522E4B6F0EFC6FDA970BAB2940E18425ED1BAED6: &[u8] = include_bytes!("./../../repair_accounts_data/ff0e03891282fed4aad30b1b522e4b6f0efc6fda970bab2940e18425ed1baed6_3db2754f210f3d8fc4f696cbb0a14120cc4a848119fc0d193b51f4bd365b3eb4");
-#[cfg(feature = "bk_wallets_repair")]
-pub static ACCOUNT_DATA_52CA31E0FC400EE3EF8EACED777F9DF3D9B350221835CB0B7B7DAD59271D214E: &[u8] = include_bytes!("./../../repair_accounts_data/52ca31e0fc400ee3ef8eaced777f9df3d9b350221835cb0b7b7dad59271d214e_6218ef2d827095f7dedd2e37c134d8fe95542b24d5f47a0ed331138c976b2f31");
-#[cfg(feature = "bk_wallets_repair")]
-pub static ACCOUNT_DATA_D875DF9CF418106D1407F60BE189ADC9E7C0E6DB430AE945FFA37448EF46469F: &[u8] = include_bytes!("./../../repair_accounts_data/d875df9cf418106d1407f60be189adc9e7c0e6db430ae945ffa37448ef46469f_3227713c1fe1656f2aa429db5fe754b95f1bf326cab28e8d9105b6abab42e881");
-#[cfg(feature = "bk_wallets_repair")]
-pub static ACCOUNT_DATA_D84BDFA753950541BAFAC1E8137BBA14FA6AA55409D9EE33252D442B4E3E682A: &[u8] = include_bytes!("./../../repair_accounts_data/d84bdfa753950541bafac1e8137bba14fa6aa55409d9ee33252d442b4e3e682a_f0583771a50f286e88e7d7dfdbf2fb807aecf9f2c5d54985ad8da92197cc6857");
-#[cfg(feature = "bk_wallets_repair")]
-pub static ACCOUNT_DATA_1033EA894040ADBA26F13680690FAF3E05F74987610E4F5D50B22142333A8787: &[u8] = include_bytes!("./../../repair_accounts_data/1033ea894040adba26f13680690faf3e05f74987610e4f5d50b22142333a8787_2f0f1240171f5ca39ad87df6410bc0e821aa94469a85075cdc5e145c5add4038");
 #[cfg(feature = "mirror_repair")]
 pub static MIRROR_TVC: &[u8] =
-    include_bytes!("../../../contracts/0.79.3_compiled/mvsystem/Mirror.tvc");
+    include_bytes!("../../../contracts/0.79.3_compiled/mvsystem/Mirror.tvc.temp");
+#[cfg(feature = "mirror_repair")]
+pub static MVROOT_TVC: &[u8] =
+    include_bytes!("../../repair_accounts_data/MobileVerifiersContractRoot.tvc");
+#[cfg(feature = "mirror_repair")]
+pub static MIRROR_ABI: &str =
+    include_str!("../../../contracts/0.79.3_compiled/mvsystem/Mirror.abi.json");
 
-#[cfg(feature = "bk_wallets_repair")]
-lazy_static::lazy_static!(
-    static ref ACCOUNTS_TO_REPAIR: HashMap<AccountAddress, Account> = {
-        let mut m = HashMap::new();
-        m.insert(AccountAddress::from_str("85eee8fe56e3f77470a982870de2dad0014aa355aad4a052c17468df945c31d3").unwrap(), Account::construct_from_bytes(ACCOUNT_DATA_85EEE8FE56E3F77470A982870DE2DAD0014AA355AAD4A052C17468DF945C31D3).unwrap());
-        m.insert(AccountAddress::from_str("7abb85f52411c0ee3b372996bc54526bcfb7fc232236101ad9b9248e6e046d77").unwrap(), Account::construct_from_bytes(ACCOUNT_DATA_7ABB85F52411C0EE3B372996BC54526BCFB7FC232236101AD9B9248E6E046D77).unwrap());
-        m.insert(AccountAddress::from_str("c0a07d04d40f719e02914f05918b389229d6cb6499da8dfe86201ae07fb7b8c9").unwrap(), Account::construct_from_bytes(ACCOUNT_DATA_C0A07D04D40F719E02914F05918B389229D6CB6499DA8DFE86201AE07FB7B8C9).unwrap());
-        m.insert(AccountAddress::from_str("bb89cf85f1a5c8521f879e9bad83257db4c9036ce26951c0ae1aa930b6dd1486").unwrap(), Account::construct_from_bytes(ACCOUNT_DATA_BB89CF85F1A5C8521F879E9BAD83257DB4C9036CE26951C0AE1AA930B6DD1486).unwrap());
-        m.insert(AccountAddress::from_str("3db40895e2ce599e425f810e768e7ff005526fa40dde248e124d147904e6cc2c").unwrap(), Account::construct_from_bytes(ACCOUNT_DATA_3DB40895E2CE599E425F810E768E7FF005526FA40DDE248E124D147904E6CC2C).unwrap());
-        m.insert(AccountAddress::from_str("2018a2548ce0b107774bdb623dc4fa30ccf38e7269288c2093c555f416fad797").unwrap(), Account::construct_from_bytes(ACCOUNT_DATA_2018A2548CE0B107774BDB623DC4FA30CCF38E7269288C2093C555F416FAD797).unwrap());
-        m.insert(AccountAddress::from_str("16e4bb3531a5600bf654d89ed13c33f6e6b1b06a9210a6b367eccbec3c36cf21").unwrap(), Account::construct_from_bytes(ACCOUNT_DATA_16E4BB3531A5600BF654D89ED13C33F6E6B1B06A9210A6B367ECCBEC3C36CF21).unwrap());
-        m.insert(AccountAddress::from_str("8a5a1110e1c873abcea15a8ab74ab08d5514cdca5e3b507179e4d0f5ad532193").unwrap(), Account::construct_from_bytes(ACCOUNT_DATA_8A5A1110E1C873ABCEA15A8AB74AB08D5514CDCA5E3B507179E4D0F5AD532193).unwrap());
-        m.insert(AccountAddress::from_str("f9734bf55de573030097d12c6b95af6525dd1ee9e44a6419f78d183c3b79d394").unwrap(), Account::construct_from_bytes(ACCOUNT_DATA_F9734BF55DE573030097D12C6B95AF6525DD1EE9E44A6419F78D183C3B79D394).unwrap());
-        m.insert(AccountAddress::from_str("ff0e03891282fed4aad30b1b522e4b6f0efc6fda970bab2940e18425ed1baed6").unwrap(), Account::construct_from_bytes(ACCOUNT_DATA_FF0E03891282FED4AAD30B1B522E4B6F0EFC6FDA970BAB2940E18425ED1BAED6).unwrap());
-        m.insert(AccountAddress::from_str("52ca31e0fc400ee3ef8eaced777f9df3d9b350221835cb0b7b7dad59271d214e").unwrap(), Account::construct_from_bytes(ACCOUNT_DATA_52CA31E0FC400EE3EF8EACED777F9DF3D9B350221835CB0B7B7DAD59271D214E).unwrap());
-        m.insert(AccountAddress::from_str("d875df9cf418106d1407f60be189adc9e7c0e6db430ae945ffa37448ef46469f").unwrap(), Account::construct_from_bytes(ACCOUNT_DATA_D875DF9CF418106D1407F60BE189ADC9E7C0E6DB430AE945FFA37448EF46469F).unwrap());
-        m.insert(AccountAddress::from_str("d84bdfa753950541bafac1e8137bba14fa6aa55409d9ee33252d442b4e3e682a").unwrap(), Account::construct_from_bytes(ACCOUNT_DATA_D84BDFA753950541BAFAC1E8137BBA14FA6AA55409D9EE33252D442B4E3E682A).unwrap());
-        m.insert(AccountAddress::from_str("1033ea894040adba26f13680690faf3e05f74987610e4f5d50b22142333a8787").unwrap(), Account::construct_from_bytes(ACCOUNT_DATA_1033EA894040ADBA26F13680690FAF3E05F74987610E4F5D50B22142333A8787).unwrap());
-        m
-    };
+#[cfg(feature = "mirror_repair")]
+static GAME_ROOT_ADDR: &str = "0:0505050505050505050505050505050505050505050505050505050505050505";
+#[cfg(feature = "mirror_repair")]
+static GAME_ROOT_DAPP_ID: &str = "0000000000000000000000000000000000000000000000000000000000000001";
+#[cfg(feature = "mirror_repair")]
+static GAME_ROOT_TVC: &[u8] = include_bytes!(
+    "../../../contracts/0.79.3_compiled/mvsystem/MobileVerifiersContractGameRoot.tvc.temp"
 );
-
-#[cfg(feature = "bk_wallets_repair")]
-lazy_static::lazy_static!(
-    static ref OLD_ACCOUNTS_HASHES: HashMap<AccountAddress, UInt256> = {
-        let mut m = HashMap::new();
-        m.insert(AccountAddress::from_str("85eee8fe56e3f77470a982870de2dad0014aa355aad4a052c17468df945c31d3").unwrap(), UInt256::from_str("cc63be63625a164dbd9888be1ba5d3f2d0c0f19b634f3592ae605684ed7005f6").unwrap());
-        m.insert(AccountAddress::from_str("7abb85f52411c0ee3b372996bc54526bcfb7fc232236101ad9b9248e6e046d77").unwrap(), UInt256::from_str("8ef1880f91b6807ae998dcbf390e408dcf8ade189725a7868ed7704d00b56289").unwrap());
-        m.insert(AccountAddress::from_str("c0a07d04d40f719e02914f05918b389229d6cb6499da8dfe86201ae07fb7b8c9").unwrap(), UInt256::from_str("339fb0e3b582028680804bd10221d6f1d73ac92950ec899f38197408eb505938").unwrap());
-        m.insert(AccountAddress::from_str("bb89cf85f1a5c8521f879e9bad83257db4c9036ce26951c0ae1aa930b6dd1486").unwrap(), UInt256::from_str("149b1168f982a62c477d58d02827838062b2fe80129809979077434408c31c8d").unwrap());
-        m.insert(AccountAddress::from_str("3db40895e2ce599e425f810e768e7ff005526fa40dde248e124d147904e6cc2c").unwrap(), UInt256::from_str("a38a9060afd8572498976ddd9e289c255a3fd92d984889097acde75e9f477a81").unwrap());
-        m.insert(AccountAddress::from_str("2018a2548ce0b107774bdb623dc4fa30ccf38e7269288c2093c555f416fad797").unwrap(), UInt256::from_str("6ea18bb25709c6763fd6182ad270b04b58d60a10171fd766c262b464df765fc5").unwrap());
-        m.insert(AccountAddress::from_str("16e4bb3531a5600bf654d89ed13c33f6e6b1b06a9210a6b367eccbec3c36cf21").unwrap(), UInt256::from_str("3cfbf27e3c23b497936d891ebcf67133cc433adbabe493ebf6b342fa63e0c75a").unwrap());
-        m.insert(AccountAddress::from_str("8a5a1110e1c873abcea15a8ab74ab08d5514cdca5e3b507179e4d0f5ad532193").unwrap(), UInt256::from_str("831fd0a8f629bd5673d8c0938ce982defe0a1bb0d6ed4081d282d44d69e453c6").unwrap());
-        m.insert(AccountAddress::from_str("f9734bf55de573030097d12c6b95af6525dd1ee9e44a6419f78d183c3b79d394").unwrap(), UInt256::from_str("23f1dfbe7019649612e9e5f2550a340bf87ccb1cd5c4f771d2d6c675452718de").unwrap());
-        m.insert(AccountAddress::from_str("ff0e03891282fed4aad30b1b522e4b6f0efc6fda970bab2940e18425ed1baed6").unwrap(), UInt256::from_str("3db2754f210f3d8fc4f696cbb0a14120cc4a848119fc0d193b51f4bd365b3eb4").unwrap());
-        m.insert(AccountAddress::from_str("52ca31e0fc400ee3ef8eaced777f9df3d9b350221835cb0b7b7dad59271d214e").unwrap(), UInt256::from_str("6218ef2d827095f7dedd2e37c134d8fe95542b24d5f47a0ed331138c976b2f31").unwrap());
-        m.insert(AccountAddress::from_str("d875df9cf418106d1407f60be189adc9e7c0e6db430ae945ffa37448ef46469f").unwrap(), UInt256::from_str("3227713c1fe1656f2aa429db5fe754b95f1bf326cab28e8d9105b6abab42e881").unwrap());
-        m.insert(AccountAddress::from_str("d84bdfa753950541bafac1e8137bba14fa6aa55409d9ee33252d442b4e3e682a").unwrap(), UInt256::from_str("f0583771a50f286e88e7d7dfdbf2fb807aecf9f2c5d54985ad8da92197cc6857").unwrap());
-        m.insert(AccountAddress::from_str("1033ea894040adba26f13680690faf3e05f74987610e4f5d50b22142333a8787").unwrap(), UInt256::from_str("2f0f1240171f5ca39ad87df6410bc0e821aa94469a85075cdc5e145c5add4038").unwrap());
-        m
-    };
+#[cfg(feature = "mirror_repair")]
+static GAME_ROOT_ABI: &str = include_str!(
+    "../../../contracts/0.79.3_compiled/mvsystem/MobileVerifiersContractGameRoot.abi.json"
 );
-
-#[cfg(feature = "bk_wallets_repair")]
-lazy_static::lazy_static!(
-    static ref OLD_ACCOUNTS_COOLERS: HashMap<AccountAddress, MsgAddressInt> = {
-        let mut m = HashMap::new();
-        m.insert(AccountAddress::from_str("85eee8fe56e3f77470a982870de2dad0014aa355aad4a052c17468df945c31d3").unwrap(), MsgAddressInt::from_str("7df5b0ae40ecb3802944d4972327b2658f1f7b1f721372a809e32122b37519be").unwrap());
-        m.insert(AccountAddress::from_str("7abb85f52411c0ee3b372996bc54526bcfb7fc232236101ad9b9248e6e046d77").unwrap(), MsgAddressInt::from_str("93ebf66e4775421b2dd4d9709eb7cdac1f9e27943af9be1de448d628db9ead5e").unwrap());
-        m.insert(AccountAddress::from_str("c0a07d04d40f719e02914f05918b389229d6cb6499da8dfe86201ae07fb7b8c9").unwrap(), MsgAddressInt::from_str("8d7c313ec37a53bbd23c7628816765c596fa13eb428be8eea3bf3937f1d55377").unwrap());
-        m.insert(AccountAddress::from_str("bb89cf85f1a5c8521f879e9bad83257db4c9036ce26951c0ae1aa930b6dd1486").unwrap(), MsgAddressInt::from_str("fc00ba1d707432bb3ff850fad0536e5197007eb4afdb932451e87fdee9ef20be").unwrap());
-        m.insert(AccountAddress::from_str("3db40895e2ce599e425f810e768e7ff005526fa40dde248e124d147904e6cc2c").unwrap(), MsgAddressInt::from_str("e84a23b7bee882be2c249fdbb0451da6fdd3ffc8bc1c8ed344c9c34c5c1409d8").unwrap());
-        m.insert(AccountAddress::from_str("2018a2548ce0b107774bdb623dc4fa30ccf38e7269288c2093c555f416fad797").unwrap(), MsgAddressInt::from_str("f90d09f70de9c68a038fa438f383025741308679c1b1bab3c288b73e294527ae").unwrap());
-        m.insert(AccountAddress::from_str("16e4bb3531a5600bf654d89ed13c33f6e6b1b06a9210a6b367eccbec3c36cf21").unwrap(), MsgAddressInt::from_str("06b8a619779f770630fa97efb96b86e03aad5b08b6d0df689057569424ec91b1").unwrap());
-        m.insert(AccountAddress::from_str("8a5a1110e1c873abcea15a8ab74ab08d5514cdca5e3b507179e4d0f5ad532193").unwrap(), MsgAddressInt::from_str("019275bd6c8e20e0bc6f83655a7b4be408739a2300001d472c883873beecddd7").unwrap());
-        m.insert(AccountAddress::from_str("f9734bf55de573030097d12c6b95af6525dd1ee9e44a6419f78d183c3b79d394").unwrap(), MsgAddressInt::from_str("add8044995027e7a3739bbaf46d0f67a07105eb6f08614b8bbad475e576d7a9d").unwrap());
-        m.insert(AccountAddress::from_str("ff0e03891282fed4aad30b1b522e4b6f0efc6fda970bab2940e18425ed1baed6").unwrap(), MsgAddressInt::from_str("d659c47f29be1739990cda435b3f527e05d2a2e7370ac1ba87738277e8ba661e").unwrap());
-        m.insert(AccountAddress::from_str("52ca31e0fc400ee3ef8eaced777f9df3d9b350221835cb0b7b7dad59271d214e").unwrap(), MsgAddressInt::from_str("6e58d19af2c6e7ed297aeeb2b4286b4572daa29bec566156b862daae727c7667").unwrap());
-        m.insert(AccountAddress::from_str("d875df9cf418106d1407f60be189adc9e7c0e6db430ae945ffa37448ef46469f").unwrap(), MsgAddressInt::from_str("b355a93edbc24b7d8dcad460bb1990351d39f101a88766f547ebc8993d3e271b").unwrap());
-        m.insert(AccountAddress::from_str("d84bdfa753950541bafac1e8137bba14fa6aa55409d9ee33252d442b4e3e682a").unwrap(), MsgAddressInt::from_str("a753deebf773035f02ab5f910982b752d26269bbcac8a96ed7d9fc073d53ca2d").unwrap());
-        m.insert(AccountAddress::from_str("1033ea894040adba26f13680690faf3e05f74987610e4f5d50b22142333a8787").unwrap(), MsgAddressInt::from_str("41d89b540d263bf718768da69b0bc6301736a849a458833092c25e12c8b1ed1d").unwrap());
-        m
-    };
+#[cfg(feature = "mirror_repair")]
+static ROOT_MV_ABI: &str = include_str!(
+    "../../../contracts/0.79.3_compiled/mvsystem/MobileVerifiersContractRoot.abi.json"
 );
-
-#[cfg(feature = "bm_license_repair")]
-lazy_static::lazy_static!(
-    static ref ACCOUNTS_LICENSES: HashMap<AccountAddress, (MsgAddressInt, String)> = {
-        let mut m = HashMap::new();
-        m.insert(AccountAddress::from_str("681bf89ec5837add54b329f8c7f32a1b97e8fed2964b39dcde8b102976d8ca60").unwrap(), (MsgAddressInt::from_str("b14eecbc0f43aa7186167fdeb985fe00f886a0d8e4b30d07dfb83db1d2ca00f0").unwrap(), "0x64eb087f078c11369731fb3c6ae9cc989d7bffc55ec85ecc2385b3cd051bb900".to_string()));
-        m.insert(AccountAddress::from_str("4060ad1a4a00cca47222246788f44d163cf94ff90c38aec70e754693b7bc536a").unwrap(), (MsgAddressInt::from_str("26f9191c1383573c122c97d91e982d897455aabcd4ae37d4860f56c91d4fa884").unwrap(), "0x13f2591b13a85c9c2fd3c2d043a988c90b0240b9eaa59de4ae6dc685ea273b86".to_string()));
-        m.insert(AccountAddress::from_str("e6e3c95463ee65c50116ad939582156cdf2c1fc2b0316f6c8214960cb404b95a").unwrap(), (MsgAddressInt::from_str("e2b7f9144ee83d247a2eb83f5099691ee6a0e1b176581206cfbfe901d62f5724").unwrap(), "0x69a453fcd052d779d42255aa73a02b55fbbf74d298c7cbcd99890dc0d9968042".to_string()));
-        m.insert(AccountAddress::from_str("0e4e5c47410d8d4e06e7be27f5a9f09e26d50852d2eaaa0c11a3d69552de0ef3").unwrap(), (MsgAddressInt::from_str("542ea7fd5a3413c3766a488a9cefff3215e36d77d518617bf6fbc1db660dd6e4").unwrap(), "0x2eaf65f32cd144943fb3e2e8412ccdd85b46f4734483dd7e42f7e532d54fd571".to_string()));
-        m.insert(AccountAddress::from_str("acdfeb444ab154dfdb742f66cec0f10d5b33fa1046842118b11f070b4d46514d").unwrap(), (MsgAddressInt::from_str("f0779f07d84cae9fd2275e7fa26b56cc6a8d9e30bfe93b892c035384eacbcf91").unwrap(), "0x54cb46c63df248ea7b1c959017cf4aba3f0ae7bb6213bd0d8b22e83f4f119e5d".to_string()));
-        m.insert(AccountAddress::from_str("0f1ace6db54840377395008a1456e08d9fd4dca4ad5045a14591bd983aeefe2d").unwrap(), (MsgAddressInt::from_str("ecacc3561b4ec562236a13dd495d4174b2af0f62bec774727427787c408bbe86").unwrap(), "0xba4bf55a5a74e22de3c6b9ba3960568380a42ad9831b4f74a34e2a8d343702f8".to_string()));
-        m.insert(AccountAddress::from_str("5cbd0371ef9ae39ebf7cabbfecd5389bb34fe8cdcb150bb63e97817049859865").unwrap(), (MsgAddressInt::from_str("1e91b51ce621cfe314542c8e132ce943b126ddd8441973e9bbfccc302b996931").unwrap(), "0x413db96e31993269c8116427b88a84f0f934a300ca3dd97b52eeb9fe676c1d19".to_string()));
-        m
-    };
-);
+#[cfg(feature = "mirror_repair")]
+static ROOT_MV_ADDRESS: &str = "0:2222222222222222222222222222222222222222222222222222222222222222";
+#[cfg(feature = "mirror_repair")]
+static MV_CONFIG_ADDRESS: &str =
+    "0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all)]
@@ -187,24 +94,10 @@ pub fn postprocess(
     block_accounts: HashSet<AccountAddress>,
     accounts_repo: AccountsRepository,
     db: MessageDurableStorage,
+    #[cfg(feature = "mirror_repair")] is_updated_mv: Arc<Mutex<bool>>,
     #[cfg(feature = "monitor-accounts-number")] updated_accounts_number: u64,
+    is_block_of_retired_version: bool,
 ) -> anyhow::Result<(OptimisticStateImpl, CrossThreadRefData)> {
-    #[cfg(feature = "bk_wallets_repair")]
-    {
-        if <u32>::from(block_seq_no) == REPAIR_BK_WALLETS_BLOCK_SEQ_NO {
-            add_messages_to_repair_coolers(&mut produced_internal_messages_to_the_current_thread);
-        }
-    }
-
-    #[cfg(feature = "bm_license_repair")]
-    {
-        if <u32>::from(block_seq_no) == FIX_STAKE_BLOCK_SEQ_NO {
-            add_messages_to_repair_bm_license(
-                &mut produced_internal_messages_to_the_current_thread,
-            );
-        }
-    }
-
     // Prepare produced_internal_messages_to_the_current_thread
     for (addr, messages) in produced_internal_messages_to_the_current_thread.iter_mut() {
         let mut sorted = if let Some(consumed_messages) = consumed_internal_messages.get(addr) {
@@ -364,37 +257,32 @@ pub fn postprocess(
         new_state = shard_state.into();
     }
 
-    #[cfg(feature = "bk_wallets_repair")]
-    {
-        if <u32>::from(block_seq_no) == REPAIR_BK_WALLETS_BLOCK_SEQ_NO {
-            let mut shard_state = new_state.into_shard_state().as_ref().clone();
-            let mut shard_accounts = shard_state.read_accounts().map_err(|e| {
-                anyhow::format_err!("Failed to read accounts from shard state: {e}")
-            })?;
-
-            repair_accounts(&mut shard_accounts)?;
-
-            shard_state
-                .write_accounts(&shard_accounts)
-                .map_err(|e| anyhow::format_err!("Failed to write accounts: {e}"))?;
-            new_state = shard_state.into();
-        }
-    }
-
     #[cfg(feature = "mirror_repair")]
     {
-        if <u32>::from(block_seq_no) == REPAIR_MIRRORS_BLOCK_SEQ_NO {
-            let mut shard_state = new_state.into_shard_state().as_ref().clone();
-            let mut shard_accounts = shard_state.read_accounts().map_err(|e| {
-                anyhow::format_err!("Failed to read accounts from shard state: {e}")
-            })?;
-
-            repair_mirror_accounts(&mut shard_accounts)?;
-
-            shard_state
-                .write_accounts(&shard_accounts)
-                .map_err(|e| anyhow::format_err!("Failed to write accounts: {e}"))?;
-            new_state = shard_state.into();
+        if <u32>::from(block_seq_no) >= UPDATE_MIRRORS_BLOCK_SEQ_NO && !is_block_of_retired_version
+        {
+            let mut lock = is_updated_mv.lock();
+            if !*lock {
+                let mut shard_state = new_state.into_shard_state().as_ref().clone();
+                let mut shard_accounts = shard_state.read_accounts().map_err(|e| {
+                    anyhow::format_err!("Failed to read accounts from shard state: {e}")
+                })?;
+                if !matches!(check_updated_mv_accounts(&mut shard_accounts), Ok(true)) {
+                    let res = mv_config_update_dapp(&mut shard_accounts);
+                    tracing::trace!("mv_config_update_dapp result: {res:?}");
+                    let res = repair_mirror_accounts(&mut shard_accounts);
+                    tracing::trace!("repair_mirror_accounts result: {res:?}");
+                    let res = init_mv_game_root(&mut shard_accounts);
+                    tracing::trace!("init_mv_game_root result: {res:?}");
+                    let res = change_mv_root(&mut shard_accounts);
+                    tracing::trace!("change_mv_root result: {res:?}");
+                    shard_state
+                        .write_accounts(&shard_accounts)
+                        .map_err(|e| anyhow::format_err!("Failed to write accounts: {e}"))?;
+                    new_state = shard_state.into();
+                }
+                *lock = true;
+            }
         }
     }
 
@@ -445,181 +333,361 @@ pub fn postprocess(
     Ok((new_state, cross_thread_ref_data))
 }
 
-#[cfg(feature = "bk_wallets_repair")]
-fn repair_accounts(accounts: &mut ShardAccounts) -> anyhow::Result<()> {
-    for (account_address, awaited_hash) in OLD_ACCOUNTS_HASHES.iter() {
-        let acc_id: AccountId = account_address.clone().into();
-        let Some(shard_account) = accounts
-            .account(&acc_id)
-            .map_err(|e| anyhow::format_err!("Failed to read account from shard state: {e}"))?
-        else {
-            tracing::error!(
-                "bk_wallets_repair: account was not found in state: {account_address:?}"
-            );
-            continue;
-        };
-        let old_account = shard_account
-            .read_account()
-            .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {e}"))?
-            .as_struct()
-            .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {e}"))?;
-        let Some(old_data_hash) = old_account.get_data().map(|data| data.repr_hash()) else {
-            tracing::error!("bk_wallets_repair: account has no data: {account_address:?}");
-            continue;
-        };
-        if old_data_hash != *awaited_hash {
-            tracing::error!(
-                "bk_wallets_repair: account data has wrong hash: {account_address:?} - {} != {}",
-                old_data_hash.to_hex_string(),
-                awaited_hash.to_hex_string()
-            );
-            continue;
-        }
-        let Some(new_account) = ACCOUNTS_TO_REPAIR.get(account_address) else {
-            tracing::error!("bk_wallets_repair: Failed to get new account");
-            continue;
-        };
-        let Ok(new_account_cell) = new_account.serialize() else {
-            tracing::error!("bk_wallets_repair: Failed to serialize new account");
-            continue;
-        };
-        let new_shard_account = ShardAccount::with_account_root(
-            new_account_cell,
-            shard_account.last_trans_hash().clone(),
-            shard_account.last_trans_lt(),
-            shard_account.get_dapp_id().cloned(),
-        );
-        if let Err(e) = accounts.insert(&account_address.0, &new_shard_account) {
-            tracing::error!("bk_wallets_repair: Failed to insert new shard account: {e}");
-            continue;
-        }
-        tracing::error!("bk_wallets_repair: Success: {account_address:?}");
+#[cfg(feature = "mirror_repair")]
+fn check_updated_mv_accounts(accounts: &mut ShardAccounts) -> anyhow::Result<bool> {
+    use tvm_block::StateInit;
+    let root_game = AccountAddress::from_str(GAME_ROOT_ADDR)
+        .map_err(|e| anyhow::format_err!("Failed to calculate root_mv addr: {e}"))?;
+    let acc_id: AccountId = root_game.clone().into();
+    let shard_account = accounts
+        .account(&acc_id)
+        .map_err(|e| anyhow::format_err!("Failed to read account from shard state: {e}"))?
+        .ok_or_else(|| anyhow::format_err!("Account not found in shard state"))?;
+    let old_account = shard_account
+        .read_account()
+        .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {e}"))?
+        .as_struct()
+        .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {e}"))?;
+    let state_init = StateInit::construct_from_bytes(GAME_ROOT_TVC)
+        .map_err(|e| anyhow::format_err!("Failed to load TVC from bytes: {e}"))?;
+    if let Some(hash_code) = old_account.get_code_hash() {
+        return Ok(state_init.code().is_some_and(|code_cell| hash_code == code_cell.repr_hash()));
     }
+    Ok(false)
+}
+
+#[cfg(feature = "mirror_repair")]
+fn mv_config_update_dapp(accounts: &mut ShardAccounts) -> anyhow::Result<()> {
+    use tvm_types::UInt256;
+
+    let mv_config = AccountAddress::from_str(MV_CONFIG_ADDRESS)
+        .map_err(|e| anyhow::format_err!("Failed to calculate root_mv addr: {e}"))?;
+    let acc_id: AccountId = mv_config.clone().into();
+    let shard_account = match accounts
+        .account(&acc_id)
+        .map_err(|e| anyhow::format_err!("Failed to read account from shard state: {e}"))?
+    {
+        Some(account) => account,
+        None => {
+            tracing::error!(
+                "mirror_repair: mvconfig account was not found in state: {mv_config:?}"
+            );
+            return Err(anyhow::format_err!("mvconfig account not found"));
+        }
+    };
+    let old_account = shard_account
+        .read_account()
+        .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {e}"))?
+        .as_struct()
+        .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {e}"))?;
+    let new_account_cell = old_account.serialize().map_err(|e| {
+        tracing::error!("mirror_repair: Failed to serialize new account: {e}");
+        anyhow::format_err!("Failed to serialize new account")
+    })?;
+    let dapp_id = UInt256::from_str(GAME_ROOT_DAPP_ID)
+        .map_err(|e| anyhow::format_err!("Failed to convert DApp ID: {e}"))?;
+    let new_shard_account = ShardAccount::with_account_root(
+        new_account_cell,
+        shard_account.last_trans_hash().clone(),
+        shard_account.last_trans_lt(),
+        Some(dapp_id.clone()),
+    );
+    if let Err(e) = accounts.insert(&mv_config.0, &new_shard_account) {
+        tracing::error!("mirror_repair: Failed to insert new shard account: {e}");
+    }
+    tracing::error!("mirror_repair: Success: {mv_config:?}");
     Ok(())
-}
-
-#[cfg(feature = "bk_wallets_repair")]
-fn add_messages_to_repair_coolers(
-    buffer: &mut HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
-) {
-    for (src, dest) in OLD_ACCOUNTS_COOLERS.iter() {
-        let src = MsgAddressInt::AddrStd(MsgAddrStd::with_address(None, 0, src.0.clone().into()));
-        use tvm_block::CurrencyCollection;
-        use tvm_block::Grams;
-        use tvm_block::InternalMessageHeader;
-        use tvm_types::SliceData;
-
-        let msg_body = tvm_abi::encode_function_call(
-            BLOCK_KEEPER_COOLER_ABI,
-            "touch",
-            None,
-            "{}",
-            true,
-            None,
-            None,
-        )
-        .expect("Failed to encode body");
-        let cc = CurrencyCollection::from_grams(Grams::new(100_000_000).unwrap());
-        let message_header = InternalMessageHeader::with_addresses(src.clone(), dest.clone(), cc);
-        let body =
-            SliceData::load_cell(msg_body.into_cell().expect("Failed serialize message body"))
-                .expect("Failed to serialize message body");
-        let message = Message::with_int_header_and_body(message_header, body);
-        let wrapped_message = WrappedMessage { message };
-        let message_id = MessageIdentifier::from(&wrapped_message);
-        let destination: AccountAddress = dest.address().into();
-        buffer.entry(destination).or_default().push((message_id, Arc::new(wrapped_message)));
-    }
-}
-
-#[cfg(feature = "bm_license_repair")]
-fn add_messages_to_repair_bm_license(
-    buffer: &mut HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
-) {
-    for (src, (dest, wallet_owner_pubkey)) in ACCOUNTS_LICENSES.iter() {
-        let src = MsgAddressInt::AddrStd(MsgAddrStd::with_address(None, 0, src.0.clone().into()));
-        use tvm_block::CurrencyCollection;
-        use tvm_block::Grams;
-        use tvm_block::InternalMessageHeader;
-        use tvm_types::SliceData;
-
-        use crate::block_keeper_system::abi::BLOCK_MANAGER_LICENSE_ABI;
-
-        let parameters = format!(r#"{{"pubkey": "{wallet_owner_pubkey}"}}"#,);
-        let msg_body = tvm_abi::encode_function_call(
-            BLOCK_MANAGER_LICENSE_ABI,
-            "acceptLicense",
-            None,
-            &parameters,
-            true,
-            None,
-            None,
-        )
-        .expect("Failed to encode body");
-        let cc = CurrencyCollection::from_grams(Grams::new(100_000_000).unwrap());
-        let message_header = InternalMessageHeader::with_addresses(src.clone(), dest.clone(), cc);
-        let body =
-            SliceData::load_cell(msg_body.into_cell().expect("Failed serialize message body"))
-                .expect("Failed to serialize message body");
-        let message = Message::with_int_header_and_body(message_header, body);
-        let wrapped_message = WrappedMessage { message };
-        let message_id = MessageIdentifier::from(&wrapped_message);
-        let destination: AccountAddress = dest.address().into();
-        buffer.entry(destination).or_default().push((message_id, Arc::new(wrapped_message)));
-    }
 }
 
 #[cfg(feature = "mirror_repair")]
 fn repair_mirror_accounts(accounts: &mut ShardAccounts) -> anyhow::Result<()> {
+    use tvm_block::CurrencyCollection;
+    use tvm_block::Deserializable;
+    use tvm_block::MsgAddressInt;
     use tvm_block::StateInit;
+    use tvm_client::abi::Abi;
+    use tvm_client::abi::AbiContract;
+    use tvm_client::encoding::slice_from_cell;
+    use tvm_types::UInt256;
 
     let mirror_stateinit = StateInit::construct_from_bytes(MIRROR_TVC)
         .map_err(|e| anyhow::format_err!("Failed to construct mirror tvc: {e}"))?;
+    let root_mv = AccountAddress::from_str(ROOT_MV_ADDRESS)
+        .map_err(|e| anyhow::format_err!("Failed to calculate root_mv addr: {e}"))?;
+    let acc_id: AccountId = root_mv.clone().into();
+    let shard_account = accounts
+        .account(&acc_id)
+        .map_err(|e| anyhow::format_err!("Failed to read account from shard state: {e}"))?
+        .ok_or_else(|| anyhow::format_err!("Account not found in shard state"))?;
+    let old_account = shard_account
+        .read_account()
+        .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {e}"))?
+        .as_struct()
+        .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {e}"))?;
+    let first_data: HashMap<String, TokenValue> = decode_root_mv_data(&old_account)
+        .map_err(|e| anyhow::format_err!("Failed to get root_mv data: {e}"))?;
+    let mut new_data: HashMap<String, TokenValue> = HashMap::new();
+    let pubkey_value = first_data
+        .get("_pubkey")
+        .ok_or_else(|| anyhow::format_err!("Key '_pubkey' not found in decoded data"))?;
+    new_data.insert("_rootPubkey".to_string(), pubkey_value.clone());
+    let balance = CurrencyCollection::with_grams(1_000_000_000_000);
+    let last_paid = 0;
+    let address = MsgAddressInt::from_str(GAME_ROOT_ADDR)
+        .map_err(|e| anyhow::format_err!("Failed to convert game root address: {e}"))?;
+    let mut account = Account::active_by_init_code_hash(
+        address.clone(),
+        balance,
+        last_paid,
+        mirror_stateinit,
+        true,
+    )
+    .map_err(|e| anyhow::format_err!("Failed to create account: {e}"))?;
 
-    let mirror_code = mirror_stateinit
-        .code()
-        .ok_or_else(|| anyhow::format_err!("Mirror TVC doesn't contain code"))?
-        .clone();
+    let abi = serde_json::from_str::<AbiContract>(MIRROR_ABI)
+        .map_err(|e| anyhow::format_err!("Failed to decode abi: {e}"))?;
+    let abi = Abi::Contract(abi);
+    let abi_contract =
+        abi.abi().map_err(|e| anyhow::anyhow!("Failed to convert abi to contract: {e}"))?;
+    let data = account.get_data().ok_or(anyhow::anyhow!("Account has no data"))?;
+    let mut tokens = abi_contract
+        .decode_storage_fields(
+            slice_from_cell(data)
+                .map_err(|e| anyhow::anyhow!("Failed to convert data cell to slice: {e}"))?,
+            true,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to decode storage field: {e}"))?;
+    for token in &mut tokens {
+        if let Some(new_value) = new_data.get(&token.name) {
+            token.value = new_value.clone();
+        }
+    }
+    let data_cell =
+        TokenValue::pack_values_into_chain(&tokens, vec![], abi.abi().unwrap().version())
+            .map_err(|e| anyhow::anyhow!("Failed to encode storage fields: {e}"))?
+            .into_cell()
+            .map_err(|e| anyhow::anyhow!("Failed to convert cell: {e}"))?;
+    account.set_data(data_cell);
+    let dapp_id = UInt256::from_str(GAME_ROOT_DAPP_ID)
+        .map_err(|e| anyhow::format_err!("Failed to convert DApp ID: {e}"))?;
 
     for i in 1..=1000 {
         let hex_part = format!("2{i:063x}");
         let address = format!("0:{hex_part}");
-        let mirror_addr = AccountAddress::from_str(&address)
+        let mirror_addr = MsgAddressInt::from_str(&address)
             .map_err(|e| anyhow::format_err!("Failed to calculate mirror addr: {e}"))?;
-        let acc_id: AccountId = mirror_addr.clone().into();
-        let Some(shard_account) = accounts
-            .account(&acc_id)
-            .map_err(|e| anyhow::format_err!("Failed to read account from shard state: {e}"))?
-        else {
-            tracing::error!("mirror_repair: account was not found in state: {mirror_addr:?}");
-            continue;
-        };
-        let mut old_account = shard_account
-            .read_account()
-            .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {e}"))?
-            .as_struct()
-            .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {e}"))?;
-        if let Some(old_account_stateinit) = old_account.state_init_mut() {
-            old_account_stateinit.set_code(mirror_code.clone());
-        } else {
-            tracing::error!("mirror_repair: Failed to get old stateinit account");
-            continue;
-        }
-        let Ok(new_account_cell) = old_account.serialize() else {
-            tracing::error!("mirror_repair: Failed to serialize new account");
-            continue;
-        };
+        let mut new_account = account.clone();
+        new_account.set_addr(mirror_addr.clone());
+        let new_account_cell = new_account
+            .serialize()
+            .map_err(|e| anyhow::anyhow!("Failed to serialize account: {e}"))?;
         let new_shard_account = ShardAccount::with_account_root(
             new_account_cell,
-            shard_account.last_trans_hash().clone(),
-            shard_account.last_trans_lt(),
-            shard_account.get_dapp_id().cloned(),
+            UInt256::new(),
+            0,
+            Some(dapp_id.clone()),
         );
-        if let Err(e) = accounts.insert(&mirror_addr.0, &new_shard_account) {
+        let address: UInt256 = mirror_addr
+            .address()
+            .try_into()
+            .map_err(|e| anyhow::anyhow!("Failed to prepare address: {e}"))?;
+        if let Err(e) = accounts.insert(&address, &new_shard_account) {
             tracing::error!("mirror_repair: Failed to insert new shard account: {e}");
             continue;
         }
-        tracing::error!("mirror_repair: Success: {mirror_addr:?}");
+        tracing::trace!("mirror_repair: Success: {mirror_addr:?}");
     }
+    Ok(())
+}
+
+#[cfg(feature = "mirror_repair")]
+fn init_mv_game_root(accounts: &mut ShardAccounts) -> anyhow::Result<()> {
+    use std::str::FromStr;
+
+    use tvm_abi::TokenValue;
+    use tvm_block::Account;
+    use tvm_block::CurrencyCollection;
+    use tvm_block::Deserializable;
+    use tvm_block::MsgAddressInt;
+    use tvm_block::Serializable;
+    use tvm_block::ShardAccount;
+    use tvm_block::StateInit;
+    use tvm_client::abi::Abi;
+    use tvm_client::abi::AbiContract;
+    use tvm_client::encoding::slice_from_cell;
+    use tvm_types::UInt256;
+
+    tracing::trace!("init_mv_game_root: start");
+    let root_mv = AccountAddress::from_str(ROOT_MV_ADDRESS)
+        .map_err(|e| anyhow::format_err!("Failed to calculate root_mv addr: {e}"))?;
+    let acc_id: AccountId = root_mv.clone().into();
+    let shard_account = accounts
+        .account(&acc_id)
+        .map_err(|e| anyhow::format_err!("Failed to read account from shard state: {e}"))?
+        .ok_or_else(|| anyhow::format_err!("Account not found in shard state"))?;
+    let old_account = shard_account
+        .read_account()
+        .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {e}"))?
+        .as_struct()
+        .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {e}"))?;
+    let new_data: HashMap<String, TokenValue> = decode_root_mv_data(&old_account)
+        .map_err(|e| anyhow::format_err!("Failed to get root_mv data: {e}"))?;
+    tracing::trace!("init_mv_game_root: data: {new_data:?}");
+
+    let address = MsgAddressInt::from_str(GAME_ROOT_ADDR)
+        .map_err(|e| anyhow::format_err!("Failed to convert game root address: {e}"))?;
+    // TODO: check if any ecc or last_paid is needed
+    let balance = CurrencyCollection::with_grams(1_000_000_000_000);
+    let last_paid = 0;
+
+    let state_init = StateInit::construct_from_bytes(GAME_ROOT_TVC)
+        .map_err(|e| anyhow::format_err!("Failed to load TVC from bytes: {e}"))?;
+
+    let mut account =
+        Account::active_by_init_code_hash(address.clone(), balance, last_paid, state_init, true)
+            .map_err(|e| anyhow::format_err!("Failed to create account: {e}"))?;
+
+    let abi = serde_json::from_str::<AbiContract>(GAME_ROOT_ABI)
+        .map_err(|e| anyhow::format_err!("Failed to decode abi: {e}"))?;
+    let abi = Abi::Contract(abi);
+    let abi_contract =
+        abi.abi().map_err(|e| anyhow::anyhow!("Failed to convert abi to contract: {e}"))?;
+    let data = account.get_data().ok_or(anyhow::anyhow!("Account has no data"))?;
+    let mut tokens = abi_contract
+        .decode_storage_fields(
+            slice_from_cell(data)
+                .map_err(|e| anyhow::anyhow!("Failed to convert data cell to slice: {e}"))?,
+            true,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to decode storage field: {e}"))?;
+    for token in &mut tokens {
+        if let Some(new_value) = new_data.get(&token.name) {
+            token.value = new_value.clone();
+        }
+    }
+    let data_cell =
+        TokenValue::pack_values_into_chain(&tokens, vec![], abi.abi().unwrap().version())
+            .map_err(|e| anyhow::anyhow!("Failed to encode storage fields: {e}"))?
+            .into_cell()
+            .map_err(|e| anyhow::anyhow!("Failed to convert cell: {e}"))?;
+    account.set_data(data_cell);
+
+    let new_account_cell =
+        account.serialize().map_err(|e| anyhow::anyhow!("Failed to serialize account: {e}"))?;
+    let dapp_id = UInt256::from_str(GAME_ROOT_DAPP_ID)
+        .map_err(|e| anyhow::format_err!("Failed to convert DApp ID: {e}"))?;
+    let new_shard_account =
+        ShardAccount::with_account_root(new_account_cell, UInt256::new(), 0, Some(dapp_id));
+    let address: UInt256 = address
+        .address()
+        .try_into()
+        .map_err(|e| anyhow::anyhow!("Failed to prepare address: {e}"))?;
+    accounts
+        .insert(&address, &new_shard_account)
+        .map_err(|e| anyhow::format_err!("Failed to insert shard account: {e}"))?;
+
+    tracing::trace!("init_mv_game_root: success");
+    Ok(())
+}
+
+#[cfg(feature = "mirror_repair")]
+fn get_root_mv_abi() -> tvm_client::abi::Abi {
+    tvm_client::abi::Abi::Json(ROOT_MV_ABI.to_string())
+}
+
+#[cfg(feature = "mirror_repair")]
+pub fn decode_root_mv_data(account: &Account) -> anyhow::Result<HashMap<String, TokenValue>> {
+    let abi = get_root_mv_abi();
+    let mut result_data: HashMap<String, TokenValue> = HashMap::new();
+    if let Some(data) = account.get_data() {
+        use tvm_client::encoding::slice_from_cell;
+        let decoded_data = abi
+            .abi()
+            .map_err(|e| anyhow::format_err!("Failed to get DAPP config abi: {e}"))?
+            .decode_storage_fields(
+                slice_from_cell(data)
+                    .map_err(|e| anyhow::format_err!("Failed to convert cell to slice: {e}"))?,
+                true,
+            )
+            .map_err(|e| anyhow::format_err!("Failed to decode DAPP config storage: {e}"))?;
+        for token in decoded_data {
+            if token.name == "_reward_sum" {
+                result_data.insert("_reward_sum".to_string(), token.value.clone());
+            }
+            if token.name == "_reward_adjustment" {
+                result_data.insert("_reward_adjustment".to_string(), token.value.clone());
+            }
+            if token.name == "_reward_last_time" {
+                result_data.insert("_reward_last_time".to_string(), token.value.clone());
+            }
+            if token.name == "_min_reward_period" {
+                result_data.insert("_min_reward_period".to_string(), token.value.clone());
+            }
+            if token.name == "_reward_period" {
+                result_data.insert("_reward_period".to_string(), token.value.clone());
+            }
+            if token.name == "_calc_reward_num" {
+                result_data.insert("_calc_reward_num".to_string(), token.value.clone());
+            }
+            if token.name == "_networkStart" {
+                result_data.insert("_networkStart".to_string(), token.value.clone());
+            }
+            if token.name == "_pubkey" {
+                result_data.insert("_pubkey".to_string(), token.value.clone());
+            }
+        }
+        tracing::trace!(target: "builder", "MV root result {:?}", result_data);
+    }
+    Ok(result_data)
+}
+
+#[cfg(feature = "mirror_repair")]
+fn change_mv_root(accounts: &mut ShardAccounts) -> anyhow::Result<()> {
+    use tvm_block::StateInit;
+
+    let mv_root_stateinit = StateInit::construct_from_bytes(MVROOT_TVC)
+        .map_err(|e| anyhow::format_err!("Failed to construct mirror tvc: {e}"))?;
+
+    let mv_root_code = mv_root_stateinit
+        .code()
+        .ok_or_else(|| anyhow::format_err!("Mirror TVC doesn't contain code"))?
+        .clone();
+    let root_mv = AccountAddress::from_str(ROOT_MV_ADDRESS)
+        .map_err(|e| anyhow::format_err!("Failed to calculate root_mv addr: {e}"))?;
+    let acc_id: AccountId = root_mv.clone().into();
+    let shard_account = match accounts
+        .account(&acc_id)
+        .map_err(|e| anyhow::format_err!("Failed to read account from shard state: {e}"))?
+    {
+        Some(account) => account,
+        None => {
+            tracing::error!("mirror_repair: mvroot account was not found in state: {root_mv:?}");
+            return Err(anyhow::format_err!("mvroot account not found"));
+        }
+    };
+    let mut old_account = shard_account
+        .read_account()
+        .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {e}"))?
+        .as_struct()
+        .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {e}"))?;
+    if let Some(old_account_stateinit) = old_account.state_init_mut() {
+        old_account_stateinit.set_code(mv_root_code.clone());
+    } else {
+        tracing::error!("mirror_repair: Failed to get old stateinit account");
+    }
+    let new_account_cell = old_account.serialize().map_err(|e| {
+        tracing::error!("mirror_repair: Failed to serialize new account: {e}");
+        anyhow::format_err!("Failed to serialize new account")
+    })?;
+    let new_shard_account = ShardAccount::with_account_root(
+        new_account_cell,
+        shard_account.last_trans_hash().clone(),
+        shard_account.last_trans_lt(),
+        shard_account.get_dapp_id().cloned(),
+    );
+    if let Err(e) = accounts.insert(&root_mv.0, &new_shard_account) {
+        tracing::error!("mirror_repair: Failed to insert new shard account: {e}");
+    }
+    tracing::error!("mirror_repair: Success: {root_mv:?}");
     Ok(())
 }

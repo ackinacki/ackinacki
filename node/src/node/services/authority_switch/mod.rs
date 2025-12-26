@@ -417,6 +417,15 @@ impl AuthoritySwitchService {
         tracing::trace!("Received NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched({next_round_success_envelope:?}))");
         let next_round_success = next_round_success_envelope.data().clone();
         let proposed_block = next_round_success.proposed_block().clone();
+
+        let block = match proposed_block.get_envelope() {
+            Ok(block) => block,
+            Err(err) => {
+                tracing::error!("Block deserialization: {err:?}");
+                return Ok(());
+            }
+        };
+
         // let resend_node_id = Some(next_round_success.node_identifier().clone());
         // self.on_incoming_candidate_block(&proposed_block, resend_node_id)?;
         let _ = self.self_node_tx.send(WrappedItem {
@@ -430,7 +439,6 @@ impl AuthoritySwitchService {
                 if attestation.clone_signature_occurrences().len()
                     >= *attestation_target.fallback().required_attestation_count()
                 {
-                    let block = proposed_block.get_envelope()?;
                     let parent_id = block.data().parent();
                     let parent_block_state = self.block_state_repository.get(&parent_id)?;
                     let Some(bk_set) =
@@ -499,8 +507,7 @@ impl AuthoritySwitchService {
             return Ok(());
         }
 
-        let proposed_block_round =
-            proposed_block.get_envelope().unwrap().data().get_common_section().round;
+        let proposed_block_round = block.data().get_common_section().round;
         tracing::trace!(
             "on_authority_switch_success: proposed_block.round={}, next_round_success.round={}",
             proposed_block_round,

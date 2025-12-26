@@ -130,6 +130,7 @@ pub struct ApiBk {
     pub owner_address: ApiUInt256,
     pub signer_index: usize,
     pub owner_pubkey: ApiUInt256,
+    pub protocol_version_support: String,
 
     #[serde(skip)]
     pub ttl_seq_no: Option<u64>,

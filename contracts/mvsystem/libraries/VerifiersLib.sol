@@ -12,9 +12,31 @@ import "../PopCoinRoot.sol";
 import "../Mvmultifactor.sol";
 import "../Indexer.sol";
 import "../Boost.sol";
+import "../Miner.sol";
 
 library VerifiersLib {
     string constant versionLib = "1.0.0";
+
+    function calculateMinerGameAddress(TvmCell code, address owner) public returns(address) {
+        TvmCell s1 = composeMinerStateInit(code, owner);
+        return address.makeAddrStd(0, tvm.hash(s1));
+    }
+
+    function composeMinerStateInit(TvmCell code, address owner) public returns(TvmCell) {
+        return abi.encodeStateInit({
+            code: buildMinerCode(code),
+            contr: Miner,
+            varInit: {_owner: owner}
+        });
+    }
+
+    function buildMinerCode(
+        TvmCell originalCode
+    ) public returns (TvmCell) {
+        TvmCell finalcell;
+        finalcell = abi.encode(versionLib);
+        return abi.setCodeSalt(originalCode, finalcell);
+    }
 
     function calculatePopitGameAddress(TvmCell code, address root, address owner) public returns(address) {
         TvmCell s1 = composePopitGameStateInit(code, root, owner);

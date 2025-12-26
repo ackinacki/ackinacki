@@ -10,16 +10,13 @@ use std::fmt::Formatter;
 use std::ops::AddAssign;
 use std::str::FromStr;
 
-use http_server::ApiBk;
-use http_server::ApiBkStatus;
-use http_server::ApiPubKey;
-use http_server::ApiUInt256;
 use num_bigint::BigUint;
 use num_traits::Zero;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
+use versioned_struct::versioned;
 
 use crate::bls::gosh_bls::PubKey;
 use crate::node::NodeIdentifier;
@@ -29,6 +26,7 @@ use crate::types::AccountAddress;
 pub mod abi;
 pub mod bk_set;
 pub mod epoch;
+pub mod from_api_bk;
 pub mod wallet_config;
 
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
@@ -36,6 +34,57 @@ pub enum BlockKeeperSetChange {
     BlockKeeperAdded((SignerIndex, BlockKeeperData)),
     BlockKeeperRemoved((SignerIndex, BlockKeeperData)),
     FutureBlockKeeperAdded((SignerIndex, BlockKeeperData)),
+    #[cfg(feature = "protocol_version_hash_in_block")]
+    BlockKeeperChangedVersion((SignerIndex, BlockKeeperData)),
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
+pub enum BlockKeeperSetChangeOld {
+    BlockKeeperAdded((SignerIndex, BlockKeeperDataOld)),
+    BlockKeeperRemoved((SignerIndex, BlockKeeperDataOld)),
+    FutureBlockKeeperAdded((SignerIndex, BlockKeeperDataOld)),
+    #[cfg(feature = "protocol_version_hash_in_block")]
+    BlockKeeperChangedVersion((SignerIndex, BlockKeeperDataOld)),
+}
+
+impl From<BlockKeeperSetChange> for BlockKeeperSetChangeOld {
+    fn from(block_keeper_set_change: BlockKeeperSetChange) -> Self {
+        match block_keeper_set_change {
+            BlockKeeperSetChange::BlockKeeperAdded((index, data_old)) => {
+                BlockKeeperSetChangeOld::BlockKeeperAdded((index, data_old.into()))
+            }
+            BlockKeeperSetChange::BlockKeeperRemoved((index, data_old)) => {
+                BlockKeeperSetChangeOld::BlockKeeperRemoved((index, data_old.into()))
+            }
+            BlockKeeperSetChange::FutureBlockKeeperAdded((index, data_old)) => {
+                BlockKeeperSetChangeOld::FutureBlockKeeperAdded((index, data_old.into()))
+            }
+            #[cfg(feature = "protocol_version_hash_in_block")]
+            BlockKeeperSetChange::BlockKeeperChangedVersion((index, data_old)) => {
+                BlockKeeperSetChangeOld::BlockKeeperChangedVersion((index, data_old.into()))
+            }
+        }
+    }
+}
+
+impl From<BlockKeeperSetChangeOld> for BlockKeeperSetChange {
+    fn from(block_keeper_set_change: BlockKeeperSetChangeOld) -> Self {
+        match block_keeper_set_change {
+            BlockKeeperSetChangeOld::BlockKeeperAdded((index, data_old)) => {
+                BlockKeeperSetChange::BlockKeeperAdded((index, data_old.into()))
+            }
+            BlockKeeperSetChangeOld::BlockKeeperRemoved((index, data_old)) => {
+                BlockKeeperSetChange::BlockKeeperRemoved((index, data_old.into()))
+            }
+            BlockKeeperSetChangeOld::FutureBlockKeeperAdded((index, data_old)) => {
+                BlockKeeperSetChange::FutureBlockKeeperAdded((index, data_old.into()))
+            }
+            #[cfg(feature = "protocol_version_hash_in_block")]
+            BlockKeeperSetChangeOld::BlockKeeperChangedVersion((index, data_old)) => {
+                BlockKeeperSetChange::BlockKeeperChangedVersion((index, data_old.into()))
+            }
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
@@ -46,6 +95,7 @@ pub enum BlockKeeperStatus {
     Expired,
 }
 
+#[versioned]
 #[derive(Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct BlockKeeperData {
     pub pubkey: PubKey,
@@ -59,11 +109,47 @@ pub struct BlockKeeperData {
     pub owner_address: AccountAddress,
     pub signer_index: SignerIndex,
     pub owner_pubkey: [u8; 32],
+    #[future]
+    pub protocol_support: crate::versioning::ProtocolVersionSupport,
+}
+
+impl From<BlockKeeperData> for BlockKeeperDataOld {
+    fn from(old: BlockKeeperData) -> Self {
+        BlockKeeperDataOld {
+            pubkey: old.pubkey,
+            epoch_finish_seq_no: old.epoch_finish_seq_no,
+            wait_step: old.wait_step,
+            status: old.status,
+            address: old.address,
+            stake: old.stake,
+            owner_address: old.owner_address,
+            signer_index: old.signer_index,
+            owner_pubkey: old.owner_pubkey,
+        }
+    }
+}
+
+impl From<BlockKeeperDataOld> for BlockKeeperData {
+    fn from(old: BlockKeeperDataOld) -> Self {
+        BlockKeeperData {
+            pubkey: old.pubkey,
+            epoch_finish_seq_no: old.epoch_finish_seq_no,
+            wait_step: old.wait_step,
+            status: old.status,
+            address: old.address,
+            stake: old.stake,
+            owner_address: old.owner_address,
+            signer_index: old.signer_index,
+            owner_pubkey: old.owner_pubkey,
+            protocol_support: crate::versioning::ProtocolVersionSupport::from_str("None").unwrap(),
+        }
+    }
 }
 
 #[cfg(test)]
 impl Default for BlockKeeperData {
     fn default() -> Self {
+        use std::str::FromStr;
         BlockKeeperData {
             pubkey: PubKey::default(),
             epoch_finish_seq_no: None,
@@ -74,6 +160,7 @@ impl Default for BlockKeeperData {
             owner_address: AccountAddress::default(),
             signer_index: SignerIndex::default(),
             owner_pubkey: [0; 32],
+            protocol_support: crate::versioning::ProtocolVersionSupport::from_str("test").unwrap(),
         }
     }
 }
@@ -84,11 +171,43 @@ impl BlockKeeperData {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl BlockKeeperDataOld {
+    pub fn node_id(&self) -> NodeIdentifier {
+        self.owner_address.clone().into()
+    }
+}
+
+#[versioned]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct BlockKeeperSet {
+    #[legacy]
+    by_signer: HashMap<SignerIndex, BlockKeeperDataOld>,
+    #[future]
     by_signer: HashMap<SignerIndex, BlockKeeperData>,
     signer_to_pubkey: HashMap<SignerIndex, PubKey>,
     signer_by_node_id: BTreeMap<NodeIdentifier, SignerIndex>,
+}
+
+impl Display for BlockKeeperSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{")?;
+        for (k, v) in &self.by_signer {
+            write!(f, "{k}: {v}, ")?;
+        }
+        write!(f, "}}")?;
+        Ok(())
+    }
+}
+
+impl From<BlockKeeperSetOld> for BlockKeeperSet {
+    fn from(value: BlockKeeperSetOld) -> Self {
+        let by_signer = value.by_signer.into_iter().map(|(k, v)| (k, v.into())).collect();
+        Self {
+            by_signer,
+            signer_to_pubkey: value.signer_to_pubkey,
+            signer_by_node_id: value.signer_by_node_id,
+        }
+    }
 }
 
 impl BlockKeeperSet {
@@ -114,11 +233,16 @@ impl BlockKeeperSet {
         self.by_signer.is_empty()
     }
 
-    pub fn insert(&mut self, signer_index: SignerIndex, keeper: BlockKeeperData) {
+    pub fn insert(
+        &mut self,
+        signer_index: SignerIndex,
+        keeper: BlockKeeperData,
+    ) -> Option<BlockKeeperData> {
         let node_id = keeper.node_id();
         self.signer_to_pubkey.insert(signer_index, keeper.pubkey.clone());
-        self.by_signer.insert(signer_index, keeper);
+        let data = self.by_signer.insert(signer_index, keeper);
         self.signer_by_node_id.insert(node_id, signer_index);
+        data
     }
 
     pub fn contains_signer(&self, signer_index: &SignerIndex) -> bool {
@@ -155,6 +279,10 @@ impl BlockKeeperSet {
         self.signer_by_node_id.keys()
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = &BlockKeeperData> {
+        self.by_signer.values()
+    }
+
     pub fn remove_signer(&mut self, signer_index: &SignerIndex) -> Option<BlockKeeperData> {
         let removed = self.by_signer.remove(signer_index);
         self.signer_to_pubkey.remove(signer_index);
@@ -165,13 +293,16 @@ impl BlockKeeperSet {
     }
 }
 
-impl Default for BlockKeeperSet {
-    fn default() -> Self {
-        Self::new()
+impl Serialize for BlockKeeperSet {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.by_signer.serialize(serializer)
     }
 }
 
-impl Serialize for BlockKeeperSet {
+impl Serialize for BlockKeeperSetOld {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -197,7 +328,30 @@ impl<'de> Deserialize<'de> for BlockKeeperSet {
     }
 }
 
+impl<'de> Deserialize<'de> for BlockKeeperSetOld {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let items = HashMap::<SignerIndex, BlockKeeperDataOld>::deserialize(deserializer)?;
+        let mut signer_to_pubkey = HashMap::new();
+        let mut by_node_id = BTreeMap::new();
+        for (signer, keeper) in &items {
+            by_node_id.insert(keeper.node_id(), *signer);
+            signer_to_pubkey.insert(*signer, keeper.pubkey.clone());
+        }
+
+        Ok(Self { by_signer: items, signer_by_node_id: by_node_id, signer_to_pubkey })
+    }
+}
+
 impl Debug for BlockKeeperData {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&format!("({:?},{:?})", self.owner_address, self.pubkey))
+    }
+}
+
+impl Debug for BlockKeeperDataOld {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(&format!("({:?},{:?})", self.owner_address, self.pubkey))
     }
@@ -213,6 +367,7 @@ impl Display for BlockKeeperData {
             .field("stake", &self.stake)
             .field("owner_address", &self.owner_address)
             .field("signer_index", &self.signer_index)
+            .field("version", &self.protocol_support)
             .finish()
     }
 }
@@ -233,76 +388,5 @@ impl Debug for BlockKeeperSlashData {
             .field("address", &self.addr)
             .field("slash_type", &self.slash_type)
             .finish()
-    }
-}
-
-impl From<ApiBk> for BlockKeeperData {
-    fn from(value: ApiBk) -> Self {
-        Self {
-            pubkey: PubKey::from(value.pubkey.0),
-            epoch_finish_seq_no: value.epoch_finish_seq_no,
-            wait_step: value.wait_step,
-            status: value.status.into(),
-            address: value.address,
-            stake: BigUint::from_str(&value.stake).unwrap_or_default(),
-            owner_address: AccountAddress(value.owner_address.0.into()),
-            signer_index: value.signer_index as SignerIndex,
-            owner_pubkey: value.owner_pubkey.0,
-        }
-    }
-}
-
-impl From<BlockKeeperData> for ApiBk {
-    fn from(value: BlockKeeperData) -> Self {
-        Self {
-            pubkey: ApiPubKey(value.pubkey.as_ref().to_bytes()),
-            epoch_finish_seq_no: value.epoch_finish_seq_no,
-            wait_step: value.wait_step,
-            status: value.status.into(),
-            address: value.address,
-            stake: value.stake.to_string(),
-            owner_address: ApiUInt256(*value.owner_address.0.as_array()),
-            signer_index: value.signer_index as usize,
-            owner_pubkey: ApiUInt256(value.owner_pubkey),
-            ttl_seq_no: None,
-        }
-    }
-}
-
-impl From<BlockKeeperStatus> for ApiBkStatus {
-    fn from(value: BlockKeeperStatus) -> Self {
-        match value {
-            BlockKeeperStatus::Active => Self::Active,
-            BlockKeeperStatus::CalledToFinish => Self::CalledToFinish,
-            BlockKeeperStatus::Expired => Self::Expired,
-            BlockKeeperStatus::PreEpoch => Self::PreEpoch,
-        }
-    }
-}
-
-impl From<ApiBkStatus> for BlockKeeperStatus {
-    fn from(value: ApiBkStatus) -> Self {
-        match value {
-            ApiBkStatus::Active => Self::Active,
-            ApiBkStatus::CalledToFinish => Self::CalledToFinish,
-            ApiBkStatus::Expired => Self::Expired,
-            ApiBkStatus::PreEpoch => Self::PreEpoch,
-        }
-    }
-}
-
-impl From<&BlockKeeperSet> for Vec<ApiBk> {
-    fn from(value: &BlockKeeperSet) -> Self {
-        value.by_signer.values().map(|x| x.clone().into()).collect()
-    }
-}
-
-impl From<Vec<ApiBk>> for BlockKeeperSet {
-    fn from(value: Vec<ApiBk>) -> Self {
-        let mut set = BlockKeeperSet::new();
-        for bk in value {
-            set.insert(bk.signer_index as SignerIndex, bk.into());
-        }
-        set
     }
 }

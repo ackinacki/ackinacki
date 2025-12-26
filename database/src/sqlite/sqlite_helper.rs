@@ -43,7 +43,7 @@ impl SqliteHelperConfig {
 
 pub struct SqliteHelperContext {
     pub config: SqliteHelperConfig,
-    pub conn: Arc<Mutex<rusqlite::Connection>>,
+    pub conn: Arc<Mutex<Option<rusqlite::Connection>>>,
 }
 
 #[derive(Clone)]
@@ -57,18 +57,28 @@ struct DBFiles {
 pub struct SqliteHelper {
     record_sender: Sender<DBStoredRecord>,
     pub config: SqliteHelperConfig,
-    pub conn: Arc<Mutex<rusqlite::Connection>>,
+    pub conn: Arc<parking_lot::Mutex<Option<rusqlite::Connection>>>,
     db_files: DBFiles,
 }
 
 impl SqliteHelper {
+    pub fn reset_connecton(&self) {
+        let mut guard = self.conn.lock();
+        *guard = None;
+    }
+
+    pub fn set_connection(&self, conn: rusqlite::Connection) {
+        let mut guard = self.conn.lock();
+        *guard = Some(conn);
+    }
+
     pub fn from_config(
         config: SqliteHelperConfig,
     ) -> anyhow::Result<(Self, thread::JoinHandle<()>)> {
         let db_path = config.data_dir.clone().join(config.db_file.clone());
 
         let (record_sender, record_receiver) = channel::<DBStoredRecord>();
-        let conn = Arc::new(Mutex::new(Self::create_connection(db_path.clone())?));
+        let conn = Arc::new(Mutex::new(Some(Self::create_connection(db_path.clone())?)));
         let mut context = SqliteHelperContext { config: config.clone(), conn: conn.clone() };
         let writer_join_handle = thread::Builder::new()
             .name("sqlite".to_string())
@@ -123,25 +133,30 @@ impl SqliteHelper {
         Ok(conn)
     }
 
+    // This function is idempotent and can be repeated as many times as needed.
     pub fn shutdown(&mut self) -> anyhow::Result<()> {
-        let (dummy_sender, _) = channel::<DBStoredRecord>();
-        self.record_sender = dummy_sender;
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        self.reset_connecton();
+        std::thread::sleep(std::time::Duration::from_secs(2));
 
-        let guarded = self.conn.lock();
-        guarded.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
+        let db_path = self.config.data_dir.clone().join(self.config.db_file.clone());
+
+        let new_conn = rusqlite::Connection::open_with_flags(
+            db_path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_URI,
+        )?;
+        new_conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         Ok(())
     }
 
-    pub fn rotate_db_file(&mut self) -> anyhow::Result<thread::JoinHandle<()>> {
+    // This function is NOT idempotent (because it moves db files), so it contains retries inside
+    pub fn rotate_db_file(&mut self) -> anyhow::Result<()> {
+        self.reset_connecton();
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
         // prepare an empty DB file with the applied schema
         std::fs::copy(&self.db_files.empty, &self.db_files.next)?;
-
-        // lock db writer
-        let (dummy_sender, _) = channel::<DBStoredRecord>();
-        self.record_sender = dummy_sender;
-        std::thread::sleep(std::time::Duration::from_millis(200));
-
         let timestamp = chrono::Utc::now().timestamp();
         let archived_path = self.config.data_dir.join(format!("bm-archive-{timestamp}.db"));
 
@@ -150,26 +165,26 @@ impl SqliteHelper {
         std::fs::rename(&self.db_files.next, &self.db_files.work)?;
         tracing::info!(target: "sqlite", "Database file created");
 
-        let conn = Arc::new(Mutex::new(Self::create_connection(self.db_files.work.clone())?));
-
-        let (record_sender, record_receiver) = channel::<DBStoredRecord>();
-        let mut context = SqliteHelperContext { config: self.config.clone(), conn: conn.clone() };
-        self.conn = conn;
-
-        let writer_join_handle =
-            thread::Builder::new().name("sqlite".to_string()).spawn(move || {
-                Self::put_records_worker(record_receiver, &mut context);
-            })?;
-
-        self.record_sender = record_sender;
+        self.set_connection(Self::create_connection(self.db_files.work.clone())?);
 
         // sync wal
-        let archive = Self::create_connection(archived_path.clone())?;
-        archive.execute_batch("PRAGMA WAL_CHECKPOINT")?;
-
-        tracing::info!(target: "sqlite", "Database file rotated to: {:?}", archived_path);
-
-        Ok(writer_join_handle)
+        let archive = rusqlite::Connection::open_with_flags(
+            archived_path.clone(),
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_URI,
+        )?;
+        // Ten hardcoded retries
+        for _ in 0..10 {
+            if let Err(err) = archive.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())) {
+                tracing::error!(target: "sqlite", "Can't truncate database {err:?}");
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            } else {
+                tracing::info!(target: "sqlite", "Database file rotated to: {:?}", archived_path);
+                return Ok(());
+            }
+        }
+        Err(anyhow::anyhow!("Database was not truncated"))
     }
 
     fn put_records_worker(receiver: Receiver<DBStoredRecord>, context: &mut SqliteHelperContext) {
@@ -204,8 +219,12 @@ impl SqliteHelper {
         accounts: Vec<ArchAccount>,
     ) -> anyhow::Result<()> {
         let cnt_accounts = accounts.len();
+
         let mut guarded = context.conn.lock();
-        let tx = guarded.transaction()?;
+        let Some(tx) = guarded.as_mut() else {
+            return Ok(());
+        };
+        let tx = tx.transaction()?;
 
         let now_batched = std::time::Instant::now();
         {
@@ -274,7 +293,10 @@ impl SqliteHelper {
 
     fn store_block(context: &mut SqliteHelperContext, block: Box<ArchBlock>) -> anyhow::Result<()> {
         let mut guarded = context.conn.lock();
-        let tx = guarded.transaction()?;
+        let Some(tx) = guarded.as_mut() else {
+            return Ok(());
+        };
+        let tx = tx.transaction()?;
 
         let now = std::time::Instant::now();
         {
@@ -394,8 +416,12 @@ impl SqliteHelper {
         messages: Vec<ArchMessage>,
     ) -> anyhow::Result<()> {
         let cnt_messages = messages.len();
+
         let mut guarded = context.conn.lock();
-        let tx = guarded.transaction()?;
+        let Some(tx) = guarded.as_mut() else {
+            return Ok(());
+        };
+        let tx = tx.transaction()?;
 
         let now_batched = std::time::Instant::now();
         {
@@ -498,7 +524,10 @@ impl SqliteHelper {
     ) -> anyhow::Result<()> {
         let cnt_transactions = transactions.len();
         let mut guarded = context.conn.lock();
-        let tx = guarded.transaction()?;
+        let Some(tx) = guarded.as_mut() else {
+            return Ok(());
+        };
+        let tx = tx.transaction()?;
 
         let now_batched = std::time::Instant::now();
         {

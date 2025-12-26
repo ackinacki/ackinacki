@@ -64,7 +64,7 @@ where
             // We have already synced with some nodes before launching the execution, but we
             // could have not reached the producer and possibly should send
             // NodeJoin again
-            if last_node_join_message_time.elapsed() > self.config.global.node_joining_timeout {
+            if last_node_join_message_time.elapsed() > self.global_config.node_joining_timeout {
                 self.broadcast_node_joining()?;
                 last_node_join_message_time = Instant::now();
                 // If we have to broadcast NodeJoining, we definitely did not get state from previous
@@ -177,7 +177,7 @@ where
             }
             tracing::debug!("[synchronizing]({:?}) waiting for a network message", self.thread_id);
             match self.network_rx.recv_timeout(Duration::from_millis(
-                self.config.global.time_to_produce_block_millis,
+                self.global_config.time_to_produce_block_millis,
             )) {
                 Err(RecvTimeoutError::Disconnected) => {
                     tracing::error!("Disconnect signal received (synchronization)");
@@ -224,8 +224,12 @@ where
                             // We have received finalized block from stopped BP
                             // It can be older than our last finalized, so process here
                             if block_id == net_block.identifier {
+                                let Ok(block_envelope) = net_block.get_envelope() else {
+                                    tracing::trace!("Failed to deserialize block");
+                                    continue;
+                                };
                                 if envelope.is_none() {
-                                    envelope = Some(net_block.get_envelope()?);
+                                    envelope = Some(block_envelope);
                                 }
                                 let envelope = envelope.as_ref().unwrap();
                                 if self.check_block_signature(envelope) != Some(true) {
@@ -272,8 +276,12 @@ where
                             }
                         }
 
+                        let Ok(block_envelope) = net_block.get_envelope() else {
+                            tracing::trace!("Failed to deserialize block");
+                            continue;
+                        };
                         if envelope.is_none() {
-                            envelope = Some(net_block.get_envelope()?);
+                            envelope = Some(block_envelope);
                         }
                         let envelope = envelope.as_ref().unwrap();
                         // if self.is_candidate_block_can_be_applied(candidate_block)
@@ -311,7 +319,7 @@ where
                             tracing::trace!("[synchronizing] first_missed_block_seq_no: {first_missed_block_seq_no:?}");
                             let incoming_block_seq_no = net_block.seq_no;
                             let seq_no_diff = incoming_block_seq_no - first_missed_block_seq_no;
-                            if seq_no_diff < self.config.global.need_synchronization_block_diff
+                            if seq_no_diff < self.global_config.need_synchronization_block_diff
                                 && !block_request_was_sent
                             {
                                 block_request_was_sent = true;
@@ -392,7 +400,7 @@ where
                         let duration_since_last_finalization =
                             self.shared_services.duration_since_last_finalization();
                         if duration_since_last_finalization
-                            < self.config.global.time_to_enable_sync_finalized
+                            < self.global_config.time_to_enable_sync_finalized
                         {
                             continue;
                         }

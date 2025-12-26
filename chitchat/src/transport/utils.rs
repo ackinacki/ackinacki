@@ -4,15 +4,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rand::distributions::Bernoulli;
-use rand::prelude::Distribution;
-use rand::prelude::SmallRng;
-use rand::thread_rng;
-use rand::SeedableRng;
+use rand::prelude::{Distribution, SmallRng};
+use rand::{SeedableRng, thread_rng};
 use tokio::sync::RwLock;
 
-use crate::transport::Socket;
-use crate::transport::Transport;
 use crate::ChitchatMessage;
+use crate::transport::{Socket, Transport};
 
 struct TransportWithDelay<D: Distribution<f32> + Send + Sync + 'static> {
     delay_secs: D,
@@ -76,7 +73,10 @@ impl<T: Transport> TransportExt for T {
     }
 
     fn delay<D: DelayMillisDist>(self, delay_secs: D) -> Box<dyn Transport> {
-        Box::new(TransportWithDelay { delay_secs, transport: Box::new(self) })
+        Box::new(TransportWithDelay {
+            delay_secs,
+            transport: Box::new(self),
+        })
     }
 }
 
@@ -94,7 +94,11 @@ impl Transport for TransportWithMessageDrop {
     async fn open(&self, listen_addr: SocketAddr) -> anyhow::Result<Box<dyn Socket>> {
         let rng = SmallRng::from_rng(thread_rng()).unwrap();
         let socket = self.transport.open(listen_addr).await?;
-        Ok(Box::new(SocketWithMessageDrop { drop_probability: self.drop_probability, socket, rng }))
+        Ok(Box::new(SocketWithMessageDrop {
+            drop_probability: self.drop_probability,
+            socket,
+            rng,
+        }))
     }
 }
 

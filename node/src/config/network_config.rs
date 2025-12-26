@@ -4,21 +4,27 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use itertools::Itertools;
+use network::config::DirectSendMode;
 use network::config::SocketAddrSet;
 use serde::Deserialize;
 use serde::Serialize;
+use transport_layer::HostPort;
 use typed_builder::TypedBuilder;
 
 // TODO: need to rework gossip arguments, now it has some advertised parameters
 // that are not used (e.g. ["node_state"]["node_id"] section)
 /// Network settings
-#[derive(Serialize, Deserialize, Debug, Clone, TypedBuilder)]
+#[derive(Serialize, Deserialize, Debug, Clone, TypedBuilder, PartialEq)]
 pub struct NetworkConfig {
     /// Socket to listen other nodes messages (QUIC UDP).
     /// Defaults to "127.0.0.1:8500"
     #[builder(default = SocketAddr::from(([127,0,0,1], 8500)))]
     #[serde(default = "default_bind")]
     pub bind: SocketAddr,
+
+    #[builder(default = DirectSendMode::Direct)]
+    #[serde(default = "default_direct_send_mode")]
+    pub direct_send_mode: DirectSendMode,
 
     /// TLS auth cert.
     ///
@@ -110,6 +116,13 @@ pub struct NetworkConfig {
     #[builder(default)]
     pub gossip_seeds: SocketAddrSet,
 
+    /// Gossip peer TTL in seconds.
+    /// Defaults to 900 (15 minutes).
+    /// Value 0 means no additional TTLs for dead peers.
+    #[builder(default = gossip::default_gossip_peer_ttl_seconds())]
+    #[serde(default = "gossip::default_gossip_peer_ttl_seconds")]
+    pub gossip_peer_ttl_seconds: u64,
+
     /// Socket to listen for lite node requests (QUIC UDP).
     #[builder(default = SocketAddr::from(([127,0,0,1],12000)))]
     #[serde(default = "default_block_manager_listen_addr")]
@@ -136,9 +149,13 @@ pub struct NetworkConfig {
     #[builder(default)]
     pub bm_api_socket: Option<SocketAddr>,
 
-    /// Public address for Block Keeper API this node
+    /// Public address for Block Keeper API (deprecated)
     #[builder(default)]
     pub bk_api_socket: Option<SocketAddr>,
+
+    /// Public url for Block Keeper API in form `host:port`
+    #[builder(default)]
+    pub bk_api_host_port: Option<HostPort>,
 
     /// Number of max tries to download shared state
     /// Defaults to 3
@@ -165,6 +182,10 @@ pub struct NetworkConfig {
 
 fn default_bind() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], 8500))
+}
+
+fn default_direct_send_mode() -> DirectSendMode {
+    DirectSendMode::Direct
 }
 
 fn default_gossip_listen_addr() -> SocketAddr {

@@ -6,23 +6,17 @@ use std::time::Duration;
 use anyhow::bail;
 use rand::prelude::*;
 use tokio::net::lookup_host;
-use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::mpsc::{self};
+use tokio::sync::mpsc::{
+    UnboundedReceiver, UnboundedSender, {self},
+};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::warn;
+use tracing::{debug, error, info, warn};
 
 use crate::message::ChitchatMessage;
-use crate::transport::Socket;
-use crate::transport::Transport;
-use crate::Chitchat;
-use crate::ChitchatConfig;
-use crate::ChitchatId;
+use crate::transport::{Socket, Transport};
+use crate::{Chitchat, ChitchatConfig, ChitchatId};
 
 /// Number of nodes picked for random gossip.
 const GOSSIP_COUNT: usize = 3;
@@ -37,6 +31,7 @@ pub struct ChitchatHandle {
     command_tx: UnboundedSender<Command>,
     chitchat: ChitchatRef,
     join_handle: JoinHandle<Result<(), anyhow::Error>>,
+    termination_watcher: watch::Receiver<Option<Result<(), String>>>,
 }
 
 impl ChitchatHandle {
@@ -119,8 +114,10 @@ async fn spawn_dns_refresh_loop(seeds: &[String]) -> watch::Receiver<HashSet<Soc
         }
     }
 
-    let initial_seed_addrs: HashSet<SocketAddr> =
-        seed_addrs_not_requiring_resolution.union(&first_round_seed_resolution).cloned().collect();
+    let initial_seed_addrs: HashSet<SocketAddr> = seed_addrs_not_requiring_resolution
+        .union(&first_round_seed_resolution)
+        .cloned()
+        .collect();
 
     debug!(initial_seed_addrs=?initial_seed_addrs);
 
@@ -176,8 +173,12 @@ pub async fn spawn_chitchat(
     let chitchat_arc = ChitchatRef::new(chitchat);
     let chitchat_arc_clone = chitchat_arc.clone();
 
+    let (termination_watcher_sender, termination_watcher) = watch::channel(None);
     let join_handle = tokio::spawn(async move {
-        let result = Server::new(command_rx, chitchat_arc_clone, socket).await.run().await;
+        let result = Server::new(command_rx, chitchat_arc_clone, socket)
+            .await
+            .run()
+            .await;
         match &result {
             Ok(()) => {
                 info!("Chitchat server shut down");
@@ -186,10 +187,18 @@ pub async fn spawn_chitchat(
                 error!(%err, "Chitchat server failed");
             }
         }
+        let cloned_result = result.as_ref().map(|_| ()).map_err(|err| err.to_string());
+        let _ = termination_watcher_sender.send(Some(cloned_result));
         result
     });
 
-    Ok(ChitchatHandle { chitchat_id, command_tx, chitchat: chitchat_arc, join_handle })
+    Ok(ChitchatHandle {
+        chitchat_id,
+        command_tx,
+        chitchat: chitchat_arc,
+        join_handle,
+        termination_watcher,
+    })
 }
 
 #[derive(Clone)]
@@ -216,16 +225,20 @@ impl ChitchatHandle {
 
     /// Calls a function with mutable access to the [`Chitchat`].
     pub async fn with_chitchat<F, T>(&self, mut fun: F) -> T
-    where
-        F: FnMut(&mut Chitchat) -> T,
-    {
+    where F: FnMut(&mut Chitchat) -> T {
         let mut chitchat = self.chitchat.lock();
         fun(&mut chitchat)
     }
 
-    /// Shuts the server down.
+    pub fn initiate_shutdown(&self) -> Result<(), anyhow::Error> {
+        self.command_tx.send(Command::Shutdown).map_err(|_| {
+            anyhow::anyhow!("Failed to initiate Chitchat shutdown, command channel already closed")
+        })
+    }
+
+    /// Shuts the server down and waits for it to finish.
     pub async fn shutdown(self) -> Result<(), anyhow::Error> {
-        let _ = self.command_tx.send(Command::Shutdown);
+        let _ = self.initiate_shutdown();
         self.join_handle.await?
     }
 
@@ -233,6 +246,20 @@ impl ChitchatHandle {
     pub fn gossip(&self, addr: SocketAddr) -> Result<(), anyhow::Error> {
         self.command_tx.send(Command::Gossip(addr))?;
         Ok(())
+    }
+
+    pub fn termination_watcher(&self) -> impl Future<Output = anyhow::Result<()>> + use<> {
+        let mut watcher = self.termination_watcher.clone();
+        async move {
+            let termination_res = watcher.wait_for(|res| res.is_some()).await;
+            if let Ok(result_opt) = termination_res {
+                result_opt.clone().unwrap().map_err(anyhow::Error::msg)
+            } else {
+                // If the channel was closed without the exit status being sent,
+                // we assume the server panicked.
+                Err(anyhow::anyhow!("Chitchat server panicked"))
+            }
+        }
     }
 }
 
@@ -250,8 +277,13 @@ impl Server {
         chitchat: ChitchatRef,
         socket: Box<dyn Socket>,
     ) -> Self {
-        let rng = SmallRng::from_rng(thread_rng()).expect("failed to seed random generator");
-        Self { chitchat, command_rx, socket, rng }
+        let rng = SmallRng::from_rng(&mut thread_rng()).expect("failed to seed random generator");
+        Self {
+            chitchat,
+            command_rx,
+            socket,
+            rng,
+        }
     }
 
     /// Listen for new Chitchat messages.
@@ -415,10 +447,14 @@ where
 
     // Select `GOSSIP_COUNT` number of live nodes.
     // On startup, select from cluster nodes since we don't know any live node yet.
-    let nodes = if live_nodes_count == 0 { peer_nodes } else { live_nodes }
-        .iter()
-        .cloned()
-        .choose_multiple(rng, GOSSIP_COUNT);
+    let nodes = if live_nodes_count == 0 {
+        peer_nodes
+    } else {
+        live_nodes
+    }
+    .iter()
+    .cloned()
+    .choose_multiple(rng, GOSSIP_COUNT);
 
     let mut has_gossiped_with_a_seed_node = false;
     for chitchat_id in &nodes {
@@ -486,15 +522,13 @@ mod tests {
     use std::future::Future;
     use std::time::Duration;
 
-    use tokio_stream::Stream;
-    use tokio_stream::StreamExt;
+    use rand::RngCore;
+    use tokio_stream::{Stream, StreamExt};
 
     use super::*;
     use crate::message::ChitchatMessage;
-    use crate::transport::ChannelTransport;
-    use crate::Heartbeat;
-    use crate::NodeState;
-    use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
+    use crate::transport::{ChannelTransport, Transport};
+    use crate::{Heartbeat, MAX_UDP_DATAGRAM_PAYLOAD_SIZE, NodeState};
 
     #[derive(Debug, Default)]
     struct RngForTest {
@@ -526,7 +560,9 @@ mod tests {
     }
 
     async fn timeout<O>(future: impl Future<Output = O>) -> O {
-        tokio::time::timeout(Duration::from_millis(100), future).await.unwrap()
+        tokio::time::timeout(Duration::from_millis(100), future)
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -536,7 +572,9 @@ mod tests {
         let test_addr = test_config.chitchat_id.gossip_advertise_addr;
         let peer_addr: SocketAddr = ([127u8, 0u8, 0u8, 1u8], 1111u16).into();
         let mut peer_transport = transport.open(peer_addr).await.unwrap();
-        let server = spawn_chitchat(test_config, Vec::new(), &transport).await.unwrap();
+        let server = spawn_chitchat(test_config, Vec::new(), &transport)
+            .await
+            .unwrap();
         server.gossip(peer_addr).unwrap();
         let (from, message) = timeout(peer_transport.recv()).await.unwrap();
         assert_eq!(from, test_addr);
@@ -559,8 +597,10 @@ mod tests {
         let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
 
         let config2 = ChitchatConfig::for_test(2);
-        let mut transport2 =
-            transport.open(config2.chitchat_id.gossip_advertise_addr).await.unwrap();
+        let mut transport2 = transport
+            .open(config2.chitchat_id.gossip_advertise_addr)
+            .await
+            .unwrap();
 
         let config1 = ChitchatConfig::for_test(1);
         let addr1 = config1.chitchat_id.gossip_advertise_addr;
@@ -571,13 +611,14 @@ mod tests {
             Vec::new(),
             MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
         );
-        let _handler = spawn_chitchat(config1, Vec::new(), &transport).await.unwrap();
+        let _handler = spawn_chitchat(config1, Vec::new(), &transport)
+            .await
+            .unwrap();
 
         let syn = chitchat.create_syn_message();
         transport2.send(addr1, syn).await.unwrap();
 
         let (from1, msg) = transport2.recv().await.unwrap();
-
         assert_eq!(from1, addr1);
         match msg {
             ChitchatMessage::SynAck { .. } => (),
@@ -590,8 +631,10 @@ mod tests {
         let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
         let mut outsider_config = ChitchatConfig::for_test(2224);
         outsider_config.cluster_id = "another-cluster".to_string();
-        let mut outsider_transport =
-            transport.open(outsider_config.chitchat_id.gossip_advertise_addr).await.unwrap();
+        let mut outsider_transport = transport
+            .open(outsider_config.chitchat_id.gossip_advertise_addr)
+            .await
+            .unwrap();
         let outsider = Chitchat::with_chitchat_id_and_seeds(
             outsider_config,
             empty_seeds(),
@@ -601,13 +644,14 @@ mod tests {
 
         let server_config = ChitchatConfig::for_test(2223);
         let server_addr = server_config.chitchat_id.gossip_advertise_addr;
-        let _handler = spawn_chitchat(server_config, Vec::new(), &transport).await.unwrap();
+        let _handler = spawn_chitchat(server_config, Vec::new(), &transport)
+            .await
+            .unwrap();
 
         let syn = outsider.create_syn_message();
         outsider_transport.send(server_addr, syn).await.unwrap();
 
         let (_from_addr, syn_ack) = timeout(outsider_transport.recv()).await.unwrap();
-
         match syn_ack {
             ChitchatMessage::BadCluster => (),
             message => panic!("unexpected message: {message:?}"),
@@ -624,7 +668,9 @@ mod tests {
         let mut client_config = ChitchatConfig::for_test(5552);
         let client_addr = client_config.chitchat_id.gossip_advertise_addr;
         client_config.seed_nodes = vec![seed_addr.to_string()];
-        let _handler = spawn_chitchat(client_config, Vec::new(), &transport).await.unwrap();
+        let _handler = spawn_chitchat(client_config, Vec::new(), &transport)
+            .await
+            .unwrap();
 
         let (from, message) = timeout(seed_transport.recv()).await.unwrap();
         assert_eq!(from, client_addr);
@@ -651,9 +697,15 @@ mod tests {
         let server_config = ChitchatConfig::for_test(2);
         let server_id = server_config.chitchat_id.clone();
         let server_addr = server_config.chitchat_id.gossip_advertise_addr;
-        let server_handle = spawn_chitchat(server_config, Vec::new(), &transport).await.unwrap();
+        let server_handle = spawn_chitchat(server_config, Vec::new(), &transport)
+            .await
+            .unwrap();
         {
-            server_handle.chitchat().lock().self_node_state().set("key", "value");
+            server_handle
+                .chitchat()
+                .lock()
+                .self_node_state()
+                .set("key", "value");
         }
 
         // Add our test socket to the server's nodes.
@@ -666,7 +718,10 @@ mod tests {
             })
             .await;
 
-        let node_state = test_chitchat.cluster_state().node_state(&server_id).unwrap();
+        let node_state = test_chitchat
+            .cluster_state()
+            .node_state(&server_id)
+            .unwrap();
         let heartbeat = node_state.heartbeat();
 
         assert_eq!(heartbeat, Heartbeat(2));
@@ -699,7 +754,9 @@ mod tests {
         let node1_config = ChitchatConfig::for_test(6663);
         let node1_id = node1_config.chitchat_id.clone();
         let node1_addr = node1_config.chitchat_id.gossip_advertise_addr;
-        let node1 = spawn_chitchat(node1_config, Vec::new(), &transport).await.unwrap();
+        let node1 = spawn_chitchat(node1_config, Vec::new(), &transport)
+            .await
+            .unwrap();
 
         let mut live_nodes_watcher = node1
             .chitchat()
@@ -715,7 +772,9 @@ mod tests {
         let mut node2_config = ChitchatConfig::for_test(6664);
         node2_config.seed_nodes = vec![node1_addr.to_string()];
         let node2_id = node2_config.chitchat_id.clone();
-        let node2 = spawn_chitchat(node2_config, Vec::new(), &transport).await.unwrap();
+        let node2 = spawn_chitchat(node2_config, Vec::new(), &transport)
+            .await
+            .unwrap();
         {
             let live_nodes = next_live_nodes(&mut live_nodes_watcher).await;
             assert_eq!(live_nodes.len(), 2);
@@ -748,13 +807,19 @@ mod tests {
                 node2.gossip_advertise_addr,
                 node3.gossip_advertise_addr,
             ]),
-            to_hash_set(vec![node1.gossip_advertise_addr, node2.gossip_advertise_addr]),
+            to_hash_set(vec![
+                node1.gossip_advertise_addr,
+                node2.gossip_advertise_addr,
+            ]),
             to_hash_set(vec![node3.gossip_advertise_addr]),
             to_hash_set(vec![node2.gossip_advertise_addr]),
         );
         assert_eq!(nodes.len(), 2);
         assert_eq!(dead_node, Some(node3.gossip_advertise_addr));
-        assert_eq!(seed_node, None, "Should have already gossiped with a seed node.");
+        assert_eq!(
+            seed_node, None,
+            "Should have already gossiped with a seed node."
+        );
     }
 
     #[test]
@@ -794,5 +859,40 @@ mod tests {
         assert_eq!(gossip_nodes, &[nodes[0]]);
         assert!(gossip_dead_node.is_some());
         assert!(gossip_seed_node.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_graceful_shutdown() {
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
+        let server_config = ChitchatConfig::for_test(1);
+        let server_handle = spawn_chitchat(server_config, Vec::new(), &transport)
+            .await
+            .unwrap();
+        server_handle.initiate_shutdown().unwrap();
+        server_handle.termination_watcher().await.unwrap();
+        server_handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_panic_shutdown() {
+        let test_config = ChitchatConfig::for_test(1);
+        let test_addr = test_config.chitchat_id.gossip_advertise_addr;
+
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
+
+        let mut test_transport = transport.open(test_addr).await.unwrap();
+        let server_config = ChitchatConfig::for_test(2);
+        let server_listen_addr = server_config.chitchat_id.gossip_advertise_addr;
+        let server_handle = spawn_chitchat(server_config, Vec::new(), &transport)
+            .await
+            .unwrap();
+
+        test_transport
+            .send(server_listen_addr, ChitchatMessage::PanicForTest)
+            .await
+            .unwrap();
+        let err = server_handle.termination_watcher().await.unwrap_err();
+        assert_eq!(err.to_string(), "Chitchat server panicked");
+        server_handle.shutdown().await.unwrap_err();
     }
 }

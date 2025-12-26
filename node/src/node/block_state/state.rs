@@ -13,10 +13,13 @@ use derive_setters::*;
 use serde::Deserialize;
 use serde::Serialize;
 use typed_builder::TypedBuilder;
+use versioned_struct::versioned;
+use versioned_struct::Transitioning;
 
 use super::attestation_target_checkpoints::AncestorBlocksFinalizationCheckpoints;
 use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperSet;
+use crate::block_keeper_system::BlockKeeperSetOld;
 use crate::bls::BLSSignatureScheme;
 use crate::node::associated_types::AttestationTargetType;
 use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
@@ -37,6 +40,7 @@ use crate::types::BlockRound;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::AllowGuardedMut;
+use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
 
 pub const MAX_STATE_ANCESTORS: NonZeroUsize = NonZeroUsize::new(10).unwrap();
 
@@ -67,6 +71,7 @@ pub struct AttestationTargets {
 // are stored in fields prexied with was_*
 // It is important:
 // All fields must be able to set once and only once.
+#[versioned]
 #[derive(Serialize, Deserialize, Default, Getters, Setters)]
 #[setters(strip_option, borrow_self, assert_none, prefix = "set_", trace)]
 #[setters(
@@ -187,20 +192,41 @@ pub struct AckiNackiBlockState {
 
     // BlockKeeper set for this block it's taken from parent block without any BK set changes
     // happened in this block
+    #[future]
     bk_set: Option<Arc<BlockKeeperSet>>,
 
     // Set of Block Keepers that has deployed pre epoch contract and will be added to the BK set
     // after pre epoch contract destruction
+    #[future]
     future_bk_set: Option<Arc<BlockKeeperSet>>,
 
     // BlockKeeper set for descendant blocks with all BK set changes happened in this block
+    #[future]
     descendant_bk_set: Option<Arc<BlockKeeperSet>>,
 
     // Set of future Block Keepers for descendant blocks with all BK set changes happened in this
     // block
+    #[future]
     descendant_future_bk_set: Option<Arc<BlockKeeperSet>>,
 
-    // has_parent_optimistic_state: Option<bool>,
+    // BlockKeeper set for this block it's taken from parent block without any BK set changes
+    // happened in this block
+    #[legacy]
+    bk_set: Option<Arc<BlockKeeperSetOld>>,
+
+    // Set of Block Keepers that has deployed pre epoch contract and will be added to the BK set
+    // after pre epoch contract destruction
+    #[legacy]
+    future_bk_set: Option<Arc<BlockKeeperSetOld>>,
+
+    // BlockKeeper set for descendant blocks with all BK set changes happened in this block
+    #[legacy]
+    descendant_bk_set: Option<Arc<BlockKeeperSetOld>>,
+
+    // Set of future Block Keepers for descendant blocks with all BK set changes happened in this
+    // block
+    #[legacy]
+    descendant_future_bk_set: Option<Arc<BlockKeeperSetOld>>,
 
     // TODO: fix for not to set several times
     #[setters(bool, assert_none = false)]
@@ -291,9 +317,21 @@ pub struct AckiNackiBlockState {
     #[setters(skip)]
     #[getter(skip)]
     pub(super) last_saved_object_state_version: u64,
+
+    #[future]
+    block_version_state: Option<BlockProtocolVersionState>,
 }
 
 impl std::fmt::Debug for AckiNackiBlockState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AckiNackiBlockState")
+            .field("block_seq_no", &self.block_seq_no)
+            .field("block_identifier", &self.block_identifier)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for AckiNackiBlockStateOld {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AckiNackiBlockState")
             .field("block_seq_no", &self.block_seq_no)
@@ -357,7 +395,108 @@ impl std::fmt::Display for AckiNackiBlockState {
     }
 }
 
+impl AckiNackiBlockStateOld {
+    pub(super) fn notify_changed(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+impl Transitioning for AckiNackiBlockState {
+    type Old = AckiNackiBlockStateOld;
+
+    fn from(old: Self::Old) -> Self {
+        Self {
+            block_seq_no: old.block_seq_no,
+            block_identifier: old.block_identifier,
+            thread_identifier: old.thread_identifier,
+            parent_block_identifier: old.parent_block_identifier,
+            ancestors: old.ancestors,
+            block_round: old.block_round,
+            block_height: old.block_height,
+            producer: old.producer,
+            block_time_ms: old.block_time_ms,
+            prefinalization_proof: old.prefinalization_proof,
+            primary_finalization_proof: old.primary_finalization_proof,
+            fallback_finalization_proof: old.fallback_finalization_proof,
+            detached_attestations: old.detached_attestations,
+            signatures_verified: old.signatures_verified,
+            common_checks_passed: old.common_checks_passed,
+            envelope_block_producer_signature_verified: old
+                .envelope_block_producer_signature_verified,
+            applied: old.applied,
+            applied_start_timestamp: old.applied_start_timestamp,
+            validated: old.validated,
+            finalizes_blocks: old.finalizes_blocks,
+            moves_attestation_list_cutoff: old.moves_attestation_list_cutoff,
+            must_be_validated: old.must_be_validated,
+            must_be_validated_in_fallback_case: old.must_be_validated_in_fallback_case,
+            finalized: old.finalized,
+            prefinalized: old.prefinalized,
+            ancestor_blocks_finalization_checkpoints: old.ancestor_blocks_finalization_checkpoints,
+            stored: old.stored,
+            invalidated: old.invalidated,
+            bad_block_accusers: old.bad_block_accusers,
+            at_least_one_verified_bad_block_accuser: old.at_least_one_verified_bad_block_accuser,
+            resolved_nacks_count: old.resolved_nacks_count,
+            bk_set: old.bk_set.map(|v| {
+                let inner: BlockKeeperSetOld = Arc::unwrap_or_clone(v);
+                Arc::new(inner.into())
+            }),
+            future_bk_set: old.future_bk_set.map(|v| {
+                let inner: BlockKeeperSetOld = Arc::unwrap_or_clone(v);
+                Arc::new(inner.into())
+            }),
+            descendant_bk_set: old.descendant_bk_set.map(|v| {
+                let inner: BlockKeeperSetOld = Arc::unwrap_or_clone(v);
+                Arc::new(inner.into())
+            }),
+            descendant_future_bk_set: old.descendant_future_bk_set.map(|v| {
+                let inner: BlockKeeperSetOld = Arc::unwrap_or_clone(v);
+                Arc::new(inner.into())
+            }),
+            has_parent_finalized: old.has_parent_finalized,
+            producer_selector_data: old.producer_selector_data,
+            has_all_cross_thread_ref_data_available: old.has_all_cross_thread_ref_data_available,
+            has_all_cross_thread_references_finalized: old
+                .has_all_cross_thread_references_finalized,
+            has_cross_thread_ref_data_prepared: old.has_cross_thread_ref_data_prepared,
+            has_primary_attestation_target_met: old.has_primary_attestation_target_met,
+            has_fallback_attestation_target_met: old.has_fallback_attestation_target_met,
+            attestation_target: old.attestation_target,
+            verified_attestations: old.verified_attestations,
+            block_stats: old.block_stats,
+            known_children: old.known_children,
+            own_attestation: old.own_attestation,
+            requires_fallback_attestation: old.requires_fallback_attestation,
+            own_fallback_attestation: old.own_fallback_attestation,
+            retracted_attestation: old.retracted_attestation,
+            known_attestation_interested_parties: old.known_attestation_interested_parties,
+            envelope_hash: old.envelope_hash,
+            has_block_attestations_processed: old.has_block_attestations_processed,
+            file_path: old.file_path,
+            notifications: old.notifications,
+            event_timestamps: old.event_timestamps,
+            object_state_version: old.object_state_version,
+            last_saved_object_state_version: old.last_saved_object_state_version,
+            block_version_state: Some(BlockProtocolVersionState::none()),
+        }
+    }
+}
+
 impl AckiNackiBlockState {
+    // TODO: remove after migrating to 0.13.0
+    pub fn update_bk_sets(
+        &mut self,
+        bk_set: Arc<BlockKeeperSet>,
+        descendant_bk_set: Option<Arc<BlockKeeperSet>>,
+    ) {
+        tracing::trace!("update_bk_sets {self}: {bk_set} {descendant_bk_set:?}");
+        self.bk_set = Some(bk_set);
+        if let Some(descendant_bk_set) = descendant_bk_set {
+            self.descendant_bk_set = Some(descendant_bk_set)
+        }
+    }
+
     #[allow(clippy::inherent_to_string_shadow_display)]
     pub fn to_string(&self) -> String {
         format!(

@@ -29,6 +29,7 @@ abstract contract Errors {
     uint16 constant ERR_NOT_EXIST = 416;
     uint16 constant ERR_WRONG_NAME = 417;
     uint16 constant ERR_WRONG_MIRROR_INDEX = 418;
+    uint16 constant ERR_FULL_TAPS = 419;
 
 
     /** Public keys general errors */

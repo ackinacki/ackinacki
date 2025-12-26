@@ -21,6 +21,7 @@ use crate::helper::block_flow_trace;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::AttestationTargetType;
+use crate::node::associated_types::NodeCredentials;
 use crate::node::services::PULSE_IDLE_TIMEOUT;
 use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
@@ -56,6 +57,24 @@ enum AttestationAction {
     // },
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum GenerateAttestationError {
+    #[error("Failed to generate attestation: no bk data for node id is available")]
+    NodeIsNotInTheBKSet,
+    #[error("Failed to generate attestation: block seq_no is not available")]
+    BlockSeqNoIsNotAvailable,
+    #[error("Failed to generate attestation: parent id is not available")]
+    BlockParentIDIsNotAvailable,
+    #[error("Failed to generate attestation: missing bls key secret")]
+    MissingBlsKeySecret,
+    #[error("Failed to generate attestation: envelope hash is not available")]
+    BlockEnvelopeHashIsNotAvailable,
+    #[error("Failed to sign attestation: {0}")]
+    FailedToSignAttestation(anyhow::Error),
+    #[error("Failed to generate attestation: bk data version support does not match node version support")]
+    WrongVersionSupport,
+}
+
 #[derive(Getters, Setters, TypedBuilder, Clone)]
 #[setters(strip_option, prefix = "set_", borrow_self)]
 struct TrackedState {
@@ -76,7 +95,7 @@ pub struct AttestationSendService {
 
     resend_attestation_timeout: std::time::Duration,
 
-    node_id: NodeIdentifier,
+    node_credentials: NodeCredentials,
 
     thread_id: ThreadIdentifier,
 
@@ -143,7 +162,7 @@ impl AttestationSendService {
         };
         match Self::generate_attestation(
             self.bls_keys_map.clone(),
-            &self.node_id,
+            &self.node_credentials,
             &state.block_state,
             AttestationTargetType::Primary,
         ) {
@@ -159,7 +178,7 @@ impl AttestationSendService {
                     state.block_state.block_identifier(),
                     error
                 );
-                Err(error)
+                anyhow::bail!(error)
             }
         }
     }
@@ -173,7 +192,7 @@ impl AttestationSendService {
         };
         match Self::generate_attestation(
             self.bls_keys_map.clone(),
-            &self.node_id,
+            &self.node_credentials,
             &state.block_state,
             AttestationTargetType::Fallback,
         ) {
@@ -189,7 +208,7 @@ impl AttestationSendService {
                     state.block_state.block_identifier(),
                     error
                 );
-                Err(error)
+                anyhow::bail!(error)
             }
         }
     }
@@ -208,7 +227,7 @@ impl AttestationSendService {
             .iter()
             .filter_map(|(k, v)| v.first_send_timestamp().as_ref().map(|time| (k.clone(), *time)))
             .collect::<HashMap<BlockIdentifier, std::time::Instant>>();
-        let trace_node_id = self.node_id.clone();
+        let trace_node_id = self.node_credentials.node_id().clone();
         let mut next_deadline = std::time::Instant::now() + PULSE_IDLE_TIMEOUT * 2;
         let mut tracking = self.tracking.clone();
         for (_block_id, state) in tracking.iter_mut() {
@@ -483,7 +502,7 @@ impl AttestationSendService {
                 awaiting_destinations
             );
             for destination in &awaiting_destinations {
-                if destination != &self.node_id {
+                if destination != self.node_credentials.node_id() {
                     let _ = self.send_block_attestation(destination.clone(), attestation.clone());
                 } else {
                     match attestation {
@@ -541,7 +560,7 @@ impl AttestationSendService {
                 block_flow_trace(
                     "send attestation",
                     attestation.data().block_id(),
-                    &self.node_id,
+                    self.node_credentials.node_id(),
                     [("to", &destination_node_id.to_string())],
                 );
                 match self.network_direct_tx.send((
@@ -578,70 +597,40 @@ impl AttestationSendService {
         Ok(())
     }
 
-    // fn prepare_attestations(&mut self) {
-    //     let mut to_attestate = vec![];
-    //     for (_, candidate) in self.tracking.iter() {
-    //         if candidate.attestation().is_some() {
-    //             continue;
-    //         }
-    //         if candidate.block_state().guarded(|e| !e.is_block_already_applied()) {
-    //             continue;
-    //         }
-    //         to_attestate.push(candidate.block_state().clone());
-    //     }
-    //     let mut attestations = vec![];
-    //     for block_state in to_attestate.into_iter() {
-    //         match self.generate_attestation(&block_state) {
-    //             Ok(attestation) => {
-    //                 attestations.push(attestation);
-    //             }
-    //             Err(error) => {
-    //                 tracing::error!(
-    //                     "Failed to generate attestation for {}: {:?}",
-    //                     block_state.block_identifier(),
-    //                     error
-    //                 );
-    //             }
-    //         }
-    //     }
-    //     for attestation in attestations.into_iter() {
-    //         if let Some(candidate) = self.tracking.get_mut(attestation.data().block_id()) {
-    //             let block_id = attestation.data().block_id().clone();
-    //             tracing::trace!("AttestationSendService: set_attestation {:?}", block_id);
-    //             candidate.set_attestation(attestation);
-    //         }
-    //     }
-    // }
-
     pub fn generate_attestation(
         bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
-        node_id: &NodeIdentifier,
+        node_credentials: &NodeCredentials,
         block_state: &BlockState,
         attestation_target_type: AttestationTargetType,
-    ) -> anyhow::Result<Envelope<GoshBLS, AttestationData>> {
-        let Some(bk_data) =
-            block_state.guarded(|state_in| state_in.get_bk_data_for_node_id(node_id))
+    ) -> Result<Envelope<GoshBLS, AttestationData>, GenerateAttestationError> {
+        let Some(bk_data) = block_state
+            .guarded(|state_in| state_in.get_bk_data_for_node_id(node_credentials.node_id()))
         else {
-            anyhow::bail!("Failed to generate attestation: no bk data for node id is available");
+            return Err(GenerateAttestationError::NodeIsNotInTheBKSet);
         };
+        if !bk_data.protocol_support.is_none()
+            && &bk_data.protocol_support != node_credentials.protocol_version_support()
+        {
+            return Err(GenerateAttestationError::WrongVersionSupport);
+        }
 
         let Some(block_seq_no) = block_state.guarded(|state_in| *state_in.block_seq_no()) else {
-            anyhow::bail!("Failed to generate attestation: block seq_no is not available");
+            return Err(GenerateAttestationError::BlockSeqNoIsNotAvailable);
         };
 
         let Some(parent_id) =
             block_state.guarded(|state_in| state_in.parent_block_identifier().clone())
         else {
-            anyhow::bail!("Failed to generate attestation: parent id is not available");
+            return Err(GenerateAttestationError::BlockParentIDIsNotAvailable);
         };
 
         let Some(secret) = bls_keys_map.guarded(|map| map.get(&bk_data.pubkey).cloned()) else {
-            anyhow::bail!("Failed to generate attestation: missing bls key secret");
+            return Err(GenerateAttestationError::MissingBlsKeySecret);
         };
         let (signer_index, secret) = (bk_data.signer_index, secret.0);
 
         let Some(envelope_hash) = block_state.guarded(|e| e.envelope_hash().clone()) else {
-            anyhow::bail!("Failed to access envelope_hash");
+            return Err(GenerateAttestationError::BlockEnvelopeHashIsNotAvailable);
         };
         let attestation_data = AttestationData::builder()
             .block_id(block_state.block_identifier().clone())
@@ -652,7 +641,8 @@ impl AttestationSendService {
             .build();
         tracing::trace!("Generate attestation: {:?}", attestation_data);
 
-        let signature = <GoshBLS as BLSSignatureScheme>::sign(&secret, &attestation_data)?;
+        let signature = <GoshBLS as BLSSignatureScheme>::sign(&secret, &attestation_data)
+            .map_err(GenerateAttestationError::FailedToSignAttestation)?;
         let signature_occurrences = HashMap::from([(signer_index, 1)]);
         Ok(Envelope::<GoshBLS, AttestationData>::create(
             signature,
@@ -726,7 +716,9 @@ impl AttestationSendService {
             // Find out in old blocks what my "signer id" was at that time, then collect "known_attestation_interested_parties"
             if let Some((_, state)) = self.tracking.get_key_value(&attested_blk_id) {
                 state.block_state().guarded(|inner| {
-                    if let Some(my_idx) = inner.get_signer_index_for_node_id(&self.node_id) {
+                    if let Some(my_idx) =
+                        inner.get_signer_index_for_node_id(self.node_credentials.node_id())
+                    {
                         if signer_ids.contains(&my_idx)
                             && inner.known_attestation_interested_parties().contains(&producer)
                         {

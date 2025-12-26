@@ -1,27 +1,18 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use async_channel::Receiver;
-use async_channel::Sender;
+use async_channel::{Receiver, Sender};
 use tokio::task::JoinHandle;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::warn;
-use transport_layer::NetConnection;
-use transport_layer::NetCredential;
-use transport_layer::NetIncomingRequest;
-use transport_layer::NetListener;
-use transport_layer::NetTransport;
+use tracing::{debug, error, info, warn};
+use transport_layer::{
+    NetConnection, NetCredential, NetIncomingRequest, NetListener, NetTransport,
+};
 
 use crate::transport::Socket;
-use crate::ChitchatMessage;
-use crate::Deserializable;
-use crate::Serializable;
+use crate::{ChitchatMessage, Deserializable, Serializable};
 
 const MAX_QUIC_DATAGRAM_PAYLOAD_SIZE: usize = 10_000_000;
 const CHANNEL_CAPACITY: usize = 1000;
@@ -38,7 +29,10 @@ pub struct TransportLayerTransport<Transport: NetTransport + Clone> {
 impl<Transport: NetTransport> TransportLayerTransport<Transport> {
     pub fn new(transport: Transport, credential: NetCredential) -> Self {
         info!("Creating chitchat transport");
-        Self { transport, credential }
+        Self {
+            transport,
+            credential,
+        }
     }
 }
 
@@ -88,13 +82,19 @@ impl<Transport: NetTransport + 'static> TransportLayerSocket<Transport> {
             warn!("existing connection to {to_addr} is finished");
         }
         warn!("create outgoing connection to {to_addr}");
-        let connection =
-            self.transport.connect(to_addr, &[GOSSIP_ALPN], self.credential.clone()).await?;
+        let connection = self
+            .transport
+            .connect(to_addr, &[GOSSIP_ALPN], self.credential.clone())
+            .await?;
         let (message_tx, message_rx) = async_channel::bounded(CHANNEL_CAPACITY);
         let task = tokio::spawn(handle_outgoing_connection(message_rx, connection));
         let new_connection = Arc::new(OutgoingConnection { message_tx, task });
-        self.outgoing_connections.insert(to_addr, new_connection.clone());
-        debug!(open_connections = self.open_connections(), "open connections");
+        self.outgoing_connections
+            .insert(to_addr, new_connection.clone());
+        debug!(
+            open_connections = self.open_connections(),
+            "open connections"
+        );
         Ok(new_connection)
     }
 
@@ -188,7 +188,9 @@ async fn handle_socket_listener<Transport: NetTransport + 'static>(
     mut stop_rx: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     info!("Creating chitchat socket listener");
-    let listener = transport.create_listener(listen_addr, &[GOSSIP_ALPN], cred).await?;
+    let listener = transport
+        .create_listener(listen_addr, &[GOSSIP_ALPN], cred)
+        .await?;
     loop {
         tokio::select! {
             sender = stop_rx.changed() => if sender.is_err() || *stop_rx.borrow() {
@@ -250,11 +252,19 @@ async fn handle_outgoing_connection<Connection: NetConnection + 'static>(
     while let Ok(message) = messages_rx.recv().await {
         let delivery_time = Instant::now();
         let serialized = message.serialize_to_vec();
-        match connection.send(&serialized).await.context("failed to open uni stream") {
+        match connection
+            .send(&serialized)
+            .await
+            .context("failed to open uni stream")
+        {
             Ok(_) => {
                 let delivery_duration = delivery_time.elapsed();
                 if delivery_duration > Duration::from_millis(600) {
-                    warn!("message delivery took {:?} ({})", delivery_duration, serialized.len());
+                    warn!(
+                        "message delivery took {:?} ({})",
+                        delivery_duration,
+                        serialized.len()
+                    );
                 }
             }
             Err(err) => {

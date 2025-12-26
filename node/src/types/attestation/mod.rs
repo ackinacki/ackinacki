@@ -175,12 +175,11 @@ impl CollectedAttestations {
         for (block_state, aggregate_filter) in required.iter() {
             let check_stored_in_state = match aggregate_filter.attestation_type() {
                 AttestationTargetType::Primary => block_state.guarded(|e| {
-                    e.primary_finalization_proof().clone()
-                        .or(e.prefinalization_proof().clone())
+                    e.primary_finalization_proof().clone().or(e.prefinalization_proof().clone())
                 }),
-                AttestationTargetType::Fallback => block_state.guarded(|e|{
-                    e.fallback_finalization_proof().clone()
-                }),
+                AttestationTargetType::Fallback => {
+                    block_state.guarded(|e| e.fallback_finalization_proof().clone())
+                }
             };
             if let Some(stored) = check_stored_in_state {
                 if stored.signatures_count() >= aggregate_filter.min_signatures_inclusive {
@@ -191,12 +190,12 @@ impl CollectedAttestations {
 
             // Check if already folded is good enough
             let block_identifier = block_state.block_identifier().clone();
-            let Some(block_seq_no) = block_state.guarded(|e| *e.block_seq_no())
-            else {
+            let Some(block_seq_no) = block_state.guarded(|e| *e.block_seq_no()) else {
                 tracing::trace!("CollectedAttestations: aggregate: failed to get block_seq_no. Block id: {block_identifier}");
                 anyhow::bail!("BlockSeqNo is missing");
             };
-            let Some(parent_block_identifier) = block_state.guarded(|e| e.parent_block_identifier().clone())
+            let Some(parent_block_identifier) =
+                block_state.guarded(|e| e.parent_block_identifier().clone())
             else {
                 tracing::trace!("CollectedAttestations: aggregate: failed to get parent_block_identifier. Block id: {block_identifier}");
                 anyhow::bail!("Parent block id is missing");
@@ -213,7 +212,9 @@ impl CollectedAttestations {
                 .build();
             let folded_attestation = self.folded_attestations.get(&key);
             if let Some(folded_attestation) = folded_attestation {
-                if folded_attestation.signatures_count() >= aggregate_filter.min_signatures_inclusive {
+                if folded_attestation.signatures_count()
+                    >= aggregate_filter.min_signatures_inclusive
+                {
                     result.push(folded_attestation.clone());
                     continue;
                 }
@@ -229,7 +230,10 @@ impl CollectedAttestations {
                 tracing::trace!("CollectedAttestations: aggregate: failed to get an envelope hash. Block id: {block_identifier}");
                 anyhow::bail!("Envelope hash is missing");
             };
-            let folded_attestation_signers: HashSet<SignerIndex> = folded_attestation.map_or(Default::default(), |e: &Envelope<GoshBLS, AttestationData>| e.signers().cloned().collect());
+            let folded_attestation_signers: HashSet<SignerIndex> = folded_attestation
+                .map_or(Default::default(), |e: &Envelope<GoshBLS, AttestationData>| {
+                    e.signers().cloned().collect()
+                });
             let mut combined_signers = folded_attestation_signers;
             let mut to_combine = vec![];
             if let Some(folded_attestation) = folded_attestation {
@@ -238,7 +242,8 @@ impl CollectedAttestations {
                     folded_attestation.aggregated_signature().clone(),
                 ));
             }
-            if let Some(unverified_attestations) = self.compacted_unverified_attestations.get(&key) {
+            if let Some(unverified_attestations) = self.compacted_unverified_attestations.get(&key)
+            {
                 for attestation in unverified_attestations.iter() {
                     if attestation.parent_block_id() != &parent_block_identifier
                         || attestation.envelope_hash() != &envelope_hash
@@ -263,9 +268,8 @@ impl CollectedAttestations {
                     .target_type(*aggregate_filter.attestation_type())
                     .build();
                 let fold_result = try_fold(attestation_data, to_combine, &bk_set);
-                let Some(new_fold) = fold_result.folded
-                else {
-                    match  aggregate_filter.action_on_condition_missed {
+                let Some(new_fold) = fold_result.folded else {
+                    match aggregate_filter.action_on_condition_missed {
                         AggregateActionOnConditionMissed::Skip => {
                             tracing::trace!("Failed to fold any attestation. Count missed {block_identifier}. Using skip action");
                             continue;
@@ -283,9 +287,11 @@ impl CollectedAttestations {
                     continue;
                 }
             }
-            match  aggregate_filter.action_on_condition_missed {
+            match aggregate_filter.action_on_condition_missed {
                 AggregateActionOnConditionMissed::Skip => {
-                    tracing::trace!("Attestations count missed {block_identifier}. Using skip action");
+                    tracing::trace!(
+                        "Attestations count missed {block_identifier}. Using skip action"
+                    );
                     continue;
                 }
             }

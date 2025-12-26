@@ -74,42 +74,17 @@ contract MobileVerifiersContractRoot is Modifiers {
         selfdestruct(address(this));
     }
 
-    function tapReward() private returns(uint128) {
-        uint32 diff = block.timestamp - _last_tap;
-        _last_tap = block.timestamp;
-        uint128 reward = _reward_adjustment * diff;
-        _reward_sum += reward;
-        gosh.mintecc(uint64(reward), CURRENCIES_ID);
-        return reward;
-    }
-
     function sendTapRewards(string name) public senderIs(VerifiersLib.calculatePopCoinRootAddress(_code[m_PopCoinRoot], address(this), name)) accept {
         ensureBalance();
-        uint128 reward = tapReward();
-        mapping(uint32 => varuint32) data_cur;
-        data_cur[CURRENCIES_ID] = varuint32(reward);
-        msg.sender.transfer({value: 0.1 vmshell, flag: 1, currencies: data_cur});
+        msg.sender.transfer({value: 0.1 vmshell, flag: 1});
     }
 
     function sendTapRewardsPopit(string name, uint256 key, optional(string) media) public senderIs(VerifiersLib.calculatePopCoinRootAddress(_code[m_PopCoinRoot], address(this), name)) accept {
         ensureBalance();
-        uint128 reward = tapReward();
-        mapping(uint32 => varuint32) data_cur;
-        data_cur[CURRENCIES_ID] = varuint32(reward);
-        PopCoinRoot(msg.sender).getTapReward{value: 0.1 vmshell, flag: 1, currencies: data_cur}(key, media);
-    }
-
-    function calcRewardAdjustment() private returns (uint128) {
-        _reward_period = (_reward_period * _calc_reward_num + block.timestamp - _reward_last_time) / (_calc_reward_num + 1);
-        _reward_last_time = block.timestamp;
-        _calc_reward_num += 1;
-        _reward_adjustment = gosh.calcbmmvrewardadj(_reward_sum, _reward_period, _reward_adjustment, uint128(block.timestamp - _networkStart), false);
+        PopCoinRoot(msg.sender).getTapReward{value: 0.1 vmshell, flag: 1}(key, media);
     }
 
     function ensureBalance() private {
-        if ((_reward_last_time + _min_reward_period < block.timestamp) || (_calc_reward_num == 0)) {
-            calcRewardAdjustment();
-        }
         if (block.timestamp >= _epochEnd) {
             _prevEpochDuration = block.timestamp - _epochStart;
             _epochStart = block.timestamp;
@@ -117,6 +92,19 @@ contract MobileVerifiersContractRoot is Modifiers {
         }
         if (address(this).balance > ROOT_BALANCE) { return; }
         gosh.mintshellq(ROOT_BALANCE);
+    }
+
+    function updateCode(TvmCell newcode, TvmCell cell) public onlyOwner accept {
+        ensureBalance();
+        tvm.setcode(newcode);
+        tvm.setCurrentCode(newcode);
+        onCodeUpgrade(cell);
+    }
+
+    function onCodeUpgrade(TvmCell cell) private {
+        cell;
+        tvm.accept();
+        tvm.resetStorage();
     }
 
     //Fallback/Receive

@@ -29,6 +29,16 @@ where
             net_block,
             resend_source_node_id
         );
+
+        // Block deserialization can fail. Silently skip this block
+        let envelope = match net_block.get_envelope() {
+            Ok(envelope) => envelope,
+            Err(err) => {
+                tracing::error!("Block deserialization {err:?}");
+                return Ok(None);
+            }
+        };
+
         // Check if we already have this block
         let block_state = self.block_state_repository.get(&net_block.identifier)?;
         block_state
@@ -49,7 +59,6 @@ where
             return Ok(None);
         };
 
-        let envelope = net_block.get_envelope()?;
         tracing::debug!(
             target: "monit",
             "Incoming block candidate: {}, signatures: {:?}, resend_source_node_id: {:?}",
@@ -64,24 +73,15 @@ where
             }
         });
 
-        let moment = std::time::Instant::now();
         self.metrics.as_ref().inspect(|m| {
-            m.report_store_block_on_disk(moment.elapsed().as_millis() as u64, &self.thread_id);
-
-            // Save the maximum value of incoming seq_no and report if it increases non-monotonically.
-            let incoming_seq_no: u32 = net_block.seq_no.into();
-
-            let last_processed_block_seq_no =
-                self.last_processed_block_seq_no.get_or_insert(incoming_seq_no);
-            if incoming_seq_no > *last_processed_block_seq_no {
-                if incoming_seq_no > *last_processed_block_seq_no + 1 {
-                    m.report_missed_blocks(
-                        incoming_seq_no - *last_processed_block_seq_no - 1,
-                        &self.thread_id,
-                    );
-                }
-                *last_processed_block_seq_no = incoming_seq_no;
+            let moment = std::time::Instant::now();
+            if let Some(last_instant) = self.last_call_on_incoming_candidate_block {
+                m.report_block_processing_jitter(
+                    last_instant.elapsed().as_millis() as f64,
+                    &self.thread_id,
+                );
             }
+            self.last_call_on_incoming_candidate_block = Some(moment);
         });
 
         let parent_id = envelope.data().parent();
@@ -136,6 +136,25 @@ where
         if parent_is_finalized {
             block_state.guarded_mut(|state| state.set_has_parent_finalized())?;
         }
+
+        let candidate_block_height = envelope.data().get_common_section().block_height;
+
+        if let Some(last_height) = self.last_processed_block_height {
+            match last_height.signed_distance_to(&candidate_block_height) {
+                Some(diff) => {
+                    let diff_abs = diff.unsigned_abs() as u64;
+                    if diff_abs > 1 {
+                        self.metrics.as_ref().inspect(|m| {
+                            m.report_missed_blocks(diff_abs - 1, &self.thread_id);
+                        });
+                    }
+                }
+                None => {
+                    tracing::error!("Received block for other thread");
+                }
+            }
+        }
+        self.last_processed_block_height = Some(candidate_block_height);
 
         // Steal block attestations
         for attestation in &envelope.data().get_common_section().block_attestations {

@@ -9,6 +9,8 @@ use std::sync::Arc;
 use anyhow::ensure;
 use chrono::Utc;
 use indexset::BTreeMap;
+#[cfg(feature = "mirror_repair")]
+use parking_lot::Mutex;
 use tracing::instrument;
 use tvm_block::GetRepresentationHash;
 use tvm_block::HashmapAugType;
@@ -30,6 +32,7 @@ use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::config::BlockchainConfigRead;
 use crate::config::Config;
+use crate::config::GlobalConfig;
 use crate::external_messages::Stamp;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::Message;
@@ -57,6 +60,7 @@ pub trait BlockVerifier {
         initial_state: Self::OptimisticState,
         refs: I,
         message_db: MessageDurableStorage,
+        is_block_of_retired_version: bool,
     ) -> anyhow::Result<(AckiNackiBlock, Self::OptimisticState)>
     where
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
@@ -68,6 +72,7 @@ pub trait BlockVerifier {
 pub struct TVMBlockVerifier {
     blockchain_config: BlockchainConfigRead,
     node_config: Config,
+    node_global_config: GlobalConfig,
     // TODO: need to fill this data for verifier
     epoch_block_keeper_data: Vec<BlockKeeperData>,
     block_nack: Vec<Envelope<GoshBLS, NackData>>,
@@ -76,6 +81,8 @@ pub struct TVMBlockVerifier {
     block_state_repository: BlockStateRepository,
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
+    #[cfg(feature = "mirror_repair")]
+    is_updated_mv: Arc<Mutex<bool>>,
 }
 
 impl TVMBlockVerifier {
@@ -101,6 +108,7 @@ impl BlockVerifier for TVMBlockVerifier {
         parent_block_state: Self::OptimisticState,
         refs: I,
         message_db: MessageDurableStorage,
+        is_block_of_retired_version: bool,
     ) -> anyhow::Result<(AckiNackiBlock, Self::OptimisticState)>
     where
         // TODO: remove Clone and change to Into<>
@@ -108,7 +116,7 @@ impl BlockVerifier for TVMBlockVerifier {
         CrossThreadRefData: 'a,
     {
         let thread_identifier = block.get_common_section().thread_id;
-        let mut time_limits = ExecutionTimeLimits::verification(&self.node_config);
+        let mut time_limits = ExecutionTimeLimits::verification(&self.node_global_config);
         let mut wrapped_slash_messages = vec![];
         let mut white_list_of_slashing_messages_hashes = HashSet::new();
         for nack in self.block_nack.iter() {
@@ -226,12 +234,14 @@ impl BlockVerifier for TVMBlockVerifier {
             Some(rand_seed),
             None,
             self.accounts_repository.clone(),
-            self.node_config.global.block_keeper_epoch_code_hash.clone(),
-            self.node_config.global.block_keeper_preepoch_code_hash.clone(),
+            self.node_global_config.block_keeper_epoch_code_hash.clone(),
+            self.node_global_config.block_keeper_preepoch_code_hash.clone(),
             self.node_config.local.parallelization_level,
             preprocessing_result.redirected_messages,
             self.metrics,
             self.wasm_cache,
+            #[cfg(feature = "mirror_repair")]
+            self.is_updated_mv,
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (verify_block, _, _) = producer.build_block(
@@ -242,6 +252,7 @@ impl BlockVerifier for TVMBlockVerifier {
             white_list_of_slashing_messages_hashes,
             message_db.clone(),
             &time_limits,
+            is_block_of_retired_version,
         )?;
 
         tracing::trace!(target: "node", "verify block generated successfully");
@@ -269,6 +280,8 @@ impl BlockVerifier for TVMBlockVerifier {
                 block.get_common_section().block_height,
                 #[cfg(feature = "monitor-accounts-number")]
                 block.get_common_section().accounts_number_diff,
+                #[cfg(feature = "protocol_version_hash_in_block")]
+                block.get_common_section().protocol_version_hash().clone(),
             ),
             new_state,
         );

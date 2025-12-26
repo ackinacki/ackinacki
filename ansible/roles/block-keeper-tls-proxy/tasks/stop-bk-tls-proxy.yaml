@@ -1,0 +1,7 @@
+---
+
+- name: Compose up
+  ansible.builtin.shell:
+    chdir: "{{ TLS_PROXY_DIR }}"
+    cmd: docker compose stop
+  become: true

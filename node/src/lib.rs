@@ -15,6 +15,7 @@ pub mod repository;
 pub mod services;
 pub mod types;
 pub mod utilities;
+pub mod versioning;
 pub mod zerostate;
 
 pub mod block_keeper_system;

@@ -16,17 +16,27 @@ import "./Indexer.sol";
 import "./Mvmultifactor.sol";
 import "./PopitGame.sol";
 import "./PopCoinRoot.sol";
+import "./Miner.sol";
 
 contract Mirror is Modifiers {
     string constant version = "1.0.0";
 
     address _root;
+    address _minerRoot;
     uint128 _index;
     uint256 _rootPubkey;
+
+    bool _isIndexUpdated = false;
     mapping(uint8 => TvmCell) _code;
+
+    event MultifactorDeployed(uint256 pubkey, address multifactor);
+    event PopitGameDeployed(address multifactor);
+    event PopCoinRootDeployed(string name, address popitGameOwner);
+    event MinerDeployed(address multifactor);
 
     constructor (
         address root,
+        address minerRoot,
         uint128 index,
         uint256 rootPubkey
     ) {
@@ -35,9 +45,23 @@ contract Mirror is Modifiers {
         _root = root;
         _index = index;
         _rootPubkey = rootPubkey;
+        _minerRoot = minerRoot;
     }
 
-    function ensureBalance() private pure {
+    function setIsIndexUpdated() public senderIs(address(this)) accept {
+        _isIndexUpdated = false;
+    }
+
+    function ensureBalance() private {
+        if (_isIndexUpdated == false) {
+            uint256 addr = address(this).value & 0xFFF;
+            (, uint256 modulus) = math.divmod(addr, MAX_MIRROR_INDEX);
+            if (modulus == 0) {
+                modulus = MAX_MIRROR_INDEX;
+            }
+            _index = uint128(modulus) - 1;
+            _isIndexUpdated = true;
+        }
         if (address(this).balance > CONTRACT_BALANCE) { return; }
         gosh.mintshellq(CONTRACT_BALANCE);
     }
@@ -56,7 +80,11 @@ contract Mirror is Modifiers {
         selfdestruct(address(this));
     }
 
-    function deployPopitGame(uint256 pubkey) public view senderIs(VerifiersLib.calculateMultifactorAddress(_code[m_MvMultifactor], pubkey, _root)) accept {
+    function setNewPubkey(uint256 pubkey) public senderIs(address(this)) accept {
+        _rootPubkey = pubkey;
+    }
+
+    function deployPopitGame(uint256 pubkey) public senderIs(VerifiersLib.calculateMultifactorAddress(_code[m_MvMultifactor], pubkey, _root)) accept {
         ensureBalance();
         TvmCell data = VerifiersLib.composePopitGameStateInit(_code[m_PopitGame], _root, msg.sender);
         mapping(uint8 => TvmCell) code;
@@ -65,6 +93,8 @@ contract Mirror is Modifiers {
         code[m_PopCoinWallet] = _code[m_PopCoinWallet];
         code[m_Boost] = _code[m_Boost];
         new PopitGame {stateInit: data, value: varuint16(FEE_DEPLOY_POPIT_GAME_WALLET), wid: 0, flag: 1}(code, _rootPubkey, _index);
+        address addrExtern = address.makeAddrExtern(PopitGameDeployedEmit, bitCntAddress);
+        emit PopitGameDeployed{dest: addrExtern}(msg.sender);
     }
 
     function deployMultifactor(
@@ -85,7 +115,7 @@ contract Mirror is Modifiers {
         bytes pub_recovery_key_sig,
         uint256 jwk_update_key,
         bytes jwk_update_key_sig,
-        mapping(uint256 => bytes) root_provider_certificates) public view accept {
+        mapping(uint256 => bytes) root_provider_certificates) public accept {
         ensureBalance();
         uint256 owner_pubkey = msg.pubkey();
         (, uint256 modulus) = math.divmod(owner_pubkey, MAX_MIRROR_INDEX);
@@ -150,14 +180,16 @@ contract Mirror is Modifiers {
         uint256 jwk_update_key,
         bytes jwk_update_key_sig,
         mapping(uint256 => bytes) root_provider_certificates,
-        uint256 owner_pubkey) public view senderIs(VerifiersLib.calculateIndexerAddress(_code[m_Indexer], name)) accept {
+        uint256 owner_pubkey) public senderIs(VerifiersLib.calculateIndexerAddress(_code[m_Indexer], name)) accept {
         ensureBalance();
         if (!ready) { return; }
         TvmCell data = VerifiersLib.composeMultifactorStateInit(_code[m_MvMultifactor], owner_pubkey, _root);
-        new Multifactor {stateInit: data, value: varuint16(FEE_DEPLOY_MULTIFACTOR), wid: 0, flag: 1}(name, zkid, proof, epk, epk_sig, epk_expire_at, jwk_modulus, kid, jwk_modulus_expire_at, index_mod_4, iss_base_64, provider, header_base_64, pub_recovery_key, pub_recovery_key_sig, jwk_update_key, jwk_update_key_sig, root_provider_certificates, _index);
+        address multifactor = new Multifactor {stateInit: data, value: varuint16(FEE_DEPLOY_MULTIFACTOR), wid: 0, flag: 1}(name, zkid, proof, epk, epk_sig, epk_expire_at, jwk_modulus, kid, jwk_modulus_expire_at, index_mod_4, iss_base_64, provider, header_base_64, pub_recovery_key, pub_recovery_key_sig, jwk_update_key, jwk_update_key_sig, root_provider_certificates, _index);
+        address addrExtern = address.makeAddrExtern(MultifactorDeployedEmit, bitCntAddress);
+        emit MultifactorDeployed{dest: addrExtern}(owner_pubkey, multifactor);
     }
 
-    function updateWhiteList(uint256 pubkey, uint8 index, string name) public view accept {
+    function updateWhiteList(uint256 pubkey, uint8 index, string name) public accept {
         pubkey;
         ensureBalance();
         optional(address) new_addr;
@@ -171,6 +203,15 @@ contract Mirror is Modifiers {
         if (index == m_PopitGame) {
             new_addr = VerifiersLib.calculatePopitGameAddress(_code[m_PopitGame], _root, msg.sender);
         }
+        if (index == m_Mirror) {
+            require(msg.sender != address.makeAddrStd(0, 0), ERR_INVALID_SENDER);
+            (, uint256 modulus) = math.divmod(msg.sender.value, MAX_MIRROR_INDEX);
+            require(modulus == _index, ERR_WRONG_MIRROR_INDEX);
+            new_addr = address(this);
+        }
+        if (index == m_Miner) {
+            new_addr = VerifiersLib.calculateMinerGameAddress(_code[m_Miner], msg.sender);
+        }
         if (new_addr.hasValue()) {
             Multifactor(msg.sender).setWhiteList{value: 0.1 vmshell, flag: 1}(new_addr.get(), _index);
         }
@@ -183,21 +224,49 @@ contract Mirror is Modifiers {
         string description,
         bool isPublic,
         address popitGameOwner
-    ) public view onlyOwnerPubkey(_rootPubkey) accept {
+    ) public onlyOwnerPubkey(_rootPubkey) accept {
         ensureBalance();
         TvmCell data = VerifiersLib.composePopCoinRootStateInit(_code[m_PopCoinRoot], _root, name);
         address newroot = VerifiersLib.calculatePopCoinRootAddress(_code[m_PopCoinRoot], _root, name);
         (, uint256 modulus) = math.divmod(newroot.value, MAX_MIRROR_INDEX);
         require(modulus == _index, ERR_WRONG_MIRROR_INDEX);
         new PopCoinRoot {stateInit: data, value: varuint16(FEE_DEPLOY_POP_COIN_ROOT), wid: 0, flag: 1}(_code[m_PopCoinWallet], tvm.hash(_code[m_PopitGame]), maxPopitIndex, popits_media, description, _rootPubkey, isPublic, _index, popitGameOwner);
+        address addrExtern = address.makeAddrExtern(PopCoinRootDeployedEmit, bitCntAddress);
+        emit PopCoinRootDeployed{dest: addrExtern}(name, popitGameOwner);
     }
 
-    //Fallback/Receive
-    receive() external {
+    function deployMiner() public accept {
+        ensureBalance();
+        address multifactor = msg.sender;
+        require(multifactor != address.makeAddrStd(0, 0), ERR_INVALID_SENDER);
+        (, uint256 modulus) = math.divmod(multifactor.value, MAX_MIRROR_INDEX);
+        require(modulus == _index, ERR_WRONG_MIRROR_INDEX);
+        address popitGame = VerifiersLib.calculatePopitGameAddress(_code[m_PopitGame], _root, msg.sender);
+        TvmCell data = VerifiersLib.composeMinerStateInit(_code[m_Miner], multifactor);
+        address boost = VerifiersLib.calculateBoostAddress(_code[m_Boost], popitGame, _root);
+        new Miner {stateInit: data, value: varuint16(FEE_DEPLOY_MINER), wid: 0, flag: 1}(_index, popitGame, _minerRoot, boost, _root);
+        address addrExtern = address.makeAddrExtern(MinerDeployedEmit, bitCntAddress);
+        emit MinerDeployed{dest: addrExtern}(msg.sender);
     }
 
+    function updateCode(TvmCell newcode, TvmCell cell) public onlyOwnerPubkey(_rootPubkey) accept {
+        ensureBalance();
+        tvm.setcode(newcode);
+        tvm.setCurrentCode(newcode);
+        onCodeUpgrade(cell);
+    }
+
+    function onCodeUpgrade(TvmCell cell) private {
+        cell;
+        tvm.accept();
+        tvm.resetStorage();
+    }
 
     //Getters
+    function getMinerAddress(address multifactor) external view returns(address miner) {
+        return VerifiersLib.calculateMinerGameAddress(_code[m_Miner], multifactor);
+    }
+
     function getVersion() external pure returns(string, string) {
         return (version, "MobileVerifiersContractRootMirror");
     }

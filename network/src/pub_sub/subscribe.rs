@@ -56,6 +56,9 @@ pub async fn handle_subscriptions<
     let mut my_subscribe_plan = net_topology_rx.borrow().my_subscribe_plan().clone();
     let mut last_closed_addrs = HashMap::<SocketAddr, Instant>::new();
     loop {
+        metrics.as_ref().inspect(|m| {
+            m.report_planned_publisher_count(my_subscribe_plan.len());
+        });
         last_closed_addrs.retain(|_, close_time| close_time.elapsed().as_millis() < 200);
         let subscriptions = my_subscribe_plan
             .iter()
@@ -74,7 +77,8 @@ pub async fn handle_subscriptions<
         let (should_be_subscribed, should_be_unsubscribed) =
             pub_sub.schedule_subscriptions(&subscriptions);
 
-        tracing::trace!(
+        tracing::info!(
+            target: "monit",
             added = ?should_be_subscribed,
             "Update subscriptions{} because of {reason}",
             diff_info(

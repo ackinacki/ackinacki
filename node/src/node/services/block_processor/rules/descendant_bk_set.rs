@@ -3,13 +3,16 @@ use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::node::block_state::repository::BlockState;
+use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::types::AckiNackiBlock;
+use crate::types::AckiNackiBlockVersioned;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
 pub fn set_descendant_bk_set(
     block_state: &BlockState,
     candidate_block: &Envelope<GoshBLS, AckiNackiBlock>,
+    optimistic_state: &OptimisticStateImpl,
 ) {
     if block_state
         .guarded(|e| e.descendant_bk_set().is_some() && e.descendant_future_bk_set().is_some())
@@ -30,9 +33,10 @@ pub fn set_descendant_bk_set(
     }
 
     match update_block_keeper_set_from_common_section(
-        candidate_block.data(),
+        &AckiNackiBlockVersioned::New(candidate_block.data().clone()),
         bk_set.clone(),
         future_bk_set.clone(),
+        optimistic_state,
     ) {
         Err(e) => {
             tracing::trace!(

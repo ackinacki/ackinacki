@@ -1,0 +1,57 @@
+---
+
+- name: "Ensures proxy dir exists"
+  ansible.builtin.file:
+    path: "{{ TLS_PROXY_DIR | mandatory }}/"
+    state: directory
+    mode: u=rwx,g=r,o=r
+
+- name: "Ensures dir exists: {{ TLS_PROXY_DIR }}/caddy/"
+  ansible.builtin.file:
+    path: "{{ TLS_PROXY_DIR }}/caddy/"
+    state: directory
+    mode: u=rwx,g=r,o=r
+
+- name: Production compose
+  ansible.builtin.template:
+    src: templates/compose.j2
+    dest: "{{ TLS_PROXY_DIR }}/compose.yaml"
+    mode: "0644"
+  register: compose
+
+- name: Copy caddyfile
+  ansible.builtin.template:
+    src: templates/Caddyfile.j2
+    dest: "{{ TLS_PROXY_DIR }}/caddy/Caddyfile"
+    mode: "0644"
+  register: caddyfile
+
+- name: Ensure .env
+  ansible.builtin.copy:
+    dest: "{{ TLS_PROXY_DIR }}/.env"
+    content: |
+      HOST_PUBLIC_IP={{ HOST_PUBLIC_IP }}
+      CADDY_EMAIL={{ CADDY_EMAIL | mandatory }}
+    mode: u=rw,g=r,o=r
+
+- name: Copy TLS files
+  ansible.builtin.copy:
+    dest: "{{ TLS_PROXY_DIR }}/caddy/"
+    src: "{{ item }}"
+  with_items:
+    - "{{ CERT_FILE }}"
+    - "{{ CERT_KEY_FILE }}"
+  when: ENABLE_GEN_CERT is false and LOAD_CERT is true
+
+- name: Compose up
+  ansible.builtin.shell:
+    chdir: "{{ TLS_PROXY_DIR }}"
+    cmd: docker compose up -d --build --remove-orphans
+
+- name: Compose restart
+  ansible.builtin.shell:
+    chdir: "{{ TLS_PROXY_DIR }}"
+    cmd: docker compose restart
+  when:
+    - caddyfile.changed
+    - not compose.changed

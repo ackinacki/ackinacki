@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use anyhow::ensure;
 use tvm_block::ShardAccounts;
 
 use crate::helper::get_temp_file_path;
@@ -46,7 +47,7 @@ impl AccountsRepository {
         last_trans_hash: &tvm_types::UInt256,
         last_trans_lt: u64,
     ) -> anyhow::Result<tvm_types::Cell> {
-        assert!(self.unload_after.is_some(), "Tried to load account while unload is disabled");
+        ensure!(self.unload_after.is_some(), "Tried to load account while unload is disabled");
         let path = self.account_path(account_id, last_trans_hash, last_trans_lt);
         let data = std::fs::read(&path).map_err(|err| {
             anyhow::format_err!("Failed to read account {}: {err}", path.display())

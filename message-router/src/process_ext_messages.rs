@@ -2,26 +2,26 @@
 //
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
 use telemetry_utils::now_ms;
+use transport_layer::HostPort;
 
 use crate::base64_id_decode;
+use crate::defaults::DEFAULT_BK_API_MESSAGES_PATH;
+use crate::defaults::DEFAULT_BK_API_PROTO;
 use crate::defaults::DEFAULT_BK_API_TIMEOUT;
-use crate::defaults::DEFAULT_NODE_URL_PATH;
-use crate::defaults::DEFAULT_NODE_URL_PROTO;
-use crate::defaults::DEFAULT_URL_PATH;
+use crate::defaults::DEFAULT_BM_API_MESSAGES_PATH;
 use crate::message_router::MessageRouter;
 
 lazy_static::lazy_static!(
     static ref NODE_URL_PATH: String = std::env::var("NODE_URL_PATH")
-        .unwrap_or(DEFAULT_NODE_URL_PATH.into());
+        .unwrap_or(DEFAULT_BK_API_MESSAGES_PATH.into());
 
     static ref ROUTER_URL_PATH: String = std::env::var("ROUTER_URL_PATH")
-        .unwrap_or(DEFAULT_URL_PATH.into());
+        .unwrap_or(DEFAULT_BM_API_MESSAGES_PATH.into());
 );
 
 pub async fn run(
@@ -76,15 +76,13 @@ pub async fn run(
         reqwest::Client::builder().timeout(Duration::from_secs(DEFAULT_BK_API_TIMEOUT)).build()?;
 
     for recipient in recipients {
-        let url = construct_url(recipient);
+        let url = construct_url(&recipient);
         tracing::debug!(target: "message_router", "Forwarding requests to: {url}");
 
         let request = client.post(&url).header("X-EXT-MSG-SENT", now_ms().to_string()).json(&nrs);
 
         result = match request.send().await {
             Ok(response) => {
-                let recipient = recipient.ip().to_string();
-
                 let body = response.text().await;
                 match body {
                     Ok(body_str) => {
@@ -98,7 +96,7 @@ pub async fn run(
                     Err(err) => {
                         tracing::error!(target: "message_router", "redirection to {url} failed: {err}");
                         let err_data = http_server::ExtMsgErrorData::new(
-                            vec![recipient],
+                            vec![recipient.clone()],
                             ids.get(&nrs[0]["id"]).unwrap().to_string(),
                             None,
                             Some(thread_id.clone()),
@@ -114,7 +112,7 @@ pub async fn run(
             Err(err) => {
                 tracing::error!(target: "message_router", "redirection to {url} failed: {err}");
                 let err_data = http_server::ExtMsgErrorData::new(
-                    vec![recipient.ip().to_string()],
+                    vec![recipient.clone()],
                     ids.get(&nrs[0]["id"]).unwrap().to_string(),
                     None,
                     Some(thread_id.clone()),
@@ -131,6 +129,6 @@ pub async fn run(
     Ok(result)
 }
 
-fn construct_url(host: SocketAddr) -> String {
-    format!("{DEFAULT_NODE_URL_PROTO}://{}:{}{}", host.ip(), host.port(), *NODE_URL_PATH)
+fn construct_url(host_port: &HostPort) -> String {
+    format!("{DEFAULT_BK_API_PROTO}://{}{}", host_port, *NODE_URL_PATH)
 }

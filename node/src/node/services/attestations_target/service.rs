@@ -32,6 +32,16 @@ pub enum AttestationsFailure {
     InvalidBlock_TailDoesNotMeetCriteria,
 }
 
+// Note: Success result does not mean that all checkpoints passed.
+// It only means there were enough data to run the evaluation function.
+#[derive(Debug, PartialEq)]
+pub enum EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess {
+    Passed { primary: Vec<BlockIdentifier>, fallback: Vec<BlockIdentifier> },
+    // A first block in a new thread.
+    ThreadSpawn,
+    SomeFailed,
+}
+
 impl AttestationTargetsService {
     // TODO: expand errors set. Return actual errors instead of Ok(false)
     pub fn evaluate_if_next_block_ancestors_required_attestations_will_be_met(
@@ -42,7 +52,10 @@ impl AttestationTargetsService {
             (BlockIdentifier, AttestationTargetType),
             HashSet<SignerIndex>,
         >,
-    ) -> anyhow::Result<bool, UnfinalizedAncestorBlocksSelectError> {
+    ) -> anyhow::Result<
+        EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess,
+        UnfinalizedAncestorBlocksSelectError,
+    > {
         tracing::trace!("evaluate_if_next_block_ancestors_required_attestations_will_be_met: parent_block_identifier: {parent_block_identifier:?}, next_block_attestations: {next_block_attestations:?}");
         let parent_block_state =
             self.block_state_repository.get(&parent_block_identifier).expect("It must not fail");
@@ -60,7 +73,9 @@ impl AttestationTargetsService {
             return Err(UnfinalizedAncestorBlocksSelectError::FailedToLoadBlockState);
         };
         if thread_identifier != parent_block_thread_identifier {
-            return Ok(true);
+            return Ok(
+                EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::ThreadSpawn,
+            );
         }
         let mut ancestor_blocks_finalization_primary_checkpoints =
             ancestor_blocks_finalization_distances_prototype.primary().clone();
@@ -87,8 +102,14 @@ impl AttestationTargetsService {
 
         if !checkpoint_result.failed.is_empty() {
             tracing::trace!("evaluate_if_next_block_ancestors_required_attestations_will_be_met: failed full result: {checkpoint_result:?}");
+            return Ok(
+                EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::SomeFailed,
+            );
         }
-        Ok(checkpoint_result.failed.is_empty())
+        Ok(EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::Passed {
+            primary: checkpoint_result.passed_primary,
+            fallback: checkpoint_result.passed_fallback,
+        })
     }
 }
 
@@ -96,14 +117,12 @@ impl AttestationTargetsService {
 mod tests {
     use std::str::FromStr;
 
-    use tracing_test::traced_test;
-
     use super::*;
     use crate::node::associated_types::AttestationTargetType;
     use crate::node::block_state::attestation_target_checkpoints::AttestationTargetCheckpoint;
     use crate::utilities::guarded::GuardedMut;
 
-    #[traced_test]
+    // #[traced_test]
     #[test]
     fn bug_evaluation_failed_jul_19_2025() {
         // Note: this is a repro from a log. Somehow it did fail in a load test.
@@ -231,7 +250,10 @@ mod tests {
             );
         assert!(actual_result.is_ok());
         let actual_result = actual_result.unwrap();
-        assert!(actual_result);
+        assert!(
+            actual_result
+                != EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::SomeFailed
+        );
     }
 
     #[test]
@@ -339,6 +361,9 @@ mod tests {
             );
         assert!(actual_result.is_ok());
         let actual_result = actual_result.unwrap();
-        assert!(actual_result);
+        assert!(
+            actual_result
+                != EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::SomeFailed
+        );
     }
 }

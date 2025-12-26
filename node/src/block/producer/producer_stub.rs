@@ -14,9 +14,10 @@ use crate::node::block_state::repository::BlockState;
 use crate::repository::stub_repository::OptimisticStateStub;
 use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
-use crate::types::AckiNackiBlock;
+use crate::types::AckiNackiBlockVersioned;
 use crate::types::BlockRound;
 use crate::types::ThreadIdentifier;
+use crate::versioning::ProtocolVersion;
 
 #[cfg(test)]
 pub struct BlockProducerStub {}
@@ -36,8 +37,9 @@ impl BlockProducer for BlockProducerStub {
         _time_limits: &ExecutionTimeLimits,
         _block_round: BlockRound,
         _parent_block_state: BlockState,
+        _protocol_version: ProtocolVersion,
     ) -> anyhow::Result<(
-        AckiNackiBlock,
+        AckiNackiBlockVersioned,
         Self::OptimisticState,
         Vec<(Cell, ActiveThread)>,
         CrossThreadRefData,

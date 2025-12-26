@@ -3,9 +3,12 @@
 
 use std::path::PathBuf;
 
-use crate::config::Config;
+use serde::Deserialize;
+use serde::Serialize;
 
-pub fn load_config_from_file(path: &PathBuf) -> anyhow::Result<Config> {
+pub fn load_config_from_file<Config: for<'a> Deserialize<'a>>(
+    path: &PathBuf,
+) -> anyhow::Result<Config> {
     std::fs::read_to_string(path)
         .map_err(|e| anyhow::format_err!("Failed to open config file: {e}"))
         .and_then(|config_str| {
@@ -14,7 +17,10 @@ pub fn load_config_from_file(path: &PathBuf) -> anyhow::Result<Config> {
         })
 }
 
-pub fn save_config_to_file(config: &Config, path: &PathBuf) -> anyhow::Result<()> {
+pub fn save_config_to_file<Config: Serialize>(
+    config: &Config,
+    path: &PathBuf,
+) -> anyhow::Result<()> {
     let config_str = serde_yaml::to_string(config)
         .map_err(|e| anyhow::format_err!("Failed to serialize config: {e}"))?;
     std::fs::write(path, config_str)?;

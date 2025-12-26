@@ -1,25 +1,4 @@
-- name: "Ensures block manager directories"
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    mode: u=rwx,g=rwx,o=rwx
-  with_items:
-    - "{{ BM_DIR }}"
-    - "{{ BM_LOGS_DIR }}"
-
-- name: "Ensures keys dir exists: {{ BM_DIR }}/bm-configs"
-  ansible.builtin.file:
-    path: "{{ BM_DIR }}/bm-configs"
-    state: directory
-    mode: u=rwx,g=,o=rwx
-
-- name: Copy keys file
-  copy:
-    dest: "{{ BM_DIR }}/bm-configs/"
-    src: "{{ item }}"
-  loop:
-    - "{{ BM_WALLET_KEYS }}"
-    - "{{ BM_SIGNER_KEYS }}"
+---
 
 - name: Get public wallet key
   ansible.builtin.shell:

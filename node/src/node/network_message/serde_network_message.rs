@@ -4,6 +4,7 @@
 use std::fmt;
 
 use serde::de;
+use serde::de::Error;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::Serializer;
@@ -131,7 +132,10 @@ impl<'de> de::Visitor<'de> for NetworkMessageVisitor {
             (9, v) => v.newtype_variant().map(ResentCandidate),
             (10, v) => v.newtype_variant().map(AuthoritySwitchProtocol),
             (11, v) => v.newtype_variant().map(NodeJoiningWithLastFinalized),
-            _ => unreachable!(),
+            (v, _) => Err(Error::unknown_variant(
+                &v.to_string(),
+                &["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"],
+            )),
         }
     }
 }

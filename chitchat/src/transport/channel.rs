@@ -1,21 +1,15 @@
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use anyhow::bail;
-use anyhow::Context;
+use anyhow::{Context, bail};
 use async_trait::async_trait;
-use tokio::sync::mpsc::Receiver;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::debug;
 
-use crate::serialize::Deserializable;
-use crate::serialize::Serializable;
-use crate::transport::Socket;
-use crate::transport::Transport;
-use crate::ChitchatMessage;
-use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
+use crate::serialize::{Deserializable, Serializable};
+use crate::transport::{Socket, Transport};
+use crate::{ChitchatMessage, MAX_UDP_DATAGRAM_PAYLOAD_SIZE};
 
 const MAX_MESSAGE_PER_CHANNEL: usize = 100;
 
@@ -58,7 +52,11 @@ impl Transport for ChannelTransport {
             bail!("Address not available `{listen_addr}`");
         }
         inner_lock.send_channels.insert(listen_addr, message_tx);
-        Ok(Box::new(InProcessSocket { listen_addr, broker: self.clone(), message_rx }))
+        Ok(Box::new(InProcessSocket {
+            listen_addr,
+            broker: self.clone(),
+            message_rx,
+        }))
     }
 }
 

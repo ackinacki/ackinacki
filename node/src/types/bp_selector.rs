@@ -116,7 +116,7 @@ mod tests {
                     owner_address: AccountAddress(UInt256::from_str(&acc_id_str).unwrap()),
                     ..Default::default()
                 },
-            )
+            );
         }
 
         let producer_selector =
@@ -146,7 +146,7 @@ mod tests {
                     owner_address: AccountAddress(UInt256::from_str(&acc_id_str).unwrap()),
                     ..Default::default()
                 },
-            )
+            );
         }
         let mut producer_selector =
             ProducerSelector { rng_seed_block_id: BlockIdentifier::default(), index: 0 };
@@ -175,7 +175,7 @@ mod tests {
                     owner_address: AccountAddress::from_str(&acc_id_str).unwrap(),
                     ..Default::default()
                 },
-            )
+            );
         }
         let producer_selector =
             ProducerSelector { rng_seed_block_id: BlockIdentifier::default(), index: 0 };
@@ -204,7 +204,7 @@ mod tests {
                     owner_address: AccountAddress::from_str(&acc_id_str).unwrap(),
                     ..Default::default()
                 },
-            )
+            );
         }
         let producer_selector =
             ProducerSelector { rng_seed_block_id: BlockIdentifier::default(), index: 11 };

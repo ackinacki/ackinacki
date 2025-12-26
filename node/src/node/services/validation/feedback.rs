@@ -18,6 +18,7 @@ use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::NackData;
 use crate::node::associated_types::NackReason;
+use crate::node::associated_types::NodeCredentials;
 use crate::node::BlockState;
 use crate::node::NetworkMessage;
 use crate::node::NodeIdentifier;
@@ -29,7 +30,7 @@ use crate::utilities::guarded::Guarded;
 
 #[derive(TypedBuilder, Clone)]
 pub struct AckiNackiSend {
-    node_id: NodeIdentifier,
+    node_credentials: NodeCredentials,
     bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
     ack_network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
     nack_network_broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
@@ -54,7 +55,7 @@ impl AckiNackiSend {
             anyhow::bail!("block state does not have valid data set")
         };
         let destinations = {
-            known_attestation_interested_parties.remove(&self.node_id);
+            known_attestation_interested_parties.remove(self.node_credentials.node_id());
             known_attestation_interested_parties
         };
         // TODO: mb just return here
@@ -131,7 +132,11 @@ impl AckiNackiSend {
 
     fn get_signer_data(&self, block_state: &BlockState) -> Option<(SignerIndex, Secret)> {
         let (node_epoch_pubkey, node_epoch_signer_index) = block_state.guarded(|e| {
-            let node_epoch_bk_data = e.get_bk_data_for_node_id(&self.node_id)?;
+            let node_epoch_bk_data = e.get_bk_data_for_node_id(self.node_credentials.node_id())?;
+            if !node_epoch_bk_data.protocol_support.is_none() && &node_epoch_bk_data.protocol_support != self.node_credentials.protocol_version_support() {
+                tracing::warn!("Failed to send Ack/Nack: bk data version support does not match node version support");
+                return None;
+            }
             let node_epoch_signer_index = node_epoch_bk_data.signer_index;
             let node_epoch_pubkey = node_epoch_bk_data.pubkey;
             Some((node_epoch_pubkey, node_epoch_signer_index))

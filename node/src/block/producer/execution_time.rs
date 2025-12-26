@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use tvm_types::UInt256;
 
-use crate::config::Config;
+use crate::config::GlobalConfig;
 
 pub struct ProductionTimeoutCorrection {
     last_production_duration: i64,
@@ -71,20 +71,19 @@ impl ExecutionTimeLimits {
         }
     }
 
-    pub fn production(block_timeout: Duration, config: &Config) -> Self {
+    pub fn production(block_timeout: Duration, config: &GlobalConfig) -> Self {
         Self::new(
             Some(Instant::now() + block_timeout),
-            config.global.time_to_produce_transaction_millis.map(Duration::from_millis),
+            config.time_to_produce_transaction_millis.map(Duration::from_millis),
             None,
         )
     }
 
-    pub fn verification(config: &Config) -> Self {
+    pub fn verification(config: &GlobalConfig) -> Self {
         Self::new(
-            Some(Instant::now() + Duration::from_millis(config.global.time_to_verify_block_millis)),
-            config.global.time_to_verify_transaction_millis.map(Duration::from_millis),
+            Some(Instant::now() + Duration::from_millis(config.time_to_verify_block_millis)),
+            config.time_to_verify_transaction_millis.map(Duration::from_millis),
             config
-                .global
                 .time_to_verify_transaction_aborted_with_execution_timeout_millis
                 .map(Duration::from_millis),
         )

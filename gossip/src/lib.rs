@@ -8,7 +8,6 @@ pub mod gossip_peer;
 use std::fmt::Display;
 
 use anyhow::Context;
-use base64::Engine;
 use chitchat::spawn_chitchat;
 use chitchat::ChitchatConfig;
 use chitchat::ChitchatHandle;
@@ -16,9 +15,6 @@ use chitchat::ChitchatId;
 use chitchat::ChitchatRef;
 use chitchat::ClusterStateSnapshot;
 use chitchat::FailureDetectorConfig;
-use chitchat::NodeState;
-use ed25519_dalek::Signer;
-use itertools::Itertools;
 use poem::listener::TcpListener;
 use poem::Route;
 use poem::Server;
@@ -29,19 +25,10 @@ use rand::Rng;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::task::JoinHandle;
-use url::Url;
 
 use crate::gossip_peer::GossipPeer;
 
 pub static DEFAULT_GOSSIP_INTERVAL: Duration = Duration::from_millis(500);
-pub const GOSSIP_API_ADVERTISE_ADDR_KEY: &str = "api_advertise_addr";
-pub const ADVERTISE_ADDR_KEY: &str = "node_advertise_addr";
-pub const BK_API_SOCKET_KEY: &str = "bk_api_socket";
-pub const BM_API_SOCKET_KEY: &str = "bm_api_socket";
-pub const ID_KEY: &str = "node_id";
-pub const PROXIES_KEY: &str = "node_proxies";
-// pubkey_signature is base64 buf with (VerifyingKey([u8; 32]), Signature([u8; 64]))
-pub const PUBKEY_SIGNATURE_KEY: &str = "pubkey_signature";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ApiResponse {
@@ -100,6 +87,12 @@ pub struct GossipConfig {
     /// Chitchat cluster id for gossip
     #[serde(default = "default_chitchat_cluster_id")]
     pub cluster_id: String,
+
+    /// Gossip peer TTL in seconds.
+    /// Defaults to 900 (15 minutes).
+    /// Value 0 means no TTL.
+    #[serde(default = "default_gossip_peer_ttl_seconds")]
+    pub peer_ttl_seconds: u64,
 }
 
 impl Default for GossipConfig {
@@ -109,6 +102,7 @@ impl Default for GossipConfig {
             advertise_addr: None,
             seeds: Vec::new(),
             cluster_id: default_chitchat_cluster_id(),
+            peer_ttl_seconds: default_gossip_peer_ttl_seconds(),
         }
     }
 }
@@ -147,6 +141,10 @@ fn default_gossip_listen_addr() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], 10000))
 }
 
+pub fn default_gossip_peer_ttl_seconds() -> u64 {
+    60 * 15
+}
+
 fn default_chitchat_cluster_id() -> String {
     "acki_nacki".to_string()
 }
@@ -154,7 +152,6 @@ fn default_chitchat_cluster_id() -> String {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GossipReloadConfig<PeerId: FromStr<Err: Display> + Display> {
     pub gossip_config: GossipConfig,
-    pub api_advertise_addr: Url,
     pub my_ed_key_secret: Vec<String>,
     pub my_ed_key_path: Vec<String>,
     pub peer_config: Option<GossipPeer<PeerId>>,
@@ -204,9 +201,9 @@ pub async fn run_gossip_no_reload(
 }
 
 pub async fn run_gossip_with_reload<PeerId>(
-    chitchat_id_prefix: &str,
+    chitchat_id_prefix: &'static str,
     mut graceful_shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    mut config_rx: tokio::sync::watch::Receiver<GossipReloadConfig<PeerId>>,
+    mut gossip_reload_config_rx: tokio::sync::watch::Receiver<GossipReloadConfig<PeerId>>,
     transport: impl chitchat::transport::Transport,
 ) -> anyhow::Result<(
     tokio::sync::watch::Receiver<Option<ChitchatRef>>,
@@ -220,13 +217,13 @@ where
 
     let (chitchat_tx, chitchat_rx) = tokio::sync::watch::channel::<Option<ChitchatRef>>(None);
 
-    let chitchat_node_id = generate_chitchat_node_id(chitchat_id_prefix);
     let run_gossip_handle = tokio::spawn(async move {
         loop {
-            let update_config = config_rx.borrow().clone();
+            let gossip_reload_config = gossip_reload_config_rx.borrow().clone();
             tracing::debug!("Config updated");
-            let gossip_config = update_config.gossip_config;
-            let chitchat_config = gossip_config.chitchat_config(chitchat_node_id.clone());
+            let gossip_config = gossip_reload_config.gossip_config;
+            let chitchat_config =
+                gossip_config.chitchat_config(generate_chitchat_node_id(chitchat_id_prefix));
 
             tracing::info!("Starting ChitChat server on {}", gossip_config.advertise_addr());
 
@@ -234,20 +231,12 @@ where
 
             chitchat_handle
                 .with_chitchat(|c| {
-                    if let Some(gossip_node) = update_config.peer_config.clone() {
-                        gossip_node.set_to(c.self_node_state());
-                    }
-                    c.self_node_state().set(
-                        GOSSIP_API_ADVERTISE_ADDR_KEY,
-                        update_config.api_advertise_addr.to_string(),
-                    );
-                    if let Ok(keys) = transport_layer::resolve_signing_keys(
-                        &update_config.my_ed_key_secret,
-                        &update_config.my_ed_key_path,
-                    ) {
-                        if let Some(key) = keys.first() {
-                            sign_gossip_node(c.self_node_state(), key.clone());
-                        }
+                    if let Some(self_peer) = gossip_reload_config.peer_config.clone() {
+                        self_peer.update_node_state(
+                            c.self_node_state(),
+                            &gossip_reload_config.my_ed_key_secret,
+                            &gossip_reload_config.my_ed_key_path,
+                        );
                     }
                 })
                 .await;
@@ -292,7 +281,7 @@ where
 
             let mut reload = true;
             tokio::select! {
-                res = config_rx.changed() => {
+                res = gossip_reload_config_rx.changed() => {
                     if res.is_err() {
                         tracing::error!("Thread serving ChitChat aborted, watch channel closed");
                         reload = false;
@@ -332,33 +321,4 @@ where
     });
     first_rx.await.context("Listener task failed before sending value")?;
     Ok((chitchat_rx, run_gossip_handle))
-}
-
-pub fn sign_gossip_node(node_state: &mut NodeState, key: transport_layer::SigningKey) {
-    let signature = key.sign(&bytes_to_sign(node_state.key_values()));
-    node_state
-        .set(PUBKEY_SIGNATURE_KEY, pubkey_signature_to_string(&key.verifying_key(), &signature));
-}
-
-pub fn pubkey_signature_to_string(
-    pubkey: &transport_layer::VerifyingKey,
-    signature: &transport_layer::Signature,
-) -> String {
-    let mut buf = [0u8; 32 + 64];
-    buf[..32].copy_from_slice(&pubkey.as_bytes()[..]);
-    buf[32..].copy_from_slice(&signature.to_bytes()[..]);
-    base64::engine::general_purpose::STANDARD.encode(buf)
-}
-
-pub fn bytes_to_sign<'kv>(key_values: impl Iterator<Item = (&'kv str, &'kv str)>) -> Vec<u8> {
-    let mut data = Vec::new();
-    for (k, v) in key_values.sorted_by_key(|x| x.0) {
-        if k != PUBKEY_SIGNATURE_KEY {
-            data.extend_from_slice(k.as_bytes());
-            data.push(0);
-            data.extend_from_slice(v.as_bytes());
-            data.push(0);
-        }
-    }
-    data
 }

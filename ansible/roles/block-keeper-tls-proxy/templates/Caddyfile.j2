@@ -1,0 +1,53 @@
+{
+    email {$CADDY_EMAIL}
+{% if CADDY_EAB is defined and CADDY_EAB %}
+{% if ZEROSSL_EXCLUSIVE is defined and ZEROSSL_EXCLUSIVE %}
+    acme_ca https://acme.zerossl.com/v2/DV90
+{% endif %}
+    acme_eab {
+        key_id {{ CADDY_EAB.split()[0] }}
+        mac_key {{ CADDY_EAB.split()[1] }}
+    }
+{% endif %}
+}
+
+(cors) {
+  @cors_preflight_request method OPTIONS
+
+  header {
+  		Access-Control-Allow-Origin "{header.origin}"
+		  Vary Origin
+		  Access-Control-Expose-Headers "X-Requested-With, Content-Type, Authorization"
+		  Access-Control-Allow-Credentials "true"
+  }
+
+  handle @cors_preflight_request {
+		header {
+			Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE"
+      Access-Control-Allow-Origin "{header.origin}"
+			Access-Control-Allow-Headers "*"
+			Access-Control-Max-Age "3600"
+		}
+    respond "" 204
+  }
+}
+
+(reverse_proxy) {
+  reverse_proxy {args[0]}:{args[1]} {
+    header_up X-Real-IP {http.request.remote.host}
+    header_up X-Forwarded-Port {http.request.port}
+    header_up X-Forwarded-Proto {http.request.scheme}
+  }
+}
+
+{% for block_keeper in block_keepers -%}
+{% for host in block_keeper -%}
+https://{{ host }} {
+{% if (LOAD_CERT is defined and LOAD_CERT is true) and (ENABLE_GEN_CERT is not defined or ENABLE_GEN_CERT is false) %}
+  tls /etc/caddy/{{ CERT_FILE | mandatory }} /etc/caddy/{{ CERT_KEY_FILE | mandatory }}
+{% endif -%}
+  import cors {header.origin}
+  import reverse_proxy "{{ ansible_host }}" "{{ block_keeper[host].BK_PORT }}"
+}
+{% endfor -%}
+{% endfor -%}

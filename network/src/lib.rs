@@ -74,9 +74,17 @@ pub(crate) fn detailed(err: &impl Debug) -> String {
     format!("{err:#?}").replace("\n", "").replace("\r", "")
 }
 
-pub fn try_parse_socket_addr(s: impl AsRef<str>, default_port: u16) -> anyhow::Result<SocketAddr> {
+pub fn resolve_port(s: impl AsRef<str>, default_port: u16) -> String {
     let s = s.as_ref();
-    let s = if s.contains(":") { s.to_string() } else { format!("{s}:{default_port}") };
+    if s.contains(":") {
+        s.to_string()
+    } else {
+        format!("{s}:{default_port}")
+    }
+}
+
+pub fn try_parse_socket_addr(s: impl AsRef<str>, default_port: u16) -> anyhow::Result<SocketAddr> {
+    let s = resolve_port(s, default_port);
     let addr = s
         .to_socket_addrs()?
         .next()

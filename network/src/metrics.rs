@@ -14,6 +14,7 @@ use opentelemetry::KeyValue;
 use telemetry_utils::out_of_bounds_guard;
 
 use crate::pub_sub::connection::ConnectionInfo;
+use crate::pub_sub::connection::ConnectionRole;
 use crate::transfer::TransportError;
 use crate::DeliveryPhase;
 use crate::SendMode;
@@ -32,6 +33,7 @@ pub struct NetMetrics {
     outgoing_transfer_error: Counter<u64>,
     subscriber_count: Gauge<u64>,
     publisher_count: Gauge<u64>,
+    planned_publisher_count: Gauge<u64>,
     transfer_after_ser: Histogram<u64>,
     receive_before_deser: Histogram<u64>,
     original_message_size: Histogram<u64>,
@@ -43,6 +45,8 @@ pub struct NetMetrics {
     received_bytes: Counter<u64>,
     errors: Counter<u64>,
     warns: Counter<u64>,
+    added_connections: Counter<u64>,
+    removed_connections: Counter<u64>,
 
     // It's usual for observable instruments to be prefixed with underscore
     _incoming_buffer_size: ObservableGauge<u64>,
@@ -176,6 +180,11 @@ impl NetMetrics {
                 .build(),
             subscriber_count: meter.u64_gauge("node_network_subscriber_count").build(),
             publisher_count: meter.u64_gauge("node_network_publisher_count").build(),
+            planned_publisher_count: meter
+                .u64_gauge("node_network_planned_publisher_count")
+                .build(),
+            added_connections: meter.u64_counter("node_network_added_connections").build(),
+            removed_connections: meter.u64_counter("node_network_removed_connections").build(),
             _incoming_buffer_size: network_incoming_buffer_size,
             _outgoing_buffer_size: network_outgoing_buffer_size,
             _network_incoming_transfer_inflight: network_incoming_transfer_inflight,
@@ -210,9 +219,23 @@ impl NetMetrics {
         self.outgoing_transfer_error.add(1, &attrs);
     }
 
+    pub fn report_added_connection(&self, local_role: ConnectionRole) {
+        let attrs = [remote_role_attr(local_role)];
+        self.added_connections.add(1, &attrs);
+    }
+
+    pub fn report_removed_connection(&self, local_role: ConnectionRole) {
+        let attrs = [remote_role_attr(local_role)];
+        self.removed_connections.add(1, &attrs);
+    }
+
     pub fn report_connections(&self, subscriber_count: usize, publisher_count: usize) {
         self.subscriber_count.record(subscriber_count as u64, &[]);
         self.publisher_count.record(publisher_count as u64, &[]);
+    }
+
+    pub fn report_planned_publisher_count(&self, count: usize) {
+        self.planned_publisher_count.record(count as u64, &[]);
     }
 
     pub fn report_transfer_after_ser(&self, value: u128) {
@@ -335,6 +358,18 @@ impl NetMetrics {
             }
         }
     }
+}
+
+fn remote_role_attr(local_role: ConnectionRole) -> KeyValue {
+    KeyValue::new(
+        "remote_role",
+        match local_role {
+            ConnectionRole::Subscriber => "publisher",
+            ConnectionRole::Publisher => "subscriber",
+            ConnectionRole::DirectReceiver => "direct_sender",
+        }
+        .to_string(),
+    )
 }
 
 fn msg_type_attr(msg_type: &str) -> KeyValue {

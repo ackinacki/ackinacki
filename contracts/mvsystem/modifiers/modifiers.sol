@@ -20,6 +20,8 @@ abstract contract Modifiers is Errors {
     uint8 constant m_MvMultifactor = 5;
     uint8 constant m_Indexer = 6;
     uint8 constant m_Boost = 7;
+    uint8 constant m_Miner = 8;
+    uint8 constant m_Mirror = 9;
 
     //Deploy constants
     uint64 constant FEE_DEPLOY_POPIT_GAME_WALLET = 51 vmshell;
@@ -28,11 +30,13 @@ abstract contract Modifiers is Errors {
     uint64 constant FEE_DEPLOY_MULTIFACTOR = 15 vmshell;
     uint64 constant FEE_DEPLOY_INDEXER = 16 vmshell;
     uint64 constant FEE_DEPLOY_BOOST = 17 vmshell;
+    uint64 constant FEE_DEPLOY_MINER = 18 vmshell;
 
     uint64 constant BUSY_BLOCKS = 10;
 
     uint64 constant ROOT_BALANCE = 200 vmshell;
     uint64 constant CONTRACT_BALANCE = 100 vmshell;
+    uint64 constant MINER_BALANCE = 50 vmshell;
 
     uint32 constant CURRENCIES_ID = 1;
     uint32 constant CURRENCIES_ID_SHELL = 2;
@@ -46,6 +50,14 @@ abstract contract Modifiers is Errors {
     string constant WASM_FUNCTION = "tlscheck";
     bytes constant WASM_BINARY = "";
 
+    string constant WASM_MINER_MODULE = "docs:bee-engine/verifier-interface@0.1.0";
+    string constant WASM_MINER_FUNCTION = "verify";
+
+    uint64 constant BIG_TAP = 12000;
+    uint64 constant SMALL_TAP = 70;
+    uint64 constant MINING_DUR_TAP = 330;
+    
+
     uint8   constant MAX_QUEUED_REQUESTS =  20;
     uint64  constant EXPIRATION_TIME = 3601; // lifetime is 1 hour
     uint64  constant MIN_EPK_LIFE_TIME = 300; //5 min             //60; // lifetime is 1 min
@@ -56,15 +68,43 @@ abstract contract Modifiers is Errors {
     uint8   constant MAX_NUM_OF_FACTORS = 10;
     uint8   constant NUMBER_OF_FACTORS_TO_CLEAR = 5;
     uint8   constant MAX_NUM_OF_JWK = 12;
-    uint8   constant MAX_LEN = 50;
+    uint8   constant MAX_LEN = 20;
+    uint8   constant MAX_LEN_TAPS = 10;
+    uint8   constant MAX_LEN_EVENT = 5;
+    uint8   constant MAX_LEN_WASM = 6;
     uint128 constant MAX_MIRROR_INDEX = 1000;
+    uint128 constant MAX_PUBKEY_SIZE = 100;
+
+    uint constant bitCntAddress = 256;
 
 
     uint256 constant BASE_PART = 0x2;
     uint256 constant SHIFT = 2 ** 252;
 
+    uint128 constant PopitGameDeployedEmit = 1;
+    uint128 constant MultifactorDeployedEmit = 2;
+    uint128 constant PopCoinRootDeployedEmit = 3;
+    uint128 constant MinerDeployedEmit = 4;
+    uint128 constant MinerIntervalEmit = 5;
+    uint128 constant MinerNewSeedEmit = 6;
+    uint128 constant MinerNewComplexityEmit = 7;
+    uint128 constant BoostNewVersionEmit = 8;
+    uint128 constant BoostNewHasSimpleWalletEmit = 9;
+
+    uint64 constant MinerRewardPeriod = 1000;
+    uint64 constant MinerRewardDelay = 262000;
+    uint64 constant MinerTapDelay = 262000;
+
+    uint64 constant IntervalRadius = 20;
+
     modifier onlyOwnerPubkey(uint256 rootpubkey) {
         require(msg.pubkey() == rootpubkey, ERR_NOT_OWNER);
+        _;
+    }
+
+    modifier onlyOwnerPubkeyOpt(optional(uint256) rootpubkey) {
+        require(rootpubkey.hasValue(), ERR_NOT_READY);
+        require(msg.pubkey() == rootpubkey.get(), ERR_NOT_OWNER);
         _;
     }
 

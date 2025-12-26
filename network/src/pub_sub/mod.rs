@@ -279,6 +279,7 @@ impl<
         inner.connections_by_remote_addr.insert(connection.info.remote_addr, connection.clone());
 
         tracing::info!(
+            target: "monit",
             connection_count = inner.connections.len(),
             peer = connection.info.remote_info(),
             host_id = connection.info.remote_cert_hash_prefix,
@@ -287,6 +288,7 @@ impl<
         );
         metrics.inspect(|m| {
             report_connections_metrics::<PeerId, Transport>(m, &inner.connections);
+            m.report_added_connection(connection.info.local_role);
         });
         Ok(())
     }
@@ -298,6 +300,7 @@ impl<
         inner.connections.remove(&conn.id);
         inner.connections_by_remote_addr.remove(&conn.remote_addr);
         tracing::info!(
+            target: "monit",
             connection_count = inner.connections.len(),
             peer = conn.remote_info(),
             host_id = conn.remote_cert_hash_prefix,
@@ -326,6 +329,7 @@ impl<
         }
         metrics.inspect(|m| {
             report_connections_metrics::<PeerId, Transport>(m, &inner.connections);
+            m.report_removed_connection(conn.local_role);
         });
     }
 }

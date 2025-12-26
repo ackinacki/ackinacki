@@ -15,6 +15,7 @@ use crate::block::verify::VerificationResult;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
+use crate::config::config_read::ConfigRead;
 use crate::config::BlockchainConfigRead;
 use crate::config::Config;
 use crate::helper::metrics::BlockProductionMetrics;
@@ -26,7 +27,7 @@ use crate::node::services::validation::feedback::AckiNackiSend;
 use crate::node::shared_services::SharedServices;
 use crate::node::unprocessed_blocks_collection::FilterPrehistoric;
 // use std::thread::sleep;
-use crate::node::BlockState;
+use crate::node::{BlockState, LOOP_PAUSE_DURATION};
 use crate::protocol::authority_switch::action_lock::Authority;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::CrossThreadRefDataRead;
@@ -36,6 +37,7 @@ use crate::types::AckiNackiBlock;
 use crate::types::BlockSeqNo;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
+use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
 
 fn read_into_buffer(
     rx: &mut InstrumentedReceiver<(BlockState, Envelope<GoshBLS, AckiNackiBlock>)>,
@@ -69,6 +71,7 @@ pub(super) fn inner_loop(
     repository: RepositoryImpl,
     blockchain_config: BlockchainConfigRead,
     node_config: Config,
+    node_global_config_read: ConfigRead,
     mut shared_services: SharedServices,
     send: AckiNackiSend,
     metrics: Option<BlockProductionMetrics>,
@@ -139,6 +142,10 @@ pub(super) fn inner_loop(
                 &next_block.get_common_section().thread_id,
                 None,
             ) else {
+                tracing::trace!(
+                    "Skip block validation process: verify block: {:?}, parent state is not available",
+                    next_block.identifier(),
+                );
                 continue;
             };
             let mut prev_state = Arc::unwrap_or_clone(prev_state);
@@ -154,12 +161,35 @@ pub(super) fn inner_loop(
                 refs
             });
 
+            // Wait for block protocol version
+            let protocol_version_state: BlockProtocolVersionState = loop {
+                let Some(protocol_version) = state.guarded(|e| e.block_version_state().clone())
+                else {
+                    tracing::trace!(
+                        "block validation process: verify block: {:?}, block protocol version is not available",
+                        next_block.identifier(),
+                    );
+                    std::thread::sleep(LOOP_PAUSE_DURATION);
+                    continue;
+                };
+                break protocol_version;
+            };
+            let protocol_version = protocol_version_state.to_use().clone();
+            let Some(node_global_config) = node_global_config_read.get(&protocol_version) else {
+                tracing::trace!("Skip block validation process: node config is not available");
+                continue;
+            };
+            let is_block_of_retired_version = node_global_config_read.is_retired(&protocol_version);
+
+            let node_global_config = Arc::unwrap_or_clone(node_global_config);
+
             let block_nack = next_block.get_common_section().nacks.clone();
             let verify_res = verify_block(
                 &next_block,
                 blockchain_config.clone(),
                 &mut prev_state,
                 node_config.clone(),
+                node_global_config,
                 refs,
                 shared_services.clone(),
                 block_nack,
@@ -168,6 +198,9 @@ pub(super) fn inner_loop(
                 metrics.clone(),
                 wasm_cache.clone(),
                 message_db.clone(),
+                #[cfg(feature = "mirror_repair")]
+                repository.is_updated_mv.clone(),
+                is_block_of_retired_version,
             )
             .expect("Failed to verify block");
             if !verify_res.is_valid() {

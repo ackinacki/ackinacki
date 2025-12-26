@@ -9,15 +9,17 @@ use typed_builder::TypedBuilder;
 use crate::node::block_state::repository::BlockState;
 use crate::node::SignerIndex;
 use crate::repository::optimistic_state::OptimisticStateImpl;
-use crate::types::AckiNackiBlock;
+use crate::types::AckiNackiBlockVersioned;
+use crate::versioning::ProtocolVersion;
 
 // Intentionally not allowing direct read of assumptions.
 // This way we force writing all assumptions to be listed
 // before it can be checked if assumed holds.
-#[derive(TypedBuilder, PartialEq, Eq)]
+#[derive(TypedBuilder, PartialEq, Eq, Debug)]
 pub struct Assumptions {
     // Note: Stub for future preattestations impl
     new_to_bk_set: BTreeSet<SignerIndex>,
+    block_version: ProtocolVersion,
 }
 
 #[derive(TypedBuilder, Getters)]
@@ -40,7 +42,7 @@ impl BlockProducerMemento {
 #[derive(TypedBuilder, Getters)]
 pub struct ProducedBlock {
     assumptions: Assumptions,
-    block: AckiNackiBlock,
+    block: AckiNackiBlockVersioned,
     optimistic_state: Arc<OptimisticStateImpl>,
     feedbacks: ExtMsgFeedbackList,
     block_state: BlockState,

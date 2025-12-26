@@ -26,7 +26,6 @@
     - [Run Multiple BK Nodes on a Single Server](#run-multiple-bk-nodes-on-a-single-server)
   - [Block Keeper Node Management](#block-keeper-node-management)
     - [Graceful Shutdown of a BK Node](#graceful-shutdown-of-a-bk-node)
-    - [Graceful shutdown using Ansible playbook](#graceful-shutdown-using-ansible-playbook)
     - [Upgrading Block Keeper to a new image or configuration](#upgrading-block-keeper-to-a-new-image-or-configuration)
     - [Stopping node with data cleanup](#stopping-node-with-data-cleanup)
     - [Starting back a stopped node without configuration changes](#starting-back-a-stopped-node-without-configuration-changes)
@@ -36,22 +35,29 @@
     - [Graceful Shutdown for Staking](#graceful-shutdown-for-staking)
     - [Debug](#debug)
   - [Check Node Status](#check-node-status)
-  - [Changing the IP Address of a BK Node](#changing-the-ip-address-of-a-bk-node)
-    - [1. Calculate the Time You Have for Migration](#1-calculate-the-time-you-have-for-migration)
-      - [1.1  Get the Current Epoch Contract Address](#11get-the-current-epoch-contract-address)
-      - [1.2  Determine the Epoch Length](#12determine-the-epoch-length)
-    - [2. Stop Staking (Graceful Shutdown)](#2-stop-staking-graceful-shutdown)
-    - [3. Stop Node (Graceful Shutdown)](#3-stop-node-graceful-shutdown)
-    - [4. Deploy BK Software on the New Node](#4-deploy-bk-software-on-the-new-node)
-    - [5. Start Staking on the New IP Address](#5-start-staking-on-the-new-ip-address)
-    - [6. Check Node Status](#6-check-node-status)
+  - [How to Migrate BK to Another Server](#how-to-migrate-bk-to-another-server)
+    - [1. Preparing the New Server](#1-preparing-the-new-server)
+      - [1.1 Server Configuration](#11-server-configuration)
+      - [1.2 Copying Keys](#12-copying-keys)
+      - [1.3 Updating the Ansible Inventory File](#13-updating-the-ansible-inventory-file)
+    - [2. Stopping the Old Server](#2-stopping-the-old-server)
+      - [2.1 Proper Node Shutdown](#21-proper-node-shutdown)
+      - [2.2 Stopping the Node](#22-stopping-the-node)
+    - [3. Starting the Node on the New Server](#3-starting-the-node-on-the-new-server)
+      - [3.1 Updating the Node IP address](#31-updating-the-node-ip-address)
+      - [3.2 Restoring the Keys](#32-restoring-the-keys)
+    - [4. Post-launch Checks](#6-post-launch-checks)
+      - [4.1 Docker Container Check](#41-docker-container-check)
+      - [4.2 Node Log Check](#42-node-log-check)
+      - [4.3 Node Synchronization Status Check](#43-node-synchronization-status-check)
   - [Troubleshooting](#troubleshooting)
     - [Recovery from Corrupted BK State](#recovery-from-corrupted-bk-state)
+    - [Error with sending continue stake request](#error-with-sending-continue-stake-request)
 - [Block Manager Documentation](#block-manager-documentation)
   - [System Requirements](#system-requirements)
   - [Deployment with Ansible](#deployment-with-ansible)
     - [Prerequisites](#prerequisites-3)
-    - [Generate Keys and Deploy Block Manager Wallet](#generate-keys-and-deploy-block-manager-wallet)
+    - [Generate Keys and Deploy the Block Manager Wallet](#generate-keys-and-deploy-the-block-manager-wallet)
       - [Manually (applies if you don’t have a license number)](#manually-applies-if-you-dont-have-a-license-number)
       - [Using the Script (if you already have a license number)](#using-the-script-if-you-already-have-a-license-number)
     - [Create an Ansible Inventory](#create-an-ansible-inventory)
@@ -307,11 +313,169 @@ tvm-cli -j callx --addr 0:7f2f945faaae4cce286299afe74dac9460893dd5cba1ac273b9e91
 - SSH access to servers.
 - Docker with the compose plugin must be installed.
 
+### BK DNS Name Generation
+
+To register a DNS name for your BK IP, you need to create an account on ZeroSSL
+([https://zerossl.com/features/acme/](https://zerossl.com/features/acme/)).
+
+After registration, generate the ACME credentials:
+
+* EAB KID
+* HMAC key
+
+Add the obtained values to the inventory into the `CADDY_EAB` variable.
+
+If you have multiple BKs on a single IP address, generate a dedicated DNS name for each BK.
+It is recommended to add the **NODE_ID** prefix to the DNS name.
+
+For example:  
+```
+x{{ (NODE_ID | string)[:6] }}.your-domain // your-bk-dns
+```
+
+### Prepare Your Inventory
+
+Here is a basic inventory for `Shellnet` node deployment:
+
+```yaml
+all:
+  vars:
+
+    NODE_OWNER_KEY: PATH_TO_NODE_OWNER_KEY        # file name pattern "block_keeper{{ NODE_ID }}.keys.json"
+
+    NODE_GROUP_ID: "your-group-id"
+    OTEL_COLLECTOR: "your otel collector url"
+
+    # the access token required for interacting with the BK API
+    AUTH_TOKEN: my-secret-token    # replace it with some random string that only you know, required for direct SDK access
+
+    ansible_port: 22
+    ansible_user: ubuntu
+
+    ROOT_DIR: /home/user/deployment   # path to store deployment files
+
+    MNT_DATA: /home/user/data         # path to store node data and logs
+
+    BK_FOLDER_NAME: "block-keeper"
+
+    IMAGE_VERSION: "v0.13.10"   # Node patch version for the update
+    NETWORK_NAME: "network-name"             # i.e. shellnet
+    UPD_NETWORK_NAME: "network-name"    
+    OTEL_SERVICE_NAME: "{{ NETWORK_NAME }}"
+
+    TVM_ENDPOINT: "network-tvm-endpoint"     # shellnet network endpoint is "https://shellnet.ackinacki.org" shellnet.ackinacki.org
+
+    BK_HOSTNAME: "your-bk-dns"     # specify in the following format x{{ (NODE_ID | string)[:6] }}.your-domain // your-bk-dns
+
+    GOSSIP_SEEDS:
+      - shellnet0.ackinacki.org:10000
+      - shellnet1.ackinacki.org:10000
+      - shellnet2.ackinacki.org:10000
+      - shellnet3.ackinacki.org:10000
+      - shellnet4.ackinacki.org:10000
+
+    PROXIES: # delete this section if the BK operates without a Proxy
+      - PROXY_IP:8085   # REPLACE WITH ACTUAL IP ADDRESS
+
+    # Total usage may be higher if logs fill too quickly, but baseline is multiplying the two vars
+    LOG_ROTATE_AMOUNT: 20   # maximum number of log files to keep
+    LOG_ROTATE_SIZE: 5G     # minimum size of the log file to rotate
+    LOG_ROTATE_SPEC: "*/2 *"  # period of rotation in cron "minute hour" format
+
+    # can be changed if there are conflicting ports, but in general should be left 0
+    PORT_OFFSET: 0
+
+    BK_DIR: "{{ ROOT_DIR }}/block-keeper"
+    BK_DATA_DIR: "{{ MNT_DATA }}/block-keeper"
+    BK_LOGS_DIR: "{{ MNT_DATA }}/logs-block-keeper"
+
+    NODE_CONFIGS:
+      - "zerostate"
+    
+    AS_VERSION: "8.1.0.1"
+
+    BIND_PORT: '{{ 8500 + PORT_OFFSET }}'                     # this port must be open
+    BIND_API_PORT: '{{ 8600 + PORT_OFFSET }}'                 # this port must be open
+    BIND_MESSAGE_ROUTER_PORT: '{{ 8700 + PORT_OFFSET }}'
+    BIND_GOSSIP_PORT: '{{ 10100 + PORT_OFFSET }}'             # this port must be open
+    BLOCK_MANAGER_PORT: '{{ 12000 + PORT_OFFSET }}'
+    AEROSPIKE_PORT: '{{ 4000 + PORT_OFFSET * 10 }}'           # Aerospike DB listening port
+    AEROSPIKE_FABRIC_PORT: '{{ 4001 + PORT_OFFSET * 10 }}'    # port for intra-cluster communication (migration, replication, etc.)
+    AEROSPIKE_HEARTBEAT_PORT: '{{ 4002 + PORT_OFFSET * 10 }}' # port used to maintain database cluster health (heartbeat)
+
+    NODE_IMAGE: teamgosh/ackinacki-node:<latest-release-tag>      # i.e. teamgosh/ackinacki-node:v0.3.3
+    STAKING_IMAGE: teamgosh/ackinacki-staking:<latest-release-tag>
+    AEROSPIKE_IMAGE: "aerospike/aerospike-server:latest"/AEROSPIKE_IMAGE: "aerospike/aerospike-server:{{ AS_VERSION }}"
+
+    HOST_PRIVATE_IP: 127.0.0.1 # default, if no private IP
+
+    EXT_MESSAGE_AUTH_REQUIRED: yes
+
+    THREAD_COUNT_SOFT_LIMIT: 1
+    THREAD_LOAD_THRESHOLD: 20000
+    MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES: 1200s
+    NODE_JOINING_TIMEOUT: 600s
+    STAKING_TIME: 420
+
+    # Remove this variable from the inventory before upgrading nodes to avoid unnecessary steps.
+    # However, it is required when starting new nodes without existing data,
+    # especially if they are running behind your own proxy servers.
+    BOOTSTRAP_BK_SET_URL: "BK_HOSTNAME:BIND_API_PORT/v2/bk_set_update"   # shellnet bootstrap url is "http://shellnet0.ackinacki.org:8600/v2/bk_set_update"
+
+block_keepers:
+  hosts:
+    YOUR-NODE-ADDRESS:   # the host address where the deployment will be performed (domain or IP).
+      NODE_ID: NODE_ID   # Node Owner wallet address (exactly 64 hexademical characters, without 0x or 0: prefix)
+      HOST_PUBLIC_IP: YOUR-NODE-PUBLIC-IP-ADDRESS
+      HOST_PRIVATE_IP: YOUR-NODE-PRIVATE-IP-ADDRESS  # remove if no private interface available
+
+block_keeper_tls_proxy:
+  vars:
+    LOAD_CERT: false
+    ENABLE_GEN_CERT: true
+    ZEROSSL_EXCLUSIVE: yes
+    CADDY_EAB: "<your kid> <your hmac key>" # <<<<< <<<<< Replace with actual values! <<<<< <<<<<
+  hosts:
+    YOUR-NODE-ADDRESS:
+      HOST_PUBLIC_IP: "YOUR-NODE-PUBLIC-IP-ADDRESS" # BKs must be reachable via this IP and BK_PORT set below
+      block_keepers:
+        - x111111.mainbk.ackinacki.org: # first 6 characters of a node id of bk on the host
+            BK_PORT: 8600               # BIND_API_PORT of that BK
+```
+
 ### Key Variables
+
+`NODE_ID`: The unique identifier of the Block Keeper within the network. It corresponds to the BK wallet address without the `0:` prefix. This identifier is required when creating a new Block Keeper.
+
+`NODE_GROUP_ID` identifies the node group and should be the same across all nodes in your deployment.
+
+`NODE_GROUP_ID`, `OTEL_COLLECTOR`, and `OTEL_SERVICE_NAME` are optional and related to node metrics integration.
+They can be used to send metrics to a specified collector server. 
 
 `AUTH_TOKEN`: This token is used to authorize access to the BK API. You can specify any arbitrary string.
 
-`Node ID`: The unique identifier of the Block Keeper within the network. It corresponds to the BK wallet address without the `0:` prefix. This identifier is required when creating a new Block Keeper.
+`BK_HOSTNAME`: The DNS name of your BK node by which it should be accessible. It is also used to deploy the BK TLS proxy.
+Specify in the following format:
+```
+x{{ (NODE_ID | string)[:6] }}.your-domain // your-bk-dns
+```
+
+`PROXIES`: List the IP addresses of the Proxies that will be used to broadcast blocks across the network.
+**If the Block Keeper will operate without a Proxy, this variable is not required.**
+
+ℹ️ **Note**:
+  **If you want to deploy a Proxy, refer to the [Proxy deployment guide](#proxy) or use an existing Proxy service.**
+  To use an existing Proxy, please contact the corresponding Proxy provider representative for details.
+
+`LOG_ROTATE_SPEC` defines the log rotation schedule in cron format (`minute hour`).
+
+For example, the default value `"0 *"` means that log files will be rotated every hour at the 0th minute.
+
+If rotated log files are too large, you may want to shorten the rotation period.
+
+For example, the value `"*/5 *"` means that log files will be rotated every 5 minutes.
+
+`BOOTSTRAP_BK_SET_URL` should be set to the provided URL to correctly retrieve the initial BK set, ensuring that the node connects properly to the network and proxy server. When upgrading, this variable should be removed to avoid unnecessary logic execution.
 
 `HOST_PUBLIC_IP`: The public IP address of the host. Make sure that the ports do not conflict with other services.
 
@@ -323,103 +487,20 @@ tvm-cli -j callx --addr 0:7f2f945faaae4cce286299afe74dac9460893dd5cba1ac273b9e91
   * Authorization Token (`AUTH_TOKEN`) – the access token required for interacting with the BK API.
   * Node Public IP Address (`HOST_PUBLIC_IP`) – the public IP address of your node.
 
-`PROXIES`: List the IP addresses of the Proxies that will be used to broadcast blocks across the network.
-**If the Block Keeper will operate without a Proxy, this variable is not required.**
-
-ℹ️ **Note**:
-  **If you want to deploy a Proxy, refer to the [Proxy deployment guide](#proxy) or use an existing Proxy service.**
-  To use an existing Proxy, please contact the corresponding Proxy provider representative for details.
-
-### Prepare Your Inventory
-
-Here is a basic inventory for `Shellnet` node deployment:
-
-```yaml
-all:
-  vars:
-    ansible_port: 22
-    ansible_user: ubuntu
-    ROOT_DIR: /home/user/deployment # path to store deployment files
-    MNT_DATA: /home/user/data       # path to store data
-    BIND_PORT: 8500                 # this port must be open
-    BIND_API_PORT: 8600             # this port must be open
-    BIND_MESSAGE_ROUTER_PORT: 8700
-    BIND_GOSSIP_PORT: 10000         # this port must be open
-    BLOCK_MANAGER_PORT: 12000
-    NODE_IMAGE: teamgosh/ackinacki-node:<latest-release-tag>      # i.e. teamgosh/ackinacki-node:v0.3.3
-    GQL_IMAGE: teamgosh/ackinacki-gql-server:<latest-release-tag> # i.e. teamgosh/ackinacki-gql-server:v0.3.3
-    BK_DIR: "{{ ROOT_DIR }}/block-keeper"
-    BK_DATA_DIR: "{{ MNT_DATA }}/block-keeper"
-    BK_LOGS_DIR: "{{ MNT_DATA }}/logs-block-keeper"
-    LOG_ROTATE_AMOUNT: 20   # maximum number of log files to keep
-    LOG_ROTATE_SIZE: 5G     # minimum size of the log file to rotate
-    LOG_ROTATE_SPEC: "*/2 *"  # period of rotation in cron "minute hour" format
-    STAKING_IMAGE: teamgosh/ackinacki-staking:<latest-release-tag>
-    STAKING_TIME: 600
-    TVM_ENDPOINT: shellnet.ackinacki.org
-    NETWORK_NAME: shellnet
-    THREAD_COUNT_SOFT_LIMIT: 4
-    AUTH_TOKEN: my-secret-token    # the access token required for interacting with the BK API
-    AEROSPIKE_PORT: 4000           # Aerospike DB listening port
-    AEROSPIKE_FABRIC_PORT: 4001    # port for intra-cluster communication (migration, replication, etc.)
-    AEROSPIKE_HEARTBEAT_PORT: 4002 # port used to maintain database cluster health (heartbeat)
-    AEROSPIKE_IMAGE: "aerospike/aerospike-server:latest"
-    NODE_GROUP_ID: ""
-    OTEL_COLLECTOR: no
-    OTEL_SERVICE_NAME: ""
-    GOSSIP_SEEDS:
-      - shellnet0.ackinacki.org:10000
-      - shellnet1.ackinacki.org:10000
-      - shellnet2.ackinacki.org:10000
-      - shellnet3.ackinacki.org:10000
-      - shellnet4.ackinacki.org:10000
-    NODE_OWNER_KEY: PATH_TO_NODE_OWNER_KEY
-    NODE_CONFIGS:
-      - "zerostate"
-    # Remove this variable from the inventory before upgrading nodes to avoid unnecessary steps.
-    # However, it is required when starting new nodes without existing data,
-    # especially if they are running behind your own proxy servers.
-    BOOTSTRAP_BK_SET_URL: http://shellnet0.ackinacki.org:8600/v2/bk_set_update
-
-block_keepers:
-  hosts:
-
-    YOUR-NODE-ADDRESS:
-      NODE_ID: NODE_ID
-      HOST_PUBLIC_IP: YOUR-NODE-PUBLIC-ADDRESS
-      HOST_PRIVATE_IP: YOUR-NODE-PRIVATE-ADDRESS
-      PROXIES: # delete this section if the BK operates without a Proxy
-        - PROXY_IP:8085
-```
-
-`BOOTSTRAP_BK_SET_URL` should be set to the provided URL to correctly retrieve the initial BK set, ensuring that the node connects properly to the network and proxy server. When upgrading, this variable should be removed to avoid unnecessary logic execution.
-
-`LOG_ROTATE_SPEC` defines the log rotation schedule in cron format (`minute hour`).
-
-For example, the default value `"0 *"` means that log files will be rotated every hour at the 0th minute.
-
-If rotated log files are too large, you may want to shorten the rotation period.
-
-For example, the value `"*/5 *"` means that log files will be rotated every 5 minutes.
-
-`NODE_GROUP_ID`, `OTEL_COLLECTOR`, and `OTEL_SERVICE_NAME` are optional and related to node metrics integration.
-
-They can be used to send metrics to a specified collector server. `NODE_GROUP_ID` identifies the node group and should be the same across all nodes in your deployment.
+### Run the Ansible Playbook
 
 Make sure to add your configuration data to the inventory before running the playbook.
 
 For testing, you can use an Ansible dry run:
 
 ```bash
-ansible-playbook -i test-inventory.yaml ansible/node-deployment.yaml --check --diff
+ansible-playbook -i your-inventory.yaml ansible/node-deployment.yaml --check --diff
 ```
-
-### Run the Ansible Playbook
 
 If everything looks good, run Ansible:
 
 ```bash
-ansible-playbook -i test-inventory.yaml ansible/node-deployment.yaml
+ansible-playbook -i your-inventory.yaml ansible/node-deployment.yaml
 ```
 
 Upon completion of the script, BLS keys will be generated and saved in the file `block_keeper{{ NODE_ID }}_bls.keys.json` in the `{{ BK_DIR }}/bk-configs/` folder on the remote server, along with the node.
@@ -466,30 +547,32 @@ Example inventory file for running two BK nodes on a single server (`Shellnet`):
 ```yaml
 all:
   vars:
+
+    NODE_OWNER_KEY: PATH_TO_NODE_OWNER_KEY        # file name pattern "block_keeper{{ NODE_ID }}.keys.json"
+
+    NODE_GROUP_ID: "your-group-id"
+    OTEL_COLLECTOR: "your otel collector url"
+
+    # the access token required for interacting with the BK API
+    AUTH_TOKEN: my-secret-token    # replace it with some random string that only you know, required for direct SDK access
+
     ansible_port: 22
     ansible_user: ubuntu
-    ansible_host: SERVER_IP_TO_CONNECT
-    NODE_IMAGE: teamgosh/ackinacki-node:<latest-release-tag>      # i.e. teamgosh/ackinacki-node:v0.3.3
-    GQL_IMAGE: teamgosh/ackinacki-gql-server:<latest-release-tag> # i.e. teamgosh/ackinacki-gql-server:v0.3.3
-    BK_DIR: "{{ ROOT_DIR }}/block-keeper"
-    BK_DATA_DIR: "{{ MNT_DATA }}/block-keeper"
-    BK_LOGS_DIR: "{{ MNT_DATA }}/logs-block-keeper"
-    LOG_ROTATE_AMOUNT: 20
-    LOG_ROTATE_SIZE: 5G
-    LOG_ROTATE_SPEC: "*/2 *"
-    STAKING_IMAGE: teamgosh/ackinacki-staking:<latest-release-tag>
-    STAKING_TIME: 600
-    TVM_ENDPOINT: shellnet.ackinacki.org
-    NETWORK_NAME: shellnet
-    THREAD_COUNT_SOFT_LIMIT: 4
-    AUTH_TOKEN: my-secret-token    # the access token required for interacting with the BK API
-    AEROSPIKE_PORT: 4000           # Aerospike DB listening port
-    AEROSPIKE_FABRIC_PORT: 4001    # port for intra-cluster communication (migration, replication, etc.)
-    AEROSPIKE_HEARTBEAT_PORT: 4002 # port used to maintain database cluster health (heartbeat)
-    AEROSPIKE_IMAGE: "aerospike/aerospike-server:latest"
-    NODE_GROUP_ID: ""
-    OTEL_COLLECTOR: no
-    OTEL_SERVICE_NAME: ""
+
+    ROOT_DIR: /home/user/deployment   # path to store deployment files
+
+    MNT_DATA: /home/user/data         # path to store node data and logs
+
+    BK_FOLDER_NAME: "block-keeper-{{ (NODE_ID | string)[:6] }}"
+
+    IMAGE_VERSION: "v0.13.10"   # Node patch version for the update
+    NETWORK_NAME: "network-name"             # i.e. shellnet
+    UPD_NETWORK_NAME: "network-name"    
+    OTEL_SERVICE_NAME: "{{ NETWORK_NAME }}"
+
+    TVM_ENDPOINT: "network-tvm-endpoint"     # shellnet network endpoint is "https://shellnet.ackinacki.org" shellnet.ackinacki.org
+
+    BK_HOSTNAME: "your-bk-dns"     # specify in the following format x{{ (NODE_ID | string)[:6] }}.your-domain // your-bk-dns
 
     GOSSIP_SEEDS:
       - shellnet0.ackinacki.org:10000
@@ -497,44 +580,83 @@ all:
       - shellnet2.ackinacki.org:10000
       - shellnet3.ackinacki.org:10000
       - shellnet4.ackinacki.org:10000
+
+    PROXIES: # delete this section if the BK operates without a Proxy
+      - PROXY_IP:8085   # REPLACE WITH ACTUAL IP ADDRESS
+
+    # Total usage may be higher if logs fill too quickly, but baseline is multiplying the two vars
+    LOG_ROTATE_AMOUNT: 20   # maximum number of log files to keep
+    LOG_ROTATE_SIZE: 5G     # minimum size of the log file to rotate
+    LOG_ROTATE_SPEC: "*/2 *"  # period of rotation in cron "minute hour" format
+
+    # can be changed if there are conflicting ports, but in general should be left 0
+    PORT_OFFSET: 0 # for multinode deployment, change in specific host entry
+
+    BK_DIR: "{{ ROOT_DIR }}/block-keeper"
+    BK_DATA_DIR: "{{ MNT_DATA }}/block-keeper"
+    BK_LOGS_DIR: "{{ MNT_DATA }}/logs-block-keeper"
+
     NODE_CONFIGS:
       - "zerostate"
-      - "blockchain.conf.json"
+    
+    AS_VERSION: "8.1.0.1"
+
+    BIND_PORT: '{{ 8500 + PORT_OFFSET }}'                     # this port must be open
+    BIND_API_PORT: '{{ 8600 + PORT_OFFSET }}'                 # this port must be open
+    BIND_MESSAGE_ROUTER_PORT: '{{ 8700 + PORT_OFFSET }}'
+    BIND_GOSSIP_PORT: '{{ 10100 + PORT_OFFSET }}'             # this port must be open
+    BLOCK_MANAGER_PORT: '{{ 12000 + PORT_OFFSET }}'
+    AEROSPIKE_PORT: '{{ 4000 + PORT_OFFSET * 10 }}'           # Aerospike DB listening port
+    AEROSPIKE_FABRIC_PORT: '{{ 4001 + PORT_OFFSET * 10 }}'    # port for intra-cluster communication (migration, replication, etc.)
+    AEROSPIKE_HEARTBEAT_PORT: '{{ 4002 + PORT_OFFSET * 10 }}' # port used to maintain database cluster health (heartbeat)
+
+    NODE_IMAGE: teamgosh/ackinacki-node:<latest-release-tag>      # i.e. teamgosh/ackinacki-node:v0.3.3
+    STAKING_IMAGE: teamgosh/ackinacki-staking:<latest-release-tag>
+    AEROSPIKE_IMAGE: "aerospike/aerospike-server:latest"/AEROSPIKE_IMAGE: "aerospike/aerospike-server:{{ AS_VERSION }}"
+
+    HOST_PRIVATE_IP: 127.0.0.1 # default, if no private IP
+
+    EXT_MESSAGE_AUTH_REQUIRED: yes
+
+    THREAD_COUNT_SOFT_LIMIT: 1
+    THREAD_LOAD_THRESHOLD: 20000
+    MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES: 1200s
+    NODE_JOINING_TIMEOUT: 600s
+    STAKING_TIME: 420
+
+    # Remove this variable from the inventory before upgrading nodes to avoid unnecessary steps.
+    # However, it is required when starting new nodes without existing data,
+    # especially if they are running behind your own proxy servers.
+    BOOTSTRAP_BK_SET_URL: "BK_HOSTNAME:BIND_API_PORT/v2/bk_set_update"   # shellnet bootstrap url is "http://shellnet0.ackinacki.org:8600/v2/bk_set_update"
 
 block_keepers:
-  vars:
-    HOST_PUBLIC_IP: YOUR-NODE-PUBLIC-ADDRESS
-    HOST_PRIVATE_IP: YOUR-NODE-PRIVATE-ADDRESS
-    PROXIES: # delete this section if the BK operates without a Proxy
-      - PROXY_IP:8085
   hosts:
-    YOUR-NODE-NAME:
-      NODE_ID: NODE_ID
-      ROOT_DIR: /home/user/deployment # path to store deployment files
-      MNT_DATA: /home/user/data       # path to store data
-      BIND_PORT: 8500
-      BIND_API_PORT: 8600
-      BIND_MESSAGE_ROUTER_PORT: 8700
-      BIND_GOSSIP_PORT: 10000
-      BLOCK_MANAGER_PORT: 12000
-      AEROSPIKE_PORT: 4000
-      AEROSPIKE_FABRIC_PORT: 4001
-      AEROSPIKE_HEARTBEAT_PORT: 4002
-      NODE_OWNER_KEY: PATH_TO_NODE_OWNER_KEY
 
-    YOUR-NODE-NAME-2:
-      NODE_ID: SECOND_NODE_ID
-      ROOT_DIR: /home/user/deployment-2 # path to store deployment files
-      MNT_DATA: /home/user/data-2       # path to store data
-      BIND_PORT: 8501
-      BIND_API_PORT: 8601
-      BIND_MESSAGE_ROUTER_PORT: 8701
-      BIND_GOSSIP_PORT: 10001
-      BLOCK_MANAGER_PORT: 12001
-      AEROSPIKE_PORT: 4010
-      AEROSPIKE_FABRIC_PORT: 4011
-      AEROSPIKE_HEARTBEAT_PORT: 4012
-      NODE_OWNER_KEY: PATH_TO_NODE_OWNER_KEY_2
+    YOUR-NODE-ADDRESS:   # the host address where the deployment will be performed (domain or IP).
+      NODE_ID: NODE_ID   # Node Owner wallet address (exactly 64 hexademical characters, without 0x or 0: prefix)
+      HOST_PUBLIC_IP: YOUR-NODE-PUBLIC-IP-ADDRESS
+      HOST_PRIVATE_IP: YOUR-NODE-PRIVATE-IP-ADDRESS  # remove if no private interface available
+    YOUR-NODE-ADDRESS-BK-2:   # MUST use BK_FOLDER_NAME for multinode deployment, see above
+      ansible_host: SERVER_IP_TO_CONNECT
+      NODE_ID: YET_ANOTHER_NODE_ID
+      HOST_PUBLIC_IP: YOUR-NODE-PUBLIC-IP-ADDRESS
+      HOST_PRIVATE_IP: YOUR-NODE-PRIVATE-IP-ADDRESS  # remove if no private interface available
+      PORT_OFFSET: 1
+
+block_keeper_tls_proxy:
+  vars:
+    LOAD_CERT: false
+    ENABLE_GEN_CERT: true
+    ZEROSSL_EXCLUSIVE: yes
+    CADDY_EAB: "<your kid> <your hmac key>" # <<<<< <<<<< Replace with actual values! <<<<< <<<<<
+  hosts:
+    YOUR-NODE-ADDRESS:
+      HOST_PUBLIC_IP: "YOUR-NODE-PUBLIC-IP-ADDRESS" # BKs must be reachable via this IP and BK_PORT set below
+      block_keepers:
+        - x111111.mainbk.ackinacki.org: # first 6 characters of a node id of BK on the host
+            BK_PORT: 8600               # BIND_API_PORT of that BK
+        - x222222.mainbk.ackinacki.org: # first 6 characters of a node id of BK-2 on the host
+            BK_PORT: 8601               # BIND_API_PORT for BK-2
 ```
 
 ## Block Keeper Node Management
@@ -547,7 +669,7 @@ This approach can also be used when you need to gracefully shut down multiple no
 Use the following command to do this:
 
 ```bash
-ansible-playbook -i test-inventory.yaml ansible/node-stopping.yml
+ansible-playbook -i your-inventory.yaml ansible/node-stopping.yml
 ```
 
 Keep an eye on the output of the command to make sure that everything was successful and nothing timed out.
@@ -566,13 +688,13 @@ and no new logs should appear afterward.
 To upgrade the node or config vars to the new version, update the inventory correspondingly and use the following command:
 
 ```bash
-ansible-playbook -i test-inventory.yaml ansible/node-upgrading.yml
+ansible-playbook -i your-inventory.yaml ansible/node-upgrading.yml
 ```
 
 However, **it is strongly recommended** to check the output first:
 
 ```bash
-ansible-playbook -i test-inventory.yaml ansible/node-upgrading.yml --check --diff
+ansible-playbook -i your-inventory.yaml ansible/node-upgrading.yml --check --diff
 ```
 
 Make sure that nothing in the docker compose or configuration files changed that was not intended to be changed. For example,
@@ -584,7 +706,7 @@ If you need to clean up a node database because of data corruption or if some up
 you can use the following command to stop the node and clean up the data:
 
 ```bash
-ansible-playbook -i test-inventory.yaml ansible/node-clean-data.yml
+ansible-playbook -i your-inventory.yaml ansible/node-clean-data.yml
 ```
 
 Afterward, you can use the [node upgrading script](#upgrading-block-keeper-to-a-new-image-or-configuration) or
@@ -598,7 +720,7 @@ If you stopped a node for some reason (with or without data clean), and want to 
 changes (or if you do not have the necessary keys or other files on hand), you can use the following command:
 
 ```bash
-ansible-playbook -i test-inventory.yaml ansible/node-starting.yml
+ansible-playbook -i your-inventory.yaml ansible/node-starting.yml
 ```
 
 ## Running Staking with Ansible
@@ -809,73 +931,134 @@ To get the node's status by blocks, use the `node_sync_status.sh` script:
 node_sync_status.sh path/to/log
 ```
 
-## Changing the IP Address of a BK Node
-To move a Block Keeper (BK) node to a new IP address without losing your reputation score,
-follow these rules:
-* Wait until the current Epoch ends and do not apply for the next one.
-* Start staking on the new node within half an Epoch after the current Epoch finishes.
+## How to Migrate BK to Another Server
 
-Step‑by‑Step Guide:
+⚠️ Important conditions
+* You must **reuse your existing key files** (`BK Node Owner keys` and `BLS keys`) and **the same `BK Wallet`**
+* Use the **ZS version** that was used to deploy the mainnet
+* **The migration must not cause the node to be out of staking for an extended period**  
+  
+  Therefore, before starting the migration:
+  * configure the new server first; only when it is fully ready should you stop the old one and proceed with the migration;
 
-### 1. Calculate the Time You Have for Migration
-#### 1.1  Get the Current Epoch Contract Address
+  * It is recommended to start the migration after 25,000 blocks have passed since the beginning of the current Epoch (so that the Epoch has time to send a continue), giving you sufficient time to complete the process.
+  
+---
+### 1. Preparing the New Server
 
-* Find the address of the currently Epoch:
-```bash
-tvm-cli -j runx --abi contracts/0.79.3_compiled/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json --addr <BK_NODE_WALLET_ADDR> -m getEpochAddress| jq -r -e '.epochAddress'
+#### 1.1 Server Configuration
+* Provision a new server
+* Install all required dependencies:  
+  * Docker 
+---
+#### 1.2 Copying Keys
+
+* Copy the BK Node Owner keys and BLS keys files from the old server to the new server, **place them into the appropriate directories using the same file names**.  
+Alternatively, you can place the key files locally in the `ansible/files` directory.  
+The paths to the key files can be found in the inventory file under the `NODE_OWNER_KEY` and `OTHER_KEYS` fields.
+
+#### 1.3 Updating the Ansible Inventory File 
+
+Ensure that all required configuration data is correctly specified in the Ansible inventory.
+
+* Update the node’s IP address
+
+> If the migration is performed without changing the IP address, make sure the inventory file matches the current configuration.
+
+* If you are running multiple nodes on the same server, the `BK_DIR` folder name must be be unique for each node.  
+For example:  
+    ```
+    BK_FOLDER_NAME: "block-keeper-{{ (NODE_ID | string)[:6] }}"
+    ```
+
+### 2. Stopping the Old Server
+
+### 2.1 Proper Node Shutdown
+
+📌 **Important:**
+**The migration must not result in the node being removed from staking for an extended period.**  
+
+Before stopping the node, make sure that the staking logs contain entries confirming that the current Epoch is in progress and has been continued:
+
+```
+There is active stake with epoch address "$EPOCH_ADDRESS"
+```
+```
+Epoch with address "$EPOCH_ADDRESS" is being continued: true
 ```
 
-ℹ️ **Note:**
-  The address of the BK node wallet can be retrieved from the logs,
-  or by calling the `getAckiNackiBlockKeeperNodeWalletAddress(uint256 pubkey)` method in the `BlockKeeperContractRoot` system contract,  where:
-  * `pubkey` - the public key of your BK node wallet.
+### 2.2 Stopping the Node
 
-  Example:
-  ```bash
-  tvm-cli -j runx --abi ../contracts/0.79.3_compiled/bksystem/BlockKeeperContractRoot.abi.json --addr 0:7777777777777777777777777777777777777777777777777777777777777777 -m getAckiNackiBlockKeeperNodeWalletAddress '{"pubkey": "0x1093c528a...............d9b9"}'
-  ```
+📌 **Important:**  
+**Proceed with stopping the old server only after the new server is fully prepared and the inventory file has been completed.**
 
-#### 1.2  Determine the Epoch Length
-Query `getDetails` on the Epoch contract to obtain its approximate duration in seconds:
+On the **old server**, stop the BK node:
+
 ```bash
-tvm-cli -j run <epochAddress> \
---abi contracts/0.79.3_compiled/bksystem/BlockKeeperEpochContract.abi.json \
-getDetails {} \
-| jq -r '((.seqNoFinish - .seqNoStart) * 3 / 10 | tostring) + " seconds"'
+ansible-playbook -i your-inventory.yaml ansible/node-stopping.yml
 ```
 
-🚨 **Important:**
-  **You must launch staking on the new node in less than half of this time.**
+⏳ Wait until the node has fully stopped before continuing.
 
-### 2. Stop Staking (Graceful Shutdown)
-To avoid losing rewards and reputation, wait for the current Epoch to end before stopping staking.
-Use the procedure described in the [Graceful Shutdown for Staking](#graceful-shutdown-for-staking) section.
+---
+### 3. Starting the Node on the New Server
 
-### 3. Stop Node (Graceful Shutdown)
-Use the procedure described in the [Graceful Shutdown of a BK node](#graceful-shutdown-of-a-bk-node) section.
+First, perform an **Ansible dry run**:
 
-### 4. Deploy BK Software on the New Node
-
-ℹ️ **Note:**
-  You must reuse your existing key files (`BK Node Owner keys`, `BLS keys`) and the same `BK Wallet`.
-
-Update the node’s IP address in your Ansible inventory.
-Follow the instructions in [BK Deployment with Ansible](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#block-keeper-deployment-with-ansible).
-
-Run the playbook:
 ```bash
-ansible-playbook -i test-inventory.yaml ansible/node-deployment.yaml
+ansible-playbook -i your-inventory.yaml ansible/node-deployment.yaml --check --diff
 ```
 
-### 5. Start Staking on the New IP Address
-Follow the [staking launch guide](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#staking)
+If everything looks correct, deploy the BK node:
 
-### 6. Check Node Status
-Your BK node should now be operating on the new IP address. To get the node's status by blocks, use the `node_sync_status.sh` script:
+```bash
+ansible-playbook -i your-inventory.yaml ansible/node-deployment.yaml
+```
+
+⏳ Wait for:
+
+* all Docker containers to start
+* the node to fully synchronize with the network
+
+---
+### 4. Post-launch Checks
+
+#### 4.1 Docker Container Check
+
+```bash
+docker ps
+# OR
+docker compose ps
+```
+
+Ensure that the all containers are in the **UP** state and are using the correct images:
+
+* `teamgosh/ackinacki-node`
+* `teamgosh/ackinacki-staking`
+* `aerospike/aerospike-server`
+* `stakater/logrotate`
+
+---
+#### 4.2 Node Log Check
+
+```bash
+tail -f $MNT_DATA/logs-block-keeper/node.log
+```
+
+Verify:
+
+* there are no critical errors
+* the synchronization process is progressing correctly
+---
+#### 4.3 Node Synchronization Status Check
+
+To check the node’s block synchronization status, use:
 
 ```bash
 node_sync_status.sh path/to/log
 ```
+Additionally, ensure that:  
+**the staking script runs without errors and reports the correct staking status**
 
 ## Troubleshooting
 
@@ -895,13 +1078,13 @@ Follow these steps to restore the node (it will resync):
 
 1) **Stop the BK node and clean up the data**
     ```bash
-    ansible-playbook -i test-inventory.yaml ansible/node-clean-data.yml
+    ansible-playbook -i your-inventory.yaml ansible/node-clean-data.yml
     ```
 
 2) **Restart services**
 
     ```bash
-    ansible-playbook -i test-inventory.yaml ansible/node-starting.yml
+    ansible-playbook -i your-inventory.yaml ansible/node-starting.yml
     ```
 
 3) **Verify service status**
@@ -1002,7 +1185,7 @@ Once the verification is complete, you will receive the address of license contr
 * A dedicated server for the Block Manager with SSH access.
 * Docker with the Compose plugin installed.
 
-### Generate Keys and Deploy the Block Manager Wallet:
+### Generate Keys and Deploy the Block Manager Wallet
 
 #### Manually (applies if you don’t have a license number)
 
@@ -1050,7 +1233,7 @@ all:
     MNT_DATA: /home/user/data       # path to store data
     BM_IMAGE: "teamgosh/ackinacki-block-manager:<latest-release-tag>" # i.e. teamgosh/ackinacki-block-manager:v0.3.3
     GQL_IMAGE: "teamgosh/ackinacki-gql-server:<latest-release-tag>"   # i.e. teamgosh/ackinacki-gql-server:v0.3.3
-    NGINX_IMAGE: "teamgosh/ackinacki-nginx"
+    NGINX_IMAGE: "teamgosh/ackinacki-nginx:v0.4.0"
     BM_DIR: "{{ ROOT_DIR }}/block-manager"
     BM_DATA_DIR: "{{ MNT_DATA }}/block-manager"
     BM_LOGS_DIR: "{{ MNT_DATA }}/logs-block-manager"
@@ -1074,7 +1257,7 @@ block_manager:
 To validate your inventory and playbook syntax, use dry run and check mode:
 
 ```bash
-ansible-playbook -i test-inventory.yaml ansible/block-manager-deployment.yaml --check --diff
+ansible-playbook -i your-inventory.yaml ansible/block-manager-deployment.yaml --check --diff
 ```
 
 ### Run the Ansible Playbook
@@ -1082,7 +1265,7 @@ ansible-playbook -i test-inventory.yaml ansible/block-manager-deployment.yaml --
 If validation passes, run the playbook to deploy the Block Manager:
 
 ```bash
-ansible-playbook -i test-inventory.yaml ansible/block-manager-deployment.yaml
+ansible-playbook -i your-inventory.yaml ansible/block-manager-deployment.yaml
 ```
 
 ### Verify the Deployment
@@ -1254,7 +1437,7 @@ Also, in such case, make sure that each host has a unique `PROXY_ID` variable se
 To test the deployment with a dry run:
 
 ```bash
-ansible-playbook -i test-inventory.yaml ansible/proxy-deployment.yaml --check --diff
+ansible-playbook -i your-inventory.yaml ansible/proxy-deployment.yaml --check --diff
 ```
 
 ### Run the Ansible Playbook
@@ -1262,7 +1445,7 @@ ansible-playbook -i test-inventory.yaml ansible/proxy-deployment.yaml --check --
 If everything looks correct, proceed with the actual deployment:
 
 ```bash
-ansible-playbook -i test-inventory.yaml ansible/proxy-deployment.yaml
+ansible-playbook -i your-inventory.yaml ansible/proxy-deployment.yaml
 ```
 
 To view the Proxy logs:
@@ -1282,8 +1465,8 @@ If you need to upgrade the proxy image or other parameters without changing the 
 
 ```bash
 # This will regenerate the proxy certificate and requires BK keys
-ansible-playbook -i test-inventory.yaml ansible/proxy-deployment.yaml
+ansible-playbook -i your-inventory.yaml ansible/proxy-deployment.yaml
 
 # This will stop, update compose and config, and restart proxy WITHOUT regenerating keys
-ansible-playbook -i test-inventory.yaml ansible/proxy-upgrade.yaml
+ansible-playbook -i your-inventory.yaml ansible/proxy-upgrade.yaml
 ```

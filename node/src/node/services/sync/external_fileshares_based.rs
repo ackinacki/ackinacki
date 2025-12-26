@@ -4,14 +4,12 @@
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use chitchat::ChitchatRef;
-use gossip::GOSSIP_API_ADVERTISE_ADDR_KEY;
 use http_server::ApiBkSet;
+use network::topology::NetTopology;
 use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedSender;
 use tokio::sync::watch::Receiver;
@@ -41,7 +39,7 @@ pub struct ExternalFileSharesBased {
     blob_sync: ServiceInterface,
     file_saving_service: FileSavingService,
     state_load_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
-    chitchat_rx: Receiver<Option<ChitchatRef>>,
+    net_topology_rx: Receiver<NetTopology<NodeIdentifier>>,
     bk_set_rx: tokio::sync::watch::Receiver<ApiBkSet>,
 }
 
@@ -49,7 +47,7 @@ impl ExternalFileSharesBased {
     pub fn new(
         blob_sync: ServiceInterface,
         file_saving_service: FileSavingService,
-        chitchat_rx: Receiver<Option<ChitchatRef>>,
+        net_topology_rx: Receiver<NetTopology<NodeIdentifier>>,
         bk_set_rx: tokio::sync::watch::Receiver<ApiBkSet>,
     ) -> Self {
         // TODO: move to config
@@ -61,17 +59,10 @@ impl ExternalFileSharesBased {
             blob_sync,
             file_saving_service,
             state_load_thread: Arc::new(Mutex::new(None)),
-            chitchat_rx,
+            net_topology_rx,
             bk_set_rx,
         }
     }
-}
-
-fn get_node_id_and_download_url_from_gossip(
-    entry: &chitchat::NodeState,
-) -> Option<(NodeIdentifier, &str)> {
-    let node_id = entry.get("node_id").map(NodeIdentifier::from_str)?.ok()?;
-    entry.get(GOSSIP_API_ADVERTISE_ADDR_KEY).map(|url| (node_id, url))
 }
 
 impl StateSyncService for ExternalFileSharesBased {
@@ -122,25 +113,19 @@ impl StateSyncService for ExternalFileSharesBased {
             let repo_clone = repo.clone();
             let external_blob_share_services = {
                 let mut services = HashSet::<Url>::from_iter(self.static_storages.iter().cloned());
-                Extend::extend(
-                    &mut services,
-                    self
-                    .chitchat_rx.borrow()
-                    .clone()
-                    .expect("ChitchatRef is guaranteed to have Some value")
-                    .lock()
-                    .state_snapshot()
-                    .node_states
-                    .iter()
-                    .flat_map(|node| {
-                        let (node_id, url) = get_node_id_and_download_url_from_gossip(node)?;
-                        current_bk_set_node_ids.contains(&node_id).then_some(url)
-                    })
-                    .flat_map(|raw_url| Url::parse(raw_url).ok())
-                    // TODO: make it connected to http-server settings so that it's not hardcoded
-                    .flat_map(|url| url.join("v2/storage/").ok()),
-                );
-                services.drain().collect()
+                for (node_id, peers) in self.net_topology_rx.borrow().peer_resolver() {
+                    if current_bk_set_node_ids.contains(node_id) {
+                        for peer in peers {
+                            if let Some(base_url) = &peer.bk_api_url_for_storage_sync {
+                                // TODO: make it connected to http-server settings so that it's not hardcoded
+                                if let Ok(url) = base_url.join("v2/storage/") {
+                                    services.insert(url);
+                                }
+                            }
+                        }
+                    }
+                }
+                Vec::from_iter(services)
             };
             if let Some(m) = metrics.as_ref() {
                 m.report_state_request()

@@ -8,6 +8,7 @@ PRE_EPOCH_ABI=../contracts/0.79.3_compiled/bksystem/BlockKeeperPreEpochContract.
 COOLER_ABI=../contracts/0.79.3_compiled/bksystem/BlockKeeperCoolerContract.abi.json
 ROOT=0:7777777777777777777777777777777777777777777777777777777777777777
 EPOCH_ABI=../contracts/0.79.3_compiled/bksystem/BlockKeeperEpochContract.abi.json
+METRICS_PROTO=opentelemetry/proto/collector/metrics/v1/metrics_service.proto
 
 IS_EPOCH_ACTIVE=false
 IS_EPOCH_CONTINUE=false
@@ -20,7 +21,7 @@ DAEMON=false
 while getopts 'd:l:' opts; do
   case "${opts}" in
     [d])
-      DAEMON=true 
+      DAEMON=true
       SLEEP_TIME="$OPTARG"
       ;;
     l)
@@ -45,13 +46,84 @@ log() {
   echo "[$(date -Is)]" "$@"
 }
 
+report_metric() {
+  if [[ -z "${OTEL_EXPORTER_OTLP_METRICS_ENDPOINT:-}" ]]; then
+    return
+  fi
+
+  local NOW=$(date +%s)
+  local NOW_NANO=$(date +%s%N)
+  # If %N is not supported (some systems), fallback to 000000000
+  if [[ "$NOW_NANO" == *N ]]; then
+    NOW_NANO="${NOW}000000000"
+  fi
+
+  local VALUE="$NOW"
+  if [[ -n "${2:-}" ]]; then
+    VALUE="$2"
+  fi
+
+  local RESOURCE_ATTRIBUTES="[]"
+  if [[ -n "${OTEL_RESOURCE_ATTRIBUTES:-}" ]]; then
+    # Parse key1=val1,key2=val2 into OTLP JSON attributes
+    RESOURCE_ATTRIBUTES=$(echo "$OTEL_RESOURCE_ATTRIBUTES" | jq -R 'split(",") | map(split("=")) | map({"key": .[0], "value": {"stringValue": .[1]}})')
+  fi
+
+  if [[ -n "${OTEL_SERVICE_NAME:-}" ]]; then
+    RESOURCE_ATTRIBUTES=$(echo "$RESOURCE_ATTRIBUTES" | jq ". + [{\"key\": \"service.name\", \"value\": {\"stringValue\": \"$OTEL_SERVICE_NAME\"}}]")
+  fi
+
+  local PAYLOAD=$(cat <<EOF
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": $RESOURCE_ATTRIBUTES
+      },
+      "scopeMetrics": [
+        {
+          "metrics": [
+            {
+              "name": "bk_staking_$1",
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "asInt": "$VALUE",
+                    "timeUnixNano": "$NOW_NANO"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+EOF
+)
+
+  local ENDPOINT=$(echo "$OTEL_EXPORTER_OTLP_METRICS_ENDPOINT" | sed -E 's|http://||; s|https://||')
+  local ARGS=("-d" "$PAYLOAD" "-import-path" "/otel-protos" "-proto" "$METRICS_PROTO")
+
+  if [[ "$OTEL_EXPORTER_OTLP_METRICS_ENDPOINT" == http://* ]]; then
+    ARGS+=("-plaintext")
+  fi
+
+  grpcurl "${ARGS[@]}" "$ENDPOINT" opentelemetry.proto.collector.metrics.v1.MetricsService/Export || log "Failed to send $1 metric to OTel"
+}
+
+report_metric startup
+
 trigger_stopping_staking () {
+  report_metric trigger_stopping_staking
   log "Stop signal has been received. Trying to shutdown gracefully"
   WILL_EPOCH_CONTINUE=false
   local WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails || { log "Error with getting details $WALLET_ADDR. Returning..." >&2 ; return ;})
   local OLD_SEQ=$(echo $WALLET_DETAILS | jq -r '.activeStakes[] | select(.status == "1") | .seqNoStart')
   if [[ ! -n "$OLD_SEQ" ]]; then
     log "Couldn't get seqNoStart for epoch in wallet $WALLET_DETAILS..."
+    report_metric trigger_stopping_staking_seqnostart
     return
   fi
   EPOCH_PARAMS=$(cat $NODE_OWNER_KEY | jq -e -r '.public' || { log "Error with reading node owner public key. Returning..." >&2 ; return ;})
@@ -71,16 +143,19 @@ trigger_stopping_staking () {
   tvm-cli -j callx --abi $EPOCH_ABI --addr $EPOCH_ADDRESS -m touch
 
   log "Exiting..."
+  report_metric trigger_stopping_staking_done
   exit 0
 }
 
 trigger_stopping_continue_staking () {
+  report_metric trigger_stopping_continue_staking
   log "SIGHUP signal has been recieved. Disabling continue staking"
   WILL_EPOCH_CONTINUE=false
   local WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails || { log "Error with getting details $WALLET_ADDR. Returning..." >&2 ; return ;})
   local OLD_SEQ=$(echo $WALLET_DETAILS | jq -r '.activeStakes[] | select(.status == "1") | .seqNoStart')
   if [[ ! -n "$OLD_SEQ" ]]; then
     log "Couldn't get seqNoStart for epoch in wallet $WALLET_DETAILS..."
+    report_metric trigger_stopping_continue_staking_failed_seqnostart
     return
   fi
   EPOCH_PARAMS=$(cat $NODE_OWNER_KEY | jq -e -r '.public' || { log "Error with reading node owner public key. Returning..." >&2 ; return ;})
@@ -89,6 +164,7 @@ trigger_stopping_continue_staking () {
   IS_EPOCH_CONTINUE=$(echo $EPOCH_DETAILS | jq -r '.isContinue')
   if [ "$IS_EPOCH_CONTINUE" = false ]; then
     log "Current epoch $EPOCH_ADDRESS is not being continued. Skipping epoch continue canceling..."
+    report_metric trigger_stopping_continue_staking_not_continued
     return 0
   fi
 
@@ -97,7 +173,7 @@ trigger_stopping_continue_staking () {
   log "Current wallet balance - $BALANCE_BEFORE"
   local CANCEL_PARAMS="{\"seqNoStartOld\": \"$OLD_SEQ\"}"
   tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $NODE_OWNER_KEY --method sendBlockKeeperRequestWithCancelStakeContinue "$CANCEL_PARAMS" || { log "Can't cancel continue staking. Probably there is no active epoch for wallet $WALLET_ADDR. Returning..." >&2 ; return ;}
-  
+
   local BALANCE_AFTER_HEX=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -r '.balance' | cut -d'x' -f 2 | tr '[:lower:]' '[:upper:]' || { log "Can't get balance for wallet $WALLET_ADDR. Returning..." >&2 ; return ;})
   local BALANCE_AFTER=$(echo "ibase=16; ${BALANCE_AFTER_HEX}" | bc)
   local BALANCE_ATTEMPTS=0
@@ -108,11 +184,12 @@ trigger_stopping_continue_staking () {
     local BALANCE_ATTEMPTS=$(( BALANCE_ATTEMPTS + 1 ))
     sleep 2
   done
-  
+
   if [ "$BALANCE_BEFORE" -ge "$BALANCE_AFTER" ]; then
     log "It seems like continue stake hasn't been moved back or continue stake was 0"
   fi
   log "Balance after canceling continue staking - $BALANCE_AFTER"
+  report_metric trigger_stopping_continue_staking_done
   return 0
 }
 
@@ -122,6 +199,7 @@ trap trigger_stopping_staking SIGINT SIGTERM
 NODE_OWNER_KEY=$1
 BLS_KEYS_FILE=$2
 NODE_IP=$3
+PROTOCOL_VERSION_FILE=$4
 
 if [[ ! -f $NODE_OWNER_KEY ]]; then
   log "$NODE_OWNER_KEY not found."
@@ -140,9 +218,20 @@ if [[ ! $NODE_IP =~ $REGEX ]]; then
   exit 1
 fi
 
+if [[ ! -f $PROTOCOL_VERSION_FILE ]]; then
+  log "Protocol version file $PROTOCOL_VERSION_FILE not found."
+  exit 1
+fi
+
 NODE_OWNER_PUB_KEY_JSON=$(jq -e -r .public $NODE_OWNER_KEY || { log "Error with reading node owner public key" >&2 ; exit 1 ;})
 NODE_OWNER_PUB_KEY=$(echo '{"pubkey": "0x{public}"}' | sed -e "s/{public}/$NODE_OWNER_PUB_KEY_JSON/g")
 BLS_PUB_KEY=$(jq -e -r .[0].public $BLS_KEYS_FILE || { log "Error with reading BLS public key" >&2 ; exit 1 ;})
+PROTOCOL_VERSION=$(cat $PROTOCOL_VERSION_FILE)
+if [[ -z $PROTOCOL_VERSION ]]; then
+  log "Unable to get protocol version."
+  exit 1
+fi
+log "Protocol version: $PROTOCOL_VERSION"
 READINESS_COUNT=0
 while ! tvm-cli -j runx --abi $ABI --addr $ROOT -m getDetails > /dev/null 2>&1; do
   log "Network endpoint is not reachable. Waiting..."
@@ -167,9 +256,11 @@ log "Wallet address: $WALLET_ADDR"
 log "Count of stake: $INIT_ACTIVE_STAKES"
 
 update_bls_keys () {
+  report_metric update_bls_keys
   if ! type -t node-helper > /dev/null 2>&1
   then
     log "node-helper: command not found"
+    report_metric update_bls_keys_failed_helper
     exit 1
   fi
 
@@ -178,13 +269,17 @@ update_bls_keys () {
   local UPD_KEY_LENGTH=$(jq '. | length' $1)
   if [ $KEY_LENGTH -ge $UPD_KEY_LENGTH ] || [ -z $UPD_BLS_PUBLIC_KEY ]; then
     log "BLS key update failed. Exiting..."
+    report_metric update_bls_keys_failed_key_update
     exit 1
   fi
-  NODE_PID=$(pgrep -f "^node.* -c .*acki-nacki.conf.yaml$" || { log "Error with getting Node PID" >&2 ; return ;})
+  NODE_PID=$(pgrep -f "^node.* -c .*acki-nacki.conf.yaml .*\.yaml$" || { log "Error with getting Node PID" >&2 ; return ;})
   kill -1 $NODE_PID
+  report_metric update_bls_keys_done
 }
 
 place_stake () {
+  report_metric place_stake
+
   local SIGN_INDEX_START=1
   local SIGN_INDEX_END=60000
   local SIGNER_INDEX=1
@@ -203,6 +298,7 @@ place_stake () {
 
   if [ $LICENSES_COUNT -eq 0 ]; then
     log "No active licenses have been found"
+    report_metric place_stake_failed_licenses
     return
   fi
 
@@ -232,7 +328,7 @@ place_stake () {
     local lockStake=$(echo "$LICENSE" | jq -r '.lockStake')
     local lockContinue=$(echo "$LICENSE" | jq -r '.lockContinue')
     local lockCooler=$(echo "$LICENSE" | jq -r '.lockCooler')
-    
+
     local available=$(echo "$balance - $lockStake - $lockContinue - $lockCooler" | bc)
     if [ $available -lt 0 ]; then
       available=0
@@ -251,6 +347,7 @@ place_stake () {
     compare=$(echo "$MIN_STAKE > $WALLET_STAKE" | bc)
     if [ "$compare" -eq 1 ]; then
       log "Not enough token's on the wallet for the stake"
+      report_metric place_stake_failed_balance
       return
     fi
   fi
@@ -272,11 +369,14 @@ place_stake () {
     fi
   done
 
+  log "Placing stake with version: $PROTOCOL_VERSION"
+  report_metric place_stake_signer_index "$SIGNER_INDEX"
+
   PREV_ACTIVE_STAKES=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '.activeStakes | length' || { log "Error with getting details $WALLET_ADDR" >&2 ; return ;})
-  PLACE_PARAMS="{\"bls_pubkey\": \"$BLS_PUB_KEY\", \"stake\": $WALLET_STAKE, \"signerIndex\": $SIGNER_INDEX, \"ProxyList\": {}, \"myIp\": \"$NODE_IP\"}"
+  PLACE_PARAMS="{\"bls_pubkey\": \"$BLS_PUB_KEY\", \"stake\": $WALLET_STAKE, \"signerIndex\": $SIGNER_INDEX, \"ProxyList\": {}, \"myIp\": \"$NODE_IP\", \"nodeVersion\": \"$PROTOCOL_VERSION\"}"
   tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $NODE_OWNER_KEY --method sendBlockKeeperRequestWithStake "$PLACE_PARAMS" || { log "Error with sending stake request. Go to the next step" >&2 ;}
   log "Waiting active stakes..."
-  
+
   ACTIVE_STAKES=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq '.activeStakes | length' || { log "Error with getting active stakes" >&2 ; return ;})
   STAKES_WAIT_COUNT=0
 
@@ -290,12 +390,15 @@ place_stake () {
   compare=$(echo "$ACTIVE_STAKES <= $PREV_ACTIVE_STAKES" | bc)
   if [ "$compare" -eq 1 ]; then
     log "Stake request failed..."
+    report_metric place_stake_failed_stake_request
     return 0
   fi
   log "Stake request successfuly accepted with signer index $SIGNER_INDEX"
+  report_metric place_stake_done
 }
 
 place_continue_stake () {
+  report_metric place_continue_stake
   local SIGN_INDEX_START=1
   local SIGN_INDEX_END=60000
   local SIGNER_INDEX=1
@@ -313,6 +416,7 @@ place_continue_stake () {
 
   if [ $LICENSES_COUNT -eq 0 ]; then
     log "No active licenses have been found"
+    report_metric place_continue_stake_failed_no_lic
     return
   fi
 
@@ -342,7 +446,7 @@ place_continue_stake () {
     local lockStake=$(echo "$LICENSE" | jq -r '.lockStake')
     local lockContinue=$(echo "$LICENSE" | jq -r '.lockContinue')
     local lockCooler=$(echo "$LICENSE" | jq -r '.lockCooler')
-    
+
     local available=$(echo "$balance - $lockStake - $lockContinue - $lockCooler" | bc)
     if [ $available -lt 0 ]; then
       available=0
@@ -363,6 +467,7 @@ place_continue_stake () {
     compare=$(echo "$MIN_STAKE > $TOTAL_AVAILABLE" | bc)
     if [ "$compare" -eq 1 ]; then
       log "Not enough token's on the wallet for continue staking"
+      report_metric place_continue_stake_failed_balance
       return
     fi
   fi
@@ -383,11 +488,13 @@ place_continue_stake () {
       break
     fi
   done
+  report_metric place_continue_stake_signer_index "$SIGNER_INDEX"
 
   update_bls_keys $BLS_KEYS_FILE
-  log "Sending continue stake - $TOTAL_AVAILABLE"
-  CONT_STAKING="{\"bls_pubkey\": \"$UPD_BLS_PUBLIC_KEY\", \"stake\": $TOTAL_AVAILABLE, \"seqNoStartOld\": \"$1\", \"signerIndex\": $SIGNER_INDEX, \"ProxyList\": {}}"
+  log "Sending continue stake - $TOTAL_AVAILABLE with version - $PROTOCOL_VERSION"
+  CONT_STAKING="{\"bls_pubkey\": \"$UPD_BLS_PUBLIC_KEY\", \"stake\": $TOTAL_AVAILABLE, \"seqNoStartOld\": \"$1\", \"signerIndex\": $SIGNER_INDEX, \"ProxyList\": {}, \"nodeVersion\": \"$PROTOCOL_VERSION\"}"
   tvm-cli -j callx --addr $WALLET_ADDR --abi $WALLET_ABI --keys $NODE_OWNER_KEY --method sendBlockKeeperRequestWithStakeContinue "$CONT_STAKING" || { log "Error with sending continue stake request. Go to the next step" >&2 ;}
+  report_metric place_continue_stake_done
 }
 
 calculate_reward () {
@@ -399,11 +506,15 @@ calculate_reward () {
 }
 
 process_cooler_epoch () {
+  report_metric process_cooler_epoch
   COOLER_SEQNO_FINISH=$(tvm-cli -j runx --abi $COOLER_ABI --addr $1 -m getDetails | jq -r -e '.seqNoFinish' || { log "Error with getting cooler seq_no finish" >&2 ; return ;})
   log "Cooler Epoch found with address \"$1\" and finish seqno \"$COOLER_SEQNO_FINISH\""
   CUR_BLOCK_SEQ=$(tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no' || { log "Error with getting current block seqNo" >&2 ; return ;})
+  report_metric cooler_seqno_finish "$COOLER_SEQNO_FINISH"
+  report_metric cooler_seqno_current "$CUR_BLOCK_SEQ"
   if [ "$(echo "$COOLER_SEQNO_FINISH < $CUR_BLOCK_SEQ" | bc)" -ne 1 ]; then
     log "Current block seq_no is less than cooler finish block seq_no. Skipping cooler processing..."
+    report_metric process_cooler_epoch_skip_seqno
     return 0
   fi
   log "Calculating rewards..."
@@ -412,9 +523,11 @@ process_cooler_epoch () {
   # log "There is no need to touch Cooler within staking..."
   # log "Touching cooler contract"
   # tvm-cli -j callx --abi $COOLER_ABI --addr $1 -m touch
+  report_metric process_cooler_epoch_done
 }
 
 process_epoch () {
+  report_metric process_epoch
   EPOCH_PARAMS=$(cat $NODE_OWNER_KEY | jq -e -r '.public' || { log "Error with reading node owner public key" >&2 ; return 0 ;})
   EPOCH_WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails || { log "Error with getting details $WALLET_ADDR" >&2 ; return 0 ;})
   log "$EPOCH_WALLET_DETAILS"
@@ -423,6 +536,7 @@ process_epoch () {
   STAKES_LENGTH=$(echo $EPOCH_WALLET_DETAILS | jq '.activeStakes | length')
   log "Active Stakes - ${ACTIVE_STAKES_ARRAY[@]}"
   log "Stakes count - ${STAKES_LENGTH}"
+  report_metric stakes_count "${STAKES_LENGTH}"
   if [ ${STAKES_LENGTH} -le 0 ] && [ "$WILL_EPOCH_CONTINUE" = true ]; then
     log "No active stakes have been found for wallet - $WALLET_ADDR. Placing stake..." >&2
     place_stake
@@ -433,6 +547,7 @@ process_epoch () {
     STAKES_LENGTH=$(echo $EPOCH_WALLET_DETAILS | jq '.activeStakes | length')
     log "Active Stakes - ${ACTIVE_STAKES_ARRAY[@]}"
     log "Stakes count - ${STAKES_LENGTH}"
+    report_metric stakes_count "${STAKES_LENGTH}"
     # return 0
   fi
 
@@ -447,6 +562,7 @@ process_epoch () {
     STAKES_LENGTH=$(echo $EPOCH_WALLET_DETAILS | jq '.activeStakes | length')
     log "Active Stakes - ${ACTIVE_STAKES_ARRAY[@]}"
     log "Stakes count - ${STAKES_LENGTH}"
+    report_metric stakes_count "${STAKES_LENGTH}"
   fi
 
   for k in ${ACTIVE_STAKES_ARRAY[@]}; do
@@ -467,6 +583,7 @@ process_epoch () {
         done
         log "Touching preEpoch contract"
         tvm-cli -j callx --abi $PRE_EPOCH_ABI --addr $PRE_EPOCH_ADDRESS -m touch
+        report_metric process_epoch_touched_preepoch
         ;;
       1)
         log "Epoch in progress - $k"
@@ -493,6 +610,7 @@ process_epoch () {
         if [ "$(echo $EPOCH_DETAILS | jq -r '.seqNoFinish')" -le $CUR_BLOCK_SEQ ]; then
           log "Current epoch $EPOCH_ADDRESS is ready to be touched"
           tvm-cli -j callx --abi $EPOCH_ABI --addr $EPOCH_ADDRESS -m touch
+          report_metric process_epoch_touched_epoch
         fi
         ;;
       2)
@@ -503,6 +621,7 @@ process_epoch () {
         ;;
     esac
   done
+  report_metric process_epoch_done
 }
 
 # Use when there is no active stakes
@@ -510,9 +629,11 @@ if [ $INIT_ACTIVE_STAKES -eq 0 ]; then
   place_stake
 fi
 
+report_metric started
 if [[ "$DAEMON" == true ]]; then
   while true; do
     process_epoch
+    report_metric heartbeat
     set +e
     sleep $SLEEP_TIME &
     wait $!
@@ -520,4 +641,7 @@ if [[ "$DAEMON" == true ]]; then
   done
 else
   process_epoch
+  report_metric heartbeat
 fi
+report_metric exited
+

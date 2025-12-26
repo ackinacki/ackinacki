@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use transport_layer::NetTransport;
 
+use crate::config::DirectSendMode;
 use crate::config::NetworkConfig;
 use crate::direct_sender::peer_info;
 use crate::direct_sender::peer_sender::PeerSender;
@@ -185,13 +186,19 @@ where
         );
         match receiver {
             DirectReceiver::Peer(id) => {
-                let mut broadcast_msg = net_message.clone();
-                broadcast_msg.direct_receiver = Some(id.to_string());
-                let _ = self.outgoing_broadcast_tx.send(OutgoingMessage {
-                    delivery: MessageDelivery::Broadcast,
-                    message: broadcast_msg,
-                    duration_before_transfer: buffer_duration,
-                });
+                let send_mode = self.network_config.direct_send_mode.clone();
+                if matches!(send_mode, DirectSendMode::Broadcast | DirectSendMode::Both) {
+                    let mut broadcast_msg = net_message.clone();
+                    broadcast_msg.direct_receiver = Some(id.to_string());
+                    let _ = self.outgoing_broadcast_tx.send(OutgoingMessage {
+                        delivery: MessageDelivery::Broadcast,
+                        message: broadcast_msg,
+                        duration_before_transfer: buffer_duration,
+                    });
+                }
+                if send_mode == DirectSendMode::Broadcast {
+                    return;
+                }
                 let peer_senders = if let Some(senders) = self.peer_senders.get(&id) {
                     senders
                 } else {

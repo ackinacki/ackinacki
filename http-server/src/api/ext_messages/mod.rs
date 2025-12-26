@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_with::serde_as;
 use serde_with::Bytes;
+use transport_layer::HostPort;
 use tvm_types::write_boc;
 use tvm_types::SliceData;
 
@@ -84,7 +85,7 @@ impl ExtMsgResponse {
         }
     }
 
-    fn set_producers(&mut self, producers: Vec<String>) {
+    fn set_producers(&mut self, producers: Vec<HostPort>) {
         if let Some(mut result) = self.result.take() {
             result.producers = producers.clone();
             self.result = Some(result);
@@ -154,14 +155,14 @@ pub struct ExtMsgResult {
     ext_out_msgs: Vec<String>,
     aborted: bool, /* We still need this field as some aborted transactions from ExtInMsg are still included into block */
     exit_code: i32, /* To see the exit code of aborted transaction included into block. 0 for success */
-    producers: Vec<String>, // ip of block producers, [0] - active one
+    producers: Vec<HostPort>, // ip of block producers, [0] - active one
     current_time: String,
     thread_id: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
 pub struct ExtMsgErrorData {
-    producers: Vec<String>,
+    producers: Vec<HostPort>,
     message_hash: String,
     exit_code: Option<i32>,
     current_time: String,
@@ -170,7 +171,7 @@ pub struct ExtMsgErrorData {
 
 impl ExtMsgErrorData {
     pub fn new(
-        producers: Vec<String>,
+        producers: Vec<HostPort>,
         message_hash: String,
         exit_code: Option<i32>,
         thread_id: Option<String>,
@@ -197,7 +198,7 @@ impl ExtMsgError {
         Self { code, message, data }
     }
 
-    fn set_producers(&mut self, producers: Vec<String>) {
+    fn set_producers(&mut self, producers: Vec<HostPort>) {
         if let Some(mut data) = self.data.take() {
             data.producers = producers;
             self.data = Some(data);
@@ -336,11 +337,11 @@ impl Display for ExtMsgFeedbackList {
 #[derive(Debug)]
 pub struct ResolvingResult {
     i_am_bp: bool,
-    active_bp: Vec<String>,
+    active_bp: Vec<HostPort>,
 }
 
 impl ResolvingResult {
-    pub fn new(i_am_bp: bool, active_bp: Vec<String>) -> Self {
+    pub fn new(i_am_bp: bool, active_bp: Vec<HostPort>) -> Self {
         Self { i_am_bp, active_bp }
     }
 }

@@ -1,0 +1,256 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"index","type":"uint128"},
+				{"name":"popitGame","type":"address"},
+				{"name":"mobileVerifiersContractGameRoot","type":"address"},
+				{"name":"boost","type":"address"},
+				{"name":"root","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "destroyNode",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setComplexity",
+			"inputs": [
+				{"name":"easyComplexity","type":"uint32"},
+				{"name":"hardComplexity","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setMbiCur",
+			"inputs": [
+				{"name":"mbiCur","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setCommitData",
+			"inputs": [
+				{"name":"id","type":"uint256"},
+				{"name":"easyNumber","type":"uint64"},
+				{"name":"tapNumber","type":"uint64"},
+				{"name":"workerId","type":"uint64"},
+				{"name":"data","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "cancelCommitData",
+			"inputs": [
+				{"name":"id","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setOwnerPubkey",
+			"inputs": [
+				{"name":"id","type":"uint256"},
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteOwnerPubkey",
+			"inputs": [
+				{"name":"id","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getReward",
+			"inputs": [
+				{"name":"id","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "acceptTap",
+			"inputs": [
+				{"name":"id","type":"uint256"},
+				{"name":"verifyData","type":"bytes"},
+				{"name":"eventAddrSuccess","type":"address[]"},
+				{"name":"eventCellSuccess","type":"bytes[]"},
+				{"name":"eventAddrFailed","type":"address[]"},
+				{"name":"eventCellFailed","type":"bytes[]"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "calculateTaps",
+			"inputs": [
+				{"name":"tapSum","type":"uint128"},
+				{"name":"commitTaps","type":"uint128"},
+				{"name":"mining_dur","type":"uint128"},
+				{"name":"modified_tap_rem_q40","type":"uint128"},
+				{"name":"miningDurSum","type":"uint128"},
+				{"name":"modifiedTapSum","type":"uint128"},
+				{"name":"tapSum5m","type":"uint128"}
+			],
+			"outputs": [
+				{"name":"rtapCoef","type":"uint128"},
+				{"name":"rmodified_tap_rem_q40","type":"uint128"},
+				{"name":"rminingDurSum","type":"uint128"},
+				{"name":"rmodifiedTapSum","type":"uint128"},
+				{"name":"rtapSum5m","type":"uint128"},
+				{"name":"rtapSum","type":"uint128"}
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"mobileVerifiersContractGameRoot","type":"address"},
+				{"name":"owner","type":"address"},
+				{"name":"popitGame","type":"address"},
+				{"name":"boost","type":"address"},
+				{"name":"mbiCur","type":"optional(uint64)"},
+				{"name":"owner_pubkey","type":"map(uint256,uint256)"},
+				{"name":"epochStart","type":"uint64"},
+				{"name":"epochStartOld","type":"uint64"},
+				{"name":"oldTaps","type":"uint128[]"},
+				{"name":"oldTapsSize","type":"uint128"},
+				{"name":"oldMbiCurTaps","type":"uint64[]"},
+				{"name":"taps","type":"uint128[]"},
+				{"name":"mbiCurTaps","type":"uint64[]"},
+				{"name":"tapsSize","type":"uint128"},
+				{"name":"tapSum","type":"uint128"},
+				{"name":"modifiedTapSum","type":"uint128"},
+				{"name":"miningDurSum","type":"uint128"},
+				{"name":"epochBigStart","type":"uint64"},
+				{"name":"seed","type":"uint256"},
+				{"name":"seedNext","type":"uint256"},
+				{"name":"commitData","type":"optional(bytes)"},
+				{"components":[{"components":[{"name":"first","type":"uint64"},{"name":"second","type":"uint64"}],"name":"value0","type":"tuple"},{"components":[{"name":"first","type":"uint64"},{"name":"second","type":"uint64"}],"name":"value1","type":"tuple"}],"name":"commitInterval","type":"optional(tuple)"},
+				{"name":"easyComplexity","type":"uint32"},
+				{"name":"hardComplexity","type":"uint32"}
+			]
+		},
+		{
+			"name": "decodeResult",
+			"inputs": [
+				{"name":"result","type":"cell"}
+			],
+			"outputs": [
+				{"name":"isSuccess","type":"uint8"},
+				{"name":"isCorrectTap","type":"uint8"},
+				{"name":"miningDur","type":"uint32"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+		{
+			"name": "TapSucceed",
+			"inputs": [
+				{"name":"data","type":"bytes"},
+				{"name":"wasmResult","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "TapFailed",
+			"inputs": [
+				{"name":"data","type":"bytes"},
+				{"name":"wasmResult","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "GetInterval",
+			"inputs": [
+				{"components":[{"name":"first","type":"uint64"},{"name":"second","type":"uint64"}],"name":"easy","type":"tuple"},
+				{"components":[{"name":"first","type":"uint64"},{"name":"second","type":"uint64"}],"name":"hard","type":"tuple"},
+				{"name":"workerId","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "NewSeed",
+			"inputs": [
+				{"name":"seed","type":"uint256"},
+				{"name":"seednext","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "NewComplexity",
+			"inputs": [
+				{"name":"easyComplexity","type":"uint32"},
+				{"name":"hardComplexity","type":"uint32"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_mobileVerifiersContractGameRoot","type":"address"},
+		{"init":true,"name":"_owner","type":"address"},
+		{"init":false,"name":"_popitGame","type":"address"},
+		{"init":false,"name":"_boost","type":"address"},
+		{"init":false,"name":"_root","type":"address"},
+		{"init":false,"name":"_mbiCur","type":"optional(uint64)"},
+		{"init":false,"name":"_owner_pubkey","type":"map(uint256,uint256)"},
+		{"init":false,"name":"_owner_pubkey_size","type":"uint32"},
+		{"init":false,"name":"_epochStart","type":"uint64"},
+		{"init":false,"name":"_epochStartOld","type":"uint64"},
+		{"init":false,"name":"_oldTaps","type":"uint128[]"},
+		{"init":false,"name":"_oldTapsSize","type":"uint128"},
+		{"init":false,"name":"_oldMbiCurTaps","type":"uint64[]"},
+		{"init":false,"name":"_taps","type":"uint128[]"},
+		{"init":false,"name":"_mbiCurTaps","type":"uint64[]"},
+		{"init":false,"name":"_tapsSize","type":"uint128"},
+		{"init":false,"name":"_tapSum","type":"uint128"},
+		{"init":false,"name":"_tapSum5m","type":"uint128"},
+		{"init":false,"name":"_modifiedTapSum","type":"uint128"},
+		{"init":false,"name":"_miningDurSum","type":"uint128"},
+		{"init":false,"name":"_modified_tap_rem_q40","type":"uint128"},
+		{"init":false,"name":"_epochBigStart","type":"uint64"},
+		{"init":false,"name":"_seed","type":"uint256"},
+		{"init":false,"name":"_seedNext","type":"uint256"},
+		{"init":false,"name":"_commitData","type":"optional(bytes)"},
+		{"init":false,"name":"_commitTaps","type":"uint128"},
+		{"components":[{"components":[{"name":"first","type":"uint64"},{"name":"second","type":"uint64"}],"name":"value0","type":"tuple"},{"components":[{"name":"first","type":"uint64"},{"name":"second","type":"uint64"}],"name":"value1","type":"tuple"}],"init":false,"name":"_commitInterval","type":"optional(tuple)"},
+		{"init":false,"name":"_easyComplexity","type":"uint32"},
+		{"init":false,"name":"_hardComplexity","type":"uint32"},
+		{"init":false,"name":"_easyComplexityOld","type":"uint32"},
+		{"init":false,"name":"_hardComplexityOld","type":"uint32"}
+	]
+}

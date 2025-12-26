@@ -165,15 +165,19 @@ where
 
         let secrets = self.bls_keys_map.guarded(|map| map.clone());
 
-        let Ok(envelope) = Envelope::<GoshBLS, SyncFinalizedData>::sealed(
-            &self.config.local.node_id,
+        let envelope = match Envelope::<GoshBLS, SyncFinalizedData>::sealed(
+            &self.node_credentials,
             &bk_set,
             &secrets,
             data,
-        ) else {
-            tracing::trace!("Failed to get sign SyncFinalized envelope. Skip broadcasting");
-            return Ok(());
+        ) {
+            Ok(envelope) => envelope,
+            Err(e) => {
+                tracing::trace!("Failed to sign SyncFinalized envelope: {e}. Skip broadcasting");
+                return Ok(());
+            }
         };
+
         match self
             .network_broadcast_tx
             .send(NetworkMessage::SyncFinalized((envelope, self.thread_id)))

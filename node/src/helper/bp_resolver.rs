@@ -1,13 +1,13 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use message_router::bp_resolver::BPResolver;
-use message_router::DEFAULT_NODE_URL_PORT;
+use message_router::DEFAULT_BK_API_PORT;
 use network::topology::NetTopology;
 use parking_lot::Mutex;
+use transport_layer::HostPort;
 
 use crate::node::NodeIdentifier;
 use crate::repository::repository_impl::RepositoryImpl;
@@ -27,7 +27,7 @@ impl BPResolverImpl {
 }
 
 impl BPResolver for BPResolverImpl {
-    fn resolve(&mut self, thread_id: Option<String>) -> Vec<SocketAddr> {
+    fn resolve(&mut self, thread_id: Option<String>) -> Vec<HostPort> {
         let repository = self.repository.lock();
         let bp_id_for_thread_map = repository.get_nodes_by_threads();
         drop(repository);
@@ -38,16 +38,12 @@ impl BPResolver for BPResolverImpl {
 
         // TODO: this list of threads can change in runtime need to take smth like shared services
         let net = self.net_topology_rx.borrow();
-        let mut nodes_vec: Vec<SocketAddr> = bp_id_for_thread_map
+        let mut nodes_vec: Vec<HostPort> = bp_id_for_thread_map
             .into_iter()
             .filter_map(|(thread, bp_id)| {
                 if target_thread.as_ref().is_none_or(|t| &thread == t) {
                     bp_id.and_then(|bp_node_id| net.resolve_peer(&bp_node_id)).and_then(|peers| {
-                        peers.first().map(|peer_data| {
-                            let mut addr = peer_data.addr;
-                            addr.set_port(DEFAULT_NODE_URL_PORT);
-                            addr
-                        })
+                        peers.first().map(|peer| peer.resolve_bk_host_port(DEFAULT_BK_API_PORT))
                     })
                 } else {
                     None

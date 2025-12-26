@@ -14,5 +14,6 @@ network.workspace = true
 node.workspace = true
 parse_duration = "2.1.1"
 serde_json.workspace = true
+transport-layer.workspace = true
 tvm_client.workspace = true
 url.workspace = true

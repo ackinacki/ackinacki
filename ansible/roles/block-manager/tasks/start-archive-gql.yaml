@@ -1,0 +1,45 @@
+- name: "Ensures archive gql server directories"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: u=rwx,g=rwx,o=rwx
+  with_items:
+    - "{{ AGQL_LOGS_DIR }}"
+    - "{{ AGQL_DIR }}"
+
+- name: Production compose
+  ansible.builtin.template:
+    src: templates/archive-gql/compose.j2
+    dest: "{{ AGQL_DIR }}/compose.yaml"
+    mode: "0644"
+
+- name: Log rotate configuration
+  ansible.builtin.template:
+    src: templates/logrotate.j2
+    dest: "{{ AGQL_DIR }}/logrotate.sh"
+    mode: "0755"
+  register: logrotate
+
+- name: Compose pull
+  ansible.builtin.shell:
+    chdir: "{{ AGQL_DIR }}"
+    cmd: docker compose pull
+
+- name: Create ackinacki-net manually
+  ansible.builtin.shell:
+    cmd: docker network create ackinacki-net
+  ignore_errors: true
+  when:
+    - CREATE_NET
+
+- name: Compose UP
+  ansible.builtin.shell:
+    chdir: "{{ AGQL_DIR }}"
+    cmd: docker compose up -d
+
+- name: Compose restart logrotate
+  ansible.builtin.shell:
+    chdir: "{{ AGQL_DIR }}"
+    cmd: docker compose restart logrotate
+  when:
+    - logrotate.changed

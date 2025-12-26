@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt::Display;
 use std::sync::Arc;
 
 use ed25519_dalek::Signer;
+use ed25519_dalek::SigningKey;
 use ed25519_dalek::Verifier;
 use ed25519_dalek::VerifyingKey;
 use rcgen::CertificateParams;
@@ -24,11 +26,106 @@ use rustls_pki_types::PrivateKeyDer;
 use rustls_pki_types::ServerName;
 use rustls_pki_types::UnixTime;
 use serde::Deserialize;
+use sha2::Digest;
 use x509_parser::nom::AsBytes;
 
 use crate::msquic::msquic_async::connection::StartError;
-use crate::CertHash;
-use crate::NetCredential;
+
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
+pub struct CertHash(pub [u8; 32]);
+
+impl CertHash {
+    pub fn prefix(&self) -> String {
+        hex::encode(&self.0[0..3])
+    }
+}
+
+impl From<&CertificateDer<'static>> for CertHash {
+    fn from(cert: &CertificateDer) -> Self {
+        Self(sha2::Sha256::digest(cert).into())
+    }
+}
+
+impl Display for CertHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", hex::encode(self.0))
+    }
+}
+
+#[derive(PartialEq)]
+pub struct NetCredential {
+    pub my_key: PrivateKeyDer<'static>,
+    pub my_certs: Vec<CertificateDer<'static>>,
+    pub trusted_cert_hashes: HashSet<CertHash>,
+    pub trusted_pubkeys: HashSet<VerifyingKey>,
+}
+
+impl NetCredential {
+    pub fn generate_self_signed(
+        subjects: Option<Vec<String>>,
+        ed_signing_keys: &[SigningKey],
+    ) -> anyhow::Result<Self> {
+        let (my_key, my_cert) = generate_self_signed_cert(subjects, ed_signing_keys)?;
+        Ok(Self {
+            my_key,
+            my_certs: vec![my_cert],
+            trusted_cert_hashes: HashSet::new(),
+            trusted_pubkeys: HashSet::new(),
+        })
+    }
+
+    pub fn identity(&self) -> String {
+        if self.my_certs.is_empty() {
+            String::new()
+        } else {
+            CertHash::from(&self.my_certs[0]).to_string()
+        }
+    }
+
+    pub fn identity_prefix(&self) -> String {
+        if self.my_certs.is_empty() {
+            String::new()
+        } else {
+            CertHash::from(&self.my_certs[0]).to_string().chars().take(4).collect()
+        }
+    }
+
+    pub fn verify_cert(&self, cert: &CertificateDer<'static>) -> Result<(), StartError> {
+        verify_cert(cert, &self.trusted_cert_hashes, &self.trusted_pubkeys)
+    }
+
+    pub fn verify_cert_hash_and_pubkeys(
+        &self,
+        hash: &CertHash,
+        pubkeys: &[VerifyingKey],
+    ) -> Result<(), StartError> {
+        verify_cert_hash_and_pubkeys(
+            hash,
+            pubkeys,
+            &self.trusted_cert_hashes,
+            &self.trusted_pubkeys,
+        )
+    }
+
+    pub fn my_cert_pubkeys(&self) -> anyhow::Result<HashSet<VerifyingKey>> {
+        let mut pubkeys = HashSet::new();
+        for cert in &self.my_certs {
+            pubkeys.extend(get_pubkeys_from_cert_der(cert)?);
+        }
+        Ok(pubkeys)
+    }
+}
+
+impl Clone for NetCredential {
+    fn clone(&self) -> Self {
+        Self {
+            my_key: self.my_key.clone_key(),
+            my_certs: self.my_certs.clone(),
+            trusted_cert_hashes: self.trusted_cert_hashes.clone(),
+            trusted_pubkeys: self.trusted_pubkeys.clone(),
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 struct NoCertVerification;
@@ -176,7 +273,7 @@ const ED_SIGNATURE_OID: x509_parser::der_parser::Oid =
 
 pub fn generate_self_signed_cert(
     subjects: Option<Vec<String>>,
-    ed_signing_keys: &[ed25519_dalek::SigningKey],
+    ed_signing_keys: &[SigningKey],
 ) -> anyhow::Result<(PrivateKeyDer<'static>, CertificateDer<'static>)> {
     let key_pair = rcgen::KeyPair::generate()?;
     let key = PrivateKeyDer::<'static>::try_from(key_pair.serialize_der())
@@ -188,7 +285,7 @@ pub fn generate_self_signed_cert(
 pub fn create_self_signed_cert_with_ed_signatures(
     subjects: Option<Vec<String>>,
     tls_key: &PrivateKeyDer<'static>,
-    ed_signing_keys: &[ed25519_dalek::SigningKey],
+    ed_signing_keys: &[SigningKey],
 ) -> anyhow::Result<(PrivateKeyDer<'static>, CertificateDer<'static>)> {
     let mut params = CertificateParams::new(cert_subjects(subjects))?;
     let key_pair = rcgen::KeyPair::try_from(tls_key)?;
@@ -343,7 +440,7 @@ pub fn build_pkcs12(credential: &NetCredential) -> anyhow::Result<Vec<u8>> {
 pub fn resolve_signing_keys(
     key_secrets: &[String],
     key_paths: &[String],
-) -> anyhow::Result<Vec<crate::SigningKey>> {
+) -> anyhow::Result<Vec<SigningKey>> {
     let mut keys = Vec::new();
     for secret in key_secrets {
         keys.push(parse_signing_key(secret.as_str())?);
@@ -359,9 +456,9 @@ pub fn resolve_signing_keys(
     Ok(keys)
 }
 
-fn parse_signing_key(s: &str) -> anyhow::Result<crate::SigningKey> {
+fn parse_signing_key(s: &str) -> anyhow::Result<SigningKey> {
     let bytes = <[u8; 32]>::try_from(hex::decode(s)?.as_slice())?;
-    Ok(crate::SigningKey::from_bytes(&bytes))
+    Ok(SigningKey::from_bytes(&bytes))
 }
 
 #[derive(Clone)]
@@ -385,7 +482,7 @@ impl TlsCertCache {
         &self,
         subjects: Option<Vec<String>>,
         tls_key: Option<&PrivateKeyDer<'static>>,
-        ed_signing_keys: &[ed25519_dalek::SigningKey],
+        ed_signing_keys: &[SigningKey],
     ) -> anyhow::Result<(PrivateKeyDer<'static>, CertificateDer<'static>)> {
         let mut inner = self.0.lock().map_err(|_| anyhow::anyhow!("Failed to lock mutex"))?;
         let tls_key = tls_key.unwrap_or(&inner.default_key);

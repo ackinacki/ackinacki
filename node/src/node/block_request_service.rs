@@ -14,6 +14,7 @@ use super::NetworkMessage;
 use super::NodeIdentifier;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::config::Config;
+use crate::config::GlobalConfig;
 use crate::helper::block_flow_trace;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::node::block_state::repository::BlockState;
@@ -40,6 +41,7 @@ pub struct BlockRequestParams {
 
 pub struct BlockRequestService {
     config: Config,
+    global_config: GlobalConfig,
     repository: RepositoryImpl,
     shared_services: SharedServices,
     block_state_repository: BlockStateRepository,
@@ -53,6 +55,7 @@ impl BlockRequestService {
     #[allow(clippy::too_many_arguments)]
     pub fn start(
         config: Config,
+        global_config: GlobalConfig,
         shared_services: SharedServices,
         repository: RepositoryImpl,
         block_state_repository: BlockStateRepository,
@@ -64,6 +67,7 @@ impl BlockRequestService {
 
         let service = BlockRequestService {
             config,
+            global_config,
             shared_services,
             repository,
             block_state_repository,
@@ -109,7 +113,7 @@ impl BlockRequestService {
 
                 let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
 
-                if elapsed > self.config.global.min_time_between_state_publish_directives {
+                if elapsed > self.global_config.min_time_between_state_publish_directives {
                     // that's not sync state here, do not clear timer
                     // {
                     //     let mut guard = last_state_sync_executed.lock();
@@ -129,7 +133,7 @@ impl BlockRequestService {
                             .select_thread_last_finalized_block(&thread_id)
                             .expect("Must be known here")
                         {
-                            for _i in 0..self.config.global.sync_gap {
+                            for _i in 0..self.global_config.sync_gap {
                                 block_seq_no_with_sync = next_seq_no(block_seq_no_with_sync);
                             }
                             tracing::trace!(

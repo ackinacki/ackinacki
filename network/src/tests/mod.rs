@@ -15,6 +15,7 @@ use std::time::Instant;
 
 use chitchat::ChitchatHandle;
 use chitchat::ChitchatRef;
+use gossip::default_gossip_peer_ttl_seconds;
 use gossip::gossip_peer::GossipPeer;
 use gossip::run_gossip_with_reload;
 use gossip::GossipConfig;
@@ -34,6 +35,7 @@ use url::Url;
 
 use crate::channel::NetBroadcastSender;
 use crate::channel::NetDirectSender;
+use crate::config::DirectSendMode;
 use crate::config::NetworkConfig;
 use crate::config::SocketAddrSet;
 use crate::network::BasicNetwork;
@@ -100,6 +102,7 @@ fn network_config(
     let cert_file = CertFile::default();
     NetworkConfig::new(
         instance_addr(instance),
+        DirectSendMode::Broadcast,
         cert_file,
         key_file,
         owner_keys,
@@ -116,6 +119,7 @@ fn gossip_config(instance: usize, seed_instances: &[usize]) -> GossipConfig {
         listen_addr: instance_gossip_addr(instance),
         seeds: seed_instances.iter().copied().map(instance_gossip_addr).collect(),
         cluster_id: "transport_test".to_string(),
+        peer_ttl_seconds: default_gossip_peer_ttl_seconds(),
     }
 }
 
@@ -307,6 +311,7 @@ impl<Transport: NetTransport + 'static> Proxy<Transport> {
                 endpoint: NetEndpoint::Proxy(SocketAddrSet::with_addr(config.network.bind)),
                 max_nodes_with_same_id: 5,
                 override_subscribe: vec![],
+                peer_ttl_seconds: default_gossip_peer_ttl_seconds(),
                 trusted_pubkeys: HashSet::new(),
             });
         let (topology_tx, topology_rx) = tokio::sync::watch::channel(NetTopology::default());
@@ -397,22 +402,24 @@ pub async fn split_node_config(
                     endpoint: config.peer_endpoint(),
                     max_nodes_with_same_id: 6,
                     override_subscribe: Vec::new(),
+                    peer_ttl_seconds: default_gossip_peer_ttl_seconds(),
                     trusted_pubkeys: config.network.credential.trusted_pubkeys.clone(),
                 });
                 gossip_reload_config_tx.send_replace(
                     GossipReloadConfig {
                         gossip_config: config.gossip.clone(),
-                        api_advertise_addr: Url::parse(&format!("http://{}", config.network.bind)).unwrap(),
                         my_ed_key_secret: vec![],
                         my_ed_key_path: vec![],
-                        peer_config: Some(GossipPeer::new(
-                            config.id.clone(),
-                            config.network.bind,
-                            vec![],
-                            None,
-                            None,
-                            &[],
-                        ).unwrap())
+                        peer_config: Some(GossipPeer {
+                            id: config.id.clone(),
+                            node_protocol_addr: config.network.bind,
+                            proxies: vec![],
+                            bm_api_addr: None,
+                            bk_api_host_port: None,
+                            bk_api_url_for_storage_sync: Some(Url::parse(&format!("http://{}", config.network.bind)).unwrap()),
+                            bk_api_addr_deprecated: None,
+                            pubkey_signature: None,
+                        })
                     }
                 );
             }
@@ -513,13 +520,13 @@ impl<Transport: NetTransport + 'static> Node<Transport> {
                 endpoint: config.peer_endpoint(),
                 max_nodes_with_same_id: 5,
                 override_subscribe: Vec::new(),
+                peer_ttl_seconds: default_gossip_peer_ttl_seconds(),
                 trusted_pubkeys: HashSet::new(),
             });
         tracing::info!("Gossip advertise addr: {:?}", config.gossip.advertise_addr);
         let (gossip_reload_config_tx, gossip_reload_config_rx) =
             tokio::sync::watch::channel(GossipReloadConfig {
                 gossip_config: config.gossip.clone(),
-                api_advertise_addr: Url::parse(&format!("http://{}", config.network.bind))?,
                 my_ed_key_secret: vec![],
                 my_ed_key_path: vec![],
                 peer_config: None,
@@ -543,18 +550,23 @@ impl<Transport: NetTransport + 'static> Node<Transport> {
         let chitchat_ref =
             chitchat_rx.borrow().clone().expect("ChitchatRef is guaranteed to have Some value");
 
-        let gossip_node = GossipPeer::new(
-            config.id.clone(),
-            config.network.bind,
-            config.proxies.clone().into(),
-            None,
-            None,
-            &[],
-        )?;
+        let gossip_node = GossipPeer {
+            id: config.id.clone(),
+            node_protocol_addr: config.network.bind,
+            proxies: config.proxies.clone().into(),
+            bm_api_addr: None,
+            bk_api_host_port: None,
+            bk_api_url_for_storage_sync: Some(Url::parse(&format!(
+                "http://{}",
+                config.network.bind
+            ))?),
+            bk_api_addr_deprecated: None,
+            pubkey_signature: None,
+        };
 
         {
             let mut chitchat = chitchat_ref.lock();
-            gossip_node.set_to(chitchat.self_node_state());
+            gossip_node.update_node_state(chitchat.self_node_state(), &[], &[]);
         }
         let network = BasicNetwork::new(shutdown_tx.clone(), network_config_rx, transport.clone());
 

@@ -1,0 +1,15 @@
+HOST_NAME: "{{ inventory_hostname }}"
+TLS_PROXY_DIR: "{{ ROOT_DIR }}/bk-tls-proxy"
+CADDY_NAME: caddy
+EXTERNAL_NET: no
+
+ENABLE_GEN_CERT: false
+LOAD_CERT: true
+CERT_FILE: testbk.ackinacki.org.crt
+CERT_KEY_FILE: testbk.ackinacki.org.key
+
+# To use ZeroSSL provide:
+# CADDY_EAB: "<your kid> <your hmac>"
+
+# Use ONLY ZeroSSL if the CADDY_EAB variable is set (to avoid strict LE rate limits)
+ZEROSSL_EXCLUSIVE: yes

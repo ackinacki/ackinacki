@@ -1,10 +1,7 @@
-use std::collections::BTreeMap;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Bound;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::sync::Weak;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
 
 use parking_lot::RwLock;
 
@@ -62,9 +59,15 @@ impl Listeners {
         let key_prefix = key_prefix.to_string();
         let weak_listeners = Arc::downgrade(&self.inner);
         let mut inner_listener_guard = self.inner.write();
-        let new_idx = inner_listener_guard.listener_idx.fetch_add(1, Ordering::Relaxed);
+        let new_idx = inner_listener_guard
+            .listener_idx
+            .fetch_add(1, Ordering::Relaxed);
         inner_listener_guard.subscribe_event(&key_prefix, new_idx, boxed_listener);
-        ListenerHandle { prefix: key_prefix, listener_id: new_idx, listeners: weak_listeners }
+        ListenerHandle {
+            prefix: key_prefix,
+            listener_id: new_idx,
+            listeners: weak_listeners,
+        }
     }
 
     pub(crate) fn trigger_event(&mut self, key_change_event: KeyChangeEvent) {
@@ -105,8 +108,10 @@ impl InnerListeners {
             return;
         }
 
-        let range =
-            (Bound::Included(&key_change_event.key[0..1]), Bound::Included(key_change_event.key));
+        let range = (
+            Bound::Included(&key_change_event.key[0..1]),
+            Bound::Included(key_change_event.key),
+        );
         for (prefix_key, listeners) in self.listeners.range::<str, _>(range) {
             if prefix_key.as_str() > key_change_event.key {
                 break;
@@ -177,8 +182,11 @@ mod tests {
             .forever();
         assert_eq!(counter.load(Ordering::Relaxed), 0);
         let node_id = chitchat_id(7280u16);
-        let key_change_event =
-            KeyChangeEvent { key: "prefix:strippedprefix", value: "value", node: &node_id };
+        let key_change_event = KeyChangeEvent {
+            key: "prefix:strippedprefix",
+            value: "value",
+            node: &node_id,
+        };
         listeners.trigger_event(key_change_event);
         assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
@@ -231,27 +239,43 @@ mod tests {
         let counter_bc = subscribe_event("bc");
 
         let node_id = chitchat_id(7280u16);
-        listeners.trigger_event(KeyChangeEvent { key: "hello", value: "value", node: &node_id });
+        listeners.trigger_event(KeyChangeEvent {
+            key: "hello",
+            value: "value",
+            node: &node_id,
+        });
         assert_eq!(counter_empty.load(Ordering::Relaxed), 1);
         assert_eq!(counter_b.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bb.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bb2.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bc.load(Ordering::Relaxed), 0);
-        listeners.trigger_event(KeyChangeEvent { key: "", value: "value", node: &node_id });
+        listeners.trigger_event(KeyChangeEvent {
+            key: "",
+            value: "value",
+            node: &node_id,
+        });
         assert_eq!(counter_empty.load(Ordering::Relaxed), 2);
         assert_eq!(counter_b.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bb.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bb2.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bc.load(Ordering::Relaxed), 0);
 
-        listeners.trigger_event(KeyChangeEvent { key: "a", value: "value", node: &node_id });
+        listeners.trigger_event(KeyChangeEvent {
+            key: "a",
+            value: "value",
+            node: &node_id,
+        });
         assert_eq!(counter_empty.load(Ordering::Relaxed), 3);
         assert_eq!(counter_b.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bb.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bb2.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bc.load(Ordering::Relaxed), 0);
 
-        listeners.trigger_event(KeyChangeEvent { key: "b", value: "value", node: &node_id });
+        listeners.trigger_event(KeyChangeEvent {
+            key: "b",
+            value: "value",
+            node: &node_id,
+        });
 
         assert_eq!(counter_empty.load(Ordering::Relaxed), 4);
         assert_eq!(counter_b.load(Ordering::Relaxed), 1);
@@ -259,14 +283,22 @@ mod tests {
         assert_eq!(counter_bb2.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bc.load(Ordering::Relaxed), 0);
 
-        listeners.trigger_event(KeyChangeEvent { key: "ba", value: "value", node: &node_id });
+        listeners.trigger_event(KeyChangeEvent {
+            key: "ba",
+            value: "value",
+            node: &node_id,
+        });
         assert_eq!(counter_empty.load(Ordering::Relaxed), 5);
         assert_eq!(counter_b.load(Ordering::Relaxed), 2);
         assert_eq!(counter_bb.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bb2.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bc.load(Ordering::Relaxed), 0);
 
-        listeners.trigger_event(KeyChangeEvent { key: "bb", value: "value", node: &node_id });
+        listeners.trigger_event(KeyChangeEvent {
+            key: "bb",
+            value: "value",
+            node: &node_id,
+        });
         assert_eq!(counter_empty.load(Ordering::Relaxed), 6);
         assert_eq!(counter_b.load(Ordering::Relaxed), 3);
         assert_eq!(counter_bb.load(Ordering::Relaxed), 1);

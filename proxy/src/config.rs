@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use ed25519_dalek::VerifyingKey;
 use gossip::GossipConfig;
+use network::config::DirectSendMode;
 use network::config::NetworkConfig;
 use network::config::SocketAddrSet;
 use network::pub_sub::CertFile;
@@ -79,6 +80,7 @@ impl ProxyConfig {
     ) -> anyhow::Result<NetworkConfig> {
         NetworkConfig::new(
             self.bind,
+            DirectSendMode::Direct,
             self.my_cert.clone(),
             self.my_key.clone(),
             &[],
@@ -104,6 +106,7 @@ impl ProxyConfig {
                 .iter()
                 .map(|x| NetEndpoint::Proxy(x.clone()))
                 .collect(),
+            peer_ttl_seconds: self.gossip.peer_ttl_seconds,
             trusted_pubkeys,
         }
     }

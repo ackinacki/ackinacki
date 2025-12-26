@@ -39,7 +39,7 @@ use crate::utilities::thread_spawn_critical::SpawnCritical;
 // TODO: calculate an acceptable and balanced value.
 const MAX_POISONED_QUEUE_SIZE: usize = 10000;
 
-type FeedbackMessage = (NetworkMessage, Option<oneshot::Sender<ExtMsgFeedback>>);
+type FeedbackMessage = (NetworkMessage, oneshot::Sender<ExtMsgFeedback>);
 type FeedbackRegistry = HashMap<String, oneshot::Sender<ExtMsgFeedback>>;
 
 type PoisonedQueue = PQueue<(NetworkMessage, SocketAddr)>;
@@ -447,20 +447,18 @@ impl RoutingService {
                         let mut registry_guard = feedback_registry.lock();
                         #[allow(clippy::map_entry)]
                         if registry_guard.contains_key(&message_hash) {
-                            if let Some(sender) = sender {
-                                let feedback = ExtMsgFeedback {
-                                    message_hash,
-                                    error: Some(FeedbackError {
-                                        code: FeedbackErrorCode::DuplicateMessage,
-                                        message: None,
-                                    }),
-                                    ..Default::default()
-                                };
+                            let feedback = ExtMsgFeedback {
+                                message_hash,
+                                error: Some(FeedbackError {
+                                    code: FeedbackErrorCode::DuplicateMessage,
+                                    message: None,
+                                }),
+                                ..Default::default()
+                            };
 
-                                let _ = sender.send(feedback); // warn about duplicate
-                            }
+                            let _ = sender.send(feedback); // warn about duplicate
                         } else {
-                            registry_guard.insert(message_hash, sender.unwrap());
+                            registry_guard.insert(message_hash, sender);
                             match cmd_sender.send(Command::ExtMessage(message)) {
                                 Ok(()) => {}
                                 Err(e) => {

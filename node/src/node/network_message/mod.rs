@@ -23,6 +23,7 @@ use crate::node::NodeIdentifier;
 use crate::protocol::authority_switch::network_message::AuthoritySwitch;
 use crate::types::bp_selector::ProducerSelector;
 use crate::types::AckiNackiBlock;
+use crate::types::AckiNackiBlockVersioned;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
@@ -39,6 +40,22 @@ pub struct NetBlock {
 }
 
 impl NetBlock {
+    pub fn with_versioned(
+        value: &Envelope<GoshBLS, AckiNackiBlockVersioned>,
+    ) -> anyhow::Result<Self> {
+        let envelope_data = bincode::serialize(value)?;
+        let block = value.data();
+        let common_section = block.get_common_section();
+        Ok(Self {
+            producer_id: common_section.producer_id(),
+            producer_selector: common_section.producer_selector().clone(),
+            thread_id: common_section.thread_id(),
+            identifier: block.identifier(),
+            seq_no: block.seq_no(),
+            envelope_data,
+        })
+    }
+
     pub fn with_envelope(value: &Envelope<GoshBLS, AckiNackiBlock>) -> anyhow::Result<Self> {
         let envelope_data = bincode::serialize(value)?;
         let block = value.data();
@@ -119,7 +136,7 @@ pub enum NetworkMessage {
     // SyncFinalized is broadcasted when network is not running.
     SyncFinalized((Envelope<GoshBLS, SyncFinalizedData>, ThreadIdentifier)),
     // Also, SyncFrom is redundant due to the authority switch mechanism.
-    // However keeping it for the review. (less security risk)
+    // However, keeping it for the review. (less security risk)
     SyncFrom((BlockSeqNo, ThreadIdentifier)),
 
     AuthoritySwitchProtocol(AuthoritySwitch),
@@ -150,7 +167,7 @@ impl NetworkMessage {
 }
 
 impl Debug for NetworkMessage {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         use NetworkMessage::*;
         if f.alternate() {
             match self {

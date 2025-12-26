@@ -1,0 +1,11 @@
+[package]
+name = "versioned_struct"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bincode.workspace = true
+serde.workspace = true
+versioned_struct_macro = { path = "../versioned_struct_macro" }

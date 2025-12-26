@@ -15,6 +15,7 @@ use std::ops::Add;
 use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -22,8 +23,6 @@ use anyhow::ensure;
 use chrono::DateTime;
 use chrono::TimeDelta;
 use chrono::Utc;
-use database::documents_db::SerializedItem;
-use database::sqlite::ArchAccount;
 use derive_getters::Getters;
 use http_server::ApiBk;
 use http_server::ApiBkSet;
@@ -32,17 +31,24 @@ use serde::Deserialize;
 use serde::Serialize;
 use telemetry_utils::mpsc::InstrumentedSender;
 use telemetry_utils::now_ms;
-use tvm_block::ShardStateUnsplit;
+use tvm_types::AccountId;
 use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
+use versioned_struct::versioned;
+use versioned_struct::Transitioning;
 
 use super::accounts::AccountsRepository;
+use crate::block_keeper_system::epoch::decode_epoch_data;
+use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::block_keeper_system::BlockKeeperSetChange;
+use crate::block_keeper_system::BlockKeeperSetOld;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
-use crate::database::serialize_block::prepare_account_archive_struct;
+use crate::config::config_read::ConfigRead;
+#[cfg(test)]
+use crate::config::GlobalConfig;
 use crate::helper::get_temp_file_path;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::helper::SHUTDOWN_FLAG;
@@ -85,6 +91,9 @@ use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 use crate::utilities::FixedSizeHashMap;
 use crate::utilities::FixedSizeHashSet;
+use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
+#[cfg(test)]
+use crate::versioning::ProtocolVersion;
 use crate::zerostate::ZeroState;
 
 const DEFAULT_OID: &str = "00000000000000000000";
@@ -199,25 +208,6 @@ pub struct BkSetUpdate {
     pub added_nodes: (HashSet<NodeIdentifier>, HashSet<NodeIdentifier>),
 }
 
-impl From<ApiBkSet> for BkSetUpdate {
-    fn from(value: ApiBkSet) -> Self {
-        fn bk_set_from(value: Vec<ApiBk>) -> Option<Arc<BlockKeeperSet>> {
-            if !value.is_empty() {
-                Some(Arc::new(value.into()))
-            } else {
-                None
-            }
-        }
-
-        Self {
-            seq_no: value.seq_no as u32,
-            current: bk_set_from(value.current),
-            future: bk_set_from(value.future),
-            added_nodes: (HashSet::new(), HashSet::new()),
-        }
-    }
-}
-
 impl From<BkSetUpdate> for ApiBkSet {
     fn from(value: BkSetUpdate) -> Self {
         fn bk_set_from(value: Option<Arc<BlockKeeperSet>>) -> Vec<ApiBk> {
@@ -260,6 +250,9 @@ pub struct RepositoryImpl {
     bk_set_update_tx: InstrumentedSender<BkSetUpdate>,
     unfinalized_blocks: Arc<Mutex<HashMap<ThreadIdentifier, UnfinalizedCandidateBlockCollection>>>,
     last_message_for_acc: Arc<Mutex<HashMap<AccountAddress, MessageIdentifier>>>,
+    #[cfg(feature = "mirror_repair")]
+    pub is_updated_mv: Arc<Mutex<bool>>,
+    config_read: ConfigRead,
 }
 
 #[allow(dead_code)]
@@ -300,28 +293,68 @@ pub struct ExtMessages<TMessage: Clone> {
     pub queue: Vec<WrappedExtMessage<TMessage>>,
 }
 
+#[versioned]
 #[derive(TypedBuilder, Serialize, Deserialize, Getters, Clone)]
 pub struct AncestorBlockData {
     block_identifier: BlockIdentifier,
     block_seq_no: BlockSeqNo,
     thread_identifier: ThreadIdentifier,
     cross_thread_ref_data: CrossThreadRefData,
+    #[future]
     bk_set: BlockKeeperSet,
+    #[future]
     future_bk_set: BlockKeeperSet,
+    #[legacy]
+    bk_set: BlockKeeperSetOld,
+    #[legacy]
+    future_bk_set: BlockKeeperSetOld,
     envelope_hash: AckiNackiEnvelopeHash,
     parent_block_identifier: BlockIdentifier,
 }
 
+impl From<AncestorBlockDataOld> for AncestorBlockData {
+    fn from(value: AncestorBlockDataOld) -> Self {
+        let bk_set = value.bk_set.into();
+        let future_bk_set = value.future_bk_set.into();
+        Self {
+            block_identifier: value.block_identifier,
+            block_seq_no: value.block_seq_no,
+            thread_identifier: value.thread_identifier,
+            cross_thread_ref_data: value.cross_thread_ref_data,
+            bk_set,
+            future_bk_set,
+            envelope_hash: value.envelope_hash,
+            parent_block_identifier: value.parent_block_identifier,
+        }
+    }
+}
+
+#[versioned]
 #[derive(TypedBuilder, Serialize, Deserialize, Getters)]
 pub struct ThreadSnapshot {
     optimistic_state: Vec<u8>,
+    #[future]
     ancestor_blocks_data: Vec<AncestorBlockData>,
+    #[legacy]
+    ancestor_blocks_data: Vec<AncestorBlockDataOld>,
     db_messages: Vec<Vec<Arc<WrappedMessage>>>,
     finalized_block: Envelope<GoshBLS, AckiNackiBlock>,
+    #[future]
     bk_set: BlockKeeperSet,
+    #[future]
     descendant_bk_set: BlockKeeperSet,
+    #[future]
     future_bk_set: BlockKeeperSet,
+    #[future]
     descendant_future_bk_set: BlockKeeperSet,
+    #[legacy]
+    bk_set: BlockKeeperSetOld,
+    #[legacy]
+    descendant_bk_set: BlockKeeperSetOld,
+    #[legacy]
+    future_bk_set: BlockKeeperSetOld,
+    #[legacy]
+    descendant_future_bk_set: BlockKeeperSetOld,
     finalized_block_stats: BlockStatistics,
     attestation_target: AttestationTargets,
     producer_selector: ProducerSelector,
@@ -330,6 +363,40 @@ pub struct ThreadSnapshot {
     ancestor_blocks_finalization_checkpoints: AncestorBlocksFinalizationCheckpoints,
     finalizes_blocks: BTreeSet<BlockIndex>,
     parent_ancestor_blocks_finalization_checkpoints: AncestorBlocksFinalizationCheckpoints,
+    #[future]
+    block_protocol_version_state: BlockProtocolVersionState,
+}
+
+impl Transitioning for ThreadSnapshot {
+    type Old = ThreadSnapshotOld;
+
+    fn from(old: Self::Old) -> Self {
+        let ancestor_blocks_data = old.ancestor_blocks_data.into_iter().map(|v| v.into()).collect();
+        let bk_set = old.bk_set.into();
+        let descendant_bk_set = old.descendant_bk_set.into();
+        let future_bk_set = old.future_bk_set.into();
+        let descendant_future_bk_set = old.descendant_future_bk_set.into();
+        Self {
+            optimistic_state: old.optimistic_state,
+            ancestor_blocks_data,
+            db_messages: old.db_messages,
+            finalized_block: old.finalized_block,
+            bk_set,
+            descendant_bk_set,
+            future_bk_set,
+            descendant_future_bk_set,
+            finalized_block_stats: old.finalized_block_stats,
+            attestation_target: old.attestation_target,
+            producer_selector: old.producer_selector,
+            block_height: old.block_height,
+            prefinalization_proof: old.prefinalization_proof,
+            ancestor_blocks_finalization_checkpoints: old.ancestor_blocks_finalization_checkpoints,
+            finalizes_blocks: old.finalizes_blocks,
+            parent_ancestor_blocks_finalization_checkpoints: old
+                .parent_ancestor_blocks_finalization_checkpoints,
+            block_protocol_version_state: BlockProtocolVersionState::none(),
+        }
+    }
 }
 
 impl<TMessage> Default for ExtMessages<TMessage>
@@ -402,6 +469,9 @@ impl Clone for RepositoryImpl {
             bk_set_update_tx: self.bk_set_update_tx.clone(),
             unfinalized_blocks: self.unfinalized_blocks.clone(),
             last_message_for_acc: self.last_message_for_acc.clone(),
+            #[cfg(feature = "mirror_repair")]
+            is_updated_mv: self.is_updated_mv.clone(),
+            config_read: self.config_read.clone(),
         }
     }
 }
@@ -422,6 +492,8 @@ impl RepositoryImpl {
         message_db: MessageDurableStorage,
         finalized_blocks: Arc<Mutex<FinalizedBlockStorage>>,
         bk_set_update_tx: InstrumentedSender<BkSetUpdate>,
+        #[cfg(feature = "mirror_repair")] is_updated_mv: Arc<Mutex<bool>>,
+        config_read: ConfigRead,
     ) -> Self {
         if let Err(err) = fs::create_dir_all(data_dir.clone()) {
             tracing::error!("Failed to create data dir {:?}: {}", data_dir, err);
@@ -482,6 +554,9 @@ impl RepositoryImpl {
             bk_set_update_tx,
             unfinalized_blocks: Arc::new(Mutex::new(HashMap::new())),
             last_message_for_acc: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(feature = "mirror_repair")]
+            is_updated_mv: is_updated_mv.clone(),
+            config_read,
         };
 
         // let optimistic_dir = format!(
@@ -520,15 +595,144 @@ impl RepositoryImpl {
             let metadata = metadata.lock();
             if metadata.last_finalized_block_id != BlockIdentifier::default() {
                 tracing::trace!("load finalized state {:?}", metadata.last_finalized_block_id);
-                let state = repo_impl
+                let finalized_optimistic_state = repo_impl
                     .get_optimistic_state(&metadata.last_finalized_block_id, thread_id, None)
                     .expect("Failed to get last finalized state")
                     .expect("Failed to load last finalized state");
 
+                let finalized_block_state = block_state_repository
+                    .get(&metadata.last_finalized_block_id)
+                    .expect("Failed to load finalized block state");
+                let (initial_bk_set, initial_descendant_bk_set) =
+                    finalized_block_state.guarded(|e| {
+                        (
+                            e.bk_set().clone().expect("Finalized block does not have bk set"),
+                            e.descendant_bk_set()
+                                .clone()
+                                .expect("Finalized block does not have descendant bk set"),
+                        )
+                    });
+
+                let initial_bk_set = Arc::unwrap_or_clone(initial_bk_set);
+                let initial_descendant_bk_set = Arc::unwrap_or_clone(initial_descendant_bk_set);
+                let (bk_set, descendant_bk_set, finalized_block_bk_data) =
+                    update_bk_set_from_state(
+                        initial_bk_set.clone(),
+                        Some(initial_descendant_bk_set.clone()),
+                        &finalized_optimistic_state,
+                    )
+                    .map_err(|e| {
+                        tracing::error!("Failed to update bk sets: {:?}", e);
+                        e
+                    })
+                    .expect("Failed to update bk sets");
+                let descendant_bk_set = descendant_bk_set.expect("descendant_bk_set must be set");
+                if initial_bk_set != bk_set || initial_descendant_bk_set != descendant_bk_set {
+                    finalized_block_state.guarded_mut(|e| {
+                        e.update_bk_sets(Arc::new(bk_set), Some(Arc::new(descendant_bk_set)));
+                    });
+
+                    // Note: need to update descendant blocks
+                    // If there is a new bk in the set a state is needed to update bk data, but if
+                    // it is not prefinalized we can just reset bk set to set it up later in block
+                    // processing
+                    let mut buffer = Vec::from_iter(
+                        finalized_block_state
+                            .guarded(|e| e.known_children(thread_id).cloned().unwrap_or_default())
+                            .into_iter(),
+                    );
+                    while !buffer.is_empty() {
+                        let cursor = buffer.remove(0);
+                        let Ok(state) = block_state_repository.get(&cursor) else {
+                            tracing::trace!("Failed to get block state for {:?}", cursor);
+                            continue;
+                        };
+                        let Some(initial_bk_set) =
+                            state.guarded(|e| e.bk_set().clone()).map(Arc::unwrap_or_clone)
+                        else {
+                            tracing::trace!("Block has no bk set {:?}", cursor);
+                            continue;
+                        };
+                        let initial_descendant_bk_set = state
+                            .guarded(|e| e.descendant_bk_set().clone())
+                            .map(Arc::unwrap_or_clone);
+                        let (mut bk_set, mut descendant_bk_set) =
+                            (initial_bk_set.clone(), initial_descendant_bk_set.clone());
+                        let mut needs_state = false;
+                        for signer_index in bk_set.clone().get_pubkeys_by_signers().keys() {
+                            if !finalized_block_bk_data.contains_key(signer_index) {
+                                needs_state = true;
+                                break;
+                            }
+                            let new_bk_data =
+                                finalized_block_bk_data.get(signer_index).unwrap().clone();
+                            bk_set.insert(*signer_index, new_bk_data);
+                        }
+                        if !needs_state {
+                            descendant_bk_set = if let Some(descendant_bk_set_ref) =
+                                descendant_bk_set.as_mut()
+                            {
+                                for signer_index in
+                                    descendant_bk_set_ref.clone().get_pubkeys_by_signers().keys()
+                                {
+                                    if !finalized_block_bk_data.contains_key(signer_index) {
+                                        needs_state = true;
+                                        break;
+                                    }
+                                    let new_bk_data =
+                                        finalized_block_bk_data.get(signer_index).unwrap().clone();
+                                    descendant_bk_set_ref.insert(*signer_index, new_bk_data);
+                                }
+                                Some(descendant_bk_set_ref.clone())
+                            } else {
+                                None
+                            };
+                        }
+                        if needs_state {
+                            let cursor_state = repo_impl
+                                .get_optimistic_state(
+                                    &cursor,
+                                    thread_id,
+                                    Some(finalized_optimistic_state.clone()),
+                                )
+                                .expect("Failed to get optimistic state to init bk set")
+                                .expect("Failed to get optimistic state to init bk set");
+                            let (new_bk_set, new_descendant_bk_set, _new_finalized_block_bk_data) =
+                                update_bk_set_from_state(
+                                    initial_bk_set.clone(),
+                                    initial_descendant_bk_set.clone(),
+                                    &cursor_state,
+                                )
+                                .map_err(|e| {
+                                    tracing::error!("Failed to update bk sets: {:?}", e);
+                                    e
+                                })
+                                .expect("Failed to update bk sets");
+                            bk_set = new_bk_set;
+                            descendant_bk_set = new_descendant_bk_set;
+                        }
+                        if bk_set != initial_bk_set
+                            || descendant_bk_set != initial_descendant_bk_set
+                        {
+                            let children = state.guarded_mut(|e| {
+                                e.update_bk_sets(Arc::new(bk_set), descendant_bk_set.map(Arc::new));
+                                e.known_children(thread_id).cloned().unwrap_or_default()
+                            });
+                            buffer.extend(children.into_iter());
+                        }
+                    }
+                }
+
                 let mut all_states = repo_impl.saved_states.lock();
-                let saved_states = all_states.entry(state.thread_id).or_default();
-                saved_states.insert(*state.get_block_seq_no(), state.get_block_id().clone());
-                repo_impl.thread_last_finalized_state.guarded_mut(|e| e.insert(*thread_id, state));
+                let saved_states =
+                    all_states.entry(finalized_optimistic_state.thread_id).or_default();
+                saved_states.insert(
+                    *finalized_optimistic_state.get_block_seq_no(),
+                    finalized_optimistic_state.get_block_id().clone(),
+                );
+                repo_impl
+                    .thread_last_finalized_state
+                    .guarded_mut(|e| e.insert(*thread_id, finalized_optimistic_state));
             }
         }
 
@@ -765,18 +969,6 @@ impl RepositoryImpl {
         Ok(())
     }
 
-    fn save_accounts(
-        &self,
-        block_id: BlockIdentifier,
-        accounts: HashMap<String, SerializedItem>,
-    ) -> anyhow::Result<()> {
-        if accounts.keys().len() == 0 {
-            return Ok(());
-        }
-        tracing::trace!("Saving accounts (block: {block_id}) into the repo...");
-        Ok(())
-    }
-
     fn load_finalized_candidate_block(
         &self,
         identifier: &BlockIdentifier,
@@ -973,6 +1165,9 @@ impl RepositoryImpl {
                 Arc::clone(&nack_set_cache),
                 self.accounts.clone(),
                 self.message_db.clone(),
+                #[cfg(feature = "mirror_repair")]
+                self.is_updated_mv.clone(),
+                true, // TODO: fix this flag, or just remove this whole function
             )?;
         }
 
@@ -1054,6 +1249,14 @@ impl RepositoryImpl {
             bk_set_update_tx,
             unfinalized_blocks: Arc::new(Mutex::new(HashMap::new())),
             last_message_for_acc: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(feature = "mirror_repair")]
+            is_updated_mv: Arc::new(Mutex::new(false)),
+            config_read: ConfigRead::new(
+                ProtocolVersion::parse("None").unwrap(),
+                GlobalConfig::default(),
+                None,
+                None,
+            ),
         }
     }
 
@@ -1067,6 +1270,8 @@ impl RepositoryImpl {
         let block_id = block.data().identifier();
         let seq_no = block.data().seq_no();
         let thread_id = block.data().get_common_section().thread_id;
+
+        tracing::debug!("Block marked as finalized: {:?} {:?} {:?}", seq_no, block_id, thread_id);
         // We have already received the last finalized block end sync
         let parent_block_id = block.data().parent();
         if let Some(metadata) = self.metadatas.guarded(|e| e.get(&thread_id).cloned()) {
@@ -1391,6 +1596,10 @@ impl Repository for RepositoryImpl {
             } else {
                 tracing::trace!("Finalized block: apply state");
                 let mut state = Arc::unwrap_or_clone(state);
+                let block_version =
+                    block_state.guarded(|e| e.block_version_state().clone()).expect("Must be set");
+                let is_block_of_retired_version =
+                    self.config_read.is_retired(block_version.to_use());
                 let (_, _messages): (
                     _,
                     HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
@@ -1401,6 +1610,9 @@ impl Repository for RepositoryImpl {
                     self.nack_set_cache().clone(),
                     self.accounts.clone(),
                     self.message_db.clone(),
+                    #[cfg(feature = "mirror_repair")]
+                    self.is_updated_mv.clone(),
+                    is_block_of_retired_version,
                 )?;
 
                 let state = Arc::new(state);
@@ -1598,7 +1810,7 @@ impl Repository for RepositoryImpl {
         _skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
     ) -> anyhow::Result<()> {
         tracing::debug!("set_state_from_snapshot");
-        let thread_snapshot: ThreadSnapshot = bincode::deserialize(&snapshot)
+        let thread_snapshot: ThreadSnapshot = Transitioning::deserialize_data_compat(&snapshot)
             .map_err(|e| anyhow::format_err!("Failed to deserialize snapshot: {e}"))?;
 
         let state = <Self as Repository>::OptimisticState::deserialize_from_buf(
@@ -1633,11 +1845,26 @@ impl Repository for RepositoryImpl {
         let update_block_state = || {
             let block_state =
                 block_state_repo_clone.get(&thread_snapshot.finalized_block.data().identifier())?;
-            let children = block_state
-                .guarded_mut(|state| {
+            let parent =
+                block_state_repo_clone.get(&thread_snapshot.finalized_block.data().parent())?;
+            block_state.guarded_mut(|state| {
+                if state.thread_identifier().is_none() {
                     state.set_thread_identifier(
                         thread_snapshot.finalized_block.data().get_common_section().thread_id,
                     )?;
+                }
+                Ok::<(), anyhow::Error>(())
+            })?;
+            connect!(parent = parent, child = block_state, &block_state_repo_clone);
+            let (bk_set, descendant_bk_set, _) = update_bk_set_from_state(
+                thread_snapshot.bk_set.clone(),
+                Some(thread_snapshot.descendant_bk_set.clone()),
+                &state,
+            )
+            .map_err(|e| anyhow::format_err!("Failed to update bk sets: {e}"))?;
+            let descendant_bk_set = descendant_bk_set.expect("descendant_bk_set must be set");
+            let children = block_state
+                .guarded_mut(|state| {
                     state.set_producer(
                         thread_snapshot
                             .finalized_block
@@ -1655,11 +1882,9 @@ impl Repository for RepositoryImpl {
                     state.set_applied(Instant::now(), Instant::now())?;
                     state.set_signatures_verified()?;
                     state.set_stored(&thread_snapshot.finalized_block)?;
-                    state.set_bk_set(Arc::new(thread_snapshot.bk_set.clone()))?;
+                    state.set_bk_set(Arc::new(bk_set.clone()))?;
                     state.set_future_bk_set(Arc::new(thread_snapshot.future_bk_set.clone()))?;
-                    state.set_descendant_bk_set(Arc::new(
-                        thread_snapshot.descendant_bk_set.clone(),
-                    ))?;
+                    state.set_descendant_bk_set(Arc::new(descendant_bk_set.clone()))?;
                     state.set_descendant_future_bk_set(Arc::new(
                         thread_snapshot.descendant_future_bk_set.clone(),
                     ))?;
@@ -1671,6 +1896,12 @@ impl Repository for RepositoryImpl {
                     state.set_attestation_target(thread_snapshot.attestation_target)?;
                     state.set_producer_selector_data(thread_snapshot.producer_selector.clone())?;
                     state.set_finalizes_blocks(thread_snapshot.finalizes_blocks.clone())?;
+                    state.set_block_round(
+                        thread_snapshot.finalized_block.data().get_common_section().round,
+                    )?;
+                    state.set_block_version_state(
+                        thread_snapshot.block_protocol_version_state.clone(),
+                    )?;
                     Ok::<Option<HashSet<_>>, anyhow::Error>(
                         state.known_children(cur_thread_id).cloned(),
                     )
@@ -1693,13 +1924,10 @@ impl Repository for RepositoryImpl {
                     .get(&child)?
                     .guarded_mut(|e| e.set_has_parent_finalized())?;
             }
-            let parent =
-                block_state_repo_clone.get(&thread_snapshot.finalized_block.data().parent())?;
-
-            connect!(parent = parent, child = block_state, &block_state_repo_clone);
             crate::node::services::block_processor::rules::descendant_bk_set::set_descendant_bk_set(
                 &block_state,
                 &thread_snapshot.finalized_block,
+                &state,
             );
             Ok::<(), anyhow::Error>(())
         };
@@ -1713,10 +1941,8 @@ impl Repository for RepositoryImpl {
                 finalized_seq_no
             );
             if seq_no > finalized_seq_no {
-                let shard_state = state.get_shard_state();
                 self.thread_last_finalized_state
                     .guarded_mut(|e| e.insert(thread_id, Arc::new(state.clone())));
-                self.sync_accounts_from_state(shard_state)?;
                 update_block_state()?;
             } else {
                 tracing::debug!(target: "monit", "Synced state is too old, skip it");
@@ -1788,6 +2014,7 @@ impl Repository for RepositoryImpl {
                     if e.envelope_hash().is_none() {
                         e.set_envelope_hash(ancestor_block_data.envelope_hash().clone())?;
                     }
+                    e.set_finalized()?;
                     Ok::<(), anyhow::Error>(())
                 })?;
 
@@ -1807,68 +2034,6 @@ impl Repository for RepositoryImpl {
         let guarded = self.block_state_repository.get(block_id)?;
         let result = !guarded.guarded(|e| e.has_all_nacks_resolved());
         Ok(Some(result))
-    }
-
-    fn sync_accounts_from_state(
-        &mut self,
-        shard_state: Arc<ShardStateUnsplit>,
-    ) -> anyhow::Result<()> {
-        tracing::debug!("syncing accounts from state...");
-        let mut arch_accounts: Vec<ArchAccount> = vec![];
-        let accounts = shard_state.read_accounts().map_err(|e| anyhow::format_err!("{e}"))?;
-        accounts
-            .iterate_accounts(|acc_id, v| {
-                let last_trans_hash = v.last_trans_hash().clone();
-                let Ok(account) = v.read_account() else {
-                    return Ok(true);
-                };
-                let account = account.as_struct()?;
-                if self.split_state {
-                    self.accounts
-                        .store_account(
-                            &AccountAddress(acc_id),
-                            &last_trans_hash,
-                            v.last_trans_lt(),
-                            v.account_cell()?,
-                        )
-                        .map_err(|err| tvm_types::error!("{}", err))?;
-                }
-                match prepare_account_archive_struct(
-                    account.clone(),
-                    None,
-                    None,
-                    last_trans_hash,
-                    v.get_dapp_id().cloned(),
-                ) {
-                    Ok(acc) => arch_accounts.push(acc),
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to parse account from state: {e}\naccount: {account}"
-                        );
-                    }
-                }
-
-                Ok(true)
-            })
-            .map_err(|e| anyhow::format_err!("{e}"))?;
-
-        let cnt_accounts = arch_accounts.len();
-        tracing::debug!(
-            "syncing accounts from state: {} accounts have been sent to sqlite helper",
-            cnt_accounts
-        );
-
-        Ok(())
-    }
-
-    fn save_account_diffs(
-        &self,
-        block_id: BlockIdentifier,
-        accounts: HashMap<String, SerializedItem>,
-    ) -> anyhow::Result<()> {
-        // TODO split according to the sqlite limits
-        self.save_accounts(block_id, accounts)?;
-        Ok(())
     }
 
     fn store_optimistic_in_cache<T: Into<Arc<Self::OptimisticState>>>(
@@ -1992,236 +2157,6 @@ impl Repository for RepositoryImpl {
 
     fn get_message_storage_service(&self) -> &MessageDBWriterService {
         &self.message_storage_service
-    }
-}
-
-#[cfg(all(feature = "messages_db", not(feature = "disable_db_for_messages")))]
-fn extract_new_messages<T>(
-    btree: &BTreeMap<
-        AccountAddress,
-        account_inbox::range::MessagesRange<MessageIdentifier, Arc<T>>,
-    >,
-    last_message_guard: &parking_lot::lock_api::MutexGuard<
-        '_,
-        parking_lot::RawMutex,
-        HashMap<AccountAddress, MessageIdentifier>,
-    >,
-) -> anyhow::Result<HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<T>)>>> {
-    let mut messages = HashMap::new();
-
-    for (address, m_range) in btree.iter() {
-        let mut tail = m_range.tail_sequence().clone(); // TODO: remove this clone if possible
-
-        if let Some(last_saved_m_id) = last_message_guard.get(address) {
-            let found_index = tail.iter().position(|(message_id, _)| message_id == last_saved_m_id);
-
-            if let Some(found_index) = found_index {
-                tail = tail.split_off(found_index + 1);
-            }
-        }
-        if !tail.is_empty() {
-            let tail_as_vec = tail.into_iter().collect();
-            messages.insert(address.clone(), tail_as_vec);
-        }
-    }
-    Ok(messages)
-}
-
-#[cfg(test)]
-pub mod tests {
-
-    use std::path::PathBuf;
-    use std::process::Command;
-    use std::sync::Arc;
-    use std::sync::Once;
-
-    use parking_lot::Mutex;
-    use telemetry_utils::mpsc::instrumented_channel;
-    use telemetry_utils::mpsc::InstrumentedSender;
-
-    use super::BkSetUpdate;
-    use super::RepositoryImpl;
-    use super::OID;
-    use crate::helper::metrics;
-    use crate::multithreading::routing::service::RoutingService;
-    use crate::node::shared_services::SharedServices;
-    use crate::repository::accounts::AccountsRepository;
-    use crate::repository::repository_impl::BlockStateRepository;
-    use crate::repository::repository_impl::FinalizedBlockStorage;
-    use crate::storage::MessageDurableStorage;
-    use crate::utilities::FixedSizeHashSet;
-
-    const ZEROSTATE: &str = "../config/zerostate";
-    const DB_PATH: &str = "./tests-data";
-    static START: Once = Once::new();
-
-    fn init_db(db_path: &str) -> anyhow::Result<()> {
-        let _ = std::fs::remove_dir_all(db_path);
-        let _ = std::fs::create_dir_all(db_path);
-
-        Command::new("../target/debug/migration-tool")
-            .arg("-p")
-            .arg(db_path)
-            .arg("-n")
-            .arg("-a")
-            .status()?;
-        Ok(())
-    }
-
-    fn init_tests() {
-        init_db(DB_PATH).expect("Failed to init DB");
-        init_db(&format!("{DB_PATH}/test_save_load")).expect("Failed to init DB");
-        init_db(&format!("{DB_PATH}/test_exists")).expect("Failed to init DB");
-        init_db(&format!("{DB_PATH}/test_remove")).expect("Failed to init DB");
-        init_db(&format!("{DB_PATH}/test_save_duplication")).expect("Failed to init DB");
-    }
-
-    pub fn finalized_blocks_storage() -> Arc<Mutex<FinalizedBlockStorage>> {
-        Arc::new(Mutex::new(FinalizedBlockStorage::new(100)))
-    }
-
-    fn mock_bk_set_updates_tx() -> InstrumentedSender<BkSetUpdate> {
-        let (bk_set_updates_tx, _bk_set_updates_rx) = instrumented_channel::<BkSetUpdate>(
-            None::<metrics::BlockProductionMetrics>,
-            metrics::BK_SET_UPDATE_CHANNEL,
-        );
-        bk_set_updates_tx
-    }
-    #[test]
-    #[ignore]
-    fn test_save_load() -> anyhow::Result<()> {
-        START.call_once(init_tests);
-
-        let block_state_repository =
-            BlockStateRepository::test(PathBuf::from("./tests-data/test_save_load/block-state"));
-        let accounts_repository =
-            AccountsRepository::new(PathBuf::from("./tests-data/test_save_load"), Some(0), 1);
-        let message_db = MessageDurableStorage::mem();
-        let finalized_blocks = finalized_blocks_storage();
-        let repository = RepositoryImpl::new(
-            PathBuf::from("./tests-data/test_save_load"),
-            Some(PathBuf::from(ZEROSTATE)),
-            1,
-            SharedServices::test_start(RoutingService::stub().0, u32::MAX),
-            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
-            false,
-            block_state_repository,
-            None,
-            accounts_repository,
-            message_db.clone(),
-            finalized_blocks,
-            mock_bk_set_updates_tx(),
-        );
-
-        let path = "block_status";
-        let oid = OID::ID(String::from("100"));
-        let expected_data: Vec<u8> = vec![0xde, 0xad, 0xbe, 0xef];
-        repository.save(path, oid.clone(), &expected_data)?;
-
-        let data = repository.load::<Vec<u8>>(path, oid.clone())?;
-        assert_eq!(data, Some(expected_data));
-        Ok(())
-    }
-
-    #[test]
-    #[ignore]
-    fn test_clear_big_state() -> anyhow::Result<()> {
-        let block_state_repository = BlockStateRepository::test(PathBuf::from(
-            "/home/user/GOSH/acki-nacki/server_data/node1/block-state/",
-        ));
-        let accounts_repository = AccountsRepository::new(
-            PathBuf::from("/home/user/GOSH/acki-nacki/server_data/node1/"),
-            Some(0),
-            1,
-        );
-        let message_db = MessageDurableStorage::mem();
-        let finalized_blocks = finalized_blocks_storage();
-        let _repository = RepositoryImpl::new(
-            PathBuf::from("/home/user/GOSH/acki-nacki/server_data/node1/"),
-            Some(PathBuf::from(ZEROSTATE)),
-            1,
-            SharedServices::test_start(RoutingService::stub().0, u32::MAX),
-            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
-            false,
-            block_state_repository,
-            None,
-            accounts_repository,
-            message_db.clone(),
-            finalized_blocks,
-            mock_bk_set_updates_tx(),
-        );
-        Ok(())
-    }
-
-    #[test]
-    #[ignore]
-    fn test_exists() -> anyhow::Result<()> {
-        START.call_once(init_tests);
-        let block_state_repository =
-            BlockStateRepository::test(PathBuf::from("./tests-data/test_exists/block-state"));
-        let accounts_repository =
-            AccountsRepository::new(PathBuf::from("./tests-data/test_exists"), Some(0), 1);
-        let message_db = MessageDurableStorage::mem();
-        let finalized_blocks = finalized_blocks_storage();
-
-        let repository = RepositoryImpl::new(
-            PathBuf::from("./tests-data/test_exists"),
-            Some(PathBuf::from(ZEROSTATE)),
-            1,
-            SharedServices::test_start(RoutingService::stub().0, u32::MAX),
-            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
-            false,
-            block_state_repository,
-            None,
-            accounts_repository,
-            message_db.clone(),
-            finalized_blocks,
-            mock_bk_set_updates_tx(),
-        );
-
-        let path = "metadata";
-        let oid = OID::SingleRow;
-        let expected_data: Vec<u8> = vec![0xde, 0xad, 0xbe, 0xef];
-        repository.save(path, oid.clone(), &expected_data)?;
-
-        assert!(repository.exists(path, oid));
-        Ok(())
-    }
-
-    #[test]
-    #[ignore]
-    fn test_remove() -> anyhow::Result<()> {
-        START.call_once(init_tests);
-        let block_state_repository =
-            BlockStateRepository::test(PathBuf::from("./tests-data/test_remove/block-state"));
-        let accounts_repository =
-            AccountsRepository::new(PathBuf::from("./tests-data/test_remove"), Some(0), 1);
-        let message_db = MessageDurableStorage::mem();
-        let finalized_blocks = finalized_blocks_storage();
-
-        let repository = RepositoryImpl::new(
-            PathBuf::from("./tests-data/test_remove"),
-            Some(PathBuf::from(ZEROSTATE)),
-            1,
-            SharedServices::test_start(RoutingService::stub().0, u32::MAX),
-            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
-            false,
-            block_state_repository,
-            None,
-            accounts_repository,
-            message_db.clone(),
-            finalized_blocks,
-            mock_bk_set_updates_tx(),
-        );
-        let path = "optimistic_state";
-        let oid = OID::ID(String::from("200"));
-        let data: Vec<u8> = vec![0xde, 0xad, 0xbe, 0xef];
-        repository.save(path, oid.clone(), &data)?;
-        assert!(repository.exists(path, oid.clone()));
-
-        repository._remove(path, oid.clone())?;
-        assert!(!repository.exists(path, oid.clone()));
-        Ok(())
     }
 }
 
@@ -2357,5 +2292,395 @@ mod extract_new_messages_tests {
         assert_eq!(inbox1[0].0, id_a1_2);
         assert_eq!(inbox2.len(), 2);
         assert_eq!(inbox2[0].0, id_a2_1);
+    }
+}
+
+fn update_bk_set_from_state(
+    mut bk_set: BlockKeeperSet,
+    mut descendant_bk_set: Option<BlockKeeperSet>,
+    state: &OptimisticStateImpl,
+) -> anyhow::Result<(BlockKeeperSet, Option<BlockKeeperSet>, HashMap<SignerIndex, BlockKeeperData>)>
+{
+    let mut epochs = bk_set
+        .clone()
+        .into_values()
+        .map(|bk_data| (bk_data.signer_index, bk_data))
+        .collect::<HashMap<SignerIndex, BlockKeeperData>>();
+    for bk_data in descendant_bk_set
+        .as_ref()
+        .map(|set| set.clone().into_values().collect::<Vec<_>>())
+        .unwrap_or_default()
+    {
+        epochs.entry(bk_data.signer_index).or_insert_with(|| bk_data.clone());
+    }
+
+    let shard_state = state.get_shard_state();
+    let accounts = shard_state
+        .read_accounts()
+        .map_err(|e| anyhow::format_err!("Failed to load accounts from state: {e}"))?;
+
+    let keys: Vec<SignerIndex> = epochs.keys().copied().collect();
+    for key in keys {
+        let epoch_address = epochs.get(&key).map(|bk_data| bk_data.address.clone()).unwrap();
+        let epoch_address = AccountId::from_str(&epoch_address)
+            .map_err(|e| anyhow::format_err!("Failed to convert epoch address: {e}"))?;
+        let epoch_account = accounts
+            .account(&epoch_address)
+            .map_err(|e| anyhow::format_err!("Failed to get account({}): {:?}", epoch_address, e))?
+            .ok_or(anyhow::format_err!("Epoch account is not on the state"))?
+            .read_account()
+            .map_err(|e| anyhow::format_err!("Failed to read account from shard account: {:?}", e))?
+            .as_struct()
+            .map_err(|e| anyhow::format_err!("Failed to convert account: {:?}", e))?;
+        let (signer_index_from_acc, bk_data) = decode_epoch_data(&epoch_account)
+            .map_err(|e| anyhow::format_err!("Failed to decode epoch data: {e}"))?
+            .ok_or(anyhow::format_err!("Failed to decode epoch data"))?;
+        ensure!(signer_index_from_acc == key, "signer index does not match account");
+        epochs.insert(signer_index_from_acc, bk_data);
+    }
+
+    for (key, data) in &epochs {
+        if bk_set.contains_signer(key) {
+            bk_set.insert(*key, data.clone());
+        }
+        if let Some(set) = descendant_bk_set.as_mut() {
+            if set.contains_signer(key) {
+                set.insert(*key, data.clone());
+            }
+        }
+    }
+    Ok((bk_set, descendant_bk_set, epochs))
+}
+
+#[cfg(all(feature = "messages_db", not(feature = "disable_db_for_messages")))]
+fn extract_new_messages<T>(
+    btree: &BTreeMap<
+        AccountAddress,
+        account_inbox::range::MessagesRange<MessageIdentifier, Arc<T>>,
+    >,
+    last_message_guard: &parking_lot::lock_api::MutexGuard<
+        '_,
+        parking_lot::RawMutex,
+        HashMap<AccountAddress, MessageIdentifier>,
+    >,
+) -> anyhow::Result<HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<T>)>>> {
+    let mut messages = HashMap::new();
+
+    for (address, m_range) in btree.iter() {
+        let mut tail = m_range.tail_sequence().clone(); // TODO: remove this clone if possible
+
+        if let Some(last_saved_m_id) = last_message_guard.get(address) {
+            let found_index = tail.iter().position(|(message_id, _)| message_id == last_saved_m_id);
+
+            if let Some(found_index) = found_index {
+                tail = tail.split_off(found_index + 1);
+            }
+        }
+        if !tail.is_empty() {
+            let tail_as_vec = tail.into_iter().collect();
+            messages.insert(address.clone(), tail_as_vec);
+        }
+    }
+    Ok(messages)
+}
+
+#[cfg(test)]
+pub mod tests {
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::sync::Arc;
+    use std::sync::Once;
+
+    use parking_lot::Mutex;
+    use telemetry_utils::mpsc::instrumented_channel;
+    use telemetry_utils::mpsc::InstrumentedSender;
+
+    use super::BkSetUpdate;
+    use super::RepositoryImpl;
+    use super::OID;
+    use crate::config::config_read::ConfigRead;
+    use crate::config::GlobalConfig;
+    use crate::helper::metrics;
+    use crate::multithreading::routing::service::RoutingService;
+    use crate::node::shared_services::SharedServices;
+    use crate::repository::accounts::AccountsRepository;
+    use crate::repository::repository_impl::BlockStateRepository;
+    use crate::repository::repository_impl::FinalizedBlockStorage;
+    use crate::repository::Repository;
+    use crate::storage::MessageDurableStorage;
+    use crate::types::BlockSeqNo;
+    use crate::utilities::FixedSizeHashSet;
+    use crate::versioning::ProtocolVersion;
+
+    const ZEROSTATE: &str = "../config/zerostate";
+    const DB_PATH: &str = "./tests-data";
+    static START: Once = Once::new();
+
+    fn init_db(db_path: &str) -> anyhow::Result<()> {
+        let _ = std::fs::remove_dir_all(db_path);
+        let _ = std::fs::create_dir_all(db_path);
+
+        Command::new("../target/debug/migration-tool")
+            .arg("-p")
+            .arg(db_path)
+            .arg("-n")
+            .arg("-a")
+            .status()?;
+        Ok(())
+    }
+
+    fn init_tests() {
+        init_db(DB_PATH).expect("Failed to init DB");
+        init_db(&format!("{DB_PATH}/test_save_load")).expect("Failed to init DB");
+        init_db(&format!("{DB_PATH}/test_exists")).expect("Failed to init DB");
+        init_db(&format!("{DB_PATH}/test_remove")).expect("Failed to init DB");
+        init_db(&format!("{DB_PATH}/test_save_duplication")).expect("Failed to init DB");
+    }
+
+    pub fn finalized_blocks_storage() -> Arc<Mutex<FinalizedBlockStorage>> {
+        Arc::new(Mutex::new(FinalizedBlockStorage::new(100)))
+    }
+
+    fn mock_bk_set_updates_tx() -> InstrumentedSender<BkSetUpdate> {
+        let (bk_set_updates_tx, _bk_set_updates_rx) = instrumented_channel::<BkSetUpdate>(
+            None::<metrics::BlockProductionMetrics>,
+            metrics::BK_SET_UPDATE_CHANNEL,
+        );
+        bk_set_updates_tx
+    }
+    #[test]
+    #[ignore]
+    fn test_save_load() -> anyhow::Result<()> {
+        START.call_once(init_tests);
+
+        let block_state_repository =
+            BlockStateRepository::test(PathBuf::from("./tests-data/test_save_load/block-state"));
+        let accounts_repository =
+            AccountsRepository::new(PathBuf::from("./tests-data/test_save_load"), Some(0), 1);
+        let message_db = MessageDurableStorage::mem();
+        let finalized_blocks = finalized_blocks_storage();
+        let repository = RepositoryImpl::new(
+            PathBuf::from("./tests-data/test_save_load"),
+            Some(PathBuf::from(ZEROSTATE)),
+            1,
+            SharedServices::test_start(RoutingService::stub().0, u32::MAX),
+            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
+            false,
+            block_state_repository,
+            None,
+            accounts_repository,
+            message_db.clone(),
+            finalized_blocks,
+            mock_bk_set_updates_tx(),
+            #[cfg(feature = "mirror_repair")]
+            Arc::new(Mutex::new(false)),
+            ConfigRead::new(
+                ProtocolVersion::parse("None").unwrap(),
+                GlobalConfig::default(),
+                None,
+                None,
+            ),
+        );
+
+        let path = "block_status";
+        let oid = OID::ID(String::from("100"));
+        let expected_data: Vec<u8> = vec![0xde, 0xad, 0xbe, 0xef];
+        repository.save(path, oid.clone(), &expected_data)?;
+
+        let data = repository.load::<Vec<u8>>(path, oid.clone())?;
+        assert_eq!(data, Some(expected_data));
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_clear_big_state() -> anyhow::Result<()> {
+        let block_state_repository = BlockStateRepository::test(PathBuf::from(
+            "/home/user/GOSH/acki-nacki/server_data/node1/block-state/",
+        ));
+        let accounts_repository = AccountsRepository::new(
+            PathBuf::from("/home/user/GOSH/acki-nacki/server_data/node1/"),
+            Some(0),
+            1,
+        );
+        let message_db = MessageDurableStorage::mem();
+        let finalized_blocks = finalized_blocks_storage();
+        let _repository = RepositoryImpl::new(
+            PathBuf::from("/home/user/GOSH/acki-nacki/server_data/node1/"),
+            Some(PathBuf::from(ZEROSTATE)),
+            1,
+            SharedServices::test_start(RoutingService::stub().0, u32::MAX),
+            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
+            false,
+            block_state_repository,
+            None,
+            accounts_repository,
+            message_db.clone(),
+            finalized_blocks,
+            mock_bk_set_updates_tx(),
+            #[cfg(feature = "mirror_repair")]
+            Arc::new(Mutex::new(false)),
+            ConfigRead::new(
+                ProtocolVersion::parse("None").unwrap(),
+                GlobalConfig::default(),
+                None,
+                None,
+            ),
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_exists() -> anyhow::Result<()> {
+        START.call_once(init_tests);
+        let block_state_repository =
+            BlockStateRepository::test(PathBuf::from("./tests-data/test_exists/block-state"));
+        let accounts_repository =
+            AccountsRepository::new(PathBuf::from("./tests-data/test_exists"), Some(0), 1);
+        let message_db = MessageDurableStorage::mem();
+        let finalized_blocks = finalized_blocks_storage();
+
+        let repository = RepositoryImpl::new(
+            PathBuf::from("./tests-data/test_exists"),
+            Some(PathBuf::from(ZEROSTATE)),
+            1,
+            SharedServices::test_start(RoutingService::stub().0, u32::MAX),
+            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
+            false,
+            block_state_repository,
+            None,
+            accounts_repository,
+            message_db.clone(),
+            finalized_blocks,
+            mock_bk_set_updates_tx(),
+            #[cfg(feature = "mirror_repair")]
+            Arc::new(Mutex::new(false)),
+            ConfigRead::new(
+                ProtocolVersion::parse("None").unwrap(),
+                GlobalConfig::default(),
+                None,
+                None,
+            ),
+        );
+
+        let path = "metadata";
+        let oid = OID::SingleRow;
+        let expected_data: Vec<u8> = vec![0xde, 0xad, 0xbe, 0xef];
+        repository.save(path, oid.clone(), &expected_data)?;
+
+        assert!(repository.exists(path, oid));
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_remove() -> anyhow::Result<()> {
+        START.call_once(init_tests);
+        let block_state_repository =
+            BlockStateRepository::test(PathBuf::from("./tests-data/test_remove/block-state"));
+        let accounts_repository =
+            AccountsRepository::new(PathBuf::from("./tests-data/test_remove"), Some(0), 1);
+        let message_db = MessageDurableStorage::mem();
+        let finalized_blocks = finalized_blocks_storage();
+
+        let repository = RepositoryImpl::new(
+            PathBuf::from("./tests-data/test_remove"),
+            Some(PathBuf::from(ZEROSTATE)),
+            1,
+            SharedServices::test_start(RoutingService::stub().0, u32::MAX),
+            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
+            false,
+            block_state_repository,
+            None,
+            accounts_repository,
+            message_db.clone(),
+            finalized_blocks,
+            mock_bk_set_updates_tx(),
+            #[cfg(feature = "mirror_repair")]
+            Arc::new(Mutex::new(false)),
+            ConfigRead::new(
+                ProtocolVersion::parse("None").unwrap(),
+                GlobalConfig::default(),
+                None,
+                None,
+            ),
+        );
+        let path = "optimistic_state";
+        let oid = OID::ID(String::from("200"));
+        let data: Vec<u8> = vec![0xde, 0xad, 0xbe, 0xef];
+        repository.save(path, oid.clone(), &data)?;
+        assert!(repository.exists(path, oid.clone()));
+
+        repository._remove(path, oid.clone())?;
+        assert!(!repository.exists(path, oid.clone()));
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_set_state_from_snapshot() -> anyhow::Result<()> {
+        use std::str::FromStr;
+
+        use crate::types::BlockIdentifier;
+        use crate::types::ThreadIdentifier;
+
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new("trace"))
+            .with_target(false)
+            .compact() // optional: cleaner output formatting
+            .init();
+
+        let tmp = tempfile::TempDir::new()?;
+        let block_state_repository = BlockStateRepository::test(tmp.path().join("block-state"));
+        let accounts_repository = AccountsRepository::new(tmp.path().join("accounts"), Some(0), 1);
+        let message_db = MessageDurableStorage::mem();
+        let finalized_blocks = finalized_blocks_storage();
+
+        let mut repository = RepositoryImpl::new(
+            tmp.path().join("repo"),
+            Some(PathBuf::from(ZEROSTATE)),
+            1,
+            SharedServices::test_start(RoutingService::stub().0, u32::MAX),
+            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
+            false,
+            block_state_repository,
+            None,
+            accounts_repository,
+            message_db.clone(),
+            finalized_blocks,
+            mock_bk_set_updates_tx(),
+            #[cfg(feature = "mirror_repair")]
+            Arc::new(Mutex::new(false)),
+            ConfigRead::new(
+                ProtocolVersion::parse("None").unwrap(),
+                GlobalConfig::default(),
+                None,
+                None,
+            ),
+        );
+
+        let state_path =
+            "/home/user/Downloads/ca6638f7c216beab81886042eb615bdcbe68a451984641b3e7d8aa97b0a0142d";
+        let snapshot_bytes = std::fs::read(state_path)?;
+        repository.set_state_from_snapshot(
+            snapshot_bytes,
+            &ThreadIdentifier::default(),
+            Arc::new(Mutex::new(HashSet::default())),
+        )?;
+
+        let (id, seq_no) =
+            repository.select_thread_last_finalized_block(&ThreadIdentifier::default())?.unwrap();
+        assert_eq!(
+            id,
+            BlockIdentifier::from_str(
+                "ca6638f7c216beab81886042eb615bdcbe68a451984641b3e7d8aa97b0a0142d"
+            )
+            .unwrap()
+        );
+        assert_eq!(seq_no, BlockSeqNo::from(11489521));
+
+        Ok(())
     }
 }

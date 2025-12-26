@@ -2,7 +2,73 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.12.4] - 2025-11-14
+## [0.13.0] - 2025-12-18
+
+### New
+- Protocol version introduced
+- Rolling network upgrade supported: when majority of nodes are updated to the new version the network protocol is automatically switched to the new version
+- Mobile Verifiers Miner subsystem which provides on-chain support for mining and computation verification performed using the on-chain Bee Engine backend. The subsystem is application-agnostic and can be integrated into any application
+- HTTPS supported for BM, BK APIs
+- Graceful shutdown supported in BM
+- BM upgrade scripts
+- Support of Gosh provider in TLS wasm binary
+- Preflight handler for graphql server
+- Versioning introduced in BM
+- Guide how to migrate BK to a another server
+
+## [0.12.11] - 2025-12-09
+
+### Fixed
+- Chitchat: dead node reappearing
+- Chitchat: panic on deserializing invalid message
+
+## [0.12.10] - 2025-11-30
+
+### Fixed 
+- Added a critical log when the gossip cluster overflows (instead of the old panic).
+
+## [0.12.9] - 2025-11-30
+
+### Fixed
+- Fixed panic in chitchat when cluster digest size is more than 65k.
+- Fixed unnecessary chitchat restarting on every sighup (only when gossip params are changed).
+- Fixed reusing chitchat id on chitchat restarting (always generate new id on every chitchat restart).
+
+
+## [0.12.8] - 2025-11-25
+
+### New 
+- counter `missed_blocks`  based on block height
+- gauge `node_network_planned_publisher_count`
+- counter `node_network_added_connections`, (attr `remote_role`: `publisher`, `subscriber`, `direct_sender)`
+- counter `node_network_removed_connections`, (attr `remote_role`: `publisher`, `subscriber`, `direct_sender)`
+- add `monit` target to some network module logs
+- counter `missed_blocks` that tracks the number of blocks received out of order (i.e., when a block’s height is not equal to the previous block height plus 1).
+- histogram `block_processing_jitter` that measures the intervals between calls to the on_incoming_block_candidate() function.
+- proxy metric `node_build_info` with attrs `version`, `commit`
+
+### Fixed
+- Node could not send a next round request after syncing on the stopped network
+- Proxy did not report `node_network_gossip_peers`, `node_network_gossip_live_nodes` metrics
+
+## [0.12.7] - 2025-11-24
+
+### Improvements
+- Added gossip peers TTL
+
+## [0.12.6] - 2025-11-20
+
+### Fixed
+
+- Added config network.direct_send_mode ("direct", "broadcast", "both")
+
+## [0.12.5] - 2025-11-20
+
+### Fixed
+
+- Network message decoding error and state synchronization error
+
+## [0.12.4] - 2025-11-20
 
 ### New
 - Added the `node_network_publisher_count` metric to display the number of nodes or proxies the Node is subscribed to (will receive blocks from) 

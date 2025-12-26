@@ -30,6 +30,7 @@ pub async fn sender<
     mut outgoing_messages_rx: tokio::sync::broadcast::Receiver<OutgoingMessage<PeerId>>,
 ) -> anyhow::Result<()> {
     tracing::info!(
+        target: "monit",
         ident = &connection.connection.local_identity()[..6],
         local = connection.connection.local_addr().to_string(),
         peer = connection.info.remote_info(),
@@ -120,6 +121,7 @@ pub async fn sender<
     }
 
     tracing::info!(
+        target: "monit",
         ident = &connection.connection.local_identity()[..6],
         local = connection.connection.local_addr().to_string(),
         peer = connection.info.remote_info(),

@@ -11,6 +11,7 @@ use clap::Parser;
 use clap::Subcommand;
 use gosh_blst::gen_bls_key_pair;
 use gosh_blst::BLSKeyPair;
+use network::config::DirectSendMode;
 use network::config::SocketAddrSet;
 use network::parse_publisher_addr;
 use network::try_parse_socket_addr;
@@ -25,7 +26,9 @@ use node::config::NodeConfig;
 use node::helper::key_handling::key_pairs_from_file;
 use node::node::NodeIdentifier;
 use node::types::RndSeed;
+use node::versioning::canonical_config_hash::CanonicalConfigHash;
 use serde_json::json;
+use transport_layer::HostPort;
 use tvm_client::ClientConfig;
 use tvm_client::ClientContext;
 
@@ -49,6 +52,11 @@ enum Commands {
     /// Generate BLS key pair
     Bls(Bls),
     GenKeys(GenKeys),
+    ConfigHash {
+        /// Path to the config file
+        #[arg(short, long, required = true)]
+        config_file_path: PathBuf,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -79,6 +87,10 @@ struct Config {
     /// Path to the config file
     #[arg(short, long, required = true)]
     config_file_path: PathBuf,
+
+    /// Path to the config file
+    #[arg(short, long, required = true)]
+    global_config_file_path: PathBuf,
 
     /// Create default config if config is invalid or does not exist
     #[clap(short, long, action=ArgAction::SetTrue, default_value = "false")]
@@ -125,6 +137,10 @@ struct Config {
     #[arg(long, env)]
     #[arg(value_parser = parse_gossip_addr)]
     pub gossip_advertise_addr: Option<SocketAddr>,
+
+    /// Gossip peer TTL in seconds
+    #[arg(long, env)]
+    pub gossip_peer_ttl_seconds: Option<u64>,
 
     /// Gossip seed nodes addresses (e.g., hostname:port or ip:port)
     #[arg(long, env)]
@@ -173,6 +189,9 @@ struct Config {
     pub bk_api_socket: Option<SocketAddr>,
 
     #[arg(long, env)]
+    pub bk_api_host_port: Option<HostPort>,
+
+    #[arg(long, env)]
     pub parallelization_level: Option<usize>,
 
     #[arg(long, env)]
@@ -200,6 +219,10 @@ struct Config {
     /// The name of the TLS cert file used for auth.
     #[arg(long)]
     pub network_my_cert: Option<PathBuf>,
+
+    #[arg(value_parser = parse_direct_send_mode)]
+    #[arg(long)]
+    pub network_direct_send_mode: Option<DirectSendMode>,
 
     /// The name of the TLS key file used for auth.
     #[arg(long)]
@@ -273,6 +296,10 @@ struct Config {
     #[arg(long, env)]
     #[arg(value_parser = parse_duration::parse)]
     pub time_to_enable_sync_finalized: Option<Duration>,
+
+    /// TVM engine version
+    #[arg(long, env)]
+    pub engine_version: Option<String>,
 }
 
 const DEFAULT_NODE_PORT: u16 = 8500;
@@ -285,52 +312,80 @@ fn parse_gossip_addr(s: &str) -> Result<SocketAddr, String> {
     try_parse_socket_addr(s, DEFAULT_GOSSIP_PORT).map_err(|err| err.to_string())
 }
 
+fn parse_direct_send_mode(s: &str) -> Result<DirectSendMode, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "direct" => Ok(DirectSendMode::Direct),
+        "broadcast" => Ok(DirectSendMode::Broadcast),
+        "both" => Ok(DirectSendMode::Both),
+        _ => Err(format!("invalid direct send mode: {s}")),
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let args: Args = Args::parse();
     match args.command {
         Commands::Config(config_cmd) => {
-            let mut config = match load_config_from_file(&config_cmd.config_file_path) {
+            let mut config =
+                match load_config_from_file::<node::config::Config>(&config_cmd.config_file_path) {
+                    Ok(config) => config,
+                    Err(e) => {
+                        if config_cmd.default {
+                            println!("Failed to open config, create a default one");
+                            let Some(node_id) = config_cmd.node_id.clone() else {
+                                eprintln!("node_id must be specified for default config");
+                                exit(2);
+                            };
+                            let Some(cluster_id) = config_cmd.chitchat_cluster_id.clone() else {
+                                eprintln!(
+                                    "chitchat_cluster_id must be specified for default config"
+                                );
+                                exit(2);
+                            };
+                            let Some(node_advertise_addr) = config_cmd.node_advertise_addr else {
+                                eprintln!(
+                                    "node_advertise_addr must be specified for default config"
+                                );
+                                exit(2);
+                            };
+                            let Some(api_addr) = config_cmd.api_addr.clone() else {
+                                eprintln!("api_addr must be specified for default config");
+                                exit(2);
+                            };
+                            let Some(ref api_advertise_addr) = config_cmd.api_advertise_addr else {
+                                eprintln!(
+                                    "api_advertise_addr must be specified for default config"
+                                );
+                                exit(2);
+                            };
+                            let local = NodeConfig::builder()
+                                .node_id(
+                                    NodeIdentifier::from_str(&node_id).expect("Invalid node ID"),
+                                )
+                                .build();
+                            let network_config = NetworkConfig::builder()
+                                .chitchat_cluster_id(cluster_id)
+                                .node_advertise_addr(node_advertise_addr)
+                                .api_addr(api_addr)
+                                .api_advertise_addr(api_advertise_addr.clone())
+                                .build();
+
+                            node::config::Config { network: network_config, local }
+                        } else {
+                            eprint!("Error: Failed to load config: {e}");
+                            exit(1);
+                        }
+                    }
+                };
+
+            let mut global_config = match load_config_from_file::<node::config::GlobalConfig>(
+                &config_cmd.config_file_path,
+            ) {
                 Ok(config) => config,
                 Err(e) => {
                     if config_cmd.default {
-                        println!("Failed to open config, create a default one");
-                        let Some(node_id) = config_cmd.node_id.clone() else {
-                            eprintln!("node_id must be specified for default config");
-                            exit(2);
-                        };
-                        let Some(cluster_id) = config_cmd.chitchat_cluster_id.clone() else {
-                            eprintln!("chitchat_cluster_id must be specified for default config");
-                            exit(2);
-                        };
-                        let Some(node_advertise_addr) = config_cmd.node_advertise_addr else {
-                            eprintln!("node_advertise_addr must be specified for default config");
-                            exit(2);
-                        };
-                        let Some(api_addr) = config_cmd.api_addr.clone() else {
-                            eprintln!("api_addr must be specified for default config");
-                            exit(2);
-                        };
-                        let Some(ref api_advertise_addr) = config_cmd.api_advertise_addr else {
-                            eprintln!("api_advertise_addr must be specified for default config");
-                            exit(2);
-                        };
-                        let local = NodeConfig::builder()
-                            .node_id(NodeIdentifier::from_str(&node_id).expect("Invalid node ID"))
-                            .build();
-                        let network_config = NetworkConfig::builder()
-                            .chitchat_cluster_id(cluster_id)
-                            .node_advertise_addr(node_advertise_addr)
-                            .api_addr(api_addr)
-                            .api_advertise_addr(api_advertise_addr.clone())
-                            .build();
-
-                        node::config::Config {
-                            global: GlobalConfig::default(),
-                            network: network_config,
-                            local,
-                        }
+                        GlobalConfig::default()
                     } else {
-                        eprint!("Error: {e}");
+                        eprint!("Error: Failed to load global config: {e}");
                         exit(1);
                     }
                 }
@@ -368,12 +423,20 @@ fn main() -> anyhow::Result<()> {
                 config.network.bind = bind;
             }
 
+            if let Some(mode) = config_cmd.network_direct_send_mode {
+                config.network.direct_send_mode = mode;
+            }
+
             if let Some(node_advertise_addr) = config_cmd.node_advertise_addr {
                 config.network.node_advertise_addr = node_advertise_addr;
             }
 
             if let Some(gossip_listen_addr) = config_cmd.gossip_listen_addr {
                 config.network.gossip_listen_addr = gossip_listen_addr;
+            }
+
+            if let Some(ttl) = config_cmd.gossip_peer_ttl_seconds {
+                config.network.gossip_peer_ttl_seconds = ttl;
             }
 
             if let Some(gossip_advertise_addr) = config_cmd.gossip_advertise_addr {
@@ -407,12 +470,12 @@ fn main() -> anyhow::Result<()> {
             if let Some(min_time_between_state_publish_directives) =
                 config_cmd.min_time_between_state_publish_directives
             {
-                config.global.min_time_between_state_publish_directives =
+                global_config.min_time_between_state_publish_directives =
                     min_time_between_state_publish_directives;
             }
 
             if let Some(node_joining_timeout) = config_cmd.node_joining_timeout {
-                config.global.node_joining_timeout = node_joining_timeout;
+                global_config.node_joining_timeout = node_joining_timeout;
             }
 
             if let Some(bm_api_socket) = config_cmd.bm_api_socket {
@@ -423,25 +486,29 @@ fn main() -> anyhow::Result<()> {
                 config.network.bk_api_socket = Some(bk_api_socket);
             }
 
+            if let Some(bk_api_host_port) = config_cmd.bk_api_host_port {
+                config.network.bk_api_host_port = Some(bk_api_host_port);
+            }
+
             if let Some(parallelization_level) = config_cmd.parallelization_level {
                 config.local.parallelization_level = parallelization_level;
             }
 
             if let Some(block_keeper_epoch_code_hash) = config_cmd.block_keeper_epoch_code_hash {
-                config.global.block_keeper_epoch_code_hash =
+                global_config.block_keeper_epoch_code_hash =
                     block_keeper_epoch_code_hash.trim_start_matches("0x").to_string();
             } else if let Ok(code_hash) = std::fs::read_to_string(EPOCH_CODE_HASH_FILE_PATH) {
-                config.global.block_keeper_epoch_code_hash =
+                global_config.block_keeper_epoch_code_hash =
                     code_hash.trim_start_matches("0x").to_string();
             }
 
             if let Some(block_keeper_preepoch_code_hash) =
                 config_cmd.block_keeper_preepoch_code_hash
             {
-                config.global.block_keeper_preepoch_code_hash =
+                global_config.block_keeper_preepoch_code_hash =
                     block_keeper_preepoch_code_hash.trim_start_matches("0x").to_string();
             } else if let Ok(code_hash) = std::fs::read_to_string(PREEPOCH_CODE_HASH_FILE_PATH) {
-                config.global.block_keeper_preepoch_code_hash =
+                global_config.block_keeper_preepoch_code_hash =
                     code_hash.trim_start_matches("0x").to_string();
             }
 
@@ -450,7 +517,7 @@ fn main() -> anyhow::Result<()> {
             }
 
             if let Some(producer_change_gap_size) = config_cmd.producer_change_gap_size {
-                config.global.producer_change_gap_size = producer_change_gap_size;
+                global_config.producer_change_gap_size = producer_change_gap_size;
             }
 
             if let Some(shared_state_max_download_tries) =
@@ -507,15 +574,15 @@ fn main() -> anyhow::Result<()> {
             }
 
             if let Some(thread_load_threshold) = config_cmd.thread_load_threshold {
-                config.global.thread_load_threshold = thread_load_threshold;
+                global_config.thread_load_threshold = thread_load_threshold;
             }
 
             if let Some(thread_load_window_size) = config_cmd.thread_load_window_size {
-                config.global.thread_load_window_size = thread_load_window_size;
+                global_config.thread_load_window_size = thread_load_window_size;
             }
 
             if let Some(thread_count_soft_limit) = config_cmd.thread_count_soft_limit {
-                config.global.thread_count_soft_limit = thread_count_soft_limit;
+                global_config.thread_count_soft_limit = thread_count_soft_limit;
             }
 
             if let Some(state_cache_size) = config_cmd.state_cache_size {
@@ -537,19 +604,26 @@ fn main() -> anyhow::Result<()> {
             config.local.signing_keys = config_cmd.signing_keys;
 
             if let Some(round_min_time_millis) = config_cmd.round_min_time_millis {
-                config.global.round_min_time_millis = round_min_time_millis;
+                global_config.round_min_time_millis = round_min_time_millis;
             }
             if let Some(round_step_millis) = config_cmd.round_step_millis {
-                config.global.round_step_millis = round_step_millis;
+                global_config.round_step_millis = round_step_millis;
             }
             if let Some(round_max_time_millis) = config_cmd.round_max_time_millis {
-                config.global.round_max_time_millis = round_max_time_millis;
+                global_config.round_max_time_millis = round_max_time_millis;
             }
             if let Some(time_to_enable_sync_finalized) = config_cmd.time_to_enable_sync_finalized {
-                config.global.time_to_enable_sync_finalized = time_to_enable_sync_finalized;
+                global_config.time_to_enable_sync_finalized = time_to_enable_sync_finalized;
+            }
+            if let Some(engine_version) = config_cmd.engine_version {
+                let version = engine_version.parse().map_err(|e| {
+                    anyhow::anyhow!("Failed to parse engine version as SemVer: {e}")
+                })?;
+                global_config.engine_version = version;
             }
 
-            save_config_to_file(&config, &config_cmd.config_file_path)
+            save_config_to_file(&config, &config_cmd.config_file_path)?;
+            save_config_to_file(&global_config, &config_cmd.global_config_file_path)
         }
         Commands::Bls(bls_cmd) => {
             let keypair = BLSKeyPair::from(gen_bls_key_pair());
@@ -591,6 +665,11 @@ fn main() -> anyhow::Result<()> {
                 println!("{keys_json}");
             }
 
+            Ok(())
+        }
+        Commands::ConfigHash { config_file_path } => {
+            let config = load_config_from_file(&config_file_path)?;
+            print!("{}", CanonicalConfigHash::from(&config));
             Ok(())
         }
     }

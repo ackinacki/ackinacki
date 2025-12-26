@@ -9,6 +9,7 @@ pub mod block_state;
 mod crypto;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::repository::optimistic_state::OptimisticStateSaveCommand;
+use crate::types::BlockHeight;
 mod execution;
 use block_request_service::BlockRequestParams;
 pub use execution::LOOP_PAUSE_DURATION;
@@ -37,6 +38,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 use std::time::Duration;
+use std::time::Instant;
 
 pub use associated_types::SignerIndex;
 pub use network_message::NetBlock;
@@ -49,9 +51,11 @@ use typed_builder::TypedBuilder;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
 use crate::config::Config;
+use crate::config::GlobalConfig;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
+use crate::node::associated_types::NodeCredentials;
 use crate::node::services::attestations_target::service::AttestationTargetsService;
 use crate::protocol::authority_switch::action_lock::Authority;
 pub use crate::protocol::authority_switch::network_message::AuthoritySwitch;
@@ -107,6 +111,7 @@ where
     sent_acks: BTreeMap<BlockSeqNo, Envelope<GoshBLS, AckData>>,
     pub received_nacks: Arc<Mutex<Vec<Envelope<GoshBLS, NackData>>>>,
     config: Config,
+    global_config: GlobalConfig,
     pub received_attestations: BTreeMap<BlockSeqNo, HashMap<BlockIdentifier, HashSet<SignerIndex>>>,
     block_keeper_rng: TRandomGenerator,
     producer_election_rng: TRandomGenerator,
@@ -146,7 +151,10 @@ where
     chain_pulse_monitor: Sender<ChainPulseEvent>,
 
     authority_handler: JoinHandle<()>,
-    last_processed_block_seq_no: Option<u32>,
+    last_processed_block_height: Option<BlockHeight>,
+    last_call_on_incoming_candidate_block: Option<Instant>,
+
+    node_credentials: NodeCredentials,
 }
 
 impl<TStateSyncService, TRandomGenerator> Node<TStateSyncService, TRandomGenerator>
@@ -166,6 +174,7 @@ where
         raw_block_tx: InstrumentedSender<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>,
         bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
         config: Config,
+        global_config: GlobalConfig,
         block_keeper_rng: TRandomGenerator,
         producer_election_rng: TRandomGenerator,
         thread_id: ThreadIdentifier,
@@ -193,6 +202,7 @@ where
         authority_handler: JoinHandle<()>,
         self_authority_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
         save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
+        node_credentials: NodeCredentials,
     ) -> Self {
         tracing::trace!("Start node for thread: {thread_id:?}");
         if let Some(metrics) = &metrics {
@@ -247,6 +257,7 @@ where
             bls_keys_map: bls_keys_map.clone(),
             last_block_attestations: last_block_attestations.clone(),
             config: config.clone(),
+            global_config: global_config.clone(),
             received_attestations: Default::default(),
             block_keeper_rng,
             received_acks: received_acks.clone(),
@@ -316,13 +327,15 @@ where
                 self_tx,
                 self_authority_tx,
                 network_broadcast_tx,
-                config.local.node_id.clone(),
-                Duration::from_millis(config.global.time_to_produce_block_millis),
-                config.global.save_state_frequency,
+                Duration::from_millis(global_config.time_to_produce_block_millis),
+                global_config.save_state_frequency,
                 external_messages.clone(),
                 is_state_sync_requested.clone(),
                 bp_production_count,
                 save_optimistic_service_sender,
+                node_credentials.clone(),
+                #[cfg(feature = "mirror_repair")]
+                Arc::new(parking_lot::Mutex::new(false)),
             )
             .expect("Failed to start producer service"),
             metrics,
@@ -338,7 +351,9 @@ where
             last_synced_state: None,
             chain_pulse_monitor,
             authority_handler,
-            last_processed_block_seq_no: Default::default(),
+            last_processed_block_height: Default::default(),
+            last_call_on_incoming_candidate_block: Default::default(),
+            node_credentials,
         }
     }
 }

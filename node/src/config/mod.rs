@@ -1,6 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 mod blockchain_config;
+pub mod config_read;
 mod network_config;
 mod serde_config;
 #[cfg(test)]
@@ -13,6 +14,7 @@ use std::time::Duration;
 
 pub use blockchain_config::*;
 use gossip::gossip_peer::GossipPeer;
+use gossip::GossipReloadConfig;
 use network::pub_sub::CertFile;
 use network::pub_sub::CertStore;
 use network::pub_sub::PrivateKeyFile;
@@ -29,6 +31,9 @@ use typed_builder::TypedBuilder;
 
 use crate::node::NodeIdentifier;
 use crate::types::BlockSeqNo;
+
+const DEFAULT_ENGINE_VERSION: &str = "1.0.1";
+const DEFAULT_GOSSIP_VERSION: &str = "0";
 
 // TODO: These settings should be moved onchain.
 /// Global node config, including block producer and synchronization settings.
@@ -114,10 +119,16 @@ pub struct GlobalConfig {
 
     ///  Security parameter. Minimal time after the last finalization to enable Synchronization start
     pub time_to_enable_sync_finalized: Duration,
+
+    /// TVM engine version
+    pub engine_version: semver::Version,
+
+    /// Gossip protocol version
+    pub gossip_version: u16,
 }
 
 /// Node interaction settings
-#[derive(Serialize, Deserialize, Debug, Clone, TypedBuilder)]
+#[derive(Serialize, Deserialize, Debug, Clone, TypedBuilder, PartialEq)]
 pub struct NodeConfig {
     /// Identifier of the current node.
     pub node_id: NodeIdentifier,
@@ -184,10 +195,6 @@ pub struct NodeConfig {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
-    /// Global config
-    #[serde(default)]
-    pub global: GlobalConfig,
-
     /// Network config
     pub network: NetworkConfig,
 
@@ -226,6 +233,8 @@ impl Default for GlobalConfig {
             round_step_millis: 1000,
             round_max_time_millis: 30000,
             time_to_enable_sync_finalized: Duration::from_secs(1200),
+            engine_version: DEFAULT_ENGINE_VERSION.parse().unwrap(),
+            gossip_version: DEFAULT_GOSSIP_VERSION.parse().unwrap(),
         }
     }
 }
@@ -237,21 +246,34 @@ impl Config {
             advertise_addr: self.network.gossip_advertise_addr,
             seeds: self.network.gossip_seeds.clone().into(),
             cluster_id: self.network.chitchat_cluster_id.clone(),
+            peer_ttl_seconds: self.network.gossip_peer_ttl_seconds,
         }
     }
 
+    pub fn gossip_reload_config(&self) -> anyhow::Result<GossipReloadConfig<NodeIdentifier>> {
+        Ok(GossipReloadConfig {
+            gossip_config: self.gossip_config(),
+            my_ed_key_secret: self.network.my_ed_key_secret.clone(),
+            my_ed_key_path: self.network.my_ed_key_path.clone(),
+            peer_config: Some(self.gossip_peer()?),
+        })
+    }
+
     pub fn gossip_peer(&self) -> anyhow::Result<GossipPeer<NodeIdentifier>> {
-        GossipPeer::new(
-            self.local.node_id.clone(),
-            self.network.node_advertise_addr,
-            self.network.proxies.clone().into(),
-            self.network.bm_api_socket,
-            self.network.bk_api_socket,
-            &transport_layer::resolve_signing_keys(
-                &self.network.my_ed_key_secret,
-                &self.network.my_ed_key_path,
-            )?,
-        )
+        GossipPeer {
+            id: self.local.node_id.clone(),
+            node_protocol_addr: self.network.node_advertise_addr,
+            proxies: self.network.proxies.clone().into(),
+            bm_api_addr: self.network.bm_api_socket,
+            bk_api_addr_deprecated: self.network.bk_api_socket,
+            bk_api_url_for_storage_sync: Some(self.network.api_advertise_addr.clone()),
+            bk_api_host_port: self.network.bk_api_host_port.clone(),
+            pubkey_signature: None,
+        }
+        .signed(&transport_layer::resolve_signing_keys(
+            &self.network.my_ed_key_secret,
+            &self.network.my_ed_key_path,
+        )?)
     }
 
     pub fn endpoint(&self) -> NetEndpoint<NodeIdentifier> {
@@ -270,6 +292,7 @@ impl Config {
             max_nodes_with_same_id: self.network.max_nodes_with_same_id as usize,
             override_subscribe: self.override_subscribe(),
             trusted_pubkeys,
+            peer_ttl_seconds: self.network.gossip_peer_ttl_seconds,
         }
     }
 
@@ -289,6 +312,7 @@ impl Config {
     ) -> anyhow::Result<network::config::NetworkConfig> {
         network::config::NetworkConfig::new(
             self.network.bind,
+            self.network.direct_send_mode.clone(),
             CertFile::try_new(&self.network.my_cert)?,
             PrivateKeyFile::try_new(&self.network.my_key)?,
             &transport_layer::resolve_signing_keys(

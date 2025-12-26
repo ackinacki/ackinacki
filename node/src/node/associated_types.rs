@@ -34,6 +34,7 @@ use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
+use crate::versioning::ProtocolVersionSupport;
 
 pub type SignerIndex = u16;
 
@@ -45,6 +46,12 @@ impl NodeIdentifier {
     pub fn some_id() -> Self {
         Self::from_str("81a6bea128f5e03843362e55fd574c42a8e457dd553498cbc8ec7e14966d20a3").unwrap()
     }
+}
+
+#[derive(Debug, Clone, TypedBuilder, Getters)]
+pub struct NodeCredentials {
+    node_id: NodeIdentifier,
+    protocol_version_support: ProtocolVersionSupport,
 }
 
 impl NodeIdentifier {

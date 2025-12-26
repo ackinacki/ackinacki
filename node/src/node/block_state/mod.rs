@@ -11,19 +11,24 @@ pub use save_service::start_state_save_service;
 mod private {
     use std::path::PathBuf;
 
+    use versioned_struct::Transitioning;
+
     use super::state::AckiNackiBlockState;
-    use crate::repository::repository_impl::load_from_file;
     use crate::repository::repository_impl::save_to_file;
 
     pub fn load_state(file_path: PathBuf) -> anyhow::Result<Option<AckiNackiBlockState>> {
-        if let Some(mut state) = load_from_file::<AckiNackiBlockState>(&file_path).map_err(|e| {
-            anyhow::format_err!("Failed to load block state from file {file_path:?}: {e}")
-        })? {
-            state.file_path = file_path;
-            Ok(Some(state))
-        } else {
-            Ok(None)
+        if !file_path.exists() {
+            return Ok(None);
         }
+        let bytes = std::fs::read(&file_path).map_err(|e| {
+            anyhow::format_err!("Failed to read bytes from file {file_path:?}: {e}")
+        })?;
+        let mut state: AckiNackiBlockState = Transitioning::deserialize_data_compat(&bytes)
+            .map_err(|e| {
+                anyhow::format_err!("Failed to load block state from bytes {file_path:?}: {e}")
+            })?;
+        state.file_path = file_path;
+        Ok(Some(state))
     }
 
     pub fn save(state: &AckiNackiBlockState) -> anyhow::Result<()> {

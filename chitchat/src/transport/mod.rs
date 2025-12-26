@@ -9,13 +9,10 @@ mod transport_layer;
 mod udp;
 mod utils;
 
-pub use channel::ChannelTransport;
-pub use channel::Statistics;
+pub use channel::{ChannelTransport, Statistics};
 pub use transport_layer::TransportLayerTransport;
-pub use udp::UdpSocket;
-pub use udp::UdpTransport;
-pub use utils::DelayMillisDist;
-pub use utils::TransportExt;
+pub use udp::{UdpSocket, UdpTransport};
+pub use utils::{DelayMillisDist, TransportExt};
 
 #[async_trait]
 pub trait Transport: Send + Sync + 'static {
@@ -42,15 +39,17 @@ mod tests {
     use tokio::time::timeout;
 
     use super::Transport;
+    use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
     use crate::digest::Digest;
     use crate::message::ChitchatMessage;
     use crate::serialize::Serializable;
-    use crate::transport::ChannelTransport;
-    use crate::transport::UdpTransport;
-    use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
+    use crate::transport::{ChannelTransport, UdpTransport};
 
     fn sample_syn_msg() -> ChitchatMessage {
-        ChitchatMessage::Syn { cluster_id: "cluster_id".to_string(), digest: Digest::default() }
+        ChitchatMessage::Syn {
+            cluster_id: "cluster_id".to_string(),
+            digest: Digest::default(),
+        }
     }
 
     #[tokio::test]
@@ -60,11 +59,17 @@ mod tests {
         let send_udp_socket: UdpSocket = UdpSocket::bind(send_addr).await.unwrap();
         let mut recv_socket = UdpTransport.open(recv_addr).await.unwrap();
         let invalid_payload = b"junk";
-        send_udp_socket.send_to(&invalid_payload[..], recv_addr).await.unwrap();
+        send_udp_socket
+            .send_to(&invalid_payload[..], recv_addr)
+            .await
+            .unwrap();
         let valid_message = sample_syn_msg();
         let mut valid_payload: Vec<u8> = Vec::new();
         valid_message.serialize(&mut valid_payload);
-        send_udp_socket.send_to(&valid_payload[..], recv_addr).await.unwrap();
+        send_udp_socket
+            .send_to(&valid_payload[..], recv_addr)
+            .await
+            .unwrap();
         let (send_addr2, received_message) = recv_socket.recv().await.unwrap();
         assert_eq!(send_addr, send_addr2);
         assert_eq!(received_message, valid_message);
@@ -81,7 +86,11 @@ mod tests {
         let addr2: SocketAddr = ([127, 0, 0, 1], 20_002u16).into();
         let mut socket1 = transport.open(addr1).await.unwrap();
         let mut socket2 = transport.open(addr2).await.unwrap();
-        assert!(timeout(Duration::from_millis(200), socket2.recv()).await.is_err());
+        assert!(
+            timeout(Duration::from_millis(200), socket2.recv())
+                .await
+                .is_err()
+        );
         let syn_message = sample_syn_msg();
         let socket_recv_fut = tokio::task::spawn(async move { socket2.recv().await.unwrap() });
         tokio::time::sleep(Duration::from_millis(100)).await;

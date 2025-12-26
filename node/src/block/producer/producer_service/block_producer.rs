@@ -23,6 +23,7 @@ use crate::block::producer::process::TVMBlockProducerProcess;
 use crate::block::producer::process::FORCE_SYNC_STATE_BLOCK_FREQUENCY;
 use crate::block::producer::producer_service::memento::Assumptions;
 use crate::block::producer::producer_service::memento::BlockProducerMemento;
+use crate::block_keeper_system::bk_set::update_block_keeper_set_from_common_section;
 use crate::bls::create_signed::CreateSealed;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
@@ -37,11 +38,13 @@ use crate::helper::SHUTDOWN_FLAG;
 use crate::misbehavior::misbehave_rules;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::NackData;
+use crate::node::associated_types::NodeCredentials;
 use crate::node::associated_types::SynchronizationResult;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::block_state::unfinalized_ancestor_blocks::UnfinalizedAncestorBlocksSelectError;
 use crate::node::services::attestations_target::service::AttestationTargetsService;
+use crate::node::services::attestations_target::service::EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess;
 use crate::node::shared_services::SharedServices;
 use crate::node::NetBlock;
 use crate::node::NetworkMessage;
@@ -60,6 +63,7 @@ use crate::types::as_signatures_map::AsSignaturesMap;
 use crate::types::bp_selector::ProducerSelector;
 use crate::types::common_section::Directives;
 use crate::types::AckiNackiBlock;
+use crate::types::AckiNackiBlockVersioned;
 use crate::types::AggregateFilter;
 use crate::types::BlockIdentifier;
 use crate::types::BlockRound;
@@ -67,8 +71,10 @@ use crate::types::BlockSeqNo;
 use crate::types::CollectedAttestations;
 use crate::types::RndSeed;
 use crate::types::ThreadIdentifier;
+use crate::utilities::all_elements_same::AllElementsSame;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
+use crate::versioning::ProtocolVersion;
 
 #[cfg(feature = "rotate_after_sync")]
 lazy_static::lazy_static!(
@@ -101,7 +107,7 @@ pub struct BlockProducer {
     self_authority_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
     broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
 
-    node_identifier: NodeIdentifier,
+    node_credentials: NodeCredentials,
     production_timeout: Duration,
     save_state_frequency: u32,
 
@@ -118,6 +124,9 @@ pub struct BlockProducer {
     control_rx: std::sync::mpsc::Receiver<BlockProducerCommand>,
 
     save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
+
+    #[cfg(feature = "mirror_repair")]
+    is_updated_mv: Arc<Mutex<bool>>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -228,8 +237,22 @@ impl BlockProducer {
                 "Requesting producer to continue block id {:?}; seq_no {:?}, node_id {:?}",
                 block_id_to_continue,
                 block_seq_no_to_continue,
-                self.node_identifier,
+                self.node_credentials.node_id(),
             );
+            let Ok(parent_block_state) = self.block_state_repository.get(&block_id_to_continue)
+            else {
+                tracing::error!("Parent block ({block_id_to_continue:?}) state is not ready");
+                return Ok(producer_tails);
+            };
+            let Some(parent_block_version) =
+                parent_block_state.guarded(|e| e.block_version_state().clone())
+            else {
+                tracing::error!(
+                    "Parent block ({block_id_to_continue:?}) block_version_state is not ready"
+                );
+                return Ok(producer_tails);
+            };
+            let block_version = parent_block_version.to_use().clone();
             match self.production_process.start_thread_production(
                 &self.thread_id,
                 &block_id_to_continue,
@@ -239,6 +262,9 @@ impl BlockProducer {
                 self.external_messages.clone(),
                 self.is_state_sync_requested.clone(),
                 initial_round,
+                block_version,
+                #[cfg(feature = "mirror_repair")]
+                self.is_updated_mv.clone(),
             ) {
                 Ok(()) => {
                     tracing::info!("Producer started successfully");
@@ -261,6 +287,7 @@ impl BlockProducer {
         &mut self,
         parent_block_id: BlockIdentifier,
         initial_round: BlockRound,
+        block_version: ProtocolVersion,
     ) -> anyhow::Result<Option<(BlockIdentifier, BlockSeqNo)>> {
         tracing::trace!("restart_block_production");
         self.production_process.stop_thread_production(&self.thread_id)?;
@@ -284,6 +311,9 @@ impl BlockProducer {
             self.external_messages.clone(),
             self.is_state_sync_requested.clone(),
             initial_round,
+            block_version,
+            #[cfg(feature = "mirror_repair")]
+            self.is_updated_mv.clone(),
         ) {
             Ok(()) => {
                 tracing::info!("Producer started successfully");
@@ -437,8 +467,13 @@ impl BlockProducer {
         tracing::trace!("on_production_timeout: minimal_seq_no_that_can_be_accepted_from_producer_process = {minimal_seq_no_that_can_be_accepted_from_producer_process:?}");
         while let Some(produced_block) = produced_data.produced_blocks().first() {
             let mut block = produced_block.block().clone();
-            block_flow_trace("check produced", &block.identifier(), &self.node_identifier, []);
-            tracing::debug!(
+            block_flow_trace(
+                "check produced",
+                &block.identifier(),
+                self.node_credentials.node_id(),
+                [],
+            );
+            tracing::info!(
                 "Got block from producer. id: {:?}; seq_no: {:?}, parent: {:?}",
                 block.identifier(),
                 block.seq_no(),
@@ -511,15 +546,22 @@ impl BlockProducer {
                     return Ok((false, Some(produced_data)));
                 }
                 Ok(UpdateCommonSectionResult::Success) => {
+                    let actual_required_version = produced_block
+                        .block_state()
+                        .guarded(|e| e.block_version_state().clone())
+                        .unwrap()
+                        .to_use()
+                        .clone();
+                    let actual_assumptions = Assumptions::builder()
+                        .new_to_bk_set(
+                            BTreeSet::new(), // TODO: set real value with preattestaions implementation
+                        )
+                        .block_version(actual_required_version.clone())
+                        .build();
                     let is_assumptions_correct =
-                        produced_block.assumptions().eq(&Assumptions::builder()
-                            .new_to_bk_set(
-                                BTreeSet::new(), // TODO: set real value with preattestaions implementation
-                            )
-                            .build());
+                        produced_block.assumptions().eq(&actual_assumptions);
                     if is_assumptions_correct {
                         tracing::trace!("Speed up production");
-                        self.production_process.set_timeout(self.production_timeout);
                         if let Some(seq_no) = share_resulting_state {
                             if seq_no <= block.seq_no() {
                                 self.is_state_sync_requested.guarded_mut(|e| *e = None);
@@ -527,8 +569,11 @@ impl BlockProducer {
                         }
                         produced_data.produced_blocks_mut().remove(0)
                     } else {
+                        tracing::trace!(
+                            "Block assumptions: {:?}, actual: {actual_assumptions:?}",
+                            produced_block.assumptions()
+                        );
                         tracing::trace!("Assumptions were not met, restart production");
-                        self.production_process.set_timeout(self.production_timeout);
                         if let Some(seq_no) = share_resulting_state {
                             if seq_no < block.seq_no() {
                                 self.is_state_sync_requested.guarded_mut(|e| *e = None);
@@ -536,10 +581,13 @@ impl BlockProducer {
                         }
                         produced_data.produced_blocks_mut().clear();
                         let parent_block_id = block.parent();
-                        let block_round = block.get_common_section().round;
-                        *producer_tails = self.restart_production(parent_block_id, block_round)?;
-                        // Note: return broadcasted = true to reset wait timeout
-                        return Ok((true, None));
+                        let block_round = block.get_common_section().round();
+                        *producer_tails = self.restart_production(
+                            parent_block_id,
+                            block_round,
+                            actual_required_version,
+                        )?;
+                        return Ok((false, None));
                     }
                 }
                 Ok(UpdateCommonSectionResult::AbortNotInBKSet) => {
@@ -552,7 +600,7 @@ impl BlockProducer {
 
             #[cfg(feature = "rotate_after_sync")]
             {
-                if block.get_common_section().directives.share_state_resources().is_some() {
+                if block.get_common_section().directives().share_state_resources().is_some() {
                     tracing::trace!("Save share state block seq_no: {:?}", block.seq_no());
                     let mut shared_state_seq_no = SHARED_STATE_SEQ_NO.lock();
                     *shared_state_seq_no = Some(block.seq_no());
@@ -604,8 +652,8 @@ impl BlockProducer {
 
             let secrets = self.bls_keys_map.guarded(|map| map.clone());
             let production_status = self.production_status.as_ref().expect("must be in prod");
-            let envelope = Envelope::<GoshBLS, AckiNackiBlock>::sealed(
-                &self.node_identifier,
+            let envelope = Envelope::<GoshBLS, AckiNackiBlockVersioned>::sealed(
+                &self.node_credentials,
                 &bk_set,
                 &secrets,
                 block.clone(),
@@ -625,13 +673,13 @@ impl BlockProducer {
             // }
 
             let producer_selector =
-                block.get_common_section().producer_selector.clone().expect("Must be set");
+                block.get_common_section().producer_selector().expect("Must be set");
             let parent_height = parent_state
                 .guarded(|e| *e.block_height())
                 .expect("Parent block height must be set");
             produced_block.block_state().guarded_mut(|e| {
                 e.set_validated(true)?;
-                e.set_producer_selector_data(producer_selector.clone())?;
+                e.set_producer_selector_data(producer_selector)?;
                 e.set_block_height(parent_height.next(&self.thread_id))
             })?;
 
@@ -644,14 +692,14 @@ impl BlockProducer {
                     let message =
                         NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched(
                             Envelope::sealed(
-                                &self.node_identifier,
+                                &self.node_credentials,
                                 &bk_set,
                                 &secrets,
                                 NextRoundSuccess::builder()
-                                .node_identifier(self.node_identifier.clone())
+                                .node_identifier(self.node_credentials.node_id().clone())
                                 .round(*production_status.init_params.round())
                                 .block_height(block_height)
-                                .proposed_block(NetBlock::with_envelope(&envelope)?)
+                                .proposed_block(NetBlock::with_versioned(&envelope)?)
                                 .attestations_aggregated(None)
                                 // TODO: Must include a proof!
                                 .requests_aggregated(vec![])
@@ -667,7 +715,7 @@ impl BlockProducer {
                         message,
                     )
                 } else {
-                    let message = NetworkMessage::candidate(&envelope)?;
+                    let message = NetworkMessage::Candidate(NetBlock::with_versioned(&envelope)?);
                     (
                         self.self_tx.send(WrappedItem {
                             payload: (message.clone(), self.self_addr),
@@ -741,7 +789,7 @@ impl BlockProducer {
 
     fn update_candidate_common_section(
         &mut self,
-        candidate_block: &mut AckiNackiBlock,
+        candidate_block: &mut AckiNackiBlockVersioned,
         share_state_ids: Option<HashMap<ThreadIdentifier, BlockIdentifier>>,
         optimistic_state: &OptimisticStateImpl,
     ) -> anyhow::Result<UpdateCommonSectionResult> {
@@ -761,6 +809,12 @@ impl BlockProducer {
                 "update_candidate_common_section: ancestor_blocks_finalization_checkpoints missing"
             );
             // anyhow::bail!("ancestor_blocks_finalization_checkpoints missing");
+            return Ok(UpdateCommonSectionResult::AncestorIsNotReadyYet);
+        };
+        let Some(parent_block_version) =
+            parent_block_state.guarded(|e| e.block_version_state().clone())
+        else {
+            tracing::trace!("update_candidate_common_section: parent block_version is missing");
             return Ok(UpdateCommonSectionResult::AncestorIsNotReadyYet);
         };
 
@@ -792,13 +846,19 @@ impl BlockProducer {
             }
             buffer
         };
-        let (Some(_parent_statistics), Some(bk_set)) = parent_block_state
-            .guarded(|e| (e.block_stats().clone(), e.descendant_bk_set().clone()))
+        let (Some(_parent_statistics), Some(bk_set), Some(future_bk_set)) = parent_block_state
+            .guarded(|e| {
+                (
+                    e.block_stats().clone(),
+                    e.descendant_bk_set().clone(),
+                    e.descendant_future_bk_set().clone(),
+                )
+            })
         else {
             tracing::trace!("update_candidate_common_section: Failed to get parent block data");
             return Ok(UpdateCommonSectionResult::NotReadyYet);
         };
-        if !bk_set.contains_node(&self.node_identifier) {
+        if !bk_set.contains_node(self.node_credentials.node_id()) {
             return Ok(UpdateCommonSectionResult::AbortNotInBKSet);
         }
 
@@ -817,8 +877,8 @@ impl BlockProducer {
             candidate_block.identifier(),
             attestations_required,
         );
-        let mut common_section = candidate_block.get_common_section().clone();
-        common_section.block_attestations = aggregated_attestations;
+        let mut common_section = candidate_block.get_common_section();
+        common_section.set_block_attestations(aggregated_attestations);
 
         // TODO: update parent_producer_selector
         // 1 step check if parent has spawned this thread
@@ -827,9 +887,9 @@ impl BlockProducer {
 
         // 2 step: update index if we have rotated BP:
         let find_bp = producer_selector.get_producer_node_id(&bk_set);
-        if find_bp.is_err() || find_bp.unwrap() != self.node_identifier {
+        if find_bp.is_err() || find_bp.unwrap() != *self.node_credentials.node_id() {
             if let Some(bp_distance_for_this_node) =
-                producer_selector.get_distance_from_bp(&bk_set, &self.node_identifier)
+                producer_selector.get_distance_from_bp(&bk_set, self.node_credentials.node_id())
             {
                 // move index
                 producer_selector =
@@ -840,8 +900,8 @@ impl BlockProducer {
                     .rng_seed_block_id(candidate_block.identifier().clone())
                     .index(0)
                     .build();
-                let Some(bp_distance_for_this_node) =
-                    producer_selector.get_distance_from_bp(&bk_set, &self.node_identifier)
+                let Some(bp_distance_for_this_node) = producer_selector
+                    .get_distance_from_bp(&bk_set, self.node_credentials.node_id())
                 else {
                     tracing::trace!("Producer: This node is not in the bk-set");
                     return Ok(UpdateCommonSectionResult::AbortNotInBKSet);
@@ -850,7 +910,7 @@ impl BlockProducer {
                     producer_selector.move_index(bp_distance_for_this_node, bk_set.len());
             }
         }
-        common_section.producer_selector = Some(producer_selector);
+        common_section.set_producer_selector(Some(producer_selector));
 
         if let Some(resource_address) = share_state_ids {
             let directive = resource_address;
@@ -859,10 +919,11 @@ impl BlockProducer {
                 candidate_block.seq_no(),
                 candidate_block.identifier()
             );
-            common_section.directives =
-                Directives::builder().share_state_resources(Some(directive)).build();
-            common_section.threads_table =
-                Some(optimistic_state.get_produced_threads_table().clone());
+            common_section.set_directives(
+                Directives::builder().share_state_resources(Some(directive)).build(),
+            );
+            common_section
+                .set_threads_table(Some(optimistic_state.get_produced_threads_table().clone()));
         }
 
         candidate_block.set_common_section(common_section, true)?;
@@ -879,8 +940,32 @@ impl BlockProducer {
             "evaluate_if_next_block_ancestors_required_attestations_will_be_met: res:{res:?}"
         );
         match res {
-            Ok(true) => {
-                let attestations = candidate_block.get_common_section().block_attestations.clone();
+            e @ Ok(
+                EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::ThreadSpawn
+                | EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::Passed { .. },
+            ) => {
+                let passed_checkpoints = match e.unwrap() {
+                    EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::ThreadSpawn => vec![],
+                    EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::Passed{
+                        primary,
+                        fallback
+                    } => primary.iter().chain(fallback.iter()).cloned().collect::<Vec<BlockIdentifier>>(),
+                    _ => unreachable!(),
+                };
+
+                // why?
+                // assert!(!candidate_block.get_common_section().block_keeper_set_changes.is_empty());
+
+                let (descendant_bk_set, _descendant_future_bk_set) =
+                    update_block_keeper_set_from_common_section(
+                        candidate_block,
+                        bk_set.clone(),
+                        future_bk_set.clone(),
+                        optimistic_state,
+                    )?
+                    .unwrap_or((bk_set.clone(), future_bk_set.clone()));
+
+                let attestations = candidate_block.get_common_section().block_attestations();
                 let block_state = self.block_state_repository.get(&candidate_block.identifier())?;
                 block_state.guarded_mut(|e| {
                     for attestation in attestations {
@@ -892,8 +977,19 @@ impl BlockProducer {
                             ),
                         )?;
                     }
+                    e.set_block_version_state(
+                        parent_block_version.next(
+                            candidate_block.identifier(),
+                            descendant_bk_set
+                                .iter()
+                                .map(|e| e.protocol_support.clone())
+                                .all_elements_same(),
+                            &passed_checkpoints,
+                        ),
+                    )?;
                     Ok::<(), anyhow::Error>(())
                 })?;
+
                 // if let Some((last_dependant_block_seq_no, last_dependant_block_id)) =
                 //     dependent_ancestor_blocks
                 //         .dependent_ancestor_blocks()
@@ -916,7 +1012,7 @@ impl BlockProducer {
                 // }
                 Ok(UpdateCommonSectionResult::Success)
             }
-            Ok(false) => {
+            Ok(EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::SomeFailed) => {
                 tracing::trace!(
                     "update_candidate_common_section: Failed to meet ancestors attestation targets"
                 );
@@ -958,9 +1054,9 @@ impl BlockProducer {
         candidate_block: NetworkMessage,
         mut ext_msg_feedbacks: ExtMsgFeedbackList,
     ) -> anyhow::Result<()> {
-        tracing::debug!("broadcasting block: {block_id}");
+        tracing::info!("broadcasting block: {:?}", candidate_block);
 
-        block_flow_trace("broadcasting candidate", block_id, &self.node_identifier, []);
+        block_flow_trace("broadcasting candidate", block_id, self.node_credentials.node_id(), []);
         match self.broadcast_tx.send(candidate_block) {
             Ok(_) => {}
             _ => {
@@ -987,7 +1083,7 @@ impl BlockProducer {
         tracing::debug!("rebroadcasting block: {}", candidate_block,);
         self.broadcast_tx.send(NetworkMessage::resent_candidate(
             &candidate_block,
-            self.node_identifier.clone(),
+            self.node_credentials.node_id().clone(),
         )?)?;
         Ok(())
     }

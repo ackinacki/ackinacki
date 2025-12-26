@@ -1,12 +1,11 @@
 use std::fmt::Debug;
 use std::net::SocketAddr;
 
-use serde::Deserialize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
-use crate::serialize::Deserializable;
 use crate::Serializable;
+use crate::serialize::Deserializable;
 
 /// For the lifetime of a cluster, nodes can go down and come back up multiple times. They may also
 /// die permanently. A [`ChitchatId`] is composed of three components:
@@ -17,8 +16,7 @@ use crate::Serializable;
 /// The `generation_id` is used to detect when a node has restarted. It must be monotonically
 /// increasing to differentiate the most recent state and must be incremented every time a node
 /// leaves and rejoins the cluster. Backends such as Cassandra or Quickwit typically use the node's
-/// startup time as the `generation_id`. Applications with stable state across restarts can use a
-/// constant `generation_id`, for instance, `0`.
+/// startup time as the `generation_id`.
 #[derive(Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct ChitchatId {
     /// An identifier unique across the cluster.
@@ -31,13 +29,23 @@ pub struct ChitchatId {
 
 impl Debug for ChitchatId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}:{}:{}", self.node_id.as_str(), self.generation_id, self.gossip_advertise_addr)
+        write!(
+            f,
+            "{}:{}:{}",
+            self.node_id.as_str(),
+            self.generation_id,
+            self.gossip_advertise_addr
+        )
     }
 }
 
 impl ChitchatId {
     pub fn new(node_id: String, generation_id: u64, gossip_advertise_addr: SocketAddr) -> Self {
-        Self { node_id, generation_id, gossip_advertise_addr }
+        Self {
+            node_id,
+            generation_id,
+            gossip_advertise_addr,
+        }
     }
 }
 
@@ -54,14 +62,16 @@ impl ChitchatId {
     }
 }
 
+/// The current status of a key-value pair with regard to deletion.
+///
+/// In both the `Deleted` and `DeleteAfterTtl` status, the `Instant` is NOT the scheduled
+/// time of deletion but the time at which the DeletionStatus was created.
 #[derive(Clone, Copy, Debug)]
 pub enum DeletionStatus {
     Set,
-    // In both `Deleted` and `DeleteAfterWithTtl`, the `Instant` is NOT the scheduled time of
-    // deletion, but the reference start time.
-    //
-    // To get the actual time of deletion, one needs to add the grace period.
+    /// The key-value pair is not visible but will be GCed only at Instant + grace period
     Deleted(Instant),
+    /// The key-value pair is still visible and will be GCed at Instant + grace period
     DeleteAfterTtl(Instant),
 }
 
@@ -84,7 +94,10 @@ impl DeletionStatus {
 
 /// A versioned key-value pair.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(into = "VersionedValueForSerialization", from = "VersionedValueForSerialization")]
+#[serde(
+    into = "VersionedValueForSerialization",
+    from = "VersionedValueForSerialization"
+)]
 pub struct VersionedValue {
     pub value: String,
     pub version: Version,
@@ -94,6 +107,7 @@ pub struct VersionedValue {
 }
 
 impl VersionedValue {
+    #[cfg(test)]
     pub fn new(value: String, version: Version, is_tombstone: bool) -> VersionedValue {
         VersionedValue {
             value,
@@ -116,7 +130,11 @@ impl VersionedValue {
 
     #[cfg(test)]
     pub fn for_test(value: &str, version: Version) -> Self {
-        Self { value: value.to_string(), version, status: DeletionStatus::Set }
+        Self {
+            value: value.to_string(),
+            version,
+            status: DeletionStatus::Set,
+        }
     }
 }
 
@@ -251,7 +269,12 @@ impl Deserializable for KeyValueMutation {
         let value: String = Deserializable::deserialize(buf)?;
         let version: u64 = Deserializable::deserialize(buf)?;
         let state: DeletionStatusMutation = Deserializable::deserialize(buf)?;
-        Ok(KeyValueMutation { key, value, version, status: state })
+        Ok(KeyValueMutation {
+            key,
+            value,
+            version,
+            status: state,
+        })
     }
 }
 
@@ -294,7 +317,10 @@ pub struct Heartbeat(pub(crate) u64);
 
 impl Heartbeat {
     pub(crate) fn inc(&mut self) {
-        self.0 = self.0.wrapping_add(1);
+        // Heartbeat is increased everytime we gossip or receive a message. In
+        // real-world scenarios, this should not happen more than a few hundred
+        // times per second so we should never overflow.
+        self.0 = self.0.checked_add(1).expect("Heartbeat overflow");
     }
 }
 

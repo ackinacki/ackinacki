@@ -38,3 +38,13 @@ struct PopitCandidateWithMedia {
         uint64[] TAPLst;
         uint64[] BCLst;
 }
+
+struct Interval {
+        uint64 first;
+        uint64 second;
+}
+
+struct TapData {
+        uint64[] tapData;
+        uint128 basicReward;
+}

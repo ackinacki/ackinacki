@@ -1,0 +1,9 @@
+- name: deploy block keeper tls proxy
+  gather_facts: no
+  hosts: "block_keeper_tls_proxy"
+  become: yes
+  vars:
+    DO_START: yes
+  any_errors_fatal: true
+  roles:
+    - block-keeper-tls-proxy

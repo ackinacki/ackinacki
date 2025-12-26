@@ -11,17 +11,34 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde::Serialize;
 use tvm_block::ShardStateUnsplit;
+use versioned_struct::versioned;
+use versioned_struct::Transitioning;
 
 use crate::block_keeper_system::BlockKeeperSet;
+use crate::block_keeper_system::BlockKeeperSetOld;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
+#[versioned]
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ZeroState {
     states: HashMap<ThreadIdentifier, OptimisticStateImpl>,
+    #[legacy]
+    block_keeper_set: HashMap<ThreadIdentifier, BlockKeeperSetOld>,
+    #[future]
     block_keeper_set: HashMap<ThreadIdentifier, BlockKeeperSet>,
+}
+
+impl Transitioning for ZeroState {
+    type Old = ZeroStateOld;
+
+    fn from(old: Self::Old) -> Self {
+        let block_keeper_set =
+            old.block_keeper_set.into_iter().map(|(k, v)| (k, v.into())).collect();
+        Self { block_keeper_set, states: old.states }
+    }
 }
 
 impl ZeroState {

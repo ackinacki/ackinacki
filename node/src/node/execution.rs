@@ -120,12 +120,12 @@ where
 
         let last_state_sync_executed = Arc::new(parking_lot::Mutex::new(
             std::time::Instant::now()
-                .sub(self.config.global.min_time_between_state_publish_directives),
+                .sub(self.global_config.min_time_between_state_publish_directives),
         ));
         // if self.is_this_node_a_producer() {
         // Allow producer sync its state from the very beginning
         //    let mut guard = last_state_sync_executed.lock();
-        //    *guard = guard.sub(self.config.global.min_time_between_state_publish_directives);
+        //    *guard = guard.sub(self.global_config.min_time_between_state_publish_directives);
         //}
 
         let iteration_start = std::time::Instant::now();
@@ -151,7 +151,7 @@ where
             if let Some(sync_delay_value) = sync_delay.as_ref() {
                 let elapsed = sync_delay_value.elapsed().as_millis();
                 tracing::trace!("sync is planned. elapsed: {}ms", elapsed);
-                if elapsed >= self.config.global.sync_delay_milliseconds {
+                if elapsed >= self.global_config.sync_delay_milliseconds {
                     // TODO: revert this code with fixes
                     // sync_delay = None;
                     // let (last_block_id, last_block_seq_no) = self.find_thread_last_block_id_this_node_can_continue(&thread_id)?;
@@ -166,7 +166,7 @@ where
                     // tracing::trace!("Sync from {first_missed_block_seq_no:?} to {first_unprocessed_block_seq_no:?}");
                     // if (first_unprocessed_block_seq_no == BlockSeqNo::default()) ||
                     //     (first_unprocessed_block_seq_no - first_missed_block_seq_no >
-                    //         self.config.global.need_synchronization_block_diff) {
+                    //         self.global_config.need_synchronization_block_diff) {
                     return Ok(ExecutionResult::SynchronizationRequired);
                     // } else {
                     //     self.send_block_request(
@@ -183,7 +183,7 @@ where
             //     }
 
             let recv_timeout =
-                Duration::from_millis(self.config.global.time_to_produce_block_millis);
+                Duration::from_millis(self.global_config.time_to_produce_block_millis);
             tracing::trace!("recv_timeout: {recv_timeout:?}");
 
             let next = {
@@ -212,7 +212,7 @@ where
                         let duration_since_last_finalization =
                             self.shared_services.duration_since_last_finalization();
                         if duration_since_last_finalization
-                            < self.config.global.time_to_enable_sync_finalized
+                            < self.global_config.time_to_enable_sync_finalized
                         {
                             tracing::trace!("duration_since_last_finalization({} ms) is too low to start synchronization", duration_since_last_finalization.as_millis());
                             continue;
@@ -353,7 +353,7 @@ where
                         let duration_since_last_finalization =
                             self.shared_services.duration_since_last_finalization();
                         if duration_since_last_finalization
-                            < self.config.global.time_to_enable_sync_finalized
+                            < self.global_config.time_to_enable_sync_finalized
                         {
                             tracing::trace!("duration_since_last_finalization({} ms) is too low to start synchronization", duration_since_last_finalization.as_millis());
                             continue;
@@ -374,11 +374,11 @@ where
                         log::debug!(
                             "Received SyncFrom: blocks_were_requested={blocks_were_requested:?}"
                         );
-                        if elapsed > self.config.global.min_time_between_state_publish_directives
+                        if elapsed > self.global_config.min_time_between_state_publish_directives
                             && (blocks_were_requested
                                 || seq_no_from
                                     > last_finalized_seq_no.add(
-                                        self.config.global.need_synchronization_block_diff as u32,
+                                        self.global_config.need_synchronization_block_diff as u32,
                                     ))
                         {
                             return Ok(ExecutionResult::SynchronizationRequired);
@@ -388,7 +388,7 @@ where
                         let duration_since_last_finalization =
                             self.shared_services.duration_since_last_finalization();
                         if duration_since_last_finalization
-                            < self.config.global.time_to_enable_sync_finalized
+                            < self.global_config.time_to_enable_sync_finalized
                         {
                             tracing::trace!("duration_since_last_finalization({} ms) is too low to start synchronization", duration_since_last_finalization.as_millis());
                             continue;
@@ -413,11 +413,11 @@ where
                             .missing_blocks_were_requested
                             .load(Ordering::Relaxed);
                         let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
-                        if elapsed > self.config.global.min_time_between_state_publish_directives
+                        if elapsed > self.global_config.min_time_between_state_publish_directives
                             && (blocks_were_requested
                                 || seq_no
                                     > last_finalized_seq_no.add(
-                                        self.config.global.need_synchronization_block_diff as u32,
+                                        self.global_config.need_synchronization_block_diff as u32,
                                     ))
                         {
                             return Ok(ExecutionResult::SynchronizationRequired);
@@ -440,7 +440,7 @@ where
 
         let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
         tracing::trace!("Elapsed from the last state sync: {}ms", elapsed.as_millis());
-        if elapsed > self.config.global.min_time_between_state_publish_directives {
+        if elapsed > self.global_config.min_time_between_state_publish_directives {
             {
                 let mut guard = last_state_sync_executed.lock();
                 *guard = std::time::Instant::now();
@@ -473,7 +473,7 @@ where
                         .repository
                         .select_thread_last_finalized_block(&self.thread_id)?
                         .expect("Must be known here");
-                    for _i in 0..self.config.global.sync_gap {
+                    for _i in 0..self.global_config.sync_gap {
                         block_seq_no_with_sync = next_seq_no(block_seq_no_with_sync);
                     }
                     tracing::trace!("Mark next block to share state: {block_seq_no_with_sync:?}");

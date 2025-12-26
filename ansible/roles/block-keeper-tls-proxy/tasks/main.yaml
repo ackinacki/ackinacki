@@ -1,0 +1,9 @@
+---
+
+- name: Block Keeper TLS proxy start
+  include_tasks: start-bk-tls-proxy.yaml
+  when: DO_START is defined and DO_START is true
+
+- name: Block Keeper TLS proxy stop
+  include_tasks: stop-bk-tls-proxy.yaml
+  when: DO_STOP is defined and DO_STOP is true

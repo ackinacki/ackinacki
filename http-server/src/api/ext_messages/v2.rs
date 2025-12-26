@@ -198,10 +198,8 @@ where
         tracing::trace!(target: "http_server", "Process request send message: {:?}", wrapped_message);
         let (feedback_sender, feedback_receiver) = oneshot::channel();
 
-        if let Err(e) = web_server
-            .incoming_message_sender
-            .clone()
-            .send((wrapped_message, Some(feedback_sender)))
+        if let Err(e) =
+            web_server.incoming_message_sender.clone().send((wrapped_message, feedback_sender))
         {
             tracing::warn!(target: "http_server", "Error queue message: {}", e);
             web_server.metrics.as_ref().inspect(|m| {

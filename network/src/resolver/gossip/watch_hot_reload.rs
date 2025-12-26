@@ -16,7 +16,7 @@ use crate::topology::NetTopology;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn watch_gossip<
-    PeerId: Clone + PartialEq + Eq + Display + Debug + FromStr<Err: Display> + Hash,
+    PeerId: Clone + PartialEq + Eq + Ord + Display + Debug + FromStr<Err: Display> + Hash,
 >(
     metrics: Option<NetMetrics>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,

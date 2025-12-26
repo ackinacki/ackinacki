@@ -8,6 +8,7 @@ mod tests {
     use std::time::Duration;
 
     use crate::config::Config;
+    use crate::config::GlobalConfig;
     use crate::config::NetworkConfig;
     use crate::node::NodeIdentifier;
 
@@ -32,35 +33,10 @@ mod tests {
 
     #[test]
     fn test_sync_gap_config() -> anyhow::Result<()> {
-        let config_str = r#"{
-    "network": {
-        "node_advertise_addr": "0.0.0.0:8500",
-        "api_addr": "127.0.0.1:8600",
-        "api_advertise_addr": "https://node0:8600",
-        "gossip_seeds": []
-    },
-    "local": {
-        "node_id": "81a6bea128f5e03843362e55fd574c42a8e457dd553498cbc8ec7e14966d20a3",
-        "blockchain_config_path": "../bc_config.json",
-        "key_path": "key1.json",
-        "zerostate_path": "./zerostate",
-        "external_state_share_local_base_dir": "/tmp",
-        "parallelization_level": 20,
-        "split_state": false,
-        "block_keeper_seed_path": "block_keeper.keys.json",
-        "block_cache_size": 20,
-        "state_cache_size": 10,
-        "message_storage_path": "message_strage",
-        "rate_limit_on_incoming_block_req": 1000,
-        "ext_messages_cache_size": 10,
-        "node_wallet_pubkey": "hex_string"
-    }
-}"#;
-        let mut config: Config = serde_json::from_str(config_str)?;
-        config.global.sync_gap = 30;
-        assert_eq!(config.global.sync_gap, 30);
+        let config = GlobalConfig { sync_gap: 30, ..Default::default() };
+        assert_eq!(config.sync_gap, 30);
         let config = config.ensure_min_sync_gap();
-        assert_eq!(config.global.sync_gap, 61);
+        assert_eq!(config.sync_gap, 61);
         Ok(())
     }
 
@@ -105,12 +81,10 @@ mod tests {
         assert_eq!(config.local.zerostate_path, PathBuf::from("./zerostate"));
         assert_eq!(config.local.external_state_share_local_base_dir, PathBuf::from("/tmp"));
 
-        assert_eq!(config.global.time_to_produce_block_millis, 330);
-        assert_eq!(config.global.need_synchronization_block_diff, 20);
-        assert_eq!(
-            config.global.min_time_between_state_publish_directives,
-            Duration::from_secs(600)
-        );
+        let config = GlobalConfig::default();
+        assert_eq!(config.time_to_produce_block_millis, 330);
+        assert_eq!(config.need_synchronization_block_diff, 20);
+        assert_eq!(config.min_time_between_state_publish_directives, Duration::from_secs(600));
 
         Ok(())
     }

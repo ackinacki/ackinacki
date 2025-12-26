@@ -76,6 +76,7 @@ pub trait OptimisticState: Send + Clone {
     fn get_shard_state_as_cell(&self) -> Self::Cell;
     fn get_block_info(&self) -> &BlockInfo;
     fn serialize_into_buf(self) -> anyhow::Result<Vec<u8>>;
+    #[allow(clippy::too_many_arguments)]
     fn apply_block(
         &mut self,
         block_candidate: &AckiNackiBlock,
@@ -84,6 +85,8 @@ pub trait OptimisticState: Send + Clone {
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         accounts_repo: AccountsRepository,
         message_db: MessageDurableStorage,
+        #[cfg(feature = "mirror_repair")] is_updated_mv: Arc<parking_lot::Mutex<bool>>,
+        is_block_of_retired_version: bool,
     ) -> anyhow::Result<(
         CrossThreadRefData,
         HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
@@ -357,6 +360,7 @@ impl OptimisticState for OptimisticStateImpl {
         Ok(buffer)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_block(
         &mut self,
         block_candidate: &AckiNackiBlock,
@@ -365,6 +369,8 @@ impl OptimisticState for OptimisticStateImpl {
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         accounts_repo: AccountsRepository,
         message_db: MessageDurableStorage,
+        #[cfg(feature = "mirror_repair")] is_updated_mv: Arc<parking_lot::Mutex<bool>>,
+        is_block_of_retired_version: bool,
     ) -> anyhow::Result<(
         CrossThreadRefData,
         HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
@@ -523,8 +529,11 @@ impl OptimisticState for OptimisticStateImpl {
             changed,
             accounts_repo,
             message_db.clone(),
+            #[cfg(feature = "mirror_repair")]
+            is_updated_mv,
             #[cfg(feature = "monitor-accounts-number")]
             updated_accounts_number,
+            is_block_of_retired_version,
         )?;
         cross_thread_ref_data.set_block_refs(block_candidate.get_common_section().refs.clone());
         *self = new_state;

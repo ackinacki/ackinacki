@@ -245,6 +245,8 @@ fn try_finalize(
                 raw_block_tx,
                 state_sync_service.clone(),
                 last_block_attestations.clone(),
+                node_id,
+                metrics,
             )?;
             let new_height_border = *block_height.height()
                 + *attestation_target.primary().generation_deadline() as u64 * 2
@@ -298,6 +300,8 @@ pub fn on_block_finalized(
     raw_block_tx: &mut InstrumentedSender<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>,
     state_sync_service: Arc<impl StateSyncService<Repository = RepositoryImpl>>,
     last_block_attestations: Arc<Mutex<CollectedAttestations>>,
+    node_id: &NodeIdentifier,
+    metrics: &Option<BlockProductionMetrics>,
 ) -> anyhow::Result<()> {
     trace_span!("on_block_finalized").in_scope(|| {
         let block_seq_no = block.data().seq_no();
@@ -315,6 +319,20 @@ pub fn on_block_finalized(
         )?;
         tracing::debug!("Block marked as finalized: {:?} {:?} {:?}", block_seq_no, block_id, thread_id);
         let producer_id = block.data().get_common_section().producer_id.clone();
+        #[cfg(feature = "protocol_version_hash_in_block")]
+        tracing::debug!(
+            target: "monit",
+            "Last finalized block data: seq_no: {:?}, block_id: {:?}, producer_id: {}, signatures: {:?}, thread_id: {:?}, tx_cnt: {}, time: {}, version_hash: {}",
+            block.data().seq_no(),
+            block.data().identifier(),
+            producer_id,
+            block.clone_signature_occurrences(),
+            block.data().get_common_section().thread_id,
+            block.data().tx_cnt(),
+            block.data().time().unwrap_or(0),
+            block.data().get_common_section().protocol_version_hash(),
+        );
+        #[cfg(not(feature = "protocol_version_hash_in_block"))]
         tracing::debug!(
             target: "monit",
             "Last finalized block data: seq_no: {:?}, block_id: {:?}, producer_id: {}, signatures: {:?}, thread_id: {:?}, tx_cnt: {}, time: {}",
@@ -326,6 +344,23 @@ pub fn on_block_finalized(
             block.data().tx_cnt(),
             block.data().time().unwrap_or(0),
         );
+        let block_version = block_state.guarded(|e| e.block_version_state().clone()).expect("Finalized block does not have version state");
+        tracing::info!("Finalized block version: {:?}", block_version.to_use());
+
+        if let Some(m) = metrics  {
+            tracing::trace!("Report finalized block version: {:?}", block_version.to_use());
+            m.report_block_protocol_version(block_version.to_use());
+
+            block_state.guarded(|e| {
+                if let Some(set) = e.bk_set()  {
+                    if let Some(bk_data) = set.get_by_node_id(node_id) {
+                        tracing::trace!("Report bk_set epoch versions: {:?}", bk_data.protocol_support);
+                        m.report_bkset_epoch_protocol_versions(&bk_data.protocol_support);
+                    }
+                };
+            });
+        };
+
         let serialized_block = bincode::serialize(&block)?;
         let bm_bcast_set = (producer_id, serialized_block.clone());
         match raw_block_tx.send(RawBlockSaveCommand::Save(bm_bcast_set))  {

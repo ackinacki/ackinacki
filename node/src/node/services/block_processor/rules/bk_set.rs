@@ -1,5 +1,6 @@
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::BlockState;
+use crate::types::BlockSeqNo;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
@@ -24,6 +25,11 @@ pub fn set_bk_set(block_state: &BlockState, repo: &BlockStateRepository) -> bool
         tracing::trace!("Parent block has no descendant bk set ready");
         return false;
     };
+    if block_state.guarded(|e| e.block_seq_no().map(|v| v % 200 == 0).unwrap_or(false)) {
+        let seq_no = block_state.guarded(|e| *e.block_seq_no()).unwrap_or(BlockSeqNo::default());
+        tracing::trace!("Full bk set {seq_no} {block_state:?}: {bk_set}");
+        tracing::trace!("Full future bk set {seq_no} {block_state:?}: {future_bk_set}");
+    }
 
     block_state.guarded_mut(|e| {
         if e.bk_set().is_none() {

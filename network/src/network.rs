@@ -73,7 +73,16 @@ impl<Transport: NetTransport + 'static> BasicNetwork<Transport> {
     where
         Message:
             Debug + for<'de> serde::Deserialize<'de> + Serialize + Send + Sync + Clone + 'static,
-        PeerId: Clone + Debug + Display + Send + Sync + Hash + Eq + FromStr<Err: Display> + 'static,
+        PeerId: Clone
+            + Debug
+            + Display
+            + Send
+            + Sync
+            + Hash
+            + Eq
+            + Ord
+            + FromStr<Err: Display>
+            + 'static,
         ChannelMetrics: InstrumentedChannelMetrics + Send + Sync + 'static,
     {
         tracing::info!("Starting network with configuration: {:?}", *self.config_rx.borrow());

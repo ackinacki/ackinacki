@@ -13,6 +13,7 @@ use super::inner_loop;
 use crate::block::producer::wasm::WasmNodeCache;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
+use crate::config::config_read::ConfigRead;
 use crate::config::load_blockchain_config;
 use crate::config::Config;
 use crate::helper::metrics::BlockProductionMetrics;
@@ -58,6 +59,7 @@ impl ValidationService {
     pub fn new(
         repository: RepositoryImpl,
         node_config: Config,
+        node_global_config_read: ConfigRead,
         shared_services: SharedServices,
         block_state_repo: BlockStateRepository,
         send: AckiNackiSend,
@@ -80,6 +82,7 @@ impl ValidationService {
                     repository,
                     blockchain_config,
                     node_config,
+                    node_global_config_read,
                     shared_services,
                     send,
                     metrics,

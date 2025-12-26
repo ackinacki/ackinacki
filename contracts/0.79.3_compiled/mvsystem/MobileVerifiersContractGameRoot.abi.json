@@ -1,0 +1,167 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"reward_adjustment","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setNewCode",
+			"inputs": [
+				{"name":"id","type":"uint8"},
+				{"name":"code","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setConfig",
+			"inputs": [
+				{"name":"reward_sum","type":"uint128"},
+				{"name":"reward_adjustment","type":"uint128"},
+				{"name":"reward_period","type":"uint32"},
+				{"name":"min_reward_period","type":"uint32"},
+				{"name":"reward_last_time","type":"uint32"},
+				{"name":"calc_reward_num","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setComplexity",
+			"inputs": [
+				{"name":"easyComplexity","type":"uint32"},
+				{"name":"hardComplexity","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "destroyNode",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getTap",
+			"inputs": [
+				{"name":"tap","type":"uint64"},
+				{"name":"tapEpochStart","type":"uint64"},
+				{"name":"owner","type":"address"},
+				{"name":"mbiCur","type":"uint64"},
+				{"name":"easyComplexity","type":"uint32"},
+				{"name":"hardComplexity","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "tapReward",
+			"inputs": [
+				{"name":"tapData","type":"cell"},
+				{"name":"epochStart","type":"uint64"},
+				{"name":"popitGame","type":"address"},
+				{"name":"owner","type":"address"},
+				{"name":"easyComplexity","type":"uint32"},
+				{"name":"hardComplexity","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"},
+				{"name":"cell","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getCellForBoost",
+			"inputs": [
+				{"name":"wallet","type":"address"},
+				{"name":"popitGame","type":"address"},
+				{"name":"root","type":"address"},
+				{"name":"mbiCur","type":"uint64"},
+				{"name":"rootPubkey","type":"uint256"},
+				{"name":"miner","type":"address"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
+			"name": "calculateTaps",
+			"inputs": [
+				{"name":"tapSum","type":"uint128"},
+				{"name":"commitTaps","type":"uint128"},
+				{"name":"mining_dur","type":"uint128"},
+				{"name":"modified_tap_rem_q40","type":"uint128"},
+				{"name":"miningDurSum","type":"uint128"},
+				{"name":"modifiedTapSum","type":"uint128"},
+				{"name":"tapSum5m","type":"uint128"}
+			],
+			"outputs": [
+				{"name":"rtapCoef","type":"uint128"},
+				{"name":"rmodified_tap_rem_q40","type":"uint128"},
+				{"name":"rminingDurSum","type":"uint128"},
+				{"name":"rmodifiedTapSum","type":"uint128"},
+				{"name":"rtapSum5m","type":"uint128"},
+				{"name":"rtapSum","type":"uint128"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+		{
+			"name": "Rewarded",
+			"inputs": [
+				{"name":"popitGame","type":"address"},
+				{"name":"reward","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "RewardedPopitGame",
+			"inputs": [
+				{"name":"reward","type":"uint128"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_code","type":"map(uint8,cell)"},
+		{"init":false,"name":"_epochStart","type":"uint64"},
+		{"components":[{"name":"tapData","type":"uint64[]"},{"name":"basicReward","type":"uint128"}],"init":false,"name":"_tapData","type":"map(uint64,tuple)"},
+		{"init":false,"name":"_reward_sum","type":"uint128"},
+		{"init":false,"name":"_reward_adjustment","type":"uint128"},
+		{"init":false,"name":"_reward_last_time","type":"uint32"},
+		{"init":false,"name":"_min_reward_period","type":"uint32"},
+		{"init":false,"name":"_reward_period","type":"uint32"},
+		{"init":false,"name":"_calc_reward_num","type":"uint32"},
+		{"init":false,"name":"_networkStart","type":"uint32"},
+		{"init":false,"name":"_easyComplexity","type":"uint32"},
+		{"init":false,"name":"_hardComplexity","type":"uint32"}
+	]
+}

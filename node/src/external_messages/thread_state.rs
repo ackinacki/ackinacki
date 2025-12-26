@@ -116,8 +116,8 @@ impl ExternalMessagesThreadState {
 
     pub fn get_remaining_external_messages(
         &self,
-    ) -> anyhow::Result<HashMap<AccountAddress, VecDeque<(Stamp, Message)>>> {
+    ) -> HashMap<AccountAddress, VecDeque<(Stamp, Message)>> {
         tracing::trace!("get_remaining_externals");
-        self.queue.guarded(|q| Ok(q.unprocessed_messages()))
+        self.queue.guarded(|q| q.unprocessed_messages())
     }
 }

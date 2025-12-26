@@ -1,10 +1,12 @@
 [package]
 name = "node"
-version = "0.12.4"
+version = "0.13.0"
 edition.workspace = true
 rust-version.workspace = true
 build = 'build.rs'
 license-file.workspace = true
+
+[env]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -53,6 +55,7 @@ wasmtime.workspace = true
 
 account-inbox = { path = "./libs/account-inbox" }
 aerospike = "1.3.0"
+blake3 = "1.8.2"
 cached = "0.56.0"
 chrono = { version = "0.4.38", features = ["serde"] }
 core_affinity = { version = "0.8.3" }
@@ -64,6 +67,7 @@ indexset = "0.10.3"
 itertools = "0.12.0"
 log = "0.4.20"
 lru = "0.12.3"
+md-5 = "0.10.6"
 num_cpus = "1.16.0"
 rand = { version = "0.8.5", features = ["small_rng"] }
 reqwest = { version = "0.12.22", default-features = false, features = ["rustls-tls", "gzip", "stream", "blocking"] }
@@ -73,6 +77,7 @@ tempfile.workspace = true
 thiserror = "2.0.3"
 tracing-test = "0.1"
 typed-builder = "0.20.0"
+versioned_struct = { path = "./libs/versioned_struct" }
 weak-table = "0.3.2"
 
 # Windows doesn't support assembly for compilation
@@ -88,6 +93,7 @@ criterion = "0.5.1"
 migration-tool.workspace = true
 mockall = "0.11.4"
 tempfile = "3.14.0"
+test-case = "3.3.1"
 testdir = "0.9.3"
 
 [features]
@@ -100,10 +106,9 @@ default = [
     "messages_db",
     "monitor-accounts-number",
     "disable_db_for_messages",
-    "bk_wallets_repair",
-    "bm_license_repair",
     "mirror_repair",
 ]
+
 # Use automocks in binaries
 use_automocks = []
 allow-dappid-thread-split = []
@@ -136,6 +141,9 @@ monitor-accounts-number = []
 # Enable the extraction and storage of raw blocks and external out messages (events) only
 store_events_only = []
 
+# Add protocol version hash to block common section
+protocol_version_hash_in_block = []
+
 # Features for tests
 nack_test = []
 verify_all_blocks = []
@@ -143,16 +151,13 @@ delay_attestation = []
 low_verification_time = []
 rotate_after_sync = []
 restart_on_failing_assumptions = []
+test_upgrade = []
+test_config_hash = []
+enforce_min_seq = []
 
 # Temporary feature for system repair
-bk_wallets_repair = []
-bm_license_repair = []
 mirror_repair = []
 
-
-[[bench]]
-name = "on_block_finalized"
-harness = false
 
 [package.metadata.cargo-machete]
 ignored = ["failure"]

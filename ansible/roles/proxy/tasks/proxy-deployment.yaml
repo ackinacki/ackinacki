@@ -89,7 +89,7 @@
 - name: Compose up
   ansible.builtin.shell:
     chdir: "{{ PROXY_DIR }}"
-    cmd: docker compose up -d
+    cmd: docker compose up -d -t 0
 
 - name: Compose restart logrotate
   ansible.builtin.shell:

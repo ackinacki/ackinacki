@@ -1,15 +1,10 @@
 use std::io::BufRead;
-use std::net::IpAddr;
-use std::net::Ipv4Addr;
-use std::net::Ipv6Addr;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use anyhow::bail;
-use anyhow::Context;
+use anyhow::{Context, bail};
 use bytes::Buf;
 
-use crate::ChitchatId;
-use crate::Heartbeat;
+use crate::{ChitchatId, Heartbeat};
 
 /// Trait to serialize messages.
 ///
@@ -28,6 +23,11 @@ pub trait Serializable {
     fn serialized_len(&self) -> usize;
 }
 
+/// Trait to deserialize messages.
+///
+/// Chitchat uses a custom binary serialization format.
+/// The point of this format is to make it possible
+/// to truncate the delta payload to a given mtu.
 pub trait Deserializable: Sized {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self>;
 }
@@ -87,7 +87,6 @@ impl Serializable for u64 {
     fn serialize(&self, buf: &mut Vec<u8>) {
         self.to_le_bytes().serialize(buf);
     }
-
     fn serialized_len(&self) -> usize {
         8
     }
@@ -103,7 +102,6 @@ impl Serializable for bool {
     fn serialize(&self, buf: &mut Vec<u8>) {
         buf.push(*self as u8);
     }
-
     fn serialized_len(&self) -> usize {
         1
     }
@@ -215,7 +213,6 @@ impl<const N: usize> Serializable for [u8; N] {
     fn serialize(&self, buf: &mut Vec<u8>) {
         buf.extend_from_slice(&self[..]);
     }
-
     fn serialized_len(&self) -> usize {
         N
     }
@@ -270,7 +267,11 @@ impl Deserializable for ChitchatId {
         let node_id = String::deserialize(buf)?;
         let generation_id = u64::deserialize(buf)?;
         let gossip_advertise_addr = SocketAddr::deserialize(buf)?;
-        Ok(Self { node_id, generation_id, gossip_advertise_addr })
+        Ok(Self {
+            node_id,
+            generation_id,
+            gossip_advertise_addr,
+        })
     }
 }
 
@@ -378,7 +379,8 @@ impl CompressedStreamWriter {
                 let num_bytes_to_compress_u16 =
                     u16::try_from(num_bytes_to_compress).expect("uncompressed block too big");
                 num_bytes_to_compress_u16.serialize(&mut self.output);
-                self.output.extend(&self.uncompressed_block[..num_bytes_to_compress]);
+                self.output
+                    .extend(&self.uncompressed_block[..num_bytes_to_compress]);
             }
         }
         self.uncompressed_block.drain(..num_bytes_to_compress);
@@ -444,7 +446,6 @@ impl Serializable for BlockType {
     fn serialize(&self, buf: &mut Vec<u8>) {
         (*self as u8).serialize(buf)
     }
-
     fn serialized_len(&self) -> usize {
         1
     }
@@ -479,8 +480,8 @@ pub fn test_serdeser_aux<T: Serializable + Deserializable + PartialEq + std::fmt
 #[cfg(test)]
 mod tests {
     use proptest::proptest;
-    use rand::distributions::Alphanumeric;
     use rand::Rng;
+    use rand::distributions::Alphanumeric;
 
     use super::*;
 
@@ -507,8 +508,9 @@ mod tests {
         let ipv4 = IpAddr::from(Ipv4Addr::new(127, 1, 3, 9));
         test_serdeser_aux(&ipv4, 5);
 
-        let ipv6 =
-            IpAddr::from(Ipv6Addr::from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]));
+        let ipv6 = IpAddr::from(Ipv6Addr::from([
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+        ]));
         test_serdeser_aux(&ipv6, 17);
     }
 
@@ -571,8 +573,11 @@ mod tests {
         }
         for _ in 0..30 {
             let rng = rand::thread_rng();
-            let random_sentence: String =
-                rng.sample_iter(&Alphanumeric).take(30).map(char::from).collect();
+            let random_sentence: String = rng
+                .sample_iter(&Alphanumeric)
+                .take(30)
+                .map(char::from)
+                .collect();
             compressed_stream_writer.append(random_sentence.as_str());
         }
         let buf = compressed_stream_writer.finish();

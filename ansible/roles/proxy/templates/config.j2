@@ -36,7 +36,7 @@ gossip:
   {% for seed in SEEDS -%}
   - {{ seed }}
   {% endfor -%}
-  cluster_id: {{ NETWORK_NAME }}
+  cluster_id: {{ UPD_NETWORK_NAME | default(NETWORK_NAME) }}
 
 {% if SEGMENT_BK is defined %}
 my_segment_addrs:

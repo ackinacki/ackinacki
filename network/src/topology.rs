@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 use ed25519_dalek::VerifyingKey;
 use gossip::gossip_peer::GossipPeer;
+use transport_layer::HostPort;
+use url::Url;
 
 use crate::config::SocketAddrSet;
 use crate::resolver::WatchGossipConfig;
@@ -51,13 +53,23 @@ pub struct NetPeer<PeerId> {
     pub id: PeerId,
     pub addr: SocketAddr,
     pub bm_api_addr: Option<SocketAddr>,
-    pub bk_api_addr: Option<SocketAddr>,
+    pub bk_api_host_port: Option<HostPort>,
+    pub bk_api_url_for_storage_sync: Option<Url>,
+    pub bk_api_addr_deprecated: Option<SocketAddr>,
     pub bk_owner_pubkey: VerifyingKey,
 }
 
 impl<PeerId: Display> NetPeer<PeerId> {
     pub fn with_id_and_addr(id: PeerId, addr: SocketAddr) -> Self {
-        Self { id, addr, bm_api_addr: None, bk_api_addr: None, bk_owner_pubkey: Default::default() }
+        Self {
+            id,
+            addr,
+            bm_api_addr: None,
+            bk_api_host_port: None,
+            bk_api_url_for_storage_sync: None,
+            bk_api_addr_deprecated: None,
+            bk_owner_pubkey: Default::default(),
+        }
     }
 
     pub fn debug_inner(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -71,10 +83,17 @@ impl<PeerId: Display> NetPeer<PeerId> {
         if let Some(bm) = &self.bm_api_addr {
             write!(f, ", bm:{bm}")?;
         }
-        if let Some(bk) = &self.bk_api_addr {
+        if let Some(bk) = &self.bk_api_addr_deprecated {
             write!(f, ", bk:{bk}")?;
         }
         Ok(())
+    }
+
+    pub fn resolve_bk_host_port(&self, default_port: u16) -> HostPort {
+        self.bk_api_host_port
+            .clone()
+            .or_else(|| self.bk_api_addr_deprecated.map(|x| x.into()))
+            .unwrap_or_else(|| HostPort::new(self.addr.ip().to_string(), Some(default_port)))
     }
 }
 
@@ -90,9 +109,11 @@ impl<PeerId> From<GossipPeer<PeerId>> for NetPeer<PeerId> {
     fn from(value: GossipPeer<PeerId>) -> Self {
         Self {
             id: value.id,
-            addr: value.advertise_addr,
-            bm_api_addr: value.bm_api_socket,
-            bk_api_addr: value.bk_api_socket,
+            addr: value.node_protocol_addr,
+            bm_api_addr: value.bm_api_addr,
+            bk_api_host_port: value.bk_api_host_port,
+            bk_api_url_for_storage_sync: value.bk_api_url_for_storage_sync,
+            bk_api_addr_deprecated: value.bk_api_addr_deprecated,
             bk_owner_pubkey: value.pubkey_signature.map(|(pubkey, _)| pubkey).unwrap_or_default(),
         }
     }
@@ -433,6 +454,8 @@ fn sorted_insert_peer<PeerId>(peers: &mut Vec<NetPeer<PeerId>>, peer: NetPeer<Pe
 
 #[cfg(test)]
 mod tests {
+    use gossip::default_gossip_peer_ttl_seconds;
+
     use super::*;
 
     fn addr(i: u8) -> SocketAddr {
@@ -450,11 +473,13 @@ mod tests {
     ) -> GossipPeer<usize> {
         GossipPeer {
             id,
-            advertise_addr,
+            node_protocol_addr: advertise_addr,
             proxies: proxies.into(),
             pubkey_signature: None,
-            bk_api_socket: None,
-            bm_api_socket: None,
+            bk_api_addr_deprecated: None,
+            bm_api_addr: None,
+            bk_api_url_for_storage_sync: None,
+            bk_api_host_port: None,
         }
     }
 
@@ -490,6 +515,7 @@ mod tests {
             endpoint: peer_endpoint(1),
             max_nodes_with_same_id: 100,
             override_subscribe: Default::default(),
+            peer_ttl_seconds: default_gossip_peer_ttl_seconds(),
             trusted_pubkeys: Default::default(),
         };
         let topology = NetTopology::new(

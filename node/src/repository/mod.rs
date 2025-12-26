@@ -6,9 +6,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use database::documents_db::SerializedItem;
 use parking_lot::Mutex;
-use tvm_block::ShardStateUnsplit;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::BLSSignatureScheme;
@@ -146,17 +144,6 @@ pub trait Repository {
         snapshot: Self::StateSnapshot,
         thread_id: &ThreadIdentifier,
         skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
-    ) -> anyhow::Result<()>;
-
-    fn sync_accounts_from_state(
-        &mut self,
-        shard_state: Arc<ShardStateUnsplit>,
-    ) -> anyhow::Result<()>;
-
-    fn save_account_diffs(
-        &self,
-        block_id: BlockIdentifier,
-        accounts: HashMap<String, SerializedItem>,
     ) -> anyhow::Result<()>;
 
     fn store_optimistic<T: Into<Arc<Self::OptimisticState>>>(&self, state: T)

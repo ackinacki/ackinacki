@@ -267,6 +267,8 @@ impl ZeroState {
         thread_id: ThreadIdentifier,
         signer_index: SignerIndex,
         owner_pubkey: String,
+        protocol_support: crate::versioning::ProtocolVersionSupport,
+        address: String,
     ) {
         let wallet_address = AccountId::from_string(&wallet_address).unwrap();
         let owner_pubkey =
@@ -278,11 +280,12 @@ impl ZeroState {
                 epoch_finish_seq_no: Some(epoch_finish_seq_no),
                 wait_step,
                 status: BlockKeeperStatus::Active,
-                address: String::new(),
+                address,
                 stake,
                 owner_address: wallet_address.into(),
                 signer_index,
                 owner_pubkey: owner_pubkey.inner(),
+                protocol_support,
             },
         );
     }

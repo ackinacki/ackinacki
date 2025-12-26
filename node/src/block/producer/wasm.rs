@@ -5,8 +5,10 @@ use anyhow::anyhow;
 use tvm_vm::executor::Engine;
 
 const WASM_BINARY_ROOT_PATH: &str = "./config/wasm";
-const NODE_MANDATORY_HASHES: [&str; 1] =
-    ["b8891b913656ae35d9ffff371f0f03e4f1f869d0e17556a8c273750313884b0a"];
+const NODE_MANDATORY_HASHES: [&str; 2] = [
+    "b8891b913656ae35d9ffff371f0f03e4f1f869d0e17556a8c273750313884b0a",
+    "343268736f6dbb5a075a477fb1146b3c25c114d341b41c142e6609a7d1a90a2c",
+];
 
 pub fn check_node_mandatory_wasm_available() {
     for hash in NODE_MANDATORY_HASHES {
@@ -61,6 +63,8 @@ impl WasmNodeCache {
             "f6b0cc30d023d266819b16dafa5a6a6ad25b97246bbbca80abac2df974939b87",
             "7670910579bb17bf986de6e318c6f5a8bf7e148b3fb8e0cbf03479fb9eb8c948",
             "b8891b913656ae35d9ffff371f0f03e4f1f869d0e17556a8c273750313884b0a",
+            "2d577ca2e693700282d6d778dce8cfcedbada644497e411ec6aed889f5a3d5f4",
+            "343268736f6dbb5a075a477fb1146b3c25c114d341b41c142e6609a7d1a90a2c",
         ];
         let mut whitelist = HashSet::<[u8; 32]>::new();
         for hash_str in hash_strs {

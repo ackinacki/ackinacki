@@ -154,6 +154,7 @@ impl FileSavingService {
                     Some(ancestor_blocks_finalization_checkpoints),
                     Some(finalizes_blocks),
                     Some(parent_id),
+                    Some(block_protocol_version_state),
                 ) = block_state.guarded(|e| {
                     (
                         e.bk_set().clone(),
@@ -168,6 +169,7 @@ impl FileSavingService {
                         e.ancestor_blocks_finalization_checkpoints().clone(),
                         e.finalizes_blocks().clone(),
                         e.parent_block_identifier().clone(),
+                        e.block_version_state().clone(),
                     )
                 })
                 else {
@@ -201,6 +203,7 @@ impl FileSavingService {
                     .parent_ancestor_blocks_finalization_checkpoints(
                         parent_ancestor_blocks_finalization_checkpoints,
                     )
+                    .block_protocol_version_state(block_protocol_version_state)
                     .build();
 
                 let bytes = bincode::serialize(&shared_thread_state)?;

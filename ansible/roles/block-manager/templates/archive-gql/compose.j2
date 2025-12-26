@@ -1,0 +1,61 @@
+services:
+  nginx_bm:
+    image: {{ NGINX_IMAGE }}
+    restart: unless-stopped
+    networks:
+      - ackinacki-net
+    environment:
+      - MESSAGE_ROUTER_ADDRESS=block_manager:{{ BM_API_PORT }}
+      - Q_SERVER_ADDRESS=q_server_bm:3000
+      - NODE_API_ADDRESS=block_manager:{{ BM_API_PORT }}
+      - BLOCK_MANAGER_API=block_manager:{{ BM_API_PORT }}
+    ports:
+      - target: 80
+{% if NGINX_IP == "public" %}
+        host_ip: {{ HOST_PUBLIC_IP }}
+{% elif NGINX_IP == "private" %}
+        host_ip: {{ HOST_PRIVATE_IP }}
+{% else %}
+        host_ip: {{ NGINX_IP }}
+{% endif %}
+        published: {{ NGINX_PORT }}
+        protocol: tcp
+
+  q_server_bm:
+    image: {{ GQL_IMAGE }}
+    entrypoint: []
+    restart: unless-stopped
+    environment:
+      NODE_VERBOSE: 1
+    command:
+      - bash
+      - -c
+      - >
+        exec gql-server -d ./data/{{ GQL_ARCHIVE_DB | basename }} -l 0.0.0.0:3000 --bm_api_socket {{ NODE_IP }}:{{ AGQL_NODE_PORT }} >> /logsdir/archive-gql.log 2>&1
+    expose:
+      - "3000"
+    ports:
+      - {{ HOST_PRIVATE_IP }}:{{ Q_SERVER_MAPPED_PORT }}:3000
+    volumes:
+      - {{ GQL_ARCHIVE_DB }}:/workdir/data/{{ GQL_ARCHIVE_DB | basename }}
+      - {{ AGQL_LOGS_DIR }}:/logsdir
+    networks:
+      - ackinacki-net
+
+  logrotate:
+    image: {{ LOGROTATE_IMAGE }}
+    restart: unless-stopped
+    environment:
+      - CRON_SCHEDULE="58 * * * *"
+    volumes:
+      - {{ AGQL_LOGS_DIR }}:/logsdir
+      - ./logrotate.sh:/logrotate.sh
+    command: [ "/bin/bash", "/logrotate.sh" ]
+    init: true
+
+networks:
+  ackinacki-net:
+    name: ackinacki-net
+{% if EXTERNAL_NET %}
+    external: true
+{% endif %}

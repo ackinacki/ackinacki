@@ -10,10 +10,13 @@ use opentelemetry::metrics::UpDownCounter;
 use opentelemetry::KeyValue;
 use telemetry_utils::instrumented_channel_ext::XInstrumentedChannelMetrics;
 use telemetry_utils::mpsc::InstrumentedChannelMetrics;
+use telemetry_utils::now_ms;
 use telemetry_utils::out_of_bounds_guard;
 use telemetry_utils::TokioMetrics;
 
 use crate::types::ThreadIdentifier;
+use crate::versioning::ProtocolVersion;
+use crate::versioning::ProtocolVersionSupport;
 
 #[derive(Clone)]
 pub struct BlockProductionMetrics(Arc<BlockProductionMetricsInner>);
@@ -43,7 +46,6 @@ struct BlockProductionMetricsInner {
     parent_first_attestation_none: Counter<u64>,
     resend: Counter<u64>,
     query_gaps: Counter<u64>,
-    store_block_on_disk: Histogram<u64>,
     verify_all_block_signatures: Histogram<u64>,
     calc_consencus_params: Histogram<u64>,
     check_cross_thread_ref_data: Histogram<u64>,
@@ -79,6 +81,16 @@ struct BlockProductionMetricsInner {
     errors: Counter<u64>,
     build_info: Gauge<u64>,
     missed_blocks: Counter<u64>,
+    block_processing_jitter: Histogram<f64>,
+
+    // Node Binary: supported protocol versions
+    protocol_support_versions: Gauge<u64>,
+
+    // finalized_block_protocol version
+    block_protocol_version: Gauge<u64>,
+
+    // BK set: supported protocol versions in epoch
+    bkset_epoch_protocol_versions: Gauge<u64>,
 }
 
 pub const BK_SET_UPDATE_CHANNEL: &str = "bk_set_update";
@@ -207,11 +219,6 @@ impl BlockProductionMetrics {
                 .build(),
 
             bk_set_size: meter.u64_gauge("node_bk_set_size").build(),
-            store_block_on_disk: meter
-                .u64_histogram("node_store_block_on_disk")
-                .with_boundaries(vec![5.0, 10.0, 15.0, 20.0, 50.0, 100.0, 200.0, 500.0])
-                .build(),
-
             verify_all_block_signatures: meter
                 .u64_histogram("node_verify_all_block_signatures")
                 .build(),
@@ -288,6 +295,18 @@ impl BlockProductionMetrics {
             errors: meter.u64_counter("node_errors").build(),
             build_info: meter.u64_gauge("node_build_info").build(),
             missed_blocks: meter.u64_counter("node_missed_blocks").build(),
+            block_processing_jitter: meter
+                .f64_histogram("node_block_processing_jitter")
+                .with_boundaries(vec![
+                    50.0, 100.0, 200.0, 300.0, 400.0, 600.0, 1000.0, 1500.0, 2000.0, 3000.0,
+                    5000.0, 10000.0,
+                ])
+                .build(),
+            protocol_support_versions: meter.u64_gauge("node_protocol_support_versions").build(),
+            block_protocol_version: meter.u64_gauge("node_block_protocol_version").build(),
+            bkset_epoch_protocol_versions: meter
+                .u64_gauge("node_bkset_epoch_protocol_versions")
+                .build(),
         }))
     }
 
@@ -440,11 +459,6 @@ impl BlockProductionMetrics {
         self.0.future_bk_set.record(future_bk_set as u64, attrs);
     }
 
-    pub fn report_store_block_on_disk(&self, value: u64, thread_id: &ThreadIdentifier) {
-        out_of_bounds_guard!(value, "store_block_on_disk");
-        self.0.store_block_on_disk.record(value, &[thread_id_attr(thread_id)]);
-    }
-
     pub fn report_verify_all_block_signatures(&self, value: u64, thread_id: &ThreadIdentifier) {
         out_of_bounds_guard!(value, "verify_all_block_signatures");
         self.0.verify_all_block_signatures.record(value, &[thread_id_attr(thread_id)]);
@@ -571,8 +585,43 @@ impl BlockProductionMetrics {
             .record(1, &[KeyValue::new("version", version), KeyValue::new("commit", commit)]);
     }
 
-    pub fn report_missed_blocks(&self, value: u32, thread_id: &ThreadIdentifier) {
-        self.0.missed_blocks.add(value as u64, &[thread_id_attr(thread_id)]);
+    pub fn report_missed_blocks(&self, value: u64, thread_id: &ThreadIdentifier) {
+        self.0.missed_blocks.add(value, &[thread_id_attr(thread_id)]);
+    }
+
+    // Here we are interested in both `current` and `target` versions
+    pub fn report_protocol_support_versions(&self, protocol_versions: &ProtocolVersionSupport) {
+        let (current, target) = protocol_versions.as_tuple();
+        let attr = vec![
+            KeyValue::new("current_ver", current.to_string()),
+            KeyValue::new(
+                "target_ver",
+                target.map(|ver| ver.to_string()).unwrap_or_else(|| "-".to_string()),
+            ),
+        ];
+        self.0.protocol_support_versions.record(now_ms(), &attr);
+    }
+
+    pub fn report_block_protocol_version(&self, version: &ProtocolVersion) {
+        self.0
+            .block_protocol_version
+            .record(now_ms(), &[KeyValue::new("protocol_ver", version.to_string())]);
+    }
+
+    pub fn report_bkset_epoch_protocol_versions(&self, protocol_versions: &ProtocolVersionSupport) {
+        let (current, target) = protocol_versions.as_tuple();
+        let attr = vec![
+            KeyValue::new("current_ver", current.to_string()),
+            KeyValue::new(
+                "target_ver",
+                target.map(|ver| ver.to_string()).unwrap_or_else(|| "-".to_string()),
+            ),
+        ];
+        self.0.bkset_epoch_protocol_versions.record(now_ms(), &attr);
+    }
+
+    pub fn report_block_processing_jitter(&self, value: f64, thread_id: &ThreadIdentifier) {
+        self.0.block_processing_jitter.record(value, &[thread_id_attr(thread_id)]);
     }
 }
 

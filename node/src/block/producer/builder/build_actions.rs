@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use account_inbox::iter::iterator::MessagesRangeIterator;
+use anyhow::bail;
 use anyhow::ensure;
 use http_server::ExtMsgFeedback;
 use http_server::ExtMsgFeedbackList;
@@ -107,7 +108,11 @@ use crate::types::BlockSeqNo;
 use crate::types::DAppIdentifier;
 use crate::types::ThreadIdentifier;
 
+#[cfg(feature = "enforce_min_seq")]
+const DEFAULT_MIN_SEQ_NO: u32 = 0;
+
 const BK_SYSTEM_DAPP_ID: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+// const EPOCH_CONTINUE_STAKE_FUNCTION_NAME: &str = "continueStake";
 
 impl BlockBuilder {
     /// Initialize BlockBuilder
@@ -129,6 +134,7 @@ impl BlockBuilder {
         >,
         metrics: Option<BlockProductionMetrics>,
         wasm_cache: WasmNodeCache,
+        #[cfg(feature = "mirror_repair")] is_updated_mv: Arc<parking_lot::Mutex<bool>>,
     ) -> anyhow::Result<Self> {
         let usage_tree =
             UsageTree::with_params(initial_optimistic_state.get_shard_state_as_cell(), true);
@@ -144,6 +150,16 @@ impl BlockBuilder {
         //     .read_out_msg_queue_info()
         //     .map_err(|e| anyhow::format_err!("Failed to read out msgs queue: {e}"))?;
         let seq_no = shard_state.seq_no() + 1;
+
+        #[cfg(feature = "enforce_min_seq")]
+        let seq_no = {
+            let min_seq_no = std::env::var("MIN_SEQ_NO")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(DEFAULT_MIN_SEQ_NO);
+
+            seq_no.max(min_seq_no)
+        };
 
         let prev_block_info = initial_optimistic_state.get_block_info();
         let start_lt = prev_block_info.prev1().map_or(0, |p| p.end_lt) + 1;
@@ -196,6 +212,8 @@ impl BlockBuilder {
             metrics,
             is_stop_requested: false,
             wasm_cache,
+            #[cfg(feature = "mirror_repair")]
+            is_updated_mv,
         };
 
         #[cfg(feature = "monitor-accounts-number")]
@@ -234,6 +252,8 @@ impl BlockBuilder {
             metrics,
             is_stop_requested: false,
             wasm_cache,
+            #[cfg(feature = "mirror_repair")]
+            is_updated_mv,
             accounts_number_diff: 0,
         };
         Ok(builder)
@@ -269,7 +289,7 @@ impl BlockBuilder {
 
         #[cfg(feature = "timing")]
         let start = std::time::Instant::now();
-        tracing::trace!(target: "builder", "execute_with_libs_and_params: {} {msg:?}", msg.hash().unwrap().to_hex_string());
+        tracing::trace!(target: "builder", "execute_with_libs_and_params: {:?} {msg:?}", msg.hash().map(|h| h.to_hex_string()));
         let mut is_ext_message = msg.is_inbound_external();
         let result = executor.execute_with_libs_and_params(Some(msg), acc_root, execute_params);
         tracing::trace!(target: "builder", "Execution result {:?}", result);
@@ -459,7 +479,8 @@ impl BlockBuilder {
                     tracing::debug!(target: "builder", "after_transaction tx statuses: {:?} {:?}", transaction.orig_status, transaction.end_status);
                     if transaction.orig_status == AccountStatus::AccStateNonexist {
                         if code_hash_str == self.block_keeper_epoch_code_hash {
-                            tracing::debug!(target: "builder", "Epoch contract was deployed");
+                            tracing::info!(target: "builder", "Epoch contract was deployed");
+                            // TODO: do not fail execution on decode fail
                             if let Some((id, block_keeper_data)) =
                                 decode_epoch_data(&acc).map_err(|e| {
                                     anyhow::format_err!("Failed to decode epoch data: {e}")
@@ -515,9 +536,9 @@ impl BlockBuilder {
                         } else {
                             false
                         };
-                    if thread_result.in_msg.src() == thread_result.in_msg.dst()
-                        && !is_tx_aborted
+                    if !is_tx_aborted
                         && in_msg_was_sent_by_bk_system_contract
+                        && thread_result.in_msg.src() == thread_result.in_msg.dst()
                     {
                         tracing::trace!(target: "builder", "Epoch destroy message");
                         tracing::trace!(target: "builder", "tx status: {:?}", transaction.end_status);
@@ -527,6 +548,23 @@ impl BlockBuilder {
                                     anyhow::format_err!("Failed to decode epoch data: {e}")
                                 })?
                             {
+                                #[cfg(feature = "protocol_version_hash_in_block")]
+                                if block_keeper_data.protocol_support.is_transitioning() {
+                                    self.block_keeper_set_changes.push(
+                                        BlockKeeperSetChange::BlockKeeperChangedVersion((
+                                            id,
+                                            block_keeper_data,
+                                        )),
+                                    );
+                                } else {
+                                    self.block_keeper_set_changes.push(
+                                        BlockKeeperSetChange::BlockKeeperRemoved((
+                                            id,
+                                            block_keeper_data,
+                                        )),
+                                    );
+                                }
+                                #[cfg(not(feature = "protocol_version_hash_in_block"))]
                                 self.block_keeper_set_changes.push(
                                     BlockKeeperSetChange::BlockKeeperRemoved((
                                         id,
@@ -538,6 +576,29 @@ impl BlockBuilder {
                             }
                         }
                     }
+                    // else {
+                    //     // Decode message
+                    //     if let Ok(Some(decoded_data)) = decode_epoch_call_message(&thread_result.in_msg) {
+                    //         if decoded_data.function_name == EPOCH_CONTINUE_STAKE_FUNCTION_NAME {
+                    //             if let Some((id, block_keeper_data)) =
+                    //                 decode_epoch_data(&acc).map_err(|e| {
+                    //                     anyhow::format_err!("Failed to decode epoch data: {e}")
+                    //                 })?
+                    //             {
+                    //                 if block_keeper_data.protocol_support.is_transitioning() {
+                    //                     self.block_keeper_set_changes.push(
+                    //                         BlockKeeperSetChange::BlockKeeperChangedVersion((
+                    //                             id,
+                    //                             block_keeper_data,
+                    //                         )),
+                    //                     );
+                    //                 }
+                    //             } else {
+                    //                 anyhow::bail!("Failed to decode epoch contract");
+                    //             }
+                    //         }
+                    //     }
+                    // }
                 }
             }
             #[cfg(feature = "timing")]
@@ -643,7 +704,7 @@ impl BlockBuilder {
             tracing::trace!(target: "builder", "Dapp config addr: {:?}", acc_id);
             if let Some(acc) = self.get_account_from_initial_state(&acc_id)? {
                 tracing::trace!(target: "builder", "account found");
-                assert!(!acc.is_redirect(), "DApp config account is redirect");
+                ensure!(!acc.is_redirect(), "DApp config account is redirect");
                 let acc_d = acc
                     .read_account()
                     .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?
@@ -760,10 +821,10 @@ impl BlockBuilder {
         acc_id: &AccountAddress,
     ) -> anyhow::Result<()> {
         tracing::trace!(target: "builder",
-            "Reroute message for another thread: {}",
-            message.hash().unwrap().to_hex_string()
+            "Reroute message for another thread: {:?}",
+            message.hash().map(|h| h.to_hex_string())
         );
-        let info = message.int_header().unwrap();
+        let info = message.int_header().ok_or_else(|| anyhow::anyhow!("int_header() is None"))?;
         let fwd_fee = info.fwd_fee();
         let msg_cell = message
             .serialize()
@@ -826,7 +887,7 @@ impl BlockBuilder {
         time_limits: &ExecutionTimeLimits,
         mv_config: MVConfig,
     ) -> anyhow::Result<ActiveThread> {
-        let message_hash = message.hash().unwrap();
+        let message_hash = message.hash().map_err(anyhow::Error::msg)?;
         tracing::debug!(target: "builder", "Start msg execution: addr={:?} {:?}", acc_id.0.to_hex_string(), message_hash);
         #[cfg(feature = "timing")]
         let start = std::time::Instant::now();
@@ -1222,7 +1283,7 @@ impl BlockBuilder {
                                 Some((message, key)) => {
                                     pause_to_avoid_busy_loop = false;
                                     executed_int_messages_cnt += 1;
-                                    let acc_id = message.int_dst_account_id().expect("Failed to get int_dst_account_id").into();
+                                    let acc_id = message.int_dst_account_id().ok_or_else(|| anyhow::anyhow!("int_dst_account_id is None"))?.into();
                                     let thread = self.execute(
                                         message,
                                         blockchain_config,
@@ -1263,7 +1324,7 @@ impl BlockBuilder {
                             first_thread_and_key.as_ref().and_then(|(thread, _)| thread.result_rx.try_recv().ok());
                         if let Some(thread_result) = first_finished {
                             pause_to_avoid_busy_loop = false;
-                            let (_, first_key) = first_thread_and_key.take().unwrap();
+                            let (_, first_key) = first_thread_and_key.take().expect("Value is checked, can't fail");
                             tracing::trace!(target: "builder", "First int message finished, key: {}", first_key.inner().hash.to_hex_string());
                             if Self::stop_block_build_after_execution(&thread_result, check_messages_map.is_some())? {
                                 let thread_result = thread_result?;
@@ -1368,11 +1429,12 @@ impl BlockBuilder {
         white_list_of_slashing_messages_hashes: HashSet<UInt256>,
         message_db: MessageDurableStorage,
         time_limits: &ExecutionTimeLimits,
+        is_block_of_retired_version: bool,
     ) -> anyhow::Result<(PreparedBlock, Vec<Stamp>, ExtMsgFeedbackList)> {
         let _ =
             tracing::span!(tracing::Level::INFO, "build_block", seq_no = self.block_info.seq_no());
         active_threads.clear();
-        tracing::debug!(target: "builder", "Start build of block: {} for {:?}", self.block_info.seq_no(), self.thread_id);
+        tracing::info!(target: "builder", "Start build of block: {} for {:?} (is_block_of_retired_version={})", self.block_info.seq_no(), self.thread_id, is_block_of_retired_version);
         tracing::debug!(target: "builder", "ext_messages_queue.len={}, active_threads.len={}, check_messages_map.len={:?}", queue_len(&ext_messages_queue), active_threads.len(), check_messages_map.as_ref().map(|map| map.len()));
 
         let (block_unixtime, block_lt) = self.at_and_lt();
@@ -1384,14 +1446,17 @@ impl BlockBuilder {
         let acc_id = AccountAddress::from_str(MV_CONFIG_CONTRACT_ADDR)
             .map_err(|e| anyhow::format_err!("Failed to calc mvconfig address: {e}"))?;
         if let Some(acc) = self.get_account_from_initial_state(&acc_id)? {
-            assert!(!acc.is_redirect(), "MVConfig account is redirect");
-            let acc_d = acc
-                .read_account()
-                .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?
-                .as_struct()
-                .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?;
-            if let Ok(config) = decode_mv_config_data(&acc_d) {
-                mvconfig = config;
+            if !acc.is_redirect() {
+                let acc_d = acc
+                    .read_account()
+                    .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?
+                    .as_struct()
+                    .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?;
+                if let Ok(config) = decode_mv_config_data(&acc_d) {
+                    mvconfig = config;
+                }
+            } else {
+                tracing::trace!(target: "builder", "MVConfig is redirect, set default");
             }
         }
 
@@ -1454,7 +1519,7 @@ impl BlockBuilder {
                             .into_cell()
                             .map_err(|e| anyhow::format_err!("Failed to serialize key: {e}"))?;
 
-                        tracing::trace!(target: "builder", "Parallel new message: {:?} to {:?}, key: {}", message.hash().unwrap(), acc_id.to_hex_string(), key.repr_hash().to_hex_string());
+                        tracing::trace!(target: "builder", "Parallel new message: {:?} to {:?}, key: {}", message.hash(), acc_id.to_hex_string(), key.repr_hash().to_hex_string());
 
                         let thread = self.execute(
                             message.clone(),
@@ -1473,8 +1538,8 @@ impl BlockBuilder {
                                     tracing::trace!(target: "builder", "remove new message: {}", index);
                                     self.new_messages.remove(&index);
                                     tracing::trace!(target: "builder",
-                                        "New message for another thread: {}",
-                                        message.hash().unwrap().to_hex_string()
+                                        "New message for another thread: {:?}",
+                                        message.hash().map(|h| h.to_hex_string())
                                     );
                                     let wrapped_message = WrappedMessage { message: message.clone() };
                                     let entry = self
@@ -1592,7 +1657,8 @@ impl BlockBuilder {
 
         tracing::debug!(target: "ext_messages", "unprocessed/processed/feedbacks={}/{}/{}", unprocessed_ext_msgs_cnt, processed_stamps.len(), ext_message_feedbacks.0.len());
 
-        let prepared_block = self.finish_and_prepare_block(active_threads, message_db)?;
+        let prepared_block =
+            self.finish_and_prepare_block(active_threads, message_db, is_block_of_retired_version)?;
 
         Ok((prepared_block, processed_stamps, ext_message_feedbacks))
     }
@@ -1629,7 +1695,7 @@ impl BlockBuilder {
         };
 
         tracing::debug!(target: "builder", "Add in message to in_msg_descr: {}", msg_cell.repr_hash().to_hex_string());
-        assert!(
+        ensure!(
             self.in_msg_descr
                 .set_return_prev(
                     &msg_cell.repr_hash(),
@@ -1652,9 +1718,9 @@ impl BlockBuilder {
     ) -> anyhow::Result<()> {
         tracing::debug!(
             target: "builder",
-            "Inserting transaction {} {}",
+            "Inserting transaction {} {:?}",
             transaction.account_id().to_hex_string(),
-            transaction.hash().unwrap().to_hex_string()
+            transaction.hash().map(|h| h.to_hex_string())
         );
 
         self.account_blocks
@@ -1679,7 +1745,8 @@ impl BlockBuilder {
                     if let Some(data) = msg.int_header_mut() {
                         if let Ok(address) = data.src() {
                             if address.address()
-                                == tvm_types::AccountId::from_string(DAPP_ROOT_ADDR).unwrap()
+                                == tvm_types::AccountId::from_string(DAPP_ROOT_ADDR)  // in that case, it's better to fail fast
+                                    .expect("DAPP_ROOT_ADDR misconfigured")
                             {
                                 if let Some(body) = body_opt {
                                     if let Ok(Some(dapp)) = decode_message_config(body) {
@@ -1690,11 +1757,14 @@ impl BlockBuilder {
                         }
                     }
 
-                    let dest_account_id = msg
-                        .int_dst_account_id()
-                        .expect("Internal message must have valid internal destination");
-                    let dest_dapp_id = msg.int_header().unwrap().dest_dapp_id.clone();
-                    let info = msg.int_header().unwrap();
+                    let dest_account_id = msg.int_dst_account_id().ok_or_else(|| {
+                        failure::err_msg("Internal message must have valid internal destination")
+                    })?;
+
+                    let info = msg
+                        .int_header()
+                        .ok_or_else(|| failure::err_msg("Internal message must have header"))?;
+                    let dest_dapp_id = info.dest_dapp_id.clone();
                     let fwd_fee = info.fwd_fee();
                     let msg_cell = msg.serialize()?;
                     let env = MsgEnvelope::with_message_and_fee(&msg, *fwd_fee)?;
@@ -1727,8 +1797,8 @@ impl BlockBuilder {
                     } else {
                         // If internal message destination doesn't match current thread, save it directly to the out msg descr of the block
                         tracing::trace!(target: "builder",
-                            "New message for another thread: {} to {:?}",
-                            msg.hash().unwrap().to_hex_string(),
+                            "New message for another thread: {:?} to {:?}",
+                            msg.hash().map(|h| h.to_hex_string()),
                             destination_routing
                         );
                         let wrapped_message = WrappedMessage { message: msg.clone() };
@@ -1747,8 +1817,8 @@ impl BlockBuilder {
                     let out_msg = OutMsg::external(msg_cell.clone(), tr_cell.clone());
                     tracing::debug!(
                         target: "builder",
-                        "Inserting new ext out message with {} {:?}",
-                        msg.hash().unwrap().to_hex_string(),
+                        "Inserting new ext out message with {:?} {:?}",
+                        msg.hash().map(|h| h.to_hex_string()),
                         msg
                     );
                     self.out_msg_descr.set(&msg_cell.repr_hash(), &out_msg, &out_msg.aug()?)?;
@@ -1770,6 +1840,7 @@ impl BlockBuilder {
     fn finish_block(
         mut self,
         message_db: MessageDurableStorage,
+        is_block_of_retired_version: bool,
     ) -> anyhow::Result<(Block, OptimisticStateImpl, CrossThreadRefData)> {
         tracing::trace!(target: "builder", "finish_block");
         let mut new_shard_state = self.shard_state.deref().clone();
@@ -1793,14 +1864,14 @@ impl BlockBuilder {
         tracing::debug!(
             target: "builder",
             "finish block new_shard_state hash: {:?}",
-            new_shard_state.hash().unwrap().to_hex_string()
+            new_shard_state.hash().map(|h| h.to_hex_string())
         );
 
         let accounts_that_changed_their_dapp_id: HashMap<AccountRouting, Option<WrappedAccount>> =
             HashMap::from_iter(
                 self.accounts_that_changed_their_dapp_id
                     .values()
-                    .map(|v| v.last().unwrap().clone()),
+                    .map(|v| v.last().unwrap().clone()), //
             );
         for (routing, _) in accounts_that_changed_their_dapp_id.iter() {
             tracing::trace!(target: "node", "set_dapp_id_changed_for_account for {routing:?}");
@@ -1890,10 +1961,13 @@ impl BlockBuilder {
 
         let span = tracing::span!(tracing::Level::INFO, "serialize and write boc");
         let span_guard = span.enter();
-        let cell = block.serialize().unwrap();
+        let cell = block
+            .serialize()
+            .map_err(|e| anyhow::format_err!("Cell serialization failure: {e}"))?;
         let root_hash = cell.repr_hash();
 
-        let serialized_block = tvm_types::write_boc(&cell).unwrap();
+        let serialized_block = tvm_types::write_boc(&cell)
+            .map_err(|e| anyhow::format_err!("Write boc failure: {e}"))?;
         drop(span_guard);
 
         let file_hash = UInt256::calc_file_hash(&serialized_block);
@@ -1940,11 +2014,14 @@ impl BlockBuilder {
             changed_accounts,
             self.accounts_repository,
             message_db.clone(),
+            #[cfg(feature = "mirror_repair")]
+            self.is_updated_mv,
             #[cfg(feature = "monitor-accounts-number")]
             updated_accounts_number,
+            is_block_of_retired_version,
         )?;
 
-        tracing::debug!(target: "builder", "Finish block: {:?}", block.hash().unwrap().to_hex_string());
+        tracing::debug!(target: "builder", "Finish block: {:?}", block.hash().map(|h| h.to_hex_string()));
         Ok((block, new_state, cross_thread_ref_data))
     }
 
@@ -2043,7 +2120,9 @@ impl BlockBuilder {
                     let acc_id = thread_result.account_id.clone();
                     tracing::trace!(target: "builder", "parallel new message finished dest: {}, key {}", acc_id.to_hex_string(), key.repr_hash().to_hex_string());
                     self.after_transaction(thread_result)?;
-                    let index = active_destinations.remove(&acc_id).unwrap();
+                    let Some(index) = active_destinations.remove(&acc_id) else {
+                        bail!("active_destinations doesn't contain address: {acc_id}");
+                    };
                     tracing::trace!(target: "builder", "remove new message: {}", index);
                     self.new_messages.remove(&index);
                 } else {
@@ -2063,9 +2142,10 @@ impl BlockBuilder {
         self,
         active_threads: Vec<(Cell, ActiveThread)>,
         message_db: MessageDurableStorage,
+        is_block_of_retired_version: bool,
     ) -> anyhow::Result<PreparedBlock> {
         for active_thread in &active_threads {
-            let mut value = active_thread.1.block_production_was_finished.lock().unwrap();
+            let mut value = active_thread.1.block_production_was_finished.lock().unwrap(); // Should we change mutex to parking_lot?
             *value = true;
         }
 
@@ -2080,7 +2160,7 @@ impl BlockBuilder {
         let accounts_number_diff = self.accounts_number_diff;
 
         let (block, new_state, cross_thread_ref_data) = self
-            .finish_block(message_db)
+            .finish_block(message_db, is_block_of_retired_version)
             .map_err(|e| anyhow::format_err!("Failed to finish block: {e}"))?;
 
         let span = tracing::span!(tracing::Level::INFO, "prepare block struct");
@@ -2123,7 +2203,7 @@ impl BlockBuilder {
                 let Some((_, next_message)) = messages.first_key_value() else {
                     continue;
                 };
-                if next_message != &message.hash().unwrap() {
+                if next_message != &message.hash().map_err(anyhow::Error::msg)? {
                     // tracing::info!(target: "builder", "Skip new message for verify block: {} {:?}", message.hash().unwrap().to_hex_string(), message);
                     continue;
                 }
@@ -2132,7 +2212,7 @@ impl BlockBuilder {
             let dest_dapp_id = message
                 .int_header()
                 .cloned()
-                .expect("New message must be internal")
+                .ok_or_else(|| anyhow::anyhow!("New message must be internal"))?
                 .dest_dapp_id
                 .unwrap_or(acc_id.0.clone());
             let dest_routing =
@@ -2250,14 +2330,14 @@ impl BlockBuilder {
                     tracing::trace!(
                         target: "ext_messages",
                         "Parallel ext message: {:?} to {:?}",
-                        msg.hash().unwrap(),
+                        msg.hash(),
                         acc_id.to_hex_string()
                     );
 
                     let exec_span = tracing::span!(tracing::Level::INFO, "execute ext message");
                     let span_guard = exec_span.enter();
                     let thread = self.execute(
-                        msg.clone(),
+                        msg,
                         blockchain_config,
                         &acc_id,
                         block_unixtime,
@@ -2504,7 +2584,11 @@ impl BlockBuilder {
                                                 break None;
                                             };
                                             ensure!(
-                                                *next_message == message.message.hash().unwrap(),
+                                                *next_message
+                                                    == message
+                                                        .message
+                                                        .hash()
+                                                        .map_err(anyhow::Error::msg)?,
                                                 "Wrong int messages order"
                                             );
                                         } else {
@@ -2578,7 +2662,11 @@ impl BlockBuilder {
                                         continue;
                                     };
                                     ensure!(
-                                        *next_message == message.message.hash().unwrap(),
+                                        *next_message
+                                            == message
+                                                .message
+                                                .hash()
+                                                .map_err(anyhow::Error::msg)?,
                                         "Wrong int messages order"
                                     );
                                 } else {
@@ -2677,9 +2765,9 @@ fn create_feedback(
         }
         let mut ext_out_msgs = vec![];
         let _ = t.out_msgs.iterate(|out_msg| {
-            let header = out_msg.0.header().clone();
+            let header = out_msg.as_ref().header().clone();
             if let CommonMsgInfo::ExtOutMsgInfo(_) = header {
-                if let Some(body) = out_msg.0.body() {
+                if let Some(body) = out_msg.as_ref().body() {
                     ext_out_msgs.push(body);
                 }
             }

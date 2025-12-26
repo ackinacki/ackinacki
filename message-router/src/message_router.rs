@@ -16,16 +16,16 @@ use ext_messages_auth::auth::Token;
 use parking_lot::Mutex;
 
 use crate::bp_resolver::BPResolver;
-use crate::defaults::DEFAULT_NODE_URL_PATH;
-use crate::defaults::DEFAULT_URL_PATH;
+use crate::defaults::DEFAULT_BK_API_MESSAGES_PATH;
+use crate::defaults::DEFAULT_BM_API_MESSAGES_PATH;
 use crate::KeyPair;
 
 lazy_static::lazy_static!(
     static ref NODE_URL_PATH: String = std::env::var("NODE_URL_PATH")
-        .unwrap_or(DEFAULT_NODE_URL_PATH.into());
+        .unwrap_or(DEFAULT_BK_API_MESSAGES_PATH.into());
 
     static ref ROUTER_URL_PATH: String = std::env::var("ROUTER_URL_PATH")
-        .unwrap_or(DEFAULT_URL_PATH.into());
+        .unwrap_or(DEFAULT_BM_API_MESSAGES_PATH.into());
 );
 
 pub struct MessageRouterConfig {

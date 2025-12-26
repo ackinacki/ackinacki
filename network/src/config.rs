@@ -174,9 +174,20 @@ impl<'de> Deserialize<'de> for SocketAddrSet {
     }
 }
 
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub enum DirectSendMode {
+    #[serde(rename = "direct")]
+    Direct,
+    #[serde(rename = "broadcast")]
+    Broadcast,
+    #[serde(rename = "both")]
+    Both,
+}
+
 #[derive(Clone, PartialEq)]
 pub struct NetworkConfig {
     pub bind: SocketAddr,
+    pub direct_send_mode: DirectSendMode,
     pub credential: NetCredential,
 }
 
@@ -190,6 +201,7 @@ impl NetworkConfig {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         bind: SocketAddr,
+        direct_send_mode: DirectSendMode,
         my_cert: CertFile,
         my_key: PrivateKeyFile,
         my_ed_keys: &[transport_layer::SigningKey],
@@ -205,6 +217,6 @@ impl NetworkConfig {
             trusted_pubkeys,
             trusted_cert_hashes: trusted_certs.cert_hashes(),
         };
-        Ok(Self { bind, credential })
+        Ok(Self { bind, direct_send_mode, credential })
     }
 }

@@ -76,6 +76,10 @@ pub async fn start(
             .body(playground_source(GraphQLPlaygroundConfig::new("")))
     });
 
+    let graphql_options = warp::path("graphql")
+        .and(warp::options())
+        .map(|| warp::reply::with_status("", StatusCode::NO_CONTENT));
+
     let graphiql = warp::path!("graphql").and(warp::get()).map(|| {
         HttpResponse::builder()
             .header("content-type", "text/html")
@@ -101,8 +105,8 @@ pub async fn start(
             },
         );
 
-        let routes =
-            graphql_post.or(graphql_playground).or(graphiql).recover(|err: Rejection| async move {
+        let routes = graphql_post.or(graphql_options).or(graphql_playground).or(graphiql).recover(
+            |err: Rejection| async move {
                 if let Some(GraphQLBadRequest(err)) = err.find() {
                     return Ok::<_, Infallible>(warp::reply::with_status(
                         err.to_string(),
@@ -114,7 +118,8 @@ pub async fn start(
                     "INTERNAL_SERVER_ERROR".to_string(),
                     StatusCode::INTERNAL_SERVER_ERROR,
                 ))
-            });
+            },
+        );
 
         tracing::info!("[API:extended] Listening on: {}\n", bind_to);
         warp::serve(routes).run((socket_addr.ip(), socket_addr.port())).await;
@@ -133,8 +138,8 @@ pub async fn start(
             },
         );
 
-        let routes =
-            graphql_post.or(graphql_playground).or(graphiql).recover(|err: Rejection| async move {
+        let routes = graphql_post.or(graphql_options).or(graphql_playground).or(graphiql).recover(
+            |err: Rejection| async move {
                 if let Some(GraphQLBadRequest(err)) = err.find() {
                     return Ok::<_, Infallible>(warp::reply::with_status(
                         err.to_string(),
@@ -146,7 +151,8 @@ pub async fn start(
                     "INTERNAL_SERVER_ERROR".to_string(),
                     StatusCode::INTERNAL_SERVER_ERROR,
                 ))
-            });
+            },
+        );
 
         tracing::info!("[API:standard] Listening on: {}\n", bind_to);
         warp::serve(routes).run((socket_addr.ip(), socket_addr.port())).await;
