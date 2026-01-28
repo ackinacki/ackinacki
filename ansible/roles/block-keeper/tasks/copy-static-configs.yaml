@@ -23,6 +23,13 @@
   when:
     - '"block_keeper" ~ NODE_ID ~ "_bls.keys.json" not in OTHER_KEYS or not bls_keys_file.stat.exists'
 
+- name: Copy zerostate
+  copy:
+    dest: "{{ BK_DIR }}/bk-configs/"
+    src: "{{ ZEROSTATE_FILE }}"
+  when:
+    - 'ZEROSTATE is true and BK_SET_FILE is false'
+
 - name: Copy .env file for compose
   copy:
     dest: "{{ BK_DIR }}"

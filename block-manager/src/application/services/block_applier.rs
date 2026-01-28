@@ -14,15 +14,19 @@ use node::bls::envelope::Envelope;
 use node::bls::GoshBLS;
 use node::types::AckiNackiBlock;
 use parking_lot::Mutex;
+use telemetry_utils::now_micros;
 use transport_layer::HostPort;
 use tvm_block::ShardStateUnsplit;
 
 use crate::application::metrics::Metrics;
+use crate::application::metrics::ERR_DESER_BLOCK;
 use crate::application::metrics::ERR_GRACEFULL_SHUTDOWN;
+use crate::application::metrics::ERR_QUARNTINE_BLOCK;
 use crate::application::metrics::ERR_RECORD_SEQNO;
 use crate::application::metrics::ERR_ROTATE_DB;
 use crate::application::metrics::ERR_STORE_BLOCK;
 use crate::application::metrics::ERR_UPDATE_BP_RESOLVER;
+use crate::application::quarantine::Quarantine;
 use crate::domain::models::AppState;
 use crate::domain::models::UpdatableBPResolver;
 use crate::domain::models::WorkerCommand;
@@ -30,6 +34,7 @@ use crate::domain::models::WorkerCommand;
 pub fn run(
     bp_resolver: Arc<Mutex<dyn UpdatableBPResolver>>,
     db_writer: SqliteHelper,
+    quarantine: Quarantine,
     app_state: Arc<AppState>,
     metrics: Option<Metrics>,
     cmd_rx: mpsc::Receiver<WorkerCommand>,
@@ -37,7 +42,7 @@ pub fn run(
     tokio::task::spawn_blocking(move || {
         match thread::Builder::new()
             .name("block-applier".to_string())
-            .spawn(|| worker(db_writer, cmd_rx, bp_resolver, app_state, metrics))
+            .spawn(|| worker(db_writer, quarantine, cmd_rx, bp_resolver, app_state, metrics))
             .expect("spawn block-subscriber worker")
             .join()
         {
@@ -50,6 +55,7 @@ pub fn run(
 
 fn worker(
     db_writer: SqliteHelper,
+    quarantine: Quarantine,
     rx: mpsc::Receiver<WorkerCommand>,
     bp_resolver: Arc<Mutex<dyn UpdatableBPResolver>>,
     app_state: Arc<AppState>,
@@ -64,13 +70,28 @@ fn worker(
         match rx.recv() {
             Ok(WorkerCommand::Data(v)) => {
                 tracing::debug!("Data received");
-                let (node_addr, raw_block) =
-                    bincode::deserialize::<(Option<HostPort>, Vec<u8>)>(&v)?;
-                let envelope: Envelope<GoshBLS, AckiNackiBlock> = bincode::deserialize(&raw_block)?;
+
+                let Ok((node_addr, raw_block, envelope)) = deserialize_block(&v) else {
+                    tracing::error!("Can't deserialize received block");
+                    if let Some(m) = &metrics {
+                        m.bm.report_errors(ERR_DESER_BLOCK);
+                    }
+                    let file_name = format!("not_deser_{}", now_micros());
+                    if let Err(err) = quarantine.store(&file_name, &v) {
+                        tracing::error!("can't store block in quarantine {file_name}: {err}");
+                        if let Some(m) = &metrics {
+                            m.bm.report_errors(ERR_QUARNTINE_BLOCK);
+                        }
+                    } else {
+                        tracing::warn!("stored in quarantine {file_name}")
+                    }
+                    continue;
+                };
+
                 let thread_id = envelope.data().get_common_section().thread_id;
                 if let Some(node_addr) = node_addr {
                     if let Err(err) =
-                        bp_resolver.lock().upsert(thread_id.to_string(), vec![node_addr])
+                        bp_resolver.lock().upsert(format!("{thread_id:x}"), vec![node_addr])
                     {
                         // This error can happen if `node_addr` can't be parsed as a SocketAddress
                         tracing::error!("Failed to update bp_resolver state: {err}");
@@ -103,13 +124,23 @@ fn worker(
                 if let Err(err) = node::database::serialize_block::reflect_block_in_db(
                     db_helper.clone(),
                     envelope,
-                    Some(raw_block),
+                    Some(raw_block.clone()),
                     shard_state.clone(),
                     &mut transaction_traces,
                 ) {
                     tracing::error!("failed to store block: {err}");
                     if let Some(m) = &metrics {
                         m.bm.report_errors(ERR_STORE_BLOCK);
+                    }
+                    // Store block in quarantine
+                    let file_name = format!("not_stored_{}", now_micros());
+                    if let Err(err) = quarantine.store(&file_name, &v) {
+                        tracing::error!("can't store block in quarantine {file_name}: {err}");
+                        if let Some(m) = &metrics {
+                            m.bm.report_errors(ERR_QUARNTINE_BLOCK);
+                        }
+                    } else {
+                        tracing::warn!("stored in quarantine {file_name}")
                     }
                 };
             }
@@ -146,4 +177,12 @@ fn worker(
             Err(err) => bail!("Error reading from channel: {err}"),
         };
     }
+}
+
+fn deserialize_block(
+    v: &[u8],
+) -> anyhow::Result<(Option<HostPort>, Vec<u8>, Envelope<GoshBLS, AckiNackiBlock>)> {
+    let (node_addr, raw_block) = bincode::deserialize::<(Option<HostPort>, Vec<u8>)>(v)?;
+    let envelope: Envelope<GoshBLS, AckiNackiBlock> = bincode::deserialize(&raw_block)?;
+    Ok((node_addr, raw_block, envelope))
 }

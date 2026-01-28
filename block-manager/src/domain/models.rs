@@ -34,5 +34,5 @@ pub struct AppState {
 }
 
 pub trait UpdatableBPResolver: BPResolver {
-    fn upsert(&mut self, thread_id: String, bp_list: Vec<HostPort>) -> anyhow::Result<()>;
+    fn upsert(&self, thread_id: String, bp_list: Vec<HostPort>) -> anyhow::Result<()>;
 }

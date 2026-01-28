@@ -137,7 +137,6 @@ impl TVMBlockProducerProcess {
         round: BlockRound,
         parent_block_state: BlockState,
         protocol_version: ProtocolVersion,
-        #[cfg(feature = "mirror_repair")] is_updated_mv: Arc<Mutex<bool>>,
     ) -> anyhow::Result<(ProcudeNextResult, BlockState)> {
         tracing::trace!("Start block production process iteration");
         let start_time = std::time::SystemTime::now();
@@ -174,7 +173,6 @@ impl TVMBlockProducerProcess {
                 ))
             })?;
 
-        #[cfg(not(feature = "mirror_repair"))]
         let producer = TVMBlockProducer::builder()
             .node_config_read(node_config_read)
             .active_threads(mem::take(active_block_producer_threads))
@@ -193,28 +191,6 @@ impl TVMBlockProducerProcess {
             .metrics(metrics.clone())
             .wasm_cache(wasm_cache)
             .build();
-
-        #[cfg(feature = "mirror_repair")]
-        let producer = TVMBlockProducer::builder()
-            .node_config_read(node_config_read)
-            .active_threads(mem::take(active_block_producer_threads))
-            .blockchain_config(blockchain_config.clone())
-            .message_queue(message_queue)
-            .producer_node_id(producer_node_id.clone())
-            .thread_count_soft_limit(node_config.thread_count_soft_limit)
-            .parallelization_level(parallelization_level)
-            .block_keeper_epoch_code_hash(node_config.block_keeper_epoch_code_hash.clone())
-            .block_keeper_preepoch_code_hash(node_config.block_keeper_preepoch_code_hash.clone())
-            .epoch_block_keeper_data(epoch_block_keeper_data)
-            .shared_services(shared_services.clone())
-            .block_nack(block_nack.clone())
-            .accounts(accounts_repo)
-            .block_state_repository(block_state_repo.clone())
-            .metrics(metrics.clone())
-            .wasm_cache(wasm_cache)
-            .is_updated_mv(is_updated_mv.clone())
-            .build();
-
         let (control_tx, control_rx) =
             instrumented_channel(metrics.clone(), crate::helper::metrics::ROUTING_COMMAND_CHANNEL);
 
@@ -417,7 +393,7 @@ impl TVMBlockProducerProcess {
             return Ok((ProcudeNextResult::Stopped, produced_block_state));
         }
         // Update common section
-        let mut common_section = block.get_common_section();
+        let mut common_section = block.get_common_section().clone();
         common_section.set_acks(aggregated_acks);
         common_section.set_nacks(aggregated_nacks.clone());
         block.set_common_section(common_section, false)?;
@@ -550,7 +526,6 @@ impl TVMBlockProducerProcess {
         is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
         initial_round: BlockRound,
         block_version: ProtocolVersion,
-        #[cfg(feature = "mirror_repair")] is_updated_mv: Arc<Mutex<bool>>,
     ) -> anyhow::Result<()> {
         #[cfg(feature = "test_upgrade")]
         {
@@ -597,9 +572,18 @@ impl TVMBlockProducerProcess {
                 {
                     state
                 } else if prev_block_id == &BlockIdentifier::default() {
-                    self.repository.get_zero_state_for_thread(thread_id)?
+                    if let Some(state) = self.repository.get_zero_state_for_thread(thread_id)? {
+                        state
+                    } else {
+                        tracing::trace!("start_thread_production: production should start from zero block id, but zerostate was not specified");
+                        return Ok(());
+                    }
                 } else {
-                    panic!("Failed to find optimistic in repository for block {:?}", &prev_block_id)
+                    tracing::trace!(
+                        "Failed to find optimistic in repository for block {:?}",
+                        &prev_block_id
+                    );
+                    return Ok(());
                 }
             }
         };
@@ -677,8 +661,6 @@ impl TVMBlockProducerProcess {
                     round,
                     parent_block_state,
                     block_version.clone(),
-                    #[cfg(feature = "mirror_repair")]
-                    is_updated_mv.clone(),
                 );
                 // Note:
                 // if stopped.is_ok() ... is skipped.
@@ -898,9 +880,6 @@ mod tests {
     #[test]
     #[ignore]
     fn test_producer() -> anyhow::Result<()> {
-        #[cfg(feature = "mirror_repair")]
-        let is_updated_mv = Arc::new(Mutex::new(false));
-
         let root_dir = testdir!();
         crate::tests::init_db(&root_dir).expect("Failed to init DB 1");
         let mut config = crate::tests::default_config(NodeIdentifier::test(1));
@@ -911,7 +890,7 @@ mod tests {
         config.local.blockchain_config_path = config_dir.join("blockchain.conf.json");
         config.local.key_path =
             config_dir.join("block_keeper1_bls.keys.json").to_string_lossy().to_string();
-        config.local.zerostate_path = config_dir.join("zerostate");
+        config.local.zerostate_path = Some(config_dir.join("zerostate"));
         config.local.block_keeper_seed_path =
             config_dir.join("block_keeper1_bls.keys.json").to_string_lossy().to_string();
 
@@ -925,7 +904,7 @@ mod tests {
 
         let repository = RepositoryImpl::new(
             root_dir.clone(),
-            Some(config.local.zerostate_path.clone()),
+            config.local.zerostate_path.clone(),
             1,
             SharedServices::start(
                 RoutingService::stub().0,
@@ -945,8 +924,6 @@ mod tests {
             message_db.clone(),
             finalized_blocks,
             mock_bk_set_updates_tx(),
-            #[cfg(feature = "mirror_repair")]
-            is_updated_mv.clone(),
             ConfigRead::new(ProtocolVersion::parse("None")?, global_config.clone(), None, None),
         );
         let (router, _router_rx) = RoutingService::stub();
@@ -994,8 +971,6 @@ mod tests {
             Arc::new(Mutex::new(None)),
             0,
             ProtocolVersion::parse("test")?,
-            #[cfg(feature = "mirror_repair")]
-            is_updated_mv.clone(),
         )?;
 
         let running_time = Instant::now();

@@ -1,10 +1,11 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use async_graphql::InputObject;
 use serde::Serialize;
 use serde_with::with_prefix;
 
+use crate::schema::graphql::filter::OptBlobFilter;
 use crate::schema::graphql::filter::OptBooleanFilter;
 use crate::schema::graphql::filter::OptFloatFilter;
 use crate::schema::graphql::filter::OptIntFilter;
@@ -24,8 +25,18 @@ pub struct ExtBlkRefFilter {
 
 #[derive(InputObject, Debug, Serialize, Default)]
 #[graphql(rename_fields = "snake_case")]
+pub struct BlockHeightFilter {
+    pub height: OptBlobFilter,
+    pub thread_id: OptStringFilter,
+    #[graphql(name = "OR")]
+    pub or: Option<Box<BlockHeightFilter>>,
+}
+
+#[derive(InputObject, Debug, Serialize, Default)]
+#[graphql(rename_fields = "snake_case")]
 pub struct BlockFilter {
     pub id: OptStringFilter,
+    pub block_height: Option<BlockHeightFilter>,
     pub after_merge: OptBooleanFilter,
     pub after_split: OptBooleanFilter,
     pub flags: OptIntFilter,

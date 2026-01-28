@@ -110,6 +110,10 @@ contract GiverV3 is Upgradable {
             messages.push(Message(msgHash, expireAt));
         }
     }
+    
+    function getData(string name, uint128 decimals, TvmCell walletCode, TvmCell transactionCode, uint256 pubkey, bool mintDisabled, address initialSupplyToOwner, uint128 initialSupply) public view returns (TvmCell) {
+        return abi.encode(name, decimals, walletCode, transactionCode, pubkey, mintDisabled, initialSupplyToOwner, initialSupply);
+    }
 
     function onCodeUpgrade() internal override {}
 }

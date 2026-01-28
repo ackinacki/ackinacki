@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -52,7 +53,6 @@ impl<PeerId: Display> Debug for NetEndpoint<PeerId> {
 pub struct NetPeer<PeerId> {
     pub id: PeerId,
     pub addr: SocketAddr,
-    pub bm_api_addr: Option<SocketAddr>,
     pub bk_api_host_port: Option<HostPort>,
     pub bk_api_url_for_storage_sync: Option<Url>,
     pub bk_api_addr_deprecated: Option<SocketAddr>,
@@ -64,7 +64,6 @@ impl<PeerId: Display> NetPeer<PeerId> {
         Self {
             id,
             addr,
-            bm_api_addr: None,
             bk_api_host_port: None,
             bk_api_url_for_storage_sync: None,
             bk_api_addr_deprecated: None,
@@ -80,12 +79,7 @@ impl<PeerId: Display> NetPeer<PeerId> {
             self.addr,
             hex::encode(self.bk_owner_pubkey.as_bytes()).chars().take(6).collect::<String>()
         )?;
-        if let Some(bm) = &self.bm_api_addr {
-            write!(f, ", bm:{bm}")?;
-        }
-        if let Some(bk) = &self.bk_api_addr_deprecated {
-            write!(f, ", bk:{bk}")?;
-        }
+        write!(f, ", bk:{}", self.resolve_bk_host_port(8600))?;
         Ok(())
     }
 
@@ -110,7 +104,6 @@ impl<PeerId> From<GossipPeer<PeerId>> for NetPeer<PeerId> {
         Self {
             id: value.id,
             addr: value.node_protocol_addr,
-            bm_api_addr: value.bm_api_addr,
             bk_api_host_port: value.bk_api_host_port,
             bk_api_url_for_storage_sync: value.bk_api_url_for_storage_sync,
             bk_api_addr_deprecated: value.bk_api_addr_deprecated,
@@ -242,8 +235,8 @@ impl<PeerId: Clone + PartialEq + Eq + Display + Debug + Hash> NetTopology<PeerId
         self.0.endpoint_is_peer_from_my_segment(remote_endpoint)
     }
 
-    pub fn resolve_peer(&self, peer_id: &PeerId) -> Option<&[NetPeer<PeerId>]> {
-        self.0.peer_resolver.get(peer_id).map(|x| x.as_slice())
+    pub fn resolve_peer(&self, peer_id: &PeerId) -> &[NetPeer<PeerId>] {
+        self.0.peer_resolver.get(peer_id).map(Vec::as_slice).unwrap_or(&[])
     }
 
     pub fn peer_resolver(&self) -> &HashMap<PeerId, Vec<NetPeer<PeerId>>> {
@@ -350,11 +343,9 @@ impl<PeerId: Clone + PartialEq + Eq + Display + Debug + Hash> Topology<PeerId> {
     ) -> HashMap<PeerId, Vec<NetPeer<PeerId>>> {
         let mut peer_resolver = HashMap::new();
         let mut insert_peer = |peer: &NetPeer<PeerId>| {
-            let resolved_peers = if let Some(existing) = peer_resolver.get_mut(&peer.id) {
-                existing
-            } else {
-                peer_resolver.insert(peer.id.clone(), Vec::new());
-                peer_resolver.get_mut(&peer.id).unwrap()
+            let resolved_peers = match peer_resolver.entry(peer.id.clone()) {
+                Entry::Occupied(e) => e.into_mut(),
+                Entry::Vacant(e) => e.insert(Vec::new()),
             };
             if resolved_peers.len() < config.max_nodes_with_same_id {
                 sorted_insert_peer(resolved_peers, peer.clone());
@@ -477,7 +468,6 @@ mod tests {
             proxies: proxies.into(),
             pubkey_signature: None,
             bk_api_addr_deprecated: None,
-            bm_api_addr: None,
             bk_api_url_for_storage_sync: None,
             bk_api_host_port: None,
         }

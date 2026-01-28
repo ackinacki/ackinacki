@@ -8,7 +8,6 @@ use serde::Serialize;
 use serde::Serializer;
 
 use super::ProtocolVersion;
-use crate::versioning::protocol_version::ProtocolVersionHash;
 
 // Each node running MUST support at least one version of a protocol.
 
@@ -47,6 +46,13 @@ impl ProtocolVersionSupport {
         }
     }
 
+    pub fn is_transitioning_to(&self, target: &ProtocolVersion) -> bool {
+        match &self.status {
+            ProtocolVersionSupportStatus::Current => false,
+            ProtocolVersionSupportStatus::TransitioningTo(version) => version == target,
+        }
+    }
+
     pub fn is_transitioning(&self) -> bool {
         match &self.status {
             ProtocolVersionSupportStatus::Current => false,
@@ -54,15 +60,13 @@ impl ProtocolVersionSupport {
         }
     }
 
-    pub fn supports_version(&self, protocol_version_hash: &ProtocolVersionHash) -> bool {
-        let bash_hash = self.base.hash();
-        let next_version_hash = match &self.status {
+    pub fn supports_version(&self, protocol_version: &ProtocolVersion) -> bool {
+        let next_version = match &self.status {
             ProtocolVersionSupportStatus::Current => None,
-            ProtocolVersionSupportStatus::TransitioningTo(v) => Some(v.hash()),
+            ProtocolVersionSupportStatus::TransitioningTo(v) => Some(v),
         };
-        &bash_hash == protocol_version_hash
-            || next_version_hash
-                .is_some_and(|next_version_hash| &next_version_hash == protocol_version_hash)
+        &self.base == protocol_version
+            || next_version.is_some_and(|next_version| next_version == protocol_version)
     }
 
     pub fn is_none(&self) -> bool {

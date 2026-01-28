@@ -414,7 +414,6 @@ pub async fn split_node_config(
                             id: config.id.clone(),
                             node_protocol_addr: config.network.bind,
                             proxies: vec![],
-                            bm_api_addr: None,
                             bk_api_host_port: None,
                             bk_api_url_for_storage_sync: Some(Url::parse(&format!("http://{}", config.network.bind)).unwrap()),
                             bk_api_addr_deprecated: None,
@@ -554,7 +553,6 @@ impl<Transport: NetTransport + 'static> Node<Transport> {
             id: config.id.clone(),
             node_protocol_addr: config.network.bind,
             proxies: config.proxies.clone().into(),
-            bm_api_addr: None,
             bk_api_host_port: None,
             bk_api_url_for_storage_sync: Some(Url::parse(&format!(
                 "http://{}",

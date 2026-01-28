@@ -2,6 +2,7 @@
 //
 
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -76,12 +77,19 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let db_path = PathBuf::from(args.db_path);
 
-    if let Err(err) = fs::create_dir_all(db_path.clone()) {
-        eprintln!("Failed to create data dir {db_path:?}: {err}");
+    let (db_dir, db_file) =
+        if db_path.is_file() || (!db_path.exists() && db_path.extension().is_some()) {
+            let parent = db_path.parent().unwrap_or_else(|| Path::new("."));
+            (parent.to_path_buf(), db_path.clone())
+        } else {
+            (db_path.clone(), db_path.join("bm-schema.db"))
+        };
+
+    if let Err(err) = fs::create_dir_all(db_dir.clone()) {
+        eprintln!("Failed to create data dir {db_dir:?}: {err}");
         std::process::exit(1);
     }
 
-    let db_file = db_path.join("bm-schema.db");
     let mut conn = Connection::open(db_file.clone())?;
     let current_version =
         conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap_or(0);

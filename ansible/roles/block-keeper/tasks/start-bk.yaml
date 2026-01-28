@@ -34,6 +34,21 @@
   include_tasks: synchronized-start.yaml
   when: SYNCHRONIZED_START is defined
 
+# Added temporary zerostate deleting step
+- name: Check if zerostate exists
+  ansible.builtin.stat:
+    path: "{{ BK_DIR }}/bk-configs/zerostate"
+  register: zerostate_stat
+  when: BK_SET_FILE and not ZEROSTATE
+
+- name: Delete zerostate if it exists
+  ansible.builtin.file:
+    path: "{{ BK_DIR }}/bk-configs/zerostate"
+    state: absent
+  when: 
+    - BK_SET_FILE and not ZEROSTATE
+    - "{{ zerostate_stat.stat.exists }}"
+
 - name: Compose up
   ansible.builtin.shell:
     chdir: "{{ BK_DIR }}"

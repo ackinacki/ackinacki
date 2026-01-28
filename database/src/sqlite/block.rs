@@ -1,7 +1,7 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use rusqlite::Row;
+// use rusqlite::Row;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::with_prefix;
@@ -74,68 +74,12 @@ pub struct ArchBlock {
     pub value_flow: Option<BlockValueFlow>,
     pub thread_id: Option<String>,
     pub producer_id: Option<String>,
+    pub height: [u8; 8],
+    pub envelope_hash: [u8; 32],
 }
 
 with_prefix!(prefix_prev_ref "prev_ref_");
 with_prefix!(prefix_prev_alt_ref "prev_alt_ref_");
-
-impl From<&Row<'_>> for ArchBlock {
-    fn from(val: &Row<'_>) -> Self {
-        ArchBlock {
-            id: val.get(1).unwrap(),
-            status: val.get(2).unwrap(),
-            seq_no: val.get(3).unwrap(),
-            parent: val.get(4).unwrap(),
-            aggregated_signature: val.get(5).ok(),
-            signature_occurrences: val.get(6).ok(),
-            share_state_resource_address: val.get(7).ok(),
-            global_id: val.get(8).ok(),
-            version: val.get(9).ok(),
-            after_merge: val.get(10).ok(),
-            before_split: val.get(11).ok(),
-            after_split: val.get(12).ok(),
-            want_split: val.get(13).ok(),
-            want_merge: val.get(14).ok(),
-            key_block: val.get(15).ok(),
-            flags: val.get(16).ok(),
-            workchain_id: val.get(17).ok(),
-            gen_utime: val.get(18).ok(),
-            gen_utime_ms_part: val.get(19).ok(),
-            start_lt: val.get(20).ok(),
-            end_lt: val.get(21).ok(),
-            gen_validator_list_hash_short: val.get(22).ok(),
-            gen_catchain_seqno: val.get(23).ok(),
-            min_ref_mc_seqno: val.get(24).ok(),
-            prev_key_block_seqno: val.get(25).ok(),
-            gen_software_version: val.get(26).ok(),
-            gen_software_capabilities: val.get(27).ok(),
-            data: val.get(28).ok(),
-            file_hash: val.get(29).ok(),
-            root_hash: val.get(30).ok(),
-            prev_alt_ref: Some(ExtBlkRef {
-                seq_no: val.get(31).ok(),
-                end_lt: val.get(32).ok(),
-                file_hash: val.get(33).ok(),
-                root_hash: val.get(34).ok(),
-            }),
-            prev_ref: Some(ExtBlkRef {
-                seq_no: val.get(35).unwrap(),
-                end_lt: val.get(36).ok(),
-                file_hash: val.get(37).ok(),
-                root_hash: val.get(38).ok(),
-            }),
-            in_msgs: val.get(39).ok(),
-            out_msgs: val.get(40).ok(),
-            shard: val.get(41).ok(),
-            chain_order: val.get(42).ok(),
-            tr_count: val.get(43).ok(),
-            boc: val.get(44).ok(),
-            thread_id: val.get(45).ok(),
-            value_flow: None,
-            producer_id: val.get(46).ok(),
-        }
-    }
-}
 
 impl From<BlockSerializationSetFH> for ArchBlock {
     fn from(blk: BlockSerializationSetFH) -> Self {
@@ -275,7 +219,9 @@ pub mod tests {
                 "seq_no": 2,
                 "root_hash": "e833f25e76683f2cedee08d55b266a2b46018939fd6326b058b780527755f89b",
                 "file_hash": "47a5b87b2c0851926703f5d6bbdc57d6c293c62aec6051086fa5382298858ab5"
-            }
+            },
+            "height": [0,0,0,0,0,0,0,87],
+            "envelope_hash": vec![0u8; 32]
         });
 
         let block = serde_json::from_value::<ArchBlock>(item)?;

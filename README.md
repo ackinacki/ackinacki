@@ -16,12 +16,13 @@
     - [Prerequisites](#prerequisites)
     - [Configure tvm-cli](#configure-tvm-cli)
     - [Deploy](#deploy)
-    - [Updating the license whitelist in the BK Node Wallet](#updating-the-license-whitelist-in-the-bk-node-wallet)
+    - [Updating the License whitelist in the BK Node Wallet](#updating-the-license-whitelist-in-the-bk-node-wallet)
   - [Delegating License](#delegating-license)
   - [Block Keeper Deployment with Ansible](#block-keeper-deployment-with-ansible)
     - [Prerequisites](#prerequisites-1)
-    - [Key Variables](#key-variables)
+    - [BK DNS Name Generation](#bk-dns-name-generation)
     - [Prepare Your Inventory](#prepare-your-inventory)
+    - [Key Variables](#key-variables)
     - [Run the Ansible Playbook](#run-the-ansible-playbook)
     - [Run Multiple BK Nodes on a Single Server](#run-multiple-bk-nodes-on-a-single-server)
   - [Block Keeper Node Management](#block-keeper-node-management)
@@ -41,39 +42,54 @@
       - [1.2 Copying Keys](#12-copying-keys)
       - [1.3 Updating the Ansible Inventory File](#13-updating-the-ansible-inventory-file)
     - [2. Stopping the Old Server](#2-stopping-the-old-server)
-      - [2.1 Proper Node Shutdown](#21-proper-node-shutdown)
-      - [2.2 Stopping the Node](#22-stopping-the-node)
+    - [2.1 Proper Node Shutdown](#21-proper-node-shutdown)
+    - [2.2 Stopping the Node](#22-stopping-the-node)
     - [3. Starting the Node on the New Server](#3-starting-the-node-on-the-new-server)
-      - [3.1 Updating the Node IP address](#31-updating-the-node-ip-address)
-      - [3.2 Restoring the Keys](#32-restoring-the-keys)
-    - [4. Post-launch Checks](#6-post-launch-checks)
+    - [4. Post-launch Checks](#4-post-launch-checks)
       - [4.1 Docker Container Check](#41-docker-container-check)
       - [4.2 Node Log Check](#42-node-log-check)
       - [4.3 Node Synchronization Status Check](#43-node-synchronization-status-check)
+  - [How to Migrate a BK From One Proxy to Another](#how-to-migrate-a-bk-from-one-proxy-to-another)
+    - [1. Deploy a New Proxy](#1-deploy-a-new-proxy)
+      - [1.1 Prepare the Inventory](#11-prepare-the-inventory)
+      - [1.2 Test Deployment (Dry Run)](#12-test-deployment-dry-run)
+      - [1.3 Deploy the Proxy](#13-deploy-the-proxy)
+      - [1.4 Verify Proxy Logs](#14-verify-proxy-logs)
+    - [2. Migrate BKs to the New Proxy](#2-migrate-bks-to-the-new-proxy)
+      - [2.1 Update the BK Inventory](#21-update-the-bk-inventory)
+      - [2.2 Test the BK Configuration (Dry Run)](#22-test-the-bk-configuration-dry-run)
+      - [2.3 Apply the BK Configuration](#23-apply-the-bk-configuration)
+      - [2.4 Verify BK Status](#24-verify-bk-status)
+    - [3. Decommission the Old Proxy](#3-decommission-the-old-proxy)
   - [Troubleshooting](#troubleshooting)
     - [Recovery from Corrupted BK State](#recovery-from-corrupted-bk-state)
     - [Error with sending continue stake request](#error-with-sending-continue-stake-request)
 - [Block Manager Documentation](#block-manager-documentation)
   - [System Requirements](#system-requirements)
+  - [Deployment Overview](#deployment-overview)
   - [Deployment with Ansible](#deployment-with-ansible)
     - [Prerequisites](#prerequisites-3)
-    - [Generate Keys and Deploy the Block Manager Wallet](#generate-keys-and-deploy-the-block-manager-wallet)
-      - [Manually (applies if you don’t have a license number)](#manually-applies-if-you-dont-have-a-license-number)
-      - [Using the Script (if you already have a license number)](#using-the-script-if-you-already-have-a-license-number)
+    - [Block Manager Wallet Setup](#block-manager-wallet-setup)
+      - [Generate Keys](#generate-keys)
+      - [Manual Deployment (Without a License Number)](#manual-deployment-without-a-license-number)
+      - [Script-Based Deployment (With a License Number)](#script-based-deployment-with-a-license-number)
     - [Create an Ansible Inventory](#create-an-ansible-inventory)
-    - [Test the Ansible Playbook](#test-the-ansible-playbook)
-    - [Run the Ansible Playbook](#run-the-ansible-playbook-1)
-    - [Verify the Deployment](#verify-the-deployment)
-  - [Updating the Whitelist and Delegating the License to the BM Wallet](#updating-the-whitelist-and-delegating-the-license-to-the-bm-wallet)
+    - [Key Variables](#key-variables-1)
+    - [Deploy the Block Manager](#deploy-the-block-manager)
+      - [Test the Ansible Playbook](#test-the-ansible-playbook)
+      - [Run the Ansible Playbook](#run-the-ansible-playbook-1)
+      - [Verify the Deployment](#verify-the-deployment)
+  - [Update the Whitelist and Delegate the License](#update-the-whitelist-and-delegate-the-license)
+  - [Staking BM](#staking-bm)
 - [Proxy Documentation](#proxy-documentation)
   - [System Requirements](#system-requirements-1)
   - [Deployment with Ansible](#deployment-with-ansible-1)
     - [Prerequisites](#prerequisites-4)
     - [How Deployment Works](#how-deployment-works)
-    - [Key Variables](#key-variables-1)
+    - [Key Variables](#key-variables-2)
     - [Prepare Your Inventory](#prepare-your-inventory-1)
     - [Run the Ansible Playbook](#run-the-ansible-playbook-2)
-    - [Upgrading proxy configuration or image](#upgrading-proxy-configuration-or-image)
+    - [Upgrading proxy Configuration or Image](#upgrading-proxy-configuration-or-image)
 
 # Block Keeper System Requirements
 
@@ -91,14 +107,14 @@ If you want to join the network right from the start, you need to take part in t
 
 ## Stage 1. Preparation Checklist
 
-**If you delegate license to your own nodes, you act simultaneously as a License Owner and Node Owner.**
+**If you delegate License to your own nodes, you act simultaneously as a License Owner and Node Owner.**
 
 ### For License Owner
 
-- ✅ You must delegate the licenses that you want to be included in the Zerostate. [See the instruction](https://docs.ackinacki.com/protocol-participation/license/license-delegation-guide#self-delegation-node-owners)
+- ✅ You must delegate the Licenses that you want to be included in the Zerostate. [See the instruction](https://docs.ackinacki.com/protocol-participation/license/license-delegation-guide#self-delegation-node-owners)
 
   ℹ️ **Note:**
-  Even if you, as the License Owner, plan to delegate licenses to your own nodes, you still need to generate a `Node Provider Key Pair` ([using this instruction](https://github.com/ackinacki/acki-nacki-igniter/blob/main/README.md#generate-a-node-provider-key-pair)) for security reasons
+  Even if you, as the License Owner, plan to delegate Licenses to your own nodes, you still need to generate a `Node Provider Key Pair` ([using this instruction](https://github.com/ackinacki/acki-nacki-igniter/blob/main/README.md#generate-a-node-provider-key-pair)) for security reasons
   and complete the steps required for Node Owners (described below).
 
 ### For Node Owner
@@ -115,7 +131,7 @@ If you want to join the network right from the start, you need to take part in t
     - ✔️ generate the `Confirmation Signatures`
 
   🚨 **Important:**
-  Do this for every delegated license on each node.
+  Do this for every delegated License on each node.
 
 - ✅ Create a [`config.yaml`](https://github.com/gosh-sh/acki-nacki-igniter?tab=readme-ov-file#prepare-confirmation-signatures-and-create-configyaml) configuration file for running the Igniter.
 
@@ -127,9 +143,9 @@ If you want to join the network right from the start, you need to take part in t
 
 🚨 **Important:**
 * The Igniter must be run for each node with the same server IP addresses and Proxy IP addresses where the BK will later be deployed.
-* The Igniter must use the same keys and licenses that will be used for deploying the BK.
+* The Igniter must use the same keys and Licenses that will be used for deploying the BK.
 
-After starting the Igniter, you can verify your node data (licenses, BLS keys, Proxy IPs, BK public key, etc.) at:
+After starting the Igniter, you can verify your node data (Licenses, BLS keys, Proxy IPs, BK public key, etc.) at:
 `http://<your-node-IP>:10001`
 (for example: http://94.156.178.1:10001)
 
@@ -141,7 +157,7 @@ Data collected by the Igniters will be used to form the zerostate.
 
 At network launch, the Zerostate will include:
 * all BK wallets with their corresponding whitelists,
-* all license contracts, and mappings to the contracts of the Node Owners’ wallets to which they were delegated.
+* all License contracts, and mappings to the contracts of the Node Owners’ wallets to which they were delegated.
 
 ## Stage 3. Launch After the GOSH Team Signal
 
@@ -164,20 +180,20 @@ You can change a node’s ip-adress after the network launch.
 In this phase, BK nodes that did not participate in the previous network launch phase will be able to join.
 
 ℹ️ **Note:**
-If you delegate license to your own node, you act simultaneously as a License Owner and a Node Owner.
+If you delegate License to your own node, you act simultaneously as a License Owner and a Node Owner.
 
 **To join the network, follow these steps:**
 
 ## Join As a License Owner
 
 **Step 1.**
-After purchasing a license, register in the [dashboard](https://dashboard.ackinacki.com) using [this guide](#delegating-license) to get license details (number and contract address).
+After purchasing a License, register in the [dashboard](https://dashboard.ackinacki.com) using [this guide](#delegating-license) to get License details (number and contract address).
 
 **Step 2.**
-Provide your license number to the chosen Node Owner so they can add it to their BK wallet whitelist.
+Provide your License number to the chosen Node Owner so they can add it to their BK wallet whitelist.
 
 **Step 3.**
-After confirmation from the Node Owner, delegate your license to the chosen BK using the BK Node Owner’s public key:
+After confirmation from the Node Owner, delegate your License to the chosen BK using the BK Node Owner’s public key:
   * via the dashboard [see instruction](https://docs.ackinacki.com/protocol-participation/license/license-delegation-guide#delegation-via-acki-nacki-dashboard),
   or
   * manually via `tvm-cli` [see instruction](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#delegating-license).
@@ -189,34 +205,34 @@ Now wait for your BK to add your stake to the staking pool.
 
 ℹ️ **Note:**
 To check your rewards:
-* Call `getDetails` in the BK wallet (see the balance field in the license mapping)  
+* Call `getDetails` in the BK wallet (see the balance field in the License mapping)  
 [You can find more details here](https://docs.ackinacki.com/for-node-owners/protocol-participation/block-keeper/license/working-with-licenses)
 
 * You can also view your rewards using the [dashboard](https://dashboard.ackinacki.com).
 
 🚨 **Important:**
-Condition for receiving the maximum reward: continuous operation and not locking the license on the wallet.
+Condition for receiving the maximum reward: continuous operation and not locking the License on the wallet.
 
 ## Join As a BK Node Owner
 
 **Step 1.**
-To deploy a BK wallet with a whitelist (license numbers received from License Owners), [follow this guide](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#block-keeper-wallet-deployment).
+To deploy a BK wallet with a whitelist (License numbers received from License Owners), [follow this guide](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#block-keeper-wallet-deployment).
 
 ℹ️ **Note:**
 The whitelist [can be updated](#updating-the-license-whitelist-in-the-bk-node-wallet) at any time.
 
 **Step 2.**
-Share the BK wallet’s public key with the License Owner so they can delegate their licenses.
+Share the BK wallet’s public key with the License Owner so they can delegate their Licenses.
 
 **Step 3.**
 If you run multiple nodes and your network card is under 2 Gbps, set up a Proxy service [using the instruction](https://docs.ackinacki.com/protocol-participation/proxy-service) for stable operation, or use existing deployed proxies.
 
 **Step 4.**
 Start the node and staking:
-After at least one license is delegated, the Node Owner deploys BK software and starts staking on the server [using the instruction](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#block-keeper-deployment-with-ansible).
+After at least one License is delegated, the Node Owner deploys BK software and starts staking on the server [using the instruction](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#block-keeper-deployment-with-ansible).
 
 🚨 **Important:**
-After delegating the license to the BK wallet, you have **only half an epoch to submit the stake**.
+After delegating the License to the BK wallet, you have **only half an epoch to submit the stake**.
 
 **Step 5.**
 [Check the node status](https://github.com/ackinacki/ackinacki?tab=readme-ov-file#check-node-status).
@@ -230,8 +246,8 @@ After delegating the license to the BK wallet, you have **only half an epoch to 
 ### Prerequisites
 - The [**`tvm-cli`**](https://github.com/tvmlabs/tvm-sdk/releases) command-line tool must be installed.
 
-- A deployed license contract with obtained license numbers.
-  Refer to the [Working with Licenses](https://docs.ackinacki.com//protocol-participation/license/working-with-licenses) section for details.
+- A deployed License contract with obtained License numbers.
+  Refer to the [`Working with Licenses`](https://docs.ackinacki.com/for-node-owners/protocol-participation/block-keeper/license/working-with-licenses) section for details.
 
 ### Configure tvm-cli
 For this example, we are using the `Shellnet` network.
@@ -251,7 +267,7 @@ To run the script, you need to provide the following arguments:
     * If not, new keys will be generated and saved in this file.
 
 * `-l` – A list of [License numbers](https://docs.ackinacki.com/glossary#license-number) to add to the [Block Keeper Wallet whitelist](https://docs.ackinacki.com/glossary#bk-wallet-whitelist). (Use `,` as a delimiter without spaces).
-    * These license numbers must be obtained from the License Owners.
+    * These License numbers must be obtained from the License Owners.
 
 For example:
 ```bash
@@ -265,15 +281,15 @@ After the script completes successfully, make sure to save:
 
 These will be required later when running the Ansible playbook.
 
-### Updating the license whitelist in the BK Node Wallet
+### Updating the License whitelist in the BK Node Wallet
 
-The Node Owner can update the license whitelist at any time. However, the changes will only take effect at the beginning of the next Epoch.
+The Node Owner can update the License whitelist at any time. However, the changes will only take effect at the beginning of the next Epoch.
 
-To do this, call the `setLicenseWhiteList(mapping(uint256 => bool))` method in your Block Keeper Node Wallet contract, passing the license numbers received from the License Owners.
+To do this, call the `setLicenseWhiteList(mapping(uint256 => bool))` method in your Block Keeper Node Wallet contract, passing the License numbers received from the License Owners.
 
 Where:
-* `uint256 (key)` – the license number;
-* `bool (value)` – set to `true` to **add** the license on the whitelist, or `false` to **remove** it.
+* `uint256 (key)` – the License number;
+* `bool (value)` – set to `true` to **add** the License on the whitelist, or `false` to **remove** it.
 
 Example command:
 ```shell
@@ -285,13 +301,13 @@ tvm-cli call <BK_NODE_WALLET_ADDR> setLicenseWhiteList \
 
 ## Delegating License
 
-Before starting staking, a node must have at least one delegated license.
-However, no more than 20 (twenty) licenses can be delegated to a single node.
+Before starting staking, a node must have at least one delegated License.
+However, no more than 20 (twenty) Licenses can be delegated to a single node.
 
-Learn more about [working with licenses](https://docs.ackinacki.com//protocol-participation/license/working-with-licenses).
+Learn more about [working with Licenses](https://docs.ackinacki.com/for-node-owners/protocol-participation/block-keeper/license/working-with-licenses).
 
-If the BK Node Owner is also a License Owner, they must use the `addBKWallet(uint256 pubkey)` method in the [`License`](https://github.com/ackinacki/ackinacki/blob/main/contracts/0.79.3_compiled/bksystem/License.sol) contract to delegate their licenses to their node.
-(This must be done for each license contract).
+If the BK Node Owner is also a License Owner, they must use the `addBKWallet(uint256 pubkey)` method in the [`License`](https://github.com/ackinacki/ackinacki/blob/main/contracts/0.79.3_compiled/bksystem/License.sol) contract to delegate their Licenses to their node.
+(This must be done for each License contract).
 
 Where:
 * `pubkey` – the public key of the BK node wallet.
@@ -304,7 +320,7 @@ tvm-cli -j callx --addr 0:7f2f945faaae4cce286299afe74dac9460893dd5cba1ac273b9e91
 ```
 
 🚨 **Important:**
-**After delegating the license to the BK wallet, you have only half an epoch to submit the stake.**
+**After delegating the License to the BK wallet, you have only half an epoch to submit the stake.**
 
 ## Block Keeper Deployment with Ansible
 
@@ -358,7 +374,7 @@ all:
 
     BK_FOLDER_NAME: "block-keeper"
 
-    IMAGE_VERSION: "v0.13.10"   # Node patch version for the update
+    IMAGE_VERSION: "v0.13.2"   # Node patch version for the update
     NETWORK_NAME: "network-name"             # i.e. shellnet
     UPD_NETWORK_NAME: "network-name"    
     OTEL_SERVICE_NAME: "{{ NETWORK_NAME }}"
@@ -389,8 +405,7 @@ all:
     BK_DATA_DIR: "{{ MNT_DATA }}/block-keeper"
     BK_LOGS_DIR: "{{ MNT_DATA }}/logs-block-keeper"
 
-    NODE_CONFIGS:
-      - "zerostate"
+    NODE_CONFIGS: []
     
     AS_VERSION: "8.1.0.1"
 
@@ -419,8 +434,8 @@ all:
 
     # Remove this variable from the inventory before upgrading nodes to avoid unnecessary steps.
     # However, it is required when starting new nodes without existing data,
-    # especially if they are running behind your own proxy servers.
-    BOOTSTRAP_BK_SET_URL: "BK_HOSTNAME:BIND_API_PORT/v2/bk_set_update"   # shellnet bootstrap url is "http://shellnet0.ackinacki.org:8600/v2/bk_set_update"
+    # especially if they are running behind your own Proxy servers.
+    MAIN_BOOTSTRAP_BK_SET_URL: "http://shellnet0.ackinacki.org:8600/v2/bk_set_update"
 
 block_keepers:
   hosts:
@@ -475,7 +490,7 @@ If rotated log files are too large, you may want to shorten the rotation period.
 
 For example, the value `"*/5 *"` means that log files will be rotated every 5 minutes.
 
-`BOOTSTRAP_BK_SET_URL` should be set to the provided URL to correctly retrieve the initial BK set, ensuring that the node connects properly to the network and proxy server. When upgrading, this variable should be removed to avoid unnecessary logic execution.
+`BOOTSTRAP_BK_SET_URL` should be set to the provided URL to correctly retrieve the initial BK set, ensuring that the node connects properly to the network and Proxy server. When upgrading, this variable should be removed to avoid unnecessary logic execution.
 
 `HOST_PUBLIC_IP`: The public IP address of the host. Make sure that the ports do not conflict with other services.
 
@@ -507,12 +522,13 @@ Upon completion of the script, BLS keys will be generated and saved in the file 
 
 **`BLS keys`** - the keys used by Block Keeper (BK) to sign blocks. The keys have a lifespan of one Epoch. New BLS keys are generated during restaking. Each BK maintains a list of BLS public keys from other BKs (for the current Epoch), which are used to verify attestations on blocks.
 
-🚨 **Important:**
-**Back up your BLS keys every time they are regenerated.**
+🚨 Important:
+**Be sure to back up your BLS keys.** 
+BLS keys for the new Epoch are generated at the moment the staking continue is sent.
 
 During the deployment of a BK node, the staking script will also be automatically started.
 
-Check the Docker containers.
+Check the Docker containers:
 
 ```bash
 docker ps
@@ -565,7 +581,7 @@ all:
 
     BK_FOLDER_NAME: "block-keeper-{{ (NODE_ID | string)[:6] }}"
 
-    IMAGE_VERSION: "v0.13.10"   # Node patch version for the update
+    IMAGE_VERSION: "v0.13.2"   # Node patch version for the update
     NETWORK_NAME: "network-name"             # i.e. shellnet
     UPD_NETWORK_NAME: "network-name"    
     OTEL_SERVICE_NAME: "{{ NETWORK_NAME }}"
@@ -596,8 +612,7 @@ all:
     BK_DATA_DIR: "{{ MNT_DATA }}/block-keeper"
     BK_LOGS_DIR: "{{ MNT_DATA }}/logs-block-keeper"
 
-    NODE_CONFIGS:
-      - "zerostate"
+    NODE_CONFIGS: []
     
     AS_VERSION: "8.1.0.1"
 
@@ -626,9 +641,8 @@ all:
 
     # Remove this variable from the inventory before upgrading nodes to avoid unnecessary steps.
     # However, it is required when starting new nodes without existing data,
-    # especially if they are running behind your own proxy servers.
-    BOOTSTRAP_BK_SET_URL: "BK_HOSTNAME:BIND_API_PORT/v2/bk_set_update"   # shellnet bootstrap url is "http://shellnet0.ackinacki.org:8600/v2/bk_set_update"
-
+    # especially if they are running behind your own Proxy servers.
+    MAIN_BOOTSTRAP_BK_SET_URL: "http://shellnet0.ackinacki.org:8600/v2/bk_set_update"
 block_keepers:
   hosts:
 
@@ -737,9 +751,9 @@ The staking container is part of the Docker Compose setup and runs alongside the
 ℹ️ **Note:**
   Stakes and rewards are denominated in [NACKL](https://docs.ackinacki.com/glossary#nack) tokens.
   Node receives rewards per each License delegated to it.
-  Maximum number of licenses delegated per node is 20.
+  Maximum number of Licenses delegated per node is 20.
 
-  As a Block Keeper with an active license, you can participate in staking under special conditions: if your BK wallet balance is below the [minimum stake](https://docs.ackinacki.com/glossary#minimal-stake), you can still place a stake as long as you continue staking without interruptions and do not withdraw the received rewards.
+  As a Block Keeper with an active License, you can participate in staking under special conditions: if your BK wallet balance is below the [minimum stake](https://docs.ackinacki.com/glossary#minimal-stake), you can still place a stake as long as you continue staking without interruptions and do not withdraw the received rewards.
 
   If your stake exceeds the [maximum stake](https://docs.ackinacki.com/glossary#maximum-stake), the excess amount will be automatically returned to your wallet.
 
@@ -753,8 +767,7 @@ The staking container is part of the Docker Compose setup and runs alongside the
   tvm-cli -j run 0:7777777777777777777777777777777777777777777777777777777777777777 getMaxStakeNow {} --abi contracts/0.79.3_compiled/bksystem/BlockKeeperContractRoot.abi.json
   ```
 
-  You will need the ABI file [BlockKeeperContractRoot.abi.json](https://raw.githubusercontent.com/ackinacki/ackinacki/fa3c2685c5efaaded16aa370066a39ea12d0f899/contracts/0.79.3_compiled/bksystem/BlockKeeperContractRoot.abi.json) to run these commands.
-
+  You will need the ABI file [BlockKeeperContractRoot.abi.json](https://raw.githubusercontent.com/ackinacki/ackinacki/refs/heads/main/contracts/0.79.3_compiled/bksystem/BlockKeeperContractRoot.abi.json) to run these commands.
 
 ### Prerequisites
 - BK Node Owner keys file
@@ -1060,6 +1073,128 @@ node_sync_status.sh path/to/log
 Additionally, ensure that:  
 **the staking script runs without errors and reports the correct staking status**
 
+## How to Migrate a BK From One Proxy to Another
+
+Migrating BKs nodes from one Proxy to another consists of two main stages:
+
+1. **Deploying a new Proxy** on a new server
+2. **Gradually switching BKs** from the old Proxy to the new one (it is recommended to migrate in batches of 5 BKs)
+
+🚨 **Important:**  
+The old Proxy **must remain operational** throughout the migration process. The old Proxy server should be decommissioned **only after** all BKs have been successfully reconnected to the new Proxy and are visible in the metrics.
+
+### 1. Deploy a New Proxy
+
+#### 1.1 Prepare the Inventory
+
+To deploy a new Proxy, you can reuse the inventory of the old Proxy, **changing the following variables**:
+
+* `PROXY_ID` — a unique identifier for the new Proxy
+* `HOST_PUBLIC_IP` — the public IP address of the new server
+
+Example:
+
+PROXY_ID: proxy-new
+HOST_PUBLIC_IP: x.x.x.x
+
+#### 1.2 Test Deployment (Dry Run)
+
+Before performing the actual deployment, run Ansible in check mode:
+
+```bash
+ansible-playbook -i your-inventory.yaml ansible/proxy-deployment.yaml --check --diff
+```
+
+Verify that:
+
+* the configuration is correct
+* there are no unexpected changes
+
+#### 1.3 Deploy the Proxy
+
+If the dry run completes successfully, proceed with the actual deployment:
+
+```bash
+ansible-playbook -i your-inventory.yaml ansible/proxy-deployment.yaml
+```
+
+📌 Note:
+During the deployment process, a **new TLS key and TLS certificate are generated automatically**. No manual actions are required.
+
+#### 1.4 Verify Proxy Logs
+
+After the deployment is complete, it is recommended to check the logs of the new Proxy to ensure that the service has started correctly and without errors.
+
+To view the Proxy logs, run:
+
+```bash
+tail -f $PROXY_DIR/logs-proxy/proxy.log
+```
+
+Also, check the `Publishers` Proxy metrics on the **Proxy Metrics dashboard**.
+It should show connections to one Proxy from another provider plus each node without a Proxy.
+The expected total number of connections should be around 6.
+
+### 2. Migrate BKs to the New Proxy
+
+#### 2.1 Update the BK Inventory
+
+To switch BKs to the new Proxy, update the following variable in the BK inventory:
+
+```yaml
+PROXY_IP: <new-proxy-ip>
+```
+
+Recommendations:
+
+* migrate BKs **in batches of 5**
+* avoid reconfiguring all BKs at once
+
+#### 2.2 Test the BK Configuration (Dry Run)
+
+After updating `PROXY_IP`, run the configuration in check mode:
+
+```bash
+ansible-playbook -i your-inventory.yaml ansible/node-upgrading.yml --check --diff
+```
+
+Ensure that:
+
+* only the intended BKs are affected
+* the configuration changes are correct
+
+#### 2.3 Apply the BK Configuration
+
+If everything looks correct, apply the changes:
+
+```bash
+ansible-playbook -i your-inventory.yaml ansible/node-upgrading.yml
+```
+
+#### 2.4 Verify BK Status
+
+After each batch of BKs is migrated, make sure that:
+
+* all BKs are successfully connected to the new Proxy
+* the `Subscriber` metric on the **Proxy Metrics dashboard** for the new Proxies has increased by the number of migrated BKs and has decreased for the old Proxies
+
+🚨 **Important:**  
+This verification step is mandatory before continuing the migration or decommissioning the old Proxy.
+
+### 3. Decommission the Old Proxy
+
+Only after the following conditions are met:
+
+* **all BKs have been reconfigured**
+* **all nodes are visible in Subscribers**
+* **the new Proxy is operating stably**
+
+can you:
+
+* stop services on the old Proxy
+* shut down the old Proxy server
+
+
 ## Troubleshooting
 
 ### Recovery from Corrupted BK State
@@ -1139,7 +1274,7 @@ If you notice an error like this in the logs:
 [2025-09-25T03:58:04+00:00] Epoch with address "0:7f73cb8939cd302418b79b86e64837675c283af95c37aec9bff673011ce38fe1" is being continued: false [2025-09-25T03:59:05+00:00] Active Stakes - "0x5c5c7dc12c5cb21e6969a3d6c44173c682fd1e7dac8dcc9b1fb70ea64cf1678e" [2025-09-25T03:59:05+00:00] Stakes count - 1 [2025-09-25T03:59:05+00:00] Epoch in progress - "0x5c5c7dc12c5cb21e6969a3d6c44173c682fd1e7dac8dcc9b1fb70ea64cf1678e" [2025-09-25T03:59:06+00:00] There is active stake with epoch address "0:7f73cb8939cd302418b79b86e64837675c283af95c37aec9bff673011ce38fe1" [2025-09-25T03:59:06+00:00] Current epoch is not being continued. Sending continue stake... [2025-09-25T03:59:06+00:00] Trying signer index: 2577 [2025-09-25T03:59:07+00:00] Found proper signer index for continue: 2577 [2025-09-25T03:59:07+00:00] Sending continue stake - 10917648873105 { "Error": { "code": 621, "message": "Failed to execute the message. Error occurred during the compute phase.", "data": { "core_version": "2.22.3", "node_error": { "extensions": { "code": "TVM_ERROR", "message": "Failed to execute the message. Error occurred during the compute phase.", "details": { "producers": [ "94.156.233.53:8601" ], "message_hash": "2174189543433f1e1a2c77e078fc3cf53da8d99956fde1751eda1f941c65844f", "exit_code": 300, "current_time": "1758772748099", "thread_id": "00000000000000000000000000000000000000000000000000000000000000000000" } } }, "ext_message_token": null } } } [2025-09-25T03:59:08+00:00] Error with sending continue stake request. Go to the next step [2025-09-25T03:59:08+00:00] Epoch with address "0:7f73cb8939cd302418b79b86e64837675c283af95c37aec9bff673011ce38fe1" is being continued: false [2025-09-25T04:00:08+00:00] Active Stakes - "0x5c5c7dc12c5cb21e6969a3d6c44173c682fd1e7dac8dcc9b1fb70ea64cf1678e" [2025-09-25T04:00:08+00:00] Stakes count - 1 [2025-09-25T04:00:09+00:00] Epoch in progress - "0x5c5c7dc12c5cb21e6969a3d6c44173c682fd1e7dac8dcc9b1fb70ea64cf1678e" [2025-09-25T04:00:09+00:00] There is active stake with epoch address "0:7f73cb8939cd302418b79b86e64837675c283af95c37aec9bff673011ce38fe1" [2025-09-25T04:00:09+00:00] Current epoch is not being continued. Sending continue stake...
 ```
 
-**This error occurs because messages are being sent to the wallet or license contract too frequently.**  
+**This error occurs because messages are being sent to the wallet or License contract too frequently.**  
 When messages are sent too often, the system doesn’t have enough time to process previous transactions, leading to a compute-phase execution error `TVM_ERROR, exit_code = 300`.
 
 ✅ What to Do
@@ -1160,13 +1295,15 @@ When messages are sent too often, the system doesn’t have enough time to proce
 | Recommended   | 8c/16t      | 64        | 2 TB NVMe  | 1 Gbit synchronous unmetered Internet connection |
 
 🚨 **Important:**
-After purchasing a BM License, it must be delegated.
+After purchasing a Block Manager (BM) License, it must be delegated.
 
 You can delegate it **to a Provider** via the [dashboard](https://dashboard.ackinacki.com/) by following [this instruction](https://docs.ackinacki.com/for-node-owners/protocol-participation/block-manager/licence/guide-to-bm-license-delegation).
 
 Alternatively, you can delegate it **to your own BM wallet** if you plan to deploy the BM service yourself.  
 In that case, you must first complete the BM License Pre-Deployment Verification using [this guide](https://docs.ackinacki.com/for-node-owners/network-participation/block-manager/licence/bm-license-pre-deployment-verification).
-Once the verification is complete, you will receive the address of license contract and number, which are required for the delegation process.
+Once the verification is complete, you will receive the address of License contract and number, which are required for the delegation process.
+
+## Deployment Overview
 
 **Steps for deploying the BM service:**
 
@@ -1176,7 +1313,7 @@ Once the verification is complete, you will receive the address of license contr
   * The BK must also open a port for connections to the block streaming service
 2. Deploy the Block Manager Wallet
 3. Prepare an Ansible inventory file for the Block Manager deployment, specifying all required variables (see example below).
-4. Run the Ansible playbook against your inventory to deploy the Block Manager node.
+4. Run the Ansible playbook to deploy the Block Manager node.
 
 ## Deployment with Ansible
 
@@ -1185,44 +1322,46 @@ Once the verification is complete, you will receive the address of license contr
 * A dedicated server for the Block Manager with SSH access.
 * Docker with the Compose plugin installed.
 
-### Generate Keys and Deploy the Block Manager Wallet
+### Block Manager Wallet Setup
 
-#### Manually (applies if you don’t have a license number)
+#### Generate Keys
 
-You can manually generate the keys and deploy the wallet:
+Before deploying a BM Wallet, you need to create **two key pairs**:
+
+* One key pair for operating the Block Manager wallet.
+* One key pair for signing external message authentication tokens.
+
+Generate the keys using the following commands:
 
 ```bash
 tvm-cli genphrase --dump block_manager.keys.json
 tvm-cli genphrase --dump block_manager_signing.keys.json
 ```
 
-You will need to specify these keys in the inventory file.  
-To deploy the Block Manager wallet, extract the keys from the files created above and run:
+These key files must later be referenced in the Ansible inventory file.
+
+#### Manual Deployment (Without a License Number)
+
+If you do not yet have a License number, extract the keys from the generated files and deploy the BM wallet using the command below.
 
 ℹ️ **Note:**  
-if you don’t have a license number, leave the `whiteListLicense` field empty (`{}`).
+In this case, the `whiteListLicense` field should be left empty (`{}`)
 
 ```bash
 tvm-cli --abi ../contracts/0.79.3_compiled/bksystem/BlockManagerContractRoot.abi.json --addr 0:6666666666666666666666666666666666666666666666666666666666666666 -m deployAckiNackiBlockManagerNodeWallet '{"pubkey": "0xYOUR_PUB_KEY", "signerPubkey": "0xYOUR_SIGNING_KEY", "whiteListLicense": {"YOUR_LICENSE_NUMBER": true}}'
 ```
+#### Script-Based Deployment (With a License Number)
 
-#### Using the Script (if you already have a license number)
-
-Before deploying a Block Manager, you need to create two key pairs:
-
-* One key pair for operating the Block Manager wallet..
-* Another for signing external message authentication tokens.
-
-If you already have your license number, create a wallet by running:
+If you already have a License number, deploy the BM wallet by specifying the key file paths and the License number:
 
 ```bash
-create_block_manager_wallet.sh block_manager_wallet.keys.json block_manager_wallet_signing.keys.json 1 tvm-endpoint-address.org
+create_block_manager_wallet.sh block_manager_wallet.keys.json block_manager_wallet_signing.keys.json YOUR_LICENSE_NUMBER tvm-endpoint-address.org
 ```
 
 ### Create an Ansible Inventory
 
-Below is a sample inventory for Block Manager deployment.
-Make sure to include the `block_manager` host group.
+Below is a sample Ansible inventory for deploying a BM on the `Shellnet` network.  
+Ensure that the `block_manager` host group is defined.
 
 ```yaml
 all:
@@ -1230,29 +1369,58 @@ all:
     ansible_port: 22
     ansible_user: ubuntu
     ROOT_DIR: /home/user/deployment # path to store deployment files
-    MNT_DATA: /home/user/data       # path to store data
+    MNT_DATA: /home/user/data       # path to store persistent data
     BM_IMAGE: "teamgosh/ackinacki-block-manager:<latest-release-tag>" # i.e. teamgosh/ackinacki-block-manager:v0.3.3
     GQL_IMAGE: "teamgosh/ackinacki-gql-server:<latest-release-tag>"   # i.e. teamgosh/ackinacki-gql-server:v0.3.3
     NGINX_IMAGE: "teamgosh/ackinacki-nginx:v0.4.0"
+    STAKING_BM_IMAGE: "teamgosh/ackinacki-bm-staking:RELEASE_TAG"     # i.e. teamgosh/ackinacki-bm-staking:v0.3.3
     BM_DIR: "{{ ROOT_DIR }}/block-manager"
     BM_DATA_DIR: "{{ MNT_DATA }}/block-manager"
     BM_LOGS_DIR: "{{ MNT_DATA }}/logs-block-manager"
     BM_WALLET_KEYS: block_manager.keys.json
     BM_SIGNER_KEYS: block_manager_signing.keys.json
-    BK_API_TOKEN: my-secret-token # access token required for the BK API
+    BK_API_TOKEN: my-secret-token # access token for the BK API
     LOG_ROTATE_AMOUNT: 30
     LOG_ROTATE_SIZE: 1G
+    STAKING_TIME: 60     # tstaking script interval (seconds)
+    TVM_ENDPOINT: "https://shellnet.ackinacki.org"
 
 block_manager:
   hosts:
 
     YOUR-BM-HOST:
-      NODE_IP: NODE_IP_ADDRESS         # BK node address for block streaming.
+      NODE_IP: NODE_IP_ADDRESS         # BK node address for block streaming
       HOST_PUBLIC_IP: HOST_IP_PUBLIC   # public IP for external access
       HOST_PRIVATE_IP: HOST_IP_PRIVATE # private IP for internal network access
 ```
+### Key Variables
 
-### Test the Ansible Playbook
+`BM image` — Docker image used to run the BM
+
+`STAKING_BM_IMAGE` — Docker image used to run the Иь staking
+
+`BM_WALLET_KEYS` — path to the file containing the BM wallet owner key pair
+  (they will be required for operating the Block Manager wallet)
+
+`BM_SIGNER_KEYS`— the path to the file containing the signer BM keys 
+  (they used to generate a token for external messages)
+
+`BK_API_TOKEN` - the access token for the BK API is obtained from the BK owner.
+
+`NODE_IP` — BK node address used for block streaming
+
+`HOST_PUBLIC_IP` — public IP address for external access
+
+`HOST_PRIVATE_IP` — private IP address for internal network access
+
+`STAKING_TIME` - interval between staking script executions (in seconds)
+  Recommended value for **Shellnet**: **60 seconds**
+
+All parameters must be specified in the **Ansible inventory file**
+
+### Deploy the Block Manager
+
+#### Test the Ansible Playbook
 
 To validate your inventory and playbook syntax, use dry run and check mode:
 
@@ -1260,17 +1428,20 @@ To validate your inventory and playbook syntax, use dry run and check mode:
 ansible-playbook -i your-inventory.yaml ansible/block-manager-deployment.yaml --check --diff
 ```
 
-### Run the Ansible Playbook
+#### Run the Ansible Playbook
 
-If validation passes, run the playbook to deploy the Block Manager:
+If validation succeeds, deploy the Block Manager:
 
 ```bash
 ansible-playbook -i your-inventory.yaml ansible/block-manager-deployment.yaml
 ```
 
-### Verify the Deployment
+ℹ️ **Note:**  
+BM staking starts automatically when the Block Manager starts, but rewards will begin to accrue only after a License has been delegated to the BM wallet.
 
-To check running Docker containers:
+#### Verify the Deployment
+
+To list running Docker containers:
 
 ```bash
 docker ps
@@ -1278,13 +1449,14 @@ docker ps
 docker compose ps
 ```
 
-Ensure the following containers are running (status: UP):
+Ensure the following containers are running (status: `UP`):
 
 ```
 teamgosh/ackinacki-block-manager
 teamgosh/logrotate
 teamgosh/ackinacki-nginx
 teamgosh/ackinacki-gql-server
+teamgosh/ackinacki-bm-staking
 ```
 
 To follow Block Manager logs:
@@ -1293,20 +1465,69 @@ To follow Block Manager logs:
 tail -f $MNT_DATA/logs-block-manager/block-manager.log
 ```
 
-## Updating the Whitelist and Delegating the License to the BM Wallet
+## Update the Whitelist and Delegate the License
 
-Before delegating, the license must be added to the BM wallet whitelist.  
-To do this, run:
+🚨 **Important:**  
+Only one License can be delegated to a single BM wallet.
 
-```bash
-tvm-cli -j callx --addr BM_WALLET_ADDR --abi contracts/bksystem/AckiNackiBlockManagerNodeWallet.abi.json --keys block_manager.keys.json --method setLicenseWhiteList '{"whiteListLicense": {"YOUR_LICENSE_NUMBER": true}}'
-```
-
-To delegate the license to the BM wallet, run:
+Before delegating, the License must be added to the BM wallet whitelist: 
 
 ```bash
-tvm-cli -j callx --addr LICENSE_ADDR --abi contracts/bksystem/LicenseBM.abi.json --keys BM_LICENSE_OWNER.keys.json --method addBMWallet '{"pubkey": "0xBM_WALLET_PUB_KEY"}'
+tvm-cli -j callx --addr BM_WALLET_ADDR --abi contracts/0.79.3_compiled/bksystem/AckiNackiBlockManagerNodeWallet.abi.json --keys block_manager.keys.json --method setLicenseWhiteList '{"whiteListLicense": {"YOUR_LICENSE_NUMBER": true}}'
 ```
+
+To delegate the License to the BM wallet, run:
+
+```bash
+tvm-cli -j callx --addr LICENSE_ADDR --abi contracts/0.79.3_compiled/bksystem/LicenseBM.abi.json --keys BM_LICENSE_OWNER.keys.json --method addBMWallet '{"pubkey": "0xBM_WALLET_PUB_KEY"}'
+```
+
+## Staking BM
+
+Staking is deployed as a **Docker container** within **Docker Compose**, which is managed by **Ansible**
+
+Staking runs as a **background daemon** inside a container.
+The staking container runs alongside the BM service.
+
+🚨 **Important:**  
+**Rewards begin to accrue only after a License has been delegated to the BM wallet.**
+
+ℹ️ **Note:**
+All stakes and rewards are denominated in [**NACKL**](https://docs.ackinacki.com/glossary#nack) tokens
+
+After staking starts, **all tokens in the BM wallet are locked**. At the initial stage, both the wallet balance and the [minimal stake](https://docs.ackinacki.com/glossary#minimal-stake-of-the-bm) are equal to 0. 
+
+**Before starting operations, make sure that the BM wallet balance exceeds the minimal stake.**
+
+To find out the current minimal stake required for your BM, call the `getDetails` method in your BM wallet:
+
+```bash
+tvm-cli -j runx --addr BM_WALLET_ADDR --abi contracts/0.79.3_compiled/bksystem/AckiNackiBlockManagerNodeWallet.abi.json --method getDetails {}
+```
+
+The method returns detailed information about the BM wallet in `JSON` format.  
+The current minimal stake is shown in the `minstake` field and is specified in **nano NACKL** tokens.
+
+Example output,  
+```
+{
+  "pubkey": "0xabcdabcd01c6b769edb1a174dc44b10bf37a62d81201b23dcc1234567891441e",
+  "root": "0:6666666666666666666666666666666666666666666666666666666666666666",
+  "balance": "0x0000000000000000000000000000000000000000000000000000000000002710",
+  "license_num": "0x0000000000000000000000000000000000000000000000000000000000000001",
+  "minstake": "9700",
+  "signerPubkey": "0x9876543210196c09958e4d61bb63a97bef92a5fce0ef7444da9876543210dcfab",
+  "state_timestamp": 1769025929490
+}
+```
+
+**To view block manager staking log**
+```
+docker compose logs staking_bm
+```
+🚨 **Important:**
+Rewards can be claimed only after the slashing period has ended. The slashing period is 300 blocks.
+
 
 # Proxy Documentation
 
@@ -1318,10 +1539,10 @@ Read more about [the motivation behind the Proxy here](https://docs.ackinacki.co
 
 | Configuration | CPU (cores) | RAM (GiB) | Storage      | Network                                            |
 | ------------- | ----------- | --------- | ------------ | -------------------------------------------------- |
-| Recommended   | 8c/16t      | 32        | 500 GB NVMe  | 1Gb *(multiply) the number of nodes behind Proxy. For example, for 100 nodes behind a proxy, the required bandwidth is 100 Gb. |
+| Recommended   | 8c/16t      | 32        | 500 GB NVMe  | 1Gb *(multiply) the number of nodes behind Proxy. For example, for 100 nodes behind a Proxy, the required bandwidth is 100 Gb. |
 
 🚨 **Important:**
-  To ensure stable operation, proxy servers must be deployed in pairs (one master and one failover).
+  To ensure stable operation, Proxy servers must be deployed in pairs (one master and one failover).
 
 ## Deployment with Ansible
 
@@ -1419,14 +1640,14 @@ proxy:
       PROXY_ID: 1
       HOST_PUBLIC_IP: HOST_IP_PUBLIC
       # Add signing keys to proxy for generating certificates
-      # Use several for reliability, but using different set for each proxy is recommended
+      # Use several for reliability, but using different set for each Proxy is recommended
       PROXY_SIGNING_KEYS:
       - "block-keeper-1.keys.json"
       - "block-keeper-2.keys.json"
       - "block-keeper-3.keys.json"
 ```
 
-`PROXY_SIGNING_KEYS` list contains path to Block Keeper keys. Better to store them in the same folder with proxy deployment playbook. Also you can specify absolute path.
+`PROXY_SIGNING_KEYS` list contains path to Block Keeper keys. Better to store them in the same folder with Proxy deployment playbook. Also you can specify absolute path.
 
 Note that the `PROXY_BK_ADDRS` variable must include at least several of your Block Keepers.
 Actually, updating the BK set is not a computationally intensive operation, so it is recommended to include all your Block Keepers in the list.
@@ -1454,19 +1675,19 @@ To view the Proxy logs:
 tail -f $PROXY_DIR/logs-proxy/proxy.log
 ```
 
-### Upgrading proxy configuration or image
+### Upgrading proxy Configuration or Image
 
-Depending on whether you need to regenerate the proxy certificate (for example, if you changed the `PROXY_SIGNING_KEYS` variable),
+Depending on whether you need to regenerate the Proxy certificate (for example, if you changed the `PROXY_SIGNING_KEYS` variable),
 you need to use either `ansible/proxy-deployment.yaml` or `ansible/proxy-upgrade.yaml` playbook.`
 
-If you need to regenerate the proxy certificate, you need to run the `ansible/proxy-deployment.yaml` playbook.
+If you need to regenerate the Proxy certificate, you need to run the `ansible/proxy-deployment.yaml` playbook.
 
-If you need to upgrade the proxy image or other parameters without changing the keys (regenerating certificates), you need to run the `ansible/proxy-upgrade.yaml` playbook.
+If you need to upgrade the Proxy image or other parameters without changing the keys (regenerating certificates), you need to run the `ansible/proxy-upgrade.yaml` playbook.
 
 ```bash
-# This will regenerate the proxy certificate and requires BK keys
+# This will regenerate the Proxy certificate and requires BK keys
 ansible-playbook -i your-inventory.yaml ansible/proxy-deployment.yaml
 
-# This will stop, update compose and config, and restart proxy WITHOUT regenerating keys
+# This will stop, update compose and config, and restart Proxy WITHOUT regenerating keys
 ansible-playbook -i your-inventory.yaml ansible/proxy-upgrade.yaml
 ```

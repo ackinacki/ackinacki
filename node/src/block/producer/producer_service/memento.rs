@@ -9,7 +9,9 @@ use typed_builder::TypedBuilder;
 use crate::node::block_state::repository::BlockState;
 use crate::node::SignerIndex;
 use crate::repository::optimistic_state::OptimisticStateImpl;
-use crate::types::AckiNackiBlockVersioned;
+use crate::types::AckiNackiBlock;
+#[cfg(feature = "transitioning_node_version")]
+use crate::types::AckiNackiBlock::AckiNackiBlockVersioned;
 use crate::versioning::ProtocolVersion;
 
 // Intentionally not allowing direct read of assumptions.
@@ -42,7 +44,10 @@ impl BlockProducerMemento {
 #[derive(TypedBuilder, Getters)]
 pub struct ProducedBlock {
     assumptions: Assumptions,
+    #[cfg(feature = "transitioning_node_version")]
     block: AckiNackiBlockVersioned,
+    #[cfg(not(feature = "transitioning_node_version"))]
+    block: AckiNackiBlock,
     optimistic_state: Arc<OptimisticStateImpl>,
     feedbacks: ExtMsgFeedbackList,
     block_state: BlockState,

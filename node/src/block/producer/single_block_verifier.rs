@@ -9,8 +9,6 @@ use std::sync::Arc;
 use anyhow::ensure;
 use chrono::Utc;
 use indexset::BTreeMap;
-#[cfg(feature = "mirror_repair")]
-use parking_lot::Mutex;
 use tracing::instrument;
 use tvm_block::GetRepresentationHash;
 use tvm_block::HashmapAugType;
@@ -60,7 +58,6 @@ pub trait BlockVerifier {
         initial_state: Self::OptimisticState,
         refs: I,
         message_db: MessageDurableStorage,
-        is_block_of_retired_version: bool,
     ) -> anyhow::Result<(AckiNackiBlock, Self::OptimisticState)>
     where
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
@@ -81,8 +78,6 @@ pub struct TVMBlockVerifier {
     block_state_repository: BlockStateRepository,
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
-    #[cfg(feature = "mirror_repair")]
-    is_updated_mv: Arc<Mutex<bool>>,
 }
 
 impl TVMBlockVerifier {
@@ -108,7 +103,6 @@ impl BlockVerifier for TVMBlockVerifier {
         parent_block_state: Self::OptimisticState,
         refs: I,
         message_db: MessageDurableStorage,
-        is_block_of_retired_version: bool,
     ) -> anyhow::Result<(AckiNackiBlock, Self::OptimisticState)>
     where
         // TODO: remove Clone and change to Into<>
@@ -240,8 +234,7 @@ impl BlockVerifier for TVMBlockVerifier {
             preprocessing_result.redirected_messages,
             self.metrics,
             self.wasm_cache,
-            #[cfg(feature = "mirror_repair")]
-            self.is_updated_mv,
+            true,
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (verify_block, _, _) = producer.build_block(
@@ -252,7 +245,6 @@ impl BlockVerifier for TVMBlockVerifier {
             white_list_of_slashing_messages_hashes,
             message_db.clone(),
             &time_limits,
-            is_block_of_retired_version,
         )?;
 
         tracing::trace!(target: "node", "verify block generated successfully");

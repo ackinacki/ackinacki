@@ -28,6 +28,7 @@ use crate::transfer::TransportError;
 use crate::DeliveryPhase;
 use crate::SendMode;
 use crate::ACKI_NACKI_DIRECT_PROTOCOL;
+const CONNECTION_TIMEOUT_SEC: u64 = 5;
 
 pub struct PeerSender<PeerId, Transport>
 where
@@ -118,9 +119,11 @@ where
                             }
                         },
                         transfer_result = self.transfer_result_rx.recv() => {
-                            if !self.handle_transfer_result(connection.clone(), transfer_result.unwrap()).await {
-                                break "transfer result channel closed";
-                            }
+                            if let Some(result) = transfer_result {
+                                if !self.handle_transfer_result(connection.clone(), result).await {
+                                    break "transfer result channel closed";
+                                }
+                            };
                         }
                     }
                 }
@@ -139,6 +142,20 @@ where
             peer = peer_info,
             "Peer sender loop finished: {reason}",
         );
+
+        // Drain the channel regardless of the stop reason and report the number of messages
+        while let Ok(PeerCommand::SendMessage(net_message, buffer_duration)) = command_rx.try_recv()
+        {
+            if let Some(metrics) = metrics.as_ref() {
+                metrics.finish_delivery_phase(
+                    DeliveryPhase::OutgoingBuffer,
+                    1,
+                    &net_message.label,
+                    SendMode::Direct,
+                    buffer_duration.elapsed(),
+                );
+            }
+        }
         let _ = self.peer_events_tx.send(PeerEvent::SenderStopped(self.id.clone(), self.addr));
     }
 
@@ -153,7 +170,7 @@ where
         let mut attempt = 0;
         let mut retry_timeout = tokio_retry::strategy::FibonacciBackoff::from_millis(100)
             .max_delay(Duration::from_secs(60 * 60));
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(CONNECTION_TIMEOUT_SEC);
         loop {
             match self
                 .transport
@@ -194,11 +211,12 @@ where
                     );
                 }
             }
-            let delay = retry_timeout.next().unwrap();
+            let delay = retry_timeout.next().expect("fibonacci_backoff is an infinite iterator");
             if Instant::now() + delay > deadline {
-                return Err(anyhow::anyhow!("Cannot connect for 30 seconds"));
+                return Err(anyhow::anyhow!("Cannot connect for {CONNECTION_TIMEOUT_SEC} seconds"));
             }
             tokio::time::sleep(delay).await;
+
             attempt += 1;
         }
     }

@@ -1,7 +1,3 @@
-use std::sync::Arc;
-
-#[cfg(feature = "mirror_repair")]
-use parking_lot::Mutex;
 use tvm_block::BlkPrevInfo;
 use tvm_block::ExtBlkRef;
 use tvm_block::GetRepresentationHash;
@@ -58,8 +54,6 @@ pub fn verify_block(
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
     message_db: MessageDurableStorage,
-    #[cfg(feature = "mirror_repair")] is_updated_mv: Arc<Mutex<bool>>,
-    is_block_of_retired_version: bool,
 ) -> anyhow::Result<VerificationResult> {
     #[cfg(feature = "timing")]
     let start = std::time::Instant::now();
@@ -69,7 +63,6 @@ pub fn verify_block(
         block_candidate.seq_no()
     );
 
-    #[cfg(not(feature = "mirror_repair"))]
     let producer = TVMBlockVerifier::builder()
         .blockchain_config(blockchain_config)
         .node_config(node_config.clone())
@@ -80,21 +73,6 @@ pub fn verify_block(
         .accounts_repository(accounts_repo)
         .metrics(metrics)
         .wasm_cache(wasm_cache)
-        .node_global_config(node_global_config.clone())
-        .build();
-
-    #[cfg(feature = "mirror_repair")]
-    let producer = TVMBlockVerifier::builder()
-        .blockchain_config(blockchain_config)
-        .node_config(node_config.clone())
-        .shared_services(shared_services)
-        .epoch_block_keeper_data(vec![])
-        .block_nack(block_nack)
-        .block_state_repository(block_state_repo)
-        .accounts_repository(accounts_repo)
-        .metrics(metrics)
-        .wasm_cache(wasm_cache)
-        .is_updated_mv(is_updated_mv)
         .node_global_config(node_global_config.clone())
         .build();
 
@@ -104,7 +82,6 @@ pub fn verify_block(
         prev_block_optimistic_state.clone(),
         refs.iter(),
         message_db,
-        is_block_of_retired_version,
     );
     tracing::trace!(
         "Verify block generation result: {:?}",

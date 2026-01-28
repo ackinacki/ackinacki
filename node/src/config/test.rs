@@ -78,7 +78,7 @@ mod tests {
         assert_eq!(config.local.node_id, NodeIdentifier::some_id());
         assert_eq!(config.local.blockchain_config_path, PathBuf::from("../bc_config.json"));
         assert_eq!(config.local.key_path, "key1.json");
-        assert_eq!(config.local.zerostate_path, PathBuf::from("./zerostate"));
+        assert_eq!(config.local.zerostate_path, Some(PathBuf::from("./zerostate")));
         assert_eq!(config.local.external_state_share_local_base_dir, PathBuf::from("/tmp"));
 
         let config = GlobalConfig::default();

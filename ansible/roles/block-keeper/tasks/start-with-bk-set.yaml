@@ -1,0 +1,37 @@
+- name: Set bootstrap URL
+  set_fact:
+    BOOTSTRAP_BK_SET_URL: "{{ MAIN_BOOTSTRAP_BK_SET_URL | default('http://' ~ HOST_PUBLIC_IP ~ ':' ~ BIND_API_PORT ~ '/v2/bk_set_update') }}"
+
+- name: Show bk_set url path
+  ansible.builtin.debug:
+    msg: |
+      "URL to get bK_set file - {{ BOOTSTRAP_BK_SET_URL }}"
+
+- name: Query BK set sequence number
+  ansible.builtin.uri:
+    url: "{{ BOOTSTRAP_BK_SET_URL }}"
+    return_content: yes
+  register: api_response
+  until: api_response.status == 200
+  retries: 30
+  delay: 3
+  check_mode: false
+
+- name: Get public wallet key
+  ansible.builtin.shell:
+    chdir: "{{ BK_DIR }}/bk-configs/"
+    cmd: "cat {{ NODE_OWNER_KEY | basename }} | jq -r '.public'"
+  register: BK_PUBLIC_KEY_OUTPUT
+  when: BK_SET_PK_CHECKING is defined and BK_SET_PK_CHECKING is true
+  check_mode: false
+
+- name: Fail if BK's public key is not in BK set
+  ansible.builtin.fail: { msg: "ERROR Couldn't find public key in bk set" }
+  when:
+    - BK_SET_PK_CHECKING is defined and BK_SET_PK_CHECKING is true
+    - api_response.json.current | selectattr('owner_pubkey', 'equalto', BK_PUBLIC_KEY_OUTPUT.stdout) | list | length == 0
+
+- name: Install collected BK set
+  ansible.builtin.copy:
+    content: "{{ api_response.content }}"
+    dest: "{{ BK_DIR }}/bk-configs/bk_set.json"

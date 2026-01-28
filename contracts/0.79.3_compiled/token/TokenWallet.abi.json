@@ -1,0 +1,123 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"isRoot","type":"bool"},
+				{"name":"walletCode","type":"cell"},
+				{"name":"transactionCode","type":"cell"},
+				{"name":"senderOwner","type":"optional(address)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "mint",
+			"inputs": [
+				{"name":"value","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployTransaction",
+			"inputs": [
+				{"name":"transactionType","type":"uint8"},
+				{"name":"value","type":"optional(uint128)"},
+				{"name":"destinationOwner","type":"optional(address)"},
+				{"name":"toWithdraw","type":"optional(uint256)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "acceptTransfer",
+			"inputs": [
+				{"name":"value","type":"uint128"},
+				{"name":"walletOwner","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "sendData",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "acceptTransaction",
+			"inputs": [
+				{"name":"transactionType","type":"uint8"},
+				{"name":"data","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getWalletAddress",
+			"inputs": [
+				{"name":"walletOwner","type":"address"}
+			],
+			"outputs": [
+				{"name":"walletAddress","type":"address"}
+			]
+		},
+		{
+			"name": "getTransactionAddress",
+			"inputs": [
+				{"name":"transactionType","type":"uint8"},
+				{"name":"value","type":"optional(uint128)"},
+				{"name":"destinationOwner","type":"optional(address)"},
+				{"name":"toWithdraw","type":"optional(uint256)"}
+			],
+			"outputs": [
+				{"name":"transactionAddress","type":"address"}
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"root","type":"address"},
+				{"name":"owner","type":"address"},
+				{"name":"balance","type":"uint128"}
+			]
+		},
+		{
+			"name": "getSubscriber",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"subscriber","type":"optional(address)"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_root","type":"address"},
+		{"init":true,"name":"_owner","type":"address"},
+		{"init":false,"name":"_walletCode","type":"cell"},
+		{"init":false,"name":"_transactionCode","type":"cell"},
+		{"init":false,"name":"_subscriber","type":"optional(address)"},
+		{"init":false,"name":"_balance","type":"uint128"}
+	]
+}

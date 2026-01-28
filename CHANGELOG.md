@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.2] – 2026-01-28
+
+### New / Improvements
+- Added **delegated license** check in BM wallet so that only wallets with delegated licenses may receive rewards
+- Extracted signal handling into a separate function and initialized it at the start of `tokio::main`
+- Removed deprecated **port 8700** from code, docker-compose, and ansible
+- Zero State is optional now and is not required during node deployment on Mainnet
+- Added documentation about `BM staking` and `BK migration to the new Proxy`
+- Quarantine + counter metric for unparsed blocks: now if any block can not be parsed it is added to quarantine folder and metric is emmited
+- Histogram: `node_gas_used` to monitor network transactional load and percentage of  used gas in a block
+- Counter: `node_gas_overflow_total` to monitor number of blocks with gas overflow
+- Updated **TVM SDK to v2.24.9.an**
+
+---
+
+## Fixes
+- Fixed unsafe `unwrap` handling in the Network module
+- Fixed outgoing buffer size metric that was not dropped in some cases
+- Forced synchronization when no state is present
+
+## [0.13.1] - 2026-01-15
+
+### Improvements
+- Old protocol version migrations cleaned up
+
 ## [0.13.0] - 2025-12-18
 
 ### New

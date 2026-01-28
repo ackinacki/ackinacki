@@ -12,6 +12,7 @@ use message_router::message_router::MessageRouterConfig;
 use parking_lot::Mutex;
 
 use crate::application::metrics::Metrics;
+use crate::application::quarantine::Quarantine;
 use crate::application::services::block_applier;
 use crate::application::services::block_subscriber;
 use crate::application::services::http_server;
@@ -49,11 +50,14 @@ pub async fn run(
     let rest_api_handle = http_server::run(config.rest_api, app_state.clone()).await?;
 
     let (db_writer, db_helper_handle) = SqliteHelper::from_config(SqliteHelperConfig::new(
-        config.sqlite_path.into(),
+        config.sqlite_path.clone().into(),
         Some("bm-archive.db".into()),
     ))?;
+
+    let quarantine = Quarantine::new(config.sqlite_path.into())?;
+
     let blk_apply_handle =
-        block_applier::run(bp_resolver, db_writer, app_state, metrics.clone(), cmd_rx);
+        block_applier::run(bp_resolver, db_writer, quarantine, app_state, metrics.clone(), cmd_rx);
 
     let blk_subscribe_handle = block_subscriber::run(cmd_tx, config.subscribe_socket, metrics);
     let db_helper_handle = tokio::task::spawn_blocking(move || db_helper_handle.join());

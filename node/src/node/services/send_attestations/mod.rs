@@ -63,6 +63,8 @@ pub enum GenerateAttestationError {
     NodeIsNotInTheBKSet,
     #[error("Failed to generate attestation: block seq_no is not available")]
     BlockSeqNoIsNotAvailable,
+    #[error("Failed to generate attestation: block version is not available")]
+    BlockVersionIsNotAvailable,
     #[error("Failed to generate attestation: parent id is not available")]
     BlockParentIDIsNotAvailable,
     #[error("Failed to generate attestation: missing bls key secret")]
@@ -608,8 +610,13 @@ impl AttestationSendService {
         else {
             return Err(GenerateAttestationError::NodeIsNotInTheBKSet);
         };
+        let Some(block_version) =
+            block_state.guarded_mut(|state| state.block_version_state().clone())
+        else {
+            return Err(GenerateAttestationError::BlockVersionIsNotAvailable);
+        };
         if !bk_data.protocol_support.is_none()
-            && &bk_data.protocol_support != node_credentials.protocol_version_support()
+            && !node_credentials.protocol_version_support().supports_version(block_version.to_use())
         {
             return Err(GenerateAttestationError::WrongVersionSupport);
         }

@@ -16,6 +16,10 @@
   include_tasks: prepare-host.yaml
   when: [DO_START, PREPARE_HOST, not FAST_UPDATE]
 
+- name: Ensure bk set file
+  include_tasks: start-with-bk-set.yaml
+  when: [BK_SET_FILE, not ZEROSTATE, not FAST_UPDATE or UPGRADE is defined]
+
 - name: Copy deployment configs
   include_tasks: copy-deployment-configs.yaml
   when: not FAST_UPDATE or UPGRADE is defined
@@ -47,5 +51,6 @@
 - name: Bootstrap BK set
   include_tasks: bootstrap-bk-set.yaml
   when:
+    - BOOTSTRAP_BK_SET is defined and BOOTSTRAP_BK_SET is true
     - BOOTSTRAP_BK_SET_URL is defined and BOOTSTRAP_BK_SET_URL
     - DO_START or UPGRADE is defined or (DO_BOOTSTRAP is defined and DO_BOOTSTRAP)

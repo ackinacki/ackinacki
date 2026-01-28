@@ -33,10 +33,6 @@ use gossip::run_gossip_with_reload;
 use gossip::GossipReloadConfig;
 use http_server::ApiBkSet;
 use http_server::ResolvingResult;
-use message_router::message_router::MessageRouter;
-use message_router::message_router::MessageRouterConfig;
-use message_router::read_keys_from_file;
-use message_router::DEFAULT_BK_API_PORT;
 use network::config::NetworkConfig;
 use network::network::BasicNetwork;
 use network::resolver::WatchGossipConfig;
@@ -58,7 +54,6 @@ use node::creditconfig::dappconfig::calculate_dapp_config_address;
 use node::creditconfig::dappconfig::decode_dapp_config_data;
 use node::external_messages::ExternalMessagesThreadState;
 use node::helper::account_boc_loader::get_account_from_shard_state;
-use node::helper::bp_resolver::BPResolverImpl;
 use node::helper::calc_file_hash;
 use node::helper::metrics::Metrics;
 use node::helper::metrics::BLOCK_STATE_SAVE_CHANNEL;
@@ -103,6 +98,7 @@ use node::repository::start_optimistic_state_save_service;
 use node::repository::Repository;
 use node::services::blob_sync;
 use node::services::cross_thread_ref_data_availability_synchronization::CrossThreadRefDataAvailabilitySynchronizationService;
+use node::signals::init_signals_join_handle;
 use node::storage::ActionLockStorage;
 use node::storage::AerospikeStore;
 use node::storage::CachedStore;
@@ -132,10 +128,6 @@ use parking_lot::Mutex;
 use rand::prelude::SeedableRng;
 use rand::prelude::SmallRng;
 use serde_json::json;
-use signal_hook::consts::SIGHUP;
-use signal_hook::consts::SIGINT;
-use signal_hook::consts::SIGTERM;
-use signal_hook::iterator::Signals;
 use telemetry_utils::mpsc::instrumented_channel;
 use tokio::task::JoinHandle;
 use transport_layer::msquic::MsQuicTransport;
@@ -149,6 +141,7 @@ use tvm_types::UInt256;
 // const ALIVE_NODES_WAIT_TIMEOUT_MILLIS: u64 = 100;
 const MINIMUM_NUMBER_OF_CORES: usize = 8;
 const DEFAULT_NACK_SIZE_CACHE: usize = 1000;
+const DEFAULT_BK_API_PORT: u16 = 8600;
 
 lazy_static::lazy_static!(
     static ref LONG_VERSION: String = format!("{}\nBUILD_GIT_BRANCH={}\nBUILD_GIT_COMMIT={}\nBUILD_GIT_DATE={}\nBUILD_TIME={}",
@@ -380,7 +373,19 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     tracing::info!("Loading config");
     let config =
         load_config_from_file::<Config>(&args.config_path)?.ensure_min_cpu(MINIMUM_NUMBER_OF_CORES);
+    let keys_map = key_pairs_from_file::<GoshBLS>(&config.local.key_path);
+    let bls_keys_map = Arc::new(Mutex::new(keys_map));
 
+    let (config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
+    let config_clone = config.clone();
+    let bls_keys_map_clone = bls_keys_map.clone();
+
+    let signals_join_handle = init_signals_join_handle(
+        config_clone.local.key_path.clone(),
+        args.config_path.clone(),
+        config_tx.clone(),
+        bls_keys_map_clone.clone(),
+    )?;
     let global_config =
         load_config_from_file::<GlobalConfig>(&args.global_config_path)?.ensure_min_sync_gap();
     let retired_global_config = args
@@ -457,7 +462,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
     tracing::info!("zero_block_version: {:?}", &zero_block_version);
 
-    tracing::info!(target: "monit", "Node config: {:?}", config_read);
+    tracing::info!(target: "monit", "Node global config: {:?}", config_read);
+    tracing::info!(target: "monit", "Node config: {}", serde_json::to_string_pretty(&config)?);
 
     let tls_cert_cache = TlsCertCache::new()?;
     let network_config = config.network_config(Some(tls_cert_cache.clone()))?;
@@ -490,20 +496,27 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let crossref_db = CrossRefStorage::new(durable_store.clone(), &durable_set("ref"));
     let action_lock_db = ActionLockStorage::new(durable_store.clone(), &durable_set("lck"));
 
-    let zerostate =
-        ZeroState::load_from_file(&config.local.zerostate_path).expect("Failed to open zerostate");
+    let zerostate = if let Some(zs_path) = config.local.zerostate_path.as_ref() {
+        let zerostate = ZeroState::load_from_file(zs_path).expect("Failed to open zerostate");
 
-    let zerostate_hash =
-        calc_file_hash(&config.local.zerostate_path).expect("Failed to calculate zerostate hash");
-    tracing::info!(target: "monit", "zerostate hash: {zerostate_hash}");
+        let zerostate_hash = calc_file_hash(zs_path).expect("Failed to calculate zerostate hash");
+        tracing::info!(target: "monit", "zerostate hash: {zerostate_hash}");
 
-    if args.check_zerostate_validity {
-        verify_zerostate(&zerostate, &message_db)?;
-    }
+        if args.check_zerostate_validity {
+            verify_zerostate(&zerostate, &message_db)?;
+        }
+        Some(zerostate)
+    } else {
+        None
+    };
+
     let bk_set = if let Some(bk_set_update_path) = &config.local.bk_set_update_path {
         serde_json::from_slice::<ApiBkSet>(&std::fs::read(bk_set_update_path)?)?
-    } else {
+    } else if let Some(zerostate) = zerostate.as_ref() {
         ApiBkSet { seq_no: 0, current: (&zerostate.get_block_keeper_set()?).into(), future: vec![] }
+    } else {
+        tracing::warn!("Failed to initialize BK set: both zerostate_path and bk_set_update_path were not set in the config. Init with zero BK set");
+        ApiBkSet { seq_no: 0, current: vec![], future: vec![] }
     };
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -516,8 +529,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     // Signals from `dispatch_hot_reload` to `gossip` module
     let (gossip_reload_config_tx, gossip_reload_config_rx) =
         tokio::sync::watch::channel(config.gossip_reload_config()?);
-
-    let (config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
 
     let (network_config_tx, network_config_rx) = tokio::sync::watch::channel(network_config);
     tokio::spawn(dispatch_hot_reload(
@@ -572,14 +583,16 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
     let block_manager_listen_addr = config.network.block_manager_listen_addr;
     let net_topology_rx_clone = net_topology_rx.clone();
-    let block_manager_handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
+
+    // Block streaming to BlockManager
+    let block_streaming_handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
         transport_layer::server::LiteServer::new(block_manager_listen_addr)
             .start(raw_block_receiver, move |node_id| {
-                let node_addr = net_topology_rx_clone
+                net_topology_rx_clone
                     .borrow()
                     .resolve_peer(&node_id)
-                    .map(|x| x.first().map(|x| x.addr.ip().to_string()).unwrap_or_default());
-                node_addr
+                    .first()
+                    .map(|n| n.resolve_bk_host_port(DEFAULT_BK_API_PORT).to_string())
             })
             .await?;
         Ok(())
@@ -601,15 +614,12 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         }));
     }
 
-    let zerostate_path = Some(config.local.zerostate_path.clone());
+    let zerostate_path = config.local.zerostate_path.clone();
 
     tracing::trace!(
         "global_config.min_time_between_state_publish_directives={:?}",
         global_config.min_time_between_state_publish_directives
     );
-    let keys_map = key_pairs_from_file::<GoshBLS>(&config.local.key_path);
-    let bls_keys_map = Arc::new(Mutex::new(keys_map));
-    let bls_keys_map_clone = bls_keys_map.clone();
 
     // node should sync with other nodes, but if there are
     // no alive nodes, node should wait
@@ -636,48 +646,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let seed_map = key_pairs_from_file::<GoshBLS>(&config.local.block_keeper_seed_path);
     let secret_seed = seed_map.values().last().unwrap().clone().0;
     let block_keeper_rng = SmallRng::from_seed(secret_seed.take_as_seed());
-
-    let config_clone = config.clone();
-
-    let signals_join_handle = {
-        let mut signals = Signals::new([SIGHUP, SIGINT, SIGTERM])?;
-        let blk_key_path = config_clone.local.key_path.clone();
-        let config_path = args.config_path.clone();
-        let config_tx = config_tx.clone();
-        std::thread::Builder::new().name("signal handler".to_string()).spawn(move || {
-            for sig in signals.forever() {
-                tracing::info!(target: "monit", "Received signal {:?}", sig);
-                match sig {
-                    SIGHUP => {
-                        let new_key_map: HashMap<
-                            node::bls::gosh_bls::PubKey,
-                            (node::bls::gosh_bls::Secret, node::types::RndSeed),
-                        > = key_pairs_from_file::<GoshBLS>(&blk_key_path);
-                        tracing::trace!(
-                            target: "monit",
-                            "Insert key pair, pubkeys: {:?}",
-                            new_key_map.keys().collect::<Vec<_>>()
-                        );
-                        let mut keys_map = bls_keys_map_clone.lock();
-                        *keys_map = new_key_map;
-                        ext_messages_auth::auth::update_ext_message_auth_flag_from_files();
-                        match load_config_from_file(&config_path) {
-                            Ok(config) => {
-                                config_tx.send_replace(config);
-                            }
-                            Err(err) => {
-                                tracing::error!("Failed to load config from file: {err:?}");
-                            }
-                        }
-                    }
-                    SIGTERM | SIGINT => {
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-        })?
-    };
 
     // let mut node_execute_handlers = JoinSet::new();
     // TODO: check that inner_service_loop is active
@@ -744,6 +712,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             state_in.set_stored_zero_state()?;
             let bk_set = Arc::new(bk_set.clone());
             state_in.set_bk_set(bk_set.clone())?;
+            tracing::trace!("Full bk set for 0 block: {bk_set}");
             state_in.set_descendant_bk_set(bk_set)?;
             state_in.set_future_bk_set(Arc::new(BlockKeeperSet::new()))?;
             state_in.set_descendant_future_bk_set(Arc::new(BlockKeeperSet::new()))?;
@@ -804,9 +773,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let (bk_set_update_tx, bk_set_update_rx) =
         instrumented_channel(node_metrics.clone(), node::helper::metrics::BK_SET_UPDATE_CHANNEL);
 
-    #[cfg(feature = "mirror_repair")]
-    let is_updated_mv = Arc::new(Mutex::new(false));
-
     let mut repository = RepositoryImpl::new(
         repo_path.clone(),
         zerostate_path.clone(),
@@ -820,8 +786,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         message_db.clone(),
         repository_blocks,
         bk_set_update_tx,
-        #[cfg(feature = "mirror_repair")]
-        is_updated_mv.clone(),
         config_read.clone(),
     );
 
@@ -879,27 +843,33 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             }
         })?;
 
-    let zerostate_threads: Vec<ThreadIdentifier> = zerostate.list_threads().cloned().collect();
+    let zerostate_threads: Vec<ThreadIdentifier> = if let Some(zerostate) = zerostate.as_ref() {
+        zerostate.list_threads().cloned().collect()
+    } else {
+        vec![ThreadIdentifier::default()]
+    };
 
     for thread_id in &zerostate_threads {
-        let (last_finalized_id, _) =
-            repository.select_thread_last_finalized_block(thread_id)?.unwrap();
-        tracing::trace!(
-            "init thread: thread_id={:?} last_finalized_id={:?}",
-            thread_id,
-            last_finalized_id
-        );
-        node_shared_services.exec(|services| {
-            // services.dependency_tracking.init_thread(*thread_id, BlockIdentifier::default());
-            // TODO: check if we have to pass all threads in set
-            services.threads_tracking.init_thread(
-                last_finalized_id.clone(),
-                HashSet::from_iter(vec![*thread_id].into_iter()),
-                &mut (&mut services.router, &mut services.load_balancing),
+        if let Some((last_finalized_id, _)) =
+            repository.select_thread_last_finalized_block(thread_id)?
+        {
+            tracing::trace!(
+                "init thread: thread_id={:?} last_finalized_id={:?}",
+                thread_id,
+                last_finalized_id
             );
-            // TODO: the same must happen after a node sync.
-            services.thread_sync.on_block_finalized(&last_finalized_id, thread_id).unwrap();
-        });
+            node_shared_services.exec(|services| {
+                // services.dependency_tracking.init_thread(*thread_id, BlockIdentifier::default());
+                // TODO: check if we have to pass all threads in set
+                services.threads_tracking.init_thread(
+                    last_finalized_id.clone(),
+                    HashSet::from_iter(vec![*thread_id].into_iter()),
+                    &mut (&mut services.router, &mut services.load_balancing),
+                );
+                // TODO: the same must happen after a node sync.
+                services.thread_sync.on_block_finalized(&last_finalized_id, thread_id).unwrap();
+            });
+        }
     }
 
     let action_lock_collections = if args.clear_missing_block_locks {
@@ -1189,7 +1159,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 block_collection.clone(),
                 node_cross_thread_ref_data_availability_synchronization_service.interface(),
                 optimistic_save_tx.clone(),
-                config_read.clone(),
             );
 
             // TODO: save blk_req_join_handle
@@ -1370,20 +1339,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         anyhow::bail!("HTTP server supposed to work forever");
     });
 
-    if let Ok(bind_to) = std::env::var("MESSAGE_ROUTER") {
-        tracing::trace!("start message router");
-        let bp_resolver =
-            BPResolverImpl::new(net_topology_rx.clone(), Arc::new(Mutex::new(repository.clone())));
-        let config = MessageRouterConfig {
-            bp_resolver: Arc::new(Mutex::new(bp_resolver)),
-            owner_wallet_pubkey: None,
-            signing_keys: std::env::var("BM_ISSUER_KEYS_FILE")
-                .ok()
-                .and_then(|path| read_keys_from_file(&path).ok()),
-        };
-        MessageRouter::new(bind_to, config).run();
-    }
-
     let wrapped_signals_join_handle =
         tokio::task::spawn_blocking(move || signals_join_handle.join());
 
@@ -1451,7 +1406,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         v = http_server_handle => {
             anyhow::bail!("http_server failed: {v:?}");
         },
-        v = block_manager_handle => {
+        v = block_streaming_handle => {
             anyhow::bail!("lite node failed: {v:?}");
         },
 
@@ -1514,7 +1469,7 @@ fn resolve_bp(
     let list = net_topology_rx
         .borrow()
         .resolve_peer(bp_id)
-        .and_then(|peers| peers.first())
+        .first()
         .map(|peer| peer.resolve_bk_host_port(DEFAULT_BK_API_PORT))
         .map_or_else(Vec::new, |addr| vec![addr]);
 
@@ -1809,7 +1764,7 @@ async fn test_execute() -> anyhow::Result<()> {
     use std::path::Path;
     use std::str::FromStr;
 
-    use node::bls::create_signed::CreateSealed;
+    use node::bls::try_seal::TrySeal;
     use node::helper::metrics::BlockProductionMetrics;
     use node::node::NetBlock;
     use node::protocol::authority_switch::network_message::AuthoritySwitch;
@@ -1840,8 +1795,8 @@ async fn test_execute() -> anyhow::Result<()> {
 
     let config_read =
         ConfigRead::new(ProtocolVersion::parse("None")?, global_config.clone(), None, None);
-    let zerostate =
-        ZeroState::load_from_file(&config.local.zerostate_path).expect("Failed to open zerostate");
+    let zerostate = ZeroState::load_from_file(config.local.zerostate_path.as_ref().unwrap())
+        .expect("Failed to open zerostate");
 
     let bk_set = if let Some(bk_set_update_path) = &config.local.bk_set_update_path {
         serde_json::from_slice::<ApiBkSet>(&std::fs::read(bk_set_update_path)?)?
@@ -1893,13 +1848,12 @@ async fn test_execute() -> anyhow::Result<()> {
             .attestations_aggregated(None)
             .requests_aggregated(vec![])
             .build();
-        let envelope = Envelope::<GoshBLS, NextRoundSuccess>::sealed(
+        let envelope = next_round_success.try_seal(
             &bp_node_id,
             &cur_bk_set,
             &keys_map,
-            next_round_success,
-        )
-        .unwrap();
+            &ProtocolVersion::parse("None")?,
+        )?;
         let mut net_messages =
             vec![NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched(envelope))];
         net_messages.push(NetworkMessage::Candidate(NetBlock::with_envelope(&blocks[1]).unwrap()));
@@ -1941,13 +1895,12 @@ async fn test_execute() -> anyhow::Result<()> {
             .attestations_aggregated(attn)
             .requests_aggregated(vec![])
             .build();
-        let envelope = Envelope::<GoshBLS, NextRoundSuccess>::sealed(
+        let envelope = next_round_success.try_seal(
             &bp_node_id,
             &cur_bk_set,
             &keys_map,
-            next_round_success,
-        )
-        .unwrap();
+            &ProtocolVersion::parse("None")?,
+        )?;
         vec![NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched(envelope))]
     };
 
@@ -1980,10 +1933,6 @@ async fn test_execute() -> anyhow::Result<()> {
     let message_db = MessageDurableStorage::new(cached_store, &durable_set("msg"));
     let crossref_db = CrossRefStorage::new(durable_store.clone(), &durable_set("ref"));
     let action_lock_db = ActionLockStorage::new(durable_store.clone(), &durable_set("lck"));
-
-    let zerostate_hash =
-        calc_file_hash(&config.local.zerostate_path).expect("Failed to calculate zerostate hash");
-    tracing::info!(target: "monit", "zerostate hash: {zerostate_hash}");
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let (_bk_set_update_async_tx, bk_set_update_async_rx) =
@@ -2064,7 +2013,7 @@ async fn test_execute() -> anyhow::Result<()> {
         }));
     }
 
-    let zerostate_path = Some(config.local.zerostate_path.clone());
+    let zerostate_path = config.local.zerostate_path.clone();
 
     tracing::trace!(
         "global_config.min_time_between_state_publish_directives={:?}",
@@ -2220,9 +2169,6 @@ async fn test_execute() -> anyhow::Result<()> {
     let (bk_set_update_tx, _bk_set_update_rx) =
         instrumented_channel(node_metrics.clone(), node::helper::metrics::BK_SET_UPDATE_CHANNEL);
 
-    #[cfg(feature = "mirror_repair")]
-    let is_updated_mv = Arc::new(Mutex::new(false));
-
     let mut repository = RepositoryImpl::new(
         repo_path.clone(),
         zerostate_path.clone(),
@@ -2236,8 +2182,6 @@ async fn test_execute() -> anyhow::Result<()> {
         message_db.clone(),
         repository_blocks,
         bk_set_update_tx,
-        #[cfg(feature = "mirror_repair")]
-        is_updated_mv,
         config_read.clone(),
     );
 
@@ -2518,7 +2462,6 @@ async fn test_execute() -> anyhow::Result<()> {
         block_collection.clone(),
         node_cross_thread_ref_data_availability_synchronization_service.interface(),
         optimistic_save_tx.clone(),
-        config_read.clone(),
     );
 
     // TODO: save blk_req_join_handle

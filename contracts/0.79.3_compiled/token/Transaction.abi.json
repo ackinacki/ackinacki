@@ -1,0 +1,93 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"transactionType","type":"uint8"},
+				{"name":"data","type":"cell"},
+				{"name":"owner","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "touch",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"wallet","type":"address"},
+				{"name":"dataHash","type":"uint256"},
+				{"name":"transactionType","type":"uint8"},
+				{"name":"data","type":"cell"},
+				{"name":"seqnoDestroy","type":"uint64"},
+				{"name":"ownerAddress","type":"address"}
+			]
+		},
+		{
+			"name": "getTransferData",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"destinationOwner","type":"address"},
+				{"name":"value","type":"uint128"}
+			]
+		},
+		{
+			"name": "getBurnData",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value","type":"uint128"}
+			]
+		},
+		{
+			"name": "getWithdrawData",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value","type":"uint128"},
+				{"name":"to","type":"uint256"}
+			]
+		},
+		{
+			"name": "getSetSubscriberData",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"subscriber","type":"optional(address)"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_wallet","type":"address"},
+		{"init":true,"name":"_dataHash","type":"uint256"},
+		{"init":false,"name":"_transactionType","type":"uint8"},
+		{"init":false,"name":"_data","type":"cell"},
+		{"init":false,"name":"_seqnoDestroy","type":"uint64"},
+		{"init":false,"name":"_ownerAddress","type":"address"}
+	]
+}

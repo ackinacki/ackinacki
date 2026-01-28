@@ -145,10 +145,6 @@ pub struct NetworkConfig {
     #[serde(default = "default_send_buffer_size")]
     pub send_buffer_size: usize,
 
-    /// Public address for Block Manager API of this node
-    #[builder(default)]
-    pub bm_api_socket: Option<SocketAddr>,
-
     /// Public address for Block Keeper API (deprecated)
     #[builder(default)]
     pub bk_api_socket: Option<SocketAddr>,

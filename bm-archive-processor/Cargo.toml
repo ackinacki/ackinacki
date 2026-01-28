@@ -1,0 +1,31 @@
+[package]
+name = "bm-archive-processor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+aws-config = { version = "1.8.8", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1.109.0"
+bytes = "1.11.0"
+clap.workspace = true
+flate2 = "1.1.5"
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
+rusqlite.workspace = true
+telemetry_utils.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+typed-builder = "0.20.0"
+
+[dev-dependencies]
+sha2 = "0.10.9"
+tempfile = "3.10"
+
+[patch.crates-io]
+libsqlite3-sys = { path = "../libsqlite3-sys" }

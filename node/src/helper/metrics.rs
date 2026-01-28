@@ -82,6 +82,8 @@ struct BlockProductionMetricsInner {
     build_info: Gauge<u64>,
     missed_blocks: Counter<u64>,
     block_processing_jitter: Histogram<f64>,
+    gas_used: Histogram<f64>,
+    gas_overflow: Counter<u64>,
 
     // Node Binary: supported protocol versions
     protocol_support_versions: Gauge<u64>,
@@ -302,6 +304,13 @@ impl BlockProductionMetrics {
                     5000.0, 10000.0,
                 ])
                 .build(),
+            gas_used: meter
+                .f64_histogram("node_gas_used")
+                .with_boundaries(vec![
+                    0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 1.0,
+                ])
+                .build(),
+            gas_overflow: meter.u64_counter("node_gas_overflow").build(),
             protocol_support_versions: meter.u64_gauge("node_protocol_support_versions").build(),
             block_protocol_version: meter.u64_gauge("node_block_protocol_version").build(),
             bkset_epoch_protocol_versions: meter
@@ -622,6 +631,14 @@ impl BlockProductionMetrics {
 
     pub fn report_block_processing_jitter(&self, value: f64, thread_id: &ThreadIdentifier) {
         self.0.block_processing_jitter.record(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_gas_used(&self, value: f64, thread_id: &ThreadIdentifier) {
+        self.0.gas_used.record(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_gas_overflow(&self, thread_id: &ThreadIdentifier) {
+        self.0.gas_overflow.add(1, &[thread_id_attr(thread_id)]);
     }
 }
 

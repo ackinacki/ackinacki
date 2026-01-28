@@ -1,14 +1,8 @@
-# HTTP_SRC_URL
-bk_api_endpoint: http://127.0.0.1:11000
-
 # STREAM_SRC_URL
 bk_stream_blocks_endpoint: https://node0:12000
 
 # SQLITE_PATH
 db_path: ./data
-
-# BLOCK_MANAGER_API
-api_listen_addr: 0.0.0.0:8600
 
 # BM_OWNER_WALLET_PUBKEY
 bm_owner_wallet_pubkey: e2c9d4be54d342d3f0e6394a7738fc39b93d4fe3fdba317aa699f7305566de2b

@@ -85,8 +85,6 @@ pub trait OptimisticState: Send + Clone {
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         accounts_repo: AccountsRepository,
         message_db: MessageDurableStorage,
-        #[cfg(feature = "mirror_repair")] is_updated_mv: Arc<parking_lot::Mutex<bool>>,
-        is_block_of_retired_version: bool,
     ) -> anyhow::Result<(
         CrossThreadRefData,
         HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
@@ -369,8 +367,6 @@ impl OptimisticState for OptimisticStateImpl {
         nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         accounts_repo: AccountsRepository,
         message_db: MessageDurableStorage,
-        #[cfg(feature = "mirror_repair")] is_updated_mv: Arc<parking_lot::Mutex<bool>>,
-        is_block_of_retired_version: bool,
     ) -> anyhow::Result<(
         CrossThreadRefData,
         HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
@@ -529,11 +525,8 @@ impl OptimisticState for OptimisticStateImpl {
             changed,
             accounts_repo,
             message_db.clone(),
-            #[cfg(feature = "mirror_repair")]
-            is_updated_mv,
             #[cfg(feature = "monitor-accounts-number")]
             updated_accounts_number,
-            is_block_of_retired_version,
         )?;
         cross_thread_ref_data.set_block_refs(block_candidate.get_common_section().refs.clone());
         *self = new_state;
@@ -811,36 +804,22 @@ fn state_from_trimmed(
     trimmed: TrimmedOptimisticStateImpl,
     state_cell: Cell,
 ) -> OptimisticStateImpl {
+    let builder = OptimisticStateImpl::builder()
+        .block_seq_no(trimmed.block_seq_no)
+        .block_id(trimmed.block_id)
+        .shard_state(state_cell)
+        .messages(trimmed.messages)
+        .high_priority_messages(trimmed.high_priority_messages)
+        .block_info(trimmed.block_info)
+        .threads_table(trimmed.threads_table)
+        .thread_id(trimmed.thread_id)
+        .thread_refs_state(trimmed.thread_refs_state)
+        .cropped(trimmed.cropped)
+        .changed_accounts(HashMap::new())
+        .cached_accounts(HashMap::new());
+
     #[cfg(feature = "monitor-accounts-number")]
-    let res = OptimisticStateImpl::builder()
-        .block_seq_no(trimmed.block_seq_no)
-        .block_id(trimmed.block_id)
-        .shard_state(state_cell)
-        .messages(trimmed.messages)
-        .high_priority_messages(trimmed.high_priority_messages)
-        .block_info(trimmed.block_info)
-        .threads_table(trimmed.threads_table)
-        .thread_id(trimmed.thread_id)
-        .thread_refs_state(trimmed.thread_refs_state)
-        .cropped(trimmed.cropped)
-        .changed_accounts(HashMap::new())
-        .cached_accounts(HashMap::new())
-        .accounts_number(trimmed.accounts_number)
-        .build();
-    #[cfg(not(feature = "monitor-accounts-number"))]
-    let res = OptimisticStateImpl::builder()
-        .block_seq_no(trimmed.block_seq_no)
-        .block_id(trimmed.block_id)
-        .shard_state(state_cell)
-        .messages(trimmed.messages)
-        .high_priority_messages(trimmed.high_priority_messages)
-        .block_info(trimmed.block_info)
-        .threads_table(trimmed.threads_table)
-        .thread_id(trimmed.thread_id)
-        .thread_refs_state(trimmed.thread_refs_state)
-        .cropped(trimmed.cropped)
-        .changed_accounts(HashMap::new())
-        .cached_accounts(HashMap::new())
-        .build();
-    res
+    let builder = builder.accounts_number(trimmed.accounts_number);
+
+    builder.build()
 }

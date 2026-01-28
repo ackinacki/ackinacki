@@ -7,10 +7,14 @@
     DELETE_DATA: no
     DO_START: yes
     FAST_UPDATE: yes
+    BK_SET_FILE: yes
+    ZEROSTATE: no
     UPGRADE:
       - node       # grsh + stop + up
       - compose    # grsh + down + up
       - aerospike  # as stop + up
       - logrotate  # up + lr restart
+    MAIN_BOOTSTRAP_BK_SET_URL: "https://mainnet.ackinacki.org/v2/bk_set_update"
+    BK_SET_PK_CHECKING: yes
   roles:
     - block-keeper

@@ -9,25 +9,10 @@ use ed25519_dalek::Verifier;
 use ed25519_dalek::VerifyingKey;
 use rcgen::CertificateParams;
 use rcgen::CustomExtension;
-use rustls::client::danger::HandshakeSignatureValid;
-use rustls::client::danger::ServerCertVerified;
-use rustls::client::danger::ServerCertVerifier;
-use rustls::server::danger::ClientCertVerified;
-use rustls::server::danger::ClientCertVerifier;
-use rustls::server::WebPkiClientVerifier;
-use rustls::version::TLS13;
-use rustls::DigitallySignedStruct;
-use rustls::DistinguishedName;
-use rustls::Error;
-use rustls::RootCertStore;
-use rustls::SignatureScheme;
 use rustls_pki_types::CertificateDer;
 use rustls_pki_types::PrivateKeyDer;
-use rustls_pki_types::ServerName;
-use rustls_pki_types::UnixTime;
 use serde::Deserialize;
 use sha2::Digest;
-use x509_parser::nom::AsBytes;
 
 use crate::msquic::msquic_async::connection::StartError;
 
@@ -125,142 +110,6 @@ impl Clone for NetCredential {
             trusted_pubkeys: self.trusted_pubkeys.clone(),
         }
     }
-}
-
-#[derive(Debug, Default)]
-struct NoCertVerification;
-
-fn supported_schemes() -> Vec<SignatureScheme> {
-    vec![
-        SignatureScheme::RSA_PKCS1_SHA1,
-        SignatureScheme::ECDSA_SHA1_Legacy,
-        SignatureScheme::RSA_PKCS1_SHA256,
-        SignatureScheme::ECDSA_NISTP256_SHA256,
-        SignatureScheme::RSA_PKCS1_SHA384,
-        SignatureScheme::ECDSA_NISTP384_SHA384,
-        SignatureScheme::RSA_PKCS1_SHA512,
-        SignatureScheme::ECDSA_NISTP521_SHA512,
-        SignatureScheme::RSA_PSS_SHA256,
-        SignatureScheme::RSA_PSS_SHA384,
-        SignatureScheme::RSA_PSS_SHA512,
-        SignatureScheme::ED25519,
-        SignatureScheme::ED448,
-    ]
-}
-impl ServerCertVerifier for NoCertVerification {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: UnixTime,
-    ) -> Result<ServerCertVerified, Error> {
-        Ok(ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        supported_schemes()
-    }
-}
-
-impl ClientCertVerifier for NoCertVerification {
-    fn root_hint_subjects(&self) -> &[DistinguishedName] {
-        &[]
-    }
-
-    fn verify_client_cert(
-        &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _now: UnixTime,
-    ) -> Result<ClientCertVerified, Error> {
-        Ok(ClientCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        supported_schemes()
-    }
-}
-
-fn root_cert_store(_cred: &NetCredential) -> RootCertStore {
-    RootCertStore::empty()
-}
-
-pub fn client_tls_config(
-    is_debug: bool,
-    credential: &NetCredential,
-    alpn_preferred: &[&str],
-) -> Result<rustls::ClientConfig, anyhow::Error> {
-    let mut tls_config = if is_debug {
-        rustls::ClientConfig::builder_with_protocol_versions(&[&TLS13])
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(NoCertVerification))
-            .with_client_auth_cert(credential.my_certs.clone(), credential.my_key.clone_key())?
-    } else {
-        rustls::ClientConfig::builder_with_protocol_versions(&[&TLS13])
-            .with_root_certificates(root_cert_store(credential))
-            .with_client_auth_cert(credential.my_certs.clone(), credential.my_key.clone_key())?
-    };
-    tls_config.alpn_protocols = alpn_preferred.iter().map(|s| s.as_bytes().to_vec()).collect();
-    tls_config.key_log = Arc::new(rustls::KeyLogFile::new());
-    Ok(tls_config)
-}
-
-pub fn server_tls_config(
-    is_debug: bool,
-    credential: &NetCredential,
-    alpn_supported: &[&str],
-) -> anyhow::Result<rustls::ServerConfig> {
-    let mut tls_config = if is_debug {
-        rustls::ServerConfig::builder_with_protocol_versions(&[&TLS13])
-            .with_client_cert_verifier(Arc::new(NoCertVerification))
-            .with_single_cert(credential.my_certs.clone(), credential.my_key.clone_key())?
-    } else {
-        rustls::ServerConfig::builder_with_protocol_versions(&[&TLS13])
-            .with_client_cert_verifier(
-                WebPkiClientVerifier::builder(Arc::new(root_cert_store(credential))).build()?,
-            )
-            .with_single_cert(credential.my_certs.clone(), credential.my_key.clone_key())?
-    };
-    tls_config.alpn_protocols = alpn_supported.iter().map(|s| s.as_bytes().to_vec()).collect();
-    Ok(tls_config)
 }
 
 fn cert_subjects(subjects: Option<Vec<String>>) -> Vec<String> {

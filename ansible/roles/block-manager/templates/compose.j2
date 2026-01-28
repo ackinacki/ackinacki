@@ -53,10 +53,8 @@ services:
         RUST_BACKTRACE: 1
         RUST_LOG: debug
         NODE_VERBOSE: 1
-        HTTP_SRC_URL: http://{{ NODE_IP }}:{{ BM_NODE_HTTP_URL_PORT }}
         SQLITE_PATH: ./data
         STREAM_SRC_URL: https://{{ NODE_IP }}:{{ BM_NODE_STREAM_PORT }}
-        BLOCK_MANAGER_API: 0.0.0.0:{{ BM_API_PORT }}
         DEFAULT_BP: {{ NODE_IP }}:{{ BM_NODE_PORT }}
         BM_OWNER_WALLET_PUBKEY: {{ BM_OWNER_WALLET_PUBKEY }}
         BM_ISSUER_KEYS_FILE: /bm-configs/{{ BM_SIGNER_KEYS }}
@@ -69,8 +67,8 @@ services:
       - bash
       - -c
       - >
-        migration-tool -p ./data --block-manager
-        && cp ./data/bm-schema.db ./data/bm-archive.db
+        migration-tool -p ./data/bm-archive.db --block-manager 
+        && migration-tool -p ./data/bm-schema.db --block-manager 
         && exec {{ BM_BINARY }} >> /logsdir/block-manager.log 2>&1
     expose:
       - {{ BM_API_PORT }}

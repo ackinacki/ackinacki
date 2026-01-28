@@ -181,6 +181,7 @@ where
             "Received message for broadcast"
         );
         let node_addr = bp_resolver(node_id);
+        tracing::debug!(node_addr = ?node_addr, "resolved BP host_port by node_id");
         match outgoing_message_tx.send(Arc::new(bincode::serialize(&(node_addr, message))?)) {
             Ok(number_subscribers) => {
                 tracing::debug!("Message forwarded to {} broadcast senders", number_subscribers);

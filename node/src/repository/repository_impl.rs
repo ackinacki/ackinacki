@@ -34,7 +34,7 @@ use telemetry_utils::now_ms;
 use tvm_types::AccountId;
 use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
-use versioned_struct::versioned;
+#[cfg(feature = "transitioning_node_version")]
 use versioned_struct::Transitioning;
 
 use super::accounts::AccountsRepository;
@@ -42,7 +42,6 @@ use crate::block_keeper_system::epoch::decode_epoch_data;
 use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::block_keeper_system::BlockKeeperSetChange;
-use crate::block_keeper_system::BlockKeeperSetOld;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
@@ -250,8 +249,6 @@ pub struct RepositoryImpl {
     bk_set_update_tx: InstrumentedSender<BkSetUpdate>,
     unfinalized_blocks: Arc<Mutex<HashMap<ThreadIdentifier, UnfinalizedCandidateBlockCollection>>>,
     last_message_for_acc: Arc<Mutex<HashMap<AccountAddress, MessageIdentifier>>>,
-    #[cfg(feature = "mirror_repair")]
-    pub is_updated_mv: Arc<Mutex<bool>>,
     config_read: ConfigRead,
 }
 
@@ -293,68 +290,28 @@ pub struct ExtMessages<TMessage: Clone> {
     pub queue: Vec<WrappedExtMessage<TMessage>>,
 }
 
-#[versioned]
 #[derive(TypedBuilder, Serialize, Deserialize, Getters, Clone)]
 pub struct AncestorBlockData {
     block_identifier: BlockIdentifier,
     block_seq_no: BlockSeqNo,
     thread_identifier: ThreadIdentifier,
     cross_thread_ref_data: CrossThreadRefData,
-    #[future]
     bk_set: BlockKeeperSet,
-    #[future]
     future_bk_set: BlockKeeperSet,
-    #[legacy]
-    bk_set: BlockKeeperSetOld,
-    #[legacy]
-    future_bk_set: BlockKeeperSetOld,
     envelope_hash: AckiNackiEnvelopeHash,
     parent_block_identifier: BlockIdentifier,
 }
 
-impl From<AncestorBlockDataOld> for AncestorBlockData {
-    fn from(value: AncestorBlockDataOld) -> Self {
-        let bk_set = value.bk_set.into();
-        let future_bk_set = value.future_bk_set.into();
-        Self {
-            block_identifier: value.block_identifier,
-            block_seq_no: value.block_seq_no,
-            thread_identifier: value.thread_identifier,
-            cross_thread_ref_data: value.cross_thread_ref_data,
-            bk_set,
-            future_bk_set,
-            envelope_hash: value.envelope_hash,
-            parent_block_identifier: value.parent_block_identifier,
-        }
-    }
-}
-
-#[versioned]
 #[derive(TypedBuilder, Serialize, Deserialize, Getters)]
 pub struct ThreadSnapshot {
     optimistic_state: Vec<u8>,
-    #[future]
     ancestor_blocks_data: Vec<AncestorBlockData>,
-    #[legacy]
-    ancestor_blocks_data: Vec<AncestorBlockDataOld>,
     db_messages: Vec<Vec<Arc<WrappedMessage>>>,
     finalized_block: Envelope<GoshBLS, AckiNackiBlock>,
-    #[future]
     bk_set: BlockKeeperSet,
-    #[future]
     descendant_bk_set: BlockKeeperSet,
-    #[future]
     future_bk_set: BlockKeeperSet,
-    #[future]
     descendant_future_bk_set: BlockKeeperSet,
-    #[legacy]
-    bk_set: BlockKeeperSetOld,
-    #[legacy]
-    descendant_bk_set: BlockKeeperSetOld,
-    #[legacy]
-    future_bk_set: BlockKeeperSetOld,
-    #[legacy]
-    descendant_future_bk_set: BlockKeeperSetOld,
     finalized_block_stats: BlockStatistics,
     attestation_target: AttestationTargets,
     producer_selector: ProducerSelector,
@@ -363,40 +320,7 @@ pub struct ThreadSnapshot {
     ancestor_blocks_finalization_checkpoints: AncestorBlocksFinalizationCheckpoints,
     finalizes_blocks: BTreeSet<BlockIndex>,
     parent_ancestor_blocks_finalization_checkpoints: AncestorBlocksFinalizationCheckpoints,
-    #[future]
     block_protocol_version_state: BlockProtocolVersionState,
-}
-
-impl Transitioning for ThreadSnapshot {
-    type Old = ThreadSnapshotOld;
-
-    fn from(old: Self::Old) -> Self {
-        let ancestor_blocks_data = old.ancestor_blocks_data.into_iter().map(|v| v.into()).collect();
-        let bk_set = old.bk_set.into();
-        let descendant_bk_set = old.descendant_bk_set.into();
-        let future_bk_set = old.future_bk_set.into();
-        let descendant_future_bk_set = old.descendant_future_bk_set.into();
-        Self {
-            optimistic_state: old.optimistic_state,
-            ancestor_blocks_data,
-            db_messages: old.db_messages,
-            finalized_block: old.finalized_block,
-            bk_set,
-            descendant_bk_set,
-            future_bk_set,
-            descendant_future_bk_set,
-            finalized_block_stats: old.finalized_block_stats,
-            attestation_target: old.attestation_target,
-            producer_selector: old.producer_selector,
-            block_height: old.block_height,
-            prefinalization_proof: old.prefinalization_proof,
-            ancestor_blocks_finalization_checkpoints: old.ancestor_blocks_finalization_checkpoints,
-            finalizes_blocks: old.finalizes_blocks,
-            parent_ancestor_blocks_finalization_checkpoints: old
-                .parent_ancestor_blocks_finalization_checkpoints,
-            block_protocol_version_state: BlockProtocolVersionState::none(),
-        }
-    }
 }
 
 impl<TMessage> Default for ExtMessages<TMessage>
@@ -469,8 +393,6 @@ impl Clone for RepositoryImpl {
             bk_set_update_tx: self.bk_set_update_tx.clone(),
             unfinalized_blocks: self.unfinalized_blocks.clone(),
             last_message_for_acc: self.last_message_for_acc.clone(),
-            #[cfg(feature = "mirror_repair")]
-            is_updated_mv: self.is_updated_mv.clone(),
             config_read: self.config_read.clone(),
         }
     }
@@ -492,7 +414,6 @@ impl RepositoryImpl {
         message_db: MessageDurableStorage,
         finalized_blocks: Arc<Mutex<FinalizedBlockStorage>>,
         bk_set_update_tx: InstrumentedSender<BkSetUpdate>,
-        #[cfg(feature = "mirror_repair")] is_updated_mv: Arc<Mutex<bool>>,
         config_read: ConfigRead,
     ) -> Self {
         if let Err(err) = fs::create_dir_all(data_dir.clone()) {
@@ -554,8 +475,6 @@ impl RepositoryImpl {
             bk_set_update_tx,
             unfinalized_blocks: Arc::new(Mutex::new(HashMap::new())),
             last_message_for_acc: Arc::new(Mutex::new(HashMap::new())),
-            #[cfg(feature = "mirror_repair")]
-            is_updated_mv: is_updated_mv.clone(),
             config_read,
         };
 
@@ -599,129 +518,128 @@ impl RepositoryImpl {
                     .get_optimistic_state(&metadata.last_finalized_block_id, thread_id, None)
                     .expect("Failed to get last finalized state")
                     .expect("Failed to load last finalized state");
-
-                let finalized_block_state = block_state_repository
-                    .get(&metadata.last_finalized_block_id)
-                    .expect("Failed to load finalized block state");
-                let (initial_bk_set, initial_descendant_bk_set) =
-                    finalized_block_state.guarded(|e| {
-                        (
-                            e.bk_set().clone().expect("Finalized block does not have bk set"),
-                            e.descendant_bk_set()
-                                .clone()
-                                .expect("Finalized block does not have descendant bk set"),
-                        )
-                    });
-
-                let initial_bk_set = Arc::unwrap_or_clone(initial_bk_set);
-                let initial_descendant_bk_set = Arc::unwrap_or_clone(initial_descendant_bk_set);
-                let (bk_set, descendant_bk_set, finalized_block_bk_data) =
-                    update_bk_set_from_state(
-                        initial_bk_set.clone(),
-                        Some(initial_descendant_bk_set.clone()),
-                        &finalized_optimistic_state,
-                    )
-                    .map_err(|e| {
-                        tracing::error!("Failed to update bk sets: {:?}", e);
-                        e
-                    })
-                    .expect("Failed to update bk sets");
-                let descendant_bk_set = descendant_bk_set.expect("descendant_bk_set must be set");
-                if initial_bk_set != bk_set || initial_descendant_bk_set != descendant_bk_set {
-                    finalized_block_state.guarded_mut(|e| {
-                        e.update_bk_sets(Arc::new(bk_set), Some(Arc::new(descendant_bk_set)));
-                    });
-
-                    // Note: need to update descendant blocks
-                    // If there is a new bk in the set a state is needed to update bk data, but if
-                    // it is not prefinalized we can just reset bk set to set it up later in block
-                    // processing
-                    let mut buffer = Vec::from_iter(
-                        finalized_block_state
-                            .guarded(|e| e.known_children(thread_id).cloned().unwrap_or_default())
-                            .into_iter(),
-                    );
-                    while !buffer.is_empty() {
-                        let cursor = buffer.remove(0);
-                        let Ok(state) = block_state_repository.get(&cursor) else {
-                            tracing::trace!("Failed to get block state for {:?}", cursor);
-                            continue;
-                        };
-                        let Some(initial_bk_set) =
-                            state.guarded(|e| e.bk_set().clone()).map(Arc::unwrap_or_clone)
-                        else {
-                            tracing::trace!("Block has no bk set {:?}", cursor);
-                            continue;
-                        };
-                        let initial_descendant_bk_set = state
-                            .guarded(|e| e.descendant_bk_set().clone())
-                            .map(Arc::unwrap_or_clone);
-                        let (mut bk_set, mut descendant_bk_set) =
-                            (initial_bk_set.clone(), initial_descendant_bk_set.clone());
-                        let mut needs_state = false;
-                        for signer_index in bk_set.clone().get_pubkeys_by_signers().keys() {
-                            if !finalized_block_bk_data.contains_key(signer_index) {
-                                needs_state = true;
-                                break;
-                            }
-                            let new_bk_data =
-                                finalized_block_bk_data.get(signer_index).unwrap().clone();
-                            bk_set.insert(*signer_index, new_bk_data);
-                        }
-                        if !needs_state {
-                            descendant_bk_set = if let Some(descendant_bk_set_ref) =
-                                descendant_bk_set.as_mut()
-                            {
-                                for signer_index in
-                                    descendant_bk_set_ref.clone().get_pubkeys_by_signers().keys()
-                                {
-                                    if !finalized_block_bk_data.contains_key(signer_index) {
-                                        needs_state = true;
-                                        break;
-                                    }
-                                    let new_bk_data =
-                                        finalized_block_bk_data.get(signer_index).unwrap().clone();
-                                    descendant_bk_set_ref.insert(*signer_index, new_bk_data);
-                                }
-                                Some(descendant_bk_set_ref.clone())
-                            } else {
-                                None
-                            };
-                        }
-                        if needs_state {
-                            let cursor_state = repo_impl
-                                .get_optimistic_state(
-                                    &cursor,
-                                    thread_id,
-                                    Some(finalized_optimistic_state.clone()),
-                                )
-                                .expect("Failed to get optimistic state to init bk set")
-                                .expect("Failed to get optimistic state to init bk set");
-                            let (new_bk_set, new_descendant_bk_set, _new_finalized_block_bk_data) =
-                                update_bk_set_from_state(
-                                    initial_bk_set.clone(),
-                                    initial_descendant_bk_set.clone(),
-                                    &cursor_state,
-                                )
-                                .map_err(|e| {
-                                    tracing::error!("Failed to update bk sets: {:?}", e);
-                                    e
-                                })
-                                .expect("Failed to update bk sets");
-                            bk_set = new_bk_set;
-                            descendant_bk_set = new_descendant_bk_set;
-                        }
-                        if bk_set != initial_bk_set
-                            || descendant_bk_set != initial_descendant_bk_set
-                        {
-                            let children = state.guarded_mut(|e| {
-                                e.update_bk_sets(Arc::new(bk_set), descendant_bk_set.map(Arc::new));
-                                e.known_children(thread_id).cloned().unwrap_or_default()
-                            });
-                            buffer.extend(children.into_iter());
-                        }
-                    }
-                }
+                // let finalized_block_state = block_state_repository
+                //     .get(&metadata.last_finalized_block_id)
+                //     .expect("Failed to load finalized block state");
+                // let (initial_bk_set, initial_descendant_bk_set) =
+                //     finalized_block_state.guarded(|e| {
+                //         (
+                //             e.bk_set().clone().expect("Finalized block does not have bk set"),
+                //             e.descendant_bk_set()
+                //                 .clone()
+                //                 .expect("Finalized block does not have descendant bk set"),
+                //         )
+                //     });
+                //
+                // let initial_bk_set = Arc::unwrap_or_clone(initial_bk_set);
+                // let initial_descendant_bk_set = Arc::unwrap_or_clone(initial_descendant_bk_set);
+                // let (bk_set, descendant_bk_set, finalized_block_bk_data) =
+                //     update_bk_set_from_state(
+                //         initial_bk_set.clone(),
+                //         Some(initial_descendant_bk_set.clone()),
+                //         &finalized_optimistic_state,
+                //     )
+                //     .map_err(|e| {
+                //         tracing::error!("Failed to update bk sets: {:?}", e);
+                //         e
+                //     })
+                //     .expect("Failed to update bk sets");
+                // let descendant_bk_set = descendant_bk_set.expect("descendant_bk_set must be set");
+                // if initial_bk_set != bk_set || initial_descendant_bk_set != descendant_bk_set {
+                //     finalized_block_state.guarded_mut(|e| {
+                //         e.update_bk_sets(Arc::new(bk_set), Some(Arc::new(descendant_bk_set)));
+                //     });
+                //
+                //     // Note: need to update descendant blocks
+                //     // If there is a new bk in the set a state is needed to update bk data, but if
+                //     // it is not prefinalized we can just reset bk set to set it up later in block
+                //     // processing
+                //     let mut buffer = Vec::from_iter(
+                //         finalized_block_state
+                //             .guarded(|e| e.known_children(thread_id).cloned().unwrap_or_default())
+                //             .into_iter(),
+                //     );
+                //     while !buffer.is_empty() {
+                //         let cursor = buffer.remove(0);
+                //         let Ok(state) = block_state_repository.get(&cursor) else {
+                //             tracing::trace!("Failed to get block state for {:?}", cursor);
+                //             continue;
+                //         };
+                //         let Some(initial_bk_set) =
+                //             state.guarded(|e| e.bk_set().clone()).map(Arc::unwrap_or_clone)
+                //         else {
+                //             tracing::trace!("Block has no bk set {:?}", cursor);
+                //             continue;
+                //         };
+                //         let initial_descendant_bk_set = state
+                //             .guarded(|e| e.descendant_bk_set().clone())
+                //             .map(Arc::unwrap_or_clone);
+                //         let (mut bk_set, mut descendant_bk_set) =
+                //             (initial_bk_set.clone(), initial_descendant_bk_set.clone());
+                //         let mut needs_state = false;
+                //         for signer_index in bk_set.clone().get_pubkeys_by_signers().keys() {
+                //             if !finalized_block_bk_data.contains_key(signer_index) {
+                //                 needs_state = true;
+                //                 break;
+                //             }
+                //             let new_bk_data =
+                //                 finalized_block_bk_data.get(signer_index).unwrap().clone();
+                //             bk_set.insert(*signer_index, new_bk_data);
+                //         }
+                //         if !needs_state {
+                //             descendant_bk_set = if let Some(descendant_bk_set_ref) =
+                //                 descendant_bk_set.as_mut()
+                //             {
+                //                 for signer_index in
+                //                     descendant_bk_set_ref.clone().get_pubkeys_by_signers().keys()
+                //                 {
+                //                     if !finalized_block_bk_data.contains_key(signer_index) {
+                //                         needs_state = true;
+                //                         break;
+                //                     }
+                //                     let new_bk_data =
+                //                         finalized_block_bk_data.get(signer_index).unwrap().clone();
+                //                     descendant_bk_set_ref.insert(*signer_index, new_bk_data);
+                //                 }
+                //                 Some(descendant_bk_set_ref.clone())
+                //             } else {
+                //                 None
+                //             };
+                //         }
+                //         if needs_state {
+                //             let cursor_state = repo_impl
+                //                 .get_optimistic_state(
+                //                     &cursor,
+                //                     thread_id,
+                //                     Some(finalized_optimistic_state.clone()),
+                //                 )
+                //                 .expect("Failed to get optimistic state to init bk set")
+                //                 .expect("Failed to get optimistic state to init bk set");
+                //             let (new_bk_set, new_descendant_bk_set, _new_finalized_block_bk_data) =
+                //                 update_bk_set_from_state(
+                //                     initial_bk_set.clone(),
+                //                     initial_descendant_bk_set.clone(),
+                //                     &cursor_state,
+                //                 )
+                //                 .map_err(|e| {
+                //                     tracing::error!("Failed to update bk sets: {:?}", e);
+                //                     e
+                //                 })
+                //                 .expect("Failed to update bk sets");
+                //             bk_set = new_bk_set;
+                //             descendant_bk_set = new_descendant_bk_set;
+                //         }
+                //         if bk_set != initial_bk_set
+                //             || descendant_bk_set != initial_descendant_bk_set
+                //         {
+                //             let children = state.guarded_mut(|e| {
+                //                 e.update_bk_sets(Arc::new(bk_set), descendant_bk_set.map(Arc::new));
+                //                 e.known_children(thread_id).cloned().unwrap_or_default()
+                //             });
+                //             buffer.extend(children.into_iter());
+                //         }
+                //     }
+                // }
 
                 let mut all_states = repo_impl.saved_states.lock();
                 let saved_states =
@@ -1165,9 +1083,6 @@ impl RepositoryImpl {
                 Arc::clone(&nack_set_cache),
                 self.accounts.clone(),
                 self.message_db.clone(),
-                #[cfg(feature = "mirror_repair")]
-                self.is_updated_mv.clone(),
-                true, // TODO: fix this flag, or just remove this whole function
             )?;
         }
 
@@ -1249,8 +1164,6 @@ impl RepositoryImpl {
             bk_set_update_tx,
             unfinalized_blocks: Arc::new(Mutex::new(HashMap::new())),
             last_message_for_acc: Arc::new(Mutex::new(HashMap::new())),
-            #[cfg(feature = "mirror_repair")]
-            is_updated_mv: Arc::new(Mutex::new(false)),
             config_read: ConfigRead::new(
                 ProtocolVersion::parse("None").unwrap(),
                 GlobalConfig::default(),
@@ -1596,10 +1509,6 @@ impl Repository for RepositoryImpl {
             } else {
                 tracing::trace!("Finalized block: apply state");
                 let mut state = Arc::unwrap_or_clone(state);
-                let block_version =
-                    block_state.guarded(|e| e.block_version_state().clone()).expect("Must be set");
-                let is_block_of_retired_version =
-                    self.config_read.is_retired(block_version.to_use());
                 let (_, _messages): (
                     _,
                     HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
@@ -1610,9 +1519,6 @@ impl Repository for RepositoryImpl {
                     self.nack_set_cache().clone(),
                     self.accounts.clone(),
                     self.message_db.clone(),
-                    #[cfg(feature = "mirror_repair")]
-                    self.is_updated_mv.clone(),
-                    is_block_of_retired_version,
                 )?;
 
                 let state = Arc::new(state);
@@ -1665,13 +1571,13 @@ impl Repository for RepositoryImpl {
     fn get_zero_state_for_thread(
         &self,
         thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<Arc<Self::OptimisticState>> {
-        let mut state = Self::OptimisticState::zero();
+    ) -> anyhow::Result<Option<Arc<Self::OptimisticState>>> {
         if let Some(path) = &self.zerostate_path {
             let zerostate = ZeroState::load_from_file(path)?;
-            state = zerostate.state(thread_id)?.clone();
-        };
-        Ok(Arc::new(state))
+            Ok(Some(Arc::new(zerostate.state(thread_id)?.clone())))
+        } else {
+            Ok(None)
+        }
     }
 
     fn get_optimistic_state(
@@ -1693,7 +1599,7 @@ impl Repository for RepositoryImpl {
             return Ok(Some(state.clone()));
         }
         if block_id == &zero_block_id {
-            return Ok(self.get_zero_state_for_thread(thread_id).ok());
+            return self.get_zero_state_for_thread(thread_id);
         }
         let root_path = self.get_optimistic_state_path();
         let path = self.get_path(root_path, block_id.to_string());
@@ -1810,7 +1716,11 @@ impl Repository for RepositoryImpl {
         _skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
     ) -> anyhow::Result<()> {
         tracing::debug!("set_state_from_snapshot");
+        #[cfg(feature = "transitioning_node_version")]
         let thread_snapshot: ThreadSnapshot = Transitioning::deserialize_data_compat(&snapshot)
+            .map_err(|e| anyhow::format_err!("Failed to deserialize snapshot: {e}"))?;
+        #[cfg(not(feature = "transitioning_node_version"))]
+        let thread_snapshot: ThreadSnapshot = bincode::deserialize(&snapshot)
             .map_err(|e| anyhow::format_err!("Failed to deserialize snapshot: {e}"))?;
 
         let state = <Self as Repository>::OptimisticState::deserialize_from_buf(
@@ -1856,13 +1766,6 @@ impl Repository for RepositoryImpl {
                 Ok::<(), anyhow::Error>(())
             })?;
             connect!(parent = parent, child = block_state, &block_state_repo_clone);
-            let (bk_set, descendant_bk_set, _) = update_bk_set_from_state(
-                thread_snapshot.bk_set.clone(),
-                Some(thread_snapshot.descendant_bk_set.clone()),
-                &state,
-            )
-            .map_err(|e| anyhow::format_err!("Failed to update bk sets: {e}"))?;
-            let descendant_bk_set = descendant_bk_set.expect("descendant_bk_set must be set");
             let children = block_state
                 .guarded_mut(|state| {
                     state.set_producer(
@@ -1882,9 +1785,11 @@ impl Repository for RepositoryImpl {
                     state.set_applied(Instant::now(), Instant::now())?;
                     state.set_signatures_verified()?;
                     state.set_stored(&thread_snapshot.finalized_block)?;
-                    state.set_bk_set(Arc::new(bk_set.clone()))?;
+                    state.set_bk_set(Arc::new(thread_snapshot.bk_set.clone()))?;
                     state.set_future_bk_set(Arc::new(thread_snapshot.future_bk_set.clone()))?;
-                    state.set_descendant_bk_set(Arc::new(descendant_bk_set.clone()))?;
+                    state.set_descendant_bk_set(Arc::new(
+                        thread_snapshot.descendant_bk_set.clone(),
+                    ))?;
                     state.set_descendant_future_bk_set(Arc::new(
                         thread_snapshot.descendant_future_bk_set.clone(),
                     ))?;
@@ -1927,7 +1832,6 @@ impl Repository for RepositoryImpl {
             crate::node::services::block_processor::rules::descendant_bk_set::set_descendant_bk_set(
                 &block_state,
                 &thread_snapshot.finalized_block,
-                &state,
             );
             Ok::<(), anyhow::Error>(())
         };
@@ -2295,7 +2199,7 @@ mod extract_new_messages_tests {
     }
 }
 
-fn update_bk_set_from_state(
+fn _update_bk_set_from_state(
     mut bk_set: BlockKeeperSet,
     mut descendant_bk_set: Option<BlockKeeperSet>,
     state: &OptimisticStateImpl,
@@ -2473,8 +2377,6 @@ pub mod tests {
             message_db.clone(),
             finalized_blocks,
             mock_bk_set_updates_tx(),
-            #[cfg(feature = "mirror_repair")]
-            Arc::new(Mutex::new(false)),
             ConfigRead::new(
                 ProtocolVersion::parse("None").unwrap(),
                 GlobalConfig::default(),
@@ -2519,8 +2421,6 @@ pub mod tests {
             message_db.clone(),
             finalized_blocks,
             mock_bk_set_updates_tx(),
-            #[cfg(feature = "mirror_repair")]
-            Arc::new(Mutex::new(false)),
             ConfigRead::new(
                 ProtocolVersion::parse("None").unwrap(),
                 GlobalConfig::default(),
@@ -2555,8 +2455,6 @@ pub mod tests {
             message_db.clone(),
             finalized_blocks,
             mock_bk_set_updates_tx(),
-            #[cfg(feature = "mirror_repair")]
-            Arc::new(Mutex::new(false)),
             ConfigRead::new(
                 ProtocolVersion::parse("None").unwrap(),
                 GlobalConfig::default(),
@@ -2598,8 +2496,6 @@ pub mod tests {
             message_db.clone(),
             finalized_blocks,
             mock_bk_set_updates_tx(),
-            #[cfg(feature = "mirror_repair")]
-            Arc::new(Mutex::new(false)),
             ConfigRead::new(
                 ProtocolVersion::parse("None").unwrap(),
                 GlobalConfig::default(),
@@ -2651,8 +2547,6 @@ pub mod tests {
             message_db.clone(),
             finalized_blocks,
             mock_bk_set_updates_tx(),
-            #[cfg(feature = "mirror_repair")]
-            Arc::new(Mutex::new(false)),
             ConfigRead::new(
                 ProtocolVersion::parse("None").unwrap(),
                 GlobalConfig::default(),

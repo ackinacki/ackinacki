@@ -38,6 +38,7 @@ fn run(tx: mpsc::Sender<WorkerCommand>) -> io::Result<JoinHandle<()>> {
                         tracing::error!("Worker did not confirm shutdown: {err:?})");
                     } else {
                         tracing::info!(target: "monit", "Database shutdown completed gracefully");
+                        std::thread::sleep(std::time::Duration::from_secs(5));
                         exit_code = 0;
                     }
                     exit(exit_code)

@@ -14,7 +14,6 @@ const NODE_PROTOCOL_ADDR_KEY: &str = "node_advertise_addr";
 const BK_API_HOST_PORT_KEY: &str = "bk_api_host_port";
 const BK_API_URL_FOR_STORAGE_SYNC_KEY: &str = "api_advertise_addr";
 const BK_API_ADDR_KEY: &str = "bk_api_socket";
-const BM_API_ADDR_KEY: &str = "bm_api_socket";
 const ID_KEY: &str = "node_id";
 const PROXIES_KEY: &str = "node_proxies";
 // pubkey_signature is base64 buf with (VerifyingKey([u8; 32]), Signature([u8; 64]))
@@ -27,8 +26,6 @@ pub struct GossipPeer<PeerId> {
     // Node Protocol
     pub node_protocol_addr: SocketAddr,
     pub proxies: Vec<SocketAddr>,
-    // BK API (is served by BM)
-    pub bm_api_addr: Option<SocketAddr>,
     // BK API.
     pub bk_api_host_port: Option<HostPort>,
     // BK API for storage sync used by nodes inside docker compose
@@ -61,9 +58,6 @@ where
                 values.push((PROXIES_KEY, proxies));
             }
         }
-        if let Some(socket) = &self.bm_api_addr {
-            values.push((BM_API_ADDR_KEY, socket.to_string()));
-        }
         if let Some(host_port) = &self.bk_api_host_port {
             values.push((BK_API_HOST_PORT_KEY, host_port.to_string()));
         }
@@ -85,7 +79,6 @@ where
         let mut id = Option::<PeerId>::None;
         let mut node_protocol_addr = None;
         let mut proxies = vec![];
-        let mut bm_api_addr = None;
         let mut bk_api_url = None;
         let mut bk_api_url_for_storage_sync = None;
         let mut bk_api_addr = None;
@@ -99,9 +92,7 @@ where
                 NODE_PROTOCOL_ADDR_KEY => {
                     node_protocol_addr = Some(parse_value(NODE_PROTOCOL_ADDR_KEY, v)?);
                 }
-                BM_API_ADDR_KEY => {
-                    bm_api_addr = Some(parse_value(BM_API_ADDR_KEY, v)?);
-                }
+
                 BK_API_HOST_PORT_KEY => {
                     bk_api_url = Some(parse_value(BK_API_HOST_PORT_KEY, v)?);
                 }
@@ -138,7 +129,6 @@ where
             id,
             node_protocol_addr,
             proxies,
-            bm_api_addr,
             bk_api_host_port: bk_api_url,
             bk_api_url_for_storage_sync,
             bk_api_addr_deprecated: bk_api_addr,
@@ -198,11 +188,10 @@ impl<PeerId: Display> Display for GossipPeer<PeerId> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "GossipPeer {{ id: {}, advertise_addr: {}, proxies: [{}], bm_api_socket: {}, bk_api_socket: {} }}",
+            "GossipPeer {{ id: {}, advertise_addr: {}, proxies: [{}], bk_api_socket: {} }}",
             self.id,
             self.node_protocol_addr,
             self.proxies.iter().map(|addr| addr.to_string()).collect::<Vec<_>>().join(", "),
-            self.bm_api_addr.as_ref().map_or("None".to_string(), |s| s.to_string()),
             self.bk_api_addr_deprecated.as_ref().map_or("None".to_string(), |s| s.to_string()),
         )
     }
@@ -221,7 +210,6 @@ fn test_signature() {
             id: "1".to_string(),
             node_protocol_addr: ([127, 0, 0, 1], 1234).into(),
             proxies: vec![],
-            bm_api_addr: None,
             bk_api_host_port: None,
             bk_api_url_for_storage_sync: None,
             bk_api_addr_deprecated: None,
@@ -235,7 +223,6 @@ fn test_signature() {
     assert_eq!(a.id, b.id);
     assert_eq!(a.node_protocol_addr, b.node_protocol_addr);
     assert_eq!(a.proxies, b.proxies);
-    assert_eq!(a.bm_api_addr, b.bm_api_addr);
     assert_eq!(a.bk_api_addr_deprecated, b.bk_api_addr_deprecated);
     assert_eq!(a.pubkey_signature, b.pubkey_signature);
 
@@ -247,7 +234,6 @@ fn test_signature() {
     assert_eq!(a.id, b.id);
     assert_eq!(a.node_protocol_addr, b.node_protocol_addr);
     assert_eq!(a.proxies, b.proxies);
-    assert_eq!(a.bm_api_addr, b.bm_api_addr);
     assert_eq!(a.bk_api_addr_deprecated, b.bk_api_addr_deprecated);
     assert_eq!(a.pubkey_signature, b.pubkey_signature);
 

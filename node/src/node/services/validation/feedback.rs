@@ -133,7 +133,11 @@ impl AckiNackiSend {
     fn get_signer_data(&self, block_state: &BlockState) -> Option<(SignerIndex, Secret)> {
         let (node_epoch_pubkey, node_epoch_signer_index) = block_state.guarded(|e| {
             let node_epoch_bk_data = e.get_bk_data_for_node_id(self.node_credentials.node_id())?;
-            if !node_epoch_bk_data.protocol_support.is_none() && &node_epoch_bk_data.protocol_support != self.node_credentials.protocol_version_support() {
+            let Some(block_version) = e.block_version_state() else {
+                tracing::warn!("Failed to send Ack/Nack: block version state is not ready");
+                return None;
+            };
+            if !node_epoch_bk_data.protocol_support.is_none() && !self.node_credentials.protocol_version_support().supports_version(block_version.to_use()) {
                 tracing::warn!("Failed to send Ack/Nack: bk data version support does not match node version support");
                 return None;
             }

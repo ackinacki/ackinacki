@@ -23,7 +23,6 @@ lazy_static = "^1.4"
 libc = { version = "0.2" }
 msquic = { git = "https://github.com/gosh-sh/msquic.git", rev = "d1909c987d97e43be94845f8333e38e207666cb5", features = ["static"] }
 parking_lot = "0.12.3"
-quinn.workspace = true
 rand.workspace = true
 rangemap = { version = "1.5.1" }
 rc2 = "^0.8"
@@ -38,7 +37,6 @@ telemetry_utils.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-wtransport.workspace = true
 x509-parser = { version = "0.17.0", features = ["verify"] }
 yasna = { version = "^0.5", features = ["std"] }
 

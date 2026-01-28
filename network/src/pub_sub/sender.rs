@@ -14,6 +14,7 @@ use crate::pub_sub::connection::ConnectionWrapper;
 use crate::pub_sub::connection::OutgoingMessage;
 use crate::topology::NetTopology;
 use crate::transfer::transfer;
+use crate::truncate_chars;
 use crate::DeliveryPhase;
 use crate::SendMode;
 
@@ -31,7 +32,7 @@ pub async fn sender<
 ) -> anyhow::Result<()> {
     tracing::info!(
         target: "monit",
-        ident = &connection.connection.local_identity()[..6],
+        ident = truncate_chars( &connection.connection.local_identity(), 6),
         local = connection.connection.local_addr().to_string(),
         peer = connection.info.remote_info(),
         "Sender loop started"
@@ -122,7 +123,7 @@ pub async fn sender<
 
     tracing::info!(
         target: "monit",
-        ident = &connection.connection.local_identity()[..6],
+        ident = truncate_chars( &connection.connection.local_identity(), 6),
         local = connection.connection.local_addr().to_string(),
         peer = connection.info.remote_info(),
         "Sender loop finished: {finish_reason}"

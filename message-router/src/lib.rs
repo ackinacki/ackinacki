@@ -7,7 +7,6 @@ pub mod process_ext_messages;
 
 pub use bp_resolver::MockBPResolver;
 pub use defaults::DEFAULT_BK_API_MESSAGES_PATH;
-pub use defaults::DEFAULT_BK_API_PORT;
 pub use defaults::DEFAULT_BM_API_MESSAGES_PATH;
 use serde::Deserialize;
 

@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::time::SystemTime;
@@ -45,13 +45,14 @@ pub struct Info {
 
 impl Default for Info {
     fn default() -> Self {
+        const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
         Self {
-            version: Some("0.68.0".into()),
+            version: Some(SERVER_VERSION.into()),
             time: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as f64),
             blocks_latency: None,
             messages_latency: None,
             transactions_latency: None,
-            latency: Some(5773.0),
+            latency: None,
             last_block_time: None,
             endpoints: Some(vec![]),
             chain_order_boundary: None,

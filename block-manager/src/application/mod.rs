@@ -3,5 +3,6 @@
 
 pub mod executor;
 pub mod metrics;
+pub mod quarantine;
 pub mod services;
 pub mod usecases;

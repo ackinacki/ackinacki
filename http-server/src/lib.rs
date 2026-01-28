@@ -180,18 +180,12 @@ where
 
     #[must_use = "server run must be awaited twice (first await is to prepare run call)"]
     pub async fn run(self, mut bk_set_rx: tokio::sync::watch::Receiver<ApiBkSet>) {
-        let rustls_config = rustls_config();
-
-        let quinn_listener = QuinnListener::new(
-            rustls_config.clone().build_quinn_config().expect("QUIC quinn config"),
-            self.addr.clone(),
-        );
         // TODO: turn SSL back when it's ready
         // let tcp_listener = TcpListener::new(self.addr.clone()).rustls(rustls_config);
         let tcp_listener = TcpListener::new(self.addr.clone());
 
         // TODO: maybe use try_bind?
-        let acceptor = tcp_listener.join(quinn_listener).bind().await;
+        let acceptor = tcp_listener.bind().await;
 
         let shared_bk_set = self.bk_set.clone();
         let shared_bk_set_summary = self.bk_set_summary.clone();

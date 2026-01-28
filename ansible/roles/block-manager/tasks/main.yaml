@@ -4,6 +4,10 @@
   run_once: true
   when: GQL_ARCHIVE is not defined or GQL_ARCHIVE is false
 
+- name: ROTATION
+  include_tasks: rotation.yaml
+  when: DO_ROTATE is defined and DO_ROTATE is true
+
 - name: Block Manager graceful shutdown
   include_tasks: graceful-shutdown.yaml
   when: DO_STOP_GRACEFUL is defined and DO_STOP_GRACEFUL is true
@@ -15,6 +19,12 @@
 - name: Block Manager directories and necessary files
   include_tasks: ensure-dirs-and-files.yaml
   when: DO_START and (GQL_ARCHIVE is not defined or GQL_ARCHIVE is false) and (UPGRADE is not defined or 'block-manager' not in UPGRADE)
+
+- name: Restore latest rotated database as current
+  include_tasks: restore-latest-rotated-db.yaml
+  when:
+    - RESTORE_ROTATED is defined and RESTORE_ROTATED is true
+    - DO_STOP or (DO_STOP_GRACEFUL is defined and DO_STOP_GRACEFUL is true) # bm must be stopped to move active db
 
 - name: Block Manager start
   include_tasks: start-bm.yaml

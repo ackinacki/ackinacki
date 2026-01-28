@@ -23,6 +23,7 @@ use crate::node::NodeIdentifier;
 use crate::protocol::authority_switch::network_message::AuthoritySwitch;
 use crate::types::bp_selector::ProducerSelector;
 use crate::types::AckiNackiBlock;
+#[cfg(feature = "transitioning_node_version")]
 use crate::types::AckiNackiBlockVersioned;
 use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
@@ -40,6 +41,7 @@ pub struct NetBlock {
 }
 
 impl NetBlock {
+    #[cfg(feature = "transitioning_node_version")]
     pub fn with_versioned(
         value: &Envelope<GoshBLS, AckiNackiBlockVersioned>,
     ) -> anyhow::Result<Self> {

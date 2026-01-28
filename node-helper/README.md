@@ -186,8 +186,6 @@ Options:
           [env: NETWORK_SEND_BUFFER_SIZE=]
       --min-time-between-state-publish-directives <MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES>
           [env: MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES=]
-      --bm_api_socket <BM_API_SOCKET>
-          Public address of the Block Manager API [env: BM_API_SOCKET=]
       --bk_api_socket <BK_API_SOCKET>
           Public address of the Block Keeper API [env: BK_API_SOCKET=]
       --parallelization-level <PARALLELIZATION_LEVEL>

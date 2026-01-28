@@ -8,6 +8,7 @@ use serde::Serialize;
 pub mod create_signed;
 pub mod envelope;
 pub mod gosh_bls;
+pub mod try_seal;
 
 pub use gosh_bls::GoshBLS;
 

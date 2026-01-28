@@ -58,6 +58,22 @@
 			]
 		},
 		{
+			"name": "getData",
+			"inputs": [
+				{"name":"name","type":"string"},
+				{"name":"decimals","type":"uint128"},
+				{"name":"walletCode","type":"cell"},
+				{"name":"transactionCode","type":"cell"},
+				{"name":"pubkey","type":"uint256"},
+				{"name":"mintDisabled","type":"bool"},
+				{"name":"initialSupplyToOwner","type":"address"},
+				{"name":"initialSupply","type":"uint128"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
 			"name": "upgrade",
 			"inputs": [
 				{"name":"newcode","type":"cell"}

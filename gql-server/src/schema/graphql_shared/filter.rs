@@ -1,8 +1,10 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use async_graphql::InputObject;
+use serde::ser::SerializeSeq;
 use serde::Serialize;
+use serde::Serializer;
 use serde_json::Value;
 
 pub trait WhereOp {
@@ -20,6 +22,13 @@ pub trait WhereOp {
         obj
     }
 
+    fn fmt_value(v: &Value) -> String {
+        match v {
+            Value::String(s) if s.len() == 19 && s.starts_with("X'") => s.clone(),
+            _ => v.to_string(),
+        }
+    }
+
     fn into_str(pair: (String, Value)) -> Option<String> {
         let (field, value) = pair;
 
@@ -28,29 +37,19 @@ pub trait WhereOp {
             .unwrap()
             .iter()
             .map(|x| match x {
-                (k, v) if k == "eq" => format!("{field} = {v}"),
-                (k, v) if k == "ne" => format!("{field} <> {v}"),
-                (k, v) if k == "gt" => format!("{field} > {v}"),
-                (k, v) if k == "lt" => format!("{field} < {v}"),
-                (k, v) if k == "ge" => format!("{field} >= {v}"),
-                (k, v) if k == "le" => format!("{field} <= {v}"),
+                (k, v) if k == "eq" => format!("{field} = {}", Self::fmt_value(v)),
+                (k, v) if k == "ne" => format!("{field} <> {}", Self::fmt_value(v)),
+                (k, v) if k == "gt" => format!("{field} > {}", Self::fmt_value(v)),
+                (k, v) if k == "lt" => format!("{field} < {}", Self::fmt_value(v)),
+                (k, v) if k == "ge" => format!("{field} >= {}", Self::fmt_value(v)),
+                (k, v) if k == "le" => format!("{field} <= {}", Self::fmt_value(v)),
                 (k, v) if k == "include" => format!(
                     "{field} IN ({})",
-                    v.as_array()
-                        .unwrap()
-                        .iter()
-                        .map(|x| format!("{x}"))
-                        .collect::<Vec<_>>()
-                        .join(",")
+                    v.as_array().unwrap().iter().map(Self::fmt_value).collect::<Vec<_>>().join(",")
                 ),
                 (k, v) if k == "notIn" => format!(
                     "{field} NOT IN ({})",
-                    v.as_array()
-                        .unwrap()
-                        .iter()
-                        .map(|x| format!("{x}"))
-                        .collect::<Vec<_>>()
-                        .join(",")
+                    v.as_array().unwrap().iter().map(Self::fmt_value).collect::<Vec<_>>().join(",")
                 ),
                 (k, v) if v.is_object() => Self::into_str((k.to_string(), v.clone()))
                     .unwrap()
@@ -152,6 +151,83 @@ pub struct StringFilter {
 }
 
 pub type OptStringFilter = Option<StringFilter>;
+
+const HEX_TABLE: [u8; 16] = *b"0123456789abcdef";
+
+/// Formats a `u64` value as an SQLite BLOB hex literal in the form `X'0123...abcd'`.
+fn u64_to_hexed_blob_buf(v: u64) -> [u8; 19] {
+    let mut buf = [0u8; 19];
+    buf[0] = b'X';
+    buf[1] = b'\'';
+
+    let mut n = v;
+    for i in (0..16).rev() {
+        let nibble = (n & 0x0f) as usize;
+        buf[2 + i] = HEX_TABLE[nibble];
+        n >>= 4;
+    }
+
+    buf[18] = b'\'';
+    buf
+}
+
+fn serialize_opt_u64_hexed_blob<S>(value: &Option<u64>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match value {
+        Some(v) => {
+            let buf = u64_to_hexed_blob_buf(*v);
+            let s = unsafe { std::str::from_utf8_unchecked(&buf) };
+            serializer.serialize_str(s)
+        }
+        None => serializer.serialize_none(),
+    }
+}
+
+fn serialize_opt_vec_opt_u64_hexed_blob<S>(
+    value: &Option<Vec<Option<u64>>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match value {
+        None => serializer.serialize_none(),
+        Some(vec) => {
+            let count = vec.iter().filter(|x| x.is_some()).count();
+            let mut seq = serializer.serialize_seq(Some(count))?;
+
+            for v in vec.iter().filter_map(|x| *x) {
+                let buf = u64_to_hexed_blob_buf(v);
+                let s = unsafe { std::str::from_utf8_unchecked(&buf) };
+                seq.serialize_element(s)?;
+            }
+
+            seq.end()
+        }
+    }
+}
+
+#[allow(non_snake_case)]
+#[derive(InputObject, Debug, Serialize)]
+pub struct BlobFilter {
+    #[serde(serialize_with = "serialize_opt_u64_hexed_blob")]
+    pub eq: Option<u64>,
+    #[serde(serialize_with = "serialize_opt_u64_hexed_blob")]
+    pub ne: Option<u64>,
+    #[serde(serialize_with = "serialize_opt_u64_hexed_blob")]
+    pub ge: Option<u64>,
+    #[serde(serialize_with = "serialize_opt_u64_hexed_blob")]
+    pub le: Option<u64>,
+    #[graphql(name = "in")]
+    #[serde(serialize_with = "serialize_opt_vec_opt_u64_hexed_blob")]
+    pub include: Option<Vec<Option<u64>>>,
+    #[serde(serialize_with = "serialize_opt_vec_opt_u64_hexed_blob")]
+    pub notIn: Option<Vec<Option<u64>>>,
+}
+
+pub type OptBlobFilter = Option<BlobFilter>;
 
 #[cfg(test)]
 pub mod tests {

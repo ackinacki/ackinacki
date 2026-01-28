@@ -1,5 +1,7 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
+
+use std::fmt;
 
 use async_graphql::futures_util::TryStreamExt;
 use sqlx::prelude::FromRow;
@@ -12,7 +14,7 @@ use crate::schema::graphql::query::PaginateDirection;
 use crate::schema::graphql_ext::blockchain_api::blocks::BlockchainBlocksQueryArgs;
 
 #[allow(dead_code)]
-#[derive(Clone, Debug, FromRow)]
+#[derive(Clone, FromRow)]
 pub struct Block {
     #[sqlx(skip)]
     pub rowid: i64, // id INTEGER PRIMARY KEY,
@@ -62,6 +64,57 @@ pub struct Block {
     pub workchain_id: Option<i64>, // workchain_id INTEGER,
     pub data: Option<Vec<u8>>,
     pub thread_id: Option<String>,
+    pub height: Option<Vec<u8>>,
+    pub envelope_hash: Option<Vec<u8>>,
+}
+
+struct HexBytesOpt<'a>(Option<&'a [u8]>);
+
+impl fmt::Debug for HexBytesOpt<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            None => f.write_str("None"),
+            Some(bytes) => {
+                f.write_str("Some(0x")?;
+                for byte in bytes {
+                    write!(f, "{:02x}", byte)?;
+                }
+                f.write_str(")")
+            }
+        }
+    }
+}
+
+struct BocPreview<'a>(Option<&'a [u8]>);
+
+impl fmt::Debug for BocPreview<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            None => f.write_str("None"),
+            Some(bytes) => {
+                let len = bytes.len();
+                let head_len = len.min(10);
+                write!(f, "Some(len={len}, head=0x")?;
+                for byte in &bytes[..head_len] {
+                    write!(f, "{:02x}", byte)?;
+                }
+                f.write_str(")")
+            }
+        }
+    }
+}
+
+impl fmt::Debug for Block {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Block")
+            .field("id", &self.id)
+            .field("boc", &BocPreview(self.boc.as_deref()))
+            .field("seq_no", &self.seq_no)
+            .field("thread_id", &self.thread_id)
+            .field("height", &HexBytesOpt(self.height.as_deref()))
+            .field("envelope_hash", &HexBytesOpt(self.envelope_hash.as_deref()))
+            .finish()
+    }
 }
 
 impl Block {

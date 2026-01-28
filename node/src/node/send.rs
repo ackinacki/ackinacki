@@ -7,10 +7,8 @@ use std::collections::HashMap;
 use network::channel::NetBroadcastSender;
 use network::channel::NetDirectSender;
 
-use crate::bls::create_signed::CreateSealed;
 use crate::bls::envelope::BLSSignedEnvelope;
-use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
+use crate::bls::try_seal::TrySeal;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::NodeAssociatedTypes;
@@ -158,18 +156,20 @@ where
             tracing::trace!("Failed to load block state. Skip broadcasting");
             return Ok(());
         };
-        let Some(bk_set) = block_state.guarded(|e| e.bk_set().clone()) else {
+        let (Some(bk_set), Some(block_version)) =
+            block_state.guarded(|e| (e.bk_set().clone(), e.block_version_state().clone()))
+        else {
             tracing::trace!("Failed to get bk_set from block state. Skip broadcasting");
             return Ok(());
         };
 
         let secrets = self.bls_keys_map.guarded(|map| map.clone());
 
-        let envelope = match Envelope::<GoshBLS, SyncFinalizedData>::sealed(
+        let envelope = match data.try_seal(
             &self.node_credentials,
             &bk_set,
             &secrets,
-            data,
+            block_version.to_use(),
         ) {
             Ok(envelope) => envelope,
             Err(e) => {

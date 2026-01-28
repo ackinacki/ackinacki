@@ -147,8 +147,8 @@ pub struct NodeConfig {
     pub block_keeper_seed_path: String,
 
     /// Path to zerostate file.
-    #[builder(default = PathBuf::from("zerostate"))]
-    pub zerostate_path: PathBuf,
+    #[builder(default)]
+    pub zerostate_path: Option<PathBuf>,
 
     /// Optional path to init bk set. If omitted, uses bk set from zerostate.
     /// Bk set file format must match `/v2/bk_set_update` API output.
@@ -264,7 +264,6 @@ impl Config {
             id: self.local.node_id.clone(),
             node_protocol_addr: self.network.node_advertise_addr,
             proxies: self.network.proxies.clone().into(),
-            bm_api_addr: self.network.bm_api_socket,
             bk_api_addr_deprecated: self.network.bk_api_socket,
             bk_api_url_for_storage_sync: Some(self.network.api_advertise_addr.clone()),
             bk_api_host_port: self.network.bk_api_host_port.clone(),
@@ -333,7 +332,7 @@ impl Default for NodeConfig {
             node_id: NodeIdentifier::some_id(),
             blockchain_config_path: PathBuf::from("blockchain_config.json"),
             key_path: "block_keeper.keys.json".to_string(),
-            zerostate_path: PathBuf::from("zerostate"),
+            zerostate_path: None,
             bk_set_update_path: None,
             external_state_share_local_base_dir: PathBuf::from("/tmp"),
             parallelization_level: 20,

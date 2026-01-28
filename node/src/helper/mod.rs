@@ -2,7 +2,6 @@
 //
 
 pub mod account_boc_loader;
-pub mod bp_resolver;
 pub mod key_handling;
 pub mod metrics;
 

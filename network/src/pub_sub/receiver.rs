@@ -11,6 +11,7 @@ use crate::metrics::NetMetrics;
 use crate::pub_sub::connection::ConnectionWrapper;
 use crate::pub_sub::connection::IncomingMessage;
 use crate::pub_sub::IncomingSender;
+use crate::truncate_chars;
 
 pub async fn receiver<PeerId: Clone + Debug + Display, Connection: NetConnection + 'static>(
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -21,7 +22,7 @@ pub async fn receiver<PeerId: Clone + Debug + Display, Connection: NetConnection
 ) -> anyhow::Result<()> {
     tracing::info!(
         target: "monit",
-        ident = &connection.connection.local_identity()[..6],
+        ident = truncate_chars(&connection.connection.local_identity(), 6),
         local = connection.connection.local_addr().to_string(),
         peer = connection.info.remote_info(),
         "Receiver loop started"
@@ -43,7 +44,7 @@ pub async fn receiver<PeerId: Clone + Debug + Display, Connection: NetConnection
     }
     tracing::info!(
         target: "monit",
-        ident = &connection.connection.local_identity()[..6],
+        ident = truncate_chars( &connection.connection.local_identity(), 6),
         local = connection.connection.local_addr().to_string(),
         peer = connection.info.remote_info(),
         "Receiver loop finished"

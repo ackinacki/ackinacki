@@ -4,15 +4,14 @@
   ansible.builtin.shell:
     chdir: "{{ BM_DIR }}"
     # cmd: docker compose exec "block_manager" /bin/bash -c 'kill -l'
-    cmd: docker compose stop -t 20 "block_manager"
+    cmd: docker compose down -t 60 "block_manager"
   ignore_errors: true
 
 - name: Wait for container to stop or shutdown to finish
   ansible.builtin.shell:
     chdir: "{{ BM_DIR }}"
     cmd: |
-      (docker compose ps "block_manager" -q | wc -l | grep -q "0") || (grep -q -e "block_manager::block_subscriber:160: block stored")
-      # (docker compose ps "block_manager" -q | wc -l | grep -q "0") || (grep -q -e "monit: Database shutdown completed gracefully")
+      (docker compose ps "block_manager" -q | wc -l | grep -q "0") # || (grep -q -e "Database shutdown completed gracefully")
   register: container_check
   until: container_check is success
   retries: "20"
@@ -22,4 +21,4 @@
 - name: Stop block manager container if the process still lingering
   ansible.builtin.shell:
     chdir: "{{ BM_DIR }}"
-    cmd: docker compose down "block_manager" -t 3
+    cmd: docker compose down "block_manager" -t 60

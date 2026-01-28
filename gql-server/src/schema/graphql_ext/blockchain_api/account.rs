@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::sync::Arc;
@@ -256,7 +256,11 @@ impl BlockchainAccountQuery<'_> {
                             .map(Box::new);
                     }
                 }
-                let cursor = message.dst_chain_order.clone().unwrap();
+                let cursor = if let Some(ref dst_chain_order) = message.dst_chain_order {
+                    dst_chain_order.clone()
+                } else {
+                    message.src_chain_order.clone().unwrap()
+                };
                 let edge: Edge<String, Message, EmptyFields, BlockchainMessageEdge> =
                     Edge::with_additional_fields(cursor, message, EmptyFields);
                 edges.push(edge);

@@ -42,7 +42,9 @@ macro_rules! out_of_bounds_guard {
 pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
-
+pub fn now_micros() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_micros() as u64
+}
 pub fn millis_from_now(start_ms: u64) -> Result<u64, String> {
     let now = now_ms();
     if now >= start_ms {

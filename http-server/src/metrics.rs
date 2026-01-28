@@ -8,6 +8,7 @@ use telemetry_utils::out_of_bounds_guard;
 pub struct RoutingMetrics {
     ext_msg_delivery_duration: Histogram<u64>,
     ext_msg_processing_duration: Histogram<u64>,
+    ext_msg_feedback: Counter<u64>,
     boc_by_address_response: Histogram<u64>,
     state_request: Counter<u64>,
 }
@@ -26,6 +27,7 @@ impl RoutingMetrics {
                 .u64_histogram("node_ext_msg_processing_duration")
                 .with_boundaries(boundaries.clone())
                 .build(),
+            ext_msg_feedback: meter.u64_counter("node_ext_msg_feedback").build(),
             boc_by_address_response: meter
                 .u64_histogram("node_boc_by_address_response")
                 .with_boundaries(boundaries)
@@ -52,5 +54,9 @@ impl RoutingMetrics {
 
     pub fn report_state_request(&self) {
         self.state_request.add(1, &[]);
+    }
+
+    pub fn report_ext_msg_feedback(&self, err_type: &str) {
+        self.ext_msg_feedback.add(1, &[KeyValue::new("err", err_type.to_string())]);
     }
 }

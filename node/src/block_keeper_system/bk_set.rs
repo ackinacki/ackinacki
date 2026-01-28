@@ -1,33 +1,17 @@
 use std::ops::Deref;
-use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::ensure;
-use tvm_types::AccountId;
-
-use crate::block_keeper_system::epoch::decode_epoch_data;
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::block_keeper_system::BlockKeeperSetChange;
-use crate::repository::optimistic_state::OptimisticState;
-use crate::repository::optimistic_state::OptimisticStateImpl;
-use crate::types::common_section::CommonSectionVersioned;
-use crate::types::AckiNackiBlockVersioned;
+use crate::types::AckiNackiBlock;
 
 pub(crate) fn update_block_keeper_set_from_common_section(
-    block: &AckiNackiBlockVersioned,
+    block: &AckiNackiBlock,
     current_bk_set: Arc<BlockKeeperSet>,
     current_future_bk_set: Arc<BlockKeeperSet>,
-    optimistic_state: &OptimisticStateImpl, /* TODO: only for transitioning version, remove after 0.13.0 */
 ) -> anyhow::Result<Option<(Arc<BlockKeeperSet>, Arc<BlockKeeperSet>)>> {
     let common_section = block.get_common_section();
-    let bk_set_changes = match common_section {
-        CommonSectionVersioned::New(common_section) => {
-            common_section.block_keeper_set_changes.clone()
-        }
-        CommonSectionVersioned::Old(common_section) => {
-            common_section.block_keeper_set_changes.into_iter().map(|v| v.into()).collect()
-        }
-    };
+    let bk_set_changes = common_section.block_keeper_set_changes.clone();
     if bk_set_changes.is_empty() {
         return Ok(None);
     }
@@ -68,46 +52,17 @@ pub(crate) fn update_block_keeper_set_from_common_section(
             print_bk_set = true;
         }
     }
-    let accounts = optimistic_state
-        .get_shard_state()
-        .read_accounts()
-        .map_err(|e| anyhow::format_err!("Failed to read state accounts: {e}"))?;
     for block_keeper_change in &bk_set_changes {
         if let BlockKeeperSetChange::BlockKeeperAdded((signer_index, block_keeper_data)) =
             block_keeper_change
         {
-            tracing::trace!(
-                "insert block keeper key (original): {signer_index} {block_keeper_data}"
-            );
-            let epoch_address = AccountId::from_str(&block_keeper_data.address)
-                .map_err(|e| anyhow::format_err!("Failed to convert epoch address: {e}"))?;
-            let epoch_account = accounts
-                .account(&epoch_address)
-                .map_err(|e| {
-                    anyhow::format_err!(
-                        "Failed to get account({}): {:?}",
-                        block_keeper_data.address,
-                        e
-                    )
-                })?
-                .ok_or(anyhow::format_err!("Epoch account is not on the state"))?
-                .read_account()
-                .map_err(|e| {
-                    anyhow::format_err!("Failed to read account from shard account: {:?}", e)
-                })?
-                .as_struct()
-                .map_err(|e| anyhow::format_err!("Failed to convert account: {:?}", e))?;
-            let (signer_index_from_acc, epoch_data) = decode_epoch_data(&epoch_account)
-                .map_err(|e| anyhow::format_err!("Failed to decode epoch data: {e}"))?
-                .ok_or(anyhow::format_err!("Failed to decode epoch data"))?;
-            ensure!(signer_index == &signer_index_from_acc, "signer index does not match account");
-            tracing::trace!("insert block keeper key (from account): {signer_index} {epoch_data}");
+            tracing::trace!("insert block keeper key: {signer_index} {block_keeper_data}");
             // Look for transition state
-            let transition_state = new_bk_set.get_by_node_id(&epoch_data.node_id()).cloned();
+            let transition_state = new_bk_set.get_by_node_id(&block_keeper_data.node_id()).cloned();
             if let Some(old_bk_data) = transition_state {
                 new_bk_set.remove_signer(&old_bk_data.signer_index);
             }
-            new_bk_set.insert(*signer_index, epoch_data);
+            new_bk_set.insert(*signer_index, block_keeper_data.clone());
             print_bk_set = true;
             if new_future_bk_set.contains_signer(signer_index) {
                 new_future_bk_set.remove_signer(signer_index);

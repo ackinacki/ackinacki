@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use async_graphql::ComplexObject;
@@ -6,6 +6,7 @@ use async_graphql::Enum;
 use async_graphql::SimpleObject;
 use chrono::DateTime;
 use chrono::Utc;
+use faster_hex::hex_string;
 
 use crate::helpers::format_big_int;
 use crate::helpers::ToBool;
@@ -162,6 +163,7 @@ pub struct Block {
     directives: Directives,
     #[graphql(skip)]
     end_lt: Option<String>,
+    envelope_hash: Option<String>,
     /// Shard block file hash.
     file_hash: String,
     flags: Option<Int>,
@@ -176,6 +178,7 @@ pub struct Block {
     /// uint32 global block ID.
     global_id: Option<Int>,
     pub hash: Option<String>,
+    height: Option<u64>,
     in_msg_descr: Option<Vec<Option<InMsg>>>,
     /// true if this block is a key block.
     key_block: Option<Boolean>,
@@ -239,6 +242,10 @@ impl From<db::Block> for Block {
         } else {
             None
         };
+        let height: Option<u64> = block.height.and_then(|v| {
+            let arr: [u8; 8] = v.try_into().ok()?;
+            Some(u64::from_be_bytes(arr))
+        });
         Self {
             id: block.id.clone(),
             account_blocks: None,
@@ -253,6 +260,7 @@ impl From<db::Block> for Block {
                 share_state_resource_address: block.share_state_resource_address,
             },
             end_lt: None,
+            envelope_hash: block.envelope_hash.as_deref().map(hex_string),
             file_hash: "".to_string(),
             flags: block.flags.to_int(),
             gen_catchain_seqno: block.gen_catchain_seqno.to_float(),
@@ -267,6 +275,7 @@ impl From<db::Block> for Block {
             gen_validator_list_hash_short: block.gen_validator_list_hash_short.to_float(),
             global_id: block.global_id.to_int(),
             hash: Some(block.id),
+            height,
             in_msg_descr: Some(vec![]),
             key_block: block.key_block.to_bool(),
             master: None,

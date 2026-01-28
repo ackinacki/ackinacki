@@ -334,8 +334,6 @@ where
                 bp_production_count,
                 save_optimistic_service_sender,
                 node_credentials.clone(),
-                #[cfg(feature = "mirror_repair")]
-                Arc::new(parking_lot::Mutex::new(false)),
             )
             .expect("Failed to start producer service"),
             metrics,

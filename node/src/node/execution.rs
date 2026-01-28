@@ -43,7 +43,17 @@ where
         // This whole thing assumes that there is only one thread.
         // In case of multiple threads this logic will immediately
         // become very complicated thus require refactoring.
-        let mut needs_synchronizing = false;
+        let mut needs_synchronizing = {
+            if let Some((_block_id, _block_seq_no)) =
+                self.repository.select_thread_last_finalized_block(&self.thread_id)?
+            {
+                // No need to start from syncronization
+                false
+            } else {
+                // No state on file. start syncronizing immediately
+                true
+            }
+        };
         loop {
             // Synchronization can be executed not once if node looses too much blocks.
             let synchronization_result = {

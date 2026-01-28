@@ -142,6 +142,7 @@ mod tests {
 
     #[test]
     fn test() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let client_ed_sign_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
         let unknown_ed_sign_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
         generate_certs(

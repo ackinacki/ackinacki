@@ -8,7 +8,6 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::ops::AddAssign;
-use std::str::FromStr;
 
 use num_bigint::BigUint;
 use num_traits::Zero;
@@ -16,7 +15,6 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
-use versioned_struct::versioned;
 
 use crate::bls::gosh_bls::PubKey;
 use crate::node::NodeIdentifier;
@@ -39,55 +37,6 @@ pub enum BlockKeeperSetChange {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
-pub enum BlockKeeperSetChangeOld {
-    BlockKeeperAdded((SignerIndex, BlockKeeperDataOld)),
-    BlockKeeperRemoved((SignerIndex, BlockKeeperDataOld)),
-    FutureBlockKeeperAdded((SignerIndex, BlockKeeperDataOld)),
-    #[cfg(feature = "protocol_version_hash_in_block")]
-    BlockKeeperChangedVersion((SignerIndex, BlockKeeperDataOld)),
-}
-
-impl From<BlockKeeperSetChange> for BlockKeeperSetChangeOld {
-    fn from(block_keeper_set_change: BlockKeeperSetChange) -> Self {
-        match block_keeper_set_change {
-            BlockKeeperSetChange::BlockKeeperAdded((index, data_old)) => {
-                BlockKeeperSetChangeOld::BlockKeeperAdded((index, data_old.into()))
-            }
-            BlockKeeperSetChange::BlockKeeperRemoved((index, data_old)) => {
-                BlockKeeperSetChangeOld::BlockKeeperRemoved((index, data_old.into()))
-            }
-            BlockKeeperSetChange::FutureBlockKeeperAdded((index, data_old)) => {
-                BlockKeeperSetChangeOld::FutureBlockKeeperAdded((index, data_old.into()))
-            }
-            #[cfg(feature = "protocol_version_hash_in_block")]
-            BlockKeeperSetChange::BlockKeeperChangedVersion((index, data_old)) => {
-                BlockKeeperSetChangeOld::BlockKeeperChangedVersion((index, data_old.into()))
-            }
-        }
-    }
-}
-
-impl From<BlockKeeperSetChangeOld> for BlockKeeperSetChange {
-    fn from(block_keeper_set_change: BlockKeeperSetChangeOld) -> Self {
-        match block_keeper_set_change {
-            BlockKeeperSetChangeOld::BlockKeeperAdded((index, data_old)) => {
-                BlockKeeperSetChange::BlockKeeperAdded((index, data_old.into()))
-            }
-            BlockKeeperSetChangeOld::BlockKeeperRemoved((index, data_old)) => {
-                BlockKeeperSetChange::BlockKeeperRemoved((index, data_old.into()))
-            }
-            BlockKeeperSetChangeOld::FutureBlockKeeperAdded((index, data_old)) => {
-                BlockKeeperSetChange::FutureBlockKeeperAdded((index, data_old.into()))
-            }
-            #[cfg(feature = "protocol_version_hash_in_block")]
-            BlockKeeperSetChangeOld::BlockKeeperChangedVersion((index, data_old)) => {
-                BlockKeeperSetChange::BlockKeeperChangedVersion((index, data_old.into()))
-            }
-        }
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum BlockKeeperStatus {
     PreEpoch,
     Active,
@@ -95,7 +44,6 @@ pub enum BlockKeeperStatus {
     Expired,
 }
 
-#[versioned]
 #[derive(Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct BlockKeeperData {
     pub pubkey: PubKey,
@@ -109,41 +57,7 @@ pub struct BlockKeeperData {
     pub owner_address: AccountAddress,
     pub signer_index: SignerIndex,
     pub owner_pubkey: [u8; 32],
-    #[future]
     pub protocol_support: crate::versioning::ProtocolVersionSupport,
-}
-
-impl From<BlockKeeperData> for BlockKeeperDataOld {
-    fn from(old: BlockKeeperData) -> Self {
-        BlockKeeperDataOld {
-            pubkey: old.pubkey,
-            epoch_finish_seq_no: old.epoch_finish_seq_no,
-            wait_step: old.wait_step,
-            status: old.status,
-            address: old.address,
-            stake: old.stake,
-            owner_address: old.owner_address,
-            signer_index: old.signer_index,
-            owner_pubkey: old.owner_pubkey,
-        }
-    }
-}
-
-impl From<BlockKeeperDataOld> for BlockKeeperData {
-    fn from(old: BlockKeeperDataOld) -> Self {
-        BlockKeeperData {
-            pubkey: old.pubkey,
-            epoch_finish_seq_no: old.epoch_finish_seq_no,
-            wait_step: old.wait_step,
-            status: old.status,
-            address: old.address,
-            stake: old.stake,
-            owner_address: old.owner_address,
-            signer_index: old.signer_index,
-            owner_pubkey: old.owner_pubkey,
-            protocol_support: crate::versioning::ProtocolVersionSupport::from_str("None").unwrap(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -171,18 +85,8 @@ impl BlockKeeperData {
     }
 }
 
-impl BlockKeeperDataOld {
-    pub fn node_id(&self) -> NodeIdentifier {
-        self.owner_address.clone().into()
-    }
-}
-
-#[versioned]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BlockKeeperSet {
-    #[legacy]
-    by_signer: HashMap<SignerIndex, BlockKeeperDataOld>,
-    #[future]
     by_signer: HashMap<SignerIndex, BlockKeeperData>,
     signer_to_pubkey: HashMap<SignerIndex, PubKey>,
     signer_by_node_id: BTreeMap<NodeIdentifier, SignerIndex>,
@@ -196,17 +100,6 @@ impl Display for BlockKeeperSet {
         }
         write!(f, "}}")?;
         Ok(())
-    }
-}
-
-impl From<BlockKeeperSetOld> for BlockKeeperSet {
-    fn from(value: BlockKeeperSetOld) -> Self {
-        let by_signer = value.by_signer.into_iter().map(|(k, v)| (k, v.into())).collect();
-        Self {
-            by_signer,
-            signer_to_pubkey: value.signer_to_pubkey,
-            signer_by_node_id: value.signer_by_node_id,
-        }
     }
 }
 
@@ -302,15 +195,6 @@ impl Serialize for BlockKeeperSet {
     }
 }
 
-impl Serialize for BlockKeeperSetOld {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.by_signer.serialize(serializer)
-    }
-}
-
 impl<'de> Deserialize<'de> for BlockKeeperSet {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -328,30 +212,7 @@ impl<'de> Deserialize<'de> for BlockKeeperSet {
     }
 }
 
-impl<'de> Deserialize<'de> for BlockKeeperSetOld {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let items = HashMap::<SignerIndex, BlockKeeperDataOld>::deserialize(deserializer)?;
-        let mut signer_to_pubkey = HashMap::new();
-        let mut by_node_id = BTreeMap::new();
-        for (signer, keeper) in &items {
-            by_node_id.insert(keeper.node_id(), *signer);
-            signer_to_pubkey.insert(*signer, keeper.pubkey.clone());
-        }
-
-        Ok(Self { by_signer: items, signer_by_node_id: by_node_id, signer_to_pubkey })
-    }
-}
-
 impl Debug for BlockKeeperData {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&format!("({:?},{:?})", self.owner_address, self.pubkey))
-    }
-}
-
-impl Debug for BlockKeeperDataOld {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(&format!("({:?},{:?})", self.owner_address, self.pubkey))
     }

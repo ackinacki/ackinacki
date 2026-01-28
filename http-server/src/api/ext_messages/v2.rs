@@ -123,6 +123,28 @@ where
                         None,
                     );
                 }
+                TokenVerificationResult::UnauthorizedIssuer => {
+                    tracing::debug!(
+                        "Token verification failed: unauthorized issuer (no delegated licenses)"
+                    );
+                    return render_error_response(
+                        res,
+                        "UNAUTHORIZED_ISSUER",
+                        Some("Missing delegated licenses"),
+                        None,
+                        None,
+                    );
+                }
+                TokenVerificationResult::UnknownIssuer => {
+                    tracing::debug!("Token verification failed: unknown issuer");
+                    return render_error_response(
+                        res,
+                        "UNKNOWN_ISSUER",
+                        Some("Invalid issuer"),
+                        None,
+                        None,
+                    );
+                }
             }
         }
 
@@ -222,17 +244,25 @@ where
                     Some(thread_id) => resolver(thread_id).active_bp,
                     _ => vec![],
                 };
-                let mut result: ExtMsgResponse = feedback.into();
-                result.set_producers(producers);
-                tracing::trace!(target: "http_server", "Response message: {:?}", result);
-                res.status_code(StatusCode::OK);
-                res.render(Json(result));
+
                 web_server.metrics.as_ref().inspect(|m| {
                     m.report_ext_msg_processing_duration(
                         moment.elapsed().as_millis() as u64,
                         StatusCode::OK.as_u16(),
-                    )
+                    );
+                    let err_type =
+                        feedback.error.as_ref().map(|x| x.code.to_string()).unwrap_or_default();
+
+                    m.report_ext_msg_feedback(&err_type);
                 });
+
+                let mut result: ExtMsgResponse = feedback.into();
+                result.set_producers(producers);
+                tracing::trace!(target: "http_server", "Response message: {:?}", result);
+
+                res.status_code(StatusCode::OK);
+                res.render(Json(result));
+
                 return;
             }
             Err(e) => {

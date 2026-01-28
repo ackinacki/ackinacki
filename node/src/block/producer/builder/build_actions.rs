@@ -114,6 +114,11 @@ const DEFAULT_MIN_SEQ_NO: u32 = 0;
 const BK_SYSTEM_DAPP_ID: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 // const EPOCH_CONTINUE_STAKE_FUNCTION_NAME: &str = "continueStake";
 
+#[cfg(test)]
+lazy_static::lazy_static!(
+    pub static ref EXTRA_EXTERNAL_MSG: Arc<parking_lot::Mutex<Vec<(AccountAddress,(Stamp, Message))>>> = Arc::new(parking_lot::Mutex::new(vec![]));
+);
+
 impl BlockBuilder {
     /// Initialize BlockBuilder
     #[allow(clippy::too_many_arguments)]
@@ -134,7 +139,7 @@ impl BlockBuilder {
         >,
         metrics: Option<BlockProductionMetrics>,
         wasm_cache: WasmNodeCache,
-        #[cfg(feature = "mirror_repair")] is_updated_mv: Arc<parking_lot::Mutex<bool>>,
+        is_verifier: bool,
     ) -> anyhow::Result<Self> {
         let usage_tree =
             UsageTree::with_params(initial_optimistic_state.get_shard_state_as_cell(), true);
@@ -174,89 +179,36 @@ impl BlockBuilder {
 
         let base_config_stateinit = StateInit::construct_from_bytes(DAPP_CONFIG_TVC)
             .map_err(|e| anyhow::format_err!("Failed to construct DAPP config tvc: {e}"))?;
-        #[cfg(not(feature = "monitor-accounts-number"))]
-        let builder = BlockBuilder {
-            thread_id,
-            shard_state,
-            from_prev_blk: accounts.full_balance().clone(),
-            in_msg_descr: Default::default(),
-            initial_accounts: accounts.clone(),
-            accounts,
-            block_info,
-            rand_seed,
-            start_lt,
-            end_lt: start_lt + 1,
-            copyleft_rewards: Default::default(),
-            block_gas_limit,
-            account_blocks: Default::default(),
-            total_gas_used: 0,
-            control_rx_stop,
-            usage_tree,
-            initial_optimistic_state,
-            block_keeper_epoch_code_hash,
-            block_keeper_preepoch_code_hash,
-            parallelization_level,
-            block_keeper_set_changes: vec![],
-            base_config_stateinit,
-            dapp_credit_map: Default::default(),
-            new_messages: Default::default(),
-            out_msg_descr: Default::default(),
-            // transaction_traces: Default::default(),
-            tx_cnt: 0,
-            dapp_minted_map: Default::default(),
-            accounts_repository,
-            consumed_internal_messages: Default::default(),
-            produced_internal_messages_to_the_current_thread: Default::default(),
-            produced_internal_messages_to_other_threads,
-            accounts_that_changed_their_dapp_id: Default::default(),
-            metrics,
-            is_stop_requested: false,
-            wasm_cache,
-            #[cfg(feature = "mirror_repair")]
-            is_updated_mv,
-        };
+
+        let builder = BlockBuilder::builder()
+            .thread_id(thread_id)
+            .shard_state(shard_state)
+            .initial_accounts(accounts.clone())
+            .accounts(accounts)
+            .block_info(block_info)
+            .rand_seed(rand_seed)
+            .start_lt(start_lt)
+            .end_lt(start_lt + 1)
+            .block_gas_limit(block_gas_limit)
+            .control_rx_stop(control_rx_stop)
+            .usage_tree(usage_tree)
+            .initial_optimistic_state(initial_optimistic_state)
+            .block_keeper_epoch_code_hash(block_keeper_epoch_code_hash)
+            .block_keeper_preepoch_code_hash(block_keeper_preepoch_code_hash)
+            .parallelization_level(parallelization_level)
+            .base_config_stateinit(base_config_stateinit)
+            .accounts_repository(accounts_repository)
+            .produced_internal_messages_to_other_threads(
+                produced_internal_messages_to_other_threads,
+            )
+            .metrics(metrics)
+            .is_stop_requested(false)
+            .wasm_cache(wasm_cache)
+            .is_verifier(is_verifier);
 
         #[cfg(feature = "monitor-accounts-number")]
-        let builder = BlockBuilder {
-            thread_id,
-            shard_state,
-            in_msg_descr: Default::default(),
-            initial_accounts: accounts.clone(),
-            accounts,
-            block_info,
-            rand_seed,
-            start_lt,
-            end_lt: start_lt + 1,
-            copyleft_rewards: Default::default(),
-            block_gas_limit,
-            account_blocks: Default::default(),
-            total_gas_used: 0,
-            control_rx_stop,
-            usage_tree,
-            initial_optimistic_state,
-            block_keeper_epoch_code_hash,
-            block_keeper_preepoch_code_hash,
-            parallelization_level,
-            block_keeper_set_changes: vec![],
-            base_config_stateinit,
-            dapp_credit_map: Default::default(),
-            new_messages: Default::default(),
-            out_msg_descr: Default::default(),
-            tx_cnt: 0,
-            dapp_minted_map: Default::default(),
-            accounts_repository,
-            consumed_internal_messages: Default::default(),
-            produced_internal_messages_to_the_current_thread: Default::default(),
-            produced_internal_messages_to_other_threads,
-            accounts_that_changed_their_dapp_id: Default::default(),
-            metrics,
-            is_stop_requested: false,
-            wasm_cache,
-            #[cfg(feature = "mirror_repair")]
-            is_updated_mv,
-            accounts_number_diff: 0,
-        };
-        Ok(builder)
+        let builder = builder.accounts_number_diff(0);
+        Ok(builder.build())
     }
 
     /// Shard ident
@@ -432,6 +384,7 @@ impl BlockBuilder {
         self.tx_cnt += 1;
 
         if let Some(gas_used) = transaction.gas_used() {
+            tracing::info!(target: "builder", "TX gas used: {}", gas_used);
             self.total_gas_used += gas_used;
         }
         tracing::trace!(target: "builder",
@@ -1239,6 +1192,7 @@ impl BlockBuilder {
 
                 // Start first message execution separately because we must wait for it to finish
                 let mut first_thread_and_key = loop {
+                    // TODO: need to check time deadline especially on verifier
                      match self.get_next_int_message(check_messages_map, &mut started_accounts, &active_int_destinations, &mut internal_messages_iter, &mut verify_block_contains_missing_messages_from_prev_state)? {
                         Some((message, key)) => {
                             executed_int_messages_cnt += 1;
@@ -1391,7 +1345,7 @@ impl BlockBuilder {
                                 i += 1;
                             }
                         }
-                        if check_messages_map.is_none() && self.is_limits_reached() {
+                        if self.should_stop_production() {
                             tracing::debug!(target: "builder", "Internal messages stop was set because block is full");
                             block_full = true;
                         }
@@ -1429,13 +1383,15 @@ impl BlockBuilder {
         white_list_of_slashing_messages_hashes: HashSet<UInt256>,
         message_db: MessageDurableStorage,
         time_limits: &ExecutionTimeLimits,
-        is_block_of_retired_version: bool,
     ) -> anyhow::Result<(PreparedBlock, Vec<Stamp>, ExtMsgFeedbackList)> {
         let _ =
             tracing::span!(tracing::Level::INFO, "build_block", seq_no = self.block_info.seq_no());
         active_threads.clear();
-        tracing::info!(target: "builder", "Start build of block: {} for {:?} (is_block_of_retired_version={})", self.block_info.seq_no(), self.thread_id, is_block_of_retired_version);
+        tracing::info!(target: "builder", "Start build of block: {} for {:?}", self.block_info.seq_no(), self.thread_id,);
         tracing::debug!(target: "builder", "ext_messages_queue.len={}, active_threads.len={}, check_messages_map.len={:?}", queue_len(&ext_messages_queue), active_threads.len(), check_messages_map.as_ref().map(|map| map.len()));
+
+        #[cfg(test)]
+        let mut ext_messages_queue = ext_messages_queue;
 
         let (block_unixtime, block_lt) = self.at_and_lt();
 
@@ -1469,6 +1425,15 @@ impl BlockBuilder {
                 time_limits,
                 mvconfig.clone(),
             )?;
+
+        #[cfg(test)]
+        {
+            let mut guard = EXTRA_EXTERNAL_MSG.lock();
+            if !guard.is_empty() {
+                let (addr, data) = guard.pop().unwrap();
+                ext_messages_queue.entry(addr).or_default().push_back(data);
+            }
+        }
 
         // Third step: execute external messages if block is not full
         let (ext_message_feedbacks, processed_stamps, unprocessed_ext_msgs_cnt) =
@@ -1574,7 +1539,7 @@ impl BlockBuilder {
                         break;
                     }
 
-                    if check_messages_map.is_none() && self.is_limits_reached() {
+                    if self.should_stop_production() {
                         tracing::debug!(target: "builder", "New messages stop because block is full");
                         break;
                     }
@@ -1657,8 +1622,7 @@ impl BlockBuilder {
 
         tracing::debug!(target: "ext_messages", "unprocessed/processed/feedbacks={}/{}/{}", unprocessed_ext_msgs_cnt, processed_stamps.len(), ext_message_feedbacks.0.len());
 
-        let prepared_block =
-            self.finish_and_prepare_block(active_threads, message_db, is_block_of_retired_version)?;
+        let prepared_block = self.finish_and_prepare_block(active_threads, message_db)?;
 
         Ok((prepared_block, processed_stamps, ext_message_feedbacks))
     }
@@ -1840,12 +1804,28 @@ impl BlockBuilder {
     fn finish_block(
         mut self,
         message_db: MessageDurableStorage,
-        is_block_of_retired_version: bool,
     ) -> anyhow::Result<(Block, OptimisticStateImpl, CrossThreadRefData)> {
         tracing::trace!(target: "builder", "finish_block");
+        if let Some(m) = self.metrics.as_ref() {
+            if self.block_gas_limit > 0 {
+                let ratio = self.total_gas_used as f64 / self.block_gas_limit as f64;
+                if ratio > 1.0 {
+                    m.report_gas_overflow(&self.thread_id);
+                    tracing::warn!(target: "builder",
+                        "total_gas_used > block_gas_limit: {} > {}",
+                        self.total_gas_used,
+                        self.block_gas_limit,
+                    );
+                }
+                m.report_gas_used(ratio, &self.thread_id);
+            } else {
+                tracing::error!(target: "builder", "block_gas_limit is 0");
+            }
+        }
         let mut new_shard_state = self.shard_state.deref().clone();
         tracing::info!(target: "builder", "finish block: seq_no: {:?}", self.block_info.seq_no());
         tracing::info!(target: "builder", "finish block: tx_cnt: {}", self.tx_cnt);
+        tracing::info!(target: "builder", "finish block: total_gas_used: {}, gas_limit: {}", self.total_gas_used, self.block_gas_limit);
         let _ = tracing::span!(
             tracing::Level::INFO,
             "finish_block",
@@ -2014,11 +1994,8 @@ impl BlockBuilder {
             changed_accounts,
             self.accounts_repository,
             message_db.clone(),
-            #[cfg(feature = "mirror_repair")]
-            self.is_updated_mv,
             #[cfg(feature = "monitor-accounts-number")]
             updated_accounts_number,
-            is_block_of_retired_version,
         )?;
 
         tracing::debug!(target: "builder", "Finish block: {:?}", block.hash().map(|h| h.to_hex_string()));
@@ -2142,7 +2119,6 @@ impl BlockBuilder {
         self,
         active_threads: Vec<(Cell, ActiveThread)>,
         message_db: MessageDurableStorage,
-        is_block_of_retired_version: bool,
     ) -> anyhow::Result<PreparedBlock> {
         for active_thread in &active_threads {
             let mut value = active_thread.1.block_production_was_finished.lock().unwrap(); // Should we change mutex to parking_lot?
@@ -2160,7 +2136,7 @@ impl BlockBuilder {
         let accounts_number_diff = self.accounts_number_diff;
 
         let (block, new_state, cross_thread_ref_data) = self
-            .finish_block(message_db, is_block_of_retired_version)
+            .finish_block(message_db)
             .map_err(|e| anyhow::format_err!("Failed to finish block: {e}"))?;
 
         let span = tracing::span!(tracing::Level::INFO, "prepare block struct");
@@ -2293,7 +2269,9 @@ impl BlockBuilder {
         let span_guard = span.enter();
 
         for (acc_id, _queue) in ext_messages_queue.clone().into_iter() {
-            if self.is_limits_reached() || active_ext_threads.len() >= self.parallelization_level {
+            if self.should_stop_production()
+                || active_ext_threads.len() >= self.parallelization_level
+            {
                 break;
             }
 
@@ -2363,6 +2341,15 @@ impl BlockBuilder {
                         ext_messages_queue.remove(&acc_id);
                     }
                 }
+            }
+        }
+
+        #[cfg(test)]
+        {
+            let mut guard = EXTRA_EXTERNAL_MSG.lock();
+            if !guard.is_empty() {
+                let (addr, data) = guard.pop().unwrap();
+                ext_messages_queue.entry(addr).or_default().push_back(data);
             }
         }
 
@@ -2466,7 +2453,7 @@ impl BlockBuilder {
         let mut active_ext_threads = VecDeque::new();
         let mut block_full = false;
         let mut processed_stamps = vec![];
-        if check_messages_map.is_none() && self.is_limits_reached() {
+        if self.should_stop_production() {
             // Don't even enter prcessing external messages.
             return Ok((ext_message_feedbacks, processed_stamps, true, incoming_queue_len));
         }
@@ -2497,9 +2484,9 @@ impl BlockBuilder {
                 break;
             }
 
-            let span = tracing::span!(tracing::Level::INFO, "is_limits_reached");
+            let span = tracing::span!(tracing::Level::INFO, "should_stop_production");
             let span_guard = span.enter();
-            if check_messages_map.is_none() && self.is_limits_reached() {
+            if self.should_stop_production() {
                 block_full = true;
                 tracing::debug!(target: "ext_messages", "Ext messages stop because block is full");
                 break;

@@ -1,0 +1,24 @@
+---
+
+- name: Remove existing bm-archive.db and bm-archive.db-* files
+  file:
+    path: "{{ item }}"
+    state: absent
+  with_fileglob:
+    - "{{ BM_DATA_DIR }}/workdir/bm-archive.db"
+    - "{{ BM_DATA_DIR }}/workdir/bm-archive.db-*"
+
+- name: Find all rotated database files
+  find:
+    paths: "{{ BM_DATA_DIR }}/workdir"
+    patterns: "bm-archive-*.db"
+  register: rotated_db_files
+
+- name: Get the latest rotated database file
+  set_fact:
+    latest_db_file: "{{ rotated_db_files.files | sort(attribute='mtime', reverse=true) | first }}"
+  when: rotated_db_files.matched > 0
+
+- name: Move the latest rotated database file to bm-archive.db
+  command: mv "{{ latest_db_file.path }}" "{{ BM_DATA_DIR }}/workdir/bm-archive.db"
+  when: rotated_db_files.matched > 0

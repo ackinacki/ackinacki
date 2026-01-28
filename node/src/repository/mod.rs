@@ -166,7 +166,7 @@ pub trait Repository {
     fn get_zero_state_for_thread(
         &self,
         thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<Arc<Self::OptimisticState>>;
+    ) -> anyhow::Result<Option<Arc<Self::OptimisticState>>>;
 
     fn get_all_metadata(&self) -> RepositoryMetadata;
 

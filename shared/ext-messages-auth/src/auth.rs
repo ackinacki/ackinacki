@@ -9,6 +9,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 use std::time::Instant;
 
+use anyhow::anyhow;
 use ed25519_dalek::Signature;
 use ed25519_dalek::Signer;
 use ed25519_dalek::SigningKey;
@@ -26,7 +27,8 @@ use tvm_types::UInt256;
 
 use crate::normalize_address;
 use crate::now_plus_n_secs;
-use crate::owner_wallet::decode_signing_pubkey;
+use crate::owner_wallet::decode_owner_wallet;
+use crate::owner_wallet::OwnerWalletData;
 use crate::root_contracts::BK_CONTRACT_ROOT_ABI;
 use crate::root_contracts::BK_CONTRACT_ROOT_ADDR;
 use crate::root_contracts::BM_CONTRACT_ROOT_ABI;
@@ -46,8 +48,8 @@ pub static EXT_MESSAGE_AUTH_REQUIRED: LazyLock<AtomicBool> = LazyLock::new(|| {
     AtomicBool::new(enabled)
 });
 
-// token issuer -> (sign_key, expired_at)
-static SIGN_KEY_CACHE: LazyLock<RwLock<HashMap<TokenIssuer, (String, Instant)>>> =
+// token issuer -> (sign_key, delegated_licenses_count, expired_at)
+static SIGN_KEY_CACHE: LazyLock<RwLock<HashMap<TokenIssuer, (String, usize, Instant)>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 const SIGN_KEY_CACHE_TTL: Duration = Duration::from_secs(60);
@@ -57,6 +59,7 @@ struct WalletAddress {
     wallet: String,
 }
 
+#[derive(Debug)]
 pub struct AccountRequest {
     pub address: String,
     pub response: oneshot::Sender<anyhow::Result<(tvm_block::Account, Option<UInt256>, u64)>>,
@@ -84,6 +87,8 @@ pub enum TokenVerificationResult {
     TokenMalformed,
     InvalidSignature,
     Expired,
+    UnauthorizedIssuer,
+    UnknownIssuer,
 }
 
 impl Token {
@@ -147,10 +152,22 @@ impl Token {
         }
 
         tracing::trace!("authorize token {self:?}");
-        let Ok(signing_pubkey) = get_signing_pubkey(&self.issuer, account_request_tx).await else {
-            tracing::trace!("Failed to get signing pubkey. Unauthorize");
-            return TokenVerificationResult::InvalidSignature;
+        let result = get_wallet_data(&self.issuer, account_request_tx).await;
+
+        let (signing_pubkey, license_count) = match result {
+            Ok(wallet_data) => (wallet_data.pubkey, wallet_data.license_count),
+            Err(e) if e.to_string() == "Unknown account" => {
+                return TokenVerificationResult::UnknownIssuer
+            }
+            Err(e) => {
+                tracing::trace!("Failed to process issuer wallet: {e}");
+                return TokenVerificationResult::InvalidSignature;
+            }
         };
+
+        if license_count == 0 {
+            return TokenVerificationResult::UnauthorizedIssuer;
+        }
 
         self.verify(signing_pubkey)
     }
@@ -167,15 +184,18 @@ async fn request_account(
     response_rx.await?.map(|(acc, ..)| Some(acc))
 }
 
-async fn get_signing_pubkey(
+async fn get_wallet_data(
     issuer: &TokenIssuer,
     account_request_tx: mpsc::Sender<AccountRequest>,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<OwnerWalletData> {
     tracing::trace!("request signing pubkey");
-    if let Some((pubkey, expires_at)) = SIGN_KEY_CACHE.read().get(issuer) {
+    if let Some((pubkey, license_count, expires_at)) = SIGN_KEY_CACHE.read().get(issuer) {
         if Instant::now() < *expires_at {
             tracing::trace!("SIGN_KEY_CACHE: cache hit for {issuer:?}");
-            return Ok(Some(pubkey.clone()));
+            return Ok(OwnerWalletData {
+                pubkey: Some(pubkey.to_string()),
+                license_count: *license_count,
+            });
         }
     }
 
@@ -207,7 +227,7 @@ async fn get_signing_pubkey(
         tvm_types::base64_encode(&boc_bytes)
     } else {
         tracing::trace!("Failed to get BOC of the root contract at {contract_addr}");
-        return Ok(None);
+        return Err(anyhow!("Account (owner wallet root) request failed"));
     };
 
     let result = contract
@@ -224,27 +244,30 @@ async fn get_signing_pubkey(
         Some(addr) => addr,
         None => {
             tracing::trace!("Failed to normalize wallet address");
-            return Ok(None);
+            return Err(anyhow!("Incorrect address"));
         }
     };
 
+    tracing::trace!(wallet_address = %wallet_addr, "derived");
+
     let Some(wallet_account) = request_account(&wallet_addr, account_request_tx).await? else {
         tracing::trace!("Failed to get BOC of the wallet at {wallet_addr}");
-        return Ok(None);
+        return Err(anyhow!("Account (owner wallet) request failed"));
     };
 
     tracing::trace!("got account: {wallet_account:?}");
-    let signing_key = decode_signing_pubkey(&wallet_account, issuer);
-    tracing::trace!("got signing key: {signing_key:?}");
+    let issuer_wallet_data = decode_owner_wallet(&wallet_account, issuer);
+    tracing::trace!("got signing key: {issuer_wallet_data:?}");
 
-    if let Ok(Some(ref pubkey)) = signing_key {
-        SIGN_KEY_CACHE
-            .write()
-            .insert(issuer.clone(), (pubkey.clone(), Instant::now() + SIGN_KEY_CACHE_TTL));
+    if let Ok(OwnerWalletData { pubkey: Some(ref pubkey), license_count }) = issuer_wallet_data {
+        SIGN_KEY_CACHE.write().insert(
+            issuer.clone(),
+            (pubkey.to_string(), license_count, Instant::now() + SIGN_KEY_CACHE_TTL),
+        );
         tracing::trace!("SIGN_KEY_CACHE: cache update for {issuer:?}");
     }
 
-    signing_key
+    issuer_wallet_data
 }
 
 pub fn is_auth_required() -> bool {
@@ -274,17 +297,44 @@ pub fn update_ext_message_auth_flag_from_files() {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
     use std::sync::OnceLock;
 
     use hex::ToHex;
+    use sdk_wrapper::read_file;
+    use tokio::sync::mpsc;
+    use tokio::sync::Mutex as TokioMutex;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tvm_block::Account;
+    use tvm_block::Deserializable;
 
     use super::*;
+    use crate::read_keys_from_file;
+    use crate::KeyPair;
 
-    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    const FAKE_BM_ISSUER_ADDR: &str =
+        "40f11d13cf70edb0b4ac883a915c03ba333eceb49263e47ef0ba0415e9b023c5";
+    const REAL_BM_ISSUER_ADDR: &str =
+        "c3c0474d61fdd004960d1a5a320bc88549f73238cfa0a8fc6a00e15a72bbda19";
+    const REAL_BK_ISSUER_ADDR: &str =
+        "dc67ae73b647b399bb8293ef1b5c9bc9577baf036ad7ec5c49505efbae74ac67";
 
-    fn lock_test() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    static TEST_LOCK: OnceLock<TokioMutex<()>> = OnceLock::new();
+
+    #[allow(unused)]
+    fn init_tracing() {
+        let test_filter = tracing_subscriber::EnvFilter::new("ext_messages_auth,sdk_wrapper");
+        let _ = tracing_subscriber::registry()
+            .with(
+                test_filter,
+                // tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "trace".into()),
+            )
+            .with(tracing_subscriber::fmt::layer())
+            .try_init();
+    }
+
+    async fn lock_test() -> tokio::sync::MutexGuard<'static, ()> {
+        TEST_LOCK.get_or_init(|| TokioMutex::new(())).lock().await
     }
 
     fn dummy_signing_keypair() -> (String, String) {
@@ -301,7 +351,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_creation_and_validation() {
-        let _guard = lock_test();
+        let _guard = lock_test().await;
 
         force_auth();
 
@@ -316,7 +366,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_expired() {
-        let _guard = lock_test();
+        let _guard = lock_test().await;
 
         force_auth();
 
@@ -335,7 +385,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_wrong_signature() {
-        let _guard = lock_test();
+        let _guard = lock_test().await;
 
         force_auth();
 
@@ -351,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_disabled_auth() {
-        let _guard = lock_test();
+        let _guard = lock_test().await;
 
         disable_auth();
 
@@ -364,8 +414,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_malformed_token_signature() {
-        let _guard = lock_test();
+    async fn test_token_malformed_signature() {
+        let _guard = lock_test().await;
 
         force_auth();
 
@@ -377,5 +427,210 @@ mod tests {
 
         let result = token.verify(Some(public));
         assert_eq!(result, TokenVerificationResult::TokenMalformed);
+    }
+
+    fn construct_response_acc(boc_file: &str) -> anyhow::Result<Account> {
+        let boc = String::from_utf8(read_file(&format!("./fixtures/{boc_file}"))?)
+            .map(|s| s.trim().to_owned())?;
+        Account::construct_from_base64(&boc)
+            .map_err(|e| anyhow::anyhow!("Failed to construct account from boc: {e}"))
+    }
+
+    async fn mock_account_request_handler(
+        mut rx: mpsc::Receiver<AccountRequest>,
+    ) -> anyhow::Result<()> {
+        while let Some(request) = rx.recv().await {
+            let account: Result<Account, anyhow::Error> = match request.address.as_str() {
+                BK_CONTRACT_ROOT_ADDR => construct_response_acc("bk_root.boc.b64"),
+                BM_CONTRACT_ROOT_ADDR => construct_response_acc("bm_root.boc.b64"),
+                FAKE_BM_ISSUER_ADDR => construct_response_acc("fake_bm_issuer_40f11d13cf70edb0b4ac883a915c03ba333eceb49263e47ef0ba0415e9b023c5.boc.b64"),
+                REAL_BM_ISSUER_ADDR => construct_response_acc("real_bm_issuer_c3c0474d61fdd004960d1a5a320bc88549f73238cfa0a8fc6a00e15a72bbda19.boc.b64"),
+                REAL_BK_ISSUER_ADDR => construct_response_acc("real_bk_issuer_dc67ae73b647b399bb8293ef1b5c9bc9577baf036ad7ec5c49505efbae74ac67.boc.b64"),
+                _ => Err(anyhow!("Unknown account")),
+            };
+
+            let account_response = account.map(|account| (account, None, 0));
+
+            let _ = request.response.send(account_response);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_authorize_with_auth_not_required() {
+        let _guard = lock_test().await;
+        // init_tracing();
+        disable_auth();
+
+        let (secret, pubkey) = dummy_signing_keypair();
+        let issuer = TokenIssuer::Bk(pubkey);
+        let token = Token::new(&secret, issuer).unwrap();
+
+        let (tx, _rx) = mpsc::channel(1);
+
+        let result = token.authorize(tx).await;
+        assert_eq!(result, TokenVerificationResult::Ok);
+    }
+
+    #[tokio::test]
+    async fn test_authorize_with_non_existed_issuer() {
+        let _guard = lock_test().await;
+        // init_tracing();
+        force_auth();
+
+        let (secret, pubkey) = dummy_signing_keypair();
+        let issuer = TokenIssuer::Bk(pubkey);
+
+        let token = Token::new(&secret, issuer.clone()).unwrap();
+
+        let (tx, rx) = mpsc::channel(10);
+
+        tokio::spawn(async move {
+            let _ = mock_account_request_handler(rx).await;
+        });
+
+        let result = token.authorize(tx).await;
+
+        assert_eq!(result, TokenVerificationResult::UnknownIssuer);
+    }
+
+    #[tokio::test]
+    async fn test_authorize_with_zero_licenses() -> anyhow::Result<()> {
+        let _guard = lock_test().await;
+        // init_tracing();
+        force_auth();
+
+        let KeyPair { public, secret } = read_keys_from_file("./fixtures/fake_bm_issuer_40f11d13cf70edb0b4ac883a915c03ba333eceb49263e47ef0ba0415e9b023c5.keys.json")
+            .expect("keypair required");
+
+        let issuer = TokenIssuer::Bm(public);
+        let token = Token::new(&secret, issuer)?;
+
+        let (tx, rx) = mpsc::channel(10);
+
+        tokio::spawn(async move {
+            let _ = mock_account_request_handler(rx).await;
+        });
+
+        let result = token.authorize(tx).await;
+
+        assert_eq!(result, TokenVerificationResult::UnauthorizedIssuer);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_authorize_with_delegated_license() -> anyhow::Result<()> {
+        let _guard = lock_test().await;
+        // init_tracing();
+        force_auth();
+
+        let KeyPair { public, secret } = read_keys_from_file("./fixtures/real_bm_issuer_c3c0474d61fdd004960d1a5a320bc88549f73238cfa0a8fc6a00e15a72bbda19.keys.json")
+            .expect("keypair required");
+
+        let issuer = TokenIssuer::Bm(public);
+        let token = Token::new(&secret, issuer)?;
+
+        let (tx, rx) = mpsc::channel(10);
+
+        tokio::spawn(async move {
+            let _ = mock_account_request_handler(rx).await;
+        });
+
+        let result = token.authorize(tx).await;
+
+        assert_eq!(result, TokenVerificationResult::Ok);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_authorize_with_cache_hit() -> anyhow::Result<()> {
+        let _guard = lock_test().await;
+        // init_tracing();
+        force_auth();
+
+        let (secret, pubkey) = dummy_signing_keypair();
+        let issuer = TokenIssuer::Bk(pubkey.clone());
+
+        SIGN_KEY_CACHE
+            .write()
+            .insert(issuer.clone(), (pubkey, 5, Instant::now() + Duration::from_secs(3600)));
+
+        let token = Token::new(&secret, issuer)?;
+
+        let (tx, _rx) = mpsc::channel(10);
+
+        let result = token.authorize(tx).await;
+
+        assert_eq!(result, TokenVerificationResult::Ok);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_authorize_with_expired_cache() -> anyhow::Result<()> {
+        let _guard = lock_test().await;
+        // init_tracing();
+        force_auth();
+
+        let (secret, pubkey) = dummy_signing_keypair();
+        let issuer = TokenIssuer::Bk(pubkey.clone());
+
+        SIGN_KEY_CACHE
+            .write()
+            .insert(issuer.clone(), (pubkey, 5, Instant::now() - Duration::from_secs(1)));
+
+        let token = Token::new(&secret, issuer)?;
+
+        let (tx, rx) = mpsc::channel(10);
+
+        tokio::spawn(async move {
+            let _ = mock_account_request_handler(rx).await;
+        });
+
+        let result = token.authorize(tx).await;
+
+        assert_eq!(result, TokenVerificationResult::UnknownIssuer);
+
+        // SIGN_KEY_CACHE.write().clear();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_authorize_with_concurrent_requests() -> anyhow::Result<()> {
+        let _guard = lock_test().await;
+        // init_tracing();
+        force_auth();
+
+        let KeyPair { public: pubkey, secret } = read_keys_from_file("./fixtures/real_bm_issuer_c3c0474d61fdd004960d1a5a320bc88549f73238cfa0a8fc6a00e15a72bbda19.keys.json")
+            .expect("keypair required");
+        let issuer = TokenIssuer::Bm(pubkey.clone());
+        let token = Token::new(&secret, issuer)?;
+
+        let (tx, rx) = mpsc::channel(50);
+
+        tokio::spawn(async move {
+            let _ = mock_account_request_handler(rx).await;
+        });
+
+        let mut handles = vec![];
+        for _ in 0..50 {
+            let token_clone = token.clone();
+            let tx_clone = tx.clone();
+            let handle = tokio::spawn(async move { token_clone.authorize(tx_clone).await });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            let result = handle.await.unwrap();
+            assert!(matches!(
+                result,
+                TokenVerificationResult::Ok | TokenVerificationResult::UnauthorizedIssuer
+            ));
+        }
+
+        Ok(())
     }
 }

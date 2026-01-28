@@ -1,6 +1,6 @@
 [package]
 name = "node"
-version = "0.13.0"
+version = "0.13.2"
 edition.workspace = true
 rust-version.workspace = true
 build = 'build.rs'
@@ -23,7 +23,6 @@ governor.workspace = true
 hex.workspace = true
 http-server.workspace = true
 lazy_static.workspace = true
-message-router.workspace = true
 network.workspace = true
 num-bigint.workspace = true
 num-traits.workspace = true
@@ -48,6 +47,7 @@ tvm_block.workspace = true
 tvm_block_json.workspace = true
 tvm_client.workspace = true
 tvm_executor.workspace = true
+tvm_sdk.workspace = true
 tvm_types.workspace = true
 tvm_vm.workspace = true
 url.workspace = true
@@ -106,7 +106,6 @@ default = [
     "messages_db",
     "monitor-accounts-number",
     "disable_db_for_messages",
-    "mirror_repair",
 ]
 
 # Use automocks in binaries
@@ -155,9 +154,8 @@ test_upgrade = []
 test_config_hash = []
 enforce_min_seq = []
 
-# Temporary feature for system repair
-mirror_repair = []
-
+# Transitioning feature that supports several node versions
+transitioning_node_version = []
 
 [package.metadata.cargo-machete]
 ignored = ["failure"]

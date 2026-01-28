@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::collections::BTreeMap;
@@ -45,6 +45,7 @@ use crate::block::producer::builder::EngineTraceInfoData;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::GoshBLS;
+use crate::types::envelope_hash::envelope_hash;
 use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
 
@@ -210,9 +211,7 @@ pub fn reflect_block_in_db(
 
         // TODO remove this workaround after implementing state parsing in the BM
         if acc.is_none() {
-            tracing::error!(
-                "Block and shard state mismatch: state doesn't contain changed account"
-            );
+            tracing::warn!("Block and shard state mismatch: state doesn't contain changed account");
             continue;
         }
 
@@ -497,6 +496,8 @@ pub(crate) fn prepare_block_archive_struct(
     let common_section = envelope.data().get_common_section();
     set.producer_id = Some(common_section.producer_id.to_string());
     set.thread_id = Some(hex::encode(common_section.thread_id));
+    set.height = common_section.block_height.height().to_be_bytes();
+    set.envelope_hash = envelope_hash(&envelope).0;
 
     let block_info = block.read_info().map_err(|e| anyhow::format_err!("{e}"))?;
     set.flags = Some(block_info.flags() as i64);

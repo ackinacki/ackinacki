@@ -1,6 +1,6 @@
 [package]
 name = "block-manager"
-version = "0.2.0"
+version = "0.3.0"
 edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
@@ -26,6 +26,7 @@ serde.workspace = true
 serde_json.workspace = true
 signal-hook.workspace = true
 telemetry_utils.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

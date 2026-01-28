@@ -34,7 +34,6 @@ services:
       EXTERNAL_STATE_SHARE_LOCAL_BASE_DIR: /share
       BIND: 0.0.0.0:{{ BIND_PORT }}
       API_ADDR: 0.0.0.0:{{ BIND_API_PORT }}
-      MESSAGE_ROUTER: 0.0.0.0:{{ BIND_MESSAGE_ROUTER_PORT }}
       AEROSPIKE_SOCKET_ADDR: 127.0.0.1:{{ AEROSPIKE_PORT }}
       GOSSIP_SEEDS: {{ GOSSIP_SEEDS | join(',') }}
       MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES: {{ MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES }}
@@ -147,7 +146,6 @@ services:
       EXTERNAL_STATE_SHARE_LOCAL_BASE_DIR: /share
       BIND: 0.0.0.0:{{ BIND_PORT }}
       API_ADDR: 0.0.0.0:{{ BIND_API_PORT }}
-      MESSAGE_ROUTER: 0.0.0.0:{{ BIND_MESSAGE_ROUTER_PORT }}
       AEROSPIKE_SOCKET_ADDR: 127.0.0.1:{{ AEROSPIKE_PORT }}
       GOSSIP_SEEDS: {{ GOSSIP_SEEDS | join(',') }}
       MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES: {{ MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES }}
@@ -175,6 +173,7 @@ services:
       - -c
       - >
         echo "[$(date -Is)] Creating Acki Nacki config file..."
+        && rm -f /bk-configs/acki-nacki.conf.yaml
         && node-helper config
         -c /bk-configs/acki-nacki.conf.yaml -g /bk-configs/acki-nacki.global.conf.yaml -d
         --blockchain-config=/bk-configs/blockchain.conf.json
@@ -182,7 +181,9 @@ services:
         --keys-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
         --block-keeper-seed-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
         --signing-keys=/bk-configs/{{ NODE_OWNER_KEY | basename }}
+{% if HAS_BK_SET_FILE is not defined or HAS_BK_SET_FILE is false %}
         --zerostate-path=/bk-configs/zerostate
+{% endif %}
         --thread-load-threshold {{ THREAD_LOAD_THRESHOLD }}
         --parallelization-level {{ PARALLELIZATION_LEVEL }}
         --thread-count-soft-limit {{ THREAD_COUNT_SOFT_LIMIT }}
@@ -202,6 +203,7 @@ services:
 {% endif %}
 {% include 'extra/block-keeper-cmd.j2' ignore missing %}
         && echo "Second config for retired version"
+        && rm -f /bk-configs/acki-nacki-retired.conf.yaml
         && node-helper config
         -c /bk-configs/acki-nacki-retired.conf.yaml -g /bk-configs/acki-nacki-retired.global.conf.yaml -d
         --blockchain-config=/bk-configs/blockchain.conf.json
@@ -209,7 +211,9 @@ services:
         --keys-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
         --block-keeper-seed-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
         --signing-keys=/bk-configs/{{ NODE_OWNER_KEY | basename }}
+{% if HAS_BK_SET_FILE is not defined or HAS_BK_SET_FILE is false %}
         --zerostate-path=/bk-configs/zerostate
+{% endif %}
         --thread-load-threshold {{ THREAD_LOAD_THRESHOLD }}
         --parallelization-level {{ PARALLELIZATION_LEVEL }}
         --thread-count-soft-limit {{ THREAD_COUNT_SOFT_LIMIT }}

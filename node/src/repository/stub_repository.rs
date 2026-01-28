@@ -93,8 +93,6 @@ impl OptimisticState for OptimisticStateStub {
         _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         _accounts_repo: AccountsRepository,
         _message_db: MessageDurableStorage,
-        #[cfg(feature = "mirror_repair")] _is_updated_mv: Arc<parking_lot::Mutex<bool>>,
-        _is_block_of_retired_version: bool,
     ) -> anyhow::Result<(
         CrossThreadRefData,
         HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
@@ -350,7 +348,7 @@ impl Repository for RepositoryStub {
     fn get_zero_state_for_thread(
         &self,
         _thread_id: &ThreadIdentifier,
-    ) -> anyhow::Result<Arc<Self::OptimisticState>> {
+    ) -> anyhow::Result<Option<Arc<Self::OptimisticState>>> {
         todo!()
     }
 

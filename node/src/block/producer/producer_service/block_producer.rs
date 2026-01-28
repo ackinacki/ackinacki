@@ -24,11 +24,11 @@ use crate::block::producer::process::FORCE_SYNC_STATE_BLOCK_FREQUENCY;
 use crate::block::producer::producer_service::memento::Assumptions;
 use crate::block::producer::producer_service::memento::BlockProducerMemento;
 use crate::block_keeper_system::bk_set::update_block_keeper_set_from_common_section;
-use crate::bls::create_signed::CreateSealed;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::gosh_bls::PubKey;
 use crate::bls::gosh_bls::Secret;
+use crate::bls::try_seal::TrySeal;
 use crate::bls::GoshBLS;
 use crate::config::must_save_state_on_seq_no;
 use crate::external_messages::ExternalMessagesThreadState;
@@ -63,6 +63,7 @@ use crate::types::as_signatures_map::AsSignaturesMap;
 use crate::types::bp_selector::ProducerSelector;
 use crate::types::common_section::Directives;
 use crate::types::AckiNackiBlock;
+#[cfg(feature = "transitioning_node_version")]
 use crate::types::AckiNackiBlockVersioned;
 use crate::types::AggregateFilter;
 use crate::types::BlockIdentifier;
@@ -124,9 +125,6 @@ pub struct BlockProducer {
     control_rx: std::sync::mpsc::Receiver<BlockProducerCommand>,
 
     save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
-
-    #[cfg(feature = "mirror_repair")]
-    is_updated_mv: Arc<Mutex<bool>>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -230,8 +228,8 @@ impl BlockProducer {
         tracing::trace!("start_block_production");
         // Produce whatever threads it has to produce
         let mut producer_tails = None;
-        if let Some((block_id_to_continue, block_seq_no_to_continue, initial_round)) =
-            self.find_thread_last_block_id_this_node_can_continue(next_bp_command)?
+        if let Ok(Some((block_id_to_continue, block_seq_no_to_continue, initial_round))) =
+            self.find_thread_last_block_id_this_node_can_continue(next_bp_command)
         {
             tracing::debug!(
                 "Requesting producer to continue block id {:?}; seq_no {:?}, node_id {:?}",
@@ -263,8 +261,6 @@ impl BlockProducer {
                 self.is_state_sync_requested.clone(),
                 initial_round,
                 block_version,
-                #[cfg(feature = "mirror_repair")]
-                self.is_updated_mv.clone(),
             ) {
                 Ok(()) => {
                     tracing::info!("Producer started successfully");
@@ -312,8 +308,6 @@ impl BlockProducer {
             self.is_state_sync_requested.clone(),
             initial_round,
             block_version,
-            #[cfg(feature = "mirror_repair")]
-            self.is_updated_mv.clone(),
         ) {
             Ok(()) => {
                 tracing::info!("Producer started successfully");
@@ -652,11 +646,18 @@ impl BlockProducer {
 
             let secrets = self.bls_keys_map.guarded(|map| map.clone());
             let production_status = self.production_status.as_ref().expect("must be in prod");
-            let envelope = Envelope::<GoshBLS, AckiNackiBlockVersioned>::sealed(
+            let protocol_version = produced_block
+                .block_state()
+                .guarded(|e| e.block_version_state().clone())
+                .unwrap()
+                .to_use()
+                .clone();
+
+            let envelope = block.clone().try_seal(
                 &self.node_credentials,
                 &bk_set,
                 &secrets,
-                block.clone(),
+                &protocol_version,
             );
             if let Err(e) = &envelope {
                 tracing::error!("Failed to sign block: {e}");
@@ -691,19 +692,19 @@ impl BlockProducer {
                         produced_block.block_state().guarded(|e| (*e.block_height()).unwrap());
                     let message =
                         NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched(
-                            Envelope::sealed(
-                                &self.node_credentials,
-                                &bk_set,
-                                &secrets,
-                                NextRoundSuccess::builder()
+                            NextRoundSuccess::builder()
                                 .node_identifier(self.node_credentials.node_id().clone())
                                 .round(*production_status.init_params.round())
                                 .block_height(block_height)
-                                .proposed_block(NetBlock::with_versioned(&envelope)?)
+                                .proposed_block(NetBlock::with_envelope(&envelope)?)
                                 .attestations_aggregated(None)
                                 // TODO: Must include a proof!
                                 .requests_aggregated(vec![])
-                                .build(),
+                                .build().try_seal(
+                                &self.node_credentials,
+                                &bk_set,
+                                &secrets,
+                                &protocol_version,
                             )
                             .expect("must work"),
                         ));
@@ -715,7 +716,7 @@ impl BlockProducer {
                         message,
                     )
                 } else {
-                    let message = NetworkMessage::Candidate(NetBlock::with_versioned(&envelope)?);
+                    let message = NetworkMessage::Candidate(NetBlock::with_envelope(&envelope)?);
                     (
                         self.self_tx.send(WrappedItem {
                             payload: (message.clone(), self.self_addr),
@@ -789,7 +790,7 @@ impl BlockProducer {
 
     fn update_candidate_common_section(
         &mut self,
-        candidate_block: &mut AckiNackiBlockVersioned,
+        candidate_block: &mut AckiNackiBlock,
         share_state_ids: Option<HashMap<ThreadIdentifier, BlockIdentifier>>,
         optimistic_state: &OptimisticStateImpl,
     ) -> anyhow::Result<UpdateCommonSectionResult> {
@@ -877,7 +878,7 @@ impl BlockProducer {
             candidate_block.identifier(),
             attestations_required,
         );
-        let mut common_section = candidate_block.get_common_section();
+        let mut common_section = candidate_block.get_common_section().clone();
         common_section.set_block_attestations(aggregated_attestations);
 
         // TODO: update parent_producer_selector
@@ -961,7 +962,6 @@ impl BlockProducer {
                         candidate_block,
                         bk_set.clone(),
                         future_bk_set.clone(),
-                        optimistic_state,
                     )?
                     .unwrap_or((bk_set.clone(), future_bk_set.clone()));
 

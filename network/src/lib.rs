@@ -194,6 +194,13 @@ pub fn extract_msg_type(s: impl AsRef<str>) -> String {
         .to_string()
 }
 
+pub fn truncate_chars(s: &str, max_len: usize) -> &str {
+    match s.char_indices().nth(max_len) {
+        Some((i, _)) => &s[..i],
+        None => s,
+    }
+}
+
 #[cfg(test)]
 mod unit_tests {
     use super::*;
@@ -211,5 +218,14 @@ mod unit_tests {
         let input = "MsgTypeMyMessage (1, 22222)";
         let result = extract_msg_type(input);
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_truncate_chars_ascii() {
+        assert_eq!(truncate_chars("hello", 0), "");
+        assert_eq!(truncate_chars("hello", 1), "h");
+        assert_eq!(truncate_chars("hello", 5), "hello");
+        assert_eq!(truncate_chars("hello", 10), "hello");
+        assert_eq!(truncate_chars("", 3), "");
     }
 }

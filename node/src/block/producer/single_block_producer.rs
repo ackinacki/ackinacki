@@ -7,8 +7,6 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use http_server::ExtMsgFeedbackList;
-#[cfg(feature = "mirror_repair")]
-use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use telemetry_utils::now_ms;
 use tracing::instrument;
@@ -50,7 +48,7 @@ use crate::storage::MessageDurableStorage;
 use crate::types::next_seq_no;
 use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
-use crate::types::AckiNackiBlockOld;
+#[cfg(feature = "transitioning_node_version")]
 use crate::types::AckiNackiBlockVersioned;
 use crate::types::BlockIdentifier;
 use crate::types::BlockRound;
@@ -60,6 +58,12 @@ use crate::utilities::guarded::GuardedMut;
 use crate::versioning::ProtocolVersion;
 
 pub const DEFAULT_VERIFY_COMPLEXITY: SignerIndex = (u16::MAX >> 5) + 1;
+
+#[cfg(feature = "transitioning_node_version")]
+pub type Block = AckiNackiBlockVersioned;
+
+#[cfg(not(feature = "transitioning_node_version"))]
+pub type Block = AckiNackiBlock;
 
 // Note: produces single block.
 pub trait BlockProducer {
@@ -80,7 +84,7 @@ pub trait BlockProducer {
         parent_block_state: BlockState,
         protocol_version: ProtocolVersion,
     ) -> anyhow::Result<(
-        AckiNackiBlockVersioned,
+        Block,
         Self::OptimisticState,
         Vec<(Cell, ActiveThread)>,
         CrossThreadRefData,
@@ -96,6 +100,7 @@ pub trait BlockProducer {
 #[derive(TypedBuilder)]
 pub struct TVMBlockProducer {
     active_threads: Vec<(Cell, ActiveThread)>,
+    #[allow(unused)]
     node_config_read: ConfigRead,
     blockchain_config: BlockchainConfigRead,
     message_queue: HashMap<AccountAddress, VecDeque<(Stamp, tvm_block::Message)>>,
@@ -111,8 +116,6 @@ pub struct TVMBlockProducer {
     block_state_repository: BlockStateRepository,
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
-    #[cfg(feature = "mirror_repair")]
-    is_updated_mv: Arc<Mutex<bool>>,
 }
 
 impl TVMBlockProducer {
@@ -143,9 +146,9 @@ impl BlockProducer for TVMBlockProducer {
         time_limits: &ExecutionTimeLimits,
         block_round: BlockRound,
         parent_block_state: BlockState,
-        protocol_version: ProtocolVersion,
+        _protocol_version: ProtocolVersion,
     ) -> anyhow::Result<(
-        AckiNackiBlockVersioned,
+        Block,
         Self::OptimisticState,
         Vec<(Cell, ActiveThread)>,
         CrossThreadRefData,
@@ -159,7 +162,6 @@ impl BlockProducer for TVMBlockProducer {
         CrossThreadRefData: 'a,
     {
         let parent_block_seq_no = parent_state.block_seq_no;
-        let is_block_of_retired_version = self.node_config_read.is_retired(&protocol_version);
         let (initial_state, in_table, white_list_of_slashing_messages_hashes, forwarded_messages) =
             trace_span!("pre processing").in_scope(|| {
                 tracing::trace!("Start production");
@@ -241,8 +243,7 @@ impl BlockProducer for TVMBlockProducer {
             forwarded_messages,
             self.metrics.clone(),
             self.wasm_cache,
-            #[cfg(feature = "mirror_repair")]
-            self.is_updated_mv,
+            false,
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (mut prepared_block, processed_stamps, ext_message_feedbacks) = producer.build_block(
@@ -253,7 +254,6 @@ impl BlockProducer for TVMBlockProducer {
             white_list_of_slashing_messages_hashes,
             message_db.clone(),
             time_limits,
-            is_block_of_retired_version,
         )?;
         tracing::trace!(target: "node", "block generated successfully");
         Self::print_block_info(&prepared_block.block);
@@ -323,6 +323,24 @@ impl BlockProducer for TVMBlockProducer {
                 e.set_block_height(block_height).expect("Failed to set block_height");
                 e.set_block_round(block_round).expect("Failed to set round for the block state")
             });
+            #[cfg(not(feature = "transitioning_node_version"))]
+            let an_block = AckiNackiBlock::new(
+                thread_identifier,
+                prepared_block.block,
+                self.producer_node_id,
+                prepared_block.tx_cnt,
+                prepared_block.block_keeper_set_changes,
+                DEFAULT_VERIFY_COMPLEXITY,
+                ref_ids,
+                forward_table,
+                block_round,
+                block_height,
+                #[cfg(feature = "monitor-accounts-number")]
+                prepared_block.accounts_number_diff,
+                #[cfg(feature = "protocol_version_hash_in_block")]
+                protocol_version.hash(),
+            );
+            #[cfg(feature = "transitioning_node_version")]
             let an_block = if !self.node_config_read.is_retired(&protocol_version) {
                 tracing::trace!("Generate new block");
                 AckiNackiBlockVersioned::New(AckiNackiBlock::new(

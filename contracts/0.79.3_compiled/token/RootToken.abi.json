@@ -1,0 +1,135 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"initialSupplyToOwner","type":"address"},
+				{"name":"initialSupply","type":"uint128"},
+				{"name":"mintDisabled","type":"bool"},
+				{"name":"walletCode","type":"cell"},
+				{"name":"transactionCode","type":"cell"},
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setDisableMint",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "clearData",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setPubkey",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "burn",
+			"inputs": [
+				{"name":"value","type":"uint128"},
+				{"name":"walletOwner","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "processWithdraw",
+			"inputs": [
+				{"name":"value","type":"uint128"},
+				{"name":"to","type":"uint256"},
+				{"name":"owner","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "mint",
+			"inputs": [
+				{"name":"value","type":"uint128"},
+				{"name":"walletOwner","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployWallet",
+			"inputs": [
+				{"name":"owner","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"},
+				{"name":"cell","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"name","type":"string"},
+				{"name":"decimals","type":"uint128"},
+				{"name":"deployer","type":"address"},
+				{"name":"minted","type":"uint128"},
+				{"name":"burned","type":"uint128"},
+				{"name":"mintDisabled","type":"bool"},
+				{"name":"ownerPubkey","type":"uint256"}
+			]
+		},
+		{
+			"name": "getWalletAddress",
+			"inputs": [
+				{"name":"walletOwner","type":"address"}
+			],
+			"outputs": [
+				{"name":"walletAddress","type":"address"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":true,"name":"_deployer","type":"address"},
+		{"init":true,"name":"_name","type":"string"},
+		{"init":true,"name":"_decimals","type":"uint128"},
+		{"init":false,"name":"_walletCode","type":"cell"},
+		{"init":false,"name":"_transactionCode","type":"cell"},
+		{"init":false,"name":"_minted","type":"uint128"},
+		{"init":false,"name":"_burned","type":"uint128"},
+		{"init":false,"name":"_mintDisabled","type":"bool"},
+		{"init":false,"name":"_ownerPubkey","type":"uint256"}
+	]
+}

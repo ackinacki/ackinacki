@@ -11,8 +11,6 @@ pub use save_service::start_state_save_service;
 mod private {
     use std::path::PathBuf;
 
-    use versioned_struct::Transitioning;
-
     use super::state::AckiNackiBlockState;
     use crate::repository::repository_impl::save_to_file;
 
@@ -23,10 +21,15 @@ mod private {
         let bytes = std::fs::read(&file_path).map_err(|e| {
             anyhow::format_err!("Failed to read bytes from file {file_path:?}: {e}")
         })?;
+        #[cfg(feature = "transitioning_node_version")]
         let mut state: AckiNackiBlockState = Transitioning::deserialize_data_compat(&bytes)
             .map_err(|e| {
                 anyhow::format_err!("Failed to load block state from bytes {file_path:?}: {e}")
             })?;
+        #[cfg(not(feature = "transitioning_node_version"))]
+        let mut state: AckiNackiBlockState = bincode::deserialize(&bytes).map_err(|e| {
+            anyhow::format_err!("Failed to load block state from bytes {file_path:?}: {e}")
+        })?;
         state.file_path = file_path;
         Ok(Some(state))
     }

@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::path::Path;
@@ -310,11 +310,11 @@ impl SqliteHelper {
                         prev_key_block_seqno,gen_software_version,gen_software_capabilities,boc,file_hash,
                         root_hash,prev_ref_seq_no,prev_ref_end_lt,prev_ref_file_hash,prev_ref_root_hash,
                         prev_alt_ref_seq_no,prev_alt_ref_end_lt,prev_alt_ref_file_hash,prev_alt_ref_root_hash,
-                        in_msgs,out_msgs,data,chain_order,tr_count,thread_id,producer_id
+                        in_msgs,out_msgs,data,chain_order,tr_count,thread_id,producer_id,height,envelope_hash
                     ) VALUES (
                         ?1,?2,?3,?4,?5,?6,   ?7,?8,?9,   ?10,?11,?12,?13,?14,?15,
                         ?16,?17,?18,?19,?20,?21,?22,   ?23,?24,?25,   ?26,?27,?28,   ?29,?30,?31,
-                        ?32,?33,?34,?35,   ?36,?37,?38,?39,   ?40,?41,?42,?43,?44,?45,?46
+                        ?32,?33,?34,?35,   ?36,?37,?38,?39,   ?40,?41,?42,?43,?44,?45,?46,  ?47,?48
                     )
                     ON CONFLICT(id) DO UPDATE SET
                         aggregated_signature=excluded.aggregated_signature,
@@ -371,15 +371,17 @@ impl SqliteHelper {
                     block.tr_count,
                     block.thread_id,
                     block.producer_id,
+                    block.height,
+                    block.envelope_hash,
                 ];
 
                 stmt.execute(params)
             } else {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO blocks (
-                        id,status,seq_no,parent,producer_id,thread_id,gen_utime,chain_order,boc
+                        id,status,seq_no,parent,producer_id,thread_id,height,gen_utime,chain_order,envelope_hash,boc
                     ) VALUES (
-                        ?1,?2,?3,?4,?5,?6,?7,?8,?9
+                        ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11
                     )",
                 )?;
 
@@ -390,8 +392,10 @@ impl SqliteHelper {
                     block.parent,
                     block.producer_id,
                     block.thread_id,
+                    block.height,
                     block.gen_utime,
                     block.chain_order,
+                    block.envelope_hash,
                     block.boc,
                 ];
 

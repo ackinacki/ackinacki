@@ -179,7 +179,6 @@ pub(super) fn inner_loop(
                 tracing::trace!("Skip block validation process: node config is not available");
                 continue;
             };
-            let is_block_of_retired_version = node_global_config_read.is_retired(&protocol_version);
 
             let node_global_config = Arc::unwrap_or_clone(node_global_config);
 
@@ -198,9 +197,6 @@ pub(super) fn inner_loop(
                 metrics.clone(),
                 wasm_cache.clone(),
                 message_db.clone(),
-                #[cfg(feature = "mirror_repair")]
-                repository.is_updated_mv.clone(),
-                is_block_of_retired_version,
             )
             .expect("Failed to verify block");
             if !verify_res.is_valid() {

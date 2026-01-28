@@ -13,6 +13,7 @@ pub mod node;
 pub mod protocol;
 pub mod repository;
 pub mod services;
+pub mod signals;
 pub mod types;
 pub mod utilities;
 pub mod versioning;

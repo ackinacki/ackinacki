@@ -155,15 +155,13 @@ where
         let mut stop_start = HashMap::new();
         for (peer_id, peer_senders) in &self.peer_senders {
             let old_addrs = peer_senders.iter().map(|(addr, _)| *addr).collect::<HashSet<_>>();
-            let (stop, start) = if let Some(new_peers) = self.net_topology.resolve_peer(peer_id) {
-                let new_addrs = new_peers.iter().map(|x| x.addr).collect::<HashSet<_>>();
-                (
-                    old_addrs.difference(&new_addrs).cloned().collect(),
-                    new_addrs.difference(&old_addrs).cloned().collect(),
-                )
-            } else {
-                (old_addrs, HashSet::new())
-            };
+
+            let new_peers = self.net_topology.resolve_peer(peer_id);
+            let new_addrs = new_peers.iter().map(|x| x.addr).collect::<HashSet<_>>();
+
+            let stop: HashSet<_> = old_addrs.difference(&new_addrs).cloned().collect();
+            let start: HashSet<_> = new_addrs.difference(&old_addrs).cloned().collect();
+
             if !stop.is_empty() || !start.is_empty() {
                 stop_start.insert(peer_id.clone(), (stop, start));
             }
@@ -202,34 +200,34 @@ where
                 let peer_senders = if let Some(senders) = self.peer_senders.get(&id) {
                     senders
                 } else {
-                    match self.net_topology.resolve_peer(&id) {
-                        Some(peers) => {
-                            self.start_peer_senders(&id, &peers.iter().map(|x| x.addr).collect());
-                            self.drain_unresolved_peers_message_queue();
-                            self.peer_senders.get(&id).unwrap()
-                        }
-                        None => {
-                            tracing::error!(
+                    let peers = self.net_topology.resolve_peer(&id);
+                    if !peers.is_empty() {
+                        self.start_peer_senders(&id, &peers.iter().map(|x| x.addr).collect());
+                        self.drain_unresolved_peers_message_queue();
+                        // At this point, the invariant holds:
+                        // `self.start_peer_senders` always inserts a non-empty entry for `id` in `peer_senders`.
+                        self.peer_senders.get(&id).expect("Invariant: `peer_senders` contains a non-empty entry for this id after starting senders")
+                    } else {
+                        tracing::error!(
                                 peer = id.to_string(),
                                 msg_type = net_message.label,
                                 broadcast = false,
                                 "Message delivery: forwarding to peer sender failed, peer is unresolved"
                             );
-                            if let Some(metrics) = self.metrics.as_ref() {
-                                metrics.report_error("fwd_to_peer_lagged");
-                            }
-                            self.unresolved_peers_message_queue.push_front((
-                                id,
-                                net_message,
-                                buffer_duration,
-                            ));
-                            while self.unresolved_peers_message_queue.len()
-                                > MAX_UNRESOLVED_PEERS_MESSAGE_QUEUE_SIZE
-                            {
-                                self.unresolved_peers_message_queue.pop_back();
-                            }
-                            return;
+                        if let Some(metrics) = self.metrics.as_ref() {
+                            metrics.report_error("fwd_to_peer_lagged");
                         }
+                        self.unresolved_peers_message_queue.push_front((
+                            id,
+                            net_message,
+                            buffer_duration,
+                        ));
+                        while self.unresolved_peers_message_queue.len()
+                            > MAX_UNRESOLVED_PEERS_MESSAGE_QUEUE_SIZE
+                        {
+                            self.unresolved_peers_message_queue.pop_back();
+                        }
+                        return;
                     }
                 };
                 for (addr, sender) in peer_senders {

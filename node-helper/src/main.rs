@@ -183,9 +183,6 @@ struct Config {
     pub min_time_between_state_publish_directives: Option<Duration>,
 
     #[arg(long, env)]
-    pub bm_api_socket: Option<SocketAddr>,
-
-    #[arg(long, env)]
     pub bk_api_socket: Option<SocketAddr>,
 
     #[arg(long, env)]
@@ -405,7 +402,7 @@ fn main() -> anyhow::Result<()> {
             }
 
             if let Some(zerostate_path) = config_cmd.zerostate_path {
-                config.local.zerostate_path = zerostate_path;
+                config.local.zerostate_path = Some(zerostate_path);
             }
 
             if let Some(bk_set_update_path) = config_cmd.bk_set_update_path {
@@ -476,10 +473,6 @@ fn main() -> anyhow::Result<()> {
 
             if let Some(node_joining_timeout) = config_cmd.node_joining_timeout {
                 global_config.node_joining_timeout = node_joining_timeout;
-            }
-
-            if let Some(bm_api_socket) = config_cmd.bm_api_socket {
-                config.network.bm_api_socket = Some(bm_api_socket);
             }
 
             if let Some(bk_api_socket) = config_cmd.bk_api_socket {

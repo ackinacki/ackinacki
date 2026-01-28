@@ -1,0 +1,25 @@
+---
+
+- name: Count existing archive files before rotation
+  ansible.builtin.find:
+    paths: "{{ BM_DATA_DIR }}/workdir"
+    patterns: "bm-archive-*.db"
+  register: files_before_rotation
+
+- name: Rotate block manager database
+  ansible.builtin.shell:
+    chdir: "{{ BM_DIR }}"
+    cmd: docker compose kill -s SIGHUP "block_manager"
+
+- name: Wait for rotation to complete
+  ansible.builtin.shell:
+    cmd: "ls {{ BM_DATA_DIR }}/workdir/bm-archive-*.db 2>/dev/null | wc -l"
+  register: current_file_count
+  until: (current_file_count.stdout | int) > (files_before_rotation.matched | int)
+  retries: 60
+  delay: 1
+
+- name: Verify rotated databases integrity
+  ansible.builtin.shell:
+    cmd: "for db in {{ BM_DATA_DIR }}/workdir/bm-archive-*.db; do sqlite3 \"$db\" 'pragma quick_check;' | grep -q '^ok$' || exit 1; done"
+  when: ROTATE_DB_CHECK is defined and ROTATE_DB_CHECK is true

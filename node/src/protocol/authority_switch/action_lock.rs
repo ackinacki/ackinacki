@@ -24,11 +24,11 @@ use typed_builder::TypedBuilder;
 use super::find_last_prefinalized::find_last_prefinalized;
 use super::find_last_prefinalized::find_next_prefinalized;
 use super::round_time::RoundTime;
-use crate::bls::create_signed::CreateSealed;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::gosh_bls::PubKey;
 use crate::bls::gosh_bls::Secret;
+use crate::bls::try_seal::TrySeal;
 use crate::bls::BLSSignatureScheme;
 use crate::bls::GoshBLS;
 use crate::helper::start_shutdown;
@@ -779,6 +779,11 @@ impl ThreadAuthority {
             tracing::trace!("start_next_round: parent block descendant bk set is not set");
             return OnBlockProducerStalledResult::retry_later(Some(block_height));
         };
+
+        let Some(block_version) = parent_block.guarded(|e| e.block_version_state().clone()) else {
+            tracing::trace!("start_next_round: parent block version state is not set");
+            return OnBlockProducerStalledResult::retry_later(Some(block_height));
+        };
         let Some(parent_block_time) = parent_block.guarded(|e| *e.block_time_ms()) else {
             tracing::trace!("start_next_round: parent block time is not set");
             return OnBlockProducerStalledResult::retry_later(Some(block_height));
@@ -950,7 +955,6 @@ impl ThreadAuthority {
             }
             None => (None, None),
         };
-
         let attestations_for_ancestors = {
             if block.is_some() {
                 vec![]
@@ -1115,8 +1119,9 @@ impl ThreadAuthority {
             .nack_bad_block(current_lock_snapshot.locked_bad_block_nacks().clone())
             .build();
         let secrets = self.bls_keys_map.guarded(|map| map.clone());
-        let Ok(lock) =
-            Envelope::sealed(&self.node_credentials, &bk_set, &secrets, lock).map_err(|e| {
+        let Ok(lock) = lock
+            .try_seal(&self.node_credentials, &bk_set, &secrets, block_version.to_use())
+            .map_err(|e| {
                 tracing::warn!("Failed to sign a lock: {}", e);
             })
         else {
@@ -1404,6 +1409,12 @@ impl ThreadAuthority {
             tracing::trace!("on_next_round_incoming_request: bk_set is not set");
             return OnNextRoundIncomingRequestResult::DoNothing;
         };
+
+        let Some(block_version_state) = parent_state.guarded(|e| e.block_version_state().clone())
+        else {
+            tracing::trace!("on_next_round_incoming_request: block_version_state is not set");
+            return OnNextRoundIncomingRequestResult::DoNothing;
+        };
         let nacked_blocks_bad_block = self
             .confirmed_bad_block_nacks
             .get(
@@ -1574,19 +1585,16 @@ impl ThreadAuthority {
             // Note: block production is not needed so far.
             // Block producer kicks in when there were no block in a previous round or the majority
             // of the block keepers had no block locked.
-            let Ok(envelope) = Envelope::sealed(
-                &self.node_credentials,
-                &bk_set,
-                &secrets,
-                NextRoundSuccess::builder()
-                    .node_identifier(self.node_credentials.node_id().clone())
-                    .round(*round)
-                    .block_height(block_height)
-                    .proposed_block(NetBlock::with_envelope(&block).unwrap())
-                    .attestations_aggregated(aggregated_attestations)
-                    .requests_aggregated(proof_of_valid_round)
-                    .build(),
-            ) else {
+            let Ok(envelope) = NextRoundSuccess::builder()
+                .node_identifier(self.node_credentials.node_id().clone())
+                .round(*round)
+                .block_height(block_height)
+                .proposed_block(NetBlock::with_envelope(&block).unwrap())
+                .attestations_aggregated(aggregated_attestations)
+                .requests_aggregated(proof_of_valid_round)
+                .build()
+                .try_seal(&self.node_credentials, &bk_set, &secrets, block_version_state.to_use())
+            else {
                 start_shutdown();
                 tracing::error!("Node does not have valid key to sign message");
                 return OnNextRoundIncomingRequestResult::DoNothing;
