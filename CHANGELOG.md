@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.3] – 2026-02-06
+
+### New / Improvements
+- The GQL server supports reading data from additional database files residing in the same directory as the current active BM's database
+- Added documentation about *Block Manager Service Management*
+
+### Fixes
+- Updated the cron job to send a `SIGHUP` signal to the q-server to re-read the list of `.db` files when it changes.
+- Refactored union queries.
+
 ## [0.13.2] – 2026-01-28
 
 ### New / Improvements

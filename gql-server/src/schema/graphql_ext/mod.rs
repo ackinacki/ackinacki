@@ -1,7 +1,8 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::fmt;
+use std::sync::Arc;
 
 use async_graphql::dataloader::DataLoader;
 use async_graphql::Context;
@@ -10,8 +11,6 @@ use async_graphql::FieldResult;
 use async_graphql::InputObject;
 use async_graphql::Object;
 use message::MessageLoader;
-use sqlx::SqlitePool;
-
 mod account;
 pub mod blockchain_api;
 
@@ -20,6 +19,7 @@ use self::message::Message;
 use self::message::MessageFilter;
 use super::db;
 use crate::helpers::query_order_by_str;
+use crate::schema::db::DBConnector;
 use crate::schema::graphql::account::Account;
 use crate::schema::graphql::account::AccountFilter;
 use crate::schema::graphql::block::Block;
@@ -66,10 +66,10 @@ pub struct QueryRoot;
 impl QueryRoot {
     async fn info(&self, ctx: &Context<'_>) -> FieldResult<Option<Info>> {
         tracing::info!("info query");
-        let pool = ctx.data::<SqlitePool>()?;
+        let db_connector = ctx.data::<Arc<DBConnector>>()?;
 
-        let gen_utime = if ctx.look_ahead().field("last_block_time").exists() {
-            let block = db::Block::latest_block(pool).await?;
+        let gen_utime = if ctx.look_ahead().field("lastBlockTime").exists() {
+            let block = db::Block::latest_block(db_connector).await?;
             match block {
                 Some(db::Block { gen_utime, .. }) => gen_utime,
                 None => None,
@@ -92,14 +92,14 @@ impl QueryRoot {
         limit: Option<i32>,
         _timeout: Option<f64>,
     ) -> FieldResult<Option<Vec<Option<Block>>>> {
-        let pool = ctx.data::<SqlitePool>()?;
+        let db_connector = ctx.data::<Arc<DBConnector>>()?;
         let filter = match filter {
             Some(f) => BlockFilter::to_where(&f).unwrap_or("".to_string()),
             None => "".to_string(),
         };
         let order_by_clause = query_order_by_str(order_by);
         let db_blocks: Vec<db::Block> =
-            db::Block::list(pool, filter, order_by_clause, limit).await?;
+            db::Block::list(db_connector, filter, order_by_clause, limit).await?;
         let mut blocks = db_blocks
             .into_iter()
             .map(|b| Some(Into::<Block>::into(b)))
@@ -107,7 +107,7 @@ impl QueryRoot {
 
         if ctx.look_ahead().field("in_msg_descr").exists() {
             for b in blocks.iter_mut().flatten() {
-                let in_msgs = db::Message::in_block_msgs(pool, b.id.to_string()).await?;
+                let in_msgs = db::Message::in_block_msgs(db_connector, b.id.to_string()).await?;
                 b.set_in_msg_descr(in_msgs);
             }
         }
@@ -135,14 +135,14 @@ impl QueryRoot {
         limit: Option<i32>,
         _timeout: Option<f64>,
     ) -> FieldResult<Option<Vec<Option<Account>>>> {
-        let pool = ctx.data::<SqlitePool>()?;
+        let db_connector = ctx.data::<Arc<DBConnector>>()?;
         let filter = match filter {
             Some(f) => AccountFilter::to_where(&f).unwrap_or("".to_string()),
             None => "".to_string(),
         };
         let order_by_clause = query_order_by_str(order_by);
         let db_accounts: Vec<db::Account> =
-            db::Account::list(pool, filter, order_by_clause, limit).await?;
+            db::Account::list(db_connector, filter, order_by_clause, limit).await?;
         let accounts: Vec<Option<Account>> =
             db_accounts.into_iter().map(|b| Some(b.into())).collect();
 
@@ -157,14 +157,14 @@ impl QueryRoot {
         limit: Option<i32>,
         _timeout: Option<f64>,
     ) -> FieldResult<Option<Vec<Option<Message>>>> {
-        let pool = ctx.data::<SqlitePool>()?;
+        let db_connector = ctx.data::<Arc<DBConnector>>()?;
         let filter = match filter {
             Some(f) => MessageFilter::to_where(&f).unwrap_or("".to_string()),
             None => "".to_string(),
         };
         let order_by_clause = query_order_by_str(order_by);
         let db_messages: Vec<db::Message> =
-            db::Message::list(pool, filter, order_by_clause, limit).await?;
+            db::Message::list(db_connector, filter, order_by_clause, limit).await?;
         let mut messages: Vec<Option<Message>> =
             db_messages.into_iter().map(|b| Some(b.into())).collect();
 
@@ -182,13 +182,10 @@ impl QueryRoot {
         }
         if ctx.look_ahead().field("dst_transaction").exists() {
             for message in messages.iter_mut().flatten() {
-                let dst_transaction = db::transaction::Transaction::by_in_message(
-                    ctx.data::<SqlitePool>().unwrap(),
-                    &message.id,
-                    None,
-                )
-                .await
-                .expect("Failed to load transaction by inbound message");
+                let dst_transaction =
+                    db::transaction::Transaction::by_in_message(db_connector, &message.id, None)
+                        .await
+                        .expect("Failed to load transaction by inbound message");
 
                 if let Some(transaction) = dst_transaction {
                     message.dst_transaction = transaction_loader
@@ -213,14 +210,14 @@ impl QueryRoot {
         limit: Option<i32>,
         _timeout: Option<f64>,
     ) -> FieldResult<Option<Vec<Option<Transaction>>>> {
-        let pool = ctx.data::<SqlitePool>()?;
+        let db_connector = ctx.data::<Arc<DBConnector>>()?;
         let filter = match filter {
             Some(f) => TransactionFilter::to_where(&f).unwrap_or("".to_string()),
             None => "".to_string(),
         };
         let order_by_clause = query_order_by_str(order_by);
         let db_transactions: Vec<db::Transaction> =
-            db::Transaction::list(pool, filter, order_by_clause, limit).await?;
+            db::Transaction::list(db_connector, filter, order_by_clause, limit).await?;
         let mut transactions: Vec<Option<Transaction>> =
             db_transactions.into_iter().map(|b| Some(b.into())).collect();
 

@@ -15,12 +15,12 @@ use async_graphql::Enum;
 use async_graphql::InputObject;
 use async_graphql::Object;
 use async_graphql::OutputType;
-use sqlx::SqlitePool;
 use tvm_client::ClientContext;
 
 use super::transactions::BlockchainTransaction;
 use crate::schema::db;
 use crate::schema::db::transaction::AccountTransactionsQueryArgs;
+use crate::schema::db::DBConnector;
 use crate::schema::graphql::account::Account;
 use crate::schema::graphql::query::PaginationArgs;
 use crate::schema::graphql::transaction::Transaction;
@@ -114,10 +114,10 @@ impl BlockchainAccountQuery<'_> {
         if let Some(preloaded) = &self.preloaded {
             return Some(preloaded.clone().into());
         }
-        let pool = self.ctx.data::<SqlitePool>().unwrap();
+        let db_connector = self.ctx.data::<Arc<DBConnector>>().unwrap();
         let client = self.ctx.data::<Arc<ClientContext>>().unwrap();
 
-        db::Account::by_address(pool, client, Some(self.address.clone()))
+        db::Account::by_address(db_connector, client, Some(self.address.clone()))
             .await
             .unwrap()
             .map(|db_account| db_account.into())
@@ -191,7 +191,7 @@ impl BlockchainAccountQuery<'_> {
                 PaginationArgs { first, after, last, before },
             );
             let mut messages = db::Message::account_messages(
-                self.ctx.data::<SqlitePool>().unwrap(),
+                self.ctx.data::<Arc<DBConnector>>().unwrap(),
                 self.address.clone(),
                 &args,
             )
@@ -239,7 +239,7 @@ impl BlockchainAccountQuery<'_> {
                 }
                 if is_child_transaction {
                     let dst_transaction = db::transaction::Transaction::by_in_message(
-                        self.ctx.data::<SqlitePool>().unwrap(),
+                        self.ctx.data::<Arc<DBConnector>>().unwrap(),
                         &message.id,
                         None,
                     )
@@ -332,7 +332,7 @@ impl BlockchainAccountQuery<'_> {
             );
 
             let mut transactions: Vec<db::Transaction> = db::Transaction::account_transactions(
-                self.ctx.data::<SqlitePool>().unwrap(),
+                self.ctx.data::<Arc<DBConnector>>().unwrap(),
                 self.address.clone(),
                 &args,
             )

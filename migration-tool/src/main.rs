@@ -77,13 +77,7 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let db_path = PathBuf::from(args.db_path);
 
-    let (db_dir, db_file) =
-        if db_path.is_file() || (!db_path.exists() && db_path.extension().is_some()) {
-            let parent = db_path.parent().unwrap_or_else(|| Path::new("."));
-            (parent.to_path_buf(), db_path.clone())
-        } else {
-            (db_path.clone(), db_path.join("bm-schema.db"))
-        };
+    let (db_dir, db_file) = resolve_db_paths(&db_path);
 
     if let Err(err) = fs::create_dir_all(db_dir.clone()) {
         eprintln!("Failed to create data dir {db_dir:?}: {err}");
@@ -138,10 +132,24 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn resolve_db_paths(db_path: &Path) -> (PathBuf, PathBuf) {
+    if db_path.is_file() || (!db_path.exists() && db_path.extension().is_some()) {
+        let parent = db_path.parent().unwrap_or_else(|| Path::new("."));
+        (parent.to_path_buf(), db_path.to_path_buf())
+    } else {
+        (db_path.to_path_buf(), db_path.join("bm-schema.db"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use lazy_static::lazy_static;
+    use std::fs;
+    use std::fs::File;
 
+    use lazy_static::lazy_static;
+    use testdir::testdir;
+
+    use super::resolve_db_paths;
     use super::*;
 
     lazy_static! {
@@ -152,5 +160,40 @@ mod tests {
     #[test]
     fn migrations_test() {
         assert!(MIGRATIONS_BM.validate().is_ok());
+    }
+
+    #[test]
+    fn resolve_db_paths_existing_file() {
+        let dir = testdir!();
+        let file_path = dir.join("bm-schema.db");
+        File::create(&file_path).unwrap();
+
+        let (db_dir, db_file) = resolve_db_paths(&file_path);
+        assert_eq!(db_dir, dir);
+        assert_eq!(db_file, file_path);
+
+        let _ = fs::remove_file(&db_file);
+        let _ = fs::remove_dir(&db_dir);
+    }
+
+    #[test]
+    fn resolve_db_paths_nonexistent_file_with_extension() {
+        let dir = testdir!();
+        let file_path = dir.join("custom.db");
+
+        let (db_dir, db_file) = resolve_db_paths(&file_path);
+        assert_eq!(db_dir, dir);
+        assert_eq!(db_file, file_path);
+    }
+
+    #[test]
+    fn resolve_db_paths_directory() {
+        let dir = testdir!();
+
+        let (db_dir, db_file) = resolve_db_paths(&dir);
+        assert_eq!(db_dir, dir);
+        assert_eq!(db_file, db_dir.join("bm-schema.db"));
+
+        let _ = fs::remove_dir(&db_dir);
     }
 }

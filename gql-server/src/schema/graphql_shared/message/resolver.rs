@@ -1,18 +1,19 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_graphql::dataloader::Loader;
 use async_graphql::Error;
 use futures::TryStreamExt;
 use sqlx::QueryBuilder;
-use sqlx::SqlitePool;
 
 use crate::schema::db;
+use crate::schema::db::DBConnector;
 
 pub struct MessageLoader {
-    pub pool: SqlitePool,
+    pub db_connector: Arc<DBConnector>,
 }
 
 impl Loader<String> for MessageLoader {
@@ -24,12 +25,27 @@ impl Loader<String> for MessageLoader {
         keys: &[String],
     ) -> anyhow::Result<HashMap<String, Self::Value>, Self::Error> {
         let ids = keys.iter().map(|m| format!("{m:?}")).collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT * FROM messages WHERE id IN ({ids})");
+
+        let db_names = self.db_connector.attached_db_names();
+
+        if db_names.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let union_sql = db_names
+            .into_iter()
+            .map(|name| format!("SELECT * FROM \"{name}\".messages WHERE id IN ({ids})"))
+            .collect::<Vec<_>>()
+            .join(" UNION ALL ");
+
+        let sql = format!("SELECT * FROM ({union_sql})");
+
         tracing::trace!(target: "data_loader",  "SQL: {sql}");
+        let mut conn = self.db_connector.get_connection().await?;
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
         let messages = builder
             .build_query_as()
-            .fetch(&self.pool)
+            .fetch(&mut *conn)
             .map_ok(|msg: db::Message| {
                 let message: Self::Value = msg.into();
                 let message_id = message.id.clone();

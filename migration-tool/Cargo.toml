@@ -22,5 +22,8 @@ path = "src/main.rs"
 cargo-emit = "0.2.1"
 merkle_hash = "3.7.0"
 
+[dev-dependencies]
+testdir.workspace = true
+
 [package.metadata.cargo-machete]
 ignored = ["cargo-emit", "merkle_hash"]

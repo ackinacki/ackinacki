@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::sync::Arc;
@@ -13,10 +13,10 @@ use async_graphql::Context;
 use async_graphql::Object;
 use async_graphql::OutputType;
 use async_graphql::SimpleObject;
-use sqlx::SqlitePool;
 use tvm_client::ClientContext;
 
 use crate::schema::db;
+use crate::schema::db::DBConnector;
 use crate::schema::graphql::query::PaginationArgs;
 use crate::schema::graphql_std::events::Event;
 
@@ -66,10 +66,10 @@ impl AccountQuery {
             return Some(preloaded.clone().into());
         }
 
-        let pool = ctx.data::<SqlitePool>().unwrap();
+        let db_connector = ctx.data::<Arc<DBConnector>>().unwrap();
         let client = ctx.data::<Arc<ClientContext>>().unwrap();
 
-        db::Account::by_address(pool, client, Some(self.address.clone()))
+        db::Account::by_address(db_connector, client, Some(self.address.clone()))
             .await
             .unwrap()
             .map(|db_account| db_account.into())
@@ -105,7 +105,7 @@ impl AccountQuery {
 
             let pagination = PaginationArgs { first, after, last, before };
             let mut messages = db::Message::account_events(
-                ctx.data::<SqlitePool>().unwrap(),
+                ctx.data::<Arc<DBConnector>>().unwrap(),
                 self.address.clone(),
                 &pagination,
             )

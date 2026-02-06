@@ -1,6 +1,6 @@
 [package]
 name = "node"
-version = "0.13.2"
+version = "0.13.3"
 edition.workspace = true
 rust-version.workspace = true
 build = 'build.rs'

@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::sync::Arc;
@@ -7,7 +7,6 @@ use anyhow::bail;
 use async_graphql::futures_util::TryStreamExt;
 use sqlx::prelude::FromRow;
 use sqlx::QueryBuilder;
-use sqlx::SqlitePool;
 use tvm_block::AccountStatus;
 use tvm_block::Deserializable;
 use tvm_block::Serializable;
@@ -19,6 +18,7 @@ use tvm_types::base64_decode;
 use tvm_types::write_boc;
 
 use crate::defaults;
+use crate::schema::db::DBConnector;
 use crate::schema::graphql::query::PaginateDirection;
 use crate::schema::graphql::query::PaginationArgs;
 
@@ -61,7 +61,7 @@ pub struct BlockchainAccountsQueryArgs {
 
 impl Account {
     pub async fn list(
-        pool: &SqlitePool,
+        db_connector: &DBConnector,
         where_clause: String,
         order_by: String,
         limit: Option<i32>,
@@ -74,10 +74,11 @@ impl Account {
         let sql = format!("SELECT * FROM accounts {where_clause} {order_by} LIMIT {limit}");
         tracing::debug!("SQL: {sql}");
 
+        let mut conn = db_connector.get_connection().await?;
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
         let accounts = builder
             .build_query_as()
-            .fetch(pool)
+            .fetch(&mut *conn)
             .map_ok(|b| b)
             .try_collect::<Vec<Account>>()
             .await?;
@@ -86,7 +87,7 @@ impl Account {
     }
 
     pub async fn by_address(
-        _pool: &SqlitePool,
+        _db_connector: &Arc<DBConnector>,
         client: &Arc<ClientContext>,
         address: Option<String>,
     ) -> anyhow::Result<Option<Account>> {
@@ -182,7 +183,7 @@ impl Account {
     }
 
     pub(crate) async fn blockchain_accounts(
-        pool: &SqlitePool,
+        db_connector: &DBConnector,
         args: &BlockchainAccountsQueryArgs,
     ) -> anyhow::Result<Vec<Account>> {
         let mut with_selects = Vec::new();
@@ -252,8 +253,9 @@ impl Account {
         if let Some(bind_code_hash) = bind_code_hash {
             query = query.bind(bind_code_hash);
         }
+        let mut conn = db_connector.get_connection().await?;
         let result: Result<Vec<Account>, anyhow::Error> =
-            query.fetch_all(pool).await.map_err(|e| anyhow::format_err!("{e}"));
+            query.fetch_all(&mut *conn).await.map_err(|e| anyhow::format_err!("{e}"));
 
         match result {
             Err(e) => {

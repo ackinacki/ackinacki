@@ -1,13 +1,13 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use async_graphql::futures_util::TryStreamExt;
 use sqlx::prelude::FromRow;
 use sqlx::QueryBuilder;
-use sqlx::SqlitePool;
 
 use crate::defaults;
 use crate::helpers::u64_to_string;
+use crate::schema::db::DBConnector;
 use crate::schema::graphql::query::PaginateDirection;
 use crate::schema::graphql::query::PaginationArgs;
 use crate::schema::graphql_ext::blockchain_api::account::BlockchainMasterSeqNoFilter;
@@ -107,7 +107,7 @@ pub struct Transaction {
 
 impl Transaction {
     pub async fn list(
-        pool: &SqlitePool,
+        db_connector: &DBConnector,
         filter: String,
         order_by: String,
         limit: Option<i32>,
@@ -117,13 +117,27 @@ impl Transaction {
             None => defaults::QUERY_BATCH_SIZE,
         };
 
-        let sql = format!("SELECT * FROM transactions {filter} {order_by} LIMIT {limit}");
+        let db_names = db_connector.attached_db_names();
+        tracing::trace!(db_names = ?db_names, "attached DBs:");
+
+        if db_names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let union_sql = db_names
+            .into_iter()
+            .map(|name| format!("SELECT * FROM \"{name}\".transactions {filter}"))
+            .collect::<Vec<_>>()
+            .join(" UNION ALL ");
+
+        let sql = format!("SELECT * FROM ({union_sql}) {order_by} LIMIT {limit}");
         tracing::debug!("SQL: {sql}");
 
+        let mut conn = db_connector.get_connection().await?;
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
         let transactions = builder
             .build_query_as()
-            .fetch(pool)
+            .fetch(&mut *conn)
             .map_ok(|b| b)
             .try_collect::<Vec<Transaction>>()
             .await?;
@@ -132,7 +146,7 @@ impl Transaction {
     }
 
     pub async fn blockchain_transactions(
-        pool: &SqlitePool,
+        db_connector: &DBConnector,
         args: &BlockchainTransactionsQueryArgs,
     ) -> anyhow::Result<Vec<Transaction>> {
         let direction = args.pagination.get_direction();
@@ -175,15 +189,33 @@ impl Transaction {
             "".to_string()
         };
 
-        let sql = format!(
-            "SELECT * FROM transactions {where_clause} ORDER BY chain_order {order_by} LIMIT {limit}",
-        );
+        let db_names = db_connector.attached_db_names();
+        tracing::trace!(db_names = ?db_names, "attached DBs:");
+
+        if db_names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let filter = where_clause;
+        let order_by = format!("ORDER BY chain_order {order_by}");
+
+        let union_sql = db_names
+            .into_iter()
+            .map(|name| format!("SELECT * FROM \"{name}\".transactions {filter}"))
+            .collect::<Vec<_>>()
+            .join(" UNION ALL ");
+
+        let sql = format!("SELECT * FROM ({union_sql}) {order_by} LIMIT {limit}");
 
         tracing::trace!(target: "blockchain_api", "SQL: {sql}");
 
+        let mut conn = db_connector.get_connection().await?;
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
-        let result: Result<Vec<Transaction>, anyhow::Error> =
-            builder.build_query_as().fetch_all(pool).await.map_err(|e| anyhow::format_err!("{e}"));
+        let result: Result<Vec<Transaction>, anyhow::Error> = builder
+            .build_query_as()
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| anyhow::format_err!("{e}"));
 
         if let Err(e) = result {
             anyhow::bail!("ERROR: {e}");
@@ -203,7 +235,7 @@ impl Transaction {
     }
 
     pub async fn account_transactions(
-        pool: &SqlitePool,
+        db_connector: &DBConnector,
         account: String,
         args: &AccountTransactionsQueryArgs,
     ) -> anyhow::Result<Vec<Self>> {
@@ -256,18 +288,35 @@ impl Transaction {
             PaginateDirection::Backward => "DESC",
         };
 
-        let sql = format!(
-            "SELECT * FROM transactions {where_clause} ORDER BY chain_order {} LIMIT {}",
-            order_by,
-            args.pagination.get_limit(),
-        );
+        let db_names = db_connector.attached_db_names();
+        tracing::trace!(db_names = ?db_names, "attached DBs:");
+
+        if db_names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let filter = where_clause;
+        let order_by = format!("ORDER BY chain_order {order_by}");
+        let limit = args.pagination.get_limit();
+
+        let union_sql = db_names
+            .into_iter()
+            .map(|name| format!("SELECT * FROM \"{name}\".transactions {filter}"))
+            .collect::<Vec<_>>()
+            .join(" UNION ALL ");
+
+        let sql = format!("SELECT * FROM ({union_sql}) {order_by} LIMIT {limit}");
 
         tracing::trace!(target: "blockchain_api.account.transactions", "SQL: {sql}");
 
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
 
-        let result: Result<Vec<Transaction>, anyhow::Error> =
-            builder.build_query_as().fetch_all(pool).await.map_err(|e| anyhow::format_err!("{e}"));
+        let mut conn = db_connector.get_connection().await?;
+        let result: Result<Vec<Transaction>, anyhow::Error> = builder
+            .build_query_as()
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| anyhow::format_err!("{e}"));
 
         if let Err(e) = result {
             anyhow::bail!("ERROR: {e}");
@@ -287,18 +336,30 @@ impl Transaction {
     }
 
     pub async fn by_in_message(
-        pool: &SqlitePool,
+        db_connector: &DBConnector,
         msg_id: &str,
         _fields: Option<Vec<String>>,
     ) -> anyhow::Result<Option<Transaction>> {
-        let sql = format!(
-            "SELECT * FROM transactions WHERE in_msg={:?} LIMIT 1",
-            msg_id.strip_prefix("message/").unwrap_or(msg_id),
-        );
+        let db_names = db_connector.attached_db_names();
+        tracing::trace!(db_names = ?db_names, "attached DBs:");
+
+        if db_names.is_empty() {
+            return Ok(None);
+        }
+
+        let msg_id = msg_id.strip_prefix("message/").unwrap_or(msg_id);
+        let union_sql = db_names
+            .into_iter()
+            .map(|name| format!("SELECT * FROM \"{name}\".transactions WHERE in_msg={msg_id:?}"))
+            .collect::<Vec<_>>()
+            .join(" UNION ALL ");
+
+        let sql = format!("SELECT * FROM ({union_sql}) LIMIT 1");
         tracing::debug!("SQL: {sql}");
 
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
 
-        Ok(builder.build_query_as().fetch_optional(pool).await?)
+        let mut conn = db_connector.get_connection().await?;
+        Ok(builder.build_query_as().fetch_optional(&mut *conn).await?)
     }
 }

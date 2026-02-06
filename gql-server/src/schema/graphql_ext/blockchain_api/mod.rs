@@ -1,5 +1,7 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
+
+use std::sync::Arc;
 
 use account::BlockchainAccountQuery;
 use account::BlockchainMasterSeqNoFilter;
@@ -14,7 +16,6 @@ use blocks::BlockchainBlock;
 use blocks::BlockchainBlocksConnection;
 use blocks::BlockchainBlocksEdge;
 use blocks::BlockchainBlocksQueryArgs;
-use sqlx::SqlitePool;
 use transactions::BlockchainMessage;
 use transactions::BlockchainTransaction;
 use transactions::BlockchainTransactionsConnection;
@@ -24,6 +25,7 @@ use transactions::BlockchainTransactionsQueryArgs;
 use super::message::MessageLoader;
 use crate::schema::db;
 use crate::schema::db::account::BlockchainAccountsQueryArgs;
+use crate::schema::db::DBConnector;
 use crate::schema::graphql;
 use crate::schema::graphql::block::BlockLoader;
 use crate::schema::graphql::query::PaginationArgs;
@@ -78,7 +80,7 @@ impl BlockchainQuery<'_> {
                 pagination: PaginationArgs { first, after, last, before },
             };
             let mut accounts: Vec<db::Account> = db::account::Account::blockchain_accounts(
-                self.ctx.data::<SqlitePool>().unwrap(),
+                self.ctx.data::<Arc<DBConnector>>().unwrap(),
                 &query_args,
             )
             .await?;
@@ -190,9 +192,11 @@ impl BlockchainQuery<'_> {
                 max_tr_count,
                 pagination: PaginationArgs { first, after, last, before },
             };
-            let mut blocks: Vec<db::Block> =
-                db::block::Block::blockchain_blocks(self.ctx.data::<SqlitePool>().unwrap(), &args)
-                    .await?;
+            let mut blocks: Vec<db::Block> = db::block::Block::blockchain_blocks(
+                self.ctx.data::<Arc<DBConnector>>().unwrap(),
+                &args,
+            )
+            .await?;
 
             let (has_previous_page, has_next_page) = (
                 args.pagination.has_previous_page(blocks.len()),
@@ -245,7 +249,7 @@ impl BlockchainQuery<'_> {
 
         if self.ctx.look_ahead().field("message").field("dst_transaction").exists() {
             let dst_transaction = db::transaction::Transaction::by_in_message(
-                self.ctx.data::<SqlitePool>().unwrap(),
+                self.ctx.data::<Arc<DBConnector>>().unwrap(),
                 &message.id,
                 None,
             )
@@ -345,7 +349,7 @@ impl BlockchainQuery<'_> {
                 };
                 let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
                 let mut transactions = db::transaction::Transaction::blockchain_transactions(
-                    self.ctx.data::<SqlitePool>().unwrap(),
+                    self.ctx.data::<Arc<DBConnector>>().unwrap(),
                     &args,
                 )
                 .await?;

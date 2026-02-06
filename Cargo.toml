@@ -25,7 +25,7 @@ members = [
     "tvm_contracts",
 ]
 
-package.version = "0.13.2"
+package.version = "0.13.3"
 package.edition = "2021"
 package.rust-version = "1.86.0"
 package.license = "LicenseRef-Acki-Nacki-Node-License"
@@ -76,6 +76,7 @@ serde_json = "1.0.114"
 serde_with = "3.12.0"
 signal-hook = "0.3.18"
 tempfile = { version = "3.21.0" }
+testdir = "0.9.3"
 thiserror = "2.0.3"
 tokio = { version = "1.44.2", features = ["full"] }
 tokio-retry = { version = "0.3.0" }

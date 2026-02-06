@@ -1,5 +1,49 @@
 ---
 
+- name: Force checkpoint to pack databases to single files
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+
+      for db in {{ BM_DATA_DIR }}/workdir/bm-archive-*.db; do
+        echo "Checkpointing: $db"
+
+        max_attempts=60
+        attempt=1
+
+        while true; do
+          out="$(sqlite3 "$db" "pragma wal_checkpoint(TRUNCATE);")"
+          echo "  attempt=$attempt result=$out"
+
+          if [[ "$out" == 0\|0\|* ]]; then
+            break
+          fi
+
+          if [[ "$out" == 0\|-1\|-1 ]]; then
+            break
+          fi
+
+          if (( attempt >= max_attempts )); then
+            echo "  ERROR: wal_checkpoint(TRUNCATE) did not reach '0|0|*' or '0|-1|-1' after $max_attempts attempts for $db" >&2
+            exit 1
+          fi
+
+          attempt=$((attempt + 1))
+          sleep 1
+        done
+      done
+  args:
+    executable: /bin/bash
+  register: checkpoint_result
+
+- name: Print checkpointing results
+  ansible.builtin.debug:
+    var: checkpoint_result.stdout_lines
+
+- name: Verify rotated databases integrity
+  ansible.builtin.shell:
+    cmd: "for db in {{ BM_DATA_DIR }}/workdir/bm-archive-*.db; do sqlite3 \"$db\" 'pragma quick_check;' | grep -q '^ok$' || exit 1; done"
+
 - name: Remove existing bm-archive.db and bm-archive.db-* files
   file:
     path: "{{ item }}"

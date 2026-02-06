@@ -1,0 +1,30 @@
+- name: upgrade block manager services
+  gather_facts: no
+  hosts: block_manager
+  serial: "{{ bm_update_batch_size | default('100%') }}"
+  become: yes
+  # Force handlers is needed for asserts
+  force_handlers: True
+  any_errors_fatal: true
+  vars:
+    DO_START: yes
+    DO_STOP_GRACEFUL: yes
+    ENABLE_CHECKER: yes
+    ENABLE_UPDATE: yes
+    GS_WAIT: true
+    UPGRADE:
+      - block-manager # grsh + down + up
+      - logrotate     # up + lr restart
+#    DO_ROTATE: true
+#    ROTATE_DB_CHECK: true
+#    RESTORE_ROTATED: true
+  roles:
+    - role: block-manager
+      when: ENABLE_UPDATE is true
+    # - role: block-manager-upgrade-check
+    #   vars:
+    #     logs_processing_period: 60
+    #     pre_testing_time: 70
+    #     log_file: "{{ BK_LOGS_DIR }}/node.log"
+    #     temp_log_file: "/tmp/node-{{ NODE_ID }}.log.tmp"
+    #   when: ENABLE_CHECKER is true

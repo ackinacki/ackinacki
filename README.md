@@ -80,6 +80,9 @@
       - [Run the Ansible Playbook](#run-the-ansible-playbook-1)
       - [Verify the Deployment](#verify-the-deployment)
   - [Update the Whitelist and Delegate the License](#update-the-whitelist-and-delegate-the-license)
+  - [Block Manager Service Management](#block-manager-service-management)
+    - [Upgrading Block Manager to a New Image Version or Configuration](#upgrading-block-keeper-to-a-new-image-or-configuration)
+    - [Stopping and Starting the Block Manager Service](#stopping-and-starting-the-block-manager-service)
   - [Staking BM](#staking-bm)
 - [Proxy Documentation](#proxy-documentation)
   - [System Requirements](#system-requirements-1)
@@ -1397,7 +1400,7 @@ block_manager:
 
 `BM image` — Docker image used to run the BM
 
-`STAKING_BM_IMAGE` — Docker image used to run the Иь staking
+`STAKING_BM_IMAGE` — Docker image used to run the BM staking
 
 `BM_WALLET_KEYS` — path to the file containing the BM wallet owner key pair
   (they will be required for operating the Block Manager wallet)
@@ -1481,6 +1484,42 @@ To delegate the License to the BM wallet, run:
 ```bash
 tvm-cli -j callx --addr LICENSE_ADDR --abi contracts/0.79.3_compiled/bksystem/LicenseBM.abi.json --keys BM_LICENSE_OWNER.keys.json --method addBMWallet '{"pubkey": "0xBM_WALLET_PUB_KEY"}'
 ```
+
+## Block Manager Service Management
+
+### Upgrading Block Manager to a New Image Version or Configuration
+
+To upgrade the **Block Manager (BM)** service to a new version, run:
+
+```bash
+ansible-playbook -i inventory-with-bm.yml upgrade-bm.yaml
+```
+
+⚠️ It is **strongly recommended** to perform a dry run before applying the upgrade, to see what changes will be made:
+
+```bash
+ansible-playbook -i your-inventory.yaml ansible/node-upgrading.yml --check --diff
+```
+
+Carefully review the output and make sure that any changes in the `docker-compose` files and configuration match what you expect.
+
+### Stopping and Starting the Block Manager Service
+
+To stop the BM service, log in to the BM server and run:
+```
+docker compose down
+```
+
+To start the service again, run:
+```
+docker compose up -d
+```
+Verify that the container status is UP by running the following command:
+```
+docker compose ps
+```
+
+More details are described in the [`Verify the Deployment`](#verify-the-deployment) section.
 
 ## Staking BM
 

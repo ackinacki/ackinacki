@@ -22,3 +22,9 @@
   ansible.builtin.shell:
     chdir: "{{ BM_DIR }}"
     cmd: docker compose down "block_manager" -t 60
+
+- name: Stop q-server
+  ansible.builtin.shell:
+    chdir: "{{ BM_DIR }}"
+    cmd: docker compose down q_server_bm -t 1
+

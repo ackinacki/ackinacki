@@ -6,10 +6,10 @@ use std::fmt;
 use async_graphql::futures_util::TryStreamExt;
 use sqlx::prelude::FromRow;
 use sqlx::QueryBuilder;
-use sqlx::SqlitePool;
 
 use crate::defaults;
 use crate::helpers::u64_to_string;
+use crate::schema::db::DBConnector;
 use crate::schema::graphql::query::PaginateDirection;
 use crate::schema::graphql_ext::blockchain_api::blocks::BlockchainBlocksQueryArgs;
 
@@ -119,7 +119,7 @@ impl fmt::Debug for Block {
 
 impl Block {
     pub async fn list(
-        pool: &SqlitePool,
+        db_connector: &DBConnector,
         where_clause: String,
         order_by: String,
         limit: Option<i32>,
@@ -129,35 +129,46 @@ impl Block {
             None => defaults::QUERY_BATCH_SIZE,
         };
 
-        let sql = format!("SELECT * FROM blocks {where_clause} {order_by} LIMIT {limit}");
+        let db_names = db_connector.attached_db_names();
+        tracing::trace!(db_names = ?db_names, "attached DBs:");
+
+        if db_names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let union_sql = db_names
+            .into_iter()
+            .map(|name| format!("SELECT * FROM \"{name}\".blocks {where_clause}"))
+            .collect::<Vec<_>>()
+            .join(" UNION ALL ");
+
+        let sql = format!("SELECT * FROM ({union_sql}) {order_by} LIMIT {limit}");
         tracing::debug!("SQL: {sql}");
 
+        let mut conn = db_connector.get_connection().await?;
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
 
-        let res =
-            builder.build_query_as().fetch(pool).map_ok(|b| b).try_collect::<Vec<Block>>().await;
+        let blocks = builder
+            .build_query_as()
+            .fetch(&mut *conn)
+            .map_ok(|b| b)
+            .try_collect::<Vec<Block>>()
+            .await?;
 
-        let blocks = if let Err(err) = res {
-            tracing::error!("ERROR: {:?}", err);
-            anyhow::bail!("ERROR: {err}");
-        } else {
-            let blocks = res.unwrap();
-            tracing::debug!("list(): {:?}", blocks);
-            blocks
-        };
         Ok(blocks)
     }
 
-    pub async fn latest_block(pool: &SqlitePool) -> anyhow::Result<Option<Block>> {
-        let block = sqlx::query_as("SELECT * FROM blocks ORDER BY chain_order DESC LIMIT 1")
-            .fetch_optional(pool)
-            .await?;
+    pub async fn latest_block(db_connector: &DBConnector) -> anyhow::Result<Option<Block>> {
+        let mut conn = db_connector.get_connection().await?;
+        let sql = "SELECT * FROM blocks ORDER BY chain_order DESC LIMIT 1";
+        tracing::debug!("SQL: {sql}");
+        let block = sqlx::query_as(sql).fetch_optional(&mut *conn).await?;
 
         Ok(block)
     }
 
     pub async fn blockchain_blocks(
-        pool: &SqlitePool,
+        db_connector: &DBConnector,
         args: &BlockchainBlocksQueryArgs,
     ) -> anyhow::Result<Vec<Block>> {
         let direction = args.pagination.get_direction();
@@ -206,15 +217,33 @@ impl Block {
             "".to_string()
         };
 
-        let sql = format!(
-            "SELECT * FROM blocks {where_clause} ORDER BY chain_order {order_by} LIMIT {limit}",
-        );
+        let db_names = db_connector.attached_db_names();
+        tracing::trace!(db_names = ?db_names, "attached DBs:");
+
+        if db_names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let filter = where_clause;
+        let order_by = format!("ORDER BY chain_order {order_by}");
+
+        let union_sql = db_names
+            .into_iter()
+            .map(|name| format!("SELECT * FROM \"{name}\".blocks {filter}"))
+            .collect::<Vec<_>>()
+            .join(" UNION ALL ");
+
+        let sql = format!("SELECT * FROM ({union_sql}) {order_by} LIMIT {limit}");
 
         tracing::trace!(target: "blockchain_api", "SQL: {sql}");
 
+        let mut conn = db_connector.get_connection().await?;
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
-        let result: Result<Vec<Block>, anyhow::Error> =
-            builder.build_query_as().fetch_all(pool).await.map_err(|e| anyhow::format_err!("{e}"));
+        let result: Result<Vec<Block>, anyhow::Error> = builder
+            .build_query_as()
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| anyhow::format_err!("{e}"));
 
         match result {
             Err(e) => {
@@ -230,7 +259,7 @@ impl Block {
         }
     }
 
-    // pub async fn by_seq_no(pool: &SqlitePool, seq_no: i64) ->
+    // pub async fn by_seq_no(db_connector: &DBConnector, seq_no: i64) ->
     // anyhow::Result<Option<Block>> {     let block =
     // sqlx::query_as_unchecked!(         Block,
     //         "SELECT * FROM blocks WHERE seq_no = ?",

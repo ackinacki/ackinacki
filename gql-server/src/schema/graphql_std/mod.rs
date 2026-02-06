@@ -1,17 +1,19 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
+
+use std::sync::Arc;
 
 use async_graphql::dataloader::DataLoader;
 use async_graphql::Context;
 use async_graphql::FieldResult;
 use async_graphql::Object;
-use sqlx::SqlitePool;
 
 mod account;
 pub(crate) mod events;
 
 use crate::helpers::query_order_by_str;
 use crate::schema::db;
+use crate::schema::db::DBConnector;
 use crate::schema::graphql::block::Block;
 use crate::schema::graphql::block::BlockFilter;
 use crate::schema::graphql::filter::WhereOp;
@@ -26,10 +28,10 @@ pub struct QueryRoot;
 impl QueryRoot {
     async fn info(&self, ctx: &Context<'_>) -> FieldResult<Option<Info>> {
         tracing::info!("info query");
-        let pool = ctx.data::<SqlitePool>()?;
+        let db_connector = ctx.data::<Arc<DBConnector>>()?;
 
         let gen_utime = if ctx.look_ahead().field("last_block_time").exists() {
-            let block = db::Block::latest_block(pool).await?;
+            let block = db::Block::latest_block(db_connector).await?;
             match block {
                 Some(db::Block { gen_utime, .. }) => gen_utime,
                 None => None,
@@ -51,14 +53,14 @@ impl QueryRoot {
         order_by: Option<Vec<Option<QueryOrderBy>>>,
         limit: Option<i32>,
     ) -> FieldResult<Option<Vec<Option<Block>>>> {
-        let pool = ctx.data::<SqlitePool>()?;
+        let db_connector = ctx.data::<Arc<DBConnector>>()?;
         let filter = match filter {
             Some(f) => BlockFilter::to_where(&f).unwrap_or("".to_string()),
             None => "".to_string(),
         };
         let order_by_clause = query_order_by_str(order_by);
         let db_blocks: Vec<db::Block> =
-            db::Block::list(pool, filter, order_by_clause, limit).await?;
+            db::Block::list(db_connector, filter, order_by_clause, limit).await?;
         let mut blocks = db_blocks
             .into_iter()
             .map(|b| Some(Into::<Block>::into(b)))
@@ -66,7 +68,7 @@ impl QueryRoot {
 
         if ctx.look_ahead().field("in_msg_descr").exists() {
             for b in blocks.iter_mut().flatten() {
-                let in_msgs = db::Message::in_block_msgs(pool, b.id.to_string()).await?;
+                let in_msgs = db::Message::in_block_msgs(db_connector, b.id.to_string()).await?;
                 b.set_in_msg_descr(in_msgs);
             }
         }
