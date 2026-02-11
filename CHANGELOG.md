@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.4] – 2026-02-11
+
+### Fixed
+- BM staking: Removed exit command from block manager staking script to prevent bm_staking service fault
+
 ## [0.13.3] – 2026-02-06
 
 ### New / Improvements

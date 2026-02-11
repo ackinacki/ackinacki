@@ -61,7 +61,6 @@ log "Starting block manager"
 tvm-cli -j callx --abi "$BM_ABI" --addr "$BM_WALLET" --keys "$BM_KEY" \
   -m startBM || {
     log "Error: Failed to start BM for $BM_WALLET" >&2
-    exit 1
   }
 
 log "Waiting for BM to start..."
@@ -72,7 +71,6 @@ process_bm() {
   tvm-cli -j callx --abi "$BM_ABI" --addr "$BM_WALLET" --keys "$BM_KEY" \
     -m getReward || {
       log "Error: Failed to get reward for $BM_WALLET" >&2
-      exit 1
     }
 }
 
