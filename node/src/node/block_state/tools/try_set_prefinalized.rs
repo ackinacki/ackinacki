@@ -4,7 +4,6 @@ use crate::node::AttestationData;
 use crate::node::BlockState;
 use crate::node::BlockStateRepository;
 use crate::node::Envelope;
-use crate::node::GoshBLS;
 use crate::types::BlockRound;
 use crate::types::BlockSeqNo;
 use crate::utilities::guarded::Guarded;
@@ -13,11 +12,10 @@ use crate::utilities::guarded::GuardedMut;
 pub fn try_set_prefinalized(
     block_state: &BlockState,
     block_state_repository: &BlockStateRepository,
-    proof: Envelope<GoshBLS, AttestationData>,
+    proof: Envelope<AttestationData>,
 ) -> anyhow::Result<()> {
     tracing::trace!("try_set_prefinalized: {:?}", block_state);
-    let Some(parent_block_identifier) =
-        block_state.guarded(|e| e.parent_block_identifier().clone())
+    let Some(parent_block_identifier) = block_state.guarded(|e| *e.parent_block_identifier())
     else {
         tracing::trace!("parent block identifier is not set");
         anyhow::bail!("parent block identifier is not set");
@@ -59,7 +57,7 @@ pub fn try_set_prefinalized(
             return Ok(());
         }
         let (other_prefinalized_block_identifier, other_prefinalized_max_block_round) = other_prefinalized.iter().map(|s| (
-            s.block_identifier().clone(),
+            *s.block_identifier(),
             s.guarded(|e| e.block_round().expect("Block round of a prefeinalized block must be set"))))
             .max_by(|a, b| (a.1).cmp(&b.1))
             .unwrap();

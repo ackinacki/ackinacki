@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use indexset::BTreeMap;
+use node_types::AccountIdentifier;
 use tvm_block::Augmentation;
 use tvm_block::EnqueuedMsg;
 use tvm_block::GetRepresentationHash;
@@ -21,13 +22,11 @@ use tvm_vm::executor::MVConfig;
 
 use super::BlockBuilder;
 use crate::block::producer::execution_time::ExecutionTimeLimits;
-use crate::creditconfig::dappconfig::calculate_dapp_config_address;
+use crate::creditconfig::dappconfig::calculate_dapp_config_account_id;
 use crate::creditconfig::dappconfig::create_config_touch_message;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::repository::optimistic_state::OptimisticState;
-use crate::types::AccountAddress;
-use crate::types::AccountRouting;
 
 impl BlockBuilder {
     pub(super) fn execute_dapp_config_messages(
@@ -35,7 +34,7 @@ impl BlockBuilder {
         blockchain_config: &BlockchainConfig,
         block_unixtime: u32,
         block_lt: u64,
-        check_messages_map: &mut Option<HashMap<AccountAddress, BTreeMap<u64, UInt256>>>,
+        check_messages_map: &mut Option<HashMap<AccountIdentifier, BTreeMap<u64, UInt256>>>,
         mvconfig: MVConfig,
     ) -> anyhow::Result<()> {
         tracing::trace!(target: "builder", "map of minted shell {:?}", self.dapp_minted_map);
@@ -51,7 +50,7 @@ impl BlockBuilder {
                     continue;
                 }
                 let addr =
-                    calculate_dapp_config_address(key.clone(), self.base_config_stateinit.clone())
+                    calculate_dapp_config_account_id(key, self.base_config_stateinit.clone())
                         .map_err(|e| {
                             anyhow::format_err!("Failed to calculate dapp config address: {e}")
                         })?;
@@ -61,13 +60,13 @@ impl BlockBuilder {
                             anyhow::format_err!("Failed to create config touch message: {e}")
                         })?;
 
-                let dst_addr: AccountAddress = message
+                let dst_addr: AccountIdentifier = message
                     .dst()
                     .ok_or_else(|| anyhow::anyhow!("message.dst() is None"))?
                     .address()
                     .clone()
                     .into();
-                let destination_routing = AccountRouting(key.clone(), dst_addr.clone());
+                let destination_routing = dst_addr.routing_with(key);
 
                 let wrapped_message = WrappedMessage { message: message.clone() };
                 if self
@@ -128,7 +127,7 @@ impl BlockBuilder {
                     .map_err(|e| anyhow::format_err!("Failed to add msg to out msg descr: {e}"))?;
             }
         }
-        let mut active_destinations = HashSet::<AccountAddress>::new();
+        let mut active_destinations = HashSet::<AccountIdentifier>::new();
         let mut active_ext_threads = VecDeque::new();
         loop {
             if active_ext_threads.len() < self.parallelization_level {
@@ -136,11 +135,13 @@ impl BlockBuilder {
                     if active_ext_threads.len() == self.parallelization_level {
                         break;
                     }
-                    if let Some(acc_id) = config_messages[0].int_dst_account_id().map(From::from) {
+                    if let Some(acc_id) =
+                        config_messages[0].int_dst_account_id().map(AccountIdentifier::from)
+                    {
                         if !active_destinations.contains(&acc_id) {
                             let msg = config_messages.remove(0); // it's safe
                             tracing::trace!(target: "builder", "Parallel config message: {:?} to {:?}", msg.hash().unwrap(), acc_id.to_hex_string());
-                            let thread = self.execute(
+                            let thread = self.execute_internal(
                                 msg,
                                 blockchain_config,
                                 &acc_id,
@@ -176,7 +177,7 @@ impl BlockBuilder {
                     let thread_result = thread_result.map_err(|_| {
                         anyhow::format_err!("Failed to execute transaction in parallel")
                     })?;
-                    let acc_id = thread_result.account_id.clone();
+                    let acc_id = thread_result.account_id;
                     tracing::trace!(target: "builder", "parallel epoch message finished dest: {}", acc_id.to_hex_string());
                     self.after_transaction(thread_result)?;
                     active_destinations.remove(&acc_id);

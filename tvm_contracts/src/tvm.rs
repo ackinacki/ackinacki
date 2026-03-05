@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use account_state::ThreadAccount;
 use serde_json::Value;
-use tvm_block::Account;
 use tvm_block::CommonMsgInfo;
 use tvm_block::ConfigParams;
 use tvm_block::CurrencyCollection;
@@ -58,12 +58,15 @@ impl Default for TvmExecutionOptions {
 impl TvmContract {
     pub fn run_get(
         &self,
-        account: &Account,
+        account: &ThreadAccount,
         function_name: &str,
         args: Option<&Value>,
     ) -> anyhow::Result<Value> {
-        let dst =
-            account.get_addr().ok_or_else(|| anyhow::anyhow!("Account has no address"))?.clone();
+        let tvm_account = tvm_block::Account::try_from(account)?;
+        let dst = tvm_account
+            .get_addr()
+            .ok_or_else(|| anyhow::anyhow!("Account has no address"))?
+            .clone();
         let msg_body = self.encode_function_call(function_name, None, args, false, None, None)?;
         let msg_header = ExternalInboundMessageHeader {
             src: MsgAddressExt::with_extern(SliceData::from_raw(vec![0x55; 8], 64)).unwrap(),
@@ -74,7 +77,7 @@ impl TvmContract {
         msg.set_body(msg_body);
         let options = TvmExecutionOptions { ..Default::default() };
 
-        let (mut out_messages, _) = tvm_call_msg(account, false, &options, &msg)?;
+        let (mut out_messages, _) = tvm_call_msg(&tvm_account, false, &options, &msg)?;
 
         let decoded = self
             .decode_function_body(
@@ -95,7 +98,7 @@ impl TvmContract {
 }
 
 pub fn tvm_get(
-    account: &Account,
+    tvm_account: &tvm_block::Account,
     function_name: &str,
     args: Vec<StackItem>,
 ) -> anyhow::Result<Vec<StackItem>> {
@@ -109,21 +112,21 @@ pub fn tvm_get(
     stack_in.push(StackItem::Integer(Arc::new(IntegerData::from_u32(function_id))));
 
     let options = TvmExecutionOptions::default();
-    let (engine, _) = tvm_call(&options, account, false, stack_in)?;
+    let (engine, _) = tvm_call(&options, tvm_account, false, stack_in)?;
     Ok(engine.stack().storage.clone())
 }
 
 pub fn tvm_call_msg(
-    account: &Account,
+    tvm_account: &tvm_block::Account,
     return_updated_account: bool,
     options: &TvmExecutionOptions,
     msg: &Message,
-) -> anyhow::Result<(Vec<Message>, Option<Account>)> {
+) -> anyhow::Result<(Vec<Message>, Option<tvm_block::Account>)> {
     let msg_cell =
         msg.serialize().map_err(|err| anyhow::anyhow!("can not serialize message: {err}"))?;
 
     let mut stack = Stack::new();
-    let balance = account.balance().map_or(0, |cc| cc.grams.as_u128());
+    let balance = tvm_account.balance().map_or(0, |cc| cc.grams.as_u128());
     let function_selector = match msg.header() {
         CommonMsgInfo::IntMsgInfo(_) => tvm_vm::int!(0),
         CommonMsgInfo::ExtInMsgInfo(_) => tvm_vm::int!(-1),
@@ -136,7 +139,7 @@ pub fn tvm_call_msg(
         .push(StackItem::Slice(msg.body().unwrap_or_default())) // message body
         .push(function_selector); // function selector
 
-    let (engine, updated_account) = tvm_call(options, account, return_updated_account, stack)?;
+    let (engine, updated_account) = tvm_call(options, tvm_account, return_updated_account, stack)?;
 
     // process out actions to get out messages
     let actions_cell = engine
@@ -160,14 +163,14 @@ pub fn tvm_call_msg(
 
 pub fn tvm_call(
     options: &TvmExecutionOptions,
-    account: &Account,
+    tvm_account: &tvm_block::Account,
     return_updated_account: bool,
     stack: Stack,
-) -> anyhow::Result<(Engine, Option<Account>)> {
-    let code = account.get_code().unwrap_or_default();
-    let data = account.get_data().ok_or_else(|| anyhow::anyhow!("Account has no code"))?;
-    let addr = account.get_addr().ok_or_else(|| anyhow::anyhow!("Account has no address"))?;
-    let balance = account.balance().ok_or_else(|| anyhow::anyhow!("Account has no balance"))?;
+) -> anyhow::Result<(Engine, Option<tvm_block::Account>)> {
+    let code = tvm_account.get_code().unwrap_or_default();
+    let data = tvm_account.get_data().ok_or_else(|| anyhow::anyhow!("Account has no code"))?;
+    let addr = tvm_account.get_addr().ok_or_else(|| anyhow::anyhow!("Account has no address"))?;
+    let balance = tvm_account.balance().ok_or_else(|| anyhow::anyhow!("Account has no balance"))?;
 
     let mut ctrls = SaveList::new();
     ctrls
@@ -182,7 +185,7 @@ pub fn tvm_call(
         options.block_lt,
         options.transaction_lt,
         code.clone(),
-        account.init_code_hash(),
+        tvm_account.init_code_hash(),
     );
     sci.capabilities = options.blockchain_config.capabilites();
     ctrls
@@ -219,9 +222,9 @@ pub fn tvm_call(
         Ok(_) => match engine.get_committed_state().get_root() {
             StackItem::Cell(data) => {
                 if return_updated_account {
-                    let mut account = Account::new();
-                    account.set_data(data.clone());
-                    Ok((engine, Some(account)))
+                    let mut tvm_account = tvm_block::Account::new();
+                    tvm_account.set_data(data.clone());
+                    Ok((engine, Some(tvm_account)))
                 } else {
                     Ok((engine, None))
                 }

@@ -5,7 +5,6 @@ use async_graphql::ComplexObject;
 use async_graphql::Enum;
 use async_graphql::SimpleObject;
 use chrono::DateTime;
-use chrono::Utc;
 use faster_hex::hex_string;
 
 use crate::helpers::format_big_int;
@@ -173,7 +172,7 @@ pub struct Block {
     gen_software_version: Option<Float>,
     /// uint 32 generation time stamp.
     gen_utime: Option<Int>,
-    gen_utime_string: String,
+    gen_utime_string: Option<String>,
     gen_validator_list_hash_short: Option<Float>,
     /// uint32 global block ID.
     global_id: Option<Int>,
@@ -267,11 +266,10 @@ impl From<db::Block> for Block {
             gen_software_capabilities: block.gen_software_capabilities,
             gen_software_version: block.gen_software_version.to_float(),
             gen_utime: block.gen_utime.to_int(),
-            gen_utime_string: {
-                let dt: DateTime<Utc> =
-                    DateTime::from_timestamp(block.gen_utime.unwrap(), 0).unwrap();
-                dt.format("%Y-%m-%d %H:%M:%S.%z").to_string()
-            },
+            gen_utime_string: block
+                .gen_utime
+                .and_then(|ts| DateTime::from_timestamp(ts, 0))
+                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S.%z").to_string()),
             gen_validator_list_hash_short: block.gen_validator_list_hash_short.to_float(),
             global_id: block.global_id.to_int(),
             hash: Some(block.id),
@@ -286,16 +284,12 @@ impl From<db::Block> for Block {
             out_msgs: block.out_msgs,
             prev_alt_ref,
             prev_key_block_seqno: block.prev_key_block_seqno.to_float(),
-            prev_ref: if !cfg!(feature = "store_events_only") {
-                Some(ExtBlkRef {
-                    end_lt: block.prev_ref_end_lt,
-                    file_hash: block.prev_ref_file_hash,
-                    root_hash: block.prev_ref_root_hash,
-                    seq_no: Some(block.prev_ref_seq_no.unwrap() as f64),
-                })
-            } else {
-                None
-            },
+            prev_ref: Some(ExtBlkRef {
+                end_lt: block.prev_ref_end_lt,
+                file_hash: block.prev_ref_file_hash,
+                root_hash: block.prev_ref_root_hash,
+                seq_no: block.prev_ref_seq_no.to_float(),
+            }),
             prev_vert_ref: None,
             prev_vert_alt_ref: None,
             producer_id: block.producer_id,

@@ -1,17 +1,15 @@
-use typed_builder::TypedBuilder;
-use std::sync::Arc;
-use crate::types::AckiNackiBlock;
-use crate::repository::optimistic_state::OptimisticStateImpl;
-use crate::bls::GoshBLS;
 use crate::bls::envelope::Envelope;
-
+use crate::bls::GoshBLS;
+use crate::repository::optimistic_state::OptimisticStateImpl;
+use crate::types::AckiNackiBlock;
+use std::sync::Arc;
+use typed_builder::TypedBuilder;
 
 // Clone is expensive, therefore not directly allowed
 #[derive(TypedBuilder, Getters)]
 pub struct Checkpoint {
-
     #[builder(strip_option)]
-    block: Option<Envelope<GoshBLS, AckiNackiBlock>>,
+    block: Option<Envelope<AckiNackiBlock>>,
 
     state_after_block_applied: Arc<OptimisticStateImpl>,
 
@@ -32,7 +30,6 @@ pub struct Checkpoint {
     nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
 }
 
-
 impl Checkpoint {
     // There is an assumption in place:
     // - All move calls must be executed with blocks that had
@@ -41,10 +38,7 @@ impl Checkpoint {
     // Constrain:
     // - Clone of a state is an expensive operation. So it's
     //   better to avoid it as much as possible.
-    pub fn apply(
-        self,
-        next_block: Envelope<GoshBLS, AckiNackiBlock>,
-    ) -> anyhow::Result<Self> {
+    pub fn apply(self, next_block: Envelope<AckiNackiBlock>) -> anyhow::Result<Self> {
         let Checkpoint {
             block: _,
             state_after_block_applied: mut state,

@@ -7,6 +7,8 @@ use std::collections::HashSet;
 use std::hash::RandomState;
 use std::sync::Arc;
 
+use account_state::ThreadAccount;
+use account_state::ThreadAccountsRepository;
 use database::documents_db::DocumentsDb;
 use database::serialization::AccountSerializationSet;
 use database::serialization::BlockSerializationSetFH;
@@ -17,8 +19,11 @@ use database::sqlite::ArchAccount;
 use database::sqlite::ArchBlock;
 use database::sqlite::ArchMessage;
 use database::sqlite::ArchTransaction;
+use node_types::AccountHash;
+use node_types::AccountIdentifier;
+use node_types::DAppIdentifier;
+use node_types::TransactionHash;
 use parking_lot::Mutex;
-use tvm_block::Account;
 use tvm_block::AccountBlock;
 use tvm_block::AccountStatus;
 use tvm_block::Block;
@@ -31,7 +36,6 @@ use tvm_block::MessageProcessingStatus;
 use tvm_block::MsgAddrStd;
 use tvm_block::MsgAddressInt;
 use tvm_block::Serializable;
-use tvm_block::ShardStateUnsplit;
 use tvm_block::Transaction;
 use tvm_block::TransactionProcessingStatus;
 use tvm_types::write_boc;
@@ -44,23 +48,25 @@ use tvm_types::UInt256;
 use crate::block::producer::builder::EngineTraceInfoData;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
+use crate::repository::accounts::NodeThreadAccountsRef;
+use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::types::envelope_hash::envelope_hash;
-use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
+use crate::types::BlockHeight;
 
 lazy_static::lazy_static!(
-    static ref ACCOUNT_NONE_HASH: UInt256 = Account::default().serialize().unwrap().repr_hash();
+    static ref ACCOUNT_NONE_HASH: AccountHash = ThreadAccount::default().hash();
     pub static ref MINTER_ADDRESS: MsgAddressInt =
         MsgAddressInt::AddrStd(MsgAddrStd::with_address(None, 0, [0; 32].into()));
 );
 
 pub fn reflect_block_in_db(
     archive: Arc<Mutex<dyn DocumentsDb>>,
-    envelope: Envelope<GoshBLS, AckiNackiBlock>,
+    envelope: Envelope<AckiNackiBlock>,
     raw_block: Option<Vec<u8>>,
-    shard_state: Arc<ShardStateUnsplit>,
+    shard_state: &NodeThreadAccountsRef,
     transaction_traces: &mut HashMap<UInt256, Vec<EngineTraceInfoData>, RandomState>,
+    thread_accounts_repository: &NodeThreadAccountsRepository,
 ) -> anyhow::Result<()> {
     let now_all = std::time::Instant::now();
 
@@ -78,19 +84,16 @@ pub fn reflect_block_in_db(
         block.read_extra().map_err(|e| anyhow::format_err!("Failed to read block extra: {e}"))?;
     let info =
         block.read_info().map_err(|e| anyhow::format_err!("Failed to read block info: {e}"))?;
-    let block_index = block_index(block)?;
+    let block_index = block_index(block, envelope.data().common_section().block_height())?;
     let workchain_id = info.shard().workchain_id();
-    let shard_accounts = shard_state
-        .read_accounts()
-        .map_err(|e| anyhow::format_err!("Failed to read block accounts: {e}"))?;
 
     // Prepare sorted tvm_block transactions and addresses of changed accounts
-    let mut changed_acc = HashSet::<AccountAddress>::new();
-    let mut deleted_acc = HashSet::<AccountAddress>::new();
-    let mut acc_last_trans_chain_order = HashMap::<AccountAddress, _>::new();
+    let mut changed_acc = HashSet::<AccountIdentifier>::new();
+    let mut deleted_acc = HashSet::<AccountIdentifier>::new();
+    let mut acc_last_trans_chain_order = HashMap::<AccountIdentifier, _>::new();
     let now = std::time::Instant::now();
     let mut tr_count = 0;
-    let mut transactions = BTreeMap::<(u64, AccountAddress), _>::new();
+    let mut transactions = BTreeMap::<(u64, AccountIdentifier), _>::new();
     block_extra
         .read_account_blocks()
         .map_err(|e| anyhow::format_err!("Failed to read account blocks: {e}"))?
@@ -98,13 +101,13 @@ pub fn reflect_block_in_db(
             // extract ids of changed accounts
             let state_upd = account_block.read_state_update()?;
             let mut check_account_existed = false;
-            if state_upd.new_hash == *ACCOUNT_NONE_HASH {
+            if AccountHash::from(state_upd.new_hash) == *ACCOUNT_NONE_HASH {
                 tracing::trace!(target: "database",
                     "reflect_block_in_db: deleted acc: {}",
                     account_block.account_id().to_hex_string()
                 );
                 deleted_acc.insert(account_block.account_id().clone().into());
-                if state_upd.old_hash == *ACCOUNT_NONE_HASH {
+                if AccountHash::from(state_upd.old_hash) == *ACCOUNT_NONE_HASH {
                     check_account_existed = true;
                 }
             } else {
@@ -205,35 +208,31 @@ pub fn reflect_block_in_db(
     let mut account_docs = vec![];
     for account_id in changed_acc.iter() {
         tracing::trace!(target: "database", "reflect_block_in_db: prepare account: {}", account_id.to_hex_string());
-        let acc = shard_accounts
-            .account(&account_id.into())
-            .map_err(|e| anyhow::format_err!("Failed to read account: {e}"))?;
-
-        // TODO remove this workaround after implementing state parsing in the BM
-        if acc.is_none() {
-            tracing::warn!("Block and shard state mismatch: state doesn't contain changed account");
+        let Some(shard_acc) =
+            thread_accounts_repository.state_account(shard_state, &account_id.dapp_originator())?
+        else {
+            // TODO remove this workaround after implementing state parsing in the BM
+            tracing::error!(
+                "Block and shard state mismatch: state doesn't contain changed account"
+            );
             continue;
-        }
+        };
 
-        let shard_acc = acc.unwrap();
-        let last_trans_hash = shard_acc.last_trans_hash().clone();
-        let acc = shard_acc
-            .read_account()
-            .map_err(|e| anyhow::format_err!("Failed to read account: {e}"))?
-            .as_struct()
-            .map_err(|e| anyhow::format_err!("Failed to read account struct: {e}"))?;
+        let last_trans_hash = shard_acc.last_trans_hash();
+        let acc = shard_acc.account()?;
+        let tvm_acc = tvm_block::Account::try_from(&acc)?;
 
-        if acc.get_addr().is_some() {
+        if tvm_acc.get_addr().is_some() {
             let prepared_account = prepare_account_archive_struct(
-                acc.clone(),
+                acc,
                 None,
                 acc_last_trans_chain_order.remove(account_id),
                 last_trans_hash,
-                shard_acc.get_dapp_id().cloned(),
+                shard_acc.get_dapp_id(),
             )?;
             account_docs.push(prepared_account);
         } else {
-            tracing::debug!("account does not have an address: {acc:?}");
+            tracing::debug!("account does not have an address: {tvm_acc:?}");
         }
     }
 
@@ -425,15 +424,19 @@ pub(crate) fn prepare_transaction_archive_struct(
 }
 
 pub(crate) fn prepare_account_archive_struct(
-    account: Account,
-    prev_account_state: Option<Account>,
+    account: ThreadAccount,
+    prev_account_state: Option<ThreadAccount>,
     last_trans_chain_order: Option<String>,
-    last_trans_hash: UInt256,
-    dapp_id: Option<UInt256>,
+    last_trans_hash: TransactionHash,
+    dapp_id: Option<DAppIdentifier>,
 ) -> anyhow::Result<ArchAccount> {
-    let boc = account.write_to_bytes().map_err(|e| anyhow::format_err!("{e}"))?;
+    let boc = account.write_bytes().map_err(|e| anyhow::format_err!("{e}"))?;
 
-    let prev_code_hash = prev_account_state.and_then(|account| account.get_code_hash());
+    let prev_code_hash = if let Some(prev_account_state) = prev_account_state {
+        prev_account_state.code_hash()?
+    } else {
+        None
+    };
     let set = AccountSerializationSet {
         account: account.clone(),
         prev_code_hash,
@@ -455,10 +458,14 @@ pub(crate) fn prepare_account_archive_struct(
 pub(crate) fn prepare_deleted_account_archive_struct(
     account_id: AccountId,
     workchain_id: i32,
-    prev_account_state: Option<Account>,
+    prev_account_state: Option<ThreadAccount>,
     last_trans_chain_order: Option<String>,
 ) -> anyhow::Result<ArchAccount> {
-    let prev_code_hash = prev_account_state.and_then(|account| account.get_code_hash());
+    let prev_code_hash = if let Some(prev_account_state) = prev_account_state {
+        prev_account_state.code_hash()?
+    } else {
+        None
+    };
     let set = DeletedAccountSerializationSet { account_id, workchain_id, prev_code_hash };
 
     let mut set: ArchAccount = set.into();
@@ -470,7 +477,7 @@ pub(crate) fn prepare_deleted_account_archive_struct(
 }
 
 pub(crate) fn prepare_block_archive_struct(
-    envelope: Envelope<GoshBLS, AckiNackiBlock>,
+    envelope: Envelope<AckiNackiBlock>,
     block_root: &Cell,
     boc: &[u8],
     file_hash: &UInt256,
@@ -493,10 +500,10 @@ pub(crate) fn prepare_block_archive_struct(
     set.signature_occurrences = Some(bincode::serialize(&envelope.clone_signature_occurrences())?);
     set.share_state_resource_address =
         envelope.data().directives().share_state_resources().clone().map(|v| format!("{v:?}"));
-    let common_section = envelope.data().get_common_section();
-    set.producer_id = Some(common_section.producer_id.to_string());
-    set.thread_id = Some(hex::encode(common_section.thread_id));
-    set.height = common_section.block_height.height().to_be_bytes();
+    let common_section = envelope.data().common_section();
+    set.producer_id = Some(common_section.producer_id().to_string());
+    set.thread_id = Some(hex::encode(common_section.thread_id()));
+    set.height = common_section.block_height().height().to_be_bytes();
     set.envelope_hash = envelope_hash(&envelope).0;
 
     let block_info = block.read_info().map_err(|e| anyhow::format_err!("{e}"))?;
@@ -545,20 +552,86 @@ pub(crate) fn prepare_block_archive_struct(
     Ok(set)
 }
 
-pub(crate) fn block_index(block: &Block) -> anyhow::Result<String> {
+// block-index = block-timestamp-in-seconds + placeholder-for-future-purposes + thread_id + height
+// Each value should be converted to hex string and prefixed with <string size -1>.
+// For example:
+// 7698320d000670000000000000000000000000000000000000000000000000000000000000000000061d4b1c0, where
+// 7698320d0 (8-length of  timestamp, timestamp value = 1770201296 or Wednesday, 4 February 2026 10:34:56
+// 00 - placeholder value for future usage with value 0 and length=1-1=0
+// 6700000000000000000000000000000000000000000000000000000000000000000000 - thread 00000000000000000000000000000000000000000000000000000000000000000000 , length 68-1=67
+// 61d4b1c0 - height=30716352, length 7-1=6
+pub(crate) fn block_index(block: &Block, block_height: &BlockHeight) -> anyhow::Result<String> {
     let info =
         block.read_info().map_err(|e| anyhow::format_err!("Failed to read block info: {e}"))?;
     let gen_utime: u32 = info.gen_utime().into();
-    let block_index = u64_to_string(gen_utime as u64);
-    let placeholder = "00";
-    let thread_prefix = u64_to_string(info.shard().shard_prefix_with_tag().reverse_bits());
-    let thread_seq_no = u64_to_string(info.seq_no() as u64);
+    let timestamp = format!("{gen_utime:x}");
+    let placeholder = "0";
+    let thread_id = format!("{:x}", block_height.thread_identifier());
+    let height = format!("{:x}", block_height.height());
+    let mut index = String::with_capacity(
+        timestamp.len() + placeholder.len() + thread_id.len() + height.len() + 8,
+    );
+    append_prefixed_hex_with_decimal_len(&mut index, &timestamp);
+    append_prefixed_hex_with_decimal_len(&mut index, placeholder);
+    append_prefixed_hex_with_decimal_len(&mut index, &thread_id);
+    append_prefixed_hex_with_decimal_len(&mut index, &height);
 
-    Ok(block_index + placeholder + &thread_prefix + &thread_seq_no)
+    Ok(index)
 }
 
 pub fn u64_to_string(value: u64) -> String {
     let mut string = format!("{value:x}");
     string.insert_str(0, &format!("{:x}", string.len() - 1));
     string
+}
+
+#[inline]
+fn append_prefixed_hex_with_decimal_len(buffer: &mut String, hex_value: &str) {
+    use std::fmt::Write;
+    let _ = write!(buffer, "{}", hex_value.len() - 1);
+    buffer.push_str(hex_value);
+}
+
+#[cfg(test)]
+mod tests {
+    use node_types::ThreadIdentifier;
+    use tvm_block::BlockExtra;
+    use tvm_block::BlockInfo;
+    use tvm_block::MerkleUpdate;
+    use tvm_block::ValueFlow;
+
+    use super::block_index;
+    use super::Block;
+    use crate::types::BlockHeight;
+
+    fn make_test_block(gen_utime_ms: u64, height: u32) -> Block {
+        let mut info = BlockInfo::new();
+        info.set_seq_no(height).unwrap();
+        info.set_gen_utime_ms(gen_utime_ms);
+
+        Block::with_params(
+            0,
+            info,
+            ValueFlow::default(),
+            MerkleUpdate::default(),
+            BlockExtra::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn block_index_format() {
+        let gen_utime_ms = 1_770_201_296_000_u64;
+        let height = 30_716_352_u64;
+        let block = make_test_block(gen_utime_ms, height as u32);
+        let block_height = BlockHeight::builder()
+            .thread_identifier(ThreadIdentifier::default())
+            .height(height)
+            .build();
+
+        let result = block_index(&block, &block_height).unwrap();
+        let expected = "7698320d000670000000000000000000000000000000000000000000000000000000000000000000061d4b1c0".to_owned();
+
+        assert_eq!(result, expected);
+    }
 }

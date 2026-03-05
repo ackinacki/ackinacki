@@ -4,6 +4,7 @@ use std::sync::Arc;
 use message_router::process_ext_messages;
 use reqwest::Client;
 use salvo::conn::TcpListener;
+use salvo::logging::Logger;
 use salvo::prelude::*;
 use salvo::Listener;
 use salvo::Router;
@@ -22,6 +23,8 @@ pub async fn run(
     let server = Server::new(acceptor);
     let router = Router::new()
         .path("v2")
+        .hoop(Logger::new())
+        .hoop(log_traceparent)
         .hoop(affix_state::inject(app_state))
         .push(Router::with_path("account").get(boc_by_address))
         .push(Router::with_path("readiness").get(readiness))
@@ -60,6 +63,25 @@ async fn ext_message(req: &mut Request, depot: &mut Depot, res: &mut Response) {
             tracing::error!("Failed to process external messages: {}", e);
             render_error(res, StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
         });
+}
+
+#[handler]
+async fn log_traceparent(
+    req: &mut Request,
+    res: &mut Response,
+    depot: &mut Depot,
+    ctrl: &mut FlowCtrl,
+) {
+    if let Some(traceparent) = req.headers().get("traceparent") {
+        match traceparent.to_str() {
+            Ok(value) => tracing::debug!(id = value, "Incoming request traceparent"),
+            Err(_) => {
+                tracing::debug!(id = ?traceparent, "Incoming request traceparent (non-UTF8)")
+            }
+        }
+    }
+
+    ctrl.call_next(req, depot, res).await;
 }
 
 #[handler]

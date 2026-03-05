@@ -1,14 +1,13 @@
 use std::sync::Arc;
 
+use node_types::AccountIdentifier;
+use node_types::AccountRouting;
+use node_types::DAppIdentifier;
 use tvm_block::HashmapAugType;
 
 use crate::bitmask::mask::Bitmask;
 use crate::multithreading::load_balancing_service::AckiNackiBlock;
 use crate::multithreading::load_balancing_service::OptimisticState;
-use crate::types::direct_bit_access_operations::DirectBitAccess;
-use crate::types::AccountAddress;
-use crate::types::AccountRouting;
-use crate::types::DAppIdentifier;
 
 #[cfg(feature = "allow-dappid-thread-split")]
 const MAX_ROUTE_PART_SPLIT: usize = 2;
@@ -41,7 +40,7 @@ impl InThreadAccountsLoad {
         current_bitmask: &Bitmask<AccountRouting>,
     ) -> Option<Bitmask<AccountRouting>> {
         let meaningful_mask_bits: [[bool; 256]; 2] =
-            current_bitmask.meaningful_mask_bits().clone().into();
+            (*current_bitmask.meaningful_mask_bits()).into();
         let mut best_proposed = None;
         let mut best_proposed_distance = None;
         for outer in 0..MAX_ROUTE_PART_SPLIT {
@@ -67,10 +66,10 @@ impl InThreadAccountsLoad {
         }
         best_proposed?;
         let split_at_index = best_proposed.unwrap();
-        let mut new_meaningful_mask_bits = current_bitmask.meaningful_mask_bits().clone();
-        let mut new_mask_bits = current_bitmask.mask_bits().clone();
-        new_meaningful_mask_bits.set_bit_value(split_at_index, true);
-        new_mask_bits.set_bit_value(split_at_index, true);
+        let mut new_meaningful_mask_bits = *current_bitmask.meaningful_mask_bits();
+        let mut new_mask_bits = *current_bitmask.mask_bits();
+        new_meaningful_mask_bits.set_bit(split_at_index);
+        new_mask_bits.set_bit(split_at_index);
         Some(
             Bitmask::builder()
                 .mask_bits(new_mask_bits)
@@ -100,18 +99,15 @@ impl InThreadAccountsLoad {
                 let Some(source) = message.get_int_src_account_id() else {
                     return Ok(true);
                 };
-                let source: AccountAddress = source.into();
-                let dapp_id = DAppIdentifier(
-                    message
-                        .int_header()
-                        .and_then(|hdr| hdr.src_dapp_id.clone())
-                        .map(AccountAddress)
-                        .unwrap_or(source.clone()),
-                );
+                let source: AccountIdentifier = source.into();
+                let dapp_id = message
+                    .int_header()
+                    .and_then(|hdr| hdr.src_dapp_id.clone())
+                    .map(DAppIdentifier::from)
+                    .unwrap_or_else(|| source.use_as_dapp_id());
 
                 // Calculate messages from existing dapps only.
-                let route = AccountRouting::from((Some(dapp_id), source));
-                let bits: [[bool; 256]; 2] = route.into();
+                let bits: [[bool; 256]; 2] = source.routing_with(dapp_id).into();
                 for outer in 0..bits.len() {
                     for inner in 0..bits[outer].len() {
                         if !bits[outer][inner] {

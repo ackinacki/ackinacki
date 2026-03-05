@@ -7,6 +7,7 @@ use http_server::ApiBk;
 use http_server::ApiBkStatus;
 use http_server::ApiPubKey;
 use http_server::ApiUInt256;
+use node_types::AccountIdentifier;
 use num_bigint::BigUint;
 
 use super::BlockKeeperData;
@@ -14,7 +15,6 @@ use super::BlockKeeperSet;
 use super::BlockKeeperStatus;
 use crate::bls::gosh_bls::PubKey;
 use crate::node::SignerIndex;
-use crate::types::AccountAddress;
 use crate::versioning::ProtocolVersionSupport;
 
 impl From<ApiBk> for BlockKeeperData {
@@ -26,7 +26,7 @@ impl From<ApiBk> for BlockKeeperData {
             status: value.status.into(),
             address: value.address,
             stake: BigUint::from_str(&value.stake).unwrap_or_default(),
-            owner_address: AccountAddress(value.owner_address.0.into()),
+            owner_address: AccountIdentifier::new(value.owner_address.0),
             signer_index: value.signer_index as SignerIndex,
             owner_pubkey: value.owner_pubkey.0,
             protocol_support: ProtocolVersionSupport::from_str(&value.protocol_version_support)
@@ -82,7 +82,7 @@ impl From<BlockKeeperData> for ApiBk {
             status: value.status.into(),
             address: value.address,
             stake: value.stake.to_string(),
-            owner_address: ApiUInt256(*value.owner_address.0.as_array()),
+            owner_address: ApiUInt256(*value.owner_address.as_array()),
             signer_index: value.signer_index as usize,
             owner_pubkey: ApiUInt256(value.owner_pubkey),
             ttl_seq_no: None,

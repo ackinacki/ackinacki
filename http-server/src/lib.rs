@@ -5,7 +5,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-// pub use api::ext_messages::token::EXT_MESSAGE_AUTH_REQUIRED;
 pub use api::ext_messages::ExtMsgError;
 pub use api::ext_messages::ExtMsgErrorData;
 pub use api::ext_messages::ExtMsgFeedback;
@@ -27,6 +26,7 @@ use ext_messages_auth::auth::Token;
 use ext_messages_auth::read_keys_from_file;
 use ext_messages_auth::KeyPair;
 use metrics::RoutingMetrics;
+use node_types::ThreadIdentifier;
 use rcgen::CertifiedKey;
 use salvo::conn::rustls::Keycert;
 use salvo::conn::rustls::RustlsConfig;
@@ -34,11 +34,9 @@ use salvo::prelude::*;
 use telemetry_utils::mpsc::InstrumentedSender;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tvm_block::Message;
 
 use crate::api::ext_messages::render_error;
-use crate::api::ext_messages::ExternalMessage;
-use crate::api::ext_messages::IncomingExternalMessage;
+pub use crate::api::ext_messages::NotQueuedExtMessage;
 use crate::api::ApiBkSetSnapshot;
 use crate::api::BkSetSummarySnapshot;
 
@@ -51,14 +49,14 @@ const PASS_UNAUTHORIZED_KEY: &str = "pass_unauthorized";
 const AUTHORIZED_BY_BK_KEY: &str = "authorized_by_bk_token";
 
 #[derive(Clone)]
-pub struct WebServer<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter> {
+pub struct WebServer<TBPResolver, TSeqnoGetter> {
     pub addr: String,
     pub local_storage_dir: PathBuf,
-    pub incoming_message_sender: InstrumentedSender<(TMessage, oneshot::Sender<ExtMsgFeedback>)>,
+    pub incoming_message_sender:
+        InstrumentedSender<(NotQueuedExtMessage, oneshot::Sender<ExtMsgFeedback>)>,
     pub account_request_sender: mpsc::Sender<AccountRequest>,
     pub bk_set_summary: Arc<parking_lot::RwLock<BkSetSummarySnapshot>>,
     pub bk_set: Arc<parking_lot::RwLock<ApiBkSetSnapshot>>,
-    pub into_external_message: TMsgConverter,
     pub bp_resolver: TBPResolver,
     pub get_default_thread_seqno: TSeqnoGetter,
     pub owner_wallet_pubkey: Option<String>,
@@ -66,22 +64,20 @@ pub struct WebServer<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter> {
     pub metrics: Option<RoutingMetrics>,
 }
 
-impl<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
-    WebServer<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
+impl<TBPResolver, TSeqnoGetter> WebServer<TBPResolver, TSeqnoGetter>
 where
-    TMessage: Send + Sync + Clone + 'static + std::fmt::Debug,
-    TMsgConverter:
-        Send + Sync + Clone + 'static + Fn(Message, [u8; 34]) -> anyhow::Result<TMessage>,
-    TBPResolver: Send + Sync + Clone + 'static + FnMut([u8; 34]) -> ResolvingResult,
+    TBPResolver: Send + Sync + Clone + 'static + FnMut(ThreadIdentifier) -> ResolvingResult,
     TSeqnoGetter: Send + Sync + Clone + 'static + Fn() -> anyhow::Result<u32>,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         addr: impl AsRef<str>,
         local_storage_dir: impl AsRef<Path>,
-        incoming_message_sender: InstrumentedSender<(TMessage, oneshot::Sender<ExtMsgFeedback>)>,
+        incoming_message_sender: InstrumentedSender<(
+            NotQueuedExtMessage,
+            oneshot::Sender<ExtMsgFeedback>,
+        )>,
         account_request_sender: mpsc::Sender<AccountRequest>,
-        into_external_message: TMsgConverter,
         bp_resolver: TBPResolver,
         get_default_thread_seqno: TSeqnoGetter,
         owner_wallet_pubkey: Option<String>,
@@ -95,7 +91,6 @@ where
             local_storage_dir: local_storage_dir.as_ref().to_path_buf(),
             incoming_message_sender,
             account_request_sender,
-            into_external_message,
             bp_resolver,
             bk_set_summary: Arc::new(parking_lot::RwLock::new(BkSetSummarySnapshot::new())),
             bk_set: Arc::new(parking_lot::RwLock::new(ApiBkSetSnapshot::new())),
@@ -115,46 +110,25 @@ where
             .hoop(report_block_request)
             .get(StaticDir::new([&self.local_storage_dir]).auto_list(true));
 
-        let bk_set_router = Router::with_path("bk_set").get(api::BkSetSummaryHandler::<
-            TMessage,
-            TMsgConverter,
-            TBPResolver,
-            TSeqnoGetter,
-        >::new());
+        let bk_set_router = Router::with_path("bk_set")
+            .get(api::BkSetSummaryHandler::<TBPResolver, TSeqnoGetter>::new());
 
-        let bk_set_update_router = Router::with_path("bk_set_update").get(api::ApiBkSetHandler::<
-            TMessage,
-            TMsgConverter,
-            TBPResolver,
-            TSeqnoGetter,
-        >::new());
+        let bk_set_update_router = Router::with_path("bk_set_update")
+            .get(api::ApiBkSetHandler::<TBPResolver, TSeqnoGetter>::new());
 
         let router_ext_messages = Router::with_path("messages")
             .hoop(pass_unauthorized)
             .hoop(auth)
             .hoop(validate_ext_message)
-            .post(api::ext_messages::v2::ExtMessagesHandler::<
-                TMessage,
-                TMsgConverter,
-                TBPResolver,
-                TSeqnoGetter,
-            >::new());
+            .post(api::ext_messages::v2::ExtMessagesHandler::<TBPResolver, TSeqnoGetter>::new());
 
-        let router_account =
-            Router::with_path("account").hoop(auth).get(api::BocByAddressHandler::<
-                TMessage,
-                TMsgConverter,
-                TBPResolver,
-                TSeqnoGetter,
-            >::new());
+        let router_account = Router::with_path("account")
+            .hoop(auth)
+            .get(api::BocByAddressHandler::<TBPResolver, TSeqnoGetter>::new());
 
-        let router_seqno =
-            Router::with_path("default_thread_seqno").hoop(auth).get(api::LastSeqnoHandler::<
-                TMessage,
-                TMsgConverter,
-                TBPResolver,
-                TSeqnoGetter,
-            >::new());
+        let router_seqno = Router::with_path("default_thread_seqno")
+            .hoop(auth)
+            .get(api::LastSeqnoHandler::<TBPResolver, TSeqnoGetter>::new());
 
         // Routes:
         // v2/bk_set
@@ -163,6 +137,7 @@ where
         // v2/default_thread_seqno
         Router::new()
             .hoop(Logger::new())
+            .hoop(log_traceparent)
             .hoop(affix_state::inject(self.clone()))
             .hoop(affix_state::inject(self.metrics.clone()))
             .push(
@@ -256,6 +231,25 @@ pub async fn report_block_request(
 }
 
 #[handler]
+pub async fn log_traceparent(
+    req: &mut Request,
+    res: &mut Response,
+    depot: &mut Depot,
+    ctrl: &mut FlowCtrl,
+) {
+    if let Some(traceparent) = req.headers().get("traceparent") {
+        match traceparent.to_str() {
+            Ok(value) => tracing::debug!(id = value, "Incoming request traceparent"),
+            Err(_) => {
+                tracing::debug!(id = ?traceparent, "Incoming request traceparent (non-UTF8)")
+            }
+        }
+    }
+
+    ctrl.call_next(req, depot, res).await;
+}
+
+#[handler]
 pub async fn pass_unauthorized(
     req: &mut Request,
     res: &mut Response,
@@ -299,23 +293,45 @@ async fn validate_ext_message(
     depot: &mut Depot,
     ctrl: &mut FlowCtrl,
 ) {
-    let Ok(incomings) = req.parse_json::<Vec<IncomingExternalMessage>>().await else {
+    #[derive(serde::Deserialize, Clone)]
+    pub(crate) struct IncomingMessage {
+        id: String,
+        body: String,
+        thread_id: Option<String>,
+        ext_message_token: Option<Token>,
+        dst_dapp_id: Option<String>,
+    }
+
+    let Ok(incomings) = req.parse_json::<Vec<IncomingMessage>>().await else {
         return render_error(res, StatusCode::BAD_REQUEST, "Invalid request body", None);
     };
 
-    if incomings.is_empty() {
+    // Only the first message will be processed
+    let mut iter = incomings.into_iter();
+    let Some(first_message) = iter.next() else {
         return render_error(res, StatusCode::BAD_REQUEST, "Empty request", None);
-    }
-
-    let Ok(ext_msg): Result<ExternalMessage, _> = (&incomings[0]).try_into() else {
-        let msg = format!("Error parsing message (msg_id={:?})", incomings[0].id());
-        tracing::warn!(target: "http_server", msg);
-        return render_error(res, StatusCode::BAD_REQUEST, &msg, None);
     };
+    drop(iter);
 
-    if !ext_msg.is_dst_exists() {
-        return render_error(res, StatusCode::BAD_REQUEST, "Invalid destination", None);
-    }
+    let IncomingMessage { id, body, thread_id, ext_message_token, dst_dapp_id } = first_message;
+
+    let ext_msg = match NotQueuedExtMessage::try_new(
+        &id,
+        &body,
+        thread_id,
+        ext_message_token.clone(),
+        dst_dapp_id,
+    ) {
+        Ok(ext_message) => ext_message,
+        Err(err) => {
+            return render_error(
+                res,
+                StatusCode::BAD_REQUEST,
+                &format!("message {id}: {err}"),
+                None,
+            )
+        }
+    };
 
     depot.insert("message", ext_msg);
 

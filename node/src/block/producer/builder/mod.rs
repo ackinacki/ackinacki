@@ -7,10 +7,16 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use account_state::DurableThreadAccountsDiff;
+use account_state::ThreadAccount;
+use node_types::AccountCodeHash;
+use node_types::AccountIdentifier;
+use node_types::AccountRouting;
+use node_types::DAppIdentifier;
+use node_types::ThreadIdentifier;
 use serde::Serialize;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use thiserror::Error;
-use tvm_block::Account;
 use tvm_block::Block;
 use tvm_block::BlockInfo;
 use tvm_block::CopyleftRewards;
@@ -19,8 +25,6 @@ use tvm_block::InMsgDescr;
 use tvm_block::Message;
 use tvm_block::OutMsgDescr;
 use tvm_block::ShardAccountBlocks;
-use tvm_block::ShardAccounts;
-use tvm_block::ShardStateUnsplit;
 use tvm_block::StateInit;
 use tvm_block::Transaction;
 use tvm_types::Cell;
@@ -35,17 +39,19 @@ use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::repository::accounts::AccountsRepository;
+use crate::repository::accounts::NodeThreadAccountsBuilder;
+use crate::repository::accounts::NodeThreadAccountsRef;
+use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::types::account::WrappedAccount;
-use crate::types::AccountAddress;
-use crate::types::AccountRouting;
-use crate::types::DAppIdentifier;
-use crate::types::ThreadIdentifier;
 
 pub mod build_actions;
 mod engine_version;
 pub use engine_version::get_engine_version;
+
+use crate::external_messages::ExtMessageDst;
+
 pub mod special_messages;
 mod test;
 pub mod trace;
@@ -63,19 +69,21 @@ pub struct PreparedBlock {
     pub cross_thread_ref_data: CrossThreadRefData,
     #[cfg(feature = "monitor-accounts-number")]
     pub accounts_number_diff: i64,
+    pub durable_state_update: DurableThreadAccountsDiff,
 }
 
 pub struct ThreadResult {
     pub transaction: Transaction,
     pub lt: u64,
     // pub trace: Option<Vec<EngineTraceInfoData>>,
-    pub account_root: Cell,
-    pub account_id: AccountAddress,
+    pub account_root: ThreadAccount,
+    pub account_id: AccountIdentifier,
     pub minted_shell: i128,
     pub initial_dapp_id: Option<DAppIdentifier>,
-    pub initial_code_hash: Option<UInt256>,
+    pub initial_code_hash: Option<AccountCodeHash>,
     // Note: initial_account field is initialized only for epoch contracts
-    pub initial_account: Option<Account>,
+    pub initial_account: Option<ThreadAccount>,
+    pub ext_msg_dst: Option<ExtMessageDst>,
     pub in_msg_is_ext: bool,
     pub in_msg: Message,
 }
@@ -107,9 +115,8 @@ type MessageIndex = u128;
 #[derive(TypedBuilder)]
 pub struct BlockBuilder {
     pub(crate) thread_id: ThreadIdentifier,
-    pub(crate) shard_state: Arc<ShardStateUnsplit>,
-    pub(crate) accounts: ShardAccounts,
-    pub(crate) initial_accounts: ShardAccounts,
+    pub(crate) initial_accounts: NodeThreadAccountsRef,
+    pub(crate) accounts_builder: NodeThreadAccountsBuilder,
     pub(crate) block_info: BlockInfo,
     pub(crate) rand_seed: UInt256,
     // Mapping of messages generated while execution
@@ -149,20 +156,21 @@ pub struct BlockBuilder {
     #[builder(default)]
     pub(crate) dapp_minted_map: HashMap<DAppIdentifier, i128>,
     pub(crate) accounts_repository: AccountsRepository,
+    pub(crate) thread_accounts_repository: NodeThreadAccountsRepository,
 
     // part used to update local state
     #[builder(default)]
-    pub(crate) consumed_internal_messages: HashMap<AccountAddress, HashSet<MessageIdentifier>>,
+    pub(crate) consumed_internal_messages: HashMap<AccountIdentifier, HashSet<MessageIdentifier>>,
     #[builder(default)]
     pub(crate) produced_internal_messages_to_the_current_thread:
-        HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+        HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
 
     // part to create cross thread ref data
     pub(crate) produced_internal_messages_to_other_threads:
         HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     #[builder(default)]
     pub(crate) accounts_that_changed_their_dapp_id:
-        HashMap<AccountAddress, Vec<(AccountRouting, Option<WrappedAccount>)>>,
+        HashMap<AccountIdentifier, Vec<(AccountRouting, Option<WrappedAccount>)>>,
     metrics: Option<BlockProductionMetrics>,
 
     // cached resources used for wasm execution
@@ -170,6 +178,11 @@ pub struct BlockBuilder {
 
     #[cfg(feature = "monitor-accounts-number")]
     pub(crate) accounts_number_diff: i64,
+
+    pub(crate) is_block_of_retired_version: bool,
+    #[cfg(feature = "usdc_name_repair")]
+    pub(crate) usdc_name_repaired:
+        std::sync::Arc<parking_lot::Mutex<Option<crate::types::BlockSeqNo>>>,
 
     is_verifier: bool,
 }

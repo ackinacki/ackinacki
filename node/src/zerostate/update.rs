@@ -3,14 +3,20 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use account_state::ThreadAccount;
+use account_state::ThreadAccountsBuilder;
+use account_state::ThreadAccountsRepository;
+use account_state::ThreadStateAccount;
+use node_types::AccountIdentifier;
+use node_types::DAppIdentifier;
+use node_types::ThreadIdentifier;
+use node_types::TransactionHash;
 use num_bigint::BigUint;
-use tvm_block::Account;
 use tvm_block::AccountStorage;
 use tvm_block::CurrencyCollection;
 use tvm_block::Deserializable;
@@ -21,7 +27,6 @@ use tvm_block::InternalMessageHeader;
 use tvm_block::Message;
 use tvm_block::MsgAddressInt;
 use tvm_block::Serializable;
-use tvm_block::ShardAccount;
 use tvm_block::StateInit;
 use tvm_block::StorageInfo;
 use tvm_client::boc::set_code_salt_cell;
@@ -36,22 +41,24 @@ use crate::bls::gosh_bls::PubKey;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::node::SignerIndex;
+use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::storage::MessageDurableStorage;
 use crate::types::thread_message_queue::ThreadMessageQueueState;
-use crate::types::ThreadIdentifier;
 use crate::zerostate::ZeroState;
 
 const ZERO_ACCOUNT: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 impl ZeroState {
+    #[allow(clippy::too_many_arguments)]
     pub fn add_account<P: AsRef<Path>>(
         &mut self,
         path: P,
         address: Option<String>,
-        dapp_id: Option<UInt256>,
+        dapp_id: Option<DAppIdentifier>,
         balance: Option<CurrencyCollection>,
         salt: Option<Cell>,
         thread_identifier: &ThreadIdentifier,
+        thread_accounts_repository: &NodeThreadAccountsRepository,
     ) -> anyhow::Result<String> {
         // Load state init
         let mut state_init = StateInit::construct_from_file(path.as_ref()).map_err(|e| {
@@ -67,14 +74,15 @@ impl ZeroState {
 
         // Generate account helper structs and account itself
         let account_id = if let Some(address) = address {
-            UInt256::from_str(&address)
+            AccountIdentifier::from_str(&address)
                 .map_err(|e| anyhow::format_err!("Failed to convert address to UInt256: {e}"))?
         } else {
             state_init
                 .hash()
                 .map_err(|e| anyhow::format_err!("Failed to calculate state init hash: {e}"))?
+                .into()
         };
-        let address = MsgAddressInt::with_standart(None, 0, AccountId::from(account_id.clone()))
+        let address = MsgAddressInt::with_standart(None, 0, AccountId::from(account_id))
             .map_err(|e| anyhow::format_err!("Failed to construct msg address: {e}"))?;
         let storage = AccountStorage::active_by_init_code_hash(
             0,
@@ -84,24 +92,22 @@ impl ZeroState {
         );
         let last_paid = SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as u32;
         let storage_stat = StorageInfo::with_values(last_paid, None);
-        let mut account = Account::with_storage(&address, &storage_stat, &storage);
+        let mut tvm_account = tvm_block::Account::with_storage(&address, &storage_stat, &storage);
         // We can't create valid storage stat, it should be updated internally
-        account
+        tvm_account
             .update_storage_stat()
             .map_err(|e| anyhow::format_err!("Failed to update account storage stat: {e}"))?;
         if let Some(balance) = balance {
-            account.set_balance(balance);
+            tvm_account.set_balance(balance);
         }
 
         let shard_account =
-            ShardAccount::with_params(&account, UInt256::default(), 0, dapp_id.clone())
-                .map_err(|e| anyhow::format_err!("Failed to create shard account: {e}"))?;
-        // Add account to zerostate
-        let mut shard_state = self.get_shard_state(thread_identifier)?.deref().clone();
-        shard_state
-            .insert_account(&account_id, &shard_account)
-            .map_err(|e| anyhow::format_err!("Failed to insert account to shard state: {e}"))?;
-        self.state_mut(thread_identifier)?.set_shard_state(Arc::new(shard_state));
+            ThreadStateAccount::new(tvm_account.try_into()?, TransactionHash::ZERO, 0, dapp_id)?;
+        // Add an account to zerostate
+        let mut shard_state =
+            thread_accounts_repository.state_builder(&self.get_shard_state(thread_identifier)?);
+        shard_state.insert_account(&account_id.routing_with(DAppIdentifier::ZERO), &shard_account);
+        self.state_mut(thread_identifier)?.set_shard_state(shard_state.build(None)?.new_state);
         #[cfg(feature = "monitor-accounts-number")]
         {
             let state = self.state_mut(thread_identifier)?;
@@ -113,24 +119,19 @@ impl ZeroState {
     pub fn add_account_to_zerostate(
         &mut self,
         thread_id: &ThreadIdentifier,
-        account: Account,
-        dapp_id: UInt256,
+        account: ThreadAccount,
+        dapp_id: DAppIdentifier,
+        thread_accounts_repository: &NodeThreadAccountsRepository,
     ) -> anyhow::Result<()> {
-        let account_id = account
-            .get_id()
-            .ok_or(anyhow::format_err!("Account does not have account id set"))?
-            .to_hex_string();
-        let account_id = UInt256::from_str(&account_id)
-            .map_err(|e| anyhow::format_err!("failed to convert account_id {e}"))?;
+        let account_id =
+            account.id().ok_or(anyhow::format_err!("Account does not have account id set"))?;
         let shard_account =
-            ShardAccount::with_params(&account, UInt256::default(), 0, Some(dapp_id))
-                .map_err(|e| anyhow::format_err!("Failed to create shard account: {e}"))?;
-        // Add account to zerostate
-        let mut shard_state = self.get_shard_state(thread_id)?.deref().clone();
-        shard_state
-            .insert_account(&account_id, &shard_account)
-            .map_err(|e| anyhow::format_err!("Failed to insert account to shard state: {e}"))?;
-        self.state_mut(thread_id)?.set_shard_state(Arc::new(shard_state));
+            ThreadStateAccount::new(account, TransactionHash::ZERO, 0, Some(dapp_id))?;
+        // Add an account to zerostate
+        let mut shard_state =
+            thread_accounts_repository.state_builder(&self.get_shard_state(thread_id)?);
+        shard_state.insert_account(&account_id.dapp_originator(), &shard_account);
+        self.state_mut(thread_id)?.set_shard_state(shard_state.build(None)?.new_state);
         #[cfg(feature = "monitor-accounts-number")]
         {
             let state = self.state_mut(thread_id)?;
@@ -144,7 +145,7 @@ impl ZeroState {
         dest: String,
         value: Option<u128>,
         ecc: Option<ExtraCurrencyCollection>,
-        dapp_id: Option<UInt256>,
+        dapp_id: Option<DAppIdentifier>,
         thread_identifier: &ThreadIdentifier,
     ) -> anyhow::Result<()> {
         // Generate internal message header
@@ -174,7 +175,7 @@ impl ZeroState {
                 .map_err(|e| anyhow::format_err!("Failed to convert dest address: {e}"))?,
             cc,
         );
-        header.set_src_dapp_id(dapp_id);
+        header.set_src_dapp_id(dapp_id.map(From::from));
 
         // Generate internal message
         let message = Message::with_int_header(header.clone());

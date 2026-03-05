@@ -1,5 +1,6 @@
-use crate::types::BlockIdentifier;
-use crate::types::ThreadIdentifier;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
+
 use crate::types::ThreadsTable;
 
 pub trait Subscriber {

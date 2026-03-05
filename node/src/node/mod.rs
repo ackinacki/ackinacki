@@ -44,6 +44,7 @@ pub use associated_types::SignerIndex;
 pub use network_message::NetBlock;
 pub use network_message::NetworkMessage;
 pub use network_message::NodeJoiningWithLastFinalizedData;
+use node_types::BlockIdentifier;
 use services::sync::StateSyncService;
 use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
@@ -61,7 +62,6 @@ use crate::protocol::authority_switch::action_lock::Authority;
 pub use crate::protocol::authority_switch::network_message::AuthoritySwitch;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::storage::MessageDurableStorage;
-use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::types::CollectedAttestations;
 use crate::types::RndSeed;
@@ -71,6 +71,7 @@ pub mod unprocessed_blocks_collection;
 use block_state::repository::BlockStateRepository;
 use network::channel::NetBroadcastSender;
 use network::channel::NetDirectSender;
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 use shared_services::SharedServices;
 use telemetry_utils::mpsc::InstrumentedSender;
@@ -79,6 +80,7 @@ use crate::block::producer::process::TVMBlockProducerProcess;
 use crate::block::producer::ProducerService;
 use crate::bls::gosh_bls::PubKey;
 use crate::bls::gosh_bls::Secret;
+use crate::config::config_read::ConfigRead;
 use crate::external_messages::ExternalMessagesThreadState;
 use crate::helper::FINALIZATION_LOOPS_COUNTER;
 pub use crate::node::associated_types::NodeIdentifier;
@@ -88,7 +90,6 @@ use crate::node::services::block_processor::service::BlockProcessorService;
 use crate::node::services::send_attestations::AttestationSendServiceHandler;
 use crate::node::services::validation::service::ValidationServiceInterface;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
-use crate::types::ThreadIdentifier;
 
 #[allow(dead_code)]
 #[derive(TypedBuilder)]
@@ -107,17 +108,17 @@ where
     raw_block_tx: InstrumentedSender<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>,
     bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
     last_block_attestations: Arc<Mutex<CollectedAttestations>>,
-    pub received_acks: Arc<Mutex<Vec<Envelope<GoshBLS, AckData>>>>,
-    sent_acks: BTreeMap<BlockSeqNo, Envelope<GoshBLS, AckData>>,
-    pub received_nacks: Arc<Mutex<Vec<Envelope<GoshBLS, NackData>>>>,
+    pub received_acks: Arc<Mutex<Vec<Envelope<AckData>>>>,
+    sent_acks: BTreeMap<BlockSeqNo, Envelope<AckData>>,
+    pub received_nacks: Arc<Mutex<Vec<Envelope<NackData>>>>,
     config: Config,
     global_config: GlobalConfig,
     pub received_attestations: BTreeMap<BlockSeqNo, HashMap<BlockIdentifier, HashSet<SignerIndex>>>,
     block_keeper_rng: TRandomGenerator,
     producer_election_rng: TRandomGenerator,
-    attestations_to_send: BTreeMap<BlockSeqNo, Vec<Envelope<GoshBLS, AttestationData>>>,
-    ack_cache: BTreeMap<BlockSeqNo, Vec<Envelope<GoshBLS, AckData>>>,
-    nack_cache: BTreeMap<BlockSeqNo, Vec<Envelope<GoshBLS, NackData>>>,
+    attestations_to_send: BTreeMap<BlockSeqNo, Vec<Envelope<AttestationData>>>,
+    ack_cache: BTreeMap<BlockSeqNo, Vec<Envelope<AckData>>>,
+    nack_cache: BTreeMap<BlockSeqNo, Vec<Envelope<NackData>>>,
     thread_id: ThreadIdentifier,
     // Note: hack. check usage
     pub is_spawned_from_node_sync: bool,
@@ -135,12 +136,10 @@ where
     finalization_loop: std::thread::JoinHandle<()>,
     producer_service: ProducerService,
     metrics: Option<BlockProductionMetrics>,
-    external_messages: ExternalMessagesThreadState,
-
     is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
     // Channel (sender) for block requests
     blk_req_tx: Sender<BlockRequestParams>,
-    ext_msg_receiver: JoinHandle<()>,
+    ext_msg_receiver: JoinHandle<anyhow::Result<()>>, // TODO: Not used
     authority_state: Arc<Mutex<Authority>>,
     unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
     stop_result_tx: Sender<()>,
@@ -193,7 +192,7 @@ where
         bp_production_count: Arc<AtomicI32>,
         blk_req_tx: Sender<BlockRequestParams>,
         attestation_send_service: AttestationSendServiceHandler,
-        ext_msg_receiver: JoinHandle<()>,
+        ext_msg_receiver: JoinHandle<anyhow::Result<()>>,
         authority_state: Arc<Mutex<Authority>>,
         unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
         stop_result_tx: Sender<()>,
@@ -203,6 +202,7 @@ where
         self_authority_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
         save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
         node_credentials: NodeCredentials,
+        config_read: ConfigRead,
     ) -> Self {
         tracing::trace!("Start node for thread: {thread_id:?}");
         if let Some(metrics) = &metrics {
@@ -334,10 +334,10 @@ where
                 bp_production_count,
                 save_optimistic_service_sender,
                 node_credentials.clone(),
+                config_read,
             )
             .expect("Failed to start producer service"),
             metrics,
-            external_messages,
             is_state_sync_requested,
             blk_req_tx,
             attestation_send_service,

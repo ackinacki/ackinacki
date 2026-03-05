@@ -13,6 +13,7 @@ use async_graphql::Object;
 use message::MessageLoader;
 mod account;
 pub mod blockchain_api;
+pub(crate) mod events;
 
 use self::blockchain_api::BlockchainQuery;
 use self::message::Message;
@@ -84,6 +85,7 @@ impl QueryRoot {
         Some(AccountQuery { address, preloaded: None })
     }
 
+    #[graphql(deprecation = "Use Blockchain API instead")]
     async fn blocks(
         &self,
         ctx: &Context<'_>,
@@ -149,6 +151,7 @@ impl QueryRoot {
         Ok(Some(accounts))
     }
 
+    #[graphql(deprecation = "Use Blockchain API instead")]
     async fn messages(
         &self,
         ctx: &Context<'_>,
@@ -202,6 +205,7 @@ impl QueryRoot {
         Ok(Some(messages))
     }
 
+    #[graphql(deprecation = "Use Blockchain API instead")]
     async fn transactions(
         &self,
         ctx: &Context<'_>,

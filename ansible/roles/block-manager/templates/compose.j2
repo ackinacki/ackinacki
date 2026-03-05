@@ -61,14 +61,19 @@ services:
         TOKEN_TTL: {{ BM_TOKEN_TTL }}
         BK_API_TOKEN: {{ BK_API_TOKEN }}
         REST_API: 0.0.0.0:{{ BM_REST_API_PORT }}
-{# Adding service section #}
-{% include 'extra/block-manager-env.j2' ignore missing +%}
+{% set otel_node_id = BM_ID | default(0) | string %}{% if NODE_GROUP_ID is defined and NODE_GROUP_ID %}{% set otel_node_id = NODE_GROUP_ID ~ '-' ~ otel_node_id %}{% endif %}
+        OTEL_RESOURCE_ATTRIBUTES: service.namespace={{ NETWORK_NAME }},service.instance.id={{ otel_node_id }},host.name={{ OTEL_MY_HOST_NAME | default(ansible_host) }}
+{% if OTEL_COLLECTOR is defined and OTEL_COLLECTOR %}
+        OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: {{ OTEL_COLLECTOR }}
+        OTEL_EXPORTER_OTLP_METRICS_PROTOCOL: {{ OTEL_COLLECTOR_PROTO | default('grpc') }}
+{% endif %}
+        OTEL_SERVICE_NAME: {{ OTEL_SERVICE_NAME | default(TEST_NAME ~ '-' ~ COMMIT_HASH) }}
     command:
       - bash
       - -c
       - >
-        migration-tool -p ./data/bm-archive.db --block-manager 
-        && migration-tool -p ./data/bm-schema.db --block-manager 
+        migration-tool -p ./data/bm-archive.db --block-manager
+        && migration-tool -p ./data/bm-schema.db --block-manager
         && exec {{ BM_BINARY }} >> /logsdir/block-manager.log 2>&1
     expose:
       - {{ BM_API_PORT }}

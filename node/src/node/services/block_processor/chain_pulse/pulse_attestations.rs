@@ -6,6 +6,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use network::channel::NetDirectSender;
+use node_types::ThreadIdentifier;
 use typed_builder::TypedBuilder;
 
 use crate::helper::metrics::BlockProductionMetrics;
@@ -18,7 +19,6 @@ use crate::node::NodeIdentifier;
 use crate::types::bp_selector::BlockGap;
 use crate::types::next_seq_no;
 use crate::types::BlockSeqNo;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 
 #[allow(dead_code)]

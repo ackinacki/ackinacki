@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Weak;
 
+use node_types::BlockIdentifier;
 use parking_lot::RwLock;
 #[cfg(test)]
 use telemetry_utils::mpsc::instrumented_channel;
@@ -19,7 +20,6 @@ use crate::node::block_state::block_state_inner::StateSaveCommand;
 #[cfg(test)]
 use crate::node::block_state::start_state_save_service;
 use crate::types::notification::Notification;
-use crate::types::BlockIdentifier;
 
 #[derive(Clone)]
 pub struct BlockState {
@@ -53,9 +53,9 @@ impl BlockState {
         let block_identifier = BlockIdentifier::default();
         let (tx, _) = instrumented_channel(None::<BlockProductionMetrics>, "test");
         BlockState {
-            block_identifier: block_identifier.clone(),
+            block_identifier,
             inner: Arc::new(BlockStateInner {
-                block_identifier: block_identifier.clone(),
+                block_identifier,
                 shared_access: RwLock::new(AckiNackiBlockState::default()),
             }),
             save_sender: Arc::new(tx),
@@ -143,7 +143,7 @@ impl BlockStateRepository {
             let guarded = self.map.read();
             if let Some(e) = guarded.get(block_identifier) {
                 let state = BlockState {
-                    block_identifier: block_identifier.clone(),
+                    block_identifier: *block_identifier,
                     inner: e,
                     save_sender: self.save_service_sender.clone(),
                 };
@@ -157,7 +157,7 @@ impl BlockStateRepository {
         // however it reduces overall time, since most of the time we read.
         let file_path = self.block_state_repo_data_dir.join(format!("{block_identifier:x}"));
         let mut state = super::private::load_state(file_path.clone())?.unwrap_or_else(|| {
-            let mut state = AckiNackiBlockState::new(block_identifier.clone());
+            let mut state = AckiNackiBlockState::new(*block_identifier);
             state.file_path = file_path;
             state.add_subscriber(self.notifications.clone());
             state
@@ -168,7 +168,7 @@ impl BlockStateRepository {
             state.set_parent_block_identifier(BlockIdentifier::default())?;
         }
         let inner_state = BlockStateInner {
-            block_identifier: block_identifier.clone(),
+            block_identifier: *block_identifier,
             shared_access: RwLock::new(state),
         };
 
@@ -177,7 +177,7 @@ impl BlockStateRepository {
             guarded.remove_expired();
             if let Some(e) = guarded.get(block_identifier) {
                 let state = BlockState {
-                    block_identifier: block_identifier.clone(),
+                    block_identifier: *block_identifier,
                     inner: e,
                     save_sender: self.save_service_sender.clone(),
                 };
@@ -185,10 +185,10 @@ impl BlockStateRepository {
                 return Ok(state);
             }
             let state = Arc::new(inner_state);
-            guarded.insert(block_identifier.clone(), state.clone());
+            guarded.insert(*block_identifier, state.clone());
             drop(guarded);
             let state = BlockState {
-                block_identifier: block_identifier.clone(),
+                block_identifier: *block_identifier,
                 inner: state,
                 save_sender: self.save_service_sender.clone(),
             };

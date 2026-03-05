@@ -111,6 +111,7 @@ where
                 }
             }
         }
+        self.stop_result_tx.send(())?;
         Ok(())
     }
 
@@ -403,7 +404,7 @@ where
                             tracing::trace!("duration_since_last_finalization({} ms) is too low to start synchronization", duration_since_last_finalization.as_millis());
                             continue;
                         }
-                        let identifier = sync_finalized.data().block_identifier().clone();
+                        let identifier = *sync_finalized.data().block_identifier();
                         let seq_no = *sync_finalized.data().block_seq_no();
                         let address = sync_finalized.data().thread_refs().clone();
                         // TODO: we'd better check that this node is up to date and does not need to sync

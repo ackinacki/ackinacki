@@ -1,12 +1,12 @@
 use std::fmt::Debug;
 use std::fmt::Formatter;
 
+use node_types::AccountIdentifier;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::types::thread_message_queue::diff::from_maps::ThreadMessageQueueStateBuilder;
 use crate::types::thread_message_queue::diff::from_maps::ThreadMessageQueueStateDiff;
-use crate::types::AccountAddress;
 use crate::types::AccountInbox;
 pub mod account_messages_iterator;
 mod diff;
@@ -16,7 +16,7 @@ mod order_set;
 pub struct ThreadMessageQueueState {
     // TODO: fix this:
     // Note: dirty solution
-    pub messages: std::collections::BTreeMap<AccountAddress, AccountInbox>,
+    pub messages: std::collections::BTreeMap<AccountIdentifier, AccountInbox>,
     order_set: order_set::OrderSet,
     cursor: usize,
 }
@@ -37,7 +37,7 @@ impl ThreadMessageQueueState {
 
     pub fn account_inbox<'a>(
         &'a self,
-        account_address: &'a AccountAddress,
+        account_address: &'a AccountIdentifier,
     ) -> Option<&'a AccountInbox> {
         self.messages.get(account_address)
     }

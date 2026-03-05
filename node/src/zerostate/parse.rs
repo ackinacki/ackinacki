@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use account_inbox::storage::DurableStorageRead;
 use account_inbox::storage::LoadErr;
+use account_state::ThreadAccountsRepository;
+use node_types::ThreadIdentifier;
 use serde::Serialize;
 use tvm_block::GetRepresentationHash;
 use tvm_block::Serializable;
@@ -16,8 +18,8 @@ use tvm_types::write_boc;
 use super::ZeroState;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
+use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::types::thread_message_queue::account_messages_iterator::AccountMessagesIterator;
-use crate::types::ThreadIdentifier;
 
 #[derive(Default)]
 struct DummyMessageStorage;
@@ -69,27 +71,26 @@ impl ZeroState {
     pub fn read_all_accounts(
         &mut self,
         thread_identifier: &ThreadIdentifier,
+        thread_accounts_repository: &NodeThreadAccountsRepository,
     ) -> anyhow::Result<Vec<ZeroStateAccount>> {
         let mut zs_accounts = vec![];
-        let accounts = self.get_shard_state(thread_identifier)?.read_accounts();
+        let accounts = self.get_shard_state(thread_identifier);
         if let Ok(accounts) = accounts {
-            accounts
-                .iterate_accounts(|_, v| {
-                    let account = v.read_account().unwrap().as_struct()?;
+            thread_accounts_repository
+                .state_iterate_all_accounts(&accounts, |_, v| {
+                    let dapp_id = v.get_dapp_id().map(|val| val.to_hex_string());
+                    let tvm_account = tvm_block::Account::try_from(v.account()?)?;
                     zs_accounts.push(ZeroStateAccount {
-                        address: account
+                        address: tvm_account
                             .get_id()
                             .map(|acc| acc.to_hex_string())
                             .unwrap_or("None".to_string()),
-                        code_hash: account
+                        code_hash: tvm_account
                             .get_code_hash()
                             .map(|code| code.to_hex_string())
                             .unwrap_or("None".to_string()),
-                        balance: account.balance().map(|cc| cc.grams.inner()).unwrap_or(0),
-                        dapp_id: v
-                            .get_dapp_id()
-                            .map(|val| val.to_hex_string())
-                            .unwrap_or("None".to_string()),
+                        balance: tvm_account.balance().map(|cc| cc.grams.inner()).unwrap_or(0),
+                        dapp_id: dapp_id.unwrap_or("None".to_string()),
                     });
                     Ok(true)
                 })

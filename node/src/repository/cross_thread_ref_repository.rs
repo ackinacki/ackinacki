@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use anyhow::bail;
 use lru::LruCache;
+use node_types::BlockIdentifier;
 use parking_lot::Mutex;
 use tracing::instrument;
 use tracing::trace_span;
@@ -15,7 +16,6 @@ use super::repository_impl::load_from_file;
 use super::repository_impl::save_to_file;
 use crate::repository::CrossThreadRefData;
 use crate::storage::CrossRefStorage;
-use crate::types::BlockIdentifier;
 
 pub trait CrossThreadRefDataRead {
     fn get_cross_thread_ref_data(
@@ -69,12 +69,12 @@ impl CrossThreadRefDataRead for CrossThreadRefDataRepository {
 
         if let Some(cross_thread_ref_data) = data {
             cross_thread_ref_data_cache.put(
-                cross_thread_ref_data.block_identifier().clone(),
+                *cross_thread_ref_data.block_identifier(),
                 Some(cross_thread_ref_data.clone()),
             );
             Ok(cross_thread_ref_data)
         } else {
-            cross_thread_ref_data_cache.put(identifier.clone(), None);
+            cross_thread_ref_data_cache.put(*identifier, None);
             bail!("cross thread ref data was not set {identifier}")
         }
     }
@@ -87,7 +87,7 @@ impl CrossThreadRefDataHistory for CrossThreadRefDataRepository {
     ) -> anyhow::Result<Vec<CrossThreadRefData>> {
         // Let's include the block data first. It must be there or fail.
         let mut history = vec![self.get_cross_thread_ref_data(identifier)?];
-        let mut cursor = history.last().unwrap().parent_block_identifier().clone();
+        let mut cursor = *history.last().unwrap().parent_block_identifier();
         for _ in 0..100 {
             let Ok(ref_data) = self.get_cross_thread_ref_data(&cursor) else {
                 tracing::trace!("Missing cross-thread-ref-data. Continue as is. Possible if this node recently joined to the network");
@@ -97,7 +97,7 @@ impl CrossThreadRefDataHistory for CrossThreadRefDataRepository {
             if cursor == BlockIdentifier::default() {
                 break;
             }
-            cursor = ref_data.parent_block_identifier().clone();
+            cursor = *ref_data.parent_block_identifier();
         }
         Ok(history)
     }
@@ -130,7 +130,7 @@ impl CrossThreadRefDataRepository {
         &mut self,
         cross_thread_ref_data: CrossThreadRefData,
     ) -> anyhow::Result<()> {
-        let id = cross_thread_ref_data.block_identifier().clone();
+        let id = *cross_thread_ref_data.block_identifier();
         let mut cache = self.cross_thread_ref_data_cache.lock();
         if let Some(Option::<CrossThreadRefData>::Some(_)) = cache.get(&id) {
             return Ok(());

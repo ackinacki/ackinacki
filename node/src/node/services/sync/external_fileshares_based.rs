@@ -10,10 +10,12 @@ use std::time::Duration;
 
 use http_server::ApiBkSet;
 use network::topology::NetTopology;
+use node_types::AccountIdentifier;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedSender;
 use tokio::sync::watch::Receiver;
-use tvm_types::UInt256;
 use url::Url;
 
 use crate::helper::SHUTDOWN_FLAG;
@@ -25,9 +27,6 @@ use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::services::blob_sync::external_fileshares_based::ServiceInterface;
 use crate::services::blob_sync::BlobSyncService;
-use crate::types::AccountAddress;
-use crate::types::BlockIdentifier;
-use crate::types::ThreadIdentifier;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
 
 #[derive(Clone)]
@@ -79,10 +78,6 @@ impl StateSyncService for ExternalFileSharesBased {
         self.file_saving_service.save_object(block_id, thread_id, min_state, file_name)
     }
 
-    fn reset_sync(&self) {
-        self.state_load_thread.lock().take();
-    }
-
     fn add_load_state_task(
         &mut self,
         resource_address: BTreeMap<ThreadIdentifier, BlockIdentifier>,
@@ -105,7 +100,7 @@ impl StateSyncService for ExternalFileSharesBased {
             .borrow()
             .current
             .iter()
-            .map(|bk| NodeIdentifier::from(AccountAddress(UInt256::with_array(bk.owner_address.0))))
+            .map(|bk| NodeIdentifier::from(AccountIdentifier::new(bk.owner_address.0)))
             .collect::<HashSet<_>>();
         for (thread_id, block_id) in resource_address.clone() {
             let output_clone = output.clone();
@@ -196,5 +191,13 @@ impl StateSyncService for ExternalFileSharesBased {
         )?;
         *thread = Some(spawned);
         Ok(())
+    }
+
+    fn reset_sync(&self) {
+        self.state_load_thread.lock().take();
+    }
+
+    fn flush(&self) -> anyhow::Result<()> {
+        self.file_saving_service.flush()
     }
 }

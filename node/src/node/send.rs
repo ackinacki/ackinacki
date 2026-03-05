@@ -6,6 +6,8 @@ use std::collections::HashMap;
 
 use network::channel::NetBroadcastSender;
 use network::channel::NetDirectSender;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::try_seal::TrySeal;
@@ -20,9 +22,7 @@ use crate::node::Node;
 use crate::node::NodeIdentifier;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
-use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 
 pub fn send_blocks_range_request(
@@ -148,7 +148,7 @@ where
         );
         let shared_res_address = BTreeMap::from_iter(shared_res_address);
         let data = SyncFinalizedData::builder()
-            .block_identifier(block_identifier.clone())
+            .block_identifier(block_identifier)
             .block_seq_no(block_seq_no)
             .thread_refs(shared_res_address)
             .build();

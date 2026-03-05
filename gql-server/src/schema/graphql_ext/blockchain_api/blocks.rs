@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use async_graphql::connection::ConnectionNameType;
@@ -16,6 +16,7 @@ pub struct BlockchainBlocksQueryArgs {
     pub block_seq_no_range: Option<BlockchainMasterSeqNoFilter>,
     pub min_tr_count: Option<i32>,
     pub max_tr_count: Option<i32>,
+    pub thread_id: Option<String>,
     pub pagination: PaginationArgs,
 }
 

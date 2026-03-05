@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use thiserror::Error;
 
-use crate::types::BlockIdentifier;
-use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
 mod subscribers;

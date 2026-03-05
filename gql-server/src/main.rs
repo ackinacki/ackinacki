@@ -10,6 +10,7 @@ use clap::Parser;
 use gql_server::init_sdk;
 use helpers::init_tracing;
 
+use crate::defaults::MAX_ATTACHED_DB;
 use crate::schema::db::DBConnector;
 
 mod defaults;
@@ -136,6 +137,7 @@ fn list_archive_dbs(db_fs_path: &Path) -> anyhow::Result<Vec<String>> {
         }
     }
     archives.sort_unstable_by_key(|(ts, _)| std::cmp::Reverse(*ts));
+    archives.truncate(MAX_ATTACHED_DB as usize);
     let archives = archives.into_iter().map(|(_, path)| path).collect();
     tracing::debug!(list = ?archives, "discovered archives:");
     Ok(archives)
@@ -146,4 +148,84 @@ fn normalize_sqlite_path(path: &Path) -> PathBuf {
     let raw = raw.strip_prefix("sqlite://").or_else(|| raw.strip_prefix("sqlite:")).unwrap_or(&raw);
     let raw = raw.split('?').next().unwrap_or(raw);
     PathBuf::from(raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::fs::File;
+    use std::path::Path;
+
+    use testdir::testdir;
+
+    use super::list_archive_dbs;
+
+    fn create_file(path: &Path) {
+        File::create(path).expect("create test file");
+    }
+
+    #[test]
+    fn list_archive_dbs_returns_9_newest() {
+        let root = testdir!();
+        let db_path = root.join("bm-archive.db");
+        create_file(&db_path);
+
+        for ts in [3_u64, 11, 5, 1, 8, 2, 10, 4, 9, 7, 6, 12] {
+            create_file(&root.join(format!("bm-archive-{ts}.db")));
+        }
+
+        let archives = list_archive_dbs(&db_path).expect("list archives");
+        let names: Vec<String> = archives
+            .iter()
+            .map(|p| {
+                Path::new(p)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("archive file name")
+                    .to_string()
+            })
+            .collect();
+
+        assert_eq!(
+            names,
+            vec![
+                "bm-archive-12.db",
+                "bm-archive-11.db",
+                "bm-archive-10.db",
+                "bm-archive-9.db",
+                "bm-archive-8.db",
+                "bm-archive-7.db",
+                "bm-archive-6.db",
+                "bm-archive-5.db",
+                "bm-archive-4.db",
+            ]
+        );
+    }
+
+    #[test]
+    fn list_archive_dbs_ignores_non_matching_files() {
+        let root = testdir!();
+        let db_path = root.join("bm-archive.db");
+        create_file(&db_path);
+
+        create_file(&root.join("bm-archive-20.db"));
+        create_file(&root.join("bm-archive-foo.db"));
+        create_file(&root.join("bm-archive-20.txt"));
+        create_file(&root.join("other-30.db"));
+        fs::create_dir(root.join("bm-archive-99.db")).expect("create test dir");
+
+        let archives = list_archive_dbs(&db_path).expect("list archives");
+        let names: Vec<String> = archives
+            .iter()
+            .map(|p| {
+                Path::new(p)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("archive file name")
+                    .to_string()
+            })
+            .collect();
+
+        assert_eq!(names, vec!["bm-archive-20.db", "bm-archive-foo.db"]);
+    }
 }

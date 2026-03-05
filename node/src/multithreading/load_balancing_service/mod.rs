@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
+
 use crate::helper::metrics::BlockProductionMetrics;
-use crate::types::BlockIdentifier;
-use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
+use crate::types::ThreadsTablePrefab;
 mod aggregated_thread_load;
 use crate::bitmask::mask::Bitmask;
 mod in_thread_accounts_load;
@@ -13,9 +15,9 @@ use std::sync::Arc;
 
 use aggregated_thread_load::AggregatedLoad;
 use aggregated_thread_load::Load;
+use node_types::AccountRouting;
 
 use crate::repository::optimistic_state::OptimisticState;
-use crate::types::AccountRouting;
 use crate::types::AckiNackiBlock;
 
 // Note:
@@ -26,7 +28,7 @@ const MAX_LOAD_DISPROPORTION: Load = 2;
 
 #[derive(Debug)]
 pub struct Proposal {
-    pub proposed_threads_table: ThreadsTable,
+    pub proposed_threads_table: ThreadsTablePrefab,
 }
 
 #[derive(Debug)]
@@ -67,7 +69,6 @@ impl LoadBalancingService {
     #[allow(clippy::explicit_counter_loop)]
     pub fn check(
         &mut self,
-        block_identifier: &BlockIdentifier,
         thread_identifier: &ThreadIdentifier,
         threads_table: &ThreadsTable,
         max_table_size: usize,
@@ -139,7 +140,6 @@ impl LoadBalancingService {
                 .get_mut(thread_identifier)
                 .ok_or(CheckError::ThreadIsNotInTheTable)?;
             let res = threads_split::try_threads_split(
-                block_identifier,
                 thread_identifier,
                 this_thread_row_index,
                 load,
@@ -168,13 +168,9 @@ impl LoadBalancingService {
         tracing::trace!("LoadBalancingService::handle_block_finalized: {}", block);
         // Note: thread that has split, should reset its load, but after split block finalization,
         // that's why, check and reset here.
-        if let Some(threads_table) = &block.get_common_section().threads_table {
-            if threads_table
-                .list_threads()
-                .any(|thread_id| thread_id.is_spawning_block(&block.identifier()))
-            {
-                if let Some(load) =
-                    self.thread_load_map.get_mut(&block.get_common_section().thread_id)
+        if let Some(prefab) = &block.common_section().threads_table() {
+            if prefab.has_insert_instructions() {
+                if let Some(load) = self.thread_load_map.get_mut(block.common_section().thread_id())
                 {
                     load.reset();
                     return;
@@ -186,7 +182,7 @@ impl LoadBalancingService {
         // Reason: It must be managed from outside to decide if thread is no longer in use.
         // And since the cleanup is managed from outside it makes sense to prepare threads
         // from the outside control as well.
-        let thread_identifier: ThreadIdentifier = block.get_common_section().thread_id;
+        let thread_identifier: ThreadIdentifier = *block.common_section().thread_id();
         if let Some(e) = self.thread_load_map.get_mut(&thread_identifier) {
             e.append_from(block, block_state, &self.metrics);
         } else {

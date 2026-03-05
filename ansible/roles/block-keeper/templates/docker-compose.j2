@@ -80,7 +80,6 @@ services:
 {% endif %}
         cat /bk-configs/acki-nacki.conf.yaml
         && cat /bk-configs/acki-nacki.global.conf.yaml
-        && {{ NODE_BINARY | default('node') }} -c /bk-configs/acki-nacki.conf.yaml -g /bk-configs/acki-nacki.global.conf.yaml --print-node-protocol-version-support | jq -r .protocol_version_support > /bk-configs/.protocol_version
         && exec {% if NUMACTL %} numactl {{ NUMACTL }} -- {% endif %}
         {{ NODE_BINARY | default('node') }} -c /bk-configs/acki-nacki.conf.yaml -g /bk-configs/acki-nacki.global.conf.yaml -r /bk-configs/acki-nacki-retired.global.conf.yaml >> /logsdir/node.log 2>&1
     volumes:
@@ -211,6 +210,7 @@ services:
         --keys-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
         --block-keeper-seed-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
         --signing-keys=/bk-configs/{{ NODE_OWNER_KEY | basename }}
+        --engine-version 1.0.1
 {% if HAS_BK_SET_FILE is not defined or HAS_BK_SET_FILE is false %}
         --zerostate-path=/bk-configs/zerostate
 {% endif %}
@@ -237,6 +237,8 @@ services:
         && echo "Retired configs"
         && cat /bk-configs/acki-nacki-retired.conf.yaml
         && cat /bk-configs/acki-nacki-retired.global.conf.yaml
+        && {{ NODE_BINARY | default('node') }} -c /bk-configs/acki-nacki.conf.yaml -g /bk-configs/acki-nacki.global.conf.yaml -r /bk-configs/acki-nacki-retired.global.conf.yaml --print-node-protocol-version-support | jq -r .protocol_version_support > /bk-configs/.protocol_version
+        && cat /bk-configs/.protocol_version
         && exit 0
     network_mode: "none"
     volumes:

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use account_inbox::iter::iterator::MessagesRangeIterator;
 use account_inbox::range::MessagesRange;
 use account_inbox::storage::DurableStorageRead;
+use node_types::AccountIdentifier;
 use tracing::instrument;
 use tracing::trace_span;
 use typed_builder::TypedBuilder;
@@ -14,7 +15,6 @@ use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::storage::MessageDurableStorage;
 use crate::types::thread_message_queue::ThreadMessageQueueState;
-use crate::types::AccountAddress;
 use crate::types::AccountInbox;
 
 #[derive(TypedBuilder)]
@@ -26,11 +26,11 @@ use crate::types::AccountInbox;
 )]
 pub struct ThreadMessageQueueStateDiff {
     initial_state: ThreadMessageQueueState,
-    consumed_messages: HashMap<AccountAddress, HashSet<MessageIdentifier>>,
+    consumed_messages: HashMap<AccountIdentifier, HashSet<MessageIdentifier>>,
     #[builder(setter(into))]
-    removed_accounts: Vec<AccountAddress>,
-    added_accounts: std::collections::BTreeMap<AccountAddress, AccountInbox>,
-    produced_messages: HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+    removed_accounts: Vec<AccountIdentifier>,
+    added_accounts: std::collections::BTreeMap<AccountIdentifier, AccountInbox>,
+    produced_messages: HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     db: MessageDurableStorage,
 }
 
@@ -56,12 +56,12 @@ impl std::convert::From<ThreadMessageQueueStateDiff> for anyhow::Result<ThreadMe
         let state_cursor = state.cursor;
 
         trace_span!("add accounts").in_scope(|| {
-            for (account_address, inbox) in val.added_accounts.into_iter() {
-                let prev = state_messages.insert(account_address.clone(), inbox);
+            for (account_id, inbox) in val.added_accounts.into_iter() {
+                let prev = state_messages.insert(account_id, inbox);
                 #[cfg(feature = "fail-fast")]
                 assert!(prev.is_none(), "dirty state detected");
-                if !state_order.contains(&account_address.clone()) {
-                    state_order.insert(account_address.clone());
+                if !state_order.contains(&account_id) {
+                    state_order.insert(account_id);
                 }
             }
         });
@@ -83,26 +83,19 @@ impl std::convert::From<ThreadMessageQueueStateDiff> for anyhow::Result<ThreadMe
         // tracing::trace!("consumed_messages {:?}", val.consumed_messages);
         trace_span!("add messages", addresses_count = val.produced_messages.len(),).in_scope(
             || {
-                for (addr, mut messages) in val.produced_messages.into_iter() {
-                    messages.retain(|(message_id, message)| {
-                        !intersection.contains(message_id)
-                            || message
-                                .message
-                                .int_header()
-                                .map(|hdr| hdr.is_redirect)
-                                .unwrap_or(false)
-                    });
+                for (account_id, mut messages) in val.produced_messages.into_iter() {
+                    messages.retain(|(message_id, _message)| !intersection.contains(message_id));
                     if messages.is_empty() {
                         continue;
                     }
                     let entry: &mut MessagesRange<MessageIdentifier, Arc<WrappedMessage>> =
-                        state_messages.entry(addr.clone()).or_insert(MessagesRange::empty());
+                        state_messages.entry(account_id).or_insert(MessagesRange::empty());
 
                     let mut tail = entry.tail_sequence().clone();
                     let mut range_ref = entry.compacted_history().clone();
 
-                    if !state_order.contains(&addr) && !messages.is_empty() {
-                        state_order.insert(addr.clone());
+                    if !state_order.contains(&account_id) && !messages.is_empty() {
+                        state_order.insert(account_id);
                     }
                     // Extend the tail with new messages
                     tail.extend(
@@ -211,6 +204,7 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;
 
+    use node_types::AccountIdentifier;
     use tvm_block::InternalMessageHeader;
     use tvm_block::Message;
 
@@ -219,7 +213,6 @@ mod tests {
     use crate::message::WrappedMessage;
     use crate::types::thread_message_queue::order_set::OrderSet;
     use crate::types::thread_message_queue::ThreadMessageQueueState;
-    use crate::types::AccountAddress;
     use crate::types::AccountInbox;
 
     fn create_empty_state() -> ThreadMessageQueueState {
@@ -236,10 +229,10 @@ mod tests {
     #[test]
     fn test_add_account() {
         let initial_state = create_empty_state();
-        let account_address = AccountAddress::default();
+        let account_address = AccountIdentifier::default();
         let mut added_accounts = BTreeMap::new();
         let account_inbox: AccountInbox = MessagesRange::empty();
-        added_accounts.insert(account_address.clone(), account_inbox);
+        added_accounts.insert(account_address, account_inbox);
         let storage = MessageDurableStorage::mem();
         let state_diff = ThreadMessageQueueStateDiff {
             initial_state,
@@ -256,14 +249,14 @@ mod tests {
 
     #[test]
     fn test_remove_account() {
-        let account_address = AccountAddress::default();
+        let account_address = AccountIdentifier::default();
         let mut initial_state = create_empty_state();
-        initial_state.messages.insert(account_address.clone(), MessagesRange::empty());
+        initial_state.messages.insert(account_address, MessagesRange::empty());
         let storage = MessageDurableStorage::mem();
         let state_diff = ThreadMessageQueueStateDiff {
             initial_state,
             consumed_messages: HashMap::new(),
-            removed_accounts: vec![account_address.clone()],
+            removed_accounts: vec![account_address],
             added_accounts: BTreeMap::new(),
             produced_messages: HashMap::new(),
             db: storage,
@@ -317,16 +310,16 @@ mod tests {
     // }
     #[test]
     fn test_consumed_messages() {
-        let account_address = AccountAddress::default();
+        let account_address = AccountIdentifier::default();
         let (message_id, wrapped_message) = create_empty_message();
         let mut initial_state = create_empty_state();
         let mut inbox: AccountInbox = MessagesRange::empty();
         let add_message = vec![(message_id.clone(), wrapped_message)];
         inbox.add_messages(add_message);
-        initial_state.messages.insert(account_address.clone(), inbox);
+        initial_state.messages.insert(account_address, inbox);
 
         let mut consumed_messages = HashMap::new();
-        consumed_messages.insert(account_address.clone(), HashSet::from([message_id]));
+        consumed_messages.insert(account_address, HashSet::from([message_id]));
         let storage = MessageDurableStorage::mem();
         let state_diff = ThreadMessageQueueStateDiff {
             initial_state,
@@ -345,7 +338,7 @@ mod tests {
     #[ignore]
     #[should_panic]
     fn test_produced_messages_out_of_order() {
-        let account_address = AccountAddress::default();
+        let account_id = AccountIdentifier::default();
         let messages = (0..5).map(|_| create_empty_message()).collect::<Vec<_>>();
 
         let initial_state = create_empty_state();
@@ -357,7 +350,7 @@ mod tests {
         inbox.add_messages(add_message);
         let mut produced_messages = HashMap::new();
         produced_messages.insert(
-            account_address.clone(),
+            account_id,
             vec![
                 messages[0].clone(),
                 messages[1].clone(),
@@ -368,7 +361,7 @@ mod tests {
         );
         let mut consumed_messages = HashMap::new();
         consumed_messages.insert(
-            account_address.clone(),
+            account_id,
             messages.iter().take(4).map(|(id, _)| id.clone()).collect::<HashSet<_>>(),
         );
         let storage = MessageDurableStorage::mem();

@@ -6,12 +6,6 @@ use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
 
-use actix_web::middleware;
-use actix_web::middleware::Logger;
-use actix_web::web;
-use actix_web::App;
-use actix_web::HttpResponse;
-use actix_web::HttpServer;
 use ext_messages_auth::auth::Token;
 use parking_lot::Mutex;
 
@@ -61,34 +55,6 @@ impl MessageRouter {
         message_router
     }
 
-    pub fn config(cfg: &mut web::ServiceConfig, message_router: Arc<MessageRouter>) {
-        cfg.service(
-            // Process inbound external messages and forward its to the BP
-            //
-            // JSON: [{
-            //     "id": String,
-            //     "body": String,
-            //     "expireAt"?: Int,
-            //     "threadId"?: String,
-            //     "ext_message_token": {
-            //         "unsigned": String,
-            //         "signature": String,
-            //         "issuer": {
-            //              "bm": String,
-            //              or
-            //              "bk": String,
-            //          }
-            //     }
-            // }]
-            web::resource(ROUTER_URL_PATH.to_string())
-                .route(web::post().to(move |node_requests| {
-                    let message_router = message_router.clone();
-                    actix_ext_messages_handler(node_requests, message_router)
-                }))
-                .route(web::head().to(HttpResponse::MethodNotAllowed)),
-        );
-    }
-
     pub fn dump(&self) {
         tracing::debug!("msg_router: {}", self);
     }
@@ -108,52 +74,6 @@ impl MessageRouter {
             }
         } else {
             None
-        }
-    }
-
-    pub fn run(&self) {
-        let message_router = Arc::new(self.clone());
-        tracing::info!("Starting MessageRouter");
-        let _ = std::thread::Builder::new()
-            .name("Message router".into())
-            .spawn(move || {
-                if let Err(e) = run(message_router) {
-                    tracing::error!("Message router exited with error: {:?}", e);
-                }
-            })
-            .expect("Failed to spawn actix");
-    }
-}
-
-#[actix_web::main]
-async fn run(message_router: Arc<MessageRouter>) -> anyhow::Result<()> {
-    let bind = message_router.bind;
-    HttpServer::new(move || {
-        let message_router = message_router.clone();
-        App::new()
-            .wrap(middleware::DefaultHeaders::new().add(("Content-type", "application/json")))
-            .configure(move |cfg| MessageRouter::config(cfg, message_router))
-            .wrap(Logger::default())
-    })
-    .bind(bind)?
-    .run()
-    .await
-    .map_err(anyhow::Error::from)?;
-
-    tracing::info!(target: "message_router", "MessageRouter is running: bind={bind}");
-
-    Ok(())
-}
-
-async fn actix_ext_messages_handler(
-    node_requests: web::Json<serde_json::Value>,
-    message_router: Arc<MessageRouter>,
-) -> actix_web::Result<web::Json<serde_json::Value>> {
-    match crate::process_ext_messages::run(node_requests.into_inner(), message_router).await {
-        Ok(value) => Ok(web::Json(value)),
-        Err(e) => {
-            tracing::error!("process_ext_messages_inner failed: {:?}", e);
-            Err(actix_web::error::ErrorInternalServerError(e))
         }
     }
 }

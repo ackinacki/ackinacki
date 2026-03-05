@@ -5,6 +5,7 @@ use std::cmp::max;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedSender;
 use tracing::trace_span;
@@ -12,7 +13,6 @@ use transport_layer::server::RawBlockSaveCommand;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
 use crate::helper::block_flow_trace;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::helper::SHUTDOWN_FINALIZATION_FLAG;
@@ -33,7 +33,6 @@ use crate::storage::MessageDurableStorage;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockSeqNo;
 use crate::types::CollectedAttestations;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
@@ -112,9 +111,7 @@ pub fn finalization_loop(
             }
             if let Some(height) = block_state.guarded(|e| *e.block_height()) {
                 if height == next_height {
-                    if let Some(parent) =
-                        block_state.guarded(|e| e.parent_block_identifier().clone())
-                    {
+                    if let Some(parent) = block_state.guarded(|e| *e.parent_block_identifier()) {
                         let Ok(parent_block_state) = block_state_repository.get(&parent) else {
                             continue;
                         };
@@ -174,11 +171,11 @@ fn try_finalize(
 ) -> anyhow::Result<Option<u64>> {
     tracing::trace!(
         "try_finalize_blocks: process: {:?}",
-        block_state.guarded(|e| (*e.block_seq_no(), e.block_identifier().clone()))
+        block_state.guarded(|e| (*e.block_seq_no(), *e.block_identifier()))
     );
     let mut finalized_block_height_border = None;
-    let (block_id, Some(parent_id)) = block_state
-        .guarded(|e| (e.block_identifier().clone(), e.parent_block_identifier().clone()))
+    let (block_id, Some(parent_id)) =
+        block_state.guarded(|e| (*e.block_identifier(), *e.parent_block_identifier()))
     else {
         tracing::trace!("try_finalize_blocks: block_id not found");
         return Ok(finalized_block_height_border);
@@ -234,7 +231,7 @@ fn try_finalize(
                 continue;
             };
             let _ = chain_pulse_monitor.send(ChainPulseEvent::block_finalized(
-                candidate_block.data().get_common_section().thread_id,
+                *candidate_block.data().common_section().thread_id(),
                 Some(block_height),
             ));
             on_block_finalized(
@@ -254,7 +251,7 @@ fn try_finalize(
             if finalized_block_height_border.map(|v| v < new_height_border).unwrap_or(true) {
                 finalized_block_height_border = Some(new_height_border);
             };
-            let thread_id = candidate_block.data().get_common_section().thread_id;
+            let thread_id = *candidate_block.data().common_section().thread_id();
             authority.guarded_mut(|e| e.get_thread_authority(&thread_id)).guarded_mut(|e| {
                 e.on_block_finalized(&block_height);
             });
@@ -263,9 +260,9 @@ fn try_finalize(
 
             block_flow_trace("finalized", &block_id, node_id, []);
             metrics.as_ref().inspect(|x| {
-                let thread_id = candidate_block.data().get_common_section().thread_id;
+                let thread_id = *candidate_block.data().common_section().thread_id();
                 let seq_no: u32 = block_seq_no.into();
-                let tx_count = candidate_block.data().tx_cnt();
+                let tx_count = *candidate_block.data().tx_cnt();
                 x.report_finalization(seq_no, tx_count, &thread_id);
             });
         }
@@ -294,7 +291,7 @@ fn try_finalize(
 // This function is public for benchmarking
 pub fn on_block_finalized(
     shared_services: &mut SharedServices,
-    block: &Envelope<GoshBLS, AckiNackiBlock>,
+    block: &Envelope<AckiNackiBlock>,
     repository: &mut RepositoryImpl,
     block_state_repository: &BlockStateRepository,
     raw_block_tx: &mut InstrumentedSender<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>,
@@ -307,10 +304,10 @@ pub fn on_block_finalized(
         let block_seq_no = block.data().seq_no();
         let block_id = block.data().identifier();
         let block_state = block_state_repository.get(&block_id)?;
-        if let Some(cutoff) = block_state.guarded(|e|e.moves_attestation_list_cutoff().clone()) {
+        if let Some(cutoff) = block_state.guarded(|e|*e.moves_attestation_list_cutoff()) {
             last_block_attestations.guarded_mut(|e| e.move_cutoff(cutoff.0, cutoff.1));
         }
-        let thread_id = block.data().get_common_section().thread_id;
+        let thread_id = *block.data().common_section().thread_id();
         tracing::debug!("on_block_finalized: {:?} {:?}", block_seq_no, block_id.clone());
         repository.mark_block_as_finalized(
             block,
@@ -318,7 +315,7 @@ pub fn on_block_finalized(
             Some(state_sync_service),
         )?;
         tracing::debug!("Block marked as finalized: {:?} {:?} {:?}", block_seq_no, block_id, thread_id);
-        let producer_id = block.data().get_common_section().producer_id.clone();
+        let producer_id = block.data().common_section().producer_id().clone();
         #[cfg(feature = "protocol_version_hash_in_block")]
         tracing::debug!(
             target: "monit",
@@ -327,10 +324,10 @@ pub fn on_block_finalized(
             block.data().identifier(),
             producer_id,
             block.clone_signature_occurrences(),
-            block.data().get_common_section().thread_id,
+            block.data().common_section().thread_id,
             block.data().tx_cnt(),
             block.data().time().unwrap_or(0),
-            block.data().get_common_section().protocol_version_hash(),
+            block.data().common_section().protocol_version_hash(),
         );
         #[cfg(not(feature = "protocol_version_hash_in_block"))]
         tracing::debug!(
@@ -340,7 +337,7 @@ pub fn on_block_finalized(
             block.data().identifier(),
             producer_id,
             block.clone_signature_occurrences(),
-            block.data().get_common_section().thread_id,
+            block.data().common_section().thread_id(),
             block.data().tx_cnt(),
             block.data().time().unwrap_or(0),
         );

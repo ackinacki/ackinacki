@@ -6,11 +6,16 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use node_types::AccountIdentifier;
+use node_types::AccountRouting;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
-use tvm_block::ShardStateUnsplit;
 use tvm_types::UInt256;
 
 use super::accounts::AccountsRepository;
+use super::accounts::NodeThreadAccountsRef;
+use super::accounts::NodeThreadAccountsRepository;
 use super::repository_impl::RepositoryImpl;
 use super::repository_impl::RepositoryMetadata;
 use crate::bls::envelope::Envelope;
@@ -33,13 +38,9 @@ use crate::repository::Repository;
 #[cfg(test)]
 use crate::storage::MessageDBWriterService;
 use crate::storage::MessageDurableStorage;
-use crate::types::AccountAddress;
-use crate::types::AccountRouting;
 use crate::types::AckiNackiBlock;
-use crate::types::BlockIdentifier;
 use crate::types::BlockInfo;
 use crate::types::BlockSeqNo;
-use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 use crate::utilities::FixedSizeHashSet;
 
@@ -55,7 +56,7 @@ pub struct OptimisticStateStub {
 impl OptimisticState for OptimisticStateStub {
     type Cell = ();
     type Message = MessageStub;
-    type ShardState = ShardStateUnsplit;
+    type ShardState = NodeThreadAccountsRef;
 
     fn get_share_stare_refs(&self) -> HashMap<ThreadIdentifier, BlockIdentifier> {
         todo!()
@@ -92,10 +93,15 @@ impl OptimisticState for OptimisticStateStub {
         _block_state_repo: BlockStateRepository,
         _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
         _accounts_repo: AccountsRepository,
+        _thread_accounts_repository: &NodeThreadAccountsRepository,
         _message_db: MessageDurableStorage,
+        _config_read: crate::config::config_read::ConfigRead,
+        #[cfg(feature = "usdc_name_repair")] _usdc_name_repaired: std::sync::Arc<
+            parking_lot::Mutex<Option<BlockSeqNo>>,
+        >,
     ) -> anyhow::Result<(
         CrossThreadRefData,
-        HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+        HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     )> {
         todo!()
     }
@@ -117,6 +123,8 @@ impl OptimisticState for OptimisticStateStub {
         _thread_identifier: &ThreadIdentifier,
         _threads_table: &ThreadsTable,
         _message_db: MessageDurableStorage,
+        _threa_state_repository: &NodeThreadAccountsRepository,
+        _apply_to_durable: bool,
     ) -> anyhow::Result<()> {
         todo!()
     }
@@ -136,23 +144,6 @@ impl OptimisticState for OptimisticStateStub {
         todo!()
     }
 
-    fn does_state_has_messages_to_other_threads(&mut self) -> anyhow::Result<bool> {
-        todo!()
-    }
-
-    // fn add_messages_from_ref(
-    // &mut self,
-    // _cross_thread_ref: &CrossThreadRefData,
-    // ) -> anyhow::Result<()> {
-    // todo!()
-    // }
-    fn add_slashing_messages(
-        &mut self,
-        _slashing_messages: Vec<Arc<Self::Message>>,
-    ) -> anyhow::Result<()> {
-        todo!()
-    }
-
     // fn add_accounts_from_ref(
     // &mut self,
     // _cross_thread_ref: &CrossThreadRefData,
@@ -167,7 +158,7 @@ impl OptimisticState for OptimisticStateStub {
 
 #[cfg(test)]
 pub struct RepositoryStub {
-    _storage: HashMap<BlockIdentifier, Envelope<GoshBLS, AckiNackiBlock>>,
+    _storage: HashMap<BlockIdentifier, Envelope<AckiNackiBlock>>,
     optimistic_state: HashMap<BlockIdentifier, <Self as Repository>::OptimisticState>,
 }
 
@@ -200,9 +191,9 @@ impl From<OptimisticStateStub> for Vec<u8> {
 
 #[cfg(test)]
 impl Repository for RepositoryStub {
-    type Attestation = Envelope<GoshBLS, AttestationData>;
+    type Attestation = Envelope<AttestationData>;
     type BLS = GoshBLS;
-    type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>;
+    type CandidateBlock = Envelope<AckiNackiBlock>;
     type EnvelopeSignerIndex = u16;
     type NodeIdentifier = NodeIdentifier;
     type OptimisticState = OptimisticStateStub;

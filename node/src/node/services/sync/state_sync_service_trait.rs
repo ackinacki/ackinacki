@@ -4,13 +4,13 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use telemetry_utils::mpsc::InstrumentedSender;
 
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
-use crate::types::BlockIdentifier;
-use crate::types::ThreadIdentifier;
 
 pub trait StateSyncService {
     type Repository: Repository;
@@ -38,4 +38,6 @@ pub trait StateSyncService {
     ) -> anyhow::Result<()>;
 
     fn reset_sync(&self);
+
+    fn flush(&self) -> anyhow::Result<()>;
 }

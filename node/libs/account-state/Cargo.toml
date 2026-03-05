@@ -1,0 +1,40 @@
+[package]
+name = "account-state"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[lib]
+
+[dependencies]
+aerospike.workspace = true
+anyhow.workspace = true
+bincode.workspace = true
+derive-getters = "0.5.0"
+derive_setters = { path = "../derive-setters" }
+node-types.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_with.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+trie-map.workspace = true
+tvm_block.workspace = true
+tvm_types.workspace = true
+
+base64 = { version = "0.22.1" }
+blake3 = { version = "1.8.2" }
+bytes = { version = "1.11.0" }
+digest = "0.10.7"
+failure = "0.1.8"
+hashbrown = "0.16.0"
+hex = "0.4.3"
+libc = "0.2"
+num = "0.4.3"
+sha2 = "0.10.9"
+sha3 = "0.10.8"
+
+[features]

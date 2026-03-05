@@ -7,67 +7,18 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 
 use ext_messages_auth::auth::Token;
-pub(crate) use message::ExternalMessage;
-pub(crate) use message::IncomingExternalMessage;
+use node_types::ThreadIdentifier;
 use salvo::http::StatusCode;
 use salvo::writing::Json;
 use salvo::Response;
-use serde::Deserialize;
 use serde::Serialize;
-use serde_with::serde_as;
-use serde_with::Bytes;
 use transport_layer::HostPort;
 use tvm_types::write_boc;
 use tvm_types::SliceData;
 
 mod message;
 pub mod v2;
-
-#[serde_as]
-#[derive(Copy, Clone, Eq, Hash, PartialEq, Serialize, Deserialize, PartialOrd, Ord)]
-pub struct ThreadIdentifier(#[serde_as(as = "Bytes")] [u8; 34]);
-
-impl Default for ThreadIdentifier {
-    fn default() -> Self {
-        Self([0; 34])
-    }
-}
-
-impl From<[u8; 34]> for ThreadIdentifier {
-    fn from(array: [u8; 34]) -> Self {
-        Self(array)
-    }
-}
-
-impl TryFrom<std::string::String> for ThreadIdentifier {
-    type Error = anyhow::Error;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        match hex::decode(value) {
-            Ok(array) => {
-                let boxed_slice = array.into_boxed_slice();
-                let boxed_array: Box<[u8; 34]> = match boxed_slice.try_into() {
-                    Ok(array) => array,
-                    Err(e) => anyhow::bail!("Expected a Vec of length 34 but it was {}", e.len()),
-                };
-                Ok(Self(*boxed_array))
-            }
-            Err(_) => anyhow::bail!("Failed to convert to ThreadIdentifier"),
-        }
-    }
-}
-
-impl From<ThreadIdentifier> for [u8; 34] {
-    fn from(val: ThreadIdentifier) -> Self {
-        val.0
-    }
-}
-
-impl Debug for ThreadIdentifier {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}", hex::encode(self.0))
-    }
-}
+pub use message::NotQueuedExtMessage;
 
 #[derive(Serialize, Clone, Debug, Default)]
 pub struct ExtMsgResponse {
@@ -267,7 +218,7 @@ pub struct ExtMsgFeedback {
     pub now: Option<u32>,
     pub aborted: bool,
     pub exit_code: i32,
-    pub thread_id: Option<[u8; 34]>,
+    pub thread_id: Option<ThreadIdentifier>,
     pub error: Option<FeedbackError>,
     pub ext_out_msgs: Vec<SliceData>,
 }

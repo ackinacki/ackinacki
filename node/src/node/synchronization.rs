@@ -7,6 +7,8 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
 
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use telemetry_utils::mpsc::instrumented_channel;
 use tokio::time::Instant;
 
@@ -22,9 +24,7 @@ use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::next_seq_no;
-use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 
 impl<TStateSyncService, TRandomGenerator> Node<TStateSyncService, TRandomGenerator>
@@ -212,7 +212,7 @@ where
                         let mut envelope =
                             self.on_incoming_candidate_block(net_block, resend_node_id)?;
 
-                        if let Some((block_id, seq_no)) = initial_state.clone() {
+                        if let Some((block_id, seq_no)) = initial_state {
                             tracing::debug!(
                                 "[synchronizing] initial_state block: {}, seqno: {}",
                                 block_id.clone(),
@@ -349,14 +349,13 @@ where
                                 let resource_address =
                                     BTreeMap::from_iter(resource_address.iter().map(
                                         |(k, v)| -> (ThreadIdentifier, BlockIdentifier) {
-                                            (*k, v.clone())
+                                            (*k, *v)
                                         },
                                     ));
                                 last_node_join_message_time = Instant::now();
                                 initial_state_shared_resource_address =
                                     Some(resource_address.clone());
-                                initial_state =
-                                    Some((net_block.identifier.clone(), net_block.seq_no));
+                                initial_state = Some((net_block.identifier, net_block.seq_no));
 
                                 self.state_sync_service.add_load_state_task(
                                     resource_address.clone(),
@@ -404,7 +403,7 @@ where
                         {
                             continue;
                         }
-                        let identifier = sync_finalized.data().block_identifier().clone();
+                        let identifier = *sync_finalized.data().block_identifier();
                         let seq_no = *sync_finalized.data().block_seq_no();
                         let address = sync_finalized.data().thread_refs().clone();
                         tracing::debug!(
@@ -426,7 +425,7 @@ where
                             tracing::trace!("[synchronizing] start loading shared state");
                             initial_state_shared_resource_address = Some(address.clone());
                             last_node_join_message_time = Instant::now();
-                            initial_state = Some((identifier.clone(), seq_no));
+                            initial_state = Some((identifier, seq_no));
                             self.state_sync_service.add_load_state_task(
                                 address,
                                 self.repository.clone(),
@@ -458,7 +457,7 @@ where
                 .repository
                 .get_optimistic_state(
                     &last_finalized_block_id,
-                    &finalized_block.data().get_common_section().thread_id,
+                    finalized_block.data().common_section().thread_id(),
                     None,
                 )?
                 .ok_or(anyhow::format_err!("Failed to load finalized state"))?;
@@ -466,11 +465,8 @@ where
             for (thread_id, block_id) in &share_state_hint {
                 self.state_sync_service.save_state_for_sharing(block_id, thread_id, None)?;
             }
-            self.last_synced_state = Some((
-                last_finalized_block_id.clone(),
-                last_finalized_seq_no,
-                share_state_hint.clone(),
-            ));
+            self.last_synced_state =
+                Some((last_finalized_block_id, last_finalized_seq_no, share_state_hint.clone()));
             self.broadcast_sync_finalized(
                 last_finalized_block_id,
                 last_finalized_seq_no,

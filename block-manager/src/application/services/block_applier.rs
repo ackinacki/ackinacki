@@ -7,16 +7,16 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 
+use account_state::ThreadAccountsRepository;
 use anyhow::bail;
 use database::sqlite::sqlite_helper::SqliteHelper;
 use node::bls::envelope::BLSSignedEnvelope;
 use node::bls::envelope::Envelope;
-use node::bls::GoshBLS;
+use node::repository::accounts::NodeThreadAccountsRepository;
 use node::types::AckiNackiBlock;
 use parking_lot::Mutex;
 use telemetry_utils::now_micros;
 use transport_layer::HostPort;
-use tvm_block::ShardStateUnsplit;
 
 use crate::application::metrics::Metrics;
 use crate::application::metrics::ERR_DESER_BLOCK;
@@ -38,11 +38,22 @@ pub fn run(
     app_state: Arc<AppState>,
     metrics: Option<Metrics>,
     cmd_rx: mpsc::Receiver<WorkerCommand>,
+    thread_accounts_repository: NodeThreadAccountsRepository,
 ) -> tokio::task::JoinHandle<Result<(), anyhow::Error>> {
     tokio::task::spawn_blocking(move || {
         match thread::Builder::new()
             .name("block-applier".to_string())
-            .spawn(|| worker(db_writer, quarantine, cmd_rx, bp_resolver, app_state, metrics))
+            .spawn(|| {
+                worker(
+                    db_writer,
+                    quarantine,
+                    cmd_rx,
+                    bp_resolver,
+                    app_state,
+                    metrics,
+                    thread_accounts_repository,
+                )
+            })
             .expect("spawn block-subscriber worker")
             .join()
         {
@@ -60,9 +71,10 @@ fn worker(
     bp_resolver: Arc<Mutex<dyn UpdatableBPResolver>>,
     app_state: Arc<AppState>,
     metrics: Option<Metrics>,
+    thread_accounts_repository: NodeThreadAccountsRepository,
 ) -> anyhow::Result<()> {
     let mut transaction_traces = HashMap::new();
-    let shard_state = Arc::new(ShardStateUnsplit::default());
+    let shard_state = NodeThreadAccountsRepository::new_state();
 
     tracing::debug!("worker() starting loop...");
     let db_helper = Arc::new(Mutex::new(db_writer));
@@ -88,7 +100,7 @@ fn worker(
                     continue;
                 };
 
-                let thread_id = envelope.data().get_common_section().thread_id;
+                let thread_id = *envelope.data().common_section().thread_id();
                 if let Some(node_addr) = node_addr {
                     if let Err(err) =
                         bp_resolver.lock().upsert(format!("{thread_id:x}"), vec![node_addr])
@@ -124,9 +136,10 @@ fn worker(
                 if let Err(err) = node::database::serialize_block::reflect_block_in_db(
                     db_helper.clone(),
                     envelope,
-                    Some(raw_block.clone()),
-                    shard_state.clone(),
+                    Some(raw_block),
+                    &shard_state,
                     &mut transaction_traces,
+                    &thread_accounts_repository,
                 ) {
                     tracing::error!("failed to store block: {err}");
                     if let Some(m) = &metrics {
@@ -181,8 +194,8 @@ fn worker(
 
 fn deserialize_block(
     v: &[u8],
-) -> anyhow::Result<(Option<HostPort>, Vec<u8>, Envelope<GoshBLS, AckiNackiBlock>)> {
+) -> anyhow::Result<(Option<HostPort>, Vec<u8>, Envelope<AckiNackiBlock>)> {
     let (node_addr, raw_block) = bincode::deserialize::<(Option<HostPort>, Vec<u8>)>(v)?;
-    let envelope: Envelope<GoshBLS, AckiNackiBlock> = bincode::deserialize(&raw_block)?;
+    let envelope: Envelope<AckiNackiBlock> = bincode::deserialize(&raw_block)?;
     Ok((node_addr, raw_block, envelope))
 }

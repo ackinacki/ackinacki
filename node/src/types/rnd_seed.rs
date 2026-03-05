@@ -1,11 +1,10 @@
 use std::ops::BitXor;
 
+use node_types::BlockIdentifier;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::serde_as;
 use serde_with::Bytes;
-
-use crate::types::BlockIdentifier;
 
 #[serde_as]
 #[derive(Deserialize, Serialize, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, Default)]
@@ -77,7 +76,7 @@ impl BitXor<BlockIdentifier> for RndSeed {
     fn bitxor(self, rhs: BlockIdentifier) -> Self::Output {
         const N: usize = 32;
         let lhs: [u8; N] = self.0;
-        let rhs: [u8; N] = rhs.0;
+        let rhs: [u8; N] = *rhs.as_array();
         let mut result: [u8; N] = [0u8; N];
         for i in 0..N {
             result[i] = lhs[i] ^ rhs[i];

@@ -3,10 +3,10 @@ use std::fmt::{self};
 use std::ops::Deref;
 use std::sync::Arc;
 
-use crate::types::AccountAddress;
+use node_types::AccountIdentifier;
 
 #[derive(Clone)]
-pub struct OrderSet(Arc<indexset::BTreeSet<AccountAddress>>);
+pub struct OrderSet(Arc<indexset::BTreeSet<AccountIdentifier>>);
 
 impl Default for OrderSet {
     fn default() -> Self {
@@ -23,23 +23,23 @@ impl OrderSet {
         self.0.len()
     }
 
-    pub fn get_index(&self, index: usize) -> Option<&AccountAddress> {
+    pub fn get_index(&self, index: usize) -> Option<&AccountIdentifier> {
         self.0.get_index(index)
     }
 
-    pub fn contains(&self, account_address: &AccountAddress) -> bool {
+    pub fn contains(&self, account_address: &AccountIdentifier) -> bool {
         self.0.contains(account_address)
     }
 
-    pub fn insert(&mut self, account_address: AccountAddress) {
+    pub fn insert(&mut self, account_address: AccountIdentifier) {
         Arc::make_mut(&mut self.0).insert(account_address);
     }
 
-    pub fn remove(&mut self, account_address: &AccountAddress) {
+    pub fn remove(&mut self, account_address: &AccountIdentifier) {
         Arc::make_mut(&mut self.0).remove(account_address);
     }
 
-    pub fn to_set(&self) -> indexset::BTreeSet<AccountAddress> {
+    pub fn to_set(&self) -> indexset::BTreeSet<AccountIdentifier> {
         self.0.deref().clone()
     }
 }
@@ -59,7 +59,7 @@ impl<'de> serde::Deserialize<'de> for OrderSet {
     where
         D: serde::Deserializer<'de>,
     {
-        let data = Vec::<AccountAddress>::deserialize(deserializer)?;
+        let data = Vec::<AccountIdentifier>::deserialize(deserializer)?;
         Ok(OrderSet(Arc::new(indexset::BTreeSet::from_iter(data))))
     }
 }

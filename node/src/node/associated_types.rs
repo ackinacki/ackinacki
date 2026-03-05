@@ -11,6 +11,9 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use derive_getters::Getters;
+use node_types::AccountIdentifier;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -21,25 +24,21 @@ use super::block_request_service::BlockRequestService;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::gosh_bls::PubKey;
-use crate::bls::GoshBLS;
 use crate::node::services::sync::StateSyncService;
 use crate::node::BlockStateRepository;
 use crate::node::Node;
 use crate::node::UInt256;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::envelope_hash::AckiNackiEnvelopeHash;
-use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
-use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 use crate::versioning::ProtocolVersionSupport;
 
 pub type SignerIndex = u16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub struct NodeIdentifier(AccountAddress);
+pub struct NodeIdentifier(AccountIdentifier);
 
 impl NodeIdentifier {
     #[cfg(any(test, feature = "nack_test"))]
@@ -57,7 +56,7 @@ pub struct NodeCredentials {
 impl NodeIdentifier {
     #[cfg(any(test, feature = "nack_test"))]
     pub fn test(seed: usize) -> NodeIdentifier {
-        AccountAddress(UInt256::from_be_bytes(&seed.to_be_bytes())).into()
+        NodeIdentifier(AccountIdentifier::from(UInt256::from_be_bytes(&seed.to_be_bytes())))
     }
 }
 
@@ -80,19 +79,19 @@ impl<'de> Deserialize<'de> for NodeIdentifier {
     }
 }
 
-impl From<AccountAddress> for NodeIdentifier {
-    fn from(value: AccountAddress) -> Self {
+impl From<AccountIdentifier> for NodeIdentifier {
+    fn from(value: AccountIdentifier) -> Self {
         Self(value)
     }
 }
 
 impl From<tvm_types::AccountId> for NodeIdentifier {
     fn from(value: tvm_types::AccountId) -> Self {
-        Self(AccountAddress::from(value))
+        Self(AccountIdentifier::from(value))
     }
 }
 
-impl From<NodeIdentifier> for AccountAddress {
+impl From<NodeIdentifier> for AccountIdentifier {
     fn from(value: NodeIdentifier) -> Self {
         value.0
     }
@@ -116,12 +115,12 @@ impl Display for NodeIdentifier {
 #[derive(Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub enum NackReason {
     // SameHeightBlock {
-    // first_envelope: Envelope<GoshBLS, AckiNackiBlock>,
-    // second_envelope: Envelope<GoshBLS, AckiNackiBlock>,
+    // first_envelope: Envelope<AckiNackiBlock>,
+    // second_envelope: Envelope<AckiNackiBlock>,
     // },
-    BadBlock { envelope: Envelope<GoshBLS, AckiNackiBlock> },
-    TooComplexExecution { envelope: Envelope<GoshBLS, AckiNackiBlock> },
-    WrongNack { nack_data_envelope: Arc<Envelope<GoshBLS, NackData>> },
+    BadBlock { envelope: Envelope<AckiNackiBlock> },
+    TooComplexExecution { envelope: Envelope<AckiNackiBlock> },
+    WrongNack { nack_data_envelope: Arc<Envelope<NackData>> },
 }
 
 impl NackReason {
@@ -136,8 +135,8 @@ impl NackReason {
             // let combined_hash: [u8; 32] = result_hash;
             // Ok(combined_hash.into())
             // }
-            NackReason::TooComplexExecution { envelope } => Ok(envelope.data().get_hash().into()),
-            NackReason::BadBlock { envelope } => Ok(envelope.data().get_hash().into()),
+            NackReason::TooComplexExecution { envelope } => Ok(envelope.data().hash().into()),
+            NackReason::BadBlock { envelope } => Ok(envelope.data().hash().into()),
             NackReason::WrongNack { nack_data_envelope: _ } => {
                 tracing::trace!("WrongNack nack");
                 Err(anyhow!("No allow WrongNack"))
@@ -148,7 +147,7 @@ impl NackReason {
     pub fn get_node_data(
         &self,
         block_state_repository: BlockStateRepository,
-    ) -> Option<(NodeIdentifier, PubKey, AccountAddress)> {
+    ) -> Option<(NodeIdentifier, PubKey, AccountIdentifier)> {
         let nack_target_node_id;
         let nack_key;
         let nack_wallet_addr;
@@ -156,7 +155,7 @@ impl NackReason {
             /*
             NackReason::SameHeightBlock { first_envelope, second_envelope: _ } => {
                 nack_target_node_id =
-                    first_envelope.data().get_common_section().producer_id.clone();
+                    first_envelope.data().common_section().producer_id.clone();
                 // TODO: think of possible attacks base on impossibility of finding BK key
                 let state = block_state_repository.get(&first_envelope.data().parent()).unwrap();
                 let state_in = state.lock();
@@ -170,24 +169,24 @@ impl NackReason {
             }
             */
             NackReason::TooComplexExecution { envelope } => {
-                nack_target_node_id = envelope.data().get_common_section().producer_id.clone();
+                nack_target_node_id = envelope.data().common_section().producer_id().clone();
                 // TODO: think of possible attacks base on impossibility of finding BK key
                 let state = block_state_repository.get(&envelope.data().parent()).unwrap();
                 let bk_set = state.guarded(|e| e.bk_set().clone()).unwrap();
                 if let Some(data) = bk_set.get_by_node_id(&nack_target_node_id) {
                     nack_key = data.pubkey.clone();
-                    nack_wallet_addr = data.owner_address.clone();
+                    nack_wallet_addr = data.owner_address;
                     return Some((nack_target_node_id, nack_key, nack_wallet_addr));
                 }
             }
             NackReason::BadBlock { envelope } => {
-                nack_target_node_id = envelope.data().get_common_section().producer_id.clone();
+                nack_target_node_id = envelope.data().common_section().producer_id().clone();
                 // TODO: think of possible attacks base on impossibility of finding BK key
                 let state = block_state_repository.get(&envelope.data().parent()).unwrap();
                 let bk_set = state.guarded(|e| e.bk_set().clone()).unwrap();
                 if let Some(data) = bk_set.get_by_node_id(&nack_target_node_id) {
                     nack_key = data.pubkey.clone();
-                    nack_wallet_addr = data.owner_address.clone();
+                    nack_wallet_addr = data.owner_address;
                     return Some((nack_target_node_id, nack_key, nack_wallet_addr));
                 }
             }
@@ -241,17 +240,17 @@ where
     TStateSyncService: StateSyncService<Repository = RepositoryImpl>,
     TRandomGenerator: rand::Rng,
 {
-    type Ack = Envelope<GoshBLS, AckData>;
-    type BlockAttestation = Envelope<GoshBLS, AttestationData>;
-    type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>;
-    type Nack = Envelope<GoshBLS, NackData>;
+    type Ack = Envelope<AckData>;
+    type BlockAttestation = Envelope<AttestationData>;
+    type CandidateBlock = Envelope<AckiNackiBlock>;
+    type Nack = Envelope<NackData>;
 }
 
 impl NodeAssociatedTypes for BlockRequestService {
-    type Ack = Envelope<GoshBLS, AckData>;
-    type BlockAttestation = Envelope<GoshBLS, AttestationData>;
-    type CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>;
-    type Nack = Envelope<GoshBLS, NackData>;
+    type Ack = Envelope<AckData>;
+    type BlockAttestation = Envelope<AttestationData>;
+    type CandidateBlock = Envelope<AckiNackiBlock>;
+    type Nack = Envelope<NackData>;
 }
 
 /// Result of node synchronization process

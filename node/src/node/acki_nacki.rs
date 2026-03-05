@@ -1,13 +1,14 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use node_types::BlockIdentifier;
+
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::node::associated_types::NackReason;
 use crate::node::associated_types::NodeAssociatedTypes;
 use crate::node::services::sync::StateSyncService;
 use crate::node::Node;
 use crate::repository::repository_impl::RepositoryImpl;
-use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::utilities::guarded::GuardedMut;
 
@@ -25,7 +26,7 @@ where
         tracing::trace!("on_ack {:?}", ack);
         let block_id: &BlockIdentifier = &ack.data().block_id;
         let block_seq_no = ack.data().block_seq_no;
-        let Some(signatures_map) = self.get_block_keeper_pubkeys(block_id.clone()) else {
+        let Some(signatures_map) = self.get_block_keeper_pubkeys(*block_id) else {
             tracing::trace!("ack can't be processed now, save to cache.");
             let acks = self.ack_cache.entry(block_seq_no).or_default();
             acks.push(ack.clone());
@@ -115,7 +116,7 @@ where
         // let mut received_nacks_in = self.received_nacks.lock();
         // received_nacks_in.push(nack.clone());
         // drop(received_nacks_in);
-        // let common_section = block.data().get_common_section();
+        // let common_section = block.data().common_section();
         // if common_section.thread_id == self.thread_id && self.get_latest_block_producer() == common_section.producer_id {
         //     self.rotate_producer_group()?;
         // }
@@ -179,7 +180,7 @@ where
     //     thread_id: &ThreadIdentifier,
     // ) -> anyhow::Result<bool> {
     //     tracing::trace!("SameHeightBlock nack");
-    //     let nack_target_node_id = &nack_first_envelope.data().get_common_section().producer_id;
+    //     let nack_target_node_id = &nack_first_envelope.data().common_section().producer_id;
     //     let bk_set = match self.get_block_keeper_set_for_block_id(block.data().parent()).clone() {
     //         Some(value) => value,
     //         None => return Ok(false),
@@ -242,8 +243,8 @@ where
     //     thread_id: &ThreadIdentifier,
     // ) -> anyhow::Result<bool> {
     //     tracing::trace!("BadBlock nack");
-    //     let nack_target_node_id = &nack_envelope.data().get_common_section().producer_id;
-    //     let block_nack = block.data().get_common_section().nacks.clone();
+    //     let nack_target_node_id = &nack_envelope.data().common_section().producer_id;
+    //     let block_nack = block.data().common_section().nacks.clone();
     //     let block_id = block.data().identifier();
     //     // TODO: check if black was already validated.
     //     // if self.blocks_state.get(block_id)?.
@@ -281,7 +282,7 @@ where
     //         Some(mut state) => {
     //             let refs = self.shared_services.exec(|service| {
     //                 let mut refs = vec![];
-    //                 for block_id in &nack_envelope.data().get_common_section().refs {
+    //                 for block_id in &nack_envelope.data().common_section().refs {
     //                     let state = service
     //                         .cross_thread_ref_data_service
     //                         .get_cross_thread_ref_data(block_id)

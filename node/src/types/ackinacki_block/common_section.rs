@@ -1,32 +1,43 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+#[cfg(feature = "history_proofs")]
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Formatter;
 
 use derive_getters::Getters;
+use derive_setters::Setters;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 use typed_builder::TypedBuilder;
+// #[cfg(feature = "transitioning_node_version")]
+use versioned_struct::versioned;
+// #[cfg(feature = "transitioning_node_version")]
+use versioned_struct::Transitioning;
 
 use crate::block_keeper_system::BlockKeeperSetChange;
 use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
 use crate::types::bp_selector::ProducerSelector;
+#[cfg(feature = "history_proofs")]
+use crate::types::history_proof::LayerNumber;
+#[cfg(feature = "history_proofs")]
+use crate::types::history_proof::ProofLayerRootHash;
 use crate::types::BlockHeight;
-use crate::types::BlockIdentifier;
 use crate::types::BlockRound;
-use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
+use crate::types::ThreadsTablePrefab;
 #[cfg(feature = "protocol_version_hash_in_block")]
 use crate::versioning::protocol_version::ProtocolVersionHash;
 
@@ -41,46 +52,80 @@ impl Debug for Directives {
     }
 }
 
-#[cfg_attr(feature = "transitioning_node_version", versioned)]
-#[derive(Clone, PartialEq, Eq, TypedBuilder)]
+// #[cfg(feature = "transitioning_node_version")]
+#[versioned]
+#[derive(Clone, PartialEq, Eq, Getters, TypedBuilder, Setters)]
+#[setters(prefix = "set_", borrow_self)]
 pub struct CommonSection {
-    pub block_height: BlockHeight,
-    pub directives: Directives,
+    block_height: BlockHeight,
+    directives: Directives,
     // TODO: we assume that all attestations are aggregated and there are no duplicates on (block_id, attestation_target_type)
     // otherwise it may break block processing cycle
-    pub block_attestations: Vec<Envelope<GoshBLS, AttestationData>>,
-    pub round: BlockRound,
-    pub producer_id: NodeIdentifier,
-    pub thread_id: ThreadIdentifier,
-    pub threads_table: Option<ThreadsTable>,
+    block_attestations: Vec<Envelope<AttestationData>>,
+    round: BlockRound,
+    producer_id: NodeIdentifier,
+    thread_id: ThreadIdentifier,
+    #[future]
+    threads_table: Option<ThreadsTablePrefab>,
+    #[legacy]
+    threads_table: Option<ThreadsTable>,
     /// Extra references this block depends on.
     /// This can be any combination of:
     /// - sources of internal messages from another thread
     /// - source of an update of the threads state
     /// - source of updates for account migrations due to a new dapp set.
     /// - (?)
-    pub refs: Vec<BlockIdentifier>,
-    pub block_keeper_set_changes: Vec<BlockKeeperSetChange>,
+    refs: Vec<BlockIdentifier>,
+    block_keeper_set_changes: Vec<BlockKeeperSetChange>,
     // Dynamic parameter: an expected number of Acki-Nacki for this block
-    pub verify_complexity: SignerIndex,
-    pub acks: Vec<Envelope<GoshBLS, AckData>>,
-    pub nacks: Vec<Envelope<GoshBLS, NackData>>,
+    verify_complexity: SignerIndex,
+    acks: Vec<Envelope<AckData>>,
+    nacks: Vec<Envelope<NackData>>,
     // This field must be set, but it is option, because we can't set it up on block creation and update it later
-    pub producer_selector: Option<ProducerSelector>,
+    producer_selector: Option<ProducerSelector>,
 
     #[cfg(feature = "monitor-accounts-number")]
-    pub accounts_number_diff: i64,
+    accounts_number_diff: i64,
 
     #[cfg(feature = "protocol_version_hash_in_block")]
     protocol_version_hash: ProtocolVersionHash,
+
+    // Mapping of Layer root hashes
+    // root mapping key <K> is number of layer [1-N]
+    // child mapping value is root hash #L<K>()
+    #[cfg(feature = "history_proofs")]
+    #[future]
+    history_proofs: BTreeMap<LayerNumber, ProofLayerRootHash>,
 }
 
-#[cfg(feature = "transitioning_node_version")]
 impl Transitioning for CommonSection {
     type Old = CommonSectionOld;
 
     fn from(old: Self::Old) -> Self {
-        todo!() // should be set for a particular transitioning version if required
+        let threads_table = old.threads_table.map(ThreadsTablePrefab::resolved);
+        Self {
+            block_height: old.block_height,
+            directives: old.directives,
+            block_attestations: old.block_attestations,
+            round: old.round,
+            producer_id: old.producer_id,
+            thread_id: old.thread_id,
+            threads_table,
+            refs: old.refs,
+            block_keeper_set_changes: old.block_keeper_set_changes,
+            verify_complexity: old.verify_complexity,
+            acks: old.acks,
+            nacks: old.nacks,
+            producer_selector: old.producer_selector,
+
+            #[cfg(feature = "monitor-accounts-number")]
+            accounts_number_diff: old.accounts_number_diff,
+
+            #[cfg(feature = "protocol_version_hash_in_block")]
+            protocol_version_hash: old.protocol_version_hash,
+            #[cfg(feature = "history_proofs")]
+            history_proofs: BTreeMap::new(),
+        }
     }
 }
 
@@ -93,7 +138,7 @@ impl CommonSection {
         block_keeper_set_changes: Vec<BlockKeeperSetChange>,
         verify_complexity: SignerIndex,
         refs: Vec<BlockIdentifier>,
-        threads_table: Option<ThreadsTable>,
+        threads_table: Option<ThreadsTablePrefab>,
         block_height: BlockHeight,
         #[cfg(feature = "monitor-accounts-number")] accounts_number_diff: i64,
         #[cfg(feature = "protocol_version_hash_in_block")]
@@ -117,6 +162,8 @@ impl CommonSection {
             accounts_number_diff,
             #[cfg(feature = "protocol_version_hash_in_block")]
             protocol_version_hash,
+            #[cfg(feature = "history_proofs")]
+            history_proofs: BTreeMap::new(),
         }
     }
 
@@ -146,6 +193,8 @@ impl CommonSection {
             .refs(self.refs.clone())
             .threads_table(self.threads_table.clone())
             .block_height(self.block_height);
+        #[cfg(feature = "history_proofs")]
+        let builder = builder.history_proofs(self.history_proofs.clone());
 
         #[cfg(feature = "monitor-accounts-number")]
         let builder = builder.accounts_number_diff(self.accounts_number_diff);
@@ -157,12 +206,121 @@ impl CommonSection {
     }
 
     fn wrap_deserialize(data: WrappedCommonSection) -> Self {
-        let block_attestations: Vec<Envelope<GoshBLS, AttestationData>> =
+        let block_attestations: Vec<Envelope<AttestationData>> =
             bincode::deserialize(&data.block_attestations)
                 .expect("Failed to deserialize block attestations");
-        let acks: Vec<Envelope<GoshBLS, AckData>> =
+        let acks: Vec<Envelope<AckData>> =
             bincode::deserialize(&data.acks).expect("Failed to deserialize acks");
-        let nacks: Vec<Envelope<GoshBLS, NackData>> =
+        let nacks: Vec<Envelope<NackData>> =
+            bincode::deserialize(&data.nacks).expect("Failed to deserialize nacks");
+
+        let builder = Self::builder()
+            .round(data.round)
+            .directives(data.directives)
+            .block_attestations(block_attestations)
+            .producer_id(data.producer_id)
+            .block_keeper_set_changes(data.block_keeper_set_changes)
+            .verify_complexity(data.verify_complexity)
+            .acks(acks)
+            .nacks(nacks)
+            .producer_selector(Some(data.producer_selector))
+            .refs(data.refs)
+            .thread_id(data.thread_identifier)
+            .threads_table(data.threads_table)
+            .block_height(data.block_height);
+
+        #[cfg(feature = "history_proofs")]
+        let builder = builder.history_proofs(data.history_proofs);
+
+        #[cfg(feature = "monitor-accounts-number")]
+        let builder = builder.accounts_number_diff(data.accounts_number_diff);
+
+        #[cfg(feature = "protocol_version_hash_in_block")]
+        let builder = builder.protocol_version_hash(data.protocol_version_hash);
+
+        builder.build()
+    }
+}
+
+impl CommonSectionOld {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        thread_id: ThreadIdentifier,
+        round: BlockRound,
+        producer_id: NodeIdentifier,
+        block_keeper_set_changes: Vec<BlockKeeperSetChange>,
+        verify_complexity: SignerIndex,
+        refs: Vec<BlockIdentifier>,
+        threads_table: Option<ThreadsTable>,
+        block_height: BlockHeight,
+        #[cfg(feature = "monitor-accounts-number")] accounts_number_diff: i64,
+        #[cfg(feature = "protocol_version_hash_in_block")]
+        protocol_version_hash: ProtocolVersionHash,
+    ) -> Self {
+        CommonSectionOld {
+            block_height,
+            round,
+            block_attestations: vec![],
+            directives: Directives::default(),
+            thread_id,
+            threads_table,
+            refs,
+            producer_id,
+            block_keeper_set_changes,
+            verify_complexity,
+            acks: vec![],
+            nacks: vec![],
+            producer_selector: None,
+            #[cfg(feature = "monitor-accounts-number")]
+            accounts_number_diff,
+            #[cfg(feature = "protocol_version_hash_in_block")]
+            protocol_version_hash,
+        }
+    }
+
+    fn wrap_serialize(&self) -> WrappedCommonSectionOld {
+        let block_attestations_data = bincode::serialize(&self.block_attestations)
+            .expect("Failed to serialize last finalized blocks");
+        let acks_data =
+            bincode::serialize(&self.acks).expect("Failed to serialize last finalized blocks");
+        let nacks_data =
+            bincode::serialize(&self.nacks).expect("Failed to serialize last finalized blocks");
+
+        let builder = WrappedCommonSectionOld::builder()
+            .round(self.round)
+            .directives(self.directives.clone())
+            .block_attestations(block_attestations_data)
+            .producer_id(self.producer_id.clone())
+            .block_keeper_set_changes(self.block_keeper_set_changes.clone())
+            .verify_complexity(self.verify_complexity)
+            .acks(acks_data)
+            .nacks(nacks_data)
+            .producer_selector(
+                self.producer_selector
+                    .clone()
+                    .expect("Producer selector must be set before serialization"),
+            )
+            .thread_identifier(self.thread_id)
+            .refs(self.refs.clone())
+            .threads_table(self.threads_table.clone())
+            .block_height(self.block_height);
+
+        #[cfg(feature = "monitor-accounts-number")]
+        let builder = builder.accounts_number_diff(self.accounts_number_diff);
+
+        #[cfg(feature = "protocol_version_hash_in_block")]
+        let builder = builder.protocol_version_hash(self.protocol_version_hash.clone());
+
+        builder.build()
+    }
+
+    fn wrap_deserialize(data: WrappedCommonSectionOld) -> Self {
+        let block_attestations: Vec<Envelope<AttestationData>> =
+            bincode::deserialize(&data.block_attestations)
+                .expect("Failed to deserialize block attestations");
+        let acks: Vec<Envelope<AckData>> =
+            bincode::deserialize(&data.acks).expect("Failed to deserialize acks");
+        let nacks: Vec<Envelope<NackData>> =
             bincode::deserialize(&data.nacks).expect("Failed to deserialize nacks");
 
         let builder = Self::builder()
@@ -184,62 +342,11 @@ impl CommonSection {
 
         #[cfg(feature = "protocol_version_hash_in_block")]
         let builder = builder.protocol_version_hash(data.protocol_version_hash);
-
         builder.build()
-    }
-
-    pub fn set_acks(&mut self, acks: Vec<Envelope<GoshBLS, AckData>>) {
-        self.acks = acks;
-    }
-
-    pub fn set_nacks(&mut self, nacks: Vec<Envelope<GoshBLS, NackData>>) {
-        self.nacks = nacks;
-    }
-
-    pub fn set_block_attestations(
-        &mut self,
-        block_attestations: Vec<Envelope<GoshBLS, AttestationData>>,
-    ) {
-        self.block_attestations = block_attestations;
-    }
-
-    pub fn set_producer_selector(&mut self, producer_selector: Option<ProducerSelector>) {
-        self.producer_selector = producer_selector;
-    }
-
-    pub fn set_directives(&mut self, directives: Directives) {
-        self.directives = directives;
-    }
-
-    pub fn set_threads_table(&mut self, threads_table: Option<ThreadsTable>) {
-        self.threads_table = threads_table;
-    }
-
-    pub fn round(&self) -> u64 {
-        self.round
-    }
-
-    pub fn producer_selector(&self) -> Option<ProducerSelector> {
-        self.producer_selector.clone()
-    }
-
-    pub fn block_attestations(&self) -> Vec<Envelope<GoshBLS, AttestationData>> {
-        self.block_attestations.clone()
-    }
-
-    pub fn producer_id(&self) -> NodeIdentifier {
-        self.producer_id.clone()
-    }
-
-    pub fn thread_id(&self) -> ThreadIdentifier {
-        self.thread_id
-    }
-
-    pub fn directives(&self) -> Directives {
-        self.directives.clone()
     }
 }
 
+#[versioned]
 #[derive(TypedBuilder, Serialize, Deserialize)]
 struct WrappedCommonSection {
     pub round: BlockRound,
@@ -253,15 +360,30 @@ struct WrappedCommonSection {
     pub producer_selector: ProducerSelector,
     pub thread_identifier: ThreadIdentifier,
     pub refs: Vec<BlockIdentifier>,
+    #[future]
+    pub threads_table: Option<ThreadsTablePrefab>,
+    #[legacy]
     pub threads_table: Option<ThreadsTable>,
     pub block_height: BlockHeight,
     #[cfg(feature = "monitor-accounts-number")]
     pub accounts_number_diff: i64,
     #[cfg(feature = "protocol_version_hash_in_block")]
     pub protocol_version_hash: ProtocolVersionHash,
+    #[cfg(feature = "history_proofs")]
+    #[future]
+    pub history_proofs: BTreeMap<LayerNumber, ProofLayerRootHash>,
 }
 
 impl Serialize for CommonSection {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.wrap_serialize().serialize(serializer)
+    }
+}
+
+impl Serialize for CommonSectionOld {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -280,7 +402,47 @@ impl<'de> Deserialize<'de> for CommonSection {
     }
 }
 
+impl<'de> Deserialize<'de> for CommonSectionOld {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wrapped_data = WrappedCommonSectionOld::deserialize(deserializer)?;
+        Ok(CommonSectionOld::wrap_deserialize(wrapped_data))
+    }
+}
+
 impl Debug for CommonSection {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut fmt = f.debug_struct("");
+
+        fmt.field("thread_id", &self.thread_id)
+            .field("round", &self.round)
+            .field("producer_id", &self.producer_id)
+            .field("directives", &self.directives)
+            .field("block_attestations", &self.block_attestations)
+            .field("block_keeper_set_changes", &self.block_keeper_set_changes)
+            .field("verify_complexity", &self.verify_complexity)
+            .field("acks", &self.acks)
+            .field("nacks", &self.nacks)
+            .field("producer_selector", &self.producer_selector)
+            .field("refs", &self.refs)
+            .field("threads_table", &self.threads_table)
+            .field("block_height", &self.block_height.height());
+
+        #[cfg(feature = "history_proofs")]
+        fmt.field("history_proofs", &self.history_proofs);
+
+        #[cfg(feature = "monitor-accounts-number")]
+        fmt.field("accounts_number_diff", &self.accounts_number_diff);
+        #[cfg(feature = "protocol_version_hash_in_block")]
+        fmt.field("protocol_version_hash", &self.protocol_version_hash);
+
+        fmt.finish()
+    }
+}
+
+impl Debug for CommonSectionOld {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let mut fmt = f.debug_struct("");
 
@@ -303,5 +465,142 @@ impl Debug for CommonSection {
         fmt.field("protocol_version_hash", &self.protocol_version_hash);
 
         fmt.finish()
+    }
+}
+
+#[derive(Clone)]
+pub enum CommonSectionVersioned {
+    New(CommonSection),
+    Old(CommonSectionOld),
+}
+
+impl CommonSectionVersioned {
+    pub fn block_keeper_set_changes(&self) -> &Vec<BlockKeeperSetChange> {
+        match self {
+            CommonSectionVersioned::New(common_section) => {
+                common_section.block_keeper_set_changes()
+            }
+            CommonSectionVersioned::Old(common_section) => {
+                common_section.block_keeper_set_changes()
+            }
+        }
+    }
+
+    pub fn set_acks(&mut self, acks: Vec<Envelope<AckData>>) {
+        match self {
+            CommonSectionVersioned::New(common_section) => {
+                common_section.acks = acks;
+            }
+            CommonSectionVersioned::Old(common_section) => {
+                common_section.acks = acks;
+            }
+        }
+    }
+
+    pub fn set_nacks(&mut self, nacks: Vec<Envelope<NackData>>) {
+        match self {
+            CommonSectionVersioned::New(common_section) => {
+                common_section.nacks = nacks;
+            }
+            CommonSectionVersioned::Old(common_section) => {
+                common_section.nacks = nacks;
+            }
+        }
+    }
+
+    pub fn set_block_attestations(&mut self, block_attestations: Vec<Envelope<AttestationData>>) {
+        match self {
+            CommonSectionVersioned::New(common_section) => {
+                common_section.block_attestations = block_attestations;
+            }
+            CommonSectionVersioned::Old(common_section) => {
+                common_section.block_attestations = block_attestations;
+            }
+        }
+    }
+
+    pub fn set_producer_selector(&mut self, producer_selector: Option<ProducerSelector>) {
+        match self {
+            CommonSectionVersioned::New(common_section) => {
+                common_section.producer_selector = producer_selector;
+            }
+            CommonSectionVersioned::Old(common_section) => {
+                common_section.producer_selector = producer_selector;
+            }
+        }
+    }
+
+    pub fn set_directives(&mut self, directives: Directives) {
+        match self {
+            CommonSectionVersioned::New(common_section) => {
+                common_section.directives = directives;
+            }
+            CommonSectionVersioned::Old(common_section) => {
+                common_section.directives = directives;
+            }
+        }
+    }
+
+    #[cfg(feature = "history_proofs")]
+    pub fn set_history_proofs(
+        &mut self,
+        history_proofs: BTreeMap<LayerNumber, ProofLayerRootHash>,
+    ) {
+        if let CommonSectionVersioned::New(common_section) = self {
+            common_section.history_proofs = history_proofs;
+        }
+    }
+
+    pub fn round(&self) -> &u64 {
+        match self {
+            CommonSectionVersioned::New(common_section) => &common_section.round,
+            CommonSectionVersioned::Old(common_section) => &common_section.round,
+        }
+    }
+
+    pub fn producer_selector(&self) -> Option<ProducerSelector> {
+        match self {
+            CommonSectionVersioned::New(common_section) => common_section.producer_selector.clone(),
+            CommonSectionVersioned::Old(common_section) => common_section.producer_selector.clone(),
+        }
+    }
+
+    pub fn block_attestations(&self) -> Vec<Envelope<AttestationData>> {
+        match self {
+            CommonSectionVersioned::New(common_section) => {
+                common_section.block_attestations.clone()
+            }
+            CommonSectionVersioned::Old(common_section) => {
+                common_section.block_attestations.clone()
+            }
+        }
+    }
+
+    pub fn producer_id(&self) -> NodeIdentifier {
+        match self {
+            CommonSectionVersioned::New(common_section) => common_section.producer_id.clone(),
+            CommonSectionVersioned::Old(common_section) => common_section.producer_id.clone(),
+        }
+    }
+
+    pub fn thread_id(&self) -> ThreadIdentifier {
+        match self {
+            CommonSectionVersioned::New(common_section) => common_section.thread_id,
+            CommonSectionVersioned::Old(common_section) => common_section.thread_id,
+        }
+    }
+
+    pub fn directives(&self) -> Directives {
+        match self {
+            CommonSectionVersioned::New(common_section) => common_section.directives.clone(),
+            CommonSectionVersioned::Old(common_section) => common_section.directives.clone(),
+        }
+    }
+
+    pub fn block_height(&self) -> &BlockHeight {
+        match self {
+            CommonSectionVersioned::New(common_section) => &common_section.block_height,
+            CommonSectionVersioned::Old(common_section) => &common_section.block_height,
+        }
     }
 }

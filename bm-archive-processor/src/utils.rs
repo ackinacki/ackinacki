@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::path::Path;
@@ -27,6 +27,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::cli::CompressionMode as CliCompressionMode;
+    use crate::cli::ServersMatchMode;
     use crate::config::AppConfig;
     use crate::domain::config::ProcessingRules;
     use crate::domain::grouping::group_by_timestamp;
@@ -86,8 +88,8 @@ mod tests {
             incoming: "incoming".to_string(),
             daily: "daily".to_string(),
             processed: "processed".to_string(),
-            compress: true,
-            require_all_servers: true,
+            compression: CliCompressionMode::Gzip,
+            servers_match_mode: ServersMatchMode::All,
             full_db: PathBuf::from("./full.db"),
             bucket: None,
             skip_upload: true,
@@ -150,8 +152,8 @@ mod tests {
             incoming: "incoming".to_string(),
             daily: "daily".to_string(),
             processed: "processed".to_string(),
-            compress: true,
-            require_all_servers: false,
+            compression: CliCompressionMode::Gzip,
+            servers_match_mode: ServersMatchMode::Any,
             full_db: PathBuf::from("./full.db"),
             bucket: None,
             skip_upload: false,

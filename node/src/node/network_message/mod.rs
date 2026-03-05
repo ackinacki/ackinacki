@@ -7,13 +7,14 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 
 use derive_getters::Getters;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use serde::Deserialize;
 use serde::Serialize;
 use typed_builder::TypedBuilder;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
 use crate::message::WrappedMessage;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
@@ -25,12 +26,10 @@ use crate::types::bp_selector::ProducerSelector;
 use crate::types::AckiNackiBlock;
 #[cfg(feature = "transitioning_node_version")]
 use crate::types::AckiNackiBlockVersioned;
-use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
-use crate::types::ThreadIdentifier;
 mod serde_network_message;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Getters)]
 pub struct NetBlock {
     pub producer_id: NodeIdentifier,
     pub producer_selector: Option<ProducerSelector>,
@@ -42,12 +41,10 @@ pub struct NetBlock {
 
 impl NetBlock {
     #[cfg(feature = "transitioning_node_version")]
-    pub fn with_versioned(
-        value: &Envelope<GoshBLS, AckiNackiBlockVersioned>,
-    ) -> anyhow::Result<Self> {
+    pub fn with_versioned(value: &Envelope<AckiNackiBlockVersioned>) -> anyhow::Result<Self> {
         let envelope_data = bincode::serialize(value)?;
         let block = value.data();
-        let common_section = block.get_common_section();
+        let common_section = block.common_section();
         Ok(Self {
             producer_id: common_section.producer_id(),
             producer_selector: common_section.producer_selector().clone(),
@@ -58,21 +55,21 @@ impl NetBlock {
         })
     }
 
-    pub fn with_envelope(value: &Envelope<GoshBLS, AckiNackiBlock>) -> anyhow::Result<Self> {
+    pub fn with_envelope(value: &Envelope<AckiNackiBlock>) -> anyhow::Result<Self> {
         let envelope_data = bincode::serialize(value)?;
         let block = value.data();
-        let common_section = block.get_common_section();
+        let common_section = block.common_section();
         Ok(Self {
-            producer_id: common_section.producer_id.clone(),
-            producer_selector: common_section.producer_selector.clone(),
-            thread_id: common_section.thread_id,
+            producer_id: common_section.producer_id().clone(),
+            producer_selector: common_section.producer_selector().clone(),
+            thread_id: *common_section.thread_id(),
             identifier: block.identifier(),
             seq_no: block.seq_no(),
             envelope_data,
         })
     }
 
-    pub fn get_envelope(&self) -> anyhow::Result<Envelope<GoshBLS, AckiNackiBlock>> {
+    pub fn get_envelope(&self) -> anyhow::Result<Envelope<AckiNackiBlock>> {
         Ok(bincode::deserialize(&self.envelope_data)?)
     }
 }
@@ -111,19 +108,19 @@ pub enum NetworkMessage {
     // Candidate block envelope that was re-sent by a replacing producer
     ResentCandidate((NetBlock, NodeIdentifier)),
 
-    Ack((Envelope<GoshBLS, AckData>, ThreadIdentifier)),
+    Ack((Envelope<AckData>, ThreadIdentifier)),
 
     // TODO: @AleksandrS Move nack to a priority queue
     // Full stake only
-    Nack((Envelope<GoshBLS, NackData>, ThreadIdentifier)),
+    Nack((Envelope<NackData>, ThreadIdentifier)),
 
     // Bleeding nack
-    // Bleeding((Envelope<GoshBLS, NackData>, ThreadIdentifier)),
+    // Bleeding((Envelope<NackData>, ThreadIdentifier)),
     ExternalMessage((WrappedMessage, ThreadIdentifier)),
 
     NodeJoining((NodeIdentifier, ThreadIdentifier)),
 
-    BlockAttestation((Envelope<GoshBLS, AttestationData>, ThreadIdentifier)),
+    BlockAttestation((Envelope<AttestationData>, ThreadIdentifier)),
 
     BlockRequest {
         inclusive_from: BlockSeqNo,
@@ -136,7 +133,7 @@ pub enum NetworkMessage {
     // Note:
     // SyncFinalized was intended to be used in case of a disaster to restart (continue) the network
     // SyncFinalized is broadcasted when network is not running.
-    SyncFinalized((Envelope<GoshBLS, SyncFinalizedData>, ThreadIdentifier)),
+    SyncFinalized((Envelope<SyncFinalizedData>, ThreadIdentifier)),
     // Also, SyncFrom is redundant due to the authority switch mechanism.
     // However, keeping it for the review. (less security risk)
     SyncFrom((BlockSeqNo, ThreadIdentifier)),
@@ -156,12 +153,12 @@ pub struct NodeJoiningWithLastFinalizedData {
 }
 
 impl NetworkMessage {
-    pub fn candidate(envelope: &Envelope<GoshBLS, AckiNackiBlock>) -> anyhow::Result<Self> {
+    pub fn candidate(envelope: &Envelope<AckiNackiBlock>) -> anyhow::Result<Self> {
         Ok(Self::Candidate(NetBlock::with_envelope(envelope)?))
     }
 
     pub fn resent_candidate(
-        envelope: &Envelope<GoshBLS, AckiNackiBlock>,
+        envelope: &Envelope<AckiNackiBlock>,
         node_id: NodeIdentifier,
     ) -> anyhow::Result<Self> {
         Ok(Self::ResentCandidate((NetBlock::with_envelope(envelope)?, node_id)))

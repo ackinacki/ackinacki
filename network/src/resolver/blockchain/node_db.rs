@@ -2,10 +2,9 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
+use account_state::ThreadAccount;
+use node_types::AccountIdentifier;
 use rusqlite::OpenFlags;
-use tvm_block::Account;
-use tvm_block::Deserializable;
-use tvm_types::SliceData;
 use tvm_types::UInt256;
 
 use crate::detailed;
@@ -33,7 +32,10 @@ impl NodeDb {
         .map_err(|e| anyhow::format_err!("Failed to open node db file: {e}"))
     }
 
-    fn get_account(conn: &rusqlite::Connection, id: &UInt256) -> anyhow::Result<Account> {
+    fn get_account(
+        conn: &rusqlite::Connection,
+        id: &AccountIdentifier,
+    ) -> anyhow::Result<ThreadAccount> {
         let mut stmt = conn
             .prepare("SELECT boc FROM accounts WHERE id = ?")
             .map_err(|e| anyhow::format_err!("Failed to prepare query: {e}"))?;
@@ -44,16 +46,13 @@ impl NodeDb {
         let boc_bytes = row.get::<_, Vec<u8>>(0)?;
         let cell = tvm_types::boc::read_single_root_boc(&boc_bytes)
             .map_err(|err| anyhow::anyhow!("Account BOC deserialization error: {err}"))?;
-        let mut slice = SliceData::load_cell(cell)
-            .map_err(|err| anyhow::anyhow!("Failed to load cell: {err}"))?;
-        Account::construct_from(&mut slice)
-            .map_err(|err| anyhow::anyhow!("Invalid account boc: {err}"))
+        Ok(cell.into())
     }
 
     fn get_account_ids_by_code_hash(
         conn: &rusqlite::Connection,
         code_hash: UInt256,
-    ) -> anyhow::Result<Vec<UInt256>> {
+    ) -> anyhow::Result<Vec<AccountIdentifier>> {
         let mut stmt = conn.prepare("SELECT id FROM accounts WHERE code_hash = ?")?;
         let mut rows = stmt
             .query([&code_hash.to_hex_string()])
@@ -70,7 +69,7 @@ impl NodeDb {
         Ok(ids)
     }
 
-    fn get_bk_set(conn: &rusqlite::Connection) -> anyhow::Result<Vec<UInt256>> {
+    fn get_bk_set(conn: &rusqlite::Connection) -> anyhow::Result<Vec<AccountIdentifier>> {
         let root = Root(Self::get_account(conn, &root_addr())?);
         let epoch_code_hash = root.get_epoch_code_hash()?;
         let mut wallet_ids = HashSet::new();
@@ -102,18 +101,18 @@ impl NodeDb {
 }
 
 const ROOT_ADDR: [u8; 32] = [0x77u8; 32];
-fn root_addr() -> UInt256 {
-    UInt256::from(ROOT_ADDR)
+fn root_addr() -> AccountIdentifier {
+    AccountIdentifier::new(ROOT_ADDR)
 }
 
 impl BkSetProvider for NodeDb {
-    fn get_bk_set(&self) -> Vec<UInt256> {
+    fn get_bk_set(&self) -> Vec<AccountIdentifier> {
         self.with_connection(Self::get_bk_set).unwrap_or_default()
     }
 }
 
 impl AccountProvider for NodeDb {
-    fn get_account(&self, id: &UInt256) -> Option<Account> {
+    fn get_account(&self, id: &AccountIdentifier) -> Option<ThreadAccount> {
         self.with_connection(|conn| Self::get_account(conn, id))
     }
 }

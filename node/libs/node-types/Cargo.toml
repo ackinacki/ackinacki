@@ -1,0 +1,20 @@
+[package]
+name = "node-types"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[lib]
+
+[dependencies]
+anyhow.workspace = true
+blake3 = { version = "1.8.2" }
+hex.workspace = true
+monotree.workspace = true
+serde.workspace = true
+serde_with.workspace = true
+tvm_block.workspace = true
+tvm_types.workspace = true
+
+[features]

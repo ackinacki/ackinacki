@@ -6,5 +6,7 @@
     DELETE_DATA: no
     DO_START: yes
     FAST_UPDATE: yes
+    BK_SET_FILE: yes
+    ZEROSTATE: no
   roles:
     - block-keeper

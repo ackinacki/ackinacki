@@ -1,11 +1,11 @@
 use std::fmt::Debug;
 use std::fmt::Formatter;
 
+use node_types::BlockIdentifier;
 use thiserror::Error;
 
 use super::repository::BlockStateRepository;
 use crate::node::BlockState;
-use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
 use crate::utilities::guarded::Guarded;
 
@@ -67,8 +67,8 @@ impl UnfinalizedAncestorBlocks for BlockStateRepository {
                     }
                     let block_seq_no = e.block_seq_no().ok_or(IncompleteHistory)?;
                     let parent_block_identifier =
-                        e.parent_block_identifier().clone().ok_or(IncompleteHistory)?;
-                    Ok((e.is_finalized(), parent_block_identifier.clone(), block_seq_no))
+                        e.parent_block_identifier().ok_or(IncompleteHistory)?;
+                    Ok((e.is_finalized(), parent_block_identifier, block_seq_no))
                 },
             )?;
             if is_finalized {
@@ -88,10 +88,11 @@ impl UnfinalizedAncestorBlocks for BlockStateRepository {
 mod test {
     use std::str::FromStr;
 
+    use node_types::BlockIdentifier;
+    use node_types::ThreadIdentifier;
+
     use super::*;
-    use crate::types::BlockIdentifier;
     use crate::types::BlockSeqNo;
-    use crate::types::ThreadIdentifier;
     use crate::utilities::guarded::GuardedMut;
 
     #[test]
@@ -111,7 +112,7 @@ mod test {
         let tail = repo.get(&tail_block_id).unwrap();
         tail.guarded_mut(|e| -> anyhow::Result<()> {
             e.set_thread_identifier(zero_thread)?;
-            e.set_parent_block_identifier(finalized_really_old.clone())?;
+            e.set_parent_block_identifier(finalized_really_old)?;
             e.set_block_seq_no(30283.into())?;
             Ok(())
         })
@@ -126,7 +127,7 @@ mod test {
             .unwrap();
         match repo.select_unfinalized_ancestor_blocks(&tail, cutoff) {
             Err(UnfinalizedAncestorBlocksSelectError::BlockSeqNoCutoff(chain)) => {
-                let id_chain: Vec<_> = chain.iter().map(|e| e.block_identifier().clone()).collect();
+                let id_chain: Vec<_> = chain.iter().map(|e| *e.block_identifier()).collect();
                 assert_eq!(&id_chain, &(vec![tail_block_id]), "Unexpected chain: {chain:?}");
             }
             e => {

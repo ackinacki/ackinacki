@@ -8,6 +8,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use derive_getters::Getters;
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 use typed_builder::TypedBuilder;
 
@@ -15,7 +16,6 @@ use super::action_lock::Authority;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
 use crate::types::BlockHeight;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::GuardedMut;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
@@ -179,6 +179,11 @@ pub fn bind(authority: Arc<Mutex<Authority>>) -> ChainPulseMonitor {
                                 .block_height(None)
                                 .build(),
                         );
+                    }
+                    Some(ChainPulseEvent::StopThread { thread_id }) => {
+                        deadlines.remove(&thread_id);
+                        block_collections.remove(&thread_id);
+                        stalled_threads_clone.guarded_mut(|set| set.remove(&thread_id));
                     }
                     Some(ChainPulseEvent::BlockApplied(e)) => {
                         stalled_threads_clone.guarded_mut(|set| set.remove(e.thread_identifier()));

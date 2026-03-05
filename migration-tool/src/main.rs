@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::fs;
@@ -98,11 +98,12 @@ fn main() -> anyhow::Result<()> {
         r"
         db path: {}
 
-        bm-schema.db:
+        {}:
           schema version: {current_version}
           latest migration version: {m_version}
     ",
-        db_path.canonicalize()?.display()
+        db_path.canonicalize()?.display(),
+        db_file.display(),
     );
     println!("{info}");
 
@@ -113,12 +114,15 @@ fn main() -> anyhow::Result<()> {
     let migrate_to =
         parse_version(args.bm.clone(), MTarget::BlockManager(migrations_block_manager.clone()))?;
     if current_version == migrate_to {
-        println!("`bm-schema.db` is up to date");
+        println!("`{}` is up to date", db_file.display());
     } else if args.bm.is_some() {
         if current_version < migrate_to {
-            println!("Upgrading `bm-schema.db` to the schema version {migrate_to:?}... ");
+            println!("Upgrading `{}` to the schema version {migrate_to:?}... ", db_file.display());
         } else {
-            println!("Downgrading `bm-schema.db` to the schema version {migrate_to:?}... ");
+            println!(
+                "Downgrading `{}` to the schema version {migrate_to:?}... ",
+                db_file.display()
+            );
         }
         migrations_block_manager.to_version(&mut conn, migrate_to as usize)?;
         // conn.execute_batch(

@@ -5,15 +5,14 @@ use std::sync::Arc;
 
 use derive_debug::Dbg;
 use derive_getters::Getters;
+use node_types::BlockIdentifier;
 use parking_lot::Mutex;
 use typed_builder::TypedBuilder;
 
 use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
 use crate::node::block_state::repository::BlockState;
 use crate::types::notification::Notification;
 use crate::types::AckiNackiBlock;
-use crate::types::BlockIdentifier;
 use crate::types::BlockIndex;
 use crate::types::BlockSeqNo;
 use crate::utilities::guarded::AllowGuardedMut;
@@ -23,7 +22,7 @@ use crate::utilities::guarded::GuardedMut;
 #[allow(clippy::mutable_key_type)]
 #[derive(Default, Getters)]
 pub struct UnfinalizedBlocksSnapshot {
-    blocks: BTreeMap<BlockIndex, (BlockState, Arc<Envelope<GoshBLS, AckiNackiBlock>>)>,
+    blocks: BTreeMap<BlockIndex, (BlockState, Arc<Envelope<AckiNackiBlock>>)>,
     notifications_stamp: u32,
     block_id_set: HashSet<BlockIdentifier>,
 }
@@ -44,20 +43,16 @@ impl UnfinalizedBlocksData {
         self.retain(|index, _| index.block_seq_no() > filter.block_seq_no());
     }
 
-    fn insert(
-        &mut self,
-        index: BlockIndex,
-        value: (BlockState, Arc<Envelope<GoshBLS, AckiNackiBlock>>),
-    ) {
-        let block_id = index.block_identifier().clone();
-        self.identifier_to_seqno.insert(block_id.clone(), *index.block_seq_no());
+    fn insert(&mut self, index: BlockIndex, value: (BlockState, Arc<Envelope<AckiNackiBlock>>)) {
+        let block_id = *index.block_identifier();
+        self.identifier_to_seqno.insert(block_id, *index.block_seq_no());
         self.main_map.blocks.insert(index, value);
         self.main_map.block_id_set.insert(block_id);
     }
 
     fn retain<F>(&mut self, mut f: F)
     where
-        F: FnMut(&BlockIndex, &mut (BlockState, Arc<Envelope<GoshBLS, AckiNackiBlock>>)) -> bool,
+        F: FnMut(&BlockIndex, &mut (BlockState, Arc<Envelope<AckiNackiBlock>>)) -> bool,
     {
         let mut to_remove = vec![];
         for (index, value) in self.main_map.blocks.iter_mut() {
@@ -67,7 +62,7 @@ impl UnfinalizedBlocksData {
         }
         for index in to_remove {
             self.identifier_to_seqno.remove(index.block_identifier());
-            let block_id = index.block_identifier().clone();
+            let block_id = *index.block_identifier();
             self.main_map.blocks.remove(&index);
             self.main_map.block_id_set.remove(&block_id);
         }
@@ -92,9 +87,7 @@ pub struct UnfinalizedCandidateBlockCollection {
 impl AllowGuardedMut for UnfinalizedBlocksData {}
 
 impl UnfinalizedCandidateBlockCollection {
-    pub fn new(
-        states: impl Iterator<Item = (BlockState, Arc<Envelope<GoshBLS, AckiNackiBlock>>)>,
-    ) -> Self {
+    pub fn new(states: impl Iterator<Item = (BlockState, Arc<Envelope<AckiNackiBlock>>)>) -> Self {
         let mut data = UnfinalizedBlocksData::default();
         let notifications = Notification::new();
 
@@ -109,10 +102,10 @@ impl UnfinalizedCandidateBlockCollection {
     pub fn get_block_by_id(
         &self,
         identifier: &BlockIdentifier,
-    ) -> Option<Arc<Envelope<GoshBLS, AckiNackiBlock>>> {
+    ) -> Option<Arc<Envelope<AckiNackiBlock>>> {
         let data = self.candidates.lock();
         data.identifier_to_seqno.get(identifier).and_then(|seq_no| {
-            let index = BlockIndex::new(*seq_no, identifier.clone());
+            let index = BlockIndex::new(*seq_no, *identifier);
             data.main_map.blocks.get(&index).map(|(_, block)| Arc::clone(block))
         })
     }
@@ -132,7 +125,7 @@ impl UnfinalizedCandidateBlockCollection {
         })
     }
 
-    pub fn insert(&mut self, block_state: BlockState, block: Envelope<GoshBLS, AckiNackiBlock>) {
+    pub fn insert(&mut self, block_state: BlockState, block: Envelope<AckiNackiBlock>) {
         let index = BlockIndex::from(&block);
         let mut data_lock = self.candidates.lock();
         block_state.guarded_mut(|e| e.add_subscriber(self.notifications().clone()));

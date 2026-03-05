@@ -9,7 +9,6 @@ use crate::bls::create_signed::CreateSealed;
 use crate::bls::envelope::Envelope;
 use crate::bls::gosh_bls::PubKey;
 use crate::bls::gosh_bls::Secret;
-use crate::bls::GoshBLS;
 use crate::helper::start_shutdown;
 use crate::node::associated_types::NodeCredentials;
 use crate::types::RndSeed;
@@ -22,7 +21,7 @@ pub trait TrySeal: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + '
         bk_set: &BlockKeeperSet,
         bls_keys_map: &HashMap<PubKey, (Secret, RndSeed)>,
         protocol_version: &ProtocolVersion,
-    ) -> anyhow::Result<Envelope<GoshBLS, Self>>;
+    ) -> anyhow::Result<Envelope<Self>>;
 }
 
 impl<T> TrySeal for T
@@ -35,7 +34,7 @@ where
         bk_set: &BlockKeeperSet,
         bls_keys_map: &HashMap<PubKey, (Secret, RndSeed)>,
         protocol_version: &ProtocolVersion,
-    ) -> anyhow::Result<Envelope<GoshBLS, Self>> {
+    ) -> anyhow::Result<Envelope<Self>> {
         let Some(bk_data) = bk_set.get_by_node_id(node_credentials.node_id()).cloned() else {
             anyhow::bail!(
                 "Node \"{}\" is not in the bk set [{}]",

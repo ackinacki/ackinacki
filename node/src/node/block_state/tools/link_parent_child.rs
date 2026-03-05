@@ -33,11 +33,11 @@ pub fn do_link(link: Link, block_state_repository: &BlockStateRepository) {
         )
     });
     let (is_parent_finalized, is_parent_invalidated) = parent.guarded_mut(|e| {
-        e.add_child(thread_identifier, child.block_identifier().clone()).unwrap();
+        e.add_child(thread_identifier, *child.block_identifier()).unwrap();
         (e.is_finalized(), e.is_invalidated())
     });
     if is_parent_invalidated && is_parent_finalized {
-        let parent_block_identifier = parent.block_identifier().clone();
+        let parent_block_identifier = *parent.block_identifier();
         panic!("Critical: wrong block state. Block {parent_block_identifier:?} is invalidated and finalized at the same time");
     }
     if is_parent_invalidated {
@@ -50,7 +50,7 @@ pub fn do_link(link: Link, block_state_repository: &BlockStateRepository) {
     }
 
     child.guarded_mut(|e| {
-        e.set_parent_block_identifier(parent.block_identifier().clone()).unwrap();
+        e.set_parent_block_identifier(*parent.block_identifier()).unwrap();
     });
     if is_parent_finalized {
         child.guarded_mut(|e| {

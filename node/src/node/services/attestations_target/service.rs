@@ -4,6 +4,8 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use typed_builder::TypedBuilder;
 
 use crate::node::associated_types::AttestationTargetType;
@@ -13,8 +15,6 @@ use crate::node::block_state::attestation_target_checkpoints::AncestorBlocksFina
 use crate::node::block_state::unfinalized_ancestor_blocks::UnfinalizedAncestorBlocksSelectError;
 use crate::node::BlockStateRepository;
 use crate::node::SignerIndex;
-use crate::types::BlockIdentifier;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 
 #[derive(TypedBuilder, Clone)]
@@ -151,13 +151,13 @@ mod tests {
             HashSet<SignerIndex>,
         > = HashMap::new();
         next_block_attestations.insert(
-            (parent_block_identifier.clone(), AttestationTargetType::Primary),
+            (parent_block_identifier, AttestationTargetType::Primary),
             HashSet::from_iter(vec![
                 1, 9, 5, 14, 8, 13, 6, 10, 19, 16, 3, 7, 11, 17, 12, 15, 18, 4, 2,
             ]),
         );
         next_block_attestations.insert(
-            (ancestor_block_identifier.clone(), AttestationTargetType::Primary),
+            (ancestor_block_identifier, AttestationTargetType::Primary),
             HashSet::from_iter(vec![
                 6, 0, 14, 7, 1, 15, 9, 10, 19, 3, 18, 8, 12, 5, 17, 4, 11, 16, 2,
             ]),
@@ -165,7 +165,7 @@ mod tests {
         let mut ancestor_blocks_finalization_primary_checkpoints = HashMap::new();
         // a69ac728fa4f2b797a1fde2a5b98c7c36281af4b73b616d0da8a8345b1502943
         ancestor_blocks_finalization_primary_checkpoints.insert(
-            ancestor_block_identifier.clone(),
+            ancestor_block_identifier,
             AttestationTargetCheckpoint::builder()
                 .current_distance(2)
                 .deadline(3)
@@ -176,7 +176,7 @@ mod tests {
 
         // cf90c7b6f94c80595c6b43590b1d64cb1a55e98360f96ca6008acb551d1b0619
         ancestor_blocks_finalization_primary_checkpoints.insert(
-            parent_block_identifier.clone(),
+            parent_block_identifier,
             AttestationTargetCheckpoint::builder()
                 .current_distance(0)
                 .deadline(3)
@@ -188,7 +188,7 @@ mod tests {
         let mut ancestor_blocks_finalization_fallback_checkpoints = HashMap::new();
         ancestor_blocks_finalization_fallback_checkpoints.insert(
             // cf90c7b6f94c80595c6b43590b1d64cb1a55e98360f96ca6008acb551d1b0619
-            parent_block_identifier.clone(),
+            parent_block_identifier,
             vec![
                 AttestationTargetCheckpoint::builder()
                     .current_distance(0)
@@ -284,19 +284,19 @@ mod tests {
             HashSet<SignerIndex>,
         > = HashMap::new();
         next_block_attestations.insert(
-            (parent_block_identifier.clone(), AttestationTargetType::Primary),
+            (parent_block_identifier, AttestationTargetType::Primary),
             HashSet::from_iter(vec![
                 17, 19, 9, 2, 8, 10, 3, 15, 5, 16, 18, 6, 13, 11, 14, 7, 0, 1, 12, 4,
             ]),
         );
         next_block_attestations.insert(
-            (ancestor_block_identifier.clone(), AttestationTargetType::Primary),
+            (ancestor_block_identifier, AttestationTargetType::Primary),
             HashSet::from_iter(vec![
                 9, 1, 16, 17, 18, 8, 3, 2, 6, 11, 13, 7, 5, 19, 0, 14, 4, 10, 12, 15,
             ]),
         );
         next_block_attestations.insert(
-            (ancestor_block_identifier.clone(), AttestationTargetType::Fallback),
+            (ancestor_block_identifier, AttestationTargetType::Fallback),
             HashSet::from_iter(vec![
                 0, 19, 1, 11, 14, 2, 9, 4, 8, 16, 10, 17, 18, 13, 5, 15, 12, 6, 3, 7,
             ]),
@@ -304,7 +304,7 @@ mod tests {
 
         let mut ancestor_blocks_finalization_primary_checkpoints = HashMap::new();
         ancestor_blocks_finalization_primary_checkpoints.insert(
-            parent_block_identifier.clone(),
+            parent_block_identifier,
             AttestationTargetCheckpoint::builder()
                 .current_distance(0)
                 .deadline(1)
@@ -315,7 +315,7 @@ mod tests {
 
         let mut ancestor_blocks_finalization_fallback_checkpoints = HashMap::new();
         ancestor_blocks_finalization_fallback_checkpoints.insert(
-            parent_block_identifier.clone(),
+            parent_block_identifier,
             vec![AttestationTargetCheckpoint::builder()
                 .current_distance(2)
                 .deadline(3)

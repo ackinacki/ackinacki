@@ -5,8 +5,7 @@ use tvm_block::Deserializable;
 use tvm_block::Message;
 use tvm_types::base64_decode;
 
-pub fn parse_message(id: &str, message_b64: &str) -> Result<Message, String> {
-    tracing::trace!(target: "http_server", "parse_message {id}");
+pub fn parse_message(message_b64: &str) -> Result<Message, String> {
     let message_bytes = base64_decode(message_b64)
         .map_err(|e| format!("Error decoding base64-encoded message: {e}"))?;
 

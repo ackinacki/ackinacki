@@ -7,6 +7,8 @@ use serde::Serialize;
 use serde::Serializer;
 use serde_json::Value;
 
+use crate::helpers::u64_to_hexed_blob_buf;
+
 pub trait WhereOp {
     fn skip_nulls(obj: &mut Value) -> &mut Value {
         if obj.is_object() {
@@ -151,25 +153,6 @@ pub struct StringFilter {
 }
 
 pub type OptStringFilter = Option<StringFilter>;
-
-const HEX_TABLE: [u8; 16] = *b"0123456789abcdef";
-
-/// Formats a `u64` value as an SQLite BLOB hex literal in the form `X'0123...abcd'`.
-fn u64_to_hexed_blob_buf(v: u64) -> [u8; 19] {
-    let mut buf = [0u8; 19];
-    buf[0] = b'X';
-    buf[1] = b'\'';
-
-    let mut n = v;
-    for i in (0..16).rev() {
-        let nibble = (n & 0x0f) as usize;
-        buf[2 + i] = HEX_TABLE[nibble];
-        n >>= 4;
-    }
-
-    buf[18] = b'\'';
-    buf
-}
 
 fn serialize_opt_u64_hexed_blob<S>(value: &Option<u64>, serializer: S) -> Result<S::Ok, S::Error>
 where

@@ -1,9 +1,9 @@
+use node_types::BlockIdentifier;
 use serde::Deserialize;
 use serde::Serialize;
 
 use super::ProtocolVersion;
 use super::ProtocolVersionSupport;
-use crate::types::BlockIdentifier;
 
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum BlockProtocolVersionState {

@@ -3,32 +3,24 @@
 
 use std::marker::PhantomData;
 
+use node_types::ThreadIdentifier;
 use salvo::prelude::*;
 
 use crate::ResolvingResult;
 use crate::WebServer;
-pub struct LastSeqnoHandler<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter> {
-    _marker: PhantomData<(TMessage, TMsgConverter, TBPResolver, TSeqnoGetter)>,
+pub struct LastSeqnoHandler<TBPResolver, TSeqnoGetter> {
+    _marker: PhantomData<(TBPResolver, TSeqnoGetter)>,
 }
 
-impl<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
-    LastSeqnoHandler<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
-{
+impl<TBPResolver, TSeqnoGetter> LastSeqnoHandler<TBPResolver, TSeqnoGetter> {
     pub fn new() -> Self {
         Self { _marker: PhantomData }
     }
 }
 #[async_trait]
-impl<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter> Handler
-    for LastSeqnoHandler<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
+impl<TBPResolver, TSeqnoGetter> Handler for LastSeqnoHandler<TBPResolver, TSeqnoGetter>
 where
-    TMessage: Clone + Send + Sync + 'static + std::fmt::Debug,
-    TMsgConverter: Clone
-        + Send
-        + Sync
-        + 'static
-        + Fn(tvm_block::Message, [u8; 34]) -> anyhow::Result<TMessage>,
-    TBPResolver: Clone + Send + Sync + 'static + FnMut([u8; 34]) -> ResolvingResult,
+    TBPResolver: Clone + Send + Sync + 'static + FnMut(ThreadIdentifier) -> ResolvingResult,
     TSeqnoGetter: Clone + Send + Sync + 'static + Fn() -> anyhow::Result<u32>,
 {
     async fn handle(
@@ -38,9 +30,7 @@ where
         res: &mut Response,
         _ctrl: &mut FlowCtrl,
     ) {
-        let Ok(web_server) =
-            depot.obtain::<WebServer<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>>()
-        else {
+        let Ok(web_server) = depot.obtain::<WebServer<TBPResolver, TSeqnoGetter>>() else {
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
             res.render("Internal server error: Web Server state not found");
             return;

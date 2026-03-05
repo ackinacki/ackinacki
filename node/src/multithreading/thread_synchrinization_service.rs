@@ -3,8 +3,8 @@
 
 use std::collections::HashMap;
 
-use crate::types::BlockIdentifier;
-use crate::types::ThreadIdentifier;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 
 // This service must be able to tell threads that there are blocks
 // that have messages or accounts for it.
@@ -40,7 +40,7 @@ impl ThreadSyncService {
         block_identifier: &BlockIdentifier,
         thread_identifier: &ThreadIdentifier,
     ) -> anyhow::Result<()> {
-        self.last_finalized_blocks.insert(*thread_identifier, block_identifier.clone());
+        self.last_finalized_blocks.insert(*thread_identifier, *block_identifier);
         Ok(())
     }
 
@@ -51,7 +51,7 @@ impl ThreadSyncService {
         let other_threads_last_blocks = self
             .last_finalized_blocks
             .iter()
-            .filter_map(|(k, v)| if k != thread_identifier { Some((*k, v.clone())) } else { None })
+            .filter_map(|(k, v)| if k != thread_identifier { Some((*k, *v)) } else { None })
             .collect();
         Ok(other_threads_last_blocks)
     }

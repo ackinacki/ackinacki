@@ -51,8 +51,8 @@ pub(super) fn service_inner_loop(
                         tracing::trace!("share_blob: sharing {:?}", &resource_id);
                         let share_full_path = local_storage_share_base_path.join(resource_id);
                         let share_result = {
-                            let stream = Box::leak(stream);
-                            share_blob(share_full_path, local_storage_share_base_path, stream)
+                            let mut stream = stream;
+                            share_blob(share_full_path, local_storage_share_base_path, &mut *stream)
                         };
                         on_complete(share_result);
                     })

@@ -6,16 +6,15 @@ pub mod serialize;
 mod update;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
+use node_types::ThreadIdentifier;
 use serde::Deserialize;
 use serde::Serialize;
-use tvm_block::ShardStateUnsplit;
 
 use crate::block_keeper_system::BlockKeeperSet;
+use crate::repository::accounts::NodeThreadAccountsRef;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
-use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -28,7 +27,7 @@ impl ZeroState {
     pub(crate) fn get_shard_state(
         &mut self,
         thread_identifier: &ThreadIdentifier,
-    ) -> anyhow::Result<Arc<ShardStateUnsplit>> {
+    ) -> anyhow::Result<NodeThreadAccountsRef> {
         self.state_mut(thread_identifier).map(|opt_state| opt_state.get_shard_state())
     }
 
@@ -77,6 +76,11 @@ impl ZeroState {
     pub fn init_thread(&mut self, thread_identifier: ThreadIdentifier) {
         let state = OptimisticStateImpl { thread_id: thread_identifier, ..Default::default() };
         self.states.insert(thread_identifier, state);
+    }
+
+    pub fn init_thread_with_state(&mut self, optimistic_state: OptimisticStateImpl) {
+        let thread_id = optimistic_state.thread_id;
+        self.states.insert(thread_id, optimistic_state);
     }
 
     pub fn set_threads_table(&mut self, threads_table: ThreadsTable) {

@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 
 use crate::bls::envelope::BLSSignedEnvelope;
@@ -15,9 +17,7 @@ use crate::repository::optimistic_state::OptimisticState;
 use crate::storage::MessageDBWriterService;
 use crate::storage::MessageDurableStorage;
 use crate::types::AckiNackiBlock;
-use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
-use crate::types::ThreadIdentifier;
 
 pub mod accounts;
 mod cross_thread_ref_data;
@@ -58,16 +58,16 @@ pub trait Repository {
     type BLS: BLSSignatureScheme;
     type CandidateBlock: BLSSignedEnvelope<
         SignerIndex = Self::EnvelopeSignerIndex,
-        BLS = Self::BLS,
         Data = AckiNackiBlock,
+        BLS = Self::BLS,
     >;
     type EnvelopeSignerIndex;
     type NodeIdentifier;
     type OptimisticState: OptimisticState;
     type Attestation: BLSSignedEnvelope<
         SignerIndex = Self::EnvelopeSignerIndex,
-        BLS = Self::BLS,
         Data = AttestationData,
+        BLS = Self::BLS,
     >;
     type StateSnapshot: From<Vec<u8>> + Into<Vec<u8>>;
 

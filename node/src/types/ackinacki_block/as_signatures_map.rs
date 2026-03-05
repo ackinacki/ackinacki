@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use node_types::BlockIdentifier;
+
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::AttestationTargetType;
 use crate::types::ackinacki_block::SignerIndex;
-use crate::types::BlockIdentifier;
 
 pub trait AsSignaturesMap {
     fn as_signatures_map(
@@ -15,7 +15,7 @@ pub trait AsSignaturesMap {
     ) -> HashMap<(BlockIdentifier, AttestationTargetType), HashSet<SignerIndex>>;
 }
 
-impl AsSignaturesMap for Vec<Envelope<GoshBLS, AttestationData>> {
+impl AsSignaturesMap for Vec<Envelope<AttestationData>> {
     fn as_signatures_map(
         &self,
     ) -> HashMap<(BlockIdentifier, AttestationTargetType), HashSet<SignerIndex>> {
@@ -23,7 +23,7 @@ impl AsSignaturesMap for Vec<Envelope<GoshBLS, AttestationData>> {
             HashMap::<(BlockIdentifier, AttestationTargetType), HashSet<SignerIndex>>::new();
         for attestation in self.iter() {
             let attestation_target =
-                (attestation.data().block_id().clone(), *attestation.data().target_type());
+                (*attestation.data().block_id(), *attestation.data().target_type());
             let attestation_signers =
                 HashSet::from_iter(attestation.clone_signature_occurrences().keys().cloned());
             attestations_map

@@ -10,9 +10,13 @@ use std::sync::Arc;
 
 use derive_getters::Getters;
 use derive_setters::*;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use serde::Deserialize;
 use serde::Serialize;
 use typed_builder::TypedBuilder;
+use versioned_struct::versioned;
+use versioned_struct::Transitioning;
 
 use super::attestation_target_checkpoints::AncestorBlocksFinalizationCheckpoints;
 use crate::block_keeper_system::BlockKeeperData;
@@ -31,11 +35,9 @@ use crate::types::envelope_hash::AckiNackiEnvelopeHash;
 use crate::types::notification::Notification;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockHeight;
-use crate::types::BlockIdentifier;
 use crate::types::BlockIndex;
 use crate::types::BlockRound;
 use crate::types::BlockSeqNo;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::AllowGuardedMut;
 use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
 
@@ -68,6 +70,7 @@ pub struct AttestationTargets {
 // are stored in fields prexied with was_*
 // It is important:
 // All fields must be able to set once and only once.
+#[versioned]
 #[derive(Serialize, Deserialize, Default, Getters, Setters)]
 #[setters(strip_option, borrow_self, assert_none, prefix = "set_", trace)]
 #[setters(
@@ -97,20 +100,20 @@ pub struct AckiNackiBlockState {
     // This proves that no other block can be finalized later UNLESS there was a NACK on this block
     // 50% + 1 attestations is enough
     #[setters(skip)]
-    prefinalization_proof: Option<Envelope<GoshBLS, AttestationData>>,
+    prefinalization_proof: Option<Envelope<AttestationData>>,
 
     // This proves that there were enough attestations to finalize this block.
     // it is EITHER:
     // - 66% of attestations on the \beta block
     // - 50% + 1 attestations on the \beta block (prefinalization_proof)
     //   AND  50% + 1 attestations with the fallback attestation target on the 2x \beta block
-    primary_finalization_proof: Option<Envelope<GoshBLS, AttestationData>>,
-    fallback_finalization_proof: Option<Envelope<GoshBLS, AttestationData>>,
+    primary_finalization_proof: Option<Envelope<AttestationData>>,
+    fallback_finalization_proof: Option<Envelope<AttestationData>>,
 
     // Attestations from NextRoundSuccess that can't be processed right now
     #[serde(skip)]
     #[setters(skip)]
-    detached_attestations: Vec<Envelope<GoshBLS, AttestationData>>,
+    detached_attestations: Vec<Envelope<AttestationData>>,
 
     // Flag indicates it has signatures checked.
     #[setters(bool)]
@@ -237,6 +240,11 @@ pub struct AckiNackiBlockState {
     // if this chain has collected the required number of attestations.
     attestation_target: Option<AttestationTargets>,
 
+    #[future]
+    #[setters(skip)]
+    verified_attestations: HashMap<(BlockIndex, AttestationTargetType), HashSet<SignerIndex>>,
+
+    #[legacy]
     #[setters(skip)]
     verified_attestations: HashMap<(BlockIdentifier, AttestationTargetType), HashSet<SignerIndex>>,
 
@@ -248,14 +256,14 @@ pub struct AckiNackiBlockState {
     pub(super) known_children: HashMap<ThreadIdentifier, HashSet<BlockIdentifier>>,
 
     #[serde(skip)]
-    own_attestation: Option<Envelope<GoshBLS, AttestationData>>,
+    own_attestation: Option<Envelope<AttestationData>>,
 
     #[setters(bool, assert_none = false)]
     requires_fallback_attestation: Option<bool>,
     #[serde(skip)]
-    own_fallback_attestation: Option<Envelope<GoshBLS, AttestationData>>,
+    own_fallback_attestation: Option<Envelope<AttestationData>>,
 
-    retracted_attestation: Option<Envelope<GoshBLS, NackData>>,
+    retracted_attestation: Option<Envelope<NackData>>,
 
     // Nodes that had sent messages indicating their interest in getting attestations for the block.
     #[setters(skip)]
@@ -270,11 +278,13 @@ pub struct AckiNackiBlockState {
     #[serde(skip)]
     #[getter(skip)]
     #[setters(skip)]
+    #[allow(unused)]
     pub(super) file_path: PathBuf,
 
     #[serde(skip)]
     #[getter(skip)]
     #[setters(skip)]
+    #[allow(unused)]
     notifications: Vec<Notification>,
 
     #[getter(skip)]
@@ -284,17 +294,103 @@ pub struct AckiNackiBlockState {
     #[serde(skip)]
     #[setters(skip)]
     #[getter(skip)]
+    #[allow(unused)]
     pub(super) object_state_version: u64,
 
     #[serde(skip)]
     #[setters(skip)]
     #[getter(skip)]
+    #[allow(unused)]
     pub(super) last_saved_object_state_version: u64,
 
     block_version_state: Option<BlockProtocolVersionState>,
 }
 
+impl Transitioning for AckiNackiBlockState {
+    type Old = AckiNackiBlockStateOld;
+
+    fn from(old: Self::Old) -> Self {
+        let verified_attestations = old
+            .verified_attestations
+            .into_iter()
+            .map(|((id, t), s)| ((BlockIndex::new(BlockSeqNo::default(), id), t), s))
+            .collect();
+        Self {
+            block_seq_no: old.block_seq_no,
+            block_identifier: old.block_identifier,
+            thread_identifier: old.thread_identifier,
+            parent_block_identifier: old.parent_block_identifier,
+            ancestors: old.ancestors,
+            block_round: old.block_round,
+            block_height: old.block_height,
+            producer: old.producer,
+            block_time_ms: old.block_time_ms,
+            prefinalization_proof: old.prefinalization_proof,
+            primary_finalization_proof: old.primary_finalization_proof,
+            fallback_finalization_proof: old.fallback_finalization_proof,
+            detached_attestations: old.detached_attestations,
+            signatures_verified: old.signatures_verified,
+            common_checks_passed: old.common_checks_passed,
+            envelope_block_producer_signature_verified: old
+                .envelope_block_producer_signature_verified,
+            applied: old.applied,
+            applied_start_timestamp: old.applied_start_timestamp,
+            validated: old.validated,
+            finalizes_blocks: old.finalizes_blocks,
+            moves_attestation_list_cutoff: old.moves_attestation_list_cutoff,
+            must_be_validated: old.must_be_validated,
+            must_be_validated_in_fallback_case: old.must_be_validated_in_fallback_case,
+            finalized: old.finalized,
+            prefinalized: old.prefinalized,
+            ancestor_blocks_finalization_checkpoints: old.ancestor_blocks_finalization_checkpoints,
+            stored: old.stored,
+            invalidated: old.invalidated,
+            bad_block_accusers: old.bad_block_accusers,
+            at_least_one_verified_bad_block_accuser: old.at_least_one_verified_bad_block_accuser,
+            resolved_nacks_count: old.resolved_nacks_count,
+            bk_set: old.bk_set,
+            future_bk_set: old.future_bk_set,
+            descendant_bk_set: old.descendant_bk_set,
+            descendant_future_bk_set: old.descendant_future_bk_set,
+            has_parent_finalized: old.has_parent_finalized,
+            producer_selector_data: old.producer_selector_data,
+            has_all_cross_thread_ref_data_available: old.has_all_cross_thread_ref_data_available,
+            has_all_cross_thread_references_finalized: old
+                .has_all_cross_thread_references_finalized,
+            has_cross_thread_ref_data_prepared: old.has_cross_thread_ref_data_prepared,
+            has_primary_attestation_target_met: old.has_primary_attestation_target_met,
+            has_fallback_attestation_target_met: old.has_fallback_attestation_target_met,
+            attestation_target: old.attestation_target,
+            verified_attestations,
+            block_stats: old.block_stats,
+            known_children: old.known_children,
+            own_attestation: old.own_attestation,
+            requires_fallback_attestation: old.requires_fallback_attestation,
+            own_fallback_attestation: old.own_fallback_attestation,
+            retracted_attestation: old.retracted_attestation,
+            known_attestation_interested_parties: old.known_attestation_interested_parties,
+            envelope_hash: old.envelope_hash,
+            has_block_attestations_processed: old.has_block_attestations_processed,
+            file_path: old.file_path,
+            notifications: old.notifications,
+            event_timestamps: old.event_timestamps,
+            object_state_version: old.object_state_version,
+            last_saved_object_state_version: old.last_saved_object_state_version,
+            block_version_state: old.block_version_state,
+        }
+    }
+}
+
 impl std::fmt::Debug for AckiNackiBlockState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AckiNackiBlockState")
+            .field("block_seq_no", &self.block_seq_no)
+            .field("block_identifier", &self.block_identifier)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for AckiNackiBlockStateOld {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AckiNackiBlockState")
             .field("block_seq_no", &self.block_seq_no)
@@ -358,6 +454,12 @@ impl std::fmt::Display for AckiNackiBlockState {
     }
 }
 
+impl AckiNackiBlockStateOld {
+    pub(super) fn notify_changed(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
 impl AckiNackiBlockState {
     // TODO: remove after migrating to 0.13.0
     pub fn update_bk_sets(
@@ -400,7 +502,7 @@ impl AckiNackiBlockState {
         }
     }
 
-    pub fn add_detached_attestations(&mut self, attestation: Envelope<GoshBLS, AttestationData>) {
+    pub fn add_detached_attestations(&mut self, attestation: Envelope<AttestationData>) {
         self.detached_attestations.push(attestation);
     }
 
@@ -488,7 +590,7 @@ has_cross_thread_ref_data_prepared={:?}\
         self.notify_changed()
     }
 
-    pub fn set_stored(&mut self, block: &Envelope<GoshBLS, AckiNackiBlock>) -> anyhow::Result<()> {
+    pub fn set_stored(&mut self, block: &Envelope<AckiNackiBlock>) -> anyhow::Result<()> {
         tracing::trace!("{:?} Call setter: set_stored", &self);
         if self.stored == Some(true) {
             return Ok(());
@@ -568,25 +670,25 @@ has_cross_thread_ref_data_prepared={:?}\
     // self.resolved_nacks_count += 1;
     // self.save()
     // }
-
-    // Selects attestations sent on behalf of the given block id
-    // from all attestations sent with this block.
-    // Returns None if signatures were not yet verified.
-    // Returns an empty result if no attestations for the given block  were sent with this block.
-    pub fn verified_attestations_for(
-        &self,
-        block_identifier: &BlockIdentifier,
-        attestation_target_type: AttestationTargetType,
-    ) -> Option<HashSet<SignerIndex>> {
-        if self.is_signatures_verified() {
-            self.verified_attestations
-                .get(&(block_identifier.clone(), attestation_target_type))
-                .cloned()
-                .or(Some(HashSet::new()))
-        } else {
-            None
-        }
-    }
+    //
+    // // Selects attestations sent on behalf of the given block id
+    // // from all attestations sent with this block.
+    // // Returns None if signatures were not yet verified.
+    // // Returns an empty result if no attestations for the given block  were sent with this block.
+    // pub fn verified_attestations_for(
+    //     &self,
+    //     block_identifier: &BlockIdentifier,
+    //     attestation_target_type: AttestationTargetType,
+    // ) -> Option<HashSet<SignerIndex>> {
+    //     if self.is_signatures_verified() {
+    //         self.verified_attestations
+    //             .get(&(*block_identifier, attestation_target_type))
+    //             .cloned()
+    //             .or(Some(HashSet::new()))
+    //     } else {
+    //         None
+    //     }
+    // }
 
     // If the interested parties set did not previously contain this value, true is returned.
     // False in case of no new information were added.
@@ -610,20 +712,22 @@ has_cross_thread_ref_data_prepared={:?}\
 
     pub fn add_verified_attestations_for(
         &mut self,
-        block_identifier: BlockIdentifier,
-        attestation_target_type: AttestationTargetType,
+        attestation_data: &AttestationData,
         attestation_signers: HashSet<SignerIndex>,
     ) -> anyhow::Result<()> {
+        let block_index =
+            BlockIndex::new(*attestation_data.block_seq_no(), *attestation_data.block_id());
+        let attestation_target_type = *attestation_data.target_type();
         tracing::trace!(
             "{:?} Call setter: add_verified_attestations_for {:?} {:?} {:?}",
             &self,
-            block_identifier,
+            block_index,
             attestation_target_type,
             attestation_signers
         );
         let prev = self
             .verified_attestations
-            .insert((block_identifier, attestation_target_type), attestation_signers);
+            .insert((block_index, attestation_target_type), attestation_signers);
         if prev.is_none() {
             self.notify_changed()
         } else {
@@ -720,7 +824,7 @@ has_cross_thread_ref_data_prepared={:?}\
 
     pub(super) fn set_prefinalized(
         &mut self,
-        proof: Envelope<GoshBLS, AttestationData>,
+        proof: Envelope<AttestationData>,
     ) -> anyhow::Result<()> {
         tracing::trace!("{:?} Call setter: set_prefinalized {:?}", &self, proof);
         self.prefinalized = Some(true);

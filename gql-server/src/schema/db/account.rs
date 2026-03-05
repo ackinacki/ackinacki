@@ -103,27 +103,27 @@ impl Account {
             Ok(got_acc) => {
                 let boc_base64 = got_acc.boc;
 
-                let acc = tvm_block::Account::construct_from_base64(&boc_base64)
+                let tvm_acc = tvm_block::Account::construct_from_base64(&boc_base64)
                     .map_err(|e| anyhow::anyhow!("Failed to construct account from boc: {e}"))?;
 
                 let boc = base64_decode(boc_base64)
                     .map_err(|e| anyhow::anyhow!("Failed to decode received data: {e}"))?;
 
-                let balance = acc
+                let balance = tvm_acc
                     .balance()
                     .map(|bal| format!("{:x}", bal.grams.as_u128()))
                     .unwrap_or_default();
 
-                let balance_other = acc
+                let balance_other = tvm_acc
                     .balance()
                     .and_then(|bal| bal.other.serialize().ok())
                     .and_then(|cell| write_boc(&cell).ok());
 
                 let code_hash =
-                    acc.get_code_hash().map(|hash| hash.as_hex_string()).unwrap_or_default();
+                    tvm_acc.get_code_hash().map(|hash| hash.as_hex_string()).unwrap_or_default();
 
-                let (code, data) = if matches!(acc.status(), AccountStatus::AccStateActive) {
-                    if let Some(state) = acc.state_init() {
+                let (code, data) = if matches!(tvm_acc.status(), AccountStatus::AccStateActive) {
+                    if let Some(state) = tvm_acc.state_init() {
                         let code = state
                             .code()
                             .filter(|cell| !cell.is_pruned())
@@ -144,7 +144,7 @@ impl Account {
 
                 let account = Account {
                     id: address,
-                    acc_type: serialize_account_status(&acc.status()),
+                    acc_type: serialize_account_status(&tvm_acc.status()),
                     balance,
                     balance_other,
                     boc: Some(boc),
@@ -152,8 +152,10 @@ impl Account {
                     code_hash,
                     data,
                     dapp_id: got_acc.dapp_id,
-                    last_paid: acc.last_paid() as u64,
-                    last_trans_lt: acc.last_tr_time().map_or("".to_owned(), |v| format!("{v:x}")),
+                    last_paid: tvm_acc.last_paid() as u64,
+                    last_trans_lt: tvm_acc
+                        .last_tr_time()
+                        .map_or("".to_owned(), |v| format!("{v:x}")),
                     // Next properties left not initialized
                     rowid: 0,
                     prev_code_hash: None,

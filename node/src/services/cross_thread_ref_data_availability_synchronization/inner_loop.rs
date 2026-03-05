@@ -1,12 +1,12 @@
 use std::sync::Arc;
 use std::sync::Weak;
 
+use node_types::BlockIdentifier;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use weak_table::WeakKeyHashMap;
 
 use super::Command;
 use crate::node::block_state::block_state_inner::BlockStateInner;
-use crate::types::BlockIdentifier;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
@@ -39,14 +39,14 @@ pub(super) fn inner_loop(receiver_rx: InstrumentedReceiver<Command>) {
                 } else {
                     missing_dependencies.insert(
                         Arc::clone(&block_state),
-                        dependencies.iter().map(|e| e.block_identifier().clone()).collect(),
+                        dependencies.iter().map(|e| *e.block_identifier()).collect(),
                     );
                 }
                 missing_dependencies.remove_expired();
             }
             Ok(Command::NotifyCrossThreadRefDataPrepared(block_state)) => {
                 missing_dependencies.remove_expired();
-                let prepared_block_identifier = block_state.block_identifier().clone();
+                let prepared_block_identifier = *block_state.block_identifier();
                 let mut dependencies_fullfilled = vec![];
                 for (block_state, dependencies) in missing_dependencies.iter_mut() {
                     dependencies.retain(|e| e != &prepared_block_identifier);

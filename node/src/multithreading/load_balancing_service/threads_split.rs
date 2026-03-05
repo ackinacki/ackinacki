@@ -1,17 +1,17 @@
+use node_types::AccountRouting;
+use node_types::ThreadIdentifier;
+
 use super::AggregatedLoad;
 use super::CheckError;
 use super::Load;
 use super::Proposal;
 use super::ThreadAction;
 use crate::bitmask::mask::Bitmask;
-use crate::types::AccountRouting;
-use crate::types::BlockIdentifier;
-use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
+use crate::types::ThreadsTablePrefab;
 
 #[allow(clippy::too_many_arguments)]
 pub fn try_threads_split(
-    produced_block_id: &BlockIdentifier,
     this_thread_id: &ThreadIdentifier,
     this_thread_row_index: usize,
     this_thread_aggregated_load: &AggregatedLoad,
@@ -24,6 +24,9 @@ pub fn try_threads_split(
     max_table_size: usize,
 ) -> anyhow::Result<ThreadAction, CheckError> {
     if thread_with_max_load != this_thread_id {
+        return Ok(ThreadAction::ContinueAsIs);
+    }
+    if max_table_size == 1 {
         return Ok(ThreadAction::ContinueAsIs);
     }
     if (threads_table.len() >= max_table_size)
@@ -44,10 +47,7 @@ pub fn try_threads_split(
         tracing::trace!("Proposed mask already exists: {:?}", proposed_mask);
         return Ok(ThreadAction::ContinueAsIs);
     }
-    let new_thread_id = ThreadIdentifier::new(produced_block_id, 0u16);
-    let mut proposed_threads_table = threads_table.clone();
-    let _: () = proposed_threads_table
-        .insert_above(this_thread_row_index, proposed_mask, new_thread_id)
-        .unwrap();
-    Ok(ThreadAction::Split(Proposal { proposed_threads_table }))
+    let prefab =
+        ThreadsTablePrefab::with_split(threads_table.clone(), this_thread_row_index, proposed_mask);
+    Ok(ThreadAction::Split(Proposal { proposed_threads_table: prefab }))
 }

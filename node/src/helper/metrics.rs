@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use http_server::metrics::RoutingMetrics;
 use network::metrics::NetMetrics;
+use node_types::ThreadIdentifier;
 use opentelemetry::metrics::Counter;
 use opentelemetry::metrics::Gauge;
 use opentelemetry::metrics::Histogram;
@@ -14,7 +15,6 @@ use telemetry_utils::now_ms;
 use telemetry_utils::out_of_bounds_guard;
 use telemetry_utils::TokioMetrics;
 
-use crate::types::ThreadIdentifier;
 use crate::versioning::ProtocolVersion;
 use crate::versioning::ProtocolVersionSupport;
 
@@ -57,6 +57,7 @@ struct BlockProductionMetricsInner {
     attn_target_descendant_generations: Histogram<u64>,
     blocks_requested: Counter<u64>,
     unfinalized_blocks_queue: Gauge<u64>,
+    attestation_tracking_collection_size: Gauge<u64>,
     finalized_block_attestations_cnt: Gauge<u64>,
     bk_set_size: Gauge<u64>,
     internal_message_queue_length: Gauge<u64>,
@@ -84,6 +85,8 @@ struct BlockProductionMetricsInner {
     block_processing_jitter: Histogram<f64>,
     gas_used: Histogram<f64>,
     gas_overflow: Counter<u64>,
+    aerospike_accounts_cache_len: Gauge<u64>,
+    aerospike_accounts_pending_len: Gauge<u64>,
 
     // Node Binary: supported protocol versions
     protocol_support_versions: Gauge<u64>,
@@ -93,6 +96,12 @@ struct BlockProductionMetricsInner {
 
     // BK set: supported protocol versions in epoch
     bkset_epoch_protocol_versions: Gauge<u64>,
+
+    // Durable arena sizes
+    durable_arena_nodes: Gauge<u64>,
+    durable_arena_values: Gauge<u64>,
+    durable_arena_branch_children: Gauge<u64>,
+    durable_arena_ext_paths_bytes: Gauge<u64>,
 }
 
 pub const BK_SET_UPDATE_CHANNEL: &str = "bk_set_update";
@@ -220,6 +229,10 @@ impl BlockProductionMetrics {
                 .u64_gauge("node_finalized_block_attestations_cnt")
                 .build(),
 
+            attestation_tracking_collection_size: meter
+                .u64_gauge("node_attestation_tracking_collection_size")
+                .build(),
+
             bk_set_size: meter.u64_gauge("node_bk_set_size").build(),
             verify_all_block_signatures: meter
                 .u64_histogram("node_verify_all_block_signatures")
@@ -311,10 +324,24 @@ impl BlockProductionMetrics {
                 ])
                 .build(),
             gas_overflow: meter.u64_counter("node_gas_overflow").build(),
+            aerospike_accounts_cache_len: meter
+                .u64_gauge("node_aerospike_accounts_cache_len")
+                .build(),
+            aerospike_accounts_pending_len: meter
+                .u64_gauge("node_aerospike_accounts_pending_len")
+                .build(),
             protocol_support_versions: meter.u64_gauge("node_protocol_support_versions").build(),
             block_protocol_version: meter.u64_gauge("node_block_protocol_version").build(),
             bkset_epoch_protocol_versions: meter
                 .u64_gauge("node_bkset_epoch_protocol_versions")
+                .build(),
+            durable_arena_nodes: meter.u64_gauge("node_durable_arena_nodes").build(),
+            durable_arena_values: meter.u64_gauge("node_durable_arena_values").build(),
+            durable_arena_branch_children: meter
+                .u64_gauge("node_durable_arena_branch_children")
+                .build(),
+            durable_arena_ext_paths_bytes: meter
+                .u64_gauge("node_durable_arena_ext_paths_bytes")
                 .build(),
         }))
     }
@@ -639,6 +666,47 @@ impl BlockProductionMetrics {
 
     pub fn report_gas_overflow(&self, thread_id: &ThreadIdentifier) {
         self.0.gas_overflow.add(1, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_aerospike_accounts_cache_stat(
+        &self,
+        cache_len: u64,
+        pending_len: u64,
+        thread_id: &ThreadIdentifier,
+    ) {
+        let attrs = &[thread_id_attr(thread_id)];
+        self.0.aerospike_accounts_cache_len.record(cache_len, attrs);
+        self.0.aerospike_accounts_pending_len.record(pending_len, attrs);
+    }
+
+    pub fn report_durable_arena_stat(
+        &self,
+        stat: &account_state::DurableRepoStat,
+        thread_id: &ThreadIdentifier,
+    ) {
+        let attrs = &[thread_id_attr(thread_id)];
+        self.0
+            .durable_arena_nodes
+            .record((stat.dapp_map.total_nodes + stat.account_map.total_nodes) as u64, attrs);
+        self.0
+            .durable_arena_values
+            .record((stat.dapp_map.values_count + stat.account_map.values_count) as u64, attrs);
+        self.0.durable_arena_branch_children.record(
+            (stat.dapp_map.branch_children_count + stat.account_map.branch_children_count) as u64,
+            attrs,
+        );
+        self.0.durable_arena_ext_paths_bytes.record(
+            (stat.dapp_map.ext_paths_bytes + stat.account_map.ext_paths_bytes) as u64,
+            attrs,
+        );
+    }
+
+    pub fn report_attestation_tracking_collection_size(
+        &self,
+        value: u64,
+        thread_id: &ThreadIdentifier,
+    ) {
+        self.0.attestation_tracking_collection_size.record(value, &[thread_id_attr(thread_id)]);
     }
 }
 

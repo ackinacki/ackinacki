@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -12,6 +11,11 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use account_inbox::iter::iterator::MessagesRangeIterator;
+use account_state::DurableThreadAccountsDiff;
+use account_state::ThreadAccount;
+use account_state::ThreadAccountsBuilder;
+use account_state::ThreadAccountsRepository;
+use account_state::ThreadStateAccount;
 use anyhow::bail;
 use anyhow::ensure;
 use http_server::ExtMsgFeedback;
@@ -19,11 +23,15 @@ use http_server::ExtMsgFeedbackList;
 use http_server::FeedbackError;
 use http_server::FeedbackErrorCode;
 use indexset::BTreeMap;
+use node_types::AccountIdentifier;
+use node_types::AccountRouting;
+use node_types::BlockIdentifier;
+use node_types::DAppIdentifier;
+use node_types::ThreadIdentifier;
 use telemetry_utils::mpsc::instrumented_channel;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use tracing::instrument;
 use tracing::trace_span;
-use tvm_block::Account;
 use tvm_block::AccountStatus;
 use tvm_block::AddSub;
 use tvm_block::Augmentation;
@@ -40,15 +48,11 @@ use tvm_block::GetRepresentationHash;
 use tvm_block::HashUpdate;
 use tvm_block::HashmapAugType;
 use tvm_block::InMsg;
-use tvm_block::MerkleUpdate;
 use tvm_block::Message;
 use tvm_block::MsgEnvelope;
 use tvm_block::OutMsg;
 use tvm_block::OutMsgQueueKey;
 use tvm_block::Serializable;
-use tvm_block::ShardAccount;
-use tvm_block::ShardIdent;
-use tvm_block::ShardStateUnsplit;
 use tvm_block::StateInit;
 use tvm_block::TrComputePhase;
 use tvm_block::TrComputePhaseVm;
@@ -63,7 +67,6 @@ use tvm_executor::OrdinaryTransactionExecutor;
 use tvm_executor::TransactionExecutor;
 use tvm_types::Cell;
 use tvm_types::UInt256;
-use tvm_types::UsageTree;
 use tvm_vm::executor::Engine;
 use tvm_vm::executor::EngineTraceInfo;
 use tvm_vm::executor::MVConfig;
@@ -83,10 +86,12 @@ use crate::block_keeper_system::epoch::decode_preepoch_data;
 use crate::block_keeper_system::BlockKeeperSetChange;
 use crate::creditconfig::abi::DAPP_CONFIG_TVC;
 use crate::creditconfig::abi::DAPP_ROOT_ADDR;
-use crate::creditconfig::dappconfig::calculate_dapp_config_address;
+use crate::creditconfig::dappconfig::calculate_dapp_config_account_id;
 use crate::creditconfig::dappconfig::decode_dapp_config_data;
 use crate::creditconfig::dappconfig::decode_message_config;
 use crate::creditconfig::dappconfig::get_available_balance_from_config;
+use crate::external_messages::ExtMessageDst;
+use crate::external_messages::QueuedExtMessage;
 use crate::external_messages::Stamp;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::identifier::MessageIdentifier;
@@ -94,6 +99,9 @@ use crate::message::WrappedMessage;
 use crate::mvconfig::abi::MV_CONFIG_CONTRACT_ADDR;
 use crate::mvconfig::mvconfig::decode_mv_config_data;
 use crate::repository::accounts::AccountsRepository;
+use crate::repository::accounts::NodeThreadAccountsDiff;
+use crate::repository::accounts::NodeThreadAccountsRef;
+use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
@@ -101,12 +109,7 @@ use crate::storage::MessageDurableStorage;
 use crate::types::account::WrappedAccount;
 use crate::types::thread_message_queue::account_messages_iterator::AccountMessagesIterator;
 use crate::types::thread_message_queue::ThreadMessageQueueState;
-use crate::types::AccountAddress;
-use crate::types::AccountRouting;
-use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
-use crate::types::DAppIdentifier;
-use crate::types::ThreadIdentifier;
 
 #[cfg(feature = "enforce_min_seq")]
 const DEFAULT_MIN_SEQ_NO: u32 = 0;
@@ -114,9 +117,11 @@ const DEFAULT_MIN_SEQ_NO: u32 = 0;
 const BK_SYSTEM_DAPP_ID: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 // const EPOCH_CONTINUE_STAKE_FUNCTION_NAME: &str = "continueStake";
 
+pub(crate) const MOVE_FROM_TVM_LIMIT: usize = 100;
+
 #[cfg(test)]
 lazy_static::lazy_static!(
-    pub static ref EXTRA_EXTERNAL_MSG: Arc<parking_lot::Mutex<Vec<(AccountAddress,(Stamp, Message))>>> = Arc::new(parking_lot::Mutex::new(vec![]));
+    pub static ref EXTRA_EXTERNAL_MSG: Arc<parking_lot::Mutex<Vec<(ExtMessageDst,(Stamp, QueuedExtMessage))>>> = Arc::new(parking_lot::Mutex::new(vec![]));
 );
 
 impl BlockBuilder {
@@ -130,6 +135,7 @@ impl BlockBuilder {
         rand_seed: Option<UInt256>,
         control_rx_stop: Option<InstrumentedReceiver<()>>,
         accounts_repository: AccountsRepository,
+        thread_accounts_repository: NodeThreadAccountsRepository,
         block_keeper_epoch_code_hash: String,
         block_keeper_preepoch_code_hash: String,
         parallelization_level: usize,
@@ -140,21 +146,20 @@ impl BlockBuilder {
         metrics: Option<BlockProductionMetrics>,
         wasm_cache: WasmNodeCache,
         is_verifier: bool,
+        is_block_of_retired_version: bool,
+        #[cfg(feature = "usdc_name_repair")] usdc_name_repaired: std::sync::Arc<
+            parking_lot::Mutex<Option<BlockSeqNo>>,
+        >,
     ) -> anyhow::Result<Self> {
-        let usage_tree =
-            UsageTree::with_params(initial_optimistic_state.get_shard_state_as_cell(), true);
+        let (initial_accounts, usage_tree) =
+            initial_optimistic_state.get_shard_state().with_tvm_usage_tree()?;
         // let shard_state = initial_optimistic_state.get_shard_state();
-        let shard_state = Arc::new(
-            ShardStateUnsplit::construct_from_cell(usage_tree.root_cell())
-                .map_err(|e| anyhow::format_err!("Failed to construct shard state {e}"))?,
-        );
-        let accounts = shard_state
-            .read_accounts()
-            .map_err(|e| anyhow::format_err!("Failed to read accounts: {e}"))?;
+        let mut accounts_builder = thread_accounts_repository.state_builder(&initial_accounts);
+        accounts_builder.set_apply_to_durable(!is_block_of_retired_version);
         // let out_queue_info = shard_state
         //     .read_out_msg_queue_info()
         //     .map_err(|e| anyhow::format_err!("Failed to read out msgs queue: {e}"))?;
-        let seq_no = shard_state.seq_no() + 1;
+        let seq_no = thread_accounts_repository.state_seq_no(&initial_accounts) + 1;
 
         #[cfg(feature = "enforce_min_seq")]
         let seq_no = {
@@ -171,7 +176,6 @@ impl BlockBuilder {
         let rand_seed = rand_seed.unwrap_or(UInt256::rand()); // we don't need strict randomization like real node
 
         let mut block_info = BlockInfo::default();
-        block_info.set_shard(shard_state.shard().clone());
         block_info.set_seq_no(seq_no).unwrap();
         block_info.set_prev_stuff(false, prev_block_info).unwrap();
         block_info.set_gen_utime_ms(gen_utime_ms);
@@ -182,9 +186,8 @@ impl BlockBuilder {
 
         let builder = BlockBuilder::builder()
             .thread_id(thread_id)
-            .shard_state(shard_state)
-            .initial_accounts(accounts.clone())
-            .accounts(accounts)
+            .initial_accounts(initial_accounts)
+            .accounts_builder(accounts_builder)
             .block_info(block_info)
             .rand_seed(rand_seed)
             .start_lt(start_lt)
@@ -198,6 +201,7 @@ impl BlockBuilder {
             .parallelization_level(parallelization_level)
             .base_config_stateinit(base_config_stateinit)
             .accounts_repository(accounts_repository)
+            .thread_accounts_repository(thread_accounts_repository)
             .produced_internal_messages_to_other_threads(
                 produced_internal_messages_to_other_threads,
             )
@@ -208,25 +212,19 @@ impl BlockBuilder {
 
         #[cfg(feature = "monitor-accounts-number")]
         let builder = builder.accounts_number_diff(0);
+        let builder = builder.is_block_of_retired_version(is_block_of_retired_version);
+        #[cfg(feature = "usdc_name_repair")]
+        let builder = builder.usdc_name_repaired(usdc_name_repaired);
         Ok(builder.build())
     }
 
-    /// Shard ident
-    fn shard_ident(&self) -> &ShardIdent {
-        self.shard_state.shard()
-    }
-
     fn out_msg_key(&self, prefix: u64, hash: UInt256) -> OutMsgQueueKey {
-        OutMsgQueueKey::with_workchain_id_and_prefix(
-            self.shard_ident().workchain_id(),
-            prefix,
-            hash,
-        )
+        OutMsgQueueKey::with_workchain_id_and_prefix(0, prefix, hash)
     }
 
     fn try_prepare_transaction(
         executor: &OrdinaryTransactionExecutor,
-        acc_root: &mut Cell,
+        acc_root: &mut ThreadAccount,
         msg: &Message,
         last_trans_hash: UInt256,
         last_trans_lt: u64,
@@ -243,7 +241,10 @@ impl BlockBuilder {
         let start = std::time::Instant::now();
         tracing::trace!(target: "builder", "execute_with_libs_and_params: {:?} {msg:?}", msg.hash().map(|h| h.to_hex_string()));
         let mut is_ext_message = msg.is_inbound_external();
-        let result = executor.execute_with_libs_and_params(Some(msg), acc_root, execute_params);
+        let mut tvm_account_cell = Cell::try_from(&mut *acc_root)?;
+        let result =
+            executor.execute_with_libs_and_params(Some(msg), &mut tvm_account_cell, execute_params);
+        *acc_root = tvm_account_cell.into();
         tracing::trace!(target: "builder", "Execution result {:?}", result);
         #[cfg(feature = "timing")]
         tracing::trace!(target: "builder", "Execution time {} ms", start.elapsed().as_millis());
@@ -281,18 +282,15 @@ impl BlockBuilder {
                     tracing::debug!(target: "builder", "ExecutorError::TerminationDeadlineReached");
                     anyhow::bail!(ExecutorError::TerminationDeadlineReached);
                 }
-                let old_hash = acc_root.repr_hash();
-                let mut account = Account::construct_from_cell(acc_root.clone())
-                    .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?;
+                let old_hash = acc_root.hash();
+                let mut tvm_account = tvm_block::Account::try_from(&mut *acc_root)?;
                 let lt = std::cmp::max(
-                    account.last_tr_time().unwrap_or(0),
+                    tvm_account.last_tr_time().unwrap_or(0),
                     std::cmp::max(last_lt, msg.lt().unwrap_or(0) + 1),
                 );
-                account.set_last_tr_time(lt);
-                *acc_root = account
-                    .serialize()
-                    .map_err(|e| anyhow::format_err!("Failed to serialize account: {e}"))?;
-                let mut transaction = Transaction::with_account_and_message(&account, msg, lt)
+                tvm_account.set_last_tr_time(lt);
+                *acc_root = tvm_account.clone().try_into()?;
+                let mut transaction = Transaction::with_account_and_message(&tvm_account, msg, lt)
                     .map_err(|e| anyhow::format_err!("Failed to create transaction: {e}"))?;
                 transaction.set_now(block_unixtime);
                 let mut description =
@@ -316,7 +314,7 @@ impl BlockBuilder {
                         description.compute_ph = TrComputePhase::Vm(vm_phase);
                     }
                     Some(ExecutorError::NoFundsToImportMsg) => {
-                        description.compute_ph = if account.is_none() {
+                        description.compute_ph = if tvm_account.is_none() {
                             TrComputePhase::skipped(ComputeSkipReason::NoState)
                         } else {
                             TrComputePhase::skipped(ComputeSkipReason::NoGas)
@@ -325,14 +323,22 @@ impl BlockBuilder {
                     Some(ExecutorError::ExtMsgComputeSkipped(reason)) => {
                         description.compute_ph = TrComputePhase::skipped(reason.clone());
                     }
-                    _ => {
-                        return Err(err).map_err(|e| anyhow::format_err!("Execution error: {e}"))?
-                    }
+                    _ => match err.downcast_ref::<tvm_types::cell::DataCellError>() {
+                        Some(tvm_types::cell::DataCellError::MaxBOCSizeExceeded) => {
+                            log::trace!("Transaction reached max BOC tree size allowed by current Node State limitations");
+                            description.compute_ph =
+                                TrComputePhase::skipped(ComputeSkipReason::BadState);
+                        }
+                        _ => {
+                            return Err(err)
+                                .map_err(|e| anyhow::format_err!("Execution error: {e}"))?
+                        }
+                    },
                 }
                 transaction
                     .write_description(&TransactionDescr::Ordinary(description))
                     .map_err(|e| anyhow::format_err!("Failed to write tx description: {e}"))?;
-                let state_update = HashUpdate::with_hashes(old_hash, acc_root.repr_hash());
+                let state_update = HashUpdate::with_hashes(old_hash.into(), acc_root.hash().into());
                 transaction
                     .write_state_update(&state_update)
                     .map_err(|e| anyhow::format_err!("Failed to write tx state update: {e}"))?;
@@ -381,6 +387,7 @@ impl BlockBuilder {
         // let trace = thread_result.trace;
         let acc_root = thread_result.account_root;
         let acc_id = thread_result.account_id;
+        let acc_addr = acc_id.dapp_originator();
         self.tx_cnt += 1;
 
         if let Some(gas_used) = transaction.gas_used() {
@@ -408,11 +415,8 @@ impl BlockBuilder {
             transaction.read_description().map_err(|e| anyhow::format_err!("Failed to read tx description: {e}"))?.is_aborted()
         );
 
-        let acc = Account::construct_from_cell(acc_root.clone())
-            .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?;
-
-        if let Some(acc_code_hash) = acc.get_code_hash() {
-            let code_hash_str = acc_code_hash.as_hex_string();
+        if let Some(acc_code_hash) = acc_root.code_hash()? {
+            let code_hash_str = acc_code_hash.to_hex_string();
             if code_hash_str == self.block_keeper_epoch_code_hash
                 || code_hash_str == self.block_keeper_preepoch_code_hash
             {
@@ -434,8 +438,8 @@ impl BlockBuilder {
                         if code_hash_str == self.block_keeper_epoch_code_hash {
                             tracing::info!(target: "builder", "Epoch contract was deployed");
                             // TODO: do not fail execution on decode fail
-                            if let Some((id, block_keeper_data)) =
-                                decode_epoch_data(&acc).map_err(|e| {
+                            if let Some((id, block_keeper_data)) = decode_epoch_data(&acc_root)
+                                .map_err(|e| {
                                     anyhow::format_err!("Failed to decode epoch data: {e}")
                                 })?
                             {
@@ -448,11 +452,10 @@ impl BlockBuilder {
                         }
                         if code_hash_str == self.block_keeper_preepoch_code_hash {
                             tracing::debug!(target: "builder", "PreEpoch contract was deployed");
-                            if let Some((id, block_keeper_data)) = decode_preepoch_data(&acc)
+                            if let Some((id, block_keeper_data)) = decode_preepoch_data(&acc_root)
                                 .map_err(|e| {
-                                    anyhow::format_err!("Failed to decode preepoch data: {e}")
-                                })?
-                            {
+                                anyhow::format_err!("Failed to decode preepoch data: {e}")
+                            })? {
                                 self.block_keeper_set_changes.push(
                                     BlockKeeperSetChange::FutureBlockKeeperAdded((
                                         id,
@@ -559,22 +562,20 @@ impl BlockBuilder {
         }
 
         // let initial_account_routing = AccountRouting(thread_result.initial_dapp_id.clone().unwrap_or(DAppIdentifier(account_address.clone())), account_address.clone());
-        if acc.is_none() {
+        if acc_root.is_none() {
             #[cfg(feature = "monitor-accounts-number")]
             {
                 self.accounts_number_diff -= 1;
             }
             tracing::trace!(target: "builder", "Remove account from shard state: {}", acc_id.to_hex_string());
-            self.accounts
-                .remove(&acc_id.0)
-                .map_err(|e| anyhow::format_err!("Failed to remove account: {e}"))?;
-            let account_routing = AccountRouting(DAppIdentifier(acc_id.clone()), acc_id.clone());
+            self.accounts_builder.remove_account(&acc_addr);
+            let account_routing = acc_id.dapp_originator();
             self.accounts_that_changed_their_dapp_id
-                .entry(acc_id.clone())
+                .entry(acc_id)
                 .or_default()
                 .push((account_routing, None));
         } else {
-            let mut result_dapp_id = thread_result.initial_dapp_id.clone();
+            let mut result_dapp_id = thread_result.initial_dapp_id;
             if transaction.end_status == AccountStatus::AccStateActive
                 && (transaction.orig_status == AccountStatus::AccStateNonexist
                     || transaction.orig_status == AccountStatus::AccStateUninit)
@@ -584,45 +585,39 @@ impl BlockBuilder {
                     self.accounts_number_diff += 1;
                 }
                 if let Some(header) = thread_result.in_msg.int_header() {
-                    result_dapp_id = header
-                        .src_dapp_id
-                        .as_ref()
-                        .map(|dapp_id| DAppIdentifier(AccountAddress(dapp_id.clone())));
+                    result_dapp_id = header.src_dapp_id.as_ref().map(DAppIdentifier::from);
                 } else {
-                    result_dapp_id = Some(DAppIdentifier(acc_id.clone()));
+                    result_dapp_id = Some(acc_id.use_as_dapp_id());
                 }
             };
 
-            let shard_acc = ShardAccount::with_account_root(
+            let shard_acc = ThreadStateAccount::new(
                 acc_root,
-                tr_cell.repr_hash(),
+                tr_cell.repr_hash().into(),
                 transaction.logical_time(),
-                result_dapp_id.clone().map(|dapp_id| dapp_id.0 .0),
-            );
+                result_dapp_id,
+            )?;
 
             if result_dapp_id != thread_result.initial_dapp_id {
                 tracing::trace!(target: "builder", "Update dapp id table for {:?}: {:?}", acc_id, result_dapp_id);
                 let new_dapp_id = result_dapp_id.expect(
                     "DApp Id has changed and account was not deleted, It should not be None",
                 );
-                let new_account_routing = AccountRouting(new_dapp_id.clone(), acc_id.clone());
 
-                self.accounts_that_changed_their_dapp_id.entry(acc_id.clone()).or_default().push((
-                    new_account_routing,
-                    Some(WrappedAccount { account: shard_acc.clone(), account_id: acc_id.clone() }),
+                self.accounts_that_changed_their_dapp_id.entry(acc_id).or_default().push((
+                    acc_id.routing_with(new_dapp_id),
+                    Some(WrappedAccount { account: shard_acc.clone(), account_id: acc_id }),
                 ));
             } else if self.accounts_that_changed_their_dapp_id.contains_key(&acc_id) {
                 let history = self.accounts_that_changed_their_dapp_id.get_mut(&acc_id).unwrap();
-                let prev_routing = history.last().expect("Can't be empty").0.clone();
+                let prev_routing = history.last().expect("Can't be empty").0;
                 history.push((
                     prev_routing,
-                    Some(WrappedAccount { account: shard_acc.clone(), account_id: acc_id.clone() }),
+                    Some(WrappedAccount { account: shard_acc.clone(), account_id: acc_id }),
                 ));
             }
             tracing::trace!(target: "builder", "Update account data: {}", acc_id.to_hex_string());
-            self.accounts
-                .insert(&acc_id.0, &shard_acc)
-                .map_err(|e| anyhow::format_err!("Failed to save account: {e}"))?;
+            self.accounts_builder.insert_account(&acc_addr, &shard_acc);
         }
         if let Err(err) =
             self.add_raw_transaction(transaction, tr_cell, thread_result.in_msg.clone())
@@ -631,7 +626,7 @@ impl BlockBuilder {
             // TODO log error, write to transaction DB about error
         }
 
-        if let Some(dapp_id) = thread_result.initial_dapp_id.clone() {
+        if let Some(dapp_id) = thread_result.initial_dapp_id {
             if thread_result.minted_shell != 0 {
                 if let Some(data) = self.dapp_minted_map.get_mut(&dapp_id) {
                     *data = data.saturating_add(thread_result.minted_shell);
@@ -649,25 +644,20 @@ impl BlockBuilder {
         if !self.dapp_credit_map.contains_key(dapp_id) {
             tracing::trace!(target: "builder", "Dapp not in cache: {:?}", dapp_id);
             let addr =
-                calculate_dapp_config_address(dapp_id.clone(), self.base_config_stateinit.clone())
+                calculate_dapp_config_account_id(*dapp_id, self.base_config_stateinit.clone())
                     .map_err(|e| {
                         anyhow::format_err!("Failed to calculate dapp config address: {e}")
                     })?;
-            let acc_id = AccountAddress(addr);
+            let acc_id = addr;
             tracing::trace!(target: "builder", "Dapp config addr: {:?}", acc_id);
-            if let Some(acc) = self.get_account_from_initial_state(&acc_id)? {
+            if let Some(acc) = self.get_account_from_original_state(&acc_id)? {
                 tracing::trace!(target: "builder", "account found");
                 ensure!(!acc.is_redirect(), "DApp config account is redirect");
-                let acc_d = acc
-                    .read_account()
-                    .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?
-                    .as_struct()
-                    .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?;
-                let data = decode_dapp_config_data(&acc_d)?;
+                let data = decode_dapp_config_data(&acc.account()?)?;
 
-                if let Some(configdata) = data {
-                    available_balance = get_available_balance_from_config(configdata.clone());
-                    self.dapp_credit_map.insert(dapp_id.clone(), configdata);
+                if let Some(config_data) = data {
+                    available_balance = get_available_balance_from_config(config_data.clone());
+                    self.dapp_credit_map.insert(*dapp_id, config_data);
                 }
             }
         } else {
@@ -679,21 +669,19 @@ impl BlockBuilder {
         Ok(available_balance)
     }
 
-    fn get_account_from_initial_state(
+    fn get_account_from_original_state(
         &mut self,
-        acc_id: &AccountAddress,
-    ) -> anyhow::Result<Option<ShardAccount>> {
-        let tvm_acc_id = acc_id.into();
+        acc_id: &AccountIdentifier,
+    ) -> anyhow::Result<Option<ThreadStateAccount>> {
         match self
-            .initial_accounts
-            .account(&tvm_acc_id)
-            .map_err(|e| anyhow::format_err!("Failed to get account: {e}"))?
+            .thread_accounts_repository
+            .state_account(&self.initial_accounts, &acc_id.dapp_originator())?
         {
             Some(mut acc) => {
                 if acc.is_redirect() {
                     return Ok(Some(acc));
                 }
-                if acc.is_external() {
+                if acc.is_unloaded() {
                     tracing::trace!(target: "builder", "account is external {}", acc_id.to_hex_string());
                     let root = match self.initial_optimistic_state.cached_accounts.get(acc_id) {
                         Some((_, acc_root)) => acc_root.clone(),
@@ -703,19 +691,10 @@ impl BlockBuilder {
                             acc.last_trans_lt(),
                         )?,
                     };
-                    if root.repr_hash()
-                        != acc
-                            .account_cell()
-                            .map_err(|e| anyhow::format_err!("Failed to load account cell: {e}"))?
-                            .repr_hash()
-                    {
+                    if root.hash() != acc.account()?.hash() {
                         return Err(anyhow::format_err!("External account cell hash mismatch"));
                     }
-                    acc.set_account_cell(root)
-                        .map_err(|e| anyhow::format_err!("Failed to set account cell: {e}"))?;
-                    self.initial_accounts
-                        .insert(&acc_id.0, &acc)
-                        .map_err(|e| anyhow::format_err!("Failed to save initial account: {e}"))?;
+                    acc.set_account(root)?;
                 }
                 Ok(Some(acc))
             }
@@ -723,18 +702,21 @@ impl BlockBuilder {
         }
     }
 
-    fn get_account(&mut self, acc_id: &AccountAddress) -> anyhow::Result<Option<ShardAccount>> {
-        let tvm_acc_id = acc_id.into();
+    fn get_account(
+        &mut self,
+        acc_routing: &AccountRouting,
+    ) -> anyhow::Result<Option<ThreadStateAccount>> {
         match self
-            .accounts
-            .account(&tvm_acc_id)
+            .accounts_builder
+            .account(acc_routing)
             .map_err(|e| anyhow::format_err!("Failed to get account: {e}"))?
         {
             Some(mut acc) => {
                 if acc.is_redirect() {
                     return Ok(Some(acc));
                 }
-                if acc.is_external() {
+                if acc.is_unloaded() {
+                    let acc_id = acc_routing.account_id();
                     tracing::trace!(target: "builder", "account is external {}", acc_id.to_hex_string());
                     let root = match self.initial_optimistic_state.cached_accounts.get(acc_id) {
                         Some((_, acc_root)) => acc_root.clone(),
@@ -744,34 +726,41 @@ impl BlockBuilder {
                             acc.last_trans_lt(),
                         )?,
                     };
-                    if root.repr_hash()
-                        != acc
-                            .account_cell()
-                            .map_err(|e| anyhow::format_err!("Failed to load account cell: {e}"))?
-                            .repr_hash()
-                    {
+                    if root.hash() != acc.account()?.hash() {
                         return Err(anyhow::format_err!("External account cell hash mismatch"));
                     }
-                    acc.set_account_cell(root)
-                        .map_err(|e| anyhow::format_err!("Failed to set account cell: {e}"))?;
-                    self.accounts
-                        .insert(&acc_id.0, &acc)
-                        .map_err(|e| anyhow::format_err!("Failed to save account: {e}"))?;
-                    self.initial_accounts
-                        .insert(&acc_id.0, &acc)
-                        .map_err(|e| anyhow::format_err!("Failed to save initial account: {e}"))?;
+                    acc.set_account(root)?;
+                    self.accounts_builder.insert_account(acc_routing, &acc);
                 }
                 Ok(Some(acc))
             }
             None => Ok(None),
+        }
+    }
+
+    fn resolve_account(
+        &mut self,
+        dst: &ExtMessageDst,
+    ) -> anyhow::Result<Option<ThreadStateAccount>> {
+        let Some(acc) = self.get_account(&dst.account_id.optional_dapp_originator(dst.dapp_id))?
+        else {
+            return Ok(None);
+        };
+        if acc.is_redirect() {
+            let redirected_dapp_id = acc
+                .get_dapp_id()
+                .ok_or_else(|| anyhow::format_err!("Account is redirect but has no dapp id"))?;
+            self.get_account(&dst.account_id.routing_with(redirected_dapp_id))
+        } else {
+            Ok(Some(acc))
         }
     }
 
     fn reroute_message(
         &mut self,
         message: Message,
-        dest_dapp_id: Option<UInt256>,
-        acc_id: &AccountAddress,
+        dest_dapp_id: Option<DAppIdentifier>,
+        acc_id: &AccountIdentifier,
     ) -> anyhow::Result<()> {
         tracing::trace!(target: "builder",
             "Reroute message for another thread: {:?}",
@@ -797,12 +786,10 @@ impl BlockBuilder {
             .map_err(|e| anyhow::format_err!("failed to update out msg descr: {e}"))?;
 
         let wrapped_message = WrappedMessage { message };
-        let dapp_id = dest_dapp_id.map(AccountAddress).unwrap_or(acc_id.clone());
-        let destination_routing: AccountRouting =
-            (Some(DAppIdentifier(dapp_id)), acc_id.clone()).into();
+        let dapp_id = dest_dapp_id.unwrap_or_else(|| acc_id.use_as_dapp_id());
         let entry = self
             .produced_internal_messages_to_other_threads
-            .entry(destination_routing)
+            .entry(acc_id.routing_with(dapp_id))
             .or_default();
         entry.push((MessageIdentifier::from(&wrapped_message), Arc::new(wrapped_message)));
         Ok(())
@@ -829,33 +816,33 @@ impl BlockBuilder {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn execute(
+    fn execute_msg(
         &mut self,
         mut message: Message,
         blockchain_config: &BlockchainConfig,
-        acc_id: &AccountAddress,
+        acc_id: &AccountIdentifier,
+        ext_dst: Option<ExtMessageDst>,
         block_unixtime: u32,
         block_lt: u64,
-        check_messages_map: &mut Option<HashMap<AccountAddress, BTreeMap<u64, UInt256>>>,
+        check_messages_map: &mut Option<HashMap<AccountIdentifier, BTreeMap<u64, UInt256>>>,
         time_limits: &ExecutionTimeLimits,
         mv_config: MVConfig,
     ) -> anyhow::Result<ActiveThread> {
         let message_hash = message.hash().map_err(anyhow::Error::msg)?;
-        tracing::debug!(target: "builder", "Start msg execution: addr={:?} {:?}", acc_id.0.to_hex_string(), message_hash);
+        tracing::debug!(target: "builder", "Start msg execution: addr={:?} {:?}", acc_id.to_hex_string(), message_hash);
         #[cfg(feature = "timing")]
         let start = std::time::Instant::now();
-        let shard_acc = self.get_account(acc_id)?;
+        let shard_acc = match &ext_dst {
+            Some(dst) => self.resolve_account(dst)?,
+            None => self.get_account(&acc_id.dapp_originator())?,
+        };
         let shard_acc = shard_acc.unwrap_or_default();
-        let dapp_id_opt = shard_acc.get_dapp_id().map(|dapp_id| dapp_id.clone().into());
-        let account_routing = AccountRouting(
-            dapp_id_opt.clone().unwrap_or(DAppIdentifier(acc_id.clone())),
-            acc_id.clone(),
-        );
+        let dapp_id_opt = shard_acc.get_dapp_id();
+        let account_routing = acc_id.optional_dapp_originator(dapp_id_opt);
         if shard_acc.is_redirect() {
             tracing::debug!(target: "builder", "account was replaced with redirect");
             let dest_dapp_id = shard_acc
                 .get_dapp_id()
-                .cloned()
                 .ok_or(anyhow::format_err!("Account stub must have DApp ID set"))?;
             let orig_message_cell = message.serialize().map_err(|e| anyhow::format_err!("{e}"))?;
             let orig_message = message.clone();
@@ -867,7 +854,7 @@ impl BlockBuilder {
                     tr.serialize().unwrap(),
                     Some(orig_message),
                 )?;
-                header.set_dest_dapp_id(Some(dest_dapp_id.clone()));
+                header.set_dest_dapp_id(Some(dest_dapp_id.into()));
                 true
             } else {
                 false
@@ -895,9 +882,7 @@ impl BlockBuilder {
         tracing::debug!(target: "builder", "Read account: {}", acc_id.to_hex_string());
         #[cfg(feature = "timing")]
         tracing::trace!(target: "builder", "Execute: read account time {} ms", start.elapsed().as_millis());
-        let mut acc_root = shard_acc
-            .account_cell()
-            .map_err(|e| anyhow::format_err!("Failed to load account cell: {e}"))?;
+        let mut acc_root = shard_acc.account()?;
         let executor = OrdinaryTransactionExecutor::new((*blockchain_config).clone());
 
         let mut last_lt = std::cmp::max(self.end_lt, shard_acc.last_trans_lt() + 1);
@@ -917,24 +902,21 @@ impl BlockBuilder {
         let lt = Arc::new(AtomicU64::new(last_lt));
         // let trace = Arc::new(lockfree::queue::Queue::new());
         let vm_execution_is_block_related = Arc::new(Mutex::new(false));
-        let acc_id = acc_id.clone();
+        let acc_id = *acc_id;
 
-        let (initial_code_hash, initial_account) =
-            if let Ok(account) = Account::construct_from_cell(acc_root.clone()) {
-                let code_hash = account.get_code_hash();
-                if let Some(code_hash) = code_hash {
-                    let code_hash_str = code_hash.to_hex_string();
-                    if code_hash_str == self.block_keeper_epoch_code_hash {
-                        (Some(code_hash), Some(account))
-                    } else {
-                        (Some(code_hash), None)
-                    }
+        let (initial_code_hash, initial_account) = {
+            let code_hash = acc_root.code_hash()?;
+            if let Some(code_hash) = code_hash {
+                let code_hash_str = code_hash.to_hex_string();
+                if code_hash_str == self.block_keeper_epoch_code_hash {
+                    (Some(code_hash), Some(acc_root.clone()))
                 } else {
-                    (None, None)
+                    (Some(code_hash), None)
                 }
             } else {
                 (None, None)
-            };
+            }
+        };
         let termination_deadline = time_limits.block_deadline();
         let execution_timeout = time_limits.get_message_timeout(&message_hash);
 
@@ -950,11 +932,13 @@ impl BlockBuilder {
                 last_tr_lt: Arc::clone(&lt),
                 seed_block: self.rand_seed.clone(),
                 debug: true,
-                signature_id: self.shard_state.global_id(),
+                signature_id: self
+                    .thread_accounts_repository
+                    .state_global_id(&self.initial_accounts),
                 trace_callback: Some(Arc::new(callback)),
                 vm_execution_is_block_related: vm_execution_is_block_related.clone(),
                 seq_no: self.block_info.seq_no(),
-                dapp_id: shard_acc.get_dapp_id().cloned(),
+                dapp_id: shard_acc.get_dapp_id().map(UInt256::from),
                 available_credit: available_balance,
                 termination_deadline,
                 execution_timeout,
@@ -964,6 +948,8 @@ impl BlockBuilder {
                 wasm_component_cache: self.wasm_cache.wasm_component_cache.clone(),
                 mvconfig: mv_config,
                 engine_version: get_engine_version(self.block_info.seq_no()),
+                #[cfg(feature = "usdc_name_repair")]
+                use_new_version: !self.is_block_of_retired_version,
                 ..Default::default() // TODO: remove default
             }
         } else {
@@ -973,11 +959,13 @@ impl BlockBuilder {
                 last_tr_lt: Arc::clone(&lt),
                 seed_block: self.rand_seed.clone(),
                 debug: false,
-                signature_id: self.shard_state.global_id(),
+                signature_id: self
+                    .thread_accounts_repository
+                    .state_global_id(&self.initial_accounts),
                 trace_callback: None,
                 vm_execution_is_block_related: vm_execution_is_block_related.clone(),
                 seq_no: self.block_info.seq_no(),
-                dapp_id: shard_acc.get_dapp_id().cloned(),
+                dapp_id: shard_acc.get_dapp_id().map(UInt256::from),
                 available_credit: available_balance,
                 termination_deadline,
                 execution_timeout,
@@ -987,6 +975,8 @@ impl BlockBuilder {
                 wasm_component_cache: self.wasm_cache.wasm_component_cache.clone(),
                 mvconfig: mv_config,
                 engine_version: get_engine_version(self.block_info.seq_no()),
+                #[cfg(feature = "usdc_name_repair")]
+                use_new_version: !self.is_block_of_retired_version,
                 ..Default::default() // TODO: remove default
             }
         };
@@ -1002,7 +992,7 @@ impl BlockBuilder {
                 &executor,
                 &mut acc_root,
                 &message,
-                shard_acc.last_trans_hash().clone(),
+                shard_acc.last_trans_hash().into(),
                 shard_acc.last_trans_lt(),
                 execute_params,
                 // trace,
@@ -1015,11 +1005,12 @@ impl BlockBuilder {
                         transaction: tx,
                         lt,
                         // trace,
-                        account_root: acc_root,
-                        account_id: acc_id.clone(),
+                        account_root: acc_root.clone(),
+                        account_id: acc_id,
                         minted_shell,
                         initial_dapp_id: dapp_id_opt,
                         in_msg_is_ext: is_ext_message,
+                        ext_msg_dst: ext_dst,
                         in_msg: message,
                         initial_code_hash,
                         initial_account,
@@ -1037,10 +1028,60 @@ impl BlockBuilder {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(super) fn execute_internal(
+        &mut self,
+        message: Message,
+        blockchain_config: &BlockchainConfig,
+        acc_id: &AccountIdentifier,
+        block_unixtime: u32,
+        block_lt: u64,
+        check_messages_map: &mut Option<HashMap<AccountIdentifier, BTreeMap<u64, UInt256>>>,
+        time_limits: &ExecutionTimeLimits,
+        mv_config: MVConfig,
+    ) -> anyhow::Result<ActiveThread> {
+        self.execute_msg(
+            message,
+            blockchain_config,
+            acc_id,
+            None,
+            block_unixtime,
+            block_lt,
+            check_messages_map,
+            time_limits,
+            mv_config,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn execute_external(
+        &mut self,
+        message: Message,
+        dst: &ExtMessageDst,
+        blockchain_config: &BlockchainConfig,
+        block_unixtime: u32,
+        block_lt: u64,
+        check_messages_map: &mut Option<HashMap<AccountIdentifier, BTreeMap<u64, UInt256>>>,
+        time_limits: &ExecutionTimeLimits,
+        mv_config: MVConfig,
+    ) -> anyhow::Result<ActiveThread> {
+        self.execute_msg(
+            message,
+            blockchain_config,
+            &dst.account_id,
+            Some(*dst),
+            block_unixtime,
+            block_lt,
+            check_messages_map,
+            time_limits,
+            mv_config,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn execute_internal_messages(
         &mut self,
         blockchain_config: &BlockchainConfig,
-        check_messages_map: &mut Option<HashMap<AccountAddress, BTreeMap<u64, UInt256>>>,
+        check_messages_map: &mut Option<HashMap<AccountIdentifier, BTreeMap<u64, UInt256>>>,
         _white_list_of_slashing_messages_hashes: HashSet<UInt256>, // TODO: check usage
         message_queue: ThreadMessageQueueState,
         message_db: MessageDurableStorage,
@@ -1188,7 +1229,7 @@ impl BlockBuilder {
                 let mut internal_messages_iter = message_queue.iter(&message_db);
 
                 let active_int_destinations = parking_lot::Mutex::new(HashSet::new());
-                let mut started_accounts: HashMap<AccountAddress, MessagesRangeIterator<MessageIdentifier, Arc<WrappedMessage>, MessageDurableStorage>> = HashMap::new();
+                let mut started_accounts: HashMap<AccountIdentifier, MessagesRangeIterator<MessageIdentifier, Arc<WrappedMessage>, MessageDurableStorage>> = HashMap::new();
 
                 // Start first message execution separately because we must wait for it to finish
                 let mut first_thread_and_key = loop {
@@ -1196,8 +1237,8 @@ impl BlockBuilder {
                      match self.get_next_int_message(check_messages_map, &mut started_accounts, &active_int_destinations, &mut internal_messages_iter, &mut verify_block_contains_missing_messages_from_prev_state)? {
                         Some((message, key)) => {
                             executed_int_messages_cnt += 1;
-                            let first_acc_id = message.int_dst_account_id().expect("Failed to get int_dst_account_id").into();
-                            let first_thread = self.execute(
+                            let first_acc_id = AccountIdentifier::from(message.int_dst_account_id().expect("Failed to get int_dst_account_id"));
+                            let first_thread = self.execute_internal(
                                 message,
                                 blockchain_config,
                                 &first_acc_id,
@@ -1237,8 +1278,8 @@ impl BlockBuilder {
                                 Some((message, key)) => {
                                     pause_to_avoid_busy_loop = false;
                                     executed_int_messages_cnt += 1;
-                                    let acc_id = message.int_dst_account_id().ok_or_else(|| anyhow::anyhow!("int_dst_account_id is None"))?.into();
-                                    let thread = self.execute(
+                                    let acc_id = AccountIdentifier::from(message.int_dst_account_id().ok_or_else(|| anyhow::anyhow!("int_dst_account_id is None"))?);
+                                    let thread = self.execute_internal(
                                         message,
                                         blockchain_config,
                                         &acc_id,
@@ -1282,7 +1323,7 @@ impl BlockBuilder {
                             tracing::trace!(target: "builder", "First int message finished, key: {}", first_key.inner().hash.to_hex_string());
                             if Self::stop_block_build_after_execution(&thread_result, check_messages_map.is_some())? {
                                 let thread_result = thread_result?;
-                                let acc_id = thread_result.account_id.clone();
+                                let acc_id = thread_result.account_id;
 
                                 self.after_transaction(thread_result)?;
 
@@ -1315,7 +1356,7 @@ impl BlockBuilder {
                                 if Self::stop_block_build_after_execution(&thread_result, check_messages_map.is_some())? {
                                     let thread_result = thread_result?;
                                     tracing::trace!(target: "builder", "Thread with dapp_id and minted shell {:?} {:?} {:?}", thread_result.initial_dapp_id, thread_result.minted_shell, thread_result.transaction);
-                                    let acc_id = thread_result.account_id.clone();
+                                    let acc_id = thread_result.account_id;
                                     // if *vm_execution_is_block_related && *block_production_was_finished {
                                     //     tracing::trace!(target: "builder", "parallel int message finished dest: {}, key: {}, but tx was block related so result is not used", acc_id.to_hex_string(), key.repr_hash().to_hex_string());
                                     //     Insert message to the head of message queue for not to break initial messages order to one account
@@ -1376,10 +1417,10 @@ impl BlockBuilder {
     #[allow(clippy::too_many_arguments)]
     pub fn build_block(
         mut self,
-        ext_messages_queue: HashMap<AccountAddress, VecDeque<(Stamp, Message)>>,
+        ext_messages_queue: HashMap<ExtMessageDst, VecDeque<(Stamp, QueuedExtMessage)>>,
         blockchain_config: &BlockchainConfig,
         mut active_threads: Vec<(Cell, ActiveThread)>,
-        mut check_messages_map: Option<HashMap<AccountAddress, BTreeMap<u64, UInt256>>>,
+        mut check_messages_map: Option<HashMap<AccountIdentifier, BTreeMap<u64, UInt256>>>,
         white_list_of_slashing_messages_hashes: HashSet<UInt256>,
         message_db: MessageDurableStorage,
         time_limits: &ExecutionTimeLimits,
@@ -1387,8 +1428,8 @@ impl BlockBuilder {
         let _ =
             tracing::span!(tracing::Level::INFO, "build_block", seq_no = self.block_info.seq_no());
         active_threads.clear();
-        tracing::info!(target: "builder", "Start build of block: {} for {:?}", self.block_info.seq_no(), self.thread_id,);
-        tracing::debug!(target: "builder", "ext_messages_queue.len={}, active_threads.len={}, check_messages_map.len={:?}", queue_len(&ext_messages_queue), active_threads.len(), check_messages_map.as_ref().map(|map| map.len()));
+        tracing::info!(target: "builder", "Start build of block: {} for {:?}", self.block_info.seq_no(), self.thread_id);
+        tracing::info!(target: "builder", "ext_messages_queue.len={}, active_threads.len={}, check_messages_map.len={:?}", queue_len(&ext_messages_queue), active_threads.len(), check_messages_map.as_ref().map(|map| map.len()));
 
         #[cfg(test)]
         let mut ext_messages_queue = ext_messages_queue;
@@ -1399,16 +1440,11 @@ impl BlockBuilder {
         // messages that have destination in the current state and remove others from state.
 
         let mut mvconfig = MVConfig::default();
-        let acc_id = AccountAddress::from_str(MV_CONFIG_CONTRACT_ADDR)
+        let acc_id = AccountIdentifier::from_str(MV_CONFIG_CONTRACT_ADDR)
             .map_err(|e| anyhow::format_err!("Failed to calc mvconfig address: {e}"))?;
-        if let Some(acc) = self.get_account_from_initial_state(&acc_id)? {
+        if let Some(acc) = self.get_account_from_original_state(&acc_id)? {
             if !acc.is_redirect() {
-                let acc_d = acc
-                    .read_account()
-                    .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?
-                    .as_struct()
-                    .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?;
-                if let Ok(config) = decode_mv_config_data(&acc_d) {
+                if let Ok(config) = decode_mv_config_data(&acc.account()?) {
                     mvconfig = config;
                 }
             } else {
@@ -1486,7 +1522,7 @@ impl BlockBuilder {
 
                         tracing::trace!(target: "builder", "Parallel new message: {:?} to {:?}, key: {}", message.hash(), acc_id.to_hex_string(), key.repr_hash().to_hex_string());
 
-                        let thread = self.execute(
+                        let thread = self.execute_internal(
                             message.clone(),
                             blockchain_config,
                             &acc_id,
@@ -1509,7 +1545,7 @@ impl BlockBuilder {
                                     let wrapped_message = WrappedMessage { message: message.clone() };
                                     let entry = self
                                         .produced_internal_messages_to_other_threads
-                                        .entry(account_routing.clone())
+                                        .entry(*account_routing)
                                         .or_default();
                                     entry.push((
                                         MessageIdentifier::from(&wrapped_message),
@@ -1714,21 +1750,24 @@ impl BlockBuilder {
                             {
                                 if let Some(body) = body_opt {
                                     if let Ok(Some(dapp)) = decode_message_config(body) {
-                                        data.set_src_dapp_id(Some(dapp));
+                                        data.set_src_dapp_id(Some(dapp.into()));
                                     }
                                 }
                             }
                         }
                     }
 
-                    let dest_account_id = msg.int_dst_account_id().ok_or_else(|| {
-                        failure::err_msg("Internal message must have valid internal destination")
-                    })?;
+                    let dest_account_id =
+                        msg.int_dst_account_id().map(AccountIdentifier::from).ok_or_else(|| {
+                            failure::err_msg(
+                                "Internal message must have valid internal destination",
+                            )
+                        })?;
 
                     let info = msg
                         .int_header()
                         .ok_or_else(|| failure::err_msg("Internal message must have header"))?;
-                    let dest_dapp_id = info.dest_dapp_id.clone();
+                    let dest_dapp_id = info.dest_dapp_id.as_ref().map(DAppIdentifier::from);
                     let fwd_fee = info.fwd_fee();
                     let msg_cell = msg.serialize()?;
                     let env = MsgEnvelope::with_message_and_fee(&msg, *fwd_fee)?;
@@ -1741,14 +1780,8 @@ impl BlockBuilder {
                     );
                     self.out_msg_descr.set(&msg_cell.repr_hash(), &out_msg, &out_msg.aug()?)?;
 
-                    let destination_routing = AccountRouting(
-                        DAppIdentifier(
-                            dest_dapp_id
-                                .map(AccountAddress)
-                                .unwrap_or(dest_account_id.clone().into()),
-                        ),
-                        dest_account_id.into(),
-                    );
+                    let destination_routing =
+                        dest_account_id.optional_dapp_originator(dest_dapp_id);
                     if self
                         .initial_optimistic_state
                         .does_routing_belong_to_the_state(&destination_routing)
@@ -1804,7 +1837,8 @@ impl BlockBuilder {
     fn finish_block(
         mut self,
         message_db: MessageDurableStorage,
-    ) -> anyhow::Result<(Block, OptimisticStateImpl, CrossThreadRefData)> {
+    ) -> anyhow::Result<(Block, OptimisticStateImpl, CrossThreadRefData, DurableThreadAccountsDiff)>
+    {
         tracing::trace!(target: "builder", "finish_block");
         if let Some(m) = self.metrics.as_ref() {
             if self.block_gas_limit > 0 {
@@ -1822,7 +1856,6 @@ impl BlockBuilder {
                 tracing::error!(target: "builder", "block_gas_limit is 0");
             }
         }
-        let mut new_shard_state = self.shard_state.deref().clone();
         tracing::info!(target: "builder", "finish block: seq_no: {:?}", self.block_info.seq_no());
         tracing::info!(target: "builder", "finish block: tx_cnt: {}", self.tx_cnt);
         tracing::info!(target: "builder", "finish block: total_gas_used: {}, gas_limit: {}", self.total_gas_used, self.block_gas_limit);
@@ -1832,20 +1865,10 @@ impl BlockBuilder {
             seq_no = self.block_info.seq_no(),
             tx_cnt = self.tx_cnt
         );
-        new_shard_state.set_seq_no(self.block_info.seq_no());
-        trace_span!("write accounts").in_scope(|| {
-            new_shard_state.write_accounts(&self.accounts).map_err(|e| {
-                anyhow::format_err!("Failed to write accounts to new shard state: {e}")
-            })
-        })?;
+        self.accounts_builder.set_seq_no(self.block_info.seq_no());
         // new_shard_state
         //     .write_out_msg_queue_info(&self.out_queue_info)
         //     .map_err(|e| anyhow::format_err!("Failed to write out msg queue info: {e}"))?;
-        tracing::debug!(
-            target: "builder",
-            "finish block new_shard_state hash: {:?}",
-            new_shard_state.hash().map(|h| h.to_hex_string())
-        );
 
         let accounts_that_changed_their_dapp_id: HashMap<AccountRouting, Option<WrappedAccount>> =
             HashMap::from_iter(
@@ -1856,7 +1879,7 @@ impl BlockBuilder {
         for (routing, _) in accounts_that_changed_their_dapp_id.iter() {
             tracing::trace!(target: "node", "set_dapp_id_changed_for_account for {routing:?}");
             self.account_blocks
-                .set_dapp_id_changed_for_account(&routing.1 .0.clone().into())
+                .set_dapp_id_changed_for_account(&routing.account_id().into())
                 .map_err(|e| {
                     anyhow::format_err!("Failed to set dapp id changed for {routing:?} {e}")
                 })?;
@@ -1892,49 +1915,39 @@ impl BlockBuilder {
 
         tracing::debug!(target: "builder", "finish_block: prepare value flow");
 
-        let (new_ss_root, state_update) = trace_span!("generate state update").in_scope(||{
-            let new_ss_root = new_shard_state
-                .serialize()
-                .map_err(|e| anyhow::format_err!("Failed to serialize shard state: {e}"))?;
-            tracing::debug!(target: "builder", "finish_block: serialize new state: {}", new_ss_root.repr_hash().to_hex_string());
-            let mut old_ss = self.initial_optimistic_state.get_shard_state().deref().clone();
-            old_ss.write_accounts(&self.initial_accounts).map_err(|e| {
-                anyhow::format_err!("Failed to write accounts to old shard state: {e}")
+        self.accounts_builder.move_from_tvm(MOVE_FROM_TVM_LIMIT)?;
+
+        let (new_accounts, accounts_diff) =
+            trace_span!("generate state update").in_scope(|| {
+                let update_time = std::time::Instant::now();
+                let transition = self.accounts_builder.build(Some(&self.usage_tree))?;
+                let update_time_ms = update_time.elapsed().as_millis() as u64;
+                self.metrics.inspect(|metric| {
+                    metric.report_generate_merkle_update_time(update_time_ms, &self.thread_id)
+                });
+
+                Ok::<(NodeThreadAccountsRef, NodeThreadAccountsDiff), anyhow::Error>((
+                    transition.new_state,
+                    transition.diff,
+                ))
             })?;
-            let old_ss_root = old_ss
-                .serialize()
-                .map_err(|e| anyhow::format_err!("Failed to serialize old shard state: {e}"))?;
-            tracing::debug!(target: "builder", "finish_block: got old state: {}", old_ss_root.repr_hash().to_hex_string());
-            // tracing::trace!(target: "builder", "finish_block: usage tree root: {:?}", self.usage_tree.root_cell());
-            // tracing::trace!(target: "builder", "finish_block: usage tree set: {:?}", self.usage_tree.build_visited_set());
-            // #[cfg(feature = "timing")]
 
-            let usages = self.usage_tree.take_visited_set();
-            let update_time = std::time::Instant::now();
-            let state_update =
-                MerkleUpdate::create_fast(&old_ss_root, &new_ss_root, |h| usages.contains(h))
-                // MerkleUpdate::create(&old_ss_root, &new_ss_root)
-                    .map_err(|e| anyhow::format_err!("Failed to create merkle update: {e}"))?;
-            let update_time_ms = update_time.elapsed().as_millis() as u64;
-            self.metrics.inspect(|metric| metric.report_generate_merkle_update_time(update_time_ms, &self.thread_id));
-            // let accounts_len = {
-            //     let accounts_cell =self.accounts.serialize().unwrap();
-            //     let account_map = ShardAccountsMap::construct_from_cell(accounts_cell).unwrap();
-            //     account_map.len().unwrap()
-            // };
-
-            Ok::<(Cell, MerkleUpdate), anyhow::Error>((new_ss_root, state_update))
-        })?;
+        tracing::debug!(
+            target: "builder",
+            "finish block new_shard_state hash: {:?}",
+            self.thread_accounts_repository.state_hash(&new_accounts).to_hex_string()
+        );
+        tracing::info!(target: "builder", "finish block tvm update: {}->{}", accounts_diff.tvm.update.old_hash.to_hex_string(), accounts_diff.tvm.update.new_hash.to_hex_string());
 
         self.block_info.set_end_lt(self.end_lt.max(self.start_lt + 1));
 
         let block_info = self.block_info.clone();
 
         let block = Block::with_params(
-            self.shard_state.global_id(),
+            self.thread_accounts_repository.state_global_id(&self.initial_accounts),
             self.block_info,
             value_flow,
-            state_update,
+            accounts_diff.tvm.update,
             block_extra,
         )
         .map_err(|e| anyhow::format_err!("Failed to construct block: {e}"))?;
@@ -1963,13 +1976,13 @@ impl BlockBuilder {
         let mut new_thread_refs = self.initial_optimistic_state.thread_refs_state.clone();
         let current_thread_id = *self.initial_optimistic_state.get_thread_id();
         let current_thread_last_block =
-            (current_thread_id, block_id.clone(), BlockSeqNo::from(block_info.seq_no()));
-        new_thread_refs.update(current_thread_id, current_thread_last_block.clone());
+            (current_thread_id, block_id, BlockSeqNo::from(block_info.seq_no()));
+        new_thread_refs.update(current_thread_id, current_thread_last_block);
 
         let mut changed_accounts = HashSet::new();
         self.account_blocks
             .iterate_with_keys(|addr, _| {
-                changed_accounts.insert(AccountAddress(addr));
+                changed_accounts.insert(AccountIdentifier::from(addr));
                 Ok(true)
             })
             .map_err(|e| anyhow::format_err!("Failed to iterate account blocks: {e}"))?;
@@ -1986,20 +1999,26 @@ impl BlockBuilder {
             accounts_that_changed_their_dapp_id.clone(),
             block_id,
             BlockSeqNo::from(block_info.seq_no()),
-            (new_shard_state, new_ss_root).into(),
+            new_accounts,
             self.produced_internal_messages_to_other_threads.clone(),
             prev_block_info.into(),
             thread_id,
             threads_table,
             changed_accounts,
             self.accounts_repository,
+            &self.thread_accounts_repository,
             message_db.clone(),
+            !self.is_block_of_retired_version,
             #[cfg(feature = "monitor-accounts-number")]
             updated_accounts_number,
+            #[cfg(feature = "usdc_name_repair")]
+            self.is_block_of_retired_version,
+            #[cfg(feature = "usdc_name_repair")]
+            self.usdc_name_repaired,
         )?;
 
         tracing::debug!(target: "builder", "Finish block: {:?}", block.hash().map(|h| h.to_hex_string()));
-        Ok((block, new_state, cross_thread_ref_data))
+        Ok((block, new_state, cross_thread_ref_data, accounts_diff.durable))
     }
 
     // TODO: remove Option from tr_cell arg
@@ -2045,7 +2064,7 @@ impl BlockBuilder {
     fn execute_all_internal_messages(
         &mut self,
         blockchain_config: &BlockchainConfig,
-        check_messages_map: &mut Option<HashMap<AccountAddress, BTreeMap<u64, UInt256>>>,
+        check_messages_map: &mut Option<HashMap<AccountIdentifier, BTreeMap<u64, UInt256>>>,
         white_list_of_slashing_messages_hashes: HashSet<UInt256>,
         message_db: MessageDurableStorage,
         time_limits: &ExecutionTimeLimits,
@@ -2081,7 +2100,7 @@ impl BlockBuilder {
     fn process_completed_new_message_threads(
         &mut self,
         active_threads: &mut Vec<(Cell, ActiveThread)>,
-        active_destinations: &mut HashMap<AccountAddress, u128>,
+        active_destinations: &mut HashMap<AccountIdentifier, u128>,
         verification: bool, // verify_block is being built now
     ) -> anyhow::Result<bool> {
         // continue execution
@@ -2094,7 +2113,7 @@ impl BlockBuilder {
 
                     tracing::trace!(target: "builder", "Thread with dapp_id and mintedshell {:?} {:?} {:?}", thread_result.initial_dapp_id, thread_result.minted_shell, thread_result.transaction);
 
-                    let acc_id = thread_result.account_id.clone();
+                    let acc_id = thread_result.account_id;
                     tracing::trace!(target: "builder", "parallel new message finished dest: {}, key {}", acc_id.to_hex_string(), key.repr_hash().to_hex_string());
                     self.after_transaction(thread_result)?;
                     let Some(index) = active_destinations.remove(&acc_id) else {
@@ -2135,7 +2154,7 @@ impl BlockBuilder {
         #[cfg(feature = "monitor-accounts-number")]
         let accounts_number_diff = self.accounts_number_diff;
 
-        let (block, new_state, cross_thread_ref_data) = self
+        let (block, new_state, cross_thread_ref_data, durable_diff) = self
             .finish_block(message_db)
             .map_err(|e| anyhow::format_err!("Failed to finish block: {e}"))?;
 
@@ -2153,6 +2172,7 @@ impl BlockBuilder {
             cross_thread_ref_data,
             #[cfg(feature = "monitor-accounts-number")]
             accounts_number_diff,
+            durable_state_update: durable_diff,
         };
         drop(span_guard);
 
@@ -2161,11 +2181,11 @@ impl BlockBuilder {
 
     fn retrieve_next_message(
         &mut self,
-        active_destinations: &HashMap<AccountAddress, u128>,
-        check_messages_map: &mut Option<HashMap<AccountAddress, BTreeMap<u64, UInt256>>>,
+        active_destinations: &HashMap<AccountIdentifier, u128>,
+        check_messages_map: &mut Option<HashMap<AccountIdentifier, BTreeMap<u64, UInt256>>>,
         there_are_no_new_messages_for_verify_block: &mut bool,
         _verify_block_contains_missing_messages_from_prev_state: bool,
-    ) -> anyhow::Result<Option<(Message, AccountAddress, u128, OutMsgQueueKey)>> {
+    ) -> anyhow::Result<Option<(Message, AccountIdentifier, u128, OutMsgQueueKey)>> {
         for (index, (message, _tr_cell)) in &self.new_messages {
             let acc_id = message.int_dst_account_id().unwrap_or_default().into();
             if let Some(msg_set) = &check_messages_map {
@@ -2190,9 +2210,8 @@ impl BlockBuilder {
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("New message must be internal"))?
                 .dest_dapp_id
-                .unwrap_or(acc_id.0.clone());
-            let dest_routing =
-                AccountRouting(DAppIdentifier(AccountAddress(dest_dapp_id)), acc_id.clone());
+                .map(DAppIdentifier::from);
+            let dest_routing = acc_id.optional_dapp_originator(dest_dapp_id);
             if !self.initial_optimistic_state.does_routing_belong_to_the_state(&dest_routing) {
                 // TODO: message is skipped, but it can prevent loop from stop
                 // need to save it to out msg descr and remove from new messages
@@ -2203,7 +2222,7 @@ impl BlockBuilder {
                 let msg_cell = message
                     .serialize()
                     .map_err(|e| anyhow::format_err!("Failed to serialize message: {e}"))?;
-                let prefix = tvm_types::AccountId::from(acc_id.clone())
+                let prefix = tvm_types::AccountId::from(acc_id)
                     .get_next_u64()
                     .map_err(|e| anyhow::format_err!("Failed to calculate acc prefix: {e}"))?;
                 // This key is used for active threads moved to the next block to remove message from out msg queue
@@ -2218,40 +2237,41 @@ impl BlockBuilder {
 
     fn get_potential_thread(
         &self,
-        account_address: &AccountAddress,
-    ) -> tvm_types::Result<Option<ThreadIdentifier>> {
-        tracing::trace!(target: "builder", "get_potential_thread: {account_address:?}");
-        let dapp_id =
-            if let Some(account) = self.accounts.account(&account_address.clone().into())? {
-                tracing::trace!(target: "builder", "get_potential_thread: got account");
-                let dapp_id = account
-                    .get_dapp_id()
-                    .map(|dapp_id| dapp_id.clone().into())
-                    .unwrap_or(DAppIdentifier(account_address.clone()));
-                tracing::trace!(target: "builder", "get_potential_thread: {dapp_id:?}");
-                dapp_id
-            } else {
-                tracing::trace!(target: "builder", "get_potential_thread: no account");
-                DAppIdentifier(account_address.clone())
-            };
+        dst: &ExtMessageDst,
+    ) -> anyhow::Result<Option<ThreadIdentifier>> {
+        let account_id = dst.account_id;
+        tracing::trace!(target: "builder", "get_potential_thread: {account_id:?}");
+        let dapp_id = if let Some(known) = dst.dapp_id {
+            known
+        } else if let Some(account) =
+            self.accounts_builder.account(&account_id.dapp_originator())?
+        {
+            tracing::trace!(target: "builder", "get_potential_thread: got account");
+            let dapp_id = account.get_dapp_id().unwrap_or_else(|| account_id.use_as_dapp_id());
+            tracing::trace!(target: "builder", "get_potential_thread: {dapp_id:?}");
+            dapp_id
+        } else {
+            tracing::trace!(target: "builder", "get_potential_thread: no account");
+            account_id.use_as_dapp_id()
+        };
         Ok(self
             .initial_optimistic_state
-            .get_thread_for_account(&AccountRouting(dapp_id, account_address.clone()))
+            .get_thread_for_account(&account_id.routing_with(dapp_id))
             .ok())
     }
 
     #[allow(clippy::too_many_arguments)]
     fn fill_ext_msg_threads_pool(
         &mut self,
-        ext_messages_queue: &mut HashMap<AccountAddress, VecDeque<(Stamp, Message)>>,
+        ext_messages_queue: &mut HashMap<ExtMessageDst, VecDeque<(Stamp, QueuedExtMessage)>>,
         active_ext_threads: &mut VecDeque<(Stamp, ActiveThread)>,
-        active_destinations: &mut HashSet<AccountAddress>,
+        active_destinations: &mut HashSet<ExtMessageDst>,
         ext_message_feedbacks: &mut ExtMsgFeedbackList,
         processed_stamps: &mut Vec<Stamp>,
         blockchain_config: &BlockchainConfig,
         block_unixtime: u32,
         block_lt: u64,
-        check_messages_map: &mut Option<HashMap<AccountAddress, BTreeMap<u64, UInt256>>>,
+        check_messages_map: &mut Option<HashMap<AccountIdentifier, BTreeMap<u64, UInt256>>>,
         time_limits: &ExecutionTimeLimits,
         mvconfig: MVConfig,
     ) -> anyhow::Result<()> {
@@ -2268,27 +2288,27 @@ impl BlockBuilder {
         );
         let span_guard = span.enter();
 
-        for (acc_id, _queue) in ext_messages_queue.clone().into_iter() {
+        for (dst, _queue) in ext_messages_queue.clone().into_iter() {
             if self.should_stop_production()
                 || active_ext_threads.len() >= self.parallelization_level
             {
                 break;
             }
 
-            if active_destinations.contains(&acc_id) {
+            if active_destinations.contains(&dst) {
                 continue;
             }
             let potential_thread = self
-                .get_potential_thread(&acc_id)
+                .get_potential_thread(&dst)
                 .map_err(|e| anyhow::format_err!("Failed to get potential thread: {e}"))?;
 
             if !potential_thread.map(|thread| thread == self.thread_id).unwrap_or(false) {
-                if let Some(mut q) = ext_messages_queue.remove(&acc_id) {
+                if let Some(mut q) = ext_messages_queue.remove(&dst) {
                     // If message destination doesn't belong to the current thread, remove it from the queue
                     let acc_thread = self
-                        .get_potential_thread(&acc_id)
+                        .get_potential_thread(&dst)
                         .map_err(|e| anyhow::format_err!("Failed to get potential thread: {e}"))?;
-                    tracing::debug!(target: "ext_messages", "thread mismatch for <dst:{}>. skipped, acc_thread={acc_thread:?}", acc_id.to_hex_string());
+                    tracing::debug!(target: "ext_messages", "thread mismatch for <dst:{}>. skipped, acc_thread={acc_thread:?}", dst.account_id.to_hex_string());
 
                     while let Some((stamp, msg)) = q.pop_front() {
                         processed_stamps.push(stamp);
@@ -2302,22 +2322,23 @@ impl BlockBuilder {
             // used in tests/ext_messages/process_in_parallel.py
             tracing::debug!(target: "ext_messages", "fill threads: active_ext_threads={}, ext_messages_queue={}", active_ext_threads.len(), queue_len(ext_messages_queue));
 
-            if let Some(q) = ext_messages_queue.get_mut(&acc_id) {
-                if let Some((stamp, msg)) = q.pop_front() {
-                    anyhow::ensure!(msg.int_header().is_none());
+            if let Some(q) = ext_messages_queue.get_mut(&dst) {
+                if let Some((stamp, ext_msg)) = q.pop_front() {
+                    anyhow::ensure!(ext_msg.tvm_message().int_header().is_none());
                     tracing::trace!(
                         target: "ext_messages",
-                        "Parallel ext message: {:?} to {:?}",
-                        msg.hash(),
-                        acc_id.to_hex_string()
+                        "Parallel ext message: {} to {:?}",
+                        ext_msg.hash().to_hex_string(),
+                        dst.account_id.to_hex_string()
                     );
 
                     let exec_span = tracing::span!(tracing::Level::INFO, "execute ext message");
                     let span_guard = exec_span.enter();
-                    let thread = self.execute(
-                        msg,
+                    let dst = *ext_msg.dst();
+                    let thread = self.execute_external(
+                        ext_msg.into_tvm_message(),
+                        &dst,
                         blockchain_config,
-                        &acc_id,
                         block_unixtime,
                         block_lt,
                         check_messages_map,
@@ -2334,11 +2355,11 @@ impl BlockBuilder {
                     drop(span_guard);
 
                     active_ext_threads.push_back((stamp.clone(), thread));
-                    active_destinations.insert(acc_id.clone());
+                    active_destinations.insert(dst);
                     processed_stamps.push(stamp);
 
                     if q.is_empty() {
-                        ext_messages_queue.remove(&acc_id);
+                        ext_messages_queue.remove(&dst);
                     }
                 }
             }
@@ -2361,7 +2382,7 @@ impl BlockBuilder {
     fn process_completed_ext_msg_threads(
         &mut self,
         active_ext_threads: &mut VecDeque<(Stamp, ActiveThread)>,
-        active_destinations: &mut HashSet<AccountAddress>,
+        active_destinations: &mut HashSet<ExtMessageDst>,
         ext_message_feedbacks: &mut ExtMsgFeedbackList,
         verification: bool, // verify_blokc is being built now
     ) -> anyhow::Result<bool> {
@@ -2396,24 +2417,29 @@ impl BlockBuilder {
             // used in tests/ext_messages/process_in_parallel.py
             tracing::trace!(target: "ext_messages", "process completed: active_ext_threads={}", active_ext_threads.len());
 
+            // unwrap is safe here, although it does require mental effort, unfortunately.
             let (_, thread) = active_ext_threads.remove(i).unwrap();
+
             if Self::stop_block_build_after_execution(&thread_result, verification)? {
                 let thread_result = thread_result?;
+                let dst = thread_result.ext_msg_dst.unwrap_or_else(|| {
+                    ExtMessageDst::new(thread_result.account_id, thread_result.initial_dapp_id)
+                });
 
                 tracing::trace!(target: "builder", "Thread with dapp_id and minted shell {:?} {:?} {:?}", thread_result.initial_dapp_id, thread_result.minted_shell, thread_result.transaction);
-                let acc_id = thread_result.account_id.clone();
+                let acc_id = thread_result.account_id;
                 tracing::trace!(target: "ext_messages", "parallel ext message finished dest: {}", acc_id.to_hex_string());
 
                 let feedback = create_feedback(
-                    thread.message,
+                    thread.message.hash().map(|h| h.to_hex_string()).unwrap_or("".to_string()),
                     Some(thread_result.transaction.clone()),
-                    self.get_potential_thread(&acc_id)
+                    self.get_potential_thread(&dst)
                         .map_err(|e| anyhow::format_err!("Failed to get potential thread: {e}"))?,
                     None,
                 )?;
 
                 self.after_transaction(thread_result)?;
-                active_destinations.remove(&acc_id);
+                active_destinations.remove(&dst);
                 ext_message_feedbacks.push(feedback);
             } else {
                 return Ok(false);
@@ -2429,10 +2455,10 @@ impl BlockBuilder {
     fn execute_external_messages(
         &mut self,
         blockchain_config: &BlockchainConfig,
-        mut ext_messages_queue: HashMap<AccountAddress, VecDeque<(Stamp, Message)>>,
+        mut ext_messages_queue: HashMap<ExtMessageDst, VecDeque<(Stamp, QueuedExtMessage)>>,
         block_unixtime: u32,
         block_lt: u64,
-        check_messages_map: &mut Option<HashMap<AccountAddress, BTreeMap<u64, UInt256>>>,
+        check_messages_map: &mut Option<HashMap<AccountIdentifier, BTreeMap<u64, UInt256>>>,
         time_limits: &ExecutionTimeLimits,
         mvconfig: MVConfig,
     ) -> anyhow::Result<(ExtMsgFeedbackList, Vec<Stamp>, bool, usize)> {
@@ -2513,9 +2539,9 @@ impl BlockBuilder {
 
     fn get_next_int_message<'a>(
         &mut self,
-        check_messages_map: &Option<HashMap<AccountAddress, BTreeMap<u64, UInt256>>>,
+        check_messages_map: &Option<HashMap<AccountIdentifier, BTreeMap<u64, UInt256>>>,
         started_accounts: &mut HashMap<
-            AccountAddress,
+            AccountIdentifier,
             MessagesRangeIterator<
                 'a,
                 MessageIdentifier,
@@ -2523,7 +2549,7 @@ impl BlockBuilder {
                 MessageDurableStorage,
             >,
         >,
-        active_int_destinations: &parking_lot::Mutex<HashSet<AccountAddress>>,
+        active_int_destinations: &parking_lot::Mutex<HashSet<AccountIdentifier>>,
         internal_messages_iter: &mut impl Iterator<
             Item = MessagesRangeIterator<
                 'a,
@@ -2543,7 +2569,8 @@ impl BlockBuilder {
                 }
 
                 let mut guarded = active_int_destinations.lock();
-                let started_keys: Vec<AccountAddress> = started_accounts.keys().cloned().collect();
+                let started_keys: Vec<AccountIdentifier> =
+                    started_accounts.keys().cloned().collect();
                 for acc_id in started_keys {
                     if !guarded.contains(&acc_id) {
                         let next_message = loop {
@@ -2586,7 +2613,7 @@ impl BlockBuilder {
                                     }
                                     tracing::trace!(target: "builder", "get_next_int_message: Got message from queue iter: {:?} {:?}", acc_id, message);
                                     // TODO: check that message destination belongs to this thread
-                                    guarded.insert(acc_id.clone());
+                                    guarded.insert(acc_id);
 
                                     tracing::trace!(target: "builder", "get_next_int_message: return: {:?}", message);
                                     break Some((message.message.clone(), key));
@@ -2617,7 +2644,7 @@ impl BlockBuilder {
                     match account_msgs_iter.next() {
                         Some(Ok((message, key))) => {
                             tracing::trace!(target: "builder", "get_next_int_message: Got message from queue iter: {:?}", message);
-                            let Some(acc_id): Option<AccountAddress> =
+                            let Some(acc_id): Option<AccountIdentifier> =
                                 message.message.int_dst_account_id().map(|x| x.into())
                             else {
                                 // TODO: We expect only messages with internal destination, skip it
@@ -2675,7 +2702,7 @@ impl BlockBuilder {
                                 // skipped_messages.entry(acc_id).or_default().push((first_message.message.clone(), key));
                                 // continue;
                             }
-                            guarded.insert(acc_id.clone());
+                            guarded.insert(acc_id);
                             started_accounts.insert(acc_id, account_msgs_iter);
 
                             tracing::trace!(target: "builder", "get_next_int_message: return: {:?}", message);
@@ -2703,17 +2730,14 @@ impl BlockBuilder {
 }
 
 fn create_feedback(
-    message: Message,
+    message_hash: String,
     transaction: Option<Transaction>,
     thread_id: Option<ThreadIdentifier>,
     error: Option<FeedbackError>,
 ) -> anyhow::Result<ExtMsgFeedback> {
-    let hash = message.hash().map_err(|e| anyhow::format_err!("{e}"))?;
-    let message_hash = hash.to_hex_string();
-
     let mut feedback = ExtMsgFeedback {
-        message_hash,
-        thread_id: thread_id.map(|thread_id| thread_id.into()),
+        message_hash: message_hash.clone(),
+        thread_id,
         error,
         ..Default::default()
     };
@@ -2769,17 +2793,17 @@ fn create_feedback(
 }
 
 fn create_thread_mismatch_feedback(
-    msg: Message,
+    ext_msg: QueuedExtMessage,
     acc_thread: Option<ThreadIdentifier>,
 ) -> anyhow::Result<ExtMsgFeedback> {
     tracing::warn!(
         target: "builder",
         "Found external msg with internal destination that doesn't match current thread: {:?}. Correct thread: {:?}",
-        msg,
+        ext_msg,
         acc_thread,
     );
     create_feedback(
-        msg,
+        ext_msg.hash().to_hex_string(),
         None,
         acc_thread,
         Some(FeedbackError {
@@ -2790,17 +2814,17 @@ fn create_thread_mismatch_feedback(
 }
 
 pub fn create_queue_overflow_feedback(
-    msg: Message,
+    ext_msg: QueuedExtMessage,
     thread_id: &ThreadIdentifier,
 ) -> anyhow::Result<ExtMsgFeedback> {
     tracing::warn!(
         target: "builder",
         "External msg is rejected in case of queue overflow: {:?}",
-        msg
+        ext_msg
     );
 
     create_feedback(
-        msg,
+        ext_msg.hash().to_hex_string(),
         None,
         Some(*thread_id),
         Some(FeedbackError {
@@ -2812,6 +2836,134 @@ pub fn create_queue_overflow_feedback(
     )
 }
 
-fn queue_len(map: &HashMap<AccountAddress, VecDeque<(Stamp, Message)>>) -> usize {
+fn queue_len(map: &HashMap<ExtMessageDst, VecDeque<(Stamp, QueuedExtMessage)>>) -> usize {
     map.values().map(|queue| queue.len()).sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_transaction(description: TransactionDescrOrdinary, now: u32) -> Transaction {
+        let mut tx = Transaction::default();
+        tx.set_now(now);
+        tx.write_description(&TransactionDescr::Ordinary(description))
+            .expect("test transaction should accept description");
+        tx
+    }
+
+    #[test]
+    fn create_feedback_without_transaction_uses_input_fields() {
+        let feedback = create_feedback(
+            "msg-hash".to_string(),
+            None,
+            Some(ThreadIdentifier::default()),
+            Some(FeedbackError {
+                code: FeedbackErrorCode::ThreadMismatch,
+                message: Some("thread mismatch".to_string()),
+            }),
+        )
+        .expect("feedback should be created");
+
+        assert_eq!(feedback.message_hash, "msg-hash");
+        assert_eq!(feedback.thread_id, Some(ThreadIdentifier::default()));
+        assert!(feedback.tx_hash.is_none());
+        assert!(feedback.now.is_none());
+        assert!(!feedback.aborted);
+        assert_eq!(feedback.exit_code, 0);
+        assert!(feedback.ext_out_msgs.is_empty());
+        assert!(matches!(
+            feedback.error.as_ref().map(|error| &error.code),
+            Some(FeedbackErrorCode::ThreadMismatch)
+        ));
+        assert_eq!(
+            feedback.error.as_ref().and_then(|error| error.message.as_deref()),
+            Some("thread mismatch")
+        );
+    }
+
+    #[test]
+    fn create_feedback_sets_tvm_error_for_non_zero_vm_exit_code() {
+        let mut description = TransactionDescrOrdinary { aborted: true, ..Default::default() };
+        description.compute_ph =
+            TrComputePhase::Vm(TrComputePhaseVm { exit_code: 42, ..Default::default() });
+        let tx = make_transaction(description, 1_000);
+
+        let feedback = create_feedback(
+            "msg-hash".to_string(),
+            Some(tx.clone()),
+            None,
+            Some(FeedbackError {
+                code: FeedbackErrorCode::InternalError,
+                message: Some("should be overwritten".to_string()),
+            }),
+        )
+        .expect("feedback should be created");
+
+        assert_eq!(feedback.now, Some(1_000));
+        assert_eq!(feedback.tx_hash, tx.hash().ok().map(|n| n.to_hex_string()));
+        assert!(feedback.aborted);
+        assert_eq!(feedback.exit_code, 42);
+        assert!(matches!(
+            feedback.error.as_ref().map(|error| &error.code),
+            Some(FeedbackErrorCode::TvmError)
+        ));
+        assert_eq!(
+            feedback.error.as_ref().and_then(|error| error.message.as_deref()),
+            Some("Failed to execute the message. Error occurred during the compute phase.")
+        );
+    }
+
+    #[test]
+    fn create_feedback_sets_compute_skipped_error_and_reason_code() {
+        let description = TransactionDescrOrdinary {
+            compute_ph: TrComputePhase::skipped(ComputeSkipReason::NoGas),
+            ..Default::default()
+        };
+        let tx = make_transaction(description, 2_000);
+
+        let feedback = create_feedback("msg-hash".to_string(), Some(tx), None, None)
+            .expect("feedback should be created");
+
+        assert_eq!(feedback.now, Some(2_000));
+        assert_eq!(feedback.exit_code, ComputeSkipReason::NoGas as i32);
+        assert!(matches!(
+            feedback.error.as_ref().map(|error| &error.code),
+            Some(FeedbackErrorCode::ComputeSkipped)
+        ));
+        assert_eq!(
+            feedback.error.as_ref().and_then(|error| error.message.as_deref()),
+            Some("The account has an empty balance")
+        );
+    }
+
+    #[test]
+    fn create_feedback_keeps_input_error_for_zero_vm_exit_code() {
+        let description = TransactionDescrOrdinary {
+            compute_ph: TrComputePhase::Vm(TrComputePhaseVm { exit_code: 0, ..Default::default() }),
+            ..Default::default()
+        };
+        let tx = make_transaction(description, 3_000);
+
+        let feedback = create_feedback(
+            "msg-hash".to_string(),
+            Some(tx),
+            None,
+            Some(FeedbackError {
+                code: FeedbackErrorCode::QueueOverflow,
+                message: Some("input error".to_string()),
+            }),
+        )
+        .expect("feedback should be created");
+
+        assert_eq!(feedback.exit_code, 0);
+        assert!(matches!(
+            feedback.error.as_ref().map(|error| &error.code),
+            Some(FeedbackErrorCode::QueueOverflow)
+        ));
+        assert_eq!(
+            feedback.error.as_ref().and_then(|error| error.message.as_deref()),
+            Some("input error")
+        );
+    }
 }

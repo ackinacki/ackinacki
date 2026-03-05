@@ -1,7 +1,12 @@
+use node_types::ThreadIdentifier;
+
 use super::CheckError;
+#[cfg(feature = "allow-threads-merge")]
+use super::Proposal;
 use super::ThreadAction;
-use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
+#[cfg(feature = "allow-threads-merge")]
+use crate::types::ThreadsTablePrefab;
 
 #[cfg(not(feature = "allow-threads-merge"))]
 pub fn try_threads_merge(
@@ -39,9 +44,10 @@ pub fn try_threads_merge(
     if is_this_the_least_used_thread
         || is_the_default_thread_is_the_least_used_and_this_thread_right_above_it
     {
-        let mut proposed_threads_table = threads_table.clone();
-        let _ = proposed_threads_table.remove(this_thread_row_index).unwrap();
-        return Ok(ThreadAction::Collapse(Proposal { proposed_threads_table }));
+        let mut collapsed_table = threads_table.clone();
+        let _ = collapsed_table.remove(this_thread_row_index).unwrap();
+        let prefab = ThreadsTablePrefab::resolved(collapsed_table);
+        return Ok(ThreadAction::Collapse(Proposal { proposed_threads_table: prefab }));
     } else {
         return Ok(ThreadAction::ContinueAsIs);
     }

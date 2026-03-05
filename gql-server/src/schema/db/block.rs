@@ -206,6 +206,10 @@ impl Block {
             where_ops.push(format!("tr_count <= {max_tr_count}"));
         }
 
+        if let Some(thread_id) = &args.thread_id {
+            where_ops.push(format!("thread_id = '{thread_id}'"));
+        }
+
         let order_by = match direction {
             PaginateDirection::Forward => "ASC",
             PaginateDirection::Backward => "DESC",

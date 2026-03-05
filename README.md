@@ -1337,9 +1337,8 @@ Before deploying a BM Wallet, you need to create **two key pairs**:
 Generate the keys using the following commands:
 
 ```bash
-tvm-cli genphrase --dump block_manager.keys.json
-tvm-cli genphrase --dump block_manager_signing.keys.json
-```
+tvm-cli genphrase --dump block_manager_wallet.keys.json
+tvm-cli genphrase --dump block_manager_wallet_signing.keys
 
 These key files must later be referenced in the Ansible inventory file.
 

@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -8,6 +8,7 @@ use std::io::BufReader;
 use std::io::{self};
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -16,8 +17,10 @@ use anyhow::Result;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use flate2::GzBuilder;
+use xz2::write::XzEncoder;
 
 use crate::domain::grouping::ArchiveFile;
+use crate::domain::traits::CompressionMode;
 use crate::domain::traits::FileSystemClient;
 use crate::utils::parse_timestamp_from_filename;
 
@@ -74,7 +77,7 @@ impl FileSystemClient for FileSystemClientImpl {
         &self,
         src_db_path: impl AsRef<Path>,
         processed_root: impl AsRef<Path>,
-        gzip: bool,
+        compression: CompressionMode,
         dry_run: bool,
     ) -> anyhow::Result<PathBuf> {
         let src_db_path = src_db_path.as_ref();
@@ -93,20 +96,26 @@ impl FileSystemClient for FileSystemClientImpl {
         fs::create_dir_all(&dest_dir)
             .with_context(|| format!("failed to create dir {}", dest_dir.display()))?;
 
-        let dest_file_name: PathBuf = if gzip {
-            let mut s = file_name.to_os_string();
-            s.push(".gz");
-            PathBuf::from(s)
-        } else {
-            PathBuf::from(file_name)
+        let dest_file_name: PathBuf = match compression {
+            CompressionMode::None => PathBuf::from(file_name),
+            CompressionMode::Gzip => {
+                let mut s = file_name.to_os_string();
+                s.push(".gz");
+                PathBuf::from(s)
+            }
+            CompressionMode::Xz => {
+                let mut s = file_name.to_os_string();
+                s.push(".xz");
+                PathBuf::from(s)
+            }
         };
 
         let dest_path = dest_dir.join(dest_file_name);
 
-        if gzip {
-            gzip_move(src_db_path, &dest_path, dry_run)?;
-        } else {
-            move_file(src_db_path, &dest_path, dry_run)?;
+        match compression {
+            CompressionMode::None => move_file(src_db_path, &dest_path, dry_run)?,
+            CompressionMode::Gzip => gzip_move(src_db_path, &dest_path, dry_run)?,
+            CompressionMode::Xz => xz_move(src_db_path, &dest_path, dry_run)?,
         }
 
         Ok(dest_path)
@@ -116,6 +125,7 @@ impl FileSystemClient for FileSystemClientImpl {
 // Compresses a file with gzip and moves it to the destination.
 // Uses atomic operations to prevent data loss.
 fn gzip_move(src: &Path, dest_gz: &Path, dry_run: bool) -> Result<()> {
+    let started_at = Instant::now();
     let tmp_path = {
         let mut tmp = dest_gz.as_os_str().to_os_string();
         tmp.push(".part");
@@ -173,6 +183,67 @@ fn gzip_move(src: &Path, dest_gz: &Path, dry_run: bool) -> Result<()> {
             .with_context(|| format!("failed to remove source file: {}", src.display()))?;
     }
 
+    tracing::info!(
+        src = %src.display(),
+        dest = %dest_gz.display(),
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "gzip move completed"
+    );
+
+    Ok(())
+}
+
+// Compresses a file with xz and moves it to the destination.
+// Uses atomic operations to prevent data loss.
+fn xz_move(src: &Path, dest_xz: &Path, dry_run: bool) -> Result<()> {
+    let started_at = Instant::now();
+    let tmp_path = {
+        let mut tmp = dest_xz.as_os_str().to_os_string();
+        tmp.push(".part");
+        PathBuf::from(tmp)
+    };
+
+    // force clean up any leftover temp file
+    let _ = fs::remove_file(&tmp_path);
+
+    let src_file = File::open(src)
+        .with_context(|| format!("failed to open source file: {}", src.display()))?;
+
+    // create temp output file
+    let tmp_file = File::create(&tmp_path)
+        .with_context(|| format!("failed to create temp file: {}", tmp_path.display()))?;
+
+    let mut encoder = XzEncoder::new(tmp_file, 6);
+
+    // todo: tune buffer size
+    let mut reader = BufReader::with_capacity(2 << 20, src_file); // 2 MiB buffer
+    io::copy(&mut reader, &mut encoder).context("failed to compress file")?;
+
+    let out_file = encoder.finish().context("failed to finalize xz compression")?;
+    out_file.sync_all().context("failed to sync compressed file")?;
+    drop(out_file);
+
+    if dest_xz.exists() {
+        fs::remove_file(dest_xz)
+            .with_context(|| format!("failed to remove existing file: {}", dest_xz.display()))?;
+    }
+
+    fs::rename(&tmp_path, dest_xz).with_context(|| {
+        format!("failed to rename {} -> {}", tmp_path.display(), dest_xz.display())
+    })?;
+
+    if !dry_run {
+        fs::remove_file(src)
+            .with_context(|| format!("failed to remove source file: {}", src.display()))?;
+    }
+
+    tracing::info!(
+        src = %src.display(),
+        dest = %dest_xz.display(),
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "xz move completed"
+    );
+
     Ok(())
 }
 
@@ -223,15 +294,15 @@ fn is_cross_device_error(e: &io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::TempDir;
+    use testdir::testdir;
 
     use super::*;
 
     #[test]
     fn test_move_file() -> Result<()> {
-        let tmp = TempDir::new()?;
-        let src = tmp.path().join("source.txt");
-        let dest = tmp.path().join("dest.txt");
+        let tmp = testdir!();
+        let src = tmp.join("source.txt");
+        let dest = tmp.join("dest.txt");
 
         fs::write(&src, b"test data")?;
         move_file(&src, &dest, false)?;
@@ -244,15 +315,50 @@ mod tests {
 
     #[test]
     fn test_gzip_move() -> Result<()> {
-        let tmp = TempDir::new()?;
-        let src = tmp.path().join("source.db");
-        let dest = tmp.path().join("dest.db.gz");
+        let tmp = testdir!();
+        let src = tmp.join("source.db");
+        let dest = tmp.join("dest.db.gz");
 
         fs::write(&src, b"test database content")?;
         gzip_move(&src, &dest, false)?;
 
         assert!(dest.exists());
         assert!(dest.metadata()?.len() > 0);
+        assert!(!src.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn test_xz_move() -> Result<()> {
+        let tmp = testdir!();
+        let src = tmp.join("source.db");
+        let dest = tmp.join("dest.db.xz");
+
+        fs::write(&src, b"test database content")?;
+        xz_move(&src, &dest, false)?;
+
+        assert!(dest.exists());
+        assert!(dest.metadata()?.len() > 0);
+        assert!(!src.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn test_move_processed_xz() -> Result<()> {
+        let tmp = testdir!();
+        let incoming = tmp.join("incoming");
+        let processed = tmp.join("processed");
+        let src_dir = incoming.join("1");
+        fs::create_dir_all(&src_dir)?;
+
+        let src = src_dir.join("bm-archive-123.db");
+        fs::write(&src, b"test database content")?;
+
+        let fs_client = FileSystemClientImpl::new(incoming);
+        let dest = fs_client.move_processed(&src, &processed, CompressionMode::Xz, false)?;
+
+        assert_eq!(dest, processed.join("1").join("bm-archive-123.db.xz"));
+        assert!(dest.exists());
         assert!(!src.exists());
         Ok(())
     }

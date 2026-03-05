@@ -317,11 +317,7 @@ impl Message {
             PaginateDirection::Backward => "DESC",
         };
 
-        let mut where_ops = vec![format!("src={account:?}")];
-
-        if !cfg!(feature = "store_events_only") {
-            where_ops.push("msg_type=2".to_string());
-        }
+        let mut where_ops = vec![format!("src={account:?}"), "msg_type=2".to_string()];
 
         let cursor_field = "msg_chain_order";
 

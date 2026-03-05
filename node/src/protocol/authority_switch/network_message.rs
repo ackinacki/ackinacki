@@ -1,19 +1,18 @@
 use std::collections::HashSet;
 
 use derive_getters::Getters;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use serde::Deserialize;
 use serde::Serialize;
 use typed_builder::TypedBuilder;
 
 use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
 use crate::node::associated_types::AttestationData;
 use crate::node::NetBlock;
 use crate::node::NodeIdentifier;
 use crate::types::BlockHeight;
-use crate::types::BlockIdentifier;
 use crate::types::BlockRound;
-use crate::types::ThreadIdentifier;
 
 // Note for the lock:
 // All nodes will have the same lock value in the same round.
@@ -48,11 +47,11 @@ pub struct Lock {
 
 #[derive(Clone, Serialize, Deserialize, Getters, TypedBuilder, Debug)]
 pub struct NextRound {
-    lock: Envelope<GoshBLS, Lock>,
-    locked_block_attestation: Option<Envelope<GoshBLS, AttestationData>>,
+    lock: Envelope<Lock>,
+    locked_block_attestation: Option<Envelope<AttestationData>>,
     // Attestations for blocks that were not yet finalized in this chain.
     // This field is required when locked block is None
-    attestations_for_ancestors: Vec<Envelope<GoshBLS, AttestationData>>,
+    attestations_for_ancestors: Vec<Envelope<AttestationData>>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Getters, TypedBuilder, Debug)]
@@ -62,9 +61,9 @@ pub struct NextRoundSuccess {
     block_height: BlockHeight,
     proposed_block: NetBlock, // Envelope<GoshBLS, AckiNackiBlock>,
     // This field MUST exist when proposed_block is a winner in the voting.
-    attestations_aggregated: Option<Envelope<GoshBLS, AttestationData>>,
+    attestations_aggregated: Option<Envelope<AttestationData>>,
     // proof that this round was successful
-    requests_aggregated: Vec<Envelope<GoshBLS, Lock>>,
+    requests_aggregated: Vec<Envelope<Lock>>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Getters, TypedBuilder)]
@@ -73,16 +72,16 @@ pub struct NextRoundFailed {
     round: BlockRound,
     block_height: BlockHeight,
     proposed_block: NetBlock, // Envelope<GoshBLS, AckiNackiBlock>,
-    attestations_aggregated: Option<Envelope<GoshBLS, AttestationData>>,
+    attestations_aggregated: Option<Envelope<AttestationData>>,
     // proof that this round was successful
-    requests_aggregated: Vec<Envelope<GoshBLS, Lock>>,
+    requests_aggregated: Vec<Envelope<Lock>>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Getters, TypedBuilder, Debug)]
 pub struct NextRoundReject {
     thread_identifier: ThreadIdentifier,
     prefinalized_block: NetBlock,
-    proof_of_prefinalization: Envelope<GoshBLS, AttestationData>,
+    proof_of_prefinalization: Envelope<AttestationData>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -121,11 +120,11 @@ pub enum AuthoritySwitch {
     ///   It either resends a locked block from any previous round
     ///   that has more than 50% + 1 of requested votes for this block,
     ///   or produces a new one if 50% + 1 of requests had no block voted for.
-    Switched(Envelope<GoshBLS, NextRoundSuccess>),
+    Switched(Envelope<NextRoundSuccess>),
 
     /// This message is sent in a reply to the AuthoritySwitch::Request
     /// in case the node were not able to collect enough requests
     /// and sends whatever block it is aware of.
     /// It is possible that the node had some requests with an unknown block locked
-    Failed(Envelope<GoshBLS, NextRoundFailed>),
+    Failed(Envelope<NextRoundFailed>),
 }

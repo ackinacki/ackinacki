@@ -9,6 +9,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::ops::AddAssign;
 
+use node_types::AccountIdentifier;
 use num_bigint::BigUint;
 use num_traits::Zero;
 use serde::Deserialize;
@@ -19,7 +20,6 @@ use serde::Serializer;
 use crate::bls::gosh_bls::PubKey;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
-use crate::types::AccountAddress;
 
 pub mod abi;
 pub mod bk_set;
@@ -54,7 +54,7 @@ pub struct BlockKeeperData {
     pub stake: BigUint,
     /// Address of the block keeper wallet.
     /// Also known as NodeIdentifier.
-    pub owner_address: AccountAddress,
+    pub owner_address: AccountIdentifier,
     pub signer_index: SignerIndex,
     pub owner_pubkey: [u8; 32],
     pub protocol_support: crate::versioning::ProtocolVersionSupport,
@@ -71,7 +71,7 @@ impl Default for BlockKeeperData {
             status: BlockKeeperStatus::Active,
             address: "".to_string(),
             stake: BigUint::zero(),
-            owner_address: AccountAddress::default(),
+            owner_address: AccountIdentifier::default(),
             signer_index: SignerIndex::default(),
             owner_pubkey: [0; 32],
             protocol_support: crate::versioning::ProtocolVersionSupport::from_str("test").unwrap(),
@@ -81,7 +81,7 @@ impl Default for BlockKeeperData {
 
 impl BlockKeeperData {
     pub fn node_id(&self) -> NodeIdentifier {
-        self.owner_address.clone().into()
+        self.owner_address.into()
     }
 }
 
@@ -237,7 +237,7 @@ impl Display for BlockKeeperData {
 pub struct BlockKeeperSlashData {
     pub node_id: NodeIdentifier,
     pub bls_pubkey: PubKey,
-    pub addr: AccountAddress,
+    pub addr: AccountIdentifier,
     pub slash_type: u8,
 }
 

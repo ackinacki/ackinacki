@@ -14,8 +14,6 @@ use crate::defaults;
 pub struct Info {
     /// Server version.
     pub version: Option<String>,
-    /// API mode (full, minimal)
-    pub api_mode: Option<String>,
     /// Server unix time in ms.
     pub time: Option<f64>,
     /// Blocks latency in ms (server time - max of blocks.gen_utime * 1000).
@@ -48,17 +46,11 @@ pub struct Info {
 impl Default for Info {
     fn default() -> Self {
         const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
-        let api_mode = if cfg!(feature = "store_events_only") {
-            "minimal API with Events".to_string()
-        } else {
-            "extended API".to_string()
-        };
 
         let time = SystemTime::now().duration_since(UNIX_EPOCH).ok().map(|d| d.as_millis() as f64);
 
         Self {
             version: Some(SERVER_VERSION.into()),
-            api_mode: Some(api_mode),
             time,
             blocks_latency: None,
             messages_latency: None,

@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use num::bigint::Sign;
@@ -204,6 +204,31 @@ pub fn query_order_by_str(order_by: Option<Vec<Option<QueryOrderBy>>>) -> String
         0 => "".to_string(),
         _ => format!(" ORDER BY {order_str} "),
     }
+}
+
+const HEX_TABLE: [u8; 16] = *b"0123456789abcdef";
+
+/// Formats a `u64` value as an SQLite BLOB hex literal in the form `X'0123...abcd'`.
+#[inline]
+pub fn u64_to_hexed_blob_buf(v: u64) -> [u8; 19] {
+    let mut buf = [0u8; 19];
+    buf[0] = b'X';
+    buf[1] = b'\'';
+
+    let mut n = v;
+    for i in (0..16).rev() {
+        let nibble = (n & 0x0f) as usize;
+        buf[2 + i] = HEX_TABLE[nibble];
+        n >>= 4;
+    }
+
+    buf[18] = b'\'';
+    buf
+}
+
+#[inline]
+pub fn sql_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 #[cfg(test)]

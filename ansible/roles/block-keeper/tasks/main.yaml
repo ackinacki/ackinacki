@@ -18,7 +18,7 @@
 
 - name: Ensure bk set file
   include_tasks: start-with-bk-set.yaml
-  when: [BK_SET_FILE, not ZEROSTATE, not FAST_UPDATE or UPGRADE is defined]
+  when: [BK_SET_FILE, not ZEROSTATE, DO_START or UPGRADE is defined]
 
 - name: Copy deployment configs
   include_tasks: copy-deployment-configs.yaml

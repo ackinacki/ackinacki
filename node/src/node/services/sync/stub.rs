@@ -4,13 +4,13 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use telemetry_utils::mpsc::InstrumentedSender;
 
 use crate::node::services::sync::StateSyncService;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
-use crate::types::BlockIdentifier;
-use crate::types::ThreadIdentifier;
 
 pub struct StateSyncServiceStub {}
 
@@ -37,6 +37,10 @@ impl StateSyncService for StateSyncServiceStub {
         _output: InstrumentedSender<anyhow::Result<BTreeMap<ThreadIdentifier, BlockIdentifier>>>,
     ) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    fn flush(&self) -> anyhow::Result<()> {
+        todo!()
     }
 }
 impl Default for StateSyncServiceStub {

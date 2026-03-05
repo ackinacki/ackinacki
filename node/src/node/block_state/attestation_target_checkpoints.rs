@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use derive_getters::Getters;
+use node_types::BlockIdentifier;
 use serde::Deserialize;
 use serde::Serialize;
 use typed_builder::TypedBuilder;
 
 use crate::node::associated_types::AttestationTargetType;
 use crate::node::BlockState;
-use crate::types::BlockIdentifier;
 use crate::utilities::guarded::Guarded;
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Copy, Getters, TypedBuilder)]
@@ -111,9 +111,9 @@ impl AncestorBlocksFinalizationCheckpointsConstructor {
                 if checkpoint.current_distance >= checkpoint.deadline {
                     // if can still be ok if there's a fallback exists for the block id
                     if !self.inherited_checkpoints.fallback.contains_key(block_id) {
-                        return Some(block_id.clone());
+                        return Some(*block_id);
                     } else {
-                        transitioned_to_fallback.insert(block_id.clone());
+                        transitioned_to_fallback.insert(*block_id);
                     }
                 }
                 None
@@ -128,7 +128,7 @@ impl AncestorBlocksFinalizationCheckpointsConstructor {
             .iter()
             .filter_map(|(block_id, checkpoints)| {
                 if checkpoints.iter().any(|e| e.current_distance >= e.deadline) {
-                    return Some(block_id.clone());
+                    return Some(*block_id);
                 }
                 None
             })
@@ -169,7 +169,7 @@ impl AncestorBlocksFinalizationCheckpointsConstructor {
                 CheckpointPassed => {
                     self.inherited_checkpoints.fallback.remove(&attested_block);
                     self.inherited_checkpoints.primary.remove(&attested_block);
-                    self.passed_primary.push(attested_block.clone());
+                    self.passed_primary.push(attested_block);
                 }
                 CheckpointFailed => {
                     // Do nothing. All failed results will be collected in the method <complete>.
@@ -186,8 +186,7 @@ impl AncestorBlocksFinalizationCheckpointsConstructor {
                     NoAction => RETAIN,
                     CheckpointPassed => {
                         if attestation_target_type == AttestationTargetType::Primary {
-                            self.passed_fallback_preattestation_checkpoint
-                                .push(attested_block.clone());
+                            self.passed_fallback_preattestation_checkpoint.push(attested_block);
                         }
                         REMOVE
                     }
@@ -198,7 +197,7 @@ impl AncestorBlocksFinalizationCheckpointsConstructor {
             if fallback_checkpoints.is_empty() {
                 self.inherited_checkpoints.fallback.remove(&attested_block);
                 self.inherited_checkpoints.primary.remove(&attested_block);
-                self.passed_fallback.push(attested_block.clone());
+                self.passed_fallback.push(attested_block);
             }
         }
     }
@@ -242,7 +241,7 @@ pub fn inherit_ancestor_blocks_finalization_distances(
 
     // Insert self
     next.primary.insert(
-        block_state.block_identifier().clone(),
+        *block_state.block_identifier(),
         AttestationTargetCheckpoint::builder()
             .current_distance(0)
             .deadline(*attestation_target.primary().generation_deadline())
@@ -252,7 +251,7 @@ pub fn inherit_ancestor_blocks_finalization_distances(
     );
 
     next.fallback.insert(
-        block_state.block_identifier().clone(),
+        *block_state.block_identifier(),
         vec![
             AttestationTargetCheckpoint::builder()
                 .current_distance(0)

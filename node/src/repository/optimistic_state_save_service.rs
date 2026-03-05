@@ -43,7 +43,7 @@ pub fn start_optimistic_state_save_service(
                     }
                 }
                 for state in states_to_save.into_values() {
-                    let block_id = state.get_block_id().clone();
+                    let block_id = *state.get_block_id();
                     let block_seq_no = *state.get_block_seq_no();
                     let thread_id = *state.get_thread_id();
                     tracing::trace!("Optimistic State saving service received state: {thread_id} {block_seq_no} {block_id:?}");

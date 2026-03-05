@@ -5,19 +5,28 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use account_state::ThreadAccount;
+use account_state::ThreadAccountsRepository;
 use anyhow::ensure;
-use tvm_block::ShardAccounts;
+use node_types::AccountIdentifier;
+use node_types::ThreadIdentifier;
+use node_types::TransactionHash;
 
 use crate::helper::get_temp_file_path;
-use crate::types::AccountAddress;
-use crate::types::ThreadIdentifier;
+
+pub type NodeThreadAccounts = account_state::FsCompositeThreadAccounts;
+pub type NodeThreadAccountsRepository =
+    <NodeThreadAccounts as account_state::ThreadAccounts>::Repository;
+pub type NodeThreadAccountsRef = <NodeThreadAccounts as account_state::ThreadAccounts>::Ref;
+pub type NodeThreadAccountsDiff = <NodeThreadAccounts as account_state::ThreadAccounts>::Diff;
+pub type NodeThreadAccountsBuilder = <NodeThreadAccounts as account_state::ThreadAccounts>::Builder;
 
 #[derive(Debug, Clone)]
 pub struct AccountsRepository {
     data_dir: PathBuf,
     unload_after: Option<u32>,
     store_after: u32,
-    deleted_accounts: Arc<Mutex<HashMap<ThreadIdentifier, BTreeMap<u64, Vec<AccountAddress>>>>>,
+    deleted_accounts: Arc<Mutex<HashMap<ThreadIdentifier, BTreeMap<u64, Vec<AccountIdentifier>>>>>,
 }
 
 impl AccountsRepository {
@@ -32,8 +41,8 @@ impl AccountsRepository {
 
     fn account_path(
         &self,
-        account_id: &AccountAddress,
-        last_trans_hash: &tvm_types::UInt256,
+        account_id: &AccountIdentifier,
+        last_trans_hash: &TransactionHash,
         last_trans_lt: u64,
     ) -> PathBuf {
         self.data_dir
@@ -43,29 +52,27 @@ impl AccountsRepository {
 
     pub fn load_account(
         &self,
-        account_id: &AccountAddress,
-        last_trans_hash: &tvm_types::UInt256,
+        account_id: &AccountIdentifier,
+        last_trans_hash: TransactionHash,
         last_trans_lt: u64,
-    ) -> anyhow::Result<tvm_types::Cell> {
+    ) -> anyhow::Result<ThreadAccount> {
         ensure!(self.unload_after.is_some(), "Tried to load account while unload is disabled");
-        let path = self.account_path(account_id, last_trans_hash, last_trans_lt);
+        let path = self.account_path(account_id, &last_trans_hash, last_trans_lt);
         let data = std::fs::read(&path).map_err(|err| {
             anyhow::format_err!("Failed to read account {}: {err}", path.display())
         })?;
-        tvm_types::boc::read_single_root_boc(data).map_err(|err| {
-            anyhow::format_err!("Failed to deserialize account {}: {err}", path.display())
-        })
+        ThreadAccount::read_bytes(&data)
     }
 
     pub fn store_account(
         &self,
-        account_id: &AccountAddress,
-        last_trans_hash: &tvm_types::UInt256,
+        account_id: &AccountIdentifier,
+        last_trans_hash: TransactionHash,
         last_trans_lt: u64,
-        account: tvm_types::Cell,
+        account: &ThreadAccount,
     ) -> anyhow::Result<()> {
         assert!(self.unload_after.is_some(), "Tried to store account while unload is disabled");
-        let path = self.account_path(account_id, last_trans_hash, last_trans_lt);
+        let path = self.account_path(account_id, &last_trans_hash, last_trans_lt);
         let parent_dir = if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|err| {
                 anyhow::format_err!("Failed to create directory {}: {err}", parent.display())
@@ -75,9 +82,7 @@ impl AccountsRepository {
             PathBuf::new()
         };
         let tmp_file_path = get_temp_file_path(&parent_dir);
-        let data = tvm_types::boc::write_boc(&account).map_err(|err| {
-            anyhow::format_err!("Failed to serialize account {}: {err}", path.display())
-        })?;
+        let data = account.write_bytes()?;
         let mut file = std::fs::File::create(&tmp_file_path).map_err(|err| {
             anyhow::format_err!("Failed to write account {}: {err}", tmp_file_path.display())
         })?;
@@ -97,11 +102,12 @@ impl AccountsRepository {
     pub fn clear_old_accounts(
         &self,
         thread_id: &ThreadIdentifier,
-        relevant_state: &ShardAccounts,
+        relevant_state: &NodeThreadAccountsRef,
         cut_lt: u64,
+        thread_accounts_repository: &NodeThreadAccountsRepository,
     ) {
-        relevant_state
-            .iterate_accounts(|account_id, account| {
+        thread_accounts_repository
+            .state_iterate_all_accounts(relevant_state, |account_id, account| {
                 let path = self.data_dir.join(account_id.to_hex_string());
                 if let Ok(states) = std::fs::read_dir(path) {
                     for state in states.flatten() {
@@ -162,7 +168,7 @@ impl AccountsRepository {
     pub fn accounts_deleted(
         &self,
         thread_id: &ThreadIdentifier,
-        accounts: Vec<AccountAddress>,
+        accounts: Vec<AccountIdentifier>,
         lt: u64,
     ) {
         let mut deleted = self.deleted_accounts.lock().unwrap();

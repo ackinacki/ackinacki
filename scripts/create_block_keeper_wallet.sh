@@ -134,6 +134,7 @@ done
 # tvm-cli -j call $SPONSOR_WALLET_ADDRESS sendTransaction "$SPONSOR_PARAMS" --abi $SPONSOR_WALLET_ABI --sign $SPONSOR_WALLET_KEY_FILE
 
 echo "Checking wallet balance..."
+sleep 3
 WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails)
 echo "$WALLET_DETAILS"
 echo "$WALLET_DETAILS" | jq -r '.balance' | xargs printf "Current wallet balance: %d\n"

@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
+
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
-use crate::types::BlockIdentifier;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 
 pub(super) fn find_next_prefinalized(

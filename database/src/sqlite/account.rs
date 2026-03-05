@@ -44,21 +44,23 @@ pub struct ArchAccount {
 
 impl From<AccountSerializationSet> for ArchAccount {
     fn from(acc: AccountSerializationSet) -> Self {
+        let tvm_account = tvm_block::Account::try_from(acc.account)
+            .expect("Serialization set is supported only for TVM accounts");
         let mut arch_account = Self {
-            id: acc.account.get_addr().unwrap().to_string(),
-            acc_type: serialize_account_status(&acc.account.status()),
+            id: tvm_account.get_addr().unwrap().to_string(),
+            acc_type: serialize_account_status(&tvm_account.status()),
             boc: Some(acc.boc),
             dapp_id: match acc.dapp_id {
                 Some(dapp_id_in) => dapp_id_in.to_hex_string(),
                 None => "None".to_string(),
             },
-            init_code_hash: acc.account.init_code_hash().map(|h| h.to_hex_string()),
-            last_trans_lt: Some(u64_to_string(acc.account.last_tr_time().unwrap_or_default())),
-            prev_code_hash: acc.prev_code_hash.map(|h| h.as_hex_string()),
+            init_code_hash: tvm_account.init_code_hash().map(|h| h.to_hex_string()),
+            last_trans_lt: Some(u64_to_string(tvm_account.last_tr_time().unwrap_or_default())),
+            prev_code_hash: acc.prev_code_hash.map(|h| h.to_hex_string()),
             ..Default::default()
         };
 
-        if let Some(storage_stat) = acc.account.storage_info() {
+        if let Some(storage_stat) = tvm_account.storage_info() {
             arch_account.last_paid = Some(storage_stat.last_paid());
             arch_account.bits = Some(u64_to_string(storage_stat.used().bits()));
             arch_account.cells = Some(u64_to_string(storage_stat.used().cells()));
@@ -68,15 +70,15 @@ impl From<AccountSerializationSet> for ArchAccount {
             }
         }
 
-        if let Some(cc) = acc.account.balance() {
+        if let Some(cc) = tvm_account.balance() {
             arch_account.balance = Some(format!("{:x}", cc.grams.as_u128()));
             arch_account.balance_other =
                 write_boc(&cc.other.serialize().expect("Failed to serialize ECC")).ok();
         }
 
-        match acc.account.status() {
+        match tvm_account.status() {
             AccountStatus::AccStateActive => {
-                if let Some(state) = acc.account.state_init() {
+                if let Some(state) = tvm_account.state_init() {
                     if let Some(split_depth) = state.split_depth() {
                         arch_account.split_depth = Some(split_depth.as_u32());
                     }
@@ -95,7 +97,7 @@ impl From<AccountSerializationSet> for ArchAccount {
                 }
             }
             AccountStatus::AccStateFrozen => {
-                arch_account.state_hash = acc.account.frozen_hash().map(|h| h.to_hex_string());
+                arch_account.state_hash = tvm_account.frozen_hash().map(|h| h.to_hex_string());
             }
             AccountStatus::AccStateUninit => {}
             AccountStatus::AccStateNonexist => {
@@ -114,7 +116,7 @@ impl From<DeletedAccountSerializationSet> for ArchAccount {
         Self {
             id: addr_int.to_string(),
             acc_type: serialize_account_status(&AccountStatus::AccStateNonexist),
-            prev_code_hash: acc.prev_code_hash.map(|h| h.as_hex_string()),
+            prev_code_hash: acc.prev_code_hash.map(|h| h.to_hex_string()),
             ..Default::default()
         }
     }

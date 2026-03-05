@@ -3,15 +3,15 @@ use std::fs;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
+
 use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::AckiNackiBlock;
-use crate::types::BlockIdentifier;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
@@ -19,21 +19,18 @@ pub trait SavedBlocksLoader {
     fn load_saved_blocks(
         &mut self,
         block_state_repository: &BlockStateRepository,
-    ) -> anyhow::Result<
-        HashMap<ThreadIdentifier, Vec<(BlockState, Arc<Envelope<GoshBLS, AckiNackiBlock>>)>>,
-    >;
+    ) -> anyhow::Result<HashMap<ThreadIdentifier, Vec<(BlockState, Arc<Envelope<AckiNackiBlock>>)>>>;
 }
 
 impl SavedBlocksLoader for RepositoryImpl {
     fn load_saved_blocks(
         &mut self,
         block_state_repository: &BlockStateRepository,
-    ) -> anyhow::Result<
-        HashMap<ThreadIdentifier, Vec<(BlockState, Arc<Envelope<GoshBLS, AckiNackiBlock>>)>>,
-    > {
+    ) -> anyhow::Result<HashMap<ThreadIdentifier, Vec<(BlockState, Arc<Envelope<AckiNackiBlock>>)>>>
+    {
         let mut result: HashMap<
             ThreadIdentifier,
-            Vec<(BlockState, Arc<Envelope<GoshBLS, AckiNackiBlock>>)>,
+            Vec<(BlockState, Arc<Envelope<AckiNackiBlock>>)>,
         > = HashMap::new();
         let blocks_dir = self.get_blocks_dir_path();
         if !blocks_dir.exists() {

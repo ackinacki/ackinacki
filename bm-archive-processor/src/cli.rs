@@ -1,6 +1,23 @@
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+//
+
 use std::path::PathBuf;
 
 use clap::Parser;
+use clap::ValueEnum;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ServersMatchMode {
+    All,
+    Any,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum CompressionMode {
+    None,
+    Gzip,
+    Xz,
+}
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Selection and grouping of the SQLite archives by timestamp (±1h)")]
@@ -21,13 +38,13 @@ pub struct Args {
     #[arg(long, default_value = "processed")]
     pub processed: String,
 
-    /// Compress processed DB
-    #[arg(long, default_value_t = true)]
-    pub compress: bool,
+    /// Compression mode for processed daily DB
+    #[arg(long, value_enum, default_value_t = CompressionMode::Gzip)]
+    pub compression: CompressionMode,
 
-    /// Process archives from all BM
-    #[arg(long, default_value_t = true)]
-    pub require_all_servers: bool,
+    /// Servers matching mode for grouping archives
+    #[arg(long, value_enum, default_value_t = ServersMatchMode::Any)]
+    pub servers_match_mode: ServersMatchMode,
 
     /// Path to full database with all dailies merged
     #[arg(long, default_value = "./db/bm-archive.db")]

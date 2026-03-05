@@ -2,15 +2,21 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use account_state::ThreadAccountsBuilder;
+use account_state::ThreadAccountsRepository;
+use node_types::AccountIdentifier;
+use node_types::AccountRouting;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use tracing::instrument;
 use tracing::trace_span;
-use tvm_block::ShardStateUnsplit;
 
 use crate::block_keeper_system::epoch::create_epoch_touch_message;
 use crate::block_keeper_system::BlockKeeperData;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
+use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::repository::optimistic_shard_state::OptimisticShardState;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::CrossThreadRefData;
@@ -18,12 +24,7 @@ use crate::repository::CrossThreadRefDataRead;
 use crate::storage::MessageDurableStorage;
 use crate::types::account::WrappedAccount;
 use crate::types::thread_message_queue::ThreadMessageQueueState;
-use crate::types::AccountAddress;
 use crate::types::AccountInbox;
-use crate::types::AccountRouting;
-use crate::types::BlockIdentifier;
-use crate::types::DAppIdentifier;
-use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
 type State = crate::repository::optimistic_state::OptimisticStateImpl;
@@ -32,7 +33,7 @@ pub struct PreprocessingResult {
     pub state: State,
     pub threads_table: ThreadsTable,
     pub redirected_messages: HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
-    pub settled_messages: HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+    pub settled_messages: HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
 }
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all)]
@@ -45,6 +46,8 @@ pub fn preprocess<'a, I, TRepo>(
     epoch_block_keeper_data: Vec<BlockKeeperData>,
     message_db: MessageDurableStorage,
     metrics: Option<BlockProductionMetrics>,
+    thread_accounts_repository: &NodeThreadAccountsRepository,
+    apply_to_durable: bool,
 ) -> anyhow::Result<PreprocessingResult>
 where
     I: std::iter::Iterator<Item = &'a CrossThreadRefData>,
@@ -66,7 +69,7 @@ where
         *descendant_thread_identifier,
         (
             *descendant_thread_identifier,
-            preprocessed_state.block_id.clone(),
+            preprocessed_state.block_id,
             preprocessed_state.block_seq_no,
         ),
     );
@@ -125,7 +128,13 @@ where
 
     tracing::trace!("Start crop");
     // --- Handle split thread case ---
-    preprocessed_state.crop(descendant_thread_identifier, &in_table, message_db.clone())?;
+    preprocessed_state.crop(
+        descendant_thread_identifier,
+        &in_table,
+        message_db.clone(),
+        thread_accounts_repository,
+        apply_to_durable,
+    )?;
 
     let mut preprocessed_state = trace_span!("").in_scope(|| {
         let x = import_migrating_accounts_with_their_inboxes(
@@ -135,6 +144,7 @@ where
             preprocessed_state,
             message_db.clone(),
             metrics,
+            thread_accounts_repository,
         )?;
         preprocessed_state = x;
         Ok::<_, anyhow::Error>(preprocessed_state)
@@ -142,7 +152,7 @@ where
     // Import messages and either settle them or move back to the outbox with the renewed route
 
     let mut settled_messages: HashMap<
-        AccountAddress,
+        AccountIdentifier,
         Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
     > = HashMap::new();
     let redirected_messages: HashMap<
@@ -156,7 +166,7 @@ where
                     continue;
                 }
                 // It is possible that this message should be forwarded with the updated route.
-                let account_address: AccountAddress = route.1.clone();
+                let account_id: AccountIdentifier = *route.account_id();
                 // let actual_route = preprocessed_state.get_account_routing(&account_address, None);
                 // if &actual_route != route {
                 //     // Forward with the new route
@@ -167,7 +177,7 @@ where
                 // } else {
                 // Settle
                 settled_messages
-                    .entry(account_address)
+                    .entry(account_id)
                     .and_modify(|e| e.extend_from_slice(messages))
                     .or_insert(messages.clone());
                 // }
@@ -218,9 +228,9 @@ where
 
 pub fn convert_slashing_messages(
     slashing_messages: Vec<Arc<WrappedMessage>>,
-) -> anyhow::Result<HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>> {
+) -> anyhow::Result<HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>> {
     let mut slashing_messages_map: HashMap<
-        AccountAddress,
+        AccountIdentifier,
         Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
     > = HashMap::new();
     for message in slashing_messages.into_iter() {
@@ -236,7 +246,10 @@ pub fn convert_slashing_messages(
 }
 
 pub fn convert_epoch_messages(
-    high_priority_map: &mut HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+    high_priority_map: &mut HashMap<
+        AccountIdentifier,
+        Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
+    >,
     epoch_message: Vec<BlockKeeperData>,
 ) -> anyhow::Result<()> {
     let now = std::time::SystemTime::now();
@@ -264,38 +277,38 @@ fn import_migrating_accounts_with_their_inboxes(
     mut state: State,
     message_db: MessageDurableStorage,
     metrics: Option<BlockProductionMetrics>,
+    thread_accounts_repository: &NodeThreadAccountsRepository,
 ) -> anyhow::Result<State> {
     tracing::trace!(target: "node", "preprocess: {:?} {:?}", state.block_id, state.thread_id);
     let mut migrated_accounts = vec![];
-    let mut migrated_inboxes: BTreeMap<AccountAddress, AccountInbox> = BTreeMap::new();
+    let mut migrated_inboxes: BTreeMap<AccountIdentifier, AccountInbox> = BTreeMap::new();
     let mut outbound_accounts_number = 0;
     let mut removed_accounts = vec![];
     for block_referenced in all_referenced_blocks.iter() {
         for (route, (account_state, inbox)) in block_referenced.outbound_accounts().iter() {
             if account_state.is_none() {
-                let default_routing =
-                    AccountRouting(DAppIdentifier(route.1.clone()), route.1.clone());
+                let default_routing = route.account_id().dapp_originator();
                 let (mask, _) = in_table
                     .rows()
                     .find(|(_, thread)| thread == &state.thread_id)
                     .expect("Failed to find thread mask in table");
                 if mask.is_match(&default_routing) {
                     tracing::trace!(target: "node", "add to removed");
-                    removed_accounts.push(route.1.clone());
+                    removed_accounts.push(*route.account_id());
                     continue;
                 }
             }
             if !in_table.is_match(route, *descendant_thread_identifier) {
                 continue;
             }
-            let account_address: AccountAddress = route.1.clone();
+            let account_id: AccountIdentifier = *route.account_id();
             let actual_dapp_id = account_state
                 .clone()
-                .and_then(|acc| acc.account.clone().get_dapp_id().cloned())
-                .unwrap_or(account_address.clone().0);
-            let actual_route = AccountRouting(actual_dapp_id.into(), account_address.clone());
-            assert!(
-                &actual_route == route,
+                .and_then(|acc| acc.account.get_dapp_id())
+                .unwrap_or_else(|| account_id.use_as_dapp_id());
+            let actual_route = account_id.routing_with(actual_dapp_id);
+            assert_eq!(
+                &actual_route, route,
                 concat!(
                     "Account dapp can be changed only in the account responsible thread. ",
                     "Actual route mismatching the route passed may indicate problems ",
@@ -306,7 +319,7 @@ fn import_migrating_accounts_with_their_inboxes(
                 migrated_accounts.push(account.clone());
             }
             if let Some(inbox) = inbox {
-                migrated_inboxes.insert(account_address, inbox.clone());
+                migrated_inboxes.insert(account_id, inbox.clone());
             }
             outbound_accounts_number += 1;
         }
@@ -316,7 +329,12 @@ fn import_migrating_accounts_with_their_inboxes(
         m.report_outbound_accounts(outbound_accounts_number, descendant_thread_identifier)
     }
 
-    settle_accounts(&mut state.shard_state, migrated_accounts, removed_accounts)?;
+    settle_accounts(
+        &mut state.shard_state,
+        migrated_accounts,
+        removed_accounts,
+        thread_accounts_repository,
+    )?;
     let x = state.messages;
     let y = ThreadMessageQueueState::build_next()
         .with_initial_state(x)
@@ -333,31 +351,24 @@ fn import_migrating_accounts_with_their_inboxes(
 fn settle_accounts(
     shard_state: &mut OptimisticShardState,
     migrated_accounts: Vec<WrappedAccount>,
-    removed_accounts: Vec<AccountAddress>,
+    removed_accounts: Vec<AccountIdentifier>,
+    thread_accounts_repository: &NodeThreadAccountsRepository,
 ) -> anyhow::Result<()> {
     if migrated_accounts.is_empty() && removed_accounts.is_empty() {
         return Ok(());
     }
-    let mut binding = shard_state.into_shard_state();
-    let existing_state = Arc::<ShardStateUnsplit>::make_mut(&mut binding);
-    let mut existing_accounts = existing_state
-        .read_accounts()
-        .map_err(|e| anyhow::format_err!("Failed to read accounts: {e}"))?;
+    let mut binding = thread_accounts_repository.state_builder(&shard_state.0);
     for wrapped_account in migrated_accounts.into_iter() {
         tracing::trace!("migrate account: {}", wrapped_account.account_id.to_hex_string());
-        existing_accounts
-            .insert(&wrapped_account.account_id.0, &wrapped_account.account)
-            .map_err(|e| anyhow::format_err!("Failed to save account: {e}"))?;
+        binding.insert_account(
+            &wrapped_account.account_id.dapp_originator(),
+            &wrapped_account.account,
+        );
     }
     for acc_id in removed_accounts.iter() {
         tracing::trace!("removed account: {:?}", acc_id);
-        existing_accounts
-            .remove(&acc_id.0)
-            .map_err(|e| anyhow::format_err!("Failed to remove acc: {acc_id} {e}"))?;
+        binding.remove_account(&acc_id.dapp_originator());
     }
-    existing_state
-        .write_accounts(&existing_accounts)
-        .map_err(|e| anyhow::format_err!("Failed to save accounts: {e}"))?;
-    *shard_state = binding.into();
+    *shard_state = OptimisticShardState(binding.build(None)?.new_state);
     Ok(())
 }

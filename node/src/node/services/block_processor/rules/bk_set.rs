@@ -9,7 +9,7 @@ pub fn set_bk_set(block_state: &BlockState, repo: &BlockStateRepository) -> bool
         // Already set
         return true;
     }
-    let Some(parent_id) = block_state.guarded(|e| e.parent_block_identifier().clone()) else {
+    let Some(parent_id) = block_state.guarded(|e| *e.parent_block_identifier()) else {
         // Parent of this block is not known yet.
         tracing::trace!("Parent of this block is not known yet");
         return false;

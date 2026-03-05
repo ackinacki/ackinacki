@@ -1,9 +1,10 @@
+use std::ops::Rem;
+
 use derive_getters::Getters;
+use node_types::ThreadIdentifier;
 use serde::Deserialize;
 use serde::Serialize;
 use typed_builder::TypedBuilder;
-
-use crate::types::ThreadIdentifier;
 
 #[derive(
     Serialize, Deserialize, Getters, TypedBuilder, Hash, Eq, PartialEq, Clone, Copy, Debug,
@@ -11,6 +12,14 @@ use crate::types::ThreadIdentifier;
 pub struct BlockHeight {
     thread_identifier: ThreadIdentifier,
     height: u64,
+}
+
+impl Rem<usize> for BlockHeight {
+    type Output = usize;
+
+    fn rem(self, rhs: usize) -> Self::Output {
+        self.height as usize % rhs
+    }
 }
 
 impl BlockHeight {

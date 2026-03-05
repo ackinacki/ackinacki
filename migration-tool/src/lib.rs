@@ -1,6 +1,7 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::borrow::Cow;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -13,15 +14,22 @@ use rusqlite::Connection;
 use rusqlite_migration::Migrations;
 
 pub struct DbInfo {
-    name: &'static str,
+    name: Cow<'static, str>,
     migrations: Dir<'static>,
 }
 
 impl DbInfo {
-    pub const BM_ARCHIVE: Self = Self {
-        name: "bm-schema",
-        migrations: include_dir!("$CARGO_MANIFEST_DIR/migrations/bm-archive"),
-    };
+    pub const BM_ARCHIVE: Self =
+        Self { name: Cow::Borrowed("bm-schema.db"), migrations: Self::BM_ARCHIVE_MIGRATIONS };
+    pub const BM_ARCHIVE_MIGRATIONS: Dir<'static> =
+        include_dir!("$CARGO_MANIFEST_DIR/migrations/bm-archive");
+
+    pub fn new(db_path: impl AsRef<Path>) -> Self {
+        Self {
+            name: Cow::Owned(db_path.as_ref().to_string_lossy().into_owned()),
+            migrations: Self::BM_ARCHIVE_MIGRATIONS,
+        }
+    }
 }
 
 pub struct DbMaintenance {
@@ -47,7 +55,7 @@ impl DbMaintenance {
     }
 
     pub fn new(info: &'static DbInfo, db_dir: impl AsRef<Path>) -> Self {
-        Self { path: db_dir.as_ref().join(format!("{}.db", info.name)), info }
+        Self { path: db_dir.as_ref().join(info.name.as_ref()), info }
     }
 
     pub fn migrate(

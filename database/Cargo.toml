@@ -5,8 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+account-state.workspace = true
 anyhow.workspace = true
 chrono = "0.4.41"
+node-types.workspace = true
 num-bigint.workspace = true
 parking_lot.workspace = true
 rusqlite.workspace = true

@@ -9,5 +9,7 @@ mod queue;
 mod stamp;
 mod thread_state;
 
+pub use queue::ExtMessageDst;
+pub use queue::QueuedExtMessage;
 pub use stamp::Stamp;
 pub use thread_state::ExternalMessagesThreadState;

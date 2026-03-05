@@ -1,11 +1,13 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use account_state::ThreadAccount;
+use node_types::AccountIdentifier;
+use node_types::DAppIdentifier;
 use num_bigint::Sign;
 use tvm_abi::Int;
 use tvm_abi::TokenValue;
 use tvm_block::messages::InternalMessageHeader;
-use tvm_block::Account;
 use tvm_block::CurrencyCollection;
 use tvm_block::GetRepresentationHash;
 use tvm_block::Grams;
@@ -22,7 +24,6 @@ use tvm_types::UInt256;
 
 use crate::creditconfig::abi::DAPP_CONFIG_ABI;
 use crate::creditconfig::DappConfig;
-use crate::types::DAppIdentifier;
 
 const DAPP_DATA: &str = "dapp_id";
 const CONFIG_DATA: &str = "_data";
@@ -33,17 +34,20 @@ fn get_dapp_config_abi() -> tvm_client::abi::Abi {
     tvm_client::abi::Abi::Json(DAPP_CONFIG_ABI.to_string())
 }
 
-pub fn calculate_dapp_config_address(
+pub fn calculate_dapp_config_account_id(
     dapp_id: DAppIdentifier,
-    mut data: StateInit,
-) -> anyhow::Result<UInt256> {
-    let code = data.code().unwrap();
+    mut state_init: StateInit,
+) -> anyhow::Result<AccountIdentifier> {
+    let code = state_init.code().unwrap();
     let mut b = BuilderData::new();
     dapp_id.write_to(&mut b).map_err(|e| anyhow::format_err!("Failed to write dapp id: {e}"))?;
-    let stateinitcode = set_code_salt_cell(code.clone(), b.into_cell().unwrap())
+    let state_init_code = set_code_salt_cell(code.clone(), b.into_cell().unwrap())
         .map_err(|e| anyhow::format_err!("Failed to set code salt: {e}"))?;
-    data.set_code(stateinitcode);
-    data.hash().map_err(|e| anyhow::format_err!("Failed to calculate hash: {e}"))
+    state_init.set_code(state_init_code);
+    state_init
+        .hash()
+        .map(AccountIdentifier::from)
+        .map_err(|e| anyhow::format_err!("Failed to calculate hash: {e}"))
 }
 
 fn get_i128_value(value: Int) -> i128 {
@@ -61,7 +65,7 @@ fn get_i128_value(value: Int) -> i128 {
     num
 }
 
-pub fn decode_message_config(body: SliceData) -> anyhow::Result<Option<UInt256>> {
+pub fn decode_message_config(body: SliceData) -> anyhow::Result<Option<DAppIdentifier>> {
     let abi = get_dapp_config_abi();
     let mut dapp = None;
     let decoded_body = abi
@@ -76,12 +80,13 @@ pub fn decode_message_config(body: SliceData) -> anyhow::Result<Option<UInt256>>
             }
         }
     }
-    Ok(dapp)
+    Ok(dapp.map(From::from))
 }
 
-pub fn decode_dapp_config_data(account: &Account) -> anyhow::Result<Option<DappConfig>> {
+pub fn decode_dapp_config_data(account: &ThreadAccount) -> anyhow::Result<Option<DappConfig>> {
+    let tvm_account = tvm_block::Account::try_from(account)?;
     let abi = get_dapp_config_abi();
-    if let Some(data) = account.get_data() {
+    if let Some(data) = tvm_account.get_data() {
         let decoded_data = abi
             .abi()
             .map_err(|e| anyhow::format_err!("Failed to get DAPP config abi: {e}"))?
@@ -118,10 +123,10 @@ pub fn decode_dapp_config_data(account: &Account) -> anyhow::Result<Option<DappC
 
 pub fn create_config_touch_message(
     minted: i128,
-    addr: UInt256,
+    account_id: AccountIdentifier,
     block_time: u32,
 ) -> anyhow::Result<Message> {
-    tracing::trace!("create_Dapp_Config message: {addr:?}");
+    tracing::trace!("create_Dapp_Config message: {account_id:?}");
     let expire = block_time + 5;
     let parameters = format!(r#"{{"value": {minted}}}"#,);
     tracing::trace!(target: "builder", "parameters {:?}", parameters);
@@ -135,8 +140,8 @@ pub fn create_config_touch_message(
         None,
     )
     .map_err(|e| anyhow::format_err!("Failed to create message body: {e}"))?;
-    let src_acc_id = AccountId::from(addr.clone());
-    let dst_acc_id = AccountId::from(addr.clone());
+    let src_acc_id = AccountId::from(account_id);
+    let dst_acc_id = AccountId::from(account_id);
     let header = InternalMessageHeader::with_addresses(
         MsgAddressInt::with_standart(None, 0, src_acc_id)
             .map_err(|e| anyhow::format_err!("Failed to get addr: {e}"))?,

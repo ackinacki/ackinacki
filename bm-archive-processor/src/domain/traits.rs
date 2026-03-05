@@ -1,3 +1,6 @@
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+//
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -8,6 +11,14 @@ use crate::domain::grouping::ArchiveFile;
 
 pub type AnchorTimestamp = i64;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompressionMode {
+    #[default]
+    None,
+    Gzip,
+    Xz,
+}
+
 pub trait DbClient {
     fn create_daily_db(&self, src_paths: &[PathBuf], dst_path: &Path) -> anyhow::Result<()>;
     fn merge_daily_into_full(&self, src_db: &Path, target_db: &Path) -> anyhow::Result<()>;
@@ -17,12 +28,12 @@ pub trait FileSystemClient {
     /// Scans incoming/1..n, parses the files, and groups the database files by anchor within the specified window.
     fn get_arch_files(&self) -> anyhow::Result<BTreeMap<String, Vec<ArchiveFile>>>;
 
-    /// Moves a processed database file to the archive directory, optionally compressing it with gzip.
+    /// Moves a processed database file to the archive directory with the configured compression mode.
     fn move_processed(
         &self,
         src_db_path: impl AsRef<Path>,
         processed_root: impl AsRef<Path>,
-        gzip: bool,
+        compression: CompressionMode,
         dry_run: bool,
     ) -> anyhow::Result<PathBuf>;
 }

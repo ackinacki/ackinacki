@@ -10,9 +10,9 @@ use crate::types::attestation::GoshBLS;
 use crate::types::attestation::SignerIndex;
 
 pub struct TryFoldResult {
-    pub folded: Option<Envelope<GoshBLS, AttestationData>>,
+    pub folded: Option<Envelope<AttestationData>>,
 
-    pub poisoned: Vec<Envelope<GoshBLS, AttestationData>>,
+    pub poisoned: Vec<Envelope<AttestationData>>,
 }
 
 pub fn try_fold(
@@ -30,7 +30,7 @@ fn try_fold_all_optimistic(
     attestation_data: AttestationData,
     to_combine: &[(HashMap<SignerIndex, u16>, Signature)],
     bk_set: &BlockKeeperSet,
-) -> Option<Envelope<GoshBLS, AttestationData>> {
+) -> Option<Envelope<AttestationData>> {
     let mut signatures = vec![];
     let mut aggregated_signature_occurences = HashMap::<SignerIndex, u16>::new();
     for (signature_occurences, signature) in to_combine.iter() {
@@ -56,7 +56,7 @@ fn try_fold_one_by_one_checked(
     to_combine: Vec<(HashMap<SignerIndex, u16>, Signature)>,
     bk_set: &BlockKeeperSet,
 ) -> TryFoldResult {
-    let mut folded: Option<Envelope<GoshBLS, AttestationData>> = None;
+    let mut folded: Option<Envelope<AttestationData>> = None;
     let mut poisoned = vec![];
     for (signature_occurences, signature) in to_combine.into_iter() {
         let envelope = Envelope::create(

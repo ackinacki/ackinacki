@@ -1,7 +1,9 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use tvm_block::Account;
+use account_state::ThreadAccount;
+use node_types::AccountCodeHash;
+use node_types::DAppIdentifier;
 use tvm_block::Block;
 use tvm_block::BlockId;
 use tvm_block::BlockProcessingStatus;
@@ -16,12 +18,12 @@ use tvm_types::UInt256;
 
 #[derive(Debug, Default)]
 pub struct AccountSerializationSet {
-    pub account: Account,
-    pub prev_code_hash: Option<UInt256>,
+    pub account: ThreadAccount,
+    pub prev_code_hash: Option<AccountCodeHash>,
     pub boc: Vec<u8>,
     pub boc1: Option<Vec<u8>>,
     pub proof: Option<Vec<u8>>,
-    pub dapp_id: Option<UInt256>,
+    pub dapp_id: Option<DAppIdentifier>,
 }
 
 pub struct BlockSerializationSetFH {
@@ -35,7 +37,7 @@ pub struct BlockSerializationSetFH {
 #[derive(Default)]
 pub struct DeletedAccountSerializationSet {
     pub account_id: AccountId,
-    pub prev_code_hash: Option<UInt256>,
+    pub prev_code_hash: Option<AccountCodeHash>,
     pub workchain_id: i32,
 }
 

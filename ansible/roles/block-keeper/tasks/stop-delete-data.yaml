@@ -20,3 +20,4 @@
   ansible.builtin.file:
     path: "{{ BK_DIR }}/bk-configs/bk_set.json"
     state: absent
+  when: not BK_SET_FILE

@@ -1,6 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use account_state::DurableThreadAccountsDiff;
 use serde::de::Error as DeserError;
 use serde::ser::Error as SerError;
 use serde::Deserialize;
@@ -11,11 +12,44 @@ use tvm_block::Deserializable;
 use tvm_block::Serializable;
 use tvm_types::read_single_root_boc;
 use tvm_types::write_boc;
+#[cfg(feature = "transitioning_node_version")]
+use versioned_struct::Transitioning;
 
 use crate::types::ackinacki_block::common_section::CommonSection;
 use crate::types::AckiNackiBlock;
+// #[cfg(feature = "transitioning_node_version")]
+use crate::types::AckiNackiBlockOld;
+#[cfg(feature = "transitioning_node_version")]
+use crate::types::AckiNackiBlockVersioned;
 
 impl AckiNackiBlock {
+    pub fn get_raw_data_without_hash(&self) -> anyhow::Result<Vec<u8>> {
+        tracing::trace!("full serialize block data");
+        let common_section = bincode::serialize(&self.common_section)?;
+        let mut data = vec![];
+        data.extend_from_slice(&common_section.len().to_be_bytes()); // 8 bytes of common section len
+        data.extend_from_slice(&common_section);
+
+        let block_cell = self
+            .block
+            .serialize()
+            .map_err(|e| anyhow::format_err!("Failed to serialize tvm block: {e}"))?;
+        let block_data = write_boc(&block_cell)
+            .map_err(|e| anyhow::format_err!("Failed to serialize tvm block cell: {e}"))?;
+        data.extend_from_slice(&block_data.len().to_be_bytes()); // 8 bytes of block data len
+        data.extend_from_slice(&block_data);
+        data.extend_from_slice(&self.tx_cnt.to_be_bytes()); // 8 bytes of tx_cnt
+
+        let durable_diff_data = bincode::serialize(&self.durable_state_update)?;
+        data.extend_from_slice(&durable_diff_data.len().to_be_bytes()); // 8 bytes of diff len
+        data.extend_from_slice(&durable_diff_data);
+
+        Ok(data)
+    }
+}
+
+// #[cfg(feature = "transitioning_node_version")]
+impl AckiNackiBlockOld {
     pub fn get_raw_data_without_hash(&self) -> anyhow::Result<Vec<u8>> {
         tracing::trace!("full serialize block data");
         let common_section = bincode::serialize(&self.common_section)?;
@@ -37,6 +71,23 @@ impl AckiNackiBlock {
 }
 
 impl Serialize for AckiNackiBlock {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if let Some(data) = &self.raw_data {
+            data.serialize(serializer)
+        } else {
+            let mut data = self
+                .get_raw_data_without_hash()
+                .map_err(|_| S::Error::custom("Failed to get block raw data"))?;
+            data.extend_from_slice(&self.hash);
+            data.serialize(serializer)
+        }
+    }
+}
+
+impl Serialize for AckiNackiBlockOld {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -93,6 +144,23 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
                 .try_into()
                 .map_err(|_| D::Error::custom("Failed to decode block field: tx_cnt"))?,
         );
+
+        let (durable_diff, rest) = if rest.len() != 32 {
+            let (durable_diff_len_data, rest) = rest.split_at(8);
+            let durable_diff_len = usize::from_be_bytes(
+                durable_diff_len_data
+                    .try_into()
+                    .map_err(|_| D::Error::custom("Failed to deserialize common section len"))?,
+            );
+            let (durable_diff_data, rest) = rest.split_at(durable_diff_len);
+            let durable_diff: DurableThreadAccountsDiff =
+                bincode::deserialize(durable_diff_data)
+                    .map_err(|_| D::Error::custom("Failed to deserialize durable diff"))?;
+            (durable_diff, rest)
+        } else {
+            (DurableThreadAccountsDiff::default(), rest)
+        };
+
         assert_eq!(rest.len(), 32);
         let hash =
             rest.try_into().map_err(|_| D::Error::custom("Failed to deserialize block hash"))?;
@@ -103,6 +171,30 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
             hash,
             raw_data: Some(raw_data),
             block_cell: Some(block_cell),
+            durable_state_update: durable_diff,
         })
+    }
+}
+
+#[cfg(feature = "transitioning_node_version")]
+impl Serialize for AckiNackiBlockVersioned {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            AckiNackiBlockVersioned::New(block) => block.serialize(serializer),
+            AckiNackiBlockVersioned::Old(block) => block.serialize(serializer),
+        }
+    }
+}
+
+#[cfg(feature = "transitioning_node_version")]
+impl<'de> Deserialize<'de> for AckiNackiBlockVersioned {
+    fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        unimplemented!("It's intentionally unimplemented cause it should not be called")
     }
 }

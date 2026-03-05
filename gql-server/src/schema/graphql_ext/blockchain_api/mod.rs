@@ -23,6 +23,7 @@ use transactions::BlockchainTransactionsEdge;
 use transactions::BlockchainTransactionsQueryArgs;
 
 use super::message::MessageLoader;
+use crate::defaults::THREAD_ID_LENGTH;
 use crate::schema::db;
 use crate::schema::db::account::BlockchainAccountsQueryArgs;
 use crate::schema::db::DBConnector;
@@ -56,13 +57,9 @@ impl BlockchainQuery<'_> {
     async fn accounts(
         &self,
         #[graphql(desc = "Filter by code hash")] code_hash: Option<String>,
-
         #[graphql(desc = "This field is mutually exclusive with 'last'.")] first: Option<i32>,
-
         after: Option<String>,
-
         #[graphql(desc = "This field is mutually exclusive with 'first'.")] last: Option<i32>,
-
         before: Option<String>,
     ) -> Option<
         Connection<
@@ -149,6 +146,40 @@ impl BlockchainQuery<'_> {
         Some(block)
     }
 
+    /// Returns a block uniquely identified by the thread ID and block height.
+    async fn block_by_height(
+        &self,
+        #[graphql(desc = "A 68-character thread identifier, left-padded with zeros.")]
+        thread_id: String,
+        #[graphql(desc = "The block height is unique within a thread.")] height: u64,
+    ) -> Option<BlockchainBlock> {
+        let block_loader = self.ctx.data_unchecked::<DataLoader<BlockLoader>>();
+        let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
+        let thread_id = if thread_id.len() >= THREAD_ID_LENGTH {
+            thread_id
+        } else {
+            let mut padded = String::with_capacity(THREAD_ID_LENGTH);
+            for _ in 0..(THREAD_ID_LENGTH - thread_id.len()) {
+                padded.push('0');
+            }
+            padded.push_str(&thread_id);
+            padded
+        };
+        let block = block_loader.load_one((thread_id, height)).await.expect("Failed to load block");
+
+        block.as_ref()?;
+
+        let block = block.unwrap();
+
+        if self.ctx.look_ahead().field("block").field("out_messages").exists() {
+            let out_msg_ids = block.out_msgs.clone();
+            let _out_messages =
+                message_loader.load_many(out_msg_ids).await.expect("Failed to load out_messages");
+        }
+
+        Some(block)
+    }
+
     #[allow(clippy::too_many_arguments)]
     /// This node could be used for a cursor-based pagination of blocks.
     async fn blocks(
@@ -171,6 +202,8 @@ impl BlockchainQuery<'_> {
             desc = "Optional filter by maximum transactions in a block (unoptimized, query could be dropped by timeout)"
         )]
         max_tr_count: Option<i32>,
+        #[graphql(desc = "A 68-character thread identifier, left-padded with zeros.")]
+        thread_id: Option<String>,
         #[graphql(desc = "This field is mutually exclusive with 'last'.")] first: Option<i32>,
         after: Option<String>,
         #[graphql(desc = "This field is mutually exclusive with 'first'.")] last: Option<i32>,
@@ -190,6 +223,7 @@ impl BlockchainQuery<'_> {
                 block_seq_no_range,
                 min_tr_count,
                 max_tr_count,
+                thread_id,
                 pagination: PaginationArgs { first, after, last, before },
             };
             let mut blocks: Vec<db::Block> = db::block::Block::blockchain_blocks(
@@ -227,6 +261,12 @@ impl BlockchainQuery<'_> {
         })
         .await
         .ok()
+    }
+
+    async fn finalized_timestamp(&self) -> Option<u64> {
+        let now =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+        Some(now.saturating_sub(5 * 60))
     }
 
     async fn message(&self, hash: String) -> Option<BlockchainMessage> {

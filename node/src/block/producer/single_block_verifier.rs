@@ -9,6 +9,7 @@ use std::sync::Arc;
 use anyhow::ensure;
 use chrono::Utc;
 use indexset::BTreeMap;
+use node_types::AccountIdentifier;
 use tracing::instrument;
 use tvm_block::GetRepresentationHash;
 use tvm_block::HashmapAugType;
@@ -27,10 +28,11 @@ use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperSlashData;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
 use crate::config::BlockchainConfigRead;
 use crate::config::Config;
 use crate::config::GlobalConfig;
+use crate::external_messages::ExtMessageDst;
+use crate::external_messages::QueuedExtMessage;
 use crate::external_messages::Stamp;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::Message;
@@ -39,12 +41,12 @@ use crate::node::associated_types::NackData;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::repository::accounts::AccountsRepository;
+use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
 use crate::types::next_seq_no;
-use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
 
 // Note: produces single verification block.
@@ -72,12 +74,16 @@ pub struct TVMBlockVerifier {
     node_global_config: GlobalConfig,
     // TODO: need to fill this data for verifier
     epoch_block_keeper_data: Vec<BlockKeeperData>,
-    block_nack: Vec<Envelope<GoshBLS, NackData>>,
+    block_nack: Vec<Envelope<NackData>>,
     shared_services: SharedServices,
     accounts_repository: AccountsRepository,
     block_state_repository: BlockStateRepository,
+    thread_accounts_repository: NodeThreadAccountsRepository,
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
+    is_block_of_retired_version: bool,
+    #[cfg(feature = "usdc_name_repair")]
+    usdc_name_repaired: std::sync::Arc<parking_lot::Mutex<Option<crate::types::BlockSeqNo>>>,
 }
 
 impl TVMBlockVerifier {
@@ -109,7 +115,7 @@ impl BlockVerifier for TVMBlockVerifier {
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
         CrossThreadRefData: 'a,
     {
-        let thread_identifier = block.get_common_section().thread_id;
+        let thread_identifier = *block.common_section().thread_id();
         let mut time_limits = ExecutionTimeLimits::verification(&self.node_global_config);
         let mut wrapped_slash_messages = vec![];
         let mut white_list_of_slashing_messages_hashes = HashSet::new();
@@ -139,6 +145,8 @@ impl BlockVerifier for TVMBlockVerifier {
                 Vec::new(),
                 message_db.clone(),
                 self.metrics.clone(),
+                &self.thread_accounts_repository,
+                !self.is_block_of_retired_version,
             )
         })?;
         let mut ref_ids = vec![];
@@ -155,7 +163,7 @@ impl BlockVerifier for TVMBlockVerifier {
         let rand_seed = block_extra.rand_seed.clone();
 
         let mut ext_messages = Vec::new();
-        let mut check_messages_map: HashMap<AccountAddress, BTreeMap<u64, UInt256>> =
+        let mut check_messages_map: HashMap<AccountIdentifier, BTreeMap<u64, UInt256>> =
             HashMap::new();
         let block_parse_result = block
             .tvm_block()
@@ -169,7 +177,10 @@ impl BlockVerifier for TVMBlockVerifier {
                     return Ok(false);
                 };
                 let in_msg = in_msg.read_message()?;
-                let msg_hash = in_msg.hash().unwrap();
+                let Ok(msg_hash) = in_msg.hash() else {
+                    tracing::trace!("Failed to parse in msg hash");
+                    return Ok(false);
+                };
                 let Some(dest_account_address) = in_msg.int_dst_account_id().map(|x| x.into())
                 else {
                     tracing::trace!("InMsg does not contain internal destination");
@@ -207,15 +218,19 @@ impl BlockVerifier for TVMBlockVerifier {
 
         for (i, (_, msg)) in ext_messages.into_iter().enumerate() {
             let stamp = Stamp { index: i as u64, timestamp };
-            let acc_id = AccountAddress::from(msg.int_dst_account_id().unwrap_or_default());
+            let dst = ExtMessageDst::from_message(&msg, None).unwrap_or_default();
 
             grouped_ext_messages
-                .entry(acc_id)
+                .entry(dst)
                 .or_insert_with(VecDeque::new)
-                .push_back((stamp, msg));
+                .push_back((stamp, QueuedExtMessage::try_from_block(msg)?));
         }
 
-        let blockchain_config = self.blockchain_config.get(&next_seq_no(parent_block_seq_no));
+        let blockchain_config = self.blockchain_config.get(
+            &next_seq_no(parent_block_seq_no),
+            #[cfg(feature = "usdc_name_repair")]
+            self.is_block_of_retired_version,
+        );
         let block_gas_limit = blockchain_config.get_gas_config(false).block_gas_limit;
 
         tracing::debug!(target: "node", "PARENT block: {:?}", preprocessing_result.state.get_block_info());
@@ -228,6 +243,7 @@ impl BlockVerifier for TVMBlockVerifier {
             Some(rand_seed),
             None,
             self.accounts_repository.clone(),
+            self.thread_accounts_repository.clone(),
             self.node_global_config.block_keeper_epoch_code_hash.clone(),
             self.node_global_config.block_keeper_preepoch_code_hash.clone(),
             self.node_config.local.parallelization_level,
@@ -235,6 +251,9 @@ impl BlockVerifier for TVMBlockVerifier {
             self.metrics,
             self.wasm_cache,
             true,
+            self.is_block_of_retired_version,
+            #[cfg(feature = "usdc_name_repair")]
+            self.usdc_name_repaired,
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (verify_block, _, _) = producer.build_block(
@@ -251,32 +270,35 @@ impl BlockVerifier for TVMBlockVerifier {
         Self::print_block_info(&verify_block.block);
 
         let mut new_state = verify_block.state;
-        if let Some(threads_table) = block.get_common_section().threads_table.clone() {
-            new_state.threads_table = threads_table;
+
+        let an_block = AckiNackiBlock::new(
+            // TODO: fix single thread implementation
+            new_state.thread_id,
+            //
+            verify_block.block,
+            block.common_section().producer_id().clone(),
+            verify_block.tx_cnt,
+            verify_block.block_keeper_set_changes,
+            *block.common_section().verify_complexity(),
+            block.common_section().refs().clone(),
+            // Skip checking load balancer actions.
+            block.common_section().threads_table().clone(),
+            *block.common_section().round(),
+            *block.common_section().block_height(),
+            #[cfg(feature = "monitor-accounts-number")]
+            *block.common_section().accounts_number_diff(),
+            #[cfg(feature = "protocol_version_hash_in_block")]
+            block.common_section().protocol_version_hash().clone(),
+            verify_block.durable_state_update,
+        );
+
+        // Resolve the prefab using the block's identifier
+        let block_id = an_block.identifier();
+        if let Some(resolved_table) = an_block.resolve_threads_table(&block_id)? {
+            new_state.threads_table = resolved_table;
         }
 
-        let res = (
-            AckiNackiBlock::new(
-                // TODO: fix single thread implementation
-                new_state.thread_id,
-                //
-                verify_block.block,
-                block.get_common_section().producer_id.clone(),
-                verify_block.tx_cnt,
-                verify_block.block_keeper_set_changes,
-                block.get_common_section().verify_complexity,
-                block.get_common_section().refs.clone(),
-                // Skip checking load balancer actions.
-                block.get_common_section().threads_table.clone(),
-                block.get_common_section().round,
-                block.get_common_section().block_height,
-                #[cfg(feature = "monitor-accounts-number")]
-                block.get_common_section().accounts_number_diff,
-                #[cfg(feature = "protocol_version_hash_in_block")]
-                block.get_common_section().protocol_version_hash().clone(),
-            ),
-            new_state,
-        );
+        let res = (an_block, new_state);
         Ok(res)
     }
 }

@@ -1,9 +1,10 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use anyhow::Context;
 use rusqlite::Connection;
 
+#[allow(unused)]
 fn normalize_create_table(sql: &str) -> anyhow::Result<String> {
     let lower = sql.to_ascii_lowercase();
     if !lower.starts_with("create table") {
@@ -19,6 +20,7 @@ fn normalize_create_table(sql: &str) -> anyhow::Result<String> {
     Ok(format!("CREATE TABLE IF NOT EXISTS{}", &sql[prefix_len..]))
 }
 
+#[allow(unused)]
 fn normalize_create_index(sql: &str) -> anyhow::Result<String> {
     let lower = sql.to_ascii_lowercase();
     if !lower.starts_with("create index") && !lower.starts_with("create unique index") {
@@ -40,6 +42,7 @@ fn normalize_create_index(sql: &str) -> anyhow::Result<String> {
     Ok(replaced)
 }
 
+#[allow(unused)]
 pub fn fetch_create_table_ddls(conn: &Connection, tables: &[&str]) -> anyhow::Result<Vec<String>> {
     let mut ddls = Vec::with_capacity(tables.len());
 
@@ -59,6 +62,7 @@ pub fn fetch_create_table_ddls(conn: &Connection, tables: &[&str]) -> anyhow::Re
     Ok(ddls)
 }
 
+#[allow(unused)]
 pub fn fetch_index_ddls(conn: &Connection, tables: &[&str]) -> anyhow::Result<Vec<String>> {
     let mut ddls = Vec::new();
     let mut stmt = conn.prepare(

@@ -1,7 +1,11 @@
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+//
+
 use crate::config::AppConfig;
 use crate::domain::config::ProcessingRules;
 use crate::domain::grouping::group_by_timestamp;
 use crate::domain::paths;
+use crate::domain::traits::CompressionMode;
 use crate::domain::traits::DbClient;
 use crate::domain::traits::FileSystemClient;
 use crate::domain::traits::S3Client;
@@ -25,7 +29,7 @@ impl App {
         // Transform AppConfig into domain rules
         let rules = ProcessingRules::builder()
             .require_all_servers(cfg.require_all_servers)
-            .compress(cfg.compress)
+            .compression(cfg.compression)
             .match_window_sec(3600)
             .build();
         App { cfg, metrics, rules }
@@ -113,22 +117,32 @@ impl App {
         // Step 2: Merge into full database
         db_client.merge_daily_into_full(&daily_db_path, &self.cfg.full_db)?;
 
-        // Step 3: Upload to S3 (if required)
-        if let Some(uploader) = s3_client {
-            let s3_key = paths::s3_key_from_path(&daily_db_path);
-            let etag = uploader.upload(&self.cfg.bucket, &s3_key, &daily_db_path).await?;
-            tracing::info!(etag = %etag, key=%s3_key, "Upload completed");
-        }
-
-        // Step 4: Move processed files
+        tracing::debug!("app cfg: {}", self.cfg);
+        // Step 3: Move processed files
         for src_path in &source_paths {
             let processed = fs_client.move_processed(
                 src_path,
-                self.cfg.daily_dir.parent().unwrap_or(&self.cfg.daily_dir),
-                self.rules.compress,
+                self.cfg.processed_dir.clone(),
+                CompressionMode::None,
                 false,
             )?;
-            tracing::info!("File processed: {}", processed.display())
+            tracing::info!("File processed: {}", processed.display());
+        }
+
+        // Step 4: Move processed daily DB
+        let processed = fs_client.move_processed(
+            daily_db_path,
+            self.cfg.daily_dir.parent().unwrap_or(std::path::Path::new("./")),
+            self.rules.compression,
+            false,
+        )?;
+        tracing::info!("File processed: {}", processed.display());
+
+        // Step 5: Upload to S3 (if required)
+        if let Some(uploader) = s3_client {
+            let s3_key = paths::s3_key_from_path(&processed);
+            let etag = uploader.upload(&self.cfg.bucket, &s3_key, &processed).await?;
+            tracing::info!(etag = %etag, key=%s3_key, "Upload completed");
         }
 
         Ok(())

@@ -11,6 +11,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 
+use node_types::BlockIdentifier;
 use opentelemetry::global::ObjectSafeSpan;
 use opentelemetry::trace::noop::NoopTracer;
 use opentelemetry::trace::noop::NoopTracerProvider;
@@ -34,7 +35,6 @@ use tvm_types::Sha256;
 
 use crate::helper::metrics::Metrics;
 use crate::node::NodeIdentifier;
-use crate::types::BlockIdentifier;
 
 pub const TIMING_TARGET: &str = "timing";
 
@@ -58,8 +58,7 @@ fn verbose_filter() -> tracing_subscriber::EnvFilter {
             database=info,\
             sqlite=trace,\
             message_router=trace,\
-            transport_layer=trace,\
-            transport_layer=trace,\
+            transport_layer=info,\
             monit=trace,\
             ext_messages=trace"
     ))

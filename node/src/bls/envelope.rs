@@ -14,6 +14,7 @@ use serde::Serialize;
 use serde::Serializer;
 
 use crate::bls::BLSSignatureScheme;
+use crate::bls::GoshBLS;
 use crate::node::SignerIndex;
 
 pub trait BLSSignedEnvelope: Send + Sync + 'static {
@@ -46,7 +47,7 @@ pub trait BLSSignedEnvelope: Send + Sync + 'static {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct Envelope<BLS, TData>
+pub struct Envelope<TData, BLS = GoshBLS>
 where
     BLS: BLSSignatureScheme,
     BLS::Signature: Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
@@ -57,7 +58,7 @@ where
     data: TData,
 }
 
-impl<BLS, TData> BLSSignedEnvelope for Envelope<BLS, TData>
+impl<TData, BLS> BLSSignedEnvelope for Envelope<TData, BLS>
 where
     BLS: BLSSignatureScheme,
     BLS::Signature: Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
@@ -175,7 +176,7 @@ struct EnvelopeSerDe<TSignature, TData> {
     pub data: TData,
 }
 
-impl<BLS, TData> Display for Envelope<BLS, TData>
+impl<TData, BLS> Display for Envelope<TData, BLS>
 where
     BLS: BLSSignatureScheme,
     BLS::Signature: Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
@@ -186,7 +187,7 @@ where
     }
 }
 
-impl<BLS, TData> Debug for Envelope<BLS, TData>
+impl<TData, BLS> Debug for Envelope<TData, BLS>
 where
     BLS: BLSSignatureScheme,
     BLS::Signature: Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
@@ -194,13 +195,13 @@ where
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("")
-            .field("data", &self.data)
             .field("signature_occurrences", &self.signature_occurrences)
+            .field("data", &self.data)
             .finish()
     }
 }
 
-impl<BLS, TData> Serialize for Envelope<BLS, TData>
+impl<TData, BLS> Serialize for Envelope<TData, BLS>
 where
     BLS: BLSSignatureScheme,
     BLS::Signature: Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
@@ -223,7 +224,7 @@ where
     }
 }
 
-impl<'de, BLS, TData> Deserialize<'de> for Envelope<BLS, TData>
+impl<'de, TData, BLS> Deserialize<'de> for Envelope<TData, BLS>
 where
     BLS: BLSSignatureScheme,
     BLS::Signature: Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,

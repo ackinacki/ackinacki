@@ -1,4 +1,4 @@
-use crate::types::BlockIdentifier;
+use node_types::BlockIdentifier;
 
 #[allow(dead_code)]
 #[derive(PartialEq)]

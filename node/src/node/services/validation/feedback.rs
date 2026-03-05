@@ -45,7 +45,7 @@ impl AckiNackiSend {
             Some(thread_identifier),
         ) = block_state.guarded(|e| {
             (
-                e.block_identifier().clone(),
+                *e.block_identifier(),
                 *e.block_seq_no(),
                 e.known_attestation_interested_parties().clone(),
                 *e.thread_identifier(),
@@ -67,12 +67,12 @@ impl AckiNackiSend {
             return Ok(());
         };
 
-        let ack_data = AckData { block_id: block_id.clone(), block_seq_no };
+        let ack_data = AckData { block_id, block_seq_no };
         let signature_occurrences = HashMap::from([(node_epoch_signer_index, 1)]);
 
         let signature = <GoshBLS as BLSSignatureScheme>::sign(&node_epoch_secret, &ack_data)?;
 
-        let ack = Envelope::<GoshBLS, AckData>::create(signature, signature_occurrences, ack_data);
+        let ack = Envelope::<AckData>::create(signature, signature_occurrences, ack_data);
         let message = NetworkMessage::Ack((ack, thread_identifier));
         for destination_node_id in destinations.into_iter() {
             tracing::trace!(
@@ -99,7 +99,7 @@ impl AckiNackiSend {
         reason: NackReason,
     ) -> anyhow::Result<()> {
         let (block_id, Some(block_seq_no), Some(thread_id)) = block_state
-            .guarded(|e| (e.block_identifier().clone(), *e.block_seq_no(), *e.thread_identifier()))
+            .guarded(|e| (*e.block_identifier(), *e.block_seq_no(), *e.thread_identifier()))
         else {
             anyhow::bail!("block state does not have valid data set")
         };
@@ -110,13 +110,12 @@ impl AckiNackiSend {
         };
 
         // let reason = NackReason::BadBlock { envelope };
-        let nack_data = NackData { block_id: block_id.clone(), block_seq_no, reason };
+        let nack_data = NackData { block_id, block_seq_no, reason };
         let signature = <GoshBLS as BLSSignatureScheme>::sign(&node_epoch_secret, &nack_data)?;
         let mut signature_occurrences = HashMap::new();
         signature_occurrences.insert(node_epoch_signer_index, 1);
 
-        let nack =
-            Envelope::<GoshBLS, NackData>::create(signature, signature_occurrences, nack_data);
+        let nack = Envelope::<NackData>::create(signature, signature_occurrences, nack_data);
         let message = NetworkMessage::Nack((nack, thread_id));
         tracing::trace!("Broadcasting nack for block_id: {block_id:?}");
         match self.nack_network_broadcast_tx.send(message) {

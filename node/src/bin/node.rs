@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU32;
+use std::sync::mpsc::TryRecvError;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -18,14 +19,13 @@ use ::node::block::producer::process::TVMBlockProducerProcess;
 use ::node::bls::GoshBLS;
 use ::node::helper::init_tracing;
 use ::node::helper::key_handling::key_pairs_from_file;
-use ::node::message::WrappedMessage;
 use ::node::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
-use ::node::node::NetworkMessage;
 use ::node::node::Node;
 use ::node::protocol::authority_switch::round_time::RoundTime;
 use ::node::repository::optimistic_state::OptimisticState;
 use ::node::repository::repository_impl::FinalizedBlockStorage;
 use ::node::repository::repository_impl::RepositoryImpl;
+use account_state::ThreadAccountsRepository;
 use chitchat::transport::UdpTransport;
 use clap::Parser;
 use ext_messages_auth::auth::AccountRequest;
@@ -50,9 +50,10 @@ use node::config::load_config_from_file;
 use node::config::Config;
 use node::config::GlobalConfig;
 use node::creditconfig::abi::DAPP_CONFIG_TVC;
-use node::creditconfig::dappconfig::calculate_dapp_config_address;
+use node::creditconfig::dappconfig::calculate_dapp_config_account_id;
 use node::creditconfig::dappconfig::decode_dapp_config_data;
 use node::external_messages::ExternalMessagesThreadState;
+use node::external_messages::QueuedExtMessage;
 use node::helper::account_boc_loader::get_account_from_shard_state;
 use node::helper::calc_file_hash;
 use node::helper::metrics::Metrics;
@@ -92,6 +93,8 @@ use node::protocol::authority_switch::action_lock::ActionLockCollection;
 use node::protocol::authority_switch::action_lock::Authority;
 use node::protocol::authority_switch::find_last_prefinalized::find_last_prefinalized;
 use node::repository::accounts::AccountsRepository;
+use node::repository::accounts::NodeThreadAccounts;
+use node::repository::accounts::NodeThreadAccountsRepository;
 use node::repository::load_saved_blocks::SavedBlocksLoader;
 use node::repository::optimistic_state::OptimisticStateSaveCommand;
 use node::repository::start_optimistic_state_save_service;
@@ -109,22 +112,21 @@ use node::storage::DEFAULT_AEROSPIKE_MESSAGE_CACHE_MAX_ENTRIES;
 use node::types::bp_selector::ProducerSelector;
 use node::types::calculate_hash;
 use node::types::thread_message_queue::account_messages_iterator::AccountMessagesIterator;
-use node::types::AccountAddress;
 use node::types::AckiNackiBlock;
 use node::types::BlockHeight;
-use node::types::BlockIdentifier;
 use node::types::BlockSeqNo;
 use node::types::CollectedAttestations;
-use node::types::DAppIdentifier;
-use node::types::ThreadIdentifier;
 use node::utilities::guarded::Guarded;
 use node::utilities::guarded::GuardedMut;
 use node::utilities::thread_spawn_critical::SpawnCritical;
 use node::utilities::FixedSizeHashSet;
 use node::versioning::block_protocol_version_state::BlockProtocolVersionState;
-use node::versioning::ProtocolVersion;
 use node::zerostate::ZeroState;
+use node_types::BlockIdentifier;
+use node_types::DAppIdentifier;
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
+use parking_lot::RwLock;
 use rand::prelude::SeedableRng;
 use rand::prelude::SmallRng;
 use serde_json::json;
@@ -136,7 +138,6 @@ use transport_layer::TlsCertCache;
 use tvm_block::Deserializable;
 use tvm_block::GetRepresentationHash;
 use tvm_block::StateInit;
-use tvm_types::UInt256;
 
 // const ALIVE_NODES_WAIT_TIMEOUT_MILLIS: u64 = 100;
 const MINIMUM_NUMBER_OF_CORES: usize = 8;
@@ -239,7 +240,11 @@ async fn tokio_main(args: Args) -> ExitCode {
     exit_code
 }
 
-fn verify_zerostate(zs: &ZeroState, message_db: &MessageDurableStorage) -> anyhow::Result<()> {
+fn verify_zerostate(
+    zs: &ZeroState,
+    message_db: &MessageDurableStorage,
+    thread_accounts_repository: &NodeThreadAccountsRepository,
+) -> anyhow::Result<()> {
     tracing::trace!("Verifying ZeroState");
     let mut messages = HashSet::new();
     for state in zs.states().values() {
@@ -271,28 +276,17 @@ fn verify_zerostate(zs: &ZeroState, message_db: &MessageDurableStorage) -> anyho
     let base_config_stateinit = StateInit::construct_from_bytes(DAPP_CONFIG_TVC)
         .map_err(|e| anyhow::format_err!("Failed to construct DAPP config tvc: {e}"))?;
 
-    let addr = calculate_dapp_config_address(
-        DAppIdentifier(AccountAddress(UInt256::ZERO)),
-        base_config_stateinit.clone(),
-    )
-    .map_err(|e| anyhow::format_err!("Failed to calculate DAPP config address: {e}"))?;
-    let account_addr = AccountAddress(addr);
-    tracing::trace!("zero config address: {:?}", account_addr);
+    let account_id =
+        calculate_dapp_config_account_id(DAppIdentifier::ZERO, base_config_stateinit.clone())
+            .map_err(|e| anyhow::format_err!("Failed to calculate DAPP config address: {e}"))?;
+    tracing::trace!("zero config address: {:?}", account_id);
     let zero_thread_state = zs.state(&ThreadIdentifier::default())?;
-    let accounts = zero_thread_state
-        .get_shard_state()
-        .read_accounts()
-        .map_err(|e| anyhow::format_err!("Failed to read accounts: {e}"))?;
+    let accounts = zero_thread_state.get_shard_state();
 
-    match accounts.account(&account_addr.clone().into()) {
+    match thread_accounts_repository.state_account(&accounts, &account_id.dapp_originator()) {
         Ok(Some(acc)) => {
             tracing::trace!(target: "builder", "account found");
-            let acc_d = acc
-                .read_account()
-                .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?
-                .as_struct()
-                .map_err(|e| anyhow::format_err!("Failed to construct account: {e}"))?;
-            let data = decode_dapp_config_data(&acc_d)?;
+            let data = decode_dapp_config_data(&acc.account()?)?;
             match data {
                 Some(configdata) if configdata.is_unlimit => {
                     // OK - continue
@@ -311,7 +305,7 @@ fn verify_zerostate(zs: &ZeroState, message_db: &MessageDurableStorage) -> anyho
         }
         Ok(None) => {
             return Err(anyhow::format_err!(
-                "Account for DAppIdentifier::ZERO not found at address: {account_addr:?}"
+                "Account for DAppIdentifier::ZERO not found at address: {account_id:?}"
             ));
         }
         Err(e) => {
@@ -415,19 +409,13 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         // )
         .build();
     let (zero_block_version, node_protocol_version_support, config_read) =
-        if let Some(retired_version) = option_env!("RETIRED_VERSION") {
-            tracing::info!("RETIRED_VERSION={}", retired_version);
-            let retired_version = node::versioning::ProtocolVersion::parse(retired_version)?;
-            assert!(retired_global_config.is_some());
-            let old_config = retired_global_config.as_ref().unwrap();
-            let version_from_config = node::versioning::ProtocolVersion::builder()
+        if let Some(old_config) = retired_global_config.as_ref() {
+            let retired_version = node::versioning::ProtocolVersion::builder()
                 .canonical_config_hash(old_config)
                 .tvm_engine_version(old_config.engine_version.clone())
                 .gossip_version(old_config.gossip_version)
                 .build();
-            if retired_version != ProtocolVersion::parse("None")? {
-                assert_eq!(version_from_config, retired_version);
-            }
+            tracing::info!("RETIRED_VERSION={}", retired_version);
             (
                 BlockProtocolVersionState::Current(retired_version.clone()),
                 node::versioning::ProtocolVersionSupport::new(retired_version.clone())
@@ -481,7 +469,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         std::env::var("AEROSPIKE_SOCKET_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
     let set_prefix = std::env::var("AEROSPIKE_SET_PREFIX").unwrap_or_else(|_| "node".to_string());
 
-    let durable_store = AerospikeStore::new(socket_address, node_metrics.clone())?;
+    let durable_store = AerospikeStore::new(socket_address.clone(), node_metrics.clone())?;
     let durable_set = |suffix: &str| format!("{set_prefix}-{suffix}");
 
     let num_cached_entries = std::env::var("AEROSPIKE_CACHE_MESSAGE_MAX_ENTRIES")
@@ -495,6 +483,16 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let message_db = MessageDurableStorage::new(cached_store, &durable_set("msg"));
     let crossref_db = CrossRefStorage::new(durable_store.clone(), &durable_set("ref"));
     let action_lock_db = ActionLockStorage::new(durable_store.clone(), &durable_set("lck"));
+    let repo_path = PathBuf::from("./data");
+
+    let thread_accounts_repository =
+        NodeThreadAccounts::new_repository(repo_path.join("thread_state"))
+            .set_accounts_aerospike_store(
+                socket_address,
+                node::storage::aerospike::NAMESPACE,
+                durable_set("acc"),
+            )
+            .build()?;
 
     let zerostate = if let Some(zs_path) = config.local.zerostate_path.as_ref() {
         let zerostate = ZeroState::load_from_file(zs_path).expect("Failed to open zerostate");
@@ -503,13 +501,12 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         tracing::info!(target: "monit", "zerostate hash: {zerostate_hash}");
 
         if args.check_zerostate_validity {
-            verify_zerostate(&zerostate, &message_db)?;
+            verify_zerostate(&zerostate, &message_db, &thread_accounts_repository)?;
         }
         Some(zerostate)
     } else {
         None
     };
-
     let bk_set = if let Some(bk_set_update_path) = &config.local.bk_set_update_path {
         serde_json::from_slice::<ApiBkSet>(&std::fs::read(bk_set_update_path)?)?
     } else if let Some(zerostate) = zerostate.as_ref() {
@@ -656,7 +653,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         metrics.as_ref().map(|x| x.net.clone()),
     );
 
-    let repo_path = PathBuf::from("./data");
     let node_cross_thread_ref_data_availability_synchronization_service =
         CrossThreadRefDataAvailabilitySynchronizationService::new(
             metrics.as_ref().map(|m| m.node.clone()),
@@ -773,6 +769,9 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let (bk_set_update_tx, bk_set_update_rx) =
         instrumented_channel(node_metrics.clone(), node::helper::metrics::BK_SET_UPDATE_CHANNEL);
 
+    #[cfg(feature = "usdc_name_repair")]
+    let usdc_name_repaired = Arc::new(parking_lot::Mutex::new(None));
+
     let mut repository = RepositoryImpl::new(
         repo_path.clone(),
         zerostate_path.clone(),
@@ -783,10 +782,13 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         block_state_repo.clone(),
         metrics.as_ref().map(|m| m.node.clone()),
         accounts_repo,
+        thread_accounts_repository,
         message_db.clone(),
         repository_blocks,
         bk_set_update_tx,
         config_read.clone(),
+        #[cfg(feature = "usdc_name_repair")]
+        usdc_name_repaired.clone(),
     );
 
     let (optimistic_save_tx, optimistic_save_rx) =
@@ -862,7 +864,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 // services.dependency_tracking.init_thread(*thread_id, BlockIdentifier::default());
                 // TODO: check if we have to pass all threads in set
                 services.threads_tracking.init_thread(
-                    last_finalized_id.clone(),
+                    last_finalized_id,
                     HashSet::from_iter(vec![*thread_id].into_iter()),
                     &mut (&mut services.router, &mut services.load_balancing),
                 );
@@ -931,6 +933,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         wasm_cache.clone(),
         message_db.clone(),
         authority.clone(),
+        #[cfg(feature = "usdc_name_repair")]
+        usdc_name_repaired.clone(),
     )
     .expect("Failed to create validation process");
 
@@ -978,7 +982,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let stop_result_rx_vec_clone = stop_result_rx_vec.clone();
     let bk_set_update_async_rx_clone = bk_set_update_async_rx.clone();
     let net_topology_rx_clone = net_topology_rx.clone();
-
+    let blk_req_join_handles = Arc::new(RwLock::new(vec![]));
+    let blk_req_join_handles_clone = blk_req_join_handles.clone();
     let optimistic_save_tx_clone = optimistic_save_tx.clone();
     let (routing, _inner_service_thread) = RoutingService::start(
         (routing, routing_rx),
@@ -1015,7 +1020,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 // Yet it requires an explanation why it was done like that
                 let last_block_id =
                     repository.get_latest_block_id_with_producer_group_change(thread_id)?;
-                let mut seed_bytes = last_block_id.as_ref().to_vec();
+                let mut seed_bytes = last_block_id.as_array().to_vec();
                 seed_bytes.extend_from_slice(thread_id.as_ref());
                 let seed = calculate_hash(&seed_bytes)?;
                 SmallRng::from_seed(seed)
@@ -1028,14 +1033,26 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 .build()?;
 
             let external_messages_clone = external_messages.clone();
+
+            // TODO: this JoinHandle is not yet in use.
             let ext_msg_receiver = std::thread::Builder::new()
                 .name("Ext message receiver".to_string())
-                .spawn_critical(move || {
+                .spawn(move || {
                     loop {
                         match ext_messages_rx.recv() {
-                            Ok(message) => {
-                                external_messages_clone.push_external_messages(&[message])?;
-                            }
+                            Ok(message) => match QueuedExtMessage::try_from_incoming(message) {
+                                Ok(message) => match external_messages_clone
+                                    .push_external_messages(&[message])
+                                {
+                                    Ok(_) => {}
+                                    Err(err) => {
+                                        tracing::error!("Failed to push external message: {err:?}");
+                                    }
+                                },
+                                Err(err) => {
+                                    tracing::error!("Failed to parse external message: {err:?}");
+                                }
+                            },
                             Err(e) => {
                                 tracing::error!("Ext message receiver received an error: {e:?}");
                                 break;
@@ -1065,18 +1082,22 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 config.network.shared_state_retry_download_timeout_millis,
             );
             sync_state_service.download_deadline_timeout = global_config.node_joining_timeout;
-            let production_process = TVMBlockProducerProcess::builder()
-                .metrics(node_metrics.clone())
-                .node_config_read(config_read.clone())
-                .repository(repository.clone())
-                .producer_node_id(config.local.node_id.clone())
-                .blockchain_config(load_blockchain_config()?)
-                .parallelization_level(config.local.parallelization_level)
-                .shared_services(node_shared_services.clone())
-                .share_service(Some(sync_state_service.clone()))
-                .wasm_cache(wasm_cache.clone())
-                .save_optimistic_service_sender(optimistic_save_tx.clone())
-                .build();
+            let production_process = {
+                let builder = TVMBlockProducerProcess::builder()
+                    .metrics(node_metrics.clone())
+                    .node_config_read(config_read.clone())
+                    .repository(repository.clone())
+                    .producer_node_id(config.local.node_id.clone())
+                    .blockchain_config(load_blockchain_config()?)
+                    .parallelization_level(config.local.parallelization_level)
+                    .shared_services(node_shared_services.clone())
+                    .share_service(Some(sync_state_service.clone()))
+                    .wasm_cache(wasm_cache.clone())
+                    .save_optimistic_service_sender(optimistic_save_tx.clone());
+                #[cfg(feature = "usdc_name_repair")]
+                let builder = builder.usdc_name_repaired(usdc_name_repaired.clone());
+                builder.build()
+            };
 
             let attestation_sender_service = AttestationSendService::builder()
                 .pulse_timeout(std::time::Duration::from_millis(
@@ -1162,7 +1183,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             );
 
             // TODO: save blk_req_join_handle
-            let (blk_req_tx, _blk_req_join_handle) = BlockRequestService::start(
+            let (blk_req_tx, blk_req_join_handle) = BlockRequestService::start(
                 config.clone(),
                 global_config.clone(),
                 node_shared_services.clone(),
@@ -1172,6 +1193,9 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 node_metrics.clone(),
                 block_collection.clone(),
             )?;
+            let mut guard = blk_req_join_handles.write();
+            guard.push(blk_req_join_handle);
+            drop(guard);
 
             let (stop_result_tx, stop_result_rx) = std::sync::mpsc::channel();
             {
@@ -1186,11 +1210,13 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             let broadcast_tx_clone = broadcast_tx.clone();
             let chain_pulse_monitor_clone = chain_pulse_monitor.clone();
             let thread_id_clone = *thread_id;
+            let node_id = config.local.node_id.clone();
             let authority_handler = std::thread::Builder::new()
                 .name(format!("AuthoritySwitchService for {thread_id_clone:?}"))
                 .spawn_critical(move || {
                     let mut authority_service = AuthoritySwitchService::builder()
                         .self_addr(config.network.node_advertise_addr)
+                        .self_node_identifier(node_id)
                         .rx(thread_authority_receiver)
                         .self_node_tx(self_node_tx_clone)
                         .network_direct_tx(direct_tx_clone)
@@ -1250,6 +1276,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 thread_authority_sender,
                 optimistic_save_tx.clone(),
                 node_credentials.clone(),
+                config_read.clone(),
             );
 
             Ok(node)
@@ -1313,13 +1340,10 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             config.local.external_state_share_local_base_dir,
             ext_messages_sender,
             account_request_tx,
-            |msg: tvm_block::Message, thread: [u8; 34]| into_external_message(msg, thread.into()),
             {
                 let repo = repo_clone_0.clone();
                 let node_id = config.local.node_id.clone();
-                move |thread_id| {
-                    resolve_bp(thread_id.into(), &repo, &mut net_topology_rx_clone, &node_id)
-                }
+                move |thread_id| resolve_bp(thread_id, &repo, &mut net_topology_rx_clone, &node_id)
             },
             // This closure returns last seq_no for default thread
             move || {
@@ -1344,6 +1368,22 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
     let wrapped_heartbeat_thread_join_handle =
         tokio::task::spawn_blocking(move || heartbeat_thread_join_handle.join());
+
+    let wrapped_blk_req_join_handle = tokio::task::spawn_blocking(move || loop {
+        let guard = blk_req_join_handles_clone.read();
+        let mut finished_index = None;
+        for (index, handle) in guard.iter().enumerate() {
+            if handle.is_finished() {
+                finished_index = Some(index);
+            }
+        }
+        drop(guard);
+        if let Some(index) = finished_index {
+            let mut guard = blk_req_join_handles_clone.write();
+            return guard.remove(index).join();
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    });
 
     let wrapped_deadlock_detector = tokio::task::spawn_blocking(move || {
         #[cfg(feature = "deadlock-detection")]
@@ -1374,7 +1414,23 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     // after shutdown.
                     let result_rx_vec = stop_result_rx_vec.lock();
                     for rx in result_rx_vec.iter() {
-                        let _ = rx.recv();
+                        tracing::trace!(target: "monit", "Shutdown wait for node execution thread to stop");
+                        loop {
+                            match rx.try_recv() {
+                                Ok(()) => {
+                                    tracing::trace!(target: "monit", "Shutdown: node execution thread has stopped");
+                                    break;
+                                }
+                                Err(TryRecvError::Disconnected) => {
+                                    anyhow::bail!("Node execution thread disconnected");
+                                }
+                                Err(TryRecvError::Empty) => {
+                                    tracing::trace!(target: "monit", "Shutdown: node execution thread has not stopped yet, wait more");
+                                    tokio::time::sleep(Duration::from_millis(10)).await;
+                                    continue;
+                                }
+                            }
+                        }
                     }
                     tracing::info!(target: "monit", "Shutdown finished");
                     Ok(())
@@ -1392,17 +1448,17 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 }
             }
         },
-        // res = wrapped_blk_req_join_handle => {
-        //     match res {
-        //         Ok(Ok(_)) =>{ unreachable!("Block request service never returns") }
-        //         Ok(Err(error)) =>{
-        //             anyhow::bail!("Block request service failed with error: {:?}", error);
-        //          }
-        //         Err(error) => {
-        //             anyhow::bail!("Block request service thread failed with error: {error}");
-        //         }
-        //     }
-        // },
+        res = wrapped_blk_req_join_handle => {
+            match res {
+                Ok(Ok(_)) =>{ unreachable!("Block request service never returns") }
+                Ok(Err(error)) =>{
+                    anyhow::bail!("Block request service failed with error: {:?}", error);
+                 }
+                Err(error) => {
+                    anyhow::bail!("Block request service thread failed with error: {error}");
+                }
+            }
+        },
         v = http_server_handle => {
             anyhow::bail!("http_server failed: {v:?}");
         },
@@ -1440,15 +1496,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     // Note: reachable on SIGTERM
     drop(chain_pulse_bind);
     result
-}
-
-fn into_external_message(
-    message: tvm_block::Message,
-    thread_id: ThreadIdentifier,
-) -> anyhow::Result<NetworkMessage> {
-    anyhow::ensure!(!message.is_internal(), "An issue with the Message content");
-    let message = WrappedMessage { message };
-    Ok(NetworkMessage::ExternalMessage((message, thread_id)))
 }
 
 fn resolve_bp(
@@ -1510,6 +1557,9 @@ fn debug_used_features() {
     }
     if cfg!(feature = "disable_db_for_messages") {
         eprintln!("  disable_db_for_messages");
+    }
+    if cfg!(feature = "history_proofs") {
+        eprintln!("  history_proofs");
     }
     if std::env::var("NODE_VERBOSE").is_ok() {
         eprintln!("  NODE_VERBOSE");
@@ -1611,7 +1661,7 @@ fn clear_missing_block_locks(
     block_state_repository: &BlockStateRepository,
     unfinalized_blocks: &HashMap<
         ThreadIdentifier,
-        Vec<(BlockState, Arc<Envelope<GoshBLS, AckiNackiBlock>>)>,
+        Vec<(BlockState, Arc<Envelope<AckiNackiBlock>>)>,
     >,
     action_lock_db: ActionLockStorage,
     action_lock_data_dir: PathBuf,
@@ -1734,9 +1784,18 @@ fn print_node_protocol_version_support(args: Args) -> anyhow::Result<()> {
         .tvm_engine_version(global_config.engine_version.clone())
         .gossip_version(global_config.gossip_version)
         .build();
+    let retired_global_config = args
+        .retired_global_config_path
+        .as_ref()
+        .map(load_config_from_file::<GlobalConfig>)
+        .transpose()?;
     let (_zero_block_version, node_protocol_version_support) =
-        if let Some(retired_version) = option_env!("RETIRED_VERSION") {
-            let retired_version = node::versioning::ProtocolVersion::parse(retired_version)?;
+        if let Some(old_config) = retired_global_config.as_ref() {
+            let retired_version = node::versioning::ProtocolVersion::builder()
+                .canonical_config_hash(old_config)
+                .tvm_engine_version(old_config.engine_version.clone())
+                .gossip_version(old_config.gossip_version)
+                .build();
             (
                 BlockProtocolVersionState::Current(retired_version.clone()),
                 node::versioning::ProtocolVersionSupport::new(retired_version)
@@ -1767,9 +1826,11 @@ async fn test_execute() -> anyhow::Result<()> {
     use node::bls::try_seal::TrySeal;
     use node::helper::metrics::BlockProductionMetrics;
     use node::node::NetBlock;
+    use node::node::NetworkMessage;
     use node::protocol::authority_switch::network_message::AuthoritySwitch;
     use node::protocol::authority_switch::network_message::NextRoundSuccess;
     use node::storage::StoreStub;
+    use node::versioning::ProtocolVersion;
     use telemetry_utils::instrumented_channel_ext::WrappedItem;
 
     let (_metrics, tracing_guard) = init_tracing();
@@ -1876,8 +1937,8 @@ async fn test_execute() -> anyhow::Result<()> {
         }
         let attn = blocks[1]
             .data()
-            .get_common_section()
-            .block_attestations
+            .common_section()
+            .block_attestations()
             .clone()
             .iter()
             .find(|attn| attn.data().block_id() == &blocks[0].data().identifier())
@@ -2161,6 +2222,8 @@ async fn test_execute() -> anyhow::Result<()> {
         config.local.unload_after,
         global_config.save_state_frequency,
     );
+    let thread_accounts_repository =
+        NodeThreadAccounts::new_repository(repo_path.join("thread_state")).build()?;
     let finalized_block_storage_size =
         1_usize + TryInto::<usize>::try_into(global_config.save_state_frequency * 2).unwrap();
     let repository_blocks =
@@ -2168,6 +2231,9 @@ async fn test_execute() -> anyhow::Result<()> {
 
     let (bk_set_update_tx, _bk_set_update_rx) =
         instrumented_channel(node_metrics.clone(), node::helper::metrics::BK_SET_UPDATE_CHANNEL);
+
+    #[cfg(feature = "usdc_name_repair")]
+    let usdc_name_repaired = Arc::new(parking_lot::Mutex::new(None));
 
     let mut repository = RepositoryImpl::new(
         repo_path.clone(),
@@ -2179,12 +2245,14 @@ async fn test_execute() -> anyhow::Result<()> {
         block_state_repo.clone(),
         metrics.as_ref().map(|m| m.node.clone()),
         accounts_repo,
+        thread_accounts_repository,
         message_db.clone(),
         repository_blocks,
         bk_set_update_tx,
         config_read.clone(),
+        #[cfg(feature = "usdc_name_repair")]
+        usdc_name_repaired.clone(),
     );
-
     let (optimistic_save_tx, _optimistic_save_rx) =
         instrumented_channel(node_metrics.clone(), OPTIMISTIC_STATE_SAVE_CHANNEL);
 
@@ -2210,7 +2278,7 @@ async fn test_execute() -> anyhow::Result<()> {
             // services.dependency_tracking.init_thread(*thread_id, BlockIdentifier::default());
             // TODO: check if we have to pass all threads in set
             services.threads_tracking.init_thread(
-                last_finalized_id.clone(),
+                last_finalized_id,
                 HashSet::from_iter(vec![*thread_id].into_iter()),
                 &mut (&mut services.router, &mut services.load_balancing),
             );
@@ -2271,6 +2339,8 @@ async fn test_execute() -> anyhow::Result<()> {
         wasm_cache.clone(),
         message_db.clone(),
         authority.clone(),
+        #[cfg(feature = "usdc_name_repair")]
+        usdc_name_repaired.clone(),
     )
     .expect("Failed to create validation process");
 
@@ -2324,7 +2394,7 @@ async fn test_execute() -> anyhow::Result<()> {
         // should take a parent block of the thread instead.
         // Yet it requires an explanation why it was done like that
         let last_block_id = repository.get_latest_block_id_with_producer_group_change(thread_id)?;
-        let mut seed_bytes = last_block_id.as_ref().to_vec();
+        let mut seed_bytes = last_block_id.as_array().to_vec();
         seed_bytes.extend_from_slice(thread_id.as_ref());
         let seed = calculate_hash(&seed_bytes)?;
         SmallRng::from_seed(seed)
@@ -2337,9 +2407,8 @@ async fn test_execute() -> anyhow::Result<()> {
         .build()?;
 
     let external_messages_clone = external_messages.clone();
-    let ext_msg_receiver = std::thread::Builder::new()
-        .name("Ext message receiver".to_string())
-        .spawn_critical(move || {
+    let ext_msg_receiver =
+        std::thread::Builder::new().name("Ext message receiver".to_string()).spawn(move || {
             loop {
                 match ext_messages_rx.recv() {
                     Ok(message) => {
@@ -2373,18 +2442,22 @@ async fn test_execute() -> anyhow::Result<()> {
     sync_state_service.retry_download_timeout =
         std::time::Duration::from_millis(config.network.shared_state_retry_download_timeout_millis);
     sync_state_service.download_deadline_timeout = global_config.node_joining_timeout;
-    let production_process = TVMBlockProducerProcess::builder()
-        .metrics(node_metrics.clone())
-        .node_config_read(config_read.clone())
-        .repository(repository.clone())
-        .producer_node_id(config.local.node_id.clone())
-        .blockchain_config(load_blockchain_config()?)
-        .parallelization_level(config.local.parallelization_level)
-        .shared_services(node_shared_services.clone())
-        .share_service(Some(sync_state_service.clone()))
-        .wasm_cache(wasm_cache.clone())
-        .save_optimistic_service_sender(optimistic_save_tx.clone())
-        .build();
+    let production_process = {
+        let builder = TVMBlockProducerProcess::builder()
+            .metrics(node_metrics.clone())
+            .node_config_read(config_read.clone())
+            .repository(repository.clone())
+            .producer_node_id(config.local.node_id.clone())
+            .blockchain_config(load_blockchain_config()?)
+            .parallelization_level(config.local.parallelization_level)
+            .shared_services(node_shared_services.clone())
+            .share_service(Some(sync_state_service.clone()))
+            .wasm_cache(wasm_cache.clone())
+            .save_optimistic_service_sender(optimistic_save_tx.clone());
+        #[cfg(feature = "usdc_name_repair")]
+        let builder = builder.usdc_name_repaired(usdc_name_repaired.clone());
+        builder.build()
+    };
 
     let attestation_sender_service = AttestationSendService::builder()
         .pulse_timeout(std::time::Duration::from_millis(global_config.time_to_produce_block_millis))
@@ -2489,6 +2562,7 @@ async fn test_execute() -> anyhow::Result<()> {
     let broadcast_tx_clone = broadcast_tx.clone();
     let chain_pulse_monitor_clone = chain_pulse_monitor.clone();
     let thread_id_clone = *thread_id;
+    let node_id = config.local.node_id.clone();
     let authority_handler = std::thread::Builder::new()
         .name(format!("AuthoritySwitchService for {thread_id_clone:?}"))
         .spawn_critical(move || {
@@ -2503,6 +2577,7 @@ async fn test_execute() -> anyhow::Result<()> {
                 .network_broadcast_tx(broadcast_tx_clone)
                 .block_state_repository(block_state_repo_clone)
                 .chain_pulse_monitor(chain_pulse_monitor_clone)
+                .self_node_identifier(node_id)
                 .build();
             authority_service.run()
         })
@@ -2553,6 +2628,7 @@ async fn test_execute() -> anyhow::Result<()> {
         thread_authority_sender,
         optimistic_save_tx.clone(),
         node_credentials.clone(),
+        config_read.clone(),
     );
 
     let thread = std::thread::Builder::new()

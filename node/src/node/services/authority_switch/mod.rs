@@ -1,9 +1,14 @@
 use std::net::SocketAddr;
+use std::ops::Sub;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
 use network::channel::NetBroadcastSender;
 use network::channel::NetDirectSender;
+use network::DirectReceiver;
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 use telemetry_utils::instrumented_channel_ext::WrappedItem;
 use telemetry_utils::instrumented_channel_ext::XInstrumentedReceiver;
@@ -12,7 +17,6 @@ use typed_builder::TypedBuilder;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::block_state::tools::try_set_prefinalized;
@@ -21,19 +25,24 @@ use crate::node::services::block_processor::chain_pulse::events::ChainPulseEvent
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::AuthoritySwitch;
 use crate::node::NetworkMessage;
+use crate::node::NetworkMessage::BlockRequest;
 use crate::node::NodeIdentifier;
 use crate::protocol::authority_switch::action_lock::OnNextRoundIncomingRequestResult;
 use crate::protocol::authority_switch::action_lock::OnNextRoundSuccessOnUnableToProcessAction;
 use crate::protocol::authority_switch::action_lock::OnNextRoundSuccessResult;
 use crate::protocol::authority_switch::action_lock::ThreadAuthority;
 use crate::protocol::authority_switch::network_message::NextRoundSuccess;
-use crate::types::ThreadIdentifier;
+use crate::types::next_seq_no;
+use crate::types::AckiNackiBlock;
+use crate::types::BlockRange;
+use crate::types::BlockSeqNo;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
 #[derive(TypedBuilder)]
 pub struct AuthoritySwitchService {
     self_addr: SocketAddr,
+    self_node_identifier: NodeIdentifier,
     rx: XInstrumentedReceiver<(NetworkMessage, SocketAddr)>,
     self_node_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
     network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
@@ -43,7 +52,13 @@ pub struct AuthoritySwitchService {
     network_broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
     block_state_repository: BlockStateRepository,
     chain_pulse_monitor: Sender<ChainPulseEvent>,
+    #[builder(default)]
+    last_requested_block_range: Option<BlockRange<BlockSeqNo>>,
+    #[builder(default)]
+    last_requested_block_range_timestamp: Option<Instant>,
 }
+
+static RANGE_REQUEST_TIME_DELTA: Duration = std::time::Duration::from_secs(5);
 
 impl AuthoritySwitchService {
     pub fn run(&mut self) -> anyhow::Result<()> {
@@ -288,7 +303,23 @@ impl AuthoritySwitchService {
                                     );
                                     continue;
                                 }
-                                let round = prefinalized_block.data().get_common_section().round;
+
+                                match attestations
+                                    .verify_signatures(bk_set.get_pubkeys_by_signers())
+                                {
+                                    Ok(false) => {
+                                        tracing::trace!("Invalid signature");
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        tracing::trace!("Signature verification failed: {e:?}");
+                                        continue;
+                                    }
+                                    Ok(true) => {}
+                                }
+
+                                self.send_block_request(prefinalized_block.data(), sender)?;
+                                let round = *prefinalized_block.data().common_section().round();
                                 self.block_state_repository
                                     .get(&prefinalized_block.data().identifier())
                                     .unwrap()
@@ -301,6 +332,8 @@ impl AuthoritySwitchService {
                                     block_state.guarded(|e| *e.attestation_target())
                                 else {
                                     tracing::trace!("Attestation target is not set for switched block {attestations:?}");
+                                    block_state
+                                        .guarded_mut(|e| e.add_detached_attestations(attestations));
                                     continue;
                                 };
                                 // TODO:
@@ -320,10 +353,10 @@ impl AuthoritySwitchService {
                                         ChainPulseEvent::block_prefinalized(
                                             *rejection_reason.thread_identifier(),
                                             Some(
-                                                prefinalized_block
+                                                *prefinalized_block
                                                     .data()
-                                                    .get_common_section()
-                                                    .block_height,
+                                                    .common_section()
+                                                    .block_height(),
                                             ),
                                         ),
                                     );
@@ -412,7 +445,7 @@ impl AuthoritySwitchService {
 
     fn on_authority_switch_success(
         &mut self,
-        next_round_success_envelope: Envelope<GoshBLS, NextRoundSuccess>,
+        next_round_success_envelope: Envelope<NextRoundSuccess>,
     ) -> anyhow::Result<()> {
         tracing::trace!("Received NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched({next_round_success_envelope:?}))");
         let next_round_success = next_round_success_envelope.data().clone();
@@ -465,8 +498,8 @@ impl AuthoritySwitchService {
                     )?;
 
                     let _ = self.chain_pulse_monitor.send(ChainPulseEvent::block_prefinalized(
-                        block.data().get_common_section().thread_id,
-                        Some(block.data().get_common_section().block_height),
+                        *block.data().common_section().thread_id(),
+                        Some(*block.data().common_section().block_height()),
                     ));
                 }
             } else {
@@ -507,7 +540,7 @@ impl AuthoritySwitchService {
             return Ok(());
         }
 
-        let proposed_block_round = block.data().get_common_section().round;
+        let proposed_block_round = *block.data().common_section().round();
         tracing::trace!(
             "on_authority_switch_success: proposed_block.round={}, next_round_success.round={}",
             proposed_block_round,
@@ -524,6 +557,59 @@ impl AuthoritySwitchService {
             });
         }
 
+        Ok(())
+    }
+
+    fn send_block_request(
+        &mut self,
+        start_block: &AckiNackiBlock,
+        destination: SocketAddr,
+    ) -> anyhow::Result<()> {
+        let from = next_seq_no(start_block.seq_no());
+        let (unprocessed_blocks, _) = self.unprocessed_blocks_cache.clone_queue();
+        // Search for next existing block
+        let mut to = None;
+        for (_, block) in unprocessed_blocks.blocks().values() {
+            if block.data().seq_no() > start_block.seq_no() {
+                to = Some(block.data().seq_no());
+                break;
+            }
+        }
+        if let Some(to) = to {
+            if to > from {
+                // Check that this range differs from the last requested, or enough time has passed from the last request
+                let mut new_range = BlockRange::<BlockSeqNo>::new(from, to)?;
+                let enough_time_has_passed_from_last_request = self
+                    .last_requested_block_range_timestamp
+                    .as_ref()
+                    .map(|t| t.elapsed() >= RANGE_REQUEST_TIME_DELTA)
+                    .unwrap_or(true);
+                tracing::trace!("Trying to request range: {new_range:?} enough_time_has_passed_from_last_request={enough_time_has_passed_from_last_request}");
+                if !enough_time_has_passed_from_last_request {
+                    if let Some(prev_range) = self.last_requested_block_range.as_ref() {
+                        tracing::trace!("last requested range: {prev_range:?}");
+                        let range = prev_range.new_range(&new_range);
+                        if range.is_empty() {
+                            tracing::trace!("Range diff is empty, skip request");
+                            return Ok(());
+                        }
+                        tracing::trace!("new range: {range:?}");
+                        new_range = range;
+                    }
+                }
+                let at_least_n_blocks = Some(new_range.end().sub(new_range.start()) as usize);
+                let request = BlockRequest {
+                    inclusive_from: *new_range.start(),
+                    exclusive_to: *new_range.end(),
+                    requester: self.self_node_identifier.clone(),
+                    thread_id: self.thread_id,
+                    at_least_n_blocks,
+                };
+                self.network_direct_tx.send((DirectReceiver::Addr(destination), request))?;
+                self.last_requested_block_range_timestamp = Some(std::time::Instant::now());
+                self.last_requested_block_range = Some(new_range);
+            }
+        }
         Ok(())
     }
 }

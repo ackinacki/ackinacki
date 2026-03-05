@@ -2,6 +2,7 @@
 //
 
 use http_server::ExtMsgFeedbackList;
+use node_types::ThreadIdentifier;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use tvm_types::Cell;
 
@@ -15,7 +16,6 @@ use crate::repository::stub_repository::OptimisticStateStub;
 use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
 use crate::types::BlockRound;
-use crate::types::ThreadIdentifier;
 use crate::versioning::ProtocolVersion;
 
 #[cfg(test)]

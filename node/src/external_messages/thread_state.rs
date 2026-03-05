@@ -7,18 +7,17 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use http_server::ExtMsgFeedbackList;
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedSender;
-use tvm_block::Message;
 use typed_builder::TypedBuilder;
 
 use crate::block::producer::builder::build_actions::create_queue_overflow_feedback;
+use crate::external_messages::queue::ExtMessageDst;
 use crate::external_messages::queue::ExternalMessagesQueue;
+use crate::external_messages::QueuedExtMessage;
 use crate::external_messages::Stamp;
 use crate::helper::metrics::BlockProductionMetrics;
-use crate::message::WrappedMessage;
-use crate::types::AccountAddress;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
@@ -67,15 +66,15 @@ impl ExternalMessagesThreadState {
         ExternalMessagesThreadStateConfig::builder()
     }
 
-    pub fn push_external_messages(&self, messages: &[WrappedMessage]) -> anyhow::Result<()> {
-        tracing::trace!("add_external_messages: {}", messages.len());
+    pub fn push_external_messages(&self, ext_messages: &[QueuedExtMessage]) -> anyhow::Result<()> {
+        tracing::trace!("add_external_messages: {}", ext_messages.len());
 
         let now = Utc::now();
 
         let (report_len, unused) = self.queue.guarded_mut(|q| {
             let remaining = self.cache_size.saturating_sub(q.messages().len());
 
-            let (to_push, unused) = messages.split_at(remaining.min(messages.len()));
+            let (to_push, unused) = ext_messages.split_at(remaining.min(ext_messages.len()));
 
             q.push_external_messages(to_push, now);
             (q.messages().len(), unused.to_vec())
@@ -84,7 +83,7 @@ impl ExternalMessagesThreadState {
         if !unused.is_empty() {
             let overflow_feedbacks: Vec<_> = unused
                 .into_iter()
-                .map(|msg| create_queue_overflow_feedback(msg.message, &self.thread_id))
+                .map(|msg| create_queue_overflow_feedback(msg, &self.thread_id))
                 .collect::<Result<_, _>>()?;
 
             let _ = self.feedback_sender.send(ExtMsgFeedbackList(overflow_feedbacks));
@@ -97,7 +96,7 @@ impl ExternalMessagesThreadState {
         Ok(())
     }
 
-    pub fn erase_processed(&self, processed: &[Stamp]) -> anyhow::Result<()> {
+    pub fn erase_processed(&self, processed: &[Stamp]) {
         tracing::trace!("erase_processed ext messages: {}", processed.len());
 
         let report_len = self.queue.guarded_mut(|q| {
@@ -110,13 +109,11 @@ impl ExternalMessagesThreadState {
         if let Some(metrics) = &self.report_metrics {
             metrics.report_ext_msg_queue_size(report_len, &self.thread_id);
         }
-
-        Ok(())
     }
 
     pub fn get_remaining_external_messages(
         &self,
-    ) -> HashMap<AccountAddress, VecDeque<(Stamp, Message)>> {
+    ) -> HashMap<ExtMessageDst, VecDeque<(Stamp, QueuedExtMessage)>> {
         tracing::trace!("get_remaining_externals");
         self.queue.guarded(|q| q.unprocessed_messages())
     }

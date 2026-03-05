@@ -14,6 +14,8 @@ use derive_getters::Getters;
 use derive_setters::Setters;
 use network::channel::NetBroadcastSender;
 use network::channel::NetDirectSender;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde::Serialize;
@@ -60,11 +62,9 @@ use crate::storage::ActionLockStorage;
 use crate::types::bp_selector::ProducerSelector;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockHeight;
-use crate::types::BlockIdentifier;
 use crate::types::BlockRound;
 use crate::types::BlockSeqNo;
 use crate::types::RndSeed;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
@@ -99,7 +99,7 @@ impl std::convert::TryFrom<&BlockState> for BlockRef {
             let Some(block_seq_no) = *e.block_seq_no() else {
                 return Err(BlockRefTryFromBlockStateError::MissingSeqNo);
             };
-            let block_identifier = e.block_identifier().clone();
+            let block_identifier = *e.block_identifier();
             Ok(BlockRef { block_seq_no, block_identifier })
         })
     }
@@ -111,9 +111,9 @@ pub struct StartBlockProducerThreadInitialParameters {
     parent_block_identifier: BlockIdentifier,
     parent_block_seq_no: BlockSeqNo,
     round: BlockRound,
-    nacked_blocks_bad_block: Vec<Arc<Envelope<GoshBLS, AckiNackiBlock>>>,
+    nacked_blocks_bad_block: Vec<Arc<Envelope<AckiNackiBlock>>>,
     // Aggregated BLS for the same lock
-    proof_of_valid_start: Vec<Envelope<GoshBLS, Lock>>,
+    proof_of_valid_start: Vec<Envelope<Lock>>,
 }
 
 #[derive(Debug)]
@@ -128,7 +128,7 @@ pub enum BlockProducerCommand {
 pub struct ActionLock {
     parent_block_producer_selector_data: ProducerSelector,
     parent_block: BlockRef,
-    parent_prefinalization_proof: Option<Envelope<GoshBLS, AttestationData>>,
+    parent_prefinalization_proof: Option<Envelope<AttestationData>>,
     locked_round: BlockRound,
     locked_block: Option<(BlockRound, BlockRef)>,
 
@@ -149,7 +149,7 @@ impl OnNextRoundSuccessOnUnableToProcessAction {
         authority: &mut ThreadAuthority,
         block_height: BlockHeight,
         round: BlockRound,
-        message: Envelope<GoshBLS, NextRoundSuccess>,
+        message: Envelope<NextRoundSuccess>,
     ) {
         match self {
             OnNextRoundSuccessOnUnableToProcessAction::Skip => {}
@@ -248,15 +248,11 @@ pub struct ActionLockCollection {
 }
 
 pub struct AuthoritySwitchBufferedSuccess {
-    last_unprocessed_success_message: Option<(BlockRound, Envelope<GoshBLS, NextRoundSuccess>)>,
+    last_unprocessed_success_message: Option<(BlockRound, Envelope<NextRoundSuccess>)>,
 }
 
 impl AuthoritySwitchBufferedSuccess {
-    pub fn try_update(
-        &mut self,
-        message: Envelope<GoshBLS, NextRoundSuccess>,
-        preparsed_round: BlockRound,
-    ) {
+    pub fn try_update(&mut self, message: Envelope<NextRoundSuccess>, preparsed_round: BlockRound) {
         if let Some(existing) = &self.last_unprocessed_success_message {
             if existing.0 >= preparsed_round {
                 return;
@@ -265,7 +261,7 @@ impl AuthoritySwitchBufferedSuccess {
         self.last_unprocessed_success_message = Some((preparsed_round, message));
     }
 
-    pub fn take(&mut self) -> Option<Envelope<GoshBLS, NextRoundSuccess>> {
+    pub fn take(&mut self) -> Option<Envelope<NextRoundSuccess>> {
         self.last_unprocessed_success_message.take().map(|e| e.1)
     }
 
@@ -302,7 +298,7 @@ impl ActionLockCollection {
     pub fn take_last_unprocessed_success_message(
         &mut self,
         block_height: &BlockHeight,
-    ) -> Option<Envelope<GoshBLS, NextRoundSuccess>> {
+    ) -> Option<Envelope<NextRoundSuccess>> {
         self.unprocessed_success_message_buffer.get_mut(block_height).and_then(|e| e.take())
     }
 
@@ -310,7 +306,7 @@ impl ActionLockCollection {
         &mut self,
         block_height: &BlockHeight,
         round: BlockRound,
-        message: Envelope<GoshBLS, NextRoundSuccess>,
+        message: Envelope<NextRoundSuccess>,
     ) {
         tracing::trace!("Save unprocessed next round success message");
         self.unprocessed_success_message_buffer
@@ -486,7 +482,7 @@ pub enum ActionLockResult {
 pub enum OnNextRoundIncomingRequestResult {
     DoNothing,
     StartingBlockProducer,
-    Broadcast(Envelope<GoshBLS, NextRoundSuccess>),
+    Broadcast(Envelope<NextRoundSuccess>),
     Reject((NextRoundReject, NodeIdentifier)),
     RejectTooOldRequest(network::DirectReceiver<NodeIdentifier>),
 }
@@ -554,8 +550,7 @@ impl ThreadAuthority {
             return ActionLockResult::Rejected;
         };
 
-        let Some(parent_block_id) = block_state.guarded(|e| e.parent_block_identifier().clone())
-        else {
+        let Some(parent_block_id) = block_state.guarded(|e| *e.parent_block_identifier()) else {
             tracing::trace!("try_lock_send_attestation_action: parent is not set");
             return ActionLockResult::Rejected;
         };
@@ -854,7 +849,7 @@ impl ThreadAuthority {
                     .locked_block(None)
                     .locked_bad_block_nacks(self.confirmed_bad_block_nacks.get(
                         &SiblingsBlockHeightKey::builder()
-                            .parent_block_identifier(parent_block.block_identifier().clone())
+                            .parent_block_identifier(*parent_block.block_identifier())
                             .height(block_height)
                             .build()
                     ).cloned().unwrap_or_default())
@@ -951,7 +946,7 @@ impl ThreadAuthority {
                         prefinalization_proof
                     }
                 };
-                (Some(candidate.block_identifier().clone()), attestations)
+                (Some(*candidate.block_identifier()), attestations)
             }
             None => (None, None),
         };
@@ -986,7 +981,7 @@ impl ThreadAuthority {
                             // However it seems that sending attestations for the entire
                             // chain may work better.
                             if !required_fallback_attestations.contains(id) {
-                                Some(id.clone())
+                                Some(*id)
                             } else {
                                 None
                             }
@@ -1115,7 +1110,7 @@ impl ThreadAuthority {
             .locked_round(*current_lock_snapshot.locked_round())
             .locked_block(block)
             .next_auth_node_id(next_producer_node_id.clone())
-            .parent_block(parent_block.block_identifier().clone())
+            .parent_block(*parent_block.block_identifier())
             .nack_bad_block(current_lock_snapshot.locked_bad_block_nacks().clone())
             .build();
         let secrets = self.bls_keys_map.guarded(|map| map.clone());
@@ -1162,7 +1157,7 @@ impl ThreadAuthority {
         &self,
         block_identifier: &BlockIdentifier,
         unprocessed_blocks_cache: &UnfinalizedCandidateBlockCollection,
-    ) -> Option<Arc<Envelope<GoshBLS, AckiNackiBlock>>> {
+    ) -> Option<Arc<Envelope<AckiNackiBlock>>> {
         if let Some(block) = unprocessed_blocks_cache.get_block_by_id(block_identifier) {
             return Some(block);
         }
@@ -1372,7 +1367,7 @@ impl ThreadAuthority {
         let round = lock.locked_round();
         let round_key = (
             SiblingsBlockHeightKey::builder()
-                .parent_block_identifier(parent_state.block_identifier().clone())
+                .parent_block_identifier(*parent_state.block_identifier())
                 .height(block_height)
                 .build(),
             *round,
@@ -1419,7 +1414,7 @@ impl ThreadAuthority {
             .confirmed_bad_block_nacks
             .get(
                 &SiblingsBlockHeightKey::builder()
-                    .parent_block_identifier(lock.parent_block().clone())
+                    .parent_block_identifier(*lock.parent_block())
                     .height(block_height)
                     .build(),
             )
@@ -1459,7 +1454,7 @@ impl ThreadAuthority {
             );
             return OnNextRoundIncomingRequestResult::DoNothing;
         }
-        let mut max_locked_block: Option<Arc<Envelope<GoshBLS, AckiNackiBlock>>> = None;
+        let mut max_locked_block: Option<Arc<Envelope<AckiNackiBlock>>> = None;
         let mut max_locked_block_round: Option<BlockRound> = None;
         let mut locked_none_count = 0;
         for e in collected_requests.iter() {
@@ -1469,7 +1464,7 @@ impl ThreadAuthority {
                     continue;
                 };
 
-                let block_round = block.data().get_common_section().round;
+                let block_round = *block.data().common_section().round();
                 if let Some(current_max_round) = &max_locked_block_round {
                     if block_round > *current_max_round {
                         max_locked_block = Some(block);
@@ -1499,7 +1494,7 @@ impl ThreadAuthority {
         if let Some(max_locked_block_parent) =
             max_locked_block.as_ref().map(|block| block.data().parent())
         {
-            let lock_parent = lock.parent_block().clone();
+            let lock_parent = *lock.parent_block();
             if lock_parent != max_locked_block_parent {
                 tracing::error!(
                         "on_next_round_incoming_request: there is a quorum already. However max locked block seems to be invalid. Its parent doest not match Lock.",
@@ -1534,7 +1529,7 @@ impl ThreadAuthority {
                     return OnNextRoundIncomingRequestResult::DoNothing;
                 }
             }
-            let mut aggregated_attestations: Option<Envelope<GoshBLS, AttestationData>> = None;
+            let mut aggregated_attestations: Option<Envelope<AttestationData>> = None;
             let envelope_hash =
                 max_locked_block_status.guarded(|e| e.envelope_hash().clone()).unwrap();
             let attestation_data = AttestationData::builder()
@@ -1635,7 +1630,7 @@ impl ThreadAuthority {
             .send(BlockProducerCommand::Start(
                 StartBlockProducerThreadInitialParameters::builder()
                     .thread_identifier(*thread_identifier)
-                    .parent_block_identifier(parent_state.block_identifier().clone())
+                    .parent_block_identifier(*parent_state.block_identifier())
                     .parent_block_seq_no(parent_state.guarded(|e| (*e.block_seq_no()).unwrap()))
                     .round(*round)
                     .nacked_blocks_bad_block(
@@ -1676,8 +1671,8 @@ impl ThreadAuthority {
 
     pub fn on_next_round_failed(
         &mut self,
-        _proof: Vec<Envelope<GoshBLS, ActionLock>>,
-        _proposed_block: Envelope<GoshBLS, AckiNackiBlock>,
+        _proof: Vec<Envelope<ActionLock>>,
+        _proposed_block: Envelope<AckiNackiBlock>,
     ) {
         // Not used for now. This part is not mandatory for the protocol.
         todo!("store proposed block just in case");
@@ -1702,7 +1697,7 @@ impl ThreadAuthority {
             tracing::error!("Incoming next round success contains invalid proposed block");
             return OnNextRoundSuccessResult::Failure;
         };
-        let block_round = proposed_block.data().get_common_section().round;
+        let block_round = *proposed_block.data().common_section().round();
         let parent_id = proposed_block.data().parent();
         let parent_state =
             self.block_state_repository.get(&parent_id).expect("must have parent block state");
@@ -1739,12 +1734,7 @@ impl ThreadAuthority {
         //     .cloned()
         //     .unwrap_or_default();
         let envelope_nacks = HashSet::from_iter(
-            proposed_block
-                .data()
-                .get_common_section()
-                .nacks
-                .iter()
-                .map(|e| e.data().block_id.clone()),
+            proposed_block.data().common_section().nacks().iter().map(|e| e.data().block_id),
         );
 
         // Note: Majority of nodes voted to produce a new block.
@@ -1760,7 +1750,7 @@ impl ThreadAuthority {
                         block_round,
                         BlockRef {
                             block_seq_no: proposed_block.data().seq_no(),
-                            block_identifier: proposed_block.data().identifier().clone(),
+                            block_identifier: proposed_block.data().identifier(),
                         },
                     ));
                 }
@@ -1772,7 +1762,7 @@ impl ThreadAuthority {
             {
                 let leader = BlockRef {
                     block_seq_no: proposed_block.data().seq_no(),
-                    block_identifier: proposed_block.data().identifier().clone(),
+                    block_identifier: proposed_block.data().identifier(),
                 };
                 if let Some(prev_locked_block) = e.locked_block().clone() {
                     if prev_locked_block.1.block_identifier != leader.block_identifier {

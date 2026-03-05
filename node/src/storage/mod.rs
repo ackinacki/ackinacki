@@ -1,5 +1,5 @@
 mod action_locks;
-mod aerospike;
+pub mod aerospike;
 mod cache;
 mod cross_ref_data;
 mod internal_messages;

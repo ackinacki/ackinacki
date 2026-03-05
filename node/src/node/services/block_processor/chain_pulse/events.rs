@@ -1,8 +1,8 @@
 use derive_getters::Getters;
+use node_types::ThreadIdentifier;
 
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::types::BlockHeight;
-use crate::types::ThreadIdentifier;
 
 #[derive(Getters)]
 pub struct BlockFinalizedEvent {
@@ -29,6 +29,9 @@ pub enum ChainPulseEvent {
     StartThread {
         thread_id: ThreadIdentifier,
         block_candidates: UnfinalizedCandidateBlockCollection,
+    },
+    StopThread {
+        thread_id: ThreadIdentifier,
     },
 }
 
@@ -62,5 +65,9 @@ impl ChainPulseEvent {
         block_candidates: UnfinalizedCandidateBlockCollection,
     ) -> Self {
         ChainPulseEvent::StartThread { thread_id, block_candidates }
+    }
+
+    pub fn stop_thread(thread_id: ThreadIdentifier) -> Self {
+        ChainPulseEvent::StopThread { thread_id }
     }
 }

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use crate::domain::grouping::ArchiveFile;
+use crate::domain::traits::CompressionMode;
 use crate::domain::traits::FileSystemClient;
 
 /// Mock file system client for testing without filesystem I/O.
@@ -55,7 +56,7 @@ impl FileSystemClient for MockFileSystemClient {
         &self,
         src_db_path: impl AsRef<Path>,
         processed_root: impl AsRef<Path>,
-        _gzip: bool,
+        _compression: CompressionMode,
         _dry_run: bool,
     ) -> anyhow::Result<PathBuf> {
         let src = src_db_path.as_ref().to_path_buf();

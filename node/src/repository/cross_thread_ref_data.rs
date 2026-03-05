@@ -2,18 +2,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use derive_getters::Getters;
+use node_types::AccountRouting;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use serde::Deserialize;
 use serde::Serialize;
+// Re-export the trait from thread-reference-state
+pub use thread_reference_state::CrossThreadRefDataTrait;
 use typed_builder::TypedBuilder;
 
 use crate::message::identifier::MessageIdentifier;
 use crate::repository::WrappedMessage;
 use crate::types::account::WrappedAccount;
 use crate::types::AccountInbox;
-use crate::types::AccountRouting;
-use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
-use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 
 /// This structure has to have minimum and complete data required
@@ -37,7 +39,7 @@ pub struct CrossThreadRefData {
 
 impl CrossThreadRefData {
     pub fn as_reference_state_data(&self) -> (ThreadIdentifier, BlockIdentifier, BlockSeqNo) {
-        (self.block_thread_identifier, self.block_identifier.clone(), self.block_seq_no)
+        (self.block_thread_identifier, self.block_identifier, self.block_seq_no)
     }
 
     pub fn set_threads_table(&mut self, threads_table: ThreadsTable) {
@@ -103,4 +105,44 @@ impl CrossThreadRefData {
     // }
     // filtered_accounts
     // }
+}
+
+// Implement the trait for ThreadReferencesState
+impl CrossThreadRefDataTrait for CrossThreadRefData {
+    fn block_identifier(&self) -> &BlockIdentifier {
+        &self.block_identifier
+    }
+
+    fn block_seq_no(&self) -> &thread_reference_state::BlockSeqNo {
+        // Note: We cannot return a reference to a converted value since it would be a temporary.
+        // Instead, we rely on the fact that both BlockSeqNo types have the same memory layout.
+        // Safety: Both types are repr(transparent) wrappers around u32 with identical layout.
+        unsafe {
+            &*((&self.block_seq_no) as *const BlockSeqNo
+                as *const thread_reference_state::BlockSeqNo)
+        }
+    }
+
+    fn block_thread_identifier(&self) -> &ThreadIdentifier {
+        &self.block_thread_identifier
+    }
+
+    fn parent_block_identifier(&self) -> &BlockIdentifier {
+        &self.parent_block_identifier
+    }
+
+    fn refs(&self) -> &Vec<BlockIdentifier> {
+        &self.block_refs
+    }
+
+    fn spawned_threads(&self) -> Vec<ThreadIdentifier> {
+        self.spawned_threads()
+    }
+
+    fn as_reference_state_data(
+        &self,
+    ) -> (ThreadIdentifier, BlockIdentifier, thread_reference_state::BlockSeqNo) {
+        let (thread, block, seq_no) = CrossThreadRefData::as_reference_state_data(self);
+        (thread, block, seq_no.into())
+    }
 }

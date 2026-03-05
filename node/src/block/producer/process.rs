@@ -10,6 +10,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
 
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 use telemetry_utils::mpsc::instrumented_channel;
 use telemetry_utils::mpsc::InstrumentedReceiver;
@@ -57,10 +59,8 @@ use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
 use crate::types::next_seq_no;
-use crate::types::BlockIdentifier;
 use crate::types::BlockRound;
 use crate::types::BlockSeqNo;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
@@ -99,6 +99,8 @@ pub struct TVMBlockProducerProcess {
     wasm_cache: WasmNodeCache,
     share_service: Option<ExternalFileSharesBased>,
     save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
+    #[cfg(feature = "usdc_name_repair")]
+    usdc_name_repaired: Arc<Mutex<Option<BlockSeqNo>>>,
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
@@ -123,8 +125,8 @@ impl TVMBlockProducerProcess {
         epoch_block_keeper_data_rx: &InstrumentedReceiver<BlockKeeperData>,
         shared_services: &mut SharedServices,
         active_block_producer_threads: &mut Vec<(Cell, ActiveThread)>,
-        received_acks: Arc<Mutex<Vec<Envelope<GoshBLS, AckData>>>>,
-        received_nacks: Arc<Mutex<Vec<Envelope<GoshBLS, NackData>>>>,
+        received_acks: Arc<Mutex<Vec<Envelope<AckData>>>>,
+        received_nacks: Arc<Mutex<Vec<Envelope<NackData>>>>,
         block_state_repo: BlockStateRepository,
         accounts_repo: AccountsRepository,
         external_control_rx: &InstrumentedReceiver<()>,
@@ -137,6 +139,7 @@ impl TVMBlockProducerProcess {
         round: BlockRound,
         parent_block_state: BlockState,
         protocol_version: ProtocolVersion,
+        #[cfg(feature = "usdc_name_repair")] usdc_name_repaired: Arc<Mutex<Option<BlockSeqNo>>>,
     ) -> anyhow::Result<(ProcudeNextResult, BlockState)> {
         tracing::trace!("Start block production process iteration");
         let start_time = std::time::SystemTime::now();
@@ -188,9 +191,12 @@ impl TVMBlockProducerProcess {
             .block_nack(block_nack.clone())
             .accounts(accounts_repo)
             .block_state_repository(block_state_repo.clone())
+            .thread_accounts_repository(repository.thread_accounts_repository().clone())
             .metrics(metrics.clone())
-            .wasm_cache(wasm_cache)
-            .build();
+            .wasm_cache(wasm_cache);
+        #[cfg(feature = "usdc_name_repair")]
+        let producer = producer.usdc_name_repaired(usdc_name_repaired);
+        let producer = producer.build();
         let (control_tx, control_rx) =
             instrumented_channel(metrics.clone(), crate::helper::metrics::ROUTING_COMMAND_CHANNEL);
 
@@ -224,7 +230,7 @@ impl TVMBlockProducerProcess {
                         }
                     };
                     for (thread_id, block_id) in initial_buffer.into_iter() {
-                        let mut referenced_block_id = block_id.clone();
+                        let mut referenced_block_id = block_id;
                         let mut add = true;
                         let mut cursor = steps_back;
                         while cursor > 0 {
@@ -235,7 +241,7 @@ impl TVMBlockProducerProcess {
                                     ancestors
                                 } else {
                                     // fallback in case of a late sync.
-                                    let parent_id = e.parent_block_identifier().clone()?;
+                                    let parent_id = *(e.parent_block_identifier().as_ref()?);
                                     &vec![parent_id]
                                 };
                                 if ancestors.is_empty() {
@@ -243,10 +249,10 @@ impl TVMBlockProducerProcess {
                                 }
                                 if let Some(target) = ancestors.get(generations_lookback) {
                                     cursor = 0;
-                                    Some(target.clone())
+                                    Some(*target)
                                 } else {
                                     cursor -= ancestors.len();
-                                    ancestors.last().cloned()
+                                    ancestors.last().copied()
                                 }
                             }) else {
                                 add = false;
@@ -273,13 +279,14 @@ impl TVMBlockProducerProcess {
                                     .cross_thread_ref_data_service
                                     .get_cross_thread_ref_data(&block_id)
                                     .ok()?;
-                                let seq_no = data.block_seq_no();
+                                let seq_no: thread_reference_state::BlockSeqNo =
+                                    (*data.block_seq_no()).into();
                                 let should_include = match initial_state_clone
                                     .thread_refs_state
                                     .all_thread_refs()
                                     .get(&thread_id)
                                 {
-                                    Some(existing_ref) => *seq_no > existing_ref.block_seq_no,
+                                    Some(existing_ref) => seq_no > existing_ref.block_seq_no,
                                     None => true,
                                 };
                                 if should_include {
@@ -393,12 +400,12 @@ impl TVMBlockProducerProcess {
             return Ok((ProcudeNextResult::Stopped, produced_block_state));
         }
         // Update common section
-        let mut common_section = block.get_common_section().clone();
+        let mut common_section = block.common_section().clone();
         common_section.set_acks(aggregated_acks);
         common_section.set_nacks(aggregated_nacks.clone());
         block.set_common_section(common_section, false)?;
         if !processed_stamps.is_empty() {
-            external_messages_queue.erase_processed(&processed_stamps)?;
+            external_messages_queue.erase_processed(&processed_stamps);
         }
 
         if tracing::level_filters::STATIC_MAX_LEVEL >= tracing::Level::TRACE {
@@ -414,7 +421,7 @@ impl TVMBlockProducerProcess {
         // let mut parent_state = repo_clone.get_optimistic_state(&block.parent())
         // .expect("Must not fail")
         // .expect("Must have state");
-        // assert!(block.get_common_section().refs.is_empty());
+        // assert!(block.common_section().refs.is_empty());
         // tracing::trace!(
         // "debug_apply_state: block {} on {:?}",
         // block.identifier(),
@@ -427,24 +434,24 @@ impl TVMBlockProducerProcess {
         *initial_state = result_state;
         repository.store_optimistic_in_cache(initial_state.clone())?;
 
-        if let Some(share_service) = &share_service {
-            let state_share_was_requested = {
-                let flag = is_state_sync_requested.lock();
-                let force_sync = <u32>::from(next_seq_no(initial_state.block_seq_no))
-                    % FORCE_SYNC_STATE_BLOCK_FREQUENCY
-                    == 0;
-                (*flag == Some(next_seq_no(initial_state.block_seq_no))) || force_sync
-            };
-            if state_share_was_requested {
-                let block_id = initial_state.block_id.clone();
-                let thread_id = initial_state.thread_id;
-                share_service.save_state_for_sharing(
-                    &block_id,
-                    &thread_id,
-                    Some(Arc::new(initial_state.clone())),
-                )?;
-            }
-        }
+        // if let Some(share_service) = &share_service {
+        //     let state_share_was_requested = {
+        //         let flag = is_state_sync_requested.lock();
+        //         let force_sync = <u32>::from(next_seq_no(initial_state.block_seq_no))
+        //             % FORCE_SYNC_STATE_BLOCK_FREQUENCY
+        //             == 0;
+        //         (*flag == Some(next_seq_no(initial_state.block_seq_no))) || force_sync
+        //     };
+        //     if state_share_was_requested {
+        //         let block_id = initial_state.block_id;
+        //         let thread_id = initial_state.thread_id;
+        //         share_service.save_state_for_sharing(
+        //             &block_id,
+        //             &thread_id,
+        //             Some(Arc::new(initial_state.clone())),
+        //         )?;
+        //     }
+        // }
 
         let span_save_cross_thread_refs =
             trace_span!("save cross thread refs", refs_len = cross_thread_ref_data.refs().len());
@@ -519,8 +526,8 @@ impl TVMBlockProducerProcess {
         &mut self,
         thread_id: &ThreadIdentifier,
         prev_block_id: &BlockIdentifier,
-        received_acks: Arc<Mutex<Vec<Envelope<GoshBLS, AckData>>>>,
-        received_nacks: Arc<Mutex<Vec<Envelope<GoshBLS, NackData>>>>,
+        received_acks: Arc<Mutex<Vec<Envelope<AckData>>>>,
+        received_nacks: Arc<Mutex<Vec<Envelope<NackData>>>>,
         block_state_repository: BlockStateRepository,
         mut external_messages: ExternalMessagesThreadState,
         is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
@@ -608,12 +615,13 @@ impl TVMBlockProducerProcess {
         let wasm_cache = self.wasm_cache.clone();
         let accounts_repo = self.repository.accounts_repository().clone();
         let share_service = self.share_service.clone();
-        let prev_block_id = prev_block_id.clone();
         let save_state_sender = self.save_optimistic_service_sender.clone();
         let node_config_read = self.node_config_read.clone();
+        #[cfg(feature = "usdc_name_repair")]
+        let usdc_name_repaired = self.usdc_name_repaired.clone();
 
         let mut parent_block_state =
-            block_state_repository.get(&prev_block_id).expect("Failed to load parent block state");
+            block_state_repository.get(prev_block_id).expect("Failed to load parent block state");
 
         let produce = move || {
             let mut active_block_producer_threads = vec![];
@@ -661,6 +669,8 @@ impl TVMBlockProducerProcess {
                     round,
                     parent_block_state,
                     block_version.clone(),
+                    #[cfg(feature = "usdc_name_repair")]
+                    usdc_name_repaired.clone(),
                 );
                 // Note:
                 // if stopped.is_ok() ... is skipped.
@@ -751,16 +761,16 @@ impl TVMBlockProducerProcess {
 }
 
 fn aggregate_acks(
-    mut received_acks: Vec<Envelope<GoshBLS, AckData>>,
-) -> anyhow::Result<Vec<Envelope<GoshBLS, AckData>>> {
+    mut received_acks: Vec<Envelope<AckData>>,
+) -> anyhow::Result<Vec<Envelope<AckData>>> {
     let mut aggregated_acks = HashMap::new();
     tracing::trace!("Aggregate acks start len: {}", received_acks.len());
     for ack in &received_acks {
-        let block_id = ack.data().block_id.clone();
+        let block_id = ack.data().block_id;
         tracing::trace!("Aggregate acks block id: {:?}", block_id);
         aggregated_acks
             .entry(block_id)
-            .and_modify(|aggregated_ack: &mut Envelope<GoshBLS, AckData>| {
+            .and_modify(|aggregated_ack: &mut Envelope<AckData>| {
                 let mut merged_signatures_occurences = aggregated_ack.clone_signature_occurrences();
                 let initial_signatures_count = merged_signatures_occurences.len();
                 let incoming_signature_occurences = ack.clone_signature_occurrences();
@@ -776,7 +786,7 @@ fn aggregate_acks(
                     let merged_aggregated_signature =
                         GoshBLS::merge(aggregated_signature, ack.aggregated_signature())
                             .expect("Failed to merge attestations");
-                    *aggregated_ack = Envelope::<GoshBLS, AckData>::create(
+                    *aggregated_ack = Envelope::<AckData>::create(
                         merged_aggregated_signature,
                         merged_signatures_occurences,
                         aggregated_ack.data().clone(),
@@ -792,16 +802,16 @@ fn aggregate_acks(
 
 // TODO: fix this function nacks can't be aggregated based on block id
 fn aggregate_nacks(
-    mut received_nacks: Vec<Envelope<GoshBLS, NackData>>,
-) -> anyhow::Result<Vec<Envelope<GoshBLS, NackData>>> {
+    mut received_nacks: Vec<Envelope<NackData>>,
+) -> anyhow::Result<Vec<Envelope<NackData>>> {
     let mut aggregated_nacks = HashMap::new();
     tracing::trace!("Aggregate nacks start len: {}", received_nacks.len());
     for nack in &received_nacks {
-        let block_id = nack.data().block_id.clone();
+        let block_id = nack.data().block_id;
         tracing::trace!("Aggregate nacks block id: {:?}", block_id);
         aggregated_nacks
             .entry(block_id)
-            .and_modify(|aggregated_nack: &mut Envelope<GoshBLS, NackData>| {
+            .and_modify(|aggregated_nack: &mut Envelope<NackData>| {
                 let mut merged_signatures_occurences =
                     aggregated_nack.clone_signature_occurrences();
                 let initial_signatures_count = merged_signatures_occurences.len();
@@ -818,7 +828,7 @@ fn aggregate_nacks(
                     let merged_aggregated_signature =
                         GoshBLS::merge(aggregated_signature, nack.aggregated_signature())
                             .expect("Failed to merge attestations");
-                    *aggregated_nack = Envelope::<GoshBLS, NackData>::create(
+                    *aggregated_nack = Envelope::<NackData>::create(
                         merged_aggregated_signature,
                         merged_signatures_occurences,
                         aggregated_nack.data().clone(),
@@ -841,6 +851,8 @@ mod tests {
     use std::time::Instant;
 
     use itertools::Itertools;
+    use node_types::BlockIdentifier;
+    use node_types::ThreadIdentifier;
     use parking_lot::Mutex;
     use telemetry_utils::mpsc::instrumented_channel;
     use telemetry_utils::mpsc::InstrumentedSender;
@@ -858,14 +870,13 @@ mod tests {
     use crate::node::associated_types::NodeIdentifier;
     use crate::node::shared_services::SharedServices;
     use crate::repository::accounts::AccountsRepository;
+    use crate::repository::accounts::NodeThreadAccounts;
     use crate::repository::optimistic_state::OptimisticStateSaveCommand;
     use crate::repository::repository_impl::BkSetUpdate;
     use crate::repository::repository_impl::RepositoryImpl;
     use crate::storage::CrossRefStorage;
     use crate::storage::MessageDurableStorage;
     use crate::tests::project_root;
-    use crate::types::BlockIdentifier;
-    use crate::types::ThreadIdentifier;
     use crate::utilities::FixedSizeHashSet;
     use crate::versioning::ProtocolVersion;
 
@@ -898,6 +909,8 @@ mod tests {
             crate::node::block_state::repository::BlockStateRepository::test(
                 root_dir.join("block-state"),
             );
+        let thread_accounts_repository =
+            NodeThreadAccounts::new_repository(root_dir.join("thread_state")).build()?;
         let message_db = MessageDurableStorage::mem();
         let finalized_blocks =
             crate::repository::repository_impl::tests::finalized_blocks_storage();
@@ -921,10 +934,13 @@ mod tests {
             block_state_repository.clone(),
             None,
             AccountsRepository::new(root_dir.clone(), None, 1),
+            thread_accounts_repository,
             message_db.clone(),
             finalized_blocks,
             mock_bk_set_updates_tx(),
             ConfigRead::new(ProtocolVersion::parse("None")?, global_config.clone(), None, None),
+            #[cfg(feature = "usdc_name_repair")]
+            Arc::new(Mutex::new(None)),
         );
         let (router, _router_rx) = RoutingService::stub();
         let feedback_sender = router.feedback_sender.clone();
@@ -932,7 +948,7 @@ mod tests {
             None::<BlockProductionMetrics>,
             "test",
         );
-        let mut production_process = TVMBlockProducerProcess::builder()
+        let builder = TVMBlockProducerProcess::builder()
             .metrics(repository.get_metrics().cloned())
             .node_config_read(config_read.clone())
             .repository(repository.clone())
@@ -951,8 +967,10 @@ mod tests {
             ))
             .share_service(None)
             .wasm_cache(WasmNodeCache::new()?)
-            .save_optimistic_service_sender(tx)
-            .build();
+            .save_optimistic_service_sender(tx);
+        #[cfg(feature = "usdc_name_repair")]
+        let builder = builder.usdc_name_repaired(repository.usdc_name_repaired());
+        let mut production_process = builder.build();
 
         let thread_id = ThreadIdentifier::default();
 

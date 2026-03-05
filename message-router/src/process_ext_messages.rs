@@ -2,12 +2,54 @@
 //
 
 use std::collections::HashMap;
+use std::error::Error as _;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::json;
 use telemetry_utils::now_ms;
 use transport_layer::HostPort;
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct ExtMsgRunResponse {
+    pub result: Option<ExtMsgRunResult>,
+    pub error: Option<ExtMsgRunError>,
+    pub ext_message_token: Option<serde_json::Value>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct ExtMsgRunResult {
+    pub message_hash: String,
+    pub block_hash: String,
+    pub tx_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_timestamp: Option<u32>,
+    pub ext_out_msgs: Vec<String>,
+    pub aborted: bool,
+    pub exit_code: i32,
+    pub producers: Vec<HostPort>,
+    pub current_time: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct ExtMsgRunError {
+    pub code: String,
+    pub message: String,
+    pub data: Option<ExtMsgRunErrorData>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct ExtMsgRunErrorData {
+    pub producers: Vec<HostPort>,
+    pub message_hash: String,
+    pub exit_code: Option<i32>,
+    pub current_time: String,
+    pub thread_id: Option<String>,
+}
 
 use crate::base64_id_decode;
 use crate::defaults::DEFAULT_BK_API_MESSAGES_PATH;
@@ -27,14 +69,18 @@ lazy_static::lazy_static!(
 pub async fn run(
     node_requests: serde_json::Value,
     message_router: Arc<MessageRouter>,
-) -> anyhow::Result<serde_json::Value> {
+) -> anyhow::Result<ExtMsgRunResponse> {
     let Some(nrs) = node_requests.as_array() else {
         tracing::error!(target: "message_router", "bad request: {node_requests}");
-        let error = serde_json::json!(http_server::ExtMsgResponse::new_with_error(
-            "BAD_REQUEST".into(),
-            "Incorrect request".into(),
-            None,
-        ));
+        let error = ExtMsgRunResponse {
+            result: None,
+            error: Some(ExtMsgRunError {
+                code: "BAD_REQUEST".to_string(),
+                message: "Incorrect request".to_string(),
+                data: None,
+            }),
+            ext_message_token: None,
+        };
         return Ok(error);
     };
     let thread_id = nrs
@@ -55,13 +101,17 @@ pub async fn run(
 
     let recipients = message_router.bp_resolver.lock().resolve(Some(thread_id.clone()));
     tracing::trace!(target: "message_router", "Resolved BPs (thread={:?}): {:?}", thread_id, recipients);
-    let mut result = serde_json::json!({});
+    let mut result = ExtMsgRunResponse::default();
     if recipients.is_empty() {
-        let error = serde_json::json!(http_server::ExtMsgResponse::new_with_error(
-            "INTERNAL_ERROR".into(),
-            "Failed to obtain any Block Producer addresses".into(),
-            None,
-        ));
+        let error = ExtMsgRunResponse {
+            result: None,
+            error: Some(ExtMsgRunError {
+                code: "INTERNAL_ERROR".to_string(),
+                message: "Failed to obtain any Block Producer addresses".to_string(),
+                data: None,
+            }),
+            ext_message_token: None,
+        };
         return Ok(error);
     }
 
@@ -83,45 +133,102 @@ pub async fn run(
 
         result = match request.send().await {
             Ok(response) => {
+                let status = response.status();
                 let body = response.text().await;
                 match body {
                     Ok(body_str) => {
-                        tracing::debug!(target: "message_router", "response body (src={}): {:?}", recipient, body_str);
-                        let mut response_json: serde_json::Value = serde_json::from_str(&body_str)?;
+                        if !status.is_success() {
+                            tracing::error!(
+                                target: "message_router",
+                                "redirection to {url} failed: http_status={} response_body={:?}",
+                                status,
+                                body_str
+                            );
+                            let err_data = ExtMsgRunErrorData {
+                                producers: vec![recipient.clone()],
+                                message_hash: ids.get(&nrs[0]["id"]).unwrap().to_string(),
+                                exit_code: None,
+                                current_time: now_ms().to_string(),
+                                thread_id: Some(thread_id.clone()),
+                            };
+                            ExtMsgRunResponse {
+                                result: None,
+                                error: Some(ExtMsgRunError {
+                                    code: "INTERNAL_ERROR".to_string(),
+                                    message: format!(
+                                        "Block Producer returned non-success HTTP status {}: {}",
+                                        status, body_str
+                                    ),
+                                    data: Some(err_data),
+                                }),
+                                ext_message_token: None,
+                            }
+                        } else {
+                            tracing::debug!(target: "message_router", "response body (src={}): {:?}", recipient, body_str);
+                            let mut response_struct: ExtMsgRunResponse =
+                                serde_json::from_str(&body_str)?;
 
-                        response_json["ext_message_token"] = json!(message_router.issue_token());
-                        tracing::trace!(target: "message_router", "add token to response: {:?}", response_json["ext_message_token"]);
-                        return Ok(response_json);
+                            response_struct.ext_message_token =
+                                Some(json!(message_router.issue_token()));
+                            tracing::trace!(target: "message_router", "add token to response: {:?}", response_struct.ext_message_token);
+                            return Ok(response_struct);
+                        }
                     }
                     Err(err) => {
-                        tracing::error!(target: "message_router", "redirection to {url} failed: {err}");
-                        let err_data = http_server::ExtMsgErrorData::new(
-                            vec![recipient.clone()],
-                            ids.get(&nrs[0]["id"]).unwrap().to_string(),
-                            None,
-                            Some(thread_id.clone()),
-                        );
-                        serde_json::json!(http_server::ExtMsgResponse::new_with_error(
-                            "INTERNAL_ERROR".into(),
-                            format!("Failed to parse the response from the Block Producer: {err}"),
-                            Some(err_data),
-                        ))
+                        tracing::error!(target: "message_router", "redirection to {url} failed: failed to parse the response from the BP: {err}");
+                        let err_data = ExtMsgRunErrorData {
+                            producers: vec![recipient.clone()],
+                            message_hash: ids.get(&nrs[0]["id"]).unwrap().to_string(),
+                            exit_code: None,
+                            current_time: now_ms().to_string(),
+                            thread_id: Some(thread_id.clone()),
+                        };
+                        ExtMsgRunResponse {
+                            result: None,
+                            error: Some(ExtMsgRunError {
+                                code: "INTERNAL_ERROR".to_string(),
+                                message: format!(
+                                    "Failed to parse the response from the Block Producer: {err}"
+                                ),
+                                data: Some(err_data),
+                            }),
+                            ext_message_token: None,
+                        }
                     }
                 }
             }
             Err(err) => {
-                tracing::error!(target: "message_router", "redirection to {url} failed: {err}");
-                let err_data = http_server::ExtMsgErrorData::new(
-                    vec![recipient.clone()],
-                    ids.get(&nrs[0]["id"]).unwrap().to_string(),
-                    None,
-                    Some(thread_id.clone()),
+                let source = err.source().map(ToString::to_string);
+                tracing::error!(
+                    target: "message_router",
+                    "redirection to {url} failed: err={} status={:?} timeout={} connect={} request={} body={} url={:?} source={:?}",
+                    err,
+                    err.status(),
+                    err.is_timeout(),
+                    err.is_connect(),
+                    err.is_request(),
+                    err.is_body(),
+                    err.url(),
+                    source
                 );
-                serde_json::json!(http_server::ExtMsgResponse::new_with_error(
-                    "INTERNAL_ERROR".into(),
-                    format!("The message redirection to the Block Producer has failed: {err}"),
-                    Some(err_data),
-                ))
+                let err_data = ExtMsgRunErrorData {
+                    producers: vec![recipient.clone()],
+                    message_hash: ids.get(&nrs[0]["id"]).unwrap().to_string(),
+                    exit_code: None,
+                    current_time: now_ms().to_string(),
+                    thread_id: Some(thread_id.clone()),
+                };
+                ExtMsgRunResponse {
+                    result: None,
+                    error: Some(ExtMsgRunError {
+                        code: "INTERNAL_ERROR".to_string(),
+                        message: format!(
+                            "The message redirection to the Block Producer has failed: {err}"
+                        ),
+                        data: Some(err_data),
+                    }),
+                    ext_message_token: None,
+                }
             }
         }
     }

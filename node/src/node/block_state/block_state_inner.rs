@@ -2,10 +2,10 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::Arc;
 
+use node_types::BlockIdentifier;
 use parking_lot::RwLock;
 
 use super::state::AckiNackiBlockState;
-use crate::types::BlockIdentifier;
 use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;

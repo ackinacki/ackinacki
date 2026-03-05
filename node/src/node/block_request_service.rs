@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use network::channel::NetDirectSender;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 
 use super::associated_types::NodeAssociatedTypes;
@@ -22,9 +24,7 @@ use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollect
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::next_seq_no;
-use crate::types::BlockIdentifier;
 use crate::types::BlockSeqNo;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
@@ -190,7 +190,7 @@ impl BlockRequestService {
             let count = self.resend_finalized(
                 thread_id,
                 node_id.clone(),
-                last_finalized_block_id.clone(),
+                last_finalized_block_id,
                 from_inclusive,
             )?;
             at_least_n_blocks = at_least_n_blocks.saturating_sub(count);
@@ -224,10 +224,10 @@ impl BlockRequestService {
         }
         let cached = unprocessed_blocks_cache.blocks().iter().filter_map(|(_, (e, _))| {
             if demanded.contains(e) {
-                return Some(e.block_identifier().clone());
+                return Some(*e.block_identifier());
             }
             let (block_id, Some(seq_no)) =
-                e.guarded(|x| (x.block_identifier().clone(), *x.block_seq_no()))
+                e.guarded(|x| (*x.block_identifier(), *x.block_seq_no()))
             else {
                 return None;
             };
@@ -280,7 +280,7 @@ impl BlockRequestService {
             let (Some(block_seq_no), Some(parent)) = self
                 .block_state_repository
                 .get(&cursor)?
-                .guarded(|e| (*e.block_seq_no(), e.parent_block_identifier().clone()))
+                .guarded(|e| (*e.block_seq_no(), *e.parent_block_identifier()))
             else {
                 anyhow::bail!("too far into the history (None state)");
             };

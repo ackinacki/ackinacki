@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -7,6 +8,8 @@ use std::time::Instant;
 use derive_getters::Getters;
 use derive_setters::Setters;
 use network::channel::NetDirectSender;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
@@ -38,10 +41,10 @@ use crate::protocol::authority_switch::action_lock::BlockRef;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::AckiNackiBlock;
-use crate::types::BlockIdentifier;
+use crate::types::BlockHeight;
+use crate::types::BlockIndex;
 use crate::types::CollectedAttestations;
 use crate::types::RndSeed;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
@@ -49,7 +52,7 @@ use crate::utilities::thread_spawn_critical::SpawnCritical;
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
 enum AttestationAction {
-    ThisBlock(Envelope<GoshBLS, AttestationData>),
+    ThisBlock(Envelope<AttestationData>),
     // Fork {
     //     candidate_block: Envelope<GoshBLS, AckiNackiBlock>,
     //     attestation: Envelope<GoshBLS, AttestationData>,
@@ -106,7 +109,7 @@ pub struct AttestationSendService {
     block_state_repository: BlockStateRepository,
 
     #[builder(default)]
-    tracking: HashMap<BlockIdentifier, TrackedState>,
+    tracking: BTreeMap<BlockIndex, TrackedState>,
 
     #[builder(default)]
     block_state_repository_last_modified: u32,
@@ -134,7 +137,7 @@ impl AttestationSendService {
         &mut self,
         candidates: &UnfinalizedBlocksSnapshot,
         loopback_attestations: Arc<Mutex<CollectedAttestations>>,
-        candidate_block_repository: &impl Repository<CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>>,
+        candidate_block_repository: &impl Repository<CandidateBlock = Envelope<AckiNackiBlock>>,
         deadline: std::time::Instant,
     ) -> std::time::Instant {
         let last_modified_state: u32 = self.block_state_repository.notifications().stamp();
@@ -151,6 +154,12 @@ impl AttestationSendService {
         self.condidates_set_last_modified = last_modified_set;
         self.append_for_tracking(candidates);
         self.stop_tracking_finalized_and_invalidated_candidates();
+        if let Some(metrics) = self.metrics.as_ref() {
+            metrics.report_attestation_tracking_collection_size(
+                self.tracking.len() as u64,
+                &self.thread_id,
+            );
+        }
         self.update_interested_parties_received_blocks(candidates);
         self.pulse(loopback_attestations, candidate_block_repository)
     }
@@ -158,7 +167,7 @@ impl AttestationSendService {
     fn try_get_attestation(
         &self,
         state: &TrackedState,
-    ) -> anyhow::Result<Envelope<GoshBLS, AttestationData>> {
+    ) -> Result<Envelope<AttestationData>, GenerateAttestationError> {
         if let Some(attn) = state.block_state.guarded(|e| e.own_attestation().clone()) {
             return Ok(attn);
         };
@@ -180,7 +189,7 @@ impl AttestationSendService {
                     state.block_state.block_identifier(),
                     error
                 );
-                anyhow::bail!(error)
+                Err(error)
             }
         }
     }
@@ -188,7 +197,7 @@ impl AttestationSendService {
     fn try_get_fallback_attestation(
         &self,
         state: &TrackedState,
-    ) -> anyhow::Result<Envelope<GoshBLS, AttestationData>> {
+    ) -> anyhow::Result<Envelope<AttestationData>> {
         if let Some(attn) = state.block_state.guarded(|e| e.own_fallback_attestation().clone()) {
             return Ok(attn);
         };
@@ -218,27 +227,28 @@ impl AttestationSendService {
     fn pulse(
         &mut self,
         loopback_attestations: Arc<Mutex<CollectedAttestations>>,
-        _candidate_block_repository: &impl Repository<
-            CandidateBlock = Envelope<GoshBLS, AckiNackiBlock>,
-        >,
+        _candidate_block_repository: &impl Repository<CandidateBlock = Envelope<AckiNackiBlock>>,
     ) -> std::time::Instant {
         let mut to_send: Vec<(HashSet<NodeIdentifier>, AttestationAction)> = vec![];
         // TODO: fix. it's a dirty hack for the borrow on tracking
         let first_sent = self
             .tracking
             .iter()
-            .filter_map(|(k, v)| v.first_send_timestamp().as_ref().map(|time| (k.clone(), *time)))
+            .filter_map(|(k, v)| {
+                v.first_send_timestamp().as_ref().map(|time| (*k.block_identifier(), *time))
+            })
             .collect::<HashMap<BlockIdentifier, std::time::Instant>>();
         let trace_node_id = self.node_credentials.node_id().clone();
         let mut next_deadline = std::time::Instant::now() + PULSE_IDLE_TIMEOUT * 2;
         let mut tracking = self.tracking.clone();
+        let mut first_unsuccessfully_processed_block_height: Option<BlockHeight> = None;
         for (_block_id, state) in tracking.iter_mut() {
             // tracing::trace!("AttestationSendService: process: {_block_id:?}");
             let trace_skip = |reason: &str| {
                 tracing::trace!("skip send attestation: {reason}");
                 block_flow_trace(
                     format!("skip send attestation: {reason}"),
-                    _block_id,
+                    _block_id.block_identifier(),
                     &trace_node_id,
                     [],
                 );
@@ -247,10 +257,47 @@ impl AttestationSendService {
             //     trace_skip("does not have attestation to send");
             //     continue;
             // };
-            let Ok(attestation) = self.try_get_attestation(state) else {
-                trace_skip("does not have attestation to send");
-                continue;
+            let try_get_attn_res = self.try_get_attestation(state);
+
+            let attestation = match try_get_attn_res {
+                Ok(attn) => attn,
+                Err(_e) => {
+                    trace_skip("does not have attestation to send");
+                    // Note: node iterates over blocks in order of their seq no and if it can't
+                    // generate attestation for a block, it won't be able to generate attestation
+                    // for the next one.
+                    // Blocks in the queue are continuously filtered to remove old, finalized or
+                    // invalidated.
+                    // There could be several blocks with equal height. So if node fails to generate
+                    // attestation for a block with height N and N + 2 without successful
+                    // attestations in between, it means that there is no reason to continue
+                    // iteration cycle.
+                    {
+                        // TODO: check that we shouldn't continue iteration in any of error
+                        // reasons
+                        let Some(block_height) = state.block_state.guarded(|e| *e.block_height())
+                        else {
+                            continue;
+                        };
+                        if first_unsuccessfully_processed_block_height
+                            .map(|prev_unsuccessful_height| {
+                                prev_unsuccessful_height
+                                    .signed_distance_to(&block_height)
+                                    .unwrap_or(0)
+                                    > 1
+                            })
+                            .unwrap_or(false)
+                        {
+                            break;
+                        }
+                        if first_unsuccessfully_processed_block_height.is_none() {
+                            first_unsuccessfully_processed_block_height = Some(block_height);
+                        }
+                        continue;
+                    }
+                }
             };
+            first_unsuccessfully_processed_block_height = None;
             let fallback_attestation = {
                 if state.block_state.guarded(|e| e.requires_fallback_attestation() == &Some(true)) {
                     let Ok(attestation) = self.try_get_fallback_attestation(state) else {
@@ -279,7 +326,7 @@ impl AttestationSendService {
                 state.block_state().guarded(|e| {
                     (
                         e.bk_set().clone(),
-                        e.parent_block_identifier().clone(),
+                        *e.parent_block_identifier(),
                         e.producer().clone(),
                         *e.thread_identifier(),
                     )
@@ -375,7 +422,7 @@ impl AttestationSendService {
                 let distance_to_producer = distance_to_producer.to_string();
                 block_flow_trace(
                     "skip send attestation: earliest_to_send_attestation > now",
-                    _block_id,
+                    _block_id.block_identifier(),
                     &trace_node_id,
                     [
                         ("delay", &format!("{}", delay.as_millis())),
@@ -558,7 +605,7 @@ impl AttestationSendService {
                     destination_node_id,
                     attestation,
                 );
-                let block_id = attestation.data().block_id().clone();
+                let block_id = *attestation.data().block_id();
                 block_flow_trace(
                     "send attestation",
                     attestation.data().block_id(),
@@ -604,7 +651,7 @@ impl AttestationSendService {
         node_credentials: &NodeCredentials,
         block_state: &BlockState,
         attestation_target_type: AttestationTargetType,
-    ) -> Result<Envelope<GoshBLS, AttestationData>, GenerateAttestationError> {
+    ) -> Result<Envelope<AttestationData>, GenerateAttestationError> {
         let Some(bk_data) = block_state
             .guarded(|state_in| state_in.get_bk_data_for_node_id(node_credentials.node_id()))
         else {
@@ -625,8 +672,7 @@ impl AttestationSendService {
             return Err(GenerateAttestationError::BlockSeqNoIsNotAvailable);
         };
 
-        let Some(parent_id) =
-            block_state.guarded(|state_in| state_in.parent_block_identifier().clone())
+        let Some(parent_id) = block_state.guarded(|state_in| *state_in.parent_block_identifier())
         else {
             return Err(GenerateAttestationError::BlockParentIDIsNotAvailable);
         };
@@ -640,7 +686,7 @@ impl AttestationSendService {
             return Err(GenerateAttestationError::BlockEnvelopeHashIsNotAvailable);
         };
         let attestation_data = AttestationData::builder()
-            .block_id(block_state.block_identifier().clone())
+            .block_id(*block_state.block_identifier())
             .block_seq_no(block_seq_no)
             .parent_block_id(parent_id)
             .envelope_hash(envelope_hash)
@@ -651,22 +697,18 @@ impl AttestationSendService {
         let signature = <GoshBLS as BLSSignatureScheme>::sign(&secret, &attestation_data)
             .map_err(GenerateAttestationError::FailedToSignAttestation)?;
         let signature_occurrences = HashMap::from([(signer_index, 1)]);
-        Ok(Envelope::<GoshBLS, AttestationData>::create(
-            signature,
-            signature_occurrences,
-            attestation_data,
-        ))
+        Ok(Envelope::<AttestationData>::create(signature, signature_occurrences, attestation_data))
     }
 
     fn stop_tracking_finalized_and_invalidated_candidates(&mut self) {
         // TODO: check if `removed_block_ids` is unused !
         let mut removed_block_ids = vec![];
-        self.tracking.retain(|block_id, e| {
+        self.tracking.retain(|block_index, e| {
             e.block_state().guarded(|x| {
                 if !x.is_finalized() && !x.is_invalidated() {
                     true
                 } else {
-                    removed_block_ids.push(block_id.clone());
+                    removed_block_ids.push(block_index.clone());
                     false
                 }
             })
@@ -681,17 +723,18 @@ impl AttestationSendService {
 
     #[allow(clippy::mutable_key_type)]
     fn append_for_tracking(&mut self, candidates: &UnfinalizedBlocksSnapshot) {
-        for (_, (candidate, _)) in candidates.blocks().iter() {
-            if !self.tracking.contains_key(candidate.block_identifier()) {
+        for (index, (candidate, _)) in candidates.blocks().iter() {
+            if !self.tracking.contains_key(index) {
                 let state = TrackedState::builder().block_state(candidate.clone()).build();
                 tracing::trace!(
                     "AttestationSendService: append_for_tracking {:?}",
                     candidate.block_identifier()
                 );
-                self.tracking.insert(candidate.block_identifier().clone(), state);
+                self.tracking.insert(index.clone(), state);
             }
         }
-        self.tracking.retain(|block_id, _state| candidates.block_id_set().contains(block_id));
+        // TODO: tracking can be retained by leave everything greater than blocks first element
+        self.tracking.retain(|block_index, _state| candidates.blocks().contains_key(block_index));
     }
 
     #[allow(clippy::mutable_key_type)]
@@ -711,7 +754,7 @@ impl AttestationSendService {
     fn collect_attested_blocks_to_receiver(
         &mut self,
         candidate: &BlockState,
-    ) -> HashMap<BlockIdentifier, (NodeIdentifier, AttestationTargetType)> {
+    ) -> HashMap<BlockIndex, (NodeIdentifier, AttestationTargetType)> {
         let mut blocks_to_parties = HashMap::new();
 
         let Some(producer) = candidate.guarded(|e| e.producer().clone()) else {
@@ -730,7 +773,7 @@ impl AttestationSendService {
                             && inner.known_attestation_interested_parties().contains(&producer)
                         {
                             let index = (producer.clone(), attestation_target_type);
-                            blocks_to_parties.insert(attested_blk_id.clone(), index.clone());
+                            blocks_to_parties.insert(attested_blk_id, index.clone());
                         }
                     }
                 });
@@ -741,10 +784,7 @@ impl AttestationSendService {
 
     fn update_tracking(
         &mut self,
-        attested_blocks_to_parties: HashMap<
-            BlockIdentifier,
-            (NodeIdentifier, AttestationTargetType),
-        >,
+        attested_blocks_to_parties: HashMap<BlockIndex, (NodeIdentifier, AttestationTargetType)>,
     ) {
         for (block_id, producer) in attested_blocks_to_parties {
             if let Some(tracked_state) = self.tracking.get_mut(&block_id) {
@@ -775,7 +815,7 @@ impl AttestationSendService {
             verify_all_block_signatures_ms_total,
             block_applied_timestamp_ms,
         ) = self.block_state_repository.get(block_id)?.guarded_mut(|e| {
-            parent_block_identifier = e.parent_block_identifier().clone();
+            parent_block_identifier = *e.parent_block_identifier();
             if e.event_timestamps.attestation_sent_ms.is_none() {
                 e.event_timestamps.attestation_sent_ms = Some(current_millis);
                 (

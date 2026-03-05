@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
+use node_types::ThreadIdentifier;
 use telemetry_utils::instrumented_channel_ext::WrappedItem;
 use telemetry_utils::instrumented_channel_ext::XInstrumentedSender;
 
 use crate::node::network_message::Command;
 use crate::node::NetworkMessage;
 use crate::protocol::authority_switch;
-use crate::types::ThreadIdentifier;
 
 type Payload = (NetworkMessage, SocketAddr);
 

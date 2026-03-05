@@ -18,9 +18,9 @@ use tvm_client::ClientContext;
 use crate::schema::db;
 use crate::schema::db::DBConnector;
 use crate::schema::graphql::query::PaginationArgs;
-use crate::schema::graphql_std::events::Event;
+use crate::schema::graphql_ext::events::Event;
 
-struct AccountEventEdge;
+pub struct AccountEventEdge;
 
 impl EdgeNameType for AccountEventEdge {
     fn type_name<T: OutputType>() -> String {
@@ -28,7 +28,7 @@ impl EdgeNameType for AccountEventEdge {
     }
 }
 
-struct AccountEventsConnection;
+pub struct AccountEventsConnection;
 
 impl ConnectionNameType for AccountEventsConnection {
     fn type_name<T: OutputType>() -> String {

@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
+use node_types::AccountRouting;
+
 use super::in_thread_accounts_load::InThreadAccountsLoad;
 use crate::bitmask::mask::Bitmask;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::repository::optimistic_state::OptimisticState;
-use crate::types::AccountRouting;
 use crate::types::AckiNackiBlock;
 
 pub(super) type Load = usize;

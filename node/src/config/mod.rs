@@ -32,7 +32,7 @@ use typed_builder::TypedBuilder;
 use crate::node::NodeIdentifier;
 use crate::types::BlockSeqNo;
 
-const DEFAULT_ENGINE_VERSION: &str = "1.0.1";
+const DEFAULT_ENGINE_VERSION: &str = "1.0.2";
 const DEFAULT_GOSSIP_VERSION: &str = "0";
 
 // TODO: These settings should be moved onchain.

@@ -4,10 +4,11 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
+use account_state::ThreadAccount;
+use node_types::AccountIdentifier;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::Value;
-use tvm_block::Account;
 use tvm_contracts::TvmContract;
 use tvm_types::UInt256;
 
@@ -51,7 +52,7 @@ static ROOT: LazyLock<TvmContract> = LazyLock::new(|| {
     )
 });
 
-pub struct Root(pub Account);
+pub struct Root(pub ThreadAccount);
 impl Root {
     pub fn get_epoch_code_hash(&self) -> anyhow::Result<UInt256> {
         let output = ROOT.run_get(&self.0, "getEpochCodeHash", None)?;
@@ -66,11 +67,11 @@ static BK: LazyLock<TvmContract> = LazyLock::new(|| {
     )
 });
 
-pub struct Bk(pub Account);
+pub struct Bk(pub ThreadAccount);
 impl Bk {
-    pub fn get_proxy_list_addr(&self) -> anyhow::Result<UInt256> {
+    pub fn get_proxy_list_addr(&self) -> anyhow::Result<AccountIdentifier> {
         let output = BK.run_get(&self.0, "getProxyListAddr", None)?;
-        get_u256(&output, "value0")
+        get_u256(&output, "value0").map(AccountIdentifier::from)
     }
 }
 
@@ -85,12 +86,12 @@ static EPOCH: LazyLock<TvmContract> = LazyLock::new(|| {
     )
 });
 
-pub struct Epoch(pub Account);
+pub struct Epoch(pub ThreadAccount);
 
 impl Epoch {
-    pub fn get_owner_address(&self) -> anyhow::Result<UInt256> {
+    pub fn get_owner_address(&self) -> anyhow::Result<AccountIdentifier> {
         let details = EPOCH.run_get(&self.0, "getDetails", None)?;
-        get_u256(&details, "owner")
+        get_u256(&details, "owner").map(AccountIdentifier::from)
     }
 }
 
@@ -105,7 +106,7 @@ static PROXY_LIST: LazyLock<TvmContract> = LazyLock::new(|| {
     )
 });
 
-pub struct ProxyList(pub Account);
+pub struct ProxyList(pub ThreadAccount);
 
 #[derive(Deserialize)]
 struct ProxyListEntry {
@@ -139,8 +140,9 @@ where
 {
     let proxy_list_id = bk.get_proxy_list_addr()?;
     let Some(proxy_list_acc) = accounts.get_account(&proxy_list_id) else { return Ok(()) };
+    let tvm_bk_account = tvm_block::Account::try_from(&bk.0)?;
     let account_id =
-        bk.0.get_id().ok_or_else(|| anyhow::anyhow!("Proxy list account has no id"))?;
+        tvm_bk_account.get_id().ok_or_else(|| anyhow::anyhow!("Proxy list account has no id"))?;
     let account_id: UInt256 = account_id.try_into().map_err(|err| anyhow::anyhow!("{err}"))?;
     nodes.insert(account_id.into(), ProxyList(proxy_list_acc).get_proxy_list()?);
     Ok(())

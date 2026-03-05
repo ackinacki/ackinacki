@@ -6,10 +6,12 @@ rust-version.workspace = true
 license-file.workspace = true
 
 [dependencies]
+account-state.workspace = true
 anyhow.workspace = true
 ed25519-dalek.workspace = true
 hex.workspace = true
 lazy_static.workspace = true
+node-types.workspace = true
 parking_lot.workspace = true
 sdk-wrapper.workspace = true
 serde.workspace = true

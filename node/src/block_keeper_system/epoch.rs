@@ -3,11 +3,11 @@
 
 use std::str::FromStr;
 
+use account_state::ThreadAccount;
 use num_bigint::BigUint;
 use num_traits::Zero;
 use tvm_abi::contract::DecodedMessage;
 use tvm_abi::TokenValue;
-use tvm_block::Account;
 use tvm_block::ExternalInboundMessageHeader;
 use tvm_block::Message;
 use tvm_block::MsgAddress;
@@ -45,10 +45,11 @@ fn get_preepoch_abi() -> tvm_client::abi::Abi {
 }
 
 pub fn decode_epoch_data(
-    account: &Account,
+    account: &ThreadAccount,
 ) -> anyhow::Result<Option<(SignerIndex, BlockKeeperData)>> {
+    let tvm_account = tvm_block::Account::try_from(account)?;
     let abi = get_epoch_abi();
-    if let Some(data) = account.get_data() {
+    if let Some(data) = tvm_account.get_data() {
         let decoded_data = abi
             .abi()
             .map_err(|e| anyhow::format_err!("Failed to load epoch ABI: {e}"))?
@@ -215,7 +216,7 @@ pub fn decode_epoch_data(
                     wait_step: block_keeper_wait_step,
                     status: BlockKeeperStatus::Active,
                     // TODO: better fix pure unwrap for address
-                    address: account.get_addr().unwrap().to_string(),
+                    address: tvm_account.get_addr().unwrap().to_string(),
                     stake: block_keeper_stake,
                     owner_address: wallet_address.into(),
                     signer_index,
@@ -229,10 +230,11 @@ pub fn decode_epoch_data(
 }
 
 pub fn decode_preepoch_data(
-    account: &Account,
+    account: &ThreadAccount,
 ) -> anyhow::Result<Option<(SignerIndex, BlockKeeperData)>> {
     let abi = get_preepoch_abi();
-    if let Some(data) = account.get_data() {
+    let tvm_account = tvm_block::Account::try_from(account)?;
+    if let Some(data) = tvm_account.get_data() {
         let decoded_data = abi
             .abi()
             .map_err(|e| anyhow::format_err!("Failed to load preepoch ABI: {e}"))?
@@ -352,7 +354,7 @@ pub fn decode_preepoch_data(
                     wait_step: block_keeper_wait_step,
                     status: BlockKeeperStatus::PreEpoch,
                     // TODO: better fix pure unwrap for address
-                    address: account.get_addr().unwrap().to_string(),
+                    address: tvm_account.get_addr().unwrap().to_string(),
                     stake: block_keeper_stake,
                     owner_address: wallet_address,
                     signer_index,

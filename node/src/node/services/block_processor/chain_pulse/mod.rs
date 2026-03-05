@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use network::channel::NetBroadcastSender;
 use network::channel::NetDirectSender;
+use node_types::ThreadIdentifier;
 use typed_builder::TypedBuilder;
 
 use crate::node::associated_types::NodeIdentifier;
@@ -13,7 +14,6 @@ use crate::node::BlockStateRepository;
 use crate::node::NetworkMessage;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::bp_selector::BlockGap;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 
 pub mod events;

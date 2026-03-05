@@ -2,6 +2,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use network::channel::NetBroadcastSender;
+use node_types::ThreadIdentifier;
 use typed_builder::TypedBuilder;
 
 use crate::node::associated_types::NodeIdentifier;
@@ -10,7 +11,6 @@ use crate::node::NetDirectSender;
 use crate::node::NetworkMessage;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::BlockSeqNo;
-use crate::types::ThreadIdentifier;
 
 #[derive(TypedBuilder)]
 #[allow(dead_code)]

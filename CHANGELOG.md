@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.0] – 2026-03-05
+
+### New / Improvements
+
+- Added a historical layer with Merkle hash support to the block common section and block serialization flow
+- Implemented block state transition logic for the node block state lifecycle
+- Updated protocol version metadata: promoted a new active version and marked the previous version as retired
+- Updated core Rust dependencies and synchronized SDK versions used in the runtime and tests
+- Updated the BK Docker Compose template for the new release configuration
+- Added threads table prefab support for block processing and state handling
+- Enabled node startup with a BK set file in deployment playbooks
+- Removed deprecated `RETIRED_VERSION` environment variable usage from node startup and deployment configurations
+- Updated Accumulator blockchain settings, including token naming and DApp ID parameters
+- Added block post-processing for Accumulator-related block handling in node validation and repository flows
+- Updated `bm-archive-processor` grouping and output controls with configurable server match mode (`all`/`any`) and compression mode (`none`/`gzip`/`xz`)
+- Added support for offloading thread account state to Aerospike durable storage, including state tooling updates
+- Added DApp ID propagation for external messages in node processing and HTTP API payloads
+- Added traceparent header logging in Block Manager and HTTP server request paths for distributed tracing
+- Added gauge metric `node_attestation_tracking_collection_size` for attestation tracking observability
+- Added history-proof flow under feature-gated block production and synchronization paths
+- Updated SDK integration for USDC DApp ID repair checks in block post-processing
+
+---
+
+## Fixes
+
+- Added strict validation for shard-state `account_address` length (exactly 32 bytes) in the account BOC loader
+- Improved `message-router` reqwest diagnostics with explicit HTTP status codes and timeout/error context
+- Fixed a potential node shutdown issue during the execution stop sequence
+- Fixed snapshot synchronization persistence in repository/file-saving flow to avoid inconsistent sync state
+- Fixed fast clean restart playbook behavior to preserve BK set during cleanup
+
+
 ## [0.13.4] – 2026-02-11
 
 ### Fixed

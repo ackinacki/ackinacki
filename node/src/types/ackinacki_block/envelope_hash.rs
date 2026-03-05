@@ -7,7 +7,6 @@ use sha2::Digest;
 use sha2::Sha256;
 
 use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
 use crate::types::AckiNackiBlock;
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize, Hash)]
@@ -20,7 +19,7 @@ impl Debug for AckiNackiEnvelopeHash {
     }
 }
 
-pub fn envelope_hash(envelope: &Envelope<GoshBLS, AckiNackiBlock>) -> AckiNackiEnvelopeHash {
+pub fn envelope_hash(envelope: &Envelope<AckiNackiBlock>) -> AckiNackiEnvelopeHash {
     let mut hasher = Sha256::new();
     let data = bincode::serialize(envelope).unwrap();
 

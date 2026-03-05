@@ -4,6 +4,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use node_types::BlockIdentifier;
+
 use super::associated_types::NodeAssociatedTypes;
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::bls::envelope::BLSSignedEnvelope;
@@ -12,7 +14,6 @@ use crate::node::services::sync::StateSyncService;
 use crate::node::Node;
 use crate::node::SignerIndex;
 use crate::repository::repository_impl::RepositoryImpl;
-use crate::types::BlockIdentifier;
 use crate::utilities::guarded::Guarded;
 
 impl<TStateSyncService, TRandomGenerator> Node<TStateSyncService, TRandomGenerator>

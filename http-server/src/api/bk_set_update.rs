@@ -6,6 +6,7 @@ use std::marker::PhantomData;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use node_types::ThreadIdentifier;
 use salvo::async_trait;
 use salvo::http::StatusCode;
 use salvo::prelude::Json;
@@ -191,32 +192,21 @@ pub struct ApiBkSetError {
     message: String,
 }
 
-pub struct ApiBkSetHandler<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>(
-    PhantomData<TMessage>,
-    PhantomData<TMsgConverter>,
+pub struct ApiBkSetHandler<TBPResolver, TSeqnoGetter>(
     PhantomData<TBPResolver>,
     PhantomData<TSeqnoGetter>,
 );
 
-impl<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
-    ApiBkSetHandler<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
-{
+impl<TBPResolver, TSeqnoGetter> ApiBkSetHandler<TBPResolver, TSeqnoGetter> {
     pub fn new() -> Self {
-        Self(PhantomData, PhantomData, PhantomData, PhantomData)
+        Self(PhantomData, PhantomData)
     }
 }
 
 #[async_trait]
-impl<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter> Handler
-    for ApiBkSetHandler<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
+impl<TBPResolver, TSeqnoGetter> Handler for ApiBkSetHandler<TBPResolver, TSeqnoGetter>
 where
-    TMessage: Clone + Send + Sync + 'static + std::fmt::Debug,
-    TMsgConverter: Clone
-        + Send
-        + Sync
-        + 'static
-        + Fn(tvm_block::Message, [u8; 34]) -> anyhow::Result<TMessage>,
-    TBPResolver: Clone + Send + Sync + 'static + FnMut([u8; 34]) -> ResolvingResult,
+    TBPResolver: Clone + Send + Sync + 'static + FnMut(ThreadIdentifier) -> ResolvingResult,
     TSeqnoGetter: Clone + Send + Sync + 'static + Fn() -> anyhow::Result<u32>,
 {
     async fn handle(
@@ -226,9 +216,7 @@ where
         res: &mut Response,
         _ctrl: &mut FlowCtrl,
     ) {
-        let Ok(web_server_state) =
-            depot.obtain::<WebServer<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>>()
-        else {
+        let Ok(web_server_state) = depot.obtain::<WebServer<TBPResolver, TSeqnoGetter>>() else {
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
             render_error_response(
                 res,

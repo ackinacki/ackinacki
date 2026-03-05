@@ -87,8 +87,8 @@ where
         let parent_id = envelope.data().parent();
         let thread_identifier = net_block.thread_id;
         let block_time = envelope.data().time()?;
-        let block_round = envelope.data().get_common_section().round;
-        let block_height = envelope.data().get_common_section().block_height;
+        let block_round = *envelope.data().common_section().round();
+        let block_height = *envelope.data().common_section().block_height();
         let parent = self.block_state_repository.get(&parent_id).unwrap();
 
         // Initialize block state
@@ -112,15 +112,19 @@ where
             } else {
                 state.set_block_height(block_height)?;
             }
+            #[cfg(feature = "verify_all_blocks")]
+            if state.must_be_validated() != &Some(true) {
+                state.set_must_be_validated()?;
+            }
             Ok::<(), anyhow::Error>(())
         })?;
 
         connect!(parent = parent, child = block_state, &self.block_state_repository);
         if let Some(hint) =
-            envelope.data().get_common_section().directives.share_state_resources().clone()
+            envelope.data().common_section().directives().share_state_resources().clone()
         {
             self.last_synced_state =
-                Some((envelope.data().identifier().clone(), envelope.data().seq_no(), hint));
+                Some((envelope.data().identifier(), envelope.data().seq_no(), hint));
         }
 
         tracing::debug!("Add candidate block state to cache: {:?}", net_block.identifier);
@@ -130,14 +134,14 @@ where
         // lock parent only after child lock is dropped
         let parent_is_finalized =
             self.block_state_repository.get(&parent_id)?.guarded_mut(|e| {
-                e.add_child(thread_identifier, net_block.identifier.clone())?;
+                e.add_child(thread_identifier, net_block.identifier)?;
                 Ok::<bool, anyhow::Error>(e.is_finalized())
             })?;
         if parent_is_finalized {
             block_state.guarded_mut(|state| state.set_has_parent_finalized())?;
         }
 
-        let candidate_block_height = envelope.data().get_common_section().block_height;
+        let candidate_block_height = *envelope.data().common_section().block_height();
 
         if let Some(last_height) = self.last_processed_block_height {
             match last_height.signed_distance_to(&candidate_block_height) {
@@ -157,7 +161,7 @@ where
         self.last_processed_block_height = Some(candidate_block_height);
 
         // Steal block attestations
-        for attestation in &envelope.data().get_common_section().block_attestations {
+        for attestation in envelope.data().common_section().block_attestations() {
             self.last_block_attestations.guarded_mut(|e| e.add(attestation.clone(), true))?;
         }
         Ok(Some(envelope))

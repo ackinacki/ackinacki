@@ -6,9 +6,10 @@ use std::fmt::Display;
 use std::hash::Hash;
 use std::net::SocketAddr;
 
+use account_state::ThreadAccount;
 use itertools::Itertools;
 pub use node_db::NodeDb;
-use tvm_block::Account;
+use node_types::AccountIdentifier;
 use tvm_types::UInt256;
 
 use crate::config::SocketAddrSet;
@@ -18,11 +19,11 @@ use crate::topology::NetEndpoint;
 use crate::topology::NetPeer;
 
 pub trait BkSetProvider {
-    fn get_bk_set(&self) -> Vec<UInt256>;
+    fn get_bk_set(&self) -> Vec<AccountIdentifier>;
 }
 
 pub trait AccountProvider {
-    fn get_account(&self, id: &UInt256) -> Option<Account>;
+    fn get_account(&self, id: &AccountIdentifier) -> Option<ThreadAccount>;
 }
 
 pub async fn watch_blockchain<PeerId, B, A>(

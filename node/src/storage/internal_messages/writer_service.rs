@@ -3,16 +3,17 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Instant;
 
+use node_types::AccountIdentifier;
+
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::storage::MessageDurableStorage;
-use crate::types::AccountAddress;
 
 #[derive(Clone)]
 pub struct MessageDBWriterService {
     sender: std::sync::mpsc::Sender<
-        HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+        HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     >,
     handler: Arc<JoinHandle<anyhow::Result<()>>>,
 }
@@ -75,8 +76,9 @@ impl MessageDBWriterService {
                             );
                         });
                     }
-                    _ => {
-                        tracing::error!("MessageDBWriterService receiver thread terminated");
+                    Err(e) => {
+                        tracing::error!("MessageDBWriterService receiver thread terminated: {e}");
+                        return Ok(());
                     }
                 }
             },
@@ -86,7 +88,7 @@ impl MessageDBWriterService {
 
     pub fn write(
         &self,
-        messages: HashMap<AccountAddress, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+        messages: HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(!self.handler.is_finished(), "Message storage writer should not stop");
         self.sender.send(messages)?;

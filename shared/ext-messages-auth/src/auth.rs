@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 use std::time::Instant;
 
-use anyhow::anyhow;
+use account_state::ThreadAccount;
 use ed25519_dalek::Signature;
 use ed25519_dalek::Signer;
 use ed25519_dalek::SigningKey;
@@ -17,13 +17,12 @@ use ed25519_dalek::Verifier;
 use ed25519_dalek::VerifyingKey;
 use hex::FromHex;
 use hex::ToHex;
+use node_types::DAppIdentifier;
 use parking_lot::RwLock;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tvm_block::Serializable;
-use tvm_types::UInt256;
 
 use crate::normalize_address;
 use crate::now_plus_n_secs;
@@ -62,7 +61,7 @@ struct WalletAddress {
 #[derive(Debug)]
 pub struct AccountRequest {
     pub address: String,
-    pub response: oneshot::Sender<anyhow::Result<(tvm_block::Account, Option<UInt256>, u64)>>,
+    pub response: oneshot::Sender<anyhow::Result<(ThreadAccount, Option<DAppIdentifier>, u64)>>,
 }
 
 // The token issuer for external message authorization.
@@ -176,7 +175,7 @@ impl Token {
 async fn request_account(
     address: &str,
     account_request_tx: mpsc::Sender<AccountRequest>,
-) -> anyhow::Result<Option<tvm_block::Account>> {
+) -> anyhow::Result<Option<ThreadAccount>> {
     let (response_tx, response_rx) = oneshot::channel();
     let request = AccountRequest { address: address.to_string(), response: response_tx };
 
@@ -223,11 +222,11 @@ async fn get_wallet_data(
     let boc = if let Some(raw_account) =
         request_account(contract_addr, account_request_tx.clone()).await?
     {
-        let boc_bytes = raw_account.write_to_bytes().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let boc_bytes = raw_account.write_bytes().map_err(|e| anyhow::anyhow!("{e}"))?;
         tvm_types::base64_encode(&boc_bytes)
     } else {
         tracing::trace!("Failed to get BOC of the root contract at {contract_addr}");
-        return Err(anyhow!("Account (owner wallet root) request failed"));
+        return Err(anyhow::anyhow!("Account (owner wallet root) request failed"));
     };
 
     let result = contract
@@ -244,7 +243,7 @@ async fn get_wallet_data(
         Some(addr) => addr,
         None => {
             tracing::trace!("Failed to normalize wallet address");
-            return Err(anyhow!("Incorrect address"));
+            return Err(anyhow::anyhow!("Incorrect address"));
         }
     };
 
@@ -252,7 +251,7 @@ async fn get_wallet_data(
 
     let Some(wallet_account) = request_account(&wallet_addr, account_request_tx).await? else {
         tracing::trace!("Failed to get BOC of the wallet at {wallet_addr}");
-        return Err(anyhow!("Account (owner wallet) request failed"));
+        return Err(anyhow::anyhow!("Account (owner wallet) request failed"));
     };
 
     tracing::trace!("got account: {wallet_account:?}");
@@ -305,8 +304,6 @@ mod tests {
     use tokio::sync::Mutex as TokioMutex;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    use tvm_block::Account;
-    use tvm_block::Deserializable;
 
     use super::*;
     use crate::read_keys_from_file;
@@ -429,24 +426,23 @@ mod tests {
         assert_eq!(result, TokenVerificationResult::TokenMalformed);
     }
 
-    fn construct_response_acc(boc_file: &str) -> anyhow::Result<Account> {
+    fn construct_response_acc(boc_file: &str) -> anyhow::Result<ThreadAccount> {
         let boc = String::from_utf8(read_file(&format!("./fixtures/{boc_file}"))?)
             .map(|s| s.trim().to_owned())?;
-        Account::construct_from_base64(&boc)
-            .map_err(|e| anyhow::anyhow!("Failed to construct account from boc: {e}"))
+        ThreadAccount::read_base64(&boc)
     }
 
     async fn mock_account_request_handler(
         mut rx: mpsc::Receiver<AccountRequest>,
     ) -> anyhow::Result<()> {
         while let Some(request) = rx.recv().await {
-            let account: Result<Account, anyhow::Error> = match request.address.as_str() {
+            let account = match request.address.as_str() {
                 BK_CONTRACT_ROOT_ADDR => construct_response_acc("bk_root.boc.b64"),
                 BM_CONTRACT_ROOT_ADDR => construct_response_acc("bm_root.boc.b64"),
                 FAKE_BM_ISSUER_ADDR => construct_response_acc("fake_bm_issuer_40f11d13cf70edb0b4ac883a915c03ba333eceb49263e47ef0ba0415e9b023c5.boc.b64"),
                 REAL_BM_ISSUER_ADDR => construct_response_acc("real_bm_issuer_c3c0474d61fdd004960d1a5a320bc88549f73238cfa0a8fc6a00e15a72bbda19.boc.b64"),
                 REAL_BK_ISSUER_ADDR => construct_response_acc("real_bk_issuer_dc67ae73b647b399bb8293ef1b5c9bc9577baf036ad7ec5c49505efbae74ac67.boc.b64"),
-                _ => Err(anyhow!("Unknown account")),
+                _ => Err(anyhow::anyhow!("Unknown account")),
             };
 
             let account_response = account.map(|account| (account, None, 0));

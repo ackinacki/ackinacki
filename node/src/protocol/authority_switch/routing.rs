@@ -1,6 +1,7 @@
+use node_types::ThreadIdentifier;
+
 use super::network_message::AuthoritySwitch;
 use crate::bls::envelope::BLSSignedEnvelope;
-use crate::types::ThreadIdentifier;
 
 // This extends message dispatcher part of the node.
 //

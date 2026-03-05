@@ -11,7 +11,6 @@ use crate::block::producer::wasm::WasmNodeCache;
 use crate::block::producer::BlockVerifier;
 use crate::block::producer::TVMBlockVerifier;
 use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
 use crate::config::BlockchainConfigRead;
 use crate::config::Config;
 use crate::config::GlobalConfig;
@@ -20,6 +19,7 @@ use crate::node::associated_types::NackData;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::repository::accounts::AccountsRepository;
+use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
@@ -48,12 +48,17 @@ pub fn verify_block(
     node_global_config: GlobalConfig,
     refs: Vec<CrossThreadRefData>,
     shared_services: SharedServices,
-    block_nack: Vec<Envelope<GoshBLS, NackData>>,
+    block_nack: Vec<Envelope<NackData>>,
     block_state_repo: BlockStateRepository,
     accounts_repo: AccountsRepository,
+    thread_accounts_repository: NodeThreadAccountsRepository,
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
     message_db: MessageDurableStorage,
+    is_block_of_retired_version: bool,
+    #[cfg(feature = "usdc_name_repair")] usdc_name_repaired: std::sync::Arc<
+        parking_lot::Mutex<Option<crate::types::BlockSeqNo>>,
+    >,
 ) -> anyhow::Result<VerificationResult> {
     #[cfg(feature = "timing")]
     let start = std::time::Instant::now();
@@ -63,7 +68,7 @@ pub fn verify_block(
         block_candidate.seq_no()
     );
 
-    let producer = TVMBlockVerifier::builder()
+    let builder = TVMBlockVerifier::builder()
         .blockchain_config(blockchain_config)
         .node_config(node_config.clone())
         .shared_services(shared_services)
@@ -71,10 +76,14 @@ pub fn verify_block(
         .block_nack(block_nack)
         .block_state_repository(block_state_repo)
         .accounts_repository(accounts_repo)
+        .thread_accounts_repository(thread_accounts_repository)
         .metrics(metrics)
         .wasm_cache(wasm_cache)
         .node_global_config(node_global_config.clone())
-        .build();
+        .is_block_of_retired_version(is_block_of_retired_version);
+    #[cfg(feature = "usdc_name_repair")]
+    let builder = builder.usdc_name_repaired(usdc_name_repaired);
+    let producer = builder.build();
 
     // TODO: need to refactor this point to reuse generated verify block
     let verification_block_production_result = producer.generate_verify_block(
@@ -252,8 +261,9 @@ fn display_block_transactions(block: &AckiNackiBlock) {
                 return Ok(true);
             };
             tracing::trace!(target: "monit",
-                "Acc: {account_id} message_hash: {:?} message: {in_msg:?} tx: {transaction:?}",
-                in_msg.as_ref().map(|msg| msg.hash().unwrap().to_hex_string())
+                "Acc: {account_id} message_hash: {:?} message: {in_msg:?} tx: {transaction:?} descr: {:?}",
+                in_msg.as_ref().map(|msg| msg.hash().unwrap().to_hex_string()),
+                transaction.read_description(),
             );
             Ok(true)
         }) else {

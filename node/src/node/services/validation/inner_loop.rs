@@ -1,11 +1,13 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::mpsc::RecvError;
 use std::sync::mpsc::TryRecvError;
 use std::sync::Arc;
 
+use node_types::BlockIdentifier;
 use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 
@@ -14,7 +16,6 @@ use crate::block::verify::verify_block;
 use crate::block::verify::VerificationResult;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
 use crate::config::config_read::ConfigRead;
 use crate::config::BlockchainConfigRead;
 use crate::config::Config;
@@ -40,8 +41,8 @@ use crate::utilities::guarded::GuardedMut;
 use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
 
 fn read_into_buffer(
-    rx: &mut InstrumentedReceiver<(BlockState, Envelope<GoshBLS, AckiNackiBlock>)>,
-    buffer: &mut VecDeque<(BlockState, Envelope<GoshBLS, AckiNackiBlock>)>,
+    rx: &mut InstrumentedReceiver<(BlockState, Envelope<AckiNackiBlock>)>,
+    buffer: &mut VecDeque<(BlockState, Envelope<AckiNackiBlock>)>,
 ) -> bool {
     while let Ok(v) = rx.try_recv() {
         buffer.push_back(v);
@@ -66,7 +67,7 @@ fn read_into_buffer(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn inner_loop(
-    mut rx: InstrumentedReceiver<(BlockState, Envelope<GoshBLS, AckiNackiBlock>)>,
+    mut rx: InstrumentedReceiver<(BlockState, Envelope<AckiNackiBlock>)>,
     block_state_repo: BlockStateRepository,
     repository: RepositoryImpl,
     blockchain_config: BlockchainConfigRead,
@@ -78,8 +79,12 @@ pub(super) fn inner_loop(
     wasm_cache: WasmNodeCache,
     message_db: MessageDurableStorage,
     authority: Arc<Mutex<Authority>>,
+    #[cfg(feature = "usdc_name_repair")] usdc_name_repaired: std::sync::Arc<
+        parking_lot::Mutex<Option<BlockSeqNo>>,
+    >,
 ) {
-    let mut buffer = VecDeque::<(BlockState, Envelope<GoshBLS, AckiNackiBlock>)>::new();
+    let mut buffer = VecDeque::<(BlockState, Envelope<AckiNackiBlock>)>::new();
+    let mut blocks_with_unsupported_version = HashSet::<BlockIdentifier>::new();
     loop {
         if SHUTDOWN_FLAG.get() == Some(&true) {
             return;
@@ -99,8 +104,11 @@ pub(super) fn inner_loop(
                     && !x.is_invalidated()
                     && x.validated().is_none()
                     && *x.envelope_block_producer_signature_verified() != Some(false)
+                    && !blocks_with_unsupported_version.contains(x.block_identifier())
             })
         });
+
+        blocks_with_unsupported_version.clear();
 
         for (state, next_envelope) in buffer.iter() {
             if state.guarded(|e| e.is_finalized() || e.is_invalidated()) {
@@ -113,7 +121,7 @@ pub(super) fn inner_loop(
             }) {
                 continue;
             }
-            let block_identifier = state.guarded(|e| e.block_identifier().clone());
+            let block_identifier = state.guarded(|e| *e.block_identifier());
             if !state.guarded(|e| {
                 *e.stored() == Some(true)
                     && *e.has_all_cross_thread_ref_data_available() == Some(true)
@@ -121,9 +129,8 @@ pub(super) fn inner_loop(
             }) {
                 continue;
             }
-            let parent_id = state
-                .guarded(|e| e.parent_block_identifier().clone())
-                .expect("Parent id must be set");
+            let parent_id =
+                state.guarded(|e| *e.parent_block_identifier()).expect("Parent id must be set");
 
             let parent_block_state =
                 block_state_repo.get(&parent_id).expect("Parent block state must exist");
@@ -139,7 +146,7 @@ pub(super) fn inner_loop(
             let prev_block_id = next_block.parent();
             let Ok(Some(prev_state)) = repository.get_optimistic_state(
                 &prev_block_id,
-                &next_block.get_common_section().thread_id,
+                next_block.common_section().thread_id(),
                 None,
             ) else {
                 tracing::trace!(
@@ -151,7 +158,7 @@ pub(super) fn inner_loop(
             let mut prev_state = Arc::unwrap_or_clone(prev_state);
             let refs = shared_services.exec(|service| {
                 let mut refs = vec![];
-                for block_id in &next_block.get_common_section().refs {
+                for block_id in next_block.common_section().refs() {
                     let state = service
                         .cross_thread_ref_data_service
                         .get_cross_thread_ref_data(block_id)
@@ -177,12 +184,13 @@ pub(super) fn inner_loop(
             let protocol_version = protocol_version_state.to_use().clone();
             let Some(node_global_config) = node_global_config_read.get(&protocol_version) else {
                 tracing::trace!("Skip block validation process: node config is not available");
+                blocks_with_unsupported_version.insert(*state.block_identifier());
                 continue;
             };
 
             let node_global_config = Arc::unwrap_or_clone(node_global_config);
 
-            let block_nack = next_block.get_common_section().nacks.clone();
+            let block_nack = next_block.common_section().nacks().clone();
             let verify_res = verify_block(
                 &next_block,
                 blockchain_config.clone(),
@@ -194,9 +202,13 @@ pub(super) fn inner_loop(
                 block_nack,
                 block_state_repo.clone(),
                 repository.accounts_repository().clone(),
+                repository.thread_accounts_repository().clone(),
                 metrics.clone(),
                 wasm_cache.clone(),
                 message_db.clone(),
+                node_global_config_read.is_retired(&protocol_version),
+                #[cfg(feature = "usdc_name_repair")]
+                usdc_name_repaired.clone(),
             )
             .expect("Failed to verify block");
             if !verify_res.is_valid() {
@@ -213,7 +225,7 @@ pub(super) fn inner_loop(
             if verify_res.is_valid() {
                 let _ = send.send_ack(state.clone());
             } else {
-                let thread_id = next_block.get_common_section().thread_id;
+                let thread_id = *next_block.common_section().thread_id();
                 match verify_res {
                     VerificationResult::TooComplexExecution => {
                         // TODO: send Nack here

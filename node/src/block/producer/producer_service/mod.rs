@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use http_server::ExtMsgFeedbackList;
 use network::channel::NetBroadcastSender;
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 use telemetry_utils::instrumented_channel_ext::XInstrumentedSender;
 use telemetry_utils::mpsc::InstrumentedSender;
@@ -19,7 +20,7 @@ use crate::block::producer::producer_service::block_producer::BlockProducer;
 use crate::bls::envelope::Envelope;
 use crate::bls::gosh_bls::PubKey;
 use crate::bls::gosh_bls::Secret;
-use crate::bls::GoshBLS;
+use crate::config::config_read::ConfigRead;
 use crate::external_messages::ExternalMessagesThreadState;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::AckData;
@@ -36,7 +37,6 @@ use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::BlockSeqNo;
 use crate::types::CollectedAttestations;
 use crate::types::RndSeed;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::AllowGuardedMut;
 
 pub struct ProducerService {
@@ -56,8 +56,8 @@ impl ProducerService {
         block_producer_control_rx: std::sync::mpsc::Receiver<BlockProducerCommand>,
         production_process: TVMBlockProducerProcess,
         feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
-        received_acks: Arc<Mutex<Vec<Envelope<GoshBLS, AckData>>>>,
-        received_nacks: Arc<Mutex<Vec<Envelope<GoshBLS, NackData>>>>,
+        received_acks: Arc<Mutex<Vec<Envelope<AckData>>>>,
+        received_nacks: Arc<Mutex<Vec<Envelope<NackData>>>>,
         shared_services: SharedServices,
         bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
         last_block_attestations: Arc<Mutex<CollectedAttestations>>,
@@ -74,6 +74,7 @@ impl ProducerService {
         bp_production_count: Arc<AtomicI32>,
         save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
         node_credentials: NodeCredentials,
+        node_config_read: ConfigRead,
     ) -> anyhow::Result<Self> {
         let mut producer = BlockProducer::builder()
             .self_addr(self_addr)
@@ -99,6 +100,7 @@ impl ProducerService {
             .is_state_sync_requested(is_state_sync_requested)
             .bp_production_count(bp_production_count)
             .save_optimistic_service_sender(save_optimistic_service_sender)
+            .config_read(node_config_read)
             .build();
 
         let handler =

@@ -1,7 +1,7 @@
+// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+use account_state::ThreadAccount;
 use num_traits::Zero;
 use tvm_abi::TokenValue;
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
-use tvm_block::Account;
 use tvm_client::encoding::slice_from_cell;
 use tvm_vm::executor::MVConfig;
 
@@ -13,10 +13,11 @@ fn get_mv_config_abi() -> tvm_client::abi::Abi {
     tvm_client::abi::Abi::Json(MV_CONFIG_ABI.to_string())
 }
 
-pub fn decode_mv_config_data(account: &Account) -> anyhow::Result<MVConfig> {
+pub fn decode_mv_config_data(account: &ThreadAccount) -> anyhow::Result<MVConfig> {
     let abi = get_mv_config_abi();
     let mut config_data = MVConfig::default();
-    if let Some(data) = account.get_data() {
+    let tvm_account = tvm_block::Account::try_from(account)?;
+    if let Some(data) = tvm_account.get_data() {
         let decoded_data = abi
             .abi()
             .map_err(|e| anyhow::format_err!("Failed to get DAPP config abi: {e}"))?

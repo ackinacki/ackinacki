@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use ext_messages_auth::auth::is_auth_required;
 use ext_messages_auth::auth::TokenVerificationResult;
+use node_types::ThreadIdentifier;
 use salvo::prelude::*;
 use salvo::Depot;
 use salvo::Response;
@@ -14,39 +15,28 @@ use tokio::sync::oneshot;
 
 use super::ExtMsgErrorData;
 use super::ResolvingResult;
+use crate::api::ext_messages::message::NotQueuedExtMessage;
 use crate::api::ext_messages::render_error;
 use crate::api::ext_messages::render_error_response;
 use crate::api::ext_messages::ExtMsgResponse;
 use crate::helpers::extract_ext_msg_sent_time;
-use crate::ExternalMessage;
 use crate::WebServer;
 
-pub struct ExtMessagesHandler<TMesssage, TMsgConverter, TBPResolver, TSeqnoGetter>(
-    PhantomData<TMesssage>,
-    PhantomData<TMsgConverter>,
+pub struct ExtMessagesHandler<TBPResolver, TSeqnoGetter>(
     PhantomData<TBPResolver>,
     PhantomData<TSeqnoGetter>,
 );
 
-impl<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
-    ExtMessagesHandler<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
-{
+impl<TBPResolver, TSeqnoGetter> ExtMessagesHandler<TBPResolver, TSeqnoGetter> {
     pub fn new() -> Self {
-        Self(PhantomData, PhantomData, PhantomData, PhantomData)
+        Self(PhantomData, PhantomData)
     }
 }
 
 #[async_trait]
-impl<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter> Handler
-    for ExtMessagesHandler<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>
+impl<TBPResolver, TSeqnoGetter> Handler for ExtMessagesHandler<TBPResolver, TSeqnoGetter>
 where
-    TMessage: Clone + Send + Sync + 'static + std::fmt::Debug,
-    TMsgConverter: Clone
-        + Send
-        + Sync
-        + 'static
-        + Fn(tvm_block::Message, [u8; 34]) -> anyhow::Result<TMessage>,
-    TBPResolver: Clone + Send + Sync + 'static + FnMut([u8; 34]) -> ResolvingResult,
+    TBPResolver: Clone + Send + Sync + 'static + FnMut(ThreadIdentifier) -> ResolvingResult,
     TSeqnoGetter: Clone + Send + Sync + 'static + Fn() -> anyhow::Result<u32>,
 {
     async fn handle(
@@ -56,11 +46,8 @@ where
         res: &mut Response,
         _ctrl: &mut FlowCtrl,
     ) {
-        tracing::debug!(target: "http_server", "Rest service: request got!");
         let moment = Instant::now();
-        let Ok(mut web_server) =
-            depot.obtain::<WebServer<TMessage, TMsgConverter, TBPResolver, TSeqnoGetter>>()
-        else {
+        let Ok(web_server) = depot.obtain::<WebServer<TBPResolver, TSeqnoGetter>>() else {
             return render_error(
                 res,
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -69,8 +56,18 @@ where
             );
         };
 
-        let message = depot.get::<ExternalMessage>("message").unwrap();
-        tracing::trace!("processing ext message: {message:?}");
+        let message = match depot.get::<NotQueuedExtMessage>("message") {
+            Ok(m) => m,
+            Err(_) => {
+                tracing::debug!(target: "http_server", "External message not found or has wrong type in depot");
+                return render_error(
+                    res,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "External message has been lost",
+                    None,
+                );
+            }
+        };
 
         let authorized_by_bearer_token =
             depot.get::<bool>(crate::AUTHORIZED_BY_BK_KEY).copied().unwrap_or(false);
@@ -148,8 +145,6 @@ where
             }
         }
 
-        tracing::debug!(target: "http_server", "Incomming ext message: {message:?}");
-
         let bk_auth_token = if authorized_by_bearer_token {
             let bk_auth_token = web_server.issue_token();
             tracing::debug!(target: "http_server", "Issued bk token: {bk_auth_token:?}");
@@ -158,9 +153,10 @@ where
             None
         };
 
-        let web_server_mut = &mut web_server;
-        let mut resolver = web_server_mut.bp_resolver.clone();
-        let resolving_result = resolver(message.thread_id().into());
+        // Check that current BP is right one for the message thread_id
+        let mut resolver = web_server.bp_resolver.clone();
+
+        let resolving_result = resolver(message.thread_id());
         tracing::trace!(
             target: "http_server",
             "Resolved BPs: {:?} for thread {:?}",
@@ -168,37 +164,19 @@ where
             message.thread_id(),
         );
         if !resolving_result.i_am_bp {
-            let message_hash = message.hash();
             render_error_response(
                 res,
                 "WRONG_PRODUCER",
                 Some("Resend message to the active Block Producer"),
                 Some(ExtMsgErrorData::new(
                     resolving_result.active_bp,
-                    message_hash,
+                    message.hash().to_hex_string(),
                     None,
                     Some(format!("{:?}", message.thread_id())),
                 )),
                 bk_auth_token,
             );
             return;
-        };
-
-        let convert = &web_server.into_external_message;
-        let wrapped_message: TMessage = match convert(
-            message.tvm_message(),
-            message.thread_id().into(),
-        ) {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!(target: "http_server", "Error queue message. Message was not accepted: {}", e);
-                return render_error(
-                    res,
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Message was not accepted",
-                    bk_auth_token,
-                );
-            }
         };
 
         if let Some(started) = extract_ext_msg_sent_time(req.headers()) {
@@ -217,11 +195,10 @@ where
             tracing::trace!(target: "http_server", "X-EXT-MSG-SENT header is missing");
         }
 
-        tracing::trace!(target: "http_server", "Process request send message: {:?}", wrapped_message);
         let (feedback_sender, feedback_receiver) = oneshot::channel();
 
         if let Err(e) =
-            web_server.incoming_message_sender.clone().send((wrapped_message, feedback_sender))
+            web_server.incoming_message_sender.clone().send((message.clone(), feedback_sender))
         {
             tracing::warn!(target: "http_server", "Error queue message: {}", e);
             web_server.metrics.as_ref().inspect(|m| {

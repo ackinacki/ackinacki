@@ -8,6 +8,7 @@ members = [
     "database",
     "gossip",
     "gql-server",
+    #    "helpers/proof_helper",
     "http-server",
     "libsqlite3-sys",
     "message-router",
@@ -16,6 +17,10 @@ members = [
     "node",
     "node-helper",
     "node/libs/account-inbox",
+    "node/libs/account-state",
+    "node/libs/node-types",
+    "node/libs/thread-reference-state",
+    "node/libs/trie-map",
     "node/libs/versioned_struct",
     "proxy",
     "shared/ext-messages-auth",
@@ -25,7 +30,7 @@ members = [
     "tvm_contracts",
 ]
 
-package.version = "0.13.4"
+package.version = "0.14.0"
 package.edition = "2021"
 package.rust-version = "1.86.0"
 package.license = "LicenseRef-Acki-Nacki-Node-License"
@@ -42,6 +47,7 @@ overflow-checks = true
 
 [workspace.dependencies]
 actix-web = { version = "4.8.0" }
+aerospike = "1.3.0"
 anyhow = "1.0.97"
 async-trait = { version = "0.1.85" }
 bincode = "1.3.3"
@@ -53,9 +59,11 @@ futures = "0.3"
 gosh_blst = { git = "https://github.com/gosh-sh/gosh_blst.git", features = ["portable"], rev = "a9da6e80b30143e04ca06ea1090525ba8cf1f299" }
 governor = "0.10.0"
 hex = "0.4.3"
+hex-literal = { version = "1.1.0" }
 itertools = { version = "0.14.0" }
 lazy_static = "1.4.0"
 lockfree = { git = 'https://github.com/tvmlabs/lockfree.git', package = 'lockfree' }
+monotree = "0.4.0"
 nonzero_ext = { version = "0.3.0", default-features = false }
 num-bigint = { version = "0.4.6", features = ["serde"] }
 num-traits = "0.2.19"
@@ -84,19 +92,21 @@ tracing = "0.1.40"
 tracing-appender = "0.2.3"
 tracing-opentelemetry = "0.28"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+typed-builder = "0.20.0"
 url = { version = "2.5.0", features = ["serde"] }
 wasmtime = "36.0.2"
 zstd = { version = "0.13.3" }
 
-tvm_abi = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.9.an' }
-tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.9.an' }
-tvm_block_json = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.9.an' }
-tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.9.an', default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
-tvm_executor = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.9.an', features = ['signature_with_id'] }
-tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.9.an' }
-tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.9.an' }
-tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.9.an', features = ['gosh'] }
+tvm_abi = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.12.an' }
+tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.12.an' }
+tvm_block_json = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.12.an' }
+tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.12.an', default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
+tvm_executor = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.12.an', features = ['signature_with_id'] }
+tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.12.an' }
+tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.12.an' }
+tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.12.an', features = ['gosh'] }
 
+account-state = { path = "node/libs/account-state" }
 chitchat = { path = "chitchat" }
 database = { path = "database" }
 ext-messages-auth = { path = "shared/ext-messages-auth" }
@@ -106,10 +116,13 @@ message-router = { path = "message-router" }
 migration-tool = { path = "migration-tool" }
 network = { path = "network" }
 node = { path = "node" }
+node-types = { path = "node/libs/node-types" }
 sdk-wrapper = { path = "shared/sdk-wrapper" }
 telemetry_utils = { path = "telemetry_utils" }
 transport-layer = { path = "transport-layer" }
+trie-map = { path = "node/libs/trie-map" }
 tvm_contracts = { path = "tvm_contracts" }
+versioned_struct = { path = "node/libs/versioned_struct" }
 
 [patch.crates-io]
 libsqlite3-sys = { path = "libsqlite3-sys" }

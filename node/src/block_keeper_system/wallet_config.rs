@@ -10,8 +10,8 @@ use crate::block_keeper_system::abi::BLOCK_KEEPER_WALLET_ABI;
 use crate::block_keeper_system::BlockKeeperSlashData;
 
 pub fn create_wallet_slash_message(data: &BlockKeeperSlashData) -> anyhow::Result<Message> {
-    let addr = data.addr.clone();
-    tracing::trace!("create Slash message: {addr:?}");
+    let account_id = data.addr;
+    tracing::trace!("create Slash message: {account_id:?}");
     let parameters = format!(
         r#"{{"slash_type": {}, "bls_key": "{}"}}"#,
         data.slash_type,
@@ -27,8 +27,8 @@ pub fn create_wallet_slash_message(data: &BlockKeeperSlashData) -> anyhow::Resul
         None,
     )
     .map_err(|e| anyhow::format_err!("Failed to create message body: {e}"))?;
-    let src_acc_id = addr.clone();
-    let dst_acc_id = addr.clone();
+    let src_acc_id = account_id;
+    let dst_acc_id = account_id;
     let header = InternalMessageHeader::with_addresses(
         MsgAddressInt::with_standart(None, 0, src_acc_id.into())
             .map_err(|e| anyhow::format_err!("Failed to get addr: {e}"))?,

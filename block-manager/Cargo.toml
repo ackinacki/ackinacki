@@ -1,6 +1,6 @@
 [package]
 name = "block-manager"
-version = "0.3.1"
+version = "0.4.0"
 edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
@@ -10,6 +10,7 @@ build = "build.rs"
 name = "block-manager"
 
 [dependencies]
+account-state.workspace = true
 anyhow.workspace = true
 bincode.workspace = true
 clap.workspace = true

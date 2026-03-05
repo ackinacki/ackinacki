@@ -3,13 +3,18 @@ use std::net::SocketAddr;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
 use http_server::ExtMsgFeedback;
 use http_server::ExtMsgFeedbackList;
 use http_server::FeedbackError;
 use http_server::FeedbackErrorCode;
+use http_server::NotQueuedExtMessage;
 use network::metrics::NetMetrics;
 use network::pub_sub::connection::IncomingMessage;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 use telemetry_utils::instrumented_channel_ext;
 use telemetry_utils::instrumented_channel_ext::XInstrumentedReceiver;
@@ -18,20 +23,16 @@ use telemetry_utils::mpsc::instrumented_channel;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use telemetry_utils::mpsc::InstrumentedSender;
 use tokio::sync::oneshot;
-use tvm_block::GetRepresentationHash;
 
 use super::dispatcher::DispatchError;
 use super::dispatcher::Dispatcher;
 use super::poisoned_queue::PoisonedQueue as PQueue;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::helper::SHUTDOWN_FLAG;
-use crate::message::WrappedMessage;
 use crate::node::services::sync::ExternalFileSharesBased;
 use crate::node::NetworkMessage;
 use crate::node::Node as NodeImpl;
 use crate::node::NodeIdentifier;
-use crate::types::BlockIdentifier;
-use crate::types::ThreadIdentifier;
 use crate::types::ThreadsTable;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
 
@@ -39,8 +40,10 @@ use crate::utilities::thread_spawn_critical::SpawnCritical;
 // TODO: calculate an acceptable and balanced value.
 const MAX_POISONED_QUEUE_SIZE: usize = 10000;
 
-type FeedbackMessage = (NetworkMessage, oneshot::Sender<ExtMsgFeedback>);
-type FeedbackRegistry = HashMap<String, oneshot::Sender<ExtMsgFeedback>>;
+const FEEDBACK_TTL: Duration = Duration::from_secs(60);
+const FEEDBACK_CLEANUP_INTERVAL: usize = 1000;
+
+type FeedbackRegistry = HashMap<String, (Instant, oneshot::Sender<ExtMsgFeedback>)>;
 
 type PoisonedQueue = PQueue<(NetworkMessage, SocketAddr)>;
 
@@ -50,7 +53,7 @@ type Node = NodeImpl<ExternalFileSharesBased, rand::prelude::SmallRng>;
 #[allow(clippy::large_enum_variant)]
 pub enum Command {
     //    Stop,
-    ExtMessage(NetworkMessage),
+    ExtMessage(NotQueuedExtMessage),
     Route(NetworkMessage, SocketAddr),
     StartThread(
         (
@@ -70,7 +73,10 @@ pub struct RoutingService {
 impl RoutingService {
     pub fn new(
         inbound_network_receiver: InstrumentedReceiver<IncomingMessage<NodeIdentifier>>,
-        inbound_ext_messages_receiver: InstrumentedReceiver<FeedbackMessage>,
+        inbound_ext_messages_receiver: InstrumentedReceiver<(
+            NotQueuedExtMessage,
+            oneshot::Sender<ExtMsgFeedback>,
+        )>,
         metrics: Option<BlockProductionMetrics>,
         net_metrics: Option<NetMetrics>,
     ) -> (
@@ -92,10 +98,11 @@ impl RoutingService {
                         net_metrics,
                     )
                 })
-                .unwrap()
+                .expect("Thread must start")
         };
         let (feedback_sender, feedback_receiver) =
             instrumented_channel(metrics.clone(), crate::helper::metrics::INBOUND_EXT_CHANNEL);
+
         let forwarding_ext_messages_thread = {
             let cmd_sender_clone = cmd_sender.clone();
             std::thread::Builder::new()
@@ -107,7 +114,7 @@ impl RoutingService {
                         cmd_sender_clone,
                     )
                 })
-                .unwrap()
+                .expect("Thread must start")
         };
         (
             RoutingService { cmd_sender, feedback_sender },
@@ -131,7 +138,7 @@ impl RoutingService {
                 XInstrumentedSender<(NetworkMessage, SocketAddr)>,
                 XInstrumentedSender<(NetworkMessage, SocketAddr)>,
                 InstrumentedSender<ExtMsgFeedbackList>,
-                Receiver<WrappedMessage>,
+                Receiver<NotQueuedExtMessage>,
             ) -> anyhow::Result<Node>
             + std::marker::Send
             + 'static,
@@ -180,7 +187,7 @@ impl RoutingService {
         thread_identifier: ThreadIdentifier,
         parent_block_id: Option<BlockIdentifier>,
         node_factory: &mut F,
-        ext_message_receiver: Receiver<WrappedMessage>,
+        ext_message_receiver: Receiver<NotQueuedExtMessage>,
         metrics: Option<BlockProductionMetrics>,
     ) -> anyhow::Result<Node>
     where
@@ -192,7 +199,7 @@ impl RoutingService {
                 XInstrumentedSender<(NetworkMessage, SocketAddr)>,
                 XInstrumentedSender<(NetworkMessage, SocketAddr)>,
                 InstrumentedSender<ExtMsgFeedbackList>,
-                Receiver<WrappedMessage>,
+                Receiver<NotQueuedExtMessage>,
             ) -> anyhow::Result<Node>
             + std::marker::Send,
     {
@@ -263,14 +270,14 @@ impl RoutingService {
                 XInstrumentedSender<(NetworkMessage, SocketAddr)>,
                 XInstrumentedSender<(NetworkMessage, SocketAddr)>,
                 InstrumentedSender<ExtMsgFeedbackList>,
-                Receiver<WrappedMessage>,
+                Receiver<NotQueuedExtMessage>,
             ) -> anyhow::Result<Node>
             + std::marker::Send,
     {
         use Command::*;
         let mut poisoned_queue = PoisonedQueue::new(MAX_POISONED_QUEUE_SIZE);
         std::thread::scope(|s| -> anyhow::Result<()> {
-            let mut ext_message_router: HashMap<ThreadIdentifier, Sender<WrappedMessage>> =
+            let mut ext_message_router: HashMap<ThreadIdentifier, Sender<NotQueuedExtMessage>> =
                 HashMap::new();
             let mut node_handlers = vec![];
             loop {
@@ -290,18 +297,17 @@ impl RoutingService {
                     Ok(command) => {
                         match command {
                             //                    Stop => break,
-                            ExtMessage(message) => {
-                                if let NetworkMessage::ExternalMessage((message, thread)) = message
+                            ExtMessage(ext_message) => {
+                                if let Some(tx) =
+                                    ext_message_router.get_mut(&ext_message.thread_id())
                                 {
-                                    if let Some(tx) = ext_message_router.get_mut(&thread) {
-                                        match tx.send(message) {
-                                            Ok(()) => {}
-                                            _ => {
-                                                if SHUTDOWN_FLAG.get() != Some(&true) {
-                                                    panic!("Failed to send ext message");
-                                                } else {
-                                                    return Ok(());
-                                                }
+                                    match tx.send(ext_message) {
+                                        Ok(()) => {}
+                                        _ => {
+                                            if SHUTDOWN_FLAG.get() != Some(&true) {
+                                                panic!("Failed to send ext message");
+                                            } else {
+                                                return Ok(());
                                             }
                                         }
                                     }
@@ -410,7 +416,10 @@ impl RoutingService {
     }
 
     fn inner_external_messages_forwarding_loop(
-        inbound_ext_messages: InstrumentedReceiver<FeedbackMessage>,
+        inbound_ext_messages: InstrumentedReceiver<(
+            NotQueuedExtMessage,
+            oneshot::Sender<ExtMsgFeedback>,
+        )>,
         feedback_receiver: InstrumentedReceiver<ExtMsgFeedbackList>,
         cmd_sender: InstrumentedSender<Command>,
     ) -> anyhow::Result<()> {
@@ -420,8 +429,9 @@ impl RoutingService {
             std::thread::Builder::new()
                 .name("routing_service_ext_messages_feedback_loop".to_string())
                 .spawn_critical(move || Self::inner_feedback_loop(feedback_receiver, registry))
-                .unwrap()
+                .expect("Thread must start")
         };
+        let mut message_count: usize = 0;
         loop {
             match inbound_ext_messages.recv() {
                 Err(e) => {
@@ -434,37 +444,38 @@ impl RoutingService {
                     }
                     anyhow::bail!("NetworkMessageRouter closed");
                 }
-                Ok(message) => {
+                Ok((message, sender)) => {
                     tracing::debug!("NetworkMessageRouter: received external message");
-                    let (message, sender) = message;
-                    if let NetworkMessage::ExternalMessage((ref ext_message, _)) = message {
-                        let message_hash = ext_message
-                            .message
-                            .hash()
-                            .map_err(|e| anyhow::format_err!("{e}"))?
-                            .to_hex_string();
 
-                        let mut registry_guard = feedback_registry.lock();
-                        #[allow(clippy::map_entry)]
-                        if registry_guard.contains_key(&message_hash) {
-                            let feedback = ExtMsgFeedback {
-                                message_hash,
-                                error: Some(FeedbackError {
-                                    code: FeedbackErrorCode::DuplicateMessage,
-                                    message: None,
-                                }),
-                                ..Default::default()
-                            };
+                    let message_hash = message.hash().to_hex_string();
 
-                            let _ = sender.send(feedback); // warn about duplicate
-                        } else {
-                            registry_guard.insert(message_hash, sender);
-                            match cmd_sender.send(Command::ExtMessage(message)) {
-                                Ok(()) => {}
-                                Err(e) => {
-                                    if SHUTDOWN_FLAG.get() != Some(&true) {
-                                        anyhow::bail!("Failed to send ext message: {e}");
-                                    }
+                    let mut registry_guard = feedback_registry.lock();
+
+                    message_count += 1;
+                    if message_count % FEEDBACK_CLEANUP_INTERVAL == 0 {
+                        registry_guard
+                            .retain(|_, (created_at, _)| created_at.elapsed() < FEEDBACK_TTL);
+                    }
+
+                    #[allow(clippy::map_entry)]
+                    if registry_guard.contains_key(&message_hash) {
+                        let feedback = ExtMsgFeedback {
+                            message_hash,
+                            error: Some(FeedbackError {
+                                code: FeedbackErrorCode::DuplicateMessage,
+                                message: None,
+                            }),
+                            ..Default::default()
+                        };
+
+                        let _ = sender.send(feedback); // warn about duplicate
+                    } else {
+                        registry_guard.insert(message_hash, (Instant::now(), sender));
+                        match cmd_sender.send(Command::ExtMessage(message)) {
+                            Ok(()) => {}
+                            Err(e) => {
+                                if SHUTDOWN_FLAG.get() != Some(&true) {
+                                    anyhow::bail!("Failed to send ext message: {e}");
                                 }
                             }
                         }
@@ -488,7 +499,7 @@ impl RoutingService {
                 Ok(feedbacks) => {
                     tracing::debug!("NetworkMessageRouter: received feedback: {}", feedbacks);
                     for feedback in feedbacks.0 {
-                        if let Some(sender) =
+                        if let Some((_created_at, sender)) =
                             feedback_registry.lock().remove(&feedback.message_hash)
                         {
                             if SHUTDOWN_FLAG.get() == Some(&true) {
@@ -510,7 +521,7 @@ impl crate::multithreading::threads_tracking_service::Subscriber for RoutingServ
         thread_id: &ThreadIdentifier,
         _threads_table: Option<ThreadsTable>,
     ) {
-        let _ = self.cmd_sender.send(Command::StartThread((*thread_id, parent_block.clone())));
+        let _ = self.cmd_sender.send(Command::StartThread((*thread_id, *parent_block)));
     }
 
     fn handle_stop_thread(&mut self, _last_block: &BlockIdentifier, _thread_id: &ThreadIdentifier) {

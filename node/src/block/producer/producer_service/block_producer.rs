@@ -1,10 +1,14 @@
 // 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+#[cfg(feature = "history_proofs")]
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::SocketAddr;
+#[cfg(feature = "history_proofs")]
+use std::ops::Div;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -13,6 +17,8 @@ use std::time::Duration;
 
 use http_server::ExtMsgFeedbackList;
 use network::channel::NetBroadcastSender;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 use telemetry_utils::instrumented_channel_ext::WrappedItem;
 use telemetry_utils::instrumented_channel_ext::XInstrumentedSender;
@@ -29,7 +35,7 @@ use crate::bls::envelope::Envelope;
 use crate::bls::gosh_bls::PubKey;
 use crate::bls::gosh_bls::Secret;
 use crate::bls::try_seal::TrySeal;
-use crate::bls::GoshBLS;
+use crate::config::config_read::ConfigRead;
 use crate::config::must_save_state_on_seq_no;
 use crate::external_messages::ExternalMessagesThreadState;
 use crate::helper::block_flow_trace;
@@ -55,23 +61,26 @@ use crate::protocol::authority_switch::action_lock::StartBlockProducerThreadInit
 use crate::protocol::authority_switch::network_message::AuthoritySwitch;
 use crate::protocol::authority_switch::network_message::NextRoundSuccess;
 use crate::repository::optimistic_state::OptimisticState;
-use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::optimistic_state::OptimisticStateSaveCommand;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::as_signatures_map::AsSignaturesMap;
 use crate::types::bp_selector::ProducerSelector;
 use crate::types::common_section::Directives;
+#[cfg(feature = "history_proofs")]
+use crate::types::history_proof::LayerNumber;
+#[cfg(feature = "history_proofs")]
+use crate::types::history_proof::ProofLayerRootHash;
+#[cfg(feature = "history_proofs")]
+use crate::types::history_proof::HISTORY_PROOF_WINDOW_SIZE;
 use crate::types::AckiNackiBlock;
 #[cfg(feature = "transitioning_node_version")]
 use crate::types::AckiNackiBlockVersioned;
 use crate::types::AggregateFilter;
-use crate::types::BlockIdentifier;
 use crate::types::BlockRound;
 use crate::types::BlockSeqNo;
 use crate::types::CollectedAttestations;
 use crate::types::RndSeed;
-use crate::types::ThreadIdentifier;
 use crate::utilities::all_elements_same::AllElementsSame;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
@@ -96,8 +105,8 @@ pub struct BlockProducer {
     block_state_repository: BlockStateRepository,
     production_process: TVMBlockProducerProcess,
     feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
-    received_acks: Arc<Mutex<Vec<Envelope<GoshBLS, AckData>>>>,
-    received_nacks: Arc<Mutex<Vec<Envelope<GoshBLS, NackData>>>>,
+    received_acks: Arc<Mutex<Vec<Envelope<AckData>>>>,
+    received_nacks: Arc<Mutex<Vec<Envelope<NackData>>>>,
     shared_services: SharedServices,
     bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
     #[builder(default = std::time::Instant::now())]
@@ -125,6 +134,8 @@ pub struct BlockProducer {
     control_rx: std::sync::mpsc::Receiver<BlockProducerCommand>,
 
     save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
+    #[allow(unused)]
+    config_read: ConfigRead,
 }
 
 #[derive(Debug, PartialEq)]
@@ -159,11 +170,10 @@ impl BlockProducer {
                 in_flight_productions = self.start_production(next_bp_command.take())?;
                 if in_flight_productions.is_some() {
                     let (block_id_to_continue, block_seq_no_to_continue) =
-                        in_flight_productions.clone().unwrap();
-                    if let Err(e) = self.execute_restarted_producer(
-                        block_id_to_continue.clone(),
-                        block_seq_no_to_continue,
-                    ) {
+                        in_flight_productions.unwrap();
+                    if let Err(e) = self
+                        .execute_restarted_producer(block_id_to_continue, block_seq_no_to_continue)
+                    {
                         tracing::error!(
                             "Failed to restart producer from {} {:?}: {e}",
                             block_id_to_continue,
@@ -269,7 +279,7 @@ impl BlockProducer {
                     if !was_producer {
                         self.bp_production_count.fetch_add(1, Ordering::Relaxed);
                     }
-                    producer_tails = Some((block_id_to_continue.clone(), block_seq_no_to_continue));
+                    producer_tails = Some((block_id_to_continue, block_seq_no_to_continue));
                 }
                 Err(e) => {
                     tracing::warn!("failed to start producer process: {e}");
@@ -402,11 +412,11 @@ impl BlockProducer {
             return Ok(None);
         };
         let (block_id, seq_no, round) =
-            if let Some((block_id, block_seq_no)) = production_status.last_produced.clone() {
+            if let Some((block_id, block_seq_no)) = production_status.last_produced {
                 (block_id, block_seq_no, 0)
             } else {
                 (
-                    production_status.init_params.parent_block_identifier().clone(),
+                    *production_status.init_params.parent_block_identifier(),
                     *production_status.init_params.parent_block_seq_no(),
                     *production_status.init_params.round(),
                 )
@@ -496,11 +506,7 @@ impl BlockProducer {
                 let n = *lock.lock();
                 n
             };
-            let update_result = self.update_candidate_common_section(
-                &mut block,
-                share_state_ids,
-                produced_block.optimistic_state(),
-            );
+            let update_result = self.update_candidate_common_section(&mut block, share_state_ids);
             let produced_block = match update_result {
                 Ok(UpdateCommonSectionResult::FailedToBuildChainToTheLastFinalizedBlock) => {
                     tracing::trace!("Failed to update common section and our block seems to be invalidated, stop production");
@@ -575,12 +581,24 @@ impl BlockProducer {
                         }
                         produced_data.produced_blocks_mut().clear();
                         let parent_block_id = block.parent();
-                        let block_round = block.get_common_section().round();
+                        let block_round = *block.common_section().round();
+
                         *producer_tails = self.restart_production(
                             parent_block_id,
                             block_round,
-                            actual_required_version,
+                            actual_required_version.clone(),
                         )?;
+
+                        #[cfg(feature = "history_proofs")]
+                        if !self.config_read.is_retired(&actual_required_version) {
+                            if let Some(parent_block_height) = self
+                                .block_state_repository
+                                .get(&parent_block_id)?
+                                .guarded(|e| *e.block_height())
+                            {
+                                self.repository.init_history_proof_data(parent_block_height)?;
+                            }
+                        }
                         return Ok((false, None));
                     }
                 }
@@ -594,7 +612,7 @@ impl BlockProducer {
 
             #[cfg(feature = "rotate_after_sync")]
             {
-                if block.get_common_section().directives().share_state_resources().is_some() {
+                if block.common_section().directives().share_state_resources().is_some() {
                     tracing::trace!("Save share state block seq_no: {:?}", block.seq_no());
                     let mut shared_state_seq_no = SHARED_STATE_SEQ_NO.lock();
                     *shared_state_seq_no = Some(block.seq_no());
@@ -664,6 +682,12 @@ impl BlockProducer {
                 return Ok((false, None));
             };
             let envelope = envelope?;
+
+            #[cfg(feature = "transitioning_node_version")]
+            let net_block = NetBlock::with_versioned(&envelope)?;
+            #[cfg(not(feature = "transitioning_node_version"))]
+            let net_block = NetBlock::with_envelope(&envelope)?;
+
             // Check if this node has already signed block of the same height
             // Note: Not valid anymore. Can't sign blocks of the same round though.
             // TODO: add corrected check.
@@ -674,7 +698,7 @@ impl BlockProducer {
             // }
 
             let producer_selector =
-                block.get_common_section().producer_selector().expect("Must be set");
+                block.common_section().producer_selector().clone().expect("Must be set");
             let parent_height = parent_state
                 .guarded(|e| *e.block_height())
                 .expect("Parent block height must be set");
@@ -696,7 +720,7 @@ impl BlockProducer {
                                 .node_identifier(self.node_credentials.node_id().clone())
                                 .round(*production_status.init_params.round())
                                 .block_height(block_height)
-                                .proposed_block(NetBlock::with_envelope(&envelope)?)
+                                .proposed_block(net_block)
                                 .attestations_aggregated(None)
                                 // TODO: Must include a proof!
                                 .requests_aggregated(vec![])
@@ -716,7 +740,7 @@ impl BlockProducer {
                         message,
                     )
                 } else {
-                    let message = NetworkMessage::Candidate(NetBlock::with_envelope(&envelope)?);
+                    let message = NetworkMessage::Candidate(net_block);
                     (
                         self.self_tx.send(WrappedItem {
                             payload: (message.clone(), self.self_addr),
@@ -749,7 +773,7 @@ impl BlockProducer {
 
             tracing::trace!("insert to cache_forward_optimistic {:?} {:?}", block_seq_no, block_id);
             if let Some(ref mut production_status) = self.production_status {
-                production_status.last_produced = Some((block_id.clone(), block_seq_no));
+                production_status.last_produced = Some((block_id, block_seq_no));
             } else {
                 panic!("Something is wrong");
             };
@@ -775,7 +799,7 @@ impl BlockProducer {
 
     pub(crate) fn _does_block_have_a_valid_sibling(
         &self,
-        candidate_block: &Envelope<GoshBLS, AckiNackiBlock>,
+        candidate_block: &Envelope<AckiNackiBlock>,
     ) -> anyhow::Result<bool> {
         let parent = candidate_block.data().parent();
         let parent_state = self.block_state_repository.get(&parent)?;
@@ -790,9 +814,10 @@ impl BlockProducer {
 
     fn update_candidate_common_section(
         &mut self,
-        candidate_block: &mut AckiNackiBlock,
+        #[cfg(not(feature = "transitioning_node_version"))] candidate_block: &mut AckiNackiBlock,
+        #[cfg(feature = "transitioning_node_version")]
+        candidate_block: &mut AckiNackiBlockVersioned,
         share_state_ids: Option<HashMap<ThreadIdentifier, BlockIdentifier>>,
-        optimistic_state: &OptimisticStateImpl,
     ) -> anyhow::Result<UpdateCommonSectionResult> {
         tracing::trace!(
             "update_candidate_common_section: share_state {} block_seq_no: {:?}, id: {:?}",
@@ -878,7 +903,7 @@ impl BlockProducer {
             candidate_block.identifier(),
             attestations_required,
         );
-        let mut common_section = candidate_block.get_common_section().clone();
+        let mut common_section = candidate_block.common_section().clone();
         common_section.set_block_attestations(aggregated_attestations);
 
         // TODO: update parent_producer_selector
@@ -898,7 +923,7 @@ impl BlockProducer {
             } else {
                 // If previous selector was invalid (due to bk removal) generate a new one
                 producer_selector = ProducerSelector::builder()
-                    .rng_seed_block_id(candidate_block.identifier().clone())
+                    .rng_seed_block_id(candidate_block.identifier())
                     .index(0)
                     .build();
                 let Some(bp_distance_for_this_node) = producer_selector
@@ -923,9 +948,12 @@ impl BlockProducer {
             common_section.set_directives(
                 Directives::builder().share_state_resources(Some(directive)).build(),
             );
-            common_section
-                .set_threads_table(Some(optimistic_state.get_produced_threads_table().clone()));
         }
+        #[cfg(feature = "history_proofs")]
+        let Some(parent_block_height) = parent_block_state.guarded(|state| *state.block_height()) else {
+            tracing::trace!("update_candidate_common_section: parent block height is missing");
+            return Ok(UpdateCommonSectionResult::AncestorIsNotReadyYet);
+        };
 
         candidate_block.set_common_section(common_section, true)?;
 
@@ -955,7 +983,7 @@ impl BlockProducer {
                 };
 
                 // why?
-                // assert!(!candidate_block.get_common_section().block_keeper_set_changes.is_empty());
+                // assert!(!candidate_block.common_section().block_keeper_set_changes.is_empty());
 
                 let (descendant_bk_set, _descendant_future_bk_set) =
                     update_block_keeper_set_from_common_section(
@@ -965,31 +993,150 @@ impl BlockProducer {
                     )?
                     .unwrap_or((bk_set.clone(), future_bk_set.clone()));
 
-                let attestations = candidate_block.get_common_section().block_attestations();
+                let attestations = candidate_block.common_section().block_attestations();
                 let block_state = self.block_state_repository.get(&candidate_block.identifier())?;
-                block_state.guarded_mut(|e| {
+                let _block_version_state = block_state.guarded_mut(|e| {
                     for attestation in attestations {
                         e.add_verified_attestations_for(
-                            attestation.data().block_id().clone(),
-                            *attestation.data().target_type(),
+                            attestation.data(),
                             HashSet::from_iter(
                                 attestation.clone_signature_occurrences().keys().cloned(),
                             ),
                         )?;
                     }
-                    e.set_block_version_state(
-                        parent_block_version.next(
-                            candidate_block.identifier(),
-                            descendant_bk_set
-                                .iter()
-                                .map(|e| e.protocol_support.clone())
-                                .all_elements_same(),
-                            &passed_checkpoints,
-                        ),
-                    )?;
-                    Ok::<(), anyhow::Error>(())
+                    let block_version_state = parent_block_version.next(
+                        candidate_block.identifier(),
+                        descendant_bk_set
+                            .iter()
+                            .map(|e| e.protocol_support.clone())
+                            .all_elements_same(),
+                        &passed_checkpoints,
+                    );
+                    e.set_block_version_state(block_version_state.clone())?;
+                    Ok::<_, anyhow::Error>(block_version_state)
                 })?;
 
+                #[cfg(feature = "history_proofs")]
+                if *candidate_block.common_section().block_height() % HISTORY_PROOF_WINDOW_SIZE == 0
+                    && *candidate_block.common_section().block_height().height() != 0
+                    && !self.config_read.is_retired(block_version_state.to_use())
+                {
+                    let mut common_section = candidate_block.common_section().clone();
+                    let history_proof_data = self.repository.get_history_proof_data();
+                    let data_lock = history_proof_data.read();
+                    let Some(thread_history) = data_lock.get(&self.thread_id).cloned() else {
+                        anyhow::bail!("Thread history can't be empty when block with non zero height is is being produced");
+                    };
+                    drop(data_lock);
+                    let history_lock = thread_history.read();
+                    let Some(mut base_layer_data) = history_lock.get(&(0 as LayerNumber)).cloned()
+                    else {
+                        anyhow::bail!("Thread history can't be empty when block with non zero height is is being produced");
+                    };
+                    let mut data = vec![];
+                    let mut cursor = parent_block_state.clone();
+                    if *base_layer_data.data_len() != 0 {
+                        for _ in *base_layer_data.data_len()..HISTORY_PROOF_WINDOW_SIZE {
+                            let (envelope_hash, parent, block_height) = cursor.guarded(|e| {
+                                (
+                                    e.envelope_hash().clone().expect("Must be set"),
+                                    (*e.parent_block_identifier()).expect("Must be set"),
+                                    (*e.block_height()).expect("Must be set"),
+                                )
+                            });
+                            data.push((*cursor.block_identifier(), envelope_hash, block_height));
+                            cursor = self.block_state_repository.get(&parent)?;
+                        }
+                        for (block_id, envelope_hash, block_height) in data.iter().rev() {
+                            base_layer_data.update_from_pure_data(
+                                block_id.into(),
+                                envelope_hash.into(),
+                                *block_height,
+                            )?;
+                        }
+                    }
+                    let mut prev_layer_root_hash = None;
+                    let mut prev_layer_block_height = None;
+                    for (layer_num, data) in history_lock.iter() {
+                        if *layer_num > 0 {
+                            if let Some(height) = prev_layer_block_height.as_ref() {
+                                if height > data.last_processed_block_height().height() {
+                                    break;
+                                }
+                            }
+                            prev_layer_block_height =
+                                Some(*data.last_processed_block_height().height());
+                            prev_layer_root_hash = data.data().get(*data.data_len() - 1).cloned();
+                        }
+                    }
+
+                    let root_hash = base_layer_data.calculate_root_hash(prev_layer_root_hash)?;
+                    let mut proofs = BTreeMap::new();
+                    let data = ProofLayerRootHash::builder()
+                        .layer(1)
+                        .root_hash(root_hash)
+                        .block_height(parent_block_height)
+                        .block_id(candidate_block.identifier())
+                        .build();
+
+                    proofs.insert(1 as LayerNumber, data);
+
+                    let additional_layers = common_section
+                        .block_height()
+                        .height()
+                        .ilog(HISTORY_PROOF_WINDOW_SIZE as u64)
+                        .saturating_sub(1);
+                    let mut height_cursor = *common_section.block_height().height();
+                    for i in 0..additional_layers {
+                        let layer = (i + 1) as LayerNumber;
+                        height_cursor = height_cursor.div(HISTORY_PROOF_WINDOW_SIZE as u64);
+                        if height_cursor % HISTORY_PROOF_WINDOW_SIZE as u64 == 0
+                            && height_cursor != 0
+                        {
+                            let Some(mut layer_data) = history_lock.get(&layer).cloned() else {
+                                anyhow::bail!("Thread history can't be empty when block with non zero height is is being produced");
+                            };
+                            let previous_root = *proofs
+                                .get(&layer)
+                                .ok_or(anyhow::format_err!("Failed to get previous layer data"))?
+                                .root_hash();
+                            layer_data.update_from_pure_data(
+                                previous_root,
+                                previous_root,
+                                parent_block_height,
+                            )?;
+                            let mut prev_layer_root_hash = None;
+                            let mut prev_layer_block_height = None;
+                            for (layer_num, data) in history_lock.iter() {
+                                if *layer_num > layer {
+                                    if let Some(height) = prev_layer_block_height.as_ref() {
+                                        if height > data.last_processed_block_height().height() {
+                                            break;
+                                        }
+                                    }
+                                    prev_layer_block_height =
+                                        Some(*data.last_processed_block_height().height());
+                                    prev_layer_root_hash =
+                                        data.data().get(*data.data_len() - 1).cloned();
+                                }
+                            }
+
+                            let root_hash = layer_data.calculate_root_hash(prev_layer_root_hash)?;
+                            let data = ProofLayerRootHash::builder()
+                                .layer(layer + 1)
+                                .root_hash(root_hash)
+                                .block_height(parent_block_height)
+                                .block_id(candidate_block.identifier())
+                                .build();
+
+                            proofs.insert(layer + 1, data);
+                        } else {
+                            break;
+                        }
+                    }
+                    common_section.set_history_proofs(proofs);
+                    candidate_block.set_common_section(common_section, true)?;
+                }
                 // if let Some((last_dependant_block_seq_no, last_dependant_block_id)) =
                 //     dependent_ancestor_blocks
                 //         .dependent_ancestor_blocks()
@@ -1035,10 +1182,8 @@ impl BlockProducer {
     ) -> anyhow::Result<ProducerSelector> {
         // Check if this thread was started from the last finalized block
         if self.thread_id.is_spawning_block(parent_block_id) {
-            let selector = ProducerSelector::builder()
-                .rng_seed_block_id(parent_block_id.clone())
-                .index(0)
-                .build();
+            let selector =
+                ProducerSelector::builder().rng_seed_block_id(*parent_block_id).index(0).build();
             Ok(selector)
         } else {
             self.block_state_repository
@@ -1078,7 +1223,7 @@ impl BlockProducer {
 
     pub(crate) fn _broadcast_candidate_block_that_was_possibly_produced_by_another_node(
         &self,
-        candidate_block: Envelope<GoshBLS, AckiNackiBlock>,
+        candidate_block: Envelope<AckiNackiBlock>,
     ) -> anyhow::Result<()> {
         tracing::debug!("rebroadcasting block: {}", candidate_block,);
         self.broadcast_tx.send(NetworkMessage::resent_candidate(

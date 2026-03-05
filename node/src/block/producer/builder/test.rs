@@ -5,31 +5,35 @@ mod tests {
     use std::collections::VecDeque;
 
     use chrono::Utc;
+    use http_server::NotQueuedExtMessage;
     use indexset::BTreeMap;
+    use node_types::AccountIdentifier;
+    use node_types::ThreadIdentifier;
     use serde_json::json;
     use telemetry_utils::now_ms;
-    // use tracing_subscriber::EnvFilter;
     use tvm_block::GetRepresentationHash;
     use tvm_block::HashmapAugType;
-    use tvm_block::Message;
     use tvm_block::MsgAddrStd;
     use tvm_block::MsgAddressExt;
     use tvm_block::MsgAddressInt;
+    use tvm_block::Serializable;
     use tvm_sdk::FunctionCallSet;
     use tvm_types::AccountId;
     use tvm_types::UInt256;
 
+    // use tracing_subscriber::EnvFilter;
     use crate::block::producer::builder::build_actions::EXTRA_EXTERNAL_MSG;
     use crate::block::producer::builder::BlockBuilder;
     use crate::block::producer::execution_time::ExecutionTimeLimits;
     use crate::block::producer::wasm::WasmNodeCache;
     use crate::config::load_blockchain_config;
+    use crate::external_messages::ExtMessageDst;
+    use crate::external_messages::QueuedExtMessage;
     use crate::external_messages::Stamp;
     use crate::repository::accounts::AccountsRepository;
+    use crate::repository::accounts::NodeThreadAccounts;
     use crate::storage::MessageDurableStorage;
-    use crate::types::AccountAddress;
     use crate::types::BlockSeqNo;
-    use crate::types::ThreadIdentifier;
     use crate::zerostate::ZeroState;
 
     pub static TEST_CONTRACT_ABI: &str =
@@ -45,8 +49,12 @@ mod tests {
         //     .init();
         let zerostate = ZeroState::load_from_file("./tests/test_verification/zerostate")?;
         let opt_state = zerostate.state(&ThreadIdentifier::default())?.clone();
-        let ext_queue: HashMap<AccountAddress, VecDeque<(Stamp, Message)>> = HashMap::new();
-        let bc_config = load_blockchain_config()?.get(&BlockSeqNo::from(0));
+        let ext_queue: HashMap<ExtMessageDst, VecDeque<(Stamp, QueuedExtMessage)>> = HashMap::new();
+        let bc_config = load_blockchain_config()?.get(
+            &BlockSeqNo::from(0),
+            #[cfg(feature = "usdc_name_repair")]
+            false,
+        );
         let now = now_ms();
         let mut ext_messages = vec![];
         for i in 0..5 {
@@ -69,16 +77,24 @@ mod tests {
             )
             .unwrap()
             .message;
+
+            let message_cell = message
+                .serialize()
+                .map_err(|e| anyhow::format_err!("Failed to serialize message: {e}"))?;
+            let message_bytes = tvm_types::write_boc(&message_cell)
+                .map_err(|e| anyhow::format_err!("Failed to write boc: {e}"))?;
+            let message_base64 = tvm_types::base64_encode(&message_bytes);
+
+            let ext_message =
+                NotQueuedExtMessage::try_new("cafe911", &message_base64, None, None, None).unwrap();
+
+            let queued_ext_message = QueuedExtMessage::try_from_incoming(ext_message).unwrap();
             let mut guard = EXTRA_EXTERNAL_MSG.lock();
             let now = Utc::now();
-            guard.push((
-                message.dst().unwrap().address().into(),
-                (Stamp { index: i, timestamp: now }, message.clone()),
-            ));
-            ext_messages.push((
-                message.dst().unwrap().address().into(),
-                (Stamp { index: i, timestamp: now }, message.clone()),
-            ));
+            let dst = ExtMessageDst::from_message(&message, None).unwrap();
+            guard.push((dst, (Stamp { index: i, timestamp: now }, queued_ext_message.clone())));
+            ext_messages
+                .push((dst, (Stamp { index: i, timestamp: now }, queued_ext_message.clone())));
         }
         let seed = Some(UInt256::rand());
         let bp_builder = BlockBuilder::with_params(
@@ -89,6 +105,8 @@ mod tests {
             seed.clone(),
             None,
             AccountsRepository::new(tempfile::tempdir()?.keep(), None, 1),
+            NodeThreadAccounts::new_repository(tempfile::tempdir()?.path().join("thread_accounts"))
+                .build()?,
             String::new(),
             String::new(),
             1,
@@ -96,6 +114,9 @@ mod tests {
             None,
             WasmNodeCache::new()?,
             false,
+            false,
+            #[cfg(feature = "usdc_name_repair")]
+            std::sync::Arc::new(parking_lot::Mutex::new(None)),
         )?;
 
         let (block, _, _) = bp_builder.build_block(
@@ -108,7 +129,7 @@ mod tests {
             &ExecutionTimeLimits::NO_LIMITS,
         )?;
 
-        let mut check_messages_map: HashMap<AccountAddress, BTreeMap<u64, UInt256>> =
+        let mut check_messages_map: HashMap<AccountIdentifier, BTreeMap<u64, UInt256>> =
             HashMap::new();
         assert!(block
             .block
@@ -149,6 +170,8 @@ mod tests {
             seed,
             None,
             AccountsRepository::new(tempfile::tempdir()?.keep(), None, 1),
+            NodeThreadAccounts::new_repository(tempfile::tempdir()?.path().join("thread_accounts"))
+                .build()?,
             String::new(),
             String::new(),
             1,
@@ -156,6 +179,9 @@ mod tests {
             None,
             WasmNodeCache::new()?,
             true,
+            false,
+            #[cfg(feature = "usdc_name_repair")]
+            std::sync::Arc::new(parking_lot::Mutex::new(None)),
         )?;
 
         let data = ext_messages.remove(4);

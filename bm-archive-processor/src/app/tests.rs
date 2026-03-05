@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 //! Integration tests for the archive processing pipeline.
 //!
@@ -12,6 +12,7 @@ mod integration_tests {
 
     use crate::config::AppConfig;
     use crate::domain::grouping::ArchiveFile;
+    use crate::domain::traits::CompressionMode;
     use crate::domain::traits::S3Client;
     use crate::infra::test_doubles::dry_run_s3_client::DryRunS3Client;
     use crate::infra::test_doubles::mock_db_client::MockDbClient;
@@ -45,7 +46,7 @@ mod integration_tests {
             full_db: PathBuf::from("/full/blockchain.db"),
             bucket: "test-bucket".to_string(),
             require_all_servers: true,
-            compress: false,
+            compression: CompressionMode::None,
             skip_upload: false,
             dry_run: false,
         }
@@ -73,7 +74,7 @@ mod integration_tests {
 
         // Verify file was processed
         let move_calls = fs_client.move_processed_calls();
-        assert_eq!(move_calls.len(), 1);
+        assert_eq!(move_calls.len(), 2);
     }
 
     #[tokio::test]
@@ -97,9 +98,9 @@ mod integration_tests {
         let merge_calls = db_client.merge_calls();
         assert_eq!(merge_calls.len(), 3);
 
-        // Each group's file should be moved
+        // Each group moves one source DB and one produced daily DB
         let move_calls = fs_client.move_processed_calls();
-        assert_eq!(move_calls.len(), 3);
+        assert_eq!(move_calls.len(), 6);
     }
 
     #[tokio::test]
@@ -123,7 +124,7 @@ mod integration_tests {
         assert_eq!(merge_calls.len(), 1);
 
         let move_calls = fs_client.move_processed_calls();
-        assert_eq!(move_calls.len(), 1);
+        assert_eq!(move_calls.len(), 2);
     }
 
     #[tokio::test]
@@ -184,7 +185,7 @@ mod integration_tests {
         assert!(full_db.to_string_lossy().contains("blockchain.db"));
 
         let move_calls = fs_client.move_processed_calls();
-        assert_eq!(move_calls.len(), 1);
+        assert_eq!(move_calls.len(), 2);
     }
 
     #[tokio::test]
@@ -213,6 +214,6 @@ mod integration_tests {
 
         // 4 files moved (2 per group: one from each server)
         let move_calls = fs_client.move_processed_calls();
-        assert_eq!(move_calls.len(), 4);
+        assert_eq!(move_calls.len(), 6);
     }
 }

@@ -1,9 +1,10 @@
+use node_types::ThreadIdentifier;
+
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
 use crate::node::BlockState;
 use crate::node::BlockStateRepository;
 use crate::types::BlockSeqNo;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 
 /// Find potentially shortest gap that MAY fix all chains.
@@ -66,7 +67,7 @@ pub fn _find_all_gaps(
             if b.guarded(|e| e.thread_identifier() != this_thread) {
                 return false;
             }
-            let Some(parent_block_id) = b.guarded(|e| e.parent_block_identifier().clone()) else {
+            let Some(parent_block_id) = b.guarded(|e| *e.parent_block_identifier()) else {
                 return false;
             };
             block_state_repository

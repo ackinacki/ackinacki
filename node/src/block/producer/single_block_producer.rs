@@ -7,6 +7,8 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use http_server::ExtMsgFeedbackList;
+use node_types::BlockIdentifier;
+use node_types::ThreadIdentifier;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use telemetry_utils::now_ms;
 use tracing::instrument;
@@ -25,9 +27,10 @@ use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperSlashData;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
-use crate::bls::GoshBLS;
 use crate::config::config_read::ConfigRead;
 use crate::config::BlockchainConfigRead;
+use crate::external_messages::ExtMessageDst;
+use crate::external_messages::QueuedExtMessage;
 use crate::external_messages::Stamp;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::Message;
@@ -41,18 +44,18 @@ use crate::node::shared_services::SharedServices;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
 use crate::repository::accounts::AccountsRepository;
+use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
 use crate::types::next_seq_no;
-use crate::types::AccountAddress;
 use crate::types::AckiNackiBlock;
 #[cfg(feature = "transitioning_node_version")]
+use crate::types::AckiNackiBlockOld;
+#[cfg(feature = "transitioning_node_version")]
 use crate::types::AckiNackiBlockVersioned;
-use crate::types::BlockIdentifier;
 use crate::types::BlockRound;
-use crate::types::ThreadIdentifier;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 use crate::versioning::ProtocolVersion;
@@ -103,7 +106,7 @@ pub struct TVMBlockProducer {
     #[allow(unused)]
     node_config_read: ConfigRead,
     blockchain_config: BlockchainConfigRead,
-    message_queue: HashMap<AccountAddress, VecDeque<(Stamp, tvm_block::Message)>>,
+    message_queue: HashMap<ExtMessageDst, VecDeque<(Stamp, QueuedExtMessage)>>,
     producer_node_id: NodeIdentifier,
     thread_count_soft_limit: usize,
     parallelization_level: usize,
@@ -111,11 +114,14 @@ pub struct TVMBlockProducer {
     block_keeper_preepoch_code_hash: String,
     epoch_block_keeper_data: Vec<BlockKeeperData>,
     shared_services: SharedServices,
-    block_nack: Vec<Envelope<GoshBLS, NackData>>,
+    block_nack: Vec<Envelope<NackData>>,
     accounts: AccountsRepository,
     block_state_repository: BlockStateRepository,
+    thread_accounts_repository: NodeThreadAccountsRepository,
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
+    #[cfg(feature = "usdc_name_repair")]
+    usdc_name_repaired: std::sync::Arc<parking_lot::Mutex<Option<crate::types::BlockSeqNo>>>,
 }
 
 impl TVMBlockProducer {
@@ -199,6 +205,8 @@ impl BlockProducer for TVMBlockProducer {
                 let cross_thread_ref_data_service = self
                     .shared_services
                     .exec(|container| container.cross_thread_ref_data_service.clone());
+                let is_block_of_retired_version =
+                    self.node_config_read.is_retired(&_protocol_version);
                 let preprocessing_result = crate::block::preprocessing::preprocess(
                     parent_state,
                     refs.clone(),
@@ -208,6 +216,8 @@ impl BlockProducer for TVMBlockProducer {
                     self.epoch_block_keeper_data.clone(),
                     message_db.clone(),
                     self.metrics.clone(),
+                    &self.thread_accounts_repository,
+                    !is_block_of_retired_version,
                 )?;
                 Ok::<_, anyhow::Error>((
                     preprocessing_result.state,
@@ -218,10 +228,15 @@ impl BlockProducer for TVMBlockProducer {
             })?;
 
         let ref_ids: Vec<BlockIdentifier> =
-            refs.into_iter().map(|ref_data| ref_data.block_identifier().clone()).collect();
+            refs.into_iter().map(|ref_data| *ref_data.block_identifier()).collect();
         let active_threads = self.active_threads;
 
-        let blockchain_config = self.blockchain_config.get(&next_seq_no(parent_block_seq_no));
+        let is_block_of_retired_version = self.node_config_read.is_retired(&_protocol_version);
+        let blockchain_config = self.blockchain_config.get(
+            &next_seq_no(parent_block_seq_no),
+            #[cfg(feature = "usdc_name_repair")]
+            is_block_of_retired_version,
+        );
         let block_gas_limit = blockchain_config.get_gas_config(false).block_gas_limit;
 
         tracing::debug!(target: "node", "PARENT block: {:?}", initial_state.get_block_info());
@@ -237,6 +252,7 @@ impl BlockProducer for TVMBlockProducer {
             None,
             Some(control_rx_stop),
             self.accounts,
+            self.thread_accounts_repository.clone(),
             self.block_keeper_epoch_code_hash.clone(),
             self.block_keeper_preepoch_code_hash.clone(),
             self.parallelization_level,
@@ -244,6 +260,9 @@ impl BlockProducer for TVMBlockProducer {
             self.metrics.clone(),
             self.wasm_cache,
             false,
+            is_block_of_retired_version,
+            #[cfg(feature = "usdc_name_repair")]
+            self.usdc_name_repaired,
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (mut prepared_block, processed_stamps, ext_message_feedbacks) = producer.build_block(
@@ -265,11 +284,10 @@ impl BlockProducer for TVMBlockProducer {
 
         let res = trace_span!("post production").in_scope(|| {
             let mut cross_thread_ref_data = prepared_block.cross_thread_ref_data.clone();
-            let produced_block_id = prepared_block.state.block_id.clone();
+            let produced_block_id = prepared_block.state.block_id;
             let proposed_action = {
                 match self.shared_services.exec(|e| {
                     let result = e.load_balancing.check(
-                        &produced_block_id,
                         &thread_identifier,
                         &in_table,
                         self.thread_count_soft_limit,
@@ -287,22 +305,13 @@ impl BlockProducer for TVMBlockProducer {
                     }
                 }
             };
-            let forward_table = {
-                match proposed_action {
-                    ThreadAction::ContinueAsIs => None,
-                    ThreadAction::Split(e) => Some(e.proposed_threads_table),
-                    ThreadAction::Collapse(e) => Some(e.proposed_threads_table),
-                }
+            let forward_prefab = match proposed_action {
+                ThreadAction::ContinueAsIs => None,
+                ThreadAction::Split(e) => Some(e.proposed_threads_table),
+                ThreadAction::Collapse(e) => Some(e.proposed_threads_table),
             };
 
             let mut new_state = prepared_block.state;
-            if let Some(table) = forward_table.clone() {
-                new_state.set_produced_threads_table(table.clone());
-                cross_thread_ref_data.set_threads_table(table);
-                // Cant continue with the existing block production since the threads table has changed!
-                // TODO: actually send kill signal to child threads.
-                // let _active_threads = std::mem::take(&mut prepared_block.active_threads);
-            }
 
             // let producer_selector = self.block_state_repository.get(&parent_block_id).expect("Must be set").guarded(|e| e.producer_selector_data().clone()).expect("Must be set");
             // self.block_state_repository.get(&produced_block_id).expect("Can't fail").guarded_mut(|e|
@@ -332,18 +341,19 @@ impl BlockProducer for TVMBlockProducer {
                 prepared_block.block_keeper_set_changes,
                 DEFAULT_VERIFY_COMPLEXITY,
                 ref_ids,
-                forward_table,
+                forward_prefab.clone(),
                 block_round,
                 block_height,
                 #[cfg(feature = "monitor-accounts-number")]
                 prepared_block.accounts_number_diff,
                 #[cfg(feature = "protocol_version_hash_in_block")]
                 protocol_version.hash(),
+                prepared_block.durable_state_update,
             );
             #[cfg(feature = "transitioning_node_version")]
-            let an_block = if !self.node_config_read.is_retired(&protocol_version) {
+            let an_block = if !self.node_config_read.is_retired(&_protocol_version) {
                 tracing::trace!("Generate new block");
-                AckiNackiBlockVersioned::New(AckiNackiBlock::new(
+                let an_block = AckiNackiBlockVersioned::New(AckiNackiBlock::new(
                     thread_identifier,
                     prepared_block.block,
                     self.producer_node_id,
@@ -351,25 +361,47 @@ impl BlockProducer for TVMBlockProducer {
                     prepared_block.block_keeper_set_changes,
                     DEFAULT_VERIFY_COMPLEXITY,
                     ref_ids,
-                    forward_table,
+                    forward_prefab.clone(),
                     block_round,
                     block_height,
                     #[cfg(feature = "monitor-accounts-number")]
                     prepared_block.accounts_number_diff,
                     #[cfg(feature = "protocol_version_hash_in_block")]
                     protocol_version.hash(),
-                ))
+                    prepared_block.durable_state_update,
+                ));
+                // Resolve the threads table now that we have the block ID
+                let final_block_id = an_block.identifier();
+                if let Some(prefab) = &forward_prefab {
+                    let resolved_table = prefab
+                        .resolve(&final_block_id)
+                        .expect("Failed to resolve threads table prefab");
+                    new_state.set_produced_threads_table(resolved_table.clone());
+                    cross_thread_ref_data.set_threads_table(resolved_table);
+                }
+                an_block
             } else {
                 tracing::trace!("Generate old block");
+                let final_block_id: BlockIdentifier = prepared_block.block.hash().unwrap().into();
+                let resolved_table = if let Some(prefab) = &forward_prefab {
+                    let resolved_table = prefab
+                        .resolve(&final_block_id)
+                        .expect("Failed to resolve threads table prefab");
+                    new_state.set_produced_threads_table(resolved_table.clone());
+                    cross_thread_ref_data.set_threads_table(resolved_table.clone());
+                    Some(resolved_table)
+                } else {
+                    None
+                };
                 AckiNackiBlockVersioned::Old(AckiNackiBlockOld::new(
                     thread_identifier,
                     prepared_block.block,
                     self.producer_node_id,
                     prepared_block.tx_cnt,
-                    prepared_block.block_keeper_set_changes.into_iter().map(|v| v.into()).collect(),
+                    prepared_block.block_keeper_set_changes.into_iter().collect(),
                     DEFAULT_VERIFY_COMPLEXITY,
                     ref_ids,
-                    forward_table,
+                    resolved_table,
                     block_round,
                     block_height,
                     #[cfg(feature = "monitor-accounts-number")]
@@ -378,6 +410,7 @@ impl BlockProducer for TVMBlockProducer {
                     protocol_version.hash(),
                 ))
             };
+
             let res = (
                 an_block,
                 new_state,

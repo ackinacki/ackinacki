@@ -10,18 +10,20 @@ use crate::bls::gosh_bls::Secret;
 use crate::bls::BLSSignatureScheme;
 use crate::node::SignerIndex;
 
-pub trait CreateSealed<T>
+pub trait CreateSealed<T, BLS>
 where
+    BLS: BLSSignatureScheme,
+    BLS::Signature: Serialize + for<'a> Deserialize<'a> + Clone + Send + Sync + 'static,
     T: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
 {
     fn sealed(
         data: T,
         secret: &Secret,
         signer_index: SignerIndex,
-    ) -> anyhow::Result<Envelope<GoshBLS, T>>;
+    ) -> anyhow::Result<Envelope<T, BLS>>;
 }
 
-impl<TData> CreateSealed<TData> for Envelope<GoshBLS, TData>
+impl<TData> CreateSealed<TData, GoshBLS> for Envelope<TData, GoshBLS>
 where
     TData: Serialize + for<'b> Deserialize<'b> + Clone + Send + Sync + 'static,
 {
