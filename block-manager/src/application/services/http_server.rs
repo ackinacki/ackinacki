@@ -102,47 +102,63 @@ async fn boc_by_address(req: &mut Request, depot: &mut Depot, res: &mut Response
         return render_error(res, StatusCode::BAD_REQUEST, "Invalid address");
     }
 
-    // Construct request to node
-    let base_url = format!("http://{}/v2/account", state.default_bp);
-    let resp = Client::new()
-        .get(format!("{base_url}?address={address}"))
-        .bearer_auth(state.bk_api_token.clone())
-        .send()
-        .await;
+    // Try endpoints with failover
+    let endpoints = state.bk_api_pool.endpoints_to_try();
+    if endpoints.is_empty() {
+        render_error(res, StatusCode::BAD_GATEWAY, "No BK API endpoints configured");
+        return;
+    }
 
-    match resp {
-        Ok(original_resp) => {
-            // Skip headers forwarding
-            // Forward status code
-            res.status_code(original_resp.status());
+    let client = Client::new();
+    let mut last_error = None;
 
-            // Forward response body
-            match original_resp.bytes().await {
-                Ok(body) => {
-                    if let Err(e) = res.write_body(body) {
-                        tracing::error!("Can't write body: {}", e);
+    for endpoint in &endpoints {
+        let url = format!("http://{endpoint}/v2/account?address={address}");
+        let resp = client.get(&url).bearer_auth(&state.bk_api_token).send().await;
+
+        match resp {
+            Ok(original_resp) if original_resp.status().is_server_error() => {
+                tracing::warn!("BK {endpoint} returned {}, trying next", original_resp.status());
+                last_error = Some(format!("BK {endpoint} returned {}", original_resp.status()));
+                continue;
+            }
+            Ok(original_resp) => {
+                state.bk_api_pool.promote(endpoint);
+                res.status_code(original_resp.status());
+                match original_resp.bytes().await {
+                    Ok(body) => {
+                        if let Err(e) = res.write_body(body) {
+                            tracing::error!("Can't write body: {}", e);
+                            render_error(
+                                res,
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "Internal server error: failed to write body",
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to read response body from {endpoint}: {e}");
                         render_error(
                             res,
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            "Internal server error: failed to write body",
+                            "Internal server error: failed to read response body",
                         );
                     }
                 }
-                Err(e) => {
-                    tracing::error!("Failed to read response body: {}", e);
-                    render_error(
-                        res,
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "Internal server error: failed to read response body",
-                    )
-                }
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("BK {endpoint} request failed: {e}, trying next");
+                last_error = Some(format!("BK {endpoint}: {e}"));
+                continue;
             }
         }
-        Err(e) => {
-            tracing::error!("API request to the default BK failed: {}", e);
-            render_error(res, StatusCode::BAD_GATEWAY, "API request failed");
-        }
     }
+
+    // All endpoints failed
+    let err_msg = last_error.unwrap_or_else(|| "all endpoints failed".to_string());
+    tracing::error!("All BK API endpoints failed. Last error: {err_msg}");
+    render_error(res, StatusCode::BAD_GATEWAY, "All BK API endpoints failed");
 }
 
 #[handler]

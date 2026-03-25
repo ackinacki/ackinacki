@@ -52,7 +52,7 @@ mod tests {
         let ext_queue: HashMap<ExtMessageDst, VecDeque<(Stamp, QueuedExtMessage)>> = HashMap::new();
         let bc_config = load_blockchain_config()?.get(
             &BlockSeqNo::from(0),
-            #[cfg(feature = "usdc_name_repair")]
+            #[cfg(feature = "fix_flag_16")]
             false,
         );
         let now = now_ms();
@@ -115,7 +115,7 @@ mod tests {
             WasmNodeCache::new()?,
             false,
             false,
-            #[cfg(feature = "usdc_name_repair")]
+            #[cfg(feature = "authroot_dapp_repair")]
             std::sync::Arc::new(parking_lot::Mutex::new(None)),
         )?;
 
@@ -180,7 +180,7 @@ mod tests {
             WasmNodeCache::new()?,
             true,
             false,
-            #[cfg(feature = "usdc_name_repair")]
+            #[cfg(feature = "authroot_dapp_repair")]
             std::sync::Arc::new(parking_lot::Mutex::new(None)),
         )?;
 

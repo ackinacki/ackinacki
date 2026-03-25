@@ -113,6 +113,7 @@ pub trait Repository {
         block: impl Borrow<<Self as Repository>::CandidateBlock>,
         block_state: BlockState,
         state_sync_service: Option<Arc<impl StateSyncService<Repository = RepositoryImpl>>>,
+        finalizing_block_id: BlockIdentifier,
     ) -> anyhow::Result<()>;
 
     //    fn is_block_finalized(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>>;

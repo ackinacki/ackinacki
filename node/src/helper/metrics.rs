@@ -96,12 +96,6 @@ struct BlockProductionMetricsInner {
 
     // BK set: supported protocol versions in epoch
     bkset_epoch_protocol_versions: Gauge<u64>,
-
-    // Durable arena sizes
-    durable_arena_nodes: Gauge<u64>,
-    durable_arena_values: Gauge<u64>,
-    durable_arena_branch_children: Gauge<u64>,
-    durable_arena_ext_paths_bytes: Gauge<u64>,
 }
 
 pub const BK_SET_UPDATE_CHANNEL: &str = "bk_set_update";
@@ -334,14 +328,6 @@ impl BlockProductionMetrics {
             block_protocol_version: meter.u64_gauge("node_block_protocol_version").build(),
             bkset_epoch_protocol_versions: meter
                 .u64_gauge("node_bkset_epoch_protocol_versions")
-                .build(),
-            durable_arena_nodes: meter.u64_gauge("node_durable_arena_nodes").build(),
-            durable_arena_values: meter.u64_gauge("node_durable_arena_values").build(),
-            durable_arena_branch_children: meter
-                .u64_gauge("node_durable_arena_branch_children")
-                .build(),
-            durable_arena_ext_paths_bytes: meter
-                .u64_gauge("node_durable_arena_ext_paths_bytes")
                 .build(),
         }))
     }
@@ -677,28 +663,6 @@ impl BlockProductionMetrics {
         let attrs = &[thread_id_attr(thread_id)];
         self.0.aerospike_accounts_cache_len.record(cache_len, attrs);
         self.0.aerospike_accounts_pending_len.record(pending_len, attrs);
-    }
-
-    pub fn report_durable_arena_stat(
-        &self,
-        stat: &account_state::DurableRepoStat,
-        thread_id: &ThreadIdentifier,
-    ) {
-        let attrs = &[thread_id_attr(thread_id)];
-        self.0
-            .durable_arena_nodes
-            .record((stat.dapp_map.total_nodes + stat.account_map.total_nodes) as u64, attrs);
-        self.0
-            .durable_arena_values
-            .record((stat.dapp_map.values_count + stat.account_map.values_count) as u64, attrs);
-        self.0.durable_arena_branch_children.record(
-            (stat.dapp_map.branch_children_count + stat.account_map.branch_children_count) as u64,
-            attrs,
-        );
-        self.0.durable_arena_ext_paths_bytes.record(
-            (stat.dapp_map.ext_paths_bytes + stat.account_map.ext_paths_bytes) as u64,
-            attrs,
-        );
     }
 
     pub fn report_attestation_tracking_collection_size(

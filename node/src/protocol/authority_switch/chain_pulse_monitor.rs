@@ -17,6 +17,7 @@ use crate::helper::SHUTDOWN_FLAG;
 use crate::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
 use crate::types::BlockHeight;
 use crate::utilities::guarded::AllowGuardedMut;
+use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
 
@@ -71,6 +72,7 @@ pub fn bind(authority: Arc<Mutex<Authority>>) -> ChainPulseMonitor {
         .spawn_critical(move || {
             let mut deadlines = HashMap::<ThreadIdentifier, Deadline>::new();
             let mut block_collections = HashMap::new();
+            let mut stall_start_times = HashMap::<ThreadIdentifier, Instant>::new();
             loop {
                 if SHUTDOWN_FLAG.get() == Some(&true) {
                     return Ok(());
@@ -122,11 +124,16 @@ pub fn bind(authority: Arc<Mutex<Authority>>) -> ChainPulseMonitor {
                         }
                         stalled_threads_clone.guarded_mut(|e| *e = stalled.clone());
                         for thread_id in stalled.iter() {
-                            authority
-                                .guarded_mut(|e| e.get_thread_authority(thread_id))
-                                .guarded_mut(|e| {
+                            stall_start_times.entry(*thread_id).or_insert(now);
+                        }
+                        for thread_id in stalled.iter() {
+                            let thread_authority =
+                                authority.guarded_mut(|e| e.get_thread_authority(thread_id));
+                            let had_next_round =
+                                thread_authority.guarded_mut(|e| {
                                     let result = e.on_block_producer_stalled();
                                     tracing::trace!("on_block_producer_stalled result: {result:?}");
+                                    let had_next_round = result.next_round().is_some();
                                     if let Some(next_round) = result.next_round().clone() {
                                         let blocks = block_collections
                                             .get(thread_id)
@@ -141,11 +148,32 @@ pub fn bind(authority: Arc<Mutex<Authority>>) -> ChainPulseMonitor {
                                             .block_height(*result.block_height())
                                             .build(),
                                     );
-                                })
+                                    had_next_round
+                                });
+
+                            let stall_duration = stall_start_times
+                                .get(thread_id)
+                                .map(|start| now.duration_since(*start))
+                                .unwrap_or_default();
+
+                            let timeout = authority.guarded(|e| e.time_to_enable_sync_finalized());
+                            if !had_next_round && stall_duration >= timeout {
+                                tracing::warn!(
+                                    "Thread {:?} has been stalled for {:?} without next_round, triggering synchronization",
+                                    thread_id,
+                                    stall_duration
+                                );
+                                // Reset the stall timer so sync is not re-triggered every tick
+                                stall_start_times.insert(*thread_id, now);
+                                // Trigger synchronization via the authority
+                                thread_authority
+                                    .guarded_mut(|e| e.on_stall_sync_required());
+                            }
                         }
                     }
                     Some(ChainPulseEvent::BlockFinalized(e)) => {
                         stalled_threads_clone.guarded_mut(|set| set.remove(e.thread_identifier()));
+                        stall_start_times.remove(e.thread_identifier());
                         // TODO: config
                         move_deadline(
                             &mut deadlines,
@@ -158,6 +186,7 @@ pub fn bind(authority: Arc<Mutex<Authority>>) -> ChainPulseMonitor {
                     }
                     Some(ChainPulseEvent::BlockPrefinalized(e)) => {
                         stalled_threads_clone.guarded_mut(|set| set.remove(e.thread_identifier()));
+                        stall_start_times.remove(e.thread_identifier());
                         // TODO: config
                         move_deadline(
                             &mut deadlines,
@@ -170,6 +199,7 @@ pub fn bind(authority: Arc<Mutex<Authority>>) -> ChainPulseMonitor {
                     }
                     Some(ChainPulseEvent::StartThread { thread_id, block_candidates }) => {
                         stalled_threads_clone.guarded_mut(|set| set.remove(&thread_id));
+                        stall_start_times.remove(&thread_id);
                         block_collections.insert(thread_id, block_candidates);
                         move_deadline(
                             &mut deadlines,
@@ -184,9 +214,11 @@ pub fn bind(authority: Arc<Mutex<Authority>>) -> ChainPulseMonitor {
                         deadlines.remove(&thread_id);
                         block_collections.remove(&thread_id);
                         stalled_threads_clone.guarded_mut(|set| set.remove(&thread_id));
+                        stall_start_times.remove(&thread_id);
                     }
                     Some(ChainPulseEvent::BlockApplied(e)) => {
                         stalled_threads_clone.guarded_mut(|set| set.remove(e.thread_identifier()));
+                        stall_start_times.remove(e.thread_identifier());
                         // TODO: config
                         move_deadline(
                             &mut deadlines,

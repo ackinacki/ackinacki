@@ -10,7 +10,7 @@ use futures::TryStreamExt;
 use sqlx::QueryBuilder;
 
 use crate::helpers::sql_quote;
-use crate::helpers::u64_to_hexed_blob_buf;
+use crate::helpers::u64_to_hexed_blob_literal;
 use crate::schema::db;
 use crate::schema::db::DBConnector;
 
@@ -39,9 +39,7 @@ impl Loader<(String, u64)> for BlockLoader {
         let tuples_sql = keys
             .iter()
             .map(|(thread_id, height)| {
-                let blob = u64_to_hexed_blob_buf(*height);
-                let height_lit = unsafe { std::str::from_utf8_unchecked(&blob) };
-                format!("({}, {})", sql_quote(thread_id), height_lit)
+                format!("({}, {})", sql_quote(thread_id), u64_to_hexed_blob_literal(*height))
             })
             .collect::<Vec<_>>()
             .join(",");

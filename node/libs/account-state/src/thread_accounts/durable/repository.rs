@@ -1,7 +1,18 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fs;
+use std::fs::File;
+use std::io::BufReader;
+use std::io::BufWriter;
+use std::io::Write;
+use std::path::PathBuf;
 
+use multi_map::DurableMultiMapRepository;
+use multi_map::MapKey;
+use multi_map::MapKeyPath;
+use multi_map::MultiMapRef;
+use multi_map::MultiMapRepository;
 use node_types::AccountHash;
 use node_types::AccountIdentifier;
 use node_types::AccountRouting;
@@ -17,10 +28,9 @@ use tvm_types::UInt256;
 
 use crate::thread_accounts::durable::accounts::AccountsRepository;
 use crate::thread_accounts::durable::dapp_accounts::AccountInfo;
-use crate::thread_accounts::durable::dapp_accounts::DAppAccountMapRepository;
+use crate::thread_accounts::durable::dapp_map_value::DAppMapValue;
 use crate::thread_accounts::durable::snapshot::CompositeDurableStateSnapshot;
-use crate::thread_accounts::durable::thread_dapps::ThreadDAppMapRepository;
-use crate::thread_accounts::DurableRepoStat;
+use crate::DAppAccountMapHash;
 use crate::ThreadAccount;
 use crate::ThreadStateAccount;
 
@@ -48,33 +58,31 @@ impl DurableThreadAccountsDiff {
     }
 }
 
+/// Thread-level durable state: a two-level map.
+///
+/// Level 1: DAppIdentifier → DAppMapValue (embeds account map directly)
+/// Level 2 (embedded): AccountIdentifier → AccountInfo
+///
+/// States are persisted as self-contained files in `state_maps/`.
+/// Old-format fallback reads from `thread_dapps/` + `dapp_accounts/` directories.
+pub type ThreadStateRef = MultiMapRef<DAppMapValue>;
+
 #[derive(Clone)]
-pub struct DurableThreadAccountsRepository<
-    ThreadDApps: ThreadDAppMapRepository,
-    DAppAccounts: DAppAccountMapRepository,
-    Accounts: AccountsRepository,
-> {
-    thread_dapps: ThreadDApps,
-    dapp_accounts: DAppAccounts,
+pub struct DurableThreadAccountsRepository<Accounts: AccountsRepository> {
+    durable_path: PathBuf,
+    dapp_map_repo: MultiMapRepository<DAppMapValue>,
     accounts: Accounts,
+    account_map_repo: MultiMapRepository<AccountInfo>,
 }
 
-impl<ThreadDApps, DAppAccounts, Accounts>
-    DurableThreadAccountsRepository<ThreadDApps, DAppAccounts, Accounts>
-where
-    ThreadDApps: ThreadDAppMapRepository,
-    DAppAccounts: DAppAccountMapRepository,
-    Accounts: AccountsRepository,
-{
-    pub fn new(thread_dapps: ThreadDApps, dapp_accounts: DAppAccounts, accounts: Accounts) -> Self {
-        Self { thread_dapps, dapp_accounts, accounts }
-    }
-
-    pub fn get_stat(&self) -> DurableRepoStat {
-        DurableRepoStat {
-            dapp_map: self.thread_dapps.get_stat(),
-            account_map: self.dapp_accounts.get_stat(),
-        }
+impl<Accounts: AccountsRepository> DurableThreadAccountsRepository<Accounts> {
+    pub fn new(durable_path: PathBuf, accounts: Accounts) -> anyhow::Result<Self> {
+        Ok(Self {
+            durable_path,
+            dapp_map_repo: MultiMapRepository::new(),
+            accounts,
+            account_map_repo: MultiMapRepository::new(),
+        })
     }
 
     pub fn aerospike_cache_stat(
@@ -84,48 +92,148 @@ where
     }
 
     pub fn commit(&self) -> anyhow::Result<()> {
-        // the order is important for consistency
-        self.accounts.commit()?;
-        self.dapp_accounts.commit()?;
-        self.thread_dapps.commit()?;
+        self.accounts.commit()
+    }
+
+    // ---- State persistence ----
+
+    /// Save a state to disk as a self-contained file.
+    /// The file contains the full two-level tree serialized with write_map.
+    pub fn state_save(
+        &self,
+        state: &ThreadStateRef,
+        block_id: &BlockIdentifier,
+    ) -> anyhow::Result<()> {
+        let state_dir = self.durable_path.join("state_maps");
+        fs::create_dir_all(&state_dir)?;
+
+        let filename = format!("{}.state", block_id.to_hex_string());
+        let path = state_dir.join(&filename);
+
+        // Atomic write via temp file + rename
+        let tmp = path.with_extension("state.tmp");
+        {
+            let f = File::create(&tmp)?;
+            let mut w = BufWriter::new(f);
+            self.dapp_map_repo.write_map(state, &mut w)?;
+            w.flush()?;
+            w.into_inner()?.sync_all()?;
+        }
+        fs::rename(&tmp, &path)?;
+
         Ok(())
     }
 
-    pub fn get_state(
-        &self,
-        block_id: &BlockIdentifier,
-    ) -> anyhow::Result<Option<ThreadDApps::MapRef>> {
-        self.thread_dapps.index_get(block_id)
+    /// Load a state from disk. Tries new format first, falls back to old durable files.
+    pub fn state_load(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<ThreadStateRef>> {
+        // 1. Try new format first
+        let state_dir = self.durable_path.join("state_maps");
+        let filename = format!("{}.state", block_id.to_hex_string());
+        let path = state_dir.join(&filename);
+
+        if path.exists() {
+            let f = File::open(&path)?;
+            let state = self.dapp_map_repo.read_map(&mut BufReader::new(f))?;
+            return Ok(Some(state));
+        }
+
+        // 2. Fall back to old durable files
+        self.load_from_old_durable(block_id)
     }
 
-    pub fn new_state() -> ThreadDApps::MapRef {
-        ThreadDApps::new_map()
+    /// Load state from old-format durable directories (thread_dapps/ + dapp_accounts/).
+    /// Any failure (missing dirs, corrupt files) is treated as "no old state".
+    fn load_from_old_durable(
+        &self,
+        block_id: &BlockIdentifier,
+    ) -> anyhow::Result<Option<ThreadStateRef>> {
+        let old_thread_dapps_path = self.durable_path.join("thread_dapps");
+        let old_dapp_accounts_path = self.durable_path.join("dapp_accounts");
+
+        // Try to load old L1. Any failure (missing dir, corrupt files) → None
+        let old_l1 =
+            match DurableMultiMapRepository::<DAppAccountMapHash, BlockIdentifier, ()>::load(
+                old_thread_dapps_path,
+            ) {
+                Ok(repo) => repo,
+                Err(_) => return Ok(None),
+            };
+
+        let Some((old_l1_map, _)) = old_l1.index_get(block_id) else {
+            return Ok(None);
+        };
+
+        // Try to load old L2. Failure → treat all dapp account maps as empty
+        let old_l2 = DurableMultiMapRepository::<AccountInfo, DAppAccountMapHash, ()>::load(
+            old_dapp_accounts_path,
+        )
+        .ok();
+
+        // Convert: for each dapp in L1, look up its account map from L2, wrap as DAppMapValue
+        let l1_entries = old_l1.collect_values(&old_l1_map);
+
+        let mut dapp_updates: Vec<(MapKey, Option<DAppMapValue>)> = Vec::new();
+        for (dapp_key, dapp_hash) in l1_entries {
+            let dapp_map = old_l2
+                .as_ref()
+                .and_then(|l2| l2.index_get(&dapp_hash))
+                .map(|(map_ref, _)| map_ref)
+                .unwrap_or_else(MultiMapRepository::<AccountInfo>::new_map);
+            dapp_updates.push((dapp_key, Some(DAppMapValue::new(dapp_map))));
+        }
+
+        // Build the new L1 map with embedded DAppMapValue entries
+        let mut new_state = Self::new_state();
+        if !dapp_updates.is_empty() {
+            new_state = self.dapp_map_repo.map_update(&new_state, &dapp_updates);
+        }
+
+        // Preserve the root_path from old map
+        new_state.root_path = old_l1_map.root_path;
+
+        Ok(Some(new_state))
+    }
+
+    // ---- State accessors (legacy compat wrappers) ----
+
+    pub fn get_state(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<ThreadStateRef>> {
+        self.state_load(block_id)
+    }
+
+    pub fn new_state() -> ThreadStateRef {
+        MultiMapRepository::<DAppMapValue>::new_map()
     }
 
     pub fn set_state(
         &self,
         block_id: &BlockIdentifier,
-        state: &ThreadDApps::MapRef,
+        state: &ThreadStateRef,
     ) -> anyhow::Result<()> {
-        self.thread_dapps.index_set(block_id, state)
+        self.state_save(state, block_id)?;
+        self.accounts.commit()?;
+        Ok(())
     }
 
-    pub fn state_hash(&self, state: &ThreadDApps::MapRef) -> ThreadAccountsHash {
-        self.thread_dapps.map_hash(state)
+    pub fn state_hash(&self, state: &ThreadStateRef) -> ThreadAccountsHash {
+        ThreadAccountsHash::new(self.dapp_map_repo.map_hash(state).0)
     }
+
+    // ---- Map operations ----
 
     pub fn state_account(
         &self,
-        state: &ThreadDApps::MapRef,
+        state: &ThreadStateRef,
         routing: &AccountRouting,
     ) -> anyhow::Result<Option<ThreadStateAccount>> {
-        let Some(dapp_hash) = self.thread_dapps.map_get(state, routing.dapp_id())? else {
+        let Some(dapp_value) =
+            self.dapp_map_repo.map_get(state, &MapKey(*routing.dapp_id().as_array()))
+        else {
             return Ok(None);
         };
-        let Some(dapp) = self.dapp_accounts.index_get(&dapp_hash)? else {
-            return Ok(None);
-        };
-        let Some(account_info) = self.dapp_accounts.map_get(&dapp, routing.account_id())? else {
+        let Some(account_info) = self
+            .account_map_repo
+            .map_get(&dapp_value.map, &MapKey(*routing.account_id().as_array()))
+        else {
             return Ok(None);
         };
         // Redirect stubs have no real account data — reconstruct from metadata
@@ -152,42 +260,49 @@ where
 
     pub(crate) fn state_split(
         &self,
-        state: &ThreadDApps::MapRef,
+        state: &ThreadStateRef,
         dapp_id_path: DAppIdentifierPath,
-    ) -> anyhow::Result<(ThreadDApps::MapRef, ThreadDApps::MapRef)> {
-        self.thread_dapps.map_split(state, dapp_id_path)
+    ) -> anyhow::Result<(ThreadStateRef, ThreadStateRef)> {
+        let DAppIdentifierPath { prefix, len } = dapp_id_path;
+        Ok(self
+            .dapp_map_repo
+            .map_split(state, MapKeyPath { prefix: MapKey(*prefix.as_array()), len }))
     }
 
     pub(crate) fn merge(
         &self,
-        a: &ThreadDApps::MapRef,
-        b: &ThreadDApps::MapRef,
-    ) -> anyhow::Result<ThreadDApps::MapRef> {
-        self.thread_dapps.merge(a, b)
+        a: &ThreadStateRef,
+        b: &ThreadStateRef,
+    ) -> anyhow::Result<ThreadStateRef> {
+        Ok(self.dapp_map_repo.merge(a, b))
     }
 
-    pub(crate) fn state_update(
+    pub fn state_update(
         &self,
         old_tvm_accounts: &tvm_block::ShardAccounts,
-        state: &ThreadDApps::MapRef,
+        state: &ThreadStateRef,
         accounts: &[(AccountRouting, ThreadAccountUpdate)],
-    ) -> anyhow::Result<ThreadDApps::MapRef> {
-        tracing::trace!(target: "monit", "Update accounts in durable state: {}", accounts.len());
+    ) -> anyhow::Result<ThreadStateRef> {
+        tracing::trace!(target: "monit", "Update accounts in durable state: prepare update: {}", accounts.len());
         let (accounts, maps) = self.prepare_updates(old_tvm_accounts, state, accounts)?;
+        tracing::trace!(target: "monit", "Update accounts in durable maps: {}", accounts.len());
         self.accounts.update(&accounts)?;
-        self.update_maps(state, maps)
+        tracing::trace!(target: "monit", "Update accounts in durable maps: {}", accounts.len());
+        let res = self.update_maps(state, maps);
+        tracing::trace!(target: "monit", "Update accounts in durable finished");
+        res
     }
 
     fn prepare_updates(
         &self,
         old_tvm_accounts: &tvm_block::ShardAccounts,
-        state: &ThreadDApps::MapRef,
+        state: &ThreadStateRef,
         accounts: &[(AccountRouting, ThreadAccountUpdate)],
     ) -> anyhow::Result<(
         Vec<(AccountHash, Option<ThreadAccount>)>,
         HashMap<
             DAppIdentifier,
-            (DAppAccounts::MapRef, Vec<(AccountIdentifier, Option<AccountInfo>)>),
+            (MultiMapRef<AccountInfo>, Vec<(AccountIdentifier, Option<AccountInfo>)>),
         >,
     )> {
         let mut account_updates = Vec::new();
@@ -197,7 +312,7 @@ where
             let map_update = match map_updates.entry(*routing.dapp_id()) {
                 Entry::Occupied(existing) => existing.into_mut(),
                 Entry::Vacant(entry) => {
-                    entry.insert((self.ensure_dapp_map(state, routing.dapp_id())?, Vec::new()))
+                    entry.insert((self.ensure_dapp_map(state, routing.dapp_id()), Vec::new()))
                 }
             };
             let (hash, account, info) =
@@ -213,11 +328,6 @@ where
         }
 
         // Deduplicate account_updates by hash.
-        // The accounts table is content-addressed: if any dApp entry still
-        // references a hash, the data must be kept.  When the same hash
-        // appears as both insert [Some(data)] and delete [None]
-        // (e.g. account changes dApp — Remove from old + Insert to new,
-        // same underlying Account cell), insert must win.
         let mut deduped: HashMap<AccountHash, Option<ThreadAccount>> = HashMap::new();
         for (hash, account) in account_updates {
             match deduped.entry(hash) {
@@ -239,28 +349,20 @@ where
 
     fn ensure_dapp_map(
         &self,
-        state: &ThreadDApps::MapRef,
+        state: &ThreadStateRef,
         dapp_id: &DAppIdentifier,
-    ) -> anyhow::Result<DAppAccounts::MapRef> {
-        let accounts_map = match self.thread_dapps.map_get(state, dapp_id)? {
-            Some(accounts_map_hash) => {
-                self.dapp_accounts.index_get(&accounts_map_hash)?.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Missing required dapp state [{accounts_map_hash}] for dapp id [{}]",
-                        dapp_id
-                    )
-                })?
-            }
-            None => DAppAccounts::new_map(),
-        };
-        Ok(accounts_map)
+    ) -> MultiMapRef<AccountInfo> {
+        match self.dapp_map_repo.map_get(state, &MapKey(*dapp_id.as_array())) {
+            Some(dapp_value) => dapp_value.map,
+            None => MultiMapRepository::<AccountInfo>::new_map(),
+        }
     }
 
     fn get_account_update(
         &self,
         routing: &AccountRouting,
         state_account: &ThreadAccountUpdate,
-        accounts_map: &DAppAccounts::MapRef,
+        accounts_map: &MultiMapRef<AccountInfo>,
         old_tvm_accounts: &tvm_block::ShardAccounts,
     ) -> anyhow::Result<(Option<AccountHash>, Option<ThreadAccount>, Option<AccountInfo>)> {
         match state_account {
@@ -269,8 +371,8 @@ where
             }
             ThreadAccountUpdate::Remove => {
                 let account_hash = self
-                    .dapp_accounts
-                    .map_get(accounts_map, routing.account_id())?
+                    .account_map_repo
+                    .map_get(accounts_map, &MapKey(*routing.account_id().as_array()))
                     .map(|x| x.account_hash);
                 Ok((account_hash, None, None))
             }
@@ -290,14 +392,14 @@ where
         &self,
         routing: &AccountRouting,
         update_bytes: &[u8],
-        accounts_map: &DAppAccounts::MapRef,
+        accounts_map: &MultiMapRef<AccountInfo>,
         old_tvm_accounts: &tvm_block::ShardAccounts,
     ) -> anyhow::Result<(Option<AccountHash>, Option<ThreadAccount>, Option<AccountInfo>)> {
         use tvm_block::Deserializable;
 
         // Look up the old account state from durable state first, then TVM
         let old_shard_acc = if let Some(account_info) =
-            self.dapp_accounts.map_get(accounts_map, routing.account_id())?
+            self.account_map_repo.map_get(accounts_map, &MapKey(*routing.account_id().as_array()))
         {
             let ThreadAccount::Tvm(account_cell) =
                 self.accounts.get(&account_info.account_hash)?.ok_or_else(|| {
@@ -386,63 +488,71 @@ where
 
     fn update_maps(
         &self,
-        state: &ThreadDApps::MapRef,
+        state: &ThreadStateRef,
         updates: HashMap<
             DAppIdentifier,
-            (DAppAccounts::MapRef, Vec<(AccountIdentifier, Option<AccountInfo>)>),
+            (MultiMapRef<AccountInfo>, Vec<(AccountIdentifier, Option<AccountInfo>)>),
         >,
-    ) -> anyhow::Result<ThreadDApps::MapRef> {
+    ) -> anyhow::Result<ThreadStateRef> {
         let mut dapp_updates = Vec::new();
         for (dapp_id, (map, accounts)) in updates {
-            let new_accounts_map = self.dapp_accounts.map_update(&map, accounts)?;
-            let new_accounts_map_hash = self.dapp_accounts.map_hash(&new_accounts_map);
-            self.dapp_accounts.index_set(&new_accounts_map_hash, &new_accounts_map)?;
-            dapp_updates.push((dapp_id, Some(new_accounts_map_hash)));
+            let trie_patch: Vec<_> =
+                accounts.into_iter().map(|(id, info)| (MapKey(*id.as_array()), info)).collect();
+            let new_accounts_map = self.account_map_repo.map_update(&map, &trie_patch);
+            dapp_updates
+                .push((MapKey(*dapp_id.as_array()), Some(DAppMapValue::new(new_accounts_map))));
         }
-
-        self.thread_dapps.map_update(state, &dapp_updates)
+        Ok(self.dapp_map_repo.map_update(state, &dapp_updates))
     }
 
     pub(crate) fn state_apply_diff(
         &self,
         old_tvm_accounts: &tvm_block::ShardAccounts,
-        state: &ThreadDApps::MapRef,
+        state: &ThreadStateRef,
         diff: &DurableThreadAccountsDiff,
-    ) -> anyhow::Result<ThreadDApps::MapRef> {
+    ) -> anyhow::Result<ThreadStateRef> {
         self.state_update(old_tvm_accounts, state, &diff.accounts)
     }
 
+    // ---- Snapshot export/import ----
+
     pub fn export_durable_snapshot(
         &self,
-        state: &ThreadDApps::MapRef,
+        state: &ThreadStateRef,
     ) -> anyhow::Result<CompositeDurableStateSnapshot> {
-        // 1. Export thread_dapps trie
-        let thread_dapps_snapshot = self.thread_dapps.export_snapshot(state);
+        // 1. Collect all dapp entries from the thread state
+        let dapp_entries = self.dapp_map_repo.collect_values(state);
 
-        // 2. Iterate all DApps
-        let dapp_entries = self.thread_dapps.collect_values(state);
+        // 2. Build thread_dapps snapshot (TrieMapSnapshot<DAppAccountMapHash>)
+        //    by creating a temporary map with DAppAccountMapHash values
+        let hash_repo = MultiMapRepository::<DAppAccountMapHash>::new();
+        let mut hash_map = MultiMapRepository::<DAppAccountMapHash>::new_map();
+        let hash_updates: Vec<_> = dapp_entries
+            .iter()
+            .map(|(k, v)| {
+                let hash = DAppAccountMapHash::new(v.map.root.hash());
+                (*k, Some(hash))
+            })
+            .collect();
+        hash_map = hash_repo.map_update(&hash_map, &hash_updates);
+        let thread_dapps_snapshot = multi_map::convert::to_trie_snapshot(&hash_map);
 
+        // 3. Build dapp_account snapshots and collect account hashes
         let mut dapp_account_snapshots = Vec::new();
         let mut all_account_hashes = HashSet::new();
 
-        for (_dapp_id, dapp_hash) in &dapp_entries {
-            // 3. Get dapp accounts map ref
-            let Some(dapp_map_ref) = self.dapp_accounts.index_get(dapp_hash)? else {
-                continue;
-            };
+        for (_dapp_key, dapp_value) in &dapp_entries {
+            let dapp_hash = DAppAccountMapHash::new(dapp_value.map.root.hash());
+            let dapp_snapshot = multi_map::convert::to_trie_snapshot(&dapp_value.map);
+            dapp_account_snapshots.push((dapp_hash, dapp_snapshot));
 
-            // 4. Export dapp accounts trie
-            let dapp_snapshot = self.dapp_accounts.export_snapshot(&dapp_map_ref);
-            dapp_account_snapshots.push((*dapp_hash, dapp_snapshot));
-
-            // 5. Collect all account hashes
-            let account_values = self.dapp_accounts.collect_values(&dapp_map_ref);
+            let account_values = self.account_map_repo.collect_values(&dapp_value.map);
             for (_account_id, account_info) in account_values {
                 all_account_hashes.insert(account_info.account_hash);
             }
         }
 
-        // 6. Export account data
+        // 4. Export account data
         let mut accounts = Vec::new();
         for account_hash in all_account_hashes {
             if let Some(account) = self.accounts.get(&account_hash)? {
@@ -461,7 +571,7 @@ where
     pub fn import_durable_snapshot(
         &self,
         snapshot: CompositeDurableStateSnapshot,
-    ) -> anyhow::Result<ThreadDApps::MapRef> {
+    ) -> anyhow::Result<ThreadStateRef> {
         // 1. Import accounts
         let account_updates: Vec<(AccountHash, Option<ThreadAccount>)> = snapshot
             .accounts
@@ -473,15 +583,34 @@ where
             .collect::<anyhow::Result<Vec<_>>>()?;
         self.accounts.update(&account_updates)?;
 
-        // 2. Import dapp accounts tries and register in index
+        // 2. Import dapp accounts: convert TrieMapSnapshot<AccountInfo> → MultiMapRef<AccountInfo>
+        let mut dapp_hash_to_map: HashMap<DAppAccountMapHash, MultiMapRef<AccountInfo>> =
+            HashMap::new();
         for (hash, dapp_snapshot) in snapshot.dapp_accounts {
-            let new_map_ref = self.dapp_accounts.import_snapshot(dapp_snapshot);
-            self.dapp_accounts.index_set(&hash, &new_map_ref)?;
+            let map = multi_map::convert::from_trie_snapshot(dapp_snapshot);
+            dapp_hash_to_map.insert(hash, map);
         }
 
-        // 3. Import thread_dapps trie
-        let new_durable_ref = self.thread_dapps.import_snapshot(snapshot.thread_dapps);
+        // 3. Import thread_dapps trie (as DAppAccountMapHash) and collect entries
+        let hash_map =
+            multi_map::convert::from_trie_snapshot::<DAppAccountMapHash>(snapshot.thread_dapps);
+        let hash_repo = MultiMapRepository::<DAppAccountMapHash>::new();
+        let hash_entries = hash_repo.collect_values(&hash_map);
 
-        Ok(new_durable_ref)
+        // 4. Build DAppMapValue map from hash entries
+        //    Note: multiple DApps may share the same hash (e.g., empty maps after account removal),
+        //    so we use .get().cloned() instead of .remove().
+        let mut dapp_map_updates: Vec<(MapKey, Option<DAppMapValue>)> = Vec::new();
+        for (dapp_key, dapp_hash) in hash_entries {
+            let account_map = dapp_hash_to_map.get(&dapp_hash).cloned().ok_or_else(|| {
+                anyhow::anyhow!("Missing dapp account snapshot for hash {}", dapp_hash)
+            })?;
+            dapp_map_updates.push((dapp_key, Some(DAppMapValue::new(account_map))));
+        }
+
+        let mut state = Self::new_state();
+        state = self.dapp_map_repo.map_update(&state, &dapp_map_updates);
+
+        Ok(state)
     }
 }

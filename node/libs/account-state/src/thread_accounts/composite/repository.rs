@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use node_types::AccountRouting;
@@ -12,16 +13,14 @@ use tvm_types::UsageTree;
 
 use crate::thread_accounts::composite::builder::CompositeThreadAccountsBuilder;
 use crate::thread_accounts::composite::repository_inner::CompositeThreadAccountsRepositoryInner;
+use crate::thread_accounts::durable::repository::ThreadStateRef;
 use crate::thread_accounts::durable::snapshot::CompositeDurableStateSnapshot;
 use crate::thread_accounts::durable::DurableThreadAccountsDiff;
 use crate::thread_accounts::tvm::TvmThreadState;
 use crate::thread_accounts::tvm::TvmThreadStateDiff;
 use crate::thread_accounts::AccountsRepository;
-use crate::thread_accounts::DAppAccountMapRepository;
-use crate::thread_accounts::DurableRepoStat;
 use crate::thread_accounts::ThreadAccountsRepository;
 use crate::thread_accounts::ThreadAccountsSplit;
-use crate::thread_accounts::ThreadDAppMapRepository;
 use crate::DurableThreadAccountsRepository;
 use crate::ThreadStateAccount;
 
@@ -62,37 +61,25 @@ impl<DurableRef: Clone> CompositeThreadAccountsRef<DurableRef> {
 // - new durable state v2.
 //
 #[derive(Clone)]
-pub struct CompositeThreadAccountRepository<ThreadDAppsRepo, DAppAccountsRepo, AccountsRepo>(
-    pub(crate)  Arc<
-        CompositeThreadAccountsRepositoryInner<ThreadDAppsRepo, DAppAccountsRepo, AccountsRepo>,
-    >,
+pub struct CompositeThreadAccountRepository<AccountsRepo>(
+    pub(crate) Arc<CompositeThreadAccountsRepositoryInner<AccountsRepo>>,
 )
 where
-    ThreadDAppsRepo: ThreadDAppMapRepository,
-    DAppAccountsRepo: DAppAccountMapRepository,
     AccountsRepo: AccountsRepository;
 
-impl<ThreadDAppsRepo, DAppAccountsRepo, AccountsRepo>
-    CompositeThreadAccountRepository<ThreadDAppsRepo, DAppAccountsRepo, AccountsRepo>
+impl<AccountsRepo> CompositeThreadAccountRepository<AccountsRepo>
 where
-    ThreadDAppsRepo: ThreadDAppMapRepository,
-    DAppAccountsRepo: DAppAccountMapRepository,
     AccountsRepo: AccountsRepository,
 {
     pub fn new(
-        thread_dapps: ThreadDAppsRepo,
-        dapp_accounts: DAppAccountsRepo,
+        durable_path: PathBuf,
         accounts: AccountsRepo,
         apply_to_durable: bool,
-    ) -> Self {
-        Self(Arc::new(CompositeThreadAccountsRepositoryInner {
-            durable: DurableThreadAccountsRepository::new(thread_dapps, dapp_accounts, accounts),
+    ) -> anyhow::Result<Self> {
+        Ok(Self(Arc::new(CompositeThreadAccountsRepositoryInner {
+            durable: DurableThreadAccountsRepository::new(durable_path, accounts)?,
             apply_to_durable,
-        }))
-    }
-
-    pub fn get_durable_stat(&self) -> DurableRepoStat {
-        self.0.durable.get_stat()
+        })))
     }
 
     pub fn aerospike_cache_stat(
@@ -103,11 +90,11 @@ where
 
     pub fn state_with_tvm_cell_and_empty_durable_state(
         cell: Cell,
-    ) -> anyhow::Result<CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>> {
+    ) -> anyhow::Result<CompositeThreadAccountsRef<ThreadStateRef>> {
         let shard_state = ShardStateUnsplit::construct_from_cell(cell)
             .map_err(|err| anyhow::format_err!("Failed to deserialize shard state: {}", err))?;
-        Ok(CompositeThreadAccountsRef::<ThreadDAppsRepo::MapRef> {
-            durable: ThreadDAppsRepo::new_map(),
+        Ok(CompositeThreadAccountsRef::<ThreadStateRef> {
+            durable: DurableThreadAccountsRepository::<AccountsRepo>::new_state(),
             tvm: TvmThreadState::with_shard_state(shard_state)?,
         })
     }
@@ -116,7 +103,7 @@ where
         &self,
         block_id: &BlockIdentifier,
         cell: Cell,
-    ) -> anyhow::Result<CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>> {
+    ) -> anyhow::Result<CompositeThreadAccountsRef<ThreadStateRef>> {
         let shard_state = ShardStateUnsplit::construct_from_cell(cell)
             .map_err(|err| anyhow::format_err!("Failed to deserialize shard state: {}", err))?;
         self.state_with_tvm_state(block_id, shard_state)
@@ -126,17 +113,20 @@ where
         &self,
         block_id: &BlockIdentifier,
         shard_state: ShardStateUnsplit,
-    ) -> anyhow::Result<CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>> {
-        let durable =
-            self.0.durable.get_state(block_id)?.unwrap_or_else(|| ThreadDAppsRepo::new_map());
-        Ok(CompositeThreadAccountsRef::<ThreadDAppsRepo::MapRef> {
+    ) -> anyhow::Result<CompositeThreadAccountsRef<ThreadStateRef>> {
+        let durable = self
+            .0
+            .durable
+            .get_state(block_id)?
+            .unwrap_or_else(DurableThreadAccountsRepository::<AccountsRepo>::new_state);
+        Ok(CompositeThreadAccountsRef::<ThreadStateRef> {
             durable,
             tvm: TvmThreadState::with_shard_state(shard_state)?,
         })
     }
 
     pub fn state_to_tvm_cell(
-        state: &CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>,
+        state: &CompositeThreadAccountsRef<ThreadStateRef>,
     ) -> anyhow::Result<Cell> {
         state
             .tvm
@@ -147,7 +137,7 @@ where
 
     pub fn export_durable_snapshot(
         &self,
-        state: &CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>,
+        state: &CompositeThreadAccountsRef<ThreadStateRef>,
     ) -> anyhow::Result<CompositeDurableStateSnapshot> {
         self.0.durable.export_durable_snapshot(&state.durable)
     }
@@ -155,26 +145,22 @@ where
     pub fn import_durable_snapshot(
         &self,
         snapshot: CompositeDurableStateSnapshot,
-    ) -> anyhow::Result<ThreadDAppsRepo::MapRef> {
+    ) -> anyhow::Result<ThreadStateRef> {
         self.0.durable.import_durable_snapshot(snapshot)
     }
 }
 
-impl<ThreadDAppsRepo, DAppAccountsRepo, AccountsRepo> ThreadAccountsRepository
-    for CompositeThreadAccountRepository<ThreadDAppsRepo, DAppAccountsRepo, AccountsRepo>
+impl<AccountsRepo> ThreadAccountsRepository for CompositeThreadAccountRepository<AccountsRepo>
 where
-    ThreadDAppsRepo: ThreadDAppMapRepository,
-    DAppAccountsRepo: DAppAccountMapRepository,
     AccountsRepo: AccountsRepository,
 {
-    type StateBuilder =
-        CompositeThreadAccountsBuilder<ThreadDAppsRepo, DAppAccountsRepo, AccountsRepo>;
+    type StateBuilder = CompositeThreadAccountsBuilder<AccountsRepo>;
     type StateDiff = CompositeThreadAccountsDiff;
-    type StateRef = CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>;
+    type StateRef = CompositeThreadAccountsRef<ThreadStateRef>;
 
     fn new_state() -> Self::StateRef {
         CompositeThreadAccountsRef {
-            durable: ThreadDAppsRepo::new_map(),
+            durable: DurableThreadAccountsRepository::<AccountsRepo>::new_state(),
             tvm: TvmThreadState::with_shard_state(ShardStateUnsplit::default()).unwrap(),
         }
     }

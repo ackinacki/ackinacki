@@ -5,6 +5,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::cli::CompressionMode as CliCompressionMode;
+use crate::cli::PostUploadAction;
 use crate::cli::ServersMatchMode;
 use crate::domain::traits::CompressionMode;
 use crate::Args;
@@ -20,6 +21,7 @@ pub struct AppConfig {
     pub bucket: String,
     pub require_all_servers: bool,
     pub compression: CompressionMode,
+    pub post_upload: PostUploadAction,
     pub skip_upload: bool,
     pub dry_run: bool,
 }
@@ -38,6 +40,7 @@ impl AppConfig {
                 CliCompressionMode::Gzip => CompressionMode::Gzip,
                 CliCompressionMode::Xz => CompressionMode::Xz,
             },
+            post_upload: args.post_upload,
             skip_upload: args.skip_upload,
             dry_run: args.dry_run,
         }
@@ -53,6 +56,7 @@ impl fmt::Display for AppConfig {
         writeln!(f, "bucket={}", self.bucket)?;
         writeln!(f, "require_all_servers={}", self.require_all_servers)?;
         writeln!(f, "compression={:?}", self.compression)?;
+        writeln!(f, "post_upload={:?}", self.post_upload)?;
         writeln!(f, "skip_upload={}", self.skip_upload)?;
         write!(f, "dry_run={}", self.dry_run)
     }
@@ -73,6 +77,7 @@ mod tests {
             servers_match_mode: ServersMatchMode::All,
             full_db: PathBuf::from("/tmp/full.db"),
             bucket: None,
+            post_upload: PostUploadAction::Move,
             skip_upload: false,
             dry_run: false,
         };

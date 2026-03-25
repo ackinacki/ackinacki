@@ -11,6 +11,7 @@ use tvm_block::Deserializable;
 use tvm_block::ExtraCurrencyCollection;
 use tvm_types::read_single_root_boc;
 
+use crate::defaults::THREAD_ID_LENGTH;
 use crate::schema::graphql::currency::OtherCurrency;
 use crate::schema::graphql::formats::BigIntFormat;
 use crate::schema::graphql_ext::QueryOrderBy;
@@ -134,6 +135,20 @@ pub fn u64_to_string(value: u64) -> String {
     string
 }
 
+#[inline]
+pub fn pad_thread_id(thread_id: String) -> String {
+    if thread_id.len() >= THREAD_ID_LENGTH {
+        thread_id
+    } else {
+        let mut padded = String::with_capacity(THREAD_ID_LENGTH);
+        for _ in 0..(THREAD_ID_LENGTH - thread_id.len()) {
+            padded.push('0');
+        }
+        padded.push_str(&thread_id);
+        padded
+    }
+}
+
 pub fn init_tracing() {
     // Init tracing
     let filter = match std::env::var("NODE_VERBOSE") {
@@ -226,6 +241,13 @@ pub fn u64_to_hexed_blob_buf(v: u64) -> [u8; 19] {
     buf
 }
 
+/// Formats a `u64` value as an SQLite BLOB hex literal string `X'0123...abcd'`.
+#[inline]
+pub fn u64_to_hexed_blob_literal(v: u64) -> String {
+    let buf = u64_to_hexed_blob_buf(v);
+    std::str::from_utf8(&buf).expect("u64 blob literal is valid UTF-8").to_string()
+}
+
 #[inline]
 pub fn sql_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
@@ -233,7 +255,10 @@ pub fn sql_quote(value: &str) -> String {
 
 #[cfg(test)]
 pub mod tests {
+    use crate::defaults::THREAD_ID_LENGTH;
     use crate::helpers::format_big_int;
+    use crate::helpers::pad_thread_id;
+    use crate::helpers::u64_to_hexed_blob_literal;
 
     #[test]
     fn test_format_big_int() {
@@ -253,5 +278,23 @@ pub mod tests {
             format_big_int(Some("0f3782dace9d900000".to_owned()), None),
             Some("0xf3782dace9d900000".to_owned())
         );
+    }
+
+    #[test]
+    fn test_pad_thread_id() {
+        let short = "thread-1".to_string();
+        let padded = pad_thread_id(short.clone());
+        assert_eq!(padded.len(), THREAD_ID_LENGTH);
+        assert!(padded.ends_with(&short));
+
+        let already_padded = "0".repeat(THREAD_ID_LENGTH);
+        assert_eq!(pad_thread_id(already_padded.clone()), already_padded);
+    }
+
+    #[test]
+    fn test_u64_to_hexed_blob_literal() {
+        assert_eq!(u64_to_hexed_blob_literal(0), "X'0000000000000000'");
+        assert_eq!(u64_to_hexed_blob_literal(1), "X'0000000000000001'");
+        assert_eq!(u64_to_hexed_blob_literal(u64::MAX), "X'ffffffffffffffff'");
     }
 }

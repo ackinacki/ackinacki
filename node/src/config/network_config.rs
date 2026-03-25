@@ -155,13 +155,13 @@ pub struct NetworkConfig {
 
     /// Number of max tries to download shared state
     /// Defaults to 3
-    #[builder(default = 50)]
+    #[builder(default = 200)]
     #[serde(default = "default_shared_state_max_download_tries")]
     pub shared_state_max_download_tries: u8,
 
     /// Retry timeout for shared state download
     /// Defaults to 2000
-    #[builder(default = 500)]
+    #[builder(default = 3000)]
     #[serde(default = "default_shared_state_retry_download_timeout_millis")]
     pub shared_state_retry_download_timeout_millis: u64,
 

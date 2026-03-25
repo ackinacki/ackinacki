@@ -85,8 +85,8 @@ pub trait OptimisticState: Send + Clone {
         thread_accounts_repository: &NodeThreadAccountsRepository,
         message_db: MessageDurableStorage,
         config_read: crate::config::config_read::ConfigRead,
-        #[cfg(feature = "usdc_name_repair")] usdc_name_repaired: std::sync::Arc<
-            parking_lot::Mutex<Option<BlockSeqNo>>,
+        #[cfg(feature = "authroot_dapp_repair")] authroot_dapp_repaired: std::sync::Arc<
+            parking_lot::Mutex<Option<crate::types::BlockSeqNo>>,
         >,
     ) -> anyhow::Result<(
         CrossThreadRefData,
@@ -372,8 +372,8 @@ impl OptimisticState for OptimisticStateImpl {
         thread_accounts_repository: &NodeThreadAccountsRepository,
         message_db: MessageDurableStorage,
         config_read: crate::config::config_read::ConfigRead,
-        #[cfg(feature = "usdc_name_repair")] usdc_name_repaired: std::sync::Arc<
-            parking_lot::Mutex<Option<BlockSeqNo>>,
+        #[cfg(feature = "authroot_dapp_repair")] authroot_dapp_repaired: std::sync::Arc<
+            parking_lot::Mutex<Option<crate::types::BlockSeqNo>>,
         >,
     ) -> anyhow::Result<(
         CrossThreadRefData,
@@ -471,7 +471,8 @@ impl OptimisticState for OptimisticStateImpl {
         *self = preprocessing_result.state;
 
         tracing::trace!("deser shard state start");
-        let mut prev_state = thread_accounts_repository.state_builder(&self.get_shard_state());
+        let (state, usage_tree) = self.get_shard_state().with_tvm_usage_tree()?;
+        let mut prev_state = thread_accounts_repository.state_builder(&state);
         prev_state.set_apply_to_durable(apply_to_durable);
         tracing::trace!("deser shard state finish");
         let changed = self.load_changed_accounts(
@@ -480,8 +481,9 @@ impl OptimisticState for OptimisticStateImpl {
             accounts_repo.clone(),
         )?;
         tracing::trace!("Start state serialization");
-        let prev_state =
-            NodeThreadAccountsRepository::state_to_tvm_cell(&prev_state.build(None)?.new_state)?;
+        let prev_state = NodeThreadAccountsRepository::state_to_tvm_cell(
+            &prev_state.build(Some(&usage_tree))?.new_state,
+        )?;
         tracing::trace!("finished state serialization");
         tracing::trace!("Applying block");
         tracing::trace!(target: "node", "apply_block: Old state hash: {:?}", prev_state.repr_hash());
@@ -557,10 +559,10 @@ impl OptimisticState for OptimisticStateImpl {
             apply_to_durable,
             #[cfg(feature = "monitor-accounts-number")]
             updated_accounts_number,
-            #[cfg(feature = "usdc_name_repair")]
+            #[cfg(feature = "authroot_dapp_repair")]
             is_block_of_retired_version,
-            #[cfg(feature = "usdc_name_repair")]
-            usdc_name_repaired,
+            #[cfg(feature = "authroot_dapp_repair")]
+            authroot_dapp_repaired,
         )?;
         cross_thread_ref_data.set_block_refs(block_candidate.common_section().refs().clone());
         *self = new_state;

@@ -3,14 +3,10 @@ use std::sync::Arc;
 
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::block_keeper_system::BlockKeeperSetChange;
-#[cfg(not(feature = "transitioning_node_version"))]
 use crate::types::AckiNackiBlock;
-#[cfg(feature = "transitioning_node_version")]
-use crate::types::AckiNackiBlockVersioned;
 
 pub(crate) fn update_block_keeper_set_from_common_section(
-    #[cfg(not(feature = "transitioning_node_version"))] block: &AckiNackiBlock,
-    #[cfg(feature = "transitioning_node_version")] block: &AckiNackiBlockVersioned,
+    block: &AckiNackiBlock,
     current_bk_set: Arc<BlockKeeperSet>,
     current_future_bk_set: Arc<BlockKeeperSet>,
 ) -> anyhow::Result<Option<(Arc<BlockKeeperSet>, Arc<BlockKeeperSet>)>> {

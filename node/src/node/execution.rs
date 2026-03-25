@@ -493,7 +493,7 @@ where
                 }
             }
         } else if let Some((id, seq_no, hint)) = self.last_synced_state.clone() {
-            self.broadcast_sync_finalized(id, seq_no, hint)?;
+            self.send_sync_finalized(id, seq_no, hint, node_id)?;
         }
         Ok(())
     }

@@ -1,0 +1,15 @@
+- name: upgrade block manager services
+  gather_facts: no
+  hosts: block_manager
+  serial: "{{ bm_update_batch_size | default('100%') }}"
+  become: yes
+  any_errors_fatal: true
+  vars:
+    DO_START: yes
+    DO_STOP_GRACEFUL: yes
+    GS_WAIT: true
+    UPGRADE:
+      - block-manager # grsh + down + up
+      - logrotate     # up + lr restart
+  roles:
+    - role: block-manager

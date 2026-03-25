@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::path::Path;
@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use crate::domain::models::BlockGap;
 use crate::domain::traits::DbClient;
 
 /// Mock database client for testing without database I/O.
@@ -52,5 +53,9 @@ impl DbClient for MockDbClient {
     fn merge_daily_into_full(&self, src_db: &Path, target_db: &Path) -> anyhow::Result<()> {
         self.merge_calls.lock().unwrap().push((src_db.to_path_buf(), target_db.to_path_buf()));
         Ok(())
+    }
+
+    fn query_block_gaps(&self, _db: &Path) -> anyhow::Result<Vec<BlockGap>> {
+        Ok(Vec::new())
     }
 }

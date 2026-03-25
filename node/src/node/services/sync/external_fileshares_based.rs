@@ -19,6 +19,7 @@ use tokio::sync::watch::Receiver;
 use url::Url;
 
 use crate::helper::SHUTDOWN_FLAG;
+use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
 use crate::node::services::sync::FileSavingService;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NodeIdentifier;
@@ -27,6 +28,8 @@ use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::services::blob_sync::external_fileshares_based::ServiceInterface;
 use crate::services::blob_sync::BlobSyncService;
+use crate::utilities::guarded::AllowGuardedMut;
+use crate::utilities::guarded::GuardedMut;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
 
 #[derive(Clone)]
@@ -42,6 +45,8 @@ pub struct ExternalFileSharesBased {
     bk_set_rx: tokio::sync::watch::Receiver<ApiBkSet>,
 }
 
+impl AllowGuardedMut for Option<JoinHandle<()>> {}
+
 impl ExternalFileSharesBased {
     pub fn new(
         blob_sync: ServiceInterface,
@@ -52,9 +57,9 @@ impl ExternalFileSharesBased {
         // TODO: move to config
         Self {
             static_storages: vec![],
-            max_download_tries: 3,
+            max_download_tries: 30,
             retry_download_timeout: Duration::from_secs(2),
-            download_deadline_timeout: Duration::from_secs(120),
+            download_deadline_timeout: Duration::from_secs(600),
             blob_sync,
             file_saving_service,
             state_load_thread: Arc::new(Mutex::new(None)),
@@ -72,12 +77,20 @@ impl StateSyncService for ExternalFileSharesBased {
         block_id: &BlockIdentifier,
         thread_id: &ThreadIdentifier,
         min_state: Option<Arc<OptimisticStateImpl>>,
+        finalizing_block_id: BlockIdentifier,
     ) -> anyhow::Result<()> {
         tracing::trace!("save_state_for_sharing: {:?}", block_id);
         let file_name = PathBuf::from(block_id.to_string());
-        self.file_saving_service.save_object(block_id, thread_id, min_state, file_name)
+        self.file_saving_service.save_object(
+            block_id,
+            thread_id,
+            min_state,
+            file_name,
+            finalizing_block_id,
+        )
     }
 
+    // TODO: load state thread needs timeout guard to prevent thread stuck on "infinite" size state
     fn add_load_state_task(
         &mut self,
         resource_address: BTreeMap<ThreadIdentifier, BlockIdentifier>,
@@ -102,9 +115,11 @@ impl StateSyncService for ExternalFileSharesBased {
             .iter()
             .map(|bk| NodeIdentifier::from(AccountIdentifier::new(bk.owner_address.0)))
             .collect::<HashSet<_>>();
+        let last_load_error = Arc::new(Mutex::new(None::<Result<(), anyhow::Error>>));
         for (thread_id, block_id) in resource_address.clone() {
             let output_clone = output.clone();
             let checker_clone = checker.clone();
+            let checker_clone2 = checker.clone();
             let repo_clone = repo.clone();
             let external_blob_share_services = {
                 let mut services = HashSet::<Url>::from_iter(self.static_storages.iter().cloned());
@@ -139,8 +154,28 @@ impl StateSyncService for ExternalFileSharesBased {
                         let mut buffer: Vec<u8> = vec![];
                         match e.read_to_end(&mut buffer) {
                             Ok(_size) => {
+                                // Transparent decompression: detect magic header
+                                let payload = if buffer.starts_with(COMPRESSED_SNAPSHOT_MAGIC) {
+                                    match zstd::decode_all(&buffer[COMPRESSED_SNAPSHOT_MAGIC.len()..]) {
+                                        Ok(decompressed) => {
+                                            tracing::trace!(
+                                                "add_load_state_task: decompressed snapshot for {thread_id:?} (compressed={} decompressed={})",
+                                                buffer.len(), decompressed.len()
+                                            );
+                                            decompressed
+                                        }
+                                        Err(e) => {
+                                            let _ = output_clone.send(Err(e.into()));
+                                            return;
+                                        }
+                                    }
+                                } else {
+                                    // Legacy uncompressed snapshot — use as-is
+                                    buffer
+                                };
+
                                 let res = repo_clone.lock().set_state_from_snapshot(
-                                    buffer,
+                                    payload,
                                     &ThreadIdentifier::default(),
                                     Arc::new(Mutex::new(HashSet::new())),
                                 );
@@ -165,9 +200,13 @@ impl StateSyncService for ExternalFileSharesBased {
                 },
                 {
                     let output_clone = output.clone();
+                    let last_load_error_clone = last_load_error.clone();
                     move |e| {
+                        tracing::trace!(target: "node", "Load state thread failed: {e}");
                         // Handle error
+                        *last_load_error_clone.lock() = Some(Err(anyhow::format_err!("Load state thread failed: {e}")));
                         let _ = output_clone.send(Err(e));
+                        checker_clone2.lock().clear();
                         if let Some(m) = metrics_on_error {
                             m.report_error("load_state_error");
                         }
@@ -182,6 +221,9 @@ impl StateSyncService for ExternalFileSharesBased {
                 }
                 let checker = checker.lock();
                 if checker.is_empty() {
+                    if let Some(err) = last_load_error.lock().take() {
+                        return err;
+                    }
                     let _ = output.send(Ok(resource_address));
                     return Ok(());
                 }
@@ -193,8 +235,23 @@ impl StateSyncService for ExternalFileSharesBased {
         Ok(())
     }
 
-    fn reset_sync(&self) {
-        self.state_load_thread.lock().take();
+    fn is_load_thread_available(&self) -> bool {
+        self.state_load_thread.guarded_mut(|load_thread| {
+            if load_thread.is_none() {
+                return true;
+            }
+            if load_thread.as_ref().map(|t| t.is_finished()).unwrap_or(false) {
+                let res = load_thread.take().unwrap().join();
+                tracing::trace!(target: "node", "load state thread finished with res: {res:?}");
+                if res.is_err() {
+                    true
+                } else {
+                    false // do not start new load, use prepared result
+                }
+            } else {
+                false
+            }
+        })
     }
 
     fn flush(&self) -> anyhow::Result<()> {

@@ -10,15 +10,19 @@ use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 use typed_builder::TypedBuilder;
 
+use crate::bls::envelope::BLSSignedEnvelope;
 use crate::helper::get_temp_file_path;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::services::block_processor::service::MAX_ATTESTATION_TARGET_BETA;
 use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BLOCK_STATISTICS_INITIAL_WINDOW_SIZE;
+use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
+use crate::node::services::sync::snapshot_compression::ZSTD_COMPRESSION_LEVEL;
 use crate::node::shared_services::SharedServices;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::AncestorBlockData;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::repository_impl::ThreadSnapshot;
+use crate::repository::repository_impl::ThreadSnapshotHeader;
 use crate::repository::CrossThreadRefData;
 use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
@@ -175,6 +179,7 @@ impl FileSavingService {
         thread_id: &ThreadIdentifier,
         min_state: Option<Arc<OptimisticStateImpl>>,
         path: PathBuf,
+        finalizing_block_id: BlockIdentifier,
     ) -> anyhow::Result<()> {
         self.flush()?;
         if !self.is_slot_available()? {
@@ -194,10 +199,27 @@ impl FileSavingService {
         // Capture the finalized block synchronously before spawning the thread.
         // The block is guaranteed to be in FinalizedBlockStorage at this call site,
         // but may be evicted by the time the background thread runs (race condition).
+
+        tracing::trace!(
+            "save_object: block_id={block_id:?}, finalizing_block_id={finalizing_block_id:?}"
+        );
         let finalized_block = self
             .repository
             .get_finalized_block(&block_id)?
             .ok_or_else(|| anyhow::format_err!("Failed to get block: {:?}", block_id))?;
+        // Collect the finalization chain synchronously before spawning the thread.
+        // Blocks may be evicted from FinalizedBlockStorage by the time the background thread runs.
+        let finalization_chain = Self::collect_finalization_chain(
+            &block_id,
+            &finalizing_block_id,
+            &thread_id,
+            &self.repository,
+        )
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to collect finalization chain: {e}");
+            vec![]
+        });
+        tracing::trace!("save_object: finalization_chain len={}", finalization_chain.len());
         #[cfg(feature = "history_proofs")]
         let history_proof_data = self.repository.get_history_proof_data();
         let active_count = Arc::clone(&self.active_thread_count);
@@ -317,26 +339,96 @@ impl FileSavingService {
                         parent_ancestor_blocks_finalization_checkpoints,
                     )
                     .block_protocol_version_state(block_protocol_version_state)
-                    .durable_state_snapshot(durable_state_snapshot);
+                    .durable_state_snapshot(durable_state_snapshot)
+                    .finalization_chain(finalization_chain);
                 #[cfg(feature = "history_proofs")]
                 let builder = builder.history_data_snapshot(history_snapshot);
                 let shared_thread_state = builder.build();
                 // Drop the Arc<Envelope> now that its data has been cloned into the snapshot.
                 drop(finalized_block);
 
+                // Extract lightweight header before dropping the snapshot
+                let header = ThreadSnapshotHeader {
+                    block_id: shared_thread_state.finalized_block().data().identifier(),
+                    thread_id: *shared_thread_state.finalized_block().data().common_section().thread_id(),
+                    seq_no: shared_thread_state.finalized_block().data().seq_no(),
+                    round: *shared_thread_state.finalized_block().data().common_section().round(),
+                };
+
                 let bytes = bincode::serialize(&shared_thread_state)?;
                 // Drop the ThreadSnapshot now that it's serialized.
                 drop(shared_thread_state);
+
+                // Compress with zstd and prepend magic header
+                let compressed = zstd::encode_all(bytes.as_slice(), ZSTD_COMPRESSION_LEVEL)?;
+                let mut bytes = Vec::with_capacity(COMPRESSED_SNAPSHOT_MAGIC.len() + compressed.len());
+                bytes.extend_from_slice(COMPRESSED_SNAPSHOT_MAGIC);
+                bytes.extend_from_slice(&compressed);
 
                 let tmp_file_path = get_temp_file_path(&parent_dir);
                 std::fs::write(tmp_file_path.clone(), bytes)?;
                 std::fs::rename(tmp_file_path, &path)?;
                 tracing::trace!(target: "node", "Successfully saved state to {}", path.display());
+
+                // Write lightweight header sidecar for fast startup scanning
+                let header_path = RepositoryImpl::snapshot_header_path(&path);
+                if !std::fs::exists(&header_path)? {
+                    let header_bytes = bincode::serialize(&header)?;
+                    let tmp_header_path = get_temp_file_path(&parent_dir);
+                    std::fs::write(&tmp_header_path, header_bytes)?;
+                    std::fs::rename(tmp_header_path, &header_path)?;
+                }
+
                 Ok(())
             })?;
         self.threads.guarded_mut(|threads| {
             threads.push(thread);
         });
         Ok(())
+    }
+
+    /// Collects the ordered chain of blocks from `finalized_block_id` (exclusive)
+    /// to `finalizing_block_id` (inclusive) by following parent links.
+    ///
+    /// Returns blocks in ascending order: [B+1, B+2, ..., P].
+    fn collect_finalization_chain(
+        finalized_block_id: &BlockIdentifier,
+        finalizing_block_id: &BlockIdentifier,
+        thread_id: &ThreadIdentifier,
+        repository: &RepositoryImpl,
+    ) -> anyhow::Result<Vec<crate::bls::envelope::Envelope<crate::types::AckiNackiBlock>>> {
+        use crate::bls::envelope::BLSSignedEnvelope;
+
+        if finalized_block_id == finalizing_block_id {
+            return Ok(vec![]);
+        }
+
+        let mut chain = vec![];
+        let mut cursor = *finalizing_block_id;
+
+        loop {
+            // TODO: Can't load finalizing block
+            let block =
+                repository.get_block_from_repo_or_archive(&cursor, thread_id).map_err(|e| {
+                    anyhow::format_err!(
+                        "collect_finalization_chain: block {cursor:?} not found: {e}"
+                    )
+                })?;
+
+            let parent_id = block.data().parent();
+
+            chain.push(block.as_ref().clone());
+
+            if parent_id == *finalized_block_id || cursor == *finalized_block_id {
+                break;
+            }
+            if parent_id == BlockIdentifier::default() {
+                break;
+            }
+            cursor = parent_id;
+        }
+
+        chain.reverse();
+        Ok(chain)
     }
 }

@@ -29,7 +29,7 @@ pub struct MapHash(pub [u8; 32]);
 pub struct MapKey(pub [u8; 32]);
 
 /// Prefix view: `len` is number of HIGH BITS fixed in `prefix`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MapKeyPath {
     pub prefix: MapKey,
     pub len: u8,
@@ -42,7 +42,7 @@ impl Default for MapKeyPath {
 }
 
 pub trait MapRepository: Clone + Send + Sync {
-    type MapRef: Clone + Copy + Send + Sync;
+    type MapRef: Clone + Send + Sync;
     type Value: MapValue;
 
     fn new_map() -> Self::MapRef;

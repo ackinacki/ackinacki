@@ -10,6 +10,8 @@ use serde::Serialize;
 // Re-export the trait from thread-reference-state
 pub use thread_reference_state::CrossThreadRefDataTrait;
 use typed_builder::TypedBuilder;
+use versioned_struct::versioned;
+use versioned_struct::Transitioning;
 
 use crate::message::identifier::MessageIdentifier;
 use crate::repository::WrappedMessage;
@@ -20,6 +22,7 @@ use crate::types::ThreadsTable;
 
 /// This structure has to have minimum and complete data required
 /// for other threads to reference a state at a particular block.
+#[versioned]
 #[derive(TypedBuilder, Clone, Serialize, Deserialize, Getters, Debug)]
 pub struct CrossThreadRefData {
     block_identifier: BlockIdentifier,
@@ -35,6 +38,30 @@ pub struct CrossThreadRefData {
     threads_table: ThreadsTable,
     parent_block_identifier: BlockIdentifier,
     block_refs: Vec<BlockIdentifier>,
+    /// True when this is the last block produced for the thread.
+    /// After a tombstone block is referenced via `move_refs`, the thread is
+    /// removed from the reference state since no further blocks will follow.
+    #[future]
+    #[builder(default = false)]
+    is_tombstone: bool,
+}
+
+impl Transitioning for CrossThreadRefData {
+    type Old = CrossThreadRefDataOld;
+
+    fn from(old: Self::Old) -> Self {
+        Self {
+            block_identifier: old.block_identifier,
+            block_seq_no: old.block_seq_no,
+            block_thread_identifier: old.block_thread_identifier,
+            outbound_messages: old.outbound_messages,
+            outbound_accounts: old.outbound_accounts,
+            threads_table: old.threads_table,
+            parent_block_identifier: old.parent_block_identifier,
+            block_refs: old.block_refs,
+            is_tombstone: false,
+        }
+    }
 }
 
 impl CrossThreadRefData {
@@ -48,6 +75,10 @@ impl CrossThreadRefData {
 
     pub fn set_block_refs(&mut self, block_refs: Vec<BlockIdentifier>) {
         self.block_refs = block_refs;
+    }
+
+    pub fn set_tombstone(&mut self, tombstone: bool) {
+        self.is_tombstone = tombstone;
     }
 
     pub fn get_produced_threads_table(&self) -> &ThreadsTable {
@@ -109,11 +140,15 @@ impl CrossThreadRefData {
 
 // Implement the trait for ThreadReferencesState
 impl CrossThreadRefDataTrait for CrossThreadRefData {
-    fn block_identifier(&self) -> &BlockIdentifier {
+    type BlockId = BlockIdentifier;
+    type SeqNo = thread_reference_state::BlockSeqNo;
+    type ThreadId = ThreadIdentifier;
+
+    fn block_identifier(&self) -> &Self::BlockId {
         &self.block_identifier
     }
 
-    fn block_seq_no(&self) -> &thread_reference_state::BlockSeqNo {
+    fn block_seq_no(&self) -> &Self::SeqNo {
         // Note: We cannot return a reference to a converted value since it would be a temporary.
         // Instead, we rely on the fact that both BlockSeqNo types have the same memory layout.
         // Safety: Both types are repr(transparent) wrappers around u32 with identical layout.
@@ -123,26 +158,28 @@ impl CrossThreadRefDataTrait for CrossThreadRefData {
         }
     }
 
-    fn block_thread_identifier(&self) -> &ThreadIdentifier {
+    fn block_thread_identifier(&self) -> &Self::ThreadId {
         &self.block_thread_identifier
     }
 
-    fn parent_block_identifier(&self) -> &BlockIdentifier {
+    fn parent_block_identifier(&self) -> &Self::BlockId {
         &self.parent_block_identifier
     }
 
-    fn refs(&self) -> &Vec<BlockIdentifier> {
+    fn refs(&self) -> &Vec<Self::BlockId> {
         &self.block_refs
     }
 
-    fn spawned_threads(&self) -> Vec<ThreadIdentifier> {
+    fn spawned_threads(&self) -> Vec<Self::ThreadId> {
         self.spawned_threads()
     }
 
-    fn as_reference_state_data(
-        &self,
-    ) -> (ThreadIdentifier, BlockIdentifier, thread_reference_state::BlockSeqNo) {
+    fn as_reference_state_data(&self) -> (Self::ThreadId, Self::BlockId, Self::SeqNo) {
         let (thread, block, seq_no) = CrossThreadRefData::as_reference_state_data(self);
         (thread, block, seq_no.into())
+    }
+
+    fn is_thread_tombstone(&self) -> bool {
+        self.is_tombstone
     }
 }

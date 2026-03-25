@@ -12,15 +12,9 @@ use tvm_block::Deserializable;
 use tvm_block::Serializable;
 use tvm_types::read_single_root_boc;
 use tvm_types::write_boc;
-#[cfg(feature = "transitioning_node_version")]
-use versioned_struct::Transitioning;
 
 use crate::types::ackinacki_block::common_section::CommonSection;
 use crate::types::AckiNackiBlock;
-// #[cfg(feature = "transitioning_node_version")]
-use crate::types::AckiNackiBlockOld;
-#[cfg(feature = "transitioning_node_version")]
-use crate::types::AckiNackiBlockVersioned;
 
 impl AckiNackiBlock {
     pub fn get_raw_data_without_hash(&self) -> anyhow::Result<Vec<u8>> {
@@ -48,46 +42,7 @@ impl AckiNackiBlock {
     }
 }
 
-// #[cfg(feature = "transitioning_node_version")]
-impl AckiNackiBlockOld {
-    pub fn get_raw_data_without_hash(&self) -> anyhow::Result<Vec<u8>> {
-        tracing::trace!("full serialize block data");
-        let common_section = bincode::serialize(&self.common_section)?;
-        let mut data = vec![];
-        data.extend_from_slice(&common_section.len().to_be_bytes()); // 8 bytes of common section len
-        data.extend_from_slice(&common_section);
-
-        let block_cell = self
-            .block
-            .serialize()
-            .map_err(|e| anyhow::format_err!("Failed to serialize tvm block: {e}"))?;
-        let block_data = write_boc(&block_cell)
-            .map_err(|e| anyhow::format_err!("Failed to serialize tvm block cell: {e}"))?;
-        data.extend_from_slice(&block_data.len().to_be_bytes()); // 8 bytes of block data len
-        data.extend_from_slice(&block_data);
-        data.extend_from_slice(&self.tx_cnt.to_be_bytes()); // 8 bytes of tx_cnt
-        Ok(data)
-    }
-}
-
 impl Serialize for AckiNackiBlock {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        if let Some(data) = &self.raw_data {
-            data.serialize(serializer)
-        } else {
-            let mut data = self
-                .get_raw_data_without_hash()
-                .map_err(|_| S::Error::custom("Failed to get block raw data"))?;
-            data.extend_from_slice(&self.hash);
-            data.serialize(serializer)
-        }
-    }
-}
-
-impl Serialize for AckiNackiBlockOld {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -117,12 +72,6 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
                 .map_err(|_| D::Error::custom("Failed to deserialize common section len"))?,
         );
         let (common_section_data, rest) = rest.split_at(common_section_len);
-        #[cfg(feature = "transitioning_node_version")]
-        let common_section: CommonSection =
-            Transitioning::deserialize_data_compat(common_section_data)
-                .map_err(|_| D::Error::custom("Failed to deserialize common section"))?;
-
-        #[cfg(not(feature = "transitioning_node_version"))]
         let common_section: CommonSection = bincode::deserialize(common_section_data)
             .map_err(|_| D::Error::custom("Failed to deserialize common section"))?;
 
@@ -173,28 +122,5 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
             block_cell: Some(block_cell),
             durable_state_update: durable_diff,
         })
-    }
-}
-
-#[cfg(feature = "transitioning_node_version")]
-impl Serialize for AckiNackiBlockVersioned {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            AckiNackiBlockVersioned::New(block) => block.serialize(serializer),
-            AckiNackiBlockVersioned::Old(block) => block.serialize(serializer),
-        }
-    }
-}
-
-#[cfg(feature = "transitioning_node_version")]
-impl<'de> Deserialize<'de> for AckiNackiBlockVersioned {
-    fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        unimplemented!("It's intentionally unimplemented cause it should not be called")
     }
 }

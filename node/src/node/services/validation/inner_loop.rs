@@ -79,9 +79,6 @@ pub(super) fn inner_loop(
     wasm_cache: WasmNodeCache,
     message_db: MessageDurableStorage,
     authority: Arc<Mutex<Authority>>,
-    #[cfg(feature = "usdc_name_repair")] usdc_name_repaired: std::sync::Arc<
-        parking_lot::Mutex<Option<BlockSeqNo>>,
-    >,
 ) {
     let mut buffer = VecDeque::<(BlockState, Envelope<AckiNackiBlock>)>::new();
     let mut blocks_with_unsupported_version = HashSet::<BlockIdentifier>::new();
@@ -207,8 +204,8 @@ pub(super) fn inner_loop(
                 wasm_cache.clone(),
                 message_db.clone(),
                 node_global_config_read.is_retired(&protocol_version),
-                #[cfg(feature = "usdc_name_repair")]
-                usdc_name_repaired.clone(),
+                #[cfg(feature = "authroot_dapp_repair")]
+                repository.authroot_dapp_repaired(),
             )
             .expect("Failed to verify block");
             if !verify_res.is_valid() {

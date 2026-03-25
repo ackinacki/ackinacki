@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 
-use node_types::BlockIdentifier;
-use node_types::ThreadIdentifier;
 use serde::Deserialize;
 use serde::Serialize;
 use tracing::instrument;
@@ -90,27 +88,38 @@ pub fn next_seq_no(seq_no: BlockSeqNo) -> BlockSeqNo {
 /// Trait for cross-thread reference data that can be used with ThreadReferencesState.
 /// This trait abstracts the minimum interface needed for reference tracking.
 pub trait CrossThreadRefDataTrait {
-    fn block_identifier(&self) -> &BlockIdentifier;
-    fn block_seq_no(&self) -> &BlockSeqNo;
-    fn block_thread_identifier(&self) -> &ThreadIdentifier;
-    fn parent_block_identifier(&self) -> &BlockIdentifier;
-    fn refs(&self) -> &Vec<BlockIdentifier>;
-    fn spawned_threads(&self) -> Vec<ThreadIdentifier>;
-    fn as_reference_state_data(&self) -> (ThreadIdentifier, BlockIdentifier, BlockSeqNo);
+    type BlockId;
+    type SeqNo;
+    type ThreadId;
+
+    fn block_identifier(&self) -> &Self::BlockId;
+    fn block_seq_no(&self) -> &Self::SeqNo;
+    fn block_thread_identifier(&self) -> &Self::ThreadId;
+    fn parent_block_identifier(&self) -> &Self::BlockId;
+    fn refs(&self) -> &Vec<Self::BlockId>;
+    fn spawned_threads(&self) -> Vec<Self::ThreadId>;
+    fn as_reference_state_data(&self) -> (Self::ThreadId, Self::BlockId, Self::SeqNo);
+    /// Returns true if this block is the last block produced for its thread.
+    /// When a tombstone block is processed by `move_refs`, the thread is removed
+    /// from the reference state because no further blocks will be produced for it.
+    fn is_thread_tombstone(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
-pub struct ReferencedBlock {
-    pub block_thread_identifier: ThreadIdentifier,
-    pub block_identifier: BlockIdentifier,
-    pub block_seq_no: BlockSeqNo,
+pub struct ReferencedBlock<TBlockId, TSeqNo, TThreadId> {
+    pub block_thread_identifier: TThreadId,
+    pub block_identifier: TBlockId,
+    pub block_seq_no: TSeqNo,
 }
 
-impl<T> From<(ThreadIdentifier, BlockIdentifier, T)> for ReferencedBlock
+impl<TBlockId, TSeqNo, TThreadId, T> From<(TThreadId, TBlockId, T)>
+    for ReferencedBlock<TBlockId, TSeqNo, TThreadId>
 where
-    T: Into<BlockSeqNo>,
+    T: Into<TSeqNo>,
 {
-    fn from(params: (ThreadIdentifier, BlockIdentifier, T)) -> Self {
+    fn from(params: (TThreadId, TBlockId, T)) -> Self {
         Self {
             block_thread_identifier: params.0,
             block_identifier: params.1,
@@ -120,39 +129,47 @@ where
 }
 
 #[derive(TypedBuilder, Clone, Serialize, Deserialize, Debug)]
-pub struct ThreadReferencesState {
-    // Note that ThreadIdentifier is duplicated as a key and in the value.
+pub struct ThreadReferencesState<TBlockId, TSeqNo, TThreadId>
+where
+    TThreadId: Eq + std::hash::Hash,
+{
+    // Note that TThreadId is duplicated as a key and in the value.
     // It was intentionally done this way, since it is possible to have a thread
     // starting block (thread split) and no first block of the new thread produced
     // (or referenced) yet.
     // It DOES NOT keep references to dead threads
     // TODO: convert it to a load on demand.
-    all_thread_refs: HashMap<ThreadIdentifier, ReferencedBlock>,
+    all_thread_refs: HashMap<TThreadId, ReferencedBlock<TBlockId, TSeqNo, TThreadId>>,
 }
 
 #[derive(Debug)]
-pub struct ResultingState {
-    pub implicitly_referenced_blocks: Vec<BlockIdentifier>,
+pub struct ResultingState<TBlockId> {
+    pub implicitly_referenced_blocks: Vec<TBlockId>,
     // Note: it is a squashed state when a query
     // had several references to the same thread.
-    pub explicitly_referenced_blocks: Vec<BlockIdentifier>,
+    pub explicitly_referenced_blocks: Vec<TBlockId>,
 }
 
 #[derive(Debug)]
-pub enum CanRefQueryResult {
+pub enum CanRefQueryResult<TBlockId> {
     No,
-    Yes(ResultingState),
+    Yes(ResultingState<TBlockId>),
 }
 
-impl ThreadReferencesState {
-    pub fn all_thread_refs(&self) -> &HashMap<ThreadIdentifier, ReferencedBlock> {
+impl<TBlockId, TSeqNo, TThreadId> ThreadReferencesState<TBlockId, TSeqNo, TThreadId>
+where
+    TThreadId: Eq + std::hash::Hash,
+{
+    pub fn all_thread_refs(
+        &self,
+    ) -> &HashMap<TThreadId, ReferencedBlock<TBlockId, TSeqNo, TThreadId>> {
         &self.all_thread_refs
     }
 
     pub fn update(
         &mut self,
-        thread: ThreadIdentifier,
-        referenced_block: impl Into<ReferencedBlock>,
+        thread: TThreadId,
+        referenced_block: impl Into<ReferencedBlock<TBlockId, TSeqNo, TThreadId>>,
     ) {
         self.all_thread_refs.insert(thread, referenced_block.into());
     }
@@ -160,12 +177,15 @@ impl ThreadReferencesState {
     #[instrument(skip_all)]
     pub fn can_reference<T, F>(
         &self,
-        explicit_references: Vec<BlockIdentifier>,
+        explicit_references: Vec<TBlockId>,
         mut get_ref_data: F,
-    ) -> anyhow::Result<CanRefQueryResult>
+    ) -> anyhow::Result<CanRefQueryResult<TBlockId>>
     where
-        T: CrossThreadRefDataTrait,
-        F: FnMut(&BlockIdentifier) -> anyhow::Result<T>,
+        TBlockId: Copy + Eq + std::hash::Hash + std::fmt::Debug,
+        TSeqNo: Copy + PartialOrd + std::fmt::Debug,
+        TThreadId: Copy + Eq + std::hash::Hash + std::fmt::Debug,
+        T: CrossThreadRefDataTrait<BlockId = TBlockId, SeqNo = TSeqNo, ThreadId = TThreadId>,
+        F: FnMut(&TBlockId) -> anyhow::Result<T>,
     {
         tracing::trace!("can_reference: {:?} self: {:?}", explicit_references, self);
         if explicit_references.is_empty() {
@@ -175,7 +195,7 @@ impl ThreadReferencesState {
             }));
         }
         let mut tails = self.all_thread_refs.clone();
-        let mut stack: VecDeque<BlockIdentifier> = explicit_references.into();
+        let mut stack: VecDeque<TBlockId> = explicit_references.into();
         let mut all_referenced_blocks = vec![];
         let previously_referenced_set: HashSet<_> =
             self.all_thread_refs.values().map(|e| e.block_identifier).collect();
@@ -184,7 +204,8 @@ impl ThreadReferencesState {
         while let Some(cursor) = stack.pop_front() {
             let trail = walk_back_into_history(&cursor, &mut get_ref_data, &tails)?;
             for block in trail.into_iter().rev() {
-                let referenced_block: ReferencedBlock = block.as_reference_state_data().into();
+                let referenced_block: ReferencedBlock<TBlockId, TSeqNo, TThreadId> =
+                    block.as_reference_state_data().into();
                 let thread_id = *block.block_thread_identifier();
                 let should_update = match tails.get(&thread_id) {
                     Some(existing) => *block.block_seq_no() > existing.block_seq_no,
@@ -216,12 +237,15 @@ impl ThreadReferencesState {
 
     pub fn move_refs<T, F>(
         &mut self,
-        refs: Vec<BlockIdentifier>,
+        refs: Vec<TBlockId>,
         mut get_ref_data: F,
     ) -> anyhow::Result<Vec<T>>
     where
-        T: CrossThreadRefDataTrait,
-        F: FnMut(&BlockIdentifier) -> anyhow::Result<T>,
+        TBlockId: Copy + Eq + std::hash::Hash + std::fmt::Debug,
+        TSeqNo: Copy + PartialOrd + std::fmt::Debug,
+        TThreadId: Copy + Eq + std::hash::Hash + std::fmt::Debug,
+        T: CrossThreadRefDataTrait<BlockId = TBlockId, SeqNo = TSeqNo, ThreadId = TThreadId>,
+        F: FnMut(&TBlockId) -> anyhow::Result<T>,
     {
         match self.can_reference(refs, &mut get_ref_data)? {
             CanRefQueryResult::No => anyhow::bail!("Can not reference to the given set of refs"),
@@ -243,14 +267,19 @@ impl ThreadReferencesState {
                     e.append(&mut implicitly_referenced_blocks.clone());
                     e
                 };
+                let mut tombstoned_threads = vec![];
                 {
-                    // Add phantoms: blocks that spawn new threads must be placed into the new thread too
+                    // Add phantoms: blocks that spawn new threads must be placed into the new thread too.
+                    // Also collect threads whose tombstone block was referenced, so they can be removed.
                     let get_ref_data = &mut get_ref_data;
                     for referenced_block in all_refs.iter().map(get_ref_data) {
                         let referenced_block = referenced_block?;
                         let block_identifier = *referenced_block.block_identifier();
                         let block_seq_no = *referenced_block.block_seq_no();
                         let block_thread_identifier = *referenced_block.block_thread_identifier();
+                        if referenced_block.is_thread_tombstone() {
+                            tombstoned_threads.push(block_thread_identifier);
+                        }
                         for spawned_thread in referenced_block.spawned_threads() {
                             self.all_thread_refs.insert(
                                 spawned_thread,
@@ -272,6 +301,10 @@ impl ThreadReferencesState {
                     keep_tails(&mut e);
                     e.into_iter().map(|e| (e.0, e.into()))
                 });
+                // Remove dead threads whose tombstone block was just processed.
+                for thread_id in tombstoned_threads {
+                    self.all_thread_refs.remove(&thread_id);
+                }
                 if cfg!(feature = "allow-threads-merge") {
                     #[cfg(feature = "allow-threads-merge")]
                     compile_error!(
@@ -285,13 +318,16 @@ impl ThreadReferencesState {
 }
 
 fn walk_back_into_history<T, F>(
-    cursor: &BlockIdentifier,
+    cursor: &T::BlockId,
     mut read: F,
-    cutoff: &HashMap<ThreadIdentifier, ReferencedBlock>,
+    cutoff: &HashMap<T::ThreadId, ReferencedBlock<T::BlockId, T::SeqNo, T::ThreadId>>,
 ) -> anyhow::Result<Vec<T>>
 where
     T: CrossThreadRefDataTrait,
-    F: FnMut(&BlockIdentifier) -> anyhow::Result<T>,
+    T::ThreadId: Eq + std::hash::Hash,
+    T::SeqNo: PartialOrd,
+    T::BlockId: Copy + PartialEq,
+    F: FnMut(&T::BlockId) -> anyhow::Result<T>,
 {
     let mut cursor = read(cursor)?;
     let mut trail = vec![];
@@ -317,9 +353,14 @@ where
     }
 }
 
-fn keep_tails(referenced_blocks: &mut Vec<(ThreadIdentifier, BlockIdentifier, BlockSeqNo)>) {
-    let mut tails =
-        HashMap::<ThreadIdentifier, (ThreadIdentifier, BlockIdentifier, BlockSeqNo)>::new();
+fn keep_tails<TThreadId, TBlockId, TSeqNo>(
+    referenced_blocks: &mut Vec<(TThreadId, TBlockId, TSeqNo)>,
+) where
+    TThreadId: Copy + Eq + std::hash::Hash,
+    TBlockId: Copy,
+    TSeqNo: Copy + PartialOrd,
+{
+    let mut tails = HashMap::<TThreadId, (TThreadId, TBlockId, TSeqNo)>::new();
     for (thread, id, seq_no) in referenced_blocks.iter_mut() {
         tails
             .entry(*thread)
@@ -337,6 +378,9 @@ fn keep_tails(referenced_blocks: &mut Vec<(ThreadIdentifier, BlockIdentifier, Bl
 mod tests {
     use std::collections::HashMap;
 
+    use node_types::BlockIdentifier;
+    use node_types::ThreadIdentifier;
+
     use super::*;
 
     // Mock implementation of CrossThreadRefDataTrait for testing
@@ -348,35 +392,44 @@ mod tests {
         parent_block_identifier: BlockIdentifier,
         refs: Vec<BlockIdentifier>,
         spawned_threads: Vec<ThreadIdentifier>,
+        tombstone: bool,
     }
 
     impl CrossThreadRefDataTrait for MockRefData {
-        fn block_identifier(&self) -> &BlockIdentifier {
+        type BlockId = BlockIdentifier;
+        type SeqNo = BlockSeqNo;
+        type ThreadId = ThreadIdentifier;
+
+        fn block_identifier(&self) -> &Self::BlockId {
             &self.block_identifier
         }
 
-        fn block_seq_no(&self) -> &BlockSeqNo {
+        fn block_seq_no(&self) -> &Self::SeqNo {
             &self.block_seq_no
         }
 
-        fn block_thread_identifier(&self) -> &ThreadIdentifier {
+        fn block_thread_identifier(&self) -> &Self::ThreadId {
             &self.block_thread_identifier
         }
 
-        fn parent_block_identifier(&self) -> &BlockIdentifier {
+        fn parent_block_identifier(&self) -> &Self::BlockId {
             &self.parent_block_identifier
         }
 
-        fn refs(&self) -> &Vec<BlockIdentifier> {
+        fn refs(&self) -> &Vec<Self::BlockId> {
             &self.refs
         }
 
-        fn spawned_threads(&self) -> Vec<ThreadIdentifier> {
+        fn spawned_threads(&self) -> Vec<Self::ThreadId> {
             self.spawned_threads.clone()
         }
 
-        fn as_reference_state_data(&self) -> (ThreadIdentifier, BlockIdentifier, BlockSeqNo) {
+        fn as_reference_state_data(&self) -> (Self::ThreadId, Self::BlockId, Self::SeqNo) {
             (self.block_thread_identifier, self.block_identifier, self.block_seq_no)
+        }
+
+        fn is_thread_tombstone(&self) -> bool {
+            self.tombstone
         }
     }
 
@@ -459,7 +512,8 @@ mod tests {
         let block_id = test_block_id(1);
         let seq_no = BlockSeqNo::new(10);
 
-        let ref_block: ReferencedBlock = (thread_id, block_id, seq_no).into();
+        let ref_block: ReferencedBlock<BlockIdentifier, BlockSeqNo, ThreadIdentifier> =
+            (thread_id, block_id, seq_no).into();
 
         assert_eq!(ref_block.block_thread_identifier, thread_id);
         assert_eq!(ref_block.block_identifier, block_id);
@@ -472,7 +526,8 @@ mod tests {
         let block_id = test_block_id(1);
         let seq_no = 10u32;
 
-        let ref_block: ReferencedBlock = (thread_id, block_id, seq_no).into();
+        let ref_block: ReferencedBlock<BlockIdentifier, BlockSeqNo, ThreadIdentifier> =
+            (thread_id, block_id, seq_no).into();
 
         assert_eq!(ref_block.block_thread_identifier, thread_id);
         assert_eq!(ref_block.block_identifier, block_id);
@@ -484,9 +539,12 @@ mod tests {
         let thread_id = test_thread_id(1);
         let block_id = test_block_id(1);
 
-        let ref1: ReferencedBlock = (thread_id, block_id, 10u32).into();
-        let ref2: ReferencedBlock = (thread_id, block_id, 10u32).into();
-        let ref3: ReferencedBlock = (thread_id, block_id, 11u32).into();
+        let ref1: ReferencedBlock<BlockIdentifier, BlockSeqNo, ThreadIdentifier> =
+            (thread_id, block_id, 10u32).into();
+        let ref2: ReferencedBlock<BlockIdentifier, BlockSeqNo, ThreadIdentifier> =
+            (thread_id, block_id, 10u32).into();
+        let ref3: ReferencedBlock<BlockIdentifier, BlockSeqNo, ThreadIdentifier> =
+            (thread_id, block_id, 11u32).into();
 
         assert_eq!(ref1, ref2);
         assert_ne!(ref1, ref3);
@@ -495,14 +553,16 @@ mod tests {
     // Tests for ThreadReferencesState
     #[test]
     fn test_thread_references_state_empty() {
-        let state = ThreadReferencesState::builder().all_thread_refs(HashMap::new()).build();
+        let state: ThreadReferencesState<BlockIdentifier, BlockSeqNo, ThreadIdentifier> =
+            ThreadReferencesState::builder().all_thread_refs(HashMap::new()).build();
 
         assert_eq!(state.all_thread_refs().len(), 0);
     }
 
     #[test]
     fn test_thread_references_state_update() {
-        let mut state = ThreadReferencesState::builder().all_thread_refs(HashMap::new()).build();
+        let mut state: ThreadReferencesState<BlockIdentifier, BlockSeqNo, ThreadIdentifier> =
+            ThreadReferencesState::builder().all_thread_refs(HashMap::new()).build();
 
         let thread_id = test_thread_id(1);
         let block_id = test_block_id(1);
@@ -518,7 +578,8 @@ mod tests {
 
     #[test]
     fn test_thread_references_state_update_overwrites() {
-        let mut state = ThreadReferencesState::builder().all_thread_refs(HashMap::new()).build();
+        let mut state: ThreadReferencesState<BlockIdentifier, BlockSeqNo, ThreadIdentifier> =
+            ThreadReferencesState::builder().all_thread_refs(HashMap::new()).build();
 
         let thread_id = test_thread_id(1);
         let block_id1 = test_block_id(1);
@@ -570,6 +631,7 @@ mod tests {
                     parent_block_identifier: parent_id, // Genesis points to itself
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -581,6 +643,7 @@ mod tests {
                     parent_block_identifier: parent_id,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
         ]);
@@ -632,6 +695,7 @@ mod tests {
                     parent_block_identifier: block_id_0, // Genesis points to itself
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -643,6 +707,7 @@ mod tests {
                     parent_block_identifier: block_id_0,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -654,6 +719,7 @@ mod tests {
                     parent_block_identifier: block_id_1,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -665,6 +731,7 @@ mod tests {
                     parent_block_identifier: block_id_2,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
         ]);
@@ -733,6 +800,7 @@ mod tests {
                     parent_block_identifier: block_id_2,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -744,6 +812,7 @@ mod tests {
                     parent_block_identifier: block_id_1,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -755,6 +824,7 @@ mod tests {
                     parent_block_identifier: test_block_id(0),
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
         ]);
@@ -823,6 +893,7 @@ mod tests {
                     parent_block_identifier: genesis_1,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -834,6 +905,7 @@ mod tests {
                     parent_block_identifier: genesis_2,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -845,6 +917,7 @@ mod tests {
                     parent_block_identifier: genesis_1,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -856,6 +929,7 @@ mod tests {
                     parent_block_identifier: genesis_2,
                     refs: vec![block_id_1_1],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -867,6 +941,7 @@ mod tests {
                     parent_block_identifier: block_id_2_1,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
         ]);
@@ -945,6 +1020,7 @@ mod tests {
                     parent_block_identifier: genesis_id,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -956,6 +1032,7 @@ mod tests {
                     parent_block_identifier: genesis_id,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
         ]);
@@ -1007,6 +1084,7 @@ mod tests {
                     parent_block_identifier: genesis_id,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -1018,6 +1096,7 @@ mod tests {
                     parent_block_identifier: genesis_id,
                     refs: vec![],
                     spawned_threads: vec![thread_id_2],
+                    tombstone: false,
                 },
             ),
         ]);
@@ -1106,7 +1185,7 @@ mod tests {
     #[test]
     fn test_keep_tails_empty() {
         let mut blocks: Vec<(ThreadIdentifier, BlockIdentifier, BlockSeqNo)> = vec![];
-        keep_tails(&mut blocks);
+        keep_tails::<ThreadIdentifier, BlockIdentifier, BlockSeqNo>(&mut blocks);
         assert_eq!(blocks.len(), 0);
     }
 
@@ -1127,6 +1206,7 @@ mod tests {
                 parent_block_identifier: block_id_1,
                 refs: vec![],
                 spawned_threads: vec![],
+                tombstone: false,
             },
         )]);
 
@@ -1150,10 +1230,12 @@ mod tests {
         let block_id = test_block_id(1);
         let seq_no = BlockSeqNo::new(10);
 
-        let ref_block: ReferencedBlock = (thread_id, block_id, seq_no).into();
+        let ref_block: ReferencedBlock<BlockIdentifier, BlockSeqNo, ThreadIdentifier> =
+            (thread_id, block_id, seq_no).into();
 
         let serialized = bincode::serialize(&ref_block).unwrap();
-        let deserialized: ReferencedBlock = bincode::deserialize(&serialized).unwrap();
+        let deserialized: ReferencedBlock<BlockIdentifier, BlockSeqNo, ThreadIdentifier> =
+            bincode::deserialize(&serialized).unwrap();
 
         assert_eq!(ref_block, deserialized);
     }
@@ -1169,7 +1251,8 @@ mod tests {
         let state = ThreadReferencesState::builder().all_thread_refs(refs).build();
 
         let serialized = bincode::serialize(&state).unwrap();
-        let deserialized: ThreadReferencesState = bincode::deserialize(&serialized).unwrap();
+        let deserialized: ThreadReferencesState<BlockIdentifier, BlockSeqNo, ThreadIdentifier> =
+            bincode::deserialize(&serialized).unwrap();
 
         assert_eq!(state.all_thread_refs().len(), deserialized.all_thread_refs().len());
         let original_ref = state.all_thread_refs().get(&thread_id).unwrap();
@@ -1223,6 +1306,7 @@ mod tests {
                     parent_block_identifier: genesis_id,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -1234,6 +1318,7 @@ mod tests {
                     parent_block_identifier: genesis_id,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -1245,6 +1330,7 @@ mod tests {
                     parent_block_identifier: genesis_id,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -1256,6 +1342,7 @@ mod tests {
                     parent_block_identifier: genesis_id,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
         ]);
@@ -1348,6 +1435,7 @@ mod tests {
                     parent_block_identifier: genesis_1,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -1359,6 +1447,7 @@ mod tests {
                     parent_block_identifier: genesis_1,
                     refs: vec![],
                     spawned_threads: vec![thread_2, thread_3, thread_4], // Spawns 3 threads
+                    tombstone: false,
                 },
             ),
         ]);
@@ -1442,6 +1531,7 @@ mod tests {
                     parent_block_identifier: genesis_1,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -1453,6 +1543,7 @@ mod tests {
                     parent_block_identifier: genesis_1,
                     refs: vec![],
                     spawned_threads: vec![thread_2], // Thread 1 spawns Thread 2
+                    tombstone: false,
                 },
             ),
             (
@@ -1464,6 +1555,7 @@ mod tests {
                     parent_block_identifier: genesis_2,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -1475,6 +1567,7 @@ mod tests {
                     parent_block_identifier: genesis_2,
                     refs: vec![block_1_1], // References Thread 1
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -1486,6 +1579,7 @@ mod tests {
                     parent_block_identifier: block_2_1,
                     refs: vec![],
                     spawned_threads: vec![thread_3], // Thread 2 spawns Thread 3
+                    tombstone: false,
                 },
             ),
         ]);
@@ -1602,6 +1696,7 @@ mod tests {
                     parent_block_identifier: genesis_1,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -1613,6 +1708,7 @@ mod tests {
                     parent_block_identifier: genesis_1,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -1624,6 +1720,7 @@ mod tests {
                     parent_block_identifier: block_1_1,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             // Thread 2 - references Thread 1, Block 1
@@ -1636,6 +1733,7 @@ mod tests {
                     parent_block_identifier: genesis_2,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -1647,6 +1745,7 @@ mod tests {
                     parent_block_identifier: genesis_2,
                     refs: vec![block_1_1],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             // Thread 3 - references Thread 1, Block 2
@@ -1659,6 +1758,7 @@ mod tests {
                     parent_block_identifier: genesis_3,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -1670,6 +1770,7 @@ mod tests {
                     parent_block_identifier: genesis_3,
                     refs: vec![block_1_2],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             // Thread 4 - references both Thread 2 and Thread 3
@@ -1682,6 +1783,7 @@ mod tests {
                     parent_block_identifier: genesis_4,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -1693,6 +1795,7 @@ mod tests {
                     parent_block_identifier: genesis_4,
                     refs: vec![block_2_1, block_3_1], // References both Thread 2 and 3
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
         ]);
@@ -1778,6 +1881,7 @@ mod tests {
                     parent_block_identifier: genesis_id,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             );
         }
@@ -1799,6 +1903,7 @@ mod tests {
                         parent_block_identifier: parent,
                         refs: vec![],
                         spawned_threads: vec![],
+                        tombstone: false,
                     },
                 );
                 parent = block_id;
@@ -1823,6 +1928,7 @@ mod tests {
                 parent_block_identifier: genesis_5,
                 refs: vec![],
                 spawned_threads: vec![],
+                tombstone: false,
             },
         );
 
@@ -1835,6 +1941,7 @@ mod tests {
                 parent_block_identifier: genesis_5,
                 refs: latest_blocks.clone(), // References all 4 threads
                 spawned_threads: vec![],
+                tombstone: false,
             },
         );
 
@@ -1940,6 +2047,7 @@ mod tests {
                     parent_block_identifier: genesis_1,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -1951,6 +2059,7 @@ mod tests {
                     parent_block_identifier: genesis_1,
                     refs: vec![],
                     spawned_threads: vec![thread_2], // Block 1 spawns Thread 2
+                    tombstone: false,
                 },
             ),
             (
@@ -1962,6 +2071,7 @@ mod tests {
                     parent_block_identifier: block_1_1,
                     refs: vec![],
                     spawned_threads: vec![thread_3], // Block 2 spawns Thread 3
+                    tombstone: false,
                 },
             ),
             (
@@ -1973,6 +2083,7 @@ mod tests {
                     parent_block_identifier: block_1_2,
                     refs: vec![],
                     spawned_threads: vec![thread_4], // Block 3 spawns Thread 4
+                    tombstone: false,
                 },
             ),
         ]);
@@ -2084,6 +2195,7 @@ mod tests {
                     parent_block_identifier: genesis_1,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -2095,6 +2207,7 @@ mod tests {
                     parent_block_identifier: genesis_1,
                     refs: vec![],
                     spawned_threads: vec![thread_2, thread_3], // Spawns 2 threads
+                    tombstone: false,
                 },
             ),
             (
@@ -2106,6 +2219,7 @@ mod tests {
                     parent_block_identifier: block_1_1,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             // Thread 2
@@ -2118,6 +2232,7 @@ mod tests {
                     parent_block_identifier: genesis_2,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -2129,6 +2244,7 @@ mod tests {
                     parent_block_identifier: genesis_2,
                     refs: vec![block_1_1], // References Thread 1
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -2140,6 +2256,7 @@ mod tests {
                     parent_block_identifier: block_2_1,
                     refs: vec![block_1_2], // References Thread 1 again
                     spawned_threads: vec![thread_4], // Spawns Thread 4
+                    tombstone: false,
                 },
             ),
             // Thread 3
@@ -2152,6 +2269,7 @@ mod tests {
                     parent_block_identifier: genesis_3,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -2163,6 +2281,7 @@ mod tests {
                     parent_block_identifier: genesis_3,
                     refs: vec![block_1_1, block_2_1], // References both Thread 1 and 2
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             // Thread 4
@@ -2175,6 +2294,7 @@ mod tests {
                     parent_block_identifier: genesis_4,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
             (
@@ -2186,6 +2306,7 @@ mod tests {
                     parent_block_identifier: genesis_4,
                     refs: vec![block_2_2, block_3_1], // References Thread 2 and 3
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             ),
         ]);
@@ -2391,6 +2512,7 @@ mod tests {
                     parent_block_identifier: gen_id,
                     refs: vec![],
                     spawned_threads: vec![],
+                    tombstone: false,
                 },
             );
         }
@@ -2405,6 +2527,7 @@ mod tests {
                 parent_block_identifier: gen_1,
                 refs: vec![],
                 spawned_threads: vec![t2, t3], // First split: spawns T2 and T3
+                tombstone: false,
             },
         );
 
@@ -2418,6 +2541,7 @@ mod tests {
                 parent_block_identifier: gen_2,
                 refs: vec![b1_1],          // References parent thread
                 spawned_threads: vec![t4], // Second split: spawns T4
+                tombstone: false,
             },
         );
         blocks.insert(
@@ -2429,6 +2553,7 @@ mod tests {
                 parent_block_identifier: b2_1,
                 refs: vec![],
                 spawned_threads: vec![],
+                tombstone: false,
             },
         );
 
@@ -2442,6 +2567,7 @@ mod tests {
                 parent_block_identifier: gen_3,
                 refs: vec![b1_1],          // References parent thread
                 spawned_threads: vec![t5], // Third split: spawns T5
+                tombstone: false,
             },
         );
         blocks.insert(
@@ -2453,6 +2579,7 @@ mod tests {
                 parent_block_identifier: b3_1,
                 refs: vec![],
                 spawned_threads: vec![],
+                tombstone: false,
             },
         );
 
@@ -2466,6 +2593,7 @@ mod tests {
                 parent_block_identifier: gen_4,
                 refs: vec![b2_1], // References parent thread
                 spawned_threads: vec![],
+                tombstone: false,
             },
         );
         blocks.insert(
@@ -2477,6 +2605,7 @@ mod tests {
                 parent_block_identifier: b4_1,
                 refs: vec![],
                 spawned_threads: vec![],
+                tombstone: false,
             },
         );
 
@@ -2490,6 +2619,7 @@ mod tests {
                 parent_block_identifier: gen_5,
                 refs: vec![b3_1], // References parent thread
                 spawned_threads: vec![],
+                tombstone: false,
             },
         );
         blocks.insert(
@@ -2501,6 +2631,7 @@ mod tests {
                 parent_block_identifier: b5_1,
                 refs: vec![],
                 spawned_threads: vec![],
+                tombstone: false,
             },
         );
 
@@ -2514,6 +2645,7 @@ mod tests {
                 parent_block_identifier: gen_6,
                 refs: vec![b2_2, b3_2, b4_2, b5_2], // Convergence: refs all 4 threads
                 spawned_threads: vec![],
+                tombstone: false,
             },
         );
         blocks.insert(
@@ -2525,6 +2657,7 @@ mod tests {
                 parent_block_identifier: b6_1,
                 refs: vec![],
                 spawned_threads: vec![],
+                tombstone: false,
             },
         );
 
@@ -2538,6 +2671,7 @@ mod tests {
                 parent_block_identifier: b1_1,
                 refs: vec![b6_2], // Final convergence through T6
                 spawned_threads: vec![],
+                tombstone: false,
             },
         );
 
@@ -2635,5 +2769,235 @@ mod tests {
             }
             CanRefQueryResult::No => panic!("Expected Yes result"),
         }
+    }
+
+    // ========================================
+    // Tombstone Tests
+    // ========================================
+
+    #[test]
+    fn test_tombstone_removes_thread_from_refs() {
+        // Thread 1 produces a single block that is its last (tombstone),
+        // then Thread 2 references it. After move_refs, Thread 1 must be gone.
+        let thread_1 = test_thread_id(1);
+        let thread_2 = test_thread_id(2);
+
+        let genesis_1 = test_block_id(10);
+        let genesis_2 = test_block_id(20);
+        let tombstone_block = test_block_id(11); // last block of thread 1
+        let block_2_1 = test_block_id(21); // thread 2 references it
+
+        let blocks = HashMap::from([
+            (
+                genesis_1,
+                MockRefData {
+                    block_identifier: genesis_1,
+                    block_seq_no: BlockSeqNo::new(0),
+                    block_thread_identifier: thread_1,
+                    parent_block_identifier: genesis_1,
+                    refs: vec![],
+                    spawned_threads: vec![],
+                    tombstone: false,
+                },
+            ),
+            (
+                tombstone_block,
+                MockRefData {
+                    block_identifier: tombstone_block,
+                    block_seq_no: BlockSeqNo::new(1),
+                    block_thread_identifier: thread_1,
+                    parent_block_identifier: genesis_1,
+                    refs: vec![],
+                    spawned_threads: vec![],
+                    tombstone: true, // last block of thread 1
+                },
+            ),
+            (
+                genesis_2,
+                MockRefData {
+                    block_identifier: genesis_2,
+                    block_seq_no: BlockSeqNo::new(0),
+                    block_thread_identifier: thread_2,
+                    parent_block_identifier: genesis_2,
+                    refs: vec![],
+                    spawned_threads: vec![],
+                    tombstone: false,
+                },
+            ),
+            (
+                block_2_1,
+                MockRefData {
+                    block_identifier: block_2_1,
+                    block_seq_no: BlockSeqNo::new(1),
+                    block_thread_identifier: thread_2,
+                    parent_block_identifier: genesis_2,
+                    refs: vec![tombstone_block], // references the tombstone
+                    spawned_threads: vec![],
+                    tombstone: false,
+                },
+            ),
+        ]);
+
+        let mut initial_refs = HashMap::new();
+        initial_refs.insert(thread_1, (thread_1, genesis_1, BlockSeqNo::new(0)).into());
+        initial_refs.insert(thread_2, (thread_2, genesis_2, BlockSeqNo::new(0)).into());
+
+        let mut state = ThreadReferencesState::builder().all_thread_refs(initial_refs).build();
+        assert_eq!(state.all_thread_refs().len(), 2);
+
+        let result = state.move_refs::<MockRefData, _>(vec![block_2_1], |id| {
+            blocks.get(id).cloned().ok_or_else(|| anyhow::anyhow!("Block not found"))
+        });
+
+        assert!(result.is_ok(), "move_refs failed: {:?}", result.unwrap_err());
+
+        // Thread 1 should be gone because its tombstone was consumed
+        assert!(
+            !state.all_thread_refs().contains_key(&thread_1),
+            "Thread 1 should have been removed after its tombstone was processed"
+        );
+        // Thread 2 should still be present
+        assert!(
+            state.all_thread_refs().contains_key(&thread_2),
+            "Thread 2 should still be tracked"
+        );
+        assert_eq!(state.all_thread_refs().len(), 1);
+    }
+
+    #[test]
+    fn test_non_tombstone_block_keeps_thread_in_refs() {
+        // Same scenario but without the tombstone flag — thread 1 must remain.
+        let thread_1 = test_thread_id(1);
+        let thread_2 = test_thread_id(2);
+
+        let genesis_1 = test_block_id(10);
+        let genesis_2 = test_block_id(20);
+        let block_1_1 = test_block_id(11);
+        let block_2_1 = test_block_id(21);
+
+        let blocks = HashMap::from([
+            (
+                genesis_1,
+                MockRefData {
+                    block_identifier: genesis_1,
+                    block_seq_no: BlockSeqNo::new(0),
+                    block_thread_identifier: thread_1,
+                    parent_block_identifier: genesis_1,
+                    refs: vec![],
+                    spawned_threads: vec![],
+                    tombstone: false,
+                },
+            ),
+            (
+                block_1_1,
+                MockRefData {
+                    block_identifier: block_1_1,
+                    block_seq_no: BlockSeqNo::new(1),
+                    block_thread_identifier: thread_1,
+                    parent_block_identifier: genesis_1,
+                    refs: vec![],
+                    spawned_threads: vec![],
+                    tombstone: false, // NOT a tombstone
+                },
+            ),
+            (
+                genesis_2,
+                MockRefData {
+                    block_identifier: genesis_2,
+                    block_seq_no: BlockSeqNo::new(0),
+                    block_thread_identifier: thread_2,
+                    parent_block_identifier: genesis_2,
+                    refs: vec![],
+                    spawned_threads: vec![],
+                    tombstone: false,
+                },
+            ),
+            (
+                block_2_1,
+                MockRefData {
+                    block_identifier: block_2_1,
+                    block_seq_no: BlockSeqNo::new(1),
+                    block_thread_identifier: thread_2,
+                    parent_block_identifier: genesis_2,
+                    refs: vec![block_1_1],
+                    spawned_threads: vec![],
+                    tombstone: false,
+                },
+            ),
+        ]);
+
+        let mut initial_refs = HashMap::new();
+        initial_refs.insert(thread_1, (thread_1, genesis_1, BlockSeqNo::new(0)).into());
+        initial_refs.insert(thread_2, (thread_2, genesis_2, BlockSeqNo::new(0)).into());
+
+        let mut state = ThreadReferencesState::builder().all_thread_refs(initial_refs).build();
+
+        state
+            .move_refs::<MockRefData, _>(vec![block_2_1], |id| {
+                blocks.get(id).cloned().ok_or_else(|| anyhow::anyhow!("Block not found"))
+            })
+            .expect("move_refs failed");
+
+        // Both threads should still be present since neither was tombstoned
+        assert!(
+            state.all_thread_refs().contains_key(&thread_1),
+            "Thread 1 should still be tracked (no tombstone)"
+        );
+        assert!(
+            state.all_thread_refs().contains_key(&thread_2),
+            "Thread 2 should still be tracked"
+        );
+        assert_eq!(state.all_thread_refs().len(), 2);
+    }
+
+    #[test]
+    fn test_tombstone_on_own_thread_removes_self() {
+        // A thread produces a tombstone block for itself (no other thread involved).
+        let thread_1 = test_thread_id(1);
+        let genesis = test_block_id(10);
+        let last_block = test_block_id(11);
+
+        let blocks = HashMap::from([
+            (
+                genesis,
+                MockRefData {
+                    block_identifier: genesis,
+                    block_seq_no: BlockSeqNo::new(0),
+                    block_thread_identifier: thread_1,
+                    parent_block_identifier: genesis,
+                    refs: vec![],
+                    spawned_threads: vec![],
+                    tombstone: false,
+                },
+            ),
+            (
+                last_block,
+                MockRefData {
+                    block_identifier: last_block,
+                    block_seq_no: BlockSeqNo::new(1),
+                    block_thread_identifier: thread_1,
+                    parent_block_identifier: genesis,
+                    refs: vec![],
+                    spawned_threads: vec![],
+                    tombstone: true,
+                },
+            ),
+        ]);
+
+        let mut initial_refs = HashMap::new();
+        initial_refs.insert(thread_1, (thread_1, genesis, BlockSeqNo::new(0)).into());
+
+        let mut state = ThreadReferencesState::builder().all_thread_refs(initial_refs).build();
+
+        state
+            .move_refs::<MockRefData, _>(vec![last_block], |id| {
+                blocks.get(id).cloned().ok_or_else(|| anyhow::anyhow!("Block not found"))
+            })
+            .expect("move_refs failed");
+
+        assert!(
+            state.all_thread_refs().is_empty(),
+            "Thread 1 should be removed after processing its own tombstone"
+        );
     }
 }

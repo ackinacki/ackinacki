@@ -32,13 +32,14 @@ services:
       - bash
       - -c
       - >
-        gql-server -d ./data/bm-archive.db -l 0.0.0.0:3000
+        exec gql-server -d ./data/bm-archive.db -l 0.0.0.0:3000 >> /logsdir/qserver.log 2>&1
     expose:
       - "3000"
     ports:
       - {{ HOST_PRIVATE_IP }}:{{ Q_SERVER_MAPPED_PORT }}:3000
     volumes:
       - {{ BM_DATA_DIR }}/workdir:/workdir/data
+      - {{ BM_LOGS_DIR }}:/logsdir
     networks:
       - ackinacki-net
     depends_on:
@@ -57,7 +58,7 @@ services:
         STREAM_SRC_URL: https://{{ NODE_IP }}:{{ BM_NODE_STREAM_PORT }}
         DEFAULT_BP: {{ NODE_IP }}:{{ BM_NODE_PORT }}
         BM_OWNER_WALLET_PUBKEY: {{ BM_OWNER_WALLET_PUBKEY }}
-        BM_ISSUER_KEYS_FILE: /bm-configs/{{ BM_SIGNER_KEYS }}
+        BM_ISSUER_KEYS_FILE: /bm-configs/{{ BM_SIGNER_KEYS | basename }}
         TOKEN_TTL: {{ BM_TOKEN_TTL }}
         BK_API_TOKEN: {{ BK_API_TOKEN }}
         REST_API: 0.0.0.0:{{ BM_REST_API_PORT }}

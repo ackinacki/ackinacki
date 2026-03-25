@@ -20,7 +20,7 @@ pub fn download_blob(
         return Ok(());
     }
     // TODO: must be guarded code here and in the share blob fn.
-
+    tracing::trace!("downloading blob: max_tries={max_tries}, retry_timeout={retry_timeout:?}, deadline={deadline:?}");
     let tmp_file_path = get_temp_file_path(tmp_dir_path);
     tracing::trace!("download_blob: trying to create file: {tmp_file_path:?}");
     if let Some(parent) = tmp_file_path.parent() {

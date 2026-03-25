@@ -46,7 +46,6 @@ macro_rules! impl_serde_bytes {
 pub const AVM_TAG: [u8; 4] = [0x02, 0x00, 0x00, 0x00];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(clippy::large_enum_variant)]
 // VM agnostic account repr.
 pub enum ThreadStateAccount {
     Tvm(tvm_block::ShardAccount),
@@ -377,14 +376,14 @@ impl ThreadAccount {
             Self::Tvm(cell) => account_from_cell(cell.clone())
                 .map(|x| x.get_id().map(AccountIdentifier::from))
                 .unwrap_or_default(),
-            Self::Avm(account) => Some(account.metadata.id),
+            Self::Avm(account) => Some(account.0.metadata.id),
         }
     }
 
     pub fn hash(&self) -> AccountHash {
         match self {
             Self::Tvm(cell) => cell.repr_hash().into(),
-            Self::Avm(account) => account.hash,
+            Self::Avm(account) => account.0.hash,
         }
     }
 
@@ -393,7 +392,7 @@ impl ThreadAccount {
             Self::Tvm(cell) => {
                 Ok(account_from_cell(cell.clone())?.get_data().map(|x| x.repr_hash().into()))
             }
-            Self::Avm(account) => Ok(account.data_hash),
+            Self::Avm(account) => Ok(account.0.data_hash),
         }
     }
 
@@ -402,7 +401,7 @@ impl ThreadAccount {
             Self::Tvm(cell) => {
                 Ok(account_from_cell(cell.clone())?.get_code().map(|x| x.repr_hash().into()))
             }
-            Self::Avm(account) => Ok(account.code_hash),
+            Self::Avm(account) => Ok(account.0.code_hash),
         }
     }
 

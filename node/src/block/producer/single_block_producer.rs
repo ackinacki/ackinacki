@@ -51,10 +51,6 @@ use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
 use crate::types::next_seq_no;
 use crate::types::AckiNackiBlock;
-#[cfg(feature = "transitioning_node_version")]
-use crate::types::AckiNackiBlockOld;
-#[cfg(feature = "transitioning_node_version")]
-use crate::types::AckiNackiBlockVersioned;
 use crate::types::BlockRound;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
@@ -62,10 +58,6 @@ use crate::versioning::ProtocolVersion;
 
 pub const DEFAULT_VERIFY_COMPLEXITY: SignerIndex = (u16::MAX >> 5) + 1;
 
-#[cfg(feature = "transitioning_node_version")]
-pub type Block = AckiNackiBlockVersioned;
-
-#[cfg(not(feature = "transitioning_node_version"))]
 pub type Block = AckiNackiBlock;
 
 // Note: produces single block.
@@ -120,8 +112,8 @@ pub struct TVMBlockProducer {
     thread_accounts_repository: NodeThreadAccountsRepository,
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
-    #[cfg(feature = "usdc_name_repair")]
-    usdc_name_repaired: std::sync::Arc<parking_lot::Mutex<Option<crate::types::BlockSeqNo>>>,
+    #[cfg(feature = "authroot_dapp_repair")]
+    authroot_dapp_repaired: std::sync::Arc<parking_lot::Mutex<Option<crate::types::BlockSeqNo>>>,
 }
 
 impl TVMBlockProducer {
@@ -234,7 +226,7 @@ impl BlockProducer for TVMBlockProducer {
         let is_block_of_retired_version = self.node_config_read.is_retired(&_protocol_version);
         let blockchain_config = self.blockchain_config.get(
             &next_seq_no(parent_block_seq_no),
-            #[cfg(feature = "usdc_name_repair")]
+            #[cfg(feature = "fix_flag_16")]
             is_block_of_retired_version,
         );
         let block_gas_limit = blockchain_config.get_gas_config(false).block_gas_limit;
@@ -261,8 +253,8 @@ impl BlockProducer for TVMBlockProducer {
             self.wasm_cache,
             false,
             is_block_of_retired_version,
-            #[cfg(feature = "usdc_name_repair")]
-            self.usdc_name_repaired,
+            #[cfg(feature = "authroot_dapp_repair")]
+            self.authroot_dapp_repaired.clone(),
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (mut prepared_block, processed_stamps, ext_message_feedbacks) = producer.build_block(
@@ -310,8 +302,11 @@ impl BlockProducer for TVMBlockProducer {
                 ThreadAction::Split(e) => Some(e.proposed_threads_table),
                 ThreadAction::Collapse(e) => Some(e.proposed_threads_table),
             };
+            if let Some(prefab_table) = forward_prefab.as_ref() {
+                prepared_block.state.threads_table = prefab_table.resolve(&produced_block_id)?;
+            }
 
-            let mut new_state = prepared_block.state;
+            let new_state = prepared_block.state;
 
             // let producer_selector = self.block_state_repository.get(&parent_block_id).expect("Must be set").guarded(|e| e.producer_selector_data().clone()).expect("Must be set");
             // self.block_state_repository.get(&produced_block_id).expect("Can't fail").guarded_mut(|e|
@@ -323,16 +318,15 @@ impl BlockProducer for TVMBlockProducer {
 
             let block_height = parent_block_state
                 .guarded(|e| *e.block_height())
-                .expect("Parent block does not have block height set")
+                .ok_or(anyhow::format_err!("Parent block does not have block height set"))?
                 .next(&thread_identifier);
 
-            let produced_block_state =
-                self.block_state_repository.get(&produced_block_id).expect("Can't fail");
+            let produced_block_state = self.block_state_repository.get(&produced_block_id)?;
             produced_block_state.guarded_mut(|e| {
-                e.set_block_height(block_height).expect("Failed to set block_height");
-                e.set_block_round(block_round).expect("Failed to set round for the block state")
-            });
-            #[cfg(not(feature = "transitioning_node_version"))]
+                e.set_block_height(block_height)?;
+                e.set_block_round(block_round)?;
+                Ok::<(), anyhow::Error>(())
+            })?;
             let an_block = AckiNackiBlock::new(
                 thread_identifier,
                 prepared_block.block,
@@ -350,66 +344,6 @@ impl BlockProducer for TVMBlockProducer {
                 protocol_version.hash(),
                 prepared_block.durable_state_update,
             );
-            #[cfg(feature = "transitioning_node_version")]
-            let an_block = if !self.node_config_read.is_retired(&_protocol_version) {
-                tracing::trace!("Generate new block");
-                let an_block = AckiNackiBlockVersioned::New(AckiNackiBlock::new(
-                    thread_identifier,
-                    prepared_block.block,
-                    self.producer_node_id,
-                    prepared_block.tx_cnt,
-                    prepared_block.block_keeper_set_changes,
-                    DEFAULT_VERIFY_COMPLEXITY,
-                    ref_ids,
-                    forward_prefab.clone(),
-                    block_round,
-                    block_height,
-                    #[cfg(feature = "monitor-accounts-number")]
-                    prepared_block.accounts_number_diff,
-                    #[cfg(feature = "protocol_version_hash_in_block")]
-                    protocol_version.hash(),
-                    prepared_block.durable_state_update,
-                ));
-                // Resolve the threads table now that we have the block ID
-                let final_block_id = an_block.identifier();
-                if let Some(prefab) = &forward_prefab {
-                    let resolved_table = prefab
-                        .resolve(&final_block_id)
-                        .expect("Failed to resolve threads table prefab");
-                    new_state.set_produced_threads_table(resolved_table.clone());
-                    cross_thread_ref_data.set_threads_table(resolved_table);
-                }
-                an_block
-            } else {
-                tracing::trace!("Generate old block");
-                let final_block_id: BlockIdentifier = prepared_block.block.hash().unwrap().into();
-                let resolved_table = if let Some(prefab) = &forward_prefab {
-                    let resolved_table = prefab
-                        .resolve(&final_block_id)
-                        .expect("Failed to resolve threads table prefab");
-                    new_state.set_produced_threads_table(resolved_table.clone());
-                    cross_thread_ref_data.set_threads_table(resolved_table.clone());
-                    Some(resolved_table)
-                } else {
-                    None
-                };
-                AckiNackiBlockVersioned::Old(AckiNackiBlockOld::new(
-                    thread_identifier,
-                    prepared_block.block,
-                    self.producer_node_id,
-                    prepared_block.tx_cnt,
-                    prepared_block.block_keeper_set_changes.into_iter().collect(),
-                    DEFAULT_VERIFY_COMPLEXITY,
-                    ref_ids,
-                    resolved_table,
-                    block_round,
-                    block_height,
-                    #[cfg(feature = "monitor-accounts-number")]
-                    prepared_block.accounts_number_diff,
-                    #[cfg(feature = "protocol_version_hash_in_block")]
-                    protocol_version.hash(),
-                ))
-            };
 
             let res = (
                 an_block,
@@ -427,9 +361,9 @@ impl BlockProducer for TVMBlockProducer {
                 res.0.identifier(),
                 processed_ext_msg_cnt,
             );
-            res
+            Ok(res)
         });
 
-        Ok(res)
+        res
     }
 }

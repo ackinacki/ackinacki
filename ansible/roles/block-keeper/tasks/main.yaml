@@ -12,6 +12,10 @@
   include_tasks: copy-static-configs.yaml
   when: [DO_START, not FAST_UPDATE]
 
+- name: Copy testnet static configs
+  include_tasks: copy-static-testnet-configs.yaml
+  when: [DO_START, not FAST_UPDATE, TESTNET]
+
 - name: Prepare host
   include_tasks: prepare-host.yaml
   when: [DO_START, PREPARE_HOST, not FAST_UPDATE]
@@ -54,3 +58,9 @@
     - BOOTSTRAP_BK_SET is defined and BOOTSTRAP_BK_SET is true
     - BOOTSTRAP_BK_SET_URL is defined and BOOTSTRAP_BK_SET_URL
     - DO_START or UPGRADE is defined or (DO_BOOTSTRAP is defined and DO_BOOTSTRAP)
+
+- name: Check TLS on Block Keeper
+  include_tasks: check-tls.yaml
+  when: 
+    - DO_START or UPGRADE is defined
+    - CHECK_HTTPS is true

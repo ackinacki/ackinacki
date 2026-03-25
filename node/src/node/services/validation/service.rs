@@ -66,9 +66,6 @@ impl ValidationService {
         wasm_cache: WasmNodeCache,
         message_db: MessageDurableStorage,
         authority: Arc<Mutex<Authority>>,
-        #[cfg(feature = "usdc_name_repair")] usdc_name_repaired: std::sync::Arc<
-            parking_lot::Mutex<Option<crate::types::BlockSeqNo>>,
-        >,
     ) -> anyhow::Result<Self> {
         let (tx, rx) =
             instrumented_channel(metrics.clone(), crate::helper::metrics::BLOCK_STATE_CHANNEL);
@@ -91,8 +88,6 @@ impl ValidationService {
                     wasm_cache,
                     message_db,
                     authority,
-                    #[cfg(feature = "usdc_name_repair")]
-                    usdc_name_repaired,
                 );
                 Ok(())
             })?;

@@ -64,7 +64,7 @@ pub struct BlockchainMasterSeqNoFilter {
     pub end: Option<i32>,
 }
 
-struct BlockchainMessageEdge;
+pub struct BlockchainMessageEdge;
 
 impl EdgeNameType for BlockchainMessageEdge {
     fn type_name<T: OutputType>() -> String {
@@ -72,7 +72,7 @@ impl EdgeNameType for BlockchainMessageEdge {
     }
 }
 
-struct BlockchainMessagesConnection;
+pub struct BlockchainMessagesConnection;
 
 impl ConnectionNameType for BlockchainMessagesConnection {
     fn type_name<T: OutputType>() -> String {
@@ -131,6 +131,7 @@ impl BlockchainAccountQuery<'_> {
     pub async fn events(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Optional destination address filter.")] dst: Option<String>,
         #[graphql(desc = "This field is mutually exclusive with 'last'.")] first: Option<i32>,
         after: Option<String>,
         #[graphql(desc = "This field is mutually exclusive with 'first'.")] last: Option<i32>,
@@ -158,6 +159,7 @@ impl BlockchainAccountQuery<'_> {
             let mut messages = db::Message::account_events(
                 ctx.data::<Arc<DBConnector>>().unwrap(),
                 self.address.clone(),
+                dst,
                 &pagination,
             )
             .await?;
@@ -206,7 +208,7 @@ impl BlockchainAccountQuery<'_> {
         >,
         #[graphql(
             name = "counterparties",
-            desc = "Filter messages by counterparties (max - 5 counterparties)."
+            desc = "Filter messages by counterparties (max - 5 counterparties). This field is mutually exclusive with 'msg_type=ExtOut'."
         )]
         counterparties: Option<Vec<String>>,
         #[graphql(
@@ -227,17 +229,31 @@ impl BlockchainAccountQuery<'_> {
             desc = "Defines query scope. If true then query performed on a maximum time range supported by the cloud. If false then query performed on a recent time range supported by the cloud. You can find an actual information about time ranges on evercloud documentation."
         )]
         _archive: Option<bool>,
-    ) -> Option<
-        Connection<
-            String,
-            BlockchainMessage,
-            EmptyFields,
-            EmptyFields,
-            BlockchainMessagesConnection,
-            BlockchainMessageEdge,
+    ) -> async_graphql::Result<
+        Option<
+            Connection<
+                String,
+                BlockchainMessage,
+                EmptyFields,
+                EmptyFields,
+                BlockchainMessagesConnection,
+                BlockchainMessageEdge,
+            >,
         >,
     > {
-        query(after, before, first, last, |after, before, first, last| async move {
+        if let Some(ref msg_types) = msg_type {
+            if msg_types.contains(&BlockchainMessageTypeFilterEnum::ExtOut) {
+                if let Some(ref cps) = counterparties {
+                    if !cps.is_empty() {
+                        return Err(async_graphql::Error::new(
+                            "Invalid input: `counterparties` parameter must be null when `msg_type` includes `ExtOut`."
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(query(after, before, first, last, |after, before, first, last| async move {
             tracing::debug!(
                 "first={:?}, after={:?}, last={:?}, before={:?}",
                 first,
@@ -337,7 +353,7 @@ impl BlockchainAccountQuery<'_> {
             Ok::<_, async_graphql::Error>(connection)
         })
         .await
-        .ok()
+        .ok())
     }
 
     #[allow(clippy::too_many_arguments)]

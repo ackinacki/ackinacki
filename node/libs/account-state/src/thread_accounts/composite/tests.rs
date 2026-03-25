@@ -105,11 +105,8 @@ fn test_fs_accounts_repo() -> anyhow::Result<()> {
 fn test_fs_accounts_repo_compact() -> anyhow::Result<()> {
     let root_path = target_tmp();
     let start = Instant::now();
-    let repo = Accounts::new_repository(root_path).build()?;
+    let _repo = Accounts::new_repository(root_path).build()?;
     println!("Repo loaded in {:?}", start.elapsed());
-    let start = Instant::now();
-    let stat = repo.get_durable_stat();
-    println!("Repo stat: {:?} in {:?}", stat, start.elapsed());
     Ok(())
 }
 
@@ -212,12 +209,13 @@ fn new_avm_acc(seed: usize) -> (AccountRouting, ThreadStateAccount) {
 
     let id = AccountIdentifier::new(new_u256("avm_acc", seed));
     let routing = id.dapp_originator();
-    let avm_account = AvmAccount {
-        hash: AccountHash::new(new_u256("avm_hash", seed)),
-        metadata: AvmAccountMetadata { id, storage_used_bytes: 1024, ..Default::default() },
-        data: Some(AvmAccountData { data: vec![0u8; 512] }),
-        ..Default::default()
-    };
+    let avm_account = AvmAccount::new(
+        AccountHash::new(new_u256("avm_hash", seed)),
+        AvmAccountMetadata { id, storage_used_bytes: 1024, ..Default::default() },
+        None,
+        None,
+        Some(AvmAccountData { data: vec![0u8; 512] }),
+    );
     let state_account = ThreadStateAccount::Avm(AvmStateAccount {
         account: avm_account,
         last_trans_hash: TransactionHash::new(new_u256("avm_trans", seed)),

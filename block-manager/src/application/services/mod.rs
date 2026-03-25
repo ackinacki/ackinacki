@@ -3,5 +3,6 @@
 
 pub mod block_applier;
 pub mod block_subscriber;
+pub mod connection_pool;
 pub mod http_server;
 pub mod signal_handler;

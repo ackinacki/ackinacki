@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use tracing::instrument;
 use tracing::trace_span;
 
-use super::repository_impl::load_from_file;
+use super::repository_impl::load_transitioning_from_file;
 use super::repository_impl::save_to_file;
 use crate::repository::CrossThreadRefData;
 use crate::storage::CrossRefStorage;
@@ -60,10 +60,10 @@ impl CrossThreadRefDataRead for CrossThreadRefDataRepository {
 
         let data: Option<CrossThreadRefData> = if cfg!(feature = "messages_db") {
             self.crossref_store
-                .read_blob(&path.to_string_lossy())
+                .read_transitioning_blob(&path.to_string_lossy())
                 .unwrap_or_else(|_| panic!("Failed to load record: {}", path.display()))
         } else {
-            load_from_file(&path)
+            load_transitioning_from_file(&path)
                 .unwrap_or_else(|_| panic!("Failed to load file: {}", path.display()))
         };
 

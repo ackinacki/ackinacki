@@ -3,8 +3,9 @@
 - name: Get public wallet key
   ansible.builtin.shell:
     chdir: "{{ BM_DIR }}/bm-configs/"
-    cmd: "cat {{ BM_WALLET_KEYS }} | jq -r '.public'"
+    cmd: "cat {{ BM_WALLET_KEYS | basename }} | jq -r '.public'"
   register: BM_PUBLIC_KEY_OUTPUT
+  check_mode: no
 
 - name: Register public wallet key
   ansible.builtin.set_fact:

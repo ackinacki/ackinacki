@@ -55,6 +55,12 @@ where
     TRepo: CrossThreadRefDataRead,
 {
     let in_table = parent_block_state.get_produced_threads_table().clone();
+    tracing::trace!(
+        "Start preprocessing: {:?} {:?} {:?}",
+        parent_block_state.block_id,
+        descendant_thread_identifier,
+        in_table
+    );
     let mut preprocessed_state = parent_block_state;
     tracing::trace!(
         "preprocessing: {} slashing_messages: {slashing_messages:?}",

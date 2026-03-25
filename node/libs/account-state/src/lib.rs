@@ -17,14 +17,16 @@ pub use thread_accounts::CompositeThreadAccountRepository;
 pub use thread_accounts::CompositeThreadAccountsBuilder;
 pub use thread_accounts::CompositeThreadAccountsDiff;
 pub use thread_accounts::CompositeThreadAccountsRef;
-pub use thread_accounts::DurableMapStat;
-pub use thread_accounts::DurableRepoStat;
 pub use thread_accounts::DurableThreadAccountsDiff;
 pub use thread_accounts::DurableThreadAccountsRepository;
+// Re-exports for benchmarking
+pub use thread_accounts::FsAccountsStore;
 pub use thread_accounts::FsCompositeThreadAccounts;
+pub use thread_accounts::FsOptAccountsStore;
 pub use thread_accounts::ThreadAccountUpdate;
 pub use thread_accounts::ThreadAccounts;
 pub use thread_accounts::ThreadAccountsBuilder;
 pub use thread_accounts::ThreadAccountsRepository;
+pub use thread_accounts::ThreadStateRef;
 
 u256!(DAppAccountMapHash, "DAppAccountMapHash", ser = array);

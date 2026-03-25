@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde::Serializer;
 use serde_json::Value;
 
-use crate::helpers::u64_to_hexed_blob_buf;
+use crate::helpers::u64_to_hexed_blob_literal;
 
 pub trait WhereOp {
     fn skip_nulls(obj: &mut Value) -> &mut Value {
@@ -159,11 +159,7 @@ where
     S: Serializer,
 {
     match value {
-        Some(v) => {
-            let buf = u64_to_hexed_blob_buf(*v);
-            let s = unsafe { std::str::from_utf8_unchecked(&buf) };
-            serializer.serialize_str(s)
-        }
+        Some(v) => serializer.serialize_str(&u64_to_hexed_blob_literal(*v)),
         None => serializer.serialize_none(),
     }
 }
@@ -182,9 +178,7 @@ where
             let mut seq = serializer.serialize_seq(Some(count))?;
 
             for v in vec.iter().filter_map(|x| *x) {
-                let buf = u64_to_hexed_blob_buf(v);
-                let s = unsafe { std::str::from_utf8_unchecked(&buf) };
-                seq.serialize_element(s)?;
+                seq.serialize_element(&u64_to_hexed_blob_literal(v))?;
             }
 
             seq.end()

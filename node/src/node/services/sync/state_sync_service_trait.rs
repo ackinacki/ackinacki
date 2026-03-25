@@ -28,6 +28,7 @@ pub trait StateSyncService {
         block_id: &BlockIdentifier,
         thread_id: &ThreadIdentifier,
         min_state: Option<Arc<OptimisticStateImpl>>,
+        finalizing_block_id: BlockIdentifier,
     ) -> anyhow::Result<()>;
 
     fn add_load_state_task(
@@ -37,7 +38,7 @@ pub trait StateSyncService {
         output: InstrumentedSender<anyhow::Result<BTreeMap<ThreadIdentifier, BlockIdentifier>>>,
     ) -> anyhow::Result<()>;
 
-    fn reset_sync(&self);
+    fn is_load_thread_available(&self) -> bool;
 
     fn flush(&self) -> anyhow::Result<()>;
 }

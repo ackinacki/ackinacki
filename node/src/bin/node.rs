@@ -20,9 +20,11 @@ use ::node::bls::GoshBLS;
 use ::node::helper::init_tracing;
 use ::node::helper::key_handling::key_pairs_from_file;
 use ::node::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
+use ::node::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
 use ::node::node::Node;
 use ::node::protocol::authority_switch::round_time::RoundTime;
 use ::node::repository::optimistic_state::OptimisticState;
+use ::node::repository::repository_impl::scan_snapshot_headers;
 use ::node::repository::repository_impl::FinalizedBlockStorage;
 use ::node::repository::repository_impl::RepositoryImpl;
 use account_state::ThreadAccountsRepository;
@@ -486,13 +488,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let repo_path = PathBuf::from("./data");
 
     let thread_accounts_repository =
-        NodeThreadAccounts::new_repository(repo_path.join("thread_state"))
-            .set_accounts_aerospike_store(
-                socket_address,
-                node::storage::aerospike::NAMESPACE,
-                durable_set("acc"),
-            )
-            .build()?;
+        NodeThreadAccounts::new_repository(repo_path.join("thread_state")).build()?;
 
     let zerostate = if let Some(zs_path) = config.local.zerostate_path.as_ref() {
         let zerostate = ZeroState::load_from_file(zs_path).expect("Failed to open zerostate");
@@ -769,9 +765,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let (bk_set_update_tx, bk_set_update_rx) =
         instrumented_channel(node_metrics.clone(), node::helper::metrics::BK_SET_UPDATE_CHANNEL);
 
-    #[cfg(feature = "usdc_name_repair")]
-    let usdc_name_repaired = Arc::new(parking_lot::Mutex::new(None));
-
     let mut repository = RepositoryImpl::new(
         repo_path.clone(),
         zerostate_path.clone(),
@@ -787,8 +780,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         repository_blocks,
         bk_set_update_tx,
         config_read.clone(),
-        #[cfg(feature = "usdc_name_repair")]
-        usdc_name_repaired.clone(),
     );
 
     let (optimistic_save_tx, optimistic_save_rx) =
@@ -874,6 +865,106 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         }
     }
 
+    // Apply saved ThreadSnapshots if they are newer than the last finalized block.
+    let snapshot_dir = config.local.external_state_share_local_base_dir.clone();
+    if snapshot_dir.is_dir() {
+        tracing::trace!(target: "node", "parse snapshot dir");
+        let mut last_finalized_seq_no: HashMap<ThreadIdentifier, BlockSeqNo> = HashMap::new();
+        let threads: Vec<_> =
+            repository.get_all_metadata().guarded(|e| e.keys().cloned().collect());
+        for thread_id in &threads {
+            if let Some((_block_id, seq_no)) =
+                repository.select_thread_last_finalized_block(thread_id)?
+            {
+                last_finalized_seq_no.insert(*thread_id, seq_no);
+            }
+        }
+
+        let mut headers = scan_snapshot_headers(&snapshot_dir);
+        tracing::trace!(target: "node", "existing snapshots: {:?}", headers.iter().map(|v| v.1.clone()).collect::<Vec<_>>());
+        // Sort: descending by seq_no, then descending by round (tiebreaker).
+        headers
+            .sort_by(|(_, a), (_, b)| b.seq_no.cmp(&a.seq_no).then_with(|| b.round.cmp(&a.round)));
+
+        let mut applied_threads: HashSet<ThreadIdentifier> = HashSet::new();
+
+        for (snapshot_path, header) in headers {
+            if applied_threads.contains(&header.thread_id) {
+                continue;
+            }
+
+            let is_newer = match last_finalized_seq_no.get(&header.thread_id) {
+                Some(finalized_seq_no) => header.seq_no > *finalized_seq_no,
+                None => true,
+            };
+
+            if !is_newer {
+                tracing::trace!(
+                    "Skipping snapshot for thread {:?}: snapshot seq_no={:?} <= finalized seq_no={:?}",
+                    header.thread_id,
+                    header.seq_no,
+                    last_finalized_seq_no.get(&header.thread_id),
+                );
+                continue;
+            }
+
+            match std::fs::read(&snapshot_path) {
+                Ok(snapshot_bytes) => {
+                    tracing::info!(
+                        "Applying ThreadSnapshot for thread {:?}, block {:?}, seq_no={:?}",
+                        header.thread_id,
+                        header.block_id,
+                        header.seq_no,
+                    );
+                    let skipped_attestation_ids =
+                        Arc::new(Mutex::new(HashSet::<BlockIdentifier>::new()));
+                    let snapshot_bytes = if snapshot_bytes.starts_with(COMPRESSED_SNAPSHOT_MAGIC) {
+                        match zstd::decode_all(&snapshot_bytes[COMPRESSED_SNAPSHOT_MAGIC.len()..]) {
+                            Ok(decompressed) => {
+                                tracing::trace!(
+                                                "add_load_state_task: decompressed snapshot (compressed={} decompressed={})",
+                                                snapshot_bytes.len(), decompressed.len()
+                                            );
+                                decompressed
+                            }
+                            Err(e) => {
+                                tracing::trace!("add_load_state_task: decompression failed: {e}",);
+                                snapshot_bytes
+                            }
+                        }
+                    } else {
+                        // Legacy uncompressed snapshot — use as-is
+                        snapshot_bytes
+                    };
+
+                    match repository.set_state_from_snapshot(
+                        snapshot_bytes,
+                        &header.thread_id,
+                        skipped_attestation_ids,
+                    ) {
+                        Ok(()) => {
+                            applied_threads.insert(header.thread_id);
+                            tracing::info!(
+                                "Successfully applied ThreadSnapshot for thread {:?}",
+                                header.thread_id,
+                            );
+                            break;
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                "Failed to apply ThreadSnapshot for thread {:?}: {err}",
+                                header.thread_id,
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::error!("Failed to read snapshot file {:?}: {err}", snapshot_path,);
+                }
+            }
+        }
+    }
+
     let action_lock_collections = if args.clear_missing_block_locks {
         clear_missing_block_locks(
             &repository,
@@ -919,6 +1010,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         .max_lookback_block_height_distance(finalized_block_storage_size)
         .self_addr(config.network.node_advertise_addr)
         .action_lock_collections(action_lock_collections)
+        .time_to_enable_sync_finalized(global_config.time_to_enable_sync_finalized)
         .build(),
     ));
 
@@ -933,8 +1025,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         wasm_cache.clone(),
         message_db.clone(),
         authority.clone(),
-        #[cfg(feature = "usdc_name_repair")]
-        usdc_name_repaired.clone(),
     )
     .expect("Failed to create validation process");
 
@@ -997,15 +1087,18 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
               feedback_sender,
               ext_messages_rx| {
             tracing::trace!("start node for thread: {thread_id:?}");
-
-            let block_collection = UnfinalizedCandidateBlockCollection::new(
-                unprocessed_blocks.get(thread_id).cloned().unwrap_or_default().into_iter(),
-            );
-
             let mut repository = repository_clone.clone();
-            repository
-                .unfinalized_blocks()
-                .guarded_mut(|e| e.insert(*thread_id, block_collection.clone()));
+            let mut block_collection = repository.unfinalized_blocks().guarded_mut(|e| {
+                e.entry(*thread_id)
+                    .or_insert(UnfinalizedCandidateBlockCollection::new([].into_iter()))
+                    .clone()
+            });
+            if let Some(loaded_from_shutdown) = unprocessed_blocks.get(thread_id).cloned() {
+                for (block_state, block) in loaded_from_shutdown {
+                    block_collection.insert_arc(block_state, block);
+                }
+            }
+
             // HACK!
             if let Some(ref parent_block_id) = parent_block_id {
                 if parent_block_id != &BlockIdentifier::default() {
@@ -1081,7 +1174,13 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             sync_state_service.retry_download_timeout = std::time::Duration::from_millis(
                 config.network.shared_state_retry_download_timeout_millis,
             );
-            sync_state_service.download_deadline_timeout = global_config.node_joining_timeout;
+            sync_state_service.download_deadline_timeout = std::time::Duration::from_millis(
+                config
+                    .network
+                    .shared_state_retry_download_timeout_millis
+                    .checked_mul(config.network.shared_state_max_download_tries as u64)
+                    .unwrap_or(10 * 60 * 1000),
+            );
             let production_process = {
                 let builder = TVMBlockProducerProcess::builder()
                     .metrics(node_metrics.clone())
@@ -1094,8 +1193,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     .share_service(Some(sync_state_service.clone()))
                     .wasm_cache(wasm_cache.clone())
                     .save_optimistic_service_sender(optimistic_save_tx.clone());
-                #[cfg(feature = "usdc_name_repair")]
-                let builder = builder.usdc_name_repaired(usdc_name_repaired.clone());
                 builder.build()
             };
 
@@ -1450,7 +1547,10 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         },
         res = wrapped_blk_req_join_handle => {
             match res {
-                Ok(Ok(_)) =>{ unreachable!("Block request service never returns") }
+                Ok(Ok(_)) =>{
+                    // Note: seems to be reachable on self shutdown
+                    unreachable!("Block request service never returns")
+                }
                 Ok(Err(error)) =>{
                     anyhow::bail!("Block request service failed with error: {:?}", error);
                  }
@@ -2232,9 +2332,6 @@ async fn test_execute() -> anyhow::Result<()> {
     let (bk_set_update_tx, _bk_set_update_rx) =
         instrumented_channel(node_metrics.clone(), node::helper::metrics::BK_SET_UPDATE_CHANNEL);
 
-    #[cfg(feature = "usdc_name_repair")]
-    let usdc_name_repaired = Arc::new(parking_lot::Mutex::new(None));
-
     let mut repository = RepositoryImpl::new(
         repo_path.clone(),
         zerostate_path.clone(),
@@ -2250,8 +2347,6 @@ async fn test_execute() -> anyhow::Result<()> {
         repository_blocks,
         bk_set_update_tx,
         config_read.clone(),
-        #[cfg(feature = "usdc_name_repair")]
-        usdc_name_repaired.clone(),
     );
     let (optimistic_save_tx, _optimistic_save_rx) =
         instrumented_channel(node_metrics.clone(), OPTIMISTIC_STATE_SAVE_CHANNEL);
@@ -2325,6 +2420,7 @@ async fn test_execute() -> anyhow::Result<()> {
             .max_lookback_block_height_distance(finalized_block_storage_size)
             .self_addr(config.network.node_advertise_addr)
             .action_lock_collections(action_lock_collections)
+            .time_to_enable_sync_finalized(global_config.time_to_enable_sync_finalized)
             .build(),
     ));
 
@@ -2339,8 +2435,6 @@ async fn test_execute() -> anyhow::Result<()> {
         wasm_cache.clone(),
         message_db.clone(),
         authority.clone(),
-        #[cfg(feature = "usdc_name_repair")]
-        usdc_name_repaired.clone(),
     )
     .expect("Failed to create validation process");
 
@@ -2454,8 +2548,6 @@ async fn test_execute() -> anyhow::Result<()> {
             .share_service(Some(sync_state_service.clone()))
             .wasm_cache(wasm_cache.clone())
             .save_optimistic_service_sender(optimistic_save_tx.clone());
-        #[cfg(feature = "usdc_name_repair")]
-        let builder = builder.usdc_name_repaired(usdc_name_repaired.clone());
         builder.build()
     };
 

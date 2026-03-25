@@ -74,8 +74,6 @@ use crate::types::history_proof::ProofLayerRootHash;
 #[cfg(feature = "history_proofs")]
 use crate::types::history_proof::HISTORY_PROOF_WINDOW_SIZE;
 use crate::types::AckiNackiBlock;
-#[cfg(feature = "transitioning_node_version")]
-use crate::types::AckiNackiBlockVersioned;
 use crate::types::AggregateFilter;
 use crate::types::BlockRound;
 use crate::types::BlockSeqNo;
@@ -683,9 +681,6 @@ impl BlockProducer {
             };
             let envelope = envelope?;
 
-            #[cfg(feature = "transitioning_node_version")]
-            let net_block = NetBlock::with_versioned(&envelope)?;
-            #[cfg(not(feature = "transitioning_node_version"))]
             let net_block = NetBlock::with_envelope(&envelope)?;
 
             // Check if this node has already signed block of the same height
@@ -814,9 +809,7 @@ impl BlockProducer {
 
     fn update_candidate_common_section(
         &mut self,
-        #[cfg(not(feature = "transitioning_node_version"))] candidate_block: &mut AckiNackiBlock,
-        #[cfg(feature = "transitioning_node_version")]
-        candidate_block: &mut AckiNackiBlockVersioned,
+        candidate_block: &mut AckiNackiBlock,
         share_state_ids: Option<HashMap<ThreadIdentifier, BlockIdentifier>>,
     ) -> anyhow::Result<UpdateCommonSectionResult> {
         tracing::trace!(

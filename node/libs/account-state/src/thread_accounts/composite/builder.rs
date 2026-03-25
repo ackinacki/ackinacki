@@ -10,14 +10,13 @@ use tvm_block::Serializable;
 use crate::thread_accounts::composite::repository::CompositeThreadAccountsDiff;
 use crate::thread_accounts::composite::repository::CompositeThreadAccountsRef;
 use crate::thread_accounts::composite::repository_inner::CompositeThreadAccountsRepositoryInner;
+use crate::thread_accounts::durable::repository::ThreadStateRef;
 use crate::thread_accounts::durable::DurableThreadAccountsDiff;
 use crate::thread_accounts::tvm::TvmThreadState;
 use crate::thread_accounts::tvm::TvmThreadStateDiff;
 use crate::thread_accounts::AccountsRepository;
-use crate::thread_accounts::DAppAccountMapRepository;
 use crate::thread_accounts::ThreadAccountsBuilder;
 use crate::thread_accounts::ThreadAccountsTransition;
-use crate::thread_accounts::ThreadDAppMapRepository;
 use crate::ThreadAccountUpdate;
 use crate::ThreadStateAccount;
 
@@ -34,13 +33,9 @@ const MERKLE_UPDATE_SIZE_FACTOR: f64 = 2.0;
 const MERKLE_UPDATE_MIN_ACCOUNT_SIZE: usize = 256;
 
 #[derive(Clone)]
-pub struct CompositeThreadAccountsBuilder<
-    ThreadDApps: ThreadDAppMapRepository,
-    DAppAccounts: DAppAccountMapRepository,
-    Accounts: AccountsRepository,
-> {
-    repository: Arc<CompositeThreadAccountsRepositoryInner<ThreadDApps, DAppAccounts, Accounts>>,
-    original: CompositeThreadAccountsRef<ThreadDApps::MapRef>,
+pub struct CompositeThreadAccountsBuilder<Accounts: AccountsRepository> {
+    repository: Arc<CompositeThreadAccountsRepositoryInner<Accounts>>,
+    original: CompositeThreadAccountsRef<ThreadStateRef>,
     seq_no: Option<u32>,
     cached_accounts: HashMap<AccountRouting, ThreadStateAccount>,
     changed_accounts: HashMap<AccountRouting, ThreadAccountUpdate>,
@@ -48,18 +43,13 @@ pub struct CompositeThreadAccountsBuilder<
     apply_to_durable: bool,
 }
 
-impl<ThreadDApps, DAppAccounts, Accounts>
-    CompositeThreadAccountsBuilder<ThreadDApps, DAppAccounts, Accounts>
+impl<Accounts> CompositeThreadAccountsBuilder<Accounts>
 where
-    ThreadDApps: ThreadDAppMapRepository,
-    DAppAccounts: DAppAccountMapRepository,
     Accounts: AccountsRepository,
 {
     pub(crate) fn new(
-        repository: Arc<
-            CompositeThreadAccountsRepositoryInner<ThreadDApps, DAppAccounts, Accounts>,
-        >,
-        original: CompositeThreadAccountsRef<ThreadDApps::MapRef>,
+        repository: Arc<CompositeThreadAccountsRepositoryInner<Accounts>>,
+        original: CompositeThreadAccountsRef<ThreadStateRef>,
     ) -> Self {
         let apply_to_durable = repository.apply_to_durable;
         Self {
@@ -73,8 +63,8 @@ where
         }
     }
 
-    pub fn set_apply_to_durable(&mut self, apply_to_durable: bool) {
-        self.apply_to_durable = apply_to_durable;
+    pub fn set_apply_to_durable(&mut self, _apply_to_durable: bool) {
+        self.apply_to_durable = false;
     }
 
     pub fn replace_with_redirect(&mut self, routing: &AccountRouting) -> anyhow::Result<()> {
@@ -96,15 +86,12 @@ where
     }
 }
 
-impl<ThreadDApps, DAppAccounts, Accounts> ThreadAccountsBuilder
-    for CompositeThreadAccountsBuilder<ThreadDApps, DAppAccounts, Accounts>
+impl<Accounts> ThreadAccountsBuilder for CompositeThreadAccountsBuilder<Accounts>
 where
-    ThreadDApps: ThreadDAppMapRepository,
-    DAppAccounts: DAppAccountMapRepository,
     Accounts: AccountsRepository,
 {
     type StateDiff = CompositeThreadAccountsDiff;
-    type StateRef = CompositeThreadAccountsRef<ThreadDApps::MapRef>;
+    type StateRef = CompositeThreadAccountsRef<ThreadStateRef>;
 
     fn set_seq_no(&mut self, seq_no: u32) {
         self.seq_no = Some(seq_no);
@@ -198,7 +185,7 @@ where
         if let Some(seq_no) = self.seq_no {
             new_tvm.set_seq_no(seq_no);
         }
-        let _original_durable = self.original.durable.clone();
+        let original_durable = self.original.durable.clone();
         let mut new_durable = self.original.durable;
         let mut durable_diff = Vec::new();
 
@@ -313,14 +300,14 @@ where
         }
 
         // Optimize durable diff: convert large UpdateOrInsert entries to merkle updates
-        // if self.apply_to_durable && !durable_diff.is_empty() {
-        //     durable_diff = optimize_durable_diff(
-        //         &self.repository.durable,
-        //         &original_durable,
-        //         &self.original.tvm.shard_accounts,
-        //         durable_diff,
-        //     );
-        // }
+        if self.apply_to_durable && !durable_diff.is_empty() {
+            durable_diff = optimize_durable_diff(
+                &self.repository.durable,
+                &original_durable,
+                &self.original.tvm.shard_accounts,
+                durable_diff,
+            );
+        }
 
         // Create TVM state merkle update
 
@@ -335,8 +322,11 @@ where
             MerkleUpdate::create_fast(&old_tvm_cell, &new_tvm_cell, |h| usages.contains(h))
                 .map_err(|e| anyhow::format_err!("Failed to create merkle update: {e}"))?
         } else {
-            MerkleUpdate::create(&old_tvm_cell, &new_tvm_cell)
-                .map_err(|e| anyhow::format_err!("Failed to create merkle update: {e}"))?
+            tracing::trace!("creating TVM state merkle update start");
+            let res = MerkleUpdate::create(&old_tvm_cell, &new_tvm_cell)
+                .map_err(|e| anyhow::format_err!("Failed to create merkle update: {e}"))?;
+            tracing::trace!("creating TVM state merkle update finish");
+            res
         };
 
         Ok(ThreadAccountsTransition {
@@ -352,25 +342,19 @@ where
     }
 }
 
-fn _optimize_durable_diff<ThreadDApps, DAppAccounts, Accounts>(
-    durable_repo: &crate::thread_accounts::durable::DurableThreadAccountsRepository<
-        ThreadDApps,
-        DAppAccounts,
-        Accounts,
-    >,
-    original_durable: &ThreadDApps::MapRef,
+fn optimize_durable_diff<Accounts>(
+    durable_repo: &crate::thread_accounts::durable::DurableThreadAccountsRepository<Accounts>,
+    original_durable: &ThreadStateRef,
     old_tvm_accounts: &tvm_block::ShardAccounts,
     diff: Vec<(AccountRouting, ThreadAccountUpdate)>,
 ) -> Vec<(AccountRouting, ThreadAccountUpdate)>
 where
-    ThreadDApps: ThreadDAppMapRepository,
-    DAppAccounts: DAppAccountMapRepository,
     Accounts: AccountsRepository,
 {
     diff.into_iter()
         .map(|(routing, update)| {
             let optimized = match &update {
-                ThreadAccountUpdate::UpdateOrInsert(new_account) => _try_create_merkle_update(
+                ThreadAccountUpdate::UpdateOrInsert(new_account) => try_create_merkle_update(
                     durable_repo,
                     original_durable,
                     old_tvm_accounts,
@@ -385,20 +369,14 @@ where
         .collect()
 }
 
-fn _try_create_merkle_update<ThreadDApps, DAppAccounts, Accounts>(
-    durable_repo: &crate::thread_accounts::durable::DurableThreadAccountsRepository<
-        ThreadDApps,
-        DAppAccounts,
-        Accounts,
-    >,
-    original_durable: &ThreadDApps::MapRef,
+fn try_create_merkle_update<Accounts>(
+    durable_repo: &crate::thread_accounts::durable::DurableThreadAccountsRepository<Accounts>,
+    original_durable: &ThreadStateRef,
     old_tvm_accounts: &tvm_block::ShardAccounts,
     routing: &AccountRouting,
     new_account: &ThreadStateAccount,
 ) -> Option<ThreadAccountUpdate>
 where
-    ThreadDApps: ThreadDAppMapRepository,
-    DAppAccounts: DAppAccountMapRepository,
     Accounts: AccountsRepository,
 {
     let ThreadStateAccount::Tvm(new_shard_acc) = new_account else {

@@ -2,6 +2,8 @@
 //
 
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -30,6 +32,39 @@ use crate::application::quarantine::Quarantine;
 use crate::domain::models::AppState;
 use crate::domain::models::UpdatableBPResolver;
 use crate::domain::models::WorkerCommand;
+
+const DEDUP_CAPACITY: usize = 10_000;
+
+struct RecentBlockFilter {
+    set: HashSet<[u8; 32]>,
+    order: VecDeque<[u8; 32]>,
+    capacity: usize,
+}
+
+impl RecentBlockFilter {
+    fn new(capacity: usize) -> Self {
+        Self {
+            set: HashSet::with_capacity(capacity),
+            order: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    /// Returns `true` if the hash is new (should be processed), `false` if duplicate.
+    fn check_and_insert(&mut self, hash: [u8; 32]) -> bool {
+        if self.set.contains(&hash) {
+            return false;
+        }
+        if self.order.len() >= self.capacity {
+            if let Some(old) = self.order.pop_front() {
+                self.set.remove(&old);
+            }
+        }
+        self.set.insert(hash);
+        self.order.push_back(hash);
+        true
+    }
+}
 
 pub fn run(
     bp_resolver: Arc<Mutex<dyn UpdatableBPResolver>>,
@@ -75,6 +110,7 @@ fn worker(
 ) -> anyhow::Result<()> {
     let mut transaction_traces = HashMap::new();
     let shard_state = NodeThreadAccountsRepository::new_state();
+    let mut dedup_filter = RecentBlockFilter::new(DEDUP_CAPACITY);
 
     tracing::debug!("worker() starting loop...");
     let db_helper = Arc::new(Mutex::new(db_writer));
@@ -99,6 +135,15 @@ fn worker(
                     }
                     continue;
                 };
+
+                let block_hash = envelope.data().hash();
+                if !dedup_filter.check_and_insert(*block_hash) {
+                    tracing::debug!("Duplicate block skipped");
+                    if let Some(m) = &metrics {
+                        m.bm.report_dedup_skipped();
+                    }
+                    continue;
+                }
 
                 let thread_id = *envelope.data().common_section().thread_id();
                 if let Some(node_addr) = node_addr {

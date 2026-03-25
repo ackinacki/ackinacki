@@ -244,6 +244,7 @@ fn try_finalize(
                 last_block_attestations.clone(),
                 node_id,
                 metrics,
+                parent_id,
             )?;
             let new_height_border = *block_height.height()
                 + *attestation_target.primary().generation_deadline() as u64 * 2
@@ -299,6 +300,7 @@ pub fn on_block_finalized(
     last_block_attestations: Arc<Mutex<CollectedAttestations>>,
     node_id: &NodeIdentifier,
     metrics: &Option<BlockProductionMetrics>,
+    finalizing_block_id: node_types::BlockIdentifier,
 ) -> anyhow::Result<()> {
     trace_span!("on_block_finalized").in_scope(|| {
         let block_seq_no = block.data().seq_no();
@@ -313,6 +315,7 @@ pub fn on_block_finalized(
             block,
             block_state_repository.get(&block_id)?,
             Some(state_sync_service),
+            finalizing_block_id,
         )?;
         tracing::debug!("Block marked as finalized: {:?} {:?} {:?}", block_seq_no, block_id, thread_id);
         let producer_id = block.data().common_section().producer_id().clone();

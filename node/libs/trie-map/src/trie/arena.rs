@@ -385,7 +385,7 @@ impl<V: MapValue> Arena<V> {
 }
 
 #[inline]
-pub(crate) fn prefix_bits_match(prefix: &[u8; 32], key: &[u8; 32], bits: u8) -> bool {
+pub fn prefix_bits_match(prefix: &[u8; 32], key: &[u8; 32], bits: u8) -> bool {
     let bits = bits as usize;
     let full = bits / 8;
     let rem = bits % 8;
@@ -401,13 +401,13 @@ pub(crate) fn prefix_bits_match(prefix: &[u8; 32], key: &[u8; 32], bits: u8) -> 
 }
 
 #[inline]
-pub(crate) fn boundary_mask(r: usize) -> u8 {
+pub fn boundary_mask(r: usize) -> u8 {
     debug_assert!((1..=3).contains(&r));
     (0xFu8 << (4 - r)) & 0xF
 }
 
 #[inline]
-pub(crate) fn nibble_from_key(key: &[u8; 32], i: usize) -> u8 {
+pub fn nibble_from_key(key: &[u8; 32], i: usize) -> u8 {
     let b = key[i / 2];
     if (i & 1) == 0 {
         (b >> 4) & 0x0F
@@ -417,11 +417,11 @@ pub(crate) fn nibble_from_key(key: &[u8; 32], i: usize) -> u8 {
 }
 
 #[inline]
-pub(crate) fn ext_bytes_len(len_nibbles: u8) -> usize {
+pub fn ext_bytes_len(len_nibbles: u8) -> usize {
     (len_nibbles as usize).div_ceil(2)
 }
 
 #[inline]
-pub(crate) fn nibble_at(key: &[u8; 32], depth: usize) -> u8 {
+pub fn nibble_at(key: &[u8; 32], depth: usize) -> u8 {
     TrieNibble4::get(key, depth)
 }

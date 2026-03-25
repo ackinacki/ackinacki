@@ -24,6 +24,7 @@ use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::next_seq_no;
+use crate::types::BlockIndex;
 use crate::types::BlockSeqNo;
 use crate::utilities::guarded::Guarded;
 
@@ -36,7 +37,6 @@ where
         &mut self,
     ) -> anyhow::Result<SynchronizationResult<(NetworkMessage, SocketAddr)>> {
         tracing::trace!(target: "monit", "Start synchronization");
-        self.state_sync_service.reset_sync();
         let (synchronization_tx, synchronization_rx) = instrumented_channel(
             self.metrics.clone(),
             crate::helper::metrics::STATE_LOAD_RESULT_CHANNEL,
@@ -64,20 +64,21 @@ where
             // We have already synced with some nodes before launching the execution, but we
             // could have not reached the producer and possibly should send
             // NodeJoin again
-            if last_node_join_message_time.elapsed() > self.global_config.node_joining_timeout {
+            if last_node_join_message_time.elapsed() > self.global_config.node_joining_timeout
+                && self.state_sync_service.is_load_thread_available()
+            {
                 self.broadcast_node_joining()?;
                 last_node_join_message_time = Instant::now();
                 // If we have to broadcast NodeJoining, we definitely did not get state from previous
                 initial_state = None;
                 initial_state_shared_resource_address = None;
-                self.state_sync_service.reset_sync();
             }
             if let Some(ref resource_address) = initial_state_shared_resource_address {
                 match synchronization_rx.try_recv() {
                     Ok(Ok(downloaded_resource_address)) => {
                         if *resource_address != downloaded_resource_address {
                             tracing::trace!(
-                                target = "monit",
+                                target: "monit",
                                 "Downloaded state is already outdated"
                             );
                             continue;
@@ -463,7 +464,44 @@ where
                 .ok_or(anyhow::format_err!("Failed to load finalized state"))?;
             let share_state_hint = finalized_state.get_share_stare_refs();
             for (thread_id, block_id) in &share_state_hint {
-                self.state_sync_service.save_state_for_sharing(block_id, thread_id, None)?;
+                let Some(block_seq_no) =
+                    self.block_state_repository.get(block_id)?.guarded(|e| *e.block_seq_no())
+                else {
+                    anyhow::bail!("Failed to get block seq no: {:?}", block_id);
+                };
+                let block_index = BlockIndex::new(block_seq_no, *block_id);
+                let mut cursors = vec![*block_id];
+                let mut finalizing_block = None;
+                while finalizing_block.is_none() {
+                    anyhow::ensure!(
+                        !cursors.is_empty(),
+                        "Failed to find finalizing block for {:?}",
+                        block_id
+                    );
+                    let cursor = cursors.pop().unwrap();
+                    self.block_state_repository.get(&cursor)?.guarded(|e| {
+                        if e.finalizes_blocks()
+                            .as_ref()
+                            .map(|blocks| blocks.contains(&block_index))
+                            .unwrap_or(false)
+                        {
+                            finalizing_block = Some(cursor);
+                        }
+                        cursors.extend(
+                            e.known_children(thread_id).cloned().unwrap_or_default().into_iter(),
+                        );
+                    });
+                    if finalizing_block.is_some() {
+                        break;
+                    }
+                }
+
+                self.state_sync_service.save_state_for_sharing(
+                    block_id,
+                    thread_id,
+                    None,
+                    finalizing_block.unwrap(),
+                )?;
             }
             self.last_synced_state =
                 Some((last_finalized_block_id, last_finalized_seq_no, share_state_hint.clone()));

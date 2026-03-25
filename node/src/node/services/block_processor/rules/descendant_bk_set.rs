@@ -3,8 +3,6 @@ use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::node::block_state::repository::BlockState;
 use crate::types::AckiNackiBlock;
-#[cfg(feature = "transitioning_node_version")]
-use crate::types::AckiNackiBlockVersioned;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
@@ -26,12 +24,9 @@ pub fn set_descendant_bk_set(block_state: &BlockState, candidate_block: &Envelop
         // no block available. skip till it's available.
         return;
     }
-    #[cfg(not(feature = "transitioning_node_version"))]
     let block = candidate_block.data();
 
-    #[cfg(feature = "transitioning_node_version")]
-    let block = AckiNackiBlockVersioned::New(candidate_block.data().clone());
-    match update_block_keeper_set_from_common_section(&block, bk_set.clone(), future_bk_set.clone())
+    match update_block_keeper_set_from_common_section(block, bk_set.clone(), future_bk_set.clone())
     {
         Err(e) => {
             tracing::trace!(

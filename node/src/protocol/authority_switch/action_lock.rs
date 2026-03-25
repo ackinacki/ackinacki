@@ -204,9 +204,14 @@ pub struct Authority {
     max_lookback_block_height_distance: usize,
     self_addr: SocketAddr,
     action_lock_collections: HashMap<ThreadIdentifier, ActionLockCollection>,
+    time_to_enable_sync_finalized: Duration,
 }
 
 impl Authority {
+    pub fn time_to_enable_sync_finalized(&self) -> Duration {
+        self.time_to_enable_sync_finalized
+    }
+
     pub fn get_thread_authority(
         &mut self,
         thread_id: &ThreadIdentifier,
@@ -690,6 +695,23 @@ impl ThreadAuthority {
         self.self_node_tx = Some(self_node_tx);
     }
 
+    fn send_try_start_sync_message(&mut self) {
+        if let Some(tx) = &self.self_node_tx {
+            let _ = tx.send(WrappedItem {
+                payload: (
+                    NetworkMessage::InnerCommand(Command::TryStartSynchronization),
+                    self.self_addr,
+                ),
+                label: self.thread_id.to_string(),
+            });
+        }
+    }
+
+    pub fn on_stall_sync_required(&mut self) {
+        tracing::warn!("on_stall_sync_required: triggering sync for thread {:?}", self.thread_id);
+        self.send_try_start_sync_message();
+    }
+
     pub fn on_block_producer_stalled(&mut self) -> OnBlockProducerStalledResult {
         let thread_identifier = self.thread_id;
         tracing::trace!("on_block_producer_stalled: start {thread_identifier:?}");
@@ -721,6 +743,7 @@ impl ThreadAuthority {
             tracing::trace!(
                 "on_block_producer_stalled: unprocessed next round round success message"
             );
+            #[allow(clippy::result_large_err)]
             let _ = self.self_node_authority_tx.as_ref().map(|e| {
                 e.send(WrappedItem {
                     payload: (
@@ -908,15 +931,7 @@ impl ThreadAuthority {
 
             if self.last_node_joining_sent.elapsed() > self.node_joining_timeout {
                 self.last_node_joining_sent = std::time::Instant::now();
-                let _ = self.self_node_tx.as_ref().map(|e| {
-                    e.send(WrappedItem {
-                        payload: (
-                            NetworkMessage::InnerCommand(Command::TryStartSynchronization),
-                            self.self_addr,
-                        ),
-                        label: self.thread_id.to_string(),
-                    })
-                });
+                self.send_try_start_sync_message();
                 return OnBlockProducerStalledResult::retry_after(
                     Some(block_height),
                     self.node_joining_timeout,

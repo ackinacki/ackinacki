@@ -22,6 +22,7 @@ pub struct BlockManagerMetrics {
     build_info: Gauge<u64>,
     errors: Counter<u64>,
     rotation: Counter<u64>,
+    dedup_skipped: Counter<u64>,
 }
 
 #[derive(Clone)]
@@ -55,6 +56,7 @@ impl BlockManagerMetrics {
             errors: meter.u64_counter("bm_errors").build(),
             rotation: meter.u64_counter("bm_rotation").build(),
             build_info: meter.u64_gauge("bm_build_info").build(),
+            dedup_skipped: meter.u64_counter("bm_dedup_skipped").build(),
         }
     }
 
@@ -70,6 +72,10 @@ impl BlockManagerMetrics {
 
     pub fn report_errors(&self, kind: &'static str) {
         self.errors.add(1, &[KeyValue::new("kind", kind)]);
+    }
+
+    pub fn report_dedup_skipped(&self) {
+        self.dedup_skipped.add(1, &[]);
     }
 
     pub fn report_build_info(&self) {

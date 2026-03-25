@@ -10,6 +10,7 @@ mod integration_tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
+    use crate::cli::PostUploadAction;
     use crate::config::AppConfig;
     use crate::domain::grouping::ArchiveFile;
     use crate::domain::traits::CompressionMode;
@@ -47,6 +48,7 @@ mod integration_tests {
             bucket: "test-bucket".to_string(),
             require_all_servers: true,
             compression: CompressionMode::None,
+            post_upload: PostUploadAction::Move,
             skip_upload: false,
             dry_run: false,
         }

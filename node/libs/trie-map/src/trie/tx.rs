@@ -26,6 +26,12 @@ pub struct Tx<V: MapValue> {
     pub ext_paths: Vec<u8>,
 }
 
+impl<V: MapValue> Default for Tx<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<V: MapValue> Tx<V> {
     #[inline]
     pub fn new() -> Self {

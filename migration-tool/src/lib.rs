@@ -169,6 +169,7 @@ fn get_latest_migration_version(migrations_dir: &'static Dir<'static>) -> anyhow
 #[cfg(test)]
 mod tests {
     use lazy_static::lazy_static;
+    use testdir::testdir;
 
     use super::*;
 
@@ -180,5 +181,55 @@ mod tests {
     #[test]
     fn migrations_test() {
         assert!(MIGRATIONS_BM.validate().is_ok());
+    }
+
+    fn object_exists(
+        conn: &Connection,
+        object_type: &str,
+        object_name: &str,
+    ) -> rusqlite::Result<bool> {
+        conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master WHERE type = ?1 AND name = ?2
+            )",
+            [object_type, object_name],
+            |row| row.get(0),
+        )
+    }
+
+    #[test]
+    fn bm_archive_v3_migration_up_and_down_creates_and_drops_new_objects() -> anyhow::Result<()> {
+        let root = testdir!();
+        let db = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &root);
+        let opts = DbMaintenanceOptions { silent: true };
+
+        db.migrate(MigrateTo::Version(2), opts.clone())?;
+        let conn = Connection::open(&db.path)?;
+        assert!(!object_exists(&conn, "table", "bk_set_updates")?);
+        assert!(!object_exists(&conn, "table", "attestations")?);
+        drop(conn);
+
+        db.migrate(MigrateTo::Version(3), opts.clone())?;
+        let conn = Connection::open(&db.path)?;
+        assert!(object_exists(&conn, "table", "bk_set_updates")?);
+        assert!(object_exists(&conn, "table", "attestations")?);
+        assert!(object_exists(&conn, "index", "idx_bk_set_updates_chain_order")?);
+        assert!(object_exists(&conn, "index", "idx_bk_set_updates_thread_height")?);
+        assert!(object_exists(&conn, "index", "idx_attestations_block_id")?);
+        assert!(object_exists(&conn, "index", "idx_attestations_source_chain_order")?);
+        assert!(object_exists(&conn, "index", "index_transactions_chain_order")?);
+        drop(conn);
+
+        db.migrate(MigrateTo::Version(2), opts)?;
+        let conn = Connection::open(&db.path)?;
+        assert!(!object_exists(&conn, "table", "bk_set_updates")?);
+        assert!(!object_exists(&conn, "table", "attestations")?);
+        assert!(!object_exists(&conn, "index", "idx_bk_set_updates_chain_order")?);
+        assert!(!object_exists(&conn, "index", "idx_bk_set_updates_thread_height")?);
+        assert!(!object_exists(&conn, "index", "idx_attestations_block_id")?);
+        assert!(!object_exists(&conn, "index", "idx_attestations_source_chain_order")?);
+        assert!(!object_exists(&conn, "index", "index_transactions_chain_order")?);
+
+        Ok(())
     }
 }

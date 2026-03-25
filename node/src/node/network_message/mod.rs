@@ -24,8 +24,6 @@ use crate::node::NodeIdentifier;
 use crate::protocol::authority_switch::network_message::AuthoritySwitch;
 use crate::types::bp_selector::ProducerSelector;
 use crate::types::AckiNackiBlock;
-#[cfg(feature = "transitioning_node_version")]
-use crate::types::AckiNackiBlockVersioned;
 use crate::types::BlockSeqNo;
 mod serde_network_message;
 
@@ -40,21 +38,6 @@ pub struct NetBlock {
 }
 
 impl NetBlock {
-    #[cfg(feature = "transitioning_node_version")]
-    pub fn with_versioned(value: &Envelope<AckiNackiBlockVersioned>) -> anyhow::Result<Self> {
-        let envelope_data = bincode::serialize(value)?;
-        let block = value.data();
-        let common_section = block.common_section();
-        Ok(Self {
-            producer_id: common_section.producer_id(),
-            producer_selector: common_section.producer_selector().clone(),
-            thread_id: common_section.thread_id(),
-            identifier: block.identifier(),
-            seq_no: block.seq_no(),
-            envelope_data,
-        })
-    }
-
     pub fn with_envelope(value: &Envelope<AckiNackiBlock>) -> anyhow::Result<Self> {
         let envelope_data = bincode::serialize(value)?;
         let block = value.data();

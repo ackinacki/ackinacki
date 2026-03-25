@@ -59,6 +59,7 @@ use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
 use crate::types::next_seq_no;
+use crate::types::BlockIndex;
 use crate::types::BlockRound;
 use crate::types::BlockSeqNo;
 use crate::utilities::guarded::Guarded;
@@ -99,8 +100,6 @@ pub struct TVMBlockProducerProcess {
     wasm_cache: WasmNodeCache,
     share_service: Option<ExternalFileSharesBased>,
     save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
-    #[cfg(feature = "usdc_name_repair")]
-    usdc_name_repaired: Arc<Mutex<Option<BlockSeqNo>>>,
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
@@ -139,7 +138,6 @@ impl TVMBlockProducerProcess {
         round: BlockRound,
         parent_block_state: BlockState,
         protocol_version: ProtocolVersion,
-        #[cfg(feature = "usdc_name_repair")] usdc_name_repaired: Arc<Mutex<Option<BlockSeqNo>>>,
     ) -> anyhow::Result<(ProcudeNextResult, BlockState)> {
         tracing::trace!("Start block production process iteration");
         let start_time = std::time::SystemTime::now();
@@ -194,8 +192,8 @@ impl TVMBlockProducerProcess {
             .thread_accounts_repository(repository.thread_accounts_repository().clone())
             .metrics(metrics.clone())
             .wasm_cache(wasm_cache);
-        #[cfg(feature = "usdc_name_repair")]
-        let producer = producer.usdc_name_repaired(usdc_name_repaired);
+        #[cfg(feature = "authroot_dapp_repair")]
+        let producer = producer.authroot_dapp_repaired(repository.authroot_dapp_repaired());
         let producer = producer.build();
         let (control_tx, control_rx) =
             instrumented_channel(metrics.clone(), crate::helper::metrics::ROUTING_COMMAND_CHANNEL);
@@ -316,10 +314,43 @@ impl TVMBlockProducerProcess {
             };
             if state_share_was_requested {
                 for block_ref in &refs {
+                    // Find finalizing block
+                    let block_index =
+                        BlockIndex::new(*block_ref.block_seq_no(), *block_ref.block_identifier());
+                    let mut cursors = vec![*block_ref.block_identifier()];
+                    let mut finalizing_block = None;
+                    while finalizing_block.is_none() {
+                        anyhow::ensure!(
+                            !cursors.is_empty(),
+                            "Failed to find finalizing block for {:?}",
+                            block_ref.block_identifier()
+                        );
+                        let cursor = cursors.pop().unwrap();
+                        block_state_repo.get(&cursor)?.guarded(|e| {
+                            if e.finalizes_blocks()
+                                .as_ref()
+                                .map(|blocks| blocks.contains(&block_index))
+                                .unwrap_or(false)
+                            {
+                                finalizing_block = Some(cursor);
+                            }
+                            cursors.extend(
+                                e.known_children(block_ref.block_thread_identifier())
+                                    .cloned()
+                                    .unwrap_or_default()
+                                    .into_iter(),
+                            );
+                        });
+                        if finalizing_block.is_some() {
+                            break;
+                        }
+                    }
+
                     share_service.save_state_for_sharing(
                         block_ref.block_identifier(),
                         block_ref.block_thread_identifier(),
                         None,
+                        finalizing_block.unwrap(),
                     )?;
                 }
             }
@@ -617,8 +648,6 @@ impl TVMBlockProducerProcess {
         let share_service = self.share_service.clone();
         let save_state_sender = self.save_optimistic_service_sender.clone();
         let node_config_read = self.node_config_read.clone();
-        #[cfg(feature = "usdc_name_repair")]
-        let usdc_name_repaired = self.usdc_name_repaired.clone();
 
         let mut parent_block_state =
             block_state_repository.get(prev_block_id).expect("Failed to load parent block state");
@@ -669,8 +698,6 @@ impl TVMBlockProducerProcess {
                     round,
                     parent_block_state,
                     block_version.clone(),
-                    #[cfg(feature = "usdc_name_repair")]
-                    usdc_name_repaired.clone(),
                 );
                 // Note:
                 // if stopped.is_ok() ... is skipped.
@@ -939,8 +966,6 @@ mod tests {
             finalized_blocks,
             mock_bk_set_updates_tx(),
             ConfigRead::new(ProtocolVersion::parse("None")?, global_config.clone(), None, None),
-            #[cfg(feature = "usdc_name_repair")]
-            Arc::new(Mutex::new(None)),
         );
         let (router, _router_rx) = RoutingService::stub();
         let feedback_sender = router.feedback_sender.clone();
@@ -968,8 +993,6 @@ mod tests {
             .share_service(None)
             .wasm_cache(WasmNodeCache::new()?)
             .save_optimistic_service_sender(tx);
-        #[cfg(feature = "usdc_name_repair")]
-        let builder = builder.usdc_name_repaired(repository.usdc_name_repaired());
         let mut production_process = builder.build();
 
         let thread_id = ThreadIdentifier::default();

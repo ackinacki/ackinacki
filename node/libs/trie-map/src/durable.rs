@@ -34,9 +34,6 @@ use crate::TrieMapRepository;
 pub struct DurableMapStat {
     pub total_nodes: usize,
     pub reachable_nodes: usize,
-    pub values_count: usize,
-    pub branch_children_count: usize,
-    pub ext_paths_bytes: usize,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -125,10 +122,21 @@ where
     IndexKey: Clone + Copy + Eq + Hash,
     IndexValue: Clone + Copy,
 {
-    root_path: PathBuf,
+    root_path: Option<PathBuf>,
     repository: TrieMapRepository<Value>,
     index: Arc<parking_lot::RwLock<DurableIndex<IndexKey, DurableIndexValue<IndexValue>>>>,
     commit: Arc<parking_lot::Mutex<Commit>>,
+}
+
+impl<Value, IndexKey, IndexValue> Default for DurableMapRepository<Value, IndexKey, IndexValue>
+where
+    Value: MapValue,
+    IndexKey: Clone + Copy + Eq + Hash + Serialize + DeserializeOwned,
+    IndexValue: Clone + Copy + Serialize + DeserializeOwned,
+{
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<Value, IndexKey, IndexValue> DurableMapRepository<Value, IndexKey, IndexValue>
@@ -137,6 +145,17 @@ where
     IndexKey: Clone + Copy + Eq + Hash + Serialize + DeserializeOwned,
     IndexValue: Clone + Copy + Serialize + DeserializeOwned,
 {
+    /// Create a purely in-memory map (no filesystem persistence).
+    pub fn new() -> Self {
+        Self {
+            root_path: None,
+            repository: TrieMapRepository::with_arena(Arena::new()),
+            index: Arc::new(parking_lot::RwLock::new(DurableIndex::new())),
+            commit: Arc::new(parking_lot::Mutex::new(Commit::default())),
+        }
+    }
+
+    /// Load from filesystem (existing behavior).
     pub fn load(root_path: PathBuf) -> anyhow::Result<Self> {
         let (commit, arena, index) =
             if let Ok(Some(commit)) = read_from_file::<Commit>(&root_path, "commit") {
@@ -153,7 +172,7 @@ where
             };
         let repository = TrieMapRepository::with_arena(arena);
         Ok(Self {
-            root_path,
+            root_path: Some(root_path),
             repository,
             index: Arc::new(parking_lot::RwLock::new(index)),
             commit: Arc::new(parking_lot::Mutex::new(commit)),
@@ -181,6 +200,12 @@ where
     }
 
     pub fn commit(&self) -> anyhow::Result<()> {
+        let Some(root_path) = &self.root_path else {
+            // In-memory mode: nothing to persist. Clear pending index updates.
+            self.index.write().updates.clear();
+            return Ok(());
+        };
+
         let mut commit_lock = self.commit.lock();
         let mut commit = *commit_lock;
         let (nodes_range, values_range, branch_children_range, ext_paths_range, index_range) =
@@ -194,32 +219,29 @@ where
             return Ok(());
         }
 
-        append_from_commit(self.root_path.join("nodes"), &mut commit.nodes, nodes_range, |r| {
+        append_from_commit(root_path.join("nodes"), &mut commit.nodes, nodes_range, |r| {
             self.repository.arena.read().nodes[r].to_vec()
         })?;
-        append_from_commit(self.root_path.join("values"), &mut commit.values, values_range, |r| {
+        append_from_commit(root_path.join("values"), &mut commit.values, values_range, |r| {
             self.repository.arena.read().values[r].to_vec()
         })?;
         append_from_commit(
-            self.root_path.join("branch_children"),
+            root_path.join("branch_children"),
             &mut commit.branch_children,
             branch_children_range,
             |r| self.repository.arena.read().branch_children[r].to_vec(),
         )?;
         append_from_commit(
-            self.root_path.join("ext_paths"),
+            root_path.join("ext_paths"),
             &mut commit.ext_paths,
             ext_paths_range,
             |r| self.repository.arena.read().ext_paths[r].to_vec(),
         )?;
-        append_from_commit(
-            self.root_path.join("index"),
-            &mut commit.index,
-            index_range.clone(),
-            |r| self.index.read().updates[r].to_vec(),
-        )?;
+        append_from_commit(root_path.join("index"), &mut commit.index, index_range.clone(), |r| {
+            self.index.read().updates[r].to_vec()
+        })?;
 
-        write_commit_to_file(&self.root_path, "commit", &commit)?;
+        write_commit_to_file(root_path, "commit", &commit)?;
 
         self.index.write().updates.drain(index_range);
         *commit_lock = commit;

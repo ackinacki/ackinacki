@@ -17,6 +17,8 @@ use anyhow::Result;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use flate2::GzBuilder;
+use xz2::stream::Check;
+use xz2::stream::MtStreamBuilder;
 use xz2::write::XzEncoder;
 
 use crate::domain::grouping::ArchiveFile;
@@ -213,7 +215,14 @@ fn xz_move(src: &Path, dest_xz: &Path, dry_run: bool) -> Result<()> {
     let tmp_file = File::create(&tmp_path)
         .with_context(|| format!("failed to create temp file: {}", tmp_path.display()))?;
 
-    let mut encoder = XzEncoder::new(tmp_file, 6);
+    let threads = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1);
+    let stream = MtStreamBuilder::new()
+        .threads(threads)
+        .preset(6)
+        .check(Check::Crc64)
+        .encoder()
+        .map_err(|e| anyhow::anyhow!("failed to create xz mt encoder: {e}"))?;
+    let mut encoder = XzEncoder::new_stream(tmp_file, stream);
 
     // todo: tune buffer size
     let mut reader = BufReader::with_capacity(2 << 20, src_file); // 2 MiB buffer
@@ -240,6 +249,7 @@ fn xz_move(src: &Path, dest_xz: &Path, dry_run: bool) -> Result<()> {
     tracing::info!(
         src = %src.display(),
         dest = %dest_xz.display(),
+        threads,
         elapsed_ms = started_at.elapsed().as_millis(),
         "xz move completed"
     );

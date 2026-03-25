@@ -81,6 +81,7 @@ impl QueryRoot {
         Ok(Some(Info { last_block_time: Some(gen_utime.unwrap_or(0) as f64), ..Info::default() }))
     }
 
+    #[graphql(deprecation = "Use blockchain.account instead")]
     async fn account(&self, address: String) -> Option<AccountQuery> {
         Some(AccountQuery { address, preloaded: None })
     }
@@ -129,6 +130,7 @@ impl QueryRoot {
         Ok(Some(blocks))
     }
 
+    #[graphql(deprecation = "Use blockchain.account instead")]
     async fn accounts(
         &self,
         ctx: &Context<'_>,

@@ -1,10 +1,20 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::path::PathBuf;
 
 use crate::domain::grouping::ArchiveFile;
 use crate::domain::traits::AnchorTimestamp;
+
+/// A gap in the `blocks` table where sequential `seq_no` values are missing.
+#[derive(Debug, Clone)]
+pub struct BlockGap {
+    pub gap_start: i64,
+    pub gap_start_ts: i64,
+    pub gap_end: i64,
+    pub gap_end_ts: i64,
+    pub missing_count: i64,
+}
 
 /// Represents a group of archive files from multiple servers
 /// that should be processed together based on timestamp proximity.

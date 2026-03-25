@@ -17,7 +17,7 @@ pub struct StateSyncServiceStub {}
 impl StateSyncService for StateSyncServiceStub {
     type Repository = RepositoryImpl;
 
-    fn reset_sync(&self) {
+    fn is_load_thread_available(&self) -> bool {
         todo!()
     }
 
@@ -26,6 +26,7 @@ impl StateSyncService for StateSyncServiceStub {
         _block_id: &BlockIdentifier,
         _thread_id: &ThreadIdentifier,
         _min_state: Option<Arc<OptimisticStateImpl>>,
+        _finalizing_block_id: BlockIdentifier,
     ) -> anyhow::Result<()> {
         todo!()
     }

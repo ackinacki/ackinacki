@@ -96,8 +96,8 @@ impl OptimisticState for OptimisticStateStub {
         _thread_accounts_repository: &NodeThreadAccountsRepository,
         _message_db: MessageDurableStorage,
         _config_read: crate::config::config_read::ConfigRead,
-        #[cfg(feature = "usdc_name_repair")] _usdc_name_repaired: std::sync::Arc<
-            parking_lot::Mutex<Option<BlockSeqNo>>,
+        #[cfg(feature = "authroot_dapp_repair")] _authroot_dapp_repaired: std::sync::Arc<
+            parking_lot::Mutex<Option<crate::types::BlockSeqNo>>,
         >,
     ) -> anyhow::Result<(
         CrossThreadRefData,
@@ -256,6 +256,7 @@ impl Repository for RepositoryStub {
         _block: impl Borrow<Self::CandidateBlock>,
         _block_state: BlockState,
         _state_sync_service: Option<Arc<impl StateSyncService<Repository = RepositoryImpl>>>,
+        _finalizing_block_id: BlockIdentifier,
     ) -> anyhow::Result<()> {
         Ok(())
     }

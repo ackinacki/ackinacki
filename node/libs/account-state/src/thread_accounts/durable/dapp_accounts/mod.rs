@@ -1,16 +1,9 @@
-pub(crate) mod fs_trie;
-
 use node_types::AccountHash;
-use node_types::AccountIdentifier;
 use node_types::Blake3Hashable;
 use node_types::DAppIdentifier;
 use node_types::TransactionHash;
 use serde::Deserialize;
 use serde::Serialize;
-use trie_map::TrieMapSnapshot;
-
-use crate::thread_accounts::DurableMapStat;
-use crate::DAppAccountMapHash;
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct AccountInfo {
@@ -31,38 +24,4 @@ impl Blake3Hashable for AccountInfo {
             hasher.update(dapp_id.as_slice());
         }
     }
-}
-
-pub trait DAppAccountMapRepository: Clone {
-    type MapRef: Clone + Send + Sync;
-
-    fn get_stat(&self) -> DurableMapStat;
-
-    fn commit(&self) -> anyhow::Result<()>;
-
-    fn new_map() -> Self::MapRef;
-
-    fn index_get(&self, map_hash: &DAppAccountMapHash) -> anyhow::Result<Option<Self::MapRef>>;
-
-    fn index_set(&self, map_hash: &DAppAccountMapHash, map: &Self::MapRef) -> anyhow::Result<()>;
-
-    fn map_hash(&self, map: &Self::MapRef) -> DAppAccountMapHash;
-
-    fn map_get(
-        &self,
-        map: &Self::MapRef,
-        account_id: &AccountIdentifier,
-    ) -> anyhow::Result<Option<AccountInfo>>;
-
-    fn map_update(
-        &self,
-        map: &Self::MapRef,
-        accounts: Vec<(AccountIdentifier, Option<AccountInfo>)>,
-    ) -> anyhow::Result<Self::MapRef>;
-
-    fn export_snapshot(&self, map: &Self::MapRef) -> TrieMapSnapshot<AccountInfo>;
-
-    fn import_snapshot(&self, snapshot: TrieMapSnapshot<AccountInfo>) -> Self::MapRef;
-
-    fn collect_values(&self, map: &Self::MapRef) -> Vec<(AccountIdentifier, AccountInfo)>;
 }

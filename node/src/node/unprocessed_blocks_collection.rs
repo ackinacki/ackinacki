@@ -125,13 +125,18 @@ impl UnfinalizedCandidateBlockCollection {
         })
     }
 
-    pub fn insert(&mut self, block_state: BlockState, block: Envelope<AckiNackiBlock>) {
-        let index = BlockIndex::from(&block);
+    pub fn insert_arc(&mut self, block_state: BlockState, block: Arc<Envelope<AckiNackiBlock>>) {
+        let index = BlockIndex::from(block.as_ref());
+        tracing::trace!(target: "node", "UnfinalizedCandidateBlockCollection insert {:?}", index);
         let mut data_lock = self.candidates.lock();
         block_state.guarded_mut(|e| e.add_subscriber(self.notifications().clone()));
-        data_lock.insert(index, (block_state, block.into()));
+        data_lock.insert(index, (block_state, block));
         drop(data_lock);
         self.touch();
+    }
+
+    pub fn insert(&mut self, block_state: BlockState, block: Envelope<AckiNackiBlock>) {
+        self.insert_arc(block_state, Arc::new(block))
     }
 
     pub fn remove_finalized_and_invalidated_blocks(&mut self) {

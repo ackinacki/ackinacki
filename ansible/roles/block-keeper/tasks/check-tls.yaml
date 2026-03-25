@@ -1,0 +1,25 @@
+---
+- name: Check that HTTP(s) socket is available
+  ansible.builtin.wait_for:
+    host: "{{ BK_TLS_IP | default(ansible_host) }}"
+    port: 443
+    state: started
+    delay: 0
+    timeout: 30
+    msg: "TLS is not available on Block Keeper - {{ ansible_host }}"
+
+- name: Check that HTTP(s) is available
+  ansible.builtin.uri:
+    url: "https://{{ item.key }}:443"
+    method: GET
+    status_code: [ 200, 405, 401, 403 ]
+    validate_certs: yes
+    timeout: 10
+  loop: "{{ block_keepers | map('dict2items') | flatten }}"
+  register: tls_status
+  until: "tls_status.status in [ 200, 405, 401, 403 ]"
+  retries: 5
+  delay: 5
+  when:
+    - block_keepers is defined
+    - (block_keepers | length) > 0

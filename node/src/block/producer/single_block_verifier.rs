@@ -82,8 +82,8 @@ pub struct TVMBlockVerifier {
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
     is_block_of_retired_version: bool,
-    #[cfg(feature = "usdc_name_repair")]
-    usdc_name_repaired: std::sync::Arc<parking_lot::Mutex<Option<crate::types::BlockSeqNo>>>,
+    #[cfg(feature = "authroot_dapp_repair")]
+    authroot_dapp_repaired: std::sync::Arc<parking_lot::Mutex<Option<crate::types::BlockSeqNo>>>,
 }
 
 impl TVMBlockVerifier {
@@ -228,7 +228,7 @@ impl BlockVerifier for TVMBlockVerifier {
 
         let blockchain_config = self.blockchain_config.get(
             &next_seq_no(parent_block_seq_no),
-            #[cfg(feature = "usdc_name_repair")]
+            #[cfg(feature = "fix_flag_16")]
             self.is_block_of_retired_version,
         );
         let block_gas_limit = blockchain_config.get_gas_config(false).block_gas_limit;
@@ -252,8 +252,8 @@ impl BlockVerifier for TVMBlockVerifier {
             self.wasm_cache,
             true,
             self.is_block_of_retired_version,
-            #[cfg(feature = "usdc_name_repair")]
-            self.usdc_name_repaired,
+            #[cfg(feature = "authroot_dapp_repair")]
+            self.authroot_dapp_repaired.clone(),
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (verify_block, _, _) = producer.build_block(

@@ -14,6 +14,8 @@ use parking_lot::Mutex;
 use rusqlite::OpenFlags;
 
 use super::ArchAccount;
+use super::ArchAttestation;
+use super::ArchBkSetUpdate;
 use super::ArchBlock;
 use super::ArchMessage;
 use super::ArchTransaction;
@@ -199,6 +201,12 @@ impl SqliteHelper {
                 }
                 DBStoredRecord::Messages(ref messages) => {
                     Self::store_messages(context, messages.to_vec())
+                }
+                DBStoredRecord::BkSetUpdates(ref updates) => {
+                    Self::store_bk_set_updates(context, updates.to_vec())
+                }
+                DBStoredRecord::Attestations(ref attestations) => {
+                    Self::store_attestations(context, attestations.to_vec())
                 }
             };
 
@@ -411,6 +419,128 @@ impl SqliteHelper {
         let now_committed = std::time::Instant::now();
         tx.commit()?;
         tracing::debug!(target: "sqlite", "TIME: committed ({}:{}) block {}ms", block.seq_no, block.id, now_committed.elapsed().as_millis());
+
+        Ok(())
+    }
+
+    fn store_bk_set_updates(
+        context: &mut SqliteHelperContext,
+        updates: Vec<ArchBkSetUpdate>,
+    ) -> anyhow::Result<()> {
+        let cnt_updates = updates.len();
+
+        let mut guarded = context.conn.lock();
+        let Some(tx) = guarded.as_mut() else {
+            return Ok(());
+        };
+        let tx = tx.transaction()?;
+
+        let now_batched = std::time::Instant::now();
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO bk_set_updates (
+                    block_id, thread_id, height, chain_order, bk_set_update
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5
+                ) ON CONFLICT(block_id) DO UPDATE SET
+                    thread_id=excluded.thread_id,
+                    height=excluded.height,
+                    chain_order=excluded.chain_order,
+                    bk_set_update=excluded.bk_set_update",
+            )?;
+
+            for update in updates.into_iter() {
+                let params = rusqlite::params![
+                    update.block_id,
+                    update.thread_id,
+                    update.height,
+                    update.chain_order,
+                    update.bk_set_update,
+                ];
+                if let Err(err) = stmt.execute(params) {
+                    tracing::error!("store_bk_set_updates(): failed to store bk set update: {err}");
+                }
+            }
+        }
+        tracing::debug!(
+            target: "sqlite",
+            "TIME: batched {} bk_set_update(s) {}ms",
+            cnt_updates,
+            now_batched.elapsed().as_millis()
+        );
+
+        let now_committed = std::time::Instant::now();
+        tx.commit()?;
+        tracing::debug!(
+            target: "sqlite",
+            "TIME: committed {} bk_set_update(s) {}ms",
+            cnt_updates,
+            now_committed.elapsed().as_millis()
+        );
+
+        Ok(())
+    }
+
+    fn store_attestations(
+        context: &mut SqliteHelperContext,
+        attestations: Vec<ArchAttestation>,
+    ) -> anyhow::Result<()> {
+        let cnt_attestations = attestations.len();
+
+        let mut guarded = context.conn.lock();
+        let Some(tx) = guarded.as_mut() else {
+            return Ok(());
+        };
+        let tx = tx.transaction()?;
+
+        let now_batched = std::time::Instant::now();
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO attestations (
+                    block_id, parent_block_id, envelope_hash, target_type, aggregated_signature,
+                    signature_occurrences, source_block_id, source_chain_order
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+                ) ON CONFLICT(block_id, target_type) DO UPDATE SET
+                    parent_block_id=excluded.parent_block_id,
+                    envelope_hash=excluded.envelope_hash,
+                    aggregated_signature=excluded.aggregated_signature,
+                    signature_occurrences=excluded.signature_occurrences,
+                    source_block_id=excluded.source_block_id,
+                    source_chain_order=excluded.source_chain_order",
+            )?;
+
+            for attestation in attestations.into_iter() {
+                let params = rusqlite::params![
+                    attestation.block_id,
+                    attestation.parent_block_id,
+                    attestation.envelope_hash,
+                    attestation.target_type,
+                    attestation.aggregated_signature,
+                    attestation.signature_occurrences,
+                    attestation.source_block_id,
+                    attestation.source_chain_order,
+                ];
+                if let Err(err) = stmt.execute(params) {
+                    tracing::error!("store_attestations(): failed to store attestation: {err}");
+                }
+            }
+        }
+        tracing::debug!(
+            target: "sqlite",
+            "TIME: batched {} attestation(s) {}ms",
+            cnt_attestations,
+            now_batched.elapsed().as_millis()
+        );
+
+        let now_committed = std::time::Instant::now();
+        tx.commit()?;
+        tracing::debug!(
+            target: "sqlite",
+            "TIME: committed {} attestation(s) {}ms",
+            cnt_attestations,
+            now_committed.elapsed().as_millis()
+        );
 
         Ok(())
     }
@@ -672,6 +802,26 @@ impl DocumentsDb for SqliteHelper {
                 tracing::error!(target: "node", "Error sending transactions {}:", items.len());
             };
         }
+
+        Ok(())
+    }
+
+    fn put_bk_set_updates(&self, items: Vec<ArchBkSetUpdate>) -> anyhow::Result<()> {
+        if let Err(SendError(DBStoredRecord::BkSetUpdates(items))) =
+            self.record_sender.send(DBStoredRecord::BkSetUpdates(items))
+        {
+            tracing::error!(target: "node", "Error sending bk set updates {}:", items.len());
+        };
+
+        Ok(())
+    }
+
+    fn put_attestations(&self, items: Vec<ArchAttestation>) -> anyhow::Result<()> {
+        if let Err(SendError(DBStoredRecord::Attestations(items))) =
+            self.record_sender.send(DBStoredRecord::Attestations(items))
+        {
+            tracing::error!(target: "node", "Error sending attestations {}:", items.len());
+        };
 
         Ok(())
     }

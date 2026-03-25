@@ -37,7 +37,7 @@ pub struct TrieMapRepository<V: MapValue> {
     pub arena: Arc<RwLock<Arena<V>>>,
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash)]
 pub struct TrieMapRef {
     pub root: NodeId,
     pub root_path: MapKeyPath,
@@ -71,13 +71,7 @@ impl<V: MapValue> TrieMapRepository<V> {
     pub fn get_stat(&self, roots: impl IntoIterator<Item = NodeId>) -> DurableMapStat {
         let arena = self.arena.read();
         let reachable = Self::reachable_from_roots(&arena, roots);
-        DurableMapStat {
-            total_nodes: arena.nodes.len(),
-            reachable_nodes: reachable.count_ones(),
-            values_count: arena.values.len(),
-            branch_children_count: arena.branch_children.len(),
-            ext_paths_bytes: arena.ext_paths.len(),
-        }
+        DurableMapStat { total_nodes: arena.nodes.len(), reachable_nodes: reachable.count_ones() }
     }
 
     pub fn export_snapshot(&self, map: &TrieMapRef) -> TrieMapSnapshot<V> {

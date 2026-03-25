@@ -1,32 +1,21 @@
 use std::path::PathBuf;
 
-use trie_map::durable::DurableMapRef;
-
 use crate::fs_utils::fs_repo;
 use crate::thread_accounts::accounts::aerospike::AerospikeAccountsConfig;
 use crate::thread_accounts::accounts::aerospike::DEFAULT_NUM_WRITE_THREADS;
 use crate::thread_accounts::accounts::AccountsStore;
 use crate::thread_accounts::composite::DEFAULT_APPLY_TO_DURABLE;
-use crate::thread_accounts::durable::dapp_accounts::fs_trie::FsTrieDAppAccountMapRepository;
-use crate::thread_accounts::durable::thread_dapps::FsTrieThreadDAppMapRepository;
+use crate::thread_accounts::durable::repository::ThreadStateRef;
 use crate::thread_accounts::ThreadAccounts;
 use crate::CompositeThreadAccountRepository;
 use crate::CompositeThreadAccountsBuilder;
 use crate::CompositeThreadAccountsDiff;
 use crate::CompositeThreadAccountsRef;
 
-type FsCompositeThreadAccountsRef = CompositeThreadAccountsRef<DurableMapRef>;
-type FsCompositeThreadAccountsBuilder = CompositeThreadAccountsBuilder<
-    FsTrieThreadDAppMapRepository,
-    FsTrieDAppAccountMapRepository,
-    AccountsStore,
->;
+type FsCompositeThreadAccountsRef = CompositeThreadAccountsRef<ThreadStateRef>;
+type FsCompositeThreadAccountsBuilder = CompositeThreadAccountsBuilder<AccountsStore>;
 type FsCompositeThreadAccountsDiff = CompositeThreadAccountsDiff;
-type FsCompositeThreadAccountsRepository = CompositeThreadAccountRepository<
-    FsTrieThreadDAppMapRepository,
-    FsTrieDAppAccountMapRepository,
-    AccountsStore,
->;
+type FsCompositeThreadAccountsRepository = CompositeThreadAccountRepository<AccountsStore>;
 
 pub struct FsCompositeThreadAccountsRepositoryBuilder {
     root_path: PathBuf,
@@ -44,16 +33,11 @@ impl FsCompositeThreadAccountsRepositoryBuilder {
         } else {
             fs_repo(AccountsStore::fs_opt, durable_path.join("accounts"))?
         };
-        Ok(CompositeThreadAccountRepository::new(
-            fs_repo(FsTrieThreadDAppMapRepository::new, durable_path.join("thread_dapps"))?,
-            fs_repo(FsTrieDAppAccountMapRepository::new, durable_path.join("dapp_accounts"))?,
-            accounts,
-            self.apply_to_durable,
-        ))
+        CompositeThreadAccountRepository::new(durable_path, accounts, self.apply_to_durable)
     }
 
-    pub fn set_apply_to_durable(mut self, apply_to_durable: bool) -> Self {
-        self.apply_to_durable = apply_to_durable;
+    pub fn set_apply_to_durable(mut self, _apply_to_durable: bool) -> Self {
+        self.apply_to_durable = false;
         self
     }
 

@@ -33,5 +33,5 @@
 - name: Copy .env file for compose
   copy:
     dest: "{{ BK_DIR }}"
-    src: ".env"
+    src: "{{ PRE_PATH | default('.') }}/.env"
   when: COPY_ENV is defined and COPY_ENV

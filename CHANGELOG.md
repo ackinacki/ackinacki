@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.3] – 2026-03-25
+
+### New / Improvements
+- Added Block Manager multi-node mode with YAML-configured BK stream and API endpoint pools, parallel subscriptions, API failover, and runtime config reload support
+- Added `bm-archive-processor` improvements including multithreaded XZ compression, leftover `.db` recovery, block gap reporting, `--post-upload` handling, and single-instance locking
+- Added GraphQL support for `blockchain.bkSetUpdates(...)`, block and BK-set `attestations`, and `dst` filtering for `blockchain.account.events`
+- Added BM archive migration `003-attestations_bk_set_update` with new tables and indexes required for archive merging and GraphQL queries
+- Added snapshot helper tools for viewing or replacing `bk_set` in `ThreadSnapshot` files and clearing finalization checkpoints
+- Added TLS availability checks to Block Keeper deployment and upgrade playbooks
+- Updated TVM SDK to `v2.24.13`
+
+---
+
+## Fixes
+- Fixed node synchronization so it can continue even when the node is temporarily unable to send the next round
+- Fixed noisy `SyncFinalized` handling during `NodeJoining`
+- Fixed `ThreadSnapshot` compatibility so nodes can decode snapshots produced from `main`
+- Fixed GraphQL rollout compatibility by deprecating legacy account queries instead of removing them immediately
+- Fixed Block Manager sync resilience by reconnecting across several BK nodes instead of depending on a single source
+
 ## [0.14.0] – 2026-03-05
 
 ### New / Improvements

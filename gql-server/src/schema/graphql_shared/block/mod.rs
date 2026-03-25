@@ -1,7 +1,10 @@
 // 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::sync::Arc;
+
 use async_graphql::ComplexObject;
+use async_graphql::Context;
 use async_graphql::Enum;
 use async_graphql::SimpleObject;
 use chrono::DateTime;
@@ -22,8 +25,10 @@ pub use resolver::BlockLoader;
 
 use super::message::InMsg;
 use super::message::OutMsg;
+use crate::schema::db::DBConnector;
 use crate::schema::graphql::currency::OtherCurrency;
 use crate::schema::graphql::formats::BigIntFormat;
+use crate::schema::graphql_ext::blockchain_api::attestations::BlockAttestation;
 
 type Boolean = bool;
 type Int = i32;
@@ -354,6 +359,20 @@ impl Block {
     /// specification.
     async fn start_lt(&self, format: Option<BigIntFormat>) -> Option<String> {
         format_big_int(self.start_lt.clone(), format)
+    }
+
+    async fn attestations(
+        &self,
+        ctx: &Context<'_>,
+    ) -> async_graphql::Result<Vec<BlockAttestation>> {
+        let db_connector = ctx.data::<Arc<DBConnector>>()?;
+        let rows = db::attestation::Attestation::by_block_id(db_connector, &self.id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        rows.into_iter()
+            .map(BlockAttestation::try_from_db)
+            .collect::<anyhow::Result<Vec<_>>>()
+            .map_err(|e| async_graphql::Error::new(e.to_string()))
     }
 }
 

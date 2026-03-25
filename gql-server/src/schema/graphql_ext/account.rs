@@ -80,6 +80,7 @@ impl AccountQuery {
     pub async fn events(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Optional destination address filter.")] dst: Option<String>,
         #[graphql(desc = "This field is mutually exclusive with 'last'.")] first: Option<i32>,
         after: Option<String>,
         #[graphql(desc = "This field is mutually exclusive with 'first'.")] last: Option<i32>,
@@ -107,6 +108,7 @@ impl AccountQuery {
             let mut messages = db::Message::account_events(
                 ctx.data::<Arc<DBConnector>>().unwrap(),
                 self.address.clone(),
+                dst,
                 &pagination,
             )
             .await?;

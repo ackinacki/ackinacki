@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use node_types::AccountCodeHash;
 use node_types::AccountDataHash;
 use node_types::AccountHash;
@@ -16,7 +18,22 @@ pub struct AvmStateAccount {
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug, Default)]
-pub struct AvmAccount {
+pub struct AvmAccount(pub(crate) Arc<AvmAccountInner>);
+
+impl AvmAccount {
+    pub fn new(
+        hash: AccountHash,
+        metadata: AvmAccountMetadata,
+        code_hash: Option<AccountCodeHash>,
+        data_hash: Option<AccountDataHash>,
+        data: Option<AvmAccountData>,
+    ) -> Self {
+        Self(Arc::new(AvmAccountInner { hash, metadata, code_hash, data_hash, data }))
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug, Default)]
+pub struct AvmAccountInner {
     pub hash: AccountHash,
     pub metadata: AvmAccountMetadata,
     pub code_hash: Option<AccountCodeHash>,

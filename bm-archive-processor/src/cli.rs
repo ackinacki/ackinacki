@@ -19,6 +19,17 @@ pub enum CompressionMode {
     Xz,
 }
 
+/// What to do with compressed daily DB after successful S3 upload.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum PostUploadAction {
+    /// Keep the file in place
+    Keep,
+    /// Delete the file
+    Delete,
+    /// Move the file to the uploaded directory
+    Move,
+}
+
 #[derive(Parser, Debug)]
 #[command(version, about = "Selection and grouping of the SQLite archives by timestamp (±1h)")]
 pub struct Args {
@@ -53,6 +64,10 @@ pub struct Args {
     /// S3 bucket name (overrides default)
     #[arg(long, env = "S3_BUCKET")]
     pub bucket: Option<String>,
+
+    /// Action after successful S3 upload: keep, delete, or move to uploaded dir
+    #[arg(long, value_enum, default_value_t = PostUploadAction::Move)]
+    pub post_upload: PostUploadAction,
 
     /// Skip uploading to S3 Glacier
     #[arg(long, default_value_t = false)]

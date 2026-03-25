@@ -803,8 +803,8 @@ fn process_candidate_block(
                 repository.thread_accounts_repository(),
                 repository.get_message_db().clone(),
                 repository.config_read(),
-                #[cfg(feature = "usdc_name_repair")]
-                repository.usdc_name_repaired(),
+                #[cfg(feature = "authroot_dapp_repair")]
+                repository.authroot_dapp_repaired(),
             ) {
                 Ok(cross_thread_ref_data) => cross_thread_ref_data,
                 Err(e) => {

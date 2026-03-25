@@ -332,6 +332,9 @@ tvm-cli -j callx --addr 0:7f2f945faaae4cce286299afe74dac9460893dd5cba1ac273b9e91
 - SSH access to servers.
 - Docker with the compose plugin must be installed.
 
+🚨 **Important:**
+**Block Keeper TLS proxy must be deployed before Block Keeper itself.**
+
 ### BK DNS Name Generation
 
 To register a DNS name for your BK IP, you need to create an account on ZeroSSL
@@ -1488,19 +1491,26 @@ tvm-cli -j callx --addr LICENSE_ADDR --abi contracts/0.79.3_compiled/bksystem/Li
 
 ### Upgrading Block Manager to a New Image Version or Configuration
 
-To upgrade the **Block Manager (BM)** service to a new version, run:
+To update **Block Manager (BM) service**, make the changes in the inventory file
+and then run: 
 
 ```bash
-ansible-playbook -i inventory-with-bm.yml upgrade-bm.yaml
+ansible-playbook -i your-inventory.yaml block-manager-upgrading.yaml --check --diff
 ```
 
-⚠️ It is **strongly recommended** to perform a dry run before applying the upgrade, to see what changes will be made:
+Make sure that no unintended changes were made in the `docker-compose` or configuration files.
 
-```bash
-ansible-playbook -i your-inventory.yaml ansible/node-upgrading.yml --check --diff
+If everything is OK, run it without `--check --diff`.
+
+After the update, check the list and status of the containers:
+
 ```
-
-Carefully review the output and make sure that any changes in the `docker-compose` files and configuration match what you expect.
+docker compose ps
+```
+And the staking logs:
+```
+docker compose logs staking_bm
+```
 
 ### Stopping and Starting the Block Manager Service
 

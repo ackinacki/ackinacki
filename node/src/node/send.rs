@@ -10,6 +10,7 @@ use node_types::BlockIdentifier;
 use node_types::ThreadIdentifier;
 
 use crate::bls::envelope::BLSSignedEnvelope;
+use crate::bls::envelope::Envelope;
 use crate::bls::try_seal::TrySeal;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::helper::SHUTDOWN_FLAG;
@@ -134,6 +135,40 @@ where
         )
     }
 
+    fn prepare_sync_finalized(
+        &self,
+        block_identifier: BlockIdentifier,
+        block_seq_no: BlockSeqNo,
+        shared_res_address: HashMap<ThreadIdentifier, BlockIdentifier>,
+    ) -> anyhow::Result<Option<Envelope<SyncFinalizedData>>> {
+        let shared_res_address = BTreeMap::from_iter(shared_res_address);
+        let data = SyncFinalizedData::builder()
+            .block_identifier(block_identifier)
+            .block_seq_no(block_seq_no)
+            .thread_refs(shared_res_address)
+            .build();
+        let Ok(block_state) = self.block_state_repository.get(&block_identifier) else {
+            tracing::trace!("Failed to load block state. Skip broadcasting");
+            return Ok(None);
+        };
+        let (Some(bk_set), Some(block_version)) =
+            block_state.guarded(|e| (e.bk_set().clone(), e.block_version_state().clone()))
+        else {
+            tracing::trace!("Failed to get bk_set from block state. Skip broadcasting");
+            return Ok(None);
+        };
+
+        let secrets = self.bls_keys_map.guarded(|map| map.clone());
+
+        Ok(match data.try_seal(&self.node_credentials, &bk_set, &secrets, block_version.to_use()) {
+            Ok(envelope) => Some(envelope),
+            Err(e) => {
+                tracing::trace!("Failed to sign SyncFinalized envelope: {e}. Skip broadcasting");
+                None
+            }
+        })
+    }
+
     pub(crate) fn broadcast_sync_finalized(
         &self,
         block_identifier: BlockIdentifier,
@@ -146,36 +181,11 @@ where
             block_identifier,
             shared_res_address
         );
-        let shared_res_address = BTreeMap::from_iter(shared_res_address);
-        let data = SyncFinalizedData::builder()
-            .block_identifier(block_identifier)
-            .block_seq_no(block_seq_no)
-            .thread_refs(shared_res_address)
-            .build();
-        let Ok(block_state) = self.block_state_repository.get(&block_identifier) else {
-            tracing::trace!("Failed to load block state. Skip broadcasting");
-            return Ok(());
-        };
-        let (Some(bk_set), Some(block_version)) =
-            block_state.guarded(|e| (e.bk_set().clone(), e.block_version_state().clone()))
+
+        let Some(envelope) =
+            self.prepare_sync_finalized(block_identifier, block_seq_no, shared_res_address)?
         else {
-            tracing::trace!("Failed to get bk_set from block state. Skip broadcasting");
             return Ok(());
-        };
-
-        let secrets = self.bls_keys_map.guarded(|map| map.clone());
-
-        let envelope = match data.try_seal(
-            &self.node_credentials,
-            &bk_set,
-            &secrets,
-            block_version.to_use(),
-        ) {
-            Ok(envelope) => envelope,
-            Err(e) => {
-                tracing::trace!("Failed to sign SyncFinalized envelope: {e}. Skip broadcasting");
-                return Ok(());
-            }
         };
 
         match self
@@ -186,6 +196,41 @@ where
             Err(e) => {
                 if SHUTDOWN_FLAG.get() != Some(&true) {
                     anyhow::bail!("Failed to broadcast sync finalized: {e}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn send_sync_finalized(
+        &self,
+        block_identifier: BlockIdentifier,
+        block_seq_no: BlockSeqNo,
+        shared_res_address: HashMap<ThreadIdentifier, BlockIdentifier>,
+        destination: NodeIdentifier,
+    ) -> anyhow::Result<()> {
+        tracing::debug!(
+            "sending SyncFinalized {:?} {:?} {:?} to {:?}",
+            block_seq_no,
+            block_identifier,
+            shared_res_address,
+            destination,
+        );
+
+        let Some(envelope) =
+            self.prepare_sync_finalized(block_identifier, block_seq_no, shared_res_address)?
+        else {
+            return Ok(());
+        };
+
+        match self
+            .network_direct_tx
+            .send((destination.into(), NetworkMessage::SyncFinalized((envelope, self.thread_id))))
+        {
+            Ok(_) => {}
+            Err(e) => {
+                if SHUTDOWN_FLAG.get() != Some(&true) {
+                    anyhow::bail!("Failed to send sync finalized: {e}");
                 }
             }
         }

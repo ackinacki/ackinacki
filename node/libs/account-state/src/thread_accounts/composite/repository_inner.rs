@@ -3,52 +3,41 @@ use node_types::BlockIdentifier;
 use node_types::DAppIdentifierPath;
 use tvm_block::ShardStateUnsplit;
 
+use crate::thread_accounts::durable::repository::ThreadStateRef;
 use crate::thread_accounts::tvm::TvmThreadState;
 use crate::thread_accounts::AccountsRepository;
-use crate::thread_accounts::DAppAccountMapRepository;
 use crate::thread_accounts::ThreadAccountsSplit;
-use crate::thread_accounts::ThreadDAppMapRepository;
 use crate::CompositeThreadAccountsDiff;
 use crate::CompositeThreadAccountsRef;
 use crate::DurableThreadAccountsRepository;
 use crate::ThreadStateAccount;
 
-pub(crate) struct CompositeThreadAccountsRepositoryInner<
-    ThreadDAppsRepo,
-    DAppAccountsRepo,
-    AccountsRepo,
-> where
-    ThreadDAppsRepo: ThreadDAppMapRepository,
-    DAppAccountsRepo: DAppAccountMapRepository,
+pub(crate) struct CompositeThreadAccountsRepositoryInner<AccountsRepo>
+where
     AccountsRepo: AccountsRepository,
 {
     pub(crate) apply_to_durable: bool,
-    pub(crate) durable:
-        DurableThreadAccountsRepository<ThreadDAppsRepo, DAppAccountsRepo, AccountsRepo>,
+    pub(crate) durable: DurableThreadAccountsRepository<AccountsRepo>,
 }
 
-impl<ThreadDAppsRepo, DAppAccountsRepo, AccountsRepo>
-    CompositeThreadAccountsRepositoryInner<ThreadDAppsRepo, DAppAccountsRepo, AccountsRepo>
+impl<AccountsRepo> CompositeThreadAccountsRepositoryInner<AccountsRepo>
 where
-    ThreadDAppsRepo: ThreadDAppMapRepository,
-    DAppAccountsRepo: DAppAccountMapRepository,
     AccountsRepo: AccountsRepository,
 {
     fn state_ref(
-        durable: ThreadDAppsRepo::MapRef,
+        durable: ThreadStateRef,
         tvm: TvmThreadState,
-    ) -> CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef> {
+    ) -> CompositeThreadAccountsRef<ThreadStateRef> {
         CompositeThreadAccountsRef { durable, tvm }
     }
 
     pub fn state_split(
         &self,
-        state: &CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>,
+        state: &CompositeThreadAccountsRef<ThreadStateRef>,
         dapp_id_path: DAppIdentifierPath,
-    ) -> anyhow::Result<ThreadAccountsSplit<CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>>>
-    {
+    ) -> anyhow::Result<ThreadAccountsSplit<CompositeThreadAccountsRef<ThreadStateRef>>> {
         let (without_branch, branch) = self.durable.state_split(&state.durable, dapp_id_path)?;
-        Ok(ThreadAccountsSplit::<CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>> {
+        Ok(ThreadAccountsSplit::<CompositeThreadAccountsRef<ThreadStateRef>> {
             without_branch: Self::state_ref(without_branch, state.tvm.clone()),
             branch: Self::state_ref(
                 branch,
@@ -59,18 +48,18 @@ where
 
     pub fn merge(
         &self,
-        a: &CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>,
-        b: &CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>,
-    ) -> anyhow::Result<CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>> {
+        a: &CompositeThreadAccountsRef<ThreadStateRef>,
+        b: &CompositeThreadAccountsRef<ThreadStateRef>,
+    ) -> anyhow::Result<CompositeThreadAccountsRef<ThreadStateRef>> {
         let durable = self.durable.merge(&a.durable, &b.durable)?;
         Ok(Self::state_ref(durable, a.tvm.clone()))
     }
 
     pub fn state_apply_diff(
         &self,
-        state: &CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>,
+        state: &CompositeThreadAccountsRef<ThreadStateRef>,
         diff: CompositeThreadAccountsDiff,
-    ) -> anyhow::Result<CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>> {
+    ) -> anyhow::Result<CompositeThreadAccountsRef<ThreadStateRef>> {
         Ok(Self::state_ref(
             self.durable.state_apply_diff(
                 &state.tvm.shard_accounts,
@@ -85,9 +74,11 @@ where
         &self,
         block_id: &BlockIdentifier,
         shard_state: ShardStateUnsplit,
-    ) -> anyhow::Result<CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>> {
-        let durable =
-            self.durable.get_state(block_id)?.unwrap_or_else(|| ThreadDAppsRepo::new_map());
+    ) -> anyhow::Result<CompositeThreadAccountsRef<ThreadStateRef>> {
+        let durable = self
+            .durable
+            .get_state(block_id)?
+            .unwrap_or_else(DurableThreadAccountsRepository::<AccountsRepo>::new_state);
         let tvm = TvmThreadState::with_shard_state(shard_state)?;
         Ok(Self::state_ref(durable, tvm))
     }
@@ -95,7 +86,7 @@ where
     pub fn set_state(
         &self,
         block_id: &BlockIdentifier,
-        state: &CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>,
+        state: &CompositeThreadAccountsRef<ThreadStateRef>,
     ) -> anyhow::Result<()> {
         self.durable.set_state(block_id, &state.durable)
     }
@@ -106,7 +97,7 @@ where
 
     pub fn state_account(
         &self,
-        state: &CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>,
+        state: &CompositeThreadAccountsRef<ThreadStateRef>,
         routing: &AccountRouting,
     ) -> anyhow::Result<Option<ThreadStateAccount>> {
         if let Some(durable) = self.durable.state_account(&state.durable, routing)? {
@@ -147,7 +138,7 @@ where
 
     pub fn state_iterate_all_accounts(
         &self,
-        state: &CompositeThreadAccountsRef<ThreadDAppsRepo::MapRef>,
+        state: &CompositeThreadAccountsRef<ThreadStateRef>,
         it: impl FnMut(&AccountRouting, ThreadStateAccount) -> anyhow::Result<bool>,
     ) -> anyhow::Result<()> {
         state.tvm.iterate_accounts(it)

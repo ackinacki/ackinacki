@@ -137,3 +137,8 @@
     state: absent
   with_list: "{{ PROXY_SIGNING_KEYS }}"
   when: CLEANUP_BK_KEYS and GENERATE_CERT
+
+- name: Sleep for 10 seconds
+  ansible.builtin.wait_for:
+    timeout: 10
+  when: UPGRADE_PROXY is defined and UPGRADE_PROXY is true

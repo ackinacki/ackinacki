@@ -11,3 +11,5 @@ pub use stub::StateSyncServiceStub;
 
 mod file_saving_service;
 pub use file_saving_service::FileSavingService;
+
+pub mod snapshot_compression;

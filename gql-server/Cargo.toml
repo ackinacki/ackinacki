@@ -1,6 +1,6 @@
 [package]
 name = "gql-server"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 rust-version.workspace = true
 license-file.workspace = true
@@ -10,6 +10,7 @@ anyhow.workspace = true
 arc-swap = "1.8.0"
 async-graphql = { version = "=7.2.1", features = ["dataloader"] }
 async-graphql-warp = "=7.2.1"
+bincode.workspace = true
 chrono = "0.4.38"
 clap.workspace = true
 faster-hex.workspace = true

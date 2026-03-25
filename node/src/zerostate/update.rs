@@ -104,10 +104,11 @@ impl ZeroState {
         let shard_account =
             ThreadStateAccount::new(tvm_account.try_into()?, TransactionHash::ZERO, 0, dapp_id)?;
         // Add an account to zerostate
-        let mut shard_state =
-            thread_accounts_repository.state_builder(&self.get_shard_state(thread_identifier)?);
+        let (state, usage_tree) = self.get_shard_state_with_usage_tree(thread_identifier)?;
+        let mut shard_state = thread_accounts_repository.state_builder(&state);
         shard_state.insert_account(&account_id.routing_with(DAppIdentifier::ZERO), &shard_account);
-        self.state_mut(thread_identifier)?.set_shard_state(shard_state.build(None)?.new_state);
+        self.state_mut(thread_identifier)?
+            .set_shard_state(shard_state.build(Some(&usage_tree))?.new_state);
         #[cfg(feature = "monitor-accounts-number")]
         {
             let state = self.state_mut(thread_identifier)?;
@@ -128,10 +129,10 @@ impl ZeroState {
         let shard_account =
             ThreadStateAccount::new(account, TransactionHash::ZERO, 0, Some(dapp_id))?;
         // Add an account to zerostate
-        let mut shard_state =
-            thread_accounts_repository.state_builder(&self.get_shard_state(thread_id)?);
+        let (state, usage_tree) = self.get_shard_state_with_usage_tree(thread_id)?;
+        let mut shard_state = thread_accounts_repository.state_builder(&state);
         shard_state.insert_account(&account_id.dapp_originator(), &shard_account);
-        self.state_mut(thread_id)?.set_shard_state(shard_state.build(None)?.new_state);
+        self.state_mut(thread_id)?.set_shard_state(shard_state.build(Some(&usage_tree))?.new_state);
         #[cfg(feature = "monitor-accounts-number")]
         {
             let state = self.state_mut(thread_id)?;

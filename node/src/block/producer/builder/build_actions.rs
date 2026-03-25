@@ -147,8 +147,8 @@ impl BlockBuilder {
         wasm_cache: WasmNodeCache,
         is_verifier: bool,
         is_block_of_retired_version: bool,
-        #[cfg(feature = "usdc_name_repair")] usdc_name_repaired: std::sync::Arc<
-            parking_lot::Mutex<Option<BlockSeqNo>>,
+        #[cfg(feature = "authroot_dapp_repair")] authroot_dapp_repaired: std::sync::Arc<
+            parking_lot::Mutex<Option<crate::types::BlockSeqNo>>,
         >,
     ) -> anyhow::Result<Self> {
         let (initial_accounts, usage_tree) =
@@ -213,8 +213,8 @@ impl BlockBuilder {
         #[cfg(feature = "monitor-accounts-number")]
         let builder = builder.accounts_number_diff(0);
         let builder = builder.is_block_of_retired_version(is_block_of_retired_version);
-        #[cfg(feature = "usdc_name_repair")]
-        let builder = builder.usdc_name_repaired(usdc_name_repaired);
+        #[cfg(feature = "authroot_dapp_repair")]
+        let builder = builder.authroot_dapp_repaired(authroot_dapp_repaired);
         Ok(builder.build())
     }
 
@@ -948,8 +948,6 @@ impl BlockBuilder {
                 wasm_component_cache: self.wasm_cache.wasm_component_cache.clone(),
                 mvconfig: mv_config,
                 engine_version: get_engine_version(self.block_info.seq_no()),
-                #[cfg(feature = "usdc_name_repair")]
-                use_new_version: !self.is_block_of_retired_version,
                 ..Default::default() // TODO: remove default
             }
         } else {
@@ -975,8 +973,6 @@ impl BlockBuilder {
                 wasm_component_cache: self.wasm_cache.wasm_component_cache.clone(),
                 mvconfig: mv_config,
                 engine_version: get_engine_version(self.block_info.seq_no()),
-                #[cfg(feature = "usdc_name_repair")]
-                use_new_version: !self.is_block_of_retired_version,
                 ..Default::default() // TODO: remove default
             }
         };
@@ -2011,10 +2007,10 @@ impl BlockBuilder {
             !self.is_block_of_retired_version,
             #[cfg(feature = "monitor-accounts-number")]
             updated_accounts_number,
-            #[cfg(feature = "usdc_name_repair")]
+            #[cfg(feature = "authroot_dapp_repair")]
             self.is_block_of_retired_version,
-            #[cfg(feature = "usdc_name_repair")]
-            self.usdc_name_repaired,
+            #[cfg(feature = "authroot_dapp_repair")]
+            self.authroot_dapp_repaired.clone(),
         )?;
 
         tracing::debug!(target: "builder", "Finish block: {:?}", block.hash().map(|h| h.to_hex_string()));

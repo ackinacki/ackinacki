@@ -1,6 +1,6 @@
 [package]
 name = "node"
-version = "0.14.0"
+version = "0.14.3"
 edition.workspace = true
 rust-version.workspace = true
 build = 'build.rs'
@@ -53,6 +53,7 @@ tvm_vm.workspace = true
 typed-builder.workspace = true
 url.workspace = true
 wasmtime.workspace = true
+zstd.workspace = true
 
 account-inbox = { path = "./libs/account-inbox" }
 aerospike = "1.3.0"
@@ -108,8 +109,8 @@ default = [
     "messages_db",
     "monitor-accounts-number",
     "disable_db_for_messages",
-    "transitioning_node_version",
-    "usdc_name_repair",
+    "fix_flag_16",
+    "authroot_dapp_repair",
 ]
 
 # Use automocks in binaries
@@ -150,6 +151,12 @@ protocol_version_hash_in_block = []
 # History proofs in block common section
 history_proofs = []
 
+# Pass use_new_version when nodes are updated
+fix_flag_16 = []
+
+# One-time migration: move authRoot account to MV dapp_id
+authroot_dapp_repair = []
+
 # Features for tests
 nack_test = []
 verify_all_blocks = []
@@ -160,12 +167,6 @@ restart_on_failing_assumptions = []
 test_upgrade = []
 test_config_hash = []
 enforce_min_seq = []
-
-# Transitioning feature that supports several node versions
-transitioning_node_version = []
-
-# Temporary feature to repair USDC token _name to USDStable
-usdc_name_repair = []
 
 [package.metadata.cargo-machete]
 ignored = ["failure"]

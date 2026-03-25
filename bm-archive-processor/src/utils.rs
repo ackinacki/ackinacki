@@ -28,6 +28,7 @@ mod tests {
 
     use super::*;
     use crate::cli::CompressionMode as CliCompressionMode;
+    use crate::cli::PostUploadAction;
     use crate::cli::ServersMatchMode;
     use crate::config::AppConfig;
     use crate::domain::config::ProcessingRules;
@@ -92,6 +93,7 @@ mod tests {
             servers_match_mode: ServersMatchMode::All,
             full_db: PathBuf::from("./full.db"),
             bucket: None,
+            post_upload: PostUploadAction::Keep,
             skip_upload: true,
             dry_run: true,
         };
@@ -156,6 +158,7 @@ mod tests {
             servers_match_mode: ServersMatchMode::Any,
             full_db: PathBuf::from("./full.db"),
             bucket: None,
+            post_upload: PostUploadAction::Keep,
             skip_upload: false,
             dry_run: false,
         };

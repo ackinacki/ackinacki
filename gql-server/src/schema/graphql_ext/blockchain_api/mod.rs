@@ -12,6 +12,10 @@ use async_graphql::connection::EmptyFields;
 use async_graphql::dataloader::DataLoader;
 use async_graphql::Context;
 use async_graphql::Object;
+use bk_set_updates::BlockchainBkSetUpdate;
+use bk_set_updates::BlockchainBkSetUpdatesConnection;
+use bk_set_updates::BlockchainBkSetUpdatesEdge;
+use bk_set_updates::BlockchainBkSetUpdatesQueryArgs;
 use blocks::BlockchainBlock;
 use blocks::BlockchainBlocksConnection;
 use blocks::BlockchainBlocksEdge;
@@ -23,7 +27,7 @@ use transactions::BlockchainTransactionsEdge;
 use transactions::BlockchainTransactionsQueryArgs;
 
 use super::message::MessageLoader;
-use crate::defaults::THREAD_ID_LENGTH;
+use crate::helpers::pad_thread_id;
 use crate::schema::db;
 use crate::schema::db::account::BlockchainAccountsQueryArgs;
 use crate::schema::db::DBConnector;
@@ -36,6 +40,8 @@ use crate::schema::graphql_ext::blockchain_api::account::BlockchainAccountEdge;
 use crate::schema::graphql_ext::blockchain_api::account::BlockchainAccountsConnection;
 
 pub mod account;
+pub mod attestations;
+pub mod bk_set_updates;
 pub mod blocks;
 pub mod transactions;
 
@@ -53,6 +59,7 @@ impl BlockchainQuery<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[graphql(deprecation = "Use blockchain.account instead")]
     /// This node could be used for a cursor-based pagination of blocks.
     async fn accounts(
         &self,
@@ -124,9 +131,7 @@ impl BlockchainQuery<'_> {
         let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
         let block = block_loader.load_one(hash).await.expect("Failed to load block");
 
-        block.as_ref()?;
-
-        let block = block.unwrap();
+        let block = block?;
 
         // if self.ctx.look_ahead().field("block").field("in_message").exists() {
         //     let in_message =
@@ -149,27 +154,19 @@ impl BlockchainQuery<'_> {
     /// Returns a block uniquely identified by the thread ID and block height.
     async fn block_by_height(
         &self,
-        #[graphql(desc = "A 68-character thread identifier, left-padded with zeros.")]
+        #[graphql(
+            name = "thread_id",
+            desc = "A 68-character thread identifier, left-padded with zeros."
+        )]
         thread_id: String,
         #[graphql(desc = "The block height is unique within a thread.")] height: u64,
     ) -> Option<BlockchainBlock> {
         let block_loader = self.ctx.data_unchecked::<DataLoader<BlockLoader>>();
         let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
-        let thread_id = if thread_id.len() >= THREAD_ID_LENGTH {
-            thread_id
-        } else {
-            let mut padded = String::with_capacity(THREAD_ID_LENGTH);
-            for _ in 0..(THREAD_ID_LENGTH - thread_id.len()) {
-                padded.push('0');
-            }
-            padded.push_str(&thread_id);
-            padded
-        };
+        let thread_id = pad_thread_id(thread_id);
         let block = block_loader.load_one((thread_id, height)).await.expect("Failed to load block");
 
-        block.as_ref()?;
-
-        let block = block.unwrap();
+        let block = block?;
 
         if self.ctx.look_ahead().field("block").field("out_messages").exists() {
             let out_msg_ids = block.out_msgs.clone();
@@ -202,7 +199,10 @@ impl BlockchainQuery<'_> {
             desc = "Optional filter by maximum transactions in a block (unoptimized, query could be dropped by timeout)"
         )]
         max_tr_count: Option<i32>,
-        #[graphql(desc = "A 68-character thread identifier, left-padded with zeros.")]
+        #[graphql(
+            name = "thread_id",
+            desc = "A 68-character thread identifier, left-padded with zeros."
+        )]
         thread_id: Option<String>,
         #[graphql(desc = "This field is mutually exclusive with 'last'.")] first: Option<i32>,
         after: Option<String>,
@@ -263,6 +263,82 @@ impl BlockchainQuery<'_> {
         .ok()
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[graphql(name = "bkSetUpdates")]
+    async fn bk_set_updates(
+        &self,
+        #[graphql(desc = "This field is mutually exclusive with 'last'.")] first: Option<i32>,
+        after: Option<String>,
+        #[graphql(desc = "This field is mutually exclusive with 'first'.")] last: Option<i32>,
+        before: Option<String>,
+        #[graphql(name = "thread_id", desc = "Thread identifier.")] thread_id: Option<String>,
+        #[graphql(name = "height_start", desc = "Include updates with height >= this value.")]
+        height_start: Option<u64>,
+        #[graphql(name = "height_end", desc = "Include updates with height <= this value.")]
+        height_end: Option<u64>,
+    ) -> Option<
+        Connection<
+            String,
+            BlockchainBkSetUpdate,
+            EmptyFields,
+            EmptyFields,
+            BlockchainBkSetUpdatesConnection,
+            BlockchainBkSetUpdatesEdge,
+        >,
+    > {
+        query(after, before, first, last, |after, before, first, last| async move {
+            let thread_id = thread_id.map(pad_thread_id);
+            let args = BlockchainBkSetUpdatesQueryArgs {
+                pagination: PaginationArgs { first, after, last, before },
+                thread_id,
+                height_start,
+                height_end,
+            };
+            let mut updates: Vec<db::BkSetUpdate> =
+                db::bk_set_update::BkSetUpdate::blockchain_bk_set_updates(
+                    self.ctx.data::<Arc<DBConnector>>().unwrap(),
+                    &args,
+                )
+                .await?;
+
+            let (has_previous_page, has_next_page) = (
+                args.pagination.has_previous_page(updates.len()),
+                args.pagination.has_next_page(updates.len()),
+            );
+
+            let mut connection: Connection<
+                String,
+                BlockchainBkSetUpdate,
+                EmptyFields,
+                EmptyFields,
+                BlockchainBkSetUpdatesConnection,
+                BlockchainBkSetUpdatesEdge,
+            > = Connection::new(has_previous_page, has_next_page);
+
+            args.pagination.shrink_portion(&mut updates);
+
+            let mut edges = Vec::new();
+            for update in updates {
+                let update: BlockchainBkSetUpdate = update
+                    .try_into()
+                    .map_err(|e: anyhow::Error| async_graphql::Error::new(e.to_string()))?;
+                let cursor = update.chain_order.clone();
+                let edge: Edge<
+                    String,
+                    BlockchainBkSetUpdate,
+                    EmptyFields,
+                    BlockchainBkSetUpdatesEdge,
+                > = Edge::with_additional_fields(cursor, update, EmptyFields);
+                edges.push(edge);
+            }
+            connection.edges.extend(edges);
+
+            Ok::<_, async_graphql::Error>(connection)
+        })
+        .await
+        .ok()
+    }
+
     async fn finalized_timestamp(&self) -> Option<u64> {
         let now =
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
@@ -274,9 +350,7 @@ impl BlockchainQuery<'_> {
         let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
 
         let message = message_loader.load_one(hash).await.expect("Failed to load message");
-        message.as_ref()?;
-
-        let mut message = message.unwrap();
+        let mut message = message?;
         if self.ctx.look_ahead().field("message").field("src_transaction").exists() {
             if let Some(transaction_id) = message.transaction_id.clone() {
                 message.src_transaction = transaction_loader
@@ -314,9 +388,7 @@ impl BlockchainQuery<'_> {
         let transaction =
             transaction_loader.load_one(hash).await.expect("Failed to load transaction");
 
-        transaction.as_ref()?;
-
-        let mut transaction = transaction.unwrap();
+        let mut transaction = transaction?;
 
         if self.ctx.look_ahead().field("transaction").field("in_message").exists() {
             let in_message = message_loader

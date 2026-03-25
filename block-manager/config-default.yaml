@@ -1,5 +1,8 @@
 # STREAM_SRC_URL
-bk_stream_blocks_endpoint: https://node0:12000
+bk_stream_blocks_endpoints:
+  - node0:12000
+  - node1:12000
+  - node2:12000
 
 # SQLITE_PATH
 db_path: ./data
@@ -10,8 +13,14 @@ bm_owner_wallet_pubkey: e2c9d4be54d342d3f0e6394a7738fc39b93d4fe3fdba317aa699f730
 # BM_ISSUER_KEYS_FILE
 keys: config/block_manager_signing.keys.json
 
-# DEFAULT_BP
+# DEFAULT_BP (legacy single-node fallback)
 default_bp: node0:8600
+
+# BK API endpoints for account queries (failover pool)
+bk_api_endpoints:
+  - node0:8600
+  - node1:8600
+  - node2:8600
 
 # TOKEN_TTL (in secs)
 token_ttl: 30

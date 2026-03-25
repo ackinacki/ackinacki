@@ -307,6 +307,7 @@ impl Message {
     pub async fn account_events(
         db_connector: &DBConnector,
         account: String,
+        dst: Option<String>,
         pagination: &PaginationArgs,
     ) -> anyhow::Result<Vec<Message>> {
         let limit = pagination.get_limit();
@@ -318,6 +319,10 @@ impl Message {
         };
 
         let mut where_ops = vec![format!("src={account:?}"), "msg_type=2".to_string()];
+
+        if let Some(ref dst_addr) = dst {
+            where_ops.push(format!("dst={dst_addr:?}"));
+        }
 
         let cursor_field = "msg_chain_order";
 

@@ -6,4 +6,4 @@ pub mod smt;
 
 #[cfg(test)]
 mod tests;
-mod tx;
+pub mod tx;

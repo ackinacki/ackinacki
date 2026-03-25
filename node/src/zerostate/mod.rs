@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use node_types::ThreadIdentifier;
 use serde::Deserialize;
 use serde::Serialize;
+use tvm_types::UsageTree;
 
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::repository::accounts::NodeThreadAccountsRef;
@@ -29,6 +30,14 @@ impl ZeroState {
         thread_identifier: &ThreadIdentifier,
     ) -> anyhow::Result<NodeThreadAccountsRef> {
         self.state_mut(thread_identifier).map(|opt_state| opt_state.get_shard_state())
+    }
+
+    pub(crate) fn get_shard_state_with_usage_tree(
+        &mut self,
+        thread_identifier: &ThreadIdentifier,
+    ) -> anyhow::Result<(NodeThreadAccountsRef, UsageTree)> {
+        self.state_mut(thread_identifier)
+            .and_then(|opt_state| opt_state.get_shard_state().with_tvm_usage_tree())
     }
 
     pub fn get_threads_table(&self) -> &ThreadsTable {

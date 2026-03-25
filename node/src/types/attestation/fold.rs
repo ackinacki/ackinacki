@@ -35,7 +35,12 @@ fn try_fold_all_optimistic(
     let mut aggregated_signature_occurences = HashMap::<SignerIndex, u16>::new();
     for (signature_occurences, signature) in to_combine.iter() {
         for (k, v) in signature_occurences {
-            aggregated_signature_occurences.entry(*k).and_modify(|e| *e += v).or_insert(*v);
+            if let Some(e) = aggregated_signature_occurences.get_mut(k) {
+                let n = e.checked_add(*v)?;
+                *e = n;
+            } else {
+                aggregated_signature_occurences.insert(*k, *v);
+            }
         }
         signatures.push(signature.clone());
     }
@@ -58,7 +63,7 @@ fn try_fold_one_by_one_checked(
 ) -> TryFoldResult {
     let mut folded: Option<Envelope<AttestationData>> = None;
     let mut poisoned = vec![];
-    for (signature_occurences, signature) in to_combine.into_iter() {
+    'outer_loop: for (signature_occurences, signature) in to_combine.into_iter() {
         let envelope = Envelope::create(
             signature.clone(),
             signature_occurences.clone(),
@@ -76,10 +81,15 @@ fn try_fold_one_by_one_checked(
                     };
                     let mut aggregated_signature_occurences = e.clone_signature_occurrences();
                     for (k, v) in signature_occurences {
-                        aggregated_signature_occurences
-                            .entry(k)
-                            .and_modify(|e| *e += v)
-                            .or_insert(v);
+                        if let Some(e) = aggregated_signature_occurences.get_mut(&k) {
+                            let Some(n) = e.checked_add(v) else {
+                                tracing::trace!("Signatures overflow");
+                                continue 'outer_loop;
+                            };
+                            *e = n;
+                        } else {
+                            aggregated_signature_occurences.insert(k, v);
+                        }
                     }
                     *e = Envelope::create(
                         aggregated_signature,

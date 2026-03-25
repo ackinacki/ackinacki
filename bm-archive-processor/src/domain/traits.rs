@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 
 use crate::domain::grouping::ArchiveFile;
+use crate::domain::models::BlockGap;
 
 pub type AnchorTimestamp = i64;
 
@@ -22,6 +23,7 @@ pub enum CompressionMode {
 pub trait DbClient {
     fn create_daily_db(&self, src_paths: &[PathBuf], dst_path: &Path) -> anyhow::Result<()>;
     fn merge_daily_into_full(&self, src_db: &Path, target_db: &Path) -> anyhow::Result<()>;
+    fn query_block_gaps(&self, db: &Path) -> anyhow::Result<Vec<BlockGap>>;
 }
 
 pub trait FileSystemClient {

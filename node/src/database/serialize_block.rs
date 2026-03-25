@@ -16,6 +16,8 @@ use database::serialization::DeletedAccountSerializationSet;
 use database::serialization::MessageSerializationSet;
 use database::serialization::TransactionSerializationSet;
 use database::sqlite::ArchAccount;
+use database::sqlite::ArchAttestation;
+use database::sqlite::ArchBkSetUpdate;
 use database::sqlite::ArchBlock;
 use database::sqlite::ArchMessage;
 use database::sqlite::ArchTransaction;
@@ -48,6 +50,7 @@ use tvm_types::UInt256;
 use crate::block::producer::builder::EngineTraceInfoData;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
+use crate::node::associated_types::AttestationTargetType;
 use crate::repository::accounts::NodeThreadAccountsRef;
 use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::types::envelope_hash::envelope_hash;
@@ -212,9 +215,7 @@ pub fn reflect_block_in_db(
             thread_accounts_repository.state_account(shard_state, &account_id.dapp_originator())?
         else {
             // TODO remove this workaround after implementing state parsing in the BM
-            tracing::error!(
-                "Block and shard state mismatch: state doesn't contain changed account"
-            );
+            tracing::warn!("Block and shard state mismatch: state doesn't contain changed account");
             continue;
         };
 
@@ -266,6 +267,25 @@ pub fn reflect_block_in_db(
     }
     tracing::debug!(target: "database", "TIME: prepare {} messages {}ms;", msg_count, now.elapsed().as_millis(),);
 
+    // Prepare BK set updates
+    if let Some(bk_set_update) =
+        prepare_bk_set_update_archive_struct(&envelope, &block_id_hex, &block_index)?
+    {
+        archive
+            .lock()
+            .put_bk_set_updates(vec![bk_set_update])
+            .map_err(|e| anyhow::format_err!("Failed to put bk set updates: {e}"))?;
+    }
+
+    // Prepare block's attestations
+    let attestations = prepare_attestations_archive_struct(&envelope, &block_id_hex, &block_index)?;
+    if !attestations.is_empty() {
+        archive
+            .lock()
+            .put_attestations(attestations)
+            .map_err(|e| anyhow::format_err!("Failed to put attestations: {e}"))?;
+    }
+
     // Block
     let now = std::time::Instant::now();
     let item = prepare_block_archive_struct(
@@ -284,6 +304,60 @@ pub fn reflect_block_in_db(
         block_id_hex
     );
     Ok(())
+}
+
+fn prepare_bk_set_update_archive_struct(
+    envelope: &Envelope<AckiNackiBlock>,
+    source_block_id: &str,
+    source_chain_order: &str,
+) -> anyhow::Result<Option<ArchBkSetUpdate>> {
+    let common_section = envelope.data().common_section();
+    if common_section.block_keeper_set_changes().is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(ArchBkSetUpdate {
+        block_id: source_block_id.to_string(),
+        thread_id: hex::encode(common_section.thread_id()),
+        height: common_section.block_height().height().to_be_bytes(),
+        chain_order: source_chain_order.to_string(),
+        bk_set_update: bincode::serialize(&common_section.block_keeper_set_changes())?,
+    }))
+}
+
+fn prepare_attestations_archive_struct(
+    envelope: &Envelope<AckiNackiBlock>,
+    source_block_id: &str,
+    source_chain_order: &str,
+) -> anyhow::Result<Vec<ArchAttestation>> {
+    let common_section = envelope.data().common_section();
+    common_section
+        .block_attestations()
+        .iter()
+        .map(|attestation| {
+            let attestation_data = attestation.data();
+            Ok(ArchAttestation {
+                block_id: attestation_data.block_id().to_hex_string(),
+                parent_block_id: attestation_data.parent_block_id().to_hex_string(),
+                envelope_hash: attestation_data.envelope_hash().0,
+                target_type: serialize_attestation_target_type(*attestation_data.target_type()),
+                aggregated_signature: bincode::serialize(attestation.aggregated_signature())?,
+                signature_occurrences: bincode::serialize(
+                    &attestation.clone_signature_occurrences(),
+                )?,
+                source_block_id: source_block_id.to_string(),
+                source_chain_order: source_chain_order.to_string(),
+            })
+        })
+        .collect()
+}
+
+#[inline]
+fn serialize_attestation_target_type(target_type: AttestationTargetType) -> u8 {
+    match target_type {
+        AttestationTargetType::Primary => 0,
+        AttestationTargetType::Fallback => 1,
+    }
 }
 
 pub(crate) fn prepare_messages_from_transaction(
