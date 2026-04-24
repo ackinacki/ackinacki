@@ -1,6 +1,7 @@
 // 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::ops::Add;
 use std::ops::Sub;
@@ -414,6 +415,10 @@ where
                             identifier,
                             address
                         );
+                        if address.get(&self.thread_id) != Some(&identifier) {
+                            tracing::trace!("Incoming SyncFinalized is broken, skip it");
+                            continue;
+                        }
                         let (_last_finalized_id, last_finalized_seq_no) = self
                             .repository
                             .select_thread_last_finalized_block(&thread_id)?
@@ -492,8 +497,13 @@ where
                     self.is_state_sync_requested.guarded_mut(|e| *e = Some(block_seq_no_with_sync));
                 }
             }
-        } else if let Some((id, seq_no, hint)) = self.last_synced_state.clone() {
+        } else if let Some((id, seq_no)) = self.last_synced_state {
+            // if let Ok(Some(state)) =
+            //     self.repository.get_optimistic_state(&id, &self.thread_id, None)
+            // {
+            let hint = HashMap::from_iter([(self.thread_id, id)]);
             self.send_sync_finalized(id, seq_no, hint, node_id)?;
+            // }
         }
         Ok(())
     }

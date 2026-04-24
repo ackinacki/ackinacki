@@ -3,10 +3,10 @@ use std::sync::Arc;
 
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::block_keeper_system::BlockKeeperSetChange;
-use crate::types::AckiNackiBlock;
+use crate::types::AckiNackiBlockVersioned;
 
 pub(crate) fn update_block_keeper_set_from_common_section(
-    block: &AckiNackiBlock,
+    block: &AckiNackiBlockVersioned,
     current_bk_set: Arc<BlockKeeperSet>,
     current_future_bk_set: Arc<BlockKeeperSet>,
 ) -> anyhow::Result<Option<(Arc<BlockKeeperSet>, Arc<BlockKeeperSet>)>> {

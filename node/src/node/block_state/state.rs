@@ -4,6 +4,7 @@
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::mem;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -11,6 +12,7 @@ use std::sync::Arc;
 use derive_getters::Getters;
 use derive_setters::*;
 use node_types::BlockIdentifier;
+use node_types::TemporaryBlockId;
 use node_types::ThreadIdentifier;
 use serde::Deserialize;
 use serde::Serialize;
@@ -20,6 +22,7 @@ use super::attestation_target_checkpoints::AncestorBlocksFinalizationCheckpoints
 use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::bls::BLSSignatureScheme;
+use crate::helper::metrics::BlockProductionMetrics;
 use crate::node::associated_types::AttestationTargetType;
 use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
 use crate::node::AttestationData;
@@ -247,6 +250,14 @@ pub struct AckiNackiBlockState {
     #[getter(skip)]
     pub(super) known_children: HashMap<ThreadIdentifier, HashSet<BlockIdentifier>>,
 
+    // References to temporary child states whose blocks are not yet produced.
+    // Used only for branch invalidation.
+    // Append-only: entries added via add_incomplete_child, removed only on promote.
+    #[setters(skip)]
+    #[getter(skip)]
+    #[serde(skip)]
+    pub(super) known_children_incomplete: HashMap<ThreadIdentifier, HashSet<TemporaryBlockId>>,
+
     #[serde(skip)]
     own_attestation: Option<Envelope<AttestationData>>,
 
@@ -278,6 +289,16 @@ pub struct AckiNackiBlockState {
     #[setters(skip)]
     #[allow(unused)]
     notifications: Vec<Notification>,
+
+    #[serde(skip)]
+    #[getter(skip)]
+    #[setters(skip)]
+    metrics: Option<BlockProductionMetrics>,
+
+    #[serde(skip)]
+    #[getter(skip)]
+    #[setters(skip)]
+    live_block_state_reported: bool,
 
     #[getter(skip)]
     #[setters(skip)]
@@ -396,16 +417,46 @@ impl AckiNackiBlockState {
     }
 
     pub fn new(block_identifier: BlockIdentifier) -> Self {
-        Self {
-            block_identifier,
-            // Note: now we ref only finalized blocks from other threads
-            has_all_cross_thread_references_finalized: Some(true),
-            ..Default::default()
-        }
+        let mut state = Self::default();
+        state.block_identifier = block_identifier;
+        // Note: now we ref only finalized blocks from other threads
+        state.has_all_cross_thread_references_finalized = Some(true);
+        state
     }
 
     pub fn add_detached_attestations(&mut self, attestation: Envelope<AttestationData>) {
         self.detached_attestations.push(attestation);
+    }
+
+    pub fn attach_metrics(&mut self, metrics: Option<BlockProductionMetrics>) {
+        self.metrics = metrics;
+    }
+
+    pub fn report_created(&mut self) {
+        if self.live_block_state_reported {
+            return;
+        }
+        if let Some(metrics) = &self.metrics {
+            metrics.report_live_block_states_delta(1);
+        }
+        self.live_block_state_reported = true;
+    }
+
+    fn report_dropped(&self) {
+        if !self.live_block_state_reported {
+            return;
+        }
+        if let Some(metrics) = &self.metrics {
+            metrics.report_live_block_states_delta(-1);
+        }
+    }
+
+    fn cleanup_subscribers(&mut self) {
+        let notifications = mem::take(&mut self.notifications);
+        self.notifications = notifications.clone();
+        for notification in notifications {
+            self.remove_subscriber(&notification);
+        }
     }
 
     #[allow(clippy::nonminimal_bool)]
@@ -668,9 +719,65 @@ has_cross_thread_ref_data_prepared={:?}\
     pub fn known_children_for_all_threads(&self) -> HashSet<BlockIdentifier> {
         let mut result = HashSet::new();
         for thread_set in self.known_children.values() {
-            result.extend(thread_set.clone().into_iter());
+            result.extend(thread_set.clone());
         }
         result
+    }
+
+    /// Add a reference to a temporary child whose block is not yet produced.
+    pub fn add_incomplete_child(
+        &mut self,
+        thread_id: ThreadIdentifier,
+        temp_id: TemporaryBlockId,
+    ) -> anyhow::Result<()> {
+        tracing::trace!(
+            "add_incomplete_child for {:?} temp_child: {temp_id:?}, {thread_id}",
+            self.block_identifier
+        );
+        let has_changed =
+            self.known_children_incomplete.entry(thread_id).or_default().insert(temp_id);
+        if has_changed {
+            self.notify_changed()
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Move a child from incomplete to complete (on temporary → real promotion).
+    pub fn promote_incomplete_child(
+        &mut self,
+        thread_id: ThreadIdentifier,
+        temp_id: &TemporaryBlockId,
+        block_id: BlockIdentifier,
+    ) -> anyhow::Result<()> {
+        tracing::trace!(
+            "promote_incomplete_child for {:?}: {temp_id:?} -> {block_id:?}",
+            self.block_identifier
+        );
+        // Remove from incomplete
+        if let Some(set) = self.known_children_incomplete.get_mut(&thread_id) {
+            set.remove(temp_id);
+            if set.is_empty() {
+                self.known_children_incomplete.remove(&thread_id);
+            }
+        }
+        // Add to complete
+        self.known_children.entry(thread_id).or_default().insert(block_id);
+        self.notify_changed()
+    }
+
+    /// Get all incomplete children for a specific thread (for invalidation).
+    pub fn known_children_incomplete(
+        &self,
+        thread_id: &ThreadIdentifier,
+    ) -> Option<&HashSet<TemporaryBlockId>> {
+        self.known_children_incomplete.get(thread_id)
+    }
+
+    pub fn all_known_children_incomplete(
+        &self,
+    ) -> &HashMap<ThreadIdentifier, HashSet<TemporaryBlockId>> {
+        &self.known_children_incomplete
     }
 
     pub fn get_signer_index_for_node_id(&self, node_id: &NodeIdentifier) -> Option<SignerIndex> {
@@ -735,6 +842,15 @@ has_cross_thread_ref_data_prepared={:?}\
     }
 
     pub fn add_subscriber(&mut self, notifications: Notification) {
+        if self.notifications.iter().any(|existing| existing.id() == notifications.id()) {
+            tracing::trace!(
+                "{:?} Skip duplicate subscriber id={} len={}",
+                &self,
+                notifications.id(),
+                self.notifications.len()
+            );
+            return;
+        }
         tracing::trace!("{:?} Call setter: add_subscriber len={}", &self, self.notifications.len());
         self.notifications.push(notifications);
     }
@@ -746,6 +862,13 @@ has_cross_thread_ref_data_prepared={:?}\
             self.notifications.len()
         );
         self.notifications.retain(|e| e.id() != notifications.id());
+    }
+}
+
+impl Drop for AckiNackiBlockState {
+    fn drop(&mut self) {
+        self.cleanup_subscribers();
+        self.report_dropped();
     }
 }
 
@@ -764,5 +887,35 @@ impl AllowGuardedMut for AckiNackiBlockState {
         F: FnOnce(&mut Self) -> T,
     {
         action(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_subscribers_removes_deduplicated_subscribers() {
+        let mut state = AckiNackiBlockState::default();
+        let notification = Notification::new();
+
+        state.add_subscriber(notification.clone());
+        state.add_subscriber(notification.clone());
+
+        assert_eq!(state.notifications.len(), 1);
+        state.cleanup_subscribers();
+        assert!(state.notifications.is_empty());
+    }
+
+    #[test]
+    fn report_created_is_idempotent() {
+        let mut state = AckiNackiBlockState::default();
+
+        assert!(!state.live_block_state_reported);
+        state.report_created();
+        assert!(state.live_block_state_reported);
+
+        state.report_created();
+        assert!(state.live_block_state_reported);
     }
 }

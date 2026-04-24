@@ -1,0 +1,77 @@
+# gql-server runtime configuration
+#
+# Pass via: gql-server --config config.yaml
+# Reload with: kill -SIGUSR1 <pid>
+
+# Maximum number of connections in the SQLite connection pool.
+# Changing this value triggers pool recreation (existing queries finish normally).
+max_pool_connections: 20
+
+# Maximum time (seconds) to wait for a free connection from the pool.
+# Requests exceeding this timeout fail fast instead of blocking indefinitely.
+# Changing this value triggers pool recreation.
+acquire_timeout_secs: 5
+
+# SQLite query execution timeout in seconds.
+# Queries exceeding this limit are interrupted with SQLITE_INTERRUPT
+# and return a "Request timeout" GraphQL error with extensions.code = "TIMEOUT".
+sqlite_query_timeout_secs: 2
+
+# SQLite mmap_size PRAGMA in bytes (0 = disabled).
+# Changing this value triggers pool recreation.
+sqlite_mmap_size: 161061273600
+
+# SQLite cache_size PRAGMA.
+# Negative value = size in KiB, positive = number of pages.
+# Changing this value triggers pool recreation.
+sqlite_cache_size: -1000000
+
+# Maximum number of archive databases attached to each connection.
+# Cannot exceed 9 (SQLite SQLITE_MAX_ATTACHED limit, excluding `main`).
+# Takes effect on the next archive resolution (SIGHUP or startup).
+max_attached_db: 9
+
+# Enable deprecated API fields (account, accounts, blocks, messages,
+# transactions at the query root and blockchain.accounts).
+# Can also be enabled via --deprecated-api CLI flag or GQL_DEPRECATED_API env var.
+# deprecated_api: false
+
+# Histogram bucket boundaries for the gql_query_duration metric (milliseconds).
+# Measures end-to-end GraphQL query execution time.
+# Changes require a restart to take effect.
+query_duration_boundaries:
+  - 5.0
+  - 10.0
+  - 25.0
+  - 50.0
+  - 100.0
+  - 200.0
+  - 300.0
+  - 500.0
+  - 1000.0
+  - 2500.0
+  - 5000.0
+  - 10000.0
+  - 30000.0
+  - 60000.0
+
+# Histogram bucket boundaries for the gql_sqlite_query_duration metric (milliseconds).
+# Measures SQLite query execution time (from connection acquire to release).
+# Changes require a restart to take effect.
+sqlite_query_boundaries:
+  - 1.0
+  - 2.0
+  - 5.0
+  - 10.0
+  - 25.0
+  - 50.0
+  - 100.0
+  - 200.0
+  - 300.0
+  - 500.0
+  - 1000.0
+  - 2500.0
+  - 5000.0
+  - 10000.0
+  - 30000.0
+  - 60000.0

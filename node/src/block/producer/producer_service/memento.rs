@@ -4,12 +4,13 @@ use std::time::Instant;
 
 use derive_getters::Getters;
 use http_server::ExtMsgFeedbackList;
+use node_types::TemporaryBlockId;
 use typed_builder::TypedBuilder;
 
-use crate::node::block_state::repository::BlockState;
 use crate::node::SignerIndex;
 use crate::repository::optimistic_state::OptimisticStateImpl;
-use crate::types::AckiNackiBlock;
+use crate::repository::CrossThreadRefData;
+use crate::types::AckiNackiBlockVersioned;
 use crate::versioning::ProtocolVersion;
 
 // Intentionally not allowing direct read of assumptions.
@@ -20,6 +21,7 @@ pub struct Assumptions {
     // Note: Stub for future preattestations impl
     new_to_bk_set: BTreeSet<SignerIndex>,
     block_version: ProtocolVersion,
+    producer_is_in_bk_set: bool,
 }
 
 #[derive(TypedBuilder, Getters)]
@@ -42,15 +44,20 @@ impl BlockProducerMemento {
 #[derive(TypedBuilder, Getters)]
 pub struct ProducedBlock {
     assumptions: Assumptions,
-    block: AckiNackiBlock,
+    block: AckiNackiBlockVersioned,
     optimistic_state: Arc<OptimisticStateImpl>,
     feedbacks: ExtMsgFeedbackList,
-    block_state: BlockState,
+    temporary_block_id: TemporaryBlockId,
     metrics_memento_init_time: Option<Instant>,
+    cross_thread_ref_data: CrossThreadRefData,
 }
 
 impl ProducedBlock {
     pub fn set_memento_init_time(&mut self, memento_init_time: Instant) {
         self.metrics_memento_init_time = Some(memento_init_time);
+    }
+
+    pub fn update_optimistic_state(&mut self, state: Arc<OptimisticStateImpl>) {
+        self.optimistic_state = state;
     }
 }

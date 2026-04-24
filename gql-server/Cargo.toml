@@ -1,6 +1,6 @@
 [package]
 name = "gql-server"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 rust-version.workspace = true
 license-file.workspace = true
@@ -16,12 +16,16 @@ clap.workspace = true
 faster-hex.workspace = true
 futures = "0.3.30"
 num = "0.4.1"
+opentelemetry.workspace = true
 rand = "0.8.5"
+rustls = { workspace = true }
 serde.workspace = true
 serde_json = { version = "1.0.114", features = ["preserve_order"] }
 serde_with.workspace = true
+serde_yaml = "0.9"
 signal-hook.workspace = true
 sqlx = { git = "https://github.com/launchbadge/sqlx", rev = "69bb5952ab665f6edfb461b45e63cc3b6d99a4d0", features = ["runtime-tokio", "sqlite", "tls-rustls"] }
+telemetry_utils.workspace = true
 tokio = { version = "1", features = ["full", "rt"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -32,7 +36,7 @@ warp = { version = "0.3.7", features = ["tls"] }
 
 [dev-dependencies]
 migration-tool.workspace = true
-reqwest = { version = "0.12.22", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.13.2", features = ["json", "rustls"], default-features = false }
 rusqlite.workspace = true
 testdir.workspace = true
 tokio.workspace = true

@@ -802,7 +802,7 @@ impl<'a, V: MapValue> TxArena<'a, V> {
         out.truncate(w);
 
         // Re-sort by key only (now unique keys)
-        out.sort_unstable_by(|a, b| a.key.0.cmp(&b.key.0));
+        out.sort_unstable_by_key(|a| a.key.0);
         out
     }
 

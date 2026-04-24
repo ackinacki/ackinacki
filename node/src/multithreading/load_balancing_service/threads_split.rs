@@ -29,7 +29,10 @@ pub fn try_threads_split(
     if max_table_size == 1 {
         return Ok(ThreadAction::ContinueAsIs);
     }
-    if (threads_table.len() >= max_table_size)
+    // threads_table.len() includes the default catch-all row, so the
+    // actual thread count is len() - 1.
+    let thread_count = threads_table.len(); //.saturating_sub(1);
+    if (thread_count >= max_table_size)
         && (max_load <= (max_load_disproportion_coefficient * min_load))
     {
         return Ok(ThreadAction::ContinueAsIs);
@@ -47,6 +50,7 @@ pub fn try_threads_split(
         tracing::trace!("Proposed mask already exists: {:?}", proposed_mask);
         return Ok(ThreadAction::ContinueAsIs);
     }
+    tracing::trace!("Propose split: {:?}", proposed_mask);
     let prefab =
         ThreadsTablePrefab::with_split(threads_table.clone(), this_thread_row_index, proposed_mask);
     Ok(ThreadAction::Split(Proposal { proposed_threads_table: prefab }))

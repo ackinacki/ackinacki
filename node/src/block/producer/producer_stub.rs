@@ -2,6 +2,8 @@
 //
 
 use http_server::ExtMsgFeedbackList;
+use node_types::ParentRef;
+use node_types::TemporaryBlockId;
 use node_types::ThreadIdentifier;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use tvm_types::Cell;
@@ -11,7 +13,6 @@ use crate::block::producer::execution_time::ExecutionTimeLimits;
 use crate::block::producer::BlockProducer;
 use crate::external_messages::Stamp;
 use crate::message::message_stub::MessageStub;
-use crate::node::block_state::repository::BlockState;
 use crate::repository::stub_repository::OptimisticStateStub;
 use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
@@ -35,7 +36,7 @@ impl BlockProducer for BlockProducerStub {
         _db: MessageDurableStorage,
         _time_limits: &ExecutionTimeLimits,
         _block_round: BlockRound,
-        _parent_block_state: BlockState,
+        _parent_block_state: ParentRef,
         _protocol_version: ProtocolVersion,
     ) -> anyhow::Result<(
         super::single_block_producer::Block,
@@ -44,7 +45,7 @@ impl BlockProducer for BlockProducerStub {
         CrossThreadRefData,
         Vec<Stamp>,
         ExtMsgFeedbackList,
-        BlockState,
+        TemporaryBlockId,
     )>
     where
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,

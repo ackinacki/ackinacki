@@ -71,7 +71,7 @@ fn normalize_updates<V: MultiMapValue>(
     }
     out.truncate(w);
 
-    out.sort_unstable_by(|a, b| a.key.0.cmp(&b.key.0));
+    out.sort_unstable_by_key(|a| a.key.0);
     out
 }
 

@@ -125,6 +125,9 @@ pub struct GlobalConfig {
 
     /// Gossip protocol version
     pub gossip_version: u16,
+
+    /// Blockchain config hash
+    pub blockchain_config_hash: String,
 }
 
 /// Node interaction settings
@@ -235,6 +238,7 @@ impl Default for GlobalConfig {
             time_to_enable_sync_finalized: Duration::from_secs(1200),
             engine_version: DEFAULT_ENGINE_VERSION.parse().unwrap(),
             gossip_version: DEFAULT_GOSSIP_VERSION.parse().unwrap(),
+            blockchain_config_hash: hex::encode(DEFAULT_BLOCKCAHIN_CONFIG_HASH.0.as_slice()),
         }
     }
 }

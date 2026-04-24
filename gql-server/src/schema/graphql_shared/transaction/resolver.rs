@@ -41,6 +41,7 @@ impl Loader<String> for TransactionLoader {
         let sql = format!("SELECT * FROM ({union_sql})");
         tracing::trace!(target: "data_loader",  "SQL: {sql}");
         let mut conn = self.db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
         let messages = builder
             .build_query_as()

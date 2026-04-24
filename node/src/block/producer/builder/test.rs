@@ -27,13 +27,13 @@ mod tests {
     use crate::block::producer::execution_time::ExecutionTimeLimits;
     use crate::block::producer::wasm::WasmNodeCache;
     use crate::config::load_blockchain_config;
+    use crate::config::DEFAULT_BLOCKCAHIN_CONFIG_HASH;
     use crate::external_messages::ExtMessageDst;
     use crate::external_messages::QueuedExtMessage;
     use crate::external_messages::Stamp;
     use crate::repository::accounts::AccountsRepository;
     use crate::repository::accounts::NodeThreadAccounts;
     use crate::storage::MessageDurableStorage;
-    use crate::types::BlockSeqNo;
     use crate::zerostate::ZeroState;
 
     pub static TEST_CONTRACT_ABI: &str =
@@ -50,11 +50,7 @@ mod tests {
         let zerostate = ZeroState::load_from_file("./tests/test_verification/zerostate")?;
         let opt_state = zerostate.state(&ThreadIdentifier::default())?.clone();
         let ext_queue: HashMap<ExtMessageDst, VecDeque<(Stamp, QueuedExtMessage)>> = HashMap::new();
-        let bc_config = load_blockchain_config()?.get(
-            &BlockSeqNo::from(0),
-            #[cfg(feature = "fix_flag_16")]
-            false,
-        );
+        let bc_config = load_blockchain_config()?.get(&DEFAULT_BLOCKCAHIN_CONFIG_HASH)?;
         let now = now_ms();
         let mut ext_messages = vec![];
         for i in 0..5 {
@@ -115,8 +111,6 @@ mod tests {
             WasmNodeCache::new()?,
             false,
             false,
-            #[cfg(feature = "authroot_dapp_repair")]
-            std::sync::Arc::new(parking_lot::Mutex::new(None)),
         )?;
 
         let (block, _, _) = bp_builder.build_block(
@@ -180,8 +174,6 @@ mod tests {
             WasmNodeCache::new()?,
             true,
             false,
-            #[cfg(feature = "authroot_dapp_repair")]
-            std::sync::Arc::new(parking_lot::Mutex::new(None)),
         )?;
 
         let data = ext_messages.remove(4);

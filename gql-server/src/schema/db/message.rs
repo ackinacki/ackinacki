@@ -15,6 +15,12 @@ use crate::schema::graphql::query::PaginationArgs;
 use crate::schema::graphql_ext::blockchain_api::account::BlockchainMasterSeqNoFilter;
 use crate::schema::graphql_ext::blockchain_api::account::BlockchainMessageTypeFilterEnum;
 
+pub enum MessageCursorField {
+    Dst,
+    Src,
+    Coalesced,
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Debug, FromRow)]
 pub struct InBlockMessage {
@@ -73,6 +79,16 @@ impl AccountMessagesQueryArgs {
 
     fn has_int_out(&self) -> bool {
         self.has_msg_type(BlockchainMessageTypeFilterEnum::IntOut)
+    }
+
+    pub fn cursor_field(&self) -> MessageCursorField {
+        let has_inbound = self.has_ext_in() || self.has_int_in();
+        let has_outbound = self.has_ext_out() || self.has_int_out();
+        match (has_inbound, has_outbound) {
+            (true, false) => MessageCursorField::Dst,
+            (false, true) => MessageCursorField::Src,
+            _ => MessageCursorField::Coalesced,
+        }
     }
 }
 
@@ -141,6 +157,7 @@ impl Message {
         tracing::debug!("SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
         let mut messages = builder
             .build_query_as()
@@ -181,6 +198,7 @@ impl Message {
         tracing::debug!("SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
         let messages = builder
             .build_query_as()
@@ -207,19 +225,18 @@ impl Message {
         let direction = args.pagination.get_direction();
 
         let mut where_ops = vec![];
-        let mut cursor_field = "";
+        let cursor_field = match args.cursor_field() {
+            MessageCursorField::Dst => "COALESCE(dst_chain_order,src_chain_order)",
+            MessageCursorField::Src => "COALESCE(src_chain_order,dst_chain_order)",
+            MessageCursorField::Coalesced => "COALESCE(dst_chain_order,src_chain_order)",
+        };
         {
             let mut ops = vec![];
             if has_inbound {
                 ops.push(format!("dst={account:?}"));
-                cursor_field = "dst_chain_order";
             }
             if has_outbound {
                 ops.push(format!("src={account:?}"));
-                cursor_field = "src_chain_order";
-            }
-            if has_inbound && has_outbound {
-                cursor_field = "COALESCE(dst_chain_order,src_chain_order)";
             }
             if !ops.is_empty() {
                 where_ops.push(format!("({})", ops.join(" OR ")));
@@ -250,11 +267,11 @@ impl Message {
         if let Some(seq_no_range) = &args.master_seq_no_range {
             if let Some(start) = seq_no_range.start {
                 let start = u64_to_string(start as u64);
-                where_ops.push(format!("dst_chain_order >= {start:?}"));
+                where_ops.push(format!("{cursor_field} >= {start:?}"));
             }
             if let Some(end) = seq_no_range.end {
                 let end = u64_to_string(end as u64);
-                where_ops.push(format!("dst_chain_order < {end:?}"));
+                where_ops.push(format!("{cursor_field} < {end:?}"));
             }
         }
 
@@ -283,6 +300,7 @@ impl Message {
         tracing::debug!("account_messages: SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
         let result = builder
             .build_query_as()
@@ -359,6 +377,7 @@ impl Message {
         tracing::debug!("account_events: SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         QueryBuilder::new(sql)
             .build_query_as()
             .fetch_all(&mut *conn)
@@ -376,18 +395,43 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use super::AccountMessagesQueryArgs;
     use super::Message;
+    use super::MessageCursorField;
+    use crate::defaults;
     use crate::schema::db::DBConnector;
+    use crate::schema::graphql::query::PaginationArgs;
+    use crate::schema::graphql_ext::blockchain_api::account::BlockchainMessageTypeFilterEnum;
     use crate::web;
 
     async fn setup_db_connector() -> Arc<DBConnector> {
         let db_path = PathBuf::from("./tests/fixtures/dup_messages/bm-archive.db");
         let archive = "./tests/fixtures/dup_messages/bm-archive-1.db".to_string();
-        let pool = web::open_db(db_path.clone()).await.expect("create pool");
-        let db_connector = DBConnector::new(pool, db_path);
+        let pool = web::open_db(
+            db_path.clone(),
+            15,
+            std::time::Duration::from_secs(defaults::DEFAULT_ACQUIRE_TIMEOUT_SECS),
+            crate::schema::db::build_read_pragmas(
+                defaults::DEFAULT_SQLITE_MMAP_SIZE,
+                defaults::DEFAULT_SQLITE_CACHE_SIZE,
+            ),
+        )
+        .await
+        .expect("create pool");
+        let db_connector = DBConnector::new(pool, db_path, defaults::MAX_POOL_CONNECTIONS);
         db_connector.update_attachments(vec![archive]).await.expect("should attach arcive DB");
 
         db_connector
+    }
+
+    fn default_pagination() -> PaginationArgs {
+        PaginationArgs { first: Some(10), after: None, last: None, before: None }
+    }
+
+    fn make_args(
+        msg_type: Option<Vec<BlockchainMessageTypeFilterEnum>>,
+    ) -> AccountMessagesQueryArgs {
+        AccountMessagesQueryArgs::new(None, None, None, msg_type, None, default_pagination())
     }
 
     #[tokio::test]
@@ -405,5 +449,44 @@ mod tests {
         .expect("list messages");
 
         assert_eq!(list.len(), 25);
+    }
+
+    #[test]
+    fn cursor_field_int_out_returns_src() {
+        let args = make_args(Some(vec![BlockchainMessageTypeFilterEnum::IntOut]));
+        assert!(matches!(args.cursor_field(), MessageCursorField::Src));
+    }
+
+    #[test]
+    fn cursor_field_int_in_returns_dst() {
+        let args = make_args(Some(vec![BlockchainMessageTypeFilterEnum::IntIn]));
+        assert!(matches!(args.cursor_field(), MessageCursorField::Dst));
+    }
+
+    #[test]
+    fn cursor_field_ext_out_returns_src() {
+        let args = make_args(Some(vec![BlockchainMessageTypeFilterEnum::ExtOut]));
+        assert!(matches!(args.cursor_field(), MessageCursorField::Src));
+    }
+
+    #[test]
+    fn cursor_field_ext_in_returns_dst() {
+        let args = make_args(Some(vec![BlockchainMessageTypeFilterEnum::ExtIn]));
+        assert!(matches!(args.cursor_field(), MessageCursorField::Dst));
+    }
+
+    #[test]
+    fn cursor_field_mixed_inbound_outbound_returns_coalesced() {
+        let args = make_args(Some(vec![
+            BlockchainMessageTypeFilterEnum::IntIn,
+            BlockchainMessageTypeFilterEnum::IntOut,
+        ]));
+        assert!(matches!(args.cursor_field(), MessageCursorField::Coalesced));
+    }
+
+    #[test]
+    fn cursor_field_none_msg_type_returns_coalesced() {
+        let args = make_args(None);
+        assert!(matches!(args.cursor_field(), MessageCursorField::Coalesced));
     }
 }

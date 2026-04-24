@@ -3,4 +3,6 @@
 pub(crate) const DEFAULT_BK_API_PROTO: &str = "http";
 pub const DEFAULT_BK_API_MESSAGES_PATH: &str = "/v2/messages";
 pub const DEFAULT_BM_API_MESSAGES_PATH: &str = "/bm/v2/messages";
-pub(crate) const DEFAULT_BK_API_TIMEOUT: u64 = 5; // in seconds
+pub(crate) const DEFAULT_BK_API_TIMEOUT: u64 = 10; // in seconds
+pub(crate) const DEFAULT_RETRY_MAX_ATTEMPTS: u32 = 3;
+pub(crate) const DEFAULT_RETRY_INITIAL_DELAY_MS: u64 = 200;

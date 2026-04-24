@@ -8,6 +8,7 @@ use async_graphql::SimpleObject;
 use super::account::AccountStatusChangeEnum;
 use super::account::AccountStatusEnum;
 use super::message::Message;
+use crate::helpers::decode_u64_string;
 use crate::helpers::format_big_int;
 use crate::schema::db;
 use crate::schema::graphql_shared::formats::BigIntFormat;
@@ -414,7 +415,7 @@ impl From<db::Transaction> for Transaction {
             in_message: None,
             in_msg: trx.in_msg,
             installed: None, // !!
-            lt: Some(trx.lt),
+            lt: Some(decode_u64_string(&trx.lt).to_string()),
             master_seq_no: None,
             new_hash: Some(trx.new_hash),
             now: trx.now,
@@ -427,7 +428,7 @@ impl From<db::Transaction> for Transaction {
             outmsg_cnt: trx.outmsg_cnt,
             prepare_transaction: None,
             prev_trans_hash: Some(trx.prev_trans_hash),
-            prev_trans_lt: Some(trx.prev_trans_lt),
+            prev_trans_lt: Some(decode_u64_string(&trx.prev_trans_lt).to_string()),
             proof: None,
             split_info: None,
             status: trx.status,

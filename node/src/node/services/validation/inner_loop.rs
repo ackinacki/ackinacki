@@ -159,7 +159,14 @@ pub(super) fn inner_loop(
                     let state = service
                         .cross_thread_ref_data_service
                         .get_cross_thread_ref_data(block_id)
-                        .expect("Failed to load ref state");
+                        .unwrap_or_else(|error| {
+                            panic!(
+                                "Failed to load direct cross-thread ref state while validating block {} in thread {:?}: direct_ref_id={block_id}, split_related={}, error={error:#}",
+                                next_block.identifier(),
+                                next_block.common_section().thread_id(),
+                                next_block.is_thread_splitting(),
+                            )
+                        });
                     refs.push(state);
                 }
                 refs
@@ -204,10 +211,16 @@ pub(super) fn inner_loop(
                 wasm_cache.clone(),
                 message_db.clone(),
                 node_global_config_read.is_retired(&protocol_version),
-                #[cfg(feature = "authroot_dapp_repair")]
-                repository.authroot_dapp_repaired(),
             )
-            .expect("Failed to verify block");
+            .unwrap_or_else(|error| {
+                panic!(
+                    "Failed to verify block {} in thread {:?} (parent={}, split_related={}): {error:#}",
+                    next_block.identifier(),
+                    next_block.common_section().thread_id(),
+                    next_block.parent(),
+                    next_block.is_thread_splitting(),
+                )
+            });
             if !verify_res.is_valid() {
                 tracing::warn!("Block verification failed: {:?}", block_identifier);
             }
@@ -223,12 +236,14 @@ pub(super) fn inner_loop(
                 let _ = send.send_ack(state.clone());
             } else {
                 let thread_id = *next_block.common_section().thread_id();
-                match verify_res {
-                    VerificationResult::TooComplexExecution => {
+                let has_bad_block_accusers = state.guarded(|e| !e.bad_block_accusers().is_empty());
+                match (verify_res, has_bad_block_accusers) {
+                    (VerificationResult::TooComplexExecution, false) => {
                         // TODO: send Nack here
-                        tracing::warn!("Verification failed: TooComplexExectuion");
+                        tracing::warn!("Verification failed: TooComplexExecution");
                     }
-                    VerificationResult::BadBlock => {
+                    (VerificationResult::BadBlock, _)
+                    | (VerificationResult::TooComplexExecution, true) => {
                         tracing::trace!(target: "monit", "{state:?} Block verification failed");
                         invalidate_branch(
                             state.clone(),
@@ -243,7 +258,7 @@ pub(super) fn inner_loop(
                             .guarded_mut(|e| e.get_thread_authority(&thread_id))
                             .guarded_mut(|e| e.on_bad_block_nack_confirmed(state.clone()));
                     }
-                    VerificationResult::ValidBlock => {
+                    (VerificationResult::ValidBlock, _) => {
                         unreachable!();
                     }
                 };

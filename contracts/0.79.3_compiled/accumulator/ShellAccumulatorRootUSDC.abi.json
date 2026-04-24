@@ -1,0 +1,211 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"sellOrderCode","type":"cell"},
+				{"name":"pubkey","type":"uint256"},
+				{"name":"unixstart","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "buyShellFor",
+			"inputs": [
+				{"name":"buyer","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "claimUSDC",
+			"inputs": [
+				{"name":"D","type":"uint16"},
+				{"name":"orderId","type":"uint64"},
+				{"name":"seller","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setPubkey",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getQueueState",
+			"inputs": [
+				{"name":"D","type":"uint16"}
+			],
+			"outputs": [
+				{"name":"nextId","type":"uint64"},
+				{"name":"available","type":"uint64"},
+				{"name":"soldPrefix","type":"uint64"},
+				{"name":"owedCount","type":"uint64"}
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"ownerPubkey","type":"uint256"},
+				{"name":"sellerShellPool","type":"uint128"},
+				{"name":"usdcBalance","type":"uint128"},
+				{"name":"owedTotal","type":"uint128"}
+			]
+		},
+		{
+			"name": "getSellOrderAddress",
+			"inputs": [
+				{"name":"D","type":"uint16"},
+				{"name":"orderId","type":"uint64"}
+			],
+			"outputs": [
+				{"name":"sellOrderAddr","type":"address"}
+			]
+		},
+		{
+			"name": "owedUsdcTotal",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"uint128"}
+			]
+		},
+		{
+			"name": "getSellerShellPool",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"uint128"}
+			]
+		},
+		{
+			"name": "getUsdcBalance",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"uint128"}
+			]
+		},
+		{
+			"name": "getNacklInfo",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"supply","type":"uint128"},
+				{"name":"burned","type":"uint128"},
+				{"name":"unixstart","type":"uint32"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		},
+		{
+			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"},
+				{"name":"cell","type":"cell"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"events": [
+		{
+			"name": "SellOrderCreated",
+			"inputs": [
+				{"name":"seller","type":"address"},
+				{"name":"denom","type":"uint16"},
+				{"name":"orderId","type":"uint64"},
+				{"name":"shellAmount","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "ShellPurchased",
+			"inputs": [
+				{"name":"buyer","type":"address"},
+				{"name":"usdcAmount","type":"uint128"},
+				{"name":"shellFromSellers","type":"uint128"},
+				{"name":"shellMinted","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "MatchedOrders",
+			"inputs": [
+				{"name":"lastSold1","type":"uint64"},
+				{"name":"lastSold10","type":"uint64"},
+				{"name":"lastSold100","type":"uint64"},
+				{"name":"lastSold1000","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "UsdcClaimed",
+			"inputs": [
+				{"name":"orderId","type":"uint64"},
+				{"name":"denom","type":"uint16"},
+				{"name":"seller","type":"address"},
+				{"name":"payout","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "NacklRedeemed",
+			"inputs": [
+				{"name":"recipient","type":"address"},
+				{"name":"burnAmount","type":"uint128"},
+				{"name":"payout","type":"uint128"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_ownerPubkey","type":"uint256"},
+		{"init":false,"name":"_sellOrderCode","type":"cell"},
+		{"init":false,"name":"_nextId1","type":"uint64"},
+		{"init":false,"name":"_available1","type":"uint64"},
+		{"init":false,"name":"_soldPrefix1","type":"uint64"},
+		{"init":false,"name":"_owedCount1","type":"uint64"},
+		{"init":false,"name":"_nextId10","type":"uint64"},
+		{"init":false,"name":"_available10","type":"uint64"},
+		{"init":false,"name":"_soldPrefix10","type":"uint64"},
+		{"init":false,"name":"_owedCount10","type":"uint64"},
+		{"init":false,"name":"_nextId100","type":"uint64"},
+		{"init":false,"name":"_available100","type":"uint64"},
+		{"init":false,"name":"_soldPrefix100","type":"uint64"},
+		{"init":false,"name":"_owedCount100","type":"uint64"},
+		{"init":false,"name":"_nextId1000","type":"uint64"},
+		{"init":false,"name":"_available1000","type":"uint64"},
+		{"init":false,"name":"_soldPrefix1000","type":"uint64"},
+		{"init":false,"name":"_owedCount1000","type":"uint64"},
+		{"init":false,"name":"_sellerShellPool","type":"uint128"},
+		{"init":false,"name":"_usdcBalance","type":"uint128"},
+		{"init":false,"name":"_nacklBurned","type":"uint128"},
+		{"init":false,"name":"_unixstart","type":"uint32"}
+	]
+}

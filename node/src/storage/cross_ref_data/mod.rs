@@ -6,7 +6,6 @@ use aerospike::Key;
 use aerospike::Value;
 use serde::Deserialize;
 use serde::Serialize;
-use versioned_struct::Transitioning;
 
 use crate::helper::metrics::AEROSPIKE_OBJECT_TYPE_CROSS_REF_DATA;
 use crate::storage::mem::MemStore;
@@ -43,25 +42,6 @@ impl CrossRefStorage {
                 return Err(anyhow::anyhow!("Failed to read record {path}: missing blob"));
             };
             let data = bincode::deserialize::<T>(blob)?;
-            Ok(Some(data))
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub fn read_transitioning_blob<T: Transitioning>(
-        &self,
-        path: &str,
-    ) -> anyhow::Result<Option<T>> {
-        let key = &self.message_key(path);
-
-        if let Some(bins) =
-            self.store.get(key, &[BIN_BLOB].into(), AEROSPIKE_OBJECT_TYPE_CROSS_REF_DATA)?
-        {
-            let Some(Value::Blob(blob)) = bins.get(BIN_BLOB) else {
-                return Err(anyhow::anyhow!("Failed to read record {path}: missing blob"));
-            };
-            let data = Transitioning::deserialize_data_compat(blob)?;
             Ok(Some(data))
         } else {
             Ok(None)

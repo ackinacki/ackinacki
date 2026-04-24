@@ -8,6 +8,7 @@ use async_graphql::SimpleObject;
 mod filter;
 pub use filter::AccountFilter;
 
+use crate::helpers::decode_u64_string;
 use crate::helpers::ecc_from_bytes;
 use crate::helpers::format_big_int;
 use crate::schema::db;
@@ -144,9 +145,9 @@ impl From<db::Account> for Account {
             acc_type_name: acc.acc_type.into(),
             balance: Some(acc.balance),
             balance_other,
-            bits: Some(acc.bits),
+            bits: Some(decode_u64_string(&acc.bits).to_string()),
             boc,
-            cells: Some(acc.cells),
+            cells: Some(decode_u64_string(&acc.cells).to_string()),
             code,
             code_hash: acc.code_hash,
             data,
@@ -155,12 +156,12 @@ impl From<db::Account> for Account {
             due_payment: None,
             init_code_hash: acc.init_code_hash,
             last_paid: Some(acc.last_paid),
-            last_trans_lt: Some(acc.last_trans_lt),
+            last_trans_lt: Some(decode_u64_string(&acc.last_trans_lt).to_string()),
             library: None,
             library_hash: None,
             prev_code_hash: None,
             proof: None,
-            public_cells: Some(acc.public_cells),
+            public_cells: Some(decode_u64_string(&acc.public_cells).to_string()),
             split_depth: None,
             state_hash: None,
             tick: None,

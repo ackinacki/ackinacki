@@ -39,8 +39,7 @@ struct UnfinalizedBlocksData {
 
 impl UnfinalizedBlocksData {
     fn set_filter(&mut self, filter: FilterPrehistoric) {
-        self.filter = filter.clone();
-        self.retain(|index, _| index.block_seq_no() > filter.block_seq_no());
+        self.filter = filter;
     }
 
     fn insert(&mut self, index: BlockIndex, value: (BlockState, Arc<Envelope<AckiNackiBlock>>)) {
@@ -125,7 +124,7 @@ impl UnfinalizedCandidateBlockCollection {
         })
     }
 
-    pub fn insert_arc(&mut self, block_state: BlockState, block: Arc<Envelope<AckiNackiBlock>>) {
+    pub fn insert_arc(&self, block_state: BlockState, block: Arc<Envelope<AckiNackiBlock>>) {
         let index = BlockIndex::from(block.as_ref());
         tracing::trace!(target: "node", "UnfinalizedCandidateBlockCollection insert {:?}", index);
         let mut data_lock = self.candidates.lock();
@@ -135,15 +134,15 @@ impl UnfinalizedCandidateBlockCollection {
         self.touch();
     }
 
-    pub fn insert(&mut self, block_state: BlockState, block: Envelope<AckiNackiBlock>) {
+    pub fn insert(&self, block_state: BlockState, block: Envelope<AckiNackiBlock>) {
         self.insert_arc(block_state, Arc::new(block))
     }
 
-    pub fn remove_finalized_and_invalidated_blocks(&mut self) {
+    pub fn remove_finalized_and_invalidated_blocks(&self) {
         self.retain(|candidate| candidate.guarded(|e| !e.is_finalized() && !e.is_invalidated()));
     }
 
-    pub fn remove_old_blocks(&mut self, last_finalized_block_seq_no: &BlockSeqNo) {
+    pub fn remove_old_blocks(&self, last_finalized_block_seq_no: &BlockSeqNo) {
         self.retain(|candidate| {
             candidate.guarded(|e| {
                 e.block_seq_no().map(|seq_no| seq_no > *last_finalized_block_seq_no).unwrap_or(true)
@@ -151,7 +150,7 @@ impl UnfinalizedCandidateBlockCollection {
         });
     }
 
-    pub fn retain<F>(&mut self, mut action: F)
+    pub fn retain<F>(&self, mut action: F)
     where
         F: FnMut(&BlockState) -> bool,
     {
@@ -183,19 +182,46 @@ impl UnfinalizedCandidateBlockCollection {
         &self.notifications
     }
 
-    pub fn touch(&mut self) {
-        self.notifications.touch();
+    pub fn touch(&self) {
+        let mut notifications = self.notifications.clone();
+        notifications.touch();
     }
 
     pub fn update_filter(&self, filter_prehistoric: FilterPrehistoric) -> bool {
-        self.candidates.guarded_mut(|e| {
+        let should_update = self.candidates.guarded_mut(|e| {
             let old_filter = e.filter.clone();
             if old_filter.block_seq_no() < filter_prehistoric.block_seq_no() {
-                e.set_filter(filter_prehistoric);
+                e.set_filter(filter_prehistoric.clone());
                 true
             } else {
                 false
             }
-        })
+        });
+        if should_update {
+            self.retain(|candidate| {
+                candidate.guarded(|e| {
+                    e.block_seq_no()
+                        .map(|seq_no| seq_no > *filter_prehistoric.block_seq_no())
+                        .unwrap_or(true)
+                })
+            });
+        }
+        should_update
+    }
+}
+
+impl Drop for UnfinalizedCandidateBlockCollection {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.candidates) != 1 {
+            return;
+        }
+
+        let blocks = self.candidates.guarded(|data| {
+            data.main_map.blocks.values().map(|(state, _)| state.clone()).collect::<Vec<_>>()
+        });
+
+        for block_state in blocks {
+            block_state.guarded_mut(|e| e.remove_subscriber(&self.notifications));
+        }
     }
 }

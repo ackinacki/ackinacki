@@ -1,6 +1,7 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use message_router::bp_resolver::BPResolver;
@@ -18,21 +19,6 @@ impl BPResolverImpl {
     pub fn new(default_bp: HostPort) -> Self {
         Self { default_bp, map_thread_addr: RwLock::new(HashMap::new()) }
     }
-
-    // pub fn start_listener(
-    //     resolver: Arc<Mutex<BPResolverImpl>>,
-    //     bp_data_rx: mpsc::Receiver<(String, Vec<HostPort>)>,
-    // ) -> anyhow::Result<()> {
-    //     std::thread::Builder::new().name("BP update handler".to_string()).spawn(move || {
-    //         for (thread_id, bp_list) in bp_data_rx {
-    //             if let Err(e) = resolver.lock().upsert(thread_id, bp_list) {
-    //                 tracing::error!("Failed to update `map_thread_addr`: {e}");
-    //             }
-    //         }
-    //     })?;
-
-    //     Ok(())
-    // }
 }
 
 impl BPResolver for BPResolverImpl {
@@ -50,24 +36,16 @@ impl BPResolver for BPResolverImpl {
 impl UpdatableBPResolver for BPResolverImpl {
     fn upsert(&self, thread_id: String, bp_list: Vec<HostPort>) -> anyhow::Result<()> {
         tracing::debug!(bp_list = ?bp_list, thread_id = thread_id, "upsert data");
-        let mut new_addrs = Vec::with_capacity(bp_list.len());
-
-        for addr in bp_list {
-            // default port forced for backward compatibility
-            new_addrs.push(addr.with_default_port(8600));
-        }
-
-        use std::collections::hash_map::Entry;
 
         let mut map = self.map_thread_addr.write();
 
         match map.entry(thread_id) {
             Entry::Vacant(e) => {
-                e.insert(new_addrs);
+                e.insert(bp_list);
             }
             Entry::Occupied(mut e) => {
-                if e.get() != &new_addrs {
-                    e.insert(new_addrs);
+                if e.get() != &bp_list {
+                    e.insert(bp_list);
                 }
             }
         }

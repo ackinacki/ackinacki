@@ -233,6 +233,7 @@ impl FileSavingService {
                     tracing::trace!(target: "node", "File {} already exists, skip saving.", path.display());
                     return Ok(());
                 }
+                let snapshot_creation_start = std::time::Instant::now();
                 // Use the no-cache variant so we don't pollute the optimistic_state
                 // cache with entries that are only needed for serialization.
                 let state = repository
@@ -368,6 +369,10 @@ impl FileSavingService {
                 let tmp_file_path = get_temp_file_path(&parent_dir);
                 std::fs::write(tmp_file_path.clone(), bytes)?;
                 std::fs::rename(tmp_file_path, &path)?;
+                let snapshot_creation_elapsed = snapshot_creation_start.elapsed().as_millis() as u64;
+                if let Some(m) = repository.get_metrics() {
+                    m.report_snapshot_creation_time(snapshot_creation_elapsed, &thread_id);
+                }
                 tracing::trace!(target: "node", "Successfully saved state to {}", path.display());
 
                 // Write lightweight header sidecar for fast startup scanning

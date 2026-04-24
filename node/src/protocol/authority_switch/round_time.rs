@@ -83,13 +83,16 @@ impl RoundTime {
             let (x, r) = div_with_reminder(remaining, bucket.round_duration);
             round += x;
             remaining = r;
-            return CalculateRoundResult { round: round.into(), round_remaining_time: remaining };
+            return CalculateRoundResult {
+                round: round.into(),
+                round_remaining_time: bucket.round_duration - remaining,
+            };
         }
 
         let (x, r) = div_with_reminder(remaining, self.default_bucket);
         round += x;
         tracing::trace!("calculate_round x={x:?}");
-        CalculateRoundResult { round: round.into(), round_remaining_time: r }
+        CalculateRoundResult { round: round.into(), round_remaining_time: self.default_bucket - r }
     }
 }
 
@@ -108,7 +111,7 @@ mod tests {
         assert_eq!(2, round_at(Duration::from_millis(800)).round);
         // Remainging time check
         assert_eq!(
-            Duration::from_millis(140),
+            Duration::from_millis(190),
             round_at(Duration::from_millis(800)).round_remaining_time
         );
     }
@@ -141,5 +144,34 @@ mod tests {
         assert_eq!(612, round_at(Duration::from_secs(1800)));
         assert_eq!(612, round_at(Duration::from_secs(2099)));
         assert_eq!(613, round_at(Duration::from_secs(2100)));
+    }
+
+    #[test]
+    fn ensure_remaining_time_correctness() -> anyhow::Result<()> {
+        let round_time = RoundTime::linear(
+            // min round time
+            Duration::from_millis(10_000),
+            // step
+            Duration::from_millis(1_000),
+            // max round time: 30 sec
+            Duration::from_millis(30_000),
+        );
+        let round = round_time.calculate_round(Duration::from_millis(300), 5);
+        // 10000 - 300
+        assert_eq!(round.round_remaining_time, Duration::from_millis(9700));
+        let round = round_time.calculate_round(Duration::from_millis(44_300), 5);
+        // 10000 - 4300
+        assert_eq!(round.round_remaining_time, Duration::from_millis(5700));
+        let round = round_time.calculate_round(Duration::from_millis(69_000), 5);
+        // 69000 - 5*10000 - 11000 = 8000
+        // 11000 - 8000
+        assert_eq!(round.round_remaining_time, Duration::from_millis(3000));
+        let round = round_time.calculate_round(Duration::from_millis(3_005_000), 5);
+        // (5*10000 + 5*11000 .... + 5*29000) = 1950000
+        // (3005000 - 1950000) - 30000 * 35 = 5000
+        // 30000 - 5000
+        assert_eq!(round.round_remaining_time, Duration::from_millis(25000));
+
+        Ok(())
     }
 }

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use account_state::ThreadAccountsBuilder;
 use account_state::ThreadAccountsRepository;
+use anyhow::Context;
 use node_types::AccountIdentifier;
 use node_types::AccountRouting;
 use node_types::BlockIdentifier;
@@ -41,6 +42,8 @@ pub fn preprocess<'a, I, TRepo>(
     parent_block_state: State,
     refs: I,
     descendant_thread_identifier: &ThreadIdentifier,
+    current_block_id: Option<BlockIdentifier>,
+    is_split_related: bool,
     repository: &TRepo,
     slashing_messages: Vec<Arc<WrappedMessage>>,
     epoch_block_keeper_data: Vec<BlockKeeperData>,
@@ -94,10 +97,17 @@ where
     for state in refs {
         ref_data.push(state.as_reference_state_data());
     }
+    let parent_block_id_for_context = preprocessed_state.block_id;
     let mut all_referenced_blocks = preprocessed_state
         .thread_refs_state
         .move_refs(ref_data.into_iter().map(|e| e.1).collect(), |block_id| {
-            repository.get_cross_thread_ref_data(block_id)
+            repository.get_cross_thread_ref_data(block_id).with_context(|| {
+                format!(
+                    "before block validation preprocess: current_block_id={:?}, parent_block_id={}, current_thread_id={descendant_thread_identifier:?}, missing_block_id={block_id}, split_related={is_split_related}",
+                    current_block_id,
+                    parent_block_id_for_context,
+                )
+            })
         })?;
     let _ = tracing::span!(
         tracing::Level::INFO,

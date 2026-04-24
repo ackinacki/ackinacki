@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::marker::PhantomData;
@@ -142,6 +142,26 @@ where
                         None,
                     );
                 }
+                TokenVerificationResult::IssuerResolutionFailed => {
+                    tracing::debug!("Token verification failed: issuer resolution error");
+                    return render_error_response(
+                        res,
+                        "ISSUER_RESOLUTION_FAILED",
+                        Some("Failed to resolve token issuer"),
+                        None,
+                        None,
+                    );
+                }
+                TokenVerificationResult::MissingSigningKey => {
+                    tracing::debug!("Token verification failed: issuer wallet has no signing key");
+                    return render_error_response(
+                        res,
+                        "MISSING_SIGNING_KEY",
+                        Some("Issuer wallet has no signing key configured"),
+                        None,
+                        None,
+                    );
+                }
             }
         }
 
@@ -172,7 +192,11 @@ where
                     resolving_result.active_bp,
                     message.hash().to_hex_string(),
                     None,
-                    Some(format!("{:?}", message.thread_id())),
+                    // Plain hex (LowerHex) — round-trips through
+                    // ThreadIdentifier::try_from on the receiving node.
+                    // Debug / Display add prefixes ("ThreadIdentifier<..>",
+                    // "<T:..>") that break hex::decode on retry.
+                    Some(format!("{:x}", message.thread_id())),
                 )),
                 bk_auth_token,
             );

@@ -39,6 +39,21 @@ impl fmt::Debug for DBStoredRecord {
     }
 }
 
+/// Lightweight summary of a transaction's account activity.
+/// Used by ClickHouse exporter to track active accounts without heavy data.
+#[derive(Clone, Debug)]
+pub struct TxActivitySummary {
+    pub tx_id: String,
+    pub account_addr: String,
+    pub timestamp: u32,
+    pub tr_type: u8,
+    pub aborted: bool,
+    /// 0 = Internal, 1 = ExtIn, 2 = ExtOut, 3 = CrossDapp
+    pub in_msg_type: Option<u8>,
+    pub bounced: bool,
+    pub total_fees: String,
+}
+
 pub trait DocumentsDb: Send + Sync {
     fn put_block(&self, item: ArchBlock) -> anyhow::Result<()>;
     fn put_accounts(&self, items: Vec<ArchAccount>) -> anyhow::Result<()>;

@@ -38,6 +38,8 @@ use crate::schema::graphql::transaction::TransactionLoader;
 use crate::schema::graphql_ext;
 use crate::schema::graphql_ext::blockchain_api::account::BlockchainAccountEdge;
 use crate::schema::graphql_ext::blockchain_api::account::BlockchainAccountsConnection;
+use crate::schema::graphql_ext::is_deprecated_api_visible;
+use crate::schema::graphql_ext::DeprecatedApiGuard;
 
 pub mod account;
 pub mod attestations;
@@ -59,7 +61,11 @@ impl BlockchainQuery<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[graphql(deprecation = "Use blockchain.account instead")]
+    #[graphql(
+        guard = "DeprecatedApiGuard",
+        visible = "is_deprecated_api_visible",
+        deprecation = "Use blockchain.account instead"
+    )]
     /// This node could be used for a cursor-based pagination of blocks.
     async fn accounts(
         &self,
@@ -208,59 +214,71 @@ impl BlockchainQuery<'_> {
         after: Option<String>,
         #[graphql(desc = "This field is mutually exclusive with 'first'.")] last: Option<i32>,
         before: Option<String>,
-    ) -> Option<
-        Connection<
-            String,
-            BlockchainBlock,
-            EmptyFields,
-            EmptyFields,
-            BlockchainBlocksConnection,
-            BlockchainBlocksEdge,
-        >,
-    > {
-        query(after, before, first, last, |after, before, first, last| async move {
-            let args = BlockchainBlocksQueryArgs {
-                block_seq_no_range,
-                min_tr_count,
-                max_tr_count,
-                thread_id,
-                pagination: PaginationArgs { first, after, last, before },
-            };
-            let mut blocks: Vec<db::Block> = db::block::Block::blockchain_blocks(
-                self.ctx.data::<Arc<DBConnector>>().unwrap(),
-                &args,
-            )
-            .await?;
-
-            let (has_previous_page, has_next_page) = (
-                args.pagination.has_previous_page(blocks.len()),
-                args.pagination.has_next_page(blocks.len()),
-            );
-            tracing::debug!("has_previous_page={:?}, after={:?}", has_previous_page, has_next_page);
-
-            let mut connection: Connection<
+    ) -> async_graphql::Result<
+        Option<
+            Connection<
                 String,
-                graphql_ext::Block,
+                BlockchainBlock,
                 EmptyFields,
                 EmptyFields,
                 BlockchainBlocksConnection,
                 BlockchainBlocksEdge,
-            > = Connection::new(has_previous_page, has_next_page);
+            >,
+        >,
+    > {
+        Ok(Some(
+            query(after, before, first, last, |after, before, first, last| async move {
+                let args = BlockchainBlocksQueryArgs {
+                    block_seq_no_range,
+                    min_tr_count,
+                    max_tr_count,
+                    thread_id,
+                    pagination: PaginationArgs { first, after, last, before },
+                };
+                let mut blocks: Vec<db::Block> = db::block::Block::blockchain_blocks(
+                    self.ctx.data::<Arc<DBConnector>>().unwrap(),
+                    &args,
+                )
+                .await?;
 
-            args.pagination.shrink_portion(&mut blocks);
+                let (has_previous_page, has_next_page) = (
+                    args.pagination.has_previous_page(blocks.len()),
+                    args.pagination.has_next_page(blocks.len()),
+                );
+                tracing::debug!(
+                    "has_previous_page={:?}, after={:?}",
+                    has_previous_page,
+                    has_next_page
+                );
 
-            connection.edges.extend(blocks.into_iter().map(|block| {
-                let block: BlockchainBlock = block.into();
-                let cursor = block.chain_order.clone().unwrap();
-                let edge: Edge<String, graphql::block::Block, EmptyFields, BlockchainBlocksEdge> =
-                    Edge::with_additional_fields(cursor, block, EmptyFields);
-                edge
-            }));
+                let mut connection: Connection<
+                    String,
+                    graphql_ext::Block,
+                    EmptyFields,
+                    EmptyFields,
+                    BlockchainBlocksConnection,
+                    BlockchainBlocksEdge,
+                > = Connection::new(has_previous_page, has_next_page);
 
-            Ok::<_, async_graphql::Error>(connection)
-        })
-        .await
-        .ok()
+                args.pagination.shrink_portion(&mut blocks);
+
+                connection.edges.extend(blocks.into_iter().map(|block| {
+                    let block: BlockchainBlock = block.into();
+                    let cursor = block.chain_order.clone().unwrap();
+                    let edge: Edge<
+                        String,
+                        graphql::block::Block,
+                        EmptyFields,
+                        BlockchainBlocksEdge,
+                    > = Edge::with_additional_fields(cursor, block, EmptyFields);
+                    edge
+                }));
+
+                Ok::<_, async_graphql::Error>(connection)
+            })
+            .await
+            .map_err(crate::schema::db::connector::map_db_error)?,
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -276,67 +294,71 @@ impl BlockchainQuery<'_> {
         height_start: Option<u64>,
         #[graphql(name = "height_end", desc = "Include updates with height <= this value.")]
         height_end: Option<u64>,
-    ) -> Option<
-        Connection<
-            String,
-            BlockchainBkSetUpdate,
-            EmptyFields,
-            EmptyFields,
-            BlockchainBkSetUpdatesConnection,
-            BlockchainBkSetUpdatesEdge,
-        >,
-    > {
-        query(after, before, first, last, |after, before, first, last| async move {
-            let thread_id = thread_id.map(pad_thread_id);
-            let args = BlockchainBkSetUpdatesQueryArgs {
-                pagination: PaginationArgs { first, after, last, before },
-                thread_id,
-                height_start,
-                height_end,
-            };
-            let mut updates: Vec<db::BkSetUpdate> =
-                db::bk_set_update::BkSetUpdate::blockchain_bk_set_updates(
-                    self.ctx.data::<Arc<DBConnector>>().unwrap(),
-                    &args,
-                )
-                .await?;
-
-            let (has_previous_page, has_next_page) = (
-                args.pagination.has_previous_page(updates.len()),
-                args.pagination.has_next_page(updates.len()),
-            );
-
-            let mut connection: Connection<
+    ) -> async_graphql::Result<
+        Option<
+            Connection<
                 String,
                 BlockchainBkSetUpdate,
                 EmptyFields,
                 EmptyFields,
                 BlockchainBkSetUpdatesConnection,
                 BlockchainBkSetUpdatesEdge,
-            > = Connection::new(has_previous_page, has_next_page);
+            >,
+        >,
+    > {
+        Ok(Some(
+            query(after, before, first, last, |after, before, first, last| async move {
+                let thread_id = thread_id.map(pad_thread_id);
+                let args = BlockchainBkSetUpdatesQueryArgs {
+                    pagination: PaginationArgs { first, after, last, before },
+                    thread_id,
+                    height_start,
+                    height_end,
+                };
+                let mut updates: Vec<db::BkSetUpdate> =
+                    db::bk_set_update::BkSetUpdate::blockchain_bk_set_updates(
+                        self.ctx.data::<Arc<DBConnector>>().unwrap(),
+                        &args,
+                    )
+                    .await?;
 
-            args.pagination.shrink_portion(&mut updates);
+                let (has_previous_page, has_next_page) = (
+                    args.pagination.has_previous_page(updates.len()),
+                    args.pagination.has_next_page(updates.len()),
+                );
 
-            let mut edges = Vec::new();
-            for update in updates {
-                let update: BlockchainBkSetUpdate = update
-                    .try_into()
-                    .map_err(|e: anyhow::Error| async_graphql::Error::new(e.to_string()))?;
-                let cursor = update.chain_order.clone();
-                let edge: Edge<
+                let mut connection: Connection<
                     String,
                     BlockchainBkSetUpdate,
                     EmptyFields,
+                    EmptyFields,
+                    BlockchainBkSetUpdatesConnection,
                     BlockchainBkSetUpdatesEdge,
-                > = Edge::with_additional_fields(cursor, update, EmptyFields);
-                edges.push(edge);
-            }
-            connection.edges.extend(edges);
+                > = Connection::new(has_previous_page, has_next_page);
 
-            Ok::<_, async_graphql::Error>(connection)
-        })
-        .await
-        .ok()
+                args.pagination.shrink_portion(&mut updates);
+
+                let mut edges = Vec::new();
+                for update in updates {
+                    let update: BlockchainBkSetUpdate = update
+                        .try_into()
+                        .map_err(|e: anyhow::Error| async_graphql::Error::new(e.to_string()))?;
+                    let cursor = update.chain_order.clone();
+                    let edge: Edge<
+                        String,
+                        BlockchainBkSetUpdate,
+                        EmptyFields,
+                        BlockchainBkSetUpdatesEdge,
+                    > = Edge::with_additional_fields(cursor, update, EmptyFields);
+                    edges.push(edge);
+                }
+                connection.edges.extend(edges);
+
+                Ok::<_, async_graphql::Error>(connection)
+            })
+            .await
+            .map_err(crate::schema::db::connector::map_db_error)?,
+        ))
     }
 
     async fn finalized_timestamp(&self) -> Option<u64> {
@@ -437,92 +459,118 @@ impl BlockchainQuery<'_> {
         after: Option<String>,
         #[graphql(desc = "This field is mutually exclusive with 'first'.")] last: Option<i32>,
         before: Option<String>,
-    ) -> Option<
-        Connection<
-            String,
-            BlockchainTransaction,
-            EmptyFields,
-            EmptyFields,
-            BlockchainTransactionsConnection,
-            BlockchainTransactionsEdge,
+    ) -> async_graphql::Result<
+        Option<
+            Connection<
+                String,
+                BlockchainTransaction,
+                EmptyFields,
+                EmptyFields,
+                BlockchainTransactionsConnection,
+                BlockchainTransactionsEdge,
+            >,
         >,
     > {
-        query(
-            after,
-            before,
-            first,
-            last,
-            |after: Option<String>, before: Option<String>, first, last| async move {
-                let args = BlockchainTransactionsQueryArgs {
-                    min_balance_delta,
-                    max_balance_delta,
-                    code_hash,
-                    pagination: PaginationArgs { first, after, last, before },
-                };
-                let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
-                let mut transactions = db::transaction::Transaction::blockchain_transactions(
-                    self.ctx.data::<Arc<DBConnector>>().unwrap(),
-                    &args,
-                )
-                .await?;
+        Ok(Some(
+            query(
+                after,
+                before,
+                first,
+                last,
+                |after: Option<String>, before: Option<String>, first, last| async move {
+                    let args = BlockchainTransactionsQueryArgs {
+                        min_balance_delta,
+                        max_balance_delta,
+                        code_hash,
+                        pagination: PaginationArgs { first, after, last, before },
+                    };
+                    let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
+                    let mut transactions = db::transaction::Transaction::blockchain_transactions(
+                        self.ctx.data::<Arc<DBConnector>>().unwrap(),
+                        &args,
+                    )
+                    .await?;
 
-                let (has_previous_page, has_next_page) = (
-                    args.pagination.has_previous_page(transactions.len()),
-                    args.pagination.has_next_page(transactions.len()),
-                );
-                tracing::debug!(
-                    "has_previous_page={:?}, after={:?}",
-                    has_previous_page,
-                    has_next_page
-                );
+                    let (has_previous_page, has_next_page) = (
+                        args.pagination.has_previous_page(transactions.len()),
+                        args.pagination.has_next_page(transactions.len()),
+                    );
+                    tracing::debug!(
+                        "has_previous_page={:?}, after={:?}",
+                        has_previous_page,
+                        has_next_page
+                    );
 
-                let mut connection: Connection<
-                    String,
-                    crate::schema::graphql_ext::Transaction,
-                    EmptyFields,
-                    EmptyFields,
-                    BlockchainTransactionsConnection,
-                    BlockchainTransactionsEdge,
-                > = Connection::new(has_previous_page, has_next_page);
-
-                args.pagination.shrink_portion(&mut transactions);
-
-                let selection_set =
-                    self.ctx.look_ahead().field("transactions").field("edges").field("node");
-                let mut edges = Vec::new();
-                for transaction in transactions.into_iter() {
-                    let mut transaction: BlockchainTransaction = transaction.into();
-
-                    if selection_set.field("in_message").exists() {
-                        let in_message =
-                            message_loader.load_many(vec![transaction.in_msg.clone()]).await?;
-                        transaction.in_message =
-                            in_message.get(&transaction.in_msg).map(ToOwned::to_owned);
-                    }
-
-                    if selection_set.field("out_messages").exists() {
-                        let out_msg_ids = transaction.out_msgs.clone();
-                        let out_messages = message_loader.load_many(out_msg_ids).await?;
-                        transaction.out_messages =
-                            Some(out_messages.into_values().map(Some).collect());
-                    }
-
-                    let cursor = transaction.chain_order.clone();
-                    let edge: Edge<
+                    let mut connection: Connection<
                         String,
-                        graphql::transaction::Transaction,
+                        crate::schema::graphql_ext::Transaction,
                         EmptyFields,
+                        EmptyFields,
+                        BlockchainTransactionsConnection,
                         BlockchainTransactionsEdge,
-                    > = Edge::with_additional_fields(cursor, transaction, EmptyFields);
-                    edges.push(edge);
-                }
+                    > = Connection::new(has_previous_page, has_next_page);
 
-                connection.edges.extend(edges);
+                    args.pagination.shrink_portion(&mut transactions);
 
-                Ok::<_, async_graphql::Error>(connection)
-            },
-        )
-        .await
-        .ok()
+                    let selection_set =
+                        self.ctx.look_ahead().field("transactions").field("edges").field("node");
+
+                    // Convert db transactions to GraphQL type first.
+                    let transactions: Vec<BlockchainTransaction> =
+                        transactions.into_iter().map(Into::into).collect();
+
+                    // Batch-fetch all messages in a single load_many call
+                    // instead of per-transaction load_many inside the loop.
+                    let want_in_message = selection_set.field("in_message").exists();
+                    let want_out_messages = selection_set.field("out_messages").exists();
+
+                    let mut all_msg_ids: Vec<String> = Vec::new();
+                    if want_in_message {
+                        all_msg_ids.extend(transactions.iter().map(|t| t.in_msg.clone()));
+                    }
+                    if want_out_messages {
+                        all_msg_ids.extend(transactions.iter().flat_map(|t| t.out_msgs.clone()));
+                    }
+                    let loaded_messages = if !all_msg_ids.is_empty() {
+                        message_loader.load_many(all_msg_ids).await?
+                    } else {
+                        std::collections::HashMap::new()
+                    };
+
+                    let mut edges = Vec::new();
+                    for mut transaction in transactions {
+                        if want_in_message {
+                            transaction.in_message =
+                                loaded_messages.get(&transaction.in_msg).cloned();
+                        }
+
+                        if want_out_messages {
+                            transaction.out_messages = Some(
+                                transaction
+                                    .out_msgs
+                                    .iter()
+                                    .map(|id| loaded_messages.get(id).cloned())
+                                    .collect(),
+                            );
+                        }
+
+                        let cursor = transaction.chain_order.clone();
+                        let edge: Edge<
+                            String,
+                            graphql::transaction::Transaction,
+                            EmptyFields,
+                            BlockchainTransactionsEdge,
+                        > = Edge::with_additional_fields(cursor, transaction, EmptyFields);
+                        edges.push(edge);
+                    }
+
+                    connection.edges.extend(edges);
+
+                    Ok::<_, async_graphql::Error>(connection)
+                },
+            )
+            .await
+            .map_err(crate::schema::db::connector::map_db_error)?,
+        ))
     }
 }

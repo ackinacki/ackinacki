@@ -1,4 +1,4 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::net::SocketAddr;
@@ -37,7 +37,7 @@ BUILD_TIME={}",
 #[derive(Parser, Debug)]
 #[command(author, long_version = &**LONG_VERSION, about, long_about = None)]
 pub struct Args {
-    // Subscription to blocks (TODO change type to SocketAddr)
+    /// Subscription to blocks (TODO change type to SocketAddr)
     #[arg(long, env)]
     pub stream_src_url: Option<Url>,
 
@@ -52,6 +52,19 @@ pub struct Args {
     /// File path for sqlite
     #[arg(long, env, default_value_t = database::sqlite::sqlite_helper::SQLITE_DATA_DIR.to_string())]
     pub sqlite_path: String,
+
+    /// ClickHouse URL for wallet activity export (e.g. http://localhost:8123)
+    /// If not set, ClickHouse export is disabled
+    #[arg(long, env = "CLICKHOUSE_URL")]
+    pub clickhouse_url: Option<String>,
+
+    /// ClickHouse user (required when clickhouse-url is set)
+    #[arg(long, env = "CLICKHOUSE_USER")]
+    pub clickhouse_user: Option<String>,
+
+    /// ClickHouse password (required when clickhouse-url is set)
+    #[arg(long, env = "CLICKHOUSE_PASSWORD")]
+    pub clickhouse_password: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -147,6 +160,9 @@ pub fn config_from_args(args: Args) -> anyhow::Result<AppConfig> {
             .and_then(|path| read_keys_from_file(&path).ok()),
         config_path,
         bk_api_endpoints,
+        clickhouse_url: args.clickhouse_url,
+        clickhouse_user: args.clickhouse_user,
+        clickhouse_password: args.clickhouse_password,
     })
 }
 

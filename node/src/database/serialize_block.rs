@@ -5,11 +5,13 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hash::RandomState;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use account_state::ThreadAccount;
 use account_state::ThreadAccountsRepository;
 use database::documents_db::DocumentsDb;
+use database::documents_db::TxActivitySummary;
 use database::serialization::AccountSerializationSet;
 use database::serialization::BlockSerializationSetFH;
 use database::serialization::DeletedAccountSerializationSet;
@@ -70,7 +72,7 @@ pub fn reflect_block_in_db(
     shard_state: &NodeThreadAccountsRef,
     transaction_traces: &mut HashMap<UInt256, Vec<EngineTraceInfoData>, RandomState>,
     thread_accounts_repository: &NodeThreadAccountsRepository,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<TxActivitySummary>> {
     let now_all = std::time::Instant::now();
 
     let block = &envelope.data().tvm_block();
@@ -192,6 +194,26 @@ pub fn reflect_block_in_db(
         doc.chain_order = transaction_index;
         transaction_docs.push(doc);
     }
+
+    // extract wallet activity summaries
+    let activity_summaries: Vec<TxActivitySummary> = transaction_docs
+        .iter()
+        .map(|tx| {
+            let in_msg_hash = UInt256::from_str(&tx.in_msg).ok();
+            let in_msg_info = in_msg_hash.and_then(|h| messages.get(&h));
+            TxActivitySummary {
+                tx_id: tx.id.clone(),
+                account_addr: tx.account_addr.clone(),
+                timestamp: tx.now,
+                tr_type: tx.tr_type,
+                aborted: tx.aborted,
+                in_msg_type: in_msg_info.and_then(|m| m.msg_type),
+                bounced: in_msg_info.and_then(|m| m.bounced).unwrap_or(false),
+                total_fees: tx.total_fees.clone(),
+            }
+        })
+        .collect();
+
     if !transaction_docs.is_empty() {
         archive
             .lock()
@@ -303,7 +325,7 @@ pub fn reflect_block_in_db(
         now_all.elapsed().as_millis(),
         block_id_hex
     );
-    Ok(())
+    Ok(activity_summaries)
 }
 
 fn prepare_bk_set_update_archive_struct(
@@ -420,9 +442,7 @@ pub(crate) fn prepare_messages_from_transaction(
             doc.msg_chain_order = Some(format!("{}{}", transaction_index, u64_to_string(index)));
 
             index += 1;
-            if !cfg!(feature = "store_events_only") && doc.msg_type == Some(2) {
-                messages.insert(message_id.clone(), doc);
-            }
+            messages.insert(message_id.clone(), doc);
 
             Ok(true)
         })
@@ -572,8 +592,11 @@ pub(crate) fn prepare_block_archive_struct(
     set.parent = envelope.data().parent().to_string();
     set.aggregated_signature = Some(bincode::serialize(envelope.aggregated_signature())?);
     set.signature_occurrences = Some(bincode::serialize(&envelope.clone_signature_occurrences())?);
-    set.share_state_resource_address =
-        envelope.data().directives().share_state_resources().clone().map(|v| format!("{v:?}"));
+    set.share_state_resource_address = if *envelope.data().directives().share_state_resources() {
+        Some("true".to_string())
+    } else {
+        None
+    };
     let common_section = envelope.data().common_section();
     set.producer_id = Some(common_section.producer_id().to_string());
     set.thread_id = Some(hex::encode(common_section.thread_id()));

@@ -1,0 +1,27 @@
+# Maximum number of connections in the SQLite connection pool.
+# Changing this value triggers pool recreation (existing queries finish normally).
+QSERVER_MAX_POOL_CONNECTIONS: 20
+
+# Maximum time (seconds) to wait for a free connection from the pool.
+# Requests exceeding this timeout fail fast instead of blocking indefinitely.
+# Changing this value triggers pool recreation.
+QSERVER_ACQUIRE_TIMEOUT_SECS: 1
+
+# SQLite query execution timeout in seconds.
+# Queries exceeding this limit are interrupted with SQLITE_INTERRUPT
+# and return a "Request timeout" GraphQL error with extensions.code = "TIMEOUT".
+QSERVER_SQLITE_QUERY_TIMEOUT_SECS: 2
+
+# SQLite mmap_size PRAGMA in bytes (0 = disabled).
+# Changing this value triggers pool recreation.
+QSERVER_SQLITE_MMAP_SIZE: 161061273600
+
+# SQLite cache_size PRAGMA.
+# Negative value = size in KiB, positive = number of pages.
+# Changing this value triggers pool recreation.
+QSERVER_SQLITE_CACHE_SIZE: -1000000
+
+# Maximum number of archive databases attached to each connection.
+# Cannot exceed 9 (SQLite SQLITE_MAX_ATTACHED limit, excluding `main`).
+# Takes effect on the next archive resolution (SIGHUP or startup).
+QSERVER_MAX_ATTACHED_DB: 9

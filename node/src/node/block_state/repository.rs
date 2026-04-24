@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -6,6 +7,9 @@ use std::sync::Arc;
 use std::sync::Weak;
 
 use node_types::BlockIdentifier;
+use node_types::ParentRef;
+use node_types::TemporaryBlockId;
+use node_types::ThreadIdentifier;
 use parking_lot::RwLock;
 #[cfg(test)]
 use telemetry_utils::mpsc::instrumented_channel;
@@ -14,11 +18,12 @@ use weak_table::WeakValueHashMap;
 
 use super::block_state_inner::BlockStateInner;
 use super::state::AckiNackiBlockState;
-#[cfg(test)]
+use super::temporary_state::TemporaryBlockState;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::node::block_state::block_state_inner::StateSaveCommand;
 #[cfg(test)]
 use crate::node::block_state::start_state_save_service;
+use crate::node::services::block_processor::service::MAX_ATTESTATION_TARGET_BETA;
 use crate::types::notification::Notification;
 
 #[derive(Clone)]
@@ -52,11 +57,14 @@ impl BlockState {
     pub fn test() -> Self {
         let block_identifier = BlockIdentifier::default();
         let (tx, _) = instrumented_channel(None::<BlockProductionMetrics>, "test");
+        let mut state = AckiNackiBlockState::default();
+        state.attach_metrics(None);
+        state.report_created();
         BlockState {
             block_identifier,
             inner: Arc::new(BlockStateInner {
                 block_identifier,
-                shared_access: RwLock::new(AckiNackiBlockState::default()),
+                shared_access: RwLock::new(state),
             }),
             save_sender: Arc::new(tx),
         }
@@ -84,6 +92,11 @@ pub struct BlockStateRepository {
     //    cache: Arc<Mutex<LruCache<BlockIdentifier, BlockState>>>,
     notifications: Notification,
     save_service_sender: Arc<InstrumentedSender<StateSaveCommand>>,
+    metrics: Option<BlockProductionMetrics>,
+
+    // In-memory storage for temporary block states.
+    // Not persisted to disk — temporary states live only while the producer is active.
+    temporary_map: Arc<RwLock<VecDeque<(TemporaryBlockId, Arc<RwLock<TemporaryBlockState>>)>>>,
 }
 
 impl PartialEq for BlockState {
@@ -107,14 +120,19 @@ impl BlockStateRepository {
     pub fn new(
         block_state_repo_data_dir: PathBuf,
         save_service_sender: Arc<InstrumentedSender<StateSaveCommand>>,
+        metrics: Option<BlockProductionMetrics>,
     ) -> Self {
-        Self {
+        let repository = Self {
             block_state_repo_data_dir,
             map: Default::default(),
             notifications: Notification::new(),
             //            cache: Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(100_000).unwrap()))),
             save_service_sender,
-        }
+            metrics,
+            temporary_map: Default::default(),
+        };
+        repository.report_temporary_map_size(0);
+        repository
     }
 
     #[cfg(test)]
@@ -131,6 +149,8 @@ impl BlockStateRepository {
             notifications: Notification::new(),
             // cache: Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(1).unwrap()))),
             save_service_sender: Arc::new(state_save_tx),
+            metrics: None,
+            temporary_map: Default::default(),
         }
     }
 
@@ -159,9 +179,11 @@ impl BlockStateRepository {
         let mut state = super::private::load_state(file_path.clone())?.unwrap_or_else(|| {
             let mut state = AckiNackiBlockState::new(*block_identifier);
             state.file_path = file_path;
-            state.add_subscriber(self.notifications.clone());
             state
         });
+        state.attach_metrics(self.metrics.clone());
+        state.report_created();
+        state.add_subscriber(self.notifications.clone());
         if state.parent_block_identifier().is_none()
             && block_identifier == &BlockIdentifier::default()
         {
@@ -202,6 +224,54 @@ impl BlockStateRepository {
 
     pub fn touch(&mut self) {
         self.notifications.touch();
+    }
+
+    fn report_temporary_map_size(&self, size: usize) {
+        if let Some(metrics) = &self.metrics {
+            metrics.report_temporary_block_states_size(size as u64);
+        }
+    }
+
+    /// Create a temporary block state and register it in the in-memory map.
+    /// Called by the block-producer BEFORE block production starts.
+    pub fn create_temporary(
+        &self,
+        temp_id: TemporaryBlockId,
+        parent_ref: ParentRef,
+        thread_id: ThreadIdentifier,
+    ) -> Arc<RwLock<TemporaryBlockState>> {
+        let mut state = TemporaryBlockState::new(temp_id, parent_ref);
+        state.set_thread_identifier(thread_id);
+        let arc = Arc::new(RwLock::new(state));
+        let mut temporary_map = self.temporary_map.write();
+        temporary_map.push_back((temp_id, arc.clone()));
+        while temporary_map.len() > MAX_ATTESTATION_TARGET_BETA * 2 {
+            temporary_map.pop_front();
+        }
+        self.report_temporary_map_size(temporary_map.len());
+        arc
+    }
+
+    /// Get a temporary block state by its ID.
+    pub fn get_temporary(
+        &self,
+        temp_id: &TemporaryBlockId,
+    ) -> Option<Arc<RwLock<TemporaryBlockState>>> {
+        self.temporary_map
+            .read()
+            .iter()
+            .find(|(id, _state)| id == temp_id)
+            .map(|(_, state)| state)
+            .cloned()
+    }
+
+    /// Remove temporary states that have been promoted to real BlockStates.
+    /// Call this after the production loop has stopped — at that point no thread
+    /// holds a `ParentRef::Temporary` referencing these entries.
+    pub fn cleanup_temporaries(&self) {
+        let mut map = self.temporary_map.write();
+        map.clear();
+        self.report_temporary_map_size(map.len());
     }
 
     #[cfg(test)]

@@ -1,4 +1,4 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::collections::HashMap;
@@ -28,7 +28,7 @@ pub fn write_to_db(
     tracing::trace!("Write to archive: seq_no={:?}, id={:?}", block.seq_no(), block.identifier());
 
     let mut transaction_traces = HashMap::new();
-    reflect_block_in_db(
+    let _activity_summaries = reflect_block_in_db(
         sqlite_clone,
         envelope,
         None,

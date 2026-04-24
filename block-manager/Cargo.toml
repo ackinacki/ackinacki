@@ -1,6 +1,6 @@
 [package]
 name = "block-manager"
-version = "0.5.0"
+version = "0.6.0"
 edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
@@ -14,6 +14,7 @@ account-state.workspace = true
 anyhow.workspace = true
 bincode.workspace = true
 clap.workspace = true
+clickhouse.workspace = true
 database.workspace = true
 message-router.workspace = true
 network.workspace = true
@@ -38,7 +39,7 @@ tvm_sdk.workspace = true
 tvm_types.workspace = true
 url.workspace = true
 
-reqwest = { version = "0.12.22", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "rustls"] }
 rustls-pki-types = { version = "1.8.0" }
 
 

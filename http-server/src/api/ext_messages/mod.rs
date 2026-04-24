@@ -169,6 +169,7 @@ pub enum FeedbackErrorCode {
     InternalError,
     ComputeSkipped,
     QueueOverflow,
+    NotBlockProducer,
 }
 
 impl FeedbackErrorCode {
@@ -186,6 +187,7 @@ impl FeedbackErrorCode {
             FeedbackErrorCode::InternalError => Cow::Borrowed("INTERNAL_ERROR"),
             FeedbackErrorCode::ComputeSkipped => Cow::Borrowed("COMPUTE_SKIPPED"),
             FeedbackErrorCode::QueueOverflow => Cow::Borrowed("QUEUE_OVERFLOW"),
+            FeedbackErrorCode::NotBlockProducer => Cow::Borrowed("NOT_BLOCK_PRODUCER"),
         }
     }
 }

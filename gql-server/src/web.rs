@@ -5,6 +5,7 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -27,21 +28,39 @@ use warp::http::StatusCode;
 use warp::Filter;
 use warp::Rejection;
 
-use crate::defaults::MAX_POOL_CONNECTIONS;
+use crate::metrics::GqlServerMetrics;
 use crate::schema::db::DBConnector;
 use crate::schema::graphql::block::BlockLoader;
 use crate::schema::graphql::message::MessageLoader;
 use crate::schema::graphql::transaction::TransactionLoader;
 use crate::schema::graphql_ext;
+use crate::schema::graphql_ext::DeprecatedApiEnabled;
 
-pub async fn open_db(db_path: PathBuf) -> anyhow::Result<Pool<Sqlite>> {
+pub async fn open_db(
+    db_path: PathBuf,
+    max_connections: u32,
+    acquire_timeout: std::time::Duration,
+    pragmas: String,
+) -> anyhow::Result<Pool<Sqlite>> {
     let db_path_str = db_path.display().to_string();
     let connect_string = format!("{db_path_str}?mode=ro");
 
     let connect_options = SqliteConnectOptions::from_str(&connect_string)?.create_if_missing(false);
 
+    tracing::info!(pragmas = pragmas.as_str(), "SQLite read PRAGMAs");
+
     let pool = SqlitePoolOptions::new()
-        .max_connections(MAX_POOL_CONNECTIONS)
+        .max_connections(max_connections)
+        .acquire_timeout(acquire_timeout)
+        .after_connect(move |conn, _meta| {
+            let pragmas = pragmas.clone();
+            Box::pin(async move {
+                sqlx::raw_sql(sqlx::AssertSqlSafe(pragmas)).execute(&mut *conn).await?;
+                // TODO: remove after verifying PRAGMAs in production
+                tracing::info!("Applied SQLite read PRAGMAs to new connection");
+                Ok(())
+            })
+        })
         .connect_with(connect_options)
         .await
         .with_context(|| format!("DB file: {db_path_str}"))?;
@@ -53,6 +72,8 @@ pub async fn start(
     bind_to: String,
     db_connector: Arc<DBConnector>,
     sdk_client: Arc<ClientContext>,
+    metrics: Option<GqlServerMetrics>,
+    deprecated_api: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let socket_addr = bind_to.parse::<SocketAddr>()?;
 
@@ -75,6 +96,7 @@ pub async fn start(
     let schema = Schema::build(graphql_ext::QueryRoot, EmptyMutation, EmptySubscription)
         .data(Arc::clone(&db_connector))
         .data(sdk_client)
+        .data(DeprecatedApiEnabled(Arc::clone(&deprecated_api)))
         .data(DataLoader::new(
             BlockLoader { db_connector: Arc::clone(&db_connector) },
             tokio::spawn,
@@ -91,11 +113,24 @@ pub async fn start(
         .finish();
 
     let graphql_post = async_graphql_warp::graphql(schema).and_then(
-        |(schema, request): (
+        move |(schema, request): (
             Schema<graphql_ext::QueryRoot, EmptyMutation, EmptySubscription>,
             async_graphql::Request,
-        )| async move {
-            Ok::<_, Infallible>(GraphQLResponse::from(schema.execute(request).await))
+        )| {
+            let metrics = metrics.clone();
+            async move {
+                let start = std::time::Instant::now();
+                let response = schema.execute(request).await;
+                if let Some(m) = &metrics {
+                    if response.errors.is_empty() {
+                        m.report_query_success(start.elapsed().as_millis() as u64);
+                    } else {
+                        tracing::trace!("request error: {:?}", response.errors);
+                        m.report_query_error();
+                    }
+                }
+                Ok::<_, Infallible>(GraphQLResponse::from(response))
+            }
         },
     );
 

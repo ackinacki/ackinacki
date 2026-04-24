@@ -47,7 +47,7 @@
     state: absent
   when: 
     - BK_SET_FILE and not ZEROSTATE
-    - "{{ zerostate_stat.stat.exists }}"
+    - "zerostate_stat.stat.exists"
 
 - name: Compose up
   ansible.builtin.shell:

@@ -51,19 +51,11 @@ impl PaginationArgs {
     }
 
     pub fn has_next_page(&self, num_nodes: usize) -> bool {
-        if let Some(first) = self.first {
-            num_nodes > first
-        } else {
-            false
-        }
+        self.first.is_some_and(|first| num_nodes > first) || self.before.is_some()
     }
 
     pub fn has_previous_page(&self, num_nodes: usize) -> bool {
-        if let Some(last) = self.last {
-            num_nodes > last
-        } else {
-            false
-        }
+        self.last.is_some_and(|last| num_nodes > last) || self.after.is_some()
     }
 }
 
@@ -111,5 +103,59 @@ mod tests {
     fn get_direction_returns_backward_when_last_and_after_and_before() {
         let args = make_args(None, Some(AFTER), Some(2), Some(BEFORE));
         assert!(matches!(args.get_direction(), PaginateDirection::Backward));
+    }
+
+    // --- has_previous_page / has_next_page ---
+
+    #[test]
+    fn has_previous_page_true_when_after_is_set() {
+        let args = make_args(Some(3), Some(AFTER), None, None);
+        // after cursor exists → items before it
+        assert!(args.has_previous_page(3));
+        assert!(args.has_previous_page(0));
+    }
+
+    #[test]
+    fn has_previous_page_false_when_no_after_and_no_overflow() {
+        let args = make_args(Some(3), None, None, None);
+        assert!(!args.has_previous_page(3));
+    }
+
+    #[test]
+    fn has_previous_page_true_on_backward_overflow() {
+        let args = make_args(None, None, Some(3), None);
+        // 4 rows returned for last=3 → overflow → previous page exists
+        assert!(args.has_previous_page(4));
+        assert!(!args.has_previous_page(3));
+    }
+
+    #[test]
+    fn has_next_page_true_when_before_is_set() {
+        let args = make_args(None, None, Some(3), Some(BEFORE));
+        // before cursor exists → items after it
+        assert!(args.has_next_page(3));
+        assert!(args.has_next_page(0));
+    }
+
+    #[test]
+    fn has_next_page_false_when_no_before_and_no_overflow() {
+        let args = make_args(None, None, Some(3), None);
+        assert!(!args.has_next_page(3));
+    }
+
+    #[test]
+    fn has_next_page_true_on_forward_overflow() {
+        let args = make_args(Some(3), None, None, None);
+        // 4 rows returned for first=3 → overflow → next page exists
+        assert!(args.has_next_page(4));
+        assert!(!args.has_next_page(3));
+    }
+
+    #[test]
+    fn window_query_both_pages_true() {
+        let args = make_args(Some(10), Some(AFTER), None, Some(BEFORE));
+        // Window between after and before, fewer items than first
+        assert!(args.has_previous_page(3)); // after is set
+        assert!(args.has_next_page(3)); // before is set
     }
 }

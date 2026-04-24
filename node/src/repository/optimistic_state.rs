@@ -85,9 +85,6 @@ pub trait OptimisticState: Send + Clone {
         thread_accounts_repository: &NodeThreadAccountsRepository,
         message_db: MessageDurableStorage,
         config_read: crate::config::config_read::ConfigRead,
-        #[cfg(feature = "authroot_dapp_repair")] authroot_dapp_repaired: std::sync::Arc<
-            parking_lot::Mutex<Option<crate::types::BlockSeqNo>>,
-        >,
     ) -> anyhow::Result<(
         CrossThreadRefData,
         HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
@@ -314,6 +311,10 @@ impl OptimisticStateImpl {
             thread_accounts_repository.get_state(&trimmed_state.block_id, shard_state)?;
         Ok(state_from_trimmed(trimmed_state, thread_accounts))
     }
+
+    pub fn set_messages(&mut self, messages: ThreadMessageQueueState) {
+        self.messages = messages;
+    }
 }
 
 impl OptimisticState for OptimisticStateImpl {
@@ -372,9 +373,6 @@ impl OptimisticState for OptimisticStateImpl {
         thread_accounts_repository: &NodeThreadAccountsRepository,
         message_db: MessageDurableStorage,
         config_read: crate::config::config_read::ConfigRead,
-        #[cfg(feature = "authroot_dapp_repair")] authroot_dapp_repaired: std::sync::Arc<
-            parking_lot::Mutex<Option<crate::types::BlockSeqNo>>,
-        >,
     ) -> anyhow::Result<(
         CrossThreadRefData,
         HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
@@ -438,7 +436,14 @@ impl OptimisticState for OptimisticStateImpl {
                 let state = e
                     .cross_thread_ref_data_service
                     .get_cross_thread_ref_data(block_id)
-                    .expect("Failed to load ref state");
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "Failed to load direct cross-thread ref state while applying block {} in thread {:?}: direct_ref_id={block_id}, split_related={}, error={error:#}",
+                            block_candidate.identifier(),
+                            block_candidate.common_section().thread_id(),
+                            block_candidate.is_thread_splitting(),
+                        )
+                    });
                 refs.push(state);
             }
             (refs, e.cross_thread_ref_data_service.clone())
@@ -459,6 +464,8 @@ impl OptimisticState for OptimisticStateImpl {
             self.clone(),
             refs.iter(),
             block_candidate.common_section().thread_id(),
+            Some(block_candidate.identifier()),
+            block_candidate.is_thread_splitting(),
             &cross_thread_ref_data_repo,
             wrapped_slash_messages,
             Vec::new(),
@@ -559,10 +566,6 @@ impl OptimisticState for OptimisticStateImpl {
             apply_to_durable,
             #[cfg(feature = "monitor-accounts-number")]
             updated_accounts_number,
-            #[cfg(feature = "authroot_dapp_repair")]
-            is_block_of_retired_version,
-            #[cfg(feature = "authroot_dapp_repair")]
-            authroot_dapp_repaired,
         )?;
         cross_thread_ref_data.set_block_refs(block_candidate.common_section().refs().clone());
         *self = new_state;

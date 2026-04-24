@@ -87,6 +87,9 @@ struct BlockProductionMetricsInner {
     gas_overflow: Counter<u64>,
     aerospike_accounts_cache_len: Gauge<u64>,
     aerospike_accounts_pending_len: Gauge<u64>,
+    temporary_block_states_size: Gauge<u64>,
+    live_block_states: UpDownCounter<i64>,
+    produced_blocks_queue_size: Gauge<u64>,
 
     // Node Binary: supported protocol versions
     protocol_support_versions: Gauge<u64>,
@@ -96,6 +99,8 @@ struct BlockProductionMetricsInner {
 
     // BK set: supported protocol versions in epoch
     bkset_epoch_protocol_versions: Gauge<u64>,
+
+    snapshot_creation_time: Gauge<u64>,
 }
 
 pub const BK_SET_UPDATE_CHANNEL: &str = "bk_set_update";
@@ -324,11 +329,17 @@ impl BlockProductionMetrics {
             aerospike_accounts_pending_len: meter
                 .u64_gauge("node_aerospike_accounts_pending_len")
                 .build(),
+            temporary_block_states_size: meter
+                .u64_gauge("node_temporary_block_states_size")
+                .build(),
+            live_block_states: meter.i64_up_down_counter("node_live_block_states").build(),
+            produced_blocks_queue_size: meter.u64_gauge("node_produced_blocks_queue_size").build(),
             protocol_support_versions: meter.u64_gauge("node_protocol_support_versions").build(),
             block_protocol_version: meter.u64_gauge("node_block_protocol_version").build(),
             bkset_epoch_protocol_versions: meter
                 .u64_gauge("node_bkset_epoch_protocol_versions")
                 .build(),
+            snapshot_creation_time: meter.u64_gauge("node_snapshot_creation_time").build(),
         }))
     }
 
@@ -567,6 +578,10 @@ impl BlockProductionMetrics {
         self.0.saved_states_counter.add(1, &[thread_id_attr(thread_id)]);
     }
 
+    pub fn report_snapshot_creation_time(&self, duration_ms: u64, thread_id: &ThreadIdentifier) {
+        self.0.snapshot_creation_time.record(duration_ms, &[thread_id_attr(thread_id)]);
+    }
+
     pub fn report_broadcast_join(&self, thread_id: &ThreadIdentifier) {
         self.0.broadcast_join.add(1, &[thread_id_attr(thread_id)]);
     }
@@ -663,6 +678,18 @@ impl BlockProductionMetrics {
         let attrs = &[thread_id_attr(thread_id)];
         self.0.aerospike_accounts_cache_len.record(cache_len, attrs);
         self.0.aerospike_accounts_pending_len.record(pending_len, attrs);
+    }
+
+    pub fn report_temporary_block_states_size(&self, value: u64) {
+        self.0.temporary_block_states_size.record(value, &[]);
+    }
+
+    pub fn report_live_block_states_delta(&self, delta: i64) {
+        self.0.live_block_states.add(delta, &[]);
+    }
+
+    pub fn report_produced_blocks_queue_size(&self, value: u64, thread_id: &ThreadIdentifier) {
+        self.0.produced_blocks_queue_size.record(value, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_attestation_tracking_collection_size(

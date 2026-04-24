@@ -79,6 +79,7 @@ impl BkSetUpdate {
         tracing::trace!(target: "blockchain_api", "SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
         let rows: Vec<BkSetUpdate> = builder.build_query_as().fetch_all(&mut *conn).await?;
 
@@ -111,6 +112,7 @@ mod tests {
     use testdir::testdir;
 
     use super::BkSetUpdate;
+    use crate::defaults;
     use crate::schema::db::DBConnector;
     use crate::schema::graphql::query::PaginationArgs;
     use crate::schema::graphql_ext::blockchain_api::bk_set_updates::BlockchainBkSetUpdatesQueryArgs;
@@ -169,8 +171,18 @@ mod tests {
         insert_bk_set_update(&archive_db, "blk-2", "thread-A", 2, "200", &[2]);
         insert_bk_set_update(&archive_db, "blk-1", "thread-A", 1, "100", &[1]);
 
-        let pool = web::open_db(PathBuf::from(&main_db)).await.expect("open main db");
-        let db_connector = DBConnector::new(pool, main_db.clone());
+        let pool = web::open_db(
+            PathBuf::from(&main_db),
+            15,
+            std::time::Duration::from_secs(defaults::DEFAULT_ACQUIRE_TIMEOUT_SECS),
+            crate::schema::db::build_read_pragmas(
+                defaults::DEFAULT_SQLITE_MMAP_SIZE,
+                defaults::DEFAULT_SQLITE_CACHE_SIZE,
+            ),
+        )
+        .await
+        .expect("open main db");
+        let db_connector = DBConnector::new(pool, main_db.clone(), defaults::MAX_POOL_CONNECTIONS);
         db_connector
             .update_attachments(vec![archive_db.to_string_lossy().into_owned()])
             .await

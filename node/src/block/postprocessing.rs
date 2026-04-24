@@ -28,17 +28,6 @@ use crate::types::BlockInfo;
 use crate::types::BlockSeqNo;
 use crate::types::ThreadsTable;
 
-#[cfg(feature = "authroot_dapp_repair")]
-static AUTH_ROOT_ADDRESS: &str = "0404040404040404040404040404040404040404040404040404040404040404";
-
-#[cfg(feature = "authroot_dapp_repair")]
-static AUTH_ROOT_OLD_DAPP_ID: &str =
-    "0000000000000000000000000000000000000000000000000000000000000000";
-
-#[cfg(feature = "authroot_dapp_repair")]
-static AUTH_ROOT_NEW_DAPP_ID: &str =
-    "0000000000000000000000000000000000000000000000000000000000000002";
-
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all)]
 pub fn postprocess(
@@ -65,10 +54,6 @@ pub fn postprocess(
     db: MessageDurableStorage,
     apply_to_durable: bool,
     #[cfg(feature = "monitor-accounts-number")] updated_accounts_number: u64,
-    #[cfg(feature = "authroot_dapp_repair")] is_block_of_retired_version: bool,
-    #[cfg(feature = "authroot_dapp_repair")] authroot_dapp_repaired: std::sync::Arc<
-        parking_lot::Mutex<Option<BlockSeqNo>>,
-    >,
 ) -> anyhow::Result<(OptimisticStateImpl, CrossThreadRefData)> {
     // Prepare produced_internal_messages_to_the_current_thread
     for (addr, messages) in produced_internal_messages_to_the_current_thread.iter_mut() {
@@ -206,31 +191,6 @@ pub fn postprocess(
         new_state = shard_state.build(None)?.new_state;
     }
 
-    #[cfg(feature = "authroot_dapp_repair")]
-    if !is_block_of_retired_version {
-        let mut lock = authroot_dapp_repaired.lock();
-        if lock.is_none() && is_authroot_dapp_repaired(thread_accounts_repository, &new_state) {
-            *lock = Some(BlockSeqNo::from(0));
-        }
-        let should_repair = match *lock {
-            None => true,
-            Some(seq_no) => seq_no == block_seq_no,
-        };
-        if should_repair {
-            match repair_authroot_dappid(thread_accounts_repository, &new_state) {
-                Ok(repaired_state) => {
-                    new_state = repaired_state;
-                }
-                Err(e) => {
-                    tracing::trace!("Failed to repair authRoot dapp_id: {e}");
-                }
-            }
-            if lock.is_none() {
-                *lock = Some(block_seq_no);
-            }
-        }
-    }
-
     let new_state_builder = OptimisticStateImpl::builder()
         .block_seq_no(block_seq_no)
         .block_id(block_id)
@@ -262,98 +222,4 @@ pub fn postprocess(
         .build();
 
     Ok((new_state, cross_thread_ref_data))
-}
-
-#[cfg(feature = "authroot_dapp_repair")]
-fn is_authroot_dapp_repaired(
-    thread_accounts_repository: &NodeThreadAccountsRepository,
-    state: &NodeThreadAccountsRef,
-) -> bool {
-    use std::str::FromStr;
-
-    use node_types::DAppIdentifier;
-    use tvm_types::UInt256;
-
-    let new_dapp_id = match UInt256::from_str(AUTH_ROOT_NEW_DAPP_ID) {
-        Ok(v) => DAppIdentifier::from(v),
-        Err(_) => return false,
-    };
-    let account_id = match UInt256::from_str(AUTH_ROOT_ADDRESS) {
-        Ok(v) => AccountIdentifier::from(v),
-        Err(_) => return false,
-    };
-
-    let new_routing = AccountRouting::new(new_dapp_id, account_id);
-    let mut builder = thread_accounts_repository.state_builder(state);
-    builder.set_apply_to_durable(true);
-    match builder.account(&new_routing) {
-        Ok(Some(account_state)) => {
-            let cur_dapp = account_state.get_dapp_id();
-            if let Some(cur_dapp) = cur_dapp {
-                if cur_dapp == new_dapp_id {
-                    tracing::info!("authRoot already at new dapp_id, marking repair as done");
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        }
-        _ => false,
-    }
-}
-
-#[cfg(feature = "authroot_dapp_repair")]
-fn repair_authroot_dappid(
-    thread_accounts_repository: &NodeThreadAccountsRepository,
-    state: &NodeThreadAccountsRef,
-) -> anyhow::Result<NodeThreadAccountsRef> {
-    use std::str::FromStr;
-
-    use account_state::ThreadStateAccount;
-    use node_types::DAppIdentifier;
-    use tvm_types::UInt256;
-
-    let old_dapp_id = DAppIdentifier::from(
-        UInt256::from_str(AUTH_ROOT_OLD_DAPP_ID)
-            .map_err(|e| anyhow::format_err!("Failed to parse old dapp id: {e}"))?,
-    );
-    let new_dapp_id = DAppIdentifier::from(
-        UInt256::from_str(AUTH_ROOT_NEW_DAPP_ID)
-            .map_err(|e| anyhow::format_err!("Failed to parse new dapp id: {e}"))?,
-    );
-    let account_id = AccountIdentifier::from(
-        UInt256::from_str(AUTH_ROOT_ADDRESS)
-            .map_err(|e| anyhow::format_err!("Failed to parse authRoot address: {e}"))?,
-    );
-
-    let old_routing = AccountRouting::new(old_dapp_id, account_id);
-    let new_routing = AccountRouting::new(new_dapp_id, account_id);
-
-    let (updated_state, usage_tree) = state.with_tvm_usage_tree()?;
-    let mut builder = thread_accounts_repository.state_builder(&updated_state);
-    builder.set_apply_to_durable(true);
-
-    let account = match builder.account(&old_routing)? {
-        Some(acc) => acc,
-        None => {
-            tracing::trace!("authRoot not found at old routing, skipping repair");
-            anyhow::bail!("authRoot not found at old routing");
-        }
-    };
-
-    let thread_account = account.account()?;
-    let last_trans_hash = account.last_trans_hash();
-    let last_trans_lt = account.last_trans_lt();
-
-    let new_account =
-        ThreadStateAccount::new(thread_account, last_trans_hash, last_trans_lt, Some(new_dapp_id))?;
-
-    builder.remove_account(&old_routing);
-    builder.insert_account(&new_routing, &new_account);
-    let transition = builder.build(Some(&usage_tree))?;
-
-    tracing::info!("Moved authRoot from dapp_id ZERO to MV_DAPP_ID");
-    Ok(transition.new_state)
 }

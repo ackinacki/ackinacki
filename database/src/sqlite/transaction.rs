@@ -1,4 +1,4 @@
-// 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use serde::Deserialize;
@@ -24,20 +24,20 @@ use crate::helpers::u64_to_string;
 use crate::serialization::TransactionSerializationSet;
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
-struct TransactionCredit {
+pub struct TransactionCredit {
     credit: Option<String>,
     due_fees_collected: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
-struct TransactionStorage {
+pub struct TransactionStorage {
     storage_fees_collected: Option<String>,
     storage_fees_due: Option<String>,
     status_change: Option<u8>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
-struct TransactionCompute {
+pub struct TransactionCompute {
     success: Option<bool>,
     msg_state_used: Option<bool>,
     account_activated: Option<bool>,
@@ -56,7 +56,7 @@ struct TransactionCompute {
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
-struct TransactionAction {
+pub struct TransactionAction {
     success: Option<bool>,
     valid: Option<bool>,
     no_funds: Option<bool>,
@@ -75,7 +75,7 @@ struct TransactionAction {
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
-struct TransactionBounce {
+pub struct TransactionBounce {
     bounce_type: Option<i32>,
     fwd_fees: Option<String>,
     msg_fees: Option<String>,
@@ -86,36 +86,36 @@ struct TransactionBounce {
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct ArchTransaction {
-    id: String,
-    block_id: String,
-    boc: Vec<u8>,
-    bounce: Option<TransactionBounce>,
-    status: u8,
-    credit: Option<TransactionCredit>,
-    storage: Option<TransactionStorage>,
-    compute: Option<TransactionCompute>,
-    action: Option<TransactionAction>,
-    credit_first: bool,
-    ext_in_msg_fee: Option<String>,
-    aborted: bool,
-    destroyed: bool,
-    tr_type: u8,
-    lt: String,
-    prev_trans_hash: String,
-    prev_trans_lt: String,
-    proof: Option<Vec<u8>>,
-    now: u32,
-    outmsg_cnt: u16,
-    orig_status: u8,
-    end_status: u8,
-    in_msg: String,
-    out_msgs: Vec<String>,
-    account_addr: String,
-    workchain_id: i32,
-    total_fees: String,
-    balance_delta: String,
-    old_hash: String,
-    new_hash: String,
+    pub id: String,
+    pub(crate) block_id: String,
+    pub(crate) boc: Vec<u8>,
+    pub(crate) bounce: Option<TransactionBounce>,
+    pub(crate) status: u8,
+    pub(crate) credit: Option<TransactionCredit>,
+    pub(crate) storage: Option<TransactionStorage>,
+    pub(crate) compute: Option<TransactionCompute>,
+    pub(crate) action: Option<TransactionAction>,
+    pub(crate) credit_first: bool,
+    pub(crate) ext_in_msg_fee: Option<String>,
+    pub aborted: bool,
+    pub(crate) destroyed: bool,
+    pub tr_type: u8,
+    pub(crate) lt: String,
+    pub(crate) prev_trans_hash: String,
+    pub(crate) prev_trans_lt: String,
+    pub(crate) proof: Option<Vec<u8>>,
+    pub now: u32,
+    pub(crate) outmsg_cnt: u16,
+    pub(crate) orig_status: u8,
+    pub(crate) end_status: u8,
+    pub in_msg: String,
+    pub(crate) out_msgs: Vec<String>,
+    pub account_addr: String,
+    pub(crate) workchain_id: i32,
+    pub total_fees: String,
+    pub(crate) balance_delta: String,
+    pub(crate) old_hash: String,
+    pub(crate) new_hash: String,
     pub chain_order: String,
 }
 

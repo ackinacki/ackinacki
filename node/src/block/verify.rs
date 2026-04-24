@@ -56,9 +56,6 @@ pub fn verify_block(
     wasm_cache: WasmNodeCache,
     message_db: MessageDurableStorage,
     is_block_of_retired_version: bool,
-    #[cfg(feature = "authroot_dapp_repair")] authroot_dapp_repaired: std::sync::Arc<
-        parking_lot::Mutex<Option<crate::types::BlockSeqNo>>,
-    >,
 ) -> anyhow::Result<VerificationResult> {
     #[cfg(feature = "timing")]
     let start = std::time::Instant::now();
@@ -81,8 +78,6 @@ pub fn verify_block(
         .wasm_cache(wasm_cache)
         .node_global_config(node_global_config.clone())
         .is_block_of_retired_version(is_block_of_retired_version);
-    #[cfg(feature = "authroot_dapp_repair")]
-    let builder = builder.authroot_dapp_repaired(authroot_dapp_repaired);
     let producer = builder.build();
 
     // TODO: need to refactor this point to reuse generated verify block
@@ -94,7 +89,7 @@ pub fn verify_block(
     );
     tracing::trace!(
         "Verify block generation result: {:?}",
-        verification_block_production_result.as_ref().map(|(block, _)| block.identifier())
+        verification_block_production_result.as_ref().map(|(block, _)| block.seq_no())
     );
     if let Err(error) = &verification_block_production_result {
         if let Some(verify_error) = error.downcast_ref::<VerifyError>() {

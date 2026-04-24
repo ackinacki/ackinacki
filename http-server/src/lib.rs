@@ -293,7 +293,7 @@ async fn validate_ext_message(
     depot: &mut Depot,
     ctrl: &mut FlowCtrl,
 ) {
-    #[derive(serde::Deserialize, Clone)]
+    #[derive(serde::Deserialize, Clone, Debug)]
     pub(crate) struct IncomingMessage {
         id: String,
         body: String,
@@ -313,23 +313,24 @@ async fn validate_ext_message(
     };
     drop(iter);
 
-    let IncomingMessage { id, body, thread_id, ext_message_token, dst_dapp_id } = first_message;
+    let IncomingMessage { id, body, thread_id, ext_message_token, dst_dapp_id } = &first_message;
 
     let ext_msg = match NotQueuedExtMessage::try_new(
-        &id,
-        &body,
-        thread_id,
+        id,
+        body,
+        thread_id.clone(),
         ext_message_token.clone(),
-        dst_dapp_id,
+        dst_dapp_id.clone(),
     ) {
         Ok(ext_message) => ext_message,
         Err(err) => {
+            tracing::trace!(msg = ?first_message, "failed to preprocess ext_in message: {err}");
             return render_error(
                 res,
                 StatusCode::BAD_REQUEST,
                 &format!("message {id}: {err}"),
                 None,
-            )
+            );
         }
     };
 

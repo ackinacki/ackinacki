@@ -17,10 +17,18 @@ pub struct KeyPair {
     pub secret: String,
 }
 
-pub fn base64_id_decode(base64_str: &serde_json::Value) -> Result<String, String> {
-    let base64_str = base64_str.as_str().ok_or("Invalid JSON format")?;
-    let base64_decoded = tvm_types::base64_decode(base64_str).map_err(|err| err.to_string())?;
-    Ok(hex::encode(&base64_decoded))
+/// TODO: unify encoding in tvm-client so that both (send_message/send_messages) paths use the same format.
+pub fn decode_msg_id(id_value: &serde_json::Value) -> Result<String, String> {
+    let id_str = id_value.as_str().ok_or("Invalid JSON format")?;
+
+    // Primary: 64 hex chars = 32-byte hash (UInt256)
+    if id_str.len() == 64 && id_str.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(id_str.to_lowercase());
+    }
+
+    // Fallback: base64-encoded hash bytes (from send_messages)
+    let decoded = tvm_types::base64_decode(id_str).map_err(|e| e.to_string())?;
+    Ok(hex::encode(&decoded))
 }
 
 pub fn read_keys_from_file(path: &str) -> Result<KeyPair, Box<dyn std::error::Error>> {

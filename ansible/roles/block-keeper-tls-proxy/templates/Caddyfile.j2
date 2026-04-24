@@ -1,5 +1,22 @@
 {
+    order rate_limit before reverse_proxy
     email {$CADDY_EMAIL}
+    servers {
+        timeouts {
+            idle 30s
+        }
+        keepalive_interval 5s
+{% if cloudflare_ip_ranges is defined and cloudflare_ip_ranges | length > 0 %}
+        trusted_proxies static {{ cloudflare_ip_ranges | join(' ') }}
+        client_ip_headers CF-Connecting-IP
+{% endif %}
+{% if OTEL_COLLECTOR is defined and OTEL_COLLECTOR %}
+        metrics
+{% endif %}
+    }
+{% if OTEL_COLLECTOR is defined and OTEL_COLLECTOR %}
+    admin 0.0.0.0:2019
+{% endif %}
 {% if CADDY_EAB is defined and CADDY_EAB %}
 {% if ZEROSSL_EXCLUSIVE is defined and ZEROSSL_EXCLUSIVE %}
     acme_ca https://acme.zerossl.com/v2/DV90
@@ -34,7 +51,7 @@
 
 (reverse_proxy) {
   reverse_proxy {args[0]}:{args[1]} {
-    header_up X-Real-IP {http.request.remote.host}
+    header_up X-Real-IP {client_ip}
     header_up X-Forwarded-Port {http.request.port}
     header_up X-Forwarded-Proto {http.request.scheme}
   }
@@ -46,6 +63,19 @@ https://{{ host }} {
 {% if (LOAD_CERT is defined and LOAD_CERT is true) and (ENABLE_GEN_CERT is not defined or ENABLE_GEN_CERT is false) %}
   tls /etc/caddy/{{ CERT_FILE | mandatory }} /etc/caddy/{{ CERT_KEY_FILE | mandatory }}
 {% endif -%}
+  rate_limit {
+    zone per_ip {
+      match {
+{% if BK_RATE_LIMIT_EXEMPT_RANGES is defined and BK_RATE_LIMIT_EXEMPT_RANGES | length > 0 %}
+        not client_ip {{ BK_RATE_LIMIT_EXEMPT_RANGES | join(' ') }}
+{% endif %}
+        not method OPTIONS
+      }
+      key {client_ip}
+      events {{ BK_RATE_LIMIT_PER_IP }}
+      window {{ BK_RATE_LIMIT_WINDOW }}
+    }
+  }
   import cors {header.origin}
   import reverse_proxy "{{ HOST_PUBLIC_IP }}" "{{ block_keeper[host].BK_PORT }}"
 }

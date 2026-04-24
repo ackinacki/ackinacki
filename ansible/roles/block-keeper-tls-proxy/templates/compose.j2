@@ -1,6 +1,9 @@
 services:
   caddy:
-    image: caddy:2.8.4
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: caddy-ratelimit:2.8.4
     ports:
       - "${HOST_PUBLIC_IP}:80:80"
       - "${HOST_PUBLIC_IP}:443:443"
@@ -10,8 +13,26 @@ services:
     environment:
       - CADDY_EMAIL=${CADDY_EMAIL}
     restart: unless-stopped
+{% if OTEL_COLLECTOR is defined and OTEL_COLLECTOR %}
+    expose:
+      - "2019"
+{% endif %}
+    networks:
+      ackinacki-net:
+        aliases:
+          - caddy-{{ HOST_PUBLIC_IP | replace('.', '-') }}
+
+{% if OTEL_COLLECTOR is defined and OTEL_COLLECTOR %}
+  otel-collector:
+    image: {{ OTEL_COLLECTOR_IMAGE | default('otel/opentelemetry-collector-contrib:0.115.1') }}
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
+    restart: unless-stopped
     networks:
       - ackinacki-net
+    depends_on:
+      - caddy
+{% endif %}
 
 networks:
   ackinacki-net:

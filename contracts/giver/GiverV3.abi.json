@@ -31,12 +31,36 @@
 			]
 		},
 		{
+			"name": "sendWithBody",
+			"inputs": [
+				{"name":"dest","type":"address"},
+				{"name":"value","type":"varuint16"},
+				{"name":"bounce","type":"bool"},
+				{"name":"flag","type":"uint8"},
+				{"name":"body","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "sendCurrencyWithFlag",
 			"inputs": [
 				{"name":"dest","type":"address"},
 				{"name":"value","type":"varuint16"},
 				{"name":"ecc","type":"map(uint32,varuint32)"},
 				{"name":"flag","type":"uint8"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "sendCurrencyWithBody",
+			"inputs": [
+				{"name":"dest","type":"address"},
+				{"name":"value","type":"varuint16"},
+				{"name":"ecc","type":"map(uint32,varuint32)"},
+				{"name":"flag","type":"uint8"},
+				{"name":"body","type":"cell"}
 			],
 			"outputs": [
 			]
@@ -68,6 +92,39 @@
 				{"name":"mintDisabled","type":"bool"},
 				{"name":"initialSupplyToOwner","type":"address"},
 				{"name":"initialSupply","type":"uint128"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
+			"name": "getAccumulatorData",
+			"inputs": [
+				{"name":"sellOrderCode","type":"cell"},
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
+			"name": "getExchangeData",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"usdcWallet","type":"address"},
+				{"name":"totalMinted","type":"uint128"},
+				{"name":"mintNonce","type":"uint64"},
+				{"name":"mintAccumulatorNonce","type":"uint64"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
+			"name": "getDataForAuthService",
+			"inputs": [
+				{"name":"profileCode","type":"cell"},
+				{"name":"pubkey","type":"uint256"}
 			],
 			"outputs": [
 				{"name":"value0","type":"cell"}

@@ -2,18 +2,47 @@
 //
 
 use std::fmt;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use async_graphql::dataloader::DataLoader;
 use async_graphql::Context;
 use async_graphql::Enum;
 use async_graphql::FieldResult;
+use async_graphql::Guard;
 use async_graphql::InputObject;
 use async_graphql::Object;
 use message::MessageLoader;
 mod account;
 pub mod blockchain_api;
 pub(crate) mod events;
+
+/// Shared toggle for the deprecated-API fields, stored in schema context data.
+pub struct DeprecatedApiEnabled(pub Arc<AtomicBool>);
+
+/// Guard that rejects queries to deprecated fields when the feature is disabled.
+pub(crate) struct DeprecatedApiGuard;
+
+impl Guard for DeprecatedApiGuard {
+    async fn check(&self, ctx: &Context<'_>) -> async_graphql::Result<()> {
+        let enabled = ctx
+            .data::<DeprecatedApiEnabled>()
+            .map(|d| d.0.load(Ordering::Relaxed))
+            .unwrap_or(false);
+        if enabled {
+            Ok(())
+        } else {
+            Err("Deprecated API is disabled".into())
+        }
+    }
+}
+
+/// Visibility function: hides deprecated fields from introspection when
+/// disabled.
+pub(crate) fn is_deprecated_api_visible(ctx: &Context<'_>) -> bool {
+    ctx.data::<DeprecatedApiEnabled>().map(|d| d.0.load(Ordering::Relaxed)).unwrap_or(false)
+}
 
 use self::blockchain_api::BlockchainQuery;
 use self::message::Message;
@@ -81,12 +110,20 @@ impl QueryRoot {
         Ok(Some(Info { last_block_time: Some(gen_utime.unwrap_or(0) as f64), ..Info::default() }))
     }
 
-    #[graphql(deprecation = "Use blockchain.account instead")]
+    #[graphql(
+        guard = "DeprecatedApiGuard",
+        visible = "is_deprecated_api_visible",
+        deprecation = "Use blockchain.account instead"
+    )]
     async fn account(&self, address: String) -> Option<AccountQuery> {
         Some(AccountQuery { address, preloaded: None })
     }
 
-    #[graphql(deprecation = "Use Blockchain API instead")]
+    #[graphql(
+        guard = "DeprecatedApiGuard",
+        visible = "is_deprecated_api_visible",
+        deprecation = "Use Blockchain API instead"
+    )]
     async fn blocks(
         &self,
         ctx: &Context<'_>,
@@ -130,7 +167,11 @@ impl QueryRoot {
         Ok(Some(blocks))
     }
 
-    #[graphql(deprecation = "Use blockchain.account instead")]
+    #[graphql(
+        guard = "DeprecatedApiGuard",
+        visible = "is_deprecated_api_visible",
+        deprecation = "Use blockchain.account instead"
+    )]
     async fn accounts(
         &self,
         ctx: &Context<'_>,
@@ -153,7 +194,11 @@ impl QueryRoot {
         Ok(Some(accounts))
     }
 
-    #[graphql(deprecation = "Use Blockchain API instead")]
+    #[graphql(
+        guard = "DeprecatedApiGuard",
+        visible = "is_deprecated_api_visible",
+        deprecation = "Use Blockchain API instead"
+    )]
     async fn messages(
         &self,
         ctx: &Context<'_>,
@@ -207,7 +252,11 @@ impl QueryRoot {
         Ok(Some(messages))
     }
 
-    #[graphql(deprecation = "Use Blockchain API instead")]
+    #[graphql(
+        guard = "DeprecatedApiGuard",
+        visible = "is_deprecated_api_visible",
+        deprecation = "Use Blockchain API instead"
+    )]
     async fn transactions(
         &self,
         ctx: &Context<'_>,

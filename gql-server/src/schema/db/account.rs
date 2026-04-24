@@ -75,6 +75,7 @@ impl Account {
         tracing::debug!("SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
         let accounts = builder
             .build_query_as()
@@ -176,7 +177,7 @@ impl Account {
                 Ok(Some(account))
             }
             Err(err) => {
-                if err.code == ErrorCode::NotFound as u32 {
+                if err.code() == ErrorCode::NotFound as u32 {
                     return Ok(None);
                 }
                 bail!("failed to get account {address}: {err}");
@@ -243,6 +244,8 @@ impl Account {
 
         tracing::trace!(target: "blockchain_api", "SQL: {sql}");
 
+        let mut conn = db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
 
         let mut query = builder.build_query_as();
@@ -255,7 +258,6 @@ impl Account {
         if let Some(bind_code_hash) = bind_code_hash {
             query = query.bind(bind_code_hash);
         }
-        let mut conn = db_connector.get_connection().await?;
         let result: Result<Vec<Account>, anyhow::Error> =
             query.fetch_all(&mut *conn).await.map_err(|e| anyhow::format_err!("{e}"));
 

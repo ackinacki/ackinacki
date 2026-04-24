@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -12,6 +14,7 @@ use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedSender;
 use typed_builder::TypedBuilder;
 
+use crate::block::producer::builder::build_actions::create_not_block_producer_feedback;
 use crate::block::producer::builder::build_actions::create_queue_overflow_feedback;
 use crate::external_messages::queue::ExtMessageDst;
 use crate::external_messages::queue::ExternalMessagesQueue;
@@ -36,6 +39,7 @@ pub struct ExternalMessagesThreadStateConfig {
     thread_id: ThreadIdentifier,
     cache_size: usize,
     feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
+    is_producing: Arc<AtomicBool>,
 }
 
 impl From<ExternalMessagesThreadStateConfig> for anyhow::Result<ExternalMessagesThreadState> {
@@ -47,6 +51,7 @@ impl From<ExternalMessagesThreadStateConfig> for anyhow::Result<ExternalMessages
             thread_id: config.thread_id,
             cache_size: config.cache_size,
             feedback_sender: config.feedback_sender,
+            is_producing: config.is_producing,
         })
     }
 }
@@ -59,6 +64,7 @@ pub struct ExternalMessagesThreadState {
     thread_id: ThreadIdentifier,
     cache_size: usize,
     feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
+    is_producing: Arc<AtomicBool>,
 }
 
 impl ExternalMessagesThreadState {
@@ -68,6 +74,21 @@ impl ExternalMessagesThreadState {
 
     pub fn push_external_messages(&self, ext_messages: &[QueuedExtMessage]) -> anyhow::Result<()> {
         tracing::trace!("add_external_messages: {}", ext_messages.len());
+
+        if !self.is_producing.load(Ordering::Acquire) {
+            self.clear_queue_for_non_producer()?;
+
+            let feedbacks: Vec<_> = ext_messages
+                .iter()
+                .map(|msg| create_not_block_producer_feedback(msg.clone(), &self.thread_id))
+                .collect::<Result<_, _>>()?;
+
+            if !feedbacks.is_empty() {
+                let _ = self.feedback_sender.send(ExtMsgFeedbackList(feedbacks));
+            }
+
+            return Ok(());
+        }
 
         let now = Utc::now();
 
@@ -91,6 +112,40 @@ impl ExternalMessagesThreadState {
 
         if let Some(metrics) = &self.report_metrics {
             metrics.report_ext_msg_queue_size(report_len, &self.thread_id);
+        }
+
+        Ok(())
+    }
+
+    pub fn clear_queue_for_non_producer(&self) -> anyhow::Result<()> {
+        if self.is_producing.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let drained = self.queue.guarded_mut(|q| q.drain_all());
+
+        if drained.is_empty() {
+            return Ok(());
+        }
+
+        tracing::info!(
+            target: "ext_messages",
+            "Clearing {} ext messages from queue for non-producer thread {:?}",
+            drained.len(),
+            self.thread_id
+        );
+
+        let feedbacks: Vec<_> = drained
+            .into_values()
+            .map(|msg| create_not_block_producer_feedback(msg, &self.thread_id))
+            .collect::<Result<_, _>>()?;
+
+        if !feedbacks.is_empty() {
+            let _ = self.feedback_sender.send(ExtMsgFeedbackList(feedbacks));
+        }
+
+        if let Some(metrics) = &self.report_metrics {
+            metrics.report_ext_msg_queue_size(0, &self.thread_id);
         }
 
         Ok(())

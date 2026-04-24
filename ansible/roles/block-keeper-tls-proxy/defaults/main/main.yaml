@@ -13,3 +13,17 @@ CERT_KEY_FILE: testbk.ackinacki.org.key
 
 # Use ONLY ZeroSSL if the CADDY_EAB variable is set (to avoid strict LE rate limits)
 ZEROSSL_EXCLUSIVE: yes
+
+# Rate limiting per IP (requests per second)
+BK_RATE_LIMIT_PER_IP: 10
+BK_RATE_LIMIT_WINDOW: 1s
+BK_RATE_LIMIT_EXEMPT_RANGES:
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16
+  - 100.64.0.0/10
+  - 127.0.0.0/8
+  - "fc00::/7"
+  - "::1/128"
+  - 94.156.178.0/24
+  - 94.156.233.0/24

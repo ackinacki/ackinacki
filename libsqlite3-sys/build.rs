@@ -287,6 +287,16 @@ mod build_bundled {
         }
         println!("cargo:rerun-if-env-changed=SQLITE_MAX_COLUMN");
 
+        if let Ok(limit) = env::var("SQLITE_MAX_MMAP_SIZE") {
+            cfg.flag(format!("-DSQLITE_MAX_MMAP_SIZE={limit}"));
+        }
+        println!("cargo:rerun-if-env-changed=SQLITE_MAX_MMAP_SIZE");
+
+        if let Ok(limit) = env::var("SQLITE_MAX_ATTACHED") {
+            cfg.flag(format!("-DSQLITE_MAX_ATTACHED={limit}"));
+        }
+        println!("cargo:rerun-if-env-changed=SQLITE_MAX_ATTACHED");
+
         if let Ok(extras) = env::var("LIBSQLITE3_FLAGS") {
             for extra in extras.split_whitespace() {
                 if extra.starts_with("-D") || extra.starts_with("-U") {

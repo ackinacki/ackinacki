@@ -33,6 +33,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
@@ -145,8 +146,7 @@ where
     stop_result_tx: Sender<()>,
 
     stalled_threads: Arc<Mutex<HashSet<ThreadIdentifier>>>,
-    last_synced_state:
-        Option<(BlockIdentifier, BlockSeqNo, HashMap<ThreadIdentifier, BlockIdentifier>)>,
+    last_synced_state: Option<(BlockIdentifier, BlockSeqNo)>,
     chain_pulse_monitor: Sender<ChainPulseEvent>,
 
     authority_handler: JoinHandle<()>,
@@ -187,6 +187,7 @@ where
         metrics: Option<BlockProductionMetrics>,
         self_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
         external_messages: ExternalMessagesThreadState,
+        is_producing: Arc<AtomicBool>,
         message_db: MessageDurableStorage,
         last_block_attestations: Arc<Mutex<CollectedAttestations>>,
         bp_production_count: Arc<AtomicI32>,
@@ -330,6 +331,7 @@ where
                 Duration::from_millis(global_config.time_to_produce_block_millis),
                 global_config.save_state_frequency,
                 external_messages.clone(),
+                is_producing,
                 is_state_sync_requested.clone(),
                 bp_production_count,
                 save_optimistic_service_sender,

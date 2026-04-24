@@ -56,6 +56,7 @@ impl Attestation {
         tracing::trace!(target: "blockchain_api", "SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
         let rows: Vec<Attestation> = builder.build_query_as().fetch_all(&mut *conn).await?;
 
@@ -88,6 +89,7 @@ mod tests {
     use testdir::testdir;
 
     use super::Attestation;
+    use crate::defaults;
     use crate::schema::db::DBConnector;
     use crate::web;
 
@@ -159,8 +161,18 @@ mod tests {
         // Older duplicate of primary attestation from archive.
         insert_attestation(&archive_db, "block-A", 0, "source-A", "100", &[1, 1]);
 
-        let pool = web::open_db(PathBuf::from(&main_db)).await.expect("open main db");
-        let db_connector = DBConnector::new(pool, main_db.clone());
+        let pool = web::open_db(
+            PathBuf::from(&main_db),
+            15,
+            std::time::Duration::from_secs(defaults::DEFAULT_ACQUIRE_TIMEOUT_SECS),
+            crate::schema::db::build_read_pragmas(
+                defaults::DEFAULT_SQLITE_MMAP_SIZE,
+                defaults::DEFAULT_SQLITE_CACHE_SIZE,
+            ),
+        )
+        .await
+        .expect("open main db");
+        let db_connector = DBConnector::new(pool, main_db.clone(), defaults::MAX_POOL_CONNECTIONS);
         db_connector
             .update_attachments(vec![archive_db.to_string_lossy().into_owned()])
             .await

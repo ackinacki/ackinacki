@@ -10,6 +10,8 @@ pub type ThreadsTable = crate::bitmask::table::BitmasksTable<AccountRouting, Thr
 impl ThreadsTable {
     pub fn merge(&mut self, another_table: &ThreadsTable) -> anyhow::Result<()> {
         let mut merged_table = ThreadsTable::default();
+        let mut inserted = HashSet::new();
+        inserted.insert(ThreadIdentifier::default());
         let mut self_rows = self.rows().cloned().collect::<Vec<_>>();
         let mut another_table_rows = another_table.rows().cloned().collect::<Vec<_>>();
         anyhow::ensure!(
@@ -25,28 +27,40 @@ impl ThreadsTable {
                 let (mask, thread_id) = self_rows.last().cloned().unwrap();
                 if another_table_rows.is_empty() {
                     self_rows.pop();
-                    merged_table.insert_above(0, mask, thread_id)?;
+                    if inserted.insert(thread_id) {
+                        merged_table.insert_above(0, mask, thread_id)?;
+                    }
                 } else {
-                    let (mask2, thread_id2) = another_table_rows.last().unwrap();
-                    if &thread_id == thread_id2 {
-                        anyhow::ensure!(&mask == mask2);
+                    let (mask2, thread_id2) = another_table_rows.last().cloned().unwrap();
+                    if thread_id == thread_id2 {
+                        anyhow::ensure!(mask == mask2);
                         another_table_rows.pop();
                         self_rows.pop();
-                        merged_table.insert_above(0, mask, thread_id)?;
-                    } else if self_rows.iter().any(|(_m, t)| t == thread_id2) {
-                        merged_table.insert_above(0, mask, thread_id)?;
+                        if inserted.insert(thread_id) {
+                            merged_table.insert_above(0, mask, thread_id)?;
+                        }
+                    } else if self_rows.iter().any(|(_m, t)| *t == thread_id2) {
                         self_rows.pop();
-                    } else if another_table_rows.iter().any(|(_m, t)| t == &thread_id) {
-                        merged_table.insert_above(0, mask2.clone(), *thread_id2)?;
+                        if inserted.insert(thread_id) {
+                            merged_table.insert_above(0, mask, thread_id)?;
+                        }
+                    } else if another_table_rows.iter().any(|(_m, t)| *t == thread_id) {
                         another_table_rows.pop();
+                        if inserted.insert(thread_id2) {
+                            merged_table.insert_above(0, mask2, thread_id2)?;
+                        }
                     } else {
-                        merged_table.insert_above(0, mask, thread_id)?;
                         self_rows.pop();
+                        if inserted.insert(thread_id) {
+                            merged_table.insert_above(0, mask, thread_id)?;
+                        }
                     }
                 }
             } else {
                 let (mask, thread_id) = another_table_rows.pop().unwrap();
-                merged_table.insert_above(0, mask, thread_id)?;
+                if inserted.insert(thread_id) {
+                    merged_table.insert_above(0, mask, thread_id)?;
+                }
             }
         }
         if self != &merged_table {
@@ -122,6 +136,47 @@ mod tests {
         add_mask(&mut etalon, &[254], 2, 2);
         println!("{etalon:?}");
         assert_eq!(threads_table, etalon);
+        Ok(())
+    }
+
+    /// Regression test: when two tables have the same threads in different
+    /// relative orders, the old merge algorithm would insert a thread twice.
+    /// E.g. table1=[T3, T2, T1, D, default] and table2=[T2, T3, T1, D, default]
+    /// should merge without duplicates.
+    #[test]
+    fn test_merge_different_relative_order_no_duplicates() -> anyhow::Result<()> {
+        // Build base: [T1, D, default]
+        let mut base = ThreadsTable::new();
+        add_mask(&mut base, &[255], 0, 1); // T1 at row 0
+        add_mask(&mut base, &[254], 1, 10); // D at row 1
+
+        // table1: T2 then T3 above T1 → [T3, T2, T1, D, default]
+        let mut table1 = base.clone();
+        add_mask(&mut table1, &[253], 0, 2); // T2 at row 0
+        add_mask(&mut table1, &[252], 0, 3); // T3 at row 0 (pushes T2 down)
+
+        // table2: T3 then T2 above T1 → [T2, T3, T1, D, default]
+        let mut table2 = base.clone();
+        add_mask(&mut table2, &[252], 0, 3); // T3 at row 0
+        add_mask(&mut table2, &[253], 0, 2); // T2 at row 0 (pushes T3 down)
+
+        // Verify setup: both tables have the same 4 threads
+        assert_eq!(table1.len(), 5); // 4 threads + default
+        assert_eq!(table2.len(), 5);
+
+        // Merge
+        table1.merge(&table2)?;
+
+        // The merged table must have exactly 4 threads + default = 5 rows
+        assert_eq!(table1.len(), 5, "Merge produced duplicates: {:?}", table1);
+
+        // All 4 threads must be present
+        let threads: HashSet<_> = table1.list_threads().collect();
+        let block_id = BlockIdentifier::default();
+        assert!(threads.contains(&ThreadIdentifier::new(&block_id, 1)));
+        assert!(threads.contains(&ThreadIdentifier::new(&block_id, 2)));
+        assert!(threads.contains(&ThreadIdentifier::new(&block_id, 3)));
+        assert!(threads.contains(&ThreadIdentifier::new(&block_id, 10)));
         Ok(())
     }
 

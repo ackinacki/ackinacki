@@ -116,16 +116,19 @@ impl LoadBalancingService {
         let this_thread_bitmask = this_thread_bitmask.unwrap();
         let last_thread_id = last_thread_id.expect("Threads table can not be empty");
 
+        // threads_table.len() includes the default catch-all row, so
+        // the actual thread count is len() - 1.
+        let thread_count = threads_table.len(); //.saturating_sub(1);
         tracing::trace!(
-            "Thread {} load: {}. Max load: {}; min load: {}, threads_table.len - {}; max_table_size - {}",
+            "Thread {} load: {}. Max load: {}; min load: {}, thread_count - {}; max_table_size - {}",
             thread_identifier,
             current_load,
             max_load,
             min_load,
-            threads_table.len(),
+            thread_count,
             max_table_size
         );
-        if threads_table.len() > max_table_size {
+        if thread_count > max_table_size {
             threads_merge::try_threads_merge(
                 thread_identifier,
                 this_thread_row_index,

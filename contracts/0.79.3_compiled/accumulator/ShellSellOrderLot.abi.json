@@ -1,0 +1,83 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"owner","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "claim",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "onReceiveUSDC",
+			"inputs": [
+				{"name":"amount","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"root","type":"address"},
+				{"name":"owner","type":"address"},
+				{"name":"denom","type":"uint16"},
+				{"name":"orderId","type":"uint64"},
+				{"name":"claimed","type":"bool"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+		{
+			"name": "ClaimInitiated",
+			"inputs": [
+				{"name":"orderId","type":"uint64"},
+				{"name":"denom","type":"uint16"},
+				{"name":"owner","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "OrderDestroyed",
+			"inputs": [
+				{"name":"orderId","type":"uint64"},
+				{"name":"denom","type":"uint16"},
+				{"name":"amount","type":"uint128"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_root","type":"address"},
+		{"init":false,"name":"_owner","type":"address"},
+		{"init":true,"name":"_denom","type":"uint16"},
+		{"init":true,"name":"_orderId","type":"uint64"},
+		{"init":false,"name":"_claimed","type":"bool"}
+	]
+}

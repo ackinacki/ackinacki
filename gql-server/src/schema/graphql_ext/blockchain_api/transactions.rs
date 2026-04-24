@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use async_graphql::connection::ConnectionNameType;
@@ -20,7 +20,7 @@ pub struct BlockchainTransactionsQueryArgs {
     pub pagination: PaginationArgs,
 }
 
-pub(crate) struct BlockchainTransactionsEdge;
+pub struct BlockchainTransactionsEdge;
 
 impl EdgeNameType for BlockchainTransactionsEdge {
     fn type_name<T: OutputType>() -> String {
@@ -28,7 +28,7 @@ impl EdgeNameType for BlockchainTransactionsEdge {
     }
 }
 
-pub(crate) struct BlockchainTransactionsConnection;
+pub struct BlockchainTransactionsConnection;
 
 impl ConnectionNameType for BlockchainTransactionsConnection {
     fn type_name<T: OutputType>() -> String {

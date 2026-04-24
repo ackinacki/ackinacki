@@ -135,6 +135,17 @@ pub fn u64_to_string(value: u64) -> String {
     string
 }
 
+/// Decodes a string encoded by `u64_to_string` back to plain hex.
+/// `u64_to_string` prepends a single hex digit representing `(hex_len - 1)`
+/// for lexicographic ordering. This function strips that prefix.
+pub fn decode_u64_string(encoded: &str) -> &str {
+    if encoded.len() > 1 {
+        &encoded[1..]
+    } else {
+        encoded
+    }
+}
+
 #[inline]
 pub fn pad_thread_id(thread_id: String) -> String {
     if thread_id.len() >= THREAD_ID_LENGTH {
@@ -256,9 +267,11 @@ pub fn sql_quote(value: &str) -> String {
 #[cfg(test)]
 pub mod tests {
     use crate::defaults::THREAD_ID_LENGTH;
+    use crate::helpers::decode_u64_string;
     use crate::helpers::format_big_int;
     use crate::helpers::pad_thread_id;
     use crate::helpers::u64_to_hexed_blob_literal;
+    use crate::helpers::u64_to_string;
 
     #[test]
     fn test_format_big_int() {
@@ -289,6 +302,20 @@ pub mod tests {
 
         let already_padded = "0".repeat(THREAD_ID_LENGTH);
         assert_eq!(pad_thread_id(already_padded.clone()), already_padded);
+    }
+
+    #[test]
+    fn test_decode_u64_string() {
+        // Bug case: actual lt = 0x935215
+        // u64_to_string encodes it as "5935215" (prefix "5" = hex_len 6 - 1)
+        // Without decoding, format_big_int returns "0x5935215" — incorrect
+        let encoded = u64_to_string(0x935215);
+        assert_eq!(encoded, "5935215");
+        assert_eq!(decode_u64_string(&encoded), "935215");
+        assert_eq!(
+            format_big_int(Some(decode_u64_string(&encoded).to_string()), None),
+            Some("0x935215".to_string())
+        );
     }
 
     #[test]

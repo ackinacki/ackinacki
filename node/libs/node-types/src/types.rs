@@ -1,3 +1,6 @@
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::serde_as;
@@ -340,6 +343,53 @@ impl Ord for ThreadIdentifier {
 impl PartialOrd for ThreadIdentifier {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+/// Identifier for a block that hasn't been fully produced yet.
+/// Generated locally by the block-producer. Never leaves the node boundary.
+/// Used for early-linking with parent before the real block ID is known.
+#[derive(Clone, Copy, Default, Hash, PartialEq, Eq)]
+pub struct TemporaryBlockId(pub [u8; 32]);
+
+impl std::fmt::Debug for TemporaryBlockId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "TemporaryBlockId<{}>", hex::encode(self.0))
+    }
+}
+
+impl TemporaryBlockId {
+    /// Generate a unique temporary ID from node_id + counter + timestamp.
+    pub fn generate() -> Self {
+        let mut hasher = blake3::Hasher::new();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("System time before UNIX epoch")
+            .as_nanos();
+        hasher.update(&nanos.to_be_bytes());
+        Self(*hasher.finalize().as_bytes())
+    }
+}
+
+impl std::fmt::Display for TemporaryBlockId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TempBlock({})", hex::encode(self.0))
+    }
+}
+
+/// Reference to a parent block.
+/// A temporary state can reference either a real block or another temporary block.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ParentRef {
+    /// Reference to an existing block with a known ID.
+    Block(BlockIdentifier),
+    /// Reference to a temporary block whose ID is not yet known.
+    Temporary(TemporaryBlockId),
+}
+
+impl Default for ParentRef {
+    fn default() -> Self {
+        Self::Block(BlockIdentifier::default())
     }
 }
 

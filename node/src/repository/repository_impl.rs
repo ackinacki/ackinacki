@@ -40,8 +40,6 @@ use telemetry_utils::mpsc::InstrumentedSender;
 use telemetry_utils::now_ms;
 use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
-use versioned_struct::versioned;
-use versioned_struct::Transitioning;
 
 use super::accounts::AccountsRepository;
 use super::accounts::NodeThreadAccountsRepository;
@@ -77,7 +75,6 @@ use crate::node::unprocessed_blocks_collection::UnfinalizedBlocksSnapshot;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
-use crate::repository::cross_thread_ref_data::CrossThreadRefDataOld;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
@@ -279,8 +276,6 @@ pub struct RepositoryImpl {
     config_read: ConfigRead,
     #[cfg(feature = "history_proofs")]
     history_proof_data: GlobalHistoryData,
-    #[cfg(feature = "authroot_dapp_repair")]
-    authroot_dapp_repaired: std::sync::Arc<parking_lot::Mutex<Option<BlockSeqNo>>>,
 }
 
 #[allow(dead_code)]
@@ -321,16 +316,12 @@ pub struct ExtMessages<TMessage: Clone> {
     pub queue: Vec<WrappedExtMessage<TMessage>>,
 }
 
-#[versioned]
 #[derive(TypedBuilder, Serialize, Deserialize, Getters, Clone)]
 pub struct AncestorBlockData {
     block_identifier: BlockIdentifier,
     block_seq_no: BlockSeqNo,
     thread_identifier: ThreadIdentifier,
-    #[future]
     cross_thread_ref_data: CrossThreadRefData,
-    #[legacy]
-    cross_thread_ref_data: CrossThreadRefDataOld,
     bk_set: BlockKeeperSet,
     future_bk_set: BlockKeeperSet,
     envelope_hash: AckiNackiEnvelopeHash,
@@ -338,32 +329,10 @@ pub struct AncestorBlockData {
     block_version_state: BlockProtocolVersionState,
 }
 
-impl Transitioning for AncestorBlockData {
-    type Old = AncestorBlockDataOld;
-
-    fn from(old: Self::Old) -> Self {
-        Self {
-            block_identifier: old.block_identifier,
-            block_seq_no: old.block_seq_no,
-            thread_identifier: old.thread_identifier,
-            cross_thread_ref_data: Transitioning::from(old.cross_thread_ref_data),
-            bk_set: old.bk_set,
-            future_bk_set: old.future_bk_set,
-            envelope_hash: old.envelope_hash,
-            parent_block_identifier: old.parent_block_identifier,
-            block_version_state: old.block_version_state,
-        }
-    }
-}
-
-#[versioned]
 #[derive(TypedBuilder, Serialize, Deserialize, Getters)]
 pub struct ThreadSnapshot {
     optimistic_state: Vec<u8>,
-    #[future]
     ancestor_blocks_data: Vec<AncestorBlockData>,
-    #[legacy]
-    ancestor_blocks_data: Vec<AncestorBlockDataOld>,
     db_messages: Vec<Vec<Arc<WrappedMessage>>>,
     finalized_block: Envelope<AckiNackiBlock>,
     bk_set: BlockKeeperSet,
@@ -382,43 +351,7 @@ pub struct ThreadSnapshot {
     #[cfg(feature = "history_proofs")]
     history_data_snapshot: GlobalHistoryDataSnapshot,
     durable_state_snapshot: Option<Vec<u8>>,
-    #[future]
     finalization_chain: Vec<Envelope<AckiNackiBlock>>,
-}
-
-impl Transitioning for ThreadSnapshot {
-    type Old = ThreadSnapshotOld;
-
-    fn from(old: Self::Old) -> Self {
-        Self {
-            optimistic_state: old.optimistic_state,
-            ancestor_blocks_data: old
-                .ancestor_blocks_data
-                .into_iter()
-                .map(Transitioning::from)
-                .collect(),
-            db_messages: old.db_messages,
-            finalized_block: old.finalized_block,
-            bk_set: old.bk_set,
-            descendant_bk_set: old.descendant_bk_set,
-            future_bk_set: old.future_bk_set,
-            descendant_future_bk_set: old.descendant_future_bk_set,
-            finalized_block_stats: old.finalized_block_stats,
-            attestation_target: old.attestation_target,
-            producer_selector: old.producer_selector,
-            block_height: old.block_height,
-            prefinalization_proof: old.prefinalization_proof,
-            ancestor_blocks_finalization_checkpoints: old.ancestor_blocks_finalization_checkpoints,
-            finalizes_blocks: old.finalizes_blocks,
-            parent_ancestor_blocks_finalization_checkpoints: old
-                .parent_ancestor_blocks_finalization_checkpoints,
-            block_protocol_version_state: old.block_protocol_version_state,
-            #[cfg(feature = "history_proofs")]
-            history_data_snapshot: old.history_data_snapshot,
-            durable_state_snapshot: old.durable_state_snapshot,
-            finalization_chain: vec![],
-        }
-    }
 }
 
 impl ThreadSnapshot {
@@ -456,6 +389,10 @@ impl ThreadSnapshot {
         let serialized_state = bincode::serialize(&new_state)?;
         self.optimistic_state = serialized_state;
         Ok(())
+    }
+
+    pub fn set_block_protocol_version_state(&mut self, new_state: BlockProtocolVersionState) {
+        self.block_protocol_version_state = new_state;
     }
 }
 
@@ -540,24 +477,13 @@ pub fn scan_snapshot_headers(snapshot_dir: &Path) -> Vec<(PathBuf, ThreadSnapsho
                 continue;
             }
         };
-        let snapshot: ThreadSnapshot =
-            match versioned_struct::Transitioning::deserialize_data_compat(&bytes) {
-                Ok(s) => s,
-                Err(err) => {
-                    tracing::warn!(
-                        "Failed to deserialize snapshot body {:?}: {err}",
-                        snapshot_path,
-                    );
-                    continue;
-                }
-            };
-        // let snapshot: ThreadSnapshot = match bincode::deserialize(&bytes) {
-        //     Ok(s) => s,
-        //     Err(err) => {
-        //         tracing::warn!("Failed to deserialize snapshot body {:?}: {err}", snapshot_path,);
-        //         continue;
-        //     }
-        // };
+        let snapshot: ThreadSnapshot = match bincode::deserialize(&bytes) {
+            Ok(s) => s,
+            Err(err) => {
+                tracing::warn!("Failed to deserialize snapshot body {:?}: {err}", snapshot_path,);
+                continue;
+            }
+        };
         let header = ThreadSnapshotHeader {
             block_id: snapshot.finalized_block().data().identifier(),
             thread_id: *snapshot.finalized_block().data().common_section().thread_id(),
@@ -598,19 +524,6 @@ pub fn load_from_file<T: for<'de> Deserialize<'de>>(
     let mut buffer = vec![];
     file.read_to_end(&mut buffer)?;
     let data = bincode::deserialize::<T>(&buffer)?;
-    Ok(Some(data))
-}
-
-pub fn load_transitioning_from_file<T: Transitioning>(
-    file_path: &PathBuf,
-) -> anyhow::Result<Option<T>> {
-    if !file_path.exists() {
-        return Ok(None);
-    }
-    let mut file = File::open(file_path)?;
-    let mut buffer = vec![];
-    file.read_to_end(&mut buffer)?;
-    let data = Transitioning::deserialize_data_compat(&buffer)?;
     Ok(Some(data))
 }
 
@@ -664,10 +577,6 @@ impl Clone for RepositoryImpl {
             unfinalized_blocks: self.unfinalized_blocks.clone(),
             last_message_for_acc: self.last_message_for_acc.clone(),
             config_read: self.config_read.clone(),
-            #[cfg(feature = "history_proofs")]
-            history_proof_data: self.history_proof_data.clone(),
-            #[cfg(feature = "authroot_dapp_repair")]
-            authroot_dapp_repaired: self.authroot_dapp_repaired.clone(),
         }
     }
 }
@@ -757,8 +666,6 @@ impl RepositoryImpl {
             config_read,
             #[cfg(feature = "history_proofs")]
             history_proof_data,
-            #[cfg(feature = "authroot_dapp_repair")]
-            authroot_dapp_repaired: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         };
 
         // let optimistic_dir = format!(
@@ -1376,8 +1283,6 @@ impl RepositoryImpl {
                 &self.thread_accounts_repository,
                 self.message_db.clone(),
                 self.config_read.clone(),
-                #[cfg(feature = "authroot_dapp_repair")]
-                self.authroot_dapp_repaired.clone(),
             )?;
         }
 
@@ -1477,8 +1382,6 @@ impl RepositoryImpl {
             ),
             #[cfg(feature = "history_proofs")]
             history_proof_data,
-            #[cfg(feature = "authroot_dapp_repair")]
-            authroot_dapp_repaired: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
@@ -1637,11 +1540,6 @@ impl RepositoryImpl {
     #[cfg(feature = "history_proofs")]
     pub fn get_history_proof_data(&self) -> GlobalHistoryData {
         self.history_proof_data.clone()
-    }
-
-    #[cfg(feature = "authroot_dapp_repair")]
-    pub fn authroot_dapp_repaired(&self) -> std::sync::Arc<parking_lot::Mutex<Option<BlockSeqNo>>> {
-        self.authroot_dapp_repaired.clone()
     }
 
     #[cfg(feature = "history_proofs")]
@@ -2039,8 +1937,6 @@ impl Repository for RepositoryImpl {
                     &self.thread_accounts_repository,
                     self.message_db.clone(),
                     self.config_read.clone(),
-                    #[cfg(feature = "authroot_dapp_repair")]
-                    self.authroot_dapp_repaired.clone(),
                 )?;
 
                 let state = Arc::new(state);
@@ -2064,8 +1960,7 @@ impl Repository for RepositoryImpl {
                 }
             }
 
-            if block.borrow().data().common_section().directives().share_state_resources().is_some()
-            {
+            if *block.borrow().data().common_section().directives().share_state_resources() {
                 if let Some(service) = state_sync_service {
                     service.save_state_for_sharing(
                         &block_id,
@@ -2245,12 +2140,8 @@ impl Repository for RepositoryImpl {
         _skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
     ) -> anyhow::Result<()> {
         tracing::debug!("set_state_from_snapshot");
-        let thread_snapshot: ThreadSnapshot =
-            versioned_struct::Transitioning::deserialize_data_compat(&snapshot)
-                .map_err(|e| anyhow::format_err!("Failed to deserialize snapshot: {e}"))?;
-
-        // let thread_snapshot: ThreadSnapshot = bincode::deserialize(&snapshot)
-        //     .map_err(|e| anyhow::format_err!("Failed to deserialize snapshot: {e}"))?;
+        let thread_snapshot: ThreadSnapshot = bincode::deserialize(&snapshot)
+            .map_err(|e| anyhow::format_err!("Failed to deserialize snapshot: {e}"))?;
 
         let mut state = <Self as Repository>::OptimisticState::deserialize_from_buf(
             thread_snapshot.optimistic_state(),
@@ -2652,7 +2543,9 @@ impl Repository for RepositoryImpl {
             start_save.elapsed().as_millis()
         );
         res?;
-        self.metrics.as_ref().inspect(|m| m.report_saved_state(&thread_id));
+        self.metrics.as_ref().inspect(|m| {
+            m.report_saved_state(&thread_id);
+        });
         {
             let mut saved_states = saved_states_clone.lock();
             saved_states.entry(thread_id).or_default().insert(block_seq_no, block_id);

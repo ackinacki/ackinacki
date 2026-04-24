@@ -116,7 +116,7 @@ impl BlockProcessorService {
         share_service: ExternalFileSharesBased,
         send: AckiNackiSend,
         chain_pulse_monitor: std::sync::mpsc::Sender<ChainPulseEvent>,
-        mut unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
+        unprocessed_blocks_cache: UnfinalizedCandidateBlockCollection,
         mut cross_thread_ref_data_availability_synchronization_service: CrossThreadRefDataAvailabilitySynchronizationServiceInterface,
         save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
     ) -> Self {
@@ -463,7 +463,7 @@ fn process_candidate_block(
                     .iter()
                     .map(|index| (*index.block_seq_no(), *index.block_identifier()))
                     .collect();
-            blocks_finalized_by_parent.sort_by(|a, b| a.0.cmp(&b.0));
+            blocks_finalized_by_parent.sort_by_key(|a| a.0);
             let finalized_block_distances_sorted_by_seq_no = if blocks_finalized_by_parent
                 .is_empty()
             {
@@ -794,6 +794,20 @@ fn process_candidate_block(
                 }
             };
             let mut optimistic_state = Arc::unwrap_or_clone(optimistic_state);
+            if let Some(threads_table_prefab) =
+                candidate_block.data().common_section().threads_table().clone()
+            {
+                if *threads_table_prefab.base_table() != optimistic_state.threads_table {
+                    tracing::trace!("Process block candidate: block has threads table update but base table does not match parent state, invalidate it");
+                    tracing::trace!(target: "monit", "{block_state:?} wrong threads table update");
+                    invalidate_branch(
+                        block_state.clone(),
+                        block_state_repository,
+                        filter_prehistoric,
+                    );
+                    return Ok(ProcessingIterationResult::Continue);
+                }
+            }
             let (cross_thread_ref_data, _messages) = match optimistic_state.apply_block(
                 candidate_block.data(),
                 shared_services,
@@ -803,8 +817,6 @@ fn process_candidate_block(
                 repository.thread_accounts_repository(),
                 repository.get_message_db().clone(),
                 repository.config_read(),
-                #[cfg(feature = "authroot_dapp_repair")]
-                repository.authroot_dapp_repaired(),
             ) {
                 Ok(cross_thread_ref_data) => cross_thread_ref_data,
                 Err(e) => {
@@ -826,7 +838,7 @@ fn process_candidate_block(
 
             let common_section = candidate_block.data().common_section().clone();
             let parent_seq_no = parent_block_state.guarded(|e| *e.block_seq_no());
-            let must_save_state = common_section.directives().share_state_resources().is_some()
+            let must_save_state = *common_section.directives().share_state_resources()
                 || candidate_block.data().is_thread_splitting()
                 || must_save_state_on_seq_no(block_seq_no, parent_seq_no, save_state_frequency);
             let optimistic_state = Arc::new(optimistic_state);

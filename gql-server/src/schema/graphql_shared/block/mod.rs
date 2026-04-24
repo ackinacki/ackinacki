@@ -10,6 +10,7 @@ use async_graphql::SimpleObject;
 use chrono::DateTime;
 use faster_hex::hex_string;
 
+use crate::helpers::decode_u64_string;
 use crate::helpers::format_big_int;
 use crate::helpers::ToBool;
 use crate::helpers::ToFloat;
@@ -238,7 +239,7 @@ impl From<db::Block> for Block {
         let boc = block.boc.map(tvm_types::base64_encode);
         let prev_alt_ref = if block.prev_alt_ref_root_hash.is_some() {
             Some(ExtBlkRef {
-                end_lt: block.prev_alt_ref_end_lt,
+                end_lt: block.prev_alt_ref_end_lt.map(|v| decode_u64_string(&v).to_string()),
                 file_hash: block.prev_alt_ref_file_hash,
                 root_hash: block.prev_alt_ref_root_hash,
                 seq_no: block.prev_alt_ref_seq_no.to_float(),
@@ -290,7 +291,7 @@ impl From<db::Block> for Block {
             prev_alt_ref,
             prev_key_block_seqno: block.prev_key_block_seqno.to_float(),
             prev_ref: Some(ExtBlkRef {
-                end_lt: block.prev_ref_end_lt,
+                end_lt: block.prev_ref_end_lt.map(|v| decode_u64_string(&v).to_string()),
                 file_hash: block.prev_ref_file_hash,
                 root_hash: block.prev_ref_root_hash,
                 seq_no: block.prev_ref_seq_no.to_float(),

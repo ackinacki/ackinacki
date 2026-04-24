@@ -1,3 +1,6 @@
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+//
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
@@ -30,6 +33,11 @@ pub struct AppConfig {
     pub bk_api_token: String,
     pub config_path: Option<PathBuf>,
     pub bk_api_endpoints: Vec<HostPort>,
+    /// Optional ClickHouse URL for wallet activity export.
+    /// If not set, ClickHouse export is disabled.
+    pub clickhouse_url: Option<String>,
+    pub clickhouse_user: Option<String>,
+    pub clickhouse_password: Option<String>,
 }
 
 pub struct AppState {

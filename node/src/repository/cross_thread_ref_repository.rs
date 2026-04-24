@@ -6,13 +6,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::bail;
+use anyhow::ensure;
 use lru::LruCache;
 use node_types::BlockIdentifier;
 use parking_lot::Mutex;
 use tracing::instrument;
 use tracing::trace_span;
 
-use super::repository_impl::load_transitioning_from_file;
+use super::repository_impl::load_from_file;
 use super::repository_impl::save_to_file;
 use crate::repository::CrossThreadRefData;
 use crate::storage::CrossRefStorage;
@@ -53,21 +54,33 @@ impl CrossThreadRefDataRead for CrossThreadRefDataRepository {
         if let Some(cross_thread_ref_data_state) = cross_thread_ref_data_cache.get(identifier) {
             match cross_thread_ref_data_state {
                 Some(cross_thread_ref_data) => return Ok(cross_thread_ref_data.clone()),
-                None => bail!("cross thread ref data was not set {identifier}"),
+                None => {
+                    let path = self.get_cross_thread_ref_data_path(identifier);
+                    bail!(
+                        "cross thread ref data was not set for block {identifier}; storage_path={}; cached_absence=true",
+                        path.display()
+                    )
+                }
             }
         }
         let path = self.get_cross_thread_ref_data_path(identifier);
 
         let data: Option<CrossThreadRefData> = if cfg!(feature = "messages_db") {
             self.crossref_store
-                .read_transitioning_blob(&path.to_string_lossy())
+                .read_blob(&path.to_string_lossy())
                 .unwrap_or_else(|_| panic!("Failed to load record: {}", path.display()))
         } else {
-            load_transitioning_from_file(&path)
+            load_from_file(&path)
                 .unwrap_or_else(|_| panic!("Failed to load file: {}", path.display()))
         };
 
         if let Some(cross_thread_ref_data) = data {
+            ensure!(
+                cross_thread_ref_data.block_identifier() == identifier,
+                "cross thread ref data key mismatch: requested {identifier}, payload has {}, path={}",
+                cross_thread_ref_data.block_identifier(),
+                path.display()
+            );
             cross_thread_ref_data_cache.put(
                 *cross_thread_ref_data.block_identifier(),
                 Some(cross_thread_ref_data.clone()),
@@ -75,7 +88,15 @@ impl CrossThreadRefDataRead for CrossThreadRefDataRepository {
             Ok(cross_thread_ref_data)
         } else {
             cross_thread_ref_data_cache.put(*identifier, None);
-            bail!("cross thread ref data was not set {identifier}")
+            let path_exists_hint = if cfg!(feature = "messages_db") {
+                "unknown".to_owned()
+            } else {
+                path.exists().to_string()
+            };
+            bail!(
+                "cross thread ref data was not set for block {identifier}; storage_path={}; path_exists={path_exists_hint}",
+                path.display()
+            )
         }
     }
 }
@@ -131,10 +152,8 @@ impl CrossThreadRefDataRepository {
         cross_thread_ref_data: CrossThreadRefData,
     ) -> anyhow::Result<()> {
         let id = *cross_thread_ref_data.block_identifier();
+        cross_thread_ref_data.validate_persisted_invariants(Some(&id))?;
         let mut cache = self.cross_thread_ref_data_cache.lock();
-        if let Some(Option::<CrossThreadRefData>::Some(_)) = cache.get(&id) {
-            return Ok(());
-        }
         let path = self.get_cross_thread_ref_data_path(&id);
         let total_outbound_messages_count =
             cross_thread_ref_data.outbound_messages().iter().fold(0, |s, (_, e)| s + e.len());

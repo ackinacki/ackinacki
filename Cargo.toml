@@ -32,7 +32,7 @@ members = [
     "tvm_contracts",
 ]
 
-package.version = "0.14.3"
+package.version = "0.15.0"
 package.edition = "2021"
 package.rust-version = "1.86.0"
 package.license = "LicenseRef-Acki-Nacki-Node-License"
@@ -54,6 +54,7 @@ anyhow = "1.0.97"
 async-trait = { version = "0.1.85" }
 bincode = "1.3.3"
 clap = { version = "4.5.2", features = ["derive", "env"] }
+clickhouse = { version = "0.14.2" }
 ed25519-dalek = { version = "2.1.1", features = ["rand_core", "serde"] }
 enum_dispatch = { version = "0.3.13" }
 faster-hex = { version = "0.10.0", features = ["serde"] }
@@ -99,14 +100,14 @@ url = { version = "2.5.0", features = ["serde"] }
 wasmtime = "36.0.2"
 zstd = { version = "0.13.3" }
 
-tvm_abi = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.16.an' }
-tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.16.an' }
-tvm_block_json = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.16.an' }
-tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.16.an', default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
-tvm_executor = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.16.an', features = ['signature_with_id'] }
-tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.16.an' }
-tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.16.an' }
-tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.16.an', features = ['gosh'] }
+tvm_abi = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.20.an' }
+tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.20.an' }
+tvm_block_json = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.20.an' }
+tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.20.an', default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
+tvm_executor = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.20.an', features = ['signature_with_id'] }
+tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.20.an' }
+tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.20.an' }
+tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.20.an', features = ['gosh'] }
 
 account-state = { path = "node/libs/account-state" }
 chitchat = { path = "chitchat" }

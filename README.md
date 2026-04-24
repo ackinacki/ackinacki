@@ -64,6 +64,7 @@
   - [Troubleshooting](#troubleshooting)
     - [Recovery from Corrupted BK State](#recovery-from-corrupted-bk-state)
     - [Error with sending continue stake request](#error-with-sending-continue-stake-request)
+    - [Permission-related errors when running the BK node update with the `--check --diff` flags](#permission-related-errors-when-running-the-bk-node-update-with-the---check---diff-flags)
 - [Block Manager Documentation](#block-manager-documentation)
   - [System Requirements](#system-requirements)
   - [Deployment Overview](#deployment-overview)
@@ -81,9 +82,10 @@
       - [Verify the Deployment](#verify-the-deployment)
   - [Update the Whitelist and Delegate the License](#update-the-whitelist-and-delegate-the-license)
   - [Block Manager Service Management](#block-manager-service-management)
-    - [Upgrading Block Manager to a New Image Version or Configuration](#upgrading-block-keeper-to-a-new-image-or-configuration)
+    - [Upgrading Block Manager to a New Image Version or Configuration](#upgrading-block-manager-to-a-new-image-version-or-configuration)
     - [Stopping and Starting the Block Manager Service](#stopping-and-starting-the-block-manager-service)
   - [Staking BM](#staking-bm)
+  - [BM storage maintenance](#bm-storage-maintenance)
 - [Proxy Documentation](#proxy-documentation)
   - [System Requirements](#system-requirements-1)
   - [Deployment with Ansible](#deployment-with-ansible-1)
@@ -208,7 +210,7 @@ Now wait for your BK to add your stake to the staking pool.
 
 ℹ️ **Note:**
 To check your rewards:
-* Call `getDetails` in the BK wallet (see the balance field in the License mapping)  
+* Call `getDetails` in the BK wallet (see the balance field in the License mapping)
 [You can find more details here](https://docs.ackinacki.com/for-node-owners/protocol-participation/block-keeper/license/working-with-licenses)
 
 * You can also view your rewards using the [dashboard](https://dashboard.ackinacki.com).
@@ -350,7 +352,7 @@ Add the obtained values to the inventory into the `CADDY_EAB` variable.
 If you have multiple BKs on a single IP address, generate a dedicated DNS name for each BK.
 It is recommended to add the **NODE_ID** prefix to the DNS name.
 
-For example:  
+For example:
 ```
 x{{ (NODE_ID | string)[:6] }}.your-domain // your-bk-dns
 ```
@@ -382,7 +384,7 @@ all:
 
     IMAGE_VERSION: "v0.13.2"   # Node patch version for the update
     NETWORK_NAME: "network-name"             # i.e. shellnet
-    UPD_NETWORK_NAME: "network-name"    
+    UPD_NETWORK_NAME: "network-name"
     OTEL_SERVICE_NAME: "{{ NETWORK_NAME }}"
 
     TVM_ENDPOINT: "network-tvm-endpoint"     # shellnet network endpoint is "https://shellnet.ackinacki.org" shellnet.ackinacki.org
@@ -412,7 +414,7 @@ all:
     BK_LOGS_DIR: "{{ MNT_DATA }}/logs-block-keeper"
 
     NODE_CONFIGS: []
-    
+
     AS_VERSION: "8.1.0.1"
 
     BIND_PORT: '{{ 8500 + PORT_OFFSET }}'                     # this port must be open
@@ -471,7 +473,7 @@ block_keeper_tls_proxy:
 `NODE_GROUP_ID` identifies the node group and should be the same across all nodes in your deployment.
 
 `NODE_GROUP_ID`, `OTEL_COLLECTOR`, and `OTEL_SERVICE_NAME` are optional and related to node metrics integration.
-They can be used to send metrics to a specified collector server. 
+They can be used to send metrics to a specified collector server.
 
 `AUTH_TOKEN`: This token is used to authorize access to the BK API. You can specify any arbitrary string.
 
@@ -529,7 +531,7 @@ Upon completion of the script, BLS keys will be generated and saved in the file 
 **`BLS keys`** - the keys used by Block Keeper (BK) to sign blocks. The keys have a lifespan of one Epoch. New BLS keys are generated during restaking. Each BK maintains a list of BLS public keys from other BKs (for the current Epoch), which are used to verify attestations on blocks.
 
 🚨 Important:
-**Be sure to back up your BLS keys.** 
+**Be sure to back up your BLS keys.**
 BLS keys for the new Epoch are generated at the moment the staking continue is sent.
 
 During the deployment of a BK node, the staking script will also be automatically started.
@@ -589,7 +591,7 @@ all:
 
     IMAGE_VERSION: "v0.13.2"   # Node patch version for the update
     NETWORK_NAME: "network-name"             # i.e. shellnet
-    UPD_NETWORK_NAME: "network-name"    
+    UPD_NETWORK_NAME: "network-name"
     OTEL_SERVICE_NAME: "{{ NETWORK_NAME }}"
 
     TVM_ENDPOINT: "network-tvm-endpoint"     # shellnet network endpoint is "https://shellnet.ackinacki.org" shellnet.ackinacki.org
@@ -619,7 +621,7 @@ all:
     BK_LOGS_DIR: "{{ MNT_DATA }}/logs-block-keeper"
 
     NODE_CONFIGS: []
-    
+
     AS_VERSION: "8.1.0.1"
 
     BIND_PORT: '{{ 8500 + PORT_OFFSET }}'                     # this port must be open
@@ -863,7 +865,7 @@ You will need the ABI file [AckiNackiBlockKeeperNodeWallet.abi.json](https://raw
 
 * Get the current network `seq_no`:
 ```bash
-tvm-cli -j query-raw blocks seq_no --limit 1 --order '[{"path":"seq_no","direction":"DESC"}]' | jq '.[0].seq_no'
+curl -s --url https://mainnet.ackinacki.org/graphql -H 'Content-Type: application/json' --data '{"query":"query{blockchain{blocks(last:1){edges{node{seq_no}}}}}"}' | jq -r '.data.blockchain.blocks.edges[0].node.seq_no'
 ```
 🚨 **Important:**
   **When the current `seq_no` is greater than `seqNoFinish`, the active Epoch is already complete and you can stop the container safely.**
@@ -955,28 +957,28 @@ node_sync_status.sh path/to/log
 ⚠️ Important conditions
 * You must **reuse your existing key files** (`BK Node Owner keys` and `BLS keys`) and **the same `BK Wallet`**
 * Use the **ZS version** that was used to deploy the mainnet
-* **The migration must not cause the node to be out of staking for an extended period**  
-  
+* **The migration must not cause the node to be out of staking for an extended period**
+
   Therefore, before starting the migration:
   * configure the new server first; only when it is fully ready should you stop the old one and proceed with the migration;
 
   * It is recommended to start the migration after 25,000 blocks have passed since the beginning of the current Epoch (so that the Epoch has time to send a continue), giving you sufficient time to complete the process.
-  
+
 ---
 ### 1. Preparing the New Server
 
 #### 1.1 Server Configuration
 * Provision a new server
-* Install all required dependencies:  
-  * Docker 
+* Install all required dependencies:
+  * Docker
 ---
 #### 1.2 Copying Keys
 
-* Copy the BK Node Owner keys and BLS keys files from the old server to the new server, **place them into the appropriate directories using the same file names**.  
-Alternatively, you can place the key files locally in the `ansible/files` directory.  
+* Copy the BK Node Owner keys and BLS keys files from the old server to the new server, **place them into the appropriate directories using the same file names**.
+Alternatively, you can place the key files locally in the `ansible/files` directory.
 The paths to the key files can be found in the inventory file under the `NODE_OWNER_KEY` and `OTHER_KEYS` fields.
 
-#### 1.3 Updating the Ansible Inventory File 
+#### 1.3 Updating the Ansible Inventory File
 
 Ensure that all required configuration data is correctly specified in the Ansible inventory.
 
@@ -984,8 +986,8 @@ Ensure that all required configuration data is correctly specified in the Ansibl
 
 > If the migration is performed without changing the IP address, make sure the inventory file matches the current configuration.
 
-* If you are running multiple nodes on the same server, the `BK_DIR` folder name must be be unique for each node.  
-For example:  
+* If you are running multiple nodes on the same server, the `BK_DIR` folder name must be be unique for each node.
+For example:
     ```
     BK_FOLDER_NAME: "block-keeper-{{ (NODE_ID | string)[:6] }}"
     ```
@@ -995,7 +997,7 @@ For example:
 ### 2.1 Proper Node Shutdown
 
 📌 **Important:**
-**The migration must not result in the node being removed from staking for an extended period.**  
+**The migration must not result in the node being removed from staking for an extended period.**
 
 Before stopping the node, make sure that the staking logs contain entries confirming that the current Epoch is in progress and has been continued:
 
@@ -1008,7 +1010,7 @@ Epoch with address "$EPOCH_ADDRESS" is being continued: true
 
 ### 2.2 Stopping the Node
 
-📌 **Important:**  
+📌 **Important:**
 **Proceed with stopping the old server only after the new server is fully prepared and the inventory file has been completed.**
 
 On the **old server**, stop the BK node:
@@ -1076,7 +1078,7 @@ To check the node’s block synchronization status, use:
 ```bash
 node_sync_status.sh path/to/log
 ```
-Additionally, ensure that:  
+Additionally, ensure that:
 **the staking script runs without errors and reports the correct staking status**
 
 ## How to Migrate a BK From One Proxy to Another
@@ -1086,7 +1088,7 @@ Migrating BKs nodes from one Proxy to another consists of two main stages:
 1. **Deploying a new Proxy** on a new server
 2. **Gradually switching BKs** from the old Proxy to the new one (it is recommended to migrate in batches of 5 BKs)
 
-🚨 **Important:**  
+🚨 **Important:**
 The old Proxy **must remain operational** throughout the migration process. The old Proxy server should be decommissioned **only after** all BKs have been successfully reconnected to the new Proxy and are visible in the metrics.
 
 ### 1. Deploy a New Proxy
@@ -1184,7 +1186,7 @@ After each batch of BKs is migrated, make sure that:
 * all BKs are successfully connected to the new Proxy
 * the `Subscriber` metric on the **Proxy Metrics dashboard** for the new Proxies has increased by the number of migrated BKs and has decreased for the old Proxies
 
-🚨 **Important:**  
+🚨 **Important:**
 This verification step is mandatory before continuing the migration or decommissioning the old Proxy.
 
 ### 3. Decommission the Old Proxy
@@ -1247,7 +1249,7 @@ Verify that the node logs are active and contain no errors:
     ```bash
     tail -f $MNT_DATA/logs-block-keeper/node.log
     ```
-    
+
     Additionally, you can check the container logs:
     ```bash
     docker compose logs -f node{{ NODE_ID }}
@@ -1280,7 +1282,7 @@ If you notice an error like this in the logs:
 [2025-09-25T03:58:04+00:00] Epoch with address "0:7f73cb8939cd302418b79b86e64837675c283af95c37aec9bff673011ce38fe1" is being continued: false [2025-09-25T03:59:05+00:00] Active Stakes - "0x5c5c7dc12c5cb21e6969a3d6c44173c682fd1e7dac8dcc9b1fb70ea64cf1678e" [2025-09-25T03:59:05+00:00] Stakes count - 1 [2025-09-25T03:59:05+00:00] Epoch in progress - "0x5c5c7dc12c5cb21e6969a3d6c44173c682fd1e7dac8dcc9b1fb70ea64cf1678e" [2025-09-25T03:59:06+00:00] There is active stake with epoch address "0:7f73cb8939cd302418b79b86e64837675c283af95c37aec9bff673011ce38fe1" [2025-09-25T03:59:06+00:00] Current epoch is not being continued. Sending continue stake... [2025-09-25T03:59:06+00:00] Trying signer index: 2577 [2025-09-25T03:59:07+00:00] Found proper signer index for continue: 2577 [2025-09-25T03:59:07+00:00] Sending continue stake - 10917648873105 { "Error": { "code": 621, "message": "Failed to execute the message. Error occurred during the compute phase.", "data": { "core_version": "2.22.3", "node_error": { "extensions": { "code": "TVM_ERROR", "message": "Failed to execute the message. Error occurred during the compute phase.", "details": { "producers": [ "94.156.233.53:8601" ], "message_hash": "2174189543433f1e1a2c77e078fc3cf53da8d99956fde1751eda1f941c65844f", "exit_code": 300, "current_time": "1758772748099", "thread_id": "00000000000000000000000000000000000000000000000000000000000000000000" } } }, "ext_message_token": null } } } [2025-09-25T03:59:08+00:00] Error with sending continue stake request. Go to the next step [2025-09-25T03:59:08+00:00] Epoch with address "0:7f73cb8939cd302418b79b86e64837675c283af95c37aec9bff673011ce38fe1" is being continued: false [2025-09-25T04:00:08+00:00] Active Stakes - "0x5c5c7dc12c5cb21e6969a3d6c44173c682fd1e7dac8dcc9b1fb70ea64cf1678e" [2025-09-25T04:00:08+00:00] Stakes count - 1 [2025-09-25T04:00:09+00:00] Epoch in progress - "0x5c5c7dc12c5cb21e6969a3d6c44173c682fd1e7dac8dcc9b1fb70ea64cf1678e" [2025-09-25T04:00:09+00:00] There is active stake with epoch address "0:7f73cb8939cd302418b79b86e64837675c283af95c37aec9bff673011ce38fe1" [2025-09-25T04:00:09+00:00] Current epoch is not being continued. Sending continue stake...
 ```
 
-**This error occurs because messages are being sent to the wallet or License contract too frequently.**  
+**This error occurs because messages are being sent to the wallet or License contract too frequently.**
 When messages are sent too often, the system doesn’t have enough time to process previous transactions, leading to a compute-phase execution error `TVM_ERROR, exit_code = 300`.
 
 ✅ What to Do
@@ -1290,6 +1292,37 @@ When messages are sent too often, the system doesn’t have enough time to proce
   * Ensure your node or script is not sending “continue stake” too often.
   * Verify that the interval between messages is at least 200 blocks.
 3. Once the interval is adjusted, the error will disappear automatically.
+
+### Permission-related errors when running the BK node update with the `--check --diff` flags
+
+If you see an error like the one below when running the update BK node with the `--check --diff` flags, make sure that the current user has the required system permissions.
+
+```
+TASK [block-keeper : Query BK set sequence number] ***********************************
+
+fatal: [localhost]: FAILED! => {
+    "msg": "The conditional check 'api_response.status == 200' failed.
+    The error was: error while evaluating conditional (api_response.status == 200):
+    'dict object' has no attribute 'status'"
+}
+```
+
+In this case, the root cause may be missing access for HTTP fetch requests.
+As a result, `--check --diff` does not receive the expected response object, and the playbook fails when checking `api_response.status`.
+
+✅ What to Do
+
+1. Run `--check --diff` with `sudo`:
+
+   ```bash
+   sudo checkdiff
+   ```
+
+2. If `--check --diff` completes successfully with `sudo`, the issue is permission-related.
+
+3. Review the permissions and security policy for the user running `--check --diff`, especially access required for HTTP fetch operations.
+
+Do not use `sudo` as a permanent workaround unless it is explicitly required by your deployment policy.
 
 # Block Manager Documentation
 
@@ -1305,7 +1338,7 @@ After purchasing a Block Manager (BM) License, it must be delegated.
 
 You can delegate it **to a Provider** via the [dashboard](https://dashboard.ackinacki.com/) by following [this instruction](https://docs.ackinacki.com/for-node-owners/protocol-participation/block-manager/licence/guide-to-bm-license-delegation).
 
-Alternatively, you can delegate it **to your own BM wallet** if you plan to deploy the BM service yourself.  
+Alternatively, you can delegate it **to your own BM wallet** if you plan to deploy the BM service yourself.
 In that case, you must first complete the BM License Pre-Deployment Verification using [this guide](https://docs.ackinacki.com/for-node-owners/network-participation/block-manager/licence/bm-license-pre-deployment-verification).
 Once the verification is complete, you will receive the address of License contract and number, which are required for the delegation process.
 
@@ -1349,7 +1382,7 @@ These key files must later be referenced in the Ansible inventory file.
 
 If you do not yet have a License number, extract the keys from the generated files and deploy the BM wallet using the command below.
 
-ℹ️ **Note:**  
+ℹ️ **Note:**
 In this case, the `whiteListLicense` field should be left empty (`{}`)
 
 ```bash
@@ -1365,7 +1398,7 @@ create_block_manager_wallet.sh block_manager_wallet.keys.json block_manager_wall
 
 ### Create an Ansible Inventory
 
-Below is a sample Ansible inventory for deploying a BM on the `Shellnet` network.  
+Below is a sample Ansible inventory for deploying a BM on the `Shellnet` network.
 Ensure that the `block_manager` host group is defined.
 
 ```yaml
@@ -1407,7 +1440,7 @@ block_manager:
 `BM_WALLET_KEYS` — path to the file containing the BM wallet owner key pair
   (they will be required for operating the Block Manager wallet)
 
-`BM_SIGNER_KEYS`— the path to the file containing the signer BM keys 
+`BM_SIGNER_KEYS`— the path to the file containing the signer BM keys
   (they used to generate a token for external messages)
 
 `BK_API_TOKEN` - the access token for the BK API is obtained from the BK owner.
@@ -1441,7 +1474,7 @@ If validation succeeds, deploy the Block Manager:
 ansible-playbook -i your-inventory.yaml ansible/block-manager-deployment.yaml
 ```
 
-ℹ️ **Note:**  
+ℹ️ **Note:**
 BM staking starts automatically when the Block Manager starts, but rewards will begin to accrue only after a License has been delegated to the BM wallet.
 
 #### Verify the Deployment
@@ -1470,12 +1503,68 @@ To follow Block Manager logs:
 tail -f $MNT_DATA/logs-block-manager/block-manager.log
 ```
 
+### Deploy Caddy Reverse Proxy for Block Manager
+
+Caddy acts as a reverse proxy in front of the Block Manager, handling TLS termination and routing. It runs as a Docker container using the `caddy:2.8.4` image.
+
+#### Inventory Preparation
+
+Add a `caddy` host group to your Ansible inventory. Each host requires the following variables:
+
+```yaml
+caddy:
+  vars:
+    HOST_NAME: "your.bm.host.org"             # public domain name for TLS certificate
+    HOST_PUBLIC_IP: "HOST_PUBLIC_IP"          # public IP
+    HOST_PRIVATE_IP: "HOST_PRIVATE_IP"        # private IP (used for internal proxying)
+    LOAD_CERT: false
+    ENABLE_GEN_CERT: true
+    ZEROSSL_EXCLUSIVE: yes
+    CADDY_EMAIL: "<your email for possible certificate notifications>"
+    CADDY_EAB: "<your kid> <your hmac key>" # <<<<< <<<<< Replace with actual values! <<<<< <<<<<
+  hosts:
+    caddy1_bm:
+      ansible_host: ansible_host_ip
+```
+
+#### Key Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `HOST_NAME` | `{{ inventory_hostname }}` | Public domain name, used for TLS certificate |
+| `HOST_PUBLIC_IP` | — | Public IP address of the host |
+| `HOST_PRIVATE_IP` | `HOST_PUBLIC_IP` | Private IP, used for reverse proxying to BM and NGINX |
+| `BM_REST_API_PORT` | `8610` | Block Manager REST API port |
+| `CADDY_EMAIL` | — | Email for ACME certificate registration (required) |
+| `LOAD_CERT` | `true` | Load TLS certificate from files |
+| `ENABLE_GEN_CERT` | `false` | Let Caddy auto-generate certificates via ACME |
+| `CERT_FILE` | `test.ackinacki.org.crt` | TLS certificate filename |
+| `CERT_KEY_FILE` | `test.ackinacki.org.key` | TLS key filename |
+| `CADDY_EAB` | — | ZeroSSL EAB credentials: `"<kid> <hmac>"` |
+| `ZEROSSL_EXCLUSIVE` | `yes` | When enabled with `CADDY_EAB`, use ZeroSSL as the only ACME provider instead of Let's Encrypt |
+
+#### TLS Certificates
+
+Two modes are supported:
+
+1. **Pre-loaded certificates** (default): set `LOAD_CERT: true`, place certificate and key files in `ansible/files/`. They will be copied to the Caddy container.
+
+2. **ACME auto-generation**: set `ENABLE_GEN_CERT: true`, `LOAD_CERT: false`. Caddy will obtain certificates automatically. For ZeroSSL, provide `CADDY_EAB`.
+
+#### Deploy
+
+```bash
+ansible-playbook -i your-inventory.yaml ansible/deploy-caddy.yml
+```
+
+The playbook targets the `caddy` host group, creates the configuration directory, renders the Caddyfile and docker-compose templates, and starts the container. If only the Caddyfile changes on a subsequent run, Caddy is restarted without recreating the container.
+
 ## Update the Whitelist and Delegate the License
 
-🚨 **Important:**  
+🚨 **Important:**
 Only one License can be delegated to a single BM wallet.
 
-Before delegating, the License must be added to the BM wallet whitelist: 
+Before delegating, the License must be added to the BM wallet whitelist:
 
 ```bash
 tvm-cli -j callx --addr BM_WALLET_ADDR --abi contracts/0.79.3_compiled/bksystem/AckiNackiBlockManagerNodeWallet.abi.json --keys block_manager.keys.json --method setLicenseWhiteList '{"whiteListLicense": {"YOUR_LICENSE_NUMBER": true}}'
@@ -1492,7 +1581,7 @@ tvm-cli -j callx --addr LICENSE_ADDR --abi contracts/0.79.3_compiled/bksystem/Li
 ### Upgrading Block Manager to a New Image Version or Configuration
 
 To update **Block Manager (BM) service**, make the changes in the inventory file
-and then run: 
+and then run:
 
 ```bash
 ansible-playbook -i your-inventory.yaml block-manager-upgrading.yaml --check --diff
@@ -1537,13 +1626,13 @@ Staking is deployed as a **Docker container** within **Docker Compose**, which i
 Staking runs as a **background daemon** inside a container.
 The staking container runs alongside the BM service.
 
-🚨 **Important:**  
+🚨 **Important:**
 **Rewards begin to accrue only after a License has been delegated to the BM wallet.**
 
 ℹ️ **Note:**
 All stakes and rewards are denominated in [**NACKL**](https://docs.ackinacki.com/glossary#nack) tokens
 
-After staking starts, **all tokens in the BM wallet are locked**. At the initial stage, both the wallet balance and the [minimal stake](https://docs.ackinacki.com/glossary#minimal-stake-of-the-bm) are equal to 0. 
+After staking starts, **all tokens in the BM wallet are locked**. At the initial stage, both the wallet balance and the [minimal stake](https://docs.ackinacki.com/glossary#minimal-stake-of-the-bm) are equal to 0.
 
 **Before starting operations, make sure that the BM wallet balance exceeds the minimal stake.**
 
@@ -1553,10 +1642,10 @@ To find out the current minimal stake required for your BM, call the `getDetails
 tvm-cli -j runx --addr BM_WALLET_ADDR --abi contracts/0.79.3_compiled/bksystem/AckiNackiBlockManagerNodeWallet.abi.json --method getDetails {}
 ```
 
-The method returns detailed information about the BM wallet in `JSON` format.  
+The method returns detailed information about the BM wallet in `JSON` format.
 The current minimal stake is shown in the `minstake` field and is specified in **nano NACKL** tokens.
 
-Example output,  
+Example output,
 ```
 {
   "pubkey": "0xabcdabcd01c6b769edb1a174dc44b10bf37a62d81201b23dcc1234567891441e",
@@ -1576,6 +1665,48 @@ docker compose logs staking_bm
 🚨 **Important:**
 Rewards can be claimed only after the slashing period has ended. The slashing period is 300 blocks.
 
+## BM storage maintenance
+
+The `block-manager-storage-maintenance.yaml` playbook performs periodic maintenance of the Block Manager database storage.
+It moves old database files out of the work directory into a separate archive folder, signals the `q_server_bm`
+container to reload the database list, and purges outdated files from the archive folder.
+
+### Inventory Preparation
+
+Add the following variable to the `block_manager` host group in your Ansible inventory:
+
+```yaml
+block_manager:
+  vars:
+    ARCHIVED_DIR: "/home/user/data/block-manager/archive"     # target directory for archived database files
+```
+
+`DEPLOY_DIR` and `DB_WORK_DIR` are resolved via a fallback chain: inventory override → BM role variables (`BM_DIR`, `BM_DATA_DIR`) → base layout variables (`ROOT_DIR`, `MNT_DATA`). In most deployments `ROOT_DIR` and `MNT_DATA` are already set in the inventory, so no extra configuration is required beyond `ARCHIVED_DIR`.
+
+### Key Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `ARCHIVED_DIR` | — | Target directory where old database files are moved for archival (required) |
+| `DEPLOY_DIR` | `{{ BM_DIR }}` → `{{ ROOT_DIR }}/block-manager` | BM deployment directory containing the `docker-compose` file |
+| `DB_WORK_DIR` | `{{ BM_DATA_DIR }}/workdir` → `{{ MNT_DATA }}/block-manager/workdir` | BM database work directory where active `bm-archive-*.db` files reside |
+| `KEEP_DAYS_WORK` | `2` | Number of days of data to keep in the work directory before archiving |
+| `KEEP_DAYS_ARCH` | `7` | Number of days to retain archived files before permanent deletion |
+
+### Run the Playbook
+
+```bash
+ansible-playbook -i your-inventory.yaml ansible/block-manager-storage-maintenance.yaml
+```
+
+The playbook performs the following steps:
+
+1. Finds `bm-archive-*.db` files in `DB_WORK_DIR` older than `KEEP_DAYS_WORK` days (rounded to midnight UTC) and moves them (along with related files) to `ARCHIVED_DIR`.
+2. Sends a `SIGHUP` to the `q_server_bm` container so it reloads the database list, if any files were moved.
+3. Finds `bm-archive-*.db` files in `ARCHIVED_DIR` older than `KEEP_DAYS_ARCH` days and removes them permanently.
+
+ℹ️ **Note:**
+It is recommended to run this playbook on a regular schedule (e.g. via `cron`) to keep BM database storage under control.
 
 # Proxy Documentation
 

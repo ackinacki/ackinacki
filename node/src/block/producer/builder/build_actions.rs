@@ -147,9 +147,6 @@ impl BlockBuilder {
         wasm_cache: WasmNodeCache,
         is_verifier: bool,
         is_block_of_retired_version: bool,
-        #[cfg(feature = "authroot_dapp_repair")] authroot_dapp_repaired: std::sync::Arc<
-            parking_lot::Mutex<Option<crate::types::BlockSeqNo>>,
-        >,
     ) -> anyhow::Result<Self> {
         let (initial_accounts, usage_tree) =
             initial_optimistic_state.get_shard_state().with_tvm_usage_tree()?;
@@ -213,8 +210,6 @@ impl BlockBuilder {
         #[cfg(feature = "monitor-accounts-number")]
         let builder = builder.accounts_number_diff(0);
         let builder = builder.is_block_of_retired_version(is_block_of_retired_version);
-        #[cfg(feature = "authroot_dapp_repair")]
-        let builder = builder.authroot_dapp_repaired(authroot_dapp_repaired);
         Ok(builder.build())
     }
 
@@ -622,8 +617,7 @@ impl BlockBuilder {
         if let Err(err) =
             self.add_raw_transaction(transaction, tr_cell, thread_result.in_msg.clone())
         {
-            tracing::warn!(target: "builder", "Error append transaction {:?}", err);
-            // TODO log error, write to transaction DB about error
+            anyhow::bail!("Error append transaction {:?}", err);
         }
 
         if let Some(dapp_id) = thread_result.initial_dapp_id {
@@ -1755,14 +1749,14 @@ impl BlockBuilder {
 
                     let dest_account_id =
                         msg.int_dst_account_id().map(AccountIdentifier::from).ok_or_else(|| {
-                            failure::err_msg(
+                            anyhow::anyhow!(
                                 "Internal message must have valid internal destination",
                             )
                         })?;
 
                     let info = msg
                         .int_header()
-                        .ok_or_else(|| failure::err_msg("Internal message must have header"))?;
+                        .ok_or_else(|| anyhow::anyhow!("Internal message must have header"))?;
                     let dest_dapp_id = info.dest_dapp_id.as_ref().map(DAppIdentifier::from);
                     let fwd_fee = info.fwd_fee();
                     let msg_cell = msg.serialize()?;
@@ -2007,10 +2001,6 @@ impl BlockBuilder {
             !self.is_block_of_retired_version,
             #[cfg(feature = "monitor-accounts-number")]
             updated_accounts_number,
-            #[cfg(feature = "authroot_dapp_repair")]
-            self.is_block_of_retired_version,
-            #[cfg(feature = "authroot_dapp_repair")]
-            self.authroot_dapp_repaired.clone(),
         )?;
 
         tracing::debug!(target: "builder", "Finish block: {:?}", block.hash().map(|h| h.to_hex_string()));
@@ -2827,6 +2817,29 @@ pub fn create_queue_overflow_feedback(
             code: FeedbackErrorCode::QueueOverflow,
             message: Some(
                 "Message queue is full. Please try to send the message later.".to_string(),
+            ),
+        }),
+    )
+}
+
+pub fn create_not_block_producer_feedback(
+    ext_msg: QueuedExtMessage,
+    thread_id: &ThreadIdentifier,
+) -> anyhow::Result<ExtMsgFeedback> {
+    tracing::warn!(
+        target: "builder",
+        "External msg is rejected because node is not the current block producer: {:?}",
+        ext_msg
+    );
+
+    create_feedback(
+        ext_msg.hash().to_hex_string(),
+        None,
+        Some(*thread_id),
+        Some(FeedbackError {
+            code: FeedbackErrorCode::NotBlockProducer,
+            message: Some(
+                "This node is not the current block producer. Please resend to the correct producer.".to_string(),
             ),
         }),
     )

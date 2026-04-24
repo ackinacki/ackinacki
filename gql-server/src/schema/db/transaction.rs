@@ -134,6 +134,7 @@ impl Transaction {
         tracing::debug!("SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
         let transactions = builder
             .build_query_as()
@@ -210,6 +211,7 @@ impl Transaction {
         tracing::trace!(target: "blockchain_api", "SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
         let result: Result<Vec<Transaction>, anyhow::Error> = builder
             .build_query_as()
@@ -309,9 +311,10 @@ impl Transaction {
 
         tracing::trace!(target: "blockchain_api.account.transactions", "SQL: {sql}");
 
+        let mut conn = db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
 
-        let mut conn = db_connector.get_connection().await?;
         let result: Result<Vec<Transaction>, anyhow::Error> = builder
             .build_query_as()
             .fetch_all(&mut *conn)
@@ -340,26 +343,181 @@ impl Transaction {
         msg_id: &str,
         _fields: Option<Vec<String>>,
     ) -> anyhow::Result<Option<Transaction>> {
-        let db_names = db_connector.attached_db_names();
-        tracing::trace!(db_names = ?db_names, "attached DBs:");
+        let mut result = Self::by_in_messages(db_connector, &[msg_id]).await?;
+        let key = msg_id.strip_prefix("message/").unwrap_or(msg_id);
+        Ok(result.remove(key))
+    }
 
-        if db_names.is_empty() {
-            return Ok(None);
+    /// Batch-fetch transactions by their inbound message IDs.
+    /// Returns a map from stripped msg_id (without `message/` prefix) to Transaction.
+    pub async fn by_in_messages(
+        db_connector: &DBConnector,
+        msg_ids: &[&str],
+    ) -> anyhow::Result<std::collections::HashMap<String, Transaction>> {
+        use std::collections::HashMap;
+
+        let db_names = db_connector.attached_db_names();
+        if db_names.is_empty() || msg_ids.is_empty() {
+            return Ok(HashMap::new());
         }
 
-        let msg_id = msg_id.strip_prefix("message/").unwrap_or(msg_id);
+        let stripped: Vec<&str> =
+            msg_ids.iter().map(|id| id.strip_prefix("message/").unwrap_or(id)).collect();
+
+        let in_list = stripped.iter().map(|id| format!("{id:?}")).collect::<Vec<_>>().join(",");
+
         let union_sql = db_names
             .into_iter()
-            .map(|name| format!("SELECT * FROM \"{name}\".transactions WHERE in_msg={msg_id:?}"))
+            .map(|name| {
+                format!("SELECT * FROM \"{name}\".transactions WHERE in_msg IN ({in_list})")
+            })
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
 
-        let sql = format!("SELECT * FROM ({union_sql}) LIMIT 1");
+        let sql = format!("SELECT * FROM ({union_sql})");
         tracing::debug!("SQL: {sql}");
 
+        let mut conn = db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
 
-        let mut conn = db_connector.get_connection().await?;
-        Ok(builder.build_query_as().fetch_optional(&mut *conn).await?)
+        let rows: Vec<Transaction> =
+            builder.build_query_as().fetch(&mut *conn).try_collect().await?;
+
+        let mut map = HashMap::with_capacity(rows.len());
+        for trx in rows {
+            map.entry(trx.in_msg.clone()).or_insert(trx);
+        }
+
+        Ok(map)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use migration_tool::DbInfo;
+    use migration_tool::DbMaintenance;
+    use migration_tool::DbMaintenanceOptions;
+    use migration_tool::MigrateTo;
+    use rusqlite::params;
+    use rusqlite::Connection;
+    use testdir::testdir;
+
+    use super::Transaction;
+    use crate::defaults;
+    use crate::schema::db::DBConnector;
+    use crate::web;
+
+    fn insert_transaction(db_path: &std::path::Path, id: &str, in_msg: &str) {
+        let conn = Connection::open(db_path).expect("open db");
+        conn.execute(
+            "INSERT INTO transactions (
+                id, block_id, status, compute_success, compute_msg_state_used,
+                compute_account_activated, compute_gas_fees, compute_gas_used,
+                compute_gas_limit, compute_mode, compute_exit_code, compute_vm_steps,
+                compute_vm_init_state_hash, compute_vm_final_state_hash, compute_type,
+                action_success, action_valid, action_no_funds, action_status_change,
+                action_result_code, action_tot_actions, action_spec_actions,
+                action_skipped_actions, action_msgs_created, action_list_hash,
+                action_tot_msg_size_cells, action_tot_msg_size_bits,
+                credit_first, aborted, destroyed, tr_type,
+                lt, prev_trans_hash, prev_trans_lt, now, outmsg_cnt,
+                orig_status, end_status, in_msg, out_msgs,
+                account_addr, workchain_id, total_fees, balance_delta,
+                old_hash, new_hash, chain_order, boc
+            ) VALUES (
+                ?1, 'block1', 3, 1, 0,
+                0, '0', 0.0,
+                0.0, 0, 0, 0,
+                'hash0', 'hash1', 0,
+                1, 1, 0, 0,
+                0, 1, 0,
+                0, 1, 'list_hash',
+                0.0, 0.0,
+                1, 0, 0, 0,
+                '10', 'prev_hash', '10', 1000, 1,
+                0, 1, ?2, '',
+                'addr1', 0, '100', '50',
+                'old', 'new', 'co1', X'00'
+            )",
+            params![id, in_msg],
+        )
+        .expect("insert transaction");
+    }
+
+    async fn setup_connector_with_transactions() -> Arc<DBConnector> {
+        let root = testdir!();
+        let db_dir = root.join(format!("db-{}", std::process::id()));
+        std::fs::create_dir_all(&db_dir).expect("create db dir");
+        let db_maintenance = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &db_dir);
+        db_maintenance
+            .migrate(MigrateTo::Latest, DbMaintenanceOptions { silent: true })
+            .expect("migrate");
+        let main_db = db_maintenance.path;
+
+        insert_transaction(&main_db, "trx-1", "msg-aaa");
+        insert_transaction(&main_db, "trx-2", "msg-bbb");
+        insert_transaction(&main_db, "trx-3", "msg-ccc");
+
+        let pool = web::open_db(
+            PathBuf::from(&main_db),
+            15,
+            std::time::Duration::from_secs(defaults::DEFAULT_ACQUIRE_TIMEOUT_SECS),
+            crate::schema::db::build_read_pragmas(
+                defaults::DEFAULT_SQLITE_MMAP_SIZE,
+                defaults::DEFAULT_SQLITE_CACHE_SIZE,
+            ),
+        )
+        .await
+        .expect("open db");
+        DBConnector::new(pool, main_db, defaults::MAX_POOL_CONNECTIONS)
+    }
+
+    #[tokio::test]
+    async fn by_in_messages_returns_matching_transactions() {
+        let connector = setup_connector_with_transactions().await;
+
+        let result =
+            Transaction::by_in_messages(&connector, &["msg-aaa", "msg-ccc"]).await.expect("batch");
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get("msg-aaa").unwrap().id, "trx-1");
+        assert_eq!(result.get("msg-ccc").unwrap().id, "trx-3");
+        assert!(!result.contains_key("msg-bbb"));
+    }
+
+    #[tokio::test]
+    async fn by_in_messages_strips_message_prefix() {
+        let connector = setup_connector_with_transactions().await;
+
+        let result = Transaction::by_in_messages(&connector, &["message/msg-aaa"])
+            .await
+            .expect("batch with prefix");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get("msg-aaa").unwrap().id, "trx-1");
+    }
+
+    #[tokio::test]
+    async fn by_in_messages_empty_input() {
+        let connector = setup_connector_with_transactions().await;
+
+        let result = Transaction::by_in_messages(&connector, &[]).await.expect("empty");
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn by_in_message_delegates_to_batch() {
+        let connector = setup_connector_with_transactions().await;
+
+        let result = Transaction::by_in_message(&connector, "msg-bbb", None).await.expect("single");
+        assert_eq!(result.unwrap().id, "trx-2");
+
+        let missing =
+            Transaction::by_in_message(&connector, "msg-zzz", None).await.expect("missing");
+        assert!(missing.is_none());
     }
 }

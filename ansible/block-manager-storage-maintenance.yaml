@@ -1,0 +1,134 @@
+---
+- name: Block manager storage maintenance script
+  hosts: block_manager
+  gather_facts: no
+  become: yes
+
+  vars:
+    # ARCHIVED_DIR: specify target directory for archived database files in the inventory
+    # Defaults below are derived from the block-manager role's standard variables
+    # (BM_DIR, BM_DATA_DIR). Override in the inventory only if non-default layout is used.
+    BM_DEPLOY_DIR:  "{{ DEPLOY_DIR  if DEPLOY_DIR  is defined else
+                        BM_DIR      if BM_DIR      is defined else
+                        (ROOT_DIR | mandatory) ~ '/block-manager' }}"
+    BM_DB_WORK_DIR: "{{ (DB_WORK_DIR if DB_WORK_DIR is defined else
+                        (BM_DATA_DIR if BM_DATA_DIR is defined else
+                         (MNT_DATA | mandatory) ~ '/block-manager') ~ '/workdir') }}"
+
+    KEEP_DAYS_WORK: 2  # keep at least 2 days of data available in the work folder (3-4 files)
+    KEEP_DAYS_ARCH: 7  # remove files older than 7 days in the archive folder
+
+  tasks:
+    - name: Collect only date/time facts
+      setup:
+        filter:
+          - ansible_date_time
+      tags: always
+
+    - name: Ensure required variables are provided
+      assert:
+        that:
+          - BM_DEPLOY_DIR is defined
+          - BM_DEPLOY_DIR | length > 0
+          - BM_DB_WORK_DIR is defined
+          - BM_DB_WORK_DIR | length > 0
+          - ARCHIVED_DIR is defined
+          - ARCHIVED_DIR | length > 0
+        fail_msg: >-
+          Required variables must be provided:
+          BM_DEPLOY_DIR, BM_DB_WORK_DIR, ARCHIVED_DIR
+      tags: validate_vars
+
+    - name: Get current timestamp and calculate cutoff date
+      set_fact:
+        cutoff_timestamp: "{{ (ansible_date_time.epoch | int) - (KEEP_DAYS_WORK | mandatory | int * 86400) }}"
+        cutoff_date_midnight: "{{ ((ansible_date_time.epoch | int) - (KEEP_DAYS_WORK | int * 86400)) | int }}"
+        archive_cutoff_timestamp: "{{ (ansible_date_time.epoch | int) - (KEEP_DAYS_ARCH | mandatory | int * 86400) }}"
+        archive_cutoff_date_midnight: "{{ ((ansible_date_time.epoch | int) - (KEEP_DAYS_ARCH | int * 86400)) | int }}"
+      tags: calculate_cutoff
+
+    - name: Adjust cutoff to midnight UTC (0:00)
+      set_fact:
+        cutoff_timestamp_midnight: "{{ (cutoff_date_midnight | int / 86400) | int * 86400 }}"
+        archive_cutoff_timestamp_midnight: "{{ (archive_cutoff_date_midnight | int / 86400) | int * 86400 }}"
+      tags: calculate_cutoff
+
+    - name: Find all bm-archive-*.db files in work directory
+      find:
+        paths: "{{ BM_DB_WORK_DIR | mandatory }}"
+        patterns: "bm-archive-*.db"
+        file_type: file
+      register: db_files
+      tags: find_files
+
+    - name: Initialize old_db_files list
+      set_fact:
+        old_db_files: []
+      tags: filter_files
+
+    - name: Filter files older than cutoff timestamp
+      set_fact:
+        old_db_files: "{{ old_db_files + [item] }}"
+      loop: "{{ db_files.files | map(attribute='path') | list }}"
+      when:
+        - item is match('.*bm-archive-([0-9]+)\.db$')
+        - (item | regex_replace('.*bm-archive-([0-9]+)\.db$', '\\g<1>') | int) < (cutoff_timestamp_midnight | int)
+      tags: filter_files
+
+    - name: Print list of filtered old database files
+      debug:
+        msg: "Filtered {{ old_db_files | length }} old files: {{ old_db_files }}"
+      tags: filter_files
+
+    - name: Create archive directory if it doesn't exist
+      file:
+        path: "{{ ARCHIVED_DIR | mandatory }}"
+        state: directory
+        mode: '0755'
+      tags: create_dir
+
+    - name: Move old database files and related files to archive directory
+      shell: "mv {{ item }}* {{ ARCHIVED_DIR }}/"
+      loop: "{{ old_db_files }}"
+      when: old_db_files | length > 0
+      tags: move_files
+
+    - name: Send SIGHUP to q_server_bm container
+      shell: "docker compose kill -s SIGHUP q_server_bm"
+      args:
+        chdir: "{{ BM_DEPLOY_DIR | mandatory }}"
+      when: old_db_files | length > 0
+      tags: signal_container
+
+    - name: Find all bm-archive-*.db files in archive directory
+      find:
+        paths: "{{ ARCHIVED_DIR | mandatory }}"
+        patterns: "bm-archive-*.db"
+        file_type: file
+      register: db_files
+      tags: find_files
+
+    - name: Initialize old_db_files list
+      set_fact:
+        old_db_files: []
+      tags: filter_files
+
+    - name: Filter files older than cutoff timestamp
+      set_fact:
+        old_db_files: "{{ old_db_files + [item] }}"
+      loop: "{{ db_files.files | map(attribute='path') | list }}"
+      when:
+        - item is match('.*bm-archive-([0-9]+)\.db$')
+        - (item | regex_replace('.*bm-archive-([0-9]+)\.db$', '\\g<1>') | int) < (archive_cutoff_timestamp_midnight | int)
+      tags: filter_files
+
+    - name: Print list of filtered old database files
+      debug:
+        msg: "Filtered {{ old_db_files | length }} old files: {{ old_db_files }}"
+      tags: filter_files
+
+    - name: Remove old databases from archive directory
+      shell: rm {{ item }}*
+      loop: "{{ old_db_files }}"
+      when: old_db_files | length > 0
+      tags: move_files

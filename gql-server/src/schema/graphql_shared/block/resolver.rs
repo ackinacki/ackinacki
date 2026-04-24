@@ -57,6 +57,7 @@ impl Loader<(String, u64)> for BlockLoader {
         let sql = format!("SELECT * FROM ({union_sql})");
         tracing::trace!(target: "data_loader", "SQL: {sql}");
         let mut conn = self.db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         let blocks = QueryBuilder::new(sql)
             .build_query_as()
             .fetch(&mut *conn)
@@ -107,6 +108,7 @@ impl Loader<String> for BlockLoader {
         let sql = format!("SELECT * FROM ({union_sql})");
         tracing::trace!(target: "data_loader", "SQL: {sql}");
         let mut conn = self.db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         let blocks = QueryBuilder::new(sql)
             .build_query_as()
             .fetch(&mut *conn)
@@ -134,6 +136,7 @@ mod tests {
     use testdir::testdir;
 
     use super::BlockLoader;
+    use crate::defaults;
     use crate::schema::db::DBConnector;
     use crate::web;
 
@@ -231,8 +234,18 @@ mod tests {
             key_archive.1,
         );
 
-        let pool = web::open_db(PathBuf::from(&main_db)).await.expect("open main db");
-        let db_connector = DBConnector::new(pool, main_db.clone());
+        let pool = web::open_db(
+            PathBuf::from(&main_db),
+            15,
+            std::time::Duration::from_secs(defaults::DEFAULT_ACQUIRE_TIMEOUT_SECS),
+            crate::schema::db::build_read_pragmas(
+                defaults::DEFAULT_SQLITE_MMAP_SIZE,
+                defaults::DEFAULT_SQLITE_CACHE_SIZE,
+            ),
+        )
+        .await
+        .expect("open main db");
+        let db_connector = DBConnector::new(pool, main_db.clone(), defaults::MAX_POOL_CONNECTIONS);
         db_connector
             .update_attachments(vec![archive_db.to_string_lossy().into_owned()])
             .await

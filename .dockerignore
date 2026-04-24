@@ -10,6 +10,8 @@ tests
 meganet_logs
 ss_logs
 tests/rust/target
+.temp
 
 # just in case we add more tests which will polute docker context
 **/target
+.codex*

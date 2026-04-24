@@ -309,7 +309,10 @@ pub struct Message {
     /// This is only used for special contracts in masterchain to deploy
     /// messages.
     tock: Option<bool>,
+    #[graphql(deprecation = "Use `src_transaction_id` instead")]
     pub transaction_id: Option<String>,
+    /// ID of the transaction that produced this message.
+    pub src_transaction_id: Option<String>,
     #[graphql(skip)]
     value: Option<String>,
     value_other: Option<Vec<OtherCurrency>>,
@@ -358,7 +361,8 @@ impl From<db::Message> for Message {
             status_name: Some(msg.status.into()),
             tick: None,
             tock: None,
-            transaction_id: msg.transaction_id,
+            transaction_id: msg.transaction_id.clone(),
+            src_transaction_id: msg.transaction_id,
             value: msg.value,
             value_other,
         }

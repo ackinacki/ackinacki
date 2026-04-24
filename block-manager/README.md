@@ -18,6 +18,9 @@ Either `--config` or `--stream-src-url` must be provided.
 | `--stream-src-url <URL>` | `STREAM_SRC_URL` | — | Single BK stream endpoint (legacy mode) |
 | `--rest-api <ADDR>` | `REST_API` | `0.0.0.0:8001` | REST API listen address |
 | `--sqlite-path <PATH>` | `SQLITE_PATH` | `./data` | SQLite database directory |
+| `--clickhouse-url <URL>` | `CLICKHOUSE_URL` | — | ClickHouse URL for transaction activity export |
+| `--clickhouse-user <USER>` | `CLICKHOUSE_USER` | — | ClickHouse user (required when clickhouse-url is set) |
+| `--clickhouse-password <PASS>` | `CLICKHOUSE_PASSWORD` | — | ClickHouse password (required when clickhouse-url is set) |
 
 ### Environment variables
 
@@ -102,6 +105,27 @@ kill -USR1 <pid>
 ```
 
 On `SIGUSR1` happen **Config reload** (multi-node mode only) — both `bk_stream_blocks_endpoints` and `bk_api_endpoints` are re-read from the config file. Connections to removed nodes are terminated; new nodes are picked up on the next health check cycle.
+
+## ClickHouse export
+
+When `--clickhouse-url` (or `CLICKHOUSE_URL`) is set, BM exports per-transaction activity summaries to the `main.tx_summary` ClickHouse table. This can be used to track active accounts and transaction statistics without querying the full SQLite archive.
+
+Exported fields per transaction:
+
+| Column | Type | Description |
+|---|---|---|
+| `tx_id` | String | Transaction hash |
+| `block_time` | UInt32 | Block unix timestamp |
+| `account_addr` | String | Account address |
+| `tr_type` | UInt8 | Transaction type |
+| `aborted` | Bool | Whether the transaction was aborted |
+| `in_msg_type` | UInt8 | Inbound message type (255 = unknown) |
+| `bounced` | Bool | Whether the inbound message was bounced |
+| `total_fees` | String | The total amount of fees spent on processing the transaction |
+
+Rows are batched (up to 10 000 rows or 5 s timeout) before flushing to ClickHouse. If the exporter fails, BM continues to operate normally — errors are logged but do not interrupt block processing.
+
+If `CLICKHOUSE_URL` is not set, the exporter is disabled and no ClickHouse dependency is required.
 
 ## REST API
 

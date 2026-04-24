@@ -30,7 +30,6 @@ base64 = { version = "0.22.1" }
 blake3 = { version = "1.8.2" }
 bytes = { version = "1.11.0" }
 digest = "0.10.7"
-failure = "0.1.8"
 hashbrown = "0.16.0"
 hex = "0.4.3"
 libc = "0.2"

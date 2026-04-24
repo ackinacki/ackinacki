@@ -11,6 +11,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use node_types::BlockIdentifier;
+use node_types::ParentRef;
 use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 use telemetry_utils::mpsc::instrumented_channel;
@@ -38,13 +39,12 @@ use crate::config::config_read::ConfigRead;
 use crate::config::BlockchainConfigRead;
 use crate::config::GlobalConfig;
 use crate::external_messages::ExternalMessagesThreadState;
-use crate::helper::block_flow_trace;
 use crate::helper::block_flow_trace_with_time;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::NackData;
-use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
+use crate::node::services::block_processor::service::MAX_ATTESTATION_TARGET_BETA;
 use crate::node::services::sync::ExternalFileSharesBased;
 use crate::node::services::sync::StateSyncService;
 use crate::node::shared_services::SharedServices;
@@ -63,7 +63,6 @@ use crate::types::BlockIndex;
 use crate::types::BlockRound;
 use crate::types::BlockSeqNo;
 use crate::utilities::guarded::Guarded;
-use crate::utilities::guarded::GuardedMut;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
 use crate::versioning::ProtocolVersion;
 
@@ -103,12 +102,18 @@ pub struct TVMBlockProducerProcess {
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
-pub enum ProcudeNextResult {
+pub enum ProduceNextResult {
     Stopped,
     Continues,
 }
 
 impl TVMBlockProducerProcess {
+    fn report_produced_blocks_size(&self, size: usize, thread_id: &ThreadIdentifier) {
+        if let Some(metrics) = &self.metrics {
+            metrics.report_produced_blocks_queue_size(size as u64, thread_id);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[instrument(skip_all)]
     fn produce_next(
@@ -136,9 +141,9 @@ impl TVMBlockProducerProcess {
         is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
         share_service: Option<ExternalFileSharesBased>,
         round: BlockRound,
-        parent_block_state: BlockState,
+        parent_ref: ParentRef,
         protocol_version: ProtocolVersion,
-    ) -> anyhow::Result<(ProcudeNextResult, BlockState)> {
+    ) -> anyhow::Result<(ProduceNextResult, ParentRef)> {
         tracing::trace!("Start block production process iteration");
         let start_time = std::time::SystemTime::now();
         let production_time = Instant::now();
@@ -192,8 +197,6 @@ impl TVMBlockProducerProcess {
             .thread_accounts_repository(repository.thread_accounts_repository().clone())
             .metrics(metrics.clone())
             .wasm_cache(wasm_cache);
-        #[cfg(feature = "authroot_dapp_repair")]
-        let producer = producer.authroot_dapp_repaired(repository.authroot_dapp_repaired());
         let producer = producer.build();
         let (control_tx, control_rx) =
             instrumented_channel(metrics.clone(), crate::helper::metrics::ROUTING_COMMAND_CHANNEL);
@@ -375,7 +378,7 @@ impl TVMBlockProducerProcess {
                     cross_thread_ref_data,
                     processed_stamps,
                     ext_msg_feedbacks,
-                    produced_block_state,
+                    temp_id,
                 ) = producer
                     // TODO: add refs to other thread states in case of sync
                     .produce(
@@ -386,7 +389,7 @@ impl TVMBlockProducerProcess {
                         db.clone(),
                         &time_limits,
                         round,
-                        parent_block_state,
+                        parent_ref,
                         protocol_version_clone,
                     )?;
 
@@ -397,7 +400,7 @@ impl TVMBlockProducerProcess {
                     cross_thread_ref_data,
                     processed_stamps,
                     ext_msg_feedbacks,
-                    produced_block_state,
+                    temp_id,
                 ))
             })?;
         let corrected_timeout = timeout_correction.get_production_timeout(desired_timeout);
@@ -417,18 +420,18 @@ impl TVMBlockProducerProcess {
             cross_thread_ref_data,
             processed_stamps,
             ext_msg_feedbacks,
-            produced_block_state,
+            temp_id,
         ) = thread.join().map_err(|_| anyhow::format_err!("Failed to join producer thread"))??;
-        tracing::trace!("Produced block: {}", block);
+        tracing::trace!("Produced block (temp_id={}) seq_no={}", temp_id, block.seq_no());
         block_flow_trace_with_time(
             Some(start_time),
             "production",
-            &block.identifier(),
+            &BlockIdentifier::new(temp_id.0),
             &producer_node_id,
             [],
         );
         if let Ok(()) = external_control_rx.try_recv() {
-            return Ok((ProcudeNextResult::Stopped, produced_block_state));
+            return Ok((ProduceNextResult::Stopped, ParentRef::Temporary(temp_id)));
         }
         // Update common section
         let mut common_section = block.common_section().clone();
@@ -484,17 +487,11 @@ impl TVMBlockProducerProcess {
         //     }
         // }
 
-        let span_save_cross_thread_refs =
-            trace_span!("save cross thread refs", refs_len = cross_thread_ref_data.refs().len());
-        shared_services.exec(|e| {
-            span_save_cross_thread_refs.in_scope(|| {
-                e.cross_thread_ref_data_service.set_cross_thread_ref_data(cross_thread_ref_data)
-            })
-        })?;
-        drop(span_save_cross_thread_refs);
-        let block_id = block.identifier();
-        produced_block_state.guarded_mut(|e| e.set_has_cross_thread_ref_data_prepared())?;
-        // let actual_required_version = produced_block_state.guarded(|e| e.block_version_state().to_use().clone());
+        // NOTE: cross_thread_ref_data is NOT saved here. It is passed through
+        // ProducedBlock and saved in block_producer.rs after the final block ID is
+        // known (after set_common_section(_, true)). This avoids writing ThreadIdentifiers
+        // derived from a temporary Merkle hash that will change once attestations,
+        // producer_selector, and other common-section fields are added.
 
         trace_span!("save state").in_scope(|| {
             tracing::trace!("Save produced block");
@@ -506,6 +503,7 @@ impl TVMBlockProducerProcess {
                 )
                 //.block_version(actual_required_version)
                 .block_version(protocol_version.clone())
+                .producer_is_in_bk_set(true)
                 .build();
 
             #[cfg(feature = "restart_on_failing_assumptions")]
@@ -518,6 +516,7 @@ impl TVMBlockProducerProcess {
                     Assumptions::builder()
                         .new_to_bk_set(new_to_bk_set)
                         .block_version(protocol_version)
+                        .producer_is_in_bk_set(true)
                         .build()
                 } else {
                     assumptions
@@ -527,11 +526,15 @@ impl TVMBlockProducerProcess {
                 .block(block)
                 .optimistic_state(Arc::new(initial_state.clone()))
                 .feedbacks(ext_msg_feedbacks)
-                .block_state(produced_block_state.clone())
+                .temporary_block_id(temp_id)
                 .metrics_memento_init_time(None)
                 .assumptions(assumptions)
+                .cross_thread_ref_data(cross_thread_ref_data)
                 .build();
             blocks.push(produced_data);
+            metrics.as_ref().inspect(|m| {
+                m.report_produced_blocks_queue_size(blocks.len() as u64, &thread_id_clone)
+            });
         });
         tracing::trace!("End block production process iteration");
         let production_time = production_time.elapsed();
@@ -548,8 +551,14 @@ impl TVMBlockProducerProcess {
         if production_time < desired_timeout {
             sleep(desired_timeout - production_time);
         }
-        block_flow_trace("finish production", &block_id, &producer_node_id, []);
-        Ok((ProcudeNextResult::Continues, produced_block_state))
+        tracing::trace!("finish production temp_id={}", temp_id);
+        {
+            if produced_blocks.lock().len() >= MAX_ATTESTATION_TARGET_BETA {
+                tracing::trace!("Produced blocks buffer is full, stop production");
+                return Ok((ProduceNextResult::Stopped, ParentRef::Temporary(temp_id)));
+            }
+        }
+        Ok((ProduceNextResult::Continues, ParentRef::Temporary(temp_id)))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -578,10 +587,9 @@ impl TVMBlockProducerProcess {
             block_version,
         );
         if self.active_producer_thread.is_some() {
-            tracing::error!(
+            anyhow::bail!(
                 "Logic failure: node should not start production for the same thread several times"
             );
-            return Ok(());
         }
         tracing::trace!("start_thread_production: loading state to start production");
         let mut initial_state = {
@@ -617,11 +625,10 @@ impl TVMBlockProducerProcess {
                         return Ok(());
                     }
                 } else {
-                    tracing::trace!(
+                    anyhow::bail!(
                         "Failed to find optimistic in repository for block {:?}",
                         &prev_block_id
                     );
-                    return Ok(());
                 }
             }
         };
@@ -649,9 +656,24 @@ impl TVMBlockProducerProcess {
         let save_state_sender = self.save_optimistic_service_sender.clone();
         let node_config_read = self.node_config_read.clone();
 
-        let mut parent_block_state =
-            block_state_repository.get(prev_block_id).expect("Failed to load parent block state");
+        {
+            let parent_block_state = block_state_repository
+                .get(prev_block_id)
+                .expect("Failed to load parent block state");
 
+            let Some(descendant_bk_set) =
+                parent_block_state.guarded(|e| e.descendant_bk_set().clone())
+            else {
+                anyhow::bail!("Parent block ({prev_block_id:?}) descendant bk set is not ready");
+            };
+            if !descendant_bk_set.contains_node(&self.producer_node_id) {
+                anyhow::bail!(
+                    "Parent block ({prev_block_id:?}) descendant bk set does not contain this node ID"
+                );
+            }
+        }
+
+        let prev_block_id_owned = *prev_block_id;
         let produce = move || {
             let mut active_block_producer_threads = vec![];
             // Note:
@@ -664,6 +686,7 @@ impl TVMBlockProducerProcess {
             // TODO: think if it is the best solution given all circumstances
             let mut timeout_correction = ProductionTimeoutCorrection::default();
             let mut round = initial_round;
+            let mut parent_ref = ParentRef::Block(prev_block_id_owned);
             loop {
                 let Some(node_config) = node_config_read.get(&block_version) else {
                     tracing::trace!("Failed to get config for specified block version");
@@ -696,7 +719,7 @@ impl TVMBlockProducerProcess {
                     is_state_sync_requested.clone(),
                     share_service.clone(),
                     round,
-                    parent_block_state,
+                    parent_ref,
                     block_version.clone(),
                 );
                 // Note:
@@ -709,7 +732,7 @@ impl TVMBlockProducerProcess {
                 tracing::trace!("produce_next result: {:?}", produce_res);
 
                 if produce_res.is_err()
-                    || produce_res.as_ref().map(|e| e.0 == ProcudeNextResult::Stopped).unwrap()
+                    || produce_res.as_ref().map(|e| e.0 == ProduceNextResult::Stopped).unwrap()
                 {
                     trace_span!("store optimistic").in_scope(|| {
                         repo_clone
@@ -724,7 +747,7 @@ impl TVMBlockProducerProcess {
                     #[cfg(feature = "fail-fast")]
                     return Ok(Arc::unwrap_or_clone(initial_state));
                 }
-                parent_block_state = produce_res.unwrap().1;
+                parent_ref = produce_res.unwrap().1;
             }
         };
         #[cfg(not(feature = "fail-fast"))]
@@ -751,21 +774,39 @@ impl TVMBlockProducerProcess {
             self.optimistic_state_cache = Some(Arc::new(last_optimistic_state));
             let _ = self.get_produced_blocks();
         }
+        self.report_produced_blocks_size(self.produced_blocks.lock().len(), thread_id);
         Ok(())
     }
 
     pub fn get_produced_blocks(&mut self) -> Vec<ProducedBlock> {
-        let mut clear_active_production = false;
-        if let Some(handler) = self.active_producer_thread.as_ref() {
-            if cfg!(feature = "fail-fast") {
-                assert!(!handler.0.is_finished());
-            } else if handler.0.is_finished() {
-                clear_active_production = true;
+        let finished_thread = self
+            .active_producer_thread
+            .as_ref()
+            .map(|handler| handler.0.is_finished())
+            .unwrap_or(false);
+
+        if finished_thread {
+            if let Some((thread, _control)) = self.active_producer_thread.take() {
+                match thread.join() {
+                    Ok(last_optimistic_state) => {
+                        let thread_id = last_optimistic_state.thread_id;
+                        self.optimistic_state_cache = Some(Arc::new(last_optimistic_state));
+                        self.report_produced_blocks_size(
+                            self.produced_blocks.lock().len(),
+                            &thread_id,
+                        );
+                    }
+                    Err(err) => {
+                        if cfg!(feature = "fail-fast") {
+                            assert!(!finished_thread, "Production thread should not fail");
+                        }
+                        tracing::error!(
+                            "Failed to join finished producer thread while draining produced blocks: {:?}",
+                            err
+                        );
+                    }
+                }
             }
-        }
-        if clear_active_production {
-            self.active_producer_thread = None;
-            return vec![];
         }
         let mut blocks: Vec<_> = {
             let mut guard = self.produced_blocks.lock();
@@ -776,6 +817,12 @@ impl TVMBlockProducerProcess {
             block.set_memento_init_time(now);
         }
         blocks.sort_by_key(|a| a.block().seq_no());
+        let thread_id = blocks.last().map(|block| block.block().common_section().thread_id());
+        if let Some(thread_id) =
+            thread_id.or_else(|| blocks.first().map(|block| block.optimistic_state().thread_id))
+        {
+            self.report_produced_blocks_size(0, &thread_id);
+        }
         blocks
     }
 
@@ -872,6 +919,7 @@ fn aggregate_nacks(
 #[cfg(test)]
 mod tests {
 
+    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
     use std::thread::sleep;
     use std::time::Duration;
@@ -1008,6 +1056,7 @@ mod tests {
                 .with_thread_id(thread_id)
                 .with_cache_size(1)
                 .with_feedback_sender(feedback_sender)
+                .with_is_producing(Arc::new(AtomicBool::new(false)))
                 .build()?,
             Arc::new(Mutex::new(None)),
             0,

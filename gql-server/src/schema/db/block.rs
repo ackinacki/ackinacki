@@ -146,6 +146,7 @@ impl Block {
         tracing::debug!("SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
 
         let blocks = builder
@@ -159,9 +160,10 @@ impl Block {
     }
 
     pub async fn latest_block(db_connector: &DBConnector) -> anyhow::Result<Option<Block>> {
-        let mut conn = db_connector.get_connection().await?;
         let sql = "SELECT * FROM blocks ORDER BY chain_order DESC LIMIT 1";
         tracing::debug!("SQL: {sql}");
+        let mut conn = db_connector.get_connection().await?;
+        conn.set_sql(sql);
         let block = sqlx::query_as(sql).fetch_optional(&mut *conn).await?;
 
         Ok(block)
@@ -242,6 +244,7 @@ impl Block {
         tracing::trace!(target: "blockchain_api", "SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
+        conn.set_sql(&sql);
         let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(sql);
         let result: Result<Vec<Block>, anyhow::Error> = builder
             .build_query_as()

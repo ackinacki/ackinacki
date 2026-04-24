@@ -297,6 +297,10 @@ struct Config {
     /// TVM engine version
     #[arg(long, env)]
     pub engine_version: Option<String>,
+
+    /// TVM engine version
+    #[arg(long, env)]
+    pub blockchain_config_hash: Option<String>,
 }
 
 const DEFAULT_NODE_PORT: u16 = 8500;
@@ -613,6 +617,9 @@ fn main() -> anyhow::Result<()> {
                     anyhow::anyhow!("Failed to parse engine version as SemVer: {e}")
                 })?;
                 global_config.engine_version = version;
+            }
+            if let Some(blockchain_config_hash) = config_cmd.blockchain_config_hash {
+                global_config.blockchain_config_hash = blockchain_config_hash;
             }
 
             save_config_to_file(&config, &config_cmd.config_file_path)?;

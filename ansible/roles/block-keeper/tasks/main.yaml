@@ -61,6 +61,12 @@
 
 - name: Check TLS on Block Keeper
   include_tasks: check-tls.yaml
-  when: 
+  loop: "{{ groups['block_keeper_tls_proxy'] }}"
+  loop_control:
+    loop_var: tls_proxy_host
+  vars:
+    block_keepers: "{{ hostvars[tls_proxy_host].block_keepers | default([]) }}"
+  run_once: true
+  when:
     - DO_START or UPGRADE is defined
     - CHECK_HTTPS is true

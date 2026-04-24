@@ -1,0 +1,63 @@
+receivers:
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: caddy
+          scrape_interval: 15s
+          static_configs:
+            - targets:
+                - caddy-{{ HOST_PUBLIC_IP | replace('.', '-') }}:2019
+
+processors:
+  resource:
+    attributes:
+      - key: service.name
+        value: "{{ OTEL_SERVICE_NAME | default('caddy-tls-proxy') }}"
+        action: upsert
+      - key: service.namespace
+        value: "{{ NETWORK_NAME }}"
+        action: upsert
+      - key: host.name
+        value: "{{ HOST_PUBLIC_IP | default(inventory_hostname) | default(ansible_host) }}"
+        action: upsert
+{% set ns = namespace(host_ids=[]) -%}
+{% for block_keeper in block_keepers -%}
+{%   for host in block_keeper -%}
+{%     set hex_id = (host | regex_search('[0-9a-fA-F]+(?=[.])')) or (host | regex_replace('[^0-9a-fA-F]', '')) -%}
+{%     set ns.host_ids = ns.host_ids + [hex_id[:4] | string] -%}
+{%   endfor -%}
+{% endfor %}
+      - key: service.instance.id
+        value: "{% if NODE_GROUP_ID is defined and NODE_GROUP_ID %}{{ NODE_GROUP_ID }}-{% endif %}{{ ns.host_ids | join('-') }}"
+        action: upsert
+      # value: "{% if NODE_GROUP_ID is defined and NODE_GROUP_ID %}{{ NODE_GROUP_ID }}-{% endif %}{{ HOST_PUBLIC_IP | default(inventory_hostname) | default(ansible_host) }}"
+
+  batch:
+
+exporters:
+{% if (OTEL_COLLECTOR_PROTO | default('grpc')) == 'grpc' %}
+  otlp:
+    endpoint: "{{ OTEL_COLLECTOR | regex_replace('^https?://', '') }}"
+    tls:
+      insecure: true
+{% else %}
+  otlphttp:
+    endpoint: "{{ OTEL_COLLECTOR }}"
+    tls:
+      insecure: true
+{% endif %}
+
+service:
+  pipelines:
+    metrics:
+      receivers:
+        - prometheus
+      processors:
+        - resource
+        - batch
+      exporters:
+{% if (OTEL_COLLECTOR_PROTO | default('grpc')) == 'grpc' %}
+        - otlp
+{% else %}
+        - otlphttp
+{% endif %}

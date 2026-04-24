@@ -181,10 +181,6 @@ pub struct BlockBuilder {
 
     pub(crate) is_block_of_retired_version: bool,
 
-    #[cfg(feature = "authroot_dapp_repair")]
-    pub(crate) authroot_dapp_repaired:
-        std::sync::Arc<parking_lot::Mutex<Option<crate::types::BlockSeqNo>>>,
-
     is_verifier: bool,
 }
 

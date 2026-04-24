@@ -1,0 +1,106 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setProfileCode",
+			"inputs": [
+				{"name":"code","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployProfile",
+			"inputs": [
+				{"name":"pubkeyHash","type":"uint256"},
+				{"name":"multifactorHash","type":"uint256"},
+				{"name":"description","type":"string"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "onProfileDeployed",
+			"inputs": [
+				{"name":"descriptionHash","type":"uint256"},
+				{"name":"multifactorHash","type":"uint256"},
+				{"name":"description","type":"string"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getProfileAddress",
+			"inputs": [
+				{"name":"description","type":"string"}
+			],
+			"outputs": [
+				{"name":"profile","type":"address"}
+			]
+		},
+		{
+			"name": "hashPubkey",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"hash","type":"uint256"}
+			]
+		},
+		{
+			"name": "hashMultifactor",
+			"inputs": [
+				{"name":"multifactor","type":"address"}
+			],
+			"outputs": [
+				{"name":"hash","type":"uint256"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		},
+		{
+			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"},
+				{"name":"cell","type":"cell"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"events": [
+		{
+			"name": "AuthProfileDeployed",
+			"inputs": [
+				{"name":"profile","type":"address"},
+				{"name":"multifactorHash","type":"uint256"},
+				{"name":"description","type":"string"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_profileCode","type":"cell"},
+		{"init":false,"name":"_ownerPubkey","type":"uint256"}
+	]
+}

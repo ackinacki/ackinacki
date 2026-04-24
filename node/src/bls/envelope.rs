@@ -214,7 +214,7 @@ where
         // Sort signature occurrences to make serialization the same each time
         let mut signature_occurrences: Vec<(SignerIndex, u16)> =
             self.signature_occurrences.clone().into_iter().collect();
-        signature_occurrences.sort_by(|(a, _), (b, _)| a.cmp(b));
+        signature_occurrences.sort_by_key(|(a, _)| *a);
         let envelope_serde = EnvelopeSerDe::<BLS::Signature, TData> {
             aggregated_signature: self.aggregated_signature.clone(),
             signature_occurrences,

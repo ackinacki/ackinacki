@@ -1,0 +1,66 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"pubkeyHash","type":"uint256"},
+				{"name":"multifactorHash","type":"uint256"},
+				{"name":"description","type":"string"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "addContext",
+			"inputs": [
+				{"name":"context","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"description","type":"string"},
+				{"name":"descriptionHash","type":"uint256"},
+				{"name":"pubkeyHash","type":"uint256"},
+				{"name":"multifactorHash","type":"uint256"},
+				{"name":"root","type":"address"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+		{
+			"name": "ContextAdded",
+			"inputs": [
+				{"name":"context","type":"cell"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":true,"name":"_root","type":"address"},
+		{"init":true,"name":"_descriptionHash","type":"uint256"},
+		{"init":false,"name":"_pubkeyHash","type":"uint256"},
+		{"init":false,"name":"_multifactorHash","type":"uint256"},
+		{"init":false,"name":"_description","type":"string"}
+	]
+}

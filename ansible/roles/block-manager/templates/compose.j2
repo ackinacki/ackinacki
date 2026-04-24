@@ -28,11 +28,18 @@ services:
     environment:
       NODE_VERBOSE: 1
       BM_API_SOCKET: block_manager:{{ BM_REST_API_PORT }}
+{% set otel_node_id = BM_ID | default(0) | string %}{% if NODE_GROUP_ID is defined and NODE_GROUP_ID %}{% set otel_node_id = NODE_GROUP_ID ~ '-' ~ otel_node_id %}{% endif %}
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace={{ NETWORK_NAME }},service.instance.id={{ otel_node_id }},host.name={{ OTEL_MY_HOST_NAME | default(ansible_host) }}
+{% if OTEL_COLLECTOR is defined and OTEL_COLLECTOR %}
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: {{ OTEL_COLLECTOR }}
+      OTEL_EXPORTER_OTLP_METRICS_PROTOCOL: {{ OTEL_COLLECTOR_PROTO | default('grpc') }}
+{% endif %}
+      OTEL_SERVICE_NAME: {{ OTEL_SERVICE_NAME | default(TEST_NAME ~ '-' ~ COMMIT_HASH) }}
     command:
       - bash
       - -c
       - >
-        exec gql-server -d ./data/bm-archive.db -l 0.0.0.0:3000 >> /logsdir/qserver.log 2>&1
+        exec gql-server -d ./data/bm-archive.db -l 0.0.0.0:3000 --config /workdir/conf/config.yaml >> /logsdir/qserver.log 2>&1
     expose:
       - "3000"
     ports:
@@ -40,6 +47,7 @@ services:
     volumes:
       - {{ BM_DATA_DIR }}/workdir:/workdir/data
       - {{ BM_LOGS_DIR }}:/logsdir
+      - ./conf:/workdir/conf
     networks:
       - ackinacki-net
     depends_on:

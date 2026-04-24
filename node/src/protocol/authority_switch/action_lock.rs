@@ -988,20 +988,18 @@ impl ThreadAuthority {
                     ancestors
                 };
                 let required_primary_attestations = Vec::<BlockIdentifier>::from_iter(
-                    ancestor_blocks_finalization_checkpoints.primary().iter().filter_map(
-                        |(id, _checkpoint)| {
-                            // Note:
-                            // It is possible to send only attestations for blocks
-                            // that must be finalized on the next round.
-                            // However it seems that sending attestations for the entire
-                            // chain may work better.
-                            if !required_fallback_attestations.contains(id) {
-                                Some(*id)
-                            } else {
-                                None
-                            }
-                        },
-                    ),
+                    ancestor_blocks_finalization_checkpoints.primary().keys().filter_map(|id| {
+                        // Note:
+                        // It is possible to send only attestations for blocks
+                        // that must be finalized on the next round.
+                        // However it seems that sending attestations for the entire
+                        // chain may work better.
+                        if !required_fallback_attestations.contains(id) {
+                            Some(*id)
+                        } else {
+                            None
+                        }
+                    }),
                 );
                 let mut attestations = vec![];
                 for id in required_fallback_attestations.iter() {

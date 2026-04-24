@@ -1,5 +1,31 @@
 ---
 
+- name: Fetch Cloudflare IPv4 ranges
+  ansible.builtin.uri:
+    url: https://www.cloudflare.com/ips-v4
+    return_content: true
+  register: cf_ips_v4
+  delegate_to: localhost
+  run_once: true
+  become: false
+  check_mode: false
+
+- name: Fetch Cloudflare IPv6 ranges
+  ansible.builtin.uri:
+    url: https://www.cloudflare.com/ips-v6
+    return_content: true
+  register: cf_ips_v6
+  delegate_to: localhost
+  run_once: true
+  become: false
+  check_mode: false
+
+- name: Set Cloudflare IP ranges fact
+  ansible.builtin.set_fact:
+    cloudflare_ip_ranges: "{{ (cf_ips_v4.content | trim).split('\n') + (cf_ips_v6.content | trim).split('\n') }}"
+  run_once: true
+  check_mode: false
+
 - name: "Ensures proxy dir exists"
   ansible.builtin.file:
     path: "{{ TLS_PROXY_DIR | mandatory }}/"
@@ -11,6 +37,13 @@
     path: "{{ TLS_PROXY_DIR }}/caddy/"
     state: directory
     mode: u=rwx,g=r,o=r
+
+- name: Copy Dockerfile
+  ansible.builtin.template:
+    src: templates/Dockerfile.j2
+    dest: "{{ TLS_PROXY_DIR }}/Dockerfile"
+    mode: "0644"
+  register: dockerfile
 
 - name: Production compose
   ansible.builtin.template:
@@ -25,6 +58,14 @@
     dest: "{{ TLS_PROXY_DIR }}/caddy/Caddyfile"
     mode: "0644"
   register: caddyfile
+
+- name: Copy otel-collector config
+  ansible.builtin.template:
+    src: templates/otel-collector-config.j2
+    dest: "{{ TLS_PROXY_DIR }}/otel-collector-config.yaml"
+    mode: "0644"
+  register: otelcfg
+  when: OTEL_COLLECTOR is defined and OTEL_COLLECTOR | length > 0
 
 - name: Ensure .env
   ansible.builtin.copy:
@@ -48,10 +89,14 @@
     chdir: "{{ TLS_PROXY_DIR }}"
     cmd: docker compose up -d --build --remove-orphans
 
-- name: Compose restart
+- name: Restart caddy
   ansible.builtin.shell:
     chdir: "{{ TLS_PROXY_DIR }}"
-    cmd: docker compose restart
-  when:
-    - caddyfile.changed
-    - not compose.changed
+    cmd: docker compose restart caddy
+  when: caddyfile.changed or dockerfile.changed
+
+- name: Restart otel-collector
+  ansible.builtin.shell:
+    chdir: "{{ TLS_PROXY_DIR }}"
+    cmd: docker compose restart otel-collector
+  when: otelcfg is defined and otelcfg.changed

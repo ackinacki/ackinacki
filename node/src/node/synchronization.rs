@@ -2,6 +2,7 @@
 //
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::TryRecvError;
@@ -20,7 +21,6 @@ use crate::node::network_message::Command;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
 use crate::node::Node;
-use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::next_seq_no;
@@ -333,37 +333,31 @@ where
                             }
                         }
 
-                        if initial_state_shared_resource_address.is_none() {
-                            if let Some(resource_address) =
-                                envelope.data().directives().share_state_resources()
-                            {
-                                let last_finalized_block_seq_no = self
-                                    .repository
-                                    .select_thread_last_finalized_block(&self.thread_id)?
-                                    .map(|(_, seq_no)| seq_no)
-                                    .unwrap_or_default();
-                                if last_finalized_block_seq_no >= net_block.seq_no {
-                                    tracing::debug!("[synchronizing] Received block with shared state seq_no({:?} is less or equal to local last finalized seq_no ({last_finalized_block_seq_no:?}), skip it", net_block.seq_no);
-                                    continue;
-                                }
-
-                                let resource_address =
-                                    BTreeMap::from_iter(resource_address.iter().map(
-                                        |(k, v)| -> (ThreadIdentifier, BlockIdentifier) {
-                                            (*k, *v)
-                                        },
-                                    ));
-                                last_node_join_message_time = Instant::now();
-                                initial_state_shared_resource_address =
-                                    Some(resource_address.clone());
-                                initial_state = Some((net_block.identifier, net_block.seq_no));
-
-                                self.state_sync_service.add_load_state_task(
-                                    resource_address.clone(),
-                                    self.repository.clone(),
-                                    synchronization_tx.clone(),
-                                )?;
+                        if initial_state_shared_resource_address.is_none()
+                            && *envelope.data().directives().share_state_resources()
+                        {
+                            let last_finalized_block_seq_no = self
+                                .repository
+                                .select_thread_last_finalized_block(&self.thread_id)?
+                                .map(|(_, seq_no)| seq_no)
+                                .unwrap_or_default();
+                            if last_finalized_block_seq_no >= net_block.seq_no {
+                                tracing::debug!("[synchronizing] Received block with shared state seq_no({:?} is less or equal to local last finalized seq_no ({last_finalized_block_seq_no:?}), skip it", net_block.seq_no);
+                                continue;
                             }
+
+                            let block_id = envelope.data().identifier();
+                            let thread_id = *envelope.data().common_section().thread_id();
+                            let resource_address = BTreeMap::from([(thread_id, block_id)]);
+                            last_node_join_message_time = Instant::now();
+                            initial_state_shared_resource_address = Some(resource_address.clone());
+                            initial_state = Some((net_block.identifier, net_block.seq_no));
+
+                            self.state_sync_service.add_load_state_task(
+                                resource_address.clone(),
+                                self.repository.clone(),
+                                synchronization_tx.clone(),
+                            )?;
                         }
                     }
                     NetworkMessage::Ack(_ack) => {
@@ -413,6 +407,10 @@ where
                             identifier,
                             address
                         );
+                        if address.get(&self.thread_id) != Some(&identifier) {
+                            tracing::trace!("Incoming SyncFinalized is broken, skip it");
+                            continue;
+                        }
                         let last_finalized_block_seq_no = self
                             .repository
                             .select_thread_last_finalized_block(&self.thread_id)?
@@ -450,19 +448,20 @@ where
                 last_finalized_block_id,
                 last_finalized_seq_no
             );
-            let finalized_block = self
-                .repository
-                .get_finalized_block(&last_finalized_block_id)?
-                .ok_or(anyhow::format_err!("missing last finalized block"))?;
-            let finalized_state = self
-                .repository
-                .get_optimistic_state(
-                    &last_finalized_block_id,
-                    finalized_block.data().common_section().thread_id(),
-                    None,
-                )?
-                .ok_or(anyhow::format_err!("Failed to load finalized state"))?;
-            let share_state_hint = finalized_state.get_share_stare_refs();
+            // let finalized_block = self
+            //     .repository
+            //     .get_finalized_block(&last_finalized_block_id)?
+            //     .ok_or(anyhow::format_err!("missing last finalized block"))?;
+            // let finalized_state = self
+            //     .repository
+            //     .get_optimistic_state(
+            //         &last_finalized_block_id,
+            //         finalized_block.data().common_section().thread_id(),
+            //         None,
+            //     )?
+            //     .ok_or(anyhow::format_err!("Failed to load finalized state"))?;
+            // let share_state_hint = finalized_state.get_share_stare_refs();
+            let share_state_hint = HashMap::from_iter([(self.thread_id, last_finalized_block_id)]);
             for (thread_id, block_id) in &share_state_hint {
                 let Some(block_seq_no) =
                     self.block_state_repository.get(block_id)?.guarded(|e| *e.block_seq_no())
@@ -487,9 +486,7 @@ where
                         {
                             finalizing_block = Some(cursor);
                         }
-                        cursors.extend(
-                            e.known_children(thread_id).cloned().unwrap_or_default().into_iter(),
-                        );
+                        cursors.extend(e.known_children(thread_id).cloned().unwrap_or_default());
                     });
                     if finalizing_block.is_some() {
                         break;
@@ -503,8 +500,7 @@ where
                     finalizing_block.unwrap(),
                 )?;
             }
-            self.last_synced_state =
-                Some((last_finalized_block_id, last_finalized_seq_no, share_state_hint.clone()));
+            self.last_synced_state = Some((last_finalized_block_id, last_finalized_seq_no));
             self.broadcast_sync_finalized(
                 last_finalized_block_id,
                 last_finalized_seq_no,

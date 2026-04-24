@@ -49,16 +49,7 @@ contract GiverV3 is Upgradable {
 
     function sendCurrency(address dest, varuint16 value, mapping(uint32 => varuint32) ecc) public pure {
         tvm.accept();
-        if (ecc.exists(1)) {
-            if (address(this).currencies[1] < ecc[1]) {
-                gosh.mintecc(uint64(ecc[1]) - uint64(address(this).currencies[1]), 1);
-            }
-        }
-        if (ecc.exists(2)) {
-            if (address(this).currencies[2] < ecc[2]) {
-                gosh.mintecc(uint64(ecc[2]) - uint64(address(this).currencies[2]), 2);
-            }
-        }
+        _mintEccIfNeeded(ecc);
         if (address(this).balance <= value + 1000 vmshell) {
             gosh.mintshellq(uint64(value + 1000 vmshell - address(this).balance));
         }
@@ -66,23 +57,40 @@ contract GiverV3 is Upgradable {
         emit SentCurrency(dest, value, ecc);
     }
 
+    function sendWithBody(address dest, varuint16 value, bool bounce, uint8 flag, TvmCell body) public acceptOnlyOwner {
+        if (address(this).balance <= value + 1000 vmshell) {
+            gosh.mintshellq(uint64(value + 1000 vmshell - address(this).balance));
+        }
+        dest.transfer({value: value, bounce: bounce, flag: flag, body: body});
+    }
+
+    function _mintEccIfNeeded(mapping(uint32 => varuint32) ecc) private pure {
+        for (uint32 id = 1; id <= 3; id++) {
+            if (ecc.exists(id)) {
+                if (address(this).currencies[id] < ecc[id]) {
+                    gosh.mintecc(uint64(ecc[id]) - uint64(address(this).currencies[id]), id);
+                }
+            }
+        }
+    }
+
     function sendCurrencyWithFlag(address dest, varuint16 value, mapping(uint32 => varuint32) ecc, uint8 flag) public pure {
         tvm.accept();
-        if (ecc.exists(1)) {
-            if (address(this).currencies[1] < ecc[1]) {
-                gosh.mintecc(uint64(ecc[1]) - uint64(address(this).currencies[1]), 1);
-            }
-        }
-        if (ecc.exists(2)) {
-            if (address(this).currencies[2] < ecc[2]) {
-                gosh.mintecc(uint64(ecc[2]) - uint64(address(this).currencies[2]), 2);
-            }
-        }
+        _mintEccIfNeeded(ecc);
         if (address(this).balance <= value + 1000 vmshell) {
             gosh.mintshellq(uint64(value + 1000 vmshell - address(this).balance));
         }
         dest.transfer({value: value, bounce: false, flag: flag, currencies: ecc});
         emit SentCurrencyWithFlag(dest, value, ecc, flag);
+    }
+
+    function sendCurrencyWithBody(address dest, varuint16 value, mapping(uint32 => varuint32) ecc, uint8 flag, TvmCell body) public pure {
+        tvm.accept();
+        _mintEccIfNeeded(ecc);
+        if (address(this).balance <= value + 1000 vmshell) {
+            gosh.mintshellq(uint64(value + 1000 vmshell - address(this).balance));
+        }
+        dest.transfer({value: value, bounce: false, flag: flag, currencies: ecc, body: body});
     }
 
     function sendFreeToken(address dest) public pure {
@@ -113,6 +121,18 @@ contract GiverV3 is Upgradable {
     
     function getData(string name, uint128 decimals, TvmCell walletCode, TvmCell transactionCode, uint256 pubkey, bool mintDisabled, address initialSupplyToOwner, uint128 initialSupply) public view returns (TvmCell) {
         return abi.encode(name, decimals, walletCode, transactionCode, pubkey, mintDisabled, initialSupplyToOwner, initialSupply);
+    }
+
+    function getAccumulatorData(TvmCell sellOrderCode, uint256 pubkey) public view returns (TvmCell) {
+        return abi.encode(sellOrderCode, pubkey);
+    }
+
+    function getExchangeData(uint256 pubkey, address usdcWallet, uint128 totalMinted, uint64 mintNonce, uint64 mintAccumulatorNonce) public view returns (TvmCell) {
+        return abi.encode(pubkey, usdcWallet, totalMinted, mintNonce, mintAccumulatorNonce);
+    }
+
+    function getDataForAuthService(TvmCell profileCode, uint256 pubkey) public view returns (TvmCell) {
+        return abi.encode(profileCode, pubkey);
     }
 
     function onCodeUpgrade() internal override {}

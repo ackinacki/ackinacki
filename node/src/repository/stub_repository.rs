@@ -96,9 +96,6 @@ impl OptimisticState for OptimisticStateStub {
         _thread_accounts_repository: &NodeThreadAccountsRepository,
         _message_db: MessageDurableStorage,
         _config_read: crate::config::config_read::ConfigRead,
-        #[cfg(feature = "authroot_dapp_repair")] _authroot_dapp_repaired: std::sync::Arc<
-            parking_lot::Mutex<Option<crate::types::BlockSeqNo>>,
-        >,
     ) -> anyhow::Result<(
         CrossThreadRefData,
         HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,

@@ -28,7 +28,7 @@ impl AsSignaturesMap for Vec<Envelope<AttestationData>> {
                 HashSet::from_iter(attestation.clone_signature_occurrences().keys().cloned());
             attestations_map
                 .entry(attestation_target)
-                .and_modify(|e| e.extend(attestation_signers.clone().into_iter()))
+                .and_modify(|e| e.extend(attestation_signers.clone()))
                 .or_insert(attestation_signers);
         }
         attestations_map

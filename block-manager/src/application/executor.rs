@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::path::PathBuf;
@@ -19,6 +19,7 @@ use crate::application::metrics::Metrics;
 use crate::application::quarantine::Quarantine;
 use crate::application::services::block_applier;
 use crate::application::services::block_subscriber;
+use crate::application::services::clickhouse_exporter;
 use crate::application::services::connection_pool;
 use crate::application::services::http_server;
 use crate::application::services::signal_handler::dispatch_signals;
@@ -63,6 +64,23 @@ pub async fn run(
 
     let quarantine = Quarantine::new(config.sqlite_path.into())?;
 
+    // Set up optional ClickHouse account activity export
+    let activity_tx = if let Some(ref clickhouse_url) = config.clickhouse_url {
+        let (tx, rx) = tokio::sync::mpsc::channel(1024);
+        let url = clickhouse_url.clone();
+        let user = config.clickhouse_user.clone();
+        let password = config.clickhouse_password.clone();
+        tokio::spawn(async move {
+            if let Err(err) = clickhouse_exporter::run(rx, url, user, password).await {
+                tracing::error!("ClickHouse exporter failed: {err}");
+            }
+        });
+        Some(tx)
+    } else {
+        tracing::info!("ClickHouse export disabled (no CLICKHOUSE_URL)");
+        None
+    };
+
     let blk_apply_handle = block_applier::run(
         bp_resolver,
         db_writer,
@@ -71,6 +89,7 @@ pub async fn run(
         metrics.clone(),
         cmd_rx,
         thread_accounts_repository,
+        activity_tx,
     );
 
     let db_helper_handle = tokio::task::spawn_blocking(move || db_helper_handle.join());

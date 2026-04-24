@@ -136,61 +136,70 @@ impl BlockchainAccountQuery<'_> {
         after: Option<String>,
         #[graphql(desc = "This field is mutually exclusive with 'first'.")] last: Option<i32>,
         before: Option<String>,
-    ) -> Option<
-        Connection<
-            String,
-            Event,
-            EmptyFields,
-            EmptyFields,
-            AccountEventsConnection,
-            AccountEventEdge,
-        >,
-    > {
-        query(after, before, first, last, |after, before, first, last| async move {
-            tracing::debug!(
-                "first={:?}, after={:?}, last={:?}, before={:?}",
-                first,
-                after,
-                last,
-                before
-            );
-
-            let pagination = PaginationArgs { first, after, last, before };
-            let mut messages = db::Message::account_events(
-                ctx.data::<Arc<DBConnector>>().unwrap(),
-                self.address.clone(),
-                dst,
-                &pagination,
-            )
-            .await?;
-
-            let (has_previous_page, has_next_page) = pagination.get_bound_markers(messages.len());
-            tracing::debug!("has_previous_page={:?}, after={:?}", has_previous_page, has_next_page);
-
-            let mut connection: Connection<
+    ) -> async_graphql::Result<
+        Option<
+            Connection<
                 String,
                 Event,
                 EmptyFields,
                 EmptyFields,
                 AccountEventsConnection,
                 AccountEventEdge,
-            > = Connection::new(has_previous_page, has_next_page);
+            >,
+        >,
+    > {
+        Ok(Some(
+            query(after, before, first, last, |after, before, first, last| async move {
+                tracing::debug!(
+                    "first={:?}, after={:?}, last={:?}, before={:?}",
+                    first,
+                    after,
+                    last,
+                    before
+                );
 
-            pagination.shrink_portion(&mut messages);
+                let pagination = PaginationArgs { first, after, last, before };
+                let mut messages = db::Message::account_events(
+                    ctx.data::<Arc<DBConnector>>().unwrap(),
+                    self.address.clone(),
+                    dst,
+                    &pagination,
+                )
+                .await?;
 
-            let mut edges: Vec<Edge<String, Event, EmptyFields, AccountEventEdge>> = vec![];
-            for message in messages {
-                let event: Event = message.into();
-                let cursor = event.msg_chain_order.clone().unwrap();
-                let edge: Edge<String, Event, EmptyFields, AccountEventEdge> =
-                    Edge::with_additional_fields(cursor, event, EmptyFields);
-                edges.push(edge);
-            }
-            connection.edges.extend(edges);
-            Ok::<_, async_graphql::Error>(connection)
-        })
-        .await
-        .ok()
+                let (has_previous_page, has_next_page) =
+                    pagination.get_bound_markers(messages.len());
+                tracing::debug!(
+                    "has_previous_page={:?}, after={:?}",
+                    has_previous_page,
+                    has_next_page
+                );
+
+                let mut connection: Connection<
+                    String,
+                    Event,
+                    EmptyFields,
+                    EmptyFields,
+                    AccountEventsConnection,
+                    AccountEventEdge,
+                > = Connection::new(has_previous_page, has_next_page);
+
+                pagination.shrink_portion(&mut messages);
+
+                let mut edges: Vec<Edge<String, Event, EmptyFields, AccountEventEdge>> = vec![];
+                for message in messages {
+                    let event: Event = message.into();
+                    let cursor = event.msg_chain_order.clone().unwrap();
+                    let edge: Edge<String, Event, EmptyFields, AccountEventEdge> =
+                        Edge::with_additional_fields(cursor, event, EmptyFields);
+                    edges.push(edge);
+                }
+                connection.edges.extend(edges);
+                Ok::<_, async_graphql::Error>(connection)
+            })
+            .await
+            .map_err(crate::schema::db::connector::map_db_error)?,
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -208,7 +217,8 @@ impl BlockchainAccountQuery<'_> {
         >,
         #[graphql(
             name = "counterparties",
-            desc = "Filter messages by counterparties (max - 5 counterparties). This field is mutually exclusive with 'msg_type=ExtOut'."
+            desc = "Filter messages by counterparties (max - 5 counterparties). This field is mutually exclusive with 'msg_type=ExtOut'.",
+            deprecation = "This argument is deprecated and will be removed in a future release."
         )]
         counterparties: Option<Vec<String>>,
         #[graphql(
@@ -253,107 +263,143 @@ impl BlockchainAccountQuery<'_> {
             }
         }
 
-        Ok(query(after, before, first, last, |after, before, first, last| async move {
-            tracing::debug!(
-                "first={:?}, after={:?}, last={:?}, before={:?}",
-                first,
-                after,
-                last,
-                before
-            );
+        Ok(Some(
+            query(after, before, first, last, |after, before, first, last| async move {
+                tracing::debug!(
+                    "first={:?}, after={:?}, last={:?}, before={:?}",
+                    first,
+                    after,
+                    last,
+                    before
+                );
 
-            let msg_type = match msg_type {
-                Some(list) if list.is_empty() => None,
-                _ => msg_type,
-            };
-            let args = db::AccountMessagesQueryArgs::new(
-                allow_latest_inconsistent_data,
-                block_seq_no_range,
-                counterparties,
-                msg_type,
-                min_value,
-                PaginationArgs { first, after, last, before },
-            );
-            let mut messages = db::Message::account_messages(
-                self.ctx.data::<Arc<DBConnector>>().unwrap(),
-                self.address.clone(),
-                &args,
-            )
-            .await?;
-
-            let (has_previous_page, has_next_page) =
-                args.pagination.get_bound_markers(messages.len());
-            tracing::debug!("has_previous_page={:?}, after={:?}", has_previous_page, has_next_page);
-
-            let mut connection: Connection<
-                String,
-                Message,
-                EmptyFields,
-                EmptyFields,
-                BlockchainMessagesConnection,
-                BlockchainMessageEdge,
-            > = Connection::new(has_previous_page, has_next_page);
-
-            args.pagination.shrink_portion(&mut messages);
-
-            let selection_set = self
-                .ctx
-                .look_ahead()
-                .field("account")
-                .field("messages")
-                .field("edges")
-                .field("node");
-            let is_parent_transaction = selection_set.field("src_transaction").exists();
-            let is_child_transaction = selection_set.field("dst_transaction").exists();
-            let transaction_loader = self.ctx.data_unchecked::<DataLoader<TransactionLoader>>();
-            let mut edges: Vec<Edge<String, Message, EmptyFields, BlockchainMessageEdge>> = vec![];
-            for message in messages {
-                let parent_transaction = message.transaction_id.clone();
-                let mut message: BlockchainMessage = message.into();
-                if is_parent_transaction {
-                    if let Some(parent_transaction) = parent_transaction {
-                        message.src_transaction = transaction_loader
-                            .load_one(parent_transaction.clone())
-                            .await
-                            .unwrap_or_else(|_| {
-                                panic!("Failed to load transaction: {parent_transaction}")
-                            })
-                            .map(Box::new);
-                    }
-                }
-                if is_child_transaction {
-                    let dst_transaction = db::transaction::Transaction::by_in_message(
-                        self.ctx.data::<Arc<DBConnector>>().unwrap(),
-                        &message.id,
-                        None,
-                    )
-                    .await
-                    .expect("Failed to load transaction by inbound message");
-
-                    if let Some(transaction) = dst_transaction {
-                        message.dst_transaction = transaction_loader
-                            .load_one(transaction.id.clone())
-                            .await
-                            .unwrap_or_else(|_| {
-                                panic!("Failed to load transaction: {}", transaction.id)
-                            })
-                            .map(Box::new);
-                    }
-                }
-                let cursor = if let Some(ref dst_chain_order) = message.dst_chain_order {
-                    dst_chain_order.clone()
-                } else {
-                    message.src_chain_order.clone().unwrap()
+                let msg_type = match msg_type {
+                    Some(list) if list.is_empty() => None,
+                    _ => msg_type,
                 };
-                let edge: Edge<String, Message, EmptyFields, BlockchainMessageEdge> =
-                    Edge::with_additional_fields(cursor, message, EmptyFields);
-                edges.push(edge);
-            }
-            connection.edges.extend(edges);
-            Ok::<_, async_graphql::Error>(connection)
-        })
-        .await
-        .ok())
+                let args = db::AccountMessagesQueryArgs::new(
+                    allow_latest_inconsistent_data,
+                    block_seq_no_range,
+                    counterparties,
+                    msg_type,
+                    min_value,
+                    PaginationArgs { first, after, last, before },
+                );
+                let mut messages = db::Message::account_messages(
+                    self.ctx.data::<Arc<DBConnector>>().unwrap(),
+                    self.address.clone(),
+                    &args,
+                )
+                .await?;
+
+                let (has_previous_page, has_next_page) =
+                    args.pagination.get_bound_markers(messages.len());
+                tracing::debug!(
+                    "has_previous_page={:?}, after={:?}",
+                    has_previous_page,
+                    has_next_page
+                );
+
+                let mut connection: Connection<
+                    String,
+                    Message,
+                    EmptyFields,
+                    EmptyFields,
+                    BlockchainMessagesConnection,
+                    BlockchainMessageEdge,
+                > = Connection::new(has_previous_page, has_next_page);
+
+                args.pagination.shrink_portion(&mut messages);
+
+                let selection_set = self
+                    .ctx
+                    .look_ahead()
+                    .field("account")
+                    .field("messages")
+                    .field("edges")
+                    .field("node");
+                let is_parent_transaction = selection_set.field("src_transaction").exists();
+                let is_child_transaction = selection_set.field("dst_transaction").exists();
+                let transaction_loader = self.ctx.data_unchecked::<DataLoader<TransactionLoader>>();
+
+                // Batch-fetch dst transactions by inbound message IDs (single query).
+                let dst_transactions = if is_child_transaction {
+                    let msg_ids: Vec<&str> = messages.iter().map(|m| m.id.as_str()).collect();
+                    db::transaction::Transaction::by_in_messages(
+                        self.ctx.data::<Arc<DBConnector>>().unwrap(),
+                        &msg_ids,
+                    )
+                    .await?
+                } else {
+                    std::collections::HashMap::new()
+                };
+
+                // Batch-fetch src and dst Transaction objects via DataLoader
+                // instead of per-message load_one calls.
+                let src_trx_ids: Vec<String> = if is_parent_transaction {
+                    messages.iter().filter_map(|m| m.transaction_id.clone()).collect()
+                } else {
+                    vec![]
+                };
+                let dst_trx_ids: Vec<String> = if is_child_transaction {
+                    dst_transactions.values().map(|t| t.id.clone()).collect()
+                } else {
+                    vec![]
+                };
+                let mut all_trx_ids = src_trx_ids;
+                all_trx_ids.extend(dst_trx_ids);
+                let loaded_transactions = if !all_trx_ids.is_empty() {
+                    transaction_loader.load_many(all_trx_ids).await.unwrap_or_default()
+                } else {
+                    std::collections::HashMap::new()
+                };
+
+                let mut edges: Vec<Edge<String, Message, EmptyFields, BlockchainMessageEdge>> =
+                    vec![];
+                for message in messages {
+                    let parent_transaction = message.transaction_id.clone();
+                    let msg_id = message.id.clone();
+                    let mut message: BlockchainMessage = message.into();
+                    if is_parent_transaction {
+                        if let Some(ref trx_id) = parent_transaction {
+                            message.src_transaction =
+                                loaded_transactions.get(trx_id).cloned().map(Box::new);
+                        }
+                    }
+                    if is_child_transaction {
+                        let stripped_id = msg_id.strip_prefix("message/").unwrap_or(&msg_id);
+                        if let Some(dst_db_trx) = dst_transactions.get(stripped_id) {
+                            message.dst_transaction =
+                                loaded_transactions.get(&dst_db_trx.id).cloned().map(Box::new);
+                        }
+                    }
+                    let cursor = match args.cursor_field() {
+                        db::MessageCursorField::Dst => message
+                            .dst_chain_order
+                            .clone()
+                            .or(message.src_chain_order.clone())
+                            .unwrap(),
+                        db::MessageCursorField::Src => message
+                            .src_chain_order
+                            .clone()
+                            .or(message.dst_chain_order.clone())
+                            .unwrap(),
+                        db::MessageCursorField::Coalesced => message
+                            .dst_chain_order
+                            .clone()
+                            .or(message.src_chain_order.clone())
+                            .unwrap(),
+                    };
+                    let edge: Edge<String, Message, EmptyFields, BlockchainMessageEdge> =
+                        Edge::with_additional_fields(cursor, message, EmptyFields);
+                    edges.push(edge);
+                }
+                connection.edges.extend(edges);
+                Ok::<_, async_graphql::Error>(connection)
+            })
+            .await
+            .map_err(crate::schema::db::connector::map_db_error)?,
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -387,66 +433,74 @@ impl BlockchainAccountQuery<'_> {
             desc = "Defines query scope. If true then query performed on a maximum time range supported by the cloud. If false then query performed on a recent time range supported by the cloud. You can find an actual information about time ranges on evercloud documentation."
         )]
         _archive: Option<bool>,
-    ) -> Option<
-        Connection<
-            String,
-            BlockchainTransaction,
-            EmptyFields,
-            EmptyFields,
-            BlockchainTransactionsConnection,
-            BlockchainTransactionsEdge,
-        >,
-    > {
-        query(after, before, first, last, |after, before, first, last| async move {
-            tracing::debug!(
-                "first={:?}, after={:?}, last={:?}, before={:?}",
-                first,
-                after,
-                last,
-                before
-            );
-
-            let args = AccountTransactionsQueryArgs::new(
-                allow_latest_inconsistent_data,
-                block_seq_no_range,
-                aborted,
-                min_balance_delta,
-                max_balance_delta,
-                PaginationArgs { first, after, last, before },
-            );
-
-            let mut transactions: Vec<db::Transaction> = db::Transaction::account_transactions(
-                self.ctx.data::<Arc<DBConnector>>().unwrap(),
-                self.address.clone(),
-                &args,
-            )
-            .await?;
-
-            let (has_previous_page, has_next_page) =
-                args.pagination.get_bound_markers(transactions.len());
-            tracing::debug!("has_previous_page={:?}, after={:?}", has_previous_page, has_next_page);
-
-            let mut connection: Connection<
+    ) -> async_graphql::Result<
+        Option<
+            Connection<
                 String,
-                Transaction,
+                BlockchainTransaction,
                 EmptyFields,
                 EmptyFields,
                 BlockchainTransactionsConnection,
                 BlockchainTransactionsEdge,
-            > = Connection::new(has_previous_page, has_next_page);
+            >,
+        >,
+    > {
+        Ok(Some(
+            query(after, before, first, last, |after, before, first, last| async move {
+                tracing::debug!(
+                    "first={:?}, after={:?}, last={:?}, before={:?}",
+                    first,
+                    after,
+                    last,
+                    before
+                );
 
-            args.pagination.shrink_portion(&mut transactions);
+                let args = AccountTransactionsQueryArgs::new(
+                    allow_latest_inconsistent_data,
+                    block_seq_no_range,
+                    aborted,
+                    min_balance_delta,
+                    max_balance_delta,
+                    PaginationArgs { first, after, last, before },
+                );
 
-            connection.edges.extend(transactions.into_iter().map(|transaction| {
-                let transaction: BlockchainTransaction = transaction.into();
-                let cursor = transaction.chain_order.clone();
-                let edge: Edge<String, Transaction, EmptyFields, BlockchainTransactionsEdge> =
-                    Edge::with_additional_fields(cursor, transaction, EmptyFields);
-                edge
-            }));
-            Ok::<_, async_graphql::Error>(connection)
-        })
-        .await
-        .ok()
+                let mut transactions: Vec<db::Transaction> = db::Transaction::account_transactions(
+                    self.ctx.data::<Arc<DBConnector>>().unwrap(),
+                    self.address.clone(),
+                    &args,
+                )
+                .await?;
+
+                let (has_previous_page, has_next_page) =
+                    args.pagination.get_bound_markers(transactions.len());
+                tracing::debug!(
+                    "has_previous_page={:?}, after={:?}",
+                    has_previous_page,
+                    has_next_page
+                );
+
+                let mut connection: Connection<
+                    String,
+                    Transaction,
+                    EmptyFields,
+                    EmptyFields,
+                    BlockchainTransactionsConnection,
+                    BlockchainTransactionsEdge,
+                > = Connection::new(has_previous_page, has_next_page);
+
+                args.pagination.shrink_portion(&mut transactions);
+
+                connection.edges.extend(transactions.into_iter().map(|transaction| {
+                    let transaction: BlockchainTransaction = transaction.into();
+                    let cursor = transaction.chain_order.clone();
+                    let edge: Edge<String, Transaction, EmptyFields, BlockchainTransactionsEdge> =
+                        Edge::with_additional_fields(cursor, transaction, EmptyFields);
+                    edge
+                }));
+                Ok::<_, async_graphql::Error>(connection)
+            })
+            .await
+            .map_err(crate::schema::db::connector::map_db_error)?,
+        ))
     }
 }

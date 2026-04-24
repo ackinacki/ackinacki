@@ -120,11 +120,8 @@ where
         })?;
 
         connect!(parent = parent, child = block_state, &self.block_state_repository);
-        if let Some(hint) =
-            envelope.data().common_section().directives().share_state_resources().clone()
-        {
-            self.last_synced_state =
-                Some((envelope.data().identifier(), envelope.data().seq_no(), hint));
+        if *envelope.data().common_section().directives().share_state_resources() {
+            self.last_synced_state = Some((envelope.data().identifier(), envelope.data().seq_no()));
         }
 
         tracing::debug!("Add candidate block state to cache: {:?}", net_block.identifier);

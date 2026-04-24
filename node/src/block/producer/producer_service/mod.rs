@@ -3,6 +3,7 @@ pub mod memento;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -69,6 +70,7 @@ impl ProducerService {
         production_timeout: Duration,
         save_state_frequency: u32,
         external_messages: ExternalMessagesThreadState,
+        is_producing: Arc<AtomicBool>,
 
         is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
         bp_production_count: Arc<AtomicI32>,
@@ -97,6 +99,7 @@ impl ProducerService {
             .feedback_sender(feedback_sender)
             .save_state_frequency(save_state_frequency)
             .external_messages(external_messages)
+            .is_producing(is_producing)
             .is_state_sync_requested(is_state_sync_requested)
             .bp_production_count(bp_production_count)
             .save_optimistic_service_sender(save_optimistic_service_sender)

@@ -1,9 +1,9 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use account_state::ThreadAccount;
 use tvm_abi::TokenValue;
-use tvm_client::encoding::slice_from_cell;
+use tvm_types::SliceData;
 use tvm_types::UInt256;
 
 use crate::auth::TokenIssuer;
@@ -34,14 +34,15 @@ pub fn decode_owner_wallet(
         return Ok(OwnerWalletData::default());
     };
 
-    let slice = slice_from_cell(data)
+    let slice = SliceData::load_cell(data)
         .map_err(|e| anyhow::format_err!("Failed to decode BK/BM Owner Wallet data cell: {e}"))?;
 
     let (abi_str, is_bk) = match issuer {
         TokenIssuer::Bk(_) => (BK_OWNER_WALLET_ABI, true),
         TokenIssuer::Bm(_) => (BM_OWNER_WALLET_ABI, false),
     };
-    let abi = tvm_client::abi::Abi::Json(abi_str.to_string()).abi()?;
+    let abi = tvm_abi::Contract::load(abi_str.as_bytes())
+        .map_err(|e| anyhow::format_err!("Failed to load ABI: {e}"))?;
 
     let decoded = abi
         .decode_storage_fields(slice, true)
@@ -87,14 +88,13 @@ pub fn decode_owner_wallet(
 #[cfg(test)]
 mod tests {
     use account_state::ThreadAccount;
-    use sdk_wrapper::read_file;
 
     use crate::auth::TokenIssuer;
     use crate::owner_wallet::decode_owner_wallet;
 
     #[test]
     fn test_bm_owner_wallet() -> anyhow::Result<()> {
-        let boc = String::from_utf8(read_file("./fixtures/real_bm_issuer_c3c0474d61fdd004960d1a5a320bc88549f73238cfa0a8fc6a00e15a72bbda19.boc.b64")?)
+        let boc = String::from_utf8(std::fs::read("./fixtures/real_bm_issuer_c3c0474d61fdd004960d1a5a320bc88549f73238cfa0a8fc6a00e15a72bbda19.boc.b64")?)
             .map(|s| s.trim().to_owned())?;
 
         let real_issuer_pubkey =
@@ -106,7 +106,7 @@ mod tests {
         assert_eq!(bm_wallet_data.pubkey, Some(real_issuer_pubkey));
         assert_eq!(bm_wallet_data.license_count, 1);
 
-        let boc = String::from_utf8(read_file("./fixtures/fake_bm_issuer_40f11d13cf70edb0b4ac883a915c03ba333eceb49263e47ef0ba0415e9b023c5.boc.b64")?)
+        let boc = String::from_utf8(std::fs::read("./fixtures/fake_bm_issuer_40f11d13cf70edb0b4ac883a915c03ba333eceb49263e47ef0ba0415e9b023c5.boc.b64")?)
             .map(|s| s.trim().to_owned())?;
 
         let fake_issuer_pubkey =
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn test_bk_owner_wallet() -> anyhow::Result<()> {
-        let boc = String::from_utf8(read_file("./fixtures/real_bk_issuer_dc67ae73b647b399bb8293ef1b5c9bc9577baf036ad7ec5c49505efbae74ac67.boc.b64")?)
+        let boc = String::from_utf8(std::fs::read("./fixtures/real_bk_issuer_dc67ae73b647b399bb8293ef1b5c9bc9577baf036ad7ec5c49505efbae74ac67.boc.b64")?)
             .map(|s| s.trim().to_owned())?;
 
         let real_issuer_pubkey =

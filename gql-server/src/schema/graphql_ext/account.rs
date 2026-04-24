@@ -85,60 +85,69 @@ impl AccountQuery {
         after: Option<String>,
         #[graphql(desc = "This field is mutually exclusive with 'first'.")] last: Option<i32>,
         before: Option<String>,
-    ) -> Option<
-        Connection<
-            String,
-            Event,
-            EmptyFields,
-            EmptyFields,
-            AccountEventsConnection,
-            AccountEventEdge,
-        >,
-    > {
-        query(after, before, first, last, |after, before, first, last| async move {
-            tracing::debug!(
-                "first={:?}, after={:?}, last={:?}, before={:?}",
-                first,
-                after,
-                last,
-                before
-            );
-
-            let pagination = PaginationArgs { first, after, last, before };
-            let mut messages = db::Message::account_events(
-                ctx.data::<Arc<DBConnector>>().unwrap(),
-                self.address.clone(),
-                dst,
-                &pagination,
-            )
-            .await?;
-
-            let (has_previous_page, has_next_page) = pagination.get_bound_markers(messages.len());
-            tracing::debug!("has_previous_page={:?}, after={:?}", has_previous_page, has_next_page);
-
-            let mut connection: Connection<
+    ) -> async_graphql::Result<
+        Option<
+            Connection<
                 String,
                 Event,
                 EmptyFields,
                 EmptyFields,
                 AccountEventsConnection,
                 AccountEventEdge,
-            > = Connection::new(has_previous_page, has_next_page);
+            >,
+        >,
+    > {
+        Ok(Some(
+            query(after, before, first, last, |after, before, first, last| async move {
+                tracing::debug!(
+                    "first={:?}, after={:?}, last={:?}, before={:?}",
+                    first,
+                    after,
+                    last,
+                    before
+                );
 
-            pagination.shrink_portion(&mut messages);
+                let pagination = PaginationArgs { first, after, last, before };
+                let mut messages = db::Message::account_events(
+                    ctx.data::<Arc<DBConnector>>().unwrap(),
+                    self.address.clone(),
+                    dst,
+                    &pagination,
+                )
+                .await?;
 
-            let mut edges: Vec<Edge<String, Event, EmptyFields, AccountEventEdge>> = vec![];
-            for message in messages {
-                let event: Event = message.into();
-                let cursor = event.msg_chain_order.clone().unwrap();
-                let edge: Edge<String, Event, EmptyFields, AccountEventEdge> =
-                    Edge::with_additional_fields(cursor, event, EmptyFields);
-                edges.push(edge);
-            }
-            connection.edges.extend(edges);
-            Ok::<_, async_graphql::Error>(connection)
-        })
-        .await
-        .ok()
+                let (has_previous_page, has_next_page) =
+                    pagination.get_bound_markers(messages.len());
+                tracing::debug!(
+                    "has_previous_page={:?}, after={:?}",
+                    has_previous_page,
+                    has_next_page
+                );
+
+                let mut connection: Connection<
+                    String,
+                    Event,
+                    EmptyFields,
+                    EmptyFields,
+                    AccountEventsConnection,
+                    AccountEventEdge,
+                > = Connection::new(has_previous_page, has_next_page);
+
+                pagination.shrink_portion(&mut messages);
+
+                let mut edges: Vec<Edge<String, Event, EmptyFields, AccountEventEdge>> = vec![];
+                for message in messages {
+                    let event: Event = message.into();
+                    let cursor = event.msg_chain_order.clone().unwrap();
+                    let edge: Edge<String, Event, EmptyFields, AccountEventEdge> =
+                        Edge::with_additional_fields(cursor, event, EmptyFields);
+                    edges.push(edge);
+                }
+                connection.edges.extend(edges);
+                Ok::<_, async_graphql::Error>(connection)
+            })
+            .await
+            .map_err(crate::schema::db::connector::map_db_error)?,
+        ))
     }
 }

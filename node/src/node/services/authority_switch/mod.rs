@@ -518,6 +518,35 @@ impl AuthoritySwitchService {
             });
         }
 
+        // Walk the chain from the proposed block back to the last finalized block,
+        // adding the sender's NodeIdentifier to known_attestation_interested_parties.
+        {
+            let node_id = next_round_success.node_identifier().clone();
+            let mut current_block_id = block.data().identifier();
+            const MAX_CHAIN_WALK: usize = 1000;
+            for _ in 0..MAX_CHAIN_WALK {
+                let block_state = match self.block_state_repository.get(&current_block_id) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(
+                            "on_authority_switch_success: failed to get block state for {current_block_id:?}: {e}"
+                        );
+                        break;
+                    }
+                };
+                let _ =
+                    block_state.guarded_mut(|e| e.try_add_attestations_interest(node_id.clone()));
+                if block_state.guarded(|e| e.is_finalized()) {
+                    break;
+                }
+                let parent_id = block_state.guarded(|e| *e.parent_block_identifier());
+                match parent_id {
+                    Some(parent) => current_block_id = parent,
+                    None => break,
+                }
+            }
+        }
+
         let do_return = self.thread_authority.guarded_mut(|e| {
             let res = e.on_next_round_success(&next_round_success);
             match res {

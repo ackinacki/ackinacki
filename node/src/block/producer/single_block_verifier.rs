@@ -46,7 +46,6 @@ use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
-use crate::types::next_seq_no;
 use crate::types::AckiNackiBlock;
 
 // Note: produces single verification block.
@@ -82,8 +81,6 @@ pub struct TVMBlockVerifier {
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
     is_block_of_retired_version: bool,
-    #[cfg(feature = "authroot_dapp_repair")]
-    authroot_dapp_repaired: std::sync::Arc<parking_lot::Mutex<Option<crate::types::BlockSeqNo>>>,
 }
 
 impl TVMBlockVerifier {
@@ -134,12 +131,13 @@ impl BlockVerifier for TVMBlockVerifier {
             }
         }
 
-        let parent_block_seq_no = *parent_block_state.get_block_seq_no();
         let preprocessing_result = self.shared_services.exec(|container| {
             crate::block::preprocessing::preprocess(
                 parent_block_state,
                 refs.clone(),
                 &thread_identifier,
+                Some(block.identifier()),
+                block.is_thread_splitting(),
                 &container.cross_thread_ref_data_service,
                 wrapped_slash_messages,
                 Vec::new(),
@@ -212,7 +210,7 @@ impl BlockVerifier for TVMBlockVerifier {
             })
             .map_err(|e| anyhow::format_err!("Failed to parse incoming block messages: {e}"));
         ensure!(block_parse_result?, "Failed to parse incoming block messages");
-        ext_messages.sort_by(|(lt_a, _), (lt_b, _)| lt_a.cmp(lt_b));
+        ext_messages.sort_by_key(|(lt_a, _)| *lt_a);
         let timestamp = Utc::now();
         let mut grouped_ext_messages = HashMap::new();
 
@@ -226,11 +224,8 @@ impl BlockVerifier for TVMBlockVerifier {
                 .push_back((stamp, QueuedExtMessage::try_from_block(msg)?));
         }
 
-        let blockchain_config = self.blockchain_config.get(
-            &next_seq_no(parent_block_seq_no),
-            #[cfg(feature = "fix_flag_16")]
-            self.is_block_of_retired_version,
-        );
+        let blockchain_config =
+            self.blockchain_config.get(&self.node_global_config.blockchain_config_hash.into())?;
         let block_gas_limit = blockchain_config.get_gas_config(false).block_gas_limit;
 
         tracing::debug!(target: "node", "PARENT block: {:?}", preprocessing_result.state.get_block_info());
@@ -252,8 +247,6 @@ impl BlockVerifier for TVMBlockVerifier {
             self.wasm_cache,
             true,
             self.is_block_of_retired_version,
-            #[cfg(feature = "authroot_dapp_repair")]
-            self.authroot_dapp_repaired.clone(),
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (verify_block, _, _) = producer.build_block(
@@ -272,6 +265,7 @@ impl BlockVerifier for TVMBlockVerifier {
         let mut new_state = verify_block.state;
 
         let an_block = AckiNackiBlock::new(
+            *block.common_section().parent_block_id(),
             // TODO: fix single thread implementation
             new_state.thread_id,
             //
@@ -292,8 +286,11 @@ impl BlockVerifier for TVMBlockVerifier {
             verify_block.durable_state_update,
         );
 
-        // Resolve the prefab using the block's identifier
-        let block_id = an_block.identifier();
+        // Resolve the prefab using the *original* block's identifier.
+        // The verify block does not carry the full common section
+        // (producer_selector, attestations, etc.) so its identifier()
+        // would panic or produce an incorrect Merkle hash.
+        let block_id = block.identifier();
         if let Some(resolved_table) = an_block.resolve_threads_table(&block_id)? {
             new_state.threads_table = resolved_table;
         }

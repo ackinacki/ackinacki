@@ -1,4 +1,4 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::collections::HashMap;
@@ -11,6 +11,7 @@ use std::thread;
 
 use account_state::ThreadAccountsRepository;
 use anyhow::bail;
+use database::documents_db::TxActivitySummary;
 use database::sqlite::sqlite_helper::SqliteHelper;
 use node::bls::envelope::BLSSignedEnvelope;
 use node::bls::envelope::Envelope;
@@ -18,6 +19,7 @@ use node::repository::accounts::NodeThreadAccountsRepository;
 use node::types::AckiNackiBlock;
 use parking_lot::Mutex;
 use telemetry_utils::now_micros;
+use tokio::sync::mpsc as tokio_mpsc;
 use transport_layer::HostPort;
 
 use crate::application::metrics::Metrics;
@@ -66,6 +68,7 @@ impl RecentBlockFilter {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     bp_resolver: Arc<Mutex<dyn UpdatableBPResolver>>,
     db_writer: SqliteHelper,
@@ -74,6 +77,7 @@ pub fn run(
     metrics: Option<Metrics>,
     cmd_rx: mpsc::Receiver<WorkerCommand>,
     thread_accounts_repository: NodeThreadAccountsRepository,
+    activity_tx: Option<tokio_mpsc::Sender<Vec<TxActivitySummary>>>,
 ) -> tokio::task::JoinHandle<Result<(), anyhow::Error>> {
     tokio::task::spawn_blocking(move || {
         match thread::Builder::new()
@@ -87,6 +91,7 @@ pub fn run(
                     app_state,
                     metrics,
                     thread_accounts_repository,
+                    activity_tx,
                 )
             })
             .expect("spawn block-subscriber worker")
@@ -99,6 +104,7 @@ pub fn run(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn worker(
     db_writer: SqliteHelper,
     quarantine: Quarantine,
@@ -107,6 +113,7 @@ fn worker(
     app_state: Arc<AppState>,
     metrics: Option<Metrics>,
     thread_accounts_repository: NodeThreadAccountsRepository,
+    activity_tx: Option<tokio_mpsc::Sender<Vec<TxActivitySummary>>>,
 ) -> anyhow::Result<()> {
     let mut transaction_traces = HashMap::new();
     let shard_state = NodeThreadAccountsRepository::new_state();
@@ -178,7 +185,7 @@ fn worker(
                     }
                 }
 
-                if let Err(err) = node::database::serialize_block::reflect_block_in_db(
+                match node::database::serialize_block::reflect_block_in_db(
                     db_helper.clone(),
                     envelope,
                     Some(raw_block),
@@ -186,19 +193,30 @@ fn worker(
                     &mut transaction_traces,
                     &thread_accounts_repository,
                 ) {
-                    tracing::error!("failed to store block: {err}");
-                    if let Some(m) = &metrics {
-                        m.bm.report_errors(ERR_STORE_BLOCK);
-                    }
-                    // Store block in quarantine
-                    let file_name = format!("not_stored_{}", now_micros());
-                    if let Err(err) = quarantine.store(&file_name, &v) {
-                        tracing::error!("can't store block in quarantine {file_name}: {err}");
-                        if let Some(m) = &metrics {
-                            m.bm.report_errors(ERR_QUARNTINE_BLOCK);
+                    Ok(summaries) => {
+                        if let Some(ref tx) = activity_tx {
+                            if !summaries.is_empty() {
+                                if let Err(err) = tx.blocking_send(summaries) {
+                                    tracing::warn!("Failed to send activity summaries: {err}");
+                                }
+                            }
                         }
-                    } else {
-                        tracing::warn!("stored in quarantine {file_name}")
+                    }
+                    Err(err) => {
+                        tracing::error!("failed to store block: {err}");
+                        if let Some(m) = &metrics {
+                            m.bm.report_errors(ERR_STORE_BLOCK);
+                        }
+                        // Store block in quarantine
+                        let file_name = format!("not_stored_{}", now_micros());
+                        if let Err(err) = quarantine.store(&file_name, &v) {
+                            tracing::error!("can't store block in quarantine {file_name}: {err}");
+                            if let Some(m) = &metrics {
+                                m.bm.report_errors(ERR_QUARNTINE_BLOCK);
+                            }
+                        } else {
+                            tracing::warn!("stored in quarantine {file_name}")
+                        }
                     }
                 };
             }

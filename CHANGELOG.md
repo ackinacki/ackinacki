@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.0] – 2026-04-24
+
+### New / Improvements
+- Added runtime-tunable `gql-server` YAML config with `--config` / `GQL_CONFIG_FILE`, `SIGUSR1` reload for pool and SQLite settings, query timeouts, OTLP metrics for GraphQL and SQLite activity, and Ansible-managed q-server config in Block Manager deployments
+- Added optional ClickHouse export in Block Manager for per-transaction activity summaries
+- Added snapshot helper tools for bootstrapping zerostate contracts into `ThreadSnapshot` files and viewing snapshot protocol versions
+- Added HTTP retry with exponential backoff for external message forwarding in `message-router`: retries on connection errors, timeouts, and server errors (429, 500, 502, 503, 504) with up to 3 attempts
+- Added per-IP rate limiting in the BK TLS proxy with Cloudflare-aware client IP handling and configurable exempt ranges
+- Added `ansible/block-manager-storage-maintenance.yaml` to rotate old Block Manager archive databases, reload `q_server_bm`, and prune aged archived files
+- Stopped persisting external messages on Block Keeper nodes to reduce storage growth during block production
+- Updated TVM SDK to `v2.24.20.an` and switched local external-message TVM execution in `ext-messages-auth` from `tvm_client` to `tvm_contracts`
+
+### Fixes
+- Fixed GraphQL cursor pagination and resolver batching in `gql-server`, reducing skipped pages, duplicate rows, and connection pool contention on message and transaction queries
+- Fixed GraphQL `lt`, `prev_trans_lt`, and `last_trans_lt` formatting so logical times are decoded from sortable storage encoding before being returned
+- Fixed `message-router` handling of hex-encoded `message_hash` identifiers
+- Fixed Block Manager BP resolution to preserve configured Block Producer ports instead of forcing the legacy `8600` default
+- Fixed startup from `ThreadSnapshot` when the BK set is provided separately
+- Fixed BK deployment config generation to advertise `bk-api-host-port` without duplicating the API port
+- Fixed BK TLS proxy Ansible runs under privilege escalation by fetching Cloudflare IP ranges on `localhost` without `become`
+- Fixed startup on rustls-based builds by installing the default crypto provider in both `node` and `gql-server`
+
+---
+
 ## [0.14.3] – 2026-03-25
 
 ### New / Improvements

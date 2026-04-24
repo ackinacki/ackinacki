@@ -17,6 +17,18 @@
     dest: "{{ BM_DIR }}/compose.yaml"
     mode: "0644"
 
+- name: Create conf directory
+  ansible.builtin.file:
+    path: "{{ BM_DIR }}/conf"
+    state: directory
+    mode: "0755"
+
+- name: Generate gql-server config
+  ansible.builtin.template:
+    src: templates/config.j2
+    dest: "{{ BM_DIR }}/conf/config.yaml"
+    mode: "0644"
+
 - name: Copy cron script
   ansible.builtin.copy:
     src: files/bm-rotate.sh

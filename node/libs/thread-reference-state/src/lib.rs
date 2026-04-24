@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 
+use anyhow::Context;
 use serde::Deserialize;
 use serde::Serialize;
 use tracing::instrument;
@@ -195,7 +196,7 @@ where
             }));
         }
         let mut tails = self.all_thread_refs.clone();
-        let mut stack: VecDeque<TBlockId> = explicit_references.into();
+        let mut stack: VecDeque<TBlockId> = explicit_references.into_iter().collect();
         let mut all_referenced_blocks = vec![];
         let previously_referenced_set: HashSet<_> =
             self.all_thread_refs.values().map(|e| e.block_identifier).collect();
@@ -326,10 +327,12 @@ where
     T: CrossThreadRefDataTrait,
     T::ThreadId: Eq + std::hash::Hash,
     T::SeqNo: PartialOrd,
-    T::BlockId: Copy + PartialEq,
+    T::BlockId: Copy + PartialEq + std::fmt::Debug,
     F: FnMut(&T::BlockId) -> anyhow::Result<T>,
 {
-    let mut cursor = read(cursor)?;
+    let mut cursor = read(cursor).with_context(|| {
+        format!("failed to load while walking cross-thread history: block_id={cursor:?}")
+    })?;
     let mut trail = vec![];
     loop {
         if let Some(thread_last_block) = cutoff.get(cursor.block_thread_identifier()) {
@@ -349,7 +352,12 @@ where
         }
         let parent_block_id = *cursor.parent_block_identifier();
         trail.push(cursor);
-        cursor = read(&parent_block_id)?;
+        cursor = read(&parent_block_id).with_context(|| {
+            format!(
+                "failed to load while walking cross-thread history: block_id={parent_block_id:?}, child_block_id={:?}",
+                trail.last().expect("trail is non-empty").block_identifier()
+            )
+        })?;
     }
 }
 
@@ -2999,5 +3007,149 @@ mod tests {
             state.all_thread_refs().is_empty(),
             "Thread 1 should be removed after processing its own tombstone"
         );
+    }
+
+    #[test]
+    fn recursive_history_traversal_succeeds_for_direct_parent_and_nested_refs() {
+        let thread_1 = test_thread_id(1);
+        let thread_2 = test_thread_id(2);
+        let genesis_1 = test_block_id(10);
+        let genesis_2 = test_block_id(20);
+        let parent = test_block_id(11);
+        let nested = test_block_id(21);
+        let direct = test_block_id(12);
+
+        let blocks = HashMap::from([
+            (
+                genesis_1,
+                MockRefData {
+                    block_identifier: genesis_1,
+                    block_seq_no: BlockSeqNo::new(0),
+                    block_thread_identifier: thread_1,
+                    parent_block_identifier: genesis_1,
+                    refs: vec![],
+                    spawned_threads: vec![],
+                    tombstone: false,
+                },
+            ),
+            (
+                genesis_2,
+                MockRefData {
+                    block_identifier: genesis_2,
+                    block_seq_no: BlockSeqNo::new(0),
+                    block_thread_identifier: thread_2,
+                    parent_block_identifier: genesis_2,
+                    refs: vec![],
+                    spawned_threads: vec![],
+                    tombstone: false,
+                },
+            ),
+            (
+                parent,
+                MockRefData {
+                    block_identifier: parent,
+                    block_seq_no: BlockSeqNo::new(1),
+                    block_thread_identifier: thread_1,
+                    parent_block_identifier: genesis_1,
+                    refs: vec![],
+                    spawned_threads: vec![],
+                    tombstone: false,
+                },
+            ),
+            (
+                nested,
+                MockRefData {
+                    block_identifier: nested,
+                    block_seq_no: BlockSeqNo::new(1),
+                    block_thread_identifier: thread_2,
+                    parent_block_identifier: genesis_2,
+                    refs: vec![],
+                    spawned_threads: vec![],
+                    tombstone: false,
+                },
+            ),
+            (
+                direct,
+                MockRefData {
+                    block_identifier: direct,
+                    block_seq_no: BlockSeqNo::new(2),
+                    block_thread_identifier: thread_1,
+                    parent_block_identifier: parent,
+                    refs: vec![nested],
+                    spawned_threads: vec![],
+                    tombstone: false,
+                },
+            ),
+        ]);
+
+        let mut state = ThreadReferencesState::builder()
+            .all_thread_refs(HashMap::from([
+                (thread_1, (thread_1, genesis_1, BlockSeqNo::new(0)).into()),
+                (thread_2, (thread_2, genesis_2, BlockSeqNo::new(0)).into()),
+            ]))
+            .build();
+
+        let moved = state
+            .move_refs::<MockRefData, _>(vec![direct], |id| {
+                blocks.get(id).cloned().ok_or_else(|| anyhow::anyhow!("Block not found: {id:?}"))
+            })
+            .expect("move_refs failed");
+
+        let moved_ids: HashSet<_> = moved.iter().map(|item| *item.block_identifier()).collect();
+        assert!(moved_ids.contains(&direct));
+        assert!(moved_ids.contains(&parent));
+        assert!(moved_ids.contains(&nested));
+    }
+
+    #[test]
+    fn move_refs_error_reports_parent_lookup_source() {
+        let thread_1 = test_thread_id(1);
+        let genesis = test_block_id(10);
+        let direct = test_block_id(11);
+        let missing_parent = test_block_id(12);
+
+        let blocks = HashMap::from([
+            (
+                genesis,
+                MockRefData {
+                    block_identifier: genesis,
+                    block_seq_no: BlockSeqNo::new(0),
+                    block_thread_identifier: thread_1,
+                    parent_block_identifier: genesis,
+                    refs: vec![],
+                    spawned_threads: vec![],
+                    tombstone: false,
+                },
+            ),
+            (
+                direct,
+                MockRefData {
+                    block_identifier: direct,
+                    block_seq_no: BlockSeqNo::new(1),
+                    block_thread_identifier: thread_1,
+                    parent_block_identifier: missing_parent,
+                    refs: vec![],
+                    spawned_threads: vec![],
+                    tombstone: false,
+                },
+            ),
+        ]);
+
+        let mut state = ThreadReferencesState::builder()
+            .all_thread_refs(HashMap::from([(
+                thread_1,
+                (thread_1, genesis, BlockSeqNo::new(0)).into(),
+            )]))
+            .build();
+
+        let err = state
+            .move_refs::<MockRefData, _>(vec![direct], |id| {
+                blocks.get(id).cloned().ok_or_else(|| anyhow::anyhow!("Block not found: {id:?}"))
+            })
+            .unwrap_err();
+
+        let err_text = err.to_string();
+        assert!(err_text.contains(&format!("{missing_parent:?}")), "{err_text}");
+        assert!(err_text.contains(&format!("{direct:?}")), "{err_text}");
     }
 }

@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 use http_server::ExtMsgFeedbackList;
 use node_types::BlockIdentifier;
+use node_types::ParentRef;
+use node_types::TemporaryBlockId;
 use node_types::ThreadIdentifier;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use telemetry_utils::now_ms;
@@ -28,6 +30,7 @@ use crate::block_keeper_system::BlockKeeperSlashData;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::config::config_read::ConfigRead;
+use crate::config::BlockchainConfigHash;
 use crate::config::BlockchainConfigRead;
 use crate::external_messages::ExtMessageDst;
 use crate::external_messages::QueuedExtMessage;
@@ -38,7 +41,6 @@ use crate::message::WrappedMessage;
 use crate::multithreading::load_balancing_service::CheckError;
 use crate::multithreading::load_balancing_service::ThreadAction;
 use crate::node::associated_types::NackData;
-use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::node::NodeIdentifier;
@@ -49,8 +51,9 @@ use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
-use crate::types::next_seq_no;
 use crate::types::AckiNackiBlock;
+use crate::types::AckiNackiBlockOld;
+use crate::types::AckiNackiBlockVersioned;
 use crate::types::BlockRound;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
@@ -58,7 +61,7 @@ use crate::versioning::ProtocolVersion;
 
 pub const DEFAULT_VERIFY_COMPLEXITY: SignerIndex = (u16::MAX >> 5) + 1;
 
-pub type Block = AckiNackiBlock;
+pub type Block = AckiNackiBlockVersioned;
 
 // Note: produces single block.
 pub trait BlockProducer {
@@ -76,7 +79,7 @@ pub trait BlockProducer {
         message_db: MessageDurableStorage,
         time_limits: &ExecutionTimeLimits,
         block_round: BlockRound,
-        parent_block_state: BlockState,
+        parent_ref: ParentRef,
         protocol_version: ProtocolVersion,
     ) -> anyhow::Result<(
         Block,
@@ -85,7 +88,7 @@ pub trait BlockProducer {
         CrossThreadRefData,
         Vec<Stamp>,
         ExtMsgFeedbackList,
-        BlockState,
+        TemporaryBlockId,
     )>
     where
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
@@ -95,7 +98,6 @@ pub trait BlockProducer {
 #[derive(TypedBuilder)]
 pub struct TVMBlockProducer {
     active_threads: Vec<(Cell, ActiveThread)>,
-    #[allow(unused)]
     node_config_read: ConfigRead,
     blockchain_config: BlockchainConfigRead,
     message_queue: HashMap<ExtMessageDst, VecDeque<(Stamp, QueuedExtMessage)>>,
@@ -112,8 +114,6 @@ pub struct TVMBlockProducer {
     thread_accounts_repository: NodeThreadAccountsRepository,
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
-    #[cfg(feature = "authroot_dapp_repair")]
-    authroot_dapp_repaired: std::sync::Arc<parking_lot::Mutex<Option<crate::types::BlockSeqNo>>>,
 }
 
 impl TVMBlockProducer {
@@ -143,8 +143,8 @@ impl BlockProducer for TVMBlockProducer {
         message_db: MessageDurableStorage,
         time_limits: &ExecutionTimeLimits,
         block_round: BlockRound,
-        parent_block_state: BlockState,
-        _protocol_version: ProtocolVersion,
+        parent_ref: ParentRef,
+        protocol_version: ProtocolVersion,
     ) -> anyhow::Result<(
         Block,
         Self::OptimisticState,
@@ -152,15 +152,14 @@ impl BlockProducer for TVMBlockProducer {
         CrossThreadRefData,
         Vec<Stamp>,
         ExtMsgFeedbackList,
-        BlockState,
+        TemporaryBlockId,
     )>
     where
         // TODO: remove Clone and change to Into<>
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
         CrossThreadRefData: 'a,
     {
-        let parent_block_seq_no = parent_state.block_seq_no;
-        let (initial_state, in_table, white_list_of_slashing_messages_hashes, forwarded_messages) =
+        let (initial_state, _in_table, white_list_of_slashing_messages_hashes, forwarded_messages) =
             trace_span!("pre processing").in_scope(|| {
                 tracing::trace!("Start production");
                 tracing::trace!(
@@ -198,11 +197,15 @@ impl BlockProducer for TVMBlockProducer {
                     .shared_services
                     .exec(|container| container.cross_thread_ref_data_service.clone());
                 let is_block_of_retired_version =
-                    self.node_config_read.is_retired(&_protocol_version);
+                    self.node_config_read.is_retired(&protocol_version);
+                let is_split_related =
+                    thread_identifier.is_spawning_block(parent_state.get_block_id());
                 let preprocessing_result = crate::block::preprocessing::preprocess(
                     parent_state,
                     refs.clone(),
                     &thread_identifier,
+                    None,
+                    is_split_related,
                     &cross_thread_ref_data_service,
                     wrapped_slash_messages,
                     self.epoch_block_keeper_data.clone(),
@@ -222,13 +225,13 @@ impl BlockProducer for TVMBlockProducer {
         let ref_ids: Vec<BlockIdentifier> =
             refs.into_iter().map(|ref_data| *ref_data.block_identifier()).collect();
         let active_threads = self.active_threads;
-
-        let is_block_of_retired_version = self.node_config_read.is_retired(&_protocol_version);
-        let blockchain_config = self.blockchain_config.get(
-            &next_seq_no(parent_block_seq_no),
-            #[cfg(feature = "fix_flag_16")]
-            is_block_of_retired_version,
-        );
+        let is_block_of_retired_version = self.node_config_read.is_retired(&protocol_version);
+        let global_config = self.node_config_read.get(&protocol_version).ok_or(
+            anyhow::format_err!("Failed to load config for block version: {}", protocol_version),
+        )?;
+        let bc_config_hash: BlockchainConfigHash =
+            global_config.blockchain_config_hash.clone().into();
+        let blockchain_config = self.blockchain_config.get(&bc_config_hash)?;
         let block_gas_limit = blockchain_config.get_gas_config(false).block_gas_limit;
 
         tracing::debug!(target: "node", "PARENT block: {:?}", initial_state.get_block_info());
@@ -253,8 +256,6 @@ impl BlockProducer for TVMBlockProducer {
             self.wasm_cache,
             false,
             is_block_of_retired_version,
-            #[cfg(feature = "authroot_dapp_repair")]
-            self.authroot_dapp_repaired.clone(),
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (mut prepared_block, processed_stamps, ext_message_feedbacks) = producer.build_block(
@@ -276,12 +277,17 @@ impl BlockProducer for TVMBlockProducer {
 
         let res = trace_span!("post production").in_scope(|| {
             let mut cross_thread_ref_data = prepared_block.cross_thread_ref_data.clone();
-            let produced_block_id = prepared_block.state.block_id;
+            // Use the post-merge threads table for the split decision.
+            // in_table is the parent's table before merging cross-thread refs.
+            // prepared_block.state.threads_table includes threads discovered from
+            // other threads' splits via cross-thread references, so the split check
+            // sees all existing threads and avoids proposing a duplicate mask.
+            let merged_threads_table = prepared_block.state.threads_table.clone();
             let proposed_action = {
                 match self.shared_services.exec(|e| {
                     let result = e.load_balancing.check(
                         &thread_identifier,
-                        &in_table,
+                        &merged_threads_table,
                         self.thread_count_soft_limit,
                     );
                     tracing::trace!("load balancing check result: {:?}", &result,);
@@ -302,66 +308,141 @@ impl BlockProducer for TVMBlockProducer {
                 ThreadAction::Split(e) => Some(e.proposed_threads_table),
                 ThreadAction::Collapse(e) => Some(e.proposed_threads_table),
             };
-            if let Some(prefab_table) = forward_prefab.as_ref() {
-                prepared_block.state.threads_table = prefab_table.resolve(&produced_block_id)?;
-            }
 
-            let new_state = prepared_block.state;
-
-            // let producer_selector = self.block_state_repository.get(&parent_block_id).expect("Must be set").guarded(|e| e.producer_selector_data().clone()).expect("Must be set");
-            // self.block_state_repository.get(&produced_block_id).expect("Can't fail").guarded_mut(|e|
-            //     e.set_producer_selector_data(producer_selector.clone())
-            // ).expect("Must be able to set producer selector");
             let active_threads = std::mem::take(&mut prepared_block.active_threads);
             cross_thread_ref_data.set_block_refs(ref_ids.clone());
             let processed_ext_msg_cnt = processed_stamps.len();
 
-            let block_height = parent_block_state
-                .guarded(|e| *e.block_height())
-                .ok_or(anyhow::format_err!("Parent block does not have block height set"))?
-                .next(&thread_identifier);
+            // Resolve parent info from ParentRef
+            let (parent_block_id, parent_block_height) = match &parent_ref {
+                ParentRef::Block(id) => {
+                    let parent_bs = self.block_state_repository.get(id)?;
+                    let height = parent_bs.guarded(|e| *e.block_height()).ok_or(
+                        anyhow::format_err!("Parent block does not have block height set"),
+                    )?;
+                    (*id, height)
+                }
+                ParentRef::Temporary(temp_id) => {
+                    let temp_arc = self.block_state_repository.get_temporary(temp_id).ok_or(
+                        anyhow::format_err!("Temporary parent state {temp_id:?} not found"),
+                    )?;
+                    let temp = temp_arc.read();
 
-            let produced_block_state = self.block_state_repository.get(&produced_block_id)?;
-            produced_block_state.guarded_mut(|e| {
-                e.set_block_height(block_height)?;
-                e.set_block_round(block_round)?;
-                Ok::<(), anyhow::Error>(())
-            })?;
-            let an_block = AckiNackiBlock::new(
+                    if let Some(promoted_id) = temp.promoted_block_id() {
+                        // Parent already promoted — use the real block state
+                        let parent_bs = self.block_state_repository.get(promoted_id)?;
+                        let height = parent_bs.guarded(|e| *e.block_height()).ok_or(
+                            anyhow::format_err!("Promoted parent does not have block height set"),
+                        )?;
+                        (*promoted_id, height)
+                    } else {
+                        // The payload-level parent is explicit even before promotion.
+                        // For an in-flight temporary parent, carry the protocol's existing
+                        // synthetic default id and replace it with the canonical parent id
+                        // in on_production_timeout before sealing/broadcast.
+                        let height = temp.block_height().cloned().ok_or(anyhow::format_err!(
+                            "Temporary parent does not have block height set"
+                        ))?;
+                        (BlockIdentifier::default(), height)
+                    }
+                }
+            };
+            let block_height = parent_block_height.next(&thread_identifier);
+
+            let producer_node_id = self.producer_node_id;
+            let an_block = if !self.node_config_read.is_retired(&protocol_version) {
+                tracing::trace!("Generate new block");
+
+                AckiNackiBlockVersioned::New(AckiNackiBlock::new(
+                    parent_block_id,
+                    thread_identifier,
+                    prepared_block.block,
+                    producer_node_id.clone(),
+                    prepared_block.tx_cnt,
+                    prepared_block.block_keeper_set_changes,
+                    DEFAULT_VERIFY_COMPLEXITY,
+                    ref_ids,
+                    forward_prefab.clone(),
+                    block_round,
+                    block_height,
+                    #[cfg(feature = "monitor-accounts-number")]
+                    prepared_block.accounts_number_diff,
+                    #[cfg(feature = "protocol_version_hash_in_block")]
+                    protocol_version.hash(),
+                    prepared_block.durable_state_update,
+                ))
+            } else {
+                tracing::trace!("Generate old block");
+                AckiNackiBlockVersioned::Old(AckiNackiBlockOld::new(
+                    thread_identifier,
+                    prepared_block.block,
+                    producer_node_id.clone(),
+                    prepared_block.tx_cnt,
+                    prepared_block.block_keeper_set_changes,
+                    DEFAULT_VERIFY_COMPLEXITY,
+                    ref_ids,
+                    forward_prefab.clone(),
+                    block_round,
+                    block_height,
+                    #[cfg(feature = "monitor-accounts-number")]
+                    prepared_block.accounts_number_diff,
+                    #[cfg(feature = "protocol_version_hash_in_block")]
+                    protocol_version.hash(),
+                    prepared_block.durable_state_update,
+                ))
+            };
+
+            let new_state = prepared_block.state;
+
+            // Create temporary block state (real BlockState is created on promotion)
+            let temp_id = TemporaryBlockId::generate();
+            let temp_state = self.block_state_repository.create_temporary(
+                temp_id,
+                parent_ref.clone(),
                 thread_identifier,
-                prepared_block.block,
-                self.producer_node_id,
-                prepared_block.tx_cnt,
-                prepared_block.block_keeper_set_changes,
-                DEFAULT_VERIFY_COMPLEXITY,
-                ref_ids,
-                forward_prefab.clone(),
-                block_round,
-                block_height,
-                #[cfg(feature = "monitor-accounts-number")]
-                prepared_block.accounts_number_diff,
-                #[cfg(feature = "protocol_version_hash_in_block")]
-                protocol_version.hash(),
-                prepared_block.durable_state_update,
+            );
+            {
+                let mut ts = temp_state.write();
+                ts.set_block_height(block_height);
+                ts.set_block_round(block_round);
+                ts.set_block_seq_no(an_block.seq_no());
+                ts.set_producer(producer_node_id);
+            }
+
+            // Register child in parent
+            match &parent_ref {
+                ParentRef::Block(id) => {
+                    let parent_bs = self.block_state_repository.get(id)?;
+                    parent_bs
+                        .guarded_mut(|e| e.add_incomplete_child(thread_identifier, temp_id))?;
+                }
+                ParentRef::Temporary(parent_temp_id) => {
+                    let parent_temp = self
+                        .block_state_repository
+                        .get_temporary(parent_temp_id)
+                        .ok_or(anyhow::format_err!(
+                            "Temporary parent {parent_temp_id:?} not found for child registration"
+                        ))?;
+                    parent_temp.write().add_incomplete_child(thread_identifier, temp_id);
+                }
+            }
+
+            tracing::trace!(
+                "Finish block production: {} temp_id={} {}",
+                an_block.seq_no(),
+                temp_id,
+                processed_ext_msg_cnt,
             );
 
-            let res = (
+            Ok((
                 an_block,
                 new_state,
                 active_threads,
                 cross_thread_ref_data,
                 processed_stamps,
                 ext_message_feedbacks,
-                produced_block_state,
-            );
-
-            tracing::trace!(
-                "Finish block production: {} {} {}",
-                res.0.seq_no(),
-                res.0.identifier(),
-                processed_ext_msg_cnt,
-            );
-            Ok(res)
+                temp_id,
+            ))
         });
 
         res

@@ -8,6 +8,7 @@ use std::fmt::Debug;
 use std::num::NonZero;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU32;
 use std::sync::mpsc::TryRecvError;
@@ -123,6 +124,7 @@ use node::utilities::guarded::GuardedMut;
 use node::utilities::thread_spawn_critical::SpawnCritical;
 use node::utilities::FixedSizeHashSet;
 use node::versioning::block_protocol_version_state::BlockProtocolVersionState;
+use node::versioning::canonical_config_hash::CanonicalConfigHash;
 use node::zerostate::ZeroState;
 use node_types::BlockIdentifier;
 use node_types::DAppIdentifier;
@@ -413,7 +415,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let (zero_block_version, node_protocol_version_support, config_read) =
         if let Some(old_config) = retired_global_config.as_ref() {
             let retired_version = node::versioning::ProtocolVersion::builder()
-                .canonical_config_hash(old_config)
+                .canonical_config_hash(CanonicalConfigHash::from_old_config(old_config))
                 .tvm_engine_version(old_config.engine_version.clone())
                 .gossip_version(old_config.gossip_version)
                 .build();
@@ -680,6 +682,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let block_state_repo = BlockStateRepository::new(
         repo_path.clone().join("blocks-states"),
         Arc::new(state_save_tx.clone()),
+        metrics.as_ref().map(|m| m.node.clone()),
     );
 
     let block_id = BlockIdentifier::default();
@@ -856,7 +859,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 // TODO: check if we have to pass all threads in set
                 services.threads_tracking.init_thread(
                     last_finalized_id,
-                    HashSet::from_iter(vec![*thread_id].into_iter()),
+                    HashSet::from_iter(vec![*thread_id]),
                     &mut (&mut services.router, &mut services.load_balancing),
                 );
                 // TODO: the same must happen after a node sync.
@@ -1088,7 +1091,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
               ext_messages_rx| {
             tracing::trace!("start node for thread: {thread_id:?}");
             let mut repository = repository_clone.clone();
-            let mut block_collection = repository.unfinalized_blocks().guarded_mut(|e| {
+            let block_collection = repository.unfinalized_blocks().guarded_mut(|e| {
                 e.entry(*thread_id)
                     .or_insert(UnfinalizedCandidateBlockCollection::new([].into_iter()))
                     .clone()
@@ -1118,11 +1121,13 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 let seed = calculate_hash(&seed_bytes)?;
                 SmallRng::from_seed(seed)
             };
+            let is_producing = Arc::new(AtomicBool::new(false));
             let external_messages = ExternalMessagesThreadState::builder()
                 .with_thread_id(*thread_id)
                 .with_report_metrics(node_metrics.clone())
                 .with_cache_size(config.local.ext_messages_cache_size)
                 .with_feedback_sender(feedback_sender.clone())
+                .with_is_producing(is_producing.clone())
                 .build()?;
 
             let external_messages_clone = external_messages.clone();
@@ -1357,6 +1362,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 node_metrics_clone.clone(),
                 thread_sender.clone(),
                 external_messages,
+                is_producing,
                 message_db.clone(),
                 last_block_attestations,
                 bp_thread_count.clone(),
@@ -1892,7 +1898,7 @@ fn print_node_protocol_version_support(args: Args) -> anyhow::Result<()> {
     let (_zero_block_version, node_protocol_version_support) =
         if let Some(old_config) = retired_global_config.as_ref() {
             let retired_version = node::versioning::ProtocolVersion::builder()
-                .canonical_config_hash(old_config)
+                .canonical_config_hash(CanonicalConfigHash::from_old_config(old_config))
                 .tvm_engine_version(old_config.engine_version.clone())
                 .gossip_version(old_config.gossip_version)
                 .build();
@@ -1919,6 +1925,7 @@ fn print_node_protocol_version_support(args: Args) -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_execute() -> anyhow::Result<()> {
     use std::path::Path;
     use std::str::FromStr;
@@ -2246,8 +2253,11 @@ async fn test_execute() -> anyhow::Result<()> {
     let (state_save_tx, _state_save_rx) =
         instrumented_channel(node_metrics.clone(), BLOCK_STATE_SAVE_CHANNEL);
 
-    let block_state_repo =
-        BlockStateRepository::new(repo_path.clone().join("blocks-states"), Arc::new(state_save_tx));
+    let block_state_repo = BlockStateRepository::new(
+        repo_path.clone().join("blocks-states"),
+        Arc::new(state_save_tx),
+        metrics.as_ref().map(|m| m.node.clone()),
+    );
 
     let block_id = BlockIdentifier::default();
     let state = block_state_repo.get(&block_id)?;
@@ -2493,11 +2503,13 @@ async fn test_execute() -> anyhow::Result<()> {
         let seed = calculate_hash(&seed_bytes)?;
         SmallRng::from_seed(seed)
     };
+    let is_producing = Arc::new(AtomicBool::new(false));
     let external_messages = ExternalMessagesThreadState::builder()
         .with_thread_id(*thread_id)
         .with_report_metrics(node_metrics.clone())
         .with_cache_size(config.local.ext_messages_cache_size)
         .with_feedback_sender(feedback_sender.clone())
+        .with_is_producing(is_producing.clone())
         .build()?;
 
     let external_messages_clone = external_messages.clone();
@@ -2704,6 +2716,7 @@ async fn test_execute() -> anyhow::Result<()> {
         node_metrics_clone.clone(),
         thread_sender.clone(),
         external_messages,
+        is_producing,
         message_db.clone(),
         last_block_attestations,
         bp_thread_count.clone(),

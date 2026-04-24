@@ -3,6 +3,7 @@ pub mod block_state_inner;
 pub mod repository;
 mod save_service;
 pub mod state;
+pub mod temporary_state;
 pub mod tools;
 pub mod unfinalized_ancestor_blocks;
 pub use save_service::start_state_save_service;

@@ -1,10 +1,9 @@
-// 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
+// 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 use std::time::Instant;
@@ -88,6 +87,8 @@ pub enum TokenVerificationResult {
     Expired,
     UnauthorizedIssuer,
     UnknownIssuer,
+    IssuerResolutionFailed,
+    MissingSigningKey,
 }
 
 impl Token {
@@ -112,7 +113,7 @@ impl Token {
         };
 
         let Some(verifying_key_hex) = signing_pubkey else {
-            return TokenVerificationResult::InvalidSignature;
+            return TokenVerificationResult::MissingSigningKey;
         };
 
         let public_bytes = match <[u8; 32]>::from_hex(&verifying_key_hex) {
@@ -160,7 +161,7 @@ impl Token {
             }
             Err(e) => {
                 tracing::trace!("Failed to process issuer wallet: {e}");
-                return TokenVerificationResult::InvalidSignature;
+                return TokenVerificationResult::IssuerResolutionFailed;
             }
         };
 
@@ -198,8 +199,6 @@ async fn get_wallet_data(
         }
     }
 
-    let context = Arc::new(tvm_client::ClientContext::new(tvm_client::ClientConfig::default())?);
-
     let (abi_json, contract_addr, function_name, pubkey_str) = match issuer {
         TokenIssuer::Bk(ref pubkey) => (
             BK_CONTRACT_ROOT_ABI,
@@ -215,28 +214,14 @@ async fn get_wallet_data(
         ),
     };
 
-    let abi = tvm_client::abi::Abi::Json(abi_json.to_string());
-    let contract =
-        sdk_wrapper::Account::try_new_with_abi(abi, None, None, Some(contract_addr)).await?;
+    let raw_account =
+        request_account(contract_addr, account_request_tx.clone()).await?.ok_or_else(|| {
+            tracing::trace!("Failed to get BOC of the root contract at {contract_addr}");
+            anyhow::anyhow!("Account (owner wallet root) request failed")
+        })?;
+    let tvm_account = tvm_block::Account::try_from(&raw_account)?;
 
-    let boc = if let Some(raw_account) =
-        request_account(contract_addr, account_request_tx.clone()).await?
-    {
-        let boc_bytes = raw_account.write_bytes().map_err(|e| anyhow::anyhow!("{e}"))?;
-        tvm_types::base64_encode(&boc_bytes)
-    } else {
-        tracing::trace!("Failed to get BOC of the root contract at {contract_addr}");
-        return Err(anyhow::anyhow!("Account (owner wallet root) request failed"));
-    };
-
-    let result = contract
-        .run_local(
-            &context,
-            function_name,
-            Some(serde_json::json!({ "pubkey": pubkey_str })),
-            Some(boc),
-        )
-        .await?;
+    let result = run_local(&tvm_account, abi_json, contract_addr, function_name, &pubkey_str)?;
 
     let owner_wallet_address = serde_json::from_value::<WalletAddress>(result)?.wallet;
     let wallet_addr = match normalize_address(&owner_wallet_address) {
@@ -269,6 +254,54 @@ async fn get_wallet_data(
     issuer_wallet_data
 }
 
+fn run_local(
+    tvm_account: &tvm_block::Account,
+    abi_json: &str,
+    address: &str,
+    function_name: &str,
+    pubkey_str: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let contract = tvm_contracts::TvmContract::new(abi_json, &[]);
+
+    let dst =
+        tvm_account.get_addr().ok_or_else(|| anyhow::anyhow!("Account has no address"))?.clone();
+
+    let params = serde_json::json!({ "pubkey": pubkey_str });
+    let msg_body = contract.encode_function_call(
+        function_name,
+        None,
+        Some(&params),
+        false,
+        None,
+        Some(dst.clone()),
+    )?;
+
+    let msg_header = tvm_block::ExternalInboundMessageHeader {
+        src: tvm_block::MsgAddressExt::with_extern(tvm_types::SliceData::from_raw(
+            vec![0x55; 8],
+            64,
+        ))
+        .unwrap(),
+        dst,
+        import_fee: 0x1234u64.into(),
+    };
+    let mut msg = tvm_block::Message::with_ext_in_header(msg_header);
+    msg.set_body(msg_body);
+
+    let options = tvm_contracts::TvmExecutionOptions::default();
+    let (mut out_messages, _) = tvm_contracts::tvm_call_msg(tvm_account, false, &options, &msg)?;
+
+    let out_msg = out_messages.pop().ok_or_else(|| {
+        anyhow::anyhow!("run_local({address}::{function_name}): no output messages")
+    })?;
+    let body = out_msg.body().ok_or_else(|| {
+        anyhow::anyhow!("run_local({address}::{function_name}): output message has no body")
+    })?;
+
+    let (_, decoded, _) = contract.decode_function_body(body, false, false, function_name, None)?;
+    Ok(decoded)
+}
+
 pub fn is_auth_required() -> bool {
     EXT_MESSAGE_AUTH_REQUIRED.load(Ordering::Relaxed)
 }
@@ -299,7 +332,6 @@ mod tests {
     use std::sync::OnceLock;
 
     use hex::ToHex;
-    use sdk_wrapper::read_file;
     use tokio::sync::mpsc;
     use tokio::sync::Mutex as TokioMutex;
     use tracing_subscriber::layer::SubscriberExt;
@@ -427,7 +459,7 @@ mod tests {
     }
 
     fn construct_response_acc(boc_file: &str) -> anyhow::Result<ThreadAccount> {
-        let boc = String::from_utf8(read_file(&format!("./fixtures/{boc_file}"))?)
+        let boc = String::from_utf8(std::fs::read(format!("./fixtures/{boc_file}"))?)
             .map(|s| s.trim().to_owned())?;
         ThreadAccount::read_base64(&boc)
     }
@@ -591,6 +623,45 @@ mod tests {
         assert_eq!(result, TokenVerificationResult::UnknownIssuer);
 
         // SIGN_KEY_CACHE.write().clear();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_verify_with_missing_signing_key() {
+        let _guard = lock_test().await;
+
+        force_auth();
+
+        let (secret, _public) = dummy_signing_keypair();
+
+        let token = Token::new(&secret, TokenIssuer::Bm("bm_wallet".to_string())).unwrap();
+
+        let result = token.verify(None);
+        assert_eq!(result, TokenVerificationResult::MissingSigningKey);
+    }
+
+    #[tokio::test]
+    async fn test_authorize_issuer_resolution_failed() -> anyhow::Result<()> {
+        let _guard = lock_test().await;
+
+        force_auth();
+
+        let (secret, pubkey) = dummy_signing_keypair();
+        let issuer = TokenIssuer::Bk(pubkey);
+
+        SIGN_KEY_CACHE.write().remove(&issuer);
+
+        let token = Token::new(&secret, issuer)?;
+
+        let (tx, rx) = mpsc::channel(10);
+
+        // Drop receiver immediately so account requests fail
+        drop(rx);
+
+        let result = token.authorize(tx).await;
+
+        assert_eq!(result, TokenVerificationResult::IssuerResolutionFailed);
+
         Ok(())
     }
 

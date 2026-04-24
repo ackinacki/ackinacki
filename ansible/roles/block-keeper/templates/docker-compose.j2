@@ -105,7 +105,7 @@ services:
       - -c
       - >
         tvm-cli config -g --url "{{ TVM_ENDPOINT }}"
-        && exec /staking/staking.sh -l /staking/logs/staking.log -d {{ STAKING_TIME }} /staking/configs/{{ NODE_OWNER_KEY | basename }} /staking/configs/block_keeper{{ NODE_ID }}_bls.keys.json {{ HOST_PUBLIC_IP }} /staking/configs/.protocol_version
+        && exec /staking/staking.sh -l /staking/logs/staking.log -d {{ STAKING_TIME }} /staking/configs/{{ NODE_OWNER_KEY | basename }} /staking/configs/block_keeper{{ NODE_ID }}_bls.keys.json {{ HOST_PUBLIC_IP }} /staking/configs/.protocol_version {{ TVM_ENDPOINT }}/graphql
     environment:
       OTEL_RESOURCE_ATTRIBUTES: node={{ otel_node_id }},service.namespace={{ NETWORK_NAME }},service.instance.id={{ otel_node_id }},host.name={{ OTEL_MY_HOST_NAME | default(inventory_hostname) | default(ansible_host) }}
 {% if OTEL_COLLECTOR is defined and OTEL_COLLECTOR %}
@@ -188,7 +188,7 @@ services:
         --thread-load-window-size {{ THREAD_LOAD_WINDOW_SIZE }}
         --chitchat-cluster-id "{{ UPD_NETWORK_NAME | default(NETWORK_NAME) }}"
         --block-keeper-epoch-code-hash {{ CODE_HASH }}
-        --bk-api-host-port {{ BK_HOSTNAME | default(inventory_hostname) }}:{{ BIND_API_PORT }}
+        --bk-api-host-port {{ BK_HOSTNAME | default(inventory_hostname) }}
 {% if HAS_BK_SET_FILE is defined and HAS_BK_SET_FILE %}
         --bk-set-update-path=/bk-configs/bk_set.json
 {% endif %}
@@ -208,7 +208,7 @@ services:
         --keys-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
         --block-keeper-seed-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
         --signing-keys=/bk-configs/{{ NODE_OWNER_KEY | basename }}
-        --engine-version 1.0.2
+        --engine-version 1.0.3
 {% if HAS_BK_SET_FILE is not defined or HAS_BK_SET_FILE is false %}
         --zerostate-path=/bk-configs/zerostate
 {% endif %}
@@ -219,7 +219,7 @@ services:
         --thread-load-window-size {{ THREAD_LOAD_WINDOW_SIZE }}
         --chitchat-cluster-id "{{ UPD_NETWORK_NAME | default(NETWORK_NAME) }}"
         --block-keeper-epoch-code-hash {{ CODE_HASH }}
-        --bk-api-host-port {{ BK_HOSTNAME | default(inventory_hostname) }}:{{ BIND_API_PORT }}
+        --bk-api-host-port {{ BK_HOSTNAME | default(inventory_hostname) }}
 {% if HAS_BK_SET_FILE is defined and HAS_BK_SET_FILE %}
         --bk-set-update-path=/bk-configs/bk_set.json
 {% endif %}

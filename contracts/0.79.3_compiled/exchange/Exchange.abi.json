@@ -1,0 +1,144 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"usdcWallet","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "onTransferReceived",
+			"inputs": [
+				{"name":"from","type":"address"},
+				{"name":"value1","type":"address"},
+				{"name":"value","type":"uint128"},
+				{"name":"value3","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "mintAndSend",
+			"inputs": [
+				{"name":"recipient","type":"address"},
+				{"name":"value","type":"uint128"},
+				{"name":"nonce","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "mintAndSendAccumulator",
+			"inputs": [
+				{"name":"buyer","type":"address"},
+				{"name":"value","type":"uint128"},
+				{"name":"nonce","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setPubkey",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "triggerTransaction",
+			"inputs": [
+				{"name":"txAddr","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"},
+				{"name":"cell","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getUsdcWallet",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
+			"name": "getOwnerPubkey",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"uint256"}
+			]
+		},
+		{
+			"name": "getTotalMinted",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"uint128"}
+			]
+		},
+		{
+			"name": "getNonces",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"mintNonce","type":"uint64"},
+				{"name":"mintAccumulatorNonce","type":"uint64"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+		{
+			"name": "UsdcMigrated",
+			"inputs": [
+				{"name":"from","type":"address"},
+				{"name":"value","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "UsdcMinted",
+			"inputs": [
+				{"name":"recipient","type":"address"},
+				{"name":"value","type":"uint128"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_ownerPubkey","type":"uint256"},
+		{"init":false,"name":"_usdcWallet","type":"address"},
+		{"init":false,"name":"_totalMinted","type":"uint128"},
+		{"init":false,"name":"_mintNonce","type":"uint64"},
+		{"init":false,"name":"_mintAccumulatorNonce","type":"uint64"}
+	]
+}

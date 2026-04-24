@@ -16,7 +16,7 @@ gossip.workspace = true
 http-server.workspace = true
 network.workspace = true
 opentelemetry.workspace = true
-reqwest = { version = "0.12.22", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "rustls"] }
 rustls = { version = "0.23.19", default-features = false, features = ["ring", "std", "logging"] }
 serde.workspace = true
 serde_json.workspace = true

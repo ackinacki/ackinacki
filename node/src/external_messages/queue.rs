@@ -24,11 +24,23 @@ enum Status {
     Included, // External messages already included in block in undergoing validation
 }
 
-#[derive(Default, Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[allow(clippy::derived_hash_with_manual_eq)]
+#[derive(Default, Clone, Copy, Debug, Hash)]
 pub struct ExtMessageDst {
     pub account_id: AccountIdentifier,
     pub dapp_id: Option<DAppIdentifier>,
 }
+
+// Note: this fix is necessary for current state impl, (ACC_ID, None) and (ACC_ID, Some(DAPP)) are
+// the same destinations and can't be processed in parallel but in state v2 DAPP will be mandatory
+// and this impl should be removed.
+impl PartialEq for ExtMessageDst {
+    fn eq(&self, other: &Self) -> bool {
+        self.account_id == other.account_id
+    }
+}
+
+impl Eq for ExtMessageDst {}
 
 impl ExtMessageDst {
     pub fn new(account_id: AccountIdentifier, dapp_id: Option<DAppIdentifier>) -> Self {
@@ -123,6 +135,10 @@ impl ExternalMessagesQueue {
             self.messages.insert(stamp, ext_message.clone());
         }
         self.last_index = cursor;
+    }
+
+    pub(super) fn drain_all(&mut self) -> BTreeMap<Stamp, QueuedExtMessage> {
+        std::mem::take(&mut self.messages)
     }
 
     pub(super) fn unprocessed_messages(

@@ -8,16 +8,17 @@ pub trait Transitioning: for<'a> Deserialize<'a> {
     fn from(old: Self::Old) -> Self;
 
     /// Compatibility deserializer: try new, fall back to old.
-    fn deserialize_data_compat(bytes: &[u8]) -> bincode::Result<Self> {
+    /// Also returns bool flag whether the new (true) or old (false) version was deserialized.
+    fn deserialize_data_compat(bytes: &[u8]) -> bincode::Result<(Self, bool)> {
         // Try to read as the new format first.
         if let Ok(new) = bincode::deserialize::<Self>(bytes) {
-            return Ok(new);
+            return Ok((new, true));
         }
 
         // If that fails (e.g. EOF because the old struct has fewer fields),
         // deserialize as the old struct and convert.
         let old: Self::Old = bincode::deserialize(bytes)?;
-        Ok(Self::from(old))
+        Ok((Self::from(old), false))
     }
 }
 
@@ -71,7 +72,7 @@ mod tests {
         let bytes = bincode::serialize(&old).expect("serialize old");
 
         // Deserialize using the compat function into the *new* Data
-        let new = Data::deserialize_data_compat(&bytes).expect("compat deserialize");
+        let new = Data::deserialize_data_compat(&bytes).expect("compat deserialize").0;
 
         println!("new: {new:?}");
         assert_eq!(new.f1, "hello");
@@ -86,7 +87,7 @@ mod tests {
         let bytes = bincode::serialize(&old).expect("serialize old");
 
         // Deserialize using the compat function into the *new* Data
-        let new = Data::deserialize_data_compat(&bytes).expect("compat deserialize");
+        let new = Data::deserialize_data_compat(&bytes).expect("compat deserialize").0;
 
         println!("new: {new:?}");
         assert_eq!(new.f1, "hello");

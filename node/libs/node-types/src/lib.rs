@@ -9,6 +9,8 @@ pub use types::AccountRouting;
 pub use types::BlockIdentifier;
 pub use types::DAppIdentifier;
 pub use types::DAppIdentifierPath;
+pub use types::ParentRef;
+pub use types::TemporaryBlockId;
 pub use types::ThreadAccountsHash;
 pub use types::ThreadIdentifier;
 pub use types::TransactionHash;

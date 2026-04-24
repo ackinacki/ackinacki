@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 #[cfg(feature = "history_proofs")]
 use std::ops::Div;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -18,6 +19,8 @@ use std::time::Duration;
 use http_server::ExtMsgFeedbackList;
 use network::channel::NetBroadcastSender;
 use node_types::BlockIdentifier;
+use node_types::ParentRef;
+use node_types::TemporaryBlockId;
 use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 use telemetry_utils::instrumented_channel_ext::WrappedItem;
@@ -30,6 +33,8 @@ use crate::block::producer::process::FORCE_SYNC_STATE_BLOCK_FREQUENCY;
 use crate::block::producer::producer_service::memento::Assumptions;
 use crate::block::producer::producer_service::memento::BlockProducerMemento;
 use crate::block_keeper_system::bk_set::update_block_keeper_set_from_common_section;
+use crate::block_keeper_system::BlockKeeperSetChange::BlockKeeperAdded;
+use crate::block_keeper_system::BlockKeeperSetChange::BlockKeeperRemoved;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::gosh_bls::PubKey;
@@ -48,6 +53,7 @@ use crate::node::associated_types::NodeCredentials;
 use crate::node::associated_types::SynchronizationResult;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
+use crate::node::block_state::tools::promote_temporary_to_block_state;
 use crate::node::block_state::unfinalized_ancestor_blocks::UnfinalizedAncestorBlocksSelectError;
 use crate::node::services::attestations_target::service::AttestationTargetsService;
 use crate::node::services::attestations_target::service::EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess;
@@ -60,13 +66,15 @@ use crate::protocol::authority_switch::action_lock::BlockProducerCommand;
 use crate::protocol::authority_switch::action_lock::StartBlockProducerThreadInitialParameters;
 use crate::protocol::authority_switch::network_message::AuthoritySwitch;
 use crate::protocol::authority_switch::network_message::NextRoundSuccess;
-use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateSaveCommand;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::as_signatures_map::AsSignaturesMap;
 use crate::types::bp_selector::ProducerSelector;
+use crate::types::common_section::CommonSectionVersioned;
 use crate::types::common_section::Directives;
+use crate::types::common_section::DirectivesOld;
+use crate::types::common_section::DirectivesVersioned;
 #[cfg(feature = "history_proofs")]
 use crate::types::history_proof::LayerNumber;
 #[cfg(feature = "history_proofs")]
@@ -74,6 +82,7 @@ use crate::types::history_proof::ProofLayerRootHash;
 #[cfg(feature = "history_proofs")]
 use crate::types::history_proof::HISTORY_PROOF_WINDOW_SIZE;
 use crate::types::AckiNackiBlock;
+use crate::types::AckiNackiBlockVersioned;
 use crate::types::AggregateFilter;
 use crate::types::BlockRound;
 use crate::types::BlockSeqNo;
@@ -82,7 +91,9 @@ use crate::types::RndSeed;
 use crate::utilities::all_elements_same::AllElementsSame;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
+use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
 use crate::versioning::ProtocolVersion;
+use crate::versioning::ProtocolVersionSupport;
 
 #[cfg(feature = "rotate_after_sync")]
 lazy_static::lazy_static!(
@@ -127,6 +138,8 @@ pub struct BlockProducer {
     #[builder(default)]
     producing_status: bool,
 
+    is_producing: Arc<AtomicBool>,
+
     external_messages: ExternalMessagesThreadState,
     is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
     control_rx: std::sync::mpsc::Receiver<BlockProducerCommand>,
@@ -136,9 +149,17 @@ pub struct BlockProducer {
     config_read: ConfigRead,
 }
 
-#[derive(Debug, PartialEq)]
 enum UpdateCommonSectionResult {
-    Success,
+    Success {
+        /// Parent's block version state — used to compute the child's state
+        /// once the final block identifier is known.
+        parent_block_version: BlockProtocolVersionState,
+        /// `descendant_bk_set.iter().map(|e| e.protocol_support).all_elements_same()`
+        /// pre-computed so we don't have to thread the whole BK set out.
+        all_bk_same_version: Option<ProtocolVersionSupport>,
+        /// Ancestor blocks that passed finalization checkpoints.
+        passed_checkpoints: Vec<BlockIdentifier>,
+    },
     FailedToBuildChainToTheLastFinalizedBlock,
     NotReadyYet,
     AncestorIsNotReadyYet,
@@ -147,6 +168,13 @@ enum UpdateCommonSectionResult {
 }
 
 impl BlockProducer {
+    /// Stop the production thread and clean up any promoted temporary states.
+    fn stop_and_cleanup(&mut self) -> anyhow::Result<()> {
+        let result = self.production_process.stop_thread_production(&self.thread_id);
+        self.block_state_repository.cleanup_temporaries();
+        result
+    }
+
     pub fn main_loop(&mut self) -> anyhow::Result<()> {
         // if let Some((block_id_to_continue, block_seq_no_to_continue)) =
         // self.find_thread_last_block_id_this_node_can_continue()?
@@ -161,7 +189,7 @@ impl BlockProducer {
             if let Ok(bp_command) = self.control_rx.try_recv() {
                 in_flight_productions = None;
                 memento = None;
-                let _ = self.production_process.stop_thread_production(&self.thread_id);
+                let _ = self.stop_and_cleanup();
                 next_bp_command = Some(bp_command);
             }
             if in_flight_productions.is_none() && memento.is_none() {
@@ -177,7 +205,7 @@ impl BlockProducer {
                             block_id_to_continue,
                             block_seq_no_to_continue
                         );
-                        let e = self.production_process.stop_thread_production(&self.thread_id);
+                        let e = self.stop_and_cleanup();
                         tracing::trace!("Production stop result: {e:?}");
                         in_flight_productions = None;
                     }
@@ -186,8 +214,16 @@ impl BlockProducer {
                     // Reset thread load
                     let was_producer = self.producing_status;
                     self.producing_status = false;
+                    self.is_producing.store(false, Ordering::Release);
                     if was_producer {
                         self.bp_production_count.fetch_sub(1, Ordering::Relaxed);
+                        if let Err(err) = self.external_messages.clear_queue_for_non_producer() {
+                            tracing::error!(
+                                target: "ext_messages",
+                                "Failed to clear ext message queue on producer stop for {:?}: {err:?}",
+                                self.thread_id
+                            );
+                        }
                     }
                     self.repository
                         .get_metrics()
@@ -274,6 +310,7 @@ impl BlockProducer {
                     tracing::info!("Producer started successfully");
                     let was_producer = self.producing_status;
                     self.producing_status = true;
+                    self.is_producing.store(true, Ordering::Release);
                     if !was_producer {
                         self.bp_production_count.fetch_add(1, Ordering::Relaxed);
                     }
@@ -294,7 +331,7 @@ impl BlockProducer {
         block_version: ProtocolVersion,
     ) -> anyhow::Result<Option<(BlockIdentifier, BlockSeqNo)>> {
         tracing::trace!("restart_block_production");
-        self.production_process.stop_thread_production(&self.thread_id)?;
+        self.stop_and_cleanup()?;
         let mut producer_tails = None;
         let Some(parent_block_seq_no) =
             self.block_state_repository.get(&parent_block_id)?.guarded(|e| *e.block_seq_no())
@@ -321,6 +358,7 @@ impl BlockProducer {
                 tracing::info!("Producer started successfully");
                 let was_producer = self.producing_status;
                 self.producing_status = true;
+                self.is_producing.store(true, Ordering::Release);
                 if !was_producer {
                     self.bp_production_count.fetch_add(1, Ordering::Relaxed);
                 }
@@ -469,52 +507,92 @@ impl BlockProducer {
         tracing::trace!("on_production_timeout: minimal_seq_no_that_can_be_accepted_from_producer_process = {minimal_seq_no_that_can_be_accepted_from_producer_process:?}");
         while let Some(produced_block) = produced_data.produced_blocks().first() {
             let mut block = produced_block.block().clone();
-            block_flow_trace(
-                "check produced",
-                &block.identifier(),
-                self.node_credentials.node_id(),
-                [],
-            );
+            let temp_id = *produced_block.temporary_block_id();
+
+            // Resolve parent from TemporaryBlockState and update block's parent_block_id
+            {
+                let temp_arc = self
+                    .block_state_repository
+                    .get_temporary(&temp_id)
+                    .ok_or(anyhow::format_err!("Temporary state {temp_id:?} not found"))?;
+                let parent_ref = temp_arc.read().parent_ref().clone();
+                let parent_block_id = match parent_ref {
+                    ParentRef::Block(id) => id,
+                    ParentRef::Temporary(parent_temp_id) => {
+                        // The parent temporary may have been promoted after this
+                        // block was produced but before this block's parent_ref
+                        // was updated (race between the production loop
+                        // registering children and the main thread promoting
+                        // the parent). Check if the parent temp was promoted
+                        // and use its final block ID.
+                        let parent_temp_arc = self
+                            .block_state_repository
+                            .get_temporary(&parent_temp_id)
+                            .ok_or(anyhow::format_err!(
+                                "Parent temporary {parent_temp_id:?} not found for child {temp_id:?}"
+                            ))?;
+                        let parent_temp = parent_temp_arc.read();
+                        match parent_temp.promoted_block_id() {
+                            Some(promoted_id) => {
+                                let id = *promoted_id;
+                                drop(parent_temp);
+                                temp_arc.write().set_parent_ref(ParentRef::Block(id));
+                                id
+                            }
+                            None => {
+                                anyhow::bail!(
+                                    "Parent {parent_temp_id:?} is not yet promoted for child {temp_id:?}"
+                                );
+                            }
+                        }
+                    }
+                };
+                block.update_parent_block_id(parent_block_id);
+            }
             tracing::info!(
-                "Got block from producer. id: {:?}; seq_no: {:?}, parent: {:?}",
-                block.identifier(),
+                "Got block from producer. temp_id: {}; seq_no: {:?}, parent: {:?}",
+                temp_id,
                 block.seq_no(),
                 block.parent(),
             );
 
             if block.seq_no() <= minimal_seq_no_that_can_be_accepted_from_producer_process {
                 tracing::trace!("Produced block is older than last finalized block. Stop production for thread: {:?}", self.thread_id);
-                self.production_process.stop_thread_production(&self.thread_id)?;
+                self.stop_and_cleanup()?;
                 *producer_tails = None;
                 return Ok((false, None));
             }
             let share_resulting_state = self.is_state_sync_requested.guarded(|e| *e);
-            let share_state_ids = if share_resulting_state == Some(block.seq_no())
-                || (<u32>::from(block.seq_no()) % FORCE_SYNC_STATE_BLOCK_FREQUENCY == 0)
-            {
+            let should_share_state = share_resulting_state == Some(block.seq_no())
+                || (<u32>::from(block.seq_no()) % FORCE_SYNC_STATE_BLOCK_FREQUENCY == 0);
+            if should_share_state {
                 tracing::trace!("Node should share state for last block");
-                Some(produced_block.optimistic_state().get_share_stare_refs())
-            } else {
-                None
-            };
-            let block_will_share_state = share_state_ids.is_some();
+            }
+            let block_will_share_state = should_share_state;
             let attestations_notifications_stamp: u32 = {
                 let (lock, _cvar) =
                     &*self.last_block_attestations.guarded(|e| e.notifications().clone());
                 let n = *lock.lock();
                 n
             };
-            let update_result = self.update_candidate_common_section(&mut block, share_state_ids);
-            let produced_block = match update_result {
+            let update_result =
+                self.update_candidate_common_section(&mut block, should_share_state, &temp_id);
+            #[allow(unused_assignments)]
+            let mut success_block_version_data: Option<(
+                BlockProtocolVersionState,
+                Option<ProtocolVersionSupport>,
+                Vec<BlockIdentifier>,
+            )> = None;
+            let mut produced_block = match update_result {
                 Ok(UpdateCommonSectionResult::FailedToBuildChainToTheLastFinalizedBlock) => {
                     tracing::trace!("Failed to update common section and our block seems to be invalidated, stop production");
-                    self.production_process.stop_thread_production(&self.thread_id)?;
+                    self.stop_and_cleanup()?;
                     *producer_tails = None;
                     return Ok((false, None));
                 }
                 Err(e) => {
                     tracing::trace!("Update common section error {e:?}");
-                    self.production_process.stop_thread_production(&self.thread_id)?;
+                    self.stop_and_cleanup()?;
                     self.repository
                         .store_optimistic_in_cache(produced_block.optimistic_state().clone())?;
                     let _ = self.save_optimistic_service_sender.send(
@@ -543,28 +621,51 @@ impl BlockProducer {
                         .set_last_attestation_notification(attestations_notifications_stamp);
                     return Ok((false, Some(produced_data)));
                 }
-                Ok(UpdateCommonSectionResult::Success) => {
-                    let actual_required_version = produced_block
-                        .block_state()
-                        .guarded(|e| e.block_version_state().clone())
-                        .unwrap()
-                        .to_use()
-                        .clone();
+                Ok(UpdateCommonSectionResult::Success {
+                    parent_block_version,
+                    all_bk_same_version,
+                    passed_checkpoints,
+                }) => {
+                    // Derive the protocol version without the block identifier.
+                    // `next().to_use()` never depends on block_id.
+                    let actual_required_version = match &parent_block_version {
+                        BlockProtocolVersionState::CompleteTransition { to, .. } => to.clone(),
+                        other => other.to_use().clone(),
+                    };
+                    let mut producer_is_in_bk_set = true;
+                    for change in produced_block.block().common_section().block_keeper_set_changes()
+                    {
+                        if let BlockKeeperRemoved((_, removed)) = change {
+                            if removed.node_id() == *self.node_credentials.node_id() {
+                                producer_is_in_bk_set = false;
+                            }
+                        }
+                    }
+                    for change in produced_block.block().common_section().block_keeper_set_changes()
+                    {
+                        if let BlockKeeperAdded((_, added)) = change {
+                            if added.node_id() == *self.node_credentials.node_id() {
+                                producer_is_in_bk_set = true;
+                            }
+                        }
+                    }
                     let actual_assumptions = Assumptions::builder()
                         .new_to_bk_set(
                             BTreeSet::new(), // TODO: set real value with preattestaions implementation
                         )
                         .block_version(actual_required_version.clone())
+                        .producer_is_in_bk_set(producer_is_in_bk_set)
                         .build();
                     let is_assumptions_correct =
                         produced_block.assumptions().eq(&actual_assumptions);
                     if is_assumptions_correct {
-                        tracing::trace!("Speed up production");
                         if let Some(seq_no) = share_resulting_state {
                             if seq_no <= block.seq_no() {
                                 self.is_state_sync_requested.guarded_mut(|e| *e = None);
                             }
                         }
+                        success_block_version_data =
+                            Some((parent_block_version, all_bk_same_version, passed_checkpoints));
                         produced_data.produced_blocks_mut().remove(0)
                     } else {
                         tracing::trace!(
@@ -579,13 +680,15 @@ impl BlockProducer {
                         }
                         produced_data.produced_blocks_mut().clear();
                         let parent_block_id = block.parent();
-                        let block_round = *block.common_section().round();
+                        if producer_is_in_bk_set {
+                            let block_round = *block.common_section().round();
 
-                        *producer_tails = self.restart_production(
-                            parent_block_id,
-                            block_round,
-                            actual_required_version.clone(),
-                        )?;
+                            *producer_tails = self.restart_production(
+                                parent_block_id,
+                                block_round,
+                                actual_required_version.clone(),
+                            )?;
+                        }
 
                         #[cfg(feature = "history_proofs")]
                         if !self.config_read.is_retired(&actual_required_version) {
@@ -602,22 +705,111 @@ impl BlockProducer {
                 }
                 Ok(UpdateCommonSectionResult::AbortNotInBKSet) => {
                     tracing::trace!("Stop production: not in bk set");
-                    self.production_process.stop_thread_production(&self.thread_id)?;
+                    self.stop_and_cleanup()?;
                     *producer_tails = None;
                     return Ok((false, None));
                 }
             };
+            // --- Finalize block ID dependent data ---
+            // After set_common_section(_, true) the block has its final Merkle hash.
+            // Promote temporary state to real BlockState, then resolve threads-table
+            // prefab with the final ID so that ThreadIdentifiers match what validators
+            // will compute in apply_block.
+            let final_block_id = block.identifier();
+
+            // Now that the final block_id is known, compute the actual
+            // BlockProtocolVersionState (the milestone in TransitionLocked
+            // must reference the real Merkle hash, not an intermediate one).
+            let (parent_bvs, all_bk_same, checkpoints) = success_block_version_data
+                .expect("success_block_version_data must be set on Success path");
+            let success_block_version_state =
+                parent_bvs.next(final_block_id, all_bk_same, &checkpoints);
+
+            // Promote TemporaryBlockState → real BlockState
+            let produced_block_state = promote_temporary_to_block_state(
+                &temp_id,
+                final_block_id,
+                &self.block_state_repository,
+            )?;
+            let final_parent_block_id = block.parent();
+            produced_block_state.guarded(|e| {
+                anyhow::ensure!(
+                    e.parent_block_identifier()
+                        .expect("promoted block state must have parent block identifier")
+                        == final_parent_block_id,
+                    "Promoted block state parent mismatch: state={:?}, block={final_parent_block_id:?}, temp_id={temp_id}",
+                    e.parent_block_identifier()
+                );
+                anyhow::ensure!(
+                    e.thread_identifier().expect("promoted block state must have thread id")
+                        == self.thread_id,
+                    "Promoted block state thread mismatch: state={:?}, expected={:?}, block={final_block_id}",
+                    e.thread_identifier(),
+                    self.thread_id
+                );
+                Ok::<_, anyhow::Error>(())
+            })?;
+
+            // Write data from update_candidate_common_section to the promoted BlockState
+            {
+                let attestations = block.common_section().block_attestations();
+                produced_block_state.guarded_mut(|e| {
+                    for attestation in attestations {
+                        e.add_verified_attestations_for(
+                            attestation.data(),
+                            HashSet::from_iter(
+                                attestation.clone_signature_occurrences().keys().cloned(),
+                            ),
+                        )?;
+                    }
+                    e.set_block_version_state(success_block_version_state.clone())?;
+                    Ok::<_, anyhow::Error>(())
+                })?;
+            }
+
+            {
+                let mut cross_thread_ref_data = produced_block.cross_thread_ref_data().clone();
+
+                let mut updated_state = produced_block.optimistic_state().as_ref().clone();
+                updated_state.block_id = final_block_id;
+                updated_state
+                    .thread_refs_state
+                    .update(self.thread_id, (self.thread_id, final_block_id, block.seq_no()));
+
+                let resolved_threads_table =
+                    if let Some(prefab) = block.common_section().threads_table() {
+                        let resolved_table = prefab.resolve(&final_block_id)?;
+                        updated_state.threads_table = resolved_table.clone();
+                        Some(resolved_table)
+                    } else {
+                        None
+                    };
+
+                cross_thread_ref_data.finalize_block_identifier_dependencies(
+                    final_block_id,
+                    final_parent_block_id,
+                    self.thread_id,
+                    resolved_threads_table,
+                )?;
+
+                produced_block.update_optimistic_state(Arc::new(updated_state));
+
+                self.shared_services.exec(|e| {
+                    e.cross_thread_ref_data_service.set_cross_thread_ref_data(cross_thread_ref_data)
+                })?;
+                produced_block_state.guarded_mut(|e| e.set_has_cross_thread_ref_data_prepared())?;
+            }
 
             #[cfg(feature = "rotate_after_sync")]
             {
-                if block.common_section().directives().share_state_resources().is_some() {
+                if block.common_section().directives().share_state_resources() {
                     tracing::trace!("Save share state block seq_no: {:?}", block.seq_no());
                     let mut shared_state_seq_no = SHARED_STATE_SEQ_NO.lock();
                     *shared_state_seq_no = Some(block.seq_no());
                 }
                 if let Some(seq_no) = SHARED_STATE_SEQ_NO.lock().as_ref() {
                     if <u32>::from(seq_no.clone()) + 100 == <u32>::from(block.seq_no().clone()) {
-                        self.production_process.stop_thread_production(&self.thread_id)?;
+                        self.stop_and_cleanup()?;
                         *producer_tails = None;
                         return Ok((false, None));
                     }
@@ -652,7 +844,7 @@ impl BlockProducer {
                 if parent_state.guarded(|e| e.is_invalidated()) {
                     // Stop production in this case
                     tracing::trace!("parent block state was invalidated");
-                    self.production_process.stop_thread_production(&self.thread_id)?;
+                    self.stop_and_cleanup()?;
                     return Ok((false, None));
                 }
                 notifications.wait_for_updates(stamp);
@@ -662,12 +854,7 @@ impl BlockProducer {
 
             let secrets = self.bls_keys_map.guarded(|map| map.clone());
             let production_status = self.production_status.as_ref().expect("must be in prod");
-            let protocol_version = produced_block
-                .block_state()
-                .guarded(|e| e.block_version_state().clone())
-                .unwrap()
-                .to_use()
-                .clone();
+            let protocol_version = success_block_version_state.to_use().clone();
 
             let envelope = block.clone().try_seal(
                 &self.node_credentials,
@@ -681,7 +868,7 @@ impl BlockProducer {
             };
             let envelope = envelope?;
 
-            let net_block = NetBlock::with_envelope(&envelope)?;
+            let net_block = NetBlock::with_versioned(&envelope)?;
 
             // Check if this node has already signed block of the same height
             // Note: Not valid anymore. Can't sign blocks of the same round though.
@@ -697,7 +884,7 @@ impl BlockProducer {
             let parent_height = parent_state
                 .guarded(|e| *e.block_height())
                 .expect("Parent block height must be set");
-            produced_block.block_state().guarded_mut(|e| {
+            produced_block_state.guarded_mut(|e| {
                 e.set_validated(true)?;
                 e.set_producer_selector_data(producer_selector)?;
                 e.set_block_height(parent_height.next(&self.thread_id))
@@ -708,7 +895,7 @@ impl BlockProducer {
                     && *production_status.init_params.round() != 0
                 {
                     let block_height =
-                        produced_block.block_state().guarded(|e| (*e.block_height()).unwrap());
+                        produced_block_state.guarded(|e| (*e.block_height()).unwrap());
                     let message =
                         NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched(
                             NextRoundSuccess::builder()
@@ -809,14 +996,15 @@ impl BlockProducer {
 
     fn update_candidate_common_section(
         &mut self,
-        candidate_block: &mut AckiNackiBlock,
-        share_state_ids: Option<HashMap<ThreadIdentifier, BlockIdentifier>>,
+        candidate_block: &mut AckiNackiBlockVersioned,
+        should_share_state: bool,
+        temp_id: &TemporaryBlockId,
     ) -> anyhow::Result<UpdateCommonSectionResult> {
         tracing::trace!(
-            "update_candidate_common_section: share_state {} block_seq_no: {:?}, id: {:?}",
-            share_state_ids.is_some(),
+            "update_candidate_common_section: share_state {} block_seq_no: {:?}, temp_id: {}",
+            should_share_state,
             candidate_block.seq_no(),
-            candidate_block.identifier()
+            temp_id
         );
         let mut received_attestations = self.last_block_attestations.guarded(|e| e.clone());
 
@@ -887,13 +1075,13 @@ impl BlockProducer {
         let proposed_attestations = aggregated_attestations.as_signatures_map();
         tracing::trace!(
             "update_candidate_common_section ({}):  waiting for finalization: {}, proposed_attestations: {:?}",
-            candidate_block.identifier(),
+            temp_id,
             trace_attestations_required,
             &proposed_attestations,
         );
         tracing::trace!(
-            "update_candidate_common_section ({:?}): dependants: {:?}",
-            candidate_block.identifier(),
+            "update_candidate_common_section ({}): dependants: {:?}",
+            temp_id,
             attestations_required,
         );
         let mut common_section = candidate_block.common_section().clone();
@@ -914,9 +1102,10 @@ impl BlockProducer {
                 producer_selector =
                     producer_selector.move_index(bp_distance_for_this_node, bk_set.len());
             } else {
-                // If previous selector was invalid (due to bk removal) generate a new one
+                // If previous selector was invalid (due to bk removal) generate a new one.
+                // Use parent block ID as seed — it is already finalized and stable.
                 producer_selector = ProducerSelector::builder()
-                    .rng_seed_block_id(candidate_block.identifier())
+                    .rng_seed_block_id(candidate_block.parent())
                     .index(0)
                     .build();
                 let Some(bp_distance_for_this_node) = producer_selector
@@ -931,16 +1120,28 @@ impl BlockProducer {
         }
         common_section.set_producer_selector(Some(producer_selector));
 
-        if let Some(resource_address) = share_state_ids {
-            let directive = resource_address;
+        if should_share_state {
             tracing::trace!(
-                "Set share state directive for block {:?} {:?}: {directive:?}",
+                "Set share state directive for block {:?} temp_id={}",
                 candidate_block.seq_no(),
-                candidate_block.identifier()
+                temp_id
             );
-            common_section.set_directives(
-                Directives::builder().share_state_resources(Some(directive)).build(),
-            );
+            let directives = match &common_section {
+                CommonSectionVersioned::New(_) => DirectivesVersioned::New(
+                    Directives::builder().share_state_resources(true).build(),
+                ),
+                CommonSectionVersioned::Old(_) => {
+                    // Old blocks use TVM hash (stable), but they are retired.
+                    // Use parent ID as a stable placeholder.
+                    let directives: HashMap<ThreadIdentifier, BlockIdentifier> = HashMap::from_iter(
+                        [(common_section.thread_id(), candidate_block.parent())],
+                    );
+                    DirectivesVersioned::Old(
+                        DirectivesOld::builder().share_state_resources(Some(directives)).build(),
+                    )
+                }
+            };
+            common_section.set_directives(directives);
         }
         #[cfg(feature = "history_proofs")]
         let Some(parent_block_height) = parent_block_state.guarded(|state| *state.block_height()) else {
@@ -986,33 +1187,21 @@ impl BlockProducer {
                     )?
                     .unwrap_or((bk_set.clone(), future_bk_set.clone()));
 
-                let attestations = candidate_block.common_section().block_attestations();
-                let block_state = self.block_state_repository.get(&candidate_block.identifier())?;
-                let _block_version_state = block_state.guarded_mut(|e| {
-                    for attestation in attestations {
-                        e.add_verified_attestations_for(
-                            attestation.data(),
-                            HashSet::from_iter(
-                                attestation.clone_signature_occurrences().keys().cloned(),
-                            ),
-                        )?;
-                    }
-                    let block_version_state = parent_block_version.next(
-                        candidate_block.identifier(),
-                        descendant_bk_set
-                            .iter()
-                            .map(|e| e.protocol_support.clone())
-                            .all_elements_same(),
-                        &passed_checkpoints,
-                    );
-                    e.set_block_version_state(block_version_state.clone())?;
-                    Ok::<_, anyhow::Error>(block_version_state)
-                })?;
+                // Pre-compute the BK-set version agreement.  The actual
+                // BlockProtocolVersionState is computed later (in on_production_timeout)
+                // once the final block identifier is known.
+                let all_bk_same_version: Option<ProtocolVersionSupport> = descendant_bk_set
+                    .iter()
+                    .map(|e| e.protocol_support.clone())
+                    .all_elements_same();
 
                 #[cfg(feature = "history_proofs")]
                 if *candidate_block.common_section().block_height() % HISTORY_PROOF_WINDOW_SIZE == 0
                     && *candidate_block.common_section().block_height().height() != 0
-                    && !self.config_read.is_retired(block_version_state.to_use())
+                    && !self.config_read.is_retired(match &parent_block_version {
+                        BlockProtocolVersionState::CompleteTransition { to, .. } => to,
+                        other => other.to_use(),
+                    })
                 {
                     let mut common_section = candidate_block.common_section().clone();
                     let history_proof_data = self.repository.get_history_proof_data();
@@ -1150,7 +1339,11 @@ impl BlockProducer {
                 //         last_dependant_block_seq_no,
                 //     )?;
                 // }
-                Ok(UpdateCommonSectionResult::Success)
+                Ok(UpdateCommonSectionResult::Success {
+                    parent_block_version,
+                    all_bk_same_version,
+                    passed_checkpoints,
+                })
             }
             Ok(EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::SomeFailed) => {
                 tracing::trace!(

@@ -1014,7 +1014,7 @@ mod tests {
         {
             let mut sorted_updates: Vec<Vec<(MapKey, Option<TV>)>> = all_updates.clone();
             for batch in &mut sorted_updates {
-                batch.sort_unstable_by(|a, b| a.0 .0.cmp(&b.0 .0));
+                batch.sort_unstable_by_key(|a| a.0 .0);
             }
             for batch in &mut sorted_updates {
                 batch.dedup_by_key(|kv| kv.0);
@@ -1150,7 +1150,7 @@ mod tests {
             let t = Instant::now();
             for _ in 0..n {
                 let mut sorted = updates.clone();
-                sorted.sort_unstable_by(|a, b| a.0 .0.cmp(&b.0 .0));
+                sorted.sort_unstable_by_key(|a| a.0 .0);
             }
             let per = t.elapsed().as_micros() as f64 / n as f64;
             eprintln!("  5. Sort 1000 MapKeys only:           {per:.0} µs");
