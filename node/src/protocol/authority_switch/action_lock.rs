@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicI32;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -197,7 +197,7 @@ pub struct Authority {
     block_repository: RepositoryImpl,
     block_state_repository: BlockStateRepository,
     network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
-    bp_production_count: Arc<AtomicI32>,
+    bp_production_count: Arc<AtomicU32>,
     network_broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
     node_joining_timeout: Duration,
     action_lock_db: ActionLockStorage,
@@ -450,7 +450,7 @@ pub struct ThreadAuthority {
     block_repository: RepositoryImpl,
     block_state_repository: BlockStateRepository,
     network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
-    bp_production_count: Arc<AtomicI32>,
+    bp_production_count: Arc<AtomicU32>,
 
     network_broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
     node_joining_timeout: Duration,
@@ -1518,7 +1518,7 @@ impl ThreadAuthority {
 
         let number_of_threads_this_node_currently_produces =
             self.bp_production_count.load(Ordering::Relaxed);
-        let current_round_generation = (*round as usize).div_ceil(bk_set.len()) as i32;
+        let current_round_generation = (*round as usize).div_ceil(bk_set.len()) as u32;
         tracing::trace!("Check if this node can start BP for a new thread: number_of_threads_this_node_currently_produces={number_of_threads_this_node_currently_produces}, current_round_generation={current_round_generation}");
         if current_round_generation <= number_of_threads_this_node_currently_produces {
             tracing::trace!("This node is already a BP for {number_of_threads_this_node_currently_produces} threads, do not accept current round");

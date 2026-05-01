@@ -26,6 +26,7 @@ use crate::node::Node;
 use crate::node::NodeIdentifier;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
+use crate::types::add_to_aggregated_attestations_cache;
 use crate::types::next_seq_no;
 use crate::types::BlockSeqNo;
 use crate::utilities::guarded::Guarded;
@@ -322,6 +323,12 @@ where
                                     break;
                                 }
                             }
+                        }
+                        for attestation in attestations.iter().cloned() {
+                            add_to_aggregated_attestations_cache(
+                                &self.aggregated_attestations_cache,
+                                attestation,
+                            );
                         }
                         if self
                             .last_block_attestations

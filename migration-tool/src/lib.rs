@@ -232,4 +232,27 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn bm_archive_v5_migration_up_and_down_creates_and_drops_events_index() -> anyhow::Result<()> {
+        let root = testdir!();
+        let db = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &root);
+        let opts = DbMaintenanceOptions { silent: true };
+
+        db.migrate(MigrateTo::Version(4), opts.clone())?;
+        let conn = Connection::open(&db.path)?;
+        assert!(!object_exists(&conn, "index", "index_messages_ext_out_msg_chain_order")?);
+        drop(conn);
+
+        db.migrate(MigrateTo::Version(5), opts.clone())?;
+        let conn = Connection::open(&db.path)?;
+        assert!(object_exists(&conn, "index", "index_messages_ext_out_msg_chain_order")?);
+        drop(conn);
+
+        db.migrate(MigrateTo::Version(4), opts)?;
+        let conn = Connection::open(&db.path)?;
+        assert!(!object_exists(&conn, "index", "index_messages_ext_out_msg_chain_order")?);
+
+        Ok(())
+    }
 }

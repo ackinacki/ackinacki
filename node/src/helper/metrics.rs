@@ -26,6 +26,7 @@ struct BlockProductionMetricsInner {
     block_production_time: Histogram<u64>,
     block_production_time_correction: Gauge<i64>,
     block_apply_time: Histogram<u64>,
+    transaction_execution_time: Histogram<u64>,
     finalization_time: Histogram<u64>,
     last_finalized_seqno: Gauge<u64>,
     ext_msg_queue_size: Gauge<u64>,
@@ -90,6 +91,7 @@ struct BlockProductionMetricsInner {
     temporary_block_states_size: Gauge<u64>,
     live_block_states: UpDownCounter<i64>,
     produced_blocks_queue_size: Gauge<u64>,
+    join_handle_monitor_buffer_size: Gauge<u64>,
 
     // Node Binary: supported protocol versions
     protocol_support_versions: Gauge<u64>,
@@ -109,6 +111,7 @@ pub const BLOB_SYNC_COMMAND_CHANNEL: &str = "block_sync_command";
 pub const EPOCH_BK_DATA_CHANNEL: &str = "epoch_bk_data";
 pub const EXT_MSG_FEEDBACK_CHANNEL: &str = "ext_msg_feedback";
 pub const INBOUND_EXT_CHANNEL: &str = "inbound_ext";
+pub const JOIN_HANDLE_MONITOR_CHANNEL: &str = "join_handle_monitor";
 pub const PRODUCE_CONTROL_CHANNEL: &str = "produce_control";
 pub const PRODUCE_THREAD_RESULT_CHANNEL: &str = "produce_thread_result";
 pub const RAW_BLOCK_CHANNEL: &str = "raw_block";
@@ -164,6 +167,13 @@ impl BlockProductionMetrics {
                 .with_boundaries(vec![
                     0.0, 10.0, 30.0, 50.0, 80.0, 110.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0,
                     700.0, 1000.0,
+                ])
+                .build(),
+            transaction_execution_time: meter
+                .u64_histogram("node_transaction_execution_time")
+                .with_boundaries(vec![
+                    0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0,
+                    5000.0, 10000.0,
                 ])
                 .build(),
             generate_merkle_update_time: meter
@@ -334,6 +344,9 @@ impl BlockProductionMetrics {
                 .build(),
             live_block_states: meter.i64_up_down_counter("node_live_block_states").build(),
             produced_blocks_queue_size: meter.u64_gauge("node_produced_blocks_queue_size").build(),
+            join_handle_monitor_buffer_size: meter
+                .u64_gauge("node_join_handle_monitor_buffer_size")
+                .build(),
             protocol_support_versions: meter.u64_gauge("node_protocol_support_versions").build(),
             block_protocol_version: meter.u64_gauge("node_block_protocol_version").build(),
             bkset_epoch_protocol_versions: meter
@@ -367,6 +380,11 @@ impl BlockProductionMetrics {
     pub fn report_block_apply_time(&self, value: u64, thread_id: &ThreadIdentifier) {
         out_of_bounds_guard!(value, "block_apply_time");
         self.0.block_apply_time.record(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_transaction_execution_time(&self, value: u64, thread_id: &ThreadIdentifier) {
+        out_of_bounds_guard!(value, "transaction_execution_time");
+        self.0.transaction_execution_time.record(value, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_generate_merkle_update_time(&self, value: u64, thread_id: &ThreadIdentifier) {
@@ -690,6 +708,10 @@ impl BlockProductionMetrics {
 
     pub fn report_produced_blocks_queue_size(&self, value: u64, thread_id: &ThreadIdentifier) {
         self.0.produced_blocks_queue_size.record(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_join_handle_monitor_buffer_size(&self, value: u64) {
+        self.0.join_handle_monitor_buffer_size.record(value, &[]);
     }
 
     pub fn report_attestation_tracking_collection_size(

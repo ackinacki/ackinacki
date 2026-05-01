@@ -1,6 +1,6 @@
 [package]
 name = "node"
-version = "0.15.0"
+version = "0.15.1"
 edition.workspace = true
 rust-version.workspace = true
 build = 'build.rs'
@@ -149,13 +149,14 @@ protocol_version_hash_in_block = []
 history_proofs = []
 
 # Features for tests
-nack_test = []
-verify_all_blocks = []
-delay_attestation = []
-low_verification_time = []
-rotate_after_sync = []
-restart_on_failing_assumptions = []
+test_nack = []
+test_verify_all_blocks = []
+test_delay_attestation = []
+test_low_verification_time = []
+test_rotate_after_sync = []
+test_restart_on_failing_assumptions = []
+test_rotate_on_failing_assumptions = []
 test_upgrade = []
 test_config_hash = []
-enforce_min_seq = []
+test_enforce_min_seq = []
 

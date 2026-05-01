@@ -168,7 +168,7 @@ impl Transaction {
         }
 
         if let Some(code_hash) = &args.code_hash {
-            where_ops.push(format!("code_hash == {code_hash:?}"));
+            where_ops.push(format!("code_hash = {code_hash:?}"));
         }
 
         if let Some(min_balance_delta) = &args.min_balance_delta {

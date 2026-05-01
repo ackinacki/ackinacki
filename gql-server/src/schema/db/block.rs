@@ -8,6 +8,7 @@ use sqlx::prelude::FromRow;
 use sqlx::QueryBuilder;
 
 use crate::defaults;
+use crate::helpers::sql_quote;
 use crate::helpers::u64_to_string;
 use crate::schema::db::DBConnector;
 use crate::schema::graphql::query::PaginateDirection;
@@ -209,7 +210,7 @@ impl Block {
         }
 
         if let Some(thread_id) = &args.thread_id {
-            where_ops.push(format!("thread_id = '{thread_id}'"));
+            where_ops.push(format!("thread_id = {}", sql_quote(thread_id)));
         }
 
         let order_by = match direction {

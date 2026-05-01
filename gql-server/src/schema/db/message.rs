@@ -388,6 +388,66 @@ impl Message {
             })
             .map_err(|e| anyhow::format_err!("{e}"))
     }
+
+    pub async fn blockchain_events(
+        db_connector: &DBConnector,
+        pagination: &PaginationArgs,
+    ) -> anyhow::Result<Vec<Message>> {
+        let limit = pagination.get_limit();
+        let direction = pagination.get_direction();
+
+        let order_by_sort = match direction {
+            PaginateDirection::Forward => "ASC",
+            PaginateDirection::Backward => "DESC",
+        };
+
+        let cursor_field = "msg_chain_order";
+        let mut where_ops = vec!["msg_type=2".to_string()];
+
+        if let Some(after) = &pagination.after {
+            if !after.is_empty() {
+                where_ops.push(format!("{cursor_field} > {after:?}"));
+            }
+        }
+
+        if let Some(before) = &pagination.before {
+            if !before.is_empty() {
+                where_ops.push(format!("{cursor_field} < {before:?}"));
+            }
+        }
+
+        let db_names = db_connector.attached_db_names();
+        tracing::trace!(db_names = ?db_names, "attached DBs:");
+
+        if db_names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let filter = format!("WHERE {}", where_ops.join(" AND "));
+        let order_by = format!("ORDER BY {cursor_field} {order_by_sort}");
+
+        let union_sql = db_names
+            .into_iter()
+            .map(|name| format!("SELECT * FROM \"{name}\".messages {filter}"))
+            .collect::<Vec<_>>()
+            .join(" UNION ALL ");
+
+        let sql = format!("SELECT * FROM ({union_sql}) {order_by} LIMIT {limit}");
+
+        tracing::debug!("blockchain_events: SQL: {sql}");
+
+        let mut conn = db_connector.get_connection().await?;
+        conn.set_sql(&sql);
+        QueryBuilder::new(sql)
+            .build_query_as()
+            .fetch_all(&mut *conn)
+            .await
+            .map(|list| match direction {
+                PaginateDirection::Forward => list,
+                PaginateDirection::Backward => list.into_iter().rev().collect(),
+            })
+            .map_err(|e| anyhow::format_err!("{e}"))
+    }
 }
 
 #[cfg(test)]
@@ -449,6 +509,15 @@ mod tests {
         .expect("list messages");
 
         assert_eq!(list.len(), 25);
+    }
+
+    #[tokio::test]
+    async fn blockchain_events_query_works_with_attached_archive() {
+        let db_connector = setup_db_connector().await;
+
+        Message::blockchain_events(&db_connector, &default_pagination())
+            .await
+            .expect("blockchain events query should work with attached archive DB");
     }
 
     #[test]

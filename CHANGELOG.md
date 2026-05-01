@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.1] – 2026-05-01
+
+### New / Improvements
+- Added cursor pagination for `blockchain.events` GraphQL queries, including event `src` and `src_dapp_id` fields and a BM archive index on external outgoing message chain order
+- Added `node_transaction_execution_time` histogram and suspicious transaction execution warnings for account read, execution, and save stages
+- Added JoinHandle monitor service and `node_join_handle_monitor_buffer_size` metric for block production worker threads
+- Added Ansible support for configuring Block Keeper external message queue size
+- Removed obsolete transitioning protocol-state handling and historical block serialization paths
+- Added attestations cache to use in BP
+
+---
+
+### Fixes
+- Fixed block production shutdown so producer thread results are received without blocking indefinitely on thread join
+- Fixed panic on Block Producer failing assumptions during block production
+- Removed stale `bm-schema.db` during Block Manager upgrade cleanup
+- Reduced noisy rate limiter logs in the Block Keeper TLS proxy
+- Fixed bp prodcounter
+
+---
+
 ## [0.15.0] – 2026-04-24
 
 ### New / Improvements

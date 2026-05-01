@@ -9,7 +9,6 @@ use std::num::NonZero;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU32;
 use std::sync::mpsc::TryRecvError;
 use std::sync::Arc;
@@ -81,6 +80,7 @@ use node::node::services::authority_switch::AuthoritySwitchService;
 use node::node::services::block_processor::service::BlockProcessorService;
 use node::node::services::block_processor::service::SecurityGuarantee;
 use node::node::services::block_processor::service::MAX_ATTESTATION_TARGET_BETA;
+use node::node::services::join_handle_monitor::JoinHandleMonitorService;
 use node::node::services::send_attestations::AttestationSendService;
 use node::node::services::send_attestations::AttestationSendServiceHandler;
 use node::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
@@ -415,7 +415,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let (zero_block_version, node_protocol_version_support, config_read) =
         if let Some(old_config) = retired_global_config.as_ref() {
             let retired_version = node::versioning::ProtocolVersion::builder()
-                .canonical_config_hash(CanonicalConfigHash::from_old_config(old_config))
+                .canonical_config_hash(CanonicalConfigHash::from(old_config))
                 .tvm_engine_version(old_config.engine_version.clone())
                 .gossip_version(old_config.gossip_version)
                 .build();
@@ -450,6 +450,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         m.report_build_info();
         m.report_protocol_support_versions(&node_protocol_version_support);
     }
+    let mut join_handle_monitor_service = JoinHandleMonitorService::new(node_metrics.clone())?;
+    let join_handle_monitor = join_handle_monitor_service.interface();
     tracing::info!(target: "monit","Protocol version supported by the node: {}", &node_protocol_version_support);
 
     tracing::info!("zero_block_version: {:?}", &zero_block_version);
@@ -568,7 +570,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         )
         .await?;
 
-    let bp_thread_count = Arc::<AtomicI32>::default();
+    let bp_thread_count = Arc::<AtomicU32>::default();
     let (raw_block_sender, raw_block_receiver) =
         instrumented_channel::<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>(
             node_metrics.clone(),
@@ -1197,7 +1199,9 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     .shared_services(node_shared_services.clone())
                     .share_service(Some(sync_state_service.clone()))
                     .wasm_cache(wasm_cache.clone())
-                    .save_optimistic_service_sender(optimistic_save_tx.clone());
+                    .save_optimistic_service_sender(optimistic_save_tx.clone())
+                    .join_handle_monitor(Some(join_handle_monitor.clone()))
+                    .bp_production_count(bp_thread_count.clone());
                 builder.build()
             };
 
@@ -1365,7 +1369,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 is_producing,
                 message_db.clone(),
                 last_block_attestations,
-                bp_thread_count.clone(),
                 // Channel (sender) for block requests
                 blk_req_tx.clone(),
                 attestation_send_service,
@@ -1599,6 +1602,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     // We must hold config_tx to supress early shutting down hot reload dispatcher
     // and network module
     drop(config_tx);
+    join_handle_monitor_service.shutdown();
     // Note: reachable on SIGTERM
     drop(chain_pulse_bind);
     result
@@ -1637,20 +1641,23 @@ fn debug_used_features() {
     if cfg!(feature = "timing") {
         eprintln!("  timing");
     }
-    if cfg!(feature = "verify_all_blocks") {
-        eprintln!("  verify_all_blocks");
+    if cfg!(feature = "test_verify_all_blocks") {
+        eprintln!("  test_verify_all_blocks");
     }
-    if cfg!(feature = "delay_attestation") {
-        eprintln!("  delay_attestation");
+    if cfg!(feature = "test_delay_attestation") {
+        eprintln!("  test_delay_attestation");
     }
-    if cfg!(feature = "low_verification_time") {
-        eprintln!("  low_verification_time");
+    if cfg!(feature = "test_low_verification_time") {
+        eprintln!("  test_low_verification_time");
     }
-    if cfg!(feature = "rotate_after_sync") {
-        eprintln!("  rotate_after_sync");
+    if cfg!(feature = "test_rotate_after_sync") {
+        eprintln!("  test_rotate_after_sync");
     }
-    if cfg!(feature = "restart_on_failing_assumptions") {
-        eprintln!("  restart_on_failing_assumptions");
+    if cfg!(feature = "test_restart_on_failing_assumptions") {
+        eprintln!("  test_restart_on_failing_assumptions");
+    }
+    if cfg!(feature = "test_rotate_on_failing_assumptions") {
+        eprintln!("  test_rotate_on_failing_assumptions");
     }
     if cfg!(feature = "allow-dappid-thread-split") {
         eprintln!("  allow-dappid-thread-split");
@@ -1898,7 +1905,7 @@ fn print_node_protocol_version_support(args: Args) -> anyhow::Result<()> {
     let (_zero_block_version, node_protocol_version_support) =
         if let Some(old_config) = retired_global_config.as_ref() {
             let retired_version = node::versioning::ProtocolVersion::builder()
-                .canonical_config_hash(CanonicalConfigHash::from_old_config(old_config))
+                .canonical_config_hash(CanonicalConfigHash::from(old_config))
                 .tvm_engine_version(old_config.engine_version.clone())
                 .gossip_version(old_config.gossip_version)
                 .build();
@@ -1943,6 +1950,8 @@ async fn test_execute() -> anyhow::Result<()> {
     let (_metrics, tracing_guard) = init_tracing();
     let metrics: Option<Metrics> = None;
     let node_metrics: Option<BlockProductionMetrics> = None;
+    let join_handle_monitor_service = JoinHandleMonitorService::new(node_metrics.clone())?;
+    let join_handle_monitor = join_handle_monitor_service.interface();
 
     let config_path = PathBuf::from("./tests/test_node_data0/acki-nacki.conf.yaml");
     let global_config_path = PathBuf::from("./tests/test_node_data0/acki-nacki.global.conf.yaml");
@@ -2158,7 +2167,7 @@ async fn test_execute() -> anyhow::Result<()> {
         )
         .await?;
 
-    let bp_thread_count = Arc::<AtomicI32>::default();
+    let bp_thread_count = Arc::<AtomicU32>::default();
 
     let (raw_block_sender, _raw_block_receiver) =
         instrumented_channel::<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>(
@@ -2559,7 +2568,9 @@ async fn test_execute() -> anyhow::Result<()> {
             .shared_services(node_shared_services.clone())
             .share_service(Some(sync_state_service.clone()))
             .wasm_cache(wasm_cache.clone())
-            .save_optimistic_service_sender(optimistic_save_tx.clone());
+            .save_optimistic_service_sender(optimistic_save_tx.clone())
+            .join_handle_monitor(Some(join_handle_monitor.clone()))
+            .bp_production_count(bp_thread_count.clone());
         builder.build()
     };
 
@@ -2719,7 +2730,6 @@ async fn test_execute() -> anyhow::Result<()> {
         is_producing,
         message_db.clone(),
         last_block_attestations,
-        bp_thread_count.clone(),
         // Channel (sender) for block requests
         blk_req_tx.clone(),
         attestation_send_service,

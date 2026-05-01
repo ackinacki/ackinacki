@@ -34,7 +34,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
@@ -63,6 +62,8 @@ use crate::protocol::authority_switch::action_lock::Authority;
 pub use crate::protocol::authority_switch::network_message::AuthoritySwitch;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::storage::MessageDurableStorage;
+use crate::types::new_aggregated_attestations_cache;
+use crate::types::AggregatedAttestationsCache;
 use crate::types::BlockSeqNo;
 use crate::types::CollectedAttestations;
 use crate::types::RndSeed;
@@ -109,6 +110,7 @@ where
     raw_block_tx: InstrumentedSender<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>,
     bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
     last_block_attestations: Arc<Mutex<CollectedAttestations>>,
+    aggregated_attestations_cache: AggregatedAttestationsCache,
     pub received_acks: Arc<Mutex<Vec<Envelope<AckData>>>>,
     sent_acks: BTreeMap<BlockSeqNo, Envelope<AckData>>,
     pub received_nacks: Arc<Mutex<Vec<Envelope<NackData>>>>,
@@ -190,7 +192,6 @@ where
         is_producing: Arc<AtomicBool>,
         message_db: MessageDurableStorage,
         last_block_attestations: Arc<Mutex<CollectedAttestations>>,
-        bp_production_count: Arc<AtomicI32>,
         blk_req_tx: Sender<BlockRequestParams>,
         attestation_send_service: AttestationSendServiceHandler,
         ext_msg_receiver: JoinHandle<anyhow::Result<()>>,
@@ -245,6 +246,7 @@ where
         let is_state_sync_requested = Arc::new(Mutex::new(None));
         let unprocessed_blocks_cache_clone = unprocessed_blocks_cache.clone();
         let last_block_attestations_clone = last_block_attestations.clone();
+        let aggregated_attestations_cache = new_aggregated_attestations_cache();
         let chain_pulse_monitor_clone = chain_pulse_monitor.clone();
         let thread_id_clone = thread_id;
         Self {
@@ -257,6 +259,7 @@ where
             raw_block_tx: raw_block_tx.clone(),
             bls_keys_map: bls_keys_map.clone(),
             last_block_attestations: last_block_attestations.clone(),
+            aggregated_attestations_cache: aggregated_attestations_cache.clone(),
             config: config.clone(),
             global_config: global_config.clone(),
             received_attestations: Default::default(),
@@ -324,6 +327,7 @@ where
                 shared_services.clone(),
                 bls_keys_map.clone(),
                 last_block_attestations.clone(),
+                aggregated_attestations_cache.clone(),
                 attestations_target_service,
                 self_tx,
                 self_authority_tx,
@@ -333,7 +337,6 @@ where
                 external_messages.clone(),
                 is_producing,
                 is_state_sync_requested.clone(),
-                bp_production_count,
                 save_optimistic_service_sender,
                 node_credentials.clone(),
                 config_read,

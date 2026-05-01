@@ -7,6 +7,7 @@ pub mod attestations_target;
 pub mod authority_switch;
 pub mod block_processor;
 pub mod finalization;
+pub mod join_handle_monitor;
 pub mod send_attestations;
 pub mod statistics;
 pub mod sync;

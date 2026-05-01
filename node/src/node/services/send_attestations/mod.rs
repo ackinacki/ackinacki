@@ -312,7 +312,7 @@ impl AttestationSendService {
 
             let Some(block_applied_timestamp) = state.block_state.guarded(|e| {
                 if e.applied().is_some() && e.applied_start_timestamp().is_none() {
-                    // this is a situtaion when this block was unloaded before and loaded again.
+                    // this is a situation when this block was unloaded before and loaded again.
                     // we can safely assume it was quite some time ago.
                     // hardcoding -330ms for now
                     return Some(std::time::Instant::now() - std::time::Duration::from_millis(330));
@@ -364,7 +364,7 @@ impl AttestationSendService {
 
             let earliest_to_send_attestation = {
                 let first_pulse_multiplier = 0.8_f32 + distance_to_producer as f32;
-                #[cfg(feature = "delay_attestation")]
+                #[cfg(feature = "test_delay_attestation")]
                 let first_pulse_multiplier = first_pulse_multiplier + 3.0;
                 let delay = self.pulse_timeout.mul_f32(first_pulse_multiplier);
                 let parent_sent_first_attestation: Option<std::time::Instant> =

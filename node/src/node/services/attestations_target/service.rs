@@ -39,7 +39,7 @@ pub enum EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess {
     Passed { primary: Vec<BlockIdentifier>, fallback: Vec<BlockIdentifier> },
     // A first block in a new thread.
     ThreadSpawn,
-    SomeFailed,
+    SomeFailed { failed: Vec<BlockIdentifier> },
 }
 
 impl AttestationTargetsService {
@@ -103,7 +103,9 @@ impl AttestationTargetsService {
         if !checkpoint_result.failed.is_empty() {
             tracing::trace!("evaluate_if_next_block_ancestors_required_attestations_will_be_met: failed full result: {checkpoint_result:?}");
             return Ok(
-                EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::SomeFailed,
+                EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::SomeFailed {
+                    failed: checkpoint_result.failed,
+                },
             );
         }
         Ok(EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::Passed {
@@ -250,10 +252,10 @@ mod tests {
             );
         assert!(actual_result.is_ok());
         let actual_result = actual_result.unwrap();
-        assert!(
-            actual_result
-                != EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::SomeFailed
-        );
+        assert!(!matches!(
+            actual_result,
+            EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::SomeFailed { .. }
+        ));
     }
 
     #[test]
@@ -361,9 +363,58 @@ mod tests {
             );
         assert!(actual_result.is_ok());
         let actual_result = actual_result.unwrap();
-        assert!(
+        assert!(!matches!(
+            actual_result,
+            EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::SomeFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn evaluation_returns_failed_block_ids() {
+        let thread_identifier = ThreadIdentifier::default();
+        let parent_block_identifier = BlockIdentifier::new([1; 32]);
+        let ancestor_block_identifier = BlockIdentifier::new([2; 32]);
+        let tmp_dir = tempfile::tempdir().unwrap().path().to_owned();
+        let block_state_repository = BlockStateRepository::test(tmp_dir);
+
+        let parent_block_state = block_state_repository.get(&parent_block_identifier).unwrap();
+        parent_block_state
+            .guarded_mut(|e| {
+                e.set_thread_identifier(thread_identifier)?;
+                e.set_ancestor_blocks_finalization_checkpoints(
+                    AncestorBlocksFinalizationCheckpoints::builder()
+                        .primary(HashMap::from_iter([(
+                            ancestor_block_identifier,
+                            AttestationTargetCheckpoint::builder()
+                                .current_distance(2)
+                                .deadline(3)
+                                .required_attestation_count(1)
+                                .attestation_target_type(AttestationTargetType::Primary)
+                                .build(),
+                        )]))
+                        .fallback(HashMap::new())
+                        .build(),
+                )
+            })
+            .unwrap();
+
+        let service = AttestationTargetsService::builder()
+            .block_state_repository(block_state_repository)
+            .build();
+
+        let actual_result = service
+            .evaluate_if_next_block_ancestors_required_attestations_will_be_met(
+                thread_identifier,
+                parent_block_identifier,
+                HashMap::new(),
+            )
+            .unwrap();
+
+        let EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::SomeFailed { failed } =
             actual_result
-                != EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::SomeFailed
-        );
+        else {
+            panic!("expected SomeFailed");
+        };
+        assert!(failed.contains(&ancestor_block_identifier));
     }
 }

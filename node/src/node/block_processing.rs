@@ -10,6 +10,7 @@ use crate::node::NetBlock;
 use crate::node::Node;
 use crate::node::NodeIdentifier;
 use crate::repository::repository_impl::RepositoryImpl;
+use crate::types::add_to_aggregated_attestations_cache;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
@@ -112,7 +113,7 @@ where
             } else {
                 state.set_block_height(block_height)?;
             }
-            #[cfg(feature = "verify_all_blocks")]
+            #[cfg(feature = "test_verify_all_blocks")]
             if state.must_be_validated() != &Some(true) {
                 state.set_must_be_validated()?;
             }
@@ -159,6 +160,10 @@ where
 
         // Steal block attestations
         for attestation in envelope.data().common_section().block_attestations() {
+            add_to_aggregated_attestations_cache(
+                &self.aggregated_attestations_cache,
+                attestation.clone(),
+            );
             self.last_block_attestations.guarded_mut(|e| e.add(attestation.clone(), true))?;
         }
         Ok(Some(envelope))

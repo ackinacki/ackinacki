@@ -1,6 +1,10 @@
 {
     order rate_limit before reverse_proxy
     email {$CADDY_EMAIL}
+    log {
+        include http.handlers.rate_limit
+        level WARN
+    }
     servers {
         timeouts {
             idle 30s

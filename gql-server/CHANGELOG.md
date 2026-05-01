@@ -2,6 +2,12 @@
 
 All notable changes to `gql-server` are documented in this file.
 
+## [Unreleased]
+
+### Added
+- Added `blockchain.events` query for paginating all outgoing external messages with source
+  address and source dApp ID metadata.
+
 ## [0.7.0] - 2026-04-07
 
 ### Added

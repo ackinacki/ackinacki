@@ -199,6 +199,7 @@ services:
         --network-subscribe '{{ SUBSCRIBE | join(',') }}'
 {% endif %}
 {% include 'extra/block-keeper-cmd.j2' ignore missing %}
+        && sed -i 's/^\(\s*ext_messages_cache_size:\).*/\1 {{ EXT_MESSAGES_CACHE_SIZE }}/' /bk-configs/acki-nacki.conf.yaml
         && echo "Second config for retired version"
         && rm -f /bk-configs/acki-nacki-retired.conf.yaml
         && node-helper config

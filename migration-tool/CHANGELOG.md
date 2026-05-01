@@ -2,6 +2,12 @@
 
 All notable changes to `migration-tool` are documented in this file.
 
+## Unreleased
+
+### Added
+- Added BM archive migration `005-events_msg_chain_order_index`:
+  - creates partial index `index_messages_ext_out_msg_chain_order` on `messages(msg_chain_order)` for rows where `msg_type = 2`
+
 ## [0.4.0] - 2026-04-01
 
 ### Added
@@ -32,4 +38,3 @@ All notable changes to `migration-tool` are documented in this file.
 - Added migration smoke-test coverage for version `3`:
   - migrate `v2 -> v3` and verify new objects are created
   - migrate `v3 -> v2` and verify new objects are removed
-

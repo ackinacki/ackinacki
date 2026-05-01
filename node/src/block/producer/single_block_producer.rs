@@ -52,8 +52,6 @@ use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
 use crate::types::AckiNackiBlock;
-use crate::types::AckiNackiBlockOld;
-use crate::types::AckiNackiBlockVersioned;
 use crate::types::BlockRound;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
@@ -61,7 +59,7 @@ use crate::versioning::ProtocolVersion;
 
 pub const DEFAULT_VERIFY_COMPLEXITY: SignerIndex = (u16::MAX >> 5) + 1;
 
-pub type Block = AckiNackiBlockVersioned;
+pub type Block = AckiNackiBlock;
 
 // Note: produces single block.
 pub trait BlockProducer {
@@ -350,47 +348,24 @@ impl BlockProducer for TVMBlockProducer {
             let block_height = parent_block_height.next(&thread_identifier);
 
             let producer_node_id = self.producer_node_id;
-            let an_block = if !self.node_config_read.is_retired(&protocol_version) {
-                tracing::trace!("Generate new block");
-
-                AckiNackiBlockVersioned::New(AckiNackiBlock::new(
-                    parent_block_id,
-                    thread_identifier,
-                    prepared_block.block,
-                    producer_node_id.clone(),
-                    prepared_block.tx_cnt,
-                    prepared_block.block_keeper_set_changes,
-                    DEFAULT_VERIFY_COMPLEXITY,
-                    ref_ids,
-                    forward_prefab.clone(),
-                    block_round,
-                    block_height,
-                    #[cfg(feature = "monitor-accounts-number")]
-                    prepared_block.accounts_number_diff,
-                    #[cfg(feature = "protocol_version_hash_in_block")]
-                    protocol_version.hash(),
-                    prepared_block.durable_state_update,
-                ))
-            } else {
-                tracing::trace!("Generate old block");
-                AckiNackiBlockVersioned::Old(AckiNackiBlockOld::new(
-                    thread_identifier,
-                    prepared_block.block,
-                    producer_node_id.clone(),
-                    prepared_block.tx_cnt,
-                    prepared_block.block_keeper_set_changes,
-                    DEFAULT_VERIFY_COMPLEXITY,
-                    ref_ids,
-                    forward_prefab.clone(),
-                    block_round,
-                    block_height,
-                    #[cfg(feature = "monitor-accounts-number")]
-                    prepared_block.accounts_number_diff,
-                    #[cfg(feature = "protocol_version_hash_in_block")]
-                    protocol_version.hash(),
-                    prepared_block.durable_state_update,
-                ))
-            };
+            let an_block = AckiNackiBlock::new(
+                parent_block_id,
+                thread_identifier,
+                prepared_block.block,
+                producer_node_id.clone(),
+                prepared_block.tx_cnt,
+                prepared_block.block_keeper_set_changes,
+                DEFAULT_VERIFY_COMPLEXITY,
+                ref_ids,
+                forward_prefab.clone(),
+                block_round,
+                block_height,
+                #[cfg(feature = "monitor-accounts-number")]
+                prepared_block.accounts_number_diff,
+                #[cfg(feature = "protocol_version_hash_in_block")]
+                protocol_version.hash(),
+                prepared_block.durable_state_update,
+            );
 
             let new_state = prepared_block.state;
 

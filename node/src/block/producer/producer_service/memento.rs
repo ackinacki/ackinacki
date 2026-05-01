@@ -10,7 +10,7 @@ use typed_builder::TypedBuilder;
 use crate::node::SignerIndex;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
-use crate::types::AckiNackiBlockVersioned;
+use crate::types::AckiNackiBlock;
 use crate::versioning::ProtocolVersion;
 
 // Intentionally not allowing direct read of assumptions.
@@ -44,7 +44,7 @@ impl BlockProducerMemento {
 #[derive(TypedBuilder, Getters)]
 pub struct ProducedBlock {
     assumptions: Assumptions,
-    block: AckiNackiBlockVersioned,
+    block: AckiNackiBlock,
     optimistic_state: Arc<OptimisticStateImpl>,
     feedbacks: ExtMsgFeedbackList,
     temporary_block_id: TemporaryBlockId,

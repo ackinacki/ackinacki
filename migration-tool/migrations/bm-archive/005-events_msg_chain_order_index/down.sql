@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS index_messages_ext_out_msg_chain_order;

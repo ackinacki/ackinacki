@@ -41,7 +41,7 @@ pub type SignerIndex = u16;
 pub struct NodeIdentifier(AccountIdentifier);
 
 impl NodeIdentifier {
-    #[cfg(any(test, feature = "nack_test"))]
+    #[cfg(any(test, feature = "test_nack"))]
     pub fn some_id() -> Self {
         Self::from_str("81a6bea128f5e03843362e55fd574c42a8e457dd553498cbc8ec7e14966d20a3").unwrap()
     }
@@ -54,7 +54,7 @@ pub struct NodeCredentials {
 }
 
 impl NodeIdentifier {
-    #[cfg(any(test, feature = "nack_test"))]
+    #[cfg(any(test, feature = "test_nack"))]
     pub fn test(seed: usize) -> NodeIdentifier {
         NodeIdentifier(AccountIdentifier::from(UInt256::from_be_bytes(&seed.to_be_bytes())))
     }

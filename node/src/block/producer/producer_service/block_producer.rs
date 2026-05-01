@@ -10,7 +10,6 @@ use std::net::SocketAddr;
 #[cfg(feature = "history_proofs")]
 use std::ops::Div;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::thread::sleep;
@@ -48,6 +47,8 @@ use crate::helper::SHUTDOWN_FLAG;
 #[cfg(feature = "misbehave")]
 use crate::misbehavior::misbehave_rules;
 use crate::node::associated_types::AckData;
+use crate::node::associated_types::AttestationData;
+use crate::node::associated_types::AttestationTargetType;
 use crate::node::associated_types::NackData;
 use crate::node::associated_types::NodeCredentials;
 use crate::node::associated_types::SynchronizationResult;
@@ -61,6 +62,7 @@ use crate::node::shared_services::SharedServices;
 use crate::node::NetBlock;
 use crate::node::NetworkMessage;
 use crate::node::NodeIdentifier;
+use crate::node::SignerIndex;
 use crate::node::LOOP_PAUSE_DURATION;
 use crate::protocol::authority_switch::action_lock::BlockProducerCommand;
 use crate::protocol::authority_switch::action_lock::StartBlockProducerThreadInitialParameters;
@@ -71,10 +73,7 @@ use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::as_signatures_map::AsSignaturesMap;
 use crate::types::bp_selector::ProducerSelector;
-use crate::types::common_section::CommonSectionVersioned;
 use crate::types::common_section::Directives;
-use crate::types::common_section::DirectivesOld;
-use crate::types::common_section::DirectivesVersioned;
 #[cfg(feature = "history_proofs")]
 use crate::types::history_proof::LayerNumber;
 #[cfg(feature = "history_proofs")]
@@ -82,8 +81,9 @@ use crate::types::history_proof::ProofLayerRootHash;
 #[cfg(feature = "history_proofs")]
 use crate::types::history_proof::HISTORY_PROOF_WINDOW_SIZE;
 use crate::types::AckiNackiBlock;
-use crate::types::AckiNackiBlockVersioned;
 use crate::types::AggregateFilter;
+use crate::types::AggregatedAttestationsCache;
+use crate::types::AttestationCacheKey;
 use crate::types::BlockRound;
 use crate::types::BlockSeqNo;
 use crate::types::CollectedAttestations;
@@ -95,9 +95,14 @@ use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
 use crate::versioning::ProtocolVersion;
 use crate::versioning::ProtocolVersionSupport;
 
-#[cfg(feature = "rotate_after_sync")]
+#[cfg(feature = "test_rotate_after_sync")]
 lazy_static::lazy_static!(
     static ref SHARED_STATE_SEQ_NO: Arc<Mutex<Option<BlockSeqNo>>> = Arc::new(Mutex::new(None));
+);
+
+#[cfg(feature = "test_rotate_on_failing_assumptions")]
+lazy_static::lazy_static!(
+    static ref BLOCK_SEQ_NO_TO_RESTART_PRODUCTION: Arc<Mutex<BlockSeqNo>> = Arc::new(Mutex::new(BlockSeqNo::from(100)));
 );
 
 #[derive(Debug)]
@@ -121,6 +126,7 @@ pub struct BlockProducer {
     #[builder(default = std::time::Instant::now())]
     last_broadcasted_produced_candidate_block_time: std::time::Instant,
     last_block_attestations: Arc<Mutex<CollectedAttestations>>,
+    aggregated_attestations_cache: AggregatedAttestationsCache,
     attestations_target_service: AttestationTargetsService,
     self_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
     self_authority_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
@@ -129,8 +135,6 @@ pub struct BlockProducer {
     node_credentials: NodeCredentials,
     production_timeout: Duration,
     save_state_frequency: u32,
-
-    bp_production_count: Arc<AtomicI32>,
 
     #[builder(default)]
     production_status: Option<ProductionStatus>,
@@ -168,8 +172,88 @@ enum UpdateCommonSectionResult {
 }
 
 impl BlockProducer {
+    fn mark_production_started(&mut self) {
+        self.producing_status = true;
+        self.is_producing.store(true, Ordering::Release);
+    }
+
+    fn recover_required_attestations_from_cache(
+        &self,
+        failed: &[BlockIdentifier],
+        attestations_required: &[(BlockState, AggregateFilter)],
+        received_attestations: &CollectedAttestations,
+        proposed_attestations: &HashMap<
+            (BlockIdentifier, AttestationTargetType),
+            HashSet<SignerIndex>,
+        >,
+    ) -> anyhow::Result<(
+        Vec<Envelope<AttestationData>>,
+        HashMap<(BlockIdentifier, AttestationTargetType), HashSet<SignerIndex>>,
+        usize,
+    )> {
+        let failed: HashSet<BlockIdentifier> = failed.iter().copied().collect();
+        let required_keys: HashSet<AttestationCacheKey> = attestations_required
+            .iter()
+            .filter_map(|(block_state, aggregate_filter)| {
+                let block_id = *block_state.block_identifier();
+                failed.contains(&block_id).then_some(AttestationCacheKey {
+                    block_id,
+                    target_type: *aggregate_filter.attestation_type(),
+                })
+            })
+            .collect();
+
+        let cached_attestations = {
+            let cache = self.aggregated_attestations_cache.lock();
+            let mut found = vec![];
+            for key in required_keys.iter() {
+                if let Some(attestation) = cache.get(key) {
+                    tracing::trace!(
+                        ?key,
+                        signatures = attestation.signatures_count(),
+                        "Found attestation in recovery cache"
+                    );
+                    found.push(attestation.clone());
+                } else {
+                    tracing::trace!(?key, "No attestation in recovery cache");
+                }
+            }
+            tracing::trace!(
+                requested = required_keys.len(),
+                found = found.len(),
+                failed = ?failed,
+                "Attestation recovery cache lookup completed"
+            );
+            found
+        };
+
+        if cached_attestations.is_empty() {
+            return Ok((vec![], proposed_attestations.clone(), 0));
+        }
+
+        let mut recovered_attestations = received_attestations.clone();
+        recovered_attestations.add_bunch(cached_attestations, false)?;
+        let aggregated_attestations = recovered_attestations.aggregate(attestations_required)?;
+        let recovered_signatures_map = aggregated_attestations.as_signatures_map();
+        let added = recovered_signatures_map
+            .keys()
+            .filter(|key| !proposed_attestations.contains_key(key))
+            .count();
+        tracing::trace!(
+            added,
+            total = aggregated_attestations.len(),
+            "Aggregated attestations after recovery cache lookup"
+        );
+        Ok((aggregated_attestations, recovered_signatures_map, added))
+    }
+
+    fn mark_production_stopped(&mut self) {
+        self.producing_status = false;
+    }
+
     /// Stop the production thread and clean up any promoted temporary states.
     fn stop_and_cleanup(&mut self) -> anyhow::Result<()> {
+        self.mark_production_stopped();
         let result = self.production_process.stop_thread_production(&self.thread_id);
         self.block_state_repository.cleanup_temporaries();
         result
@@ -212,18 +296,14 @@ impl BlockProducer {
                 }
                 if in_flight_productions.is_none() {
                     // Reset thread load
-                    let was_producer = self.producing_status;
                     self.producing_status = false;
                     self.is_producing.store(false, Ordering::Release);
-                    if was_producer {
-                        self.bp_production_count.fetch_sub(1, Ordering::Relaxed);
-                        if let Err(err) = self.external_messages.clear_queue_for_non_producer() {
-                            tracing::error!(
-                                target: "ext_messages",
-                                "Failed to clear ext message queue on producer stop for {:?}: {err:?}",
-                                self.thread_id
-                            );
-                        }
+                    if let Err(err) = self.external_messages.clear_queue_for_non_producer() {
+                        tracing::error!(
+                            target: "ext_messages",
+                            "Failed to clear ext message queue on producer stop for {:?}: {err:?}",
+                            self.thread_id
+                        );
                     }
                     self.repository
                         .get_metrics()
@@ -308,12 +388,7 @@ impl BlockProducer {
             ) {
                 Ok(()) => {
                     tracing::info!("Producer started successfully");
-                    let was_producer = self.producing_status;
-                    self.producing_status = true;
-                    self.is_producing.store(true, Ordering::Release);
-                    if !was_producer {
-                        self.bp_production_count.fetch_add(1, Ordering::Relaxed);
-                    }
+                    self.mark_production_started();
                     producer_tails = Some((block_id_to_continue, block_seq_no_to_continue));
                 }
                 Err(e) => {
@@ -356,12 +431,7 @@ impl BlockProducer {
         ) {
             Ok(()) => {
                 tracing::info!("Producer started successfully");
-                let was_producer = self.producing_status;
-                self.producing_status = true;
-                self.is_producing.store(true, Ordering::Release);
-                if !was_producer {
-                    self.bp_production_count.fetch_add(1, Ordering::Relaxed);
-                }
+                self.mark_production_started();
                 producer_tails = Some((parent_block_id, parent_block_seq_no));
             }
             Err(e) => {
@@ -649,6 +719,21 @@ impl BlockProducer {
                             }
                         }
                     }
+                    #[cfg(feature = "test_rotate_on_failing_assumptions")]
+                    {
+                        let mut misbehave_block_seq_not = BLOCK_SEQ_NO_TO_RESTART_PRODUCTION.lock();
+                        if block.seq_no() == *misbehave_block_seq_not {
+                            *misbehave_block_seq_not = 0.into();
+                            let parent_state = self.block_state_repository.get(&block.parent())?;
+                            let parent_producer = parent_state
+                                .guarded(|e| e.producer().clone())
+                                .expect("Parent state producer is not set");
+                            if self.node_credentials.node_id() == &parent_producer {
+                                producer_is_in_bk_set = false;
+                            }
+                        }
+                    }
+
                     let actual_assumptions = Assumptions::builder()
                         .new_to_bk_set(
                             BTreeSet::new(), // TODO: set real value with preattestaions implementation
@@ -656,6 +741,7 @@ impl BlockProducer {
                         .block_version(actual_required_version.clone())
                         .producer_is_in_bk_set(producer_is_in_bk_set)
                         .build();
+
                     let is_assumptions_correct =
                         produced_block.assumptions().eq(&actual_assumptions);
                     if is_assumptions_correct {
@@ -672,7 +758,6 @@ impl BlockProducer {
                             "Block assumptions: {:?}, actual: {actual_assumptions:?}",
                             produced_block.assumptions()
                         );
-                        tracing::trace!("Assumptions were not met, restart production");
                         if let Some(seq_no) = share_resulting_state {
                             if seq_no < block.seq_no() {
                                 self.is_state_sync_requested.guarded_mut(|e| *e = None);
@@ -681,6 +766,7 @@ impl BlockProducer {
                         produced_data.produced_blocks_mut().clear();
                         let parent_block_id = block.parent();
                         if producer_is_in_bk_set {
+                            tracing::trace!("Assumptions were not met, restart production");
                             let block_round = *block.common_section().round();
 
                             *producer_tails = self.restart_production(
@@ -688,6 +774,9 @@ impl BlockProducer {
                                 block_round,
                                 actual_required_version.clone(),
                             )?;
+                        } else {
+                            tracing::trace!("Assumptions were not met, stop production");
+                            self.stop_and_cleanup()?;
                         }
 
                         #[cfg(feature = "history_proofs")]
@@ -800,9 +889,9 @@ impl BlockProducer {
                 produced_block_state.guarded_mut(|e| e.set_has_cross_thread_ref_data_prepared())?;
             }
 
-            #[cfg(feature = "rotate_after_sync")]
+            #[cfg(feature = "test_rotate_after_sync")]
             {
-                if block.common_section().directives().share_state_resources() {
+                if *block.common_section().directives().share_state_resources() {
                     tracing::trace!("Save share state block seq_no: {:?}", block.seq_no());
                     let mut shared_state_seq_no = SHARED_STATE_SEQ_NO.lock();
                     *shared_state_seq_no = Some(block.seq_no());
@@ -868,7 +957,7 @@ impl BlockProducer {
             };
             let envelope = envelope?;
 
-            let net_block = NetBlock::with_versioned(&envelope)?;
+            let net_block = NetBlock::with_envelope(&envelope)?;
 
             // Check if this node has already signed block of the same height
             // Note: Not valid anymore. Can't sign blocks of the same round though.
@@ -996,7 +1085,7 @@ impl BlockProducer {
 
     fn update_candidate_common_section(
         &mut self,
-        candidate_block: &mut AckiNackiBlockVersioned,
+        candidate_block: &mut AckiNackiBlock,
         should_share_state: bool,
         temp_id: &TemporaryBlockId,
     ) -> anyhow::Result<UpdateCommonSectionResult> {
@@ -1126,21 +1215,7 @@ impl BlockProducer {
                 candidate_block.seq_no(),
                 temp_id
             );
-            let directives = match &common_section {
-                CommonSectionVersioned::New(_) => DirectivesVersioned::New(
-                    Directives::builder().share_state_resources(true).build(),
-                ),
-                CommonSectionVersioned::Old(_) => {
-                    // Old blocks use TVM hash (stable), but they are retired.
-                    // Use parent ID as a stable placeholder.
-                    let directives: HashMap<ThreadIdentifier, BlockIdentifier> = HashMap::from_iter(
-                        [(common_section.thread_id(), candidate_block.parent())],
-                    );
-                    DirectivesVersioned::Old(
-                        DirectivesOld::builder().share_state_resources(Some(directives)).build(),
-                    )
-                }
-            };
+            let directives = Directives::builder().share_state_resources(true).build();
             common_section.set_directives(directives);
         }
         #[cfg(feature = "history_proofs")]
@@ -1149,19 +1224,53 @@ impl BlockProducer {
             return Ok(UpdateCommonSectionResult::AncestorIsNotReadyYet);
         };
 
-        candidate_block.set_common_section(common_section, true)?;
+        candidate_block.set_common_section(common_section.clone(), true)?;
 
         //
-        let res = self
+        let mut proposed_attestations = proposed_attestations;
+        let mut res = self
             .attestations_target_service
             .evaluate_if_next_block_ancestors_required_attestations_will_be_met(
                 self.thread_id,
                 candidate_block.parent(),
-                proposed_attestations,
+                proposed_attestations.clone(),
             );
         tracing::trace!(
             "evaluate_if_next_block_ancestors_required_attestations_will_be_met: res:{res:?}"
         );
+        if let Ok(EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::SomeFailed {
+            failed,
+        }) = &res
+        {
+            let (recovered_attestations, recovered_signatures_map, added) = self
+                .recover_required_attestations_from_cache(
+                    failed,
+                    &attestations_required,
+                    &received_attestations,
+                    &proposed_attestations,
+                )?;
+            tracing::trace!(
+                failed = ?failed,
+                recovered = recovered_attestations.len(),
+                added,
+                "Trying recovered attestations from cache"
+            );
+            if added > 0 {
+                proposed_attestations = recovered_signatures_map;
+                common_section.set_block_attestations(recovered_attestations);
+                candidate_block.set_common_section(common_section.clone(), true)?;
+                res = self
+                    .attestations_target_service
+                    .evaluate_if_next_block_ancestors_required_attestations_will_be_met(
+                        self.thread_id,
+                        candidate_block.parent(),
+                        proposed_attestations.clone(),
+                    );
+                tracing::trace!(
+                    "evaluate_if_next_block_ancestors_required_attestations_will_be_met after recovery: res:{res:?}"
+                );
+            }
+        }
         match res {
             e @ Ok(
                 EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::ThreadSpawn
@@ -1345,8 +1454,11 @@ impl BlockProducer {
                     passed_checkpoints,
                 })
             }
-            Ok(EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::SomeFailed) => {
+            Ok(EvaluateIfNextBlockAncestorsRequiredAttestationsWillBeMetSuccess::SomeFailed {
+                failed,
+            }) => {
                 tracing::trace!(
+                    ?failed,
                     "update_candidate_common_section: Failed to meet ancestors attestation targets"
                 );
                 Ok(UpdateCommonSectionResult::NotReadyYet)

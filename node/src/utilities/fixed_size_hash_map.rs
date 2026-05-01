@@ -62,6 +62,14 @@ where
         self.blocks.get(k)
     }
 
+    pub fn get_mut<Q>(&mut self, k: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.blocks.get_mut(k)
+    }
+
     pub fn blocks(&self) -> &HashMap<K, V> {
         &self.blocks
     }

@@ -7,3 +7,9 @@
   ansible.builtin.shell:
     chdir: "{{ BM_DIR }}"
     cmd: docker compose kill
+
+- name: Remove schema file
+  ansible.builtin.file:
+    path: "{{ BM_DATA_DIR }}/workdir/bm-schema.db"
+    state: absent
+  when: UPGRADE is defined and 'block-manager' in UPGRADE

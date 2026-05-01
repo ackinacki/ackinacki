@@ -4,6 +4,8 @@
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::mem;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::thread::JoinHandle;
@@ -45,11 +47,12 @@ use crate::node::associated_types::AckData;
 use crate::node::associated_types::NackData;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::services::block_processor::service::MAX_ATTESTATION_TARGET_BETA;
+use crate::node::services::join_handle_monitor::JoinHandleMonitorInterface;
 use crate::node::services::sync::ExternalFileSharesBased;
 use crate::node::services::sync::StateSyncService;
 use crate::node::shared_services::SharedServices;
 use crate::node::NodeIdentifier;
-#[cfg(feature = "restart_on_failing_assumptions")]
+#[cfg(feature = "test_restart_on_failing_assumptions")]
 use crate::node::SignerIndex;
 use crate::repository::accounts::AccountsRepository;
 use crate::repository::cross_thread_ref_repository::CrossThreadRefDataRead;
@@ -66,7 +69,7 @@ use crate::utilities::guarded::Guarded;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
 use crate::versioning::ProtocolVersion;
 
-#[cfg(feature = "restart_on_failing_assumptions")]
+#[cfg(feature = "test_restart_on_failing_assumptions")]
 lazy_static::lazy_static!(
     static ref BLOCK_SEQ_NO_TO_RESTART_PRODUCTION: Arc<Mutex<BlockSeqNo>> = Arc::new(Mutex::new(BlockSeqNo::from(100)));
 );
@@ -99,6 +102,10 @@ pub struct TVMBlockProducerProcess {
     wasm_cache: WasmNodeCache,
     share_service: Option<ExternalFileSharesBased>,
     save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
+    #[builder(default)]
+    join_handle_monitor: Option<JoinHandleMonitorInterface>,
+
+    bp_production_count: Arc<AtomicU32>,
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
@@ -140,6 +147,7 @@ impl TVMBlockProducerProcess {
         repository: &RepositoryImpl,
         is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
         share_service: Option<ExternalFileSharesBased>,
+        join_handle_monitor: Option<JoinHandleMonitorInterface>,
         round: BlockRound,
         parent_ref: ParentRef,
         protocol_version: ProtocolVersion,
@@ -364,7 +372,11 @@ impl TVMBlockProducerProcess {
         let desired_timeout = Duration::from_millis(node_config.time_to_produce_block_millis);
         let time_limits = ExecutionTimeLimits::production(desired_timeout, &node_config);
         let protocol_version_clone = protocol_version.clone();
-        let thread = std::thread::Builder::new()
+        let parent_ref_for_monitor = parent_ref.clone();
+
+        let (produce_result_tx, produce_result_rx) = std::sync::mpsc::channel();
+
+        let thread: JoinHandle<anyhow::Result<()>> = std::thread::Builder::new()
             .name(format!("Produce block {}", &thread_id_clone))
             .stack_size(16 * 1024 * 1024)
             .spawn(move || {
@@ -393,15 +405,18 @@ impl TVMBlockProducerProcess {
                         protocol_version_clone,
                     )?;
 
-                Ok::<_, anyhow::Error>((
-                    block,
-                    result_state,
-                    active_block_producer_threads,
-                    cross_thread_ref_data,
-                    processed_stamps,
-                    ext_msg_feedbacks,
-                    temp_id,
-                ))
+                produce_result_tx
+                    .send((
+                        block,
+                        result_state,
+                        active_block_producer_threads,
+                        cross_thread_ref_data,
+                        processed_stamps,
+                        ext_msg_feedbacks,
+                        temp_id,
+                    ))
+                    .map_err(|e| anyhow::format_err!("Failed to send produce result: {e}"))?;
+                Ok(())
             })?;
         let corrected_timeout = timeout_correction.get_production_timeout(desired_timeout);
         tracing::trace!("Sleep for {corrected_timeout:?}");
@@ -421,8 +436,51 @@ impl TVMBlockProducerProcess {
             processed_stamps,
             ext_msg_feedbacks,
             temp_id,
-        ) = thread.join().map_err(|_| anyhow::format_err!("Failed to join producer thread"))??;
+        ) = match produce_result_rx.recv() {
+            Ok(result) => result,
+            Err(error) => {
+                if let Some(monitor) = &join_handle_monitor {
+                    monitor.watch(
+                        thread,
+                        format!(
+                            "produce_next failed before result receive: thread_id={}, parent_ref={:?}, round={:?}",
+                            thread_id_clone, parent_ref_for_monitor, round,
+                        ),
+                    );
+                } else {
+                    tracing::trace!(
+                        "JoinHandleMonitor is disabled; dropping production thread handle after failed result receive: thread_id={}, parent_ref={:?}, round={:?}",
+                        thread_id_clone,
+                        parent_ref_for_monitor,
+                        round,
+                    );
+                }
+                return Err(anyhow::format_err!(
+                    "Failed to receive result from producer thread: {error}"
+                ));
+            }
+        };
         tracing::trace!("Produced block (temp_id={}) seq_no={}", temp_id, block.seq_no());
+        if let Some(monitor) = &join_handle_monitor {
+            monitor.watch(
+                thread,
+                format!(
+                    "produce_next result received: thread_id={}, seq_no={}, temp_id={}, round={:?}, parent_ref={:?}",
+                    thread_id_clone,
+                    block.seq_no(),
+                    temp_id,
+                    round,
+                    parent_ref_for_monitor,
+                ),
+            );
+        } else {
+            tracing::trace!(
+                "JoinHandleMonitor is disabled; dropping production thread handle: thread_id={}, seq_no={}, temp_id={}",
+                thread_id_clone,
+                block.seq_no(),
+                temp_id,
+            );
+        }
         block_flow_trace_with_time(
             Some(start_time),
             "production",
@@ -506,7 +564,7 @@ impl TVMBlockProducerProcess {
                 .producer_is_in_bk_set(true)
                 .build();
 
-            #[cfg(feature = "restart_on_failing_assumptions")]
+            #[cfg(feature = "test_restart_on_failing_assumptions")]
             let assumptions = {
                 let mut misbehave_block_seq_not = BLOCK_SEQ_NO_TO_RESTART_PRODUCTION.lock();
                 if block.seq_no() == *misbehave_block_seq_not {
@@ -655,6 +713,7 @@ impl TVMBlockProducerProcess {
         let share_service = self.share_service.clone();
         let save_state_sender = self.save_optimistic_service_sender.clone();
         let node_config_read = self.node_config_read.clone();
+        let join_handle_monitor = self.join_handle_monitor.clone();
 
         {
             let parent_block_state = block_state_repository
@@ -718,6 +777,7 @@ impl TVMBlockProducerProcess {
                     &repo_clone,
                     is_state_sync_requested.clone(),
                     share_service.clone(),
+                    join_handle_monitor.clone(),
                     round,
                     parent_ref,
                     block_version.clone(),
@@ -750,14 +810,25 @@ impl TVMBlockProducerProcess {
                 parent_ref = produce_res.unwrap().1;
             }
         };
+        let bp_production_count = self.bp_production_count.clone();
         #[cfg(not(feature = "fail-fast"))]
         let handler = std::thread::Builder::new()
             .name(format!("Production {}", &thread_id_clone))
-            .spawn(produce)?;
+            .spawn(|| {
+                bp_production_count.fetch_add(1, Ordering::Relaxed);
+                let res = produce();
+                bp_production_count.fetch_sub(1, Ordering::Relaxed);
+                res
+            })?;
         #[cfg(feature = "fail-fast")]
         let handler = std::thread::Builder::new()
             .name(format!("Production {}", &thread_id_clone))
-            .spawn_critical(produce)?;
+            .spawn_critical(move || {
+                bp_production_count.fetch_add(1, Ordering::Relaxed);
+                let res = produce();
+                bp_production_count.fetch_sub(1, Ordering::Relaxed);
+                res
+            })?;
         self.active_producer_thread = Some((handler, control_tx));
         self.epoch_block_keeper_data_senders = Some(epoch_block_keeper_data_tx);
         Ok(())
@@ -818,8 +889,9 @@ impl TVMBlockProducerProcess {
         }
         blocks.sort_by_key(|a| a.block().seq_no());
         let thread_id = blocks.last().map(|block| block.block().common_section().thread_id());
-        if let Some(thread_id) =
-            thread_id.or_else(|| blocks.first().map(|block| block.optimistic_state().thread_id))
+        if let Some(thread_id) = thread_id
+            .cloned()
+            .or_else(|| blocks.first().map(|block| block.optimistic_state().thread_id))
         {
             self.report_produced_blocks_size(0, &thread_id);
         }
@@ -920,6 +992,7 @@ fn aggregate_nacks(
 mod tests {
 
     use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicU32;
     use std::sync::Arc;
     use std::thread::sleep;
     use std::time::Duration;
@@ -1040,7 +1113,8 @@ mod tests {
             ))
             .share_service(None)
             .wasm_cache(WasmNodeCache::new()?)
-            .save_optimistic_service_sender(tx);
+            .save_optimistic_service_sender(tx)
+            .bp_production_count(Arc::new(AtomicU32::new(0)));
         let mut production_process = builder.build();
 
         let thread_id = ThreadIdentifier::default();

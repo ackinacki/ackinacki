@@ -4,11 +4,13 @@ use std::sync::Arc;
 
 use derive_getters::Getters;
 use node_types::BlockIdentifier;
+use parking_lot::Mutex;
 use tracing::instrument;
 use typed_builder::TypedBuilder;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
+use crate::bls::BLSSignatureScheme;
 use crate::bls::GoshBLS;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::AttestationTargetType;
@@ -17,6 +19,7 @@ use crate::node::block_state::repository::BlockState;
 use crate::node::SignerIndex;
 use crate::types::BlockSeqNo;
 use crate::utilities::guarded::Guarded;
+use crate::utilities::FixedSizeHashMap;
 
 mod compacted_attestation;
 mod compacted_map_key;
@@ -28,6 +31,98 @@ use crate::types::attestation::compacted_map_key::CompactedMapKey;
 use crate::utilities::guarded::AllowGuardedMut;
 
 type CompactedMap<T> = BTreeMap<compacted_map_key::CompactedMapKey, T>;
+
+pub const AGGREGATED_ATTESTATIONS_CACHE_SIZE: usize = 128;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct AttestationCacheKey {
+    pub block_id: BlockIdentifier,
+    pub target_type: AttestationTargetType,
+}
+
+impl From<&Envelope<AttestationData>> for AttestationCacheKey {
+    fn from(value: &Envelope<AttestationData>) -> Self {
+        Self { block_id: *value.data().block_id(), target_type: *value.data().target_type() }
+    }
+}
+
+pub type AggregatedAttestationsCache =
+    Arc<Mutex<FixedSizeHashMap<AttestationCacheKey, Envelope<AttestationData>>>>;
+
+pub fn new_aggregated_attestations_cache() -> AggregatedAttestationsCache {
+    Arc::new(Mutex::new(FixedSizeHashMap::new(AGGREGATED_ATTESTATIONS_CACHE_SIZE)))
+}
+
+pub fn add_to_aggregated_attestations_cache(
+    cache: &AggregatedAttestationsCache,
+    attestation: Envelope<AttestationData>,
+) {
+    let key = AttestationCacheKey::from(&attestation);
+    let mut cache = cache.lock();
+    let Some(existing) = cache.get_mut(&key) else {
+        cache.insert(key, attestation);
+        return;
+    };
+
+    if existing.data().parent_block_id() != attestation.data().parent_block_id()
+        || existing.data().block_seq_no() != attestation.data().block_seq_no()
+        || existing.data().envelope_hash() != attestation.data().envelope_hash()
+        || existing.data().block_id() != attestation.data().block_id()
+        || existing.data().target_type() != attestation.data().target_type()
+    {
+        tracing::warn!(
+            ?key,
+            existing = ?existing.data(),
+            incoming = ?attestation.data(),
+            "Conflicting attestation was not stored in aggregated attestations cache"
+        );
+        return;
+    }
+
+    let existing_signers: HashSet<SignerIndex> = existing.signers().copied().collect();
+    let incoming_signers: HashSet<SignerIndex> = attestation.signers().copied().collect();
+    if incoming_signers.is_subset(&existing_signers) {
+        tracing::trace!(
+            ?key,
+            "Incoming attestation does not add unique signers to aggregated attestations cache"
+        );
+        return;
+    }
+
+    let mut signature_occurrences = existing.clone_signature_occurrences();
+    for (signer_index, count) in attestation.clone_signature_occurrences() {
+        let Some(new_count) = signature_occurrences
+            .get(&signer_index)
+            .copied()
+            .unwrap_or_default()
+            .checked_add(count)
+        else {
+            tracing::trace!(
+                ?key,
+                signer_index,
+                "Attestation signature occurrence count overflow in aggregated attestations cache"
+            );
+            return;
+        };
+        signature_occurrences.insert(signer_index, new_count);
+    }
+    signature_occurrences.retain(|_, count| *count > 0);
+
+    let Ok(aggregated_signature) =
+        GoshBLS::merge(existing.aggregated_signature(), attestation.aggregated_signature())
+    else {
+        tracing::trace!(
+            ?key,
+            "Failed to merge attestation signatures for aggregated attestations cache"
+        );
+        return;
+    };
+    *existing = Envelope::<AttestationData>::create(
+        aggregated_signature,
+        signature_occurrences,
+        existing.data().clone(),
+    );
+}
 
 #[derive(Default, Clone)]
 #[allow(clippy::disallowed_types)]
@@ -369,5 +464,113 @@ impl CollectedAttestations {
             */
         }
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use node_types::BlockIdentifier;
+
+    use super::*;
+    use crate::bls::gosh_bls::Signature;
+    use crate::types::envelope_hash::AckiNackiEnvelopeHash;
+
+    fn test_attestation(
+        parent_block_id: BlockIdentifier,
+        block_id: BlockIdentifier,
+        envelope_hash: AckiNackiEnvelopeHash,
+        target_type: AttestationTargetType,
+        signer_indices: impl IntoIterator<Item = SignerIndex>,
+    ) -> Envelope<AttestationData> {
+        let signature_occurrences =
+            HashMap::from_iter(signer_indices.into_iter().map(|signer_index| (signer_index, 1)));
+        Envelope::create(
+            Signature::default(),
+            signature_occurrences,
+            AttestationData::builder()
+                .parent_block_id(parent_block_id)
+                .block_id(block_id)
+                .block_seq_no(BlockSeqNo::from(1))
+                .envelope_hash(envelope_hash)
+                .target_type(target_type)
+                .build(),
+        )
+    }
+
+    #[test]
+    fn aggregated_cache_merges_attestations_for_same_key() {
+        let cache = new_aggregated_attestations_cache();
+        let parent_block_id = BlockIdentifier::new([1; 32]);
+        let block_id = BlockIdentifier::new([2; 32]);
+        let envelope_hash = AckiNackiEnvelopeHash([3; 32]);
+
+        add_to_aggregated_attestations_cache(
+            &cache,
+            test_attestation(
+                parent_block_id,
+                block_id,
+                envelope_hash.clone(),
+                AttestationTargetType::Primary,
+                [1],
+            ),
+        );
+        add_to_aggregated_attestations_cache(
+            &cache,
+            test_attestation(
+                parent_block_id,
+                block_id,
+                envelope_hash,
+                AttestationTargetType::Primary,
+                [1, 2],
+            ),
+        );
+
+        let cache = cache.lock();
+        let cached = cache
+            .get(&AttestationCacheKey { block_id, target_type: AttestationTargetType::Primary })
+            .unwrap();
+        assert_eq!(cached.signatures_count(), 2);
+        assert!(cached.has_signer_index(1));
+        assert!(cached.has_signer_index(2));
+    }
+
+    #[test]
+    fn aggregated_cache_keeps_existing_attestation_on_conflict() {
+        let cache = new_aggregated_attestations_cache();
+        let parent_block_id = BlockIdentifier::new([1; 32]);
+        let block_id = BlockIdentifier::new([2; 32]);
+        let original_hash = AckiNackiEnvelopeHash([3; 32]);
+
+        add_to_aggregated_attestations_cache(
+            &cache,
+            test_attestation(
+                parent_block_id,
+                block_id,
+                original_hash.clone(),
+                AttestationTargetType::Primary,
+                [1],
+            ),
+        );
+        add_to_aggregated_attestations_cache(
+            &cache,
+            test_attestation(
+                parent_block_id,
+                block_id,
+                AckiNackiEnvelopeHash([4; 32]),
+                AttestationTargetType::Primary,
+                [2],
+            ),
+        );
+
+        let cache = cache.lock();
+        let cached = cache
+            .get(&AttestationCacheKey { block_id, target_type: AttestationTargetType::Primary })
+            .unwrap();
+        assert_eq!(cached.data().envelope_hash(), &original_hash);
+        assert_eq!(cached.signatures_count(), 1);
+        assert!(cached.has_signer_index(1));
+        assert!(!cached.has_signer_index(2));
     }
 }

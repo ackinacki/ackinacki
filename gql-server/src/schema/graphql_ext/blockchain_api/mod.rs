@@ -38,6 +38,9 @@ use crate::schema::graphql::transaction::TransactionLoader;
 use crate::schema::graphql_ext;
 use crate::schema::graphql_ext::blockchain_api::account::BlockchainAccountEdge;
 use crate::schema::graphql_ext::blockchain_api::account::BlockchainAccountsConnection;
+use crate::schema::graphql_ext::events::BlockchainEventEdge;
+use crate::schema::graphql_ext::events::BlockchainEventsConnection;
+use crate::schema::graphql_ext::events::Event;
 use crate::schema::graphql_ext::is_deprecated_api_visible;
 use crate::schema::graphql_ext::DeprecatedApiGuard;
 
@@ -90,7 +93,7 @@ impl BlockchainQuery<'_> {
                 pagination: PaginationArgs { first, after, last, before },
             };
             let mut accounts: Vec<db::Account> = db::account::Account::blockchain_accounts(
-                self.ctx.data::<Arc<DBConnector>>().unwrap(),
+                self.ctx.data::<Arc<DBConnector>>()?,
                 &query_args,
             )
             .await?;
@@ -155,6 +158,84 @@ impl BlockchainQuery<'_> {
         }
 
         Some(block)
+    }
+
+    /// This node could be used for a cursor-based pagination of blockchain
+    /// events (aka outgoing external messages).
+    async fn events(
+        &self,
+        #[graphql(desc = "This field is mutually exclusive with 'last'.")] first: Option<i32>,
+        after: Option<String>,
+        #[graphql(desc = "This field is mutually exclusive with 'first'.")] last: Option<i32>,
+        before: Option<String>,
+    ) -> async_graphql::Result<
+        Option<
+            Connection<
+                String,
+                Event,
+                EmptyFields,
+                EmptyFields,
+                BlockchainEventsConnection,
+                BlockchainEventEdge,
+            >,
+        >,
+    > {
+        Ok(Some(
+            query(after, before, first, last, |after, before, first, last| async move {
+                tracing::debug!(
+                    "first={:?}, after={:?}, last={:?}, before={:?}",
+                    first,
+                    after,
+                    last,
+                    before
+                );
+
+                let pagination = PaginationArgs { first, after, last, before };
+                let mut messages = db::Message::blockchain_events(
+                    self.ctx.data::<Arc<DBConnector>>()?,
+                    &pagination,
+                )
+                .await?;
+
+                let (has_previous_page, has_next_page) =
+                    pagination.get_bound_markers(messages.len());
+                tracing::debug!(
+                    "has_previous_page={:?}, after={:?}",
+                    has_previous_page,
+                    has_next_page
+                );
+
+                let mut connection: Connection<
+                    String,
+                    Event,
+                    EmptyFields,
+                    EmptyFields,
+                    BlockchainEventsConnection,
+                    BlockchainEventEdge,
+                > = Connection::new(has_previous_page, has_next_page);
+
+                pagination.shrink_portion(&mut messages);
+
+                let mut edges: Vec<Edge<String, Event, EmptyFields, BlockchainEventEdge>> = vec![];
+                for message in messages {
+                    let Some(cursor) = message.msg_chain_order.clone() else {
+                        tracing::warn!(
+                            "ext_out message {} has no msg_chain_order, skipping",
+                            message.id,
+                        );
+                        continue;
+                    };
+                    let event: Event = message.into();
+                    let edge: Edge<String, Event, EmptyFields, BlockchainEventEdge> =
+                        Edge::with_additional_fields(cursor, event, EmptyFields);
+                    edges.push(edge);
+                }
+                connection.edges.extend(edges);
+                Ok::<_, async_graphql::Error>(connection)
+            })
+            .await
+            .map_err(crate::schema::db::connector::map_db_error)?,
+        ))
     }
 
     /// Returns a block uniquely identified by the thread ID and block height.
@@ -236,7 +317,7 @@ impl BlockchainQuery<'_> {
                     pagination: PaginationArgs { first, after, last, before },
                 };
                 let mut blocks: Vec<db::Block> = db::block::Block::blockchain_blocks(
-                    self.ctx.data::<Arc<DBConnector>>().unwrap(),
+                    self.ctx.data::<Arc<DBConnector>>()?,
                     &args,
                 )
                 .await?;
@@ -317,7 +398,7 @@ impl BlockchainQuery<'_> {
                 };
                 let mut updates: Vec<db::BkSetUpdate> =
                     db::bk_set_update::BkSetUpdate::blockchain_bk_set_updates(
-                        self.ctx.data::<Arc<DBConnector>>().unwrap(),
+                        self.ctx.data::<Arc<DBConnector>>()?,
                         &args,
                     )
                     .await?;
@@ -486,7 +567,7 @@ impl BlockchainQuery<'_> {
                     };
                     let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
                     let mut transactions = db::transaction::Transaction::blockchain_transactions(
-                        self.ctx.data::<Arc<DBConnector>>().unwrap(),
+                        self.ctx.data::<Arc<DBConnector>>()?,
                         &args,
                     )
                     .await?;

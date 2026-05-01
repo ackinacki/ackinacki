@@ -111,13 +111,15 @@ use crate::types::thread_message_queue::account_messages_iterator::AccountMessag
 use crate::types::thread_message_queue::ThreadMessageQueueState;
 use crate::types::BlockSeqNo;
 
-#[cfg(feature = "enforce_min_seq")]
+#[cfg(feature = "test_enforce_min_seq")]
 const DEFAULT_MIN_SEQ_NO: u32 = 0;
 
 const BK_SYSTEM_DAPP_ID: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 // const EPOCH_CONTINUE_STAKE_FUNCTION_NAME: &str = "continueStake";
 
 pub(crate) const MOVE_FROM_TVM_LIMIT: usize = 100;
+
+const SUSPICIOUS_EXECUTION_TIME: u64 = 150;
 
 #[cfg(test)]
 lazy_static::lazy_static!(
@@ -158,7 +160,7 @@ impl BlockBuilder {
         //     .map_err(|e| anyhow::format_err!("Failed to read out msgs queue: {e}"))?;
         let seq_no = thread_accounts_repository.state_seq_no(&initial_accounts) + 1;
 
-        #[cfg(feature = "enforce_min_seq")]
+        #[cfg(feature = "test_enforce_min_seq")]
         let seq_no = {
             let min_seq_no = std::env::var("MIN_SEQ_NO")
                 .ok()
@@ -351,6 +353,8 @@ impl BlockBuilder {
         &mut self,
         mut thread_result: ThreadResult,
     ) -> anyhow::Result<()> {
+        let mut base_transaction_execution_time_ms =
+            thread_result.read_account_time_ms + thread_result.message_execution_time_ms;
         let transaction = thread_result.transaction;
         if true {
             // TODO
@@ -374,6 +378,15 @@ impl BlockBuilder {
                 // This metric counts only external aborted transactions
                 self.metrics.as_ref().inspect(|m| m.report_ext_tx_aborted(&self.thread_id));
                 tracing::trace!(target: "builder", "Ext message was aborted, do not process resulting tx");
+                if base_transaction_execution_time_ms >= SUSPICIOUS_EXECUTION_TIME {
+                    tracing::warn!(target: "monit", "Suspicious execution time: read={} ms, exec={}ms, ext aborted, dest={}, msg_id={:?}", thread_result.read_account_time_ms, thread_result.message_execution_time_ms, thread_result.account_id.to_hex_string(), thread_result.in_msg.hash().map(|e| e.to_hex_string()));
+                }
+                self.metrics.as_ref().inspect(|m| {
+                    m.report_transaction_execution_time(
+                        base_transaction_execution_time_ms,
+                        &self.thread_id,
+                    )
+                });
                 return Ok(());
             }
         }
@@ -389,9 +402,10 @@ impl BlockBuilder {
             tracing::info!(target: "builder", "TX gas used: {}", gas_used);
             self.total_gas_used += gas_used;
         }
+        let tx_hash = transaction.hash().map(|e| e.to_hex_string());
         tracing::trace!(target: "builder",
             "Transaction {:?} {}",
-            transaction.hash(),
+            tx_hash,
             is_tx_aborted,
         );
 
@@ -557,6 +571,7 @@ impl BlockBuilder {
         }
 
         // let initial_account_routing = AccountRouting(thread_result.initial_dapp_id.clone().unwrap_or(DAppIdentifier(account_address.clone())), account_address.clone());
+        let save_account_start = std::time::Instant::now();
         if acc_root.is_none() {
             #[cfg(feature = "monitor-accounts-number")]
             {
@@ -614,6 +629,14 @@ impl BlockBuilder {
             tracing::trace!(target: "builder", "Update account data: {}", acc_id.to_hex_string());
             self.accounts_builder.insert_account(&acc_addr, &shard_acc);
         }
+        let save_account_time_ms = save_account_start.elapsed().as_millis() as u64;
+        base_transaction_execution_time_ms += save_account_time_ms;
+        if base_transaction_execution_time_ms >= SUSPICIOUS_EXECUTION_TIME {
+            tracing::warn!(target: "monit", "Suspicious execution time: read={} ms, exec={}ms, save={}ms, int msg, dest={}, tx_id={:?}", thread_result.read_account_time_ms, thread_result.message_execution_time_ms, save_account_time_ms, thread_result.account_id.to_hex_string(), tx_hash);
+        }
+        self.metrics.as_ref().inspect(|m| {
+            m.report_transaction_execution_time(base_transaction_execution_time_ms, &self.thread_id)
+        });
         if let Err(err) =
             self.add_raw_transaction(transaction, tr_cell, thread_result.in_msg.clone())
         {
@@ -826,10 +849,12 @@ impl BlockBuilder {
         tracing::debug!(target: "builder", "Start msg execution: addr={:?} {:?}", acc_id.to_hex_string(), message_hash);
         #[cfg(feature = "timing")]
         let start = std::time::Instant::now();
+        let read_account_start = std::time::Instant::now();
         let shard_acc = match &ext_dst {
             Some(dst) => self.resolve_account(dst)?,
             None => self.get_account(&acc_id.dapp_originator())?,
         };
+        let read_account_time_ms = read_account_start.elapsed().as_millis() as u64;
         let shard_acc = shard_acc.unwrap_or_default();
         let dapp_id_opt = shard_acc.get_dapp_id();
         let account_routing = acc_id.optional_dapp_originator(dapp_id_opt);
@@ -978,6 +1003,7 @@ impl BlockBuilder {
         );
         rayon::spawn(move || {
             tracing::debug!(target: "builder", "Executing message {} {:?}", message_hash.to_hex_string(), message);
+            let execution_start = std::time::Instant::now();
             let res = Self::try_prepare_transaction(
                 &executor,
                 &mut acc_root,
@@ -987,6 +1013,7 @@ impl BlockBuilder {
                 execute_params,
                 // trace,
             );
+            let message_execution_time_ms = execution_start.elapsed().as_millis() as u64;
             #[cfg(feature = "timing")]
             tracing::trace!(target: "builder", "Execute: total time {} ms, available_balance {}, result with minted {:?}", start.elapsed().as_millis(), available_balance, res);
             let _ = result_tx.send(res.map(
@@ -994,6 +1021,8 @@ impl BlockBuilder {
                     ThreadResult {
                         transaction: tx,
                         lt,
+                        read_account_time_ms,
+                        message_execution_time_ms,
                         // trace,
                         account_root: acc_root.clone(),
                         account_id: acc_id,

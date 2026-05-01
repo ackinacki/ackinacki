@@ -75,6 +75,8 @@ pub struct PreparedBlock {
 pub struct ThreadResult {
     pub transaction: Transaction,
     pub lt: u64,
+    pub read_account_time_ms: u64,
+    pub message_execution_time_ms: u64,
     // pub trace: Option<Vec<EngineTraceInfoData>>,
     pub account_root: ThreadAccount,
     pub account_id: AccountIdentifier,

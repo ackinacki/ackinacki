@@ -4,7 +4,6 @@ pub mod memento;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicI32;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -35,6 +34,7 @@ use crate::node::NodeIdentifier;
 use crate::protocol::authority_switch::action_lock::BlockProducerCommand;
 use crate::repository::optimistic_state::OptimisticStateSaveCommand;
 use crate::repository::repository_impl::RepositoryImpl;
+use crate::types::AggregatedAttestationsCache;
 use crate::types::BlockSeqNo;
 use crate::types::CollectedAttestations;
 use crate::types::RndSeed;
@@ -62,6 +62,7 @@ impl ProducerService {
         shared_services: SharedServices,
         bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
         last_block_attestations: Arc<Mutex<CollectedAttestations>>,
+        aggregated_attestations_cache: AggregatedAttestationsCache,
         attestations_target_service: AttestationTargetsService,
         self_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
         self_authority_tx: XInstrumentedSender<(NetworkMessage, SocketAddr)>,
@@ -73,7 +74,6 @@ impl ProducerService {
         is_producing: Arc<AtomicBool>,
 
         is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
-        bp_production_count: Arc<AtomicI32>,
         save_optimistic_service_sender: InstrumentedSender<OptimisticStateSaveCommand>,
         node_credentials: NodeCredentials,
         node_config_read: ConfigRead,
@@ -89,6 +89,7 @@ impl ProducerService {
             .shared_services(shared_services)
             .repository(repository)
             .last_block_attestations(last_block_attestations)
+            .aggregated_attestations_cache(aggregated_attestations_cache)
             .thread_id(thread_id)
             .broadcast_tx(broadcast_tx)
             .control_rx(block_producer_control_rx)
@@ -101,7 +102,6 @@ impl ProducerService {
             .external_messages(external_messages)
             .is_producing(is_producing)
             .is_state_sync_requested(is_state_sync_requested)
-            .bp_production_count(bp_production_count)
             .save_optimistic_service_sender(save_optimistic_service_sender)
             .config_read(node_config_read)
             .build();
