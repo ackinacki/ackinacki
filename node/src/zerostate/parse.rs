@@ -18,7 +18,6 @@ use tvm_types::write_boc;
 use super::ZeroState;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
-use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::types::thread_message_queue::account_messages_iterator::AccountMessagesIterator;
 
 #[derive(Default)]
@@ -71,15 +70,15 @@ impl ZeroState {
     pub fn read_all_accounts(
         &mut self,
         thread_identifier: &ThreadIdentifier,
-        thread_accounts_repository: &NodeThreadAccountsRepository,
+        thread_accounts_repository: &ThreadAccountsRepository,
     ) -> anyhow::Result<Vec<ZeroStateAccount>> {
         let mut zs_accounts = vec![];
         let accounts = self.get_shard_state(thread_identifier);
         if let Ok(accounts) = accounts {
             thread_accounts_repository
-                .state_iterate_all_accounts(&accounts, |_, v| {
+                .state_iterate_tvm_accounts(&accounts, |_, v| {
                     let dapp_id = v.get_dapp_id().map(|val| val.to_hex_string());
-                    let tvm_account = tvm_block::Account::try_from(v.account()?)?;
+                    let tvm_account = tvm_block::Account::try_from(v.vm_account()?)?;
                     zs_accounts.push(ZeroStateAccount {
                         address: tvm_account
                             .get_id()

@@ -1,7 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use account_state::ThreadAccount;
+use account_state::VmAccount;
 use node_types::AccountIdentifier;
 use node_types::DAppIdentifier;
 use num_bigint::Sign;
@@ -83,7 +83,7 @@ pub fn decode_message_config(body: SliceData) -> anyhow::Result<Option<DAppIdent
     Ok(dapp.map(From::from))
 }
 
-pub fn decode_dapp_config_data(account: &ThreadAccount) -> anyhow::Result<Option<DappConfig>> {
+pub fn decode_dapp_config_data(account: &VmAccount) -> anyhow::Result<Option<DappConfig>> {
     let tvm_account = tvm_block::Account::try_from(account)?;
     let abi = get_dapp_config_abi();
     if let Some(data) = tvm_account.get_data() {

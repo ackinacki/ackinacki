@@ -1,7 +1,10 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::BTreeMap;
+
 use http_server::ExtMsgFeedbackList;
+use node_types::AccountRouting;
 use node_types::ParentRef;
 use node_types::TemporaryBlockId;
 use node_types::ThreadIdentifier;
@@ -10,6 +13,7 @@ use tvm_types::Cell;
 
 use crate::block::producer::builder::ActiveThread;
 use crate::block::producer::execution_time::ExecutionTimeLimits;
+use crate::block::producer::single_block_producer::Block;
 use crate::block::producer::BlockProducer;
 use crate::external_messages::Stamp;
 use crate::message::message_stub::MessageStub;
@@ -30,25 +34,26 @@ impl BlockProducer for BlockProducerStub {
     fn produce<'a, I>(
         self,
         _thread_identifier: ThreadIdentifier,
-        _initial_state: Self::OptimisticState,
+        _parent_state: Self::OptimisticState,
         _refs: I,
         _control_rx_stop: InstrumentedReceiver<()>,
-        _db: MessageDurableStorage,
+        _message_db: MessageDurableStorage,
         _time_limits: &ExecutionTimeLimits,
         _block_round: BlockRound,
         _parent_block_state: ParentRef,
         _protocol_version: ProtocolVersion,
     ) -> anyhow::Result<(
-        super::single_block_producer::Block,
+        Block,
         Self::OptimisticState,
         Vec<(Cell, ActiveThread)>,
         CrossThreadRefData,
         Vec<Stamp>,
         ExtMsgFeedbackList,
         TemporaryBlockId,
+        BTreeMap<AccountRouting, u32>,
     )>
     where
-        I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
+        I: Iterator<Item = &'a CrossThreadRefData> + Clone,
         CrossThreadRefData: 'a,
     {
         todo!()

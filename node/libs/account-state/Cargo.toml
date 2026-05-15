@@ -9,12 +9,16 @@ license-file.workspace = true
 
 [dependencies]
 aerospike.workspace = true
+aerospike2 = { path = "../aerospike2" }
 anyhow.workspace = true
 bincode.workspace = true
+critical-thread.workspace = true
+crossbeam-channel = "0.5.15"
 derive-getters = "0.5.0"
 derive_setters = { path = "../derive-setters" }
 multi-map.workspace = true
 node-types.workspace = true
+opentelemetry.workspace = true
 parking_lot.workspace = true
 rand.workspace = true
 rayon.workspace = true
@@ -29,6 +33,7 @@ tvm_types.workspace = true
 base64 = { version = "0.22.1" }
 blake3 = { version = "1.8.2" }
 bytes = { version = "1.11.0" }
+clap = { version = "4.6.0", features = ["derive"] }
 digest = "0.10.7"
 hashbrown = "0.16.0"
 hex = "0.4.3"
@@ -39,9 +44,16 @@ sha3 = "0.10.8"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+once_cell = "1.21.3"
+tracing-subscriber.workspace = true
+
+[[bin]]
+name = "archive-summary"
+path = "src/bin/archive_summary.rs"
 
 [[bench]]
 name = "update_maps"
 harness = false
 
 [features]
+disable-live-counting = ["multi-map/disable-live-counting"]

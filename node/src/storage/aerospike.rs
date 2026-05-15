@@ -50,6 +50,10 @@ pub struct AerospikeStore {
 }
 
 impl AerospikeStore {
+    fn write_policy() -> WritePolicy {
+        WritePolicy { send_key: true, ..WritePolicy::default() }
+    }
+
     pub fn new(
         socket_address: String,
         metrics: Option<BlockProductionMetrics>,
@@ -61,7 +65,7 @@ impl AerospikeStore {
             Self {
                 client: Arc::new(client),
                 rpolicy: ReadPolicy::default(),
-                wpolicy: WritePolicy::default(),
+                wpolicy: Self::write_policy(),
                 bpolicy: BatchPolicy::default(),
                 metrics,
                 #[cfg(debug_assertions)]
@@ -217,5 +221,16 @@ impl Stats {
 impl Default for Stats {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AerospikeStore;
+
+    #[test]
+    fn test_write_policy_sends_user_key() {
+        let policy = AerospikeStore::write_policy();
+        assert!(policy.send_key);
     }
 }

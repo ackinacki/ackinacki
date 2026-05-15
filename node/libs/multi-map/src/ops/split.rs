@@ -1,16 +1,18 @@
-use trie_map::trie::arena::boundary_mask;
-use trie_map::trie::arena::nibble_at;
-use trie_map::trie::arena::nibble_from_key;
-use trie_map::MapKeyPath;
-
+use super::boundary_mask;
 use super::ensure_branch_at_depth;
 use super::make_branch;
 use super::merge_ext_if_possible;
+use super::nibble_at;
+use super::nibble_from_key;
 use super::rebuild_branch_with_child;
 use crate::node::Node;
+use crate::MapKeyPath;
 use crate::MultiMapValue;
 
-/// Normalize trie structure: collapse single-child branches, merge adjacent Exts, remove empties.
+/// Normalize trie structure: collapse single-child branches, merge adjacent `Ext`s, remove empties.
+/// Uses hash-based short-circuit: if a node's hash is non-zero (i.e., it was properly hashed
+/// during construction, not created by `new_branch_unhashed`/`new_ext_unhashed`), its subtree
+/// is already canonical and can be returned as-is.
 fn canonicalize<V: MultiMapValue>(node: &Node<V>) -> Node<V> {
     match node {
         Node::Empty => Node::Empty,
@@ -18,6 +20,11 @@ fn canonicalize<V: MultiMapValue>(node: &Node<V>) -> Node<V> {
         Node::Leaf(_) => node.clone(),
 
         Node::Ext(data) => {
+            // If this ext was properly constructed (non-zero hash), it and its
+            // subtree are already canonical — skip the recursive walk.
+            if data.hash != [0u8; 32] {
+                return node.clone();
+            }
             let child2 = canonicalize(&data.child);
             match child2 {
                 Node::Empty => Node::Empty,
@@ -30,6 +37,11 @@ fn canonicalize<V: MultiMapValue>(node: &Node<V>) -> Node<V> {
         }
 
         Node::Branch(data) => {
+            // If this branch was properly constructed (non-zero hash), it and its
+            // subtree are already canonical — skip the recursive walk.
+            if data.hash != [0u8; 32] {
+                return node.clone();
+            }
             let mut out: [Node<V>; 16] = Default::default();
             let mut out_bitmap: u16 = 0;
 
@@ -287,5 +299,19 @@ pub fn merge<V: MultiMapValue>(
     b_path: MapKeyPath,
 ) -> Node<V> {
     let merged = graft_prefix(a, b, b_path);
+    canonicalize(&merged)
+}
+
+/// Merge multiple subtrees into `a` in a single pass.
+/// Avoids the O(n²) cost of repeated merge and canonicalize calls.
+pub fn merge_batch<V: MultiMapValue>(
+    a: &Node<V>,
+    #[allow(unused)] a_path: MapKeyPath,
+    subtrees: &[(Node<V>, MapKeyPath)],
+) -> Node<V> {
+    let mut merged = a.clone();
+    for (b, b_path) in subtrees {
+        merged = graft_prefix(&merged, b, *b_path);
+    }
     canonicalize(&merged)
 }

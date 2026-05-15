@@ -122,7 +122,11 @@ where
 
         connect!(parent = parent, child = block_state, &self.block_state_repository);
         if *envelope.data().common_section().directives().share_state_resources() {
-            self.last_synced_state = Some((envelope.data().identifier(), envelope.data().seq_no()));
+            self.last_synced_state = Some((
+                envelope.data().identifier(),
+                envelope.data().seq_no(),
+                *envelope.data().common_section().block_height(),
+            ));
         }
 
         tracing::debug!("Add candidate block state to cache: {:?}", net_block.identifier);

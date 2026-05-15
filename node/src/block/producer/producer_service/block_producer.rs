@@ -70,6 +70,7 @@ use crate::protocol::authority_switch::network_message::AuthoritySwitch;
 use crate::protocol::authority_switch::network_message::NextRoundSuccess;
 use crate::repository::optimistic_state::OptimisticStateSaveCommand;
 use crate::repository::repository_impl::RepositoryImpl;
+use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
 use crate::types::as_signatures_map::AsSignaturesMap;
 use crate::types::bp_selector::ProducerSelector;
@@ -734,12 +735,17 @@ impl BlockProducer {
                         }
                     }
 
+                    let parent_crtd = self.shared_services.exec(|e| {
+                        e.cross_thread_ref_data_service
+                            .get_cross_thread_ref_data(&produced_block.block().parent())
+                    })?;
                     let actual_assumptions = Assumptions::builder()
                         .new_to_bk_set(
                             BTreeSet::new(), // TODO: set real value with preattestaions implementation
                         )
                         .block_version(actual_required_version.clone())
                         .producer_is_in_bk_set(producer_is_in_bk_set)
+                        .threads_table(parent_crtd.threads_table().clone())
                         .build();
 
                     let is_assumptions_correct =
@@ -957,7 +963,15 @@ impl BlockProducer {
             };
             let envelope = envelope?;
 
-            let net_block = NetBlock::with_envelope(&envelope)?;
+            let block_serialization_started_at = std::time::Instant::now();
+            let net_block_result = NetBlock::with_envelope(&envelope);
+            self.shared_services.metrics.as_ref().inspect(|m| {
+                m.report_block_serialization_time(
+                    block_serialization_started_at.elapsed().as_millis(),
+                    &self.thread_id,
+                );
+            });
+            let net_block = net_block_result?;
 
             // Check if this node has already signed block of the same height
             // Note: Not valid anymore. Can't sign blocks of the same round though.

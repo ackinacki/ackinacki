@@ -324,7 +324,7 @@ async fn validate_ext_message(
     ) {
         Ok(ext_message) => ext_message,
         Err(err) => {
-            tracing::trace!(msg = ?first_message, "failed to preprocess ext_in message: {err}");
+            tracing::warn!(thread_id = ?thread_id, msg = ?first_message, "failed to preprocess ext_in message: {err}");
             return render_error(
                 res,
                 StatusCode::BAD_REQUEST,

@@ -66,6 +66,8 @@ services:
 {% include 'extra/block-keeper-env.j2' ignore missing +%}
     entrypoint: []
     init: true
+    ulimits:
+      core: 0
 {% if NUMACTL %}
     cap_add:
       - SYS_NICE
@@ -80,7 +82,7 @@ services:
         cat /bk-configs/acki-nacki.conf.yaml
         && cat /bk-configs/acki-nacki.global.conf.yaml
         && exec {% if NUMACTL %} numactl {{ NUMACTL }} -- {% endif %}
-        {{ NODE_BINARY | default('node') }} -c /bk-configs/acki-nacki.conf.yaml -g /bk-configs/acki-nacki.global.conf.yaml -r /bk-configs/acki-nacki-retired.global.conf.yaml >> /logsdir/node.log 2>&1
+        {{ NODE_BINARY | default('node') }} -c /bk-configs/acki-nacki.conf.yaml -g /bk-configs/acki-nacki.global.conf.yaml{% if RETIRED_CONFIG %} -r /bk-configs/acki-nacki-retired.global.conf.yaml{% endif %} >> /logsdir/node.log 2>&1
     volumes:
       - {{ BK_DATA_DIR }}/share:/share
       - {{ BK_DATA_DIR }}/workdir:/workdir/data

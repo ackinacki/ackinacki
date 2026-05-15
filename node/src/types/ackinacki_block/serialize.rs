@@ -1,7 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use account_state::DurableThreadAccountsDiff;
+use account_state::DurableThreadAccountsStateDiff;
 use serde::de::Error as DeserError;
 use serde::ser::Error as SerError;
 use serde::Deserialize;
@@ -13,6 +13,7 @@ use tvm_block::Serializable;
 use tvm_types::read_single_root_boc;
 use tvm_types::write_boc;
 
+use crate::live_metrics::LiveAckiNackiBlockCounter;
 use crate::types::common_section::CommonSection;
 use crate::types::AckiNackiBlock;
 
@@ -104,12 +105,12 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
                     .map_err(|_| D::Error::custom("Failed to deserialize common section len"))?,
             );
             let (durable_diff_data, rest) = rest.split_at(durable_diff_len);
-            let durable_diff: DurableThreadAccountsDiff =
+            let durable_diff: DurableThreadAccountsStateDiff =
                 bincode::deserialize(durable_diff_data)
                     .map_err(|_| D::Error::custom("Failed to deserialize durable diff"))?;
             (durable_diff, rest)
         } else {
-            (DurableThreadAccountsDiff::default(), rest)
+            (DurableThreadAccountsStateDiff::default(), rest)
         };
 
         assert_eq!(rest.len(), 32);
@@ -124,6 +125,7 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
             block_cell: Some(block_cell),
             durable_state_update: durable_diff,
             cached_block_id: None,
+            _live_counter: LiveAckiNackiBlockCounter::new(),
         };
         block.cached_block_id = Some(node_types::BlockIdentifier::new(block.merkle_block_id()));
 

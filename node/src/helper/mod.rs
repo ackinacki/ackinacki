@@ -29,7 +29,6 @@ use telemetry_utils::init_meter_provider;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
 use tvm_types::Sha256;
 
@@ -51,6 +50,7 @@ fn verbose_filter() -> tracing_subscriber::EnvFilter {
             block_manager=trace,\
             node=trace,\
             poem=debug,\
+            lock=trace,\
             executor={tvm_trace_level},\
             network=trace,\
             tvm={tvm_trace_level},\
@@ -60,16 +60,18 @@ fn verbose_filter() -> tracing_subscriber::EnvFilter {
             message_router=trace,\
             transport_layer=info,\
             monit=trace,\
-            ext_messages=trace"
+            ext_messages=trace,\
+            mem=info"
     ))
 }
 
-pub fn init_tracing() -> (Option<Metrics>, WorkerGuard) {
-    let filter = if std::env::var("NODE_VERBOSE").is_ok() {
-        verbose_filter()
-    } else {
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("error,monit=trace"))
-    };
+pub fn init_tracing() -> (Option<Metrics>, Vec<WorkerGuard>) {
+    // let filter = if std::env::var("NODE_VERBOSE").is_ok() {
+    // verbose_filter()
+    // } else {
+    // EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("error,monit=trace"))
+    // };
+    let filter = verbose_filter();
 
     // According to OpenTelemetry Specification:
     // The following environment variables configure the OTLP exporter:
@@ -87,6 +89,7 @@ pub fn init_tracing() -> (Option<Metrics>, WorkerGuard) {
         .ok();
 
     let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stderr());
+    let mut guards = vec![guard];
 
     let fmt_layer = tracing_subscriber::fmt::layer()
         .compact()
@@ -95,7 +98,19 @@ pub fn init_tracing() -> (Option<Metrics>, WorkerGuard) {
         .with_writer(non_blocking)
         .with_filter(filter);
 
-    let registry = tracing_subscriber::registry().with(fmt_layer);
+    // Memory tracking layer — writes target "mem" to a dedicated file
+    let mem_appender = tracing_appender::rolling::daily(".", "mem.log");
+    let (mem_non_blocking, mem_guard) = tracing_appender::non_blocking(mem_appender);
+    guards.push(mem_guard);
+
+    let mem_layer = tracing_subscriber::fmt::layer()
+        .compact()
+        .with_thread_ids(true)
+        .with_ansi(false)
+        .with_writer(mem_non_blocking)
+        .with_filter(tracing_subscriber::filter::filter_fn(|meta| meta.target() == "mem"));
+
+    let registry = tracing_subscriber::registry().with(fmt_layer).with(mem_layer);
 
     if let Some(endpoint) = traces_endpoint {
         println!("Using OTLP traces endpoint: {endpoint}");
@@ -112,18 +127,18 @@ pub fn init_tracing() -> (Option<Metrics>, WorkerGuard) {
     if let Some(endpoint) = get_metrics_endpoint() {
         tracing::info!("Using OTLP metrics endpoint: {endpoint}");
         opentelemetry::global::set_meter_provider(init_meter_provider());
-        (Some(Metrics::new(&opentelemetry::global::meter("node"))), guard)
+        (Some(Metrics::new(&opentelemetry::global::meter("node"))), guards)
     } else {
         tracing::info!("No OTEL exporter endpoint found, metrics not collected.");
         opentelemetry::global::set_meter_provider(SdkMeterProvider::builder().build());
-        (None, guard)
+        (None, guards)
     }
 }
 
-pub fn shutdown_tracing(tracing_guard: WorkerGuard) {
+pub fn shutdown_tracing(tracing_guards: Vec<WorkerGuard>) {
     tracing::trace!("shutting down tracing");
     opentelemetry::global::shutdown_tracer_provider();
-    drop(tracing_guard);
+    drop(tracing_guards);
 }
 
 pub fn init_tracer(endpoint: String) -> opentelemetry_sdk::trace::Tracer {

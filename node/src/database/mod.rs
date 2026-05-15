@@ -4,14 +4,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use account_state::ThreadAccountsRepository;
+use account_state::ThreadAccountsState;
 use database::documents_db::DocumentsDb;
 use parking_lot::Mutex;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::database::serialize_block::reflect_block_in_db;
-use crate::repository::accounts::NodeThreadAccountsRef;
-use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::types::AckiNackiBlock;
 
 pub mod serialize_block;
@@ -19,8 +19,8 @@ pub mod serialize_block;
 pub fn write_to_db(
     archive: Arc<Mutex<dyn DocumentsDb>>,
     envelope: Envelope<AckiNackiBlock>,
-    thread_accounts_repository: NodeThreadAccountsRepository,
-    shard_state: NodeThreadAccountsRef,
+    thread_accounts_repository: ThreadAccountsRepository,
+    shard_state: ThreadAccountsState,
 ) -> anyhow::Result<()> {
     let block = envelope.data().clone();
     let sqlite_clone = archive.clone();

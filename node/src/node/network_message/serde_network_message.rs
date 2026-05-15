@@ -48,6 +48,9 @@ impl Serialize for NetworkMessage {
 
             SyncFinalized(e) => serializer.serialize_newtype_variant(TYPE, 8, "SyncFinalized", &e),
             SyncFrom(e) => serializer.serialize_newtype_variant(TYPE, 7, "SyncFrom", &e),
+            SyncFinalizedWithHeight(e) => {
+                serializer.serialize_newtype_variant(TYPE, 12, "SyncFinalizedWithHeight", &e)
+            }
 
             ResentCandidate(e) => {
                 serializer.serialize_newtype_variant(TYPE, 9, "ResentCandidate", &e)
@@ -80,8 +83,10 @@ impl<'de> Deserialize<'de> for NetworkMessage {
                 "BlockRequest",
                 "SyncFrom",
                 "SyncFinalized",
+                "SyncFinalizedWithHeight",
                 "ResentCandidate",
                 "AuthoritySwitchProtocol",
+                "NodeJoiningWithLastFinalized",
             ],
             NetworkMessageVisitor::new(),
         )
@@ -129,12 +134,13 @@ impl<'de> de::Visitor<'de> for NetworkMessageVisitor {
 
             (7, v) => v.newtype_variant().map(SyncFrom),
             (8, v) => v.newtype_variant().map(SyncFinalized),
+            (12, v) => v.newtype_variant().map(SyncFinalizedWithHeight),
             (9, v) => v.newtype_variant().map(ResentCandidate),
             (10, v) => v.newtype_variant().map(AuthoritySwitchProtocol),
             (11, v) => v.newtype_variant().map(NodeJoiningWithLastFinalized),
             (v, _) => Err(Error::unknown_variant(
                 &v.to_string(),
-                &["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"],
+                &["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"],
             )),
         }
     }

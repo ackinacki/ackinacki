@@ -1,0 +1,4 @@
+---
+
+- name: Deploy Caddy server
+  include_tasks: deploy-caddy.yaml

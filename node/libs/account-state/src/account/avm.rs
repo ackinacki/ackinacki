@@ -4,17 +4,15 @@ use node_types::AccountCodeHash;
 use node_types::AccountDataHash;
 use node_types::AccountHash;
 use node_types::AccountIdentifier;
-use node_types::DAppIdentifier;
 use node_types::TransactionHash;
 use serde::Deserialize;
 use serde::Serialize;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug, Default)]
-pub struct AvmStateAccount {
-    pub account: AvmAccount,
+pub struct AvmThreadAccount {
+    pub vm_account: AvmAccount,
     pub last_trans_hash: TransactionHash,
     pub last_trans_lt: u64,
-    pub dapp_id: Option<DAppIdentifier>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug, Default)]

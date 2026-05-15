@@ -1,16 +1,21 @@
+use std::io::Read;
+use std::io::Write;
+
 use blake3::Hasher;
 use node_types::Blake3Hashable;
 use serde::Deserialize;
 use serde::Serialize;
-use trie_map::trie::arena::nibble_at;
-use trie_map::MapKey;
-use trie_map::MapKeyPath;
 
 use crate::node::Node;
 use crate::ops::get;
 use crate::ops::merge;
+use crate::ops::nibble_at;
+use crate::ops::prefix_bits_match;
 use crate::ops::split;
 use crate::ops::update;
+use crate::MapKey;
+use crate::MapKeyPath;
+use crate::MultiMapValue;
 
 // ====================== test helpers ======================
 
@@ -20,6 +25,19 @@ struct TV(pub u64);
 impl Blake3Hashable for TV {
     fn update_hasher(&self, hasher: &mut Hasher) {
         hasher.update(&self.0.to_be_bytes());
+    }
+}
+
+impl MultiMapValue for TV {
+    fn write_value<W: Write>(&self, w: &mut W) -> anyhow::Result<()> {
+        w.write_all(&self.0.to_be_bytes())?;
+        Ok(())
+    }
+
+    fn read_value<R: Read>(r: &mut R) -> anyhow::Result<Self> {
+        let mut buf = [0u8; 8];
+        r.read_exact(&mut buf)?;
+        Ok(TV(u64::from_be_bytes(buf)))
     }
 }
 
@@ -47,7 +65,7 @@ fn root_hash<V: crate::MultiMapValue>(node: &Node<V>) -> [u8; 32] {
 }
 
 fn prefix_bits_match_local(prefix: &[u8; 32], k: &[u8; 32], bits: u8) -> bool {
-    trie_map::trie::arena::prefix_bits_match(prefix, k, bits)
+    prefix_bits_match(prefix, k, bits)
 }
 
 // ====================== get tests ======================
@@ -171,102 +189,6 @@ fn insert_many_keys_and_read_back() {
     }
 }
 
-#[test]
-fn cross_hash_matches_trie_map() {
-    use trie_map::trie::arena::Arena;
-
-    let keys_and_vals: Vec<(MapKey, TV)> = (0..50u64)
-        .map(|i| {
-            let mut k = [0u8; 32];
-            k[0] = (i * 7) as u8;
-            k[1] = (i * 13) as u8;
-            (MapKey(k), TV(i * 100))
-        })
-        .collect();
-
-    let root_path = default_path();
-    let updates: Vec<(MapKey, Option<TV>)> =
-        keys_and_vals.iter().map(|(k, v)| (*k, Some(*v))).collect();
-
-    let mut arena = Arena::<TV>::new();
-    let (tm_root, _) = arena.update(0, root_path, &updates);
-    let tm_hash = arena.nodes[tm_root as usize].hash;
-
-    let mm_root: Node<TV> = Node::Empty;
-    let mm_root = update(&mm_root, &root_path, &updates);
-    let mm_hash = mm_root.hash();
-
-    assert_eq!(tm_hash, mm_hash, "trie-map and multi-map root hashes must match");
-
-    for (k, v) in &keys_and_vals {
-        assert_eq!(get(&mm_root, &root_path, k), Some(*v));
-    }
-}
-
-#[test]
-fn cross_hash_with_deletes() {
-    use trie_map::trie::arena::Arena;
-
-    let root_path = default_path();
-
-    let all_keys: Vec<(MapKey, TV)> = (0..30u64)
-        .map(|i| {
-            let mut k = [0u8; 32];
-            k[0] = (i * 11) as u8;
-            k[1] = (i * 3) as u8;
-            (MapKey(k), TV(i))
-        })
-        .collect();
-
-    let inserts: Vec<(MapKey, Option<TV>)> = all_keys.iter().map(|(k, v)| (*k, Some(*v))).collect();
-    let deletes: Vec<(MapKey, Option<TV>)> =
-        all_keys[0..10].iter().map(|(k, _)| (*k, None)).collect();
-
-    let mut arena = Arena::<TV>::new();
-    let (tm_root, _) = arena.update(0, root_path, &inserts);
-    let (tm_root, _) = arena.update(tm_root, root_path, &deletes);
-    let tm_hash = arena.nodes[tm_root as usize].hash;
-
-    let mm_root: Node<TV> = Node::Empty;
-    let mm_root = update(&mm_root, &root_path, &inserts);
-    let mm_root = update(&mm_root, &root_path, &deletes);
-    let mm_hash = mm_root.hash();
-
-    assert_eq!(tm_hash, mm_hash, "hashes must match after deletes");
-}
-
-#[test]
-fn incremental_updates_match_trie_map() {
-    use trie_map::trie::arena::Arena;
-
-    let root_path = default_path();
-
-    let mut arena = Arena::<TV>::new();
-    let mut tm_root: u32 = 0;
-    let mut mm_root: Node<TV> = Node::Empty;
-
-    for batch in 0..5u64 {
-        let updates: Vec<(MapKey, Option<TV>)> = (0..20u64)
-            .map(|i| {
-                let idx = batch * 20 + i;
-                let mut k = [0u8; 32];
-                k[0] = (idx * 7 % 256) as u8;
-                k[1] = (idx * 13 % 256) as u8;
-                k[2] = (idx * 17 % 256) as u8;
-                (MapKey(k), Some(TV(idx)))
-            })
-            .collect();
-
-        let (new_tm, _) = arena.update(tm_root, root_path, &updates);
-        tm_root = new_tm;
-        mm_root = update(&mm_root, &root_path, &updates);
-
-        let tm_hash = arena.nodes[tm_root as usize].hash;
-        let mm_hash = mm_root.hash();
-        assert_eq!(tm_hash, mm_hash, "batch {} hashes must match", batch);
-    }
-}
-
 // ====================== split / merge tests ======================
 
 #[test]
@@ -365,33 +287,4 @@ fn merge_empty_with_full_restores() {
     let merged = merge(&empty, path, &original, path);
 
     assert_eq!(root_hash(&merged), orig_hash);
-}
-
-#[test]
-fn cross_hash_split_merge_matches_trie_map() {
-    use trie_map::trie::smt::TrieMapRepository;
-    use trie_map::MapRepository;
-
-    let path = default_path();
-    let n = 500usize;
-    let updates: Vec<_> = (0..n).map(|i| (key(i), Some(value(i as u64)))).collect();
-
-    let trie_repo = TrieMapRepository::<TV>::new();
-    let t = trie_repo.map_update(&TrieMapRepository::<TV>::new_map(), &updates);
-    let m = update(&Node::Empty, &path, &updates);
-
-    let pfx = key(50).0;
-    let split_path = MapKeyPath { prefix: MapKey(pfx), len: 8 };
-
-    let (t_without, t_branch) = trie_repo.map_split(&t, split_path);
-    let (m_without, m_branch) = split(&m, path, split_path);
-
-    assert_eq!(trie_repo.map_hash(&t_without).0, root_hash(&m_without), "without hashes");
-    assert_eq!(trie_repo.map_hash(&t_branch).0, root_hash(&m_branch), "branch hashes");
-
-    let t_merged = trie_repo.merge(&t_without, &t_branch);
-    let m_merged = merge(&m_without, path, &m_branch, split_path);
-
-    assert_eq!(trie_repo.map_hash(&t_merged).0, root_hash(&m_merged), "merged hashes");
-    assert_eq!(trie_repo.map_hash(&t).0, root_hash(&m_merged), "merged matches original");
 }

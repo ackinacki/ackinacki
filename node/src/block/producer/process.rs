@@ -12,6 +12,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
 
+use node_types::AccountRouting;
 use node_types::BlockIdentifier;
 use node_types::ParentRef;
 use node_types::ThreadIdentifier;
@@ -24,6 +25,7 @@ use tracing::trace_span;
 use tvm_types::Cell;
 use typed_builder::TypedBuilder;
 
+use crate::bitmask::mask::Bitmask;
 use crate::block::producer::builder::ActiveThread;
 use crate::block::producer::execution_time::ExecutionTimeLimits;
 use crate::block::producer::execution_time::ProductionTimeoutCorrection;
@@ -43,6 +45,7 @@ use crate::config::GlobalConfig;
 use crate::external_messages::ExternalMessagesThreadState;
 use crate::helper::block_flow_trace_with_time;
 use crate::helper::metrics::BlockProductionMetrics;
+use crate::multithreading::load_balancing_service::LoadPlanner;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::NackData;
 use crate::node::block_state::repository::BlockStateRepository;
@@ -54,7 +57,6 @@ use crate::node::shared_services::SharedServices;
 use crate::node::NodeIdentifier;
 #[cfg(feature = "test_restart_on_failing_assumptions")]
 use crate::node::SignerIndex;
-use crate::repository::accounts::AccountsRepository;
 use crate::repository::cross_thread_ref_repository::CrossThreadRefDataRead;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::optimistic_state::OptimisticStateSaveCommand;
@@ -139,7 +141,6 @@ impl TVMBlockProducerProcess {
         received_acks: Arc<Mutex<Vec<Envelope<AckData>>>>,
         received_nacks: Arc<Mutex<Vec<Envelope<NackData>>>>,
         block_state_repo: BlockStateRepository,
-        accounts_repo: AccountsRepository,
         external_control_rx: &InstrumentedReceiver<()>,
         metrics: Option<BlockProductionMetrics>,
         wasm_cache: WasmNodeCache,
@@ -151,7 +152,17 @@ impl TVMBlockProducerProcess {
         round: BlockRound,
         parent_ref: ParentRef,
         protocol_version: ProtocolVersion,
-    ) -> anyhow::Result<(ProduceNextResult, ParentRef)> {
+
+        // This will be used IF load balancer proposes a split
+        best_recommended_cut: thread_load_balance::Recommendation<Bitmask<AccountRouting>>,
+
+        // This is what was requested to monitor in the past block.
+        monitored_paths: Vec<thread_load_balance::MonitorRequest<Bitmask<AccountRouting>>>,
+    ) -> anyhow::Result<(
+        ProduceNextResult,
+        ParentRef,
+        Vec<thread_load_balance::MonitorReport<Bitmask<AccountRouting>>>,
+    )> {
         tracing::trace!("Start block production process iteration");
         let start_time = std::time::SystemTime::now();
         let production_time = Instant::now();
@@ -200,11 +211,11 @@ impl TVMBlockProducerProcess {
             .epoch_block_keeper_data(epoch_block_keeper_data)
             .shared_services(shared_services.clone())
             .block_nack(block_nack.clone())
-            .accounts(accounts_repo)
             .block_state_repository(block_state_repo.clone())
             .thread_accounts_repository(repository.thread_accounts_repository().clone())
             .metrics(metrics.clone())
-            .wasm_cache(wasm_cache);
+            .wasm_cache(wasm_cache)
+            .best_recommended_cut(best_recommended_cut);
         let producer = producer.build();
         let (control_tx, control_rx) =
             instrumented_channel(metrics.clone(), crate::helper::metrics::ROUTING_COMMAND_CHANNEL);
@@ -357,9 +368,14 @@ impl TVMBlockProducerProcess {
                         }
                     }
 
+                    let anchor = repository.build_snapshot_anchor_for_block(
+                        block_ref.block_identifier(),
+                        block_ref.block_thread_identifier(),
+                    )?;
                     share_service.save_state_for_sharing(
                         block_ref.block_identifier(),
                         block_ref.block_thread_identifier(),
+                        anchor,
                         None,
                         finalizing_block.unwrap(),
                     )?;
@@ -375,6 +391,7 @@ impl TVMBlockProducerProcess {
         let parent_ref_for_monitor = parent_ref.clone();
 
         let (produce_result_tx, produce_result_rx) = std::sync::mpsc::channel();
+        let metrics_for_computation = metrics.clone();
 
         let thread: JoinHandle<anyhow::Result<()>> = std::thread::Builder::new()
             .name(format!("Produce block {}", &thread_id_clone))
@@ -391,9 +408,11 @@ impl TVMBlockProducerProcess {
                     processed_stamps,
                     ext_msg_feedbacks,
                     temp_id,
-                ) = producer
+                    tx_count_per_routing,
+                ) = {
+                    let block_computation_started_at = Instant::now();
                     // TODO: add refs to other thread states in case of sync
-                    .produce(
+                    let result = producer.produce(
                         thread_id_clone,
                         initial_state_clone,
                         refs.iter(),
@@ -403,7 +422,17 @@ impl TVMBlockProducerProcess {
                         round,
                         parent_ref,
                         protocol_version_clone,
-                    )?;
+                    );
+
+                    if let Some(metrics) = &metrics_for_computation {
+                        metrics.report_block_computation_time(
+                            block_computation_started_at.elapsed().as_millis(),
+                            &thread_id_clone,
+                        );
+                    }
+
+                    result?
+                };
 
                 produce_result_tx
                     .send((
@@ -414,6 +443,7 @@ impl TVMBlockProducerProcess {
                         processed_stamps,
                         ext_msg_feedbacks,
                         temp_id,
+                        tx_count_per_routing,
                     ))
                     .map_err(|e| anyhow::format_err!("Failed to send produce result: {e}"))?;
                 Ok(())
@@ -436,6 +466,7 @@ impl TVMBlockProducerProcess {
             processed_stamps,
             ext_msg_feedbacks,
             temp_id,
+            tx_count_per_routing,
         ) = match produce_result_rx.recv() {
             Ok(result) => result,
             Err(error) => {
@@ -489,8 +520,46 @@ impl TVMBlockProducerProcess {
             [],
         );
         if let Ok(()) = external_control_rx.try_recv() {
-            return Ok((ProduceNextResult::Stopped, ParentRef::Temporary(temp_id)));
+            return Ok((ProduceNextResult::Stopped, ParentRef::Temporary(temp_id), vec![]));
         }
+
+        // Build monitoring reports using per-routing transaction counts.
+        let mut monitoring_updates = vec![];
+        let overall_load = thread_load_balance::Score(*block.tx_cnt() as u32);
+        for monitored_path in monitored_paths.iter() {
+            let path = monitored_path.target();
+            let path_len = thread_load_balance::AsPath::len(path);
+            let mut score_at_path: u32 = 0;
+            let mut child_true: u32 = 0;
+            let mut child_false: u32 = 0;
+            for (routing, &count) in tx_count_per_routing.iter() {
+                if !path.is_match(routing) {
+                    continue;
+                }
+                score_at_path += count;
+                if routing.dapp_id().get_bit(path_len) {
+                    child_true += count;
+                } else {
+                    child_false += count;
+                }
+            }
+            let mut child_scores = std::collections::BTreeMap::new();
+            if child_true > 0 {
+                child_scores.insert(true, thread_load_balance::Score(child_true));
+            }
+            if child_false > 0 {
+                child_scores.insert(false, thread_load_balance::Score(child_false));
+            }
+            let monitoring_report =
+                thread_load_balance::MonitorReport::<Bitmask<AccountRouting>>::builder()
+                    .overall_load(overall_load)
+                    .path(path.clone())
+                    .score_at_path(thread_load_balance::Score(score_at_path))
+                    .path_child_scores(child_scores)
+                    .build();
+            monitoring_updates.push(monitoring_report);
+        }
+
         // Update common section
         let mut common_section = block.common_section().clone();
         common_section.set_acks(aggregated_acks);
@@ -523,6 +592,7 @@ impl TVMBlockProducerProcess {
         //
 
         *active_block_producer_threads = new_active_block_producer_threads;
+        let parent_state_threads_table = initial_state.threads_table.clone();
         *initial_state = result_state;
         repository.store_optimistic_in_cache(initial_state.clone())?;
 
@@ -555,6 +625,9 @@ impl TVMBlockProducerProcess {
             tracing::trace!("Save produced block");
             let mut blocks = produced_blocks.lock();
 
+            #[cfg(feature = "test_restart_on_failing_assumptions")]
+            let parent_state_threads_table_clone = parent_state_threads_table.clone();
+
             let assumptions = Assumptions::builder()
                 .new_to_bk_set(
                     BTreeSet::new(), // TODO: set real value with preattestaions implementation
@@ -562,6 +635,7 @@ impl TVMBlockProducerProcess {
                 //.block_version(actual_required_version)
                 .block_version(protocol_version.clone())
                 .producer_is_in_bk_set(true)
+                .threads_table(parent_state_threads_table)
                 .build();
 
             #[cfg(feature = "test_restart_on_failing_assumptions")]
@@ -575,6 +649,7 @@ impl TVMBlockProducerProcess {
                         .new_to_bk_set(new_to_bk_set)
                         .block_version(protocol_version)
                         .producer_is_in_bk_set(true)
+                        .threads_table(parent_state_threads_table_clone)
                         .build()
                 } else {
                     assumptions
@@ -613,10 +688,14 @@ impl TVMBlockProducerProcess {
         {
             if produced_blocks.lock().len() >= MAX_ATTESTATION_TARGET_BETA {
                 tracing::trace!("Produced blocks buffer is full, stop production");
-                return Ok((ProduceNextResult::Stopped, ParentRef::Temporary(temp_id)));
+                return Ok((
+                    ProduceNextResult::Stopped,
+                    ParentRef::Temporary(temp_id),
+                    monitoring_updates,
+                ));
             }
         }
-        Ok((ProduceNextResult::Continues, ParentRef::Temporary(temp_id)))
+        Ok((ProduceNextResult::Continues, ParentRef::Temporary(temp_id), monitoring_updates))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -709,7 +788,6 @@ impl TVMBlockProducerProcess {
         let parallelization_level = self.parallelization_level;
         let metrics = self.repository.get_metrics().cloned();
         let wasm_cache = self.wasm_cache.clone();
-        let accounts_repo = self.repository.accounts_repository().clone();
         let share_service = self.share_service.clone();
         let save_state_sender = self.save_optimistic_service_sender.clone();
         let node_config_read = self.node_config_read.clone();
@@ -745,6 +823,12 @@ impl TVMBlockProducerProcess {
             // TODO: think if it is the best solution given all circumstances
             let mut timeout_correction = ProductionTimeoutCorrection::default();
             let mut round = initial_round;
+
+            let mut best_recommended_cut_planning_state = <LoadPlanner as thread_load_balance::LoadPlanner::<Bitmask::<AccountRouting>>>::State::default();
+            let mut best_recommended_cut =
+                thread_load_balance::Recommendation::<Bitmask<AccountRouting>>::None;
+            let mut monitored_paths =
+                Vec::<thread_load_balance::MonitorRequest<Bitmask<AccountRouting>>>::new();
             let mut parent_ref = ParentRef::Block(prev_block_id_owned);
             loop {
                 let Some(node_config) = node_config_read.get(&block_version) else {
@@ -769,7 +853,6 @@ impl TVMBlockProducerProcess {
                     received_acks.clone(),
                     received_nacks.clone(),
                     block_state_repository.clone(),
-                    accounts_repo.clone(),
                     &external_control_rx,
                     metrics.clone(),
                     wasm_cache.clone(),
@@ -781,6 +864,8 @@ impl TVMBlockProducerProcess {
                     round,
                     parent_ref,
                     block_version.clone(),
+                    best_recommended_cut.clone(),
+                    monitored_paths.clone(),
                 );
                 // Note:
                 // if stopped.is_ok() ... is skipped.
@@ -807,7 +892,17 @@ impl TVMBlockProducerProcess {
                     #[cfg(feature = "fail-fast")]
                     return Ok(Arc::unwrap_or_clone(initial_state));
                 }
-                parent_ref = produce_res.unwrap().1;
+                let (_, produced, monitoring_report) = produce_res.unwrap();
+
+                let (next_best_recommended_cut_planning_state, plan) =
+                    <LoadPlanner as thread_load_balance::LoadPlanner<_>>::next(
+                        best_recommended_cut_planning_state,
+                        &monitoring_report,
+                    );
+                best_recommended_cut_planning_state = next_best_recommended_cut_planning_state;
+                best_recommended_cut = plan.recommendation().clone();
+                monitored_paths = plan.requests().clone();
+                parent_ref = produced;
             }
         };
         let bp_production_count = self.bp_production_count.clone();
@@ -998,6 +1093,7 @@ mod tests {
     use std::time::Duration;
     use std::time::Instant;
 
+    use account_state::ThreadAccountsRepository;
     use itertools::Itertools;
     use node_types::BlockIdentifier;
     use node_types::ThreadIdentifier;
@@ -1018,7 +1114,6 @@ mod tests {
     use crate::node::associated_types::NodeIdentifier;
     use crate::node::shared_services::SharedServices;
     use crate::repository::accounts::AccountsRepository;
-    use crate::repository::accounts::NodeThreadAccounts;
     use crate::repository::optimistic_state::OptimisticStateSaveCommand;
     use crate::repository::repository_impl::BkSetUpdate;
     use crate::repository::repository_impl::RepositoryImpl;
@@ -1058,7 +1153,7 @@ mod tests {
                 root_dir.join("block-state"),
             );
         let thread_accounts_repository =
-            NodeThreadAccounts::new_repository(root_dir.join("thread_state")).build()?;
+            ThreadAccountsRepository::builder(root_dir.join("durable")).build()?;
         let message_db = MessageDurableStorage::mem();
         let finalized_blocks =
             crate::repository::repository_impl::tests::finalized_blocks_storage();
@@ -1087,7 +1182,7 @@ mod tests {
             finalized_blocks,
             mock_bk_set_updates_tx(),
             ConfigRead::new(ProtocolVersion::parse("None")?, global_config.clone(), None, None),
-        );
+        )?;
         let (router, _router_rx) = RoutingService::stub();
         let feedback_sender = router.feedback_sender.clone();
         let (tx, _rx) = instrumented_channel::<OptimisticStateSaveCommand>(

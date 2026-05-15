@@ -148,7 +148,7 @@ where
     stop_result_tx: Sender<()>,
 
     stalled_threads: Arc<Mutex<HashSet<ThreadIdentifier>>>,
-    last_synced_state: Option<(BlockIdentifier, BlockSeqNo)>,
+    last_synced_state: Option<(BlockIdentifier, BlockSeqNo, BlockHeight)>,
     chain_pulse_monitor: Sender<ChainPulseEvent>,
 
     authority_handler: JoinHandle<()>,

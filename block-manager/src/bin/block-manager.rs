@@ -2,10 +2,10 @@
 //
 
 use std::io::Write;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use account_state::ThreadAccountsRepository;
 use block_manager::application::executor;
 use block_manager::application::metrics::Metrics;
 use block_manager::cli::config_from_args;
@@ -15,7 +15,6 @@ use block_manager::domain::bp_resolver::BPResolverImpl;
 use block_manager::domain::models::AppConfig;
 use block_manager::infrastructure::tracing::init_tracing;
 use clap::Parser;
-use node::repository::accounts::NodeThreadAccounts;
 use parking_lot::Mutex;
 
 fn main() -> anyhow::Result<()> {
@@ -59,8 +58,7 @@ fn tokio_main(config: AppConfig) -> anyhow::Result<()> {
 
         let bp_resolver = Arc::new(Mutex::new(BPResolverImpl::new(config.default_bp.clone())));
         let thread_accounts_repository =
-            NodeThreadAccounts::new_repository(PathBuf::from("./data").join("thread_state"))
-                .build()?;
+            ThreadAccountsRepository::builder("./data/thread_state").build()?;
         executor::run(config, bp_resolver, metrics, thread_accounts_repository).await
     });
     tracing::debug!("Shutting down tokio runtime");

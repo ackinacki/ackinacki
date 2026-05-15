@@ -6,7 +6,7 @@ use std::fmt::Display;
 use std::hash::Hash;
 use std::net::SocketAddr;
 
-use account_state::ThreadAccount;
+use account_state::VmAccount;
 use itertools::Itertools;
 pub use node_db::NodeDb;
 use node_types::AccountIdentifier;
@@ -23,7 +23,7 @@ pub trait BkSetProvider {
 }
 
 pub trait AccountProvider {
-    fn get_account(&self, id: &AccountIdentifier) -> Option<ThreadAccount>;
+    fn get_account(&self, id: &AccountIdentifier) -> Option<VmAccount>;
 }
 
 pub async fn watch_blockchain<PeerId, B, A>(

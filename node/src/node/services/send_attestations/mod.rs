@@ -112,6 +112,9 @@ pub struct AttestationSendService {
     tracking: BTreeMap<BlockIndex, TrackedState>,
 
     #[builder(default)]
+    last_pulse_started_at: Option<std::time::Instant>,
+
+    #[builder(default)]
     block_state_repository_last_modified: u32,
 
     #[builder(default)]
@@ -229,6 +232,21 @@ impl AttestationSendService {
         loopback_attestations: Arc<Mutex<CollectedAttestations>>,
         _candidate_block_repository: &impl Repository<CandidateBlock = Envelope<AckiNackiBlock>>,
     ) -> std::time::Instant {
+        let pulse_started_at = std::time::Instant::now();
+
+        if let Some(previous_pulse_started_at) = self.last_pulse_started_at {
+            let interval_ms = pulse_started_at
+                .saturating_duration_since(previous_pulse_started_at)
+                .as_millis()
+                .min(u64::MAX as u128) as u64;
+
+            if let Some(metrics) = self.metrics.as_ref() {
+                metrics.report_attestation_send_pulse_interval(interval_ms, &self.thread_id);
+            }
+        }
+
+        self.last_pulse_started_at = Some(pulse_started_at);
+
         let mut to_send: Vec<(HashSet<NodeIdentifier>, AttestationAction)> = vec![];
         // TODO: fix. it's a dirty hack for the borrow on tracking
         let first_sent = self

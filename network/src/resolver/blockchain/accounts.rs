@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
-use account_state::ThreadAccount;
+use account_state::VmAccount;
 use node_types::AccountIdentifier;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -52,7 +52,7 @@ static ROOT: LazyLock<TvmContract> = LazyLock::new(|| {
     )
 });
 
-pub struct Root(pub ThreadAccount);
+pub struct Root(pub VmAccount);
 impl Root {
     pub fn get_epoch_code_hash(&self) -> anyhow::Result<UInt256> {
         let output = ROOT.run_get(&self.0, "getEpochCodeHash", None)?;
@@ -67,7 +67,7 @@ static BK: LazyLock<TvmContract> = LazyLock::new(|| {
     )
 });
 
-pub struct Bk(pub ThreadAccount);
+pub struct Bk(pub VmAccount);
 impl Bk {
     pub fn get_proxy_list_addr(&self) -> anyhow::Result<AccountIdentifier> {
         let output = BK.run_get(&self.0, "getProxyListAddr", None)?;
@@ -86,7 +86,7 @@ static EPOCH: LazyLock<TvmContract> = LazyLock::new(|| {
     )
 });
 
-pub struct Epoch(pub ThreadAccount);
+pub struct Epoch(pub VmAccount);
 
 impl Epoch {
     pub fn get_owner_address(&self) -> anyhow::Result<AccountIdentifier> {
@@ -106,7 +106,7 @@ static PROXY_LIST: LazyLock<TvmContract> = LazyLock::new(|| {
     )
 });
 
-pub struct ProxyList(pub ThreadAccount);
+pub struct ProxyList(pub VmAccount);
 
 #[derive(Deserialize)]
 struct ProxyListEntry {

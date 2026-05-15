@@ -1,15 +1,14 @@
-use trie_map::trie::arena::boundary_mask;
-use trie_map::trie::arena::nibble_at;
-use trie_map::trie::arena::nibble_from_key;
-use trie_map::trie::arena::prefix_bits_match;
-use trie_map::MapKey;
-use trie_map::MapKeyPath;
-
+use super::boundary_mask;
 use super::ensure_branch_at_depth;
 use super::make_branch;
+use super::nibble_at;
+use super::nibble_from_key;
 use super::node_ptr_eq;
+use super::prefix_bits_match;
 use super::rebuild_branch_with_child;
 use crate::node::Node;
+use crate::MapKey;
+use crate::MapKeyPath;
 use crate::MultiMapValue;
 
 struct Update<V> {
@@ -218,4 +217,110 @@ pub fn update<V: MultiMapValue>(
 
     let start = (root_path.len as usize) / 4;
     apply_range(root, start, &mut items)
+}
+
+/// Fast path for inserting or replacing a single key-value pair.
+/// Skips normalize_updates, sort, dedup, split_by_nibble — just walks the trie directly.
+pub fn update_single<V: MultiMapValue>(
+    root: &Node<V>,
+    root_path: &MapKeyPath,
+    key: &MapKey,
+    value: Option<V>,
+) -> Node<V> {
+    let start = (root_path.len as usize) / 4;
+    apply_single(root, start, key, value)
+}
+
+/// COW single-key update: walk directly by nibble, no sorting or range splitting.
+fn apply_single<V: MultiMapValue>(
+    old: &Node<V>,
+    depth: usize,
+    key: &MapKey,
+    value: Option<V>,
+) -> Node<V> {
+    if depth == 64 {
+        return value.map_or(Node::Empty, Node::new_leaf);
+    }
+
+    let nib = nibble_at(&key.0, depth);
+
+    match old {
+        Node::Empty => {
+            // Insert into empty: build a path of ext + leaf
+            match value {
+                None => Node::Empty,
+                Some(v) => {
+                    let leaf = Node::new_leaf(v);
+                    // Remaining nibbles after consuming `nib` at `depth`: depth+1 .. 63
+                    let remaining = 63 - depth; // number of nibbles for the ext
+                    if remaining == 0 {
+                        // We're at depth 63, just one nibble branches to the leaf
+                        let mut children: [Node<V>; 16] = Default::default();
+                        children[nib as usize] = leaf;
+                        make_branch(1u16 << nib, children)
+                    } else {
+                        // Build ext covering nibbles [depth+1 .. 63], child is leaf
+                        let mut nibbles = [0u8; 64];
+                        #[allow(clippy::needless_range_loop)]
+                        for i in 0..remaining {
+                            nibbles[i] = nibble_at(&key.0, depth + 1 + i);
+                        }
+                        let ext_child = Node::new_ext(&nibbles[..remaining], leaf);
+                        let mut children: [Node<V>; 16] = Default::default();
+                        children[nib as usize] = ext_child;
+                        make_branch(1u16 << nib, children)
+                    }
+                }
+            }
+        }
+
+        Node::Leaf(_) => {
+            // Leaf at non-max depth shouldn't happen in a well-formed trie
+            // Fall back to batch update
+            let updates = [(*key, value)];
+            let mut items =
+                normalize_updates(&MapKeyPath { prefix: MapKey([0; 32]), len: 0 }, &updates);
+            apply_range(old, depth, &mut items)
+        }
+
+        Node::Ext(data) => {
+            let ext_count = data.nibble_count as usize;
+            // Check if our key matches the ext prefix
+            let mut match_len = 0;
+            while match_len < ext_count {
+                if data.nibbles[match_len] != nibble_at(&key.0, depth + match_len) {
+                    break;
+                }
+                match_len += 1;
+            }
+
+            if match_len == ext_count {
+                // Full match: recurse into child
+                let new_child = apply_single(&data.child, depth + ext_count, key, value);
+                if node_ptr_eq(&data.child, &new_child) {
+                    return old.clone();
+                }
+                if new_child.is_empty() {
+                    return Node::Empty;
+                }
+                return Node::new_ext(&data.nibbles[..ext_count], new_child);
+            }
+
+            // Partial match: need to split the ext
+            // Fall back to batch update for this case (rare in practice for updates on existing keys)
+            let updates = [(*key, value)];
+            let mut items =
+                normalize_updates(&MapKeyPath { prefix: MapKey([0; 32]), len: 0 }, &updates);
+            apply_range(old, depth, &mut items)
+        }
+
+        Node::Branch(br_data) => {
+            let old_child = &br_data.children[nib as usize];
+            let new_child = apply_single(old_child, depth + 1, key, value);
+            if node_ptr_eq(old_child, &new_child) {
+                return old.clone();
+            }
+            rebuild_branch_with_child(br_data, nib, new_child)
+        }
+    }
 }

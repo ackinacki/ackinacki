@@ -4,6 +4,7 @@
 use std::fmt::Debug;
 
 use account_state::ThreadAccountsRepository;
+use account_state::ThreadAccountsState;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -13,15 +14,13 @@ use serde_with::SerializeAs;
 use tvm_types::Cell;
 
 use super::tvm_cell_serde::CellFormat;
-use crate::repository::accounts::NodeThreadAccountsRef;
-use crate::repository::accounts::NodeThreadAccountsRepository;
 
 #[derive(Clone, Debug)]
-pub struct OptimisticShardState(pub NodeThreadAccountsRef);
+pub struct OptimisticShardState(pub ThreadAccountsState);
 
 impl Default for OptimisticShardState {
     fn default() -> Self {
-        Self(NodeThreadAccountsRepository::new_state())
+        Self(ThreadAccountsRepository::new_state())
     }
 }
 
@@ -31,7 +30,7 @@ impl Serialize for OptimisticShardState {
         S: Serializer,
     {
         use serde::ser::Error;
-        let cell = NodeThreadAccountsRepository::state_to_tvm_cell(&self.0)
+        let cell = ThreadAccountsRepository::state_to_tvm_cell(&self.0)
             .map_err(|err| S::Error::custom(format!("Failed to serialize shard state: {}", err)))?;
         <CellFormat as SerializeAs<Cell>>::serialize_as(&cell, serializer)
     }
@@ -45,10 +44,9 @@ impl<'de> Deserialize<'de> for OptimisticShardState {
         use serde::de::Error;
         let cell: Cell = <CellFormat as DeserializeAs<Cell>>::deserialize_as(deserializer)?;
         Ok(Self(
-            NodeThreadAccountsRepository::state_with_tvm_cell_and_empty_durable_state(cell)
-                .map_err(|err| {
-                    D::Error::custom(format!("Failed to deserialize shard state: {}", err))
-                })?,
+            ThreadAccountsRepository::state_with_tvm_cell_and_empty_durable_state(cell).map_err(
+                |err| D::Error::custom(format!("Failed to deserialize shard state: {}", err)),
+            )?,
         ))
     }
 }

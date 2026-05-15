@@ -3,7 +3,6 @@ use std::fmt::Formatter;
 
 use node_types::AccountIdentifier;
 use node_types::AccountRouting;
-use node_types::DAppIdentifier;
 use node_types::ThreadAccountsHash;
 use tvm_block::Deserializable;
 use tvm_block::GetRepresentationHash;
@@ -12,33 +11,33 @@ use tvm_block::Serializable;
 use tvm_block::ShardAccounts;
 use tvm_block::ShardStateUnsplit;
 
-use crate::ThreadAccountUpdate;
-use crate::ThreadStateAccount;
+use crate::BlockAccountOperation;
+use crate::ThreadAccount;
 
-#[derive(Clone)]
-pub struct TvmThreadStateDiff {
+#[derive(Clone, Debug)]
+pub struct TvmThreadAccountsStateDiff {
     pub update: MerkleUpdate,
 }
 
-impl From<MerkleUpdate> for TvmThreadStateDiff {
+impl From<MerkleUpdate> for TvmThreadAccountsStateDiff {
     fn from(update: MerkleUpdate) -> Self {
         Self { update }
     }
 }
 
 #[derive(Clone)]
-pub struct TvmThreadState {
+pub struct TvmThreadAccountsState {
     pub shard_state: ShardStateUnsplit,
     pub shard_accounts: ShardAccounts,
 }
 
-impl Debug for TvmThreadState {
+impl Debug for TvmThreadAccountsState {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "TvmThreadState {}", self.shard_state.hash().unwrap_or_default())
     }
 }
 
-impl Default for TvmThreadState {
+impl Default for TvmThreadAccountsState {
     fn default() -> Self {
         let shard_state = ShardStateUnsplit::default();
         let shard_accounts = shard_state.read_accounts().unwrap();
@@ -46,7 +45,7 @@ impl Default for TvmThreadState {
     }
 }
 
-impl TvmThreadState {
+impl TvmThreadAccountsState {
     pub fn with_shard_state(shard_state: ShardStateUnsplit) -> anyhow::Result<Self> {
         let shard_accounts = shard_state
             .read_accounts()
@@ -69,7 +68,7 @@ impl TvmThreadState {
     pub fn account(
         &self,
         account_address: &AccountRouting,
-    ) -> anyhow::Result<Option<ThreadStateAccount>> {
+    ) -> anyhow::Result<Option<ThreadAccount>> {
         self.shard_accounts
             .account(&account_address.account_id().into())
             .map_err(|err| anyhow::anyhow!("Failed to get TVM account: {}", err))
@@ -78,26 +77,18 @@ impl TvmThreadState {
 
     pub fn iterate_accounts(
         &self,
-        mut it: impl FnMut(&AccountRouting, ThreadStateAccount) -> anyhow::Result<bool>,
+        mut it: impl FnMut(&AccountIdentifier, ThreadAccount) -> anyhow::Result<bool>,
     ) -> anyhow::Result<()> {
         self.shard_accounts
             .iterate_accounts(|address, account| {
-                it(
-                    &AccountIdentifier::from(address).routing_with(
-                        account
-                            .get_dapp_id()
-                            .map(DAppIdentifier::from)
-                            .unwrap_or_else(|| DAppIdentifier::ZERO),
-                    ),
-                    account.into(),
-                )
-                .map_err(|err| tvm_types::error!("{}", err))
+                it(&AccountIdentifier::from(address), account.into())
+                    .map_err(|err| tvm_types::error!("{}", err))
             })
             .map_err(|err| anyhow::anyhow!("{}", err))?;
         Ok(())
     }
 
-    pub fn apply_diff(&self, diff: &TvmThreadStateDiff) -> anyhow::Result<Self> {
+    pub fn apply_diff(&self, diff: &TvmThreadAccountsStateDiff) -> anyhow::Result<Self> {
         let old_state_cell = self
             .shard_state
             .serialize()
@@ -114,26 +105,26 @@ impl TvmThreadState {
 
 pub(crate) fn patch_account(
     address: AccountIdentifier,
-    account: ThreadAccountUpdate,
+    account: BlockAccountOperation,
     accounts: &mut ShardAccounts,
 ) -> anyhow::Result<()> {
     match account {
-        ThreadAccountUpdate::UpdateOrInsert(account) => {
+        BlockAccountOperation::UpdateOrInsert(account) => {
             accounts
                 .insert(&address.into(), &account.try_into()?)
                 .map_err(|err| anyhow::anyhow!("Failed to insert TVM account: {}", err))?;
         }
-        ThreadAccountUpdate::Remove | ThreadAccountUpdate::MoveFromTvm => {
+        BlockAccountOperation::Remove | BlockAccountOperation::MoveFromTvm => {
             accounts
                 .remove(&address.into())
                 .map_err(|err| anyhow::anyhow!("Failed to remove TVM account: {}", err))?;
         }
-        ThreadAccountUpdate::AccountMerkleUpdate(update_bytes) => {
+        BlockAccountOperation::AccountMerkleUpdate(update_bytes) => {
             let old_shard_acc = accounts
                 .account(&address.into())
                 .map_err(|e| anyhow::anyhow!("Failed to read TVM account for merkle update: {e}"))?
                 .ok_or_else(|| {
-                    anyhow::anyhow!("AccountMerkleUpdate for non-existent TVM account")
+                    anyhow::anyhow!("Account merkle update for non-existent TVM account")
                 })?;
 
             let old_bytes = old_shard_acc

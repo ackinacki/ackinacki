@@ -168,6 +168,10 @@ fn trace_lock(action_lock: &ActionLock, message: &str) {
     tracing::trace!("{message}: {action_lock:?}");
 }
 
+fn node_is_in_ancestor_bk_set(node_id: &NodeIdentifier, ancestor_state: &BlockState) -> bool {
+    ancestor_state.guarded(|e| e.get_bk_data_for_node_id(node_id).is_some())
+}
+
 #[derive(Clone)]
 struct CollectedAuthoritySwitchRoundRequests {
     _round_timeout: Timeout,
@@ -743,9 +747,8 @@ impl ThreadAuthority {
             tracing::trace!(
                 "on_block_producer_stalled: unprocessed next round round success message"
             );
-            #[allow(clippy::result_large_err)]
-            let _ = self.self_node_authority_tx.as_ref().map(|e| {
-                e.send(WrappedItem {
+            if let Some(tx) = &self.self_node_authority_tx {
+                let _ = tx.send(WrappedItem {
                     payload: (
                         NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched(
                             buffered_unprocessed_round_success_message,
@@ -753,8 +756,8 @@ impl ThreadAuthority {
                         self.self_addr,
                     ),
                     label: self.thread_id.to_string(),
-                })
-            });
+                });
+            }
             return OnBlockProducerStalledResult::retry_later(None);
         }
 
@@ -1004,6 +1007,13 @@ impl ThreadAuthority {
                 let mut attestations = vec![];
                 for id in required_fallback_attestations.iter() {
                     let ancestor_state = self.block_state_repository.get(id).unwrap();
+                    if !node_is_in_ancestor_bk_set(self.node_credentials.node_id(), &ancestor_state)
+                    {
+                        tracing::trace!(
+                            "start_next_round: skip fallback ancestor attestation for {id:?}: node is not in ancestor bk set"
+                        );
+                        continue;
+                    }
                     if self.try_lock_send_attestation_action(id)
                         != ActionLockResult::OkSendAttestation
                     {
@@ -1057,6 +1067,13 @@ impl ThreadAuthority {
                 }
                 for id in required_primary_attestations.iter() {
                     let ancestor_state = self.block_state_repository.get(id).unwrap();
+                    if !node_is_in_ancestor_bk_set(self.node_credentials.node_id(), &ancestor_state)
+                    {
+                        tracing::trace!(
+                            "start_next_round: skip primary ancestor attestation for {id:?}: node is not in ancestor bk set"
+                        );
+                        continue;
+                    }
                     if self.try_lock_send_attestation_action(id)
                         != ActionLockResult::OkSendAttestation
                     {
@@ -1820,5 +1837,60 @@ impl ThreadAuthority {
         // Note:
         // todo!("Push the proposed block for processing");
         OnNextRoundSuccessResult::Success
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+    use crate::block_keeper_system::BlockKeeperData;
+    use crate::block_keeper_system::BlockKeeperSet;
+    use crate::node::associated_types::NodeIdentifier;
+    use crate::versioning::ProtocolVersionSupport;
+
+    fn make_bk_set(node_ids: &[NodeIdentifier]) -> BlockKeeperSet {
+        let mut bk_set = BlockKeeperSet::new();
+        for (idx, node_id) in node_ids.iter().enumerate() {
+            let data = BlockKeeperData {
+                owner_address: node_id.clone().into(),
+                signer_index: idx as SignerIndex,
+                protocol_support: ProtocolVersionSupport::from_str("test").unwrap(),
+                ..Default::default()
+            };
+
+            bk_set.insert(idx as SignerIndex, data);
+        }
+        bk_set
+    }
+
+    #[test]
+    fn node_is_in_ancestor_bk_set_returns_false_when_node_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let block_state_repository = BlockStateRepository::test(tmp.path().to_owned());
+        let ancestor_id = BlockIdentifier::new([7; 32]);
+        let node_id = NodeIdentifier::test(1);
+        let other_node = NodeIdentifier::test(2);
+        let ancestor_state = block_state_repository.get(&ancestor_id).unwrap();
+
+        ancestor_state.guarded_mut(|e| e.set_bk_set(Arc::new(make_bk_set(&[other_node])))).unwrap();
+
+        assert!(!node_is_in_ancestor_bk_set(&node_id, &ancestor_state));
+    }
+
+    #[test]
+    fn node_is_in_ancestor_bk_set_returns_true_when_node_is_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let block_state_repository = BlockStateRepository::test(tmp.path().to_owned());
+        let ancestor_id = BlockIdentifier::new([8; 32]);
+        let node_id = NodeIdentifier::test(1);
+        let ancestor_state = block_state_repository.get(&ancestor_id).unwrap();
+
+        ancestor_state
+            .guarded_mut(|e| e.set_bk_set(Arc::new(make_bk_set(std::slice::from_ref(&node_id)))))
+            .unwrap();
+
+        assert!(node_is_in_ancestor_bk_set(&node_id, &ancestor_state));
     }
 }

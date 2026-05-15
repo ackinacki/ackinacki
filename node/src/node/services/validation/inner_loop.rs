@@ -27,8 +27,8 @@ use crate::node::block_state::tools::invalidate_branch;
 use crate::node::services::validation::feedback::AckiNackiSend;
 use crate::node::shared_services::SharedServices;
 use crate::node::unprocessed_blocks_collection::FilterPrehistoric;
-// use std::thread::sleep;
-use crate::node::{BlockState, LOOP_PAUSE_DURATION};
+use crate::node::BlockState;
+use crate::node::LOOP_PAUSE_DURATION;
 use crate::protocol::authority_switch::action_lock::Authority;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::CrossThreadRefDataRead;
@@ -237,13 +237,19 @@ pub(super) fn inner_loop(
             } else {
                 let thread_id = *next_block.common_section().thread_id();
                 let has_bad_block_accusers = state.guarded(|e| !e.bad_block_accusers().is_empty());
-                match (verify_res, has_bad_block_accusers) {
-                    (VerificationResult::TooComplexExecution, false) => {
+                let is_finalized = state.guarded(|e| e.is_finalized());
+                match (verify_res, has_bad_block_accusers, is_finalized) {
+                    (VerificationResult::TooComplexExecution, false, _) => {
                         // TODO: send Nack here
-                        tracing::warn!("Verification failed: TooComplexExecution");
+                        tracing::warn!("Verification failed: TooComplexExecution. Skip NACK");
                     }
-                    (VerificationResult::BadBlock, _)
-                    | (VerificationResult::TooComplexExecution, true) => {
+                    (VerificationResult::AccountHashMismatch, false, true) => {
+                        // TODO: send Nack here
+                        tracing::warn!("Verification failed: AccountHashMismatch. Skip NACK");
+                    }
+                    (VerificationResult::BadBlock, _, _)
+                    | (VerificationResult::AccountHashMismatch, _, _)
+                    | (VerificationResult::TooComplexExecution, true, _) => {
                         tracing::trace!(target: "monit", "{state:?} Block verification failed");
                         invalidate_branch(
                             state.clone(),
@@ -258,11 +264,13 @@ pub(super) fn inner_loop(
                             .guarded_mut(|e| e.get_thread_authority(&thread_id))
                             .guarded_mut(|e| e.on_bad_block_nack_confirmed(state.clone()));
                     }
-                    (VerificationResult::ValidBlock, _) => {
+                    (VerificationResult::ValidBlock, _, _) => {
                         unreachable!();
                     }
                 };
             }
         }
+        // Sleep to prevent busy loop
+        std::thread::sleep(LOOP_PAUSE_DURATION);
     }
 }

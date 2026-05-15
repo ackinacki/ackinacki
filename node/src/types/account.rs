@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 use std::fmt::Formatter;
 
-use account_state::ThreadStateAccount;
+use account_state::ThreadAccount;
 use node_types::AccountIdentifier;
 use serde::Deserialize;
 use serde::Deserializer;
@@ -11,7 +11,7 @@ use serde::Serializer;
 #[derive(Clone, PartialEq)]
 pub struct WrappedAccount {
     pub account_id: AccountIdentifier,
-    pub account: account_state::ThreadStateAccount,
+    pub account: account_state::ThreadAccount,
 }
 
 impl Debug for WrappedAccount {
@@ -37,7 +37,7 @@ impl WrappedAccount {
     fn wrap_deserialize(data: WrappedAccountData) -> Self {
         Self {
             account_id: data.account_id,
-            account: ThreadStateAccount::read_bytes(&data.data).unwrap(),
+            account: ThreadAccount::read_bytes(&data.data).unwrap(),
         }
     }
 }

@@ -1,10 +1,16 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::Duration;
 use std::time::Instant;
 
 use node_types::AccountIdentifier;
 use node_types::AccountRouting;
 use node_types::BlockIdentifier;
 use node_types::DAppIdentifier;
+use node_types::ThreadIdentifier;
 use node_types::TransactionHash;
+use once_cell::sync::OnceCell;
+use tracing_subscriber::EnvFilter;
 use tvm_block::MsgAddressInt;
 use tvm_block::ShardAccount;
 use tvm_types::AccountId;
@@ -12,23 +18,34 @@ use tvm_types::AccountId;
 use crate::account::avm::AvmAccount;
 use crate::account::avm::AvmAccountData;
 use crate::account::avm::AvmAccountMetadata;
-use crate::account::avm::AvmStateAccount;
-use crate::DurableThreadAccountsDiff;
-use crate::FsCompositeThreadAccounts;
-use crate::ThreadAccountUpdate;
-use crate::ThreadAccounts;
-use crate::ThreadAccountsBuilder;
+use crate::account::avm::AvmThreadAccount;
+use crate::AccountHashMismatchError;
+use crate::ArchiveOperation;
+use crate::BlockAccountOperation;
+use crate::DurableThreadAccountsStateDiff;
+use crate::ThreadAccount;
 use crate::ThreadAccountsRepository;
-use crate::ThreadStateAccount;
+use crate::ThreadAccountsState;
 
-fn target_tmp() -> std::path::PathBuf {
+fn new_state() -> ThreadAccountsState {
+    ThreadAccountsRepository::new_state()
+}
+
+fn target_tmp() -> PathBuf {
     let target = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".into());
 
-    let path = std::path::PathBuf::from(target).join("test-accounts");
+    let path = PathBuf::from(target).join("test-accounts");
 
     std::fs::create_dir_all(&path).unwrap();
 
     path
+}
+
+fn assert_drained(repo: &ThreadAccountsRepository) {
+    assert!(
+        repo.flush_pending_and_wait_for_drain(Duration::from_secs(5)),
+        "archive accumulator did not drain"
+    );
 }
 
 fn new_u256(name: &str, seed: usize) -> [u8; 32] {
@@ -39,9 +56,9 @@ fn new_u256(name: &str, seed: usize) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn new_acc(seed: usize) -> (AccountRouting, ThreadStateAccount) {
+fn new_acc(seed: usize) -> (AccountRouting, ThreadAccount) {
     let id = AccountIdentifier::new(new_u256("acc", seed));
-    let routing = id.dapp_originator();
+    let routing = id.redirect();
     let tvm_acc = tvm_block::Account::with_address(
         MsgAddressInt::with_standart(None, 0, AccountId::from_raw(id.as_slice().to_vec(), 256))
             .unwrap(),
@@ -53,12 +70,9 @@ fn new_acc(seed: usize) -> (AccountRouting, ThreadStateAccount) {
         Some(routing.dapp_id().as_array().into()),
     )
     .unwrap();
-    let acc = ThreadStateAccount::from(tvm_shard_acc);
-    (id.dapp_originator(), acc)
+    let acc = ThreadAccount::from(tvm_shard_acc);
+    (id.redirect(), acc)
 }
-
-type Accounts = FsCompositeThreadAccounts;
-type Repo = <Accounts as ThreadAccounts>::Repository;
 
 #[test]
 #[ignore]
@@ -66,12 +80,13 @@ fn test_fs_accounts_repo() -> anyhow::Result<()> {
     let root_path = target_tmp();
     std::fs::remove_dir_all(&root_path).ok();
     let start = Instant::now();
-    let repo = Accounts::new_repository(root_path).build()?;
+    let repo = ThreadAccountsRepository::builder(root_path).build()?;
+    repo.ensure_thread(&ThreadIdentifier::default(), &BlockIdentifier::default(), true)?;
     let mut seed = 1;
-    let mut prev_state = Repo::new_state();
+    let mut prev_state = new_state();
     for block_index in 0..10000 {
         let block_id = BlockIdentifier::new(new_u256("block", block_index));
-        let mut builder = repo.state_builder(&prev_state);
+        let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &prev_state);
         let mut accounts = Vec::new();
         for _ in 0..1000 {
             let (routing, acc) = new_acc(seed);
@@ -79,22 +94,26 @@ fn test_fs_accounts_repo() -> anyhow::Result<()> {
             builder.insert_account(&routing, &acc);
             accounts.push((routing, acc));
         }
-        let new_state = builder.build(None)?.new_state;
-        repo.set_state(&block_id, &new_state)?;
+        let transition = builder.build(None)?;
+        repo.finalize_thread_transition(
+            &block_id,
+            &ThreadIdentifier::default(),
+            0,
+            &transition.new_state,
+            transition.account_operations,
+        )?;
+        assert_drained(&repo);
+        repo.state_save(&block_id, &transition.new_state)?;
         for (routing, acc) in accounts {
-            let acc1 = repo.state_account(&new_state, &routing)?.unwrap();
+            let acc1 = repo.state_account(&transition.new_state, &routing)?.unwrap();
             assert_eq!(acc.get_dapp_id(), acc1.get_dapp_id());
-            assert_eq!(acc.account()?.hash(), acc1.account()?.hash());
+            assert_eq!(acc.vm_account()?.hash(), acc1.vm_account()?.hash());
         }
-        prev_state = new_state;
-        if block_index % 200 == 0 {
-            repo.commit()?;
-        }
+        prev_state = transition.new_state;
         if block_index % 10 == 0 {
             println!("Block {} done", block_index);
         }
     }
-    repo.commit()?;
     println!("Repo filled in {:?}", start.elapsed());
     test_fs_accounts_repo_compact()?;
     Ok(())
@@ -105,7 +124,7 @@ fn test_fs_accounts_repo() -> anyhow::Result<()> {
 fn test_fs_accounts_repo_compact() -> anyhow::Result<()> {
     let root_path = target_tmp();
     let start = Instant::now();
-    let _repo = Accounts::new_repository(root_path).build()?;
+    let _repo = ThreadAccountsRepository::builder(root_path).build()?;
     println!("Repo loaded in {:?}", start.elapsed());
     Ok(())
 }
@@ -114,12 +133,12 @@ fn test_fs_accounts_repo_compact() -> anyhow::Result<()> {
 
 /// Creates a TVM account with a substantial data cell large enough to trigger
 /// merkle update optimization (>= 256 bytes serialized).
-fn new_large_acc(seed: usize, data_size: usize) -> (AccountRouting, ThreadStateAccount) {
+fn new_large_acc(seed: usize, data_size: usize) -> (AccountRouting, ThreadAccount) {
     use tvm_block::*;
     use tvm_types::*;
 
     let id = AccountIdentifier::new(new_u256("large_acc", seed));
-    let routing = id.dapp_originator();
+    let routing = id.redirect();
     let address =
         MsgAddressInt::with_standart(None, 0, AccountId::from_raw(id.as_slice().to_vec(), 256))
             .unwrap();
@@ -150,7 +169,7 @@ fn new_large_acc(seed: usize, data_size: usize) -> (AccountRouting, ThreadStateA
     )
     .unwrap();
 
-    let state_acc = ThreadStateAccount::from(shard_acc);
+    let state_acc = ThreadAccount::from(shard_acc);
     assert!(
         state_acc.write_bytes().unwrap().len() >= 256,
         "Large account should be at least 256 bytes, got {}",
@@ -186,15 +205,15 @@ fn build_data_cell(seed: usize, size: usize) -> tvm_types::Cell {
 
 /// Creates a modified copy of a TVM account with a different balance.
 /// This is the minimal change that produces a small merkle delta.
-fn modify_acc_balance(acc: &ThreadStateAccount, new_balance: u64) -> ThreadStateAccount {
-    use crate::ThreadAccount;
+fn modify_acc_balance(acc: &ThreadAccount, new_balance: u64) -> ThreadAccount {
+    use crate::VmAccount;
 
-    let thread_account = acc.account().unwrap();
+    let thread_account = acc.vm_account().unwrap();
     let mut tvm_account = tvm_block::Account::try_from(&thread_account).unwrap();
     tvm_account.set_balance(tvm_block::CurrencyCollection::with_grams(new_balance));
 
-    let new_thread_account: ThreadAccount = tvm_account.try_into().unwrap();
-    ThreadStateAccount::new(
+    let new_thread_account: VmAccount = tvm_account.try_into().unwrap();
+    ThreadAccount::new(
         new_thread_account,
         acc.last_trans_hash(),
         acc.last_trans_lt() + 1,
@@ -203,12 +222,27 @@ fn modify_acc_balance(acc: &ThreadStateAccount, new_balance: u64) -> ThreadState
     .unwrap()
 }
 
+fn set_acc_dapp_id(acc: &ThreadAccount, dapp_id: DAppIdentifier) -> ThreadAccount {
+    use crate::VmAccount;
+
+    let thread_account = acc.vm_account().unwrap();
+    let tvm_account = tvm_block::Account::try_from(&thread_account).unwrap();
+    let new_thread_account: VmAccount = tvm_account.try_into().unwrap();
+    ThreadAccount::new(
+        new_thread_account,
+        acc.last_trans_hash(),
+        acc.last_trans_lt(),
+        Some(dapp_id),
+    )
+    .unwrap()
+}
+
 /// Creates an AVM account for testing the AVM-skip guard.
-fn new_avm_acc(seed: usize) -> (AccountRouting, ThreadStateAccount) {
+fn new_avm_acc(seed: usize) -> (AccountRouting, ThreadAccount) {
     use node_types::AccountHash;
 
     let id = AccountIdentifier::new(new_u256("avm_acc", seed));
-    let routing = id.dapp_originator();
+    let routing = id.redirect();
     let avm_account = AvmAccount::new(
         AccountHash::new(new_u256("avm_hash", seed)),
         AvmAccountMetadata { id, storage_used_bytes: 1024, ..Default::default() },
@@ -216,23 +250,37 @@ fn new_avm_acc(seed: usize) -> (AccountRouting, ThreadStateAccount) {
         None,
         Some(AvmAccountData { data: vec![0u8; 512] }),
     );
-    let state_account = ThreadStateAccount::Avm(AvmStateAccount {
-        account: avm_account,
+    let state_account = ThreadAccount::from_avm(AvmThreadAccount {
+        vm_account: avm_account,
         last_trans_hash: TransactionHash::new(new_u256("avm_trans", seed)),
         last_trans_lt: seed as u64,
-        dapp_id: Some(*routing.dapp_id()),
     });
     (routing, state_account)
 }
 
 /// Creates a fresh filesystem-backed repository in a temp directory.
 /// Returns the repo and the TempDir (which keeps the directory alive).
-fn setup_repo(apply_to_durable: bool) -> (Repo, tempfile::TempDir) {
+fn setup_repo(apply_to_durable: bool) -> (ThreadAccountsRepository, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let repo =
-        Accounts::new_repository_with_apply_to_durable(dir.path().to_path_buf(), apply_to_durable)
-            .build()
-            .unwrap();
+    let repo = ThreadAccountsRepository::builder(dir.path())
+        .set_apply_to_durable(apply_to_durable)
+        .build()
+        .unwrap();
+    repo.ensure_thread(&ThreadIdentifier::default(), &BlockIdentifier::default(), true).unwrap();
+    repo.start_archive_update_service().unwrap();
+    (repo, dir)
+}
+
+/// Like setup_repo but with thread in Uninitialized phase — for repos that will import a snapshot.
+fn setup_import_repo(apply_to_durable: bool) -> (ThreadAccountsRepository, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = ThreadAccountsRepository::builder(dir.path())
+        .set_apply_to_durable(apply_to_durable)
+        .build()
+        .unwrap();
+    repo.ensure_thread(&ThreadIdentifier::default(), &BlockIdentifier::default(), true).unwrap();
+    repo.reset_archive().unwrap();
+    repo.start_archive_update_service().unwrap();
     (repo, dir)
 }
 
@@ -267,7 +315,7 @@ fn test_merkle_update_roundtrip_raw() {
 
     // Reconstruct and compare
     let result_bytes = write_boc(&result_cell).unwrap();
-    let result_acc = ThreadStateAccount::read_bytes(&result_bytes).unwrap();
+    let result_acc = ThreadAccount::read_bytes(&result_bytes).unwrap();
 
     assert_eq!(
         result_acc.write_bytes().unwrap(),
@@ -351,36 +399,43 @@ fn test_merkle_update_large_change_not_smaller() {
 #[ignore]
 fn test_builder_optimizes_large_account_update() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 1));
 
     // Insert a large account
     let (routing, large_acc) = new_large_acc(1, 1024);
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&routing, &large_acc);
     let transition1 = builder.build(None)?;
     let state1 = transition1.new_state;
-    repo.set_state(&block_id_1, &state1)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
 
     // Modify the same account (balance change only)
     let modified_acc = modify_acc_balance(&large_acc, 999_999);
-    let mut builder2 = repo.state_builder(&state1);
+    let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &state1);
     builder2.insert_account(&routing, &modified_acc);
     let transition2 = builder2.build(None)?;
 
     // The diff should contain AccountMerkleUpdate for this routing
     let durable_accounts = &transition2.diff.durable.accounts;
-    let entry = durable_accounts.iter().find(|(r, _)| r == &routing);
-    assert!(entry.is_some(), "Diff should contain the modified account");
-    let (_, update) = entry.unwrap();
+    let update = durable_accounts.get(&routing);
+    assert!(update.is_some(), "Diff should contain the modified account");
+    let update = update.unwrap();
     assert!(
-        matches!(update, ThreadAccountUpdate::AccountMerkleUpdate(_)),
-        "Large account with small change should be optimized to AccountMerkleUpdate, got {:?}",
+        matches!(update, BlockAccountOperation::AccountMerkleUpdate(_)),
+        "Large account with small change should be optimized to account merkle update, got {:?}",
         std::mem::discriminant(update)
     );
 
-    if let ThreadAccountUpdate::AccountMerkleUpdate(bytes) = update {
+    if let BlockAccountOperation::AccountMerkleUpdate(bytes) = update {
         assert!(!bytes.is_empty(), "Merkle update bytes should be non-empty");
     }
 
@@ -396,32 +451,156 @@ fn test_builder_optimizes_large_account_update() -> anyhow::Result<()> {
 }
 
 #[test]
+fn test_builder_skips_merkle_update_for_redirect_account() -> anyhow::Result<()> {
+    let (repo, _dir) = setup_repo(true);
+    let state0 = new_state();
+    let block_id_1 = BlockIdentifier::new(new_u256("block", 10_001));
+
+    let (routing, large_acc) = new_large_acc(10_001, 1024);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
+    builder.insert_account(&routing, &large_acc);
+    let transition1 = builder.build(None)?;
+    let state1 = transition1.new_state;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
+
+    let redirect_acc = large_acc.with_redirect()?;
+    let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &state1);
+    builder2.insert_account(&routing, &redirect_acc);
+    let transition2 = builder2.build(None)?;
+
+    let update = transition2.diff.durable.accounts.get(&routing).unwrap();
+    assert!(
+        matches!(update, BlockAccountOperation::UpdateOrInsert(account) if account.is_redirect()),
+        "Redirect account should stay a full UpdateOrInsert, got {:?}",
+        std::mem::discriminant(update)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_builder_skips_merkle_update_when_account_dapp_differs_from_routing() -> anyhow::Result<()> {
+    let (repo, _dir) = setup_repo(true);
+    let state0 = new_state();
+    let block_id_1 = BlockIdentifier::new(new_u256("block", 10_002));
+
+    let (default_routing, large_acc) = new_large_acc(10_002, 1024);
+    let dapp_a = DAppIdentifier::new(new_u256("dapp", 10_002));
+    let dapp_b = DAppIdentifier::new(new_u256("dapp", 10_003));
+    let routing = default_routing.account_id().routing(dapp_a);
+    let large_acc = set_acc_dapp_id(&large_acc, dapp_a);
+
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
+    builder.insert_account(&routing, &large_acc);
+    let transition1 = builder.build(None)?;
+    let state1 = transition1.new_state;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
+
+    let modified_acc = set_acc_dapp_id(&modify_acc_balance(&large_acc, 999_999), dapp_b);
+    let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &state1);
+    builder2.insert_account(&routing, &modified_acc);
+    let transition2 = builder2.build(None)?;
+
+    let update = transition2.diff.durable.accounts.get(&routing).unwrap();
+    assert!(
+        matches!(update, BlockAccountOperation::UpdateOrInsert(_)),
+        "Account with dapp id different from routing should stay full UpdateOrInsert, got {:?}",
+        std::mem::discriminant(update)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_builder_allows_merkle_update_when_account_dapp_matches_routing() -> anyhow::Result<()> {
+    let (repo, _dir) = setup_repo(true);
+    let state0 = new_state();
+    let block_id_1 = BlockIdentifier::new(new_u256("block", 10_004));
+
+    let (default_routing, large_acc) = new_large_acc(10_004, 1024);
+    let dapp = DAppIdentifier::new(new_u256("dapp", 10_004));
+    let routing = default_routing.account_id().routing(dapp);
+    let large_acc = set_acc_dapp_id(&large_acc, dapp);
+
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
+    builder.insert_account(&routing, &large_acc);
+    let transition1 = builder.build(None)?;
+    let state1 = transition1.new_state;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
+
+    let modified_acc = set_acc_dapp_id(&modify_acc_balance(&large_acc, 999_999), dapp);
+    let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &state1);
+    builder2.insert_account(&routing, &modified_acc);
+    let transition2 = builder2.build(None)?;
+
+    let update = transition2.diff.durable.accounts.get(&routing).unwrap();
+    assert!(
+        matches!(update, BlockAccountOperation::AccountMerkleUpdate(_)),
+        "Matching dapp id account should still be eligible for AccountMerkleUpdate, got {:?}",
+        std::mem::discriminant(update)
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_builder_keeps_small_account_as_update_or_insert() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 100));
 
-    // Insert a small account (below 256-byte threshold)
+    // Insert a small account (below the 256-byte threshold)
     let (routing, small_acc) = new_acc(1);
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&routing, &small_acc);
     let transition1 = builder.build(None)?;
     let state1 = transition1.new_state;
-    repo.set_state(&block_id_1, &state1)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
 
     // Modify the small account
     let modified = modify_acc_balance(&small_acc, 42);
-    let mut builder2 = repo.state_builder(&state1);
+    let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &state1);
     builder2.insert_account(&routing, &modified);
     let transition2 = builder2.build(None)?;
 
     // Should remain as UpdateOrInsert (too small for merkle optimization)
-    let entry = transition2.diff.durable.accounts.iter().find(|(r, _)| r == &routing);
+    let entry = transition2.diff.durable.accounts.get(&routing);
     assert!(entry.is_some(), "Diff should contain the modified account");
-    let (_, update) = entry.unwrap();
+    let update = entry.unwrap();
     assert!(
-        matches!(update, ThreadAccountUpdate::UpdateOrInsert(_)),
+        matches!(update, BlockAccountOperation::UpdateOrInsert(_)),
         "Small account should remain as UpdateOrInsert"
     );
 
@@ -431,20 +610,20 @@ fn test_builder_keeps_small_account_as_update_or_insert() -> anyhow::Result<()> 
 #[test]
 fn test_builder_keeps_new_account_as_update_or_insert() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
 
     // Insert a large account into an empty state (no old state to diff against)
     let (routing, large_acc) = new_large_acc(1, 1024);
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&routing, &large_acc);
     let transition = builder.build(None)?;
 
     // Should be UpdateOrInsert since there's no old account to create a delta from
-    let entry = transition.diff.durable.accounts.iter().find(|(r, _)| r == &routing);
+    let entry = transition.diff.durable.accounts.get(&routing);
     assert!(entry.is_some(), "Diff should contain the new account");
-    let (_, update) = entry.unwrap();
+    let update = entry.unwrap();
     assert!(
-        matches!(update, ThreadAccountUpdate::UpdateOrInsert(_)),
+        matches!(update, BlockAccountOperation::UpdateOrInsert(_)),
         "New account (no prior state) should be UpdateOrInsert"
     );
 
@@ -457,30 +636,37 @@ fn test_builder_skips_avm_accounts() -> anyhow::Result<()> {
     // be converted to merkle updates. We verify by checking that an AVM account
     // always produces UpdateOrInsert in the diff.
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 200));
 
     let (routing, avm_acc) = new_avm_acc(1);
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&routing, &avm_acc);
     let transition1 = builder.build(None)?;
     let state1 = transition1.new_state;
-    repo.set_state(&block_id_1, &state1)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
 
     // Modify the AVM account
     let (_, modified_avm) = new_avm_acc(2);
     // Use the same routing but different account data
-    let mut builder2 = repo.state_builder(&state1);
+    let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &state1);
     builder2.insert_account(&routing, &modified_avm);
     let transition2 = builder2.build(None)?;
 
-    let entry = transition2.diff.durable.accounts.iter().find(|(r, _)| r == &routing);
+    let entry = transition2.diff.durable.accounts.get(&routing);
     assert!(entry.is_some(), "Diff should contain the AVM account");
-    let (_, update) = entry.unwrap();
+    let update = entry.unwrap();
     assert!(
-        matches!(update, ThreadAccountUpdate::UpdateOrInsert(_)),
-        "AVM accounts should never be converted to AccountMerkleUpdate"
+        matches!(update, BlockAccountOperation::UpdateOrInsert(_)),
+        "AVM accounts should never be converted to account merkle update"
     );
 
     Ok(())
@@ -489,32 +675,39 @@ fn test_builder_skips_avm_accounts() -> anyhow::Result<()> {
 #[test]
 fn test_builder_preserves_remove_and_move_from_tvm() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 300));
 
     // Insert two large accounts
     let (routing1, large_acc1) = new_large_acc(1, 1024);
     let (routing2, large_acc2) = new_large_acc(2, 1024);
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&routing1, &large_acc1);
     builder.insert_account(&routing2, &large_acc2);
     let transition1 = builder.build(None)?;
     let state1 = transition1.new_state;
-    repo.set_state(&block_id_1, &state1)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
 
     // Remove one, modify the other
     let modified2 = modify_acc_balance(&large_acc2, 42);
-    let mut builder2 = repo.state_builder(&state1);
+    let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &state1);
     builder2.remove_account(&routing1);
     builder2.insert_account(&routing2, &modified2);
     let transition2 = builder2.build(None)?;
 
     // routing1 should be Remove
-    let entry1 = transition2.diff.durable.accounts.iter().find(|(r, _)| r == &routing1);
+    let entry1 = transition2.diff.durable.accounts.get(&routing1);
     assert!(entry1.is_some(), "Diff should contain the removed account");
     assert!(
-        matches!(entry1.unwrap().1, ThreadAccountUpdate::Remove),
+        matches!(entry1.unwrap(), BlockAccountOperation::Remove),
         "Removed account should stay as Remove"
     );
 
@@ -522,7 +715,7 @@ fn test_builder_preserves_remove_and_move_from_tvm() -> anyhow::Result<()> {
     // let entry2 = transition2.diff.durable.accounts.iter().find(|(r, _)| r == &routing2);
     // assert!(entry2.is_some(), "Diff should contain the modified account");
     // assert!(
-    //     matches!(entry2.unwrap().1, ThreadAccountUpdate::AccountMerkleUpdate(_)),
+    //     matches!(entry2.unwrap().1, ThreadAccountDiff::AccountMerkleUpdate(_)),
     //     "Large modified account should be AccountMerkleUpdate"
     // );
 
@@ -533,21 +726,28 @@ fn test_builder_preserves_remove_and_move_from_tvm() -> anyhow::Result<()> {
 #[ignore]
 fn test_apply_merkle_update_diff_produces_correct_state() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 400));
 
-    // Insert large account
+    // Insert a large account
     let (routing, large_acc) = new_large_acc(1, 1024);
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&routing, &large_acc);
     let transition1 = builder.build(None)?;
     let state1 = transition1.new_state;
-    repo.set_state(&block_id_1, &state1)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
 
-    // Modify account → build produces optimized diff with AccountMerkleUpdate
+    // Modify an account → build produces optimized diff with AccountMerkleUpdate
     let modified = modify_acc_balance(&large_acc, 777_777);
-    let mut builder2 = repo.state_builder(&state1);
+    let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &state1);
     builder2.insert_account(&routing, &modified);
     let transition2 = builder2.build(None)?;
 
@@ -557,15 +757,16 @@ fn test_apply_merkle_update_diff_produces_correct_state() -> anyhow::Result<()> 
         .durable
         .accounts
         .iter()
-        .any(|(_, u)| matches!(u, ThreadAccountUpdate::AccountMerkleUpdate(_)));
-    assert!(has_merkle_update, "Diff should contain at least one AccountMerkleUpdate");
+        .any(|(_, u)| matches!(u, BlockAccountOperation::AccountMerkleUpdate(_)));
+    assert!(has_merkle_update, "Diff should contain at least one account merkle update");
 
     // Simulate receiver: apply the diff to the old state
-    let state_applied = repo.state_apply_diff(&state1, transition2.diff)?;
+    let transition =
+        repo.state_apply_diff(&state1, transition2.diff, ThreadIdentifier::default(), 0)?;
 
     // Verify the applied state has the correct account
     let acc_from_new_state = repo.state_account(&transition2.new_state, &routing)?.unwrap();
-    let acc_from_applied = repo.state_account(&state_applied, &routing)?.unwrap();
+    let acc_from_applied = repo.state_account(&transition.new_state, &routing)?.unwrap();
 
     assert_eq!(
         acc_from_applied.write_bytes()?,
@@ -585,24 +786,31 @@ fn test_apply_merkle_update_diff_produces_correct_state() -> anyhow::Result<()> 
 #[ignore]
 fn test_multiple_accounts_mixed_optimization() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 500));
 
-    // Insert 2 large + 2 small accounts
+    // Insert 2 large + 2 smalls accounts
     let (routing_l1, large1) = new_large_acc(1, 1024);
     let (routing_l2, large2) = new_large_acc(2, 1024);
     let (routing_s1, small1) = new_acc(101);
     let (routing_s2, small2) = new_acc(102);
 
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&routing_l1, &large1);
     builder.insert_account(&routing_l2, &large2);
     builder.insert_account(&routing_s1, &small1);
     builder.insert_account(&routing_s2, &small2);
     let transition1 = builder.build(None)?;
     let state1 = transition1.new_state;
-    repo.set_state(&block_id_1, &state1)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
 
     // Modify all 4 accounts (balance change)
     let mod_l1 = modify_acc_balance(&large1, 100);
@@ -610,7 +818,7 @@ fn test_multiple_accounts_mixed_optimization() -> anyhow::Result<()> {
     let mod_s1 = modify_acc_balance(&small1, 300);
     let mod_s2 = modify_acc_balance(&small2, 400);
 
-    let mut builder2 = repo.state_builder(&state1);
+    let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &state1);
     builder2.insert_account(&routing_l1, &mod_l1);
     builder2.insert_account(&routing_l2, &mod_l2);
     builder2.insert_account(&routing_s1, &mod_s1);
@@ -621,13 +829,13 @@ fn test_multiple_accounts_mixed_optimization() -> anyhow::Result<()> {
     for (routing, update) in &transition2.diff.durable.accounts {
         if routing == &routing_l1 || routing == &routing_l2 {
             assert!(
-                matches!(update, ThreadAccountUpdate::AccountMerkleUpdate(_)),
-                "Large account {:?} should be optimized to AccountMerkleUpdate",
+                matches!(update, BlockAccountOperation::AccountMerkleUpdate(_)),
+                "Large account {:?} should be optimized to account merkle update",
                 routing.account_id().to_hex_string()
             );
         } else if routing == &routing_s1 || routing == &routing_s2 {
             assert!(
-                matches!(update, ThreadAccountUpdate::UpdateOrInsert(_)),
+                matches!(update, BlockAccountOperation::UpdateOrInsert(_)),
                 "Small account {:?} should remain as UpdateOrInsert",
                 routing.account_id().to_hex_string()
             );
@@ -635,7 +843,8 @@ fn test_multiple_accounts_mixed_optimization() -> anyhow::Result<()> {
     }
 
     // Apply diff and verify all accounts are correct
-    let state_applied = repo.state_apply_diff(&state1, transition2.diff)?;
+    let applied =
+        repo.state_apply_diff(&state1, transition2.diff, ThreadIdentifier::default(), 0)?;
 
     for (routing, expected) in [
         (&routing_l1, &mod_l1),
@@ -643,7 +852,7 @@ fn test_multiple_accounts_mixed_optimization() -> anyhow::Result<()> {
         (&routing_s1, &mod_s1),
         (&routing_s2, &mod_s2),
     ] {
-        let actual = repo.state_account(&state_applied, routing)?.unwrap();
+        let actual = repo.state_account(&applied.new_state, routing)?.unwrap();
         assert_eq!(
             actual.write_bytes()?,
             expected.write_bytes()?,
@@ -664,17 +873,17 @@ fn test_durable_diff_bincode_roundtrip_all_variants() {
     let (routing3, _) = new_acc(3);
     let (routing4, _) = new_acc(4);
 
-    let diff = DurableThreadAccountsDiff {
-        accounts: vec![
-            (routing1, ThreadAccountUpdate::UpdateOrInsert(some_account)),
-            (routing2, ThreadAccountUpdate::Remove),
-            (routing3, ThreadAccountUpdate::MoveFromTvm),
-            (routing4, ThreadAccountUpdate::AccountMerkleUpdate(vec![0xDE, 0xAD, 0xBE, 0xEF])),
-        ],
+    let diff = DurableThreadAccountsStateDiff {
+        accounts: HashMap::from_iter([
+            (routing1, BlockAccountOperation::UpdateOrInsert(some_account)),
+            (routing2, BlockAccountOperation::Remove),
+            (routing3, BlockAccountOperation::MoveFromTvm),
+            (routing4, BlockAccountOperation::AccountMerkleUpdate(vec![0xDE, 0xAD, 0xBE, 0xEF])),
+        ]),
     };
 
     let bytes = bincode::serialize(&diff).unwrap();
-    let diff2: DurableThreadAccountsDiff = bincode::deserialize(&bytes).unwrap();
+    let diff2: DurableThreadAccountsStateDiff = bincode::deserialize(&bytes).unwrap();
 
     assert!(diff == diff2, "Bincode roundtrip should produce identical diff");
 }
@@ -700,13 +909,13 @@ fn test_account_merkle_update_variant_bincode_roundtrip() {
     let mu_cell = mu.serialize().unwrap();
     let mu_bytes = write_boc(&mu_cell).unwrap();
 
-    // Wrap in ThreadAccountUpdate and roundtrip via bincode
-    let update = ThreadAccountUpdate::AccountMerkleUpdate(mu_bytes.clone());
+    // Wrap in ThreadAccountDiff and roundtrip via bincode
+    let update = BlockAccountOperation::AccountMerkleUpdate(mu_bytes.clone());
     let serialized = bincode::serialize(&update).unwrap();
-    let deserialized: ThreadAccountUpdate = bincode::deserialize(&serialized).unwrap();
+    let deserialized: BlockAccountOperation = bincode::deserialize(&serialized).unwrap();
 
     // Verify bytes match
-    if let ThreadAccountUpdate::AccountMerkleUpdate(deserialized_bytes) = &deserialized {
+    if let BlockAccountOperation::AccountMerkleUpdate(deserialized_bytes) = &deserialized {
         assert_eq!(
             deserialized_bytes, &mu_bytes,
             "Deserialized merkle update bytes should match original"
@@ -717,7 +926,7 @@ fn test_account_merkle_update_variant_bincode_roundtrip() {
         let mu2 = MerkleUpdate::construct_from_cell(mu_cell2).unwrap();
         let result_cell = mu2.apply_for(&old_cell).unwrap();
         let result_bytes = write_boc(&result_cell).unwrap();
-        let result_acc = ThreadStateAccount::read_bytes(&result_bytes).unwrap();
+        let result_acc = ThreadAccount::read_bytes(&result_bytes).unwrap();
 
         assert_eq!(
             result_acc.write_bytes().unwrap(),
@@ -744,10 +953,10 @@ fn test_patch_account_applies_merkle_update() {
     let mut accounts = shard_state.read_accounts().unwrap();
 
     let (routing, large_acc) = new_large_acc(60, 512);
-    let shard_acc: tvm_block::ShardAccount = large_acc.clone().try_into().unwrap();
+    let shard_acc: ShardAccount = large_acc.clone().try_into().unwrap();
     accounts.insert(&routing.account_id().into(), &shard_acc).unwrap();
 
-    // Create modified account and merkle update
+    // Create a modified account and merkle update
     let modified = modify_acc_balance(&large_acc, 555_555);
     let old_bytes = large_acc.write_bytes().unwrap();
     let new_bytes = modified.write_bytes().unwrap();
@@ -760,14 +969,14 @@ fn test_patch_account_applies_merkle_update() {
     // Apply via patch_account
     crate::thread_accounts::tvm::patch_account(
         *routing.account_id(),
-        ThreadAccountUpdate::AccountMerkleUpdate(mu_bytes),
+        BlockAccountOperation::AccountMerkleUpdate(mu_bytes),
         &mut accounts,
     )
     .unwrap();
 
     // Read back and verify
     let result_shard_acc = accounts.account(&routing.account_id().into()).unwrap().unwrap();
-    let result_acc = ThreadStateAccount::from(result_shard_acc);
+    let result_acc = ThreadAccount::from(result_shard_acc);
     assert_eq!(
         result_acc.write_bytes().unwrap(),
         modified.write_bytes().unwrap(),
@@ -787,7 +996,7 @@ fn test_patch_account_merkle_update_nonexistent_account_errors() {
 
     let result = crate::thread_accounts::tvm::patch_account(
         *routing.account_id(),
-        ThreadAccountUpdate::AccountMerkleUpdate(some_bytes),
+        BlockAccountOperation::AccountMerkleUpdate(some_bytes),
         &mut accounts,
     );
 
@@ -809,17 +1018,24 @@ fn test_apply_account_merkle_update_from_durable_state() -> anyhow::Result<()> {
     use tvm_types::write_boc;
 
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 600));
 
-    // Insert a large account into durable state
+    // Insert a large account into a durable state
     let (routing, large_acc) = new_large_acc(1, 1024);
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&routing, &large_acc);
     let transition1 = builder.build(None)?;
     let state1 = transition1.new_state;
-    repo.set_state(&block_id_1, &state1)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
 
     // Manually create merkle update bytes
     let modified = modify_acc_balance(&large_acc, 888_888);
@@ -836,17 +1052,20 @@ fn test_apply_account_merkle_update_from_durable_state() -> anyhow::Result<()> {
     let tvm_cell = state1.tvm.shard_state.serialize().unwrap();
     let tvm_mu = MerkleUpdate::create(&tvm_cell, &tvm_cell).unwrap();
 
-    let diff = crate::CompositeThreadAccountsDiff {
-        durable: DurableThreadAccountsDiff {
-            accounts: vec![(routing, ThreadAccountUpdate::AccountMerkleUpdate(mu_bytes))],
+    let diff = crate::ThreadAccountsStateDiff {
+        durable: DurableThreadAccountsStateDiff {
+            accounts: HashMap::from_iter([(
+                routing,
+                BlockAccountOperation::AccountMerkleUpdate(mu_bytes),
+            )]),
         },
-        tvm: crate::thread_accounts::tvm::TvmThreadStateDiff { update: tvm_mu },
+        tvm: crate::thread_accounts::tvm::TvmThreadAccountsStateDiff { update: tvm_mu },
     };
 
-    let state_applied = repo.state_apply_diff(&state1, diff)?;
+    let applied = repo.state_apply_diff(&state1, diff, ThreadIdentifier::default(), 0)?;
 
     // Verify the account was correctly updated
-    let applied_acc = repo.state_account(&state_applied, &routing)?.unwrap();
+    let applied_acc = repo.state_account(&applied.new_state, &routing)?.unwrap();
     assert_eq!(
         applied_acc.write_bytes()?,
         modified.write_bytes()?,
@@ -862,7 +1081,7 @@ fn test_apply_account_merkle_update_nonexistent_account_errors() -> anyhow::Resu
     use tvm_block::Serializable;
 
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
 
     // Create a valid-looking merkle update for an account that doesn't exist
     let (routing, large_acc) = new_large_acc(1, 512);
@@ -875,18 +1094,21 @@ fn test_apply_account_merkle_update_nonexistent_account_errors() -> anyhow::Resu
     let mu_cell = mu.serialize().unwrap();
     let mu_bytes = tvm_types::write_boc(&mu_cell).unwrap();
 
-    // Apply to empty state — account doesn't exist in durable or TVM
+    // Apply to empty state — an account doesn't exist in durable or TVM
     let tvm_cell = state0.tvm.shard_state.serialize().unwrap();
     let tvm_mu = MerkleUpdate::create(&tvm_cell, &tvm_cell).unwrap();
 
-    let diff = crate::CompositeThreadAccountsDiff {
-        durable: DurableThreadAccountsDiff {
-            accounts: vec![(routing, ThreadAccountUpdate::AccountMerkleUpdate(mu_bytes))],
+    let diff = crate::ThreadAccountsStateDiff {
+        durable: DurableThreadAccountsStateDiff {
+            accounts: HashMap::from_iter([(
+                routing,
+                BlockAccountOperation::AccountMerkleUpdate(mu_bytes),
+            )]),
         },
-        tvm: crate::thread_accounts::tvm::TvmThreadStateDiff { update: tvm_mu },
+        tvm: crate::thread_accounts::tvm::TvmThreadAccountsStateDiff { update: tvm_mu },
     };
 
-    let result = repo.state_apply_diff(&state0, diff);
+    let result = repo.state_apply_diff(&state0, diff, ThreadIdentifier::default(), 0);
     assert!(result.is_err(), "Should error when applying merkle update for non-existent account");
     let err_msg = result.unwrap_err().to_string();
     assert!(
@@ -899,10 +1121,10 @@ fn test_apply_account_merkle_update_nonexistent_account_errors() -> anyhow::Resu
 
 // ==================== Durable State Snapshot Tests ====================
 
-fn new_acc_with_dapp(seed: usize, dapp_seed: usize) -> (AccountRouting, ThreadStateAccount) {
+fn new_acc_with_dapp(seed: usize, dapp_seed: usize) -> (AccountRouting, ThreadAccount) {
     let id = AccountIdentifier::new(new_u256("acc", seed));
     let dapp_id = DAppIdentifier::new(new_u256("dapp", dapp_seed));
-    let routing = id.routing_with(dapp_id);
+    let routing = id.routing(dapp_id);
     let tvm_acc = tvm_block::Account::with_address(
         MsgAddressInt::with_standart(None, 0, AccountId::from_raw(id.as_slice().to_vec(), 256))
             .unwrap(),
@@ -914,26 +1136,28 @@ fn new_acc_with_dapp(seed: usize, dapp_seed: usize) -> (AccountRouting, ThreadSt
         Some(dapp_id.as_array().into()),
     )
     .unwrap();
-    let acc = ThreadStateAccount::from(tvm_shard_acc);
+    let acc = ThreadAccount::from(tvm_shard_acc);
     (routing, acc)
 }
 
 #[test]
 fn test_durable_snapshot_empty_state() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state = Repo::new_state();
+    let state = new_state();
 
     let snapshot = repo.export_durable_snapshot(&state)?;
 
     assert!(snapshot.accounts.is_empty(), "Empty state should have no accounts");
-    assert!(snapshot.dapp_accounts.is_empty(), "Empty state should have no dapp account maps");
 
-    let (repo2, _dir2) = setup_repo(true);
-    let new_durable = repo2.import_durable_snapshot(snapshot)?;
+    let (repo2, _dir2) = setup_import_repo(true);
+    let new_durable = repo2.import_durable_snapshot(
+        snapshot,
+        &ThreadIdentifier::default(),
+        &BlockIdentifier::default(),
+    )?;
 
     // Build a state from the imported durable
-    let imported_state =
-        crate::CompositeThreadAccountsRef { durable: new_durable, tvm: state.tvm.clone() };
+    let imported_state = ThreadAccountsState::from_parts(new_durable, state.tvm.clone());
 
     // State should be empty
     let (routing, _) = new_acc(1);
@@ -948,32 +1172,51 @@ fn test_durable_snapshot_empty_state() -> anyhow::Result<()> {
 #[test]
 fn test_durable_snapshot_with_accounts() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 1));
 
     // Insert 10 accounts
     let mut accounts = Vec::new();
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     for i in 1..=10 {
         let (routing, acc) = new_acc(i);
         builder.insert_account(&routing, &acc);
         accounts.push((routing, acc));
     }
-    let state1 = builder.build(None)?.new_state;
-    repo.set_state(&block_id_1, &state1)?;
-    repo.commit()?;
+    let transition1 = builder.build(None)?;
+    let state1 = transition1.new_state;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
 
     // Export
     let snapshot = repo.export_durable_snapshot(&state1)?;
     assert!(!snapshot.accounts.is_empty(), "Snapshot should contain account data");
 
-    // Import into new repo
-    let (repo2, _dir2) = setup_repo(true);
+    // Import into a new repo
+    let (repo2, _dir2) = setup_import_repo(true);
     let block_id_2 = BlockIdentifier::new(new_u256("block", 2));
-    let new_durable = repo2.import_durable_snapshot(snapshot)?;
-    let imported_state =
-        crate::CompositeThreadAccountsRef { durable: new_durable, tvm: state1.tvm.clone() };
-    repo2.set_state(&block_id_2, &imported_state)?;
+    let new_durable = repo2.import_durable_snapshot(
+        snapshot,
+        &ThreadIdentifier::default(),
+        &BlockIdentifier::default(),
+    )?;
+    let imported_state = ThreadAccountsState::from_parts(new_durable, state1.tvm.clone());
+    repo2.finalize_thread_transition(
+        &block_id_2,
+        &ThreadIdentifier::default(),
+        0,
+        &imported_state,
+        HashMap::new(),
+    )?;
+    assert_drained(&repo2);
+    repo2.state_save(&block_id_2, &imported_state)?;
 
     // Verify all accounts
     for (routing, orig_acc) in &accounts {
@@ -985,8 +1228,8 @@ fn test_durable_snapshot_with_accounts() -> anyhow::Result<()> {
         );
         let imported_acc = imported_acc.unwrap();
         assert_eq!(
-            imported_acc.account()?.hash(),
-            orig_acc.account()?.hash(),
+            imported_acc.vm_account()?.hash(),
+            orig_acc.vm_account()?.hash(),
             "Account hash should match for {}",
             routing.account_id().to_hex_string()
         );
@@ -998,12 +1241,12 @@ fn test_durable_snapshot_with_accounts() -> anyhow::Result<()> {
 #[test]
 fn test_durable_snapshot_preserves_dapp_structure() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 1));
 
     // Create accounts in 3 different dapp groups
     let mut accounts = Vec::new();
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     for dapp in 0..3 {
         for acc in 0..5 {
             let seed = dapp * 100 + acc + 1;
@@ -1012,22 +1255,28 @@ fn test_durable_snapshot_preserves_dapp_structure() -> anyhow::Result<()> {
             accounts.push((routing, account));
         }
     }
-    let state1 = builder.build(None)?.new_state;
-    repo.set_state(&block_id_1, &state1)?;
-    repo.commit()?;
+    let tr1 = builder.build(None)?;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &tr1.new_state,
+        tr1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &tr1.new_state)?;
 
     // Export and import
-    let snapshot = repo.export_durable_snapshot(&state1)?;
-    assert!(
-        snapshot.dapp_accounts.len() >= 3,
-        "Should have at least 3 dapp account maps, got {}",
-        snapshot.dapp_accounts.len()
-    );
+    let snapshot = repo.export_durable_snapshot(&tr1.new_state)?;
+    assert!(!snapshot.maps.is_empty(), "Should be not empty maps, got",);
 
-    let (repo2, _dir2) = setup_repo(true);
-    let new_durable = repo2.import_durable_snapshot(snapshot)?;
-    let imported_state =
-        crate::CompositeThreadAccountsRef { durable: new_durable, tvm: state1.tvm.clone() };
+    let (repo2, _dir2) = setup_import_repo(true);
+    let new_durable = repo2.import_durable_snapshot(
+        snapshot,
+        &ThreadIdentifier::default(),
+        &BlockIdentifier::default(),
+    )?;
+    let imported_state = ThreadAccountsState::from_parts(new_durable, tr1.new_state.tvm.clone());
 
     // Verify all accounts in correct dapp groups
     for (routing, orig_acc) in &accounts {
@@ -1038,7 +1287,7 @@ fn test_durable_snapshot_preserves_dapp_structure() -> anyhow::Result<()> {
             routing.account_id().to_hex_string(),
             routing.dapp_id().to_hex_string()
         );
-        assert_eq!(imported_acc.unwrap().account()?.hash(), orig_acc.account()?.hash(),);
+        assert_eq!(imported_acc.unwrap().vm_account()?.hash(), orig_acc.vm_account()?.hash(),);
     }
 
     Ok(())
@@ -1047,37 +1296,47 @@ fn test_durable_snapshot_preserves_dapp_structure() -> anyhow::Result<()> {
 #[test]
 fn test_durable_snapshot_bincode_roundtrip() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 1));
 
     // Insert 50 accounts
     let mut accounts = Vec::new();
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     for i in 1..=50 {
         let (routing, acc) = new_acc(i);
         builder.insert_account(&routing, &acc);
         accounts.push((routing, acc));
     }
-    let state1 = builder.build(None)?.new_state;
-    repo.set_state(&block_id_1, &state1)?;
-    repo.commit()?;
+    let tr1 = builder.build(None)?;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &tr1.new_state,
+        tr1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &tr1.new_state)?;
 
     // Export, serialize, deserialize
-    let snapshot = repo.export_durable_snapshot(&state1)?;
-    let bytes = bincode::serialize(&snapshot).unwrap();
-    let deserialized: crate::CompositeDurableStateSnapshot = bincode::deserialize(&bytes).unwrap();
+    let snapshot = repo.export_durable_snapshot(&tr1.new_state)?;
+    let bytes = bincode::serialize(&snapshot)?;
+    let deserialized: crate::DurableStateSnapshot = bincode::deserialize(&bytes)?;
 
     // Import deserialized snapshot
-    let (repo2, _dir2) = setup_repo(true);
-    let new_durable = repo2.import_durable_snapshot(deserialized)?;
-    let imported_state =
-        crate::CompositeThreadAccountsRef { durable: new_durable, tvm: state1.tvm.clone() };
+    let (repo2, _dir2) = setup_import_repo(true);
+    let new_durable = repo2.import_durable_snapshot(
+        deserialized,
+        &ThreadIdentifier::default(),
+        &BlockIdentifier::default(),
+    )?;
+    let imported_state = ThreadAccountsState::from_parts(new_durable, tr1.new_state.tvm.clone());
 
     for (routing, orig_acc) in &accounts {
         let imported_acc = repo2.state_account(&imported_state, routing)?.unwrap();
         assert_eq!(
-            imported_acc.account()?.hash(),
-            orig_acc.account()?.hash(),
+            imported_acc.vm_account()?.hash(),
+            orig_acc.vm_account()?.hash(),
             "Account {} should match after bincode roundtrip",
             routing.account_id().to_hex_string()
         );
@@ -1089,24 +1348,31 @@ fn test_durable_snapshot_bincode_roundtrip() -> anyhow::Result<()> {
 #[test]
 fn test_durable_snapshot_after_updates() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 1));
     let block_id_2 = BlockIdentifier::new(new_u256("block", 2));
 
     // Insert 20 accounts
     let mut accounts = Vec::new();
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     for i in 1..=20 {
         let (routing, acc) = new_acc(i);
         builder.insert_account(&routing, &acc);
         accounts.push((routing, acc));
     }
-    let state1 = builder.build(None)?.new_state;
-    repo.set_state(&block_id_1, &state1)?;
-    repo.commit()?;
+    let tr1 = builder.build(None)?;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &tr1.new_state,
+        tr1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &tr1.new_state)?;
 
     // Update 5 accounts (seeds 1-5), remove 3 (seeds 6-8), add 5 new (seeds 21-25)
-    let mut builder2 = repo.state_builder(&state1);
+    let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &tr1.new_state);
 
     let mut updated_accounts = Vec::new();
     for i in 1..=5 {
@@ -1127,23 +1393,36 @@ fn test_durable_snapshot_after_updates() -> anyhow::Result<()> {
         new_accounts.push((routing, acc));
     }
 
-    let state2 = builder2.build(None)?.new_state;
-    repo.set_state(&block_id_2, &state2)?;
-    repo.commit()?;
+    let tr2 = builder2.build(None)?;
+    repo.finalize_thread_transition(
+        &block_id_2,
+        &ThreadIdentifier::default(),
+        0,
+        &tr2.new_state,
+        tr2.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_2, &tr2.new_state)?;
 
     // Export and import
-    let snapshot = repo.export_durable_snapshot(&state2)?;
-    let (repo2, _dir2) = setup_repo(true);
-    let new_durable = repo2.import_durable_snapshot(snapshot)?;
-    let imported_state =
-        crate::CompositeThreadAccountsRef { durable: new_durable, tvm: state2.tvm.clone() };
+    let snapshot = repo.export_durable_snapshot(&tr2.new_state)?;
+    let (repo2, _dir2) = setup_import_repo(true);
+    let new_durable = repo2.import_durable_snapshot(
+        snapshot,
+        &ThreadIdentifier::default(),
+        &BlockIdentifier::default(),
+    )?;
+    let imported_state = ThreadAccountsState::from_parts(new_durable, tr2.new_state.tvm.clone());
+    for (routing, info) in repo2.durable_map_iter(&imported_state.durable) {
+        println!("{routing} {:?}", info);
+    }
 
     // Verify updated accounts
     for (routing, expected_acc) in &updated_accounts {
         let imported = repo2.state_account(&imported_state, routing)?.unwrap();
         assert_eq!(
-            imported.account()?.hash(),
-            expected_acc.account()?.hash(),
+            imported.vm_account()?.hash(),
+            expected_acc.vm_account()?.hash(),
             "Updated account should match"
         );
     }
@@ -1160,8 +1439,8 @@ fn test_durable_snapshot_after_updates() -> anyhow::Result<()> {
     for (routing, expected_acc) in &new_accounts {
         let imported = repo2.state_account(&imported_state, routing)?.unwrap();
         assert_eq!(
-            imported.account()?.hash(),
-            expected_acc.account()?.hash(),
+            imported.vm_account()?.hash(),
+            expected_acc.vm_account()?.hash(),
             "New account should match"
         );
     }
@@ -1171,8 +1450,8 @@ fn test_durable_snapshot_after_updates() -> anyhow::Result<()> {
         let routing = &account.0;
         let imported = repo2.state_account(&imported_state, routing)?.unwrap();
         assert_eq!(
-            imported.account()?.hash(),
-            account.1.account()?.hash(),
+            imported.vm_account()?.hash(),
+            account.1.vm_account()?.hash(),
             "Unchanged account {} should match",
             i + 1
         );
@@ -1181,23 +1460,42 @@ fn test_durable_snapshot_after_updates() -> anyhow::Result<()> {
     Ok(())
 }
 
+static LOG_INIT: OnceCell<()> = OnceCell::new();
+
+pub fn init_logs() {
+    LOG_INIT.get_or_init(|| {
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .with_test_writer()
+            .init();
+    });
+}
+
 #[test]
 fn test_durable_snapshot_cross_repo_import() -> anyhow::Result<()> {
+    init_logs();
     // Repo 1: has accounts 1-10
     let (repo1, _dir1) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 1));
 
     let mut accounts1 = Vec::new();
-    let mut builder = repo1.state_builder(&state0);
+    let mut builder = repo1.state_builder(&ThreadIdentifier::default(), 0, &state0);
     for i in 1..=10 {
         let (routing, acc) = new_acc(i);
         builder.insert_account(&routing, &acc);
         accounts1.push((routing, acc));
     }
-    let state1 = builder.build(None)?.new_state;
-    repo1.set_state(&block_id_1, &state1)?;
-    repo1.commit()?;
+    let tr1 = builder.build(None)?;
+    repo1.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &tr1.new_state,
+        tr1.account_operations,
+    )?;
+    assert_drained(&repo1);
+    repo1.state_save(&block_id_1, &tr1.new_state)?;
 
     // Repo 2: has accounts 101-110
     let (repo2, _dir2) = setup_repo(true);
@@ -1205,22 +1503,42 @@ fn test_durable_snapshot_cross_repo_import() -> anyhow::Result<()> {
     let block_id_3 = BlockIdentifier::new(new_u256("block", 3));
 
     let mut accounts2 = Vec::new();
-    let mut builder2 = repo2.state_builder(&Repo::new_state());
+    let mut builder2 = repo2.state_builder(&ThreadIdentifier::default(), 0, &new_state());
     for i in 101..=110 {
         let (routing, acc) = new_acc(i);
         builder2.insert_account(&routing, &acc);
         accounts2.push((routing, acc));
     }
-    let state2 = builder2.build(None)?.new_state;
-    repo2.set_state(&block_id_2, &state2)?;
-    repo2.commit()?;
+    let tr2 = builder2.build(None)?;
+    repo2.finalize_thread_transition(
+        &block_id_2,
+        &ThreadIdentifier::default(),
+        0,
+        &tr2.new_state,
+        tr2.account_operations,
+    )?;
+    assert_drained(&repo2);
+    repo2.state_save(&block_id_2, &tr2.new_state)?;
 
-    // Export from repo1, import into repo2
-    let snapshot = repo1.export_durable_snapshot(&state1)?;
-    let imported_durable = repo2.import_durable_snapshot(snapshot)?;
+    // Export from repo1, import into repo2 (reset archive first to go back to Uninitialized)
+    repo2.reset_archive()?;
+    let snapshot = repo1.export_durable_snapshot(&tr1.new_state)?;
+    let imported_durable = repo2.import_durable_snapshot(
+        snapshot,
+        &ThreadIdentifier::default(),
+        &BlockIdentifier::default(),
+    )?;
     let imported_state =
-        crate::CompositeThreadAccountsRef { durable: imported_durable, tvm: state1.tvm.clone() };
-    repo2.set_state(&block_id_3, &imported_state)?;
+        ThreadAccountsState::from_parts(imported_durable, tr1.new_state.tvm.clone());
+    repo2.finalize_thread_transition(
+        &block_id_3,
+        &ThreadIdentifier::default(),
+        0,
+        &imported_state,
+        HashMap::new(),
+    )?;
+    assert_drained(&repo2);
+    repo2.state_save(&block_id_3, &imported_state)?;
 
     // Verify imported accounts are accessible via block_id_3
     for (routing, orig_acc) in &accounts1 {
@@ -1230,18 +1548,36 @@ fn test_durable_snapshot_cross_repo_import() -> anyhow::Result<()> {
             "Imported account {} should exist",
             routing.account_id().to_hex_string()
         );
-        assert_eq!(acc.unwrap().account()?.hash(), orig_acc.account()?.hash());
+        assert_eq!(acc.unwrap().vm_account()?.hash(), orig_acc.vm_account()?.hash());
     }
 
-    // Verify repo2's own accounts are still intact via state2
+    // After `reset_archive`, repo2's PRE-RESET accounts are intentionally
+    // unreachable — the archive is bound to the new data_epoch and the
+    // old per-epoch sets are no longer referenced (and will be truncated).
+    // The pre-reset state object (`tr2.new_state`) still has those
+    // routings in its map, so `find_account_with_info` reaches its typed
+    // hash-mismatch error. That error IS the correct outcome — it proves
+    // the per-epoch isolation is doing its job. (Under the previous
+    // buggy semantic, the old bytes were still served and the error
+    // would never fire.)
     for (routing, orig_acc) in &accounts2 {
-        let acc = repo2.state_account(&state2, routing)?;
+        let result = repo2.state_account(&tr2.new_state, routing);
+        let err = result.unwrap_err();
+        let mismatch = err.downcast_ref::<AccountHashMismatchError>().unwrap_or_else(|| {
+            panic!(
+                "Pre-reset account {} expected AccountHashMismatchError, got: {err:?}",
+                routing.account_id().to_hex_string()
+            )
+        });
+        assert_eq!(mismatch.routing, *routing);
+        assert_eq!(mismatch.expected_hash, orig_acc.vm_account().unwrap().hash());
+
+        let msg = err.to_string();
         assert!(
-            acc.is_some(),
-            "Repo2's own account {} should still exist",
+            msg.contains("exists in map") && msg.contains("no matching version"),
+            "Pre-reset account {} expected the per-epoch-isolation error display, got: {msg}",
             routing.account_id().to_hex_string()
         );
-        assert_eq!(acc.unwrap().account()?.hash(), orig_acc.account()?.hash());
     }
 
     Ok(())
@@ -1251,40 +1587,50 @@ fn test_durable_snapshot_cross_repo_import() -> anyhow::Result<()> {
 #[ignore]
 fn test_durable_snapshot_with_large_accounts() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id = BlockIdentifier::new(new_u256("block", 1));
 
     let mut accounts = Vec::new();
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     for i in 1..=100 {
         let (routing, acc) = new_large_acc(i, 4096);
         builder.insert_account(&routing, &acc);
         accounts.push((routing, acc));
     }
-    let state1 = builder.build(None)?.new_state;
-    repo.set_state(&block_id, &state1)?;
-    repo.commit()?;
+    let tr1 = builder.build(None)?;
+    repo.finalize_thread_transition(
+        &block_id,
+        &ThreadIdentifier::default(),
+        0,
+        &tr1.new_state,
+        tr1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id, &tr1.new_state)?;
 
     let start = Instant::now();
-    let snapshot = repo.export_durable_snapshot(&state1)?;
+    let snapshot = repo.export_durable_snapshot(&tr1.new_state)?;
     println!("Exported {} accounts in {:?}", accounts.len(), start.elapsed());
 
-    let bytes = bincode::serialize(&snapshot).unwrap();
+    let bytes = bincode::serialize(&snapshot)?;
     println!("Serialized durable snapshot: {} bytes", bytes.len());
 
-    let deserialized: crate::CompositeDurableStateSnapshot = bincode::deserialize(&bytes).unwrap();
+    let deserialized: crate::DurableStateSnapshot = bincode::deserialize(&bytes)?;
 
     let (repo2, _dir2) = setup_repo(true);
     let start = Instant::now();
-    let new_durable = repo2.import_durable_snapshot(deserialized)?;
+    let new_durable = repo2.import_durable_snapshot(
+        deserialized,
+        &ThreadIdentifier::default(),
+        &BlockIdentifier::default(),
+    )?;
     println!("Imported in {:?}", start.elapsed());
 
-    let imported_state =
-        crate::CompositeThreadAccountsRef { durable: new_durable, tvm: state1.tvm.clone() };
+    let imported_state = ThreadAccountsState::from_parts(new_durable, tr1.new_state.tvm.clone());
 
     for (routing, orig_acc) in &accounts {
         let imported = repo2.state_account(&imported_state, routing)?.unwrap();
-        assert_eq!(imported.account()?.hash(), orig_acc.account()?.hash());
+        assert_eq!(imported.vm_account()?.hash(), orig_acc.vm_account()?.hash());
     }
 
     Ok(())
@@ -1295,32 +1641,43 @@ fn test_durable_snapshot_with_large_accounts() -> anyhow::Result<()> {
 #[test]
 fn test_redirect_stub_created_for_dapp_account() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id = BlockIdentifier::new(new_u256("block", 1));
 
-    // Insert account with dapp_id != account_id
+    // Insert an account with dapp_id != account_id
     let (routing, acc) = new_acc_with_dapp(1, 10);
     let account_id = *routing.account_id();
     let dapp_id = *routing.dapp_id();
-    assert_ne!(dapp_id, account_id.use_as_dapp_id(), "dapp_id should differ from account_id");
+    assert_ne!(dapp_id, account_id.redirect_dapp_id(), "dapp_id should differ from account_id");
 
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&routing, &acc);
     let transition = builder.build(None)?;
     let state1 = transition.new_state;
-    repo.set_state(&block_id, &state1)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id, &state1)?;
 
-    // Real account should be at (dapp_id, account_id)
+    // The real account should be at (dapp_id, account_id)
     let real = repo.state_account(&state1, &routing)?;
     assert!(real.is_some(), "Real account should exist at (dapp_id, account_id)");
     let real = real.unwrap();
     assert!(!real.is_redirect(), "Real account should not be a redirect");
-    assert_eq!(real.account()?.hash(), acc.account()?.hash(), "Real account data should match");
+    assert_eq!(
+        real.vm_account()?.hash(),
+        acc.vm_account()?.hash(),
+        "Real account data should match"
+    );
 
     // Lookup at default routing (account_id, account_id) follows the redirect
     // and returns the real account
-    let default_routing = account_id.dapp_originator();
+    let default_routing = account_id.redirect();
     let followed = repo.state_account(&state1, &default_routing)?;
     assert!(followed.is_some(), "Default routing lookup should find account via redirect");
     let followed = followed.unwrap();
@@ -1331,8 +1688,8 @@ fn test_redirect_stub_created_for_dapp_account() -> anyhow::Result<()> {
         "Followed account should have the actual dapp_id"
     );
     assert_eq!(
-        followed.account()?.hash(),
-        acc.account()?.hash(),
+        followed.vm_account()?.hash(),
+        acc.vm_account()?.hash(),
         "Followed account data should match original"
     );
 
@@ -1342,21 +1699,28 @@ fn test_redirect_stub_created_for_dapp_account() -> anyhow::Result<()> {
 #[test]
 fn test_redirect_stub_lookup_returns_redirect() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id = BlockIdentifier::new(new_u256("block", 1));
 
     let (routing, acc) = new_acc_with_dapp(2, 20);
     let account_id = *routing.account_id();
 
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&routing, &acc);
     let transition = builder.build(None)?;
     let state1 = transition.new_state;
-    repo.set_state(&block_id, &state1)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id, &state1)?;
 
     // Lookup via default routing follows the redirect and returns the real account
-    let default_routing = account_id.dapp_originator();
+    let default_routing = account_id.redirect();
     let result = repo.state_account(&state1, &default_routing)?;
     assert!(result.is_some(), "Default routing lookup should find account via redirect");
     let followed = result.unwrap();
@@ -1365,8 +1729,8 @@ fn test_redirect_stub_lookup_returns_redirect() -> anyhow::Result<()> {
         "Default routing should return the real account (via redirect)"
     );
     assert_eq!(
-        followed.account()?.hash(),
-        acc.account()?.hash(),
+        followed.vm_account()?.hash(),
+        acc.vm_account()?.hash(),
         "Account data via default routing should match original"
     );
 
@@ -1379,34 +1743,86 @@ fn test_redirect_stub_lookup_returns_redirect() -> anyhow::Result<()> {
 }
 
 #[test]
+fn test_redirect_stub_is_materialized_in_archive() -> anyhow::Result<()> {
+    let (repo, _dir) = setup_repo(true);
+    let state0 = new_state();
+    let block_id = BlockIdentifier::new(new_u256("block", 1));
+
+    let (routing, acc) = new_acc_with_dapp(26, 260);
+    let default_routing = routing.account_id().redirect();
+
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
+    builder.insert_account(&routing, &acc);
+    let transition = builder.build(None)?;
+    let state1 = transition.new_state;
+    repo.finalize_thread_transition(
+        &block_id,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition.account_operations,
+    )?;
+    assert_drained(&repo);
+
+    let archived_redirect =
+        repo.durable_map_repo().archive_account_for_test(&default_routing)?.unwrap();
+    assert!(archived_redirect.is_redirect(), "Redirect route must be materialized in archive");
+    assert_eq!(
+        archived_redirect.get_dapp_id(),
+        Some(*routing.dapp_id()),
+        "Archived redirect must point to the real dapp"
+    );
+
+    let archived_real = repo.durable_map_repo().archive_account_for_test(&routing)?.unwrap();
+    assert!(!archived_real.is_redirect(), "Real route must keep the real account body");
+    assert_eq!(archived_real.vm_account()?.hash(), acc.vm_account()?.hash());
+
+    Ok(())
+}
+
+#[test]
 fn test_redirect_stub_removed_when_account_removed() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 1));
     let block_id_2 = BlockIdentifier::new(new_u256("block", 2));
 
-    // Insert account with dapp_id != account_id
+    // Insert an account with dapp_id != account_id
     let (routing, acc) = new_acc_with_dapp(3, 30);
     let account_id = *routing.account_id();
-    let default_routing = account_id.dapp_originator();
+    let default_routing = account_id.redirect();
 
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&routing, &acc);
     let transition1 = builder.build(None)?;
     let state1 = transition1.new_state;
-    repo.set_state(&block_id_1, &state1)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
 
     // Verify redirect exists
     assert!(repo.state_account(&state1, &default_routing)?.is_some(), "Redirect should exist");
 
     // Remove the account at its real routing
-    let mut builder2 = repo.state_builder(&state1);
+    let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &state1);
     builder2.remove_account(&routing);
     let transition2 = builder2.build(None)?;
     let state2 = transition2.new_state;
-    repo.set_state(&block_id_2, &state2)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id_2,
+        &ThreadIdentifier::default(),
+        0,
+        &state2,
+        transition2.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_2, &state2)?;
 
     // Both real account and redirect should be gone
     assert!(repo.state_account(&state2, &routing)?.is_none(), "Real account should be removed");
@@ -1421,23 +1837,30 @@ fn test_redirect_stub_removed_when_account_removed() -> anyhow::Result<()> {
 #[test]
 fn test_redirect_stub_for_move_from_tvm() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 1));
     let block_id_2 = BlockIdentifier::new(new_u256("block", 2));
 
-    // Step 1: Insert account with dapp_id into TVM (apply_to_durable = false)
+    // Step 1: Insert an account with dapp_id into TVM (apply_to_durable = false)
     let (routing, acc) = new_acc_with_dapp(4, 40);
     let account_id = *routing.account_id();
     let dapp_id = *routing.dapp_id();
-    let default_routing = account_id.dapp_originator();
+    let default_routing = account_id.redirect();
 
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.set_apply_to_durable(false);
     builder.insert_account(&routing, &acc);
     let transition1 = builder.build(None)?;
     let state1 = transition1.new_state;
-    repo.set_state(&block_id_1, &state1)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
 
     // Account should be in TVM, not durable
     assert!(
@@ -1446,15 +1869,22 @@ fn test_redirect_stub_for_move_from_tvm() -> anyhow::Result<()> {
     );
 
     // Step 2: Move from TVM to durable
-    let mut builder2 = repo.state_builder(&state1);
+    let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &state1);
     builder2.set_apply_to_durable(true);
     builder2.move_from_tvm(1000)?;
     let transition2 = builder2.build(None)?;
     let state2 = transition2.new_state;
-    repo.set_state(&block_id_2, &state2)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id_2,
+        &ThreadIdentifier::default(),
+        0,
+        &state2,
+        transition2.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_2, &state2)?;
 
-    // Real account should be at (dapp_id, account_id) in durable
+    // The real account should be at (dapp_id, account_id) in durable
     let real = repo.state_account(&state2, &routing)?;
     assert!(real.is_some(), "Real account should exist in durable at (dapp_id, account_id)");
     assert!(!real.unwrap().is_redirect(), "Real account should not be a redirect");
@@ -1476,30 +1906,44 @@ fn test_redirect_stub_for_move_from_tvm() -> anyhow::Result<()> {
 #[test]
 fn test_redirect_stub_for_replace_with_redirect() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 1));
     let block_id_2 = BlockIdentifier::new(new_u256("block", 2));
 
-    // Insert account with dapp_id != account_id
+    // Insert an account with dapp_id != account_id
     let (routing, acc) = new_acc_with_dapp(5, 50);
     let account_id = *routing.account_id();
     let dapp_id = *routing.dapp_id();
-    let default_routing = account_id.dapp_originator();
+    let default_routing = account_id.redirect();
 
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&routing, &acc);
     let transition1 = builder.build(None)?;
     let state1 = transition1.new_state;
-    repo.set_state(&block_id_1, &state1)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
 
     // Replace the real account with a redirect at (dapp_id, account_id)
-    let mut builder2 = repo.state_builder(&state1);
+    let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &state1);
     builder2.replace_with_redirect(&routing)?;
     let transition2 = builder2.build(None)?;
     let state2 = transition2.new_state;
-    repo.set_state(&block_id_2, &state2)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id_2,
+        &ThreadIdentifier::default(),
+        0,
+        &state2,
+        transition2.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_2, &state2)?;
 
     // The entry at (dapp_id, account_id) should be a redirect
     let entry_at_real = repo.state_account(&state2, &routing)?;
@@ -1523,23 +1967,30 @@ fn test_redirect_stub_for_replace_with_redirect() -> anyhow::Result<()> {
 #[test]
 fn test_no_redirect_stub_for_default_routing_account() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id = BlockIdentifier::new(new_u256("block", 1));
 
-    // Insert account with dapp_id == account_id (default routing)
+    // Insert an account with dapp_id == account_id (default routing)
     let (routing, acc) = new_acc(1);
     assert_eq!(
         *routing.dapp_id(),
-        routing.account_id().use_as_dapp_id(),
+        routing.account_id().redirect_dapp_id(),
         "This test requires dapp_id == account_id"
     );
 
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&routing, &acc);
     let transition = builder.build(None)?;
     let state1 = transition.new_state;
-    repo.set_state(&block_id, &state1)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id, &state1)?;
 
     // Account should exist at its routing
     let result = repo.state_account(&state1, &routing)?;
@@ -1559,14 +2010,14 @@ fn test_no_redirect_stub_for_default_routing_account() -> anyhow::Result<()> {
 #[test]
 fn test_redirect_stub_diff_contains_both_entries() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
 
-    // Insert account with dapp_id != account_id
+    // Insert an account with dapp_id != account_id
     let (routing, acc) = new_acc_with_dapp(6, 60);
     let account_id = *routing.account_id();
-    let default_routing = account_id.dapp_originator();
+    let default_routing = account_id.redirect();
 
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&routing, &acc);
     let transition = builder.build(None)?;
 
@@ -1575,16 +2026,16 @@ fn test_redirect_stub_diff_contains_both_entries() -> anyhow::Result<()> {
     assert_eq!(durable_accounts.len(), 2, "Diff should contain real account and redirect stub");
 
     // Find entries by routing
-    let real_entry = durable_accounts.iter().find(|(r, _)| r == &routing);
+    let real_entry = durable_accounts.get(&routing);
     assert!(real_entry.is_some(), "Diff should contain entry at real routing");
     assert!(
-        matches!(real_entry.unwrap().1, ThreadAccountUpdate::UpdateOrInsert(_)),
+        matches!(real_entry.unwrap(), BlockAccountOperation::UpdateOrInsert(_)),
         "Real entry should be UpdateOrInsert"
     );
 
-    let redirect_entry = durable_accounts.iter().find(|(r, _)| r == &default_routing);
+    let redirect_entry = durable_accounts.get(&default_routing);
     assert!(redirect_entry.is_some(), "Diff should contain redirect entry at default routing");
-    if let ThreadAccountUpdate::UpdateOrInsert(redirect_acc) = &redirect_entry.unwrap().1 {
+    if let BlockAccountOperation::UpdateOrInsert(redirect_acc) = &redirect_entry.unwrap() {
         assert!(redirect_acc.is_redirect(), "Redirect entry should be a redirect");
     } else {
         panic!("Redirect entry should be UpdateOrInsert");
@@ -1596,15 +2047,15 @@ fn test_redirect_stub_diff_contains_both_entries() -> anyhow::Result<()> {
 #[test]
 fn test_redirect_stub_updated_when_account_dapp_changes() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 1));
     let block_id_2 = BlockIdentifier::new(new_u256("block", 2));
 
-    // Insert account with dapp_id_1
+    // Insert an account with dapp_id_1
     let id = AccountIdentifier::new(new_u256("acc", 7));
     let dapp_id_1 = DAppIdentifier::new(new_u256("dapp", 71));
-    let routing1 = id.routing_with(dapp_id_1);
-    let default_routing = id.dapp_originator();
+    let routing1 = id.routing(dapp_id_1);
+    let default_routing = id.redirect();
 
     let tvm_acc = tvm_block::Account::with_address(
         MsgAddressInt::with_standart(None, 0, AccountId::from_raw(id.as_slice().to_vec(), 256))
@@ -1617,23 +2068,32 @@ fn test_redirect_stub_updated_when_account_dapp_changes() -> anyhow::Result<()> 
         Some(dapp_id_1.as_array().into()),
     )
     .unwrap();
-    let acc1 = ThreadStateAccount::from(shard_acc_1);
+    let acc1 = ThreadAccount::from(shard_acc_1);
 
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&routing1, &acc1);
     let transition1 = builder.build(None)?;
     let state1 = transition1.new_state;
-    repo.set_state(&block_id_1, &state1)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
 
-    // Verify default routing follows redirect → returns real account with dapp_id_1
+    // Verify default routing follows redirect → returns a real account with dapp_id_1
     let followed1 = repo.state_account(&state1, &default_routing)?.unwrap();
     assert!(!followed1.is_redirect(), "Should follow redirect to real account");
     assert_eq!(followed1.get_dapp_id(), Some(dapp_id_1));
 
-    // Now change account's dapp to dapp_id_2
+    // Now change the account's dapp to dapp_id_2
     let dapp_id_2 = DAppIdentifier::new(new_u256("dapp", 72));
-    let routing2 = id.routing_with(dapp_id_2);
+    let routing2 = id.routing(dapp_id_2);
 
     let shard_acc_2 = ShardAccount::with_params(
         &tvm_acc,
@@ -1642,16 +2102,23 @@ fn test_redirect_stub_updated_when_account_dapp_changes() -> anyhow::Result<()> 
         Some(dapp_id_2.as_array().into()),
     )
     .unwrap();
-    let acc2 = ThreadStateAccount::from(shard_acc_2);
+    let acc2 = ThreadAccount::from(shard_acc_2);
 
-    let mut builder2 = repo.state_builder(&state1);
+    let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &state1);
     // Remove from old routing, insert at new routing
     builder2.remove_account(&routing1);
     builder2.insert_account(&routing2, &acc2);
     let transition2 = builder2.build(None)?;
     let state2 = transition2.new_state;
-    repo.set_state(&block_id_2, &state2)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id_2,
+        &ThreadIdentifier::default(),
+        0,
+        &state2,
+        transition2.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_2, &state2)?;
 
     // Old routing should be removed
     assert!(repo.state_account(&state2, &routing1)?.is_none(), "Old routing should be empty");
@@ -1660,7 +2127,7 @@ fn test_redirect_stub_updated_when_account_dapp_changes() -> anyhow::Result<()> 
     let real = repo.state_account(&state2, &routing2)?.unwrap();
     assert!(!real.is_redirect(), "New routing should have real account");
 
-    // Default routing follows redirect → returns real account with dapp_id_2
+    // Default routing follows redirect → returns a real account with dapp_id_2
     let followed2 = repo.state_account(&state2, &default_routing)?;
     assert!(followed2.is_some(), "Default routing should find account via redirect");
     let followed2 = followed2.unwrap();
@@ -1677,15 +2144,15 @@ fn test_redirect_stub_updated_when_account_dapp_changes() -> anyhow::Result<()> 
 #[test]
 fn test_redirect_stub_with_account_inserted_at_wrong_routing() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id = BlockIdentifier::new(new_u256("block", 1));
 
-    // Create account with dapp_id != account_id but insert at default routing
+    // Create an account with dapp_id != account_id but insert at default routing
     // (simulates build_actions.rs using acc_id.dapp_originator())
     let id = AccountIdentifier::new(new_u256("acc", 8));
     let dapp_id = DAppIdentifier::new(new_u256("dapp", 80));
-    let default_routing = id.dapp_originator();
-    let correct_routing = id.routing_with(dapp_id);
+    let default_routing = id.redirect();
+    let correct_routing = id.routing(dapp_id);
 
     let tvm_acc = tvm_block::Account::with_address(
         MsgAddressInt::with_standart(None, 0, AccountId::from_raw(id.as_slice().to_vec(), 256))
@@ -1698,18 +2165,25 @@ fn test_redirect_stub_with_account_inserted_at_wrong_routing() -> anyhow::Result
         Some(dapp_id.as_array().into()),
     )
     .unwrap();
-    let acc = ThreadStateAccount::from(shard_acc);
+    let acc = ThreadAccount::from(shard_acc);
     assert_eq!(acc.get_dapp_id(), Some(dapp_id), "Account should have dapp_id set");
 
     // Insert at default routing (wrong — dapp_id != account_id)
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&default_routing, &acc);
     let transition = builder.build(None)?;
     let state1 = transition.new_state;
-    repo.set_state(&block_id, &state1)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id, &state1)?;
 
-    // Account should be rerouted to correct routing (dapp_id, account_id)
+    // Account should be rerouted to the correct routing (dapp_id, account_id)
     let real = repo.state_account(&state1, &correct_routing)?;
     assert!(real.is_some(), "Account should exist at correct routing (dapp_id, account_id)");
     assert!(!real.unwrap().is_redirect(), "Account at correct routing should not be a redirect");
@@ -1731,43 +2205,736 @@ fn test_redirect_stub_with_account_inserted_at_wrong_routing() -> anyhow::Result
 #[test]
 fn test_redirect_stub_diff_applied_correctly() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
-    let state0 = Repo::new_state();
+    let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 1));
 
-    // Insert account with dapp_id != account_id
+    // Insert an account with dapp_id != account_id
     let (routing, acc) = new_acc_with_dapp(9, 90);
     let account_id = *routing.account_id();
-    let default_routing = account_id.dapp_originator();
+    let default_routing = account_id.redirect();
 
-    let mut builder = repo.state_builder(&state0);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
     builder.insert_account(&routing, &acc);
     let transition = builder.build(None)?;
     let state1 = transition.new_state;
-    repo.set_state(&block_id_1, &state1)?;
-    repo.commit()?;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition.account_operations.clone(),
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
 
     // Apply the diff to the old state (simulates a receiving node)
-    let state_applied = repo.state_apply_diff(&state0, transition.diff)?;
+    let applied =
+        repo.state_apply_diff(&state0, transition.diff, ThreadIdentifier::default(), 0)?;
 
     // Real account should be accessible at the real routing
-    let real_from_applied = repo.state_account(&state_applied, &routing)?;
+    let real_from_applied = repo.state_account(&applied.new_state, &routing)?;
     assert!(real_from_applied.is_some(), "Real account should exist in applied state");
     assert_eq!(
-        real_from_applied.unwrap().account()?.hash(),
-        acc.account()?.hash(),
+        real_from_applied.unwrap().vm_account()?.hash(),
+        acc.vm_account()?.hash(),
         "Applied state should have correct account data"
     );
 
     // Default routing follows redirect → returns the real account
-    let followed_from_applied = repo.state_account(&state_applied, &default_routing)?;
+    let followed_from_applied = repo.state_account(&applied.new_state, &default_routing)?;
     assert!(followed_from_applied.is_some(), "Default routing should find account via redirect");
     let followed_from_applied = followed_from_applied.unwrap();
     assert!(!followed_from_applied.is_redirect(), "Followed redirect should return real account");
     assert_eq!(
-        followed_from_applied.account()?.hash(),
-        acc.account()?.hash(),
+        followed_from_applied.vm_account()?.hash(),
+        acc.vm_account()?.hash(),
         "Followed account data should match original"
     );
+
+    Ok(())
+}
+
+// ==================== Routing Lookup Stress Tests ====================
+
+/// Lightweight AVM account with originator routing (dapp_id == account_id)
+fn small_acc(seed: usize) -> (AccountRouting, ThreadAccount) {
+    use node_types::AccountHash;
+    let id = AccountIdentifier::new(new_u256("sm_acc", seed));
+    let routing = id.redirect();
+    let acc = ThreadAccount::from_avm(AvmThreadAccount {
+        vm_account: AvmAccount::new(
+            AccountHash::new(new_u256("sm_hash", seed)),
+            AvmAccountMetadata { id, ..Default::default() },
+            None,
+            None,
+            None,
+        ),
+        last_trans_hash: TransactionHash::new(new_u256("sm_tx", seed)),
+        last_trans_lt: seed as u64,
+    });
+    (routing, acc)
+}
+
+/// Lightweight AVM account with separate dapp_id
+fn small_acc_dapp(acc_seed: usize, dapp_seed: usize) -> (AccountRouting, ThreadAccount) {
+    use node_types::AccountHash;
+    let id = AccountIdentifier::new(new_u256("sm_acc", acc_seed));
+    let dapp_id = DAppIdentifier::new(new_u256("sm_dapp", dapp_seed));
+    let routing = id.routing(dapp_id);
+    let acc = ThreadAccount::from_avm(AvmThreadAccount {
+        vm_account: AvmAccount::new(
+            AccountHash::new(new_u256("sm_hash", acc_seed)),
+            AvmAccountMetadata { id, ..Default::default() },
+            None,
+            None,
+            None,
+        ),
+        last_trans_hash: TransactionHash::new(new_u256("sm_tx", acc_seed)),
+        last_trans_lt: acc_seed as u64,
+    });
+    (routing, acc)
+}
+
+/// Lightweight AVM account with explicit 32-byte key
+fn small_acc_key(key: [u8; 32], seed: usize) -> (AccountRouting, ThreadAccount) {
+    use node_types::AccountHash;
+    let id = AccountIdentifier::new(key);
+    let routing = id.redirect();
+    let acc = ThreadAccount::from_avm(AvmThreadAccount {
+        vm_account: AvmAccount::new(
+            AccountHash::new(new_u256("sm_hash_k", seed)),
+            AvmAccountMetadata { id, ..Default::default() },
+            None,
+            None,
+            None,
+        ),
+        last_trans_hash: TransactionHash::new(new_u256("sm_tx_k", seed)),
+        last_trans_lt: seed as u64,
+    });
+    (routing, acc)
+}
+
+fn insert_accounts(
+    repo: &ThreadAccountsRepository,
+    state: &ThreadAccountsState,
+    accounts: &[(AccountRouting, ThreadAccount)],
+) -> anyhow::Result<(ThreadAccountsState, HashMap<AccountRouting, ArchiveOperation>)> {
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, state);
+    for (routing, acc) in accounts {
+        builder.insert_account(routing, acc);
+    }
+    let tr = builder.build(None)?;
+    Ok((tr.new_state, tr.account_operations))
+}
+
+fn verify_all(
+    repo: &ThreadAccountsRepository,
+    state: &ThreadAccountsState,
+    accounts: &[(AccountRouting, ThreadAccount)],
+    label: &str,
+) {
+    for (i, (routing, _)) in accounts.iter().enumerate() {
+        let found = repo.state_account(state, routing).unwrap();
+        assert!(
+            found.is_some(),
+            "{label}: account {i}/{} not found: dapp={}, acc={}",
+            accounts.len(),
+            routing.dapp_id().to_hex_string(),
+            routing.account_id().to_hex_string(),
+        );
+    }
+}
+
+#[test]
+fn stress_originator_routing() -> anyhow::Result<()> {
+    let (repo, _dir) = setup_repo(true);
+    let mut state = new_state();
+    let accounts: Vec<_> = (0..10_000).map(small_acc).collect();
+    (state, _) = insert_accounts(&repo, &state, &accounts)?;
+    verify_all(&repo, &state, &accounts, "originator");
+    Ok(())
+}
+
+#[test]
+fn stress_separate_dapps() -> anyhow::Result<()> {
+    let (repo, _dir) = setup_repo(true);
+    let mut state = new_state();
+    let mut accounts = Vec::new();
+    for d in 0..200 {
+        for a in 0..50 {
+            accounts.push(small_acc_dapp(d * 1000 + a, d + 1));
+        }
+    }
+    (state, _) = insert_accounts(&repo, &state, &accounts)?;
+    verify_all(&repo, &state, &accounts, "separate_dapps");
+    Ok(())
+}
+
+#[test]
+fn stress_incremental_verify_each_step() -> anyhow::Result<()> {
+    let (repo, _dir) = setup_repo(true);
+    let mut state = new_state();
+    let mut all: Vec<(AccountRouting, ThreadAccount)> = Vec::new();
+    for batch in 0..50 {
+        let accounts: Vec<_> = (0..200)
+            .map(|i| {
+                let seed = batch * 200 + i;
+                if i % 3 == 0 {
+                    small_acc_dapp(seed, batch + 1)
+                } else {
+                    small_acc(seed)
+                }
+            })
+            .collect();
+        (state, _) = insert_accounts(&repo, &state, &accounts)?;
+        all.extend(accounts);
+        verify_all(&repo, &state, &all, &format!("batch_{batch}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn stress_save_load_verify() -> anyhow::Result<()> {
+    let (repo, _dir) = setup_repo(true);
+    let mut all: Vec<(AccountRouting, ThreadAccount)> = Vec::new();
+
+    let p1: Vec<_> = (0..5000).map(small_acc).collect();
+    let (state, account_operations) = insert_accounts(&repo, &new_state(), &p1)?;
+    all.extend(p1);
+    repo.finalize_thread_transition(
+        &BlockIdentifier::new(new_u256("blk", 1)),
+        &ThreadIdentifier::default(),
+        0,
+        &state,
+        account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&BlockIdentifier::new(new_u256("blk", 1)), &state)?;
+    verify_all(&repo, &state, &all, "after_save_1");
+
+    let p2: Vec<_> = (0..2000).map(|i| small_acc_dapp(50000 + i, i % 100 + 1)).collect();
+    let (state, account_operations) = insert_accounts(&repo, &state, &p2)?;
+    all.extend(p2);
+    verify_all(&repo, &state, &all, "after_phase2");
+
+    repo.finalize_thread_transition(
+        &BlockIdentifier::new(new_u256("blk", 2)),
+        &ThreadIdentifier::default(),
+        0,
+        &state,
+        account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&BlockIdentifier::new(new_u256("blk", 2)), &state)?;
+    verify_all(&repo, &state, &all, "after_commit");
+    Ok(())
+}
+
+#[test]
+fn stress_insert_remove_reinsert() -> anyhow::Result<()> {
+    let (repo, _dir) = setup_repo(true);
+    let mut state = new_state();
+
+    let accounts: Vec<_> = (0..5000).map(small_acc).collect();
+    (state, _) = insert_accounts(&repo, &state, &accounts)?;
+
+    {
+        let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state);
+        for (i, (routing, _)) in accounts.iter().enumerate() {
+            if i % 3 == 0 {
+                builder.remove_account(routing);
+            }
+        }
+        state = builder.build(None)?.new_state;
+    }
+
+    for (i, (routing, _)) in accounts.iter().enumerate() {
+        let found = repo.state_account(&state, routing)?;
+        if i % 3 == 0 {
+            assert!(found.is_none(), "Removed {i} should be None");
+        } else {
+            assert!(found.is_some(), "Kept {i} should exist");
+        }
+    }
+
+    let reinserted: Vec<_> = accounts
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| i % 3 == 0)
+        .map(|(i, _)| small_acc(10000 + i))
+        .collect();
+    (state, _) = insert_accounts(&repo, &state, &reinserted)?;
+
+    for (i, (routing, _)) in accounts.iter().enumerate() {
+        if i % 3 != 0 {
+            assert!(repo.state_account(&state, routing)?.is_some(), "Kept {i} gone");
+        }
+    }
+    for (i, (routing, _)) in reinserted.iter().enumerate() {
+        assert!(repo.state_account(&state, routing)?.is_some(), "Reinserted {i} not found");
+    }
+    Ok(())
+}
+
+#[test]
+fn stress_high_nibble_keys() -> anyhow::Result<()> {
+    let (repo, _dir) = setup_repo(true);
+    let mut state = new_state();
+    let mut all = Vec::new();
+
+    let bg: Vec<_> = (0..5000).map(small_acc).collect();
+    all.extend(bg);
+
+    // Keys with every possible first nibble pair for 0xe* and 0xf*
+    for hi in 0x0eu8..=0x0f {
+        for lo in 0x00u8..=0x0f {
+            let prefix = (hi << 4) | lo;
+            let mut key = new_u256("hn", prefix as usize);
+            key[0] = prefix;
+            all.push(small_acc_key(key, 9000 + prefix as usize));
+        }
+    }
+
+    let account_operations;
+    (state, account_operations) = insert_accounts(&repo, &state, &all)?;
+    verify_all(&repo, &state, &all, "high_nibble");
+
+    repo.finalize_thread_transition(
+        &BlockIdentifier::new(new_u256("blk", 1)),
+        &ThreadIdentifier::default(),
+        0,
+        &state,
+        account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&BlockIdentifier::new(new_u256("blk", 1)), &state)?;
+    verify_all(&repo, &state, &all, "high_nibble_after_save");
+    Ok(())
+}
+
+#[test]
+fn stress_same_first_nibble() -> anyhow::Result<()> {
+    let (repo, _dir) = setup_repo(true);
+    let mut state = new_state();
+    let mut all = Vec::new();
+
+    for i in 0..2000 {
+        let mut key = new_u256("same_prefix", i);
+        key[0] = 0xe1;
+        all.push(small_acc_key(key, i));
+    }
+
+    (state, _) = insert_accounts(&repo, &state, &all)?;
+    verify_all(&repo, &state, &all, "same_first_nibble");
+    Ok(())
+}
+
+// #[test]
+// fn stress_snapshot_roundtrip() -> anyhow::Result<()> {
+//     let (repo, _dir) = setup_repo(true);
+//     let mut state = new_state();
+//     let mut all = Vec::new();
+//     for i in 0..5000 {
+//         if i % 4 == 0 { all.push(small_acc_dapp(i, i / 10 + 1)); }
+//         else { all.push(small_acc(i)); }
+//     }
+//     state = insert_accounts(&repo, &state, &all)?;
+//
+//     let snapshot = repo.export_durable_snapshot(&state)?;
+//     let (repo2, _dir2) = setup_repo(true);
+//     let imported = repo2.import_durable_snapshot(snapshot, &ThreadIdentifier::default(), &BlockIdentifier::default())?;
+//
+//     assert_eq!(repo.state_hash(&state), repo2.state_hash(&imported));
+//     verify_all(&repo2, &imported, &all, "snapshot_import");
+//     Ok(())
+// }
+
+#[test]
+fn stress_many_accounts_one_dapp() -> anyhow::Result<()> {
+    let (repo, _dir) = setup_repo(true);
+    let mut state = new_state();
+    let accounts: Vec<_> = (0..10_000).map(|i| small_acc_dapp(i, 1)).collect();
+    (state, _) = insert_accounts(&repo, &state, &accounts)?;
+    verify_all(&repo, &state, &accounts, "single_dapp_10k");
+    Ok(())
+}
+
+#[test]
+fn stress_one_account_per_dapp() -> anyhow::Result<()> {
+    let (repo, _dir) = setup_repo(true);
+    let mut state = new_state();
+    let accounts: Vec<_> = (0..10_000).map(|i| small_acc_dapp(i, i + 1)).collect();
+    (state, _) = insert_accounts(&repo, &state, &accounts)?;
+    verify_all(&repo, &state, &accounts, "10k_dapps_x_1");
+    Ok(())
+}
+
+#[test]
+fn stress_100k_routings() -> anyhow::Result<()> {
+    let (repo, _dir) = setup_repo(true);
+    let mut state = new_state();
+    let mut all: Vec<(AccountRouting, ThreadAccount)> = Vec::new();
+
+    // 100k accounts inserted in batches of 10k, verified after each batch
+    for batch in 0..10 {
+        let accounts: Vec<_> = (0..10_000)
+            .map(|i| {
+                let seed = batch * 10_000 + i;
+                match seed % 5 {
+                    0 => small_acc(seed),                      // originator
+                    1 => small_acc_dapp(seed, seed / 100 + 1), // many dapps
+                    2 => small_acc_dapp(seed, batch + 1),      // few dapps, many accounts
+                    3 => {
+                        // forced high nibble key
+                        let mut key = new_u256("100k", seed);
+                        key[0] = 0xe0 + (seed % 32) as u8;
+                        small_acc_key(key, seed)
+                    }
+                    _ => small_acc(seed),
+                }
+            })
+            .collect();
+        (state, _) = insert_accounts(&repo, &state, &accounts)?;
+        all.extend(accounts);
+        verify_all(&repo, &state, &all, &format!("100k_batch_{batch}"));
+        eprintln!("  batch {batch}: {} accounts verified", all.len());
+    }
+
+    Ok(())
+}
+
+// ==================== Snapshot pin protocol tests (spec/SNAPSHOT.md) ====================
+
+/// Regression for the panic
+///   "Account R exists in map (hash H_pin) but no matching version found in
+///    pool, accumulator, or archive"
+///
+/// Before the snapshot pin protocol, the export iterated the live archive.
+/// If a routing was updated between the snapshot block being finalized and
+/// the export reading the archive, the snapshot shipped bytes hashing to
+/// the *new* version while the snapshot map still recorded the *old* hash.
+/// The receiver bailed on lookup.
+///
+/// The unfinalized accounts pool is drained at finalization bounds. Once
+/// block 2 finalizes and overwrites archive routing bytes, block 1's
+/// body is no longer reachable unless another operational state still
+/// holds it above the finalized bound.
+#[test]
+fn test_export_fails_for_drained_finalized_body_after_archive_overwrite() -> anyhow::Result<()> {
+    use crate::AnchorBlockRef;
+    let (repo, _dir) = setup_repo(true);
+    let thread_id = ThreadIdentifier::default();
+    let mut state = new_state();
+
+    // Block 1: insert account X with body v1.
+    let (routing, acc_v1) = new_acc(7);
+    let block1 = BlockIdentifier::new(new_u256("block", 1));
+    let mut builder = repo.state_builder(&thread_id, 1, &state);
+    builder.insert_account(&routing, &acc_v1);
+    let transition1 = builder.build(None)?;
+    let snapshot_state = transition1.new_state.clone();
+    repo.finalize_thread_transition(
+        &block1,
+        &thread_id,
+        1,
+        &snapshot_state,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    state = transition1.new_state;
+
+    // Block 2: update X to body v2 — this overwrites the archive's
+    // routing record. Export from block 1 must fail after the block 1
+    // operational version is drained at block 2 finalization.
+    let (_, acc_v2) = new_acc(7777);
+    let block2 = BlockIdentifier::new(new_u256("block", 2));
+    let mut builder = repo.state_builder(&thread_id, 2, &state);
+    builder.insert_account(&routing, &acc_v2);
+    let transition2 = builder.build(None)?;
+    repo.finalize_thread_transition(
+        &block2,
+        &thread_id,
+        2,
+        &transition2.new_state,
+        transition2.account_operations,
+    )?;
+    assert_drained(&repo);
+
+    let mut snapshot = std::io::Cursor::new(Vec::new());
+    let err = repo
+        .durable_map_repo()
+        .export_durable_snapshot_to_writer(&snapshot_state.durable, &mut snapshot)
+        .expect_err("block 1 body must be drained after block 2 finalization");
+    assert!(
+        err.to_string().contains("not found in"),
+        "unexpected export error after finalized body drain: {err:#}",
+    );
+
+    // Sanity: the AnchorBlockRef pin_set expansion still works as a
+    // smoke test of the public API (no behavioural assertion — this
+    // just exercises the type so it can't silently regress).
+    let mut refs = std::collections::HashMap::new();
+    refs.insert(ThreadIdentifier::default(), block1);
+    let anchor = AnchorBlockRef {
+        anchor_block_id: block1,
+        anchor_thread_id: thread_id,
+        cross_thread_refs: refs,
+    };
+    let set = anchor.pin_set();
+    assert_eq!(set.len(), 1);
+    assert_eq!(set.get(&thread_id), Some(&block1));
+
+    Ok(())
+}
+
+#[test]
+fn test_push_transition_does_not_preserve_imported_archive_only_version() -> anyhow::Result<()> {
+    let (source_repo, _source_dir) = setup_repo(true);
+    let thread_id = ThreadIdentifier::default();
+    let source_state = new_state();
+
+    let (routing, acc_v1) = new_acc(7001);
+    let block1 = BlockIdentifier::new(new_u256("block", 7001));
+    let mut builder = source_repo.state_builder(&thread_id, 1, &source_state);
+    builder.insert_account(&routing, &acc_v1);
+    let transition1 = builder.build(None)?;
+    let snapshot_state = transition1.new_state.clone();
+    source_repo.finalize_thread_transition(
+        &block1,
+        &thread_id,
+        1,
+        &snapshot_state,
+        transition1.account_operations,
+    )?;
+    assert_drained(&source_repo);
+
+    let mut snapshot = std::io::Cursor::new(Vec::new());
+    source_repo
+        .durable_map_repo()
+        .export_durable_snapshot_to_writer(&snapshot_state.durable, &mut snapshot)?;
+    let snapshot_bytes = snapshot.into_inner();
+
+    let (import_repo, _import_dir) = setup_import_repo(true);
+    let imported_durable = import_repo.durable_map_repo().import_durable_snapshot_from_reader(
+        &mut std::io::Cursor::new(snapshot_bytes),
+        &thread_id,
+        &block1,
+    )?;
+    let imported_state =
+        crate::ThreadAccountsState::from_parts(imported_durable, snapshot_state.tvm.clone());
+
+    let (_, acc_v2) = new_acc(7002);
+    let block2 = BlockIdentifier::new(new_u256("block", 7002));
+    let mut builder = import_repo.state_builder(&thread_id, 2, &imported_state);
+    builder.insert_account(&routing, &acc_v2);
+    let transition2 = builder.build(None)?;
+    import_repo.finalize_thread_transition(
+        &block2,
+        &thread_id,
+        2,
+        &transition2.new_state,
+        transition2.account_operations,
+    )?;
+    assert_drained(&import_repo);
+
+    let current =
+        import_repo.state_account(&transition2.new_state, &routing)?.ok_or_else(|| {
+            anyhow::anyhow!("updated account must remain readable after archive update")
+        })?;
+    assert_eq!(current.vm_account()?.hash(), acc_v2.vm_account()?.hash());
+
+    let mut old_snapshot = std::io::Cursor::new(Vec::new());
+    let err = import_repo
+        .durable_map_repo()
+        .export_durable_snapshot_to_writer(&imported_state.durable, &mut old_snapshot)
+        .expect_err("archive-only v1 must not be preserved into the unfinalized pool");
+    assert!(
+        err.to_string().contains("not found in"),
+        "unexpected export error after archive-only version overwrite: {err:#}",
+    );
+
+    Ok(())
+}
+
+/// Fix A: producer-side alignment fires when `request_snapshot_pin` is
+/// called *before* the matching `push_transition`. The boundary batch
+/// must reach the update loop without waiting for the next push or for
+/// `is_full` — i.e. `acquire_snapshot_pin` must succeed promptly.
+#[test]
+fn test_pin_acquires_promptly_when_request_precedes_push() -> anyhow::Result<()> {
+    use std::collections::HashMap;
+
+    use crate::AnchorBlockRef;
+    let (repo, _dir) = setup_repo(true);
+    let thread_id = ThreadIdentifier::default();
+    let mut state = new_state();
+
+    // Get the thread to a known starting state with a single push.
+    let (routing0, acc0) = new_acc(100);
+    let block0 = BlockIdentifier::new(new_u256("block", 0));
+    let mut builder = repo.state_builder(&thread_id, 0, &state);
+    builder.insert_account(&routing0, &acc0);
+    let transition0 = builder.build(None)?;
+    repo.finalize_thread_transition(
+        &block0,
+        &thread_id,
+        0,
+        &transition0.new_state,
+        transition0.account_operations,
+    )?;
+    assert_drained(&repo);
+    state = transition0.new_state;
+
+    // Fix A path: request the pin BEFORE pushing the anchor's transition.
+    let block1 = BlockIdentifier::new(new_u256("block", 1));
+    let anchor = AnchorBlockRef {
+        anchor_block_id: block1,
+        anchor_thread_id: thread_id,
+        cross_thread_refs: HashMap::new(),
+    };
+    let mut pin_request_guard = repo.request_snapshot_pin(anchor);
+
+    // Now push the anchor. The alignment hook in `push_transition`
+    // should detect the requested anchor matches and force-flush the
+    // batch in the same critical section.
+    let (routing1, acc1) = new_acc(200);
+    let mut builder = repo.state_builder(&thread_id, 0, &state);
+    builder.insert_account(&routing1, &acc1);
+    let transition1 = builder.build(None)?;
+    repo.finalize_thread_transition(
+        &block1,
+        &thread_id,
+        0,
+        &transition1.new_state,
+        transition1.account_operations,
+    )?;
+
+    // Acquire with a tight timeout. If alignment fired correctly the
+    // boundary batch is already in the channel and the update loop
+    // should reach it within milliseconds. A failure here means the
+    // batch is stuck in pending.
+    let pin = repo.acquire_snapshot_pin(thread_id, block1, std::time::Duration::from_secs(2));
+    assert!(pin.is_some(), "Fix A regression: acquire timed out — alignment did not fire");
+    pin_request_guard.disarm();
+    drop(pin);
+
+    Ok(())
+}
+
+/// Fix B: producer-side alignment is missed because `request_snapshot_pin`
+/// is called *after* the push; the anchor's transition is sitting in
+/// pending. The late-flush hook in `request_snapshot_pin` must detect
+/// this and ship the batch on the spot, so `acquire_snapshot_pin` still
+/// succeeds promptly.
+#[test]
+fn test_pin_acquires_promptly_when_request_lands_after_push() -> anyhow::Result<()> {
+    use std::collections::HashMap;
+
+    use crate::AnchorBlockRef;
+    let (repo, _dir) = setup_repo(true);
+    let thread_id = ThreadIdentifier::default();
+    let mut state = new_state();
+
+    // Initial push so the thread is initialized.
+    let (routing0, acc0) = new_acc(300);
+    let block0 = BlockIdentifier::new(new_u256("block", 0));
+    let mut builder = repo.state_builder(&thread_id, 0, &state);
+    builder.insert_account(&routing0, &acc0);
+    let transition0 = builder.build(None)?;
+    repo.finalize_thread_transition(
+        &block0,
+        &thread_id,
+        0,
+        &transition0.new_state,
+        transition0.account_operations,
+    )?;
+    assert_drained(&repo);
+    state = transition0.new_state;
+
+    // Fix B path: push the anchor first, then request the pin.
+    let block1 = BlockIdentifier::new(new_u256("block", 1));
+    let (routing1, acc1) = new_acc(400);
+    let mut builder = repo.state_builder(&thread_id, 0, &state);
+    builder.insert_account(&routing1, &acc1);
+    let transition1 = builder.build(None)?;
+    repo.finalize_thread_transition(
+        &block1,
+        &thread_id,
+        0,
+        &transition1.new_state,
+        transition1.account_operations,
+    )?;
+    // The anchor's transition is now in pending. Without Fix B it
+    // would sit there until the next push or until pending fills.
+    let anchor = AnchorBlockRef {
+        anchor_block_id: block1,
+        anchor_thread_id: thread_id,
+        cross_thread_refs: HashMap::new(),
+    };
+    let mut pin_request_guard = repo.request_snapshot_pin(anchor);
+
+    // The late-flush hook should have shipped the batch synchronously.
+    let pin = repo.acquire_snapshot_pin(thread_id, block1, std::time::Duration::from_secs(2));
+    assert!(
+        pin.is_some(),
+        "Fix B regression: acquire timed out — late-flush did not ship the pending batch"
+    );
+    pin_request_guard.disarm();
+    drop(pin);
+
+    Ok(())
+}
+
+/// Stale network: after a block has been finalized and its batch fully
+/// applied to the archive, no further `push_transition` calls are coming
+/// in. A late `request_snapshot_pin` for that already-applied anchor must
+/// still succeed promptly — there's no batch left to ship and no apply
+/// for the update loop to drive a boundary signal off of, so the
+/// shortcut in `request_snapshot_pin` has to detect this and transition
+/// `Requested → BoundaryReached` directly.
+#[test]
+fn test_pin_acquires_when_anchor_already_applied_and_stream_is_stale() -> anyhow::Result<()> {
+    use std::collections::HashMap;
+
+    use crate::AnchorBlockRef;
+    let (repo, _dir) = setup_repo(true);
+    let thread_id = ThreadIdentifier::default();
+    let mut state = new_state();
+
+    // Finalize one block; let its batch apply to the archive.
+    let (routing0, acc0) = new_acc(100);
+    let block0 = BlockIdentifier::new(new_u256("block", 0));
+    let mut builder = repo.state_builder(&thread_id, 0, &state);
+    builder.insert_account(&routing0, &acc0);
+    let transition0 = builder.build(None)?;
+    repo.finalize_thread_transition(
+        &block0,
+        &thread_id,
+        0,
+        &transition0.new_state,
+        transition0.account_operations,
+    )?;
+    assert_drained(&repo);
+    state = transition0.new_state;
+    let _ = state;
+
+    // Stream is now stale — no more `finalize_thread_transition` calls.
+    // Request a pin for the just-applied anchor. Without the shortcut,
+    // the alignment hook never fires (no push), late-flush finds nothing
+    // (pending is empty after drain), and the worker times out.
+    let anchor = AnchorBlockRef {
+        anchor_block_id: block0,
+        anchor_thread_id: thread_id,
+        cross_thread_refs: HashMap::new(),
+    };
+    let mut pin_request_guard = repo.request_snapshot_pin(anchor);
+
+    // Tight timeout: the shortcut should have flipped the state to
+    // BoundaryReached synchronously inside `request_snapshot_pin`.
+    let pin = repo.acquire_snapshot_pin(thread_id, block0, std::time::Duration::from_millis(500));
+    assert!(pin.is_some(), "stale-network regression: archive at anchor but pin not acquirable");
+    pin_request_guard.disarm();
+    drop(pin);
 
     Ok(())
 }

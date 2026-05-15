@@ -9,7 +9,9 @@ use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
 use std::hash::Hash;
+use std::io::Cursor;
 use std::io::Read;
+use std::io::Seek;
 use std::io::Write;
 use std::ops::Add;
 use std::ops::Deref;
@@ -17,11 +19,12 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 
-use account_state::ThreadAccountsBuilder;
 use account_state::ThreadAccountsRepository;
 use anyhow::ensure;
+use anyhow::Context;
 use chrono::DateTime;
 use chrono::TimeDelta;
 use chrono::Utc;
@@ -38,11 +41,11 @@ use serde::Deserialize;
 use serde::Serialize;
 use telemetry_utils::mpsc::InstrumentedSender;
 use telemetry_utils::now_ms;
+use tempfile::NamedTempFile;
 use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
 
 use super::accounts::AccountsRepository;
-use super::accounts::NodeThreadAccountsRepository;
 use crate::block_keeper_system::epoch::decode_epoch_data;
 use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperSet;
@@ -78,6 +81,7 @@ use crate::node::SignerIndex;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
+use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
 use crate::repository::RepositoryError;
 use crate::storage::MessageDBWriterService;
@@ -250,6 +254,15 @@ impl From<BkSetUpdate> for ApiBkSet {
 
 // TODO: divide repository into 2 entities: one for blocks, one for states with weak refs (for not
 // to store optimistic states longer than necessary)
+pub fn get_process_rss_bytes() -> u64 {
+    // /proc/self/statm: columns are pages; 2nd column = RSS
+    std::fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+        .map(|pages| pages * 4096)
+        .unwrap_or(0)
+}
+
 pub struct RepositoryImpl {
     data_dir: PathBuf,
     zerostate_path: Option<PathBuf>,
@@ -263,7 +276,7 @@ pub struct RepositoryImpl {
     block_state_repository: BlockStateRepository,
     optimistic_state: Arc<Mutex<HashMap<BlockIdentifier, Arc<OptimisticStateImpl>>>>,
     accounts: AccountsRepository,
-    thread_accounts_repository: NodeThreadAccountsRepository,
+    thread_accounts_repository: ThreadAccountsRepository,
     split_state: bool,
     metrics: Option<BlockProductionMetrics>,
     message_db: MessageDurableStorage,
@@ -406,11 +419,975 @@ pub struct ThreadSnapshotHeader {
     pub round: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotCompression {
+    Plain,
+    ZstdWithMagic,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SnapshotFormat {
+    Legacy,
+    Streamed { durable_bytes: Vec<u8> },
+}
+
+pub struct SnapshotFile {
+    snapshot: ThreadSnapshot,
+    format: SnapshotFormat,
+    compression: SnapshotCompression,
+}
+
+impl SnapshotFile {
+    pub fn snapshot(&self) -> &ThreadSnapshot {
+        &self.snapshot
+    }
+
+    pub fn snapshot_mut(&mut self) -> &mut ThreadSnapshot {
+        &mut self.snapshot
+    }
+
+    pub fn into_snapshot(self) -> ThreadSnapshot {
+        self.snapshot
+    }
+
+    pub fn format(&self) -> &SnapshotFormat {
+        &self.format
+    }
+
+    pub fn compression(&self) -> SnapshotCompression {
+        self.compression
+    }
+}
+
+fn serialize_into_writer<W: Write + ?Sized, T: Serialize>(
+    writer: &mut W,
+    value: &T,
+) -> anyhow::Result<()> {
+    bincode::serialize_into(writer, value)
+        .map_err(|e| anyhow::format_err!("Failed to serialize snapshot field: {e}"))
+}
+
+const STREAMED_THREAD_SNAPSHOT_MAGIC: &[u8; 7] = b"SNAP2V1";
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DurableSnapshotHeader {
+    pub tag: u8,
+    pub len: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct StreamedThreadSnapshotHeader {
+    prefix_len: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct StreamedThreadSnapshot {
+    optimistic_state: Vec<u8>,
+    ancestor_blocks_data: Vec<AncestorBlockData>,
+    db_messages: Vec<Vec<Arc<WrappedMessage>>>,
+    finalized_block: Envelope<AckiNackiBlock>,
+    bk_set: BlockKeeperSet,
+    descendant_bk_set: BlockKeeperSet,
+    future_bk_set: BlockKeeperSet,
+    descendant_future_bk_set: BlockKeeperSet,
+    finalized_block_stats: BlockStatistics,
+    attestation_target: AttestationTargets,
+    producer_selector: ProducerSelector,
+    block_height: BlockHeight,
+    prefinalization_proof: Envelope<AttestationData>,
+    ancestor_blocks_finalization_checkpoints: AncestorBlocksFinalizationCheckpoints,
+    finalizes_blocks: BTreeSet<BlockIndex>,
+    parent_ancestor_blocks_finalization_checkpoints: AncestorBlocksFinalizationCheckpoints,
+    block_protocol_version_state: BlockProtocolVersionState,
+    #[cfg(feature = "history_proofs")]
+    history_data_snapshot: GlobalHistoryDataSnapshot,
+    durable_snapshot_header: DurableSnapshotHeader,
+    finalization_chain: Vec<Envelope<AckiNackiBlock>>,
+}
+
+impl StreamedThreadSnapshot {
+    fn from_legacy(snapshot: &ThreadSnapshot, durable_len: u64) -> Self {
+        Self {
+            optimistic_state: snapshot.optimistic_state.clone(),
+            ancestor_blocks_data: snapshot.ancestor_blocks_data.clone(),
+            db_messages: snapshot.db_messages.clone(),
+            finalized_block: snapshot.finalized_block.clone(),
+            bk_set: snapshot.bk_set.clone(),
+            descendant_bk_set: snapshot.descendant_bk_set.clone(),
+            future_bk_set: snapshot.future_bk_set.clone(),
+            descendant_future_bk_set: snapshot.descendant_future_bk_set.clone(),
+            finalized_block_stats: snapshot.finalized_block_stats.clone(),
+            attestation_target: snapshot.attestation_target,
+            producer_selector: snapshot.producer_selector.clone(),
+            block_height: snapshot.block_height,
+            prefinalization_proof: snapshot.prefinalization_proof.clone(),
+            ancestor_blocks_finalization_checkpoints: snapshot
+                .ancestor_blocks_finalization_checkpoints
+                .clone(),
+            finalizes_blocks: snapshot.finalizes_blocks.clone(),
+            parent_ancestor_blocks_finalization_checkpoints: snapshot
+                .parent_ancestor_blocks_finalization_checkpoints
+                .clone(),
+            block_protocol_version_state: snapshot.block_protocol_version_state.clone(),
+            #[cfg(feature = "history_proofs")]
+            history_data_snapshot: snapshot.history_data_snapshot.clone(),
+            durable_snapshot_header: DurableSnapshotHeader {
+                tag: u8::from(durable_len > 0),
+                len: durable_len,
+            },
+            finalization_chain: snapshot.finalization_chain.clone(),
+        }
+    }
+
+    fn into_legacy(self) -> ThreadSnapshot {
+        let builder = ThreadSnapshot::builder()
+            .optimistic_state(self.optimistic_state)
+            .ancestor_blocks_data(self.ancestor_blocks_data)
+            .db_messages(self.db_messages)
+            .finalized_block(self.finalized_block)
+            .bk_set(self.bk_set)
+            .descendant_bk_set(self.descendant_bk_set)
+            .future_bk_set(self.future_bk_set)
+            .descendant_future_bk_set(self.descendant_future_bk_set)
+            .finalized_block_stats(self.finalized_block_stats)
+            .attestation_target(self.attestation_target)
+            .producer_selector(self.producer_selector)
+            .block_height(self.block_height)
+            .prefinalization_proof(self.prefinalization_proof)
+            .ancestor_blocks_finalization_checkpoints(self.ancestor_blocks_finalization_checkpoints)
+            .finalizes_blocks(self.finalizes_blocks)
+            .parent_ancestor_blocks_finalization_checkpoints(
+                self.parent_ancestor_blocks_finalization_checkpoints,
+            )
+            .block_protocol_version_state(self.block_protocol_version_state)
+            .durable_state_snapshot(None)
+            .finalization_chain(self.finalization_chain);
+        #[cfg(feature = "history_proofs")]
+        let builder = builder.history_data_snapshot(self.history_data_snapshot);
+        builder.build()
+    }
+}
+
+fn read_thread_snapshot_from_payload(
+    payload: &[u8],
+    compression: SnapshotCompression,
+) -> anyhow::Result<SnapshotFile> {
+    if payload.starts_with(STREAMED_THREAD_SNAPSHOT_MAGIC) {
+        let mut reader = Cursor::new(&payload[STREAMED_THREAD_SNAPSHOT_MAGIC.len()..]);
+        let header: StreamedThreadSnapshotHeader =
+            bincode::deserialize_from(&mut reader).map_err(|e| {
+                anyhow::format_err!("Failed to deserialize streamed snapshot header: {e}")
+            })?;
+        let prefix_len = usize::try_from(header.prefix_len).map_err(|_| {
+            anyhow::format_err!("Streamed snapshot prefix is too large: {}", header.prefix_len)
+        })?;
+        let header_len = usize::try_from(reader.position())
+            .map_err(|_| anyhow::format_err!("Streamed snapshot header offset is too large"))?;
+        let prefix_start = STREAMED_THREAD_SNAPSHOT_MAGIC
+            .len()
+            .checked_add(header_len)
+            .ok_or_else(|| anyhow::format_err!("Streamed snapshot prefix offset overflow"))?;
+        let prefix_end = prefix_start
+            .checked_add(prefix_len)
+            .ok_or_else(|| anyhow::format_err!("Streamed snapshot prefix length overflow"))?;
+        anyhow::ensure!(
+            prefix_end <= payload.len(),
+            "Streamed snapshot prefix exceeds payload bounds: prefix_end={} payload_len={}",
+            prefix_end,
+            payload.len()
+        );
+
+        let prefix_bytes = &payload[prefix_start..prefix_end];
+        let prefix: StreamedThreadSnapshot = bincode::deserialize(prefix_bytes).map_err(|e| {
+            anyhow::format_err!("Failed to deserialize streamed snapshot prefix: {e}")
+        })?;
+
+        let durable_tag = prefix.durable_snapshot_header.tag;
+        let durable_len = prefix.durable_snapshot_header.len;
+        if durable_tag == 0 {
+            anyhow::ensure!(
+                durable_len == 0,
+                "Invalid streamed durable snapshot header: tag={durable_tag}, len={durable_len}"
+            );
+        } else {
+            anyhow::ensure!(
+                durable_len > 0,
+                "Invalid streamed durable snapshot header: tag={durable_tag}, len={durable_len}"
+            );
+        }
+
+        let durable_len = usize::try_from(durable_len).map_err(|_| {
+            anyhow::format_err!("Streamed durable snapshot is too large: {durable_len}")
+        })?;
+        let durable_bytes = payload[prefix_end..].to_vec();
+        anyhow::ensure!(
+            durable_bytes.len() == durable_len,
+            "Streamed durable snapshot length mismatch: expected {durable_len}, got {}",
+            durable_bytes.len()
+        );
+
+        return Ok(SnapshotFile {
+            snapshot: prefix.into_legacy(),
+            format: SnapshotFormat::Streamed { durable_bytes },
+            compression,
+        });
+    }
+
+    let snapshot: ThreadSnapshot = bincode::deserialize(payload)
+        .map_err(|e| anyhow::format_err!("Failed to deserialize legacy snapshot: {e}"))?;
+    Ok(SnapshotFile { snapshot, format: SnapshotFormat::Legacy, compression })
+}
+
+fn write_streamed_thread_snapshot_prefix_to_writer<W: Write + ?Sized>(
+    snapshot: &ThreadSnapshot,
+    durable_len: u64,
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    let prefix = StreamedThreadSnapshot::from_legacy(snapshot, durable_len);
+    let prefix_bytes = bincode::serialize(&prefix)
+        .map_err(|e| anyhow::format_err!("Failed to serialize streamed snapshot prefix: {e}"))?;
+
+    writer.write_all(STREAMED_THREAD_SNAPSHOT_MAGIC)?;
+    serialize_into_writer(
+        writer,
+        &StreamedThreadSnapshotHeader { prefix_len: prefix_bytes.len() as u64 },
+    )?;
+    writer.write_all(&prefix_bytes)?;
+    Ok(())
+}
+
+fn write_streamed_thread_snapshot_bytes_to_writer<W: Write + ?Sized>(
+    snapshot: &ThreadSnapshot,
+    durable_bytes: &[u8],
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    let durable_len = u64::try_from(durable_bytes.len()).map_err(|_| {
+        anyhow::format_err!("Durable snapshot is too large: {}", durable_bytes.len())
+    })?;
+    write_streamed_thread_snapshot_prefix_to_writer(snapshot, durable_len, writer)?;
+    writer.write_all(durable_bytes)?;
+    Ok(())
+}
+
+fn write_snapshot_payload_to_writer<W: Write + ?Sized>(
+    snapshot_file: &SnapshotFile,
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    match snapshot_file.format() {
+        SnapshotFormat::Legacy => {
+            write_legacy_thread_snapshot_to_writer(snapshot_file.snapshot(), writer)
+        }
+        SnapshotFormat::Streamed { durable_bytes } => {
+            write_streamed_thread_snapshot_bytes_to_writer(
+                snapshot_file.snapshot(),
+                durable_bytes,
+                writer,
+            )
+        }
+    }
+}
+
+/// Reads a snapshot helper file, preserving its logical snapshot,
+/// on-disk format, and compression envelope.
+pub fn read_snapshot_file(path: &Path) -> anyhow::Result<SnapshotFile> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("Failed to read snapshot file: {}", path.display()))?;
+
+    let (compression, payload) = if bytes
+        .starts_with(crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC)
+    {
+        let decompressed = zstd::decode_all(
+            &bytes[crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC
+                .len()..],
+        )
+        .with_context(|| format!("Failed to decompress snapshot file: {}", path.display()))?;
+        (SnapshotCompression::ZstdWithMagic, decompressed)
+    } else {
+        (SnapshotCompression::Plain, bytes)
+    };
+
+    read_thread_snapshot_from_payload(&payload, compression)
+        .with_context(|| format!("Failed to parse snapshot file: {}", path.display()))
+}
+
+/// Writes a snapshot helper file back using the preserved on-disk format
+/// and compression envelope.
+pub fn write_snapshot_file(path: &Path, snapshot_file: &SnapshotFile) -> anyhow::Result<()> {
+    let parent_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut temp = NamedTempFile::new_in(parent_dir).with_context(|| {
+        format!("Failed to create temporary snapshot file in {}", parent_dir.display())
+    })?;
+
+    match snapshot_file.compression() {
+        SnapshotCompression::Plain => {
+            let writer = temp.as_file_mut();
+            write_snapshot_payload_to_writer(snapshot_file, writer)?;
+            writer.sync_all()?;
+        }
+        SnapshotCompression::ZstdWithMagic => {
+            let writer = temp.as_file_mut();
+            writer.write_all(
+                crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC,
+            )?;
+            let mut encoder = zstd::Encoder::new(
+                writer,
+                crate::node::services::sync::snapshot_compression::ZSTD_COMPRESSION_LEVEL,
+            )
+            .map_err(|e| anyhow::format_err!("Failed to create snapshot zstd encoder: {e}"))?;
+            write_snapshot_payload_to_writer(snapshot_file, &mut encoder)?;
+            let writer = encoder
+                .finish()
+                .map_err(|e| anyhow::format_err!("Failed to finish snapshot zstd encoder: {e}"))?;
+            writer.sync_all()?;
+        }
+    }
+
+    temp.persist(path).map_err(|err| {
+        anyhow::anyhow!("Failed to persist snapshot file {}: {}", path.display(), err.error)
+    })?;
+    Ok(())
+}
+
+/// Reads a snapshot file, applies a mutation to the logical ThreadSnapshot,
+/// then writes it back preserving the original format and compression.
+pub fn rewrite_snapshot_file<F>(input: &Path, output: &Path, f: F) -> anyhow::Result<()>
+where
+    F: FnOnce(&mut ThreadSnapshot) -> anyhow::Result<()>,
+{
+    let mut snapshot_file = read_snapshot_file(input)?;
+    f(snapshot_file.snapshot_mut())?;
+    write_snapshot_file(output, &snapshot_file)
+}
+
+pub(crate) fn write_streamed_thread_snapshot_to_writer<W: Write + ?Sized>(
+    snapshot: &ThreadSnapshot,
+    durable_snapshot_path: Option<&Path>,
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    let durable_len = match durable_snapshot_path {
+        Some(path) => std::fs::metadata(path)?.len(),
+        None => 0,
+    };
+    write_streamed_thread_snapshot_prefix_to_writer(snapshot, durable_len, writer)?;
+    if let Some(path) = durable_snapshot_path {
+        let mut durable_file = File::open(path)?;
+        std::io::copy(&mut durable_file, writer)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn write_legacy_thread_snapshot_to_writer<W: Write + ?Sized>(
+    snapshot: &ThreadSnapshot,
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    bincode::serialize_into(writer, snapshot)
+        .map_err(|e| anyhow::format_err!("Failed to serialize legacy snapshot: {e}"))
+}
+
+fn copy_snapshot_segment_to_writer<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    expected_len: u64,
+    segment_name: &str,
+) -> anyhow::Result<()> {
+    let mut limited_reader = reader.take(expected_len);
+    let copied = std::io::copy(&mut limited_reader, writer)?;
+    anyhow::ensure!(
+        copied == expected_len,
+        "{segment_name}: expected {expected_len} bytes, received {copied}"
+    );
+    Ok(())
+}
+
+fn stage_snapshot_segment_to_temp<R: Read>(
+    reader: &mut R,
+    temp_dir: &Path,
+    expected_len: u64,
+    segment_name: &str,
+) -> anyhow::Result<NamedTempFile> {
+    let mut temp = NamedTempFile::new_in(temp_dir)?;
+    copy_snapshot_segment_to_writer(reader, temp.as_file_mut(), expected_len, segment_name)?;
+    temp.as_file_mut().rewind()?;
+    Ok(temp)
+}
+
 impl RepositoryImpl {
+    pub fn build_snapshot_anchor_for_block(
+        &self,
+        block_id: &BlockIdentifier,
+        thread_id: &ThreadIdentifier,
+    ) -> anyhow::Result<account_state::AnchorBlockRef> {
+        let block = self.get_block_from_repo_or_archive(block_id, thread_id)?;
+        let mut cross_thread_refs = std::collections::HashMap::new();
+        let mut shared_services = self.shared_services.clone();
+        shared_services.exec(|services| {
+            for ref_block_id in block.data().common_section().refs() {
+                if let Ok(ref_data) =
+                    services.cross_thread_ref_data_service.get_cross_thread_ref_data(ref_block_id)
+                {
+                    let ref_thread_id = *ref_data.block_thread_identifier();
+                    if ref_thread_id != *thread_id {
+                        cross_thread_refs.insert(ref_thread_id, *ref_block_id);
+                    }
+                } else {
+                    tracing::warn!(
+                        target: "monit",
+                        "snapshot pin: ref {ref_block_id:?} has no cross-thread \
+                         ref data; the snapshot will be missing this thread's state",
+                    );
+                }
+            }
+        });
+        Ok(account_state::AnchorBlockRef {
+            anchor_block_id: *block_id,
+            anchor_thread_id: *thread_id,
+            cross_thread_refs,
+        })
+    }
+
     /// Returns the path to the header sidecar file for a given snapshot file path.
     pub fn snapshot_header_path(snapshot_path: &Path) -> PathBuf {
         snapshot_path.with_extension("header")
     }
+
+    pub fn set_state_from_snapshot_reader<R: Read>(
+        &mut self,
+        reader: &mut R,
+        cur_thread_id: &ThreadIdentifier,
+        skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
+    ) -> anyhow::Result<()> {
+        tracing::debug!(target: "monit", "set_state_from_snapshot_reader");
+        let mut probe = Vec::with_capacity(STREAMED_THREAD_SNAPSHOT_MAGIC.len());
+        let mut byte = [0u8; 1];
+        while probe.len() < STREAMED_THREAD_SNAPSHOT_MAGIC.len() {
+            match reader.read(&mut byte)? {
+                0 => break,
+                _ => probe.push(byte[0]),
+            }
+        }
+
+        if probe.as_slice() == STREAMED_THREAD_SNAPSHOT_MAGIC {
+            tracing::debug!("set_state_from_streamed_snapshot_reader");
+            return self.set_state_from_streamed_snapshot_reader(
+                reader,
+                cur_thread_id,
+                skipped_attestation_ids,
+            );
+        }
+
+        let mut legacy_bytes = probe;
+        reader.read_to_end(&mut legacy_bytes)?;
+        tracing::debug!("set_state_from_legacy_snapshot_bytes");
+        self.set_state_from_legacy_snapshot_bytes(
+            legacy_bytes,
+            cur_thread_id,
+            skipped_attestation_ids,
+        )
+    }
+
+    fn set_state_from_streamed_snapshot_reader<R: Read>(
+        &mut self,
+        reader: &mut R,
+        cur_thread_id: &ThreadIdentifier,
+        skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
+    ) -> anyhow::Result<()> {
+        let header: StreamedThreadSnapshotHeader = bincode::deserialize_from(&mut *reader)
+            .map_err(|e| {
+                tracing::error!("Failed to deserialize streamed snapshot header: {e}");
+                anyhow::format_err!("Failed to deserialize streamed snapshot header: {e}")
+            })?;
+        let mut prefix_bytes = vec![0u8; header.prefix_len as usize];
+        reader.read_exact(&mut prefix_bytes)?;
+        let prefix: StreamedThreadSnapshot = bincode::deserialize(&prefix_bytes).map_err(|e| {
+            tracing::error!("Failed to deserialize streamed snapshot prefix: {e}");
+            anyhow::format_err!("Failed to deserialize streamed snapshot prefix: {e}")
+        })?;
+
+        let mut state = <Self as Repository>::OptimisticState::deserialize_from_buf(
+            prefix.optimistic_state.as_slice(),
+        )
+        .map_err(|e| {
+            tracing::error!("Failed to deserialize streamed snapshot state: {e}");
+            anyhow::format_err!("Failed to deserialize state: {e}")
+        })?;
+
+        let block_id = prefix.finalized_block.data().identifier();
+        let snapshot_thread_id = state.thread_id;
+        let durable_tag = prefix.durable_snapshot_header.tag;
+        let durable_len = prefix.durable_snapshot_header.len;
+        if durable_tag == 0 {
+            anyhow::ensure!(
+                durable_len == 0,
+                "Invalid streamed durable snapshot header: block_id={block_id:?}, thread_id={snapshot_thread_id:?}, tag={durable_tag}, len={durable_len}"
+            );
+        } else {
+            anyhow::ensure!(
+                durable_len > 0,
+                "Invalid streamed durable snapshot header: block_id={block_id:?}, thread_id={snapshot_thread_id:?}, tag={durable_tag}, len={durable_len}"
+            );
+
+            let segment_name = format!(
+                "streamed durable snapshot block_id={block_id:?} thread_id={snapshot_thread_id:?}"
+            );
+            let mut durable_snapshot =
+                stage_snapshot_segment_to_temp(reader, &self.data_dir, durable_len, &segment_name)
+                    .map_err(|e| {
+                        tracing::error!(
+                            target: "node",
+                            ?block_id,
+                            ?snapshot_thread_id,
+                            expected_durable_len = durable_len,
+                            "Failed to stage durable snapshot bytes: {e}",
+                        );
+                        e
+                    })?;
+
+            // Drain in-flight before wiping the archive. The deprecated
+            // `flush_accumulator` previously held producers off too,
+            // which is unnecessary here — the import path reset_*
+            // operations panic if a snapshot pin is held, and there
+            // shouldn't be one during a sync import on this node.
+            self.thread_accounts_repository.wait_for_drain(std::time::Duration::from_secs(60));
+            self.thread_accounts_repository.reset_archive().map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to reset durable archive before import: block_id={block_id:?}, thread_id={snapshot_thread_id:?}, expected_durable_len={durable_len}, err={e}"
+                )
+            })?;
+            self.thread_accounts_repository.reset_accumulator().map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to reset durable accumulator before import: block_id={block_id:?}, thread_id={snapshot_thread_id:?}, expected_durable_len={durable_len}, err={e}"
+                )
+            })?;
+
+            let import_result =
+                self.thread_accounts_repository.import_durable_snapshot_from_reader(
+                    durable_snapshot.as_file_mut(),
+                    &snapshot_thread_id,
+                    &block_id,
+                );
+            let new_durable = match import_result {
+                Ok(new_durable) => new_durable,
+                Err(err) => {
+                    tracing::error!(
+                        target: "node",
+                        ?block_id,
+                        ?snapshot_thread_id,
+                        expected_durable_len = durable_len,
+                        "Failed to import durable snapshot from streamed snapshot: {err}",
+                    );
+                    if let Err(cleanup_err) = self.thread_accounts_repository.reset_archive() {
+                        tracing::error!(
+                            target: "node",
+                            ?block_id,
+                            ?snapshot_thread_id,
+                            "Failed to cleanup durable archive after import error: {cleanup_err}",
+                        );
+                    }
+                    if let Err(cleanup_err) = self.thread_accounts_repository.reset_accumulator() {
+                        tracing::error!(
+                            target: "node",
+                            ?block_id,
+                            ?snapshot_thread_id,
+                            "Failed to cleanup durable accumulator after import error: {cleanup_err}",
+                        );
+                    }
+                    return Err(anyhow::anyhow!(
+                        "Failed to import durable snapshot: block_id={block_id:?}, thread_id={snapshot_thread_id:?}, expected_durable_len={durable_len}, err={err}"
+                    ));
+                }
+            };
+            state.shard_state.0.durable = new_durable;
+            self.thread_accounts_repository.reset_accumulator().map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to reset durable accumulator after import: block_id={block_id:?}, thread_id={snapshot_thread_id:?}, expected_durable_len={durable_len}, err={e}"
+                )
+            })?;
+        }
+
+        self.apply_thread_snapshot(
+            prefix.into_legacy(),
+            state,
+            cur_thread_id,
+            skipped_attestation_ids,
+        )
+    }
+
+    fn set_state_from_legacy_snapshot_bytes(
+        &mut self,
+        snapshot_bytes: Vec<u8>,
+        cur_thread_id: &ThreadIdentifier,
+        skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
+    ) -> anyhow::Result<()> {
+        let thread_snapshot: ThreadSnapshot =
+            bincode::deserialize(&snapshot_bytes).map_err(|e| {
+                tracing::error!(target: "monit", "Failed to deserialize legacy snapshot: {e}");
+                anyhow::format_err!("Failed to deserialize legacy snapshot: {e}")
+            })?;
+        tracing::debug!(target: "monit", "Deserialized ThreadSnapshot");
+        let state = <Self as Repository>::OptimisticState::deserialize_from_buf(
+            thread_snapshot.optimistic_state.as_slice(),
+        )
+        .map_err(|e| {
+            tracing::error!(target: "monit", "Failed to deserialize legacy snapshot state: {e}");
+            anyhow::format_err!("Failed to deserialize state: {e}")
+        })?;
+
+        tracing::debug!(target: "monit", "Deserialized OptimisticState");
+
+        if let Some(durable_bytes) = thread_snapshot.durable_state_snapshot.as_ref() {
+            tracing::debug!(target: "monit", "Checking legacy durable snapshot emptiness");
+            account_state::ensure_legacy_durable_snapshot_is_empty(durable_bytes)?;
+        }
+
+        tracing::debug!(target: "monit", "Applying thread snapshot");
+        self.apply_thread_snapshot(thread_snapshot, state, cur_thread_id, skipped_attestation_ids)
+    }
+
+    fn apply_thread_snapshot(
+        &mut self,
+        thread_snapshot: ThreadSnapshot,
+        state: OptimisticStateImpl,
+        cur_thread_id: &ThreadIdentifier,
+        _skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
+    ) -> anyhow::Result<()> {
+        let state = state;
+        let thread_id = state.thread_id;
+        let seq_no = thread_snapshot.finalized_block.data().seq_no();
+
+        let opt_collection = self.unfinalized_blocks.guarded(|m| m.get(cur_thread_id).cloned());
+        if let Some(unfinalized) = opt_collection {
+            tracing::trace!(
+                "Update filter_prehistoric for thread={cur_thread_id:?}, seq_no={seq_no:?}"
+            );
+            let res = unfinalized
+                .update_filter(FilterPrehistoric::builder().block_seq_no(seq_no).build());
+            tracing::trace!("Update filter_prehistoric res: {res}");
+        }
+
+        tracing::debug!(target: "monit", "set_state_from_snapshot: {:?} {:?} {}", state.thread_id, state.block_id, seq_no);
+        self.store_optimistic(state.clone())?;
+
+        if &thread_id == cur_thread_id {
+            tracing::trace!(
+                "set_state_from_snapshot: fin stats: {:?}",
+                thread_snapshot.finalized_block_stats()
+            );
+        }
+
+        let block_state_repo_clone = self.block_state_repository.clone();
+        let update_block_state = || {
+            let block_state =
+                block_state_repo_clone.get(&thread_snapshot.finalized_block.data().identifier())?;
+            let parent =
+                block_state_repo_clone.get(&thread_snapshot.finalized_block.data().parent())?;
+            block_state.guarded_mut(|state| {
+                if state.thread_identifier().is_none() {
+                    state.set_thread_identifier(
+                        *thread_snapshot.finalized_block.data().common_section().thread_id(),
+                    )?;
+                }
+                Ok::<(), anyhow::Error>(())
+            })?;
+            connect!(parent = parent, child = block_state, &block_state_repo_clone);
+            let children = block_state
+                .guarded_mut(|state| {
+                    state.set_producer(
+                        thread_snapshot
+                            .finalized_block
+                            .data()
+                            .common_section()
+                            .producer_id()
+                            .clone(),
+                    )?;
+                    state.set_block_seq_no(thread_snapshot.finalized_block.data().seq_no())?;
+                    state.set_block_time_ms(
+                        thread_snapshot.finalized_block.data().time().unwrap(),
+                    )?;
+                    state.set_common_checks_passed()?;
+                    state.set_finalized()?;
+                    state.set_applied(Instant::now(), Instant::now())?;
+                    state.set_signatures_verified()?;
+                    state.set_stored(&thread_snapshot.finalized_block)?;
+                    state.set_bk_set(Arc::new(thread_snapshot.bk_set.clone()))?;
+                    state.set_future_bk_set(Arc::new(thread_snapshot.future_bk_set.clone()))?;
+                    state.set_descendant_bk_set(Arc::new(
+                        thread_snapshot.descendant_bk_set.clone(),
+                    ))?;
+                    state.set_descendant_future_bk_set(Arc::new(
+                        thread_snapshot.descendant_future_bk_set.clone(),
+                    ))?;
+                    state.set_block_stats(thread_snapshot.finalized_block_stats.clone())?;
+                    state.set_block_height(thread_snapshot.block_height)?;
+                    state.set_ancestor_blocks_finalization_checkpoints(
+                        thread_snapshot.ancestor_blocks_finalization_checkpoints.clone(),
+                    )?;
+                    state.set_attestation_target(thread_snapshot.attestation_target)?;
+                    state.set_producer_selector_data(thread_snapshot.producer_selector.clone())?;
+                    state.set_finalizes_blocks(thread_snapshot.finalizes_blocks.clone())?;
+                    state.set_block_round(
+                        *thread_snapshot.finalized_block.data().common_section().round(),
+                    )?;
+                    state.set_block_version_state(
+                        thread_snapshot.block_protocol_version_state.clone(),
+                    )?;
+                    // Populate ancestors from ancestor_blocks_data so the
+                    // ancestor-propagation chain is not broken after snapshot restore.
+                    // ancestor_blocks_data[0] is the finalized block itself; skip it.
+                    let ancestors: Vec<BlockIdentifier> = thread_snapshot
+                        .ancestor_blocks_data
+                        .iter()
+                        .skip(1)
+                        .take(MAX_STATE_ANCESTORS.get())
+                        .map(|d| *d.block_identifier())
+                        .collect();
+                    if !ancestors.is_empty() {
+                        state.set_ancestors(ancestors)?;
+                    }
+                    Ok::<Option<HashSet<_>>, anyhow::Error>(
+                        state.known_children(cur_thread_id).cloned(),
+                    )
+                })?
+                .unwrap_or_default();
+            try_set_prefinalized(
+                &block_state,
+                &block_state_repo_clone,
+                thread_snapshot.prefinalization_proof.clone(),
+            )?;
+            let parent_id = thread_snapshot.finalized_block.data().parent();
+            let parent_state = block_state_repo_clone.get(&parent_id)?;
+            parent_state.guarded_mut(|e| {
+                e.set_ancestor_blocks_finalization_checkpoints(
+                    thread_snapshot.parent_ancestor_blocks_finalization_checkpoints.clone(),
+                )
+            })?;
+            for child in children {
+                block_state_repo_clone
+                    .get(&child)?
+                    .guarded_mut(|e| e.set_has_parent_finalized())?;
+            }
+            crate::node::services::block_processor::rules::descendant_bk_set::set_descendant_bk_set(
+                &block_state,
+                &thread_snapshot.finalized_block,
+            );
+            Ok::<(), anyhow::Error>(())
+        };
+
+        if let Some(finalized_seq_no) = self
+            .thread_last_finalized_state
+            .guarded(|e| e.get(&thread_id).map(|state| state.block_seq_no))
+        {
+            tracing::trace!(
+                "Repo already has finalized state for the thread, seq_no: {}",
+                finalized_seq_no
+            );
+            if seq_no > finalized_seq_no {
+                self.thread_last_finalized_state
+                    .guarded_mut(|e| e.insert(thread_id, Arc::new(state.clone())));
+                #[cfg(feature = "history_proofs")]
+                {
+                    self.history_proof_data =
+                        unpack_history_data_snapshot(thread_snapshot.history_data_snapshot.clone());
+                }
+                update_block_state()?;
+            } else {
+                tracing::debug!(target: "monit", "Synced state is too old, skip it");
+            }
+        } else {
+            self.thread_last_finalized_state
+                .guarded_mut(|e| e.insert(thread_id, Arc::new(state.clone())));
+            #[cfg(feature = "history_proofs")]
+            {
+                self.history_proof_data =
+                    unpack_history_data_snapshot(thread_snapshot.history_data_snapshot.clone());
+            }
+            update_block_state()?;
+        }
+        {
+            let mut all_states = self.saved_states.lock();
+            let saved_states = all_states.entry(thread_id).or_default();
+            saved_states.insert(seq_no, thread_snapshot.finalized_block.data().identifier());
+        }
+        let db_messages = thread_snapshot
+            .db_messages
+            .clone()
+            .into_iter()
+            .filter_map(|v| {
+                if v.is_empty() {
+                    None
+                } else {
+                    v[0].message.int_dst_account_id().map(|addr| {
+                        (
+                            addr.into(),
+                            v.into_iter()
+                                .map(|msg| {
+                                    let id = MessageIdentifier::from(msg.deref());
+                                    (id, msg)
+                                })
+                                .collect(),
+                        )
+                    })
+                }
+            })
+            .collect();
+        self.message_storage_service.write(db_messages)?;
+
+        self.shared_services.exec(|services| {
+            for ancestor_block_data in
+                thread_snapshot.ancestor_blocks_data.clone().into_iter().rev()
+            {
+                let ref_data = ancestor_block_data.cross_thread_ref_data.clone();
+                services
+                    .cross_thread_ref_data_service
+                    .set_cross_thread_ref_data(ref_data)
+                    .expect("Failed to load cross-thread-ref-data");
+
+                let block_state =
+                    block_state_repo_clone.get(ancestor_block_data.block_identifier())?;
+                block_state.guarded_mut(|e| {
+                    if e.has_cross_thread_ref_data_prepared().is_none() {
+                        e.set_has_cross_thread_ref_data_prepared()?;
+                    }
+                    if e.block_seq_no().is_none() {
+                        e.set_block_seq_no(*ancestor_block_data.block_seq_no())?;
+                    }
+                    if e.thread_identifier().is_none() {
+                        e.set_thread_identifier(*ancestor_block_data.thread_identifier())?;
+                    }
+                    if e.bk_set().is_none() {
+                        e.set_bk_set(Arc::new(ancestor_block_data.bk_set().clone()))?;
+                    }
+                    if e.future_bk_set().is_none() {
+                        e.set_future_bk_set(Arc::new(ancestor_block_data.future_bk_set().clone()))?;
+                    }
+                    if e.envelope_hash().is_none() {
+                        e.set_envelope_hash(ancestor_block_data.envelope_hash().clone())?;
+                    }
+                    if e.block_version_state().is_none() {
+                        e.set_block_version_state(
+                            ancestor_block_data.block_version_state().clone(),
+                        )?;
+                    }
+                    e.set_finalized()?;
+                    Ok::<(), anyhow::Error>(())
+                })?;
+
+                let parent_block_state =
+                    block_state_repo_clone.get(ancestor_block_data.parent_block_identifier())?;
+                connect!(parent = parent_block_state, child = block_state, &block_state_repo_clone);
+            }
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        // Process finalization chain: blocks between finalized_block (exclusive) and
+        // the finalizing block (inclusive), in ascending order.
+        tracing::trace!(
+            "set_state_from_snapshot: finalization_chain len: {}",
+            thread_snapshot.finalization_chain.len()
+        );
+        for chain_block_envelope in thread_snapshot.finalization_chain.iter() {
+            let chain_block_id = chain_block_envelope.data().identifier();
+            tracing::trace!(
+                "set_state_from_snapshot: process unfinalized block {:?} {:?}",
+                chain_block_envelope.data().seq_no(),
+                chain_block_id
+            );
+            let chain_block_state = block_state_repo_clone.get(&chain_block_id)?;
+
+            if chain_block_state.guarded(|e| e.is_stored()) {
+                continue;
+            }
+
+            let thread_identifier = *chain_block_envelope.data().common_section().thread_id();
+            let block_time = chain_block_envelope.data().time()?;
+            let block_round = *chain_block_envelope.data().common_section().round();
+            let block_height = *chain_block_envelope.data().common_section().block_height();
+            let Some(producer_selector) =
+                chain_block_envelope.data().common_section().producer_selector().clone()
+            else {
+                tracing::trace!("Incoming block doesn't have producer selector, Skip it");
+                continue;
+            };
+            chain_block_state.guarded_mut(|state| {
+                state.set_stored(chain_block_envelope)?;
+                state.set_block_seq_no(chain_block_envelope.data().seq_no())?;
+                state.set_thread_identifier(thread_identifier)?;
+
+                if state.producer_selector_data().is_none() {
+                    state.set_producer_selector_data(producer_selector)?;
+                }
+
+                state.set_block_time_ms(block_time)?;
+                if let Some(r) = state.block_round() {
+                    assert_eq!(*r, block_round);
+                } else {
+                    state.set_block_round(block_round)?;
+                }
+                if let Some(h) = state.block_height() {
+                    assert_eq!(h, &block_height);
+                } else {
+                    state.set_block_height(block_height)?;
+                }
+                Ok::<(), anyhow::Error>(())
+            })?;
+
+            let parent_id = chain_block_envelope.data().parent();
+            let parent_state = block_state_repo_clone.get(&parent_id)?;
+            connect!(parent = parent_state, child = chain_block_state, &block_state_repo_clone);
+
+            tracing::debug!("Add candidate block state to cache: {:?}", chain_block_id);
+            self.unfinalized_blocks.guarded_mut(|map| {
+                map.entry(thread_identifier)
+                    .or_insert_with(|| UnfinalizedCandidateBlockCollection::new(vec![].into_iter()))
+                    .insert(chain_block_state.clone(), chain_block_envelope.clone())
+            });
+        }
+
+        self.finalize_synced_block(&thread_snapshot, &state)?;
+        Ok(())
+    }
+}
+
+fn read_snapshot_header_from_reader<R: Read>(
+    reader: &mut R,
+) -> anyhow::Result<Option<ThreadSnapshotHeader>> {
+    let mut probe = Vec::with_capacity(STREAMED_THREAD_SNAPSHOT_MAGIC.len());
+    let mut byte = [0u8; 1];
+    while probe.len() < STREAMED_THREAD_SNAPSHOT_MAGIC.len() {
+        match reader.read(&mut byte)? {
+            0 => break,
+            _ => probe.push(byte[0]),
+        }
+    }
+
+    if probe.as_slice() == STREAMED_THREAD_SNAPSHOT_MAGIC {
+        let header: StreamedThreadSnapshotHeader = bincode::deserialize_from(&mut *reader)
+            .map_err(|e| {
+                anyhow::format_err!("Failed to deserialize streamed snapshot header: {e}")
+            })?;
+        let mut prefix_bytes = vec![0u8; header.prefix_len as usize];
+        reader.read_exact(&mut prefix_bytes)?;
+        let snapshot: StreamedThreadSnapshot =
+            bincode::deserialize(&prefix_bytes).map_err(|e| {
+                anyhow::format_err!("Failed to deserialize streamed snapshot prefix: {e}")
+            })?;
+        return Ok(Some(ThreadSnapshotHeader {
+            block_id: snapshot.finalized_block.data().identifier(),
+            thread_id: *snapshot.finalized_block.data().common_section().thread_id(),
+            seq_no: snapshot.finalized_block.data().seq_no(),
+            round: *snapshot.finalized_block.data().common_section().round(),
+        }));
+    }
+
+    let mut legacy_bytes = probe;
+    reader.read_to_end(&mut legacy_bytes)?;
+    let snapshot: ThreadSnapshot = bincode::deserialize(&legacy_bytes)
+        .map_err(|e| anyhow::format_err!("Failed to deserialize legacy snapshot: {e}"))?;
+    Ok(Some(ThreadSnapshotHeader {
+        block_id: snapshot.finalized_block().data().identifier(),
+        thread_id: *snapshot.finalized_block().data().common_section().thread_id(),
+        seq_no: snapshot.finalized_block().data().seq_no(),
+        round: *snapshot.finalized_block().data().common_section().round(),
+    }))
 }
 
 /// Scans `snapshot_dir` for `*.header` sidecar files and returns
@@ -465,30 +1442,36 @@ pub fn scan_snapshot_headers(snapshot_dir: &Path) -> Vec<(PathBuf, ThreadSnapsho
             }
         }
 
-        // --- Fallback: legacy snapshot without a .header file ---
+        // --- Fallback: parse snapshot body directly ---
         tracing::info!(
-            "No header sidecar found for {:?}. Deserializing full snapshot to build header.",
+            "No header sidecar found for {:?}. Parsing snapshot to build header.",
             snapshot_path,
         );
-        let bytes = match std::fs::read(&snapshot_path) {
-            Ok(b) => b,
+        let header = match File::open(&snapshot_path).and_then(|mut file| {
+            let mut compression_magic = [0u8; crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC.len()];
+            match file.read_exact(&mut compression_magic) {
+                Ok(()) if &compression_magic
+                    == crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC =>
+                {
+                    let mut decoder = zstd::Decoder::new(file)
+                        .map_err(std::io::Error::other)?;
+                    read_snapshot_header_from_reader(&mut decoder)
+                        .map_err(std::io::Error::other)?
+                }
+                Ok(()) => {
+                    let mut reader = Cursor::new(compression_magic).chain(file);
+                    read_snapshot_header_from_reader(&mut reader)
+                        .map_err(std::io::Error::other)?
+                }
+                Err(err) => return Err(err),
+            }
+            .ok_or_else(|| std::io::Error::other("failed to parse snapshot header"))
+        }) {
+            Ok(header) => header,
             Err(err) => {
-                tracing::warn!("Failed to read snapshot body {:?}: {err}", snapshot_path);
+                tracing::warn!("Failed to parse snapshot body {:?}: {err}", snapshot_path);
                 continue;
             }
-        };
-        let snapshot: ThreadSnapshot = match bincode::deserialize(&bytes) {
-            Ok(s) => s,
-            Err(err) => {
-                tracing::warn!("Failed to deserialize snapshot body {:?}: {err}", snapshot_path,);
-                continue;
-            }
-        };
-        let header = ThreadSnapshotHeader {
-            block_id: snapshot.finalized_block().data().identifier(),
-            thread_id: *snapshot.finalized_block().data().common_section().thread_id(),
-            seq_no: snapshot.finalized_block().data().seq_no(),
-            round: *snapshot.finalized_block().data().common_section().round(),
         };
         // Persist the generated header for future runs (best-effort, non-fatal)
         if let Ok(header_bytes) = bincode::serialize(&header) {
@@ -594,12 +1577,12 @@ impl RepositoryImpl {
         block_state_repository: BlockStateRepository,
         metrics: Option<BlockProductionMetrics>,
         accounts_repository: AccountsRepository,
-        thread_accounts_repository: NodeThreadAccountsRepository,
+        thread_accounts_repository: ThreadAccountsRepository,
         message_db: MessageDurableStorage,
         finalized_blocks: Arc<Mutex<FinalizedBlockStorage>>,
         bk_set_update_tx: InstrumentedSender<BkSetUpdate>,
         config_read: ConfigRead,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         if let Err(err) = fs::create_dir_all(data_dir.clone()) {
             tracing::error!("Failed to create data dir {:?}: {}", data_dir, err);
         }
@@ -615,6 +1598,7 @@ impl RepositoryImpl {
         }));
 
         let mut thread_last_finalized_state = HashMap::new();
+        let mut zerostate_threads = HashMap::new();
         {
             let mut metadatas = metadata.lock();
             if let Some(path) = &zerostate_path {
@@ -625,7 +1609,7 @@ impl RepositoryImpl {
                         .state(thread_id)
                         .expect("Failed to load state from zerostate")
                         .clone();
-
+                    zerostate_threads.insert(*thread_id, optimistic_state.block_id);
                     thread_last_finalized_state.insert(*thread_id, Arc::new(optimistic_state));
                     if !metadatas.contains_key(thread_id) {
                         metadatas.insert(
@@ -699,8 +1683,8 @@ impl RepositoryImpl {
             let states = &repo_impl.saved_states.lock();
             tracing::trace!("Repo saved states: {:?}", states);
         }
-        let guarded = repo_impl.metadatas.lock();
-        for (thread_id, metadata) in guarded.iter() {
+        let metadata_guard = repo_impl.metadatas.lock();
+        for (thread_id, metadata) in metadata_guard.iter() {
             let metadata = metadata.lock();
             if metadata.last_finalized_block_id != BlockIdentifier::default() {
                 tracing::trace!("load finalized state {:?}", metadata.last_finalized_block_id);
@@ -899,9 +1883,85 @@ impl RepositoryImpl {
         // }
         // tracing::trace!("Finished checking old blocks");
 
-        drop(guarded);
+        // Validate archive consistency with node metadata — bail on mismatch
+        let control_states = thread_accounts_repository.get_archive_thread_control_states()?;
+
+        // Check if we start with fresh data or old node version data (without an archive)
+        if control_states.is_empty() {
+            tracing::trace!("No archive data found, starting with fresh data");
+            for (thread_id, metadata) in metadata_guard.iter() {
+                let metadata = metadata.lock();
+                tracing::trace!(
+                    "Ensuring thread {} with last finalized block {}",
+                    thread_id,
+                    metadata.last_finalized_block_id
+                );
+                thread_accounts_repository.ensure_thread(
+                    thread_id,
+                    &metadata.last_finalized_block_id,
+                    false,
+                )?;
+            }
+        } else {
+            tracing::trace!("Archive data found, validating consistency");
+            for control in &control_states {
+                let thread_id = &control.thread_id;
+                if let Some(metadata_arc) = metadata_guard.get(thread_id) {
+                    let metadata = metadata_arc.lock();
+                    let meta_block_id = &metadata.last_finalized_block_id;
+                    if *meta_block_id != BlockIdentifier::default() {
+                        match &control.last_block_id {
+                            Some(archive_id) if archive_id != meta_block_id => {
+                                anyhow::bail!(
+                                    "Archive/metadata mismatch for thread {:?}: \
+                                     metadata={:?}, archive={:?}. \
+                                     Node cannot start with inconsistent state.",
+                                    thread_id,
+                                    meta_block_id,
+                                    archive_id,
+                                );
+                            }
+                            None => {
+                                anyhow::bail!(
+                                    "Archive has no last_block_id for thread {:?} \
+                                     but metadata says {:?}. \
+                                     Node cannot start with inconsistent state.",
+                                    thread_id,
+                                    meta_block_id,
+                                );
+                            }
+                            _ => {
+                                tracing::trace!(
+                                    "Archive consistent for thread {:?}: {:?}",
+                                    thread_id,
+                                    meta_block_id,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        tracing::trace!("Archive consistency validation finished");
+        if zerostate_threads.is_empty() {
+            thread_accounts_repository.ensure_thread(
+                &ThreadIdentifier::default(),
+                &BlockIdentifier::default(),
+                false,
+            )?;
+        } else {
+            for (thread_id, block_id) in zerostate_threads {
+                thread_accounts_repository.ensure_thread(&thread_id, &block_id, false)?;
+            }
+        }
+
+        drop(metadata_guard);
+
+        tracing::trace!("Starting archive update service");
+        thread_accounts_repository.start_archive_update_service()?;
+
         tracing::trace!("repository init finished");
-        repo_impl
+        Ok(repo_impl)
     }
 
     fn is_block_finalized(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>> {
@@ -1159,13 +2219,17 @@ impl RepositoryImpl {
         let Some((_, last_finalized_seq_no)) =
             self.select_thread_last_finalized_block(thread_id)?
         else {
+            tracing::info!(target: "mem", "clear_optimistic_states: no finalized block for {thread_id:?}, skipping");
             return Ok(());
         };
         const RETAIN: bool = true;
         const REMOVE: bool = false;
+        let mut other_thread_states = 0;
+        let before_count = self.optimistic_state.guarded(|s| s.len());
         self.optimistic_state.guarded_mut(|states| {
             states.retain(|_, e| {
                 if e.get_thread_id() != thread_id {
+                    other_thread_states += 1;
                     return RETAIN;
                 }
                 if e.get_block_seq_no() >= &last_finalized_seq_no {
@@ -1174,6 +2238,12 @@ impl RepositoryImpl {
                 REMOVE
             })
         });
+        let after_count = self.optimistic_state.guarded(|s| s.len());
+        tracing::info!(
+            target: "mem",
+            "clear_optimistic_states: thread={thread_id:?} finalized_seq={last_finalized_seq_no:?} before={before_count} after={after_count} removed={} other_thread_states={other_thread_states}",
+            before_count - after_count,
+        );
 
         self.saved_states.guarded_mut(|all_states| {
             if let Some(thread_states) = all_states.get_mut(thread_id) {
@@ -1279,7 +2349,6 @@ impl RepositoryImpl {
                 &self.shared_services,
                 self.block_state_repository.clone(),
                 Arc::clone(&nack_set_cache),
-                self.accounts.clone(),
                 &self.thread_accounts_repository,
                 self.message_db.clone(),
                 self.config_read.clone(),
@@ -1310,7 +2379,7 @@ impl RepositoryImpl {
         &self.accounts
     }
 
-    pub fn thread_accounts_repository(&self) -> &NodeThreadAccountsRepository {
+    pub fn thread_accounts_repository(&self) -> &ThreadAccountsRepository {
         &self.thread_accounts_repository
     }
 
@@ -1352,10 +2421,9 @@ impl RepositoryImpl {
         let history_proof_data: GlobalHistoryData = Arc::new(RwLock::new(HashMap::new()));
         Self {
             accounts: AccountsRepository::new(data_dir.clone(), None, 1),
-            thread_accounts_repository:
-                crate::repository::accounts::NodeThreadAccounts::new_repository(data_dir.clone())
-                    .build()
-                    .unwrap(),
+            thread_accounts_repository: ThreadAccountsRepository::builder(data_dir.clone())
+                .build()
+                .unwrap(),
             data_dir,
             zerostate_path: None,
             metadatas: Arc::new(Mutex::new(metadatas)),
@@ -1456,18 +2524,148 @@ impl RepositoryImpl {
         }
     }
 
+    pub fn report_mem_stats(&self) {
+        // Process-level RSS
+        let rss_bytes = get_process_rss_bytes();
+
+        let optimistic_count = self.optimistic_state.lock().len();
+        let finalized_threads = self.thread_last_finalized_state.lock().len();
+        let saved_states_total: usize = self.saved_states.lock().values().map(|m| m.len()).sum();
+        let unfinalized_threads = self.unfinalized_blocks.lock().len();
+        let last_msg_accounts = self.last_message_for_acc.lock().len();
+        let msg_db_seq_entries = self.message_db.seq_entries();
+        let block_states_count = self.block_state_repository.live_count();
+
+        // Message queue sizes from the latest finalized states
+        let mut msg_queue_info = Vec::new();
+        for (thread_id, state) in self.thread_last_finalized_state.lock().iter() {
+            let msg_accounts = state.messages.messages.len();
+            let msg_total: usize =
+                state.messages.messages.values().map(|inbox| inbox.tail_sequence().len()).sum();
+            let hi_msg_accounts = state.high_priority_messages.messages.len();
+            let hi_msg_total: usize = state
+                .high_priority_messages
+                .messages
+                .values()
+                .map(|inbox| inbox.tail_sequence().len())
+                .sum();
+            msg_queue_info.push(format!(
+                "T:{thread_id} msg_accounts={msg_accounts} msg_tail={msg_total} \
+                 hi_accounts={hi_msg_accounts} hi_tail={hi_msg_total}"
+            ));
+        }
+
+        tracing::info!(
+            target: "mem",
+            "process: rss_mb={:.1}",
+            rss_bytes as f64 / (1024.0 * 1024.0),
+        );
+        tracing::info!(
+            target: "mem",
+            "repository: optimistic_states={optimistic_count} finalized_threads={finalized_threads} \
+             saved_states={saved_states_total} unfinalized_threads={unfinalized_threads} \
+             last_msg_accounts={last_msg_accounts} msg_db_seq={msg_db_seq_entries} \
+             block_states={block_states_count}",
+        );
+        for info in &msg_queue_info {
+            tracing::info!(target: "mem", "repository: msg_queue {info}");
+        }
+    }
+
     pub fn dump_state(&self) {
         tracing::trace!("start dumping state");
+
+        // Shutdown dump must flush the current pending batch first:
+        // `wait_for_drain` only observes sent/in-flight batches and would
+        // miss the final partial batch that never reached the send limit.
+        // This still relies on the caller using `start_shutdown()` first,
+        // because `flush_pending_and_wait_for_drain` does not block new sends.
+        let drain_timeout = Duration::from_secs(60);
+        if !self.thread_accounts_repository.flush_pending_and_wait_for_drain(drain_timeout) {
+            tracing::error!(
+                "dump_state: timed out after {drain_timeout:?} waiting for durable account \
+                 accumulator to flush pending updates to Aerospike before saving repository \
+                 state; aborting dump to avoid persisting metadata/state ahead of account data",
+            );
+            // `dump_state` is a best-effort shutdown hook used from signal paths.
+            // Keep the `()` signature for now and fail closed here instead of
+            // persisting metadata/finalized state that may outrun durable accounts.
+            return;
+        }
+        tracing::info!(
+            "dump_state: durable account accumulator flushed pending updates and drained before \
+             repository state dump",
+        );
+
+        // // Read archive control records and align metadata.
+        // // Archive is the source of truth for what has been durably committed.
+        // match self.thread_accounts_repository.get_archive_thread_control_states() {
+        //     Ok(control_states) => {
+        //         let metadatas = self.metadatas.lock();
+        //         for control in &control_states {
+        //             if let Some(archive_block_id) = &control.last_block_id {
+        //                 if let Some(metadata_arc) = metadatas.get(&control.thread_id) {
+        //                     let mut metadata = metadata_arc.lock();
+        //                     if metadata.last_finalized_block_id != *archive_block_id {
+        //                         tracing::error!(
+        //                             "dump_state: metadata/archive mismatch for thread {:?}: \
+        //                              metadata={:?}, archive={:?}. Aligning metadata to archive.",
+        //                             control.thread_id,
+        //                             metadata.last_finalized_block_id,
+        //                             archive_block_id,
+        //                         );
+        //                         metadata.last_finalized_block_id = *archive_block_id;
+        //                         match self.get_optimistic_state(
+        //                             archive_block_id,
+        //                             &control.thread_id,
+        //                             None,
+        //                         ) {
+        //                             Ok(Some(state)) => {
+        //                                 metadata.last_finalized_block_seq_no =
+        //                                     *state.get_block_seq_no();
+        //                             }
+        //                             Ok(None) => {
+        //                                 tracing::error!(
+        //                                     "dump_state: no optimistic state for archive block {:?} \
+        //                                      thread {:?}, seq_no may be stale",
+        //                                     archive_block_id, control.thread_id,
+        //                                 );
+        //                             }
+        //                             Err(e) => {
+        //                                 tracing::error!(
+        //                                     "dump_state: failed to load optimistic state \
+        //                                      for archive block {:?}: {e}",
+        //                                     archive_block_id,
+        //                                 );
+        //                             }
+        //                         }
+        //                     } else {
+        //                         tracing::trace!(
+        //                             "dump_state: archive consistent for thread {:?}: {:?}",
+        //                             control.thread_id,
+        //                             archive_block_id,
+        //                         );
+        //                     }
+        //                 }
+        //             }
+        //         }
+        //     }
+        //     Err(e) => {
+        //         tracing::error!("dump_state: failed to read archive control states: {e}");
+        //     }
+        // }
+
+        // Save metadata (now exactly consistent with archive control records)
         let res = Self::save_metadata(&self.data_dir, self.metadatas.clone());
-        // get last fin block from meta
         tracing::trace!("dump_state: save metadata res: {:?}", res);
+
         #[cfg(feature = "history_proofs")]
-        let res = Self::save_history_data(&self.data_dir, self.history_proof_data.clone());
-        // get last fin block from meta
-        tracing::trace!("dump_state: save_history_data res: {:?}", res);
+        {
+            let res = Self::save_history_data(&self.data_dir, self.history_proof_data.clone());
+            tracing::trace!("dump_state: save_history_data res: {:?}", res);
+        }
 
         for (_, finalized_state) in self.thread_last_finalized_state.guarded(|e| e.clone()).iter() {
-            // check that it matches metadata
             let res = self.store_optimistic(finalized_state.clone());
             tracing::trace!("dump_state: Store optimistic state res: {:?}", res);
         }
@@ -1651,35 +2849,7 @@ impl RepositoryImpl {
         if !self.split_state {
             return Ok(Some(state));
         }
-        let mut state = Arc::unwrap_or_clone(state);
-        let original_state = state.get_shard_state();
-        let mut shard_state = self.thread_accounts_repository.state_builder(&original_state);
-        self.thread_accounts_repository()
-            .state_iterate_all_accounts(&original_state, |address, mut shard_acc| {
-                let account_id = address.account_id();
-                if shard_acc.is_unloaded() {
-                    let acc_root = match state.cached_accounts.get(account_id) {
-                        Some((_, acc_root)) => acc_root.clone(),
-                        None => self.accounts.load_account(
-                            account_id,
-                            shard_acc.last_trans_hash(),
-                            shard_acc.last_trans_lt(),
-                        )?,
-                    };
-                    if acc_root.hash() != shard_acc.account()?.hash() {
-                        anyhow::bail!(
-                            "External account {address} cell hash mismatch: required: {}, actual: {}",
-                            acc_root.hash(),
-                            shard_acc.account()?.hash()
-                        );
-                    }
-                    shard_acc.set_account(acc_root)?;
-                    shard_state.insert_account(address, &shard_acc);
-                }
-                Ok(true)
-            })
-            .map_err(|e| anyhow::format_err!("Failed to load accounts: {e}"))?;
-        state.set_shard_state(shard_state.build(None)?.new_state);
+        let state = Arc::unwrap_or_clone(state);
         Ok(Some(Arc::new(state)))
     }
 }
@@ -1871,12 +3041,18 @@ impl Repository for RepositoryImpl {
         let metadata = self.get_metadata_for_thread(&thread_id)?;
         let mut metadata = metadata.lock();
 
+        let prev_finalized = metadata.last_finalized_block_seq_no;
         if block_seq_no > metadata.last_finalized_block_seq_no {
             metadata.last_finalized_block_seq_no = block_seq_no;
             metadata.last_finalized_block_id = block_id;
             metadata.last_finalized_producer_id =
                 Some(block.borrow().data().common_section().producer_id().clone());
         }
+        tracing::info!(
+            target: "mem",
+            "mark_block_as_finalized: thread={thread_id:?} block_seq={block_seq_no:?} prev_finalized={prev_finalized:?} new_finalized={:?}",
+            metadata.last_finalized_block_seq_no,
+        );
         drop(metadata);
 
         if let Some(received_ms) = received_ms {
@@ -1933,7 +3109,6 @@ impl Repository for RepositoryImpl {
                     &self.shared_services,
                     self.block_state_repository.clone(),
                     self.nack_set_cache().clone(),
-                    self.accounts.clone(),
                     &self.thread_accounts_repository,
                     self.message_db.clone(),
                     self.config_read.clone(),
@@ -1944,6 +3119,21 @@ impl Repository for RepositoryImpl {
                     .guarded_mut(|e| e.insert(thread_id, Arc::clone(&state)));
                 state
             };
+
+            let new_map = new_state.get_shard_state();
+
+            // Finalize: push account diffs through the commit queue now that
+            // consensus has confirmed this block. If a snapshot pin was
+            // just registered above, the alignment hook in
+            // `push_transition` will fire on this call and ship the
+            // boundary batch before returning.
+            self.thread_accounts_repository.finalize_thread_transition(
+                &block_id,
+                &thread_id,
+                *block.borrow().data().common_section().block_height().height(),
+                &new_map,
+                new_state.get_account_operations().clone(),
+            )?;
 
             #[cfg(feature = "monitor-accounts-number")]
             if let Some(metrics) = self.metrics.as_ref() {
@@ -1962,9 +3152,15 @@ impl Repository for RepositoryImpl {
 
             if *block.borrow().data().common_section().directives().share_state_resources() {
                 if let Some(service) = state_sync_service {
+                    let anchor = self.build_snapshot_anchor_for_block(&block_id, &thread_id)?;
+                    // Pin acquisition runs entirely on the snapshot
+                    // worker. `save_state_for_sharing` reserves worker
+                    // capacity first and only then requests the pin,
+                    // avoiding pin leaks when the worker is skipped.
                     service.save_state_for_sharing(
                         &block_id,
                         &thread_id,
+                        anchor,
                         Some(new_state.clone()),
                         finalizing_block_id,
                     )?;
@@ -1974,8 +3170,21 @@ impl Repository for RepositoryImpl {
             if let Some(prefab) = &block.borrow().data().common_section().threads_table() {
                 if prefab.has_insert_instructions() {
                     if let Ok(resolved_table) = prefab.resolve(&block_id) {
-                        for thread_id in resolved_table.list_threads() {
+                        for (mask, thread_id) in resolved_table.rows() {
                             if thread_id.is_spawning_block(&block_id) {
+                                tracing::trace!(
+                                    "Spawning block: {}, mask {}, meaningful {}",
+                                    thread_id,
+                                    mask.mask_bits(),
+                                    mask.meaningful_mask_bits()
+                                );
+                                // Register new thread in archive store
+                                self.thread_accounts_repository.finalize_thread_emerge(
+                                    thread_id,
+                                    &block_id,
+                                    &new_map,
+                                    new_state.get_account_operations().clone(),
+                                )?;
                                 self.optimistic_state.guarded_mut(|e| {
                                     e.insert(block_id, new_state.clone());
                                 });
@@ -2066,29 +3275,7 @@ impl Repository for RepositoryImpl {
         // TODO:
         // add flag indicating that this state has all external accounts loaded
         // to skip this iterator.
-        let mut state = Arc::unwrap_or_clone(state);
-        let original_state = state.get_shard_state();
-        let mut shard_state = self.thread_accounts_repository.state_builder(&original_state);
-        self.thread_accounts_repository().state_iterate_all_accounts(&original_state,
-        |address, mut shard_acc| {
-            let account_id = address.account_id();
-                if shard_acc.is_unloaded() {
-                    let acc_root = match state.cached_accounts.get(account_id) {
-                        Some((_, acc_root)) => acc_root.clone(),
-                        None => {
-                            self.accounts.load_account(account_id, shard_acc.last_trans_hash(), shard_acc.last_trans_lt())?
-                        }
-                    };
-                    if acc_root.hash() != shard_acc.account()?.hash() {
-                        anyhow::bail!("External account {address} cell hash mismatch: required: {}, actual: {}", acc_root.hash(), shard_acc.account()?.hash());
-                    }
-                    shard_acc.set_account(acc_root)?;
-                    shard_state.insert_account(address, &shard_acc);
-                }
-                Ok(true)
-            })
-            .map_err(|e| anyhow::format_err!("Failed to load accounts: {e}"))?;
-        state.set_shard_state(shard_state.build(None)?.new_state);
+        let state = Arc::unwrap_or_clone(state);
         let state = Arc::new(state);
         // TODO: check if we want to keep all counts loaded in mem.
         // self.optimistic_state
@@ -2137,324 +3324,22 @@ impl Repository for RepositoryImpl {
         &mut self,
         snapshot: Self::StateSnapshot,
         cur_thread_id: &ThreadIdentifier,
-        _skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
+        skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
     ) -> anyhow::Result<()> {
         tracing::debug!("set_state_from_snapshot");
-        let thread_snapshot: ThreadSnapshot = bincode::deserialize(&snapshot)
-            .map_err(|e| anyhow::format_err!("Failed to deserialize snapshot: {e}"))?;
-
-        let mut state = <Self as Repository>::OptimisticState::deserialize_from_buf(
-            thread_snapshot.optimistic_state(),
-        )
-        .map_err(|e| anyhow::format_err!("Failed to deserialize state: {e}"))?;
-
-        // Import durable state from snapshot if present
-        if let Some(durable_bytes) = thread_snapshot.durable_state_snapshot.as_ref() {
-            let durable_snapshot: account_state::CompositeDurableStateSnapshot =
-                bincode::deserialize(durable_bytes).map_err(|e| {
-                    anyhow::format_err!("Failed to deserialize durable snapshot: {e}")
-                })?;
-            let new_durable =
-                self.thread_accounts_repository.import_durable_snapshot(durable_snapshot)?;
-            state.shard_state.0.durable = new_durable;
-        }
-
-        let thread_id = state.thread_id;
-        let seq_no = thread_snapshot.finalized_block.data().seq_no();
-
-        let opt_collection = self.unfinalized_blocks.guarded(|m| m.get(cur_thread_id).cloned());
-        if let Some(unfinalized) = opt_collection {
-            tracing::trace!(
-                "Update filter_prehistoric for thread={cur_thread_id:?}, seq_no={seq_no:?}"
-            );
-            let res = unfinalized
-                .update_filter(FilterPrehistoric::builder().block_seq_no(seq_no).build());
-            tracing::trace!("Update filter_prehistoric res: {res}");
-        }
-
-        tracing::debug!(target: "monit", "set_state_from_snapshot: {:?} {:?} {}", state.thread_id, state.block_id, seq_no);
-        self.store_optimistic(state.clone())?;
-
-        if &thread_id == cur_thread_id {
-            // TODO: need to store for other threads
-            tracing::trace!(
-                "set_state_from_snapshot: fin stats: {:?}",
-                thread_snapshot.finalized_block_stats()
-            );
-        }
-
-        let block_state_repo_clone = self.block_state_repository.clone();
-        let update_block_state = || {
-            let block_state =
-                block_state_repo_clone.get(&thread_snapshot.finalized_block.data().identifier())?;
-            let parent =
-                block_state_repo_clone.get(&thread_snapshot.finalized_block.data().parent())?;
-            block_state.guarded_mut(|state| {
-                if state.thread_identifier().is_none() {
-                    state.set_thread_identifier(
-                        *thread_snapshot.finalized_block.data().common_section().thread_id(),
-                    )?;
-                }
-                Ok::<(), anyhow::Error>(())
-            })?;
-            connect!(parent = parent, child = block_state, &block_state_repo_clone);
-            let children = block_state
-                .guarded_mut(|state| {
-                    state.set_producer(
-                        thread_snapshot
-                            .finalized_block
-                            .data()
-                            .common_section()
-                            .producer_id()
-                            .clone(),
-                    )?;
-                    state.set_block_seq_no(thread_snapshot.finalized_block.data().seq_no())?;
-                    state.set_block_time_ms(
-                        thread_snapshot.finalized_block.data().time().unwrap(),
-                    )?;
-                    state.set_common_checks_passed()?;
-                    state.set_finalized()?;
-                    state.set_applied(Instant::now(), Instant::now())?;
-                    state.set_signatures_verified()?;
-                    state.set_stored(&thread_snapshot.finalized_block)?;
-                    state.set_bk_set(Arc::new(thread_snapshot.bk_set.clone()))?;
-                    state.set_future_bk_set(Arc::new(thread_snapshot.future_bk_set.clone()))?;
-                    state.set_descendant_bk_set(Arc::new(
-                        thread_snapshot.descendant_bk_set.clone(),
-                    ))?;
-                    state.set_descendant_future_bk_set(Arc::new(
-                        thread_snapshot.descendant_future_bk_set.clone(),
-                    ))?;
-                    state.set_block_stats(thread_snapshot.finalized_block_stats.clone())?;
-                    state.set_block_height(thread_snapshot.block_height)?;
-                    state.set_ancestor_blocks_finalization_checkpoints(
-                        thread_snapshot.ancestor_blocks_finalization_checkpoints.clone(),
-                    )?;
-                    state.set_attestation_target(thread_snapshot.attestation_target)?;
-                    state.set_producer_selector_data(thread_snapshot.producer_selector.clone())?;
-                    state.set_finalizes_blocks(thread_snapshot.finalizes_blocks.clone())?;
-                    state.set_block_round(
-                        *thread_snapshot.finalized_block.data().common_section().round(),
-                    )?;
-                    state.set_block_version_state(
-                        thread_snapshot.block_protocol_version_state.clone(),
-                    )?;
-                    // Populate ancestors from ancestor_blocks_data so the
-                    // ancestor-propagation chain is not broken after snapshot restore.
-                    // ancestor_blocks_data[0] is the finalized block itself; skip it.
-                    let ancestors: Vec<BlockIdentifier> = thread_snapshot
-                        .ancestor_blocks_data
-                        .iter()
-                        .skip(1)
-                        .take(MAX_STATE_ANCESTORS.get())
-                        .map(|d| *d.block_identifier())
-                        .collect();
-                    if !ancestors.is_empty() {
-                        state.set_ancestors(ancestors)?;
-                    }
-                    Ok::<Option<HashSet<_>>, anyhow::Error>(
-                        state.known_children(cur_thread_id).cloned(),
-                    )
-                })?
-                .unwrap_or_default();
-            try_set_prefinalized(
-                &block_state,
-                &block_state_repo_clone,
-                thread_snapshot.prefinalization_proof.clone(),
-            )?;
-            let parent_id = thread_snapshot.finalized_block.data().parent();
-            let parent_state = block_state_repo_clone.get(&parent_id)?;
-            parent_state.guarded_mut(|e| {
-                e.set_ancestor_blocks_finalization_checkpoints(
-                    thread_snapshot.parent_ancestor_blocks_finalization_checkpoints.clone(),
-                )
-            })?;
-            for child in children {
-                block_state_repo_clone
-                    .get(&child)?
-                    .guarded_mut(|e| e.set_has_parent_finalized())?;
-            }
-            crate::node::services::block_processor::rules::descendant_bk_set::set_descendant_bk_set(
-                &block_state,
-                &thread_snapshot.finalized_block,
-            );
-            Ok::<(), anyhow::Error>(())
-        };
-
-        if let Some(finalized_seq_no) = self
-            .thread_last_finalized_state
-            .guarded(|e| e.get(&thread_id).map(|state| state.block_seq_no))
-        {
-            tracing::trace!(
-                "Repo already has finalized state for the thread, seq_no: {}",
-                finalized_seq_no
-            );
-            if seq_no > finalized_seq_no {
-                self.thread_last_finalized_state
-                    .guarded_mut(|e| e.insert(thread_id, Arc::new(state.clone())));
-                #[cfg(feature = "history_proofs")]
-                {
-                    self.history_proof_data =
-                        unpack_history_data_snapshot(thread_snapshot.history_data_snapshot.clone());
-                }
-                update_block_state()?;
-            } else {
-                tracing::debug!(target: "monit", "Synced state is too old, skip it");
-            }
+        if snapshot.starts_with(STREAMED_THREAD_SNAPSHOT_MAGIC) {
+            self.set_state_from_snapshot_reader(
+                &mut Cursor::new(snapshot),
+                cur_thread_id,
+                skipped_attestation_ids,
+            )
         } else {
-            self.thread_last_finalized_state
-                .guarded_mut(|e| e.insert(thread_id, Arc::new(state.clone())));
-            #[cfg(feature = "history_proofs")]
-            {
-                self.history_proof_data =
-                    unpack_history_data_snapshot(thread_snapshot.history_data_snapshot.clone());
-            }
-            update_block_state()?;
+            self.set_state_from_legacy_snapshot_bytes(
+                snapshot,
+                cur_thread_id,
+                skipped_attestation_ids,
+            )
         }
-        {
-            let mut all_states = self.saved_states.lock();
-            let saved_states = all_states.entry(thread_id).or_default();
-            saved_states.insert(seq_no, thread_snapshot.finalized_block.data().identifier());
-        }
-        let db_messages = thread_snapshot
-            .db_messages
-            .clone()
-            .into_iter()
-            .filter_map(|v| {
-                if v.is_empty() {
-                    None
-                } else {
-                    v[0].message.int_dst_account_id().map(|addr| {
-                        (
-                            addr.into(),
-                            v.into_iter()
-                                .map(|msg| {
-                                    let id = MessageIdentifier::from(msg.deref());
-                                    (id, msg)
-                                })
-                                .collect(),
-                        )
-                    })
-                }
-            })
-            .collect();
-        self.message_storage_service.write(db_messages)?;
-
-        self.shared_services.exec(|services| {
-            for ancestor_block_data in
-                thread_snapshot.ancestor_blocks_data.clone().into_iter().rev()
-            {
-                let ref_data = ancestor_block_data.cross_thread_ref_data.clone();
-                services
-                    .cross_thread_ref_data_service
-                    .set_cross_thread_ref_data(ref_data)
-                    .expect("Failed to load cross-thread-ref-data");
-
-                let block_state =
-                    block_state_repo_clone.get(ancestor_block_data.block_identifier())?;
-                block_state.guarded_mut(|e| {
-                    if e.has_cross_thread_ref_data_prepared().is_none() {
-                        e.set_has_cross_thread_ref_data_prepared()?;
-                    }
-                    if e.block_seq_no().is_none() {
-                        e.set_block_seq_no(*ancestor_block_data.block_seq_no())?;
-                    }
-                    if e.thread_identifier().is_none() {
-                        e.set_thread_identifier(*ancestor_block_data.thread_identifier())?;
-                    }
-                    if e.bk_set().is_none() {
-                        e.set_bk_set(Arc::new(ancestor_block_data.bk_set().clone()))?;
-                    }
-                    if e.future_bk_set().is_none() {
-                        e.set_future_bk_set(Arc::new(ancestor_block_data.future_bk_set().clone()))?;
-                    }
-                    if e.envelope_hash().is_none() {
-                        e.set_envelope_hash(ancestor_block_data.envelope_hash().clone())?;
-                    }
-                    if e.block_version_state().is_none() {
-                        e.set_block_version_state(
-                            ancestor_block_data.block_version_state().clone(),
-                        )?;
-                    }
-                    e.set_finalized()?;
-                    Ok::<(), anyhow::Error>(())
-                })?;
-
-                let parent_block_state =
-                    block_state_repo_clone.get(ancestor_block_data.parent_block_identifier())?;
-                connect!(parent = parent_block_state, child = block_state, &block_state_repo_clone);
-            }
-            Ok::<(), anyhow::Error>(())
-        })?;
-
-        // Process finalization chain: blocks between finalized_block (exclusive) and
-        // the finalizing block (inclusive), in ascending order.
-        tracing::trace!(
-            "set_state_from_snapshot: finalization_chain len: {}",
-            thread_snapshot.finalization_chain.len()
-        );
-        for chain_block_envelope in thread_snapshot.finalization_chain.iter() {
-            let chain_block_id = chain_block_envelope.data().identifier();
-            tracing::trace!(
-                "set_state_from_snapshot: process unfinalized block {:?} {:?}",
-                chain_block_envelope.data().seq_no(),
-                chain_block_id
-            );
-            let chain_block_state = block_state_repo_clone.get(&chain_block_id)?;
-
-            if chain_block_state.guarded(|e| e.is_stored()) {
-                // We already have this block stored in repo
-                continue;
-            }
-
-            let thread_identifier = *chain_block_envelope.data().common_section().thread_id();
-            let block_time = chain_block_envelope.data().time()?;
-            let block_round = *chain_block_envelope.data().common_section().round();
-            let block_height = *chain_block_envelope.data().common_section().block_height();
-            let Some(producer_selector) =
-                chain_block_envelope.data().common_section().producer_selector().clone()
-            else {
-                tracing::trace!("Incoming block doesn't have producer selector, Skip it");
-                continue;
-            };
-            chain_block_state.guarded_mut(|state| {
-                state.set_stored(chain_block_envelope)?;
-                state.set_block_seq_no(chain_block_envelope.data().seq_no())?;
-                state.set_thread_identifier(thread_identifier)?;
-
-                if state.producer_selector_data().is_none() {
-                    state.set_producer_selector_data(producer_selector)?;
-                }
-
-                state.set_block_time_ms(block_time)?;
-                if let Some(r) = state.block_round() {
-                    assert_eq!(*r, block_round);
-                } else {
-                    state.set_block_round(block_round)?;
-                }
-                if let Some(h) = state.block_height() {
-                    assert_eq!(h, &block_height);
-                } else {
-                    state.set_block_height(block_height)?;
-                }
-                Ok::<(), anyhow::Error>(())
-            })?;
-
-            let parent_id = chain_block_envelope.data().parent();
-            let parent_state = block_state_repo_clone.get(&parent_id)?;
-            connect!(parent = parent_state, child = chain_block_state, &block_state_repo_clone);
-
-            tracing::debug!("Add candidate block state to cache: {:?}", chain_block_id);
-            self.unfinalized_blocks.guarded_mut(|map| {
-                map.entry(thread_identifier)
-                    .or_insert_with(|| UnfinalizedCandidateBlockCollection::new(vec![].into_iter()))
-                    .insert(chain_block_state.clone(), chain_block_envelope.clone())
-            });
-        }
-
-        self.finalize_synced_block(&thread_snapshot, &state)?;
-
-        Ok(())
     }
 
     fn is_block_suspicious(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>> {
@@ -2475,6 +3360,7 @@ impl Repository for RepositoryImpl {
             e.insert(block_id, optimistic);
         });
         self.clear_optimistic_states(&thread_id)?;
+        self.report_mem_stats();
         Ok(())
     }
 
@@ -2498,41 +3384,7 @@ impl Repository for RepositoryImpl {
         let thread_id = optimistic.thread_id;
         self.clear_optimistic_states(&optimistic.thread_id)?;
 
-        let mut optimistic = Arc::unwrap_or_clone(optimistic);
-        if self.split_state
-            && (!optimistic.changed_accounts.is_empty() || !optimistic.cached_accounts.is_empty())
-        {
-            let changed_accounts = std::mem::take(&mut optimistic.changed_accounts);
-            let mut shard_state = optimistic.get_shard_state();
-            let mut accounts = self.thread_accounts_repository.state_builder(&shard_state);
-            for account_id in changed_accounts.into_keys() {
-                if let Some(mut account) = accounts
-                    .account(&account_id.dapp_originator())
-                    .map_err(|e| anyhow::format_err!("Failed to read account: {e}"))?
-                {
-                    let account_root = account.unload_account()?;
-                    self.accounts.store_account(
-                        &account_id,
-                        account.last_trans_hash(),
-                        account.last_trans_lt(),
-                        &account_root,
-                    )?;
-                    accounts.insert_account(&account_id.dapp_originator(), &account);
-                }
-            }
-            for (account_id, (_, account_root)) in &optimistic.cached_accounts {
-                if let Some(account) = accounts.account(&account_id.dapp_originator())? {
-                    self.accounts.store_account(
-                        account_id,
-                        account.last_trans_hash(),
-                        account.last_trans_lt(),
-                        account_root,
-                    )?;
-                }
-            }
-            shard_state = accounts.build(None)?.new_state;
-            optimistic.set_shard_state(shard_state);
-        }
+        let optimistic = Arc::unwrap_or_clone(optimistic);
 
         // let state_bytes =
         //     OptimisticState::serialize_into_buf(optimistic).expect("Failed to serialize block");
@@ -2719,7 +3571,7 @@ fn _update_bk_set_from_state(
     mut bk_set: BlockKeeperSet,
     mut descendant_bk_set: Option<BlockKeeperSet>,
     state: &OptimisticStateImpl,
-    thread_accounts_repository: &NodeThreadAccountsRepository,
+    thread_accounts_repository: &ThreadAccountsRepository,
 ) -> anyhow::Result<(BlockKeeperSet, Option<BlockKeeperSet>, HashMap<SignerIndex, BlockKeeperData>)>
 {
     let mut epochs = bk_set
@@ -2743,10 +3595,10 @@ fn _update_bk_set_from_state(
         let epoch_address = AccountIdentifier::from_str(&epoch_address)
             .map_err(|e| anyhow::format_err!("Failed to convert epoch address: {e}"))?;
         let epoch_account = thread_accounts_repository
-            .state_account(&shard_state, &epoch_address.dapp_originator())
+            .state_account(&shard_state, &epoch_address.redirect())
             .map_err(|e| anyhow::format_err!("Failed to get account({}): {:?}", epoch_address, e))?
             .ok_or(anyhow::format_err!("Epoch account is not on the state"))?
-            .account()
+            .vm_account()
             .map_err(|e| {
                 anyhow::format_err!("Failed to read account from shard account: {:?}", e)
             })?;
@@ -2804,33 +3656,85 @@ fn extract_new_messages<T>(
 
 #[cfg(test)]
 pub mod tests {
+    #[path = "snapshot_tests.rs"]
+    mod snapshot_tests;
+
+    use std::collections::BTreeSet;
+    use std::collections::HashMap;
     use std::collections::HashSet;
+    use std::fs::File;
+    use std::io::Cursor;
+    use std::io::Read;
+    use std::num::NonZeroUsize;
     use std::path::PathBuf;
     use std::process::Command;
     use std::sync::Arc;
     use std::sync::Once;
+    use std::time::Duration;
 
+    use account_state::AccountInfo;
+    use account_state::DurableThreadAccountsStateDiff;
+    use account_state::ThreadAccount;
+    use account_state::ThreadAccountsRepository;
+    use anyhow::ensure;
+    use node_types::AccountIdentifier;
+    use node_types::BlockIdentifier;
+    use node_types::ThreadIdentifier;
     use parking_lot::Mutex;
     use telemetry_utils::mpsc::instrumented_channel;
     use telemetry_utils::mpsc::InstrumentedSender;
+    use tvm_block::Block;
+    use tvm_block::BlockExtra;
+    use tvm_block::BlockInfo;
+    use tvm_block::MerkleUpdate;
+    use tvm_block::MsgAddressInt;
+    use tvm_block::ShardAccount;
+    use tvm_block::ValueFlow;
+    use tvm_types::AccountId;
 
+    use super::read_snapshot_file;
+    use super::rewrite_snapshot_file;
+    use super::write_snapshot_file;
+    use super::write_streamed_thread_snapshot_bytes_to_writer;
     use super::BkSetUpdate;
     use super::RepositoryImpl;
+    use super::SnapshotCompression;
+    use super::SnapshotFormat;
+    use super::ThreadSnapshot;
     use super::OID;
+    use super::STREAMED_THREAD_SNAPSHOT_MAGIC;
+    use crate::block_keeper_system::BlockKeeperData;
+    use crate::block_keeper_system::BlockKeeperSet;
+    use crate::bls::envelope::BLSSignedEnvelope;
+    use crate::bls::envelope::Envelope;
     use crate::config::config_read::ConfigRead;
     use crate::config::GlobalConfig;
     use crate::helper::metrics;
     use crate::multithreading::routing::service::RoutingService;
+    use crate::node::associated_types::AttestationData;
+    use crate::node::associated_types::AttestationTargetType;
+    use crate::node::block_state::attestation_target_checkpoints::AncestorBlocksFinalizationCheckpoints;
+    use crate::node::block_state::state::AttestationTarget;
+    use crate::node::block_state::state::AttestationTargets;
+    use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
     use crate::node::shared_services::SharedServices;
+    use crate::node::NodeIdentifier;
     use crate::repository::accounts::AccountsRepository;
-    use crate::repository::accounts::NodeThreadAccounts;
+    use crate::repository::optimistic_state::OptimisticState;
     use crate::repository::repository_impl::BlockStateRepository;
     use crate::repository::repository_impl::FinalizedBlockStorage;
     use crate::repository::Repository;
     use crate::storage::MessageDurableStorage;
+    use crate::types::bp_selector::ProducerSelector;
+    use crate::types::envelope_hash::envelope_hash as compute_envelope_hash;
+    use crate::types::AckiNackiBlock;
+    use crate::types::BlockHeight;
+    use crate::types::BlockRound;
     use crate::types::BlockSeqNo;
     use crate::utilities::FixedSizeHashSet;
+    use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
     use crate::versioning::ProtocolVersion;
+    use crate::zerostate::ZeroState;
 
     const ZEROSTATE: &str = "../config/zerostate";
     const DB_PATH: &str = "./tests-data";
@@ -2868,6 +3772,246 @@ pub mod tests {
         );
         bk_set_updates_tx
     }
+
+    fn make_test_block(seq_no: u32) -> Block {
+        let mut info = BlockInfo::new();
+        info.set_seq_no(seq_no).unwrap();
+        info.set_gen_utime_ms(1_770_201_296_000);
+        Block::with_params(
+            0,
+            info,
+            ValueFlow::default(),
+            MerkleUpdate::default(),
+            BlockExtra::default(),
+        )
+        .unwrap()
+    }
+
+    fn make_block_height() -> BlockHeight {
+        BlockHeight::builder().thread_identifier(ThreadIdentifier::default()).height(7).build()
+    }
+
+    fn make_empty_checkpoints() -> AncestorBlocksFinalizationCheckpoints {
+        AncestorBlocksFinalizationCheckpoints::builder()
+            .fallback(HashMap::new())
+            .primary(HashMap::new())
+            .build()
+    }
+
+    fn make_attestation_targets() -> AttestationTargets {
+        AttestationTargets::builder()
+            .primary(
+                AttestationTarget::builder()
+                    .generation_deadline(1)
+                    .required_attestation_count(1)
+                    .build(),
+            )
+            .fallback(
+                AttestationTarget::builder()
+                    .generation_deadline(2)
+                    .required_attestation_count(1)
+                    .build(),
+            )
+            .build()
+    }
+
+    fn make_bk_set(signer_index: u16) -> BlockKeeperSet {
+        let mut bk_set = BlockKeeperSet::new();
+        bk_set.insert(signer_index, BlockKeeperData::default());
+        bk_set
+    }
+
+    fn make_finalized_block(parent_block_id: BlockIdentifier) -> Envelope<AckiNackiBlock> {
+        let mut block = AckiNackiBlock::new(
+            parent_block_id,
+            ThreadIdentifier::default(),
+            make_test_block(1),
+            NodeIdentifier::some_id(),
+            0,
+            vec![],
+            0,
+            vec![],
+            None,
+            BlockRound::default(),
+            make_block_height(),
+            #[cfg(feature = "monitor-accounts-number")]
+            0,
+            #[cfg(feature = "protocol_version_hash_in_block")]
+            Default::default(),
+            DurableThreadAccountsStateDiff::default(),
+        );
+        let mut common_section = block.common_section().clone();
+        common_section.set_producer_selector(Some(
+            ProducerSelector::builder().rng_seed_block_id(parent_block_id).index(0).build(),
+        ));
+        block.set_common_section(common_section, true).unwrap();
+
+        Envelope::create(Default::default(), HashMap::new(), block)
+    }
+
+    fn make_test_snapshot() -> ThreadSnapshot {
+        let parent_block_id = BlockIdentifier::new([9; 32]);
+        let finalized_block = make_finalized_block(parent_block_id);
+        let block_id = finalized_block.data().identifier();
+        let attestation_data = AttestationData::builder()
+            .parent_block_id(parent_block_id)
+            .block_id(block_id)
+            .block_seq_no(finalized_block.data().seq_no())
+            .envelope_hash(compute_envelope_hash(&finalized_block))
+            .target_type(AttestationTargetType::Primary)
+            .build();
+        let prefinalization_proof =
+            Envelope::create(Default::default(), HashMap::new(), attestation_data);
+
+        ThreadSnapshot::builder()
+            .optimistic_state(vec![1, 2, 3, 4])
+            .ancestor_blocks_data(vec![])
+            .db_messages(vec![])
+            .finalized_block(finalized_block.clone())
+            .bk_set(make_bk_set(1))
+            .descendant_bk_set(make_bk_set(2))
+            .future_bk_set(BlockKeeperSet::new())
+            .descendant_future_bk_set(BlockKeeperSet::new())
+            .finalized_block_stats(BlockStatistics::zero(
+                NonZeroUsize::new(1).unwrap(),
+                NonZeroUsize::new(1).unwrap(),
+            ))
+            .attestation_target(make_attestation_targets())
+            .producer_selector(
+                ProducerSelector::builder().rng_seed_block_id(block_id).index(0).build(),
+            )
+            .block_height(make_block_height())
+            .prefinalization_proof(prefinalization_proof)
+            .ancestor_blocks_finalization_checkpoints(make_empty_checkpoints())
+            .finalizes_blocks(BTreeSet::new())
+            .parent_ancestor_blocks_finalization_checkpoints(make_empty_checkpoints())
+            .block_protocol_version_state(BlockProtocolVersionState::none())
+            .durable_state_snapshot(Some(vec![0xAA, 0xBB, 0xCC]))
+            .finalization_chain(vec![finalized_block])
+            .build()
+    }
+
+    fn new_u256(name: &str, seed: usize) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(name.as_bytes());
+        hasher.update(&(seed as u64).to_be_bytes());
+        hasher.finalize().into()
+    }
+
+    fn new_thread_account(seed: usize) -> (node_types::AccountRouting, ThreadAccount) {
+        let id = AccountIdentifier::new(new_u256("acc", seed));
+        let routing = id.redirect();
+        let tvm_account = tvm_block::Account::with_address(
+            MsgAddressInt::with_standart(None, 0, AccountId::from_raw(id.as_slice().to_vec(), 256))
+                .unwrap(),
+        );
+        let shard_account = ShardAccount::with_params(
+            &tvm_account,
+            new_u256("trans", seed).into(),
+            seed as u64,
+            Some(routing.dapp_id().as_array().into()),
+        )
+        .unwrap();
+        (routing, ThreadAccount::from(shard_account))
+    }
+
+    fn streamed_durable_offset(bytes: &[u8]) -> anyhow::Result<usize> {
+        anyhow::ensure!(
+            bytes.starts_with(STREAMED_THREAD_SNAPSHOT_MAGIC),
+            "Snapshot is not in streamed format"
+        );
+        let mut reader = Cursor::new(&bytes[STREAMED_THREAD_SNAPSHOT_MAGIC.len()..]);
+        let header: super::StreamedThreadSnapshotHeader = bincode::deserialize_from(&mut reader)?;
+        let header_len = usize::try_from(reader.position())?;
+        let prefix_len = usize::try_from(header.prefix_len)?;
+        Ok(STREAMED_THREAD_SNAPSHOT_MAGIC.len() + header_len + prefix_len)
+    }
+
+    fn compress_snapshot_payload(payload: &[u8]) -> anyhow::Result<Vec<u8>> {
+        use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
+        use crate::node::services::sync::snapshot_compression::ZSTD_COMPRESSION_LEVEL;
+
+        let compressed = zstd::encode_all(payload, ZSTD_COMPRESSION_LEVEL)?;
+        let mut bytes = Vec::with_capacity(COMPRESSED_SNAPSHOT_MAGIC.len() + compressed.len());
+        bytes.extend_from_slice(COMPRESSED_SNAPSHOT_MAGIC);
+        bytes.extend_from_slice(&compressed);
+        Ok(bytes)
+    }
+
+    #[test]
+    fn dump_state_flushes_pending_account_updates_before_saving_repository_state(
+    ) -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let durable_dir = tmp.path().join("durable");
+        let thread_accounts_repository = ThreadAccountsRepository::builder(&durable_dir).build()?;
+        thread_accounts_repository.ensure_thread(
+            &ThreadIdentifier::default(),
+            &BlockIdentifier::default(),
+            true,
+        )?;
+        thread_accounts_repository.start_archive_update_service()?;
+
+        let repository = RepositoryImpl::new(
+            tmp.path().join("repo"),
+            None,
+            1,
+            SharedServices::test_start(RoutingService::stub().0, u32::MAX),
+            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
+            false,
+            BlockStateRepository::test(tmp.path().join("block-state")),
+            None,
+            AccountsRepository::new(tmp.path().join("accounts"), Some(0), 1),
+            thread_accounts_repository.clone(),
+            MessageDurableStorage::mem(),
+            finalized_blocks_storage(),
+            mock_bk_set_updates_tx(),
+            ConfigRead::new(
+                ProtocolVersion::parse("None").unwrap(),
+                GlobalConfig::default(),
+                None,
+                None,
+            ),
+        )?;
+
+        let thread_id = ThreadIdentifier::default();
+        let block_id = BlockIdentifier::new(new_u256("block", 1));
+        let block_height = 1;
+        let mut builder = thread_accounts_repository.state_builder(
+            &thread_id,
+            block_height,
+            &ThreadAccountsRepository::new_state(),
+        );
+        let (routing, account) = new_thread_account(7);
+        builder.insert_account(&routing, &account);
+        let transition = builder.build(None)?;
+        let state = transition.new_state.clone();
+        thread_accounts_repository.finalize_thread_transition(
+            &block_id,
+            &thread_id,
+            block_height,
+            &state,
+            transition.account_operations,
+        )?;
+
+        assert!(
+            thread_accounts_repository.wait_for_drain(Duration::from_millis(100)),
+            "wait_for_drain should not block on a pending-but-unsent partial batch",
+        );
+        let control_states = thread_accounts_repository.get_archive_thread_control_states()?;
+        assert_eq!(control_states.len(), 1);
+        assert_eq!(control_states[0].thread_id, thread_id);
+        assert_eq!(control_states[0].last_block_id, Some(BlockIdentifier::default()));
+
+        repository.dump_state();
+
+        let control_states = thread_accounts_repository.get_archive_thread_control_states()?;
+        assert_eq!(control_states.len(), 1);
+        assert_eq!(control_states[0].thread_id, thread_id);
+        assert_eq!(control_states[0].last_block_id, Some(block_id));
+
+        Ok(())
+    }
+
     #[test]
     #[ignore]
     fn test_save_load() -> anyhow::Result<()> {
@@ -2889,7 +4033,7 @@ pub mod tests {
             block_state_repository,
             None,
             accounts_repository,
-            NodeThreadAccounts::new_repository(PathBuf::from("./tests-data/test_save_load"))
+            ThreadAccountsRepository::builder(PathBuf::from("./tests-data/test_save_load"))
                 .build()?,
             message_db.clone(),
             finalized_blocks,
@@ -2900,7 +4044,7 @@ pub mod tests {
                 None,
                 None,
             ),
-        );
+        )?;
 
         let path = "block_status";
         let oid = OID::ID(String::from("100"));
@@ -2923,10 +4067,9 @@ pub mod tests {
             Some(0),
             1,
         );
-        let thread_accounts_repository = NodeThreadAccounts::new_repository(PathBuf::from(
-            "/home/user/GOSH/acki-nacki/server_data/node1/",
-        ))
-        .build()?;
+        let thread_accounts_repository =
+            ThreadAccountsRepository::builder("/home/user/GOSH/acki-nacki/server_data/node1/")
+                .build()?;
         let message_db = MessageDurableStorage::mem();
         let finalized_blocks = finalized_blocks_storage();
         let _repository = RepositoryImpl::new(
@@ -2949,7 +4092,7 @@ pub mod tests {
                 None,
                 None,
             ),
-        );
+        )?;
         Ok(())
     }
 
@@ -2962,8 +4105,7 @@ pub mod tests {
         let accounts_repository =
             AccountsRepository::new(PathBuf::from("./tests-data/test_exists"), Some(0), 1);
         let thread_accounts_repository =
-            NodeThreadAccounts::new_repository(PathBuf::from("./tests-data/test_exists"))
-                .build()?;
+            ThreadAccountsRepository::builder("./tests-data/test_exists").build()?;
         let message_db = MessageDurableStorage::mem();
         let finalized_blocks = finalized_blocks_storage();
 
@@ -2987,7 +4129,7 @@ pub mod tests {
                 None,
                 None,
             ),
-        );
+        )?;
 
         let path = "metadata";
         let oid = OID::SingleRow;
@@ -3007,8 +4149,7 @@ pub mod tests {
         let accounts_repository =
             AccountsRepository::new(PathBuf::from("./tests-data/test_remove"), Some(0), 1);
         let thread_accounts_repository =
-            NodeThreadAccounts::new_repository(PathBuf::from("./tests-data/test_remove"))
-                .build()?;
+            ThreadAccountsRepository::builder("./tests-data/test_remove").build()?;
         let message_db = MessageDurableStorage::mem();
         let finalized_blocks = finalized_blocks_storage();
 
@@ -3032,7 +4173,7 @@ pub mod tests {
                 None,
                 None,
             ),
-        );
+        )?;
         let path = "optimistic_state";
         let oid = OID::ID(String::from("200"));
         let data: Vec<u8> = vec![0xde, 0xad, 0xbe, 0xef];
@@ -3062,7 +4203,7 @@ pub mod tests {
         let block_state_repository = BlockStateRepository::test(tmp.path().join("block-state"));
         let accounts_repository = AccountsRepository::new(tmp.path().join("accounts"), Some(0), 1);
         let thread_accounts_repository =
-            NodeThreadAccounts::new_repository(tmp.path().join("thread_state")).build()?;
+            ThreadAccountsRepository::builder(tmp.path().join("durable")).build()?;
         let message_db = MessageDurableStorage::mem();
         let finalized_blocks = finalized_blocks_storage();
 
@@ -3086,7 +4227,7 @@ pub mod tests {
                 None,
                 None,
             ),
-        );
+        )?;
 
         let state_path =
             "/home/user/Downloads/ca6638f7c216beab81886042eb615bdcbe68a451984641b3e7d8aa97b0a0142d";
@@ -3110,6 +4251,374 @@ pub mod tests {
 
         Ok(())
     }
+
+    #[test]
+    #[ignore = "uses a hardcoded local snapshot file"]
+    fn test_read_hardcoded_snapshot_into_legacy_thread_snapshot() -> anyhow::Result<()> {
+        use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
+
+        fn read_legacy_thread_snapshot_from_reader<R: Read>(
+            reader: &mut R,
+        ) -> anyhow::Result<ThreadSnapshot> {
+            let mut probe = Vec::with_capacity(STREAMED_THREAD_SNAPSHOT_MAGIC.len());
+            let mut byte = [0u8; 1];
+            while probe.len() < STREAMED_THREAD_SNAPSHOT_MAGIC.len() {
+                match reader.read(&mut byte)? {
+                    0 => break,
+                    _ => probe.push(byte[0]),
+                }
+            }
+
+            ensure!(
+                probe.as_slice() != STREAMED_THREAD_SNAPSHOT_MAGIC,
+                "Snapshot is in streamed format and cannot be read directly as legacy ThreadSnapshot"
+            );
+
+            let mut legacy_bytes = probe;
+            reader.read_to_end(&mut legacy_bytes)?;
+            bincode::deserialize(&legacy_bytes)
+                .map_err(|e| anyhow::format_err!("Failed to deserialize legacy snapshot: {e}"))
+        }
+
+        let snapshot_path = PathBuf::from(
+            "/Volumes/x5/logs/testnet/858c149732b1334352b59f548425233aeba16a4e03e0a0edb0e9e568887b81f7",
+        );
+        ensure!(
+            snapshot_path.is_file(),
+            "Snapshot file does not exist: {}",
+            snapshot_path.display()
+        );
+        let durable_cache_path = snapshot_path.with_extension("durable-cache");
+        let durable_bytes = if durable_cache_path.is_file() {
+            println!("Using durable snapshot cache: {}", durable_cache_path.display());
+            std::fs::read(&durable_cache_path)?
+        } else {
+            let mut snapshot_file = File::open(&snapshot_path)?;
+            let mut magic = [0u8; COMPRESSED_SNAPSHOT_MAGIC.len()];
+
+            let snapshot = match snapshot_file.read_exact(&mut magic) {
+                Ok(()) if &magic == COMPRESSED_SNAPSHOT_MAGIC => {
+                    let mut decoder = zstd::Decoder::new(snapshot_file)?;
+                    read_legacy_thread_snapshot_from_reader(&mut decoder)
+                }
+                Ok(()) => {
+                    let mut reader = Cursor::new(magic.to_vec()).chain(snapshot_file);
+                    read_legacy_thread_snapshot_from_reader(&mut reader)
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    anyhow::bail!("Snapshot file is too short: {}", snapshot_path.display());
+                }
+                Err(err) => Err(err.into()),
+            }?;
+
+            ensure!(
+                !snapshot.optimistic_state().is_empty(),
+                "Legacy snapshot has empty optimistic_state"
+            );
+            let _ = snapshot.finalized_block().data().identifier();
+            let _ = snapshot.db_messages().len();
+            let _ = snapshot.finalization_chain().len();
+
+            let durable_bytes = snapshot.durable_state_snapshot().clone().unwrap_or_default();
+            println!("durable_state_snapshot bytes: {}", durable_bytes.len());
+            std::fs::write(&durable_cache_path, &durable_bytes)?;
+            println!("Saved durable snapshot cache: {}", durable_cache_path.display());
+            durable_bytes
+        };
+
+        account_state::ensure_legacy_durable_snapshot_is_empty(&durable_bytes)?;
+        println!("legacy durable snapshot is logically empty");
+
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "uses local snapshot files from LOCAL_SNAPSHOT_DIR or /Volumes/x5/_"]
+    fn test_set_state_from_local_snapshots_via_streamed_reader() -> anyhow::Result<()> {
+        use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
+
+        let snapshots_dir = std::env::var_os("LOCAL_SNAPSHOT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/Volumes/x5/_"));
+        ensure!(
+            snapshots_dir.exists(),
+            "Local snapshots directory does not exist: {}",
+            snapshots_dir.display()
+        );
+
+        let mut snapshot_paths = std::fs::read_dir(&snapshots_dir)?
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|path| path.is_file())
+            .filter(|path| path.extension().is_none_or(|ext| ext != "header"))
+            .collect::<Vec<_>>();
+        snapshot_paths.sort();
+        ensure!(
+            !snapshot_paths.is_empty(),
+            "No snapshot files found in {}",
+            snapshots_dir.display()
+        );
+
+        let snapshot_paths = if std::env::var_os("LOCAL_SNAPSHOT_ALL").is_some() {
+            snapshot_paths
+        } else {
+            let snapshot_path = std::env::var_os("LOCAL_SNAPSHOT_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| snapshot_paths[0].clone());
+            ensure!(
+                snapshot_path.is_file(),
+                "Snapshot file does not exist: {}",
+                snapshot_path.display()
+            );
+            vec![snapshot_path]
+        };
+
+        for snapshot_path in snapshot_paths {
+            let tmp = tempfile::TempDir::new()?;
+            let block_state_repository = BlockStateRepository::test(tmp.path().join("block-state"));
+            let accounts_repository =
+                AccountsRepository::new(tmp.path().join("accounts"), Some(0), 1);
+            let thread_accounts_repository =
+                ThreadAccountsRepository::builder(tmp.path().join("durable")).build()?;
+            let message_db = MessageDurableStorage::mem();
+            let finalized_blocks = finalized_blocks_storage();
+
+            let mut repository = RepositoryImpl::new(
+                tmp.path().join("repo"),
+                Some(PathBuf::from(ZEROSTATE)),
+                1,
+                SharedServices::test_start(RoutingService::stub().0, u32::MAX),
+                Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
+                false,
+                block_state_repository,
+                None,
+                accounts_repository,
+                thread_accounts_repository,
+                message_db.clone(),
+                finalized_blocks,
+                mock_bk_set_updates_tx(),
+                ConfigRead::new(
+                    ProtocolVersion::parse("None").unwrap(),
+                    GlobalConfig::default(),
+                    None,
+                    None,
+                ),
+            )?;
+
+            let zerostate = ZeroState::load_from_file(PathBuf::from(ZEROSTATE))?;
+            for tid in zerostate.list_threads() {
+                let block_id = *zerostate.state(tid)?.get_block_id();
+                repository.thread_accounts_repository.ensure_thread(tid, &block_id, false)?;
+            }
+
+            let mut snapshot_file = File::open(&snapshot_path)?;
+            let mut magic = [0u8; COMPRESSED_SNAPSHOT_MAGIC.len()];
+            let skipped_attestation_ids = Arc::new(Mutex::new(HashSet::default()));
+
+            let restore_result = match snapshot_file.read_exact(&mut magic) {
+                Ok(()) if &magic == COMPRESSED_SNAPSHOT_MAGIC => {
+                    let mut decoder = zstd::Decoder::new(snapshot_file)?;
+                    repository.set_state_from_snapshot_reader(
+                        &mut decoder,
+                        &ThreadIdentifier::default(),
+                        skipped_attestation_ids,
+                    )
+                }
+                Ok(()) => {
+                    let reader = Cursor::new(magic.to_vec());
+                    let mut chained = reader.chain(snapshot_file);
+                    repository.set_state_from_snapshot_reader(
+                        &mut chained,
+                        &ThreadIdentifier::default(),
+                        skipped_attestation_ids,
+                    )
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    anyhow::bail!("Snapshot file is too short: {}", snapshot_path.display());
+                }
+                Err(err) => Err(err.into()),
+            };
+
+            restore_result.map_err(|e| {
+                anyhow::anyhow!("Failed to restore {}: {e}", snapshot_path.display())
+            })?;
+            let (restored_block_id, _) = repository
+                .select_thread_last_finalized_block(&ThreadIdentifier::default())?
+                .ok_or_else(|| anyhow::anyhow!("No finalized block after restore"))?;
+            let restored_state = repository
+                .get_full_optimistic_state_no_cache(
+                    &restored_block_id,
+                    &ThreadIdentifier::default(),
+                    None,
+                )?
+                .ok_or_else(|| anyhow::anyhow!("No optimistic state after restore"))?;
+            const MAX_PRINTED_RESTORED_ACCOUNTS: usize = 100;
+            let mut printed_accounts = 0usize;
+            let mut total_accounts = 0usize;
+            for (routing, info) in repository
+                .thread_accounts_repository
+                .durable_map_iter(&restored_state.shard_state.0.durable)
+            {
+                if let AccountInfo::VmAccountHash(_) = info {
+                    total_accounts += 1;
+                    if let Some(account) = repository
+                        .thread_accounts_repository
+                        .state_account(&restored_state.shard_state.0, &routing)?
+                    {
+                        if printed_accounts < MAX_PRINTED_RESTORED_ACCOUNTS {
+                            eprintln!(
+                                "streamed snapshot test: account {} last_trans_lt={} dapp_id={} last_trans_hash={}",
+                                routing,
+                                account.last_trans_lt(),
+                                account
+                                    .get_dapp_id()
+                                    .map(|x| x.to_hex_string())
+                                    .unwrap_or_default(),
+                                account.last_trans_hash()
+                            );
+                            printed_accounts += 1;
+                        }
+                    }
+                }
+            }
+            eprintln!(
+                "streamed snapshot test: printed {} of {} restored accounts",
+                printed_accounts, total_accounts
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_file_streamed_roundtrip_preserves_durable_bytes() -> anyhow::Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let input_path = tempdir.path().join("streamed.snapshot");
+        let output_path = tempdir.path().join("streamed-out.snapshot");
+        let durable_bytes = vec![0x10, 0x20, 0x30, 0x40, 0x50];
+
+        let mut payload = Vec::new();
+        write_streamed_thread_snapshot_bytes_to_writer(
+            &make_test_snapshot(),
+            &durable_bytes,
+            &mut payload,
+        )?;
+        std::fs::write(&input_path, payload)?;
+
+        let mut snapshot_file = read_snapshot_file(&input_path)?;
+        assert_eq!(snapshot_file.compression(), SnapshotCompression::Plain);
+        match snapshot_file.format() {
+            SnapshotFormat::Legacy => panic!("expected streamed snapshot"),
+            SnapshotFormat::Streamed { durable_bytes: preserved } => {
+                assert_eq!(preserved, &durable_bytes);
+            }
+        }
+        assert!(snapshot_file.snapshot().durable_state_snapshot().is_none());
+
+        snapshot_file.snapshot_mut().set_descendant_bk_set(BlockKeeperSet::new());
+        write_snapshot_file(&output_path, &snapshot_file)?;
+
+        let output_bytes = std::fs::read(&output_path)?;
+        let durable_offset = streamed_durable_offset(&output_bytes)?;
+        assert_eq!(&output_bytes[durable_offset..], durable_bytes.as_slice());
+
+        let reparsed = read_snapshot_file(&output_path)?;
+        assert!(reparsed.snapshot().descendant_bk_set().is_empty());
+        match reparsed.format() {
+            SnapshotFormat::Legacy => panic!("expected streamed snapshot"),
+            SnapshotFormat::Streamed { durable_bytes: preserved } => {
+                assert_eq!(preserved, &durable_bytes);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_file_legacy_roundtrip_preserves_legacy_format() -> anyhow::Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let input_path = tempdir.path().join("legacy.snapshot");
+        let output_path = tempdir.path().join("legacy-out.snapshot");
+        let snapshot = make_test_snapshot();
+        let durable_state_snapshot = snapshot.durable_state_snapshot().clone();
+        std::fs::write(&input_path, bincode::serialize(&snapshot)?)?;
+
+        let mut snapshot_file = read_snapshot_file(&input_path)?;
+        assert_eq!(snapshot_file.compression(), SnapshotCompression::Plain);
+        assert!(matches!(snapshot_file.format(), SnapshotFormat::Legacy));
+        snapshot_file.snapshot_mut().set_descendant_bk_set(BlockKeeperSet::new());
+        write_snapshot_file(&output_path, &snapshot_file)?;
+
+        let output_bytes = std::fs::read(&output_path)?;
+        assert!(!output_bytes.starts_with(STREAMED_THREAD_SNAPSHOT_MAGIC));
+
+        let reparsed = read_snapshot_file(&output_path)?;
+        assert!(matches!(reparsed.format(), SnapshotFormat::Legacy));
+        assert!(reparsed.snapshot().descendant_bk_set().is_empty());
+        assert_eq!(reparsed.snapshot().durable_state_snapshot(), &durable_state_snapshot);
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_file_compressed_roundtrip_preserves_compression() -> anyhow::Result<()> {
+        use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
+
+        let tempdir = tempfile::tempdir()?;
+        let input_path = tempdir.path().join("compressed.snapshot");
+        let output_path = tempdir.path().join("compressed-out.snapshot");
+        let durable_bytes = vec![0xAB, 0xCD, 0xEF];
+
+        let mut payload = Vec::new();
+        write_streamed_thread_snapshot_bytes_to_writer(
+            &make_test_snapshot(),
+            &durable_bytes,
+            &mut payload,
+        )?;
+        std::fs::write(&input_path, compress_snapshot_payload(&payload)?)?;
+
+        let mut snapshot_file = read_snapshot_file(&input_path)?;
+        assert_eq!(snapshot_file.compression(), SnapshotCompression::ZstdWithMagic);
+        snapshot_file.snapshot_mut().set_bk_set(BlockKeeperSet::new());
+        write_snapshot_file(&output_path, &snapshot_file)?;
+
+        let output_bytes = std::fs::read(&output_path)?;
+        assert!(output_bytes.starts_with(COMPRESSED_SNAPSHOT_MAGIC));
+        let decompressed = zstd::decode_all(&output_bytes[COMPRESSED_SNAPSHOT_MAGIC.len()..])?;
+        assert!(decompressed.starts_with(STREAMED_THREAD_SNAPSHOT_MAGIC));
+
+        let reparsed = read_snapshot_file(&output_path)?;
+        assert_eq!(reparsed.compression(), SnapshotCompression::ZstdWithMagic);
+        match reparsed.format() {
+            SnapshotFormat::Legacy => panic!("expected streamed snapshot"),
+            SnapshotFormat::Streamed { durable_bytes: preserved } => {
+                assert_eq!(preserved, &durable_bytes);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rewrite_snapshot_file_keeps_streamed_format() -> anyhow::Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let input_path = tempdir.path().join("rewrite-streamed.snapshot");
+        let output_path = tempdir.path().join("rewrite-streamed-out.snapshot");
+
+        let mut payload = Vec::new();
+        write_streamed_thread_snapshot_bytes_to_writer(
+            &make_test_snapshot(),
+            &[0x01, 0x02],
+            &mut payload,
+        )?;
+        std::fs::write(&input_path, payload)?;
+
+        rewrite_snapshot_file(&input_path, &output_path, |snapshot| {
+            snapshot.set_descendant_bk_set(BlockKeeperSet::new());
+            Ok(())
+        })?;
+
+        let output_bytes = std::fs::read(&output_path)?;
+        assert!(output_bytes.starts_with(STREAMED_THREAD_SNAPSHOT_MAGIC));
+        Ok(())
+    }
+
     // /// Test that Transitioning::from produces None for durable_state_snapshot
     // /// when converting from ThreadSnapshotOld (which lacks durable_state_snapshot).
     // /// This verifies backward compatibility: old snapshots get None durable state.
@@ -3164,6 +4673,19 @@ pub mod tests {
         let bytes = bincode::serialize(&some_large).unwrap();
         let deserialized: Option<Vec<u8>> = bincode::deserialize(&bytes).unwrap();
         assert_eq!(deserialized.unwrap().len(), 10000);
+    }
+
+    #[test]
+    fn streamed_durable_segment_copy_rejects_truncated_input() {
+        let mut reader = Cursor::new(vec![1u8, 2, 3]);
+        let mut writer = Vec::new();
+
+        let err =
+            super::copy_snapshot_segment_to_writer(&mut reader, &mut writer, 4, "durable snapshot")
+                .unwrap_err();
+
+        assert!(err.to_string().contains("expected 4 bytes, received 3"));
+        assert_eq!(writer, vec![1u8, 2, 3]);
     }
 
     // /// Test that durable_state_snapshot field exists in ThreadSnapshot

@@ -3,7 +3,7 @@
 
 use std::str::FromStr;
 
-use account_state::ThreadAccount;
+use account_state::VmAccount;
 use num_bigint::BigUint;
 use num_traits::Zero;
 use tvm_abi::contract::DecodedMessage;
@@ -45,7 +45,7 @@ fn get_preepoch_abi() -> tvm_client::abi::Abi {
 }
 
 pub fn decode_epoch_data(
-    account: &ThreadAccount,
+    account: &VmAccount,
 ) -> anyhow::Result<Option<(SignerIndex, BlockKeeperData)>> {
     let tvm_account = tvm_block::Account::try_from(account)?;
     let abi = get_epoch_abi();
@@ -230,7 +230,7 @@ pub fn decode_epoch_data(
 }
 
 pub fn decode_preepoch_data(
-    account: &ThreadAccount,
+    account: &VmAccount,
 ) -> anyhow::Result<Option<(SignerIndex, BlockKeeperData)>> {
     let abi = get_preepoch_abi();
     let tvm_account = tvm_block::Account::try_from(account)?;

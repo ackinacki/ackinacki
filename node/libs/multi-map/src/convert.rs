@@ -9,6 +9,7 @@ use trie_map::trie::node::TAG_LEAF;
 use trie_map::MapValue;
 use trie_map::TrieMapSnapshot;
 
+use crate::live_metrics::LiveMultiMapNodeCounter;
 use crate::node::BranchData;
 use crate::node::ExtData;
 use crate::node::LeafData;
@@ -116,6 +117,7 @@ fn convert_from_arena<V: MapValue>(id: NodeId, snapshot: &TrieMapSnapshot<V>) ->
             Node::Leaf(Arc::new(LeafData {
                 hash: arena_node.hash,
                 value: snapshot.values[value_index],
+                _live_counter: LiveMultiMapNodeCounter::new(),
             }))
         }
         TAG_BRANCH => {
@@ -129,7 +131,12 @@ fn convert_from_arena<V: MapValue>(id: NodeId, snapshot: &TrieMapSnapshot<V>) ->
                     slot += 1;
                 }
             }
-            Node::Branch(Arc::new(BranchData { hash: arena_node.hash, bitmap, children }))
+            Node::Branch(Arc::new(BranchData {
+                hash: arena_node.hash,
+                bitmap,
+                children,
+                _live_counter: LiveMultiMapNodeCounter::new(),
+            }))
         }
         TAG_EXT => {
             let (ext_base, ext_len, child_id) = arena_node.ext();
@@ -148,6 +155,7 @@ fn convert_from_arena<V: MapValue>(id: NodeId, snapshot: &TrieMapSnapshot<V>) ->
                 nibble_count: ext_len,
                 nibbles,
                 child,
+                _live_counter: LiveMultiMapNodeCounter::new(),
             }))
         }
         _ => Node::Empty,

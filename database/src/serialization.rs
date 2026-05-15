@@ -1,7 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use account_state::ThreadAccount;
+use account_state::VmAccount;
 use node_types::AccountCodeHash;
 use node_types::DAppIdentifier;
 use tvm_block::Block;
@@ -18,7 +18,7 @@ use tvm_types::UInt256;
 
 #[derive(Debug, Default)]
 pub struct AccountSerializationSet {
-    pub account: ThreadAccount,
+    pub account: VmAccount,
     pub prev_code_hash: Option<AccountCodeHash>,
     pub boc: Vec<u8>,
     pub boc1: Option<Vec<u8>>,

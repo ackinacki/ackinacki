@@ -16,6 +16,7 @@ use crate::helper::metrics::BlockProductionMetrics;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::NodeAssociatedTypes;
 use crate::node::associated_types::SyncFinalizedData;
+use crate::node::associated_types::SyncFinalizedWithHeightData;
 use crate::node::network_message::NodeJoiningWithLastFinalizedData;
 use crate::node::services::sync::StateSyncService;
 use crate::node::NetworkMessage;
@@ -23,6 +24,7 @@ use crate::node::Node;
 use crate::node::NodeIdentifier;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
+use crate::types::BlockHeight;
 use crate::types::BlockSeqNo;
 use crate::utilities::guarded::Guarded;
 
@@ -169,33 +171,91 @@ where
         })
     }
 
+    fn prepare_sync_finalized_with_height(
+        &self,
+        block_identifier: BlockIdentifier,
+        block_height: BlockHeight,
+        shared_res_address: HashMap<ThreadIdentifier, BlockIdentifier>,
+    ) -> anyhow::Result<Option<Envelope<SyncFinalizedWithHeightData>>> {
+        let shared_res_address = BTreeMap::from_iter(shared_res_address);
+        let data = SyncFinalizedWithHeightData::builder()
+            .block_identifier(block_identifier)
+            .block_height(block_height)
+            .thread_refs(shared_res_address)
+            .build();
+        let Ok(block_state) = self.block_state_repository.get(&block_identifier) else {
+            tracing::trace!("Failed to load block state. Skip broadcasting");
+            return Ok(None);
+        };
+        let (Some(bk_set), Some(block_version)) =
+            block_state.guarded(|e| (e.bk_set().clone(), e.block_version_state().clone()))
+        else {
+            tracing::trace!("Failed to get bk_set from block state. Skip broadcasting");
+            return Ok(None);
+        };
+
+        let secrets = self.bls_keys_map.guarded(|map| map.clone());
+
+        Ok(match data.try_seal(&self.node_credentials, &bk_set, &secrets, block_version.to_use()) {
+            Ok(envelope) => Some(envelope),
+            Err(e) => {
+                tracing::trace!(
+                    "Failed to sign SyncFinalizedWithHeight envelope: {e}. Skip broadcasting"
+                );
+                None
+            }
+        })
+    }
+
     pub(crate) fn broadcast_sync_finalized(
         &self,
         block_identifier: BlockIdentifier,
         block_seq_no: BlockSeqNo,
+        block_height: BlockHeight,
         shared_res_address: HashMap<ThreadIdentifier, BlockIdentifier>,
     ) -> anyhow::Result<()> {
         tracing::debug!(
-            "broadcasting SyncFinalized {:?} {:?} {:?}",
+            "broadcasting SyncFinalized {:?} {:?} {:?} {:?}",
             block_seq_no,
+            block_height,
             block_identifier,
             shared_res_address
         );
 
-        let Some(envelope) =
-            self.prepare_sync_finalized(block_identifier, block_seq_no, shared_res_address)?
-        else {
-            return Ok(());
-        };
+        let maybe_legacy_envelope = self.prepare_sync_finalized(
+            block_identifier,
+            block_seq_no,
+            shared_res_address.clone(),
+        )?;
+        let maybe_height_envelope = self.prepare_sync_finalized_with_height(
+            block_identifier,
+            block_height,
+            shared_res_address,
+        )?;
 
-        match self
-            .network_broadcast_tx
-            .send(NetworkMessage::SyncFinalized((envelope, self.thread_id)))
-        {
-            Ok(_) => {}
-            Err(e) => {
-                if SHUTDOWN_FLAG.get() != Some(&true) {
-                    anyhow::bail!("Failed to broadcast sync finalized: {e}");
+        if let Some(envelope) = maybe_legacy_envelope {
+            match self
+                .network_broadcast_tx
+                .send(NetworkMessage::SyncFinalized((envelope, self.thread_id)))
+            {
+                Ok(_) => {}
+                Err(e) => {
+                    if SHUTDOWN_FLAG.get() != Some(&true) {
+                        anyhow::bail!("Failed to broadcast sync finalized: {e}");
+                    }
+                }
+            }
+        }
+        if let Some(envelope) = maybe_height_envelope {
+            match self
+                .network_broadcast_tx
+                .send(NetworkMessage::SyncFinalizedWithHeight((envelope, self.thread_id)))
+            {
+                Ok(_) => {}
+                Err(e) => {
+                    if SHUTDOWN_FLAG.get() != Some(&true) {
+                        anyhow::bail!("Failed to broadcast sync finalized with height: {e}");
+                    }
                 }
             }
         }
@@ -206,31 +266,53 @@ where
         &self,
         block_identifier: BlockIdentifier,
         block_seq_no: BlockSeqNo,
+        block_height: BlockHeight,
         shared_res_address: HashMap<ThreadIdentifier, BlockIdentifier>,
         destination: NodeIdentifier,
     ) -> anyhow::Result<()> {
         tracing::debug!(
-            "sending SyncFinalized {:?} {:?} {:?} to {:?}",
+            "sending SyncFinalized {:?} {:?} {:?} {:?} to {:?}",
             block_seq_no,
+            block_height,
             block_identifier,
             shared_res_address,
             destination,
         );
 
-        let Some(envelope) =
-            self.prepare_sync_finalized(block_identifier, block_seq_no, shared_res_address)?
-        else {
-            return Ok(());
-        };
+        let maybe_legacy_envelope = self.prepare_sync_finalized(
+            block_identifier,
+            block_seq_no,
+            shared_res_address.clone(),
+        )?;
+        let maybe_height_envelope = self.prepare_sync_finalized_with_height(
+            block_identifier,
+            block_height,
+            shared_res_address,
+        )?;
 
-        match self
-            .network_direct_tx
-            .send((destination.into(), NetworkMessage::SyncFinalized((envelope, self.thread_id))))
-        {
-            Ok(_) => {}
-            Err(e) => {
-                if SHUTDOWN_FLAG.get() != Some(&true) {
-                    anyhow::bail!("Failed to send sync finalized: {e}");
+        if let Some(envelope) = maybe_legacy_envelope {
+            match self.network_direct_tx.send((
+                destination.clone().into(),
+                NetworkMessage::SyncFinalized((envelope, self.thread_id)),
+            )) {
+                Ok(_) => {}
+                Err(e) => {
+                    if SHUTDOWN_FLAG.get() != Some(&true) {
+                        anyhow::bail!("Failed to send sync finalized: {e}");
+                    }
+                }
+            }
+        }
+        if let Some(envelope) = maybe_height_envelope {
+            match self.network_direct_tx.send((
+                destination.into(),
+                NetworkMessage::SyncFinalizedWithHeight((envelope, self.thread_id)),
+            )) {
+                Ok(_) => {}
+                Err(e) => {
+                    if SHUTDOWN_FLAG.get() != Some(&true) {
+                        anyhow::bail!("Failed to send sync finalized with height: {e}");
+                    }
                 }
             }
         }

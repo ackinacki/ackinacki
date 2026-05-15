@@ -1,4 +1,6 @@
+use std::io::Write;
 use std::ops::Deref;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -8,6 +10,7 @@ use std::thread::JoinHandle;
 use node_types::BlockIdentifier;
 use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
+use tempfile::NamedTempFile;
 use typed_builder::TypedBuilder;
 
 use crate::bls::envelope::BLSSignedEnvelope;
@@ -17,8 +20,12 @@ use crate::node::services::block_processor::service::MAX_ATTESTATION_TARGET_BETA
 use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BLOCK_STATISTICS_INITIAL_WINDOW_SIZE;
 use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
 use crate::node::services::sync::snapshot_compression::ZSTD_COMPRESSION_LEVEL;
+use crate::node::services::sync::state_sync_service_trait::SaveStateForSharingStatus;
 use crate::node::shared_services::SharedServices;
 use crate::repository::optimistic_state::OptimisticStateImpl;
+use crate::repository::repository_impl::get_process_rss_bytes;
+use crate::repository::repository_impl::write_legacy_thread_snapshot_to_writer;
+use crate::repository::repository_impl::write_streamed_thread_snapshot_to_writer;
 use crate::repository::repository_impl::AncestorBlockData;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::repository_impl::ThreadSnapshot;
@@ -33,11 +40,14 @@ use crate::types::thread_message_queue::account_messages_iterator::AccountMessag
 use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
+use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
 
 impl AllowGuardedMut for Vec<JoinHandle<anyhow::Result<()>>> {}
 
 /// Maximum number of concurrent file-saving threads.
-const MAX_CONCURRENT_SAVE_THREADS: usize = 2;
+/// Set to 1 so only one snapshot runs at a time — if a snapshot is already
+/// in progress when `save_object` is called, it's skipped.
+const MAX_CONCURRENT_SAVE_THREADS: usize = 1;
 
 /// RAII guard that decrements an atomic counter on drop.
 struct ActiveThreadGuard(Arc<AtomicUsize>);
@@ -123,6 +133,116 @@ fn get_ancestor_blocks_data(
     Ok(history)
 }
 
+fn should_write_legacy_snapshot(
+    config_read: &crate::config::config_read::ConfigRead,
+    block_protocol_version_state: &BlockProtocolVersionState,
+) -> bool {
+    config_read.is_retired(block_protocol_version_state.to_use())
+}
+
+enum SnapshotPinAcquireOutcome<P> {
+    Acquired(P),
+    LegacyReleased,
+    SkipSnapshot,
+}
+
+fn spawn_named_worker<T, F, S>(name: String, spawner: S, worker: F) -> std::io::Result<T>
+where
+    F: FnOnce() -> anyhow::Result<()> + Send + 'static,
+    S: FnOnce(std::thread::Builder, F) -> std::io::Result<T>,
+{
+    spawner(std::thread::Builder::new().name(name), worker)
+}
+
+fn acquire_snapshot_pin_for_worker<P, F>(
+    thread_id: ThreadIdentifier,
+    block_id: BlockIdentifier,
+    timeout: std::time::Duration,
+    write_legacy_snapshot: bool,
+    acquire_pin: F,
+) -> SnapshotPinAcquireOutcome<P>
+where
+    F: FnOnce(ThreadIdentifier, BlockIdentifier, std::time::Duration) -> Option<P>,
+{
+    tracing::info!(
+        target: "monit",
+        "snapshot[{block_id:?}]: pin was requested earlier; waiting for boundary up to {:?}",
+        timeout,
+    );
+    let Some(pin) = acquire_pin(thread_id, block_id, timeout) else {
+        tracing::warn!(
+            target: "monit",
+            "snapshot[{block_id:?}]: pin not acquired (anchor mismatch or timeout); skipping atomically",
+        );
+        return SnapshotPinAcquireOutcome::SkipSnapshot;
+    };
+    tracing::info!(target: "monit", "snapshot[{block_id:?}]: pin acquired");
+    if write_legacy_snapshot {
+        tracing::info!(
+            target: "monit",
+            "snapshot[{block_id:?}]: legacy path releasing pin without durable export",
+        );
+        drop(pin);
+        SnapshotPinAcquireOutcome::LegacyReleased
+    } else {
+        SnapshotPinAcquireOutcome::Acquired(pin)
+    }
+}
+
+fn write_snapshot_file<F>(
+    snapshot_path: &Path,
+    parent_dir: &Path,
+    header: &ThreadSnapshotHeader,
+    write_snapshot: F,
+) -> anyhow::Result<()>
+where
+    F: FnOnce(&mut dyn Write) -> anyhow::Result<()>,
+{
+    let tmp_file_path = get_temp_file_path(parent_dir);
+    let result = (|| -> anyhow::Result<()> {
+        let mut tmp_file = std::fs::File::create(&tmp_file_path)?;
+        tmp_file.write_all(COMPRESSED_SNAPSHOT_MAGIC)?;
+        let mut encoder = zstd::Encoder::new(tmp_file, ZSTD_COMPRESSION_LEVEL)?;
+        write_snapshot(&mut encoder)?;
+        let tmp_file = encoder.finish()?;
+        tmp_file.sync_all()?;
+        std::fs::rename(&tmp_file_path, snapshot_path)?;
+
+        let header_path = RepositoryImpl::snapshot_header_path(snapshot_path);
+        if !std::fs::exists(&header_path)? {
+            let header_bytes = bincode::serialize(header)?;
+            let tmp_header_path = get_temp_file_path(parent_dir);
+            std::fs::write(&tmp_header_path, header_bytes)?;
+            std::fs::rename(tmp_header_path, &header_path)?;
+        }
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_file_path);
+    }
+
+    result
+}
+
+#[cfg(test)]
+fn export_durable_and_write_snapshot<FExport, FWrite>(
+    snapshot_path: &Path,
+    parent_dir: &Path,
+    header: &ThreadSnapshotHeader,
+    export_durable_snapshot: FExport,
+    write_snapshot: FWrite,
+) -> anyhow::Result<()>
+where
+    FExport: FnOnce() -> anyhow::Result<Option<NamedTempFile>>,
+    FWrite: FnOnce(Option<&Path>, &mut dyn Write) -> anyhow::Result<()>,
+{
+    let durable_snapshot = export_durable_snapshot()?;
+    write_snapshot_file(snapshot_path, parent_dir, header, |writer| {
+        write_snapshot(durable_snapshot.as_ref().map(|temp| temp.path()), writer)
+    })
+}
+
 impl Drop for FileSavingService {
     fn drop(&mut self) {
         // Only join threads when this is the last clone (Arc has a single owner).
@@ -164,29 +284,48 @@ impl FileSavingService {
         Ok(())
     }
 
-    /// Allow saving only if the number of active save threads drops below the limit.
-    fn is_slot_available(&self) -> anyhow::Result<bool> {
-        self.flush()?;
-        if self.active_thread_count.load(Ordering::Acquire) < MAX_CONCURRENT_SAVE_THREADS {
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
     pub fn save_object(
         &self,
         block_id: &BlockIdentifier,
         thread_id: &ThreadIdentifier,
+        anchor: account_state::AnchorBlockRef,
         min_state: Option<Arc<OptimisticStateImpl>>,
         path: PathBuf,
         finalizing_block_id: BlockIdentifier,
-    ) -> anyhow::Result<()> {
-        self.flush()?;
-        if !self.is_slot_available()? {
-            tracing::trace!(target: "node", "Saving state to {}", path.display());
-            tracing::trace!(target: "monit", "There is no available slot for saving thread. Skip it");
-            return Ok(());
+    ) -> anyhow::Result<SaveStateForSharingStatus> {
+        // Atomically claim a slot. If another snapshot is in progress, skip.
+        // Using compare_exchange to avoid TOCTOU races.
+        let mut current = self.active_thread_count.load(Ordering::Acquire);
+        loop {
+            if current >= MAX_CONCURRENT_SAVE_THREADS {
+                tracing::trace!(
+                    target: "monit",
+                    "Snapshot already in progress, skipping save for {}",
+                    path.display(),
+                );
+                return Ok(SaveStateForSharingStatus::SkippedBusy);
+            }
+            match self.active_thread_count.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
         }
+        // From here on, we must release the slot on any early return.
+        // The ActiveThreadGuard in the spawned thread handles the normal path;
+        // we need to handle errors before the thread is successfully spawned.
+        let slot_guard = ActiveThreadGuard(Arc::clone(&self.active_thread_count));
+
+        // Reap any finished threads (cheap — just joins handles that are already done).
+        self.flush()?;
+        // Request pin only after slot reservation succeeds so skipped saves
+        // cannot leave a stale Requested/BoundaryReached pin behind.
+        let pin_request_guard =
+            self.repository.thread_accounts_repository().request_snapshot_pin(anchor);
 
         let path = self.root_path.join(path);
         let parent_dir = self.root_path.clone();
@@ -196,86 +335,237 @@ impl FileSavingService {
         let repository = self.repository.clone();
         let block_id = *block_id;
         let thread_id = *thread_id;
-        // Capture the finalized block synchronously before spawning the thread.
-        // The block is guaranteed to be in FinalizedBlockStorage at this call site,
-        // but may be evicted by the time the background thread runs (race condition).
-
+        // The snapshot pin is acquired by the spawned worker via
+        // `acquire_snapshot_pin` with a long timeout — finalize never
+        // blocks on it. The worker drops the pin on completion or
+        // panic.
+        //
+        // Block lookups (`get_finalized_block`, finalization-chain walk)
+        // are deferred to the worker so the finalize thread does no
+        // disk I/O or Envelope clones. The blocks were just finalized
+        // and live in `FinalizedBlockStorage`; if any have been evicted
+        // by the time the worker runs, the chain walk falls back to an
+        // empty chain (with a warn log) and the snapshot proceeds
+        // without that block range — atomic skip if a critical lookup
+        // (`get_finalized_block` for `block_id`) fails.
         tracing::trace!(
             "save_object: block_id={block_id:?}, finalizing_block_id={finalizing_block_id:?}"
         );
-        let finalized_block = self
-            .repository
-            .get_finalized_block(&block_id)?
-            .ok_or_else(|| anyhow::format_err!("Failed to get block: {:?}", block_id))?;
-        // Collect the finalization chain synchronously before spawning the thread.
-        // Blocks may be evicted from FinalizedBlockStorage by the time the background thread runs.
-        let finalization_chain = Self::collect_finalization_chain(
-            &block_id,
-            &finalizing_block_id,
-            &thread_id,
-            &self.repository,
-        )
-        .unwrap_or_else(|e| {
-            tracing::warn!("Failed to collect finalization chain: {e}");
-            vec![]
-        });
-        tracing::trace!("save_object: finalization_chain len={}", finalization_chain.len());
         #[cfg(feature = "history_proofs")]
         let history_proof_data = self.repository.get_history_proof_data();
+        // Transfer slot ownership to the spawned thread. The slot was already
+        // claimed by the compare_exchange above; we forget slot_guard on
+        // successful spawn so ownership passes to the thread's ActiveThreadGuard.
         let active_count = Arc::clone(&self.active_thread_count);
-        active_count.fetch_add(1, Ordering::Release);
-        let thread = std::thread::Builder::new()
-            .name(format!("Saving state: {}", path.display()))
-            .spawn(move || {
+        let thread_result = spawn_named_worker(
+            format!("Saving state: {}", path.display()),
+            |builder, worker| builder.spawn(worker),
+            move || {
                 let _guard = ActiveThreadGuard(active_count);
+                let mut pin_request_guard = pin_request_guard;
                 tracing::trace!(target: "node", "Saving state to {}", path.display());
                 if std::fs::exists(&path)? {
                     tracing::trace!(target: "node", "File {} already exists, skip saving.", path.display());
                     return Ok(());
                 }
                 let snapshot_creation_start = std::time::Instant::now();
+                let mb = |b: u64| b as f64 / (1024.0 * 1024.0);
+                let rss_start = get_process_rss_bytes();
+                tracing::info!(target: "mem", "snapshot[{block_id:?}]: START rss_mb={:.1}", mb(rss_start));
+
+                let finalized_block = repository
+                    .get_finalized_block(&block_id)?
+                    .ok_or_else(|| anyhow::format_err!("Failed to get block: {:?}", block_id))?;
+                let finalization_chain_arcs = Self::collect_finalization_chain_arcs(
+                    &block_id,
+                    &finalizing_block_id,
+                    &thread_id,
+                    &repository,
+                )
+                .unwrap_or_else(|e| {
+                    tracing::warn!("Failed to collect finalization chain: {e}");
+                    vec![]
+                });
+                tracing::trace!(
+                    "save_object: finalization_chain len={}",
+                    finalization_chain_arcs.len()
+                );
+
                 // Use the no-cache variant so we don't pollute the optimistic_state
                 // cache with entries that are only needed for serialization.
                 let state = repository
                     .get_full_optimistic_state_no_cache(&block_id, &thread_id, min_state)?
                     .ok_or(anyhow::format_err!("Failed to get full optimistic state"))?;
+                let rss_after_get = get_process_rss_bytes();
+                tracing::info!(
+                    target: "mem",
+                    "snapshot[{block_id:?}]: AFTER get_full_state rss_mb={:.1} delta={:.1}",
+                    mb(rss_after_get),
+                    mb(rss_after_get.saturating_sub(rss_start)),
+                );
 
                 // When the Arc has a single strong reference (no cache entry),
                 // unwrap_or_clone will move the data without cloning.
+                let state_arc_count = Arc::strong_count(&state);
                 let state = Arc::unwrap_or_clone(state);
+                tracing::info!(
+                    target: "mem",
+                    "snapshot[{block_id:?}]: unwrapped state Arc, prev_strong_count={state_arc_count}",
+                );
                 let db_messages = state
                     .messages
                     .iter(&message_db)
                     .map(|range| range.remaining_messages_from_db().unwrap_or_default())
-                    .collect();
-                // Export durable state snapshot
-                let durable_state_snapshot = match repository
-                    .thread_accounts_repository()
-                    .export_durable_snapshot(&state.shard_state.0)
-                {
-                    Ok(snapshot) => match bincode::serialize(&snapshot) {
-                        Ok(bytes) => Some(bytes),
-                        Err(e) => {
-                            tracing::warn!("Failed to serialize durable snapshot: {e}");
+                    .collect::<Vec<_>>();
+                let db_messages_total: usize = db_messages.iter().map(|v: &Vec<_>| v.len()).sum();
+                let rss_after_db_msgs = get_process_rss_bytes();
+                tracing::info!(
+                    target: "mem",
+                    "snapshot[{block_id:?}]: AFTER db_messages count={db_messages_total} rss_mb={:.1}",
+                    mb(rss_after_db_msgs),
+                );
+
+                let block_state = block_state_repository.get(&block_id)?;
+                let Some(block_protocol_version_state) =
+                    block_state.guarded(|e| e.block_version_state().clone())
+                else {
+                    anyhow::bail!("Failed to get block protocol version state for sync");
+                };
+                let write_legacy_snapshot = should_write_legacy_snapshot(
+                    &repository.config_read(),
+                    &block_protocol_version_state,
+                );
+                const SLOW_PATH_PIN_TIMEOUT: std::time::Duration =
+                    std::time::Duration::from_secs(15 * 60);
+                let durable_state_snapshot = if write_legacy_snapshot {
+                    match acquire_snapshot_pin_for_worker(
+                        thread_id,
+                        block_id,
+                        SLOW_PATH_PIN_TIMEOUT,
+                        true,
+                        |thread_id, block_id, timeout| {
+                            repository
+                                .thread_accounts_repository()
+                                .acquire_snapshot_pin(thread_id, block_id, timeout)
+                        },
+                    ) {
+                        SnapshotPinAcquireOutcome::SkipSnapshot => return Ok(()),
+                        SnapshotPinAcquireOutcome::LegacyReleased => {
+                            pin_request_guard.disarm();
+                            tracing::info!(
+                                target: "mem",
+                                "snapshot[{block_id:?}]: legacy snapshot released pin rss_mb={:.1}",
+                                mb(get_process_rss_bytes()),
+                            );
+                            tracing::info!(
+                                target: "mem",
+                                "snapshot[{block_id:?}]: SKIP durable export for legacy snapshot rss_mb={:.1}",
+                                mb(get_process_rss_bytes()),
+                            );
                             None
                         }
-                    },
-                    Err(e) => {
-                        tracing::warn!("Failed to export durable snapshot: {e}");
-                        None
+                        SnapshotPinAcquireOutcome::Acquired(_pin) => {
+                            tracing::warn!(
+                                target: "monit",
+                                "snapshot[{block_id:?}]: legacy path unexpectedly retained durable pin; releasing",
+                            );
+                            drop(_pin);
+                            None
+                        }
                     }
+                } else {
+                    // Acquire the snapshot pin on this worker thread.
+                    // `request_snapshot_pin` was called on the accumulator
+                    // in `mark_block_as_finalized` (synchronously with
+                    // the alignment-hook'd `push_transition` that ships
+                    // the boundary batch), so the accumulator is in
+                    // `Requested` when we get here — modulo update-loop
+                    // backlog. We wait long enough to span the worst-
+                    // observed update-loop batch apply time (~9 min per
+                    // batch); if the boundary still isn't reached after
+                    // this window, skip atomically.
+                    let _pin = match acquire_snapshot_pin_for_worker(
+                        thread_id,
+                        block_id,
+                        SLOW_PATH_PIN_TIMEOUT,
+                        false,
+                        |thread_id, block_id, timeout| {
+                            repository
+                                .thread_accounts_repository()
+                                .acquire_snapshot_pin(thread_id, block_id, timeout)
+                        },
+                    ) {
+                        SnapshotPinAcquireOutcome::Acquired(pin) => {
+                            pin_request_guard.disarm();
+                            tracing::info!(
+                                target: "mem",
+                                "snapshot[{block_id:?}]: pin acquired rss_mb={:.1}",
+                                mb(get_process_rss_bytes()),
+                            );
+                            pin
+                        }
+                        SnapshotPinAcquireOutcome::SkipSnapshot => return Ok(()),
+                        SnapshotPinAcquireOutcome::LegacyReleased => {
+                            unreachable!("streamed snapshot path cannot release a pin as legacy")
+                        }
+                    };
+                    let mut temp = NamedTempFile::new_in(&parent_dir).map_err(|e| {
+                        tracing::error!(
+                            target: "node",
+                            ?block_id,
+                            ?thread_id,
+                            path = %path.display(),
+                            "Failed to create temp durable snapshot file: {e}",
+                        );
+                        anyhow::anyhow!("Failed to create temp durable snapshot file: {e}")
+                    })?;
+                    // Atomic skip: if the export's resolution chain
+                    // fails on any routing, it returns Err and the temp
+                    // file is dropped (NamedTempFile cleans up on
+                    // drop). The final snapshot path is never touched.
+                    repository
+                        .thread_accounts_repository()
+                        .export_durable_snapshot_to_writer(&state.shard_state.0, temp.as_file_mut())
+                        .map_err(|e| {
+                            tracing::warn!(
+                                target: "monit",
+                                ?block_id,
+                                ?thread_id,
+                                "snapshot export aborted (atomic skip): {e}",
+                            );
+                            anyhow::anyhow!("Failed to export durable snapshot: {e}")
+                        })?;
+                    temp.as_file_mut().sync_all()?;
+                    let rss_after_export = get_process_rss_bytes();
+                    tracing::info!(
+                        target: "mem",
+                        "snapshot[{block_id:?}]: AFTER export_durable_snapshot rss_mb={:.1}",
+                        mb(rss_after_export),
+                    );
+                    drop(_pin);
+                    tracing::info!(
+                        target: "mem",
+                        "snapshot[{block_id:?}]: streamed path released pin after durable export rss_mb={:.1}",
+                        mb(get_process_rss_bytes()),
+                    );
+                    Some(temp)
                 };
-
                 let serialized_state = bincode::serialize(&state)?;
+                let serialized_state_bytes = serialized_state.len();
                 // Drop the heavy optimistic state now that it's serialized.
                 drop(state);
+                let rss_after_serialize_state = get_process_rss_bytes();
+                tracing::info!(
+                    target: "mem",
+                    "snapshot[{block_id:?}]: AFTER serialize+drop(state) bytes={serialized_state_bytes} rss_mb={:.1}",
+                    mb(rss_after_serialize_state),
+                );
 
                 let ancestor_blocks_data = get_ancestor_blocks_data(
                     &block_id,
                     &block_state_repository,
                     &mut shared_services,
                 )?;
-                let block_state = block_state_repository.get(&block_id)?;
                 let (
                     Some(bk_set),
                     Some(finalized_block_stats),
@@ -289,7 +579,6 @@ impl FileSavingService {
                     Some(ancestor_blocks_finalization_checkpoints),
                     Some(finalizes_blocks),
                     Some(parent_id),
-                    Some(block_protocol_version_state),
                 ) = block_state.guarded(|e| {
                     (
                         e.bk_set().clone(),
@@ -304,7 +593,6 @@ impl FileSavingService {
                         e.ancestor_blocks_finalization_checkpoints().clone(),
                         e.finalizes_blocks().clone(),
                         *e.parent_block_identifier(),
-                        e.block_version_state().clone(),
                     )
                 })
                 else {
@@ -340,8 +628,11 @@ impl FileSavingService {
                         parent_ancestor_blocks_finalization_checkpoints,
                     )
                     .block_protocol_version_state(block_protocol_version_state)
-                    .durable_state_snapshot(durable_state_snapshot)
-                    .finalization_chain(finalization_chain);
+                    .durable_state_snapshot(None)
+                    .finalization_chain(
+                        finalization_chain_arcs.iter().map(|b| b.as_ref().clone()).collect(),
+                    );
+                drop(finalization_chain_arcs);
                 #[cfg(feature = "history_proofs")]
                 let builder = builder.history_data_snapshot(history_snapshot);
                 let shared_thread_state = builder.build();
@@ -351,57 +642,99 @@ impl FileSavingService {
                 // Extract lightweight header before dropping the snapshot
                 let header = ThreadSnapshotHeader {
                     block_id: shared_thread_state.finalized_block().data().identifier(),
-                    thread_id: *shared_thread_state.finalized_block().data().common_section().thread_id(),
+                    thread_id: *shared_thread_state
+                        .finalized_block()
+                        .data()
+                        .common_section()
+                        .thread_id(),
                     seq_no: shared_thread_state.finalized_block().data().seq_no(),
                     round: *shared_thread_state.finalized_block().data().common_section().round(),
                 };
 
-                let bytes = bincode::serialize(&shared_thread_state)?;
-                // Drop the ThreadSnapshot now that it's serialized.
+                write_snapshot_file(&path, &parent_dir, &header, |writer| {
+                    if write_legacy_snapshot {
+                        write_legacy_thread_snapshot_to_writer(&shared_thread_state, &mut *writer)
+                    } else {
+                        write_streamed_thread_snapshot_to_writer(
+                            &shared_thread_state,
+                            durable_state_snapshot.as_ref().map(|temp| temp.path()),
+                            &mut *writer,
+                        )
+                    }
+                })?;
                 drop(shared_thread_state);
-
-                // Compress with zstd and prepend magic header
-                let compressed = zstd::encode_all(bytes.as_slice(), ZSTD_COMPRESSION_LEVEL)?;
-                let mut bytes = Vec::with_capacity(COMPRESSED_SNAPSHOT_MAGIC.len() + compressed.len());
-                bytes.extend_from_slice(COMPRESSED_SNAPSHOT_MAGIC);
-                bytes.extend_from_slice(&compressed);
-
-                let tmp_file_path = get_temp_file_path(&parent_dir);
-                std::fs::write(tmp_file_path.clone(), bytes)?;
-                std::fs::rename(tmp_file_path, &path)?;
-                let snapshot_creation_elapsed = snapshot_creation_start.elapsed().as_millis() as u64;
+                let rss_after_write = get_process_rss_bytes();
+                tracing::info!(
+                    target: "mem",
+                    "snapshot[{block_id:?}]: AFTER {} snapshot write rss_mb={:.1}",
+                    if write_legacy_snapshot { "legacy" } else { "streamed" },
+                    mb(rss_after_write),
+                );
+                let snapshot_creation_elapsed =
+                    snapshot_creation_start.elapsed().as_millis() as u64;
                 if let Some(m) = repository.get_metrics() {
                     m.report_snapshot_creation_time(snapshot_creation_elapsed, &thread_id);
                 }
+                let rss_end = get_process_rss_bytes();
+                tracing::info!(
+                    target: "mem",
+                    "snapshot[{block_id:?}]: END elapsed_ms={snapshot_creation_elapsed} \
+                     rss_mb={:.1} delta_total={:.1}",
+                    mb(rss_end),
+                    mb(rss_end.saturating_sub(rss_start)),
+                );
                 tracing::trace!(target: "node", "Successfully saved state to {}", path.display());
 
-                // Write lightweight header sidecar for fast startup scanning
-                let header_path = RepositoryImpl::snapshot_header_path(&path);
-                if !std::fs::exists(&header_path)? {
-                    let header_bytes = bincode::serialize(&header)?;
-                    let tmp_header_path = get_temp_file_path(&parent_dir);
-                    std::fs::write(&tmp_header_path, header_bytes)?;
-                    std::fs::rename(tmp_header_path, &header_path)?;
+                // Sample RSS at intervals after the snapshot completes to detect
+                // whether memory is reclaimed (allocator returns to OS) or retained.
+                // We've dropped all snapshot-local allocations by this point.
+                for delay_ms in [0u64, 1000, 5000, 15000] {
+                    if delay_ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    }
+                    let rss = get_process_rss_bytes();
+                    tracing::info!(
+                        target: "mem",
+                        "snapshot[{block_id:?}]: post_snapshot t+{delay_ms}ms rss_mb={:.1} delta_from_start={:.1}",
+                        mb(rss),
+                        mb(rss.saturating_sub(rss_start)),
+                    );
                 }
-
                 Ok(())
-            })?;
-        self.threads.guarded_mut(|threads| {
-            threads.push(thread);
-        });
-        Ok(())
+            },
+        );
+        match thread_result {
+            Ok(handle) => {
+                // Thread has taken ownership of the slot via its own ActiveThreadGuard.
+                std::mem::forget(slot_guard);
+                self.threads.guarded_mut(|threads| {
+                    threads.push(handle);
+                });
+                Ok(SaveStateForSharingStatus::Spawned)
+            }
+            Err(e) => {
+                // Thread failed to spawn — slot_guard will release the slot on drop.
+                drop(slot_guard);
+                Err(anyhow::anyhow!("Failed to spawn save thread: {e}"))
+            }
+        }
     }
 
     /// Collects the ordered chain of blocks from `finalized_block_id` (exclusive)
     /// to `finalizing_block_id` (inclusive) by following parent links.
     ///
-    /// Returns blocks in ascending order: [B+1, B+2, ..., P].
-    fn collect_finalization_chain(
+    /// Returns blocks in ascending order: [B+1, B+2, ..., P]. The returned
+    /// `Arc`s keep each block alive across the spawn boundary even if
+    /// `FinalizedBlockStorage` evicts its own caches; the worker clones
+    /// the `Envelope`s once when building the snapshot so the heavy copy
+    /// happens off the finalize thread.
+    fn collect_finalization_chain_arcs(
         finalized_block_id: &BlockIdentifier,
         finalizing_block_id: &BlockIdentifier,
         thread_id: &ThreadIdentifier,
         repository: &RepositoryImpl,
-    ) -> anyhow::Result<Vec<crate::bls::envelope::Envelope<crate::types::AckiNackiBlock>>> {
+    ) -> anyhow::Result<Vec<Arc<crate::bls::envelope::Envelope<crate::types::AckiNackiBlock>>>>
+    {
         use crate::bls::envelope::BLSSignedEnvelope;
 
         if finalized_block_id == finalizing_block_id {
@@ -422,7 +755,7 @@ impl FileSavingService {
 
             let parent_id = block.data().parent();
 
-            chain.push(block.as_ref().clone());
+            chain.push(block);
 
             if parent_id == *finalized_block_id || cursor == *finalized_block_id {
                 break;
@@ -435,5 +768,191 @@ impl FileSavingService {
 
         chain.reverse();
         Ok(chain)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    use node_types::BlockIdentifier;
+    use node_types::ThreadIdentifier;
+
+    use super::acquire_snapshot_pin_for_worker;
+    use super::export_durable_and_write_snapshot;
+    use super::should_write_legacy_snapshot;
+    use super::spawn_named_worker;
+    use super::SnapshotPinAcquireOutcome;
+    use super::ThreadSnapshotHeader;
+    use crate::config::config_read::ConfigRead;
+    use crate::config::GlobalConfig;
+    use crate::repository::repository_impl::RepositoryImpl;
+    use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
+    use crate::versioning::ProtocolVersion;
+
+    struct TestPinGuard(Arc<AtomicUsize>);
+
+    impl Drop for TestPinGuard {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn test_should_write_legacy_snapshot_for_retired_block_version() -> anyhow::Result<()> {
+        let retired = ProtocolVersion::parse("retired")?;
+        let current = ProtocolVersion::parse("current")?;
+        let config_read = ConfigRead::new(
+            current.clone(),
+            GlobalConfig::default(),
+            Some(retired.clone()),
+            Some(GlobalConfig::default()),
+        );
+
+        assert!(should_write_legacy_snapshot(
+            &config_read,
+            &BlockProtocolVersionState::Current(retired.clone())
+        ));
+        assert!(should_write_legacy_snapshot(
+            &config_read,
+            &BlockProtocolVersionState::TransitionLocked {
+                from: retired.clone(),
+                to: current.clone(),
+                milestone: Default::default(),
+            }
+        ));
+        assert!(should_write_legacy_snapshot(
+            &config_read,
+            &BlockProtocolVersionState::CompleteTransition { from: retired, to: current.clone() }
+        ));
+        assert!(!should_write_legacy_snapshot(
+            &config_read,
+            &BlockProtocolVersionState::Current(current)
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn durable_export_failure_does_not_publish_snapshot_or_header() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let snapshot_path = dir.path().join("snapshot.bin");
+        let header = ThreadSnapshotHeader {
+            block_id: BlockIdentifier::default(),
+            thread_id: ThreadIdentifier::default(),
+            seq_no: Default::default(),
+            round: 0,
+        };
+        let mut writer_called = false;
+
+        let err = export_durable_and_write_snapshot(
+            &snapshot_path,
+            dir.path(),
+            &header,
+            || anyhow::bail!("durable export failed"),
+            |_durable_snapshot_path, _writer| {
+                writer_called = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("durable export failed"));
+        assert!(!writer_called);
+        assert!(!snapshot_path.exists());
+        assert!(!RepositoryImpl::snapshot_header_path(&snapshot_path).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_snapshot_path_acquires_and_releases_pin() {
+        let acquire_calls = Arc::new(AtomicUsize::new(0));
+        let drop_calls = Arc::new(AtomicUsize::new(0));
+        let acquire_calls_clone = Arc::clone(&acquire_calls);
+        let drop_calls_clone = Arc::clone(&drop_calls);
+
+        let outcome = acquire_snapshot_pin_for_worker(
+            ThreadIdentifier::default(),
+            BlockIdentifier::default(),
+            std::time::Duration::from_secs(1),
+            true,
+            move |_thread_id, _block_id, _timeout| {
+                acquire_calls_clone.fetch_add(1, Ordering::Relaxed);
+                Some(TestPinGuard(drop_calls_clone))
+            },
+        );
+
+        assert!(matches!(outcome, SnapshotPinAcquireOutcome::LegacyReleased));
+        assert_eq!(acquire_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(drop_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn streamed_snapshot_path_keeps_pin_until_guard_drop() {
+        let drop_calls = Arc::new(AtomicUsize::new(0));
+        let drop_calls_clone = Arc::clone(&drop_calls);
+
+        let outcome = acquire_snapshot_pin_for_worker(
+            ThreadIdentifier::default(),
+            BlockIdentifier::default(),
+            std::time::Duration::from_secs(1),
+            false,
+            move |_thread_id, _block_id, _timeout| Some(TestPinGuard(drop_calls_clone)),
+        );
+
+        let guard = match outcome {
+            SnapshotPinAcquireOutcome::Acquired(guard) => guard,
+            SnapshotPinAcquireOutcome::LegacyReleased => {
+                panic!("streamed snapshot path released pin too early")
+            }
+            SnapshotPinAcquireOutcome::SkipSnapshot => panic!("streamed snapshot path skipped pin"),
+        };
+        assert_eq!(drop_calls.load(Ordering::Relaxed), 0);
+        drop(guard);
+        assert_eq!(drop_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn snapshot_pin_timeout_skips_atomically() {
+        let acquire_calls = Arc::new(AtomicUsize::new(0));
+        let acquire_calls_clone = Arc::clone(&acquire_calls);
+
+        let outcome = acquire_snapshot_pin_for_worker(
+            ThreadIdentifier::default(),
+            BlockIdentifier::default(),
+            std::time::Duration::from_secs(1),
+            true,
+            move |_thread_id, _block_id, _timeout| {
+                acquire_calls_clone.fetch_add(1, Ordering::Relaxed);
+                None::<TestPinGuard>
+            },
+        );
+
+        assert!(matches!(outcome, SnapshotPinAcquireOutcome::SkipSnapshot));
+        assert_eq!(acquire_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn spawn_failure_drops_captured_guard() {
+        let drop_calls = Arc::new(AtomicUsize::new(0));
+        let captured_guard = TestPinGuard(Arc::clone(&drop_calls));
+
+        let result: std::io::Result<std::thread::JoinHandle<anyhow::Result<()>>> =
+            spawn_named_worker(
+                "test-worker".to_string(),
+                |_builder, worker| {
+                    drop(worker);
+                    Err(std::io::Error::other("spawn failed"))
+                },
+                move || {
+                    let _guard = captured_guard;
+                    Ok(())
+                },
+            );
+
+        assert!(result.is_err());
+        assert_eq!(drop_calls.load(Ordering::Relaxed), 1);
     }
 }

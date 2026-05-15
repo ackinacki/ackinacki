@@ -50,11 +50,14 @@ impl NotQueuedExtMessage {
             bail!("Invalid ExternalMessage, id {nonce}: hash() must return UInt256")
         };
 
-        let thread_id = match thread_id.map(ThreadIdentifier::try_from).transpose() {
+        let thread_id = match thread_id.clone().map(ThreadIdentifier::try_from).transpose() {
             Ok(Some(id)) => id,
             Ok(None) => ThreadIdentifier::default(),
-            Err(_) => {
-                bail!("thread_id can not be parsed")
+            Err(err) => {
+                bail!(
+                    "thread_id can not be parsed: {err}, thread_id: {}",
+                    thread_id.unwrap_or_default()
+                )
             }
         };
 

@@ -1,12 +1,15 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use account_state::ThreadAccountsRepository;
 use http_server::ExtMsgFeedbackList;
+use node_types::AccountRouting;
 use node_types::BlockIdentifier;
 use node_types::ParentRef;
 use node_types::TemporaryBlockId;
@@ -20,6 +23,7 @@ use tvm_types::Cell;
 use tvm_types::HashmapType;
 use typed_builder::TypedBuilder;
 
+use crate::bitmask::mask::Bitmask;
 use crate::block::producer::builder::ActiveThread;
 use crate::block::producer::builder::BlockBuilder;
 use crate::block::producer::execution_time::ExecutionTimeLimits;
@@ -45,8 +49,6 @@ use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
-use crate::repository::accounts::AccountsRepository;
-use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
@@ -87,6 +89,7 @@ pub trait BlockProducer {
         Vec<Stamp>,
         ExtMsgFeedbackList,
         TemporaryBlockId,
+        BTreeMap<AccountRouting, u32>,
     )>
     where
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
@@ -107,11 +110,11 @@ pub struct TVMBlockProducer {
     epoch_block_keeper_data: Vec<BlockKeeperData>,
     shared_services: SharedServices,
     block_nack: Vec<Envelope<NackData>>,
-    accounts: AccountsRepository,
     block_state_repository: BlockStateRepository,
-    thread_accounts_repository: NodeThreadAccountsRepository,
+    thread_accounts_repository: ThreadAccountsRepository,
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
+    best_recommended_cut: thread_load_balance::Recommendation<Bitmask<AccountRouting>>,
 }
 
 impl TVMBlockProducer {
@@ -151,12 +154,44 @@ impl BlockProducer for TVMBlockProducer {
         Vec<Stamp>,
         ExtMsgFeedbackList,
         TemporaryBlockId,
+        BTreeMap<AccountRouting, u32>,
     )>
     where
         // TODO: remove Clone and change to Into<>
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
         CrossThreadRefData: 'a,
     {
+        let (parent_block_id, parent_block_height) = match &parent_ref {
+            ParentRef::Block(id) => {
+                let parent_bs = self.block_state_repository.get(id)?;
+                let height = parent_bs
+                    .guarded(|e| *e.block_height())
+                    .ok_or(anyhow::format_err!("Parent block does not have block height set"))?;
+                (*id, height)
+            }
+            ParentRef::Temporary(temp_id) => {
+                let temp_arc = self
+                    .block_state_repository
+                    .get_temporary(temp_id)
+                    .ok_or(anyhow::format_err!("Temporary parent state {temp_id:?} not found"))?;
+                let temp = temp_arc.read();
+
+                if let Some(promoted_id) = temp.promoted_block_id() {
+                    let parent_bs = self.block_state_repository.get(promoted_id)?;
+                    let height = parent_bs.guarded(|e| *e.block_height()).ok_or(
+                        anyhow::format_err!("Promoted parent does not have block height set"),
+                    )?;
+                    (*promoted_id, height)
+                } else {
+                    let height = temp.block_height().cloned().ok_or(anyhow::format_err!(
+                        "Temporary parent does not have block height set"
+                    ))?;
+                    (BlockIdentifier::default(), height)
+                }
+            }
+        };
+        let block_height = parent_block_height.next(&thread_identifier);
+
         let (initial_state, _in_table, white_list_of_slashing_messages_hashes, forwarded_messages) =
             trace_span!("pre processing").in_scope(|| {
                 tracing::trace!("Start production");
@@ -202,6 +237,7 @@ impl BlockProducer for TVMBlockProducer {
                     parent_state,
                     refs.clone(),
                     &thread_identifier,
+                    *block_height.height(),
                     None,
                     is_split_related,
                     &cross_thread_ref_data_service,
@@ -239,12 +275,12 @@ impl BlockProducer for TVMBlockProducer {
 
         let producer = BlockBuilder::with_params(
             thread_identifier,
+            *block_height.height(),
             initial_state,
             time,
             block_gas_limit,
             None,
             Some(control_rx_stop),
-            self.accounts,
             self.thread_accounts_repository.clone(),
             self.block_keeper_epoch_code_hash.clone(),
             self.block_keeper_preepoch_code_hash.clone(),
@@ -281,12 +317,15 @@ impl BlockProducer for TVMBlockProducer {
             // other threads' splits via cross-thread references, so the split check
             // sees all existing threads and avoids proposing a duplicate mask.
             let merged_threads_table = prepared_block.state.threads_table.clone();
-            let proposed_action = {
+
+            #[allow(unused_variables)]
+            let mut proposed_action = {
                 match self.shared_services.exec(|e| {
                     let result = e.load_balancing.check(
                         &thread_identifier,
                         &merged_threads_table,
                         self.thread_count_soft_limit,
+                        self.best_recommended_cut.clone(),
                     );
                     tracing::trace!("load balancing check result: {:?}", &result,);
                     result
@@ -301,51 +340,32 @@ impl BlockProducer for TVMBlockProducer {
                     }
                 }
             };
+
+            // todo: !!! During TVM to durable transition period we disable split/merge
+            // while transition is not completed
+            let _ =
+                prepared_block.state.shard_state.0.tvm.shard_accounts.iterate_accounts(|_, _| {
+                    tracing::trace!(target: "monit", "TVM state is not empty, disable split");
+                    // TVM state is not empty, disable split
+                    proposed_action = ThreadAction::ContinueAsIs;
+                    Ok(false)
+                });
+
+            // todo: !!! Must be removed after split will work
+            proposed_action = ThreadAction::ContinueAsIs;
+
             let forward_prefab = match proposed_action {
                 ThreadAction::ContinueAsIs => None,
-                ThreadAction::Split(e) => Some(e.proposed_threads_table),
+                ThreadAction::Split(_e) => {
+                    unreachable!("This node version is not meant to process several threads");
+                    // Some(e.proposed_threads_table)
+                }
                 ThreadAction::Collapse(e) => Some(e.proposed_threads_table),
             };
 
             let active_threads = std::mem::take(&mut prepared_block.active_threads);
             cross_thread_ref_data.set_block_refs(ref_ids.clone());
             let processed_ext_msg_cnt = processed_stamps.len();
-
-            // Resolve parent info from ParentRef
-            let (parent_block_id, parent_block_height) = match &parent_ref {
-                ParentRef::Block(id) => {
-                    let parent_bs = self.block_state_repository.get(id)?;
-                    let height = parent_bs.guarded(|e| *e.block_height()).ok_or(
-                        anyhow::format_err!("Parent block does not have block height set"),
-                    )?;
-                    (*id, height)
-                }
-                ParentRef::Temporary(temp_id) => {
-                    let temp_arc = self.block_state_repository.get_temporary(temp_id).ok_or(
-                        anyhow::format_err!("Temporary parent state {temp_id:?} not found"),
-                    )?;
-                    let temp = temp_arc.read();
-
-                    if let Some(promoted_id) = temp.promoted_block_id() {
-                        // Parent already promoted — use the real block state
-                        let parent_bs = self.block_state_repository.get(promoted_id)?;
-                        let height = parent_bs.guarded(|e| *e.block_height()).ok_or(
-                            anyhow::format_err!("Promoted parent does not have block height set"),
-                        )?;
-                        (*promoted_id, height)
-                    } else {
-                        // The payload-level parent is explicit even before promotion.
-                        // For an in-flight temporary parent, carry the protocol's existing
-                        // synthetic default id and replace it with the canonical parent id
-                        // in on_production_timeout before sealing/broadcast.
-                        let height = temp.block_height().cloned().ok_or(anyhow::format_err!(
-                            "Temporary parent does not have block height set"
-                        ))?;
-                        (BlockIdentifier::default(), height)
-                    }
-                }
-            };
-            let block_height = parent_block_height.next(&thread_identifier);
 
             let producer_node_id = self.producer_node_id;
             let an_block = AckiNackiBlock::new(
@@ -417,6 +437,7 @@ impl BlockProducer for TVMBlockProducer {
                 processed_stamps,
                 ext_message_feedbacks,
                 temp_id,
+                prepared_block.tx_count_per_routing,
             ))
         });
 

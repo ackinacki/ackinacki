@@ -16,19 +16,19 @@ pub struct DAppIdentifierPath {
 u256!(AccountIdentifier, "AccountIdentifier", ser = array);
 
 impl AccountIdentifier {
-    pub fn routing_with(self, dapp_id: DAppIdentifier) -> AccountRouting {
+    pub fn routing(self, dapp_id: DAppIdentifier) -> AccountRouting {
         AccountRouting::new(dapp_id, self)
     }
 
-    pub fn dapp_originator(self) -> AccountRouting {
+    pub fn redirect(self) -> AccountRouting {
         AccountRouting::new(DAppIdentifier(self.0), self)
     }
 
-    pub fn optional_dapp_originator(self, dapp: Option<DAppIdentifier>) -> AccountRouting {
+    pub fn routing_or_redirect(self, dapp: Option<DAppIdentifier>) -> AccountRouting {
         AccountRouting::new(dapp.unwrap_or(DAppIdentifier(self.0)), self)
     }
 
-    pub fn use_as_dapp_id(&self) -> DAppIdentifier {
+    pub fn redirect_dapp_id(&self) -> DAppIdentifier {
         DAppIdentifier(self.0)
     }
 }
@@ -116,7 +116,11 @@ impl AccountRouting {
         Self { dapp_id, account_id }
     }
 
-    pub fn is_dapp_originator(&self) -> bool {
+    pub fn with_dapp_id(&self, new_dapp_id: DAppIdentifier) -> Self {
+        Self { dapp_id: new_dapp_id, account_id: self.account_id }
+    }
+
+    pub fn is_maybe_redirect(&self) -> bool {
         self.account_id.0 == self.dapp_id.0
     }
 
@@ -170,7 +174,7 @@ impl std::str::FromStr for AccountRouting {
             let dapp_id = if !dapp.is_empty() {
                 DAppIdentifier::from_str(dapp)?
             } else {
-                account_id.use_as_dapp_id()
+                account_id.redirect_dapp_id()
             };
             Ok(Self::new(dapp_id, account_id))
         } else if s.len() == 128 && s.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -188,7 +192,7 @@ impl std::ops::BitAnd for &'_ AccountRouting {
     type Output = AccountRouting;
 
     fn bitand(self, rhs: Self) -> Self::Output {
-        (&self.account_id & &rhs.account_id).routing_with(&self.dapp_id & &rhs.dapp_id)
+        (&self.account_id & &rhs.account_id).routing(&self.dapp_id & &rhs.dapp_id)
     }
 }
 
@@ -258,6 +262,10 @@ impl ThreadIdentifier {
         let mut block_id_bytes = [0u8; 32];
         block_id_bytes.copy_from_slice(&self.0[2..34]);
         BlockIdentifier(block_id_bytes)
+    }
+
+    pub fn to_hex_string(&self) -> String {
+        hex::encode(self.0)
     }
 }
 

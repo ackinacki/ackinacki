@@ -1,0 +1,29 @@
+---
+CADDY_NAME: bk-caddy
+CADDY_DIR: "{{ ROOT_DIR }}/caddy"
+HOST_NAME: "{{ inventory_hostname }}"
+EXTRA_HOSTS: ""
+
+# keep in sync with roles/block-keeper/defaults/main.yaml !!!
+NGINX_IP:   "private"
+NGINX_PORT: 8080
+
+USE_CADDY: yes
+
+EXTERNAL_NET: no
+# Hack to get working HTTPs on BM
+BM_REST_API_PORT: 8610
+
+# TLS section
+ENABLE_GEN_CERT: false
+LOAD_CERT: true
+CERT_FILE: testbm.ackinacki.org.crt
+CERT_KEY_FILE: testbm.ackinacki.org.key
+CERT_FILE_BK_ON_BM: testbk.ackinacki.org.crt
+CERT_KEY_FILE_BK_ON_BM: testbk.ackinacki.org.key
+
+# To use ZeroSSL provide:
+# CADDY_EAB: "<your kid> <your hmac>"
+
+# Use ONLY ZeroSSL if the CADDY_EAB variable is set (to avoid strict LE rate limits)
+ZEROSSL_EXCLUSIVE: yes

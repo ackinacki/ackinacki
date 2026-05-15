@@ -9,10 +9,14 @@ mod tests;
 // Shared helpers used by update.rs and split.rs
 use std::sync::Arc;
 
+use blake3::Hasher;
 pub use get::get;
+use node_types::Blake3Hashable;
 pub use split::merge;
+pub use split::merge_batch;
 pub use split::split;
 pub use update::update;
+pub use update::update_single;
 
 use crate::node::BranchData;
 use crate::node::Node;
@@ -125,4 +129,90 @@ pub(crate) fn rebuild_branch_with_child<V: MultiMapValue>(
     } else {
         make_branch(out_bitmap, out)
     }
+}
+
+#[inline]
+pub fn boundary_mask(r: usize) -> u8 {
+    debug_assert!((1..=3).contains(&r));
+    (0xFu8 << (4 - r)) & 0xF
+}
+
+#[inline]
+pub fn prefix_bits_match(prefix: &[u8; 32], key: &[u8; 32], bits: u8) -> bool {
+    let bits = bits as usize;
+    let full = bits / 8;
+    let rem = bits % 8;
+
+    if full > 0 && prefix[..full] != key[..full] {
+        return false;
+    }
+    if rem == 0 {
+        return true;
+    }
+    let mask = 0xFFu8 << (8 - rem);
+    (prefix[full] & mask) == (key[full] & mask)
+}
+
+#[inline]
+pub fn nibble_from_key(key: &[u8; 32], i: usize) -> u8 {
+    let b = key[i / 2];
+    if (i & 1) == 0 {
+        (b >> 4) & 0x0F
+    } else {
+        b & 0x0F
+    }
+}
+
+#[inline]
+pub fn nibble_at(key: &[u8; 32], depth: usize) -> u8 {
+    let b = key[depth / 2];
+    if (depth & 1) == 0 {
+        (b >> 4) & 0x0F
+    } else {
+        b & 0x0F
+    }
+}
+
+/// H(0x01 || value) — leaf depends only on value
+#[inline(always)]
+pub fn hash_leaf_value<V: Blake3Hashable>(value: &V) -> [u8; 32] {
+    value.hash(0x01)
+}
+
+/// Sparse branch hash:
+/// H(0x02 || bitmap_le(u16) || repeated (nibble(u8) || child_hash([u8;32])) in nibble order)
+pub fn hash_branch_sparse(bitmap: u16, nibs: &[u8], child_hashes: &[[u8; 32]]) -> [u8; 32] {
+    debug_assert_eq!(nibs.len(), child_hashes.len());
+
+    let mut h = Hasher::new();
+    h.update(&[0x02]);
+    h.update(&bitmap.to_le_bytes());
+
+    for i in 0..nibs.len() {
+        h.update(&[nibs[i]]);
+        h.update(&child_hashes[i]);
+    }
+
+    *h.finalize().as_bytes()
+}
+
+/// Extension node hash:
+/// H(0x03 || len(u8) || packed_nibbles || child_hash)
+///
+/// Packed_nibbles contains 2 nibbles per byte (high then low), length = ceil(len/2).
+pub fn hash_ext(len: u8, packed_nibbles: &[u8], child_hash: &[u8; 32]) -> [u8; 32] {
+    debug_assert_eq!(packed_nibbles.len(), (len as usize).div_ceil(2));
+
+    let mut h = Hasher::new();
+    h.update(&[0x03]);
+    h.update(&[len]);
+    h.update(packed_nibbles);
+    h.update(child_hash);
+
+    *h.finalize().as_bytes()
+}
+
+/// Empty branch (bitmap=0)
+pub fn hash_branch_empty() -> [u8; 32] {
+    hash_branch_sparse(0, &[], &[])
 }

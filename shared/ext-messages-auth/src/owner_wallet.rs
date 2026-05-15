@@ -1,7 +1,7 @@
 // 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use account_state::ThreadAccount;
+use account_state::VmAccount;
 use tvm_abi::TokenValue;
 use tvm_types::SliceData;
 use tvm_types::UInt256;
@@ -26,7 +26,7 @@ pub struct OwnerWalletData {
 }
 
 pub fn decode_owner_wallet(
-    account: &ThreadAccount,
+    account: &VmAccount,
     issuer: &TokenIssuer,
 ) -> anyhow::Result<OwnerWalletData> {
     let tvm_account = tvm_block::Account::try_from(account)?;
@@ -87,7 +87,7 @@ pub fn decode_owner_wallet(
 
 #[cfg(test)]
 mod tests {
-    use account_state::ThreadAccount;
+    use account_state::VmAccount;
 
     use crate::auth::TokenIssuer;
     use crate::owner_wallet::decode_owner_wallet;
@@ -99,7 +99,7 @@ mod tests {
 
         let real_issuer_pubkey =
             "184ee76138c4b0f3b24096482c2e9be18c26214c5501290afe1df16f9e40e905".to_string();
-        let real_issuer_account = ThreadAccount::read_base64(&boc)?;
+        let real_issuer_account = VmAccount::read_base64(&boc)?;
         let issuer = TokenIssuer::Bm(real_issuer_pubkey.clone());
         let bm_wallet_data = decode_owner_wallet(&real_issuer_account, &issuer)?;
 
@@ -111,7 +111,7 @@ mod tests {
 
         let fake_issuer_pubkey =
             "95c9241701b8023509d1d55aaa0fe44ca7348822b1accf99c89a642379121153".to_string();
-        let fake_issuer_account = ThreadAccount::read_base64(&boc)?;
+        let fake_issuer_account = VmAccount::read_base64(&boc)?;
         let issuer = TokenIssuer::Bm(fake_issuer_pubkey.clone());
         let bm_wallet_data = decode_owner_wallet(&fake_issuer_account, &issuer)?;
 
@@ -128,7 +128,7 @@ mod tests {
 
         let real_issuer_pubkey =
             "0a61873357b136f5daa35f9cc852113330864ab9ed6485dc36398520612c86e3".to_string();
-        let account = ThreadAccount::read_base64(&boc)?;
+        let account = VmAccount::read_base64(&boc)?;
         let real_issuer_issuer = TokenIssuer::Bk(real_issuer_pubkey.clone());
         let bm_wallet_data = decode_owner_wallet(&account, &real_issuer_issuer)?;
 

@@ -19,8 +19,11 @@ members = [
     "node-helper",
     "node/libs/account-inbox",
     "node/libs/account-state",
+    "node/libs/aerospike2",
+    "node/libs/critical-thread",
     "node/libs/multi-map",
     "node/libs/node-types",
+    "node/libs/thread-load-balance",
     "node/libs/thread-reference-state",
     "node/libs/trie-map",
     "node/libs/versioned_struct",
@@ -32,7 +35,7 @@ members = [
     "tvm_contracts",
 ]
 
-package.version = "0.15.1"
+package.version = "0.16.0"
 package.edition = "2021"
 package.rust-version = "1.86.0"
 package.license = "LicenseRef-Acki-Nacki-Node-License"
@@ -111,6 +114,7 @@ tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v2.24.20.an', 
 
 account-state = { path = "node/libs/account-state" }
 chitchat = { path = "chitchat" }
+critical-thread = { path = "node/libs/critical-thread" }
 database = { path = "database" }
 ext-messages-auth = { path = "shared/ext-messages-auth" }
 gossip = { path = "gossip" }

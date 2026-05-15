@@ -1,0 +1,7 @@
+- name: deploy caddy reverse proxy
+  gather_facts: no
+  hosts: "caddy"
+  become: yes
+  any_errors_fatal: true
+  roles:
+    - caddy

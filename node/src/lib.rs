@@ -8,6 +8,7 @@ pub mod config;
 pub mod database;
 pub mod external_messages;
 pub mod helper;
+pub mod live_metrics;
 pub mod message;
 pub mod node;
 pub mod protocol;

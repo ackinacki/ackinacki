@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use account_state::ArchiveOperation;
+use account_state::ThreadAccountsRepository;
+use account_state::ThreadAccountsState;
 use node_types::AccountIdentifier;
 use node_types::AccountRouting;
 use node_types::BlockIdentifier;
@@ -13,9 +16,6 @@ use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 use tvm_types::UInt256;
 
-use super::accounts::AccountsRepository;
-use super::accounts::NodeThreadAccountsRef;
-use super::accounts::NodeThreadAccountsRepository;
 use super::repository_impl::RepositoryImpl;
 use super::repository_impl::RepositoryMetadata;
 use crate::bls::envelope::Envelope;
@@ -56,7 +56,7 @@ pub struct OptimisticStateStub {
 impl OptimisticState for OptimisticStateStub {
     type Cell = ();
     type Message = MessageStub;
-    type ShardState = NodeThreadAccountsRef;
+    type ShardState = ThreadAccountsState;
 
     fn get_share_stare_refs(&self) -> HashMap<ThreadIdentifier, BlockIdentifier> {
         todo!()
@@ -92,8 +92,7 @@ impl OptimisticState for OptimisticStateStub {
         _shared_services: &SharedServices,
         _block_state_repo: BlockStateRepository,
         _nack_set_cache: Arc<Mutex<FixedSizeHashSet<UInt256>>>,
-        _accounts_repo: AccountsRepository,
-        _thread_accounts_repository: &NodeThreadAccountsRepository,
+        _thread_accounts_repository: &ThreadAccountsRepository,
         _message_db: MessageDurableStorage,
         _config_read: crate::config::config_read::ConfigRead,
     ) -> anyhow::Result<(
@@ -120,7 +119,7 @@ impl OptimisticState for OptimisticStateStub {
         _thread_identifier: &ThreadIdentifier,
         _threads_table: &ThreadsTable,
         _message_db: MessageDurableStorage,
-        _threa_state_repository: &NodeThreadAccountsRepository,
+        _threa_state_repository: &ThreadAccountsRepository,
         _apply_to_durable: bool,
     ) -> anyhow::Result<()> {
         todo!()
@@ -149,6 +148,10 @@ impl OptimisticState for OptimisticStateStub {
     // }
 
     fn get_thread_refs(&self) -> &ThreadReferencesState {
+        todo!()
+    }
+
+    fn get_account_operations(&self) -> &HashMap<AccountRouting, ArchiveOperation> {
         todo!()
     }
 }

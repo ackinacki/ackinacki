@@ -1,16 +1,16 @@
 #![allow(unused)]
 
+use std::collections::HashMap;
 use std::time::Duration;
 
+use account_state::ArchiveStateStore;
+use account_state::BlockAccountOperation;
 use account_state::DurableThreadAccountsRepository;
-use account_state::FsAccountsStore;
-use account_state::FsCompositeThreadAccounts;
-use account_state::ThreadAccountUpdate;
-use account_state::ThreadAccounts;
-use account_state::ThreadAccountsBuilder;
+use account_state::DurableThreadAccountsState;
+use account_state::DurableThreadAccountsStateDiff;
+use account_state::ThreadAccount;
 use account_state::ThreadAccountsRepository;
-use account_state::ThreadStateAccount;
-use account_state::ThreadStateRef;
+use account_state::ThreadAccountsStateBuilder;
 use criterion::criterion_group;
 use criterion::criterion_main;
 use criterion::BenchmarkId;
@@ -19,15 +19,13 @@ use criterion::Throughput;
 use node_types::AccountIdentifier;
 use node_types::AccountRouting;
 use node_types::DAppIdentifier;
+use node_types::ThreadIdentifier;
 use tempfile::TempDir;
 use tvm_block::MsgAddressInt;
 use tvm_block::ShardAccount;
 use tvm_types::AccountId;
 
-type Repo = DurableThreadAccountsRepository<FsAccountsStore>;
-
-type NodeAccounts = FsCompositeThreadAccounts;
-type NodeRepo = <NodeAccounts as ThreadAccounts>::Repository;
+type Repo = DurableThreadAccountsRepository;
 
 // ==================== Data Generators ====================
 
@@ -51,7 +49,7 @@ fn make_routing(dapp_seed: u64, acc_seed: u64) -> AccountRouting {
     AccountRouting::new(make_dapp_id(dapp_seed), make_account_id(dapp_seed, acc_seed))
 }
 
-fn make_state_account(routing: &AccountRouting, seed: u64) -> ThreadStateAccount {
+fn make_state_account(routing: &AccountRouting, seed: u64) -> ThreadAccount {
     let id = routing.account_id();
     let tvm_acc = tvm_block::Account::with_address(
         MsgAddressInt::with_standart(None, 0, AccountId::from_raw(id.as_slice().to_vec(), 256))
@@ -64,7 +62,7 @@ fn make_state_account(routing: &AccountRouting, seed: u64) -> ThreadStateAccount
         Some(routing.dapp_id().as_array().into()),
     )
     .unwrap();
-    ThreadStateAccount::from(tvm_shard_acc)
+    ThreadAccount::from(tvm_shard_acc)
 }
 
 /// Builds a data cell tree of approximately `size` bytes using deterministic content.
@@ -108,7 +106,7 @@ fn make_sized_state_account(
     routing: &AccountRouting,
     seed: u64,
     data_size: usize,
-) -> ThreadStateAccount {
+) -> ThreadAccount {
     use tvm_block::*;
     use tvm_types::BuilderData;
 
@@ -143,7 +141,7 @@ fn make_sized_state_account(
     )
     .unwrap();
 
-    ThreadStateAccount::from(shard_acc)
+    ThreadAccount::from(shard_acc)
 }
 
 fn empty_shard_accounts() -> tvm_block::ShardAccounts {
@@ -154,20 +152,19 @@ fn empty_shard_accounts() -> tvm_block::ShardAccounts {
 
 // ==================== Repo Builders ====================
 
-/// Benchmark-only repo: DurableThreadAccountsRepository + FsAccountsStore (simple FS).
-fn make_repo(dir: &TempDir) -> Repo {
+/// Benchmark-only repo: DurableThreadAccountsRepository + InMemoryAccountsStore.
+fn make_repo(dir: &TempDir) -> DurableThreadAccountsRepository {
     let base = dir.path();
-    std::fs::create_dir_all(base.join("accounts")).unwrap();
 
-    let accounts = FsAccountsStore::new(base.join("accounts")).unwrap();
-    DurableThreadAccountsRepository::new(base.to_path_buf(), accounts).unwrap()
+    let accounts = ArchiveStateStore::in_memory();
+    DurableThreadAccountsRepository::new(base.to_path_buf(), accounts, None).unwrap()
 }
 
 /// Production node repo: FsCompositeThreadAccounts with FsOptAccountsStore,
 /// same as `NodeThreadAccounts::new_repository(path).build()` in bin/node.rs,
 /// with apply_to_durable=true to exercise the durable update path.
-fn make_node_repo(dir: &TempDir) -> NodeRepo {
-    NodeAccounts::new_repository(dir.path().to_path_buf())
+fn make_node_repo(dir: &TempDir) -> ThreadAccountsRepository {
+    ThreadAccountsRepository::builder(dir.path())
         .set_apply_to_durable(true)
         .set_accounts_aerospike_store("127.0.0.1:3000", "test", "test1")
         .build()
@@ -182,18 +179,18 @@ fn make_insert_updates(
     a: usize,
     redirect: bool,
     seed_offset: u64,
-) -> Vec<(AccountRouting, ThreadAccountUpdate)> {
-    let mut updates = Vec::with_capacity(d * a);
+) -> HashMap<AccountRouting, BlockAccountOperation> {
+    let mut updates = HashMap::with_capacity(d * a);
     for di in 0..d {
         for ai in 0..a {
             let routing = make_routing(di as u64, seed_offset + ai as u64);
             let acc = make_state_account(&routing, seed_offset + ai as u64);
             let update = if redirect {
-                ThreadAccountUpdate::UpdateOrInsert(acc.with_redirect().unwrap())
+                BlockAccountOperation::UpdateOrInsert(acc.with_redirect().unwrap())
             } else {
-                ThreadAccountUpdate::UpdateOrInsert(acc)
+                BlockAccountOperation::UpdateOrInsert(acc)
             };
-            updates.push((routing, update));
+            updates.insert(routing, update);
         }
     }
     updates
@@ -206,22 +203,22 @@ fn make_mixed_updates(
     d: usize,
     a: usize,
     delete_fraction: f64,
-) -> Vec<(AccountRouting, ThreadAccountUpdate)> {
+) -> HashMap<AccountRouting, BlockAccountOperation> {
     let delete_per_dapp = (a as f64 * delete_fraction).round() as usize;
     let insert_per_dapp = a - delete_per_dapp;
     let new_seed_offset = 10_000u64;
 
-    let mut updates = Vec::with_capacity(d * a);
+    let mut updates = HashMap::with_capacity(d * a);
     for di in 0..d {
         for ai in 0..delete_per_dapp {
             let routing = make_routing(di as u64, ai as u64);
-            updates.push((routing, ThreadAccountUpdate::Remove));
+            updates.insert(routing, BlockAccountOperation::Remove);
         }
         for ai in 0..insert_per_dapp {
             let seed = new_seed_offset + ai as u64;
             let routing = make_routing(di as u64, seed);
             let acc = make_state_account(&routing, seed);
-            updates.push((routing, ThreadAccountUpdate::UpdateOrInsert(acc)));
+            updates.insert(routing, BlockAccountOperation::UpdateOrInsert(acc));
         }
     }
     updates
@@ -232,19 +229,19 @@ fn make_payload_updates(
     d: usize,
     a: usize,
     redirect_fraction: f64,
-) -> Vec<(AccountRouting, ThreadAccountUpdate)> {
+) -> HashMap<AccountRouting, BlockAccountOperation> {
     let redirect_per_dapp = (a as f64 * redirect_fraction).round() as usize;
-    let mut updates = Vec::with_capacity(d * a);
+    let mut updates = HashMap::with_capacity(d * a);
     for di in 0..d {
         for ai in 0..a {
             let routing = make_routing(di as u64, ai as u64);
             let acc = make_state_account(&routing, ai as u64);
             let update = if ai < redirect_per_dapp {
-                ThreadAccountUpdate::UpdateOrInsert(acc.with_redirect().unwrap())
+                BlockAccountOperation::UpdateOrInsert(acc.with_redirect().unwrap())
             } else {
-                ThreadAccountUpdate::UpdateOrInsert(acc)
+                BlockAccountOperation::UpdateOrInsert(acc)
             };
-            updates.push((routing, update));
+            updates.insert(routing, update);
         }
     }
     updates
@@ -256,7 +253,7 @@ fn make_sized_accounts(
     a: usize,
     data_size: usize,
     seed_offset: u64,
-) -> Vec<(AccountRouting, ThreadStateAccount)> {
+) -> Vec<(AccountRouting, ThreadAccount)> {
     let mut accounts = Vec::with_capacity(d * a);
     for di in 0..d {
         for ai in 0..a {
@@ -274,24 +271,24 @@ fn make_sized_insert_updates(
     a: usize,
     data_size: usize,
     seed_offset: u64,
-) -> Vec<(AccountRouting, ThreadAccountUpdate)> {
-    let mut updates = Vec::with_capacity(d * a);
+) -> HashMap<AccountRouting, BlockAccountOperation> {
+    let mut updates = HashMap::with_capacity(d * a);
     for di in 0..d {
         for ai in 0..a {
             let routing = make_routing(di as u64, seed_offset + ai as u64);
             let acc = make_sized_state_account(&routing, seed_offset + ai as u64, data_size);
-            updates.push((routing, ThreadAccountUpdate::UpdateOrInsert(acc)));
+            updates.insert(routing, BlockAccountOperation::UpdateOrInsert(acc));
         }
     }
     updates
 }
 
 /// Prepopulate the repo with d DApps x a_per_dapp accounts.
-fn prepopulate(repo: &Repo, d: usize, a_per_dapp: usize) -> ThreadStateRef {
+fn prepopulate(repo: &Repo, d: usize, a_per_dapp: usize) -> DurableThreadAccountsState {
     let state = Repo::new_state();
     let shard_accounts = empty_shard_accounts();
     let updates = make_insert_updates(d, a_per_dapp, false, 0);
-    repo.state_update(&shard_accounts, &state, &updates).unwrap()
+    repo.state_update(&ThreadIdentifier::default(), 1, &shard_accounts, &state, &updates).unwrap().0
 }
 
 // ==================== Benchmark Groups ====================
@@ -317,7 +314,16 @@ fn bench_scale(c: &mut Criterion) {
                 let shard_accounts = empty_shard_accounts();
                 let updates = make_insert_updates(d, a, false, 0);
 
-                b.iter(|| repo.state_update(&shard_accounts, &state, &updates).unwrap());
+                b.iter(|| {
+                    repo.state_update(
+                        &ThreadIdentifier::default(),
+                        1,
+                        &shard_accounts,
+                        &state,
+                        &updates,
+                    )
+                    .unwrap()
+                });
             },
         );
     }
@@ -342,7 +348,16 @@ fn bench_delete_ratio(c: &mut Criterion) {
             let shard_accounts = empty_shard_accounts();
             let updates = make_mixed_updates(d, a, pct as f64 / 100.0);
 
-            b.iter(|| repo.state_update(&shard_accounts, &state, &updates).unwrap());
+            b.iter(|| {
+                repo.state_update(
+                    &ThreadIdentifier::default(),
+                    1,
+                    &shard_accounts,
+                    &state,
+                    &updates,
+                )
+                .unwrap()
+            });
         });
     }
     group.finish();
@@ -373,7 +388,16 @@ fn bench_trie_density(c: &mut Criterion) {
                 let shard_accounts = empty_shard_accounts();
                 let updates = make_insert_updates(d, a, false, pre_existing as u64);
 
-                b.iter(|| repo.state_update(&shard_accounts, &state, &updates).unwrap());
+                b.iter(|| {
+                    repo.state_update(
+                        &ThreadIdentifier::default(),
+                        1,
+                        &shard_accounts,
+                        &state,
+                        &updates,
+                    )
+                    .unwrap()
+                });
             },
         );
     }
@@ -400,7 +424,16 @@ fn bench_payload_type(c: &mut Criterion) {
             let shard_accounts = empty_shard_accounts();
             let updates = make_payload_updates(d, a, redirect_frac);
 
-            b.iter(|| repo.state_update(&shard_accounts, &state, &updates).unwrap());
+            b.iter(|| {
+                repo.state_update(
+                    &ThreadIdentifier::default(),
+                    1,
+                    &shard_accounts,
+                    &state,
+                    &updates,
+                )
+                .unwrap()
+            });
         });
     }
     group.finish();
@@ -430,13 +463,22 @@ fn bench_account_size(c: &mut Criterion) {
             let shard_accounts = empty_shard_accounts();
             let updates = make_sized_insert_updates(d, a, size, 0);
 
-            b.iter(|| repo.state_update(&shard_accounts, &state, &updates).unwrap());
+            b.iter(|| {
+                repo.state_update(
+                    &ThreadIdentifier::default(),
+                    1,
+                    &shard_accounts,
+                    &state,
+                    &updates,
+                )
+                .unwrap()
+            });
         });
     }
     group.finish();
 }
 
-/// Compares current benchmark setup (DurableThreadAccountsRepository + FsAccountsStore)
+/// Compares current benchmark setup (DurableThreadAccountsRepository + InMemoryAccountsStore)
 /// vs the production node setup (CompositeThreadAccountRepository + FsOptAccountsStore
 /// + builder pattern), matching the initialization in bin/node.rs:
 ///   NodeThreadAccounts::new_repository(path)
@@ -460,7 +502,7 @@ fn bench_vs_node(c: &mut Criterion) {
     ] {
         group.throughput(Throughput::Elements((d * a) as u64));
 
-        // Current benchmark: DurableThreadAccountsRepository + FsAccountsStore, direct state_update
+        // Current benchmark: DurableThreadAccountsRepository + InMemoryAccountsStore, direct state_update
         group.bench_function(BenchmarkId::new("bench_direct", label), |b| {
             let dir = TempDir::new().unwrap();
             let repo = make_repo(&dir);
@@ -468,7 +510,16 @@ fn bench_vs_node(c: &mut Criterion) {
             let shard_accounts = empty_shard_accounts();
             let updates = make_sized_insert_updates(d, a, size, 0);
 
-            b.iter(|| repo.state_update(&shard_accounts, &state, &updates).unwrap());
+            b.iter(|| {
+                repo.state_update(
+                    &ThreadIdentifier::default(),
+                    1,
+                    &shard_accounts,
+                    &state,
+                    &updates,
+                )
+                .unwrap()
+            });
         });
 
         // Production node path: CompositeThreadAccountRepository + FsOptAccountsStore,
@@ -476,11 +527,11 @@ fn bench_vs_node(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("node_builder", label), |b| {
             let dir = TempDir::new().unwrap();
             let repo = make_node_repo(&dir);
-            let state = NodeRepo::new_state();
+            let state = ThreadAccountsRepository::new_state();
             let accounts = make_sized_accounts(d, a, size, 0);
 
             b.iter(|| {
-                let mut builder = repo.state_builder(&state);
+                let mut builder = repo.state_builder(&ThreadIdentifier::default(), 1, &state);
                 for (routing, acc) in &accounts {
                     builder.insert_account(routing, acc);
                 }

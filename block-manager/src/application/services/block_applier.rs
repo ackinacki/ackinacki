@@ -15,7 +15,6 @@ use database::documents_db::TxActivitySummary;
 use database::sqlite::sqlite_helper::SqliteHelper;
 use node::bls::envelope::BLSSignedEnvelope;
 use node::bls::envelope::Envelope;
-use node::repository::accounts::NodeThreadAccountsRepository;
 use node::types::AckiNackiBlock;
 use parking_lot::Mutex;
 use telemetry_utils::now_micros;
@@ -76,7 +75,7 @@ pub fn run(
     app_state: Arc<AppState>,
     metrics: Option<Metrics>,
     cmd_rx: mpsc::Receiver<WorkerCommand>,
-    thread_accounts_repository: NodeThreadAccountsRepository,
+    thread_accounts_repository: ThreadAccountsRepository,
     activity_tx: Option<tokio_mpsc::Sender<Vec<TxActivitySummary>>>,
 ) -> tokio::task::JoinHandle<Result<(), anyhow::Error>> {
     tokio::task::spawn_blocking(move || {
@@ -112,11 +111,11 @@ fn worker(
     bp_resolver: Arc<Mutex<dyn UpdatableBPResolver>>,
     app_state: Arc<AppState>,
     metrics: Option<Metrics>,
-    thread_accounts_repository: NodeThreadAccountsRepository,
+    thread_accounts_repository: ThreadAccountsRepository,
     activity_tx: Option<tokio_mpsc::Sender<Vec<TxActivitySummary>>>,
 ) -> anyhow::Result<()> {
     let mut transaction_traces = HashMap::new();
-    let shard_state = NodeThreadAccountsRepository::new_state();
+    let shard_state = ThreadAccountsRepository::new_state();
     let mut dedup_filter = RecentBlockFilter::new(DEDUP_CAPACITY);
 
     tracing::debug!("worker() starting loop...");

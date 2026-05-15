@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use account_state::ThreadAccountsBuilder;
+use account_state::DurableThreadAccountsStateDiff;
 use account_state::ThreadAccountsRepository;
+use account_state::ThreadAccountsStateTransition;
 use node_types::AccountIdentifier;
 use node_types::AccountRouting;
 use node_types::BlockIdentifier;
@@ -13,9 +14,6 @@ use tracing::instrument;
 
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
-use crate::repository::accounts::AccountsRepository;
-use crate::repository::accounts::NodeThreadAccountsRef;
-use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::repository::optimistic_shard_state::OptimisticShardState;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
@@ -40,7 +38,8 @@ pub fn postprocess(
     accounts_that_changed_their_dapp_id: HashMap<AccountRouting, Option<WrappedAccount>>,
     block_id: BlockIdentifier,
     block_seq_no: BlockSeqNo,
-    mut new_state: NodeThreadAccountsRef,
+    block_height: u64,
+    mut state_transition: ThreadAccountsStateTransition,
     mut produced_internal_messages_to_other_threads: HashMap<
         AccountRouting,
         Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
@@ -48,13 +47,11 @@ pub fn postprocess(
     block_info: BlockInfo,
     thread_id: ThreadIdentifier,
     threads_table: ThreadsTable,
-    block_accounts: HashSet<AccountIdentifier>,
-    accounts_repo: AccountsRepository,
-    thread_accounts_repository: &NodeThreadAccountsRepository,
     db: MessageDurableStorage,
+    thread_accounts_repository: &ThreadAccountsRepository,
     apply_to_durable: bool,
     #[cfg(feature = "monitor-accounts-number")] updated_accounts_number: u64,
-) -> anyhow::Result<(OptimisticStateImpl, CrossThreadRefData)> {
+) -> anyhow::Result<(OptimisticStateImpl, CrossThreadRefData, DurableThreadAccountsStateDiff)> {
     // Prepare produced_internal_messages_to_the_current_thread
     for (addr, messages) in produced_internal_messages_to_the_current_thread.iter_mut() {
         let mut sorted = if let Some(consumed_messages) = consumed_internal_messages.get(addr) {
@@ -85,7 +82,7 @@ pub fn postprocess(
         .for_each(|(_addr, messages)| messages.sort_by(|a, b| a.1.cmp(&b.1)));
 
     let mut new_thread_refs = initial_optimistic_state.thread_refs_state.clone();
-    let current_thread_id = *initial_optimistic_state.get_thread_id();
+    let current_thread_id = initial_optimistic_state.thread_id;
     let current_thread_last_block = (current_thread_id, block_id, block_seq_no);
     new_thread_refs.update(current_thread_id, current_thread_last_block);
 
@@ -116,8 +113,29 @@ pub fn postprocess(
             outbound_accounts.insert(*routing, (account.clone(), account_inbox));
         }
     }
-    if !outbound_accounts.is_empty() {
-        let mut shard_state = thread_accounts_repository.state_builder(&new_state);
+    // Collect redirect stubs for newly created accounts with dapp_id != account_id
+    // that stay in this thread. These go directly into durable state, bypassing
+    // the builder's re-routing logic.
+    let mut explicit_redirects: Vec<(AccountRouting, crate::types::account::WrappedAccount)> =
+        vec![];
+    if apply_to_durable {
+        for (routing, account) in &accounts_that_changed_their_dapp_id {
+            if !routing.is_maybe_redirect()
+                && account.is_some()
+                && initial_optimistic_state.does_routing_belong_to_the_state(routing)
+            {
+                explicit_redirects.push((*routing, account.clone().unwrap()));
+            }
+        }
+    }
+
+    let need_state_update = !outbound_accounts.is_empty() || !explicit_redirects.is_empty();
+    if need_state_update {
+        let mut shard_state = thread_accounts_repository.state_builder(
+            &current_thread_id,
+            block_height,
+            &state_transition.new_state,
+        );
         shard_state.set_apply_to_durable(apply_to_durable);
         for (account_routing, (_, _)) in &outbound_accounts {
             // let default_account_routing = AccountRouting(
@@ -132,7 +150,18 @@ pub fn postprocess(
             }
             // }
         }
-        new_state = shard_state.build(None)?.new_state;
+        for (routing, wrapped_account) in &explicit_redirects {
+            let redirect_routing = routing.account_id().redirect();
+            let redirect_account = wrapped_account.account.with_redirect()?;
+            tracing::debug!(
+                target: "node",
+                "create redirect at default routing {:?} for account with routing {:?}",
+                redirect_routing,
+                routing,
+            );
+            shard_state.add_explicit_redirect(redirect_routing, redirect_account);
+        }
+        state_transition.apply(shard_state.build(None)?);
     }
 
     let messages = ThreadMessageQueueState::build_next()
@@ -145,65 +174,18 @@ pub fn postprocess(
         .build()?;
     initial_optimistic_state.messages = messages;
 
-    let mut changed_accounts = initial_optimistic_state.changed_accounts;
-    let mut cached_accounts = initial_optimistic_state.cached_accounts;
-    if let Some(unload_after) = accounts_repo.get_unload_after() {
-        changed_accounts.extend(block_accounts.into_iter().map(|acc| (acc, block_seq_no)));
-        cached_accounts.retain(|account_id, (seq_no, _)| {
-            if *seq_no + accounts_repo.get_store_after() >= block_seq_no
-                && !changed_accounts.contains_key(account_id)
-            {
-                true
-            } else {
-                tracing::trace!(
-                    account_id = account_id.to_hex_string(),
-                    "Removing account from cache"
-                );
-                false
-            }
-        });
-        let mut shard_state = thread_accounts_repository.state_builder(&new_state);
-        shard_state.set_apply_to_durable(apply_to_durable);
-        let mut deleted = Vec::new();
-        for (account_id, seq_no) in std::mem::take(&mut changed_accounts) {
-            let account_routing = account_id.dapp_originator();
-            if seq_no + unload_after <= block_seq_no {
-                if let Some(mut account) = shard_state.account(&account_routing)? {
-                    tracing::trace!(
-                        account_id = account_id.to_hex_string(),
-                        "Unloading account from state"
-                    );
-                    let state = account
-                        .unload_account()
-                        .map_err(|e| anyhow::format_err!("Failed to set account external: {e}"))?;
-                    cached_accounts.insert(account_id, (block_seq_no, state));
-                    shard_state.insert_account(&account_routing, &account);
-                } else {
-                    deleted.push(account_id);
-                }
-            } else {
-                changed_accounts.insert(account_id, seq_no);
-            }
-        }
-        if !deleted.is_empty() {
-            accounts_repo.accounts_deleted(&thread_id, deleted, block_info.prev1().unwrap().end_lt);
-        }
-        new_state = shard_state.build(None)?.new_state;
-    }
-
     let new_state_builder = OptimisticStateImpl::builder()
         .block_seq_no(block_seq_no)
         .block_id(block_id)
-        .shard_state(OptimisticShardState(new_state))
+        .shard_state(OptimisticShardState(state_transition.new_state.clone()))
+        .account_operations(state_transition.account_operations.clone())
         .messages(initial_optimistic_state.messages)
         .high_priority_messages(initial_optimistic_state.high_priority_messages)
         .threads_table(threads_table.clone())
         .thread_id(thread_id)
         .block_info(block_info)
         .thread_refs_state(new_thread_refs)
-        .cropped(initial_optimistic_state.cropped)
-        .changed_accounts(changed_accounts)
-        .cached_accounts(cached_accounts);
+        .cropped(initial_optimistic_state.cropped);
 
     #[cfg(feature = "monitor-accounts-number")]
     let new_state_builder = new_state_builder.accounts_number(updated_accounts_number);
@@ -221,5 +203,9 @@ pub fn postprocess(
         .block_refs(vec![]) // set up later
         .build();
 
-    Ok((new_state, cross_thread_ref_data))
+    // Return the diff *after* state_transition.apply(...) above so the caller
+    // sees the explicit redirects added by postprocess. Cloning before this
+    // point misses them and the BP serializes an incomplete durable_state_update,
+    // which leaves descendants on synced nodes unable to resolve the redirect.
+    Ok((new_state, cross_thread_ref_data, state_transition.diff.durable))
 }

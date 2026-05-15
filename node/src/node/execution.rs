@@ -446,6 +446,56 @@ where
                             return Ok(ExecutionResult::SynchronizationRequired);
                         }
                     }
+                    NetworkMessage::SyncFinalizedWithHeight((sync_finalized, _)) => {
+                        let duration_since_last_finalization =
+                            self.shared_services.duration_since_last_finalization();
+                        if duration_since_last_finalization
+                            < self.global_config.time_to_enable_sync_finalized
+                        {
+                            tracing::trace!("duration_since_last_finalization({} ms) is too low to start synchronization", duration_since_last_finalization.as_millis());
+                            continue;
+                        }
+                        let identifier = *sync_finalized.data().block_identifier();
+                        let block_height = *sync_finalized.data().block_height();
+                        let address = sync_finalized.data().thread_refs().clone();
+                        tracing::debug!(
+                            "Received SyncFinalizedWithHeight: {:?} {:?} {:?}",
+                            block_height,
+                            identifier,
+                            address
+                        );
+                        if address.get(&self.thread_id) != Some(&identifier) {
+                            tracing::trace!("Incoming SyncFinalizedWithHeight is broken, skip it");
+                            continue;
+                        }
+                        let (last_finalized_id, _last_finalized_seq_no) = self
+                            .repository
+                            .select_thread_last_finalized_block(&thread_id)?
+                            .expect("Must be known here");
+                        let last_finalized_block_height = self
+                            .block_state_repository
+                            .get(&last_finalized_id)?
+                            .guarded(|e| *e.block_height())
+                            .expect("Last finalized block must have block height set");
+
+                        let blocks_were_requested = self
+                            .block_processor_service
+                            .missing_blocks_were_requested
+                            .load(Ordering::Relaxed);
+                        let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
+                        let needs_sync_by_height = last_finalized_block_height
+                            .signed_distance_to(&block_height)
+                            .map(|distance| {
+                                distance
+                                    > i128::from(self.global_config.need_synchronization_block_diff)
+                            })
+                            .unwrap_or(false);
+                        if elapsed > self.global_config.min_time_between_state_publish_directives
+                            && (blocks_were_requested || needs_sync_by_height)
+                        {
+                            return Ok(ExecutionResult::SynchronizationRequired);
+                        }
+                    }
                 },
             }
         }
@@ -504,12 +554,12 @@ where
                     self.is_state_sync_requested.guarded_mut(|e| *e = Some(block_seq_no_with_sync));
                 }
             }
-        } else if let Some((id, seq_no)) = self.last_synced_state {
+        } else if let Some((id, seq_no, block_height)) = self.last_synced_state {
             // if let Ok(Some(state)) =
             //     self.repository.get_optimistic_state(&id, &self.thread_id, None)
             // {
             let hint = HashMap::from_iter([(self.thread_id, id)]);
-            self.send_sync_finalized(id, seq_no, hint, node_id)?;
+            self.send_sync_finalized(id, seq_no, block_height, hint, node_id)?;
             // }
         }
         Ok(())

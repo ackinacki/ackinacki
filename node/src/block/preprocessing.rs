@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use account_state::ThreadAccountsBuilder;
 use account_state::ThreadAccountsRepository;
 use anyhow::Context;
 use node_types::AccountIdentifier;
@@ -17,7 +16,6 @@ use crate::block_keeper_system::BlockKeeperData;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
-use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::repository::optimistic_shard_state::OptimisticShardState;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::CrossThreadRefData;
@@ -42,6 +40,7 @@ pub fn preprocess<'a, I, TRepo>(
     parent_block_state: State,
     refs: I,
     descendant_thread_identifier: &ThreadIdentifier,
+    block_height: u64,
     current_block_id: Option<BlockIdentifier>,
     is_split_related: bool,
     repository: &TRepo,
@@ -49,7 +48,7 @@ pub fn preprocess<'a, I, TRepo>(
     epoch_block_keeper_data: Vec<BlockKeeperData>,
     message_db: MessageDurableStorage,
     metrics: Option<BlockProductionMetrics>,
-    thread_accounts_repository: &NodeThreadAccountsRepository,
+    thread_accounts_repository: &ThreadAccountsRepository,
     apply_to_durable: bool,
 ) -> anyhow::Result<PreprocessingResult>
 where
@@ -157,6 +156,7 @@ where
             &all_referenced_blocks,
             &in_table,
             descendant_thread_identifier,
+            block_height,
             preprocessed_state,
             message_db.clone(),
             metrics,
@@ -286,14 +286,16 @@ pub fn convert_epoch_messages(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn import_migrating_accounts_with_their_inboxes(
     all_referenced_blocks: &[CrossThreadRefData],
     in_table: &ThreadsTable,
     descendant_thread_identifier: &ThreadIdentifier,
+    block_height: u64,
     mut state: State,
     message_db: MessageDurableStorage,
     metrics: Option<BlockProductionMetrics>,
-    thread_accounts_repository: &NodeThreadAccountsRepository,
+    thread_accounts_repository: &ThreadAccountsRepository,
 ) -> anyhow::Result<State> {
     tracing::trace!(target: "node", "preprocess: {:?} {:?}", state.block_id, state.thread_id);
     let mut migrated_accounts = vec![];
@@ -303,7 +305,7 @@ fn import_migrating_accounts_with_their_inboxes(
     for block_referenced in all_referenced_blocks.iter() {
         for (route, (account_state, inbox)) in block_referenced.outbound_accounts().iter() {
             if account_state.is_none() {
-                let default_routing = route.account_id().dapp_originator();
+                let default_routing = route.account_id().redirect();
                 let (mask, _) = in_table
                     .rows()
                     .find(|(_, thread)| thread == &state.thread_id)
@@ -321,8 +323,8 @@ fn import_migrating_accounts_with_their_inboxes(
             let actual_dapp_id = account_state
                 .clone()
                 .and_then(|acc| acc.account.get_dapp_id())
-                .unwrap_or_else(|| account_id.use_as_dapp_id());
-            let actual_route = account_id.routing_with(actual_dapp_id);
+                .unwrap_or_else(|| account_id.redirect_dapp_id());
+            let actual_route = account_id.routing(actual_dapp_id);
             assert_eq!(
                 &actual_route, route,
                 concat!(
@@ -349,6 +351,8 @@ fn import_migrating_accounts_with_their_inboxes(
         &mut state.shard_state,
         migrated_accounts,
         removed_accounts,
+        descendant_thread_identifier,
+        block_height,
         thread_accounts_repository,
     )?;
     let x = state.messages;
@@ -368,22 +372,22 @@ fn settle_accounts(
     shard_state: &mut OptimisticShardState,
     migrated_accounts: Vec<WrappedAccount>,
     removed_accounts: Vec<AccountIdentifier>,
-    thread_accounts_repository: &NodeThreadAccountsRepository,
+    thread_id: &ThreadIdentifier,
+    block_height: u64,
+    thread_accounts_repository: &ThreadAccountsRepository,
 ) -> anyhow::Result<()> {
     if migrated_accounts.is_empty() && removed_accounts.is_empty() {
         return Ok(());
     }
-    let mut binding = thread_accounts_repository.state_builder(&shard_state.0);
+    let mut binding =
+        thread_accounts_repository.state_builder(thread_id, block_height, &shard_state.0);
     for wrapped_account in migrated_accounts.into_iter() {
-        tracing::trace!("migrate account: {}", wrapped_account.account_id.to_hex_string());
-        binding.insert_account(
-            &wrapped_account.account_id.dapp_originator(),
-            &wrapped_account.account,
-        );
+        tracing::trace!(target: "monit", "migrate account: {}", wrapped_account.account_id.to_hex_string());
+        binding.insert_account(&wrapped_account.account_id.redirect(), &wrapped_account.account);
     }
     for acc_id in removed_accounts.iter() {
-        tracing::trace!("removed account: {:?}", acc_id);
-        binding.remove_account(&acc_id.dapp_originator());
+        tracing::trace!(target: "monit", "removed account: {:?}", acc_id);
+        binding.remove_account(&acc_id.redirect());
     }
     *shard_state = OptimisticShardState(binding.build(None)?.new_state);
     Ok(())

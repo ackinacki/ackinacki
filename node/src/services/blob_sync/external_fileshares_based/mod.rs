@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+pub use download_blob::DownloadError;
 use telemetry_utils::mpsc::instrumented_channel;
 use telemetry_utils::mpsc::InstrumentedSender;
 use typed_builder::TypedBuilder;
@@ -87,7 +88,8 @@ impl BlobSyncService for ServiceInterface {
         on_error: ErrorCallback,
     ) -> anyhow::Result<()>
     where
-        SuccessCallback: FnOnce(&mut dyn std::io::Read) + Send + Sync + 'static,
+        SuccessCallback:
+            FnOnce(&mut dyn std::io::Read) -> anyhow::Result<()> + Send + Sync + 'static,
         ErrorCallback: FnOnce(anyhow::Error) + Send + Sync + 'static,
     {
         tracing::trace!("load_blob");

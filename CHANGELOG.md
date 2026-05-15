@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.0] – 2026-05-13
+
+### New / Improvements
+- Added state v2 synchronization snapshots with height-based anchors and streamed `SNAP2V1` snapshot support
+- Reworked durable account-state storage with archive snapshots, Aerospike-backed KV storage, and account-state metrics
+- Added state snapshot loading and sharing flow for external file-share based synchronization
+- Added Block Keeper deployment options for retained optimistic-state archive cleanup and optional retired config usage
+- Added live-instance counters and observable gauges for `ThreadAccount`, `ThreadAccountsState`, `PendingUpdate`, `AccumulatedUpdate`, multi-map nodes, `AckiNackiBlock`, `OptimisticStateImpl`, and `BlockState`, plus `unfinalized_pool` active/draining size gauges and an `accumulator_deferred_batches` gauge
+- Added block production timing histograms (`node_block_computation_time`, `node_block_serialization_time`, `node_tvm_block_serialization_time`, `node_block_tvm_apply_time`, `node_block_durable_apply_time`)
+
+---
+
+### Fixes
+- Disabled core dump generation for Block Keeper containers
+- Fixed hybrid BK-on-BM Caddy deployment to copy and use the dedicated BK TLS certificate files
+- Fixed synchronization snapshot selection to prefer newer height or sequence anchors and keep usable downloaded snapshots during repeated `NodeJoining` broadcasts
+- Fixed external messages being removed from the queue before execution completed, which caused unprocessed messages to be dropped instead of retained for retry
+- Fixed snapshot pin leak that left the accumulator in `Requested`/`BoundaryReached` indefinitely when the snapshot worker never acquired the pin, causing the update loop to defer batches and grow RAM/swap; `request_snapshot_pin` now returns an RAII `PinRequestGuard` that auto-cancels on drop, and the legacy snapshot path acquires and releases the pin explicitly instead of leaving the request orphaned
+- Fixed authority-switch sending unnecessary fallback and primary ancestor attestations from nodes that are not in the ancestor block's BK set
+
+---
+
 ## [0.15.1] – 2026-05-01
 
 ### New / Improvements

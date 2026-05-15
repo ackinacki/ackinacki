@@ -7,8 +7,11 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use account_state::DurableThreadAccountsDiff;
-use account_state::ThreadAccount;
+use account_state::DurableThreadAccountsStateDiff;
+use account_state::ThreadAccountsRepository;
+use account_state::ThreadAccountsState;
+use account_state::ThreadAccountsStateBuilder;
+use account_state::VmAccount;
 use node_types::AccountCodeHash;
 use node_types::AccountIdentifier;
 use node_types::AccountRouting;
@@ -38,10 +41,6 @@ use crate::creditconfig::DappConfig;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
-use crate::repository::accounts::AccountsRepository;
-use crate::repository::accounts::NodeThreadAccountsBuilder;
-use crate::repository::accounts::NodeThreadAccountsRef;
-use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::types::account::WrappedAccount;
@@ -65,11 +64,12 @@ pub struct PreparedBlock {
     // pub transaction_traces: HashMap<UInt256, Vec<EngineTraceInfoData>>,
     pub active_threads: Vec<(Cell, ActiveThread)>,
     pub tx_cnt: usize,
+    pub tx_count_per_routing: BTreeMap<AccountRouting, u32>,
     pub block_keeper_set_changes: Vec<BlockKeeperSetChange>,
     pub cross_thread_ref_data: CrossThreadRefData,
     #[cfg(feature = "monitor-accounts-number")]
     pub accounts_number_diff: i64,
-    pub durable_state_update: DurableThreadAccountsDiff,
+    pub durable_state_update: DurableThreadAccountsStateDiff,
 }
 
 pub struct ThreadResult {
@@ -78,13 +78,13 @@ pub struct ThreadResult {
     pub read_account_time_ms: u64,
     pub message_execution_time_ms: u64,
     // pub trace: Option<Vec<EngineTraceInfoData>>,
-    pub account_root: ThreadAccount,
+    pub account: VmAccount,
     pub account_id: AccountIdentifier,
     pub minted_shell: i128,
     pub initial_dapp_id: Option<DAppIdentifier>,
     pub initial_code_hash: Option<AccountCodeHash>,
     // Note: initial_account field is initialized only for epoch contracts
-    pub initial_account: Option<ThreadAccount>,
+    pub initial_account: Option<VmAccount>,
     pub ext_msg_dst: Option<ExtMessageDst>,
     pub in_msg_is_ext: bool,
     pub in_msg: Message,
@@ -117,8 +117,9 @@ type MessageIndex = u128;
 #[derive(TypedBuilder)]
 pub struct BlockBuilder {
     pub(crate) thread_id: ThreadIdentifier,
-    pub(crate) initial_accounts: NodeThreadAccountsRef,
-    pub(crate) accounts_builder: NodeThreadAccountsBuilder,
+    pub(crate) block_height: u64,
+    pub(crate) initial_accounts: ThreadAccountsState,
+    pub(crate) accounts_builder: ThreadAccountsStateBuilder,
     pub(crate) block_info: BlockInfo,
     pub(crate) rand_seed: UInt256,
     // Mapping of messages generated while execution
@@ -145,6 +146,8 @@ pub struct BlockBuilder {
     pub(crate) parallelization_level: usize,
     #[builder(default)]
     pub(crate) tx_cnt: usize,
+    #[builder(default)]
+    pub(crate) tx_count_per_routing: BTreeMap<AccountRouting, u32>,
 
     pub(crate) usage_tree: UsageTree,
     pub(crate) initial_optimistic_state: OptimisticStateImpl,
@@ -157,8 +160,7 @@ pub struct BlockBuilder {
     pub(crate) dapp_credit_map: HashMap<DAppIdentifier, DappConfig>,
     #[builder(default)]
     pub(crate) dapp_minted_map: HashMap<DAppIdentifier, i128>,
-    pub(crate) accounts_repository: AccountsRepository,
-    pub(crate) thread_accounts_repository: NodeThreadAccountsRepository,
+    pub(crate) thread_accounts_repository: ThreadAccountsRepository,
 
     // part used to update local state
     #[builder(default)]
@@ -219,6 +221,6 @@ pub(crate) enum ExecuteError {
     AccountWasMovedRerouteInternalMessage,
     #[error("Account was moved to another thread, ignore external message")]
     AccountWasMovedIgnoreExternalMessage,
-    #[error("Dest account does not match thread state")]
-    WrongDestinationThread(AccountRouting),
+    #[error("Dest account does not match thread state {0}, thread: {1}")]
+    WrongDestinationThread(AccountRouting, ThreadIdentifier),
 }

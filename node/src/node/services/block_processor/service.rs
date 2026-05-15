@@ -813,7 +813,6 @@ fn process_candidate_block(
                 shared_services,
                 block_state_repository.clone(),
                 nack_set_cache,
-                repository.accounts_repository().clone(),
                 repository.thread_accounts_repository(),
                 repository.get_message_db().clone(),
                 repository.config_read(),

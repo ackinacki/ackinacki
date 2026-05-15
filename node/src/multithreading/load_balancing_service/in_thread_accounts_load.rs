@@ -104,10 +104,10 @@ impl InThreadAccountsLoad {
                     .int_header()
                     .and_then(|hdr| hdr.src_dapp_id.clone())
                     .map(DAppIdentifier::from)
-                    .unwrap_or_else(|| source.use_as_dapp_id());
+                    .unwrap_or_else(|| source.redirect_dapp_id());
 
                 // Calculate messages from existing dapps only.
-                let bits: [[bool; 256]; 2] = source.routing_with(dapp_id).into();
+                let bits: [[bool; 256]; 2] = source.routing(dapp_id).into();
                 for outer in 0..bits.len() {
                     for inner in 0..bits[outer].len() {
                         if !bits[outer][inner] {

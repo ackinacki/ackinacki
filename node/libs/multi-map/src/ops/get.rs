@@ -1,11 +1,10 @@
-use trie_map::trie::arena::boundary_mask;
-use trie_map::trie::arena::nibble_at;
-use trie_map::trie::arena::nibble_from_key;
-use trie_map::trie::arena::prefix_bits_match;
-use trie_map::MapKey;
-use trie_map::MapKeyPath;
-
 use crate::node::Node;
+use crate::ops::boundary_mask;
+use crate::ops::nibble_at;
+use crate::ops::nibble_from_key;
+use crate::ops::prefix_bits_match;
+use crate::MapKey;
+use crate::MapKeyPath;
 use crate::MultiMapValue;
 
 /// Look up a key in the trie. Returns `Some(value)` if found, `None` otherwise.

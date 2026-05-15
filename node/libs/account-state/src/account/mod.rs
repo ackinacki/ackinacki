@@ -11,10 +11,12 @@ use serde::Deserializer;
 use serde::Serializer;
 use tvm_block::Deserializable;
 use tvm_block::Serializable;
+use tvm_block::ShardAccount;
 use tvm_types::read_single_root_boc;
 use tvm_types::write_boc;
 
-use crate::account::avm::AvmStateAccount;
+use crate::account::avm::AvmThreadAccount;
+use crate::live_metrics::LiveThreadAccountCounter;
 use crate::AvmAccount;
 
 #[macro_export]
@@ -47,27 +49,42 @@ pub const AVM_TAG: [u8; 4] = [0x02, 0x00, 0x00, 0x00];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 // VM agnostic account repr.
-pub enum ThreadStateAccount {
-    Tvm(tvm_block::ShardAccount),
-    Avm(AvmStateAccount),
+pub enum ThreadAccount {
+    Tvm(ShardAccount, LiveThreadAccountCounter),
+    Avm(AvmThreadAccount, LiveThreadAccountCounter),
 }
 
-impl Default for ThreadStateAccount {
+impl Default for ThreadAccount {
     fn default() -> Self {
-        Self::Tvm(tvm_block::ShardAccount::default())
+        Self::from_tvm(ShardAccount::default())
     }
 }
 
-impl ThreadStateAccount {
+impl ThreadAccount {
+    pub fn from_tvm(account: ShardAccount) -> Self {
+        Self::Tvm(account, LiveThreadAccountCounter::new())
+    }
+
+    pub fn from_avm(account: AvmThreadAccount) -> Self {
+        Self::Avm(account, LiveThreadAccountCounter::new())
+    }
+
+    pub fn as_tvm(&self) -> Option<&ShardAccount> {
+        match self {
+            Self::Tvm(shard_account, _) => Some(shard_account),
+            Self::Avm(_, _) => None,
+        }
+    }
+
     pub fn new(
-        account: ThreadAccount,
+        account: VmAccount,
         last_trans_hash: TransactionHash,
         last_trans_lt: u64,
         dapp_id: Option<DAppIdentifier>,
     ) -> anyhow::Result<Self> {
         Ok(match account {
-            ThreadAccount::Tvm(account) => {
-                let mut shard_account = tvm_block::ShardAccount::with_params(
+            VmAccount::Tvm(account) => {
+                let mut shard_account = ShardAccount::with_params(
                     &tvm_block::Account::default(),
                     last_trans_hash.into(),
                     last_trans_lt,
@@ -75,24 +92,33 @@ impl ThreadStateAccount {
                 )
                 .map_err(|err| anyhow::anyhow!("{err}"))?;
                 shard_account.set_account_cell(account).map_err(|err| anyhow::anyhow!("{err}"))?;
-                Self::Tvm(shard_account)
+                Self::from_tvm(shard_account)
             }
-            ThreadAccount::Avm(account) => {
-                Self::Avm(AvmStateAccount { account, last_trans_hash, last_trans_lt, dapp_id })
-            }
+            VmAccount::Avm(account) => Self::from_avm(AvmThreadAccount {
+                vm_account: account,
+                last_trans_hash,
+                last_trans_lt,
+            }),
         })
+    }
+
+    pub fn redirect(dapp_id: DAppIdentifier) -> Self {
+        Self::from_tvm(
+            ShardAccount::with_redirect(Default::default(), 0, Some(dapp_id.into()))
+                .expect("Failed to create redirect account"),
+        )
     }
 
     pub fn write_bytes(&self) -> anyhow::Result<Vec<u8>> {
         match self {
-            Self::Avm(avm_account) => {
+            Self::Avm(avm_account, _) => {
                 let mut buf = Vec::new();
                 buf.extend(AVM_TAG);
                 bincode::serialize_into(&mut buf, avm_account)
                     .map_err(|err| anyhow::anyhow!("{err}"))?;
                 Ok(buf)
             }
-            Self::Tvm(shard_account) => {
+            Self::Tvm(shard_account, _) => {
                 shard_account.write_to_bytes().map_err(|err| anyhow::anyhow!("{err}"))
             }
         }
@@ -100,13 +126,13 @@ impl ThreadStateAccount {
 
     pub fn read_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
         if bytes.starts_with(&AVM_TAG) {
-            Ok(Self::Avm(
+            Ok(Self::from_avm(
                 bincode::deserialize(&bytes[AVM_TAG.len()..])
                     .map_err(|err| anyhow::anyhow!("{err}"))?,
             ))
         } else {
-            Ok(Self::Tvm(
-                tvm_block::ShardAccount::construct_from_bytes(bytes)
+            Ok(Self::from_tvm(
+                ShardAccount::construct_from_bytes(bytes)
                     .map_err(|err| anyhow::anyhow!("{err}"))?,
             ))
         }
@@ -114,37 +140,37 @@ impl ThreadStateAccount {
 
     pub fn is_redirect(&self) -> bool {
         match self {
-            Self::Avm(_) => false,
-            Self::Tvm(shard_account) => shard_account.is_redirect(),
+            Self::Avm(_, _) => false,
+            Self::Tvm(shard_account, _) => shard_account.is_redirect(),
         }
     }
 
     pub fn last_trans_hash(&self) -> TransactionHash {
         match self {
-            Self::Avm(avm_account) => avm_account.last_trans_hash,
-            Self::Tvm(shard_account) => shard_account.last_trans_hash().into(),
+            Self::Avm(avm_account, _) => avm_account.last_trans_hash,
+            Self::Tvm(shard_account, _) => shard_account.last_trans_hash().into(),
         }
     }
 
     pub fn last_trans_lt(&self) -> u64 {
         match self {
-            Self::Avm(state_account) => state_account.last_trans_lt,
-            Self::Tvm(shard_account) => shard_account.last_trans_lt(),
+            Self::Avm(state_account, _) => state_account.last_trans_lt,
+            Self::Tvm(shard_account, _) => shard_account.last_trans_lt(),
         }
     }
 
     pub fn get_dapp_id(&self) -> Option<DAppIdentifier> {
         match self {
-            Self::Avm(state_account) => state_account.dapp_id,
-            Self::Tvm(shard_account) => shard_account.get_dapp_id().map(From::from),
+            Self::Avm(_, _) => None,
+            Self::Tvm(shard_account, _) => shard_account.get_dapp_id().map(From::from),
         }
     }
 
     pub fn with_redirect(&self) -> anyhow::Result<Self> {
         match self {
-            Self::Avm(_) => Ok(self.clone()),
-            Self::Tvm(shard_account) => Ok(Self::Tvm(
-                tvm_block::ShardAccount::with_redirect(
+            Self::Avm(_, _) => Ok(self.clone()),
+            Self::Tvm(shard_account, _) => Ok(Self::from_tvm(
+                ShardAccount::with_redirect(
                     shard_account.last_trans_hash().clone(),
                     shard_account.last_trans_lt(),
                     shard_account.get_dapp_id().cloned(),
@@ -156,39 +182,39 @@ impl ThreadStateAccount {
 
     pub fn is_unloaded(&self) -> bool {
         match self {
-            Self::Avm(_) => false,
-            Self::Tvm(shard_account) => shard_account.is_external(),
+            Self::Avm(_, _) => false,
+            Self::Tvm(shard_account, _) => shard_account.is_external(),
         }
     }
 
-    pub fn unload_account(&mut self) -> anyhow::Result<ThreadAccount> {
+    pub fn unload_account(&mut self) -> anyhow::Result<VmAccount> {
         match self {
-            Self::Avm(_) => anyhow::bail!("Can't unload AVM state account"),
-            Self::Tvm(shard_account) => {
+            Self::Avm(_, _) => anyhow::bail!("Can't unload AVM state account"),
+            Self::Tvm(shard_account, _) => {
                 let state = shard_account
                     .replace_with_external()
                     .map_err(|err| anyhow::anyhow!("{err}"))?;
-                Ok(ThreadAccount::Tvm(state))
+                Ok(VmAccount::Tvm(state))
             }
         }
     }
 
-    pub fn account(&self) -> anyhow::Result<ThreadAccount> {
+    pub fn vm_account(&self) -> anyhow::Result<VmAccount> {
         match self {
-            Self::Avm(avm_account) => Ok(ThreadAccount::Avm(avm_account.account.clone())),
-            Self::Tvm(shard_state) => Ok(ThreadAccount::Tvm(
+            Self::Avm(avm_account, _) => Ok(VmAccount::Avm(avm_account.vm_account.clone())),
+            Self::Tvm(shard_state, _) => Ok(VmAccount::Tvm(
                 shard_state.account_cell().map_err(|err| anyhow::anyhow!("{err}"))?,
             )),
         }
     }
 
-    pub fn set_account(&mut self, account: ThreadAccount) -> anyhow::Result<()> {
+    pub fn set_vm_account(&mut self, account: VmAccount) -> anyhow::Result<()> {
         match (self, account) {
-            (Self::Avm(state_account), ThreadAccount::Avm(account)) => {
-                state_account.account = account;
+            (Self::Avm(state_account, _), VmAccount::Avm(account)) => {
+                state_account.vm_account = account;
                 Ok(())
             }
-            (Self::Tvm(shard_account), ThreadAccount::Tvm(cell)) => {
+            (Self::Tvm(shard_account, _), VmAccount::Tvm(cell)) => {
                 shard_account.set_account_cell(cell).map_err(|err| anyhow::anyhow!("{err}"))
             }
             _ => anyhow::bail!("Can't set account: incompatible VM types"),
@@ -196,52 +222,51 @@ impl ThreadStateAccount {
     }
 }
 
-impl From<tvm_block::ShardAccount> for ThreadStateAccount {
-    fn from(value: tvm_block::ShardAccount) -> Self {
-        Self::Tvm(value)
+impl From<ShardAccount> for ThreadAccount {
+    fn from(value: ShardAccount) -> Self {
+        Self::from_tvm(value)
     }
 }
 
-impl TryFrom<ThreadStateAccount> for tvm_block::ShardAccount {
+impl TryFrom<ThreadAccount> for ShardAccount {
     type Error = anyhow::Error;
 
-    fn try_from(value: ThreadStateAccount) -> Result<Self, Self::Error> {
+    fn try_from(value: ThreadAccount) -> Result<Self, Self::Error> {
         match value {
-            ThreadStateAccount::Tvm(shard_account) => Ok(shard_account),
+            ThreadAccount::Tvm(shard_account, _live_counter) => Ok(shard_account),
             _ => anyhow::bail!("Can't convert non TVM state account to TVM shard account"),
         }
     }
 }
 
-impl TryFrom<&ThreadStateAccount> for tvm_block::ShardAccount {
+impl TryFrom<&ThreadAccount> for ShardAccount {
     type Error = anyhow::Error;
 
-    fn try_from(value: &ThreadStateAccount) -> Result<Self, Self::Error> {
-        match value {
-            ThreadStateAccount::Tvm(shard_account) => Ok(shard_account.clone()),
-            _ => anyhow::bail!("Can't convert non TVM state account to TVM shard account"),
-        }
+    fn try_from(value: &ThreadAccount) -> Result<Self, Self::Error> {
+        value.as_tvm().cloned().ok_or_else(|| {
+            anyhow::anyhow!("Can't convert non TVM state account to TVM shard account")
+        })
     }
 }
 
-impl_serde_bytes!(ThreadStateAccount);
+impl_serde_bytes!(ThreadAccount);
 
 #[derive(Clone)]
 #[allow(clippy::large_enum_variant)]
 // VM agnostic account repr.
 #[derive(Debug)]
-pub enum ThreadAccount {
+pub enum VmAccount {
     Tvm(tvm_types::Cell),
     Avm(AvmAccount),
 }
 
-impl Default for ThreadAccount {
+impl Default for VmAccount {
     fn default() -> Self {
         Self::Tvm(tvm_types::Cell::default())
     }
 }
 
-impl ThreadAccount {
+impl VmAccount {
     pub fn read_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
         Ok(if bytes.starts_with(&AVM_TAG) {
             Self::Avm(
@@ -272,21 +297,21 @@ impl ThreadAccount {
     }
 }
 
-impl_serde_bytes!(ThreadAccount);
+impl_serde_bytes!(VmAccount);
 
-impl From<tvm_types::Cell> for ThreadAccount {
+impl From<tvm_types::Cell> for VmAccount {
     fn from(value: tvm_types::Cell) -> Self {
         Self::Tvm(value)
     }
 }
 
-impl From<&tvm_types::Cell> for ThreadAccount {
+impl From<&tvm_types::Cell> for VmAccount {
     fn from(value: &tvm_types::Cell) -> Self {
         Self::Tvm(value.clone())
     }
 }
 
-impl TryFrom<tvm_block::Account> for ThreadAccount {
+impl TryFrom<tvm_block::Account> for VmAccount {
     type Error = anyhow::Error;
 
     fn try_from(value: tvm_block::Account) -> Result<Self, Self::Error> {
@@ -294,7 +319,7 @@ impl TryFrom<tvm_block::Account> for ThreadAccount {
     }
 }
 
-impl TryFrom<&tvm_block::Account> for ThreadAccount {
+impl TryFrom<&tvm_block::Account> for VmAccount {
     type Error = anyhow::Error;
 
     fn try_from(value: &tvm_block::Account) -> Result<Self, Self::Error> {
@@ -303,10 +328,10 @@ impl TryFrom<&tvm_block::Account> for ThreadAccount {
     }
 }
 
-impl TryFrom<&ThreadAccount> for tvm_block::Account {
+impl TryFrom<&VmAccount> for tvm_block::Account {
     type Error = anyhow::Error;
 
-    fn try_from(value: &ThreadAccount) -> Result<Self, Self::Error> {
+    fn try_from(value: &VmAccount) -> Result<Self, Self::Error> {
         Self::try_from(value.clone())
     }
 }
@@ -315,62 +340,62 @@ fn account_from_cell(cell: tvm_types::Cell) -> anyhow::Result<tvm_block::Account
     tvm_block::Account::construct_from_cell(cell).map_err(|err| anyhow::anyhow!("{err}"))
 }
 
-impl TryFrom<ThreadAccount> for tvm_block::Account {
+impl TryFrom<VmAccount> for tvm_block::Account {
     type Error = anyhow::Error;
 
-    fn try_from(value: ThreadAccount) -> Result<Self, Self::Error> {
+    fn try_from(value: VmAccount) -> Result<Self, Self::Error> {
         match value {
-            ThreadAccount::Tvm(cell) => account_from_cell(cell),
+            VmAccount::Tvm(cell) => account_from_cell(cell),
             _ => anyhow::bail!("Can't convert non TVM state account to TVM account"),
         }
     }
 }
 
-impl TryFrom<&mut ThreadAccount> for tvm_block::Account {
+impl TryFrom<&mut VmAccount> for tvm_block::Account {
     type Error = anyhow::Error;
 
-    fn try_from(value: &mut ThreadAccount) -> Result<Self, Self::Error> {
+    fn try_from(value: &mut VmAccount) -> Result<Self, Self::Error> {
         match value {
-            ThreadAccount::Tvm(cell) => account_from_cell(cell.clone()),
+            VmAccount::Tvm(cell) => account_from_cell(cell.clone()),
             _ => anyhow::bail!("Can't convert non TVM state account to TVM account"),
         }
     }
 }
 
-impl TryFrom<&ThreadAccount> for tvm_types::Cell {
+impl TryFrom<&VmAccount> for tvm_types::Cell {
     type Error = anyhow::Error;
 
-    fn try_from(value: &ThreadAccount) -> Result<Self, Self::Error> {
+    fn try_from(value: &VmAccount) -> Result<Self, Self::Error> {
         match value {
-            ThreadAccount::Tvm(cell) => Ok(cell.clone()),
+            VmAccount::Tvm(cell) => Ok(cell.clone()),
             _ => anyhow::bail!("Can't convert non TVM state account to TVM cell"),
         }
     }
 }
 
-impl TryFrom<&mut ThreadAccount> for tvm_types::Cell {
+impl TryFrom<&mut VmAccount> for tvm_types::Cell {
     type Error = anyhow::Error;
 
-    fn try_from(value: &mut ThreadAccount) -> Result<Self, Self::Error> {
+    fn try_from(value: &mut VmAccount) -> Result<Self, Self::Error> {
         match value {
-            ThreadAccount::Tvm(cell) => Ok(cell.clone()),
+            VmAccount::Tvm(cell) => Ok(cell.clone()),
             _ => anyhow::bail!("Can't convert non TVM state account to TVM cell"),
         }
     }
 }
 
-impl TryFrom<ThreadAccount> for tvm_types::Cell {
+impl TryFrom<VmAccount> for tvm_types::Cell {
     type Error = anyhow::Error;
 
-    fn try_from(value: ThreadAccount) -> Result<Self, Self::Error> {
+    fn try_from(value: VmAccount) -> Result<Self, Self::Error> {
         match value {
-            ThreadAccount::Tvm(cell) => Ok(cell),
+            VmAccount::Tvm(cell) => Ok(cell),
             _ => anyhow::bail!("Can't convert non TVM state account to TVM cell"),
         }
     }
 }
 
-impl ThreadAccount {
+impl VmAccount {
     pub fn id(&self) -> Option<AccountIdentifier> {
         match self {
             Self::Tvm(cell) => account_from_cell(cell.clone())

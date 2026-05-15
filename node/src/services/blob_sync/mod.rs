@@ -31,7 +31,8 @@ pub trait BlobSyncService {
         on_error: ErrorCallback,
     ) -> anyhow::Result<()>
     where
-        SuccessCallback: FnOnce(&mut dyn std::io::Read) + Send + Sync + 'static,
+        SuccessCallback:
+            FnOnce(&mut dyn std::io::Read) -> anyhow::Result<()> + Send + Sync + 'static,
         ErrorCallback: FnOnce(anyhow::Error) + Send + Sync + 'static;
 }
 
@@ -115,6 +116,7 @@ mod tests {
                             .map(|e| i32::from_be_bytes(<[u8; 4]>::try_from(e).unwrap()))
                             .collect();
                         tx_ok.send((MARKER_SUCCESS, data)).unwrap();
+                        Ok(())
                     },
                     move |_e| {
                         tx_fail.send((MARKER_FAILED, vec![])).unwrap();
@@ -138,5 +140,52 @@ mod tests {
             .start(None)
             .expect("should be able to start");
         example_usecase(service.interface());
+    }
+
+    #[test]
+    fn load_blob_removes_cached_file_when_consumer_fails() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let base_path = tmp_dir.path().join("cache");
+        let service = external_fileshares_based::ExternalFileSharesBased::builder()
+            .local_storage_share_base_path(base_path.clone())
+            .build()
+            .start(None)
+            .expect("should be able to start");
+        let mut interface = service.interface();
+        let resource_id = "corrupt-snapshot".to_string();
+        let cached_path = base_path.join(&resource_id);
+
+        let (share_tx, share_rx) = std::sync::mpsc::channel();
+        interface
+            .share_blob(resource_id.clone(), std::io::Cursor::new(vec![1u8, 2, 3]), move |res| {
+                share_tx.send(res.map(|_| ())).unwrap();
+            })
+            .unwrap();
+        share_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("share callback must complete")
+            .unwrap();
+        assert!(cached_path.exists());
+
+        let (load_tx, load_rx) = std::sync::mpsc::channel();
+        interface
+            .load_blob(
+                resource_id,
+                vec![],
+                1,
+                None,
+                None,
+                |_reader| Err(anyhow::anyhow!("snapshot processing failed")),
+                move |err| {
+                    load_tx.send(err.to_string()).unwrap();
+                },
+            )
+            .unwrap();
+
+        let err = load_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("load error callback must complete");
+        assert!(err.contains("snapshot processing failed"));
+        assert!(!cached_path.exists());
     }
 }

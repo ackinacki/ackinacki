@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use account_state::ThreadAccountsRepository;
 use anyhow::ensure;
 use chrono::Utc;
 use indexset::BTreeMap;
@@ -41,7 +42,6 @@ use crate::node::associated_types::NackData;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::repository::accounts::AccountsRepository;
-use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
@@ -77,7 +77,7 @@ pub struct TVMBlockVerifier {
     shared_services: SharedServices,
     accounts_repository: AccountsRepository,
     block_state_repository: BlockStateRepository,
-    thread_accounts_repository: NodeThreadAccountsRepository,
+    thread_accounts_repository: ThreadAccountsRepository,
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
     is_block_of_retired_version: bool,
@@ -136,6 +136,7 @@ impl BlockVerifier for TVMBlockVerifier {
                 parent_block_state,
                 refs.clone(),
                 &thread_identifier,
+                *block.common_section().block_height().height(),
                 Some(block.identifier()),
                 block.is_thread_splitting(),
                 &container.cross_thread_ref_data_service,
@@ -232,12 +233,12 @@ impl BlockVerifier for TVMBlockVerifier {
 
         let producer = BlockBuilder::with_params(
             thread_identifier,
+            *block.common_section().block_height().height(),
             preprocessing_result.state,
             time,
             block_gas_limit,
             Some(rand_seed),
             None,
-            self.accounts_repository.clone(),
             self.thread_accounts_repository.clone(),
             self.node_global_config.block_keeper_epoch_code_hash.clone(),
             self.node_global_config.block_keeper_preepoch_code_hash.clone(),

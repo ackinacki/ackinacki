@@ -4,8 +4,6 @@ use serde::Serialize;
 use crate::trie::hash::hash_branch_empty;
 use crate::trie::hash::hash_ext;
 use crate::trie::hash::hash_leaf_value;
-use crate::trie::nibble::TrieNibble;
-use crate::trie::nibble::TrieNibble4;
 use crate::trie::node::*;
 use crate::trie::tx::is_tx_node;
 use crate::trie::tx::Tx;
@@ -423,5 +421,10 @@ pub fn ext_bytes_len(len_nibbles: u8) -> usize {
 
 #[inline]
 pub fn nibble_at(key: &[u8; 32], depth: usize) -> u8 {
-    TrieNibble4::get(key, depth)
+    let b = key[depth / 2];
+    if (depth & 1) == 0 {
+        (b >> 4) & 0x0F
+    } else {
+        b & 0x0F
+    }
 }

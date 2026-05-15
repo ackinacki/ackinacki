@@ -376,7 +376,7 @@ pub fn monitor_critical_task(
                     metrics.report_error(kind);
                 }
 
-                tracing::error!("Critical: {name} task panicked: {}", detailed(err))
+                tracing::error!(target: "monit", "Critical: {name} task panicked: {}", detailed(err))
             }
         }
     });

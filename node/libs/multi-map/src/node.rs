@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
-use trie_map::trie::hash::hash_branch_empty;
-use trie_map::trie::hash::hash_branch_sparse;
-use trie_map::trie::hash::hash_ext;
-use trie_map::trie::hash::hash_leaf_value;
-
+use crate::live_metrics::LiveMultiMapNodeCounter;
+use crate::ops::hash_branch_empty;
+use crate::ops::hash_branch_sparse;
+use crate::ops::hash_ext;
+use crate::ops::hash_leaf_value;
 use crate::MultiMapValue;
 
-/// Per-variant Arc node layout. Each variant holds its own Arc to a tightly-sized struct.
+/// Per-variant Arc node layout. Each variant holds its own Arc to a tightly sized struct.
 /// `Node::Empty` replaces `Option<Arc<Node>>` / `None`.
-/// sizeof(Node<V>) = 16 bytes (discriminant + pointer).
+/// `sizeof(Node<V>)` = 16 bytes (discriminant and pointer).
 #[derive(Clone)]
 pub enum Node<V: MultiMapValue> {
     Empty,
@@ -21,12 +21,14 @@ pub enum Node<V: MultiMapValue> {
 pub struct LeafData<V: MultiMapValue> {
     pub hash: [u8; 32],
     pub value: V,
+    pub(crate) _live_counter: LiveMultiMapNodeCounter,
 }
 
 pub struct BranchData<V: MultiMapValue> {
     pub hash: [u8; 32],
     pub bitmap: u16,
     pub children: [Node<V>; 16],
+    pub(crate) _live_counter: LiveMultiMapNodeCounter,
 }
 
 pub struct ExtData<V: MultiMapValue> {
@@ -34,19 +36,24 @@ pub struct ExtData<V: MultiMapValue> {
     pub nibble_count: u8,
     pub nibbles: [u8; 64],
     pub child: Node<V>,
+    pub(crate) _live_counter: LiveMultiMapNodeCounter,
 }
 
 impl<V: MultiMapValue> Node<V> {
     /// Create a leaf node. Hash = H(0x01 || value).
     pub fn new_leaf(value: V) -> Self {
         let hash = hash_leaf_value(&value);
-        Node::Leaf(Arc::new(LeafData { hash, value }))
+        Node::Leaf(Arc::new(LeafData {
+            hash,
+            value,
+            _live_counter: LiveMultiMapNodeCounter::new(),
+        }))
     }
 
     /// Create a branch node from a full 16-slot children array.
     ///
-    /// IMPORTANT: this does NOT perform Patricia compression.
-    /// Use `make_branch()` from ops module for the compressing variant.
+    /// IMPORTANT: this does NOT perform Patricia's compression.
+    /// Use `make_branch()` from the ops module for the compressing variant.
     pub fn new_branch(bitmap: u16, children: [Node<V>; 16]) -> Self {
         let mut nibs = [0u8; 16];
         let mut hashes = [[0u8; 32]; 16];
@@ -61,10 +68,15 @@ impl<V: MultiMapValue> Node<V> {
         }
 
         let hash = hash_branch_sparse(bitmap, &nibs[..out_len], &hashes[..out_len]);
-        Node::Branch(Arc::new(BranchData { hash, bitmap, children }))
+        Node::Branch(Arc::new(BranchData {
+            hash,
+            bitmap,
+            children,
+            _live_counter: LiveMultiMapNodeCounter::new(),
+        }))
     }
 
-    /// Create an extension node. `nibbles` is unpacked (one nibble per byte).
+    /// Create an extension node. `nibbles` are unpacked (one nibble per byte).
     /// Hash = H(0x03 || len || packed_nibbles || child_hash).
     pub fn new_ext(nibbles: &[u8], child: Node<V>) -> Self {
         debug_assert!(!nibbles.is_empty());
@@ -84,7 +96,13 @@ impl<V: MultiMapValue> Node<V> {
         }
 
         let hash = hash_ext(nibble_count, &packed[..packed_len], &child.hash());
-        Node::Ext(Arc::new(ExtData { hash, nibble_count, nibbles: nibble_arr, child }))
+        Node::Ext(Arc::new(ExtData {
+            hash,
+            nibble_count,
+            nibbles: nibble_arr,
+            child,
+            _live_counter: LiveMultiMapNodeCounter::new(),
+        }))
     }
 
     /// Create a branch node WITHOUT computing the hash.
@@ -96,7 +114,12 @@ impl<V: MultiMapValue> Node<V> {
                 bitmap |= 1u16 << nib;
             }
         }
-        Node::Branch(Arc::new(BranchData { hash: [0; 32], bitmap, children }))
+        Node::Branch(Arc::new(BranchData {
+            hash: [0; 32],
+            bitmap,
+            children,
+            _live_counter: LiveMultiMapNodeCounter::new(),
+        }))
     }
 
     /// Create an ext node WITHOUT computing the hash.
@@ -107,7 +130,13 @@ impl<V: MultiMapValue> Node<V> {
         let nibble_count = nibbles.len() as u8;
         let mut nibble_arr = [0u8; 64];
         nibble_arr[..nibbles.len()].copy_from_slice(nibbles);
-        Node::Ext(Arc::new(ExtData { hash: [0; 32], nibble_count, nibbles: nibble_arr, child }))
+        Node::Ext(Arc::new(ExtData {
+            hash: [0; 32],
+            nibble_count,
+            nibbles: nibble_arr,
+            child,
+            _live_counter: LiveMultiMapNodeCounter::new(),
+        }))
     }
 
     /// Get the hash of any node variant.
@@ -152,16 +181,31 @@ pub fn empty_map_hash() -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+    use std::io::Write;
+
     use blake3::Hasher;
     use node_types::Blake3Hashable;
     use serde::Deserialize;
     use serde::Serialize;
-    use trie_map::trie::hash::hash_branch_empty;
 
     use super::*;
 
     #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
     struct TV(pub u64);
+
+    impl MultiMapValue for TV {
+        fn write_value<W: Write>(&self, w: &mut W) -> anyhow::Result<()> {
+            w.write_all(&self.0.to_be_bytes())?;
+            Ok(())
+        }
+
+        fn read_value<R: Read>(r: &mut R) -> anyhow::Result<Self> {
+            let mut buf = [0u8; 8];
+            r.read_exact(&mut buf)?;
+            Ok(TV(u64::from_be_bytes(buf)))
+        }
+    }
 
     impl Blake3Hashable for TV {
         fn update_hasher(&self, hasher: &mut Hasher) {
@@ -173,7 +217,7 @@ mod tests {
     fn leaf_hash_matches_trie_map() {
         let v = TV(42);
         let leaf = Node::new_leaf(v);
-        let expected = trie_map::trie::hash::hash_leaf_value(&v);
+        let expected = hash_leaf_value(&v);
         assert_eq!(leaf.hash(), expected);
     }
 
@@ -194,7 +238,7 @@ mod tests {
 
         let nibs = [3u8, 7u8];
         let hashes = [child_a.hash(), child_b.hash()];
-        let expected = trie_map::trie::hash::hash_branch_sparse(bitmap, &nibs, &hashes);
+        let expected = hash_branch_sparse(bitmap, &nibs, &hashes);
         assert_eq!(branch.hash(), expected);
     }
 
@@ -206,7 +250,7 @@ mod tests {
         let ext = Node::new_ext(&nibbles, child);
 
         let packed = pack_nibbles(&nibbles);
-        let expected = trie_map::trie::hash::hash_ext(3, &packed, &child_hash);
+        let expected = hash_ext(3, &packed, &child_hash);
         assert_eq!(ext.hash(), expected);
     }
 

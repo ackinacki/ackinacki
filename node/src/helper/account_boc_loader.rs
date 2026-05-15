@@ -4,8 +4,7 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use account_state::ThreadAccount;
-use account_state::ThreadAccountsRepository;
+use account_state::VmAccount;
 use node_types::AccountIdentifier;
 use node_types::AccountRouting;
 use node_types::DAppIdentifier;
@@ -21,13 +20,13 @@ fn parse_account_routing(account_address: &str) -> anyhow::Result<AccountRouting
     if let Ok(routing) = AccountRouting::from_str(account_address) {
         return Ok(routing);
     }
-    Ok(AccountIdentifier::from_str(account_address)?.dapp_originator())
+    Ok(AccountIdentifier::from_str(account_address)?.redirect())
 }
 
 pub fn get_account_from_shard_state(
     repository: Arc<Mutex<RepositoryImpl>>,
     account_address: &str,
-) -> anyhow::Result<(ThreadAccount, Option<DAppIdentifier>, u64)> {
+) -> anyhow::Result<(VmAccount, Option<DAppIdentifier>, u64)> {
     tracing::trace!("get_account_from_shard_state: address={account_address}");
 
     let repo = repository.lock();
@@ -64,7 +63,7 @@ pub fn get_account_from_shard_state(
         let actual_dapp_id = acc
             .get_dapp_id()
             .ok_or(anyhow::format_err!("DApp ID must be set for redirect account"))?;
-        let actual_routing = acc_id.routing_with(actual_dapp_id);
+        let actual_routing = acc_id.routing(actual_dapp_id);
         tracing::trace!("get_account_from_shard_state: actual_routing={actual_routing:?}");
         let actual_thread = default_state.threads_table.find_match(&actual_routing);
         tracing::trace!("get_account_from_shard_state: actual_thread={actual_thread:?}");
@@ -81,27 +80,9 @@ pub fn get_account_from_shard_state(
     }
     tracing::trace!("Loaded acc");
 
-    if acc.is_unloaded() {
-        tracing::trace!("Account is external");
-        // TODO:
-        // verify with @vasily. It does seem like a bug
-        // I guess it must be account_thread_state
-        let root = match final_state.cached_accounts.get(&acc_id) {
-            Some((_, acc_root)) => acc_root.clone(),
-            None => repo.accounts_repository().load_account(
-                &acc_id,
-                acc.last_trans_hash(),
-                acc.last_trans_lt(),
-            )?,
-        };
-        if root.hash() != acc.account()?.hash() {
-            anyhow::bail!("External account cell hash mismatch");
-        }
-        acc.set_account(root)?;
-    }
     let dapp_id = acc.get_dapp_id();
     tracing::trace!("get_account_from_shard_state: dapp_id={dapp_id:?}");
-    let account = acc.account()?;
+    let account = acc.vm_account()?;
     tracing::trace!("return acc");
     tracing::trace!(
         "account source state data: {:?} {:?}",

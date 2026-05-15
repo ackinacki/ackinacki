@@ -20,18 +20,20 @@ use node_types::AccountRouting;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::types::AckiNackiBlock;
 
+pub type LoadPlanner = ::thread_load_balance::SimplePlanner<Bitmask<AccountRouting>>;
+
 // Note:
 // MAX_LOAD_DISPROPORTION can not be less than 2!
 // Otherwise it may create infinite splits and collapses on threads table.
 // TODO: write an example here.
 const MAX_LOAD_DISPROPORTION: Load = 2;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Proposal {
     pub proposed_threads_table: ThreadsTablePrefab,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ThreadAction {
     ContinueAsIs,
     Split(Proposal),
@@ -72,6 +74,9 @@ impl LoadBalancingService {
         thread_identifier: &ThreadIdentifier,
         threads_table: &ThreadsTable,
         max_table_size: usize,
+        _current_best_split_recommendation: thread_load_balance::Recommendation<
+            Bitmask<AccountRouting>,
+        >,
     ) -> anyhow::Result<ThreadAction, CheckError> {
         assert!(max_table_size > 0, "Empty threads table is not allowed");
         let current_load: Load = self.read_load(thread_identifier)?;

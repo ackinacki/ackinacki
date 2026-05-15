@@ -1,6 +1,6 @@
 [package]
 name = "node"
-version = "0.15.1"
+version = "0.16.0"
 edition.workspace = true
 rust-version.workspace = true
 build = 'build.rs'
@@ -12,6 +12,7 @@ anyhow.workspace = true
 bincode.workspace = true
 chitchat.workspace = true
 clap.workspace = true
+critical-thread.workspace = true
 database.workspace = true
 ext-messages-auth.workspace = true
 gosh_blst.workspace = true
@@ -23,6 +24,7 @@ http-server.workspace = true
 lazy_static.workspace = true
 message-router.workspace = true
 monotree.workspace = true
+multi-map.workspace = true
 network.workspace = true
 num-bigint.workspace = true
 num-traits.workspace = true
@@ -77,6 +79,7 @@ serde_yaml = "0.9.33"
 signal-hook = "0.3.17"
 tempfile.workspace = true
 thiserror = "2.0.3"
+thread-load-balance = { path = "./libs/thread-load-balance" }
 thread-reference-state = { path = "./libs/thread-reference-state" }
 tracing-test = "0.1"
 versioned_struct = { path = "./libs/versioned_struct" }
@@ -121,6 +124,8 @@ disable_db_for_messages = []
 delay-references = []
 
 fail_on_long_lock = []
+
+disable-live-counting = ["account-state/disable-live-counting"]
 
 # Record time of heavy operations
 timing = []

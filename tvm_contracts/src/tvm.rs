@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
-use account_state::ThreadAccount;
+use account_state::VmAccount;
 use serde_json::Value;
 use tvm_block::CommonMsgInfo;
 use tvm_block::ConfigParams;
@@ -58,7 +58,7 @@ impl Default for TvmExecutionOptions {
 impl TvmContract {
     pub fn run_get(
         &self,
-        account: &ThreadAccount,
+        account: &VmAccount,
         function_name: &str,
         args: Option<&Value>,
     ) -> anyhow::Result<Value> {

@@ -12,7 +12,8 @@ use super::share_blob::share_blob;
 use super::ResourceId;
 
 type ShareCallback = Box<dyn FnOnce(anyhow::Result<()>) + Send + Sync + 'static>;
-type LoadSuccessCallback = Box<dyn FnOnce(&mut dyn std::io::Read) + Send + Sync + 'static>;
+type LoadSuccessCallback =
+    Box<dyn FnOnce(&mut dyn std::io::Read) -> anyhow::Result<()> + Send + Sync + 'static>;
 type LoadErrCallback = Box<dyn FnOnce(anyhow::Error) + Send + Sync + 'static>;
 type KnownExternalFileshares = Vec<url::Url>;
 
@@ -87,12 +88,13 @@ pub(super) fn service_inner_loop(
                             options.deadline,
                         ) {
                             Ok(()) => {
-                                if let Ok(mut file) = std::fs::File::open(local_share_full_path) {
-                                    on_success(&mut file);
-                                } else {
-                                    on_error(anyhow::Error::msg(
-                                        "Failed to open a downloaded blob",
-                                    ));
+                                let load_result = (|| -> anyhow::Result<()> {
+                                    let mut file = std::fs::File::open(&local_share_full_path)?;
+                                    on_success(&mut file)
+                                })();
+                                if let Err(err) = load_result {
+                                    let _ = std::fs::remove_file(&local_share_full_path);
+                                    on_error(err);
                                 }
                             }
                             Err(error) => {

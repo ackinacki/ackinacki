@@ -31,6 +31,7 @@ use crate::node::UInt256;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::envelope_hash::AckiNackiEnvelopeHash;
 use crate::types::AckiNackiBlock;
+use crate::types::BlockHeight;
 use crate::types::BlockSeqNo;
 use crate::utilities::guarded::Guarded;
 use crate::versioning::ProtocolVersionSupport;
@@ -328,5 +329,12 @@ pub struct AttestationData {
 pub struct SyncFinalizedData {
     block_identifier: BlockIdentifier,
     block_seq_no: BlockSeqNo,
+    thread_refs: BTreeMap<ThreadIdentifier, BlockIdentifier>,
+}
+
+#[derive(TypedBuilder, Deserialize, Debug, Clone, Serialize, Getters)]
+pub struct SyncFinalizedWithHeightData {
+    block_identifier: BlockIdentifier,
+    block_height: BlockHeight,
     thread_refs: BTreeMap<ThreadIdentifier, BlockIdentifier>,
 }

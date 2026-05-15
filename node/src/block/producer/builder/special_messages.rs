@@ -66,7 +66,7 @@ impl BlockBuilder {
                     .address()
                     .clone()
                     .into();
-                let destination_routing = dst_addr.routing_with(key);
+                let destination_routing = dst_addr.routing(key);
 
                 let wrapped_message = WrappedMessage { message: message.clone() };
                 if self

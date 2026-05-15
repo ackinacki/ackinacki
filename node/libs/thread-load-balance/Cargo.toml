@@ -1,0 +1,16 @@
+[package]
+name = "thread-load-balance"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[lib]
+
+[dependencies]
+derive-getters = "0.5.0"
+derive_setters = { path = "../derive-setters" }
+expose = { path = "../expose-submodules-macro", package = "expose-submodules-macro" }
+typed-builder = "0.20.0"
+
+[features]

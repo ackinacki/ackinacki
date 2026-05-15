@@ -45,6 +45,10 @@ impl MessageDurableStorage {
         Self::new(MemStore::new(), "")
     }
 
+    pub fn seq_entries(&self) -> usize {
+        self.seq.lock().len()
+    }
+
     fn message_key(&self, hash: &str) -> Key {
         as_key!(NAMESPACE, &self.set_prefix, hash)
     }

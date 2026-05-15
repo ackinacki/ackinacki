@@ -1,5 +1,5 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
-use account_state::ThreadAccount;
+use account_state::VmAccount;
 use num_traits::Zero;
 use tvm_abi::TokenValue;
 use tvm_client::encoding::slice_from_cell;
@@ -13,7 +13,7 @@ fn get_mv_config_abi() -> tvm_client::abi::Abi {
     tvm_client::abi::Abi::Json(MV_CONFIG_ABI.to_string())
 }
 
-pub fn decode_mv_config_data(account: &ThreadAccount) -> anyhow::Result<MVConfig> {
+pub fn decode_mv_config_data(account: &VmAccount) -> anyhow::Result<MVConfig> {
     let abi = get_mv_config_abi();
     let mut config_data = MVConfig::default();
     let tvm_account = tvm_block::Account::try_from(account)?;

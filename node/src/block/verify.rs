@@ -1,3 +1,5 @@
+use account_state::AccountHashMismatchError;
+use account_state::ThreadAccountsRepository;
 use tvm_block::BlkPrevInfo;
 use tvm_block::ExtBlkRef;
 use tvm_block::GetRepresentationHash;
@@ -19,7 +21,6 @@ use crate::node::associated_types::NackData;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::shared_services::SharedServices;
 use crate::repository::accounts::AccountsRepository;
-use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
@@ -31,12 +32,35 @@ pub enum VerificationResult {
     ValidBlock,
     BadBlock,
     TooComplexExecution,
+    AccountHashMismatch,
 }
 
 impl VerificationResult {
     pub fn is_valid(&self) -> bool {
         *self == VerificationResult::ValidBlock
     }
+}
+
+fn classify_verify_block_generation_error(error: &anyhow::Error) -> Option<VerificationResult> {
+    if let Some(verify_error) = error.downcast_ref::<VerifyError>() {
+        // TODO: need to set Nack reason in this case
+        tracing::error!("verify block generation returned VerifyError: {verify_error:?}");
+        if verify_error.code == BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK {
+            return Some(VerificationResult::BadBlock);
+        }
+    }
+
+    if error.downcast_ref::<AccountHashMismatchError>().is_some() {
+        tracing::warn!("verify block generation returned AccountHashMismatchError: {error:?}");
+        return Some(VerificationResult::AccountHashMismatch);
+    }
+
+    if let Some(ExecutorError::TerminationDeadlineReached) = error.downcast_ref() {
+        tracing::trace!("verify block generation returned TerminationDeadlineReached");
+        return Some(VerificationResult::TooComplexExecution);
+    }
+
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -51,7 +75,7 @@ pub fn verify_block(
     block_nack: Vec<Envelope<NackData>>,
     block_state_repo: BlockStateRepository,
     accounts_repo: AccountsRepository,
-    thread_accounts_repository: NodeThreadAccountsRepository,
+    thread_accounts_repository: ThreadAccountsRepository,
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
     message_db: MessageDurableStorage,
@@ -92,19 +116,8 @@ pub fn verify_block(
         verification_block_production_result.as_ref().map(|(block, _)| block.seq_no())
     );
     if let Err(error) = &verification_block_production_result {
-        if let Some(verify_error) = error.downcast_ref::<VerifyError>() {
-            // TODO: need to set Nack reason in this case
-            tracing::error!("verify block generation returned VerifyError: {verify_error:?}");
-            if verify_error.code == BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK {
-                return Ok(VerificationResult::BadBlock);
-            }
-        }
-    }
-
-    if let Err(error) = &verification_block_production_result {
-        if let Some(ExecutorError::TerminationDeadlineReached) = error.downcast_ref() {
-            tracing::trace!("verify block generation returned TerminationDeadlineReached");
-            return Ok(VerificationResult::TooComplexExecution);
+        if let Some(result) = classify_verify_block_generation_error(error) {
+            return Ok(result);
         }
     }
 
@@ -270,4 +283,56 @@ fn display_block_transactions(block: &AckiNackiBlock) {
         tracing::error!("failed to iterate account blocks");
         return;
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use account_state::AccountHashMismatchError;
+    use anyhow::anyhow;
+    use node_types::AccountHash;
+    use node_types::AccountIdentifier;
+    use node_types::AccountRouting;
+    use node_types::DAppIdentifier;
+    use tvm_executor::ExecutorError;
+
+    use super::classify_verify_block_generation_error;
+    use super::VerificationResult;
+    use crate::block::producer::errors::_verify_error;
+    use crate::block::producer::errors::BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK;
+
+    #[test]
+    fn classify_verify_block_generation_error_returns_account_hash_mismatch() {
+        let error = anyhow!(AccountHashMismatchError {
+            routing: AccountRouting::new(
+                DAppIdentifier::new([1; 32]),
+                AccountIdentifier::new([2; 32])
+            ),
+            expected_hash: AccountHash::new([3; 32]),
+        });
+
+        assert!(matches!(
+            classify_verify_block_generation_error(&error),
+            Some(VerificationResult::AccountHashMismatch)
+        ));
+    }
+
+    #[test]
+    fn classify_verify_block_generation_error_keeps_verify_error_handling() {
+        let error = _verify_error(BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK);
+
+        assert!(matches!(
+            classify_verify_block_generation_error(&error),
+            Some(VerificationResult::BadBlock)
+        ));
+    }
+
+    #[test]
+    fn classify_verify_block_generation_error_keeps_executor_error_handling() {
+        let error = anyhow!(ExecutorError::TerminationDeadlineReached);
+
+        assert!(matches!(
+            classify_verify_block_generation_error(&error),
+            Some(VerificationResult::TooComplexExecution)
+        ));
+    }
 }

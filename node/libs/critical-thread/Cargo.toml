@@ -1,0 +1,12 @@
+[package]
+name = "critical-thread"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[lib]
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true

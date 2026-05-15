@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use account_state::ThreadAccountsRepository;
+use account_state::ThreadAccountsState;
 use node_types::AccountIdentifier;
 use node_types::AccountRouting;
 use node_types::DAppIdentifier;
@@ -10,8 +11,6 @@ use tvm_block::HashmapAugType;
 
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
-use crate::repository::accounts::NodeThreadAccountsRef;
-use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::types::account::WrappedAccount;
@@ -21,8 +20,8 @@ impl AckiNackiBlock {
     pub fn get_data_for_postprocessing(
         &self,
         initial_optimistic_state: &mut OptimisticStateImpl,
-        updated_shard_state: NodeThreadAccountsRef,
-        thread_accounts_repository: &NodeThreadAccountsRepository,
+        updated_shard_state: ThreadAccountsState,
+        thread_accounts_repository: &ThreadAccountsRepository,
     ) -> anyhow::Result<(
         HashMap<AccountIdentifier, HashSet<MessageIdentifier>>,
         HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
@@ -59,11 +58,11 @@ impl AckiNackiBlock {
                             .dest_dapp_id
                             .as_ref()
                             .map(DAppIdentifier::from)
-                            .unwrap_or_else(|| dest_account_id.use_as_dapp_id());
+                            .unwrap_or_else(|| dest_account_id.redirect_dapp_id());
                         let wrapped_message = WrappedMessage { message: msg };
                         let message_identifier = MessageIdentifier::from(&wrapped_message);
                         let entry = produced_internal_messages
-                            .entry(dest_account_id.routing_with(dest_dapp_id))
+                            .entry(dest_account_id.routing(dest_dapp_id))
                             .or_default();
                         entry.push((message_identifier, Arc::new(wrapped_message)));
                     }
@@ -99,23 +98,22 @@ impl AckiNackiBlock {
                     // tracing::trace!(target: "node", "get_data_for_postprocessing: dapp id changed {}", account_block.account_id().to_hex_string());
                     let acc_id = AccountIdentifier::from(account_block.account_id());
                     if let Some(account) = thread_accounts_repository
-                        .state_account(&updated_shard_state, &acc_id.dapp_originator())
+                        .state_account(&updated_shard_state, &acc_id.redirect())
                         .map_err(|err| tvm_types::error!("{}", err))?
                     {
                         match account.get_dapp_id() {
                             Some(new_dapp_id) => {
                                 accounts_that_changed_their_dapp_id.insert(
-                                    acc_id.routing_with(new_dapp_id),
+                                    acc_id.routing(new_dapp_id),
                                     Some(WrappedAccount { account_id: acc_id, account }),
                                 );
                             }
                             None => {
-                                accounts_that_changed_their_dapp_id
-                                    .insert(acc_id.dapp_originator(), None);
+                                accounts_that_changed_their_dapp_id.insert(acc_id.redirect(), None);
                             }
                         }
                     } else {
-                        accounts_that_changed_their_dapp_id.insert(acc_id.dapp_originator(), None);
+                        accounts_that_changed_their_dapp_id.insert(acc_id.redirect(), None);
                     }
                 }
                 Ok(true)

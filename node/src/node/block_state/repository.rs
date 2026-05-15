@@ -117,6 +117,10 @@ impl Hash for BlockState {
 }
 
 impl BlockStateRepository {
+    pub fn live_count(&self) -> usize {
+        self.map.read().len()
+    }
+
     pub fn new(
         block_state_repo_data_dir: PathBuf,
         save_service_sender: Arc<InstrumentedSender<StateSaveCommand>>,

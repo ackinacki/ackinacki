@@ -33,6 +33,14 @@ where
     pub fn meaningful_mask_bits(&self) -> &TBitsSource {
         &self.meaningful_mask_bits
     }
+
+    pub fn mask_bits_mut(&mut self) -> &mut TBitsSource {
+        &mut self.mask_bits
+    }
+
+    pub fn meaningful_mask_bits_mut(&mut self) -> &mut TBitsSource {
+        &mut self.meaningful_mask_bits
+    }
 }
 
 #[cfg(test)]

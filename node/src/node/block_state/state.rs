@@ -23,6 +23,7 @@ use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::bls::BLSSignatureScheme;
 use crate::helper::metrics::BlockProductionMetrics;
+use crate::live_metrics::LiveBlockStateCounter;
 use crate::node::associated_types::AttestationTargetType;
 use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BlockStatistics;
 use crate::node::AttestationData;
@@ -300,6 +301,11 @@ pub struct AckiNackiBlockState {
     #[setters(skip)]
     live_block_state_reported: bool,
 
+    #[serde(skip, default)]
+    #[getter(skip)]
+    #[setters(skip)]
+    _live_counter: LiveBlockStateCounter,
+
     #[getter(skip)]
     #[setters(skip)]
     pub event_timestamps: EventTimestamps,
@@ -436,19 +442,7 @@ impl AckiNackiBlockState {
         if self.live_block_state_reported {
             return;
         }
-        if let Some(metrics) = &self.metrics {
-            metrics.report_live_block_states_delta(1);
-        }
         self.live_block_state_reported = true;
-    }
-
-    fn report_dropped(&self) {
-        if !self.live_block_state_reported {
-            return;
-        }
-        if let Some(metrics) = &self.metrics {
-            metrics.report_live_block_states_delta(-1);
-        }
     }
 
     fn cleanup_subscribers(&mut self) {
@@ -868,7 +862,6 @@ has_cross_thread_ref_data_prepared={:?}\
 impl Drop for AckiNackiBlockState {
     fn drop(&mut self) {
         self.cleanup_subscribers();
-        self.report_dropped();
     }
 }
 

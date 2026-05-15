@@ -1,0 +1,88 @@
+---
+
+- name: "Ensures dir exists: {{ CADDY_DIR }}"
+  file:
+    path: "{{ CADDY_DIR | mandatory }}/"
+    state: directory
+    mode: u=rwx,g=,o=
+  when: USE_CADDY
+
+- name: "Ensures dir exists: {{ CADDY_DIR }}/caddy/"
+  file:
+    path: "{{ CADDY_DIR }}/caddy/"
+    state: directory
+  when: USE_CADDY
+
+- name: Production compose
+  ansible.builtin.template:
+    src: templates/compose.j2
+    dest: "{{ CADDY_DIR }}/compose.yaml"
+    mode: "0644"
+  register: compose
+  when: USE_CADDY
+
+- name: Copy caddyfile
+  ansible.builtin.template:
+    src: templates/Caddyfile.j2
+    dest: "{{ CADDY_DIR }}/caddy/Caddyfile"
+    mode: "0644"
+  register: caddyfile
+  when: USE_CADDY
+
+- name: Set NGINX_HOST variable
+  set_fact:
+    NGINX_HOST: >-
+      {{ HOST_PUBLIC_IP if NGINX_IP == "public" else
+         HOST_PRIVATE_IP if NGINX_IP == "private" else
+         NGINX_IP }}
+  when: USE_CADDY
+
+- name: Ensure .env
+  copy:
+    dest: "{{ CADDY_DIR }}/.env"
+    content: |
+      HOST_NAME={{ HOST_NAME }}
+      HOST_PUBLIC_IP={{ HOST_PUBLIC_IP }}
+      HOST_PRIVATE_IP={{ HOST_PRIVATE_IP | default(HOST_PUBLIC_IP) }}
+      EXTRA_HOSTS={{ EXTRA_HOSTS }}
+      CADDY_EMAIL={{ CADDY_EMAIL | mandatory }}
+      CADDY_NAME={{ CADDY_NAME }}
+      NGINX_HOST={{ NGINX_HOST }}
+      NGINX_PORT={{ NGINX_PORT }}
+    mode: u=rw,g=r,o=r
+  when: USE_CADDY
+
+- name: Copy TLS files
+  ansible.builtin.copy:
+    dest: "{{ CADDY_DIR }}/caddy/"
+    src: "{{ item }}"
+  with_items:
+    - "{{ CERT_FILE }}"
+    - "{{ CERT_KEY_FILE }}"
+  when: ENABLE_GEN_CERT is false and LOAD_CERT is true
+
+- name: Copy BK TLS files for hybrid BK-on-BM deployment
+  ansible.builtin.copy:
+    dest: "{{ CADDY_DIR }}/caddy/"
+    src: "{{ item }}"
+  with_items:
+    - "{{ CERT_FILE_BK_ON_BM }}"
+    - "{{ CERT_KEY_FILE_BK_ON_BM }}"
+  when:
+    - ENABLE_GEN_CERT is false and LOAD_CERT is true
+    - BK_ON_BM is defined and BK_ON_BM is true
+
+- name: Compose up
+  ansible.builtin.shell:
+    chdir: "{{ CADDY_DIR }}"
+    cmd: docker compose up -d --build --remove-orphans
+  when: USE_CADDY
+
+- name: Compose restart
+  ansible.builtin.shell:
+    chdir: "{{ CADDY_DIR }}"
+    cmd: docker compose restart
+  when:
+    - USE_CADDY
+    - caddyfile.changed
+    - not compose.changed

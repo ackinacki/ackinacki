@@ -1,0 +1,5 @@
+[package]
+name = "expose-submodules-macro"
+version = "0.1.0"
+edition = "2021"
+license-file.workspace = true

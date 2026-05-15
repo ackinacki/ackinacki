@@ -7,13 +7,13 @@ mod update;
 
 use std::collections::HashMap;
 
+use account_state::ThreadAccountsState;
 use node_types::ThreadIdentifier;
 use serde::Deserialize;
 use serde::Serialize;
 use tvm_types::UsageTree;
 
 use crate::block_keeper_system::BlockKeeperSet;
-use crate::repository::accounts::NodeThreadAccountsRef;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::types::ThreadsTable;
@@ -28,14 +28,14 @@ impl ZeroState {
     pub(crate) fn get_shard_state(
         &mut self,
         thread_identifier: &ThreadIdentifier,
-    ) -> anyhow::Result<NodeThreadAccountsRef> {
+    ) -> anyhow::Result<ThreadAccountsState> {
         self.state_mut(thread_identifier).map(|opt_state| opt_state.get_shard_state())
     }
 
     pub(crate) fn get_shard_state_with_usage_tree(
         &mut self,
         thread_identifier: &ThreadIdentifier,
-    ) -> anyhow::Result<(NodeThreadAccountsRef, UsageTree)> {
+    ) -> anyhow::Result<(ThreadAccountsState, UsageTree)> {
         self.state_mut(thread_identifier)
             .and_then(|opt_state| opt_state.get_shard_state().with_tvm_usage_tree())
     }
@@ -83,7 +83,8 @@ impl ZeroState {
     }
 
     pub fn init_thread(&mut self, thread_identifier: ThreadIdentifier) {
-        let state = OptimisticStateImpl { thread_id: thread_identifier, ..Default::default() };
+        let mut state = OptimisticStateImpl::default();
+        state.thread_id = thread_identifier;
         self.states.insert(thread_identifier, state);
     }
 

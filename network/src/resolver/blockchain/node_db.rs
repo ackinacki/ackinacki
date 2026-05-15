@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
-use account_state::ThreadAccount;
+use account_state::VmAccount;
 use node_types::AccountIdentifier;
 use rusqlite::OpenFlags;
 use tvm_types::UInt256;
@@ -35,7 +35,7 @@ impl NodeDb {
     fn get_account(
         conn: &rusqlite::Connection,
         id: &AccountIdentifier,
-    ) -> anyhow::Result<ThreadAccount> {
+    ) -> anyhow::Result<VmAccount> {
         let mut stmt = conn
             .prepare("SELECT boc FROM accounts WHERE id = ?")
             .map_err(|e| anyhow::format_err!("Failed to prepare query: {e}"))?;
@@ -112,7 +112,7 @@ impl BkSetProvider for NodeDb {
 }
 
 impl AccountProvider for NodeDb {
-    fn get_account(&self, id: &AccountIdentifier) -> Option<ThreadAccount> {
+    fn get_account(&self, id: &AccountIdentifier) -> Option<VmAccount> {
         self.with_connection(|conn| Self::get_account(conn, id))
     }
 }

@@ -1,12 +1,21 @@
 use std::sync::Arc;
 
+use account_state::live_accumulated_updates;
+use account_state::live_pending_updates;
+use account_state::live_thread_account_states;
+use account_state::live_thread_accounts;
+use account_state::unfinalized_pool_active_size;
+use account_state::unfinalized_pool_draining_size;
+use account_state::StateAccountsMetrics;
 use http_server::metrics::RoutingMetrics;
+use multi_map::live_metrics::live_multimap_nodes;
 use network::metrics::NetMetrics;
 use node_types::ThreadIdentifier;
 use opentelemetry::metrics::Counter;
 use opentelemetry::metrics::Gauge;
 use opentelemetry::metrics::Histogram;
 use opentelemetry::metrics::Meter;
+use opentelemetry::metrics::ObservableGauge;
 use opentelemetry::metrics::UpDownCounter;
 use opentelemetry::KeyValue;
 use telemetry_utils::instrumented_channel_ext::XInstrumentedChannelMetrics;
@@ -15,6 +24,9 @@ use telemetry_utils::now_ms;
 use telemetry_utils::out_of_bounds_guard;
 use telemetry_utils::TokioMetrics;
 
+use crate::live_metrics::live_acki_nacki_blocks;
+use crate::live_metrics::live_block_states;
+use crate::live_metrics::live_optimistic_state_impls;
 use crate::versioning::ProtocolVersion;
 use crate::versioning::ProtocolVersionSupport;
 
@@ -24,8 +36,13 @@ pub struct BlockProductionMetrics(Arc<BlockProductionMetricsInner>);
 struct BlockProductionMetricsInner {
     thread_load: Gauge<u64>,
     block_production_time: Histogram<u64>,
+    block_computation_time: Histogram<u64>,
+    block_serialization_time: Histogram<u64>,
+    tvm_block_serialization_time: Histogram<u64>,
     block_production_time_correction: Gauge<i64>,
     block_apply_time: Histogram<u64>,
+    block_tvm_apply_time: Histogram<u64>,
+    block_durable_apply_time: Histogram<u64>,
     transaction_execution_time: Histogram<u64>,
     finalization_time: Histogram<u64>,
     last_finalized_seqno: Gauge<u64>,
@@ -43,6 +60,7 @@ struct BlockProductionMetricsInner {
     load_from_archive_apply: Counter<u64>,
     block_received_attestation_sent: Histogram<u64>,
     child_parent_attestation: Histogram<u64>,
+    attestation_send_pulse_interval: Histogram<u64>,
     forks_count: Counter<u64>,
     parent_first_attestation_none: Counter<u64>,
     resend: Counter<u64>,
@@ -89,7 +107,16 @@ struct BlockProductionMetricsInner {
     aerospike_accounts_cache_len: Gauge<u64>,
     aerospike_accounts_pending_len: Gauge<u64>,
     temporary_block_states_size: Gauge<u64>,
-    live_block_states: UpDownCounter<i64>,
+    _live_thread_accounts: ObservableGauge<i64>,
+    _live_multimap_nodes: ObservableGauge<i64>,
+    _live_acki_nacki_blocks: ObservableGauge<i64>,
+    _live_thread_account_states: ObservableGauge<i64>,
+    _live_pending_updates: ObservableGauge<i64>,
+    _live_accumulated_updates: ObservableGauge<i64>,
+    _live_optimistic_state_impls: ObservableGauge<i64>,
+    _live_block_states: ObservableGauge<i64>,
+    _unfinalized_pool_active_size: ObservableGauge<u64>,
+    _unfinalized_pool_draining_size: ObservableGauge<u64>,
     produced_blocks_queue_size: Gauge<u64>,
     join_handle_monitor_buffer_size: Gauge<u64>,
 
@@ -134,6 +161,7 @@ pub struct Metrics {
     pub net: NetMetrics,
     pub node: BlockProductionMetrics,
     pub routing: RoutingMetrics,
+    pub state_accounts: StateAccountsMetrics,
     pub tokio: TokioMetrics,
 }
 
@@ -143,6 +171,7 @@ impl Metrics {
             net: NetMetrics::new(meter),
             node: BlockProductionMetrics::new(meter),
             routing: RoutingMetrics::new(meter),
+            state_accounts: StateAccountsMetrics::new(meter),
             tokio: TokioMetrics::new(meter),
         }
     }
@@ -159,11 +188,44 @@ impl BlockProductionMetrics {
                     5000.0,
                 ])
                 .build(),
+            block_computation_time: meter
+                .u64_histogram("node_block_computation_time")
+                .with_boundaries(vec![
+                    0.0, 50.0, 100.0, 150.0, 200.0, 250.0, 300.0, 330.0, 350.0, 370.0, 400.0,
+                    500.0, 700.0, 1000.0, 5000.0,
+                ])
+                .build(),
+            block_serialization_time: meter
+                .u64_histogram("node_block_serialization_time")
+                .with_boundaries(vec![
+                    0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 5000.0,
+                ])
+                .build(),
+            tvm_block_serialization_time: meter
+                .u64_histogram("node_tvm_block_serialization_time")
+                .with_boundaries(vec![
+                    0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 5000.0,
+                ])
+                .build(),
             block_production_time_correction: meter
                 .i64_gauge("node_block_production_time_correction")
                 .build(),
             block_apply_time: meter
                 .u64_histogram("node_block_apply_time")
+                .with_boundaries(vec![
+                    0.0, 10.0, 30.0, 50.0, 80.0, 110.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0,
+                    700.0, 1000.0,
+                ])
+                .build(),
+            block_tvm_apply_time: meter
+                .u64_histogram("node_block_tvm_apply_time")
+                .with_boundaries(vec![
+                    0.0, 10.0, 30.0, 50.0, 80.0, 110.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0,
+                    700.0, 1000.0,
+                ])
+                .build(),
+            block_durable_apply_time: meter
+                .u64_histogram("node_block_durable_apply_time")
                 .with_boundaries(vec![
                     0.0, 10.0, 30.0, 50.0, 80.0, 110.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0,
                     700.0, 1000.0,
@@ -223,6 +285,13 @@ impl BlockProductionMetrics {
                 .with_boundaries(vec![
                     100.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 1000.0, 1200.0, 1500.0,
                     2000.0, 2500.0, 3000.0, 3500.0, 4000.0, 5000.0, 7000.0, 10000.0,
+                ])
+                .build(),
+            attestation_send_pulse_interval: meter
+                .u64_histogram("node_attestation_send_pulse_interval")
+                .with_boundaries(vec![
+                    1.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 300.0, 500.0, 700.0, 1000.0, 1500.0,
+                    2000.0, 3000.0, 5000.0, 10000.0,
                 ])
                 .build(),
             forks_count: meter.u64_counter("node_forks_count").build(),
@@ -342,7 +411,46 @@ impl BlockProductionMetrics {
             temporary_block_states_size: meter
                 .u64_gauge("node_temporary_block_states_size")
                 .build(),
-            live_block_states: meter.i64_up_down_counter("node_live_block_states").build(),
+            _live_thread_accounts: meter
+                .i64_observable_gauge("node_live_thread_accounts")
+                .with_callback(|observer| observer.observe(live_thread_accounts(), &[]))
+                .build(),
+            _live_multimap_nodes: meter
+                .i64_observable_gauge("node_live_multimap_nodes")
+                .with_callback(|observer| observer.observe(live_multimap_nodes(), &[]))
+                .build(),
+            _live_acki_nacki_blocks: meter
+                .i64_observable_gauge("node_live_acki_nacki_blocks")
+                .with_callback(|observer| observer.observe(live_acki_nacki_blocks(), &[]))
+                .build(),
+            _live_thread_account_states: meter
+                .i64_observable_gauge("node_live_thread_account_states")
+                .with_callback(|observer| observer.observe(live_thread_account_states(), &[]))
+                .build(),
+            _live_pending_updates: meter
+                .i64_observable_gauge("node_state_accounts_live_pending_updates")
+                .with_callback(|observer| observer.observe(live_pending_updates(), &[]))
+                .build(),
+            _live_accumulated_updates: meter
+                .i64_observable_gauge("node_state_accounts_live_accumulated_updates")
+                .with_callback(|observer| observer.observe(live_accumulated_updates(), &[]))
+                .build(),
+            _live_optimistic_state_impls: meter
+                .i64_observable_gauge("node_live_optimistic_state_impls")
+                .with_callback(|observer| observer.observe(live_optimistic_state_impls(), &[]))
+                .build(),
+            _live_block_states: meter
+                .i64_observable_gauge("node_live_block_states")
+                .with_callback(|observer| observer.observe(live_block_states(), &[]))
+                .build(),
+            _unfinalized_pool_active_size: meter
+                .u64_observable_gauge("node_state_accounts_unfinalized_pool_active_size")
+                .with_callback(|observer| observer.observe(unfinalized_pool_active_size(), &[]))
+                .build(),
+            _unfinalized_pool_draining_size: meter
+                .u64_observable_gauge("node_state_accounts_unfinalized_pool_draining_size")
+                .with_callback(|observer| observer.observe(unfinalized_pool_draining_size(), &[]))
+                .build(),
             produced_blocks_queue_size: meter.u64_gauge("node_produced_blocks_queue_size").build(),
             join_handle_monitor_buffer_size: meter
                 .u64_gauge("node_join_handle_monitor_buffer_size")
@@ -377,9 +485,67 @@ impl BlockProductionMetrics {
             .record(correction_time, &[thread_id_attr(thread_id)]);
     }
 
+    pub fn report_block_computation_time(
+        &self,
+        computation_time: u128,
+        thread_id: &ThreadIdentifier,
+    ) {
+        if computation_time < 10_000 {
+            self.0
+                .block_computation_time
+                .record(computation_time as u64, &[thread_id_attr(thread_id)]);
+        } else {
+            tracing::warn!(
+                "Metric block_computation_time: value {computation_time} is out of bounds",
+            );
+        }
+    }
+
+    pub fn report_block_serialization_time(
+        &self,
+        serialization_time: u128,
+        thread_id: &ThreadIdentifier,
+    ) {
+        if serialization_time < 10_000 {
+            self.0
+                .block_serialization_time
+                .record(serialization_time as u64, &[thread_id_attr(thread_id)]);
+        } else {
+            tracing::warn!(
+                "Metric block_serialization_time: value {serialization_time} is out of bounds",
+            );
+        }
+    }
+
+    pub fn report_tvm_block_serialization_time(
+        &self,
+        serialization_time: u128,
+        thread_id: &ThreadIdentifier,
+    ) {
+        if serialization_time < 10_000 {
+            self.0
+                .tvm_block_serialization_time
+                .record(serialization_time as u64, &[thread_id_attr(thread_id)]);
+        } else {
+            tracing::warn!(
+                "Metric tvm_block_serialization_time: value {serialization_time} is out of bounds",
+            );
+        }
+    }
+
     pub fn report_block_apply_time(&self, value: u64, thread_id: &ThreadIdentifier) {
         out_of_bounds_guard!(value, "block_apply_time");
         self.0.block_apply_time.record(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_block_tvm_apply_time(&self, value: u64, thread_id: &ThreadIdentifier) {
+        out_of_bounds_guard!(value, "block_tvm_apply_time");
+        self.0.block_tvm_apply_time.record(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_block_durable_apply_time(&self, value: u64, thread_id: &ThreadIdentifier) {
+        out_of_bounds_guard!(value, "block_durable_apply_time");
+        self.0.block_durable_apply_time.record(value, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_transaction_execution_time(&self, value: u64, thread_id: &ThreadIdentifier) {
@@ -466,6 +632,11 @@ impl BlockProductionMetrics {
     pub fn report_child_parent_attestation(&self, value: u64, thread_id: &ThreadIdentifier) {
         out_of_bounds_guard!(value, "child_parent_attestation");
         self.0.child_parent_attestation.record(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_attestation_send_pulse_interval(&self, value: u64, thread_id: &ThreadIdentifier) {
+        out_of_bounds_guard!(value, "attestation_send_pulse_interval");
+        self.0.attestation_send_pulse_interval.record(value, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_forks_count(&self, thread_id: &ThreadIdentifier) {
@@ -700,10 +871,6 @@ impl BlockProductionMetrics {
 
     pub fn report_temporary_block_states_size(&self, value: u64) {
         self.0.temporary_block_states_size.record(value, &[]);
-    }
-
-    pub fn report_live_block_states_delta(&self, delta: i64) {
-        self.0.live_block_states.add(delta, &[]);
     }
 
     pub fn report_produced_blocks_queue_size(&self, value: u64, thread_id: &ThreadIdentifier) {

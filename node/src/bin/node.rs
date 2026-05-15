@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::fmt::Debug;
+use std::io::Read;
 use std::num::NonZero;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -96,11 +97,10 @@ use node::protocol::authority_switch::action_lock::ActionLockCollection;
 use node::protocol::authority_switch::action_lock::Authority;
 use node::protocol::authority_switch::find_last_prefinalized::find_last_prefinalized;
 use node::repository::accounts::AccountsRepository;
-use node::repository::accounts::NodeThreadAccounts;
-use node::repository::accounts::NodeThreadAccountsRepository;
 use node::repository::load_saved_blocks::SavedBlocksLoader;
 use node::repository::optimistic_state::OptimisticStateSaveCommand;
 use node::repository::start_optimistic_state_save_service;
+use node::repository::CrossThreadRefData;
 use node::repository::Repository;
 use node::services::blob_sync;
 use node::services::cross_thread_ref_data_availability_synchronization::CrossThreadRefDataAvailabilitySynchronizationService;
@@ -119,6 +119,7 @@ use node::types::AckiNackiBlock;
 use node::types::BlockHeight;
 use node::types::BlockSeqNo;
 use node::types::CollectedAttestations;
+use node::types::ThreadsTable;
 use node::utilities::guarded::Guarded;
 use node::utilities::guarded::GuardedMut;
 use node::utilities::thread_spawn_critical::SpawnCritical;
@@ -236,7 +237,8 @@ async fn tokio_main(args: Args) -> ExitCode {
     let exit_code = match execute(args, metrics).await {
         Ok(_) => ExitCode::SUCCESS,
         Err(err) => {
-            tracing::error!("{err:?}");
+            eprintln!("Node exited with error: {err:?}");
+            tracing::error!(target: "monit", "Node exited with error: {err:?}");
             ExitCode::FAILURE
         }
     };
@@ -247,7 +249,7 @@ async fn tokio_main(args: Args) -> ExitCode {
 fn verify_zerostate(
     zs: &ZeroState,
     message_db: &MessageDurableStorage,
-    thread_accounts_repository: &NodeThreadAccountsRepository,
+    thread_accounts_repository: &ThreadAccountsRepository,
 ) -> anyhow::Result<()> {
     tracing::trace!("Verifying ZeroState");
     let mut messages = HashSet::new();
@@ -287,10 +289,10 @@ fn verify_zerostate(
     let zero_thread_state = zs.state(&ThreadIdentifier::default())?;
     let accounts = zero_thread_state.get_shard_state();
 
-    match thread_accounts_repository.state_account(&accounts, &account_id.dapp_originator()) {
+    match thread_accounts_repository.state_account(&accounts, &account_id.redirect()) {
         Ok(Some(acc)) => {
             tracing::trace!(target: "builder", "account found");
-            let data = decode_dapp_config_data(&acc.account()?)?;
+            let data = decode_dapp_config_data(&acc.vm_account()?)?;
             match data {
                 Some(configdata) if configdata.is_unlimit => {
                     // OK - continue
@@ -386,11 +388,13 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     )?;
     let global_config =
         load_config_from_file::<GlobalConfig>(&args.global_config_path)?.ensure_min_sync_gap();
+
     let retired_global_config = args
         .retired_global_config_path
         .as_ref()
         .map(load_config_from_file::<GlobalConfig>)
         .transpose()?;
+
     tracing::info!("Loaded config");
 
     #[cfg(feature = "test_upgrade")]
@@ -491,10 +495,20 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let action_lock_db = ActionLockStorage::new(durable_store.clone(), &durable_set("lck"));
     let repo_path = PathBuf::from("./data");
 
-    let thread_accounts_repository =
-        NodeThreadAccounts::new_repository(repo_path.join("thread_state")).build()?;
+    let thread_accounts_repository = ThreadAccountsRepository::builder(repo_path.join("archive"))
+        .set_metrics(metrics.as_ref().map(|m| m.state_accounts.clone()))
+        // V2 backend uses Aerospike's native `client.batch(...)` for writes —
+        // one network round trip per batch instead of per-record. Big win for
+        // bulk paths (snapshot import + apply_update). See aerospike2 crate.
+        .set_accounts_aerospike2_store(
+            socket_address,
+            node::storage::aerospike::NAMESPACE,
+            durable_set("acc"),
+        )
+        .build()?;
 
-    let zerostate = if let Some(zs_path) = config.local.zerostate_path.as_ref() {
+    let zerostate_path = config.local.zerostate_path.clone();
+    let zerostate = if let Some(zs_path) = zerostate_path.as_ref() {
         let zerostate = ZeroState::load_from_file(zs_path).expect("Failed to open zerostate");
 
         let zerostate_hash = calc_file_hash(zs_path).expect("Failed to calculate zerostate hash");
@@ -507,6 +521,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     } else {
         None
     };
+
     let bk_set = if let Some(bk_set_update_path) = &config.local.bk_set_update_path {
         serde_json::from_slice::<ApiBkSet>(&std::fs::read(bk_set_update_path)?)?
     } else if let Some(zerostate) = zerostate.as_ref() {
@@ -610,8 +625,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             std::process::exit(100);
         }));
     }
-
-    let zerostate_path = config.local.zerostate_path.clone();
 
     tracing::trace!(
         "global_config.min_time_between_state_publish_directives={:?}",
@@ -754,6 +767,21 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             state_in.set_block_round(0)?;
             state_in.set_block_version_state(zero_block_version)?;
         }
+        node_shared_services.exec(|e| {
+            let zero_block_crtd = CrossThreadRefData::builder()
+                .block_identifier(BlockIdentifier::default())
+                .block_seq_no(BlockSeqNo::default())
+                .block_thread_identifier(ThreadIdentifier::default())
+                .outbound_messages(HashMap::new())
+                .outbound_accounts(HashMap::new())
+                .threads_table(ThreadsTable::new())
+                .parent_block_identifier(BlockIdentifier::default())
+                .block_refs(vec![])
+                .build();
+            e.cross_thread_ref_data_service
+                .set_cross_thread_ref_data(zero_block_crtd)
+                .expect("Should not fail");
+        });
         Ok(())
     })?;
     drop(state);
@@ -785,7 +813,10 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         repository_blocks,
         bk_set_update_tx,
         config_read.clone(),
-    );
+    )
+    .inspect_err(|err| {
+        tracing::error!("Repository creation error: {:?}", err);
+    })?;
 
     let (optimistic_save_tx, optimistic_save_rx) =
         instrumented_channel(node_metrics.clone(), OPTIMISTIC_STATE_SAVE_CHANNEL);
@@ -913,8 +944,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 continue;
             }
 
-            match std::fs::read(&snapshot_path) {
-                Ok(snapshot_bytes) => {
+            match std::fs::File::open(&snapshot_path) {
+                Ok(mut snapshot_file) => {
                     tracing::info!(
                         "Applying ThreadSnapshot for thread {:?}, block {:?}, seq_no={:?}",
                         header.thread_id,
@@ -923,30 +954,30 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     );
                     let skipped_attestation_ids =
                         Arc::new(Mutex::new(HashSet::<BlockIdentifier>::new()));
-                    let snapshot_bytes = if snapshot_bytes.starts_with(COMPRESSED_SNAPSHOT_MAGIC) {
-                        match zstd::decode_all(&snapshot_bytes[COMPRESSED_SNAPSHOT_MAGIC.len()..]) {
-                            Ok(decompressed) => {
-                                tracing::trace!(
-                                                "add_load_state_task: decompressed snapshot (compressed={} decompressed={})",
-                                                snapshot_bytes.len(), decompressed.len()
-                                            );
-                                decompressed
-                            }
-                            Err(e) => {
-                                tracing::trace!("add_load_state_task: decompression failed: {e}",);
-                                snapshot_bytes
+                    let mut magic = [0u8; COMPRESSED_SNAPSHOT_MAGIC.len()];
+                    let result = match std::io::Read::read_exact(&mut snapshot_file, &mut magic) {
+                        Ok(()) if &magic == COMPRESSED_SNAPSHOT_MAGIC => {
+                            match zstd::Decoder::new(snapshot_file) {
+                                Ok(mut decoder) => repository.set_state_from_snapshot_reader(
+                                    &mut decoder,
+                                    &header.thread_id,
+                                    skipped_attestation_ids,
+                                ),
+                                Err(e) => Err(e.into()),
                             }
                         }
-                    } else {
-                        // Legacy uncompressed snapshot — use as-is
-                        snapshot_bytes
+                        Ok(()) => {
+                            let mut reader = std::io::Cursor::new(magic).chain(snapshot_file);
+                            repository.set_state_from_snapshot_reader(
+                                &mut reader,
+                                &header.thread_id,
+                                skipped_attestation_ids,
+                            )
+                        }
+                        Err(e) => Err(e.into()),
                     };
 
-                    match repository.set_state_from_snapshot(
-                        snapshot_bytes,
-                        &header.thread_id,
-                        skipped_attestation_ids,
-                    ) {
+                    match result {
                         Ok(()) => {
                             applied_threads.insert(header.thread_id);
                             tracing::info!(
@@ -2341,8 +2372,16 @@ async fn test_execute() -> anyhow::Result<()> {
         config.local.unload_after,
         global_config.save_state_frequency,
     );
-    let thread_accounts_repository =
-        NodeThreadAccounts::new_repository(repo_path.join("thread_state")).build()?;
+    let thread_accounts_repository = ThreadAccountsRepository::builder(repo_path.join("archive"))
+        .set_metrics(metrics.as_ref().map(|m| m.state_accounts.clone()))
+        .build()?;
+
+    // Ensure archive threads exist before the repository is moved
+    for tid in zerostate.list_threads() {
+        let block_id = *zerostate.state(tid)?.get_block_id();
+        thread_accounts_repository.ensure_thread(tid, &block_id, false)?;
+    }
+
     let finalized_block_storage_size =
         1_usize + TryInto::<usize>::try_into(global_config.save_state_frequency * 2).unwrap();
     let repository_blocks =
@@ -2366,7 +2405,7 @@ async fn test_execute() -> anyhow::Result<()> {
         repository_blocks,
         bk_set_update_tx,
         config_read.clone(),
-    );
+    )?;
     let (optimistic_save_tx, _optimistic_save_rx) =
         instrumented_channel(node_metrics.clone(), OPTIMISTIC_STATE_SAVE_CHANNEL);
 

@@ -7,19 +7,13 @@ use std::sync::Mutex;
 
 use account_state::ThreadAccount;
 use account_state::ThreadAccountsRepository;
+use account_state::ThreadAccountsState;
 use anyhow::ensure;
 use node_types::AccountIdentifier;
 use node_types::ThreadIdentifier;
 use node_types::TransactionHash;
 
 use crate::helper::get_temp_file_path;
-
-pub type NodeThreadAccounts = account_state::FsCompositeThreadAccounts;
-pub type NodeThreadAccountsRepository =
-    <NodeThreadAccounts as account_state::ThreadAccounts>::Repository;
-pub type NodeThreadAccountsRef = <NodeThreadAccounts as account_state::ThreadAccounts>::Ref;
-pub type NodeThreadAccountsDiff = <NodeThreadAccounts as account_state::ThreadAccounts>::Diff;
-pub type NodeThreadAccountsBuilder = <NodeThreadAccounts as account_state::ThreadAccounts>::Builder;
 
 #[derive(Debug, Clone)]
 pub struct AccountsRepository {
@@ -102,12 +96,12 @@ impl AccountsRepository {
     pub fn clear_old_accounts(
         &self,
         thread_id: &ThreadIdentifier,
-        relevant_state: &NodeThreadAccountsRef,
+        relevant_state: &ThreadAccountsState,
         cut_lt: u64,
-        thread_accounts_repository: &NodeThreadAccountsRepository,
+        thread_accounts_repository: &ThreadAccountsRepository,
     ) {
         thread_accounts_repository
-            .state_iterate_all_accounts(relevant_state, |account_id, account| {
+            .state_iterate_tvm_accounts(relevant_state, |account_id, account| {
                 let path = self.data_dir.join(account_id.to_hex_string());
                 if let Ok(states) = std::fs::read_dir(path) {
                     for state in states.flatten() {

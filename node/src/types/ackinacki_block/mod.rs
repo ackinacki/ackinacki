@@ -6,7 +6,8 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
-use account_state::DurableThreadAccountsDiff;
+use account_state::DurableThreadAccountsStateDiff;
+use account_state::DurableThreadAccountsStateDiffSerDe;
 use derive_getters::Getters;
 use node_types::BlockIdentifier;
 use node_types::ThreadIdentifier;
@@ -16,6 +17,7 @@ use tvm_types::write_boc;
 use tvm_types::Cell;
 
 use crate::block_keeper_system::BlockKeeperSetChange;
+use crate::live_metrics::LiveAckiNackiBlockCounter;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
 use crate::types::ackinacki_block::common_section::CommonSection;
@@ -49,11 +51,12 @@ pub struct AckiNackiBlock {
     hash: Sha256Hash,
     raw_data: Option<Vec<u8>>,
     block_cell: Option<Cell>,
-    durable_state_update: DurableThreadAccountsDiff,
+    durable_state_update: DurableThreadAccountsStateDiff,
     /// Cached Merkle-hash block identifier.
     /// Set once after the final set_common_section(_, true) call or on deserialization.
     /// Not serialized — reconstructed from block data.
     cached_block_id: Option<BlockIdentifier>,
+    _live_counter: LiveAckiNackiBlockCounter,
 }
 
 impl Display for AckiNackiBlock {
@@ -97,7 +100,7 @@ impl AckiNackiBlock {
         #[cfg(feature = "monitor-accounts-number")] accounts_number_diff: i64,
         #[cfg(feature = "protocol_version_hash_in_block")]
         protocol_version_hash: ProtocolVersionHash,
-        durable_state_update: DurableThreadAccountsDiff,
+        durable_state_update: DurableThreadAccountsStateDiff,
     ) -> Self {
         // Note: according to the node logic we will update common section of every
         // block so there is no need to calculate hash here
@@ -127,6 +130,7 @@ impl AckiNackiBlock {
             block_cell: None,
             durable_state_update,
             cached_block_id: None,
+            _live_counter: LiveAckiNackiBlockCounter::new(),
         }
     }
 
@@ -224,8 +228,8 @@ impl AckiNackiBlock {
         let leaf_tvm: [u8; 32] = tvm_hash_bytes.try_into().expect("Hash must be 32 bytes");
 
         // Leaf 3: Durable state update hash
-        let durable_data =
-            bincode::serialize(&self.durable_state_update).expect("Must serialize durable state");
+        let durable: DurableThreadAccountsStateDiffSerDe = self.durable_state_update.clone().into();
+        let durable_data = bincode::serialize(&durable).expect("Must serialize durable state");
         let leaf_durable = leaf_hash(&durable_data);
 
         // Leaf 4: tx_cnt
@@ -336,7 +340,6 @@ impl AckiNackiBlock {
 
 #[cfg(test)]
 mod tests {
-    use account_state::DurableThreadAccountsDiff;
     use tvm_block::Block;
     use tvm_block::BlockExtra;
     use tvm_block::BlockInfo;
@@ -385,7 +388,7 @@ mod tests {
             0,
             #[cfg(feature = "protocol_version_hash_in_block")]
             Default::default(),
-            DurableThreadAccountsDiff::default(),
+            DurableThreadAccountsStateDiff::default(),
         )
     }
 

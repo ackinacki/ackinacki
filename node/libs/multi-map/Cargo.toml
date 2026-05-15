@@ -8,11 +8,11 @@ license-file.workspace = true
 [dependencies]
 anyhow.workspace = true
 bincode.workspace = true
+blake3 = { version = "1.8.3" }
 hex.workspace = true
 node-types.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
-trie-map.workspace = true
 
 [dev-dependencies]
 blake3 = "1"
@@ -21,6 +21,5 @@ rand.workspace = true
 rayon.workspace = true
 tempfile.workspace = true
 
-[[bench]]
-name = "perf_compare"
-harness = false
+[features]
+disable-live-counting = []

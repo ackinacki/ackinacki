@@ -63,6 +63,7 @@ impl Dispatcher {
             NetworkMessage::BlockRequest { thread_id, .. } => (false, *thread_id),
 
             NetworkMessage::SyncFinalized((_, thread_id)) => (false, *thread_id),
+            NetworkMessage::SyncFinalizedWithHeight((_, thread_id)) => (false, *thread_id),
             NetworkMessage::SyncFrom((_, thread_id)) => (false, *thread_id),
             // ignore TryStartSynchronization it is used for local interaction
             NetworkMessage::InnerCommand(Command::TryStartSynchronization) => {

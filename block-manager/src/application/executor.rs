@@ -6,11 +6,11 @@ use std::sync::atomic::AtomicU64;
 use std::sync::mpsc;
 use std::sync::Arc;
 
+use account_state::ThreadAccountsRepository;
 use database::sqlite::sqlite_helper::SqliteHelper;
 use database::sqlite::sqlite_helper::SqliteHelperConfig;
 use message_router::message_router::MessageRouter;
 use message_router::message_router::MessageRouterConfig;
-use node::repository::accounts::NodeThreadAccountsRepository;
 use parking_lot::Mutex;
 use tokio::signal::unix::SignalKind;
 use tokio::sync::watch;
@@ -32,7 +32,7 @@ pub async fn run(
     config: AppConfig,
     bp_resolver: Arc<Mutex<dyn UpdatableBPResolver>>,
     metrics: Option<Metrics>,
-    thread_accounts_repository: NodeThreadAccountsRepository,
+    thread_accounts_repository: ThreadAccountsRepository,
 ) -> anyhow::Result<()> {
     let message_router = Arc::new(MessageRouter::new(
         // bind socket can be anything, because message router will not be started

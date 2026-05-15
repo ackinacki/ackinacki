@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 use std::time::Instant;
 
-use account_state::ThreadAccount;
+use account_state::VmAccount;
 use ed25519_dalek::Signature;
 use ed25519_dalek::Signer;
 use ed25519_dalek::SigningKey;
@@ -60,7 +60,7 @@ struct WalletAddress {
 #[derive(Debug)]
 pub struct AccountRequest {
     pub address: String,
-    pub response: oneshot::Sender<anyhow::Result<(ThreadAccount, Option<DAppIdentifier>, u64)>>,
+    pub response: oneshot::Sender<anyhow::Result<(VmAccount, Option<DAppIdentifier>, u64)>>,
 }
 
 // The token issuer for external message authorization.
@@ -176,7 +176,7 @@ impl Token {
 async fn request_account(
     address: &str,
     account_request_tx: mpsc::Sender<AccountRequest>,
-) -> anyhow::Result<Option<ThreadAccount>> {
+) -> anyhow::Result<Option<VmAccount>> {
     let (response_tx, response_rx) = oneshot::channel();
     let request = AccountRequest { address: address.to_string(), response: response_tx };
 
@@ -458,10 +458,10 @@ mod tests {
         assert_eq!(result, TokenVerificationResult::TokenMalformed);
     }
 
-    fn construct_response_acc(boc_file: &str) -> anyhow::Result<ThreadAccount> {
+    fn construct_response_acc(boc_file: &str) -> anyhow::Result<VmAccount> {
         let boc = String::from_utf8(std::fs::read(format!("./fixtures/{boc_file}"))?)
             .map(|s| s.trim().to_owned())?;
-        ThreadAccount::read_base64(&boc)
+        VmAccount::read_base64(&boc)
     }
 
     async fn mock_account_request_handler(

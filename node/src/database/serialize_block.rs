@@ -8,8 +8,9 @@ use std::hash::RandomState;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use account_state::ThreadAccount;
 use account_state::ThreadAccountsRepository;
+use account_state::ThreadAccountsState;
+use account_state::VmAccount;
 use database::documents_db::DocumentsDb;
 use database::documents_db::TxActivitySummary;
 use database::serialization::AccountSerializationSet;
@@ -53,14 +54,12 @@ use crate::block::producer::builder::EngineTraceInfoData;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::node::associated_types::AttestationTargetType;
-use crate::repository::accounts::NodeThreadAccountsRef;
-use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::types::envelope_hash::envelope_hash;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockHeight;
 
 lazy_static::lazy_static!(
-    static ref ACCOUNT_NONE_HASH: AccountHash = ThreadAccount::default().hash();
+    static ref ACCOUNT_NONE_HASH: AccountHash = VmAccount::default().hash();
     pub static ref MINTER_ADDRESS: MsgAddressInt =
         MsgAddressInt::AddrStd(MsgAddrStd::with_address(None, 0, [0; 32].into()));
 );
@@ -69,9 +68,9 @@ pub fn reflect_block_in_db(
     archive: Arc<Mutex<dyn DocumentsDb>>,
     envelope: Envelope<AckiNackiBlock>,
     raw_block: Option<Vec<u8>>,
-    shard_state: &NodeThreadAccountsRef,
+    shard_state: &ThreadAccountsState,
     transaction_traces: &mut HashMap<UInt256, Vec<EngineTraceInfoData>, RandomState>,
-    thread_accounts_repository: &NodeThreadAccountsRepository,
+    thread_accounts_repository: &ThreadAccountsRepository,
 ) -> anyhow::Result<Vec<TxActivitySummary>> {
     let now_all = std::time::Instant::now();
 
@@ -234,7 +233,7 @@ pub fn reflect_block_in_db(
     for account_id in changed_acc.iter() {
         tracing::trace!(target: "database", "reflect_block_in_db: prepare account: {}", account_id.to_hex_string());
         let Some(shard_acc) =
-            thread_accounts_repository.state_account(shard_state, &account_id.dapp_originator())?
+            thread_accounts_repository.state_account(shard_state, &account_id.redirect())?
         else {
             // TODO remove this workaround after implementing state parsing in the BM
             tracing::warn!("Block and shard state mismatch: state doesn't contain changed account");
@@ -242,7 +241,7 @@ pub fn reflect_block_in_db(
         };
 
         let last_trans_hash = shard_acc.last_trans_hash();
-        let acc = shard_acc.account()?;
+        let acc = shard_acc.vm_account()?;
         let tvm_acc = tvm_block::Account::try_from(&acc)?;
 
         if tvm_acc.get_addr().is_some() {
@@ -518,8 +517,8 @@ pub(crate) fn prepare_transaction_archive_struct(
 }
 
 pub(crate) fn prepare_account_archive_struct(
-    account: ThreadAccount,
-    prev_account_state: Option<ThreadAccount>,
+    account: VmAccount,
+    prev_account_state: Option<VmAccount>,
     last_trans_chain_order: Option<String>,
     last_trans_hash: TransactionHash,
     dapp_id: Option<DAppIdentifier>,
@@ -552,7 +551,7 @@ pub(crate) fn prepare_account_archive_struct(
 pub(crate) fn prepare_deleted_account_archive_struct(
     account_id: AccountId,
     workchain_id: i32,
-    prev_account_state: Option<ThreadAccount>,
+    prev_account_state: Option<VmAccount>,
     last_trans_chain_order: Option<String>,
 ) -> anyhow::Result<ArchAccount> {
     let prev_code_hash = if let Some(prev_account_state) = prev_account_state {

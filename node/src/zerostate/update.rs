@@ -9,9 +9,8 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use account_state::ThreadAccount;
-use account_state::ThreadAccountsBuilder;
 use account_state::ThreadAccountsRepository;
-use account_state::ThreadStateAccount;
+use account_state::VmAccount;
 use node_types::AccountIdentifier;
 use node_types::DAppIdentifier;
 use node_types::ThreadIdentifier;
@@ -41,12 +40,12 @@ use crate::bls::gosh_bls::PubKey;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::node::SignerIndex;
-use crate::repository::accounts::NodeThreadAccountsRepository;
 use crate::storage::MessageDurableStorage;
 use crate::types::thread_message_queue::ThreadMessageQueueState;
 use crate::zerostate::ZeroState;
 
 const ZERO_ACCOUNT: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+const ZERO_STATE_BLOCK_HEIGHT: u64 = 0;
 
 impl ZeroState {
     #[allow(clippy::too_many_arguments)]
@@ -58,7 +57,7 @@ impl ZeroState {
         balance: Option<CurrencyCollection>,
         salt: Option<Cell>,
         thread_identifier: &ThreadIdentifier,
-        thread_accounts_repository: &NodeThreadAccountsRepository,
+        thread_accounts_repository: &ThreadAccountsRepository,
     ) -> anyhow::Result<String> {
         // Load state init
         let mut state_init = StateInit::construct_from_file(path.as_ref()).map_err(|e| {
@@ -102,11 +101,15 @@ impl ZeroState {
         }
 
         let shard_account =
-            ThreadStateAccount::new(tvm_account.try_into()?, TransactionHash::ZERO, 0, dapp_id)?;
+            ThreadAccount::new(tvm_account.try_into()?, TransactionHash::ZERO, 0, dapp_id)?;
         // Add an account to zerostate
         let (state, usage_tree) = self.get_shard_state_with_usage_tree(thread_identifier)?;
-        let mut shard_state = thread_accounts_repository.state_builder(&state);
-        shard_state.insert_account(&account_id.routing_with(DAppIdentifier::ZERO), &shard_account);
+        let mut shard_state = thread_accounts_repository.state_builder(
+            thread_identifier,
+            ZERO_STATE_BLOCK_HEIGHT,
+            &state,
+        );
+        shard_state.insert_account(&account_id.routing(DAppIdentifier::ZERO), &shard_account);
         self.state_mut(thread_identifier)?
             .set_shard_state(shard_state.build(Some(&usage_tree))?.new_state);
         #[cfg(feature = "monitor-accounts-number")]
@@ -120,18 +123,18 @@ impl ZeroState {
     pub fn add_account_to_zerostate(
         &mut self,
         thread_id: &ThreadIdentifier,
-        account: ThreadAccount,
+        account: VmAccount,
         dapp_id: DAppIdentifier,
-        thread_accounts_repository: &NodeThreadAccountsRepository,
+        thread_accounts_repository: &ThreadAccountsRepository,
     ) -> anyhow::Result<()> {
         let account_id =
             account.id().ok_or(anyhow::format_err!("Account does not have account id set"))?;
-        let shard_account =
-            ThreadStateAccount::new(account, TransactionHash::ZERO, 0, Some(dapp_id))?;
+        let shard_account = ThreadAccount::new(account, TransactionHash::ZERO, 0, Some(dapp_id))?;
         // Add an account to zerostate
         let (state, usage_tree) = self.get_shard_state_with_usage_tree(thread_id)?;
-        let mut shard_state = thread_accounts_repository.state_builder(&state);
-        shard_state.insert_account(&account_id.dapp_originator(), &shard_account);
+        let mut shard_state =
+            thread_accounts_repository.state_builder(thread_id, ZERO_STATE_BLOCK_HEIGHT, &state);
+        shard_state.insert_account(&account_id.redirect(), &shard_account);
         self.state_mut(thread_id)?.set_shard_state(shard_state.build(Some(&usage_tree))?.new_state);
         #[cfg(feature = "monitor-accounts-number")]
         {

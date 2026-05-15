@@ -11,6 +11,7 @@ use crate::node::SignerIndex;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::types::AckiNackiBlock;
+use crate::types::ThreadsTable;
 use crate::versioning::ProtocolVersion;
 
 // Intentionally not allowing direct read of assumptions.
@@ -22,6 +23,7 @@ pub struct Assumptions {
     new_to_bk_set: BTreeSet<SignerIndex>,
     block_version: ProtocolVersion,
     producer_is_in_bk_set: bool,
+    threads_table: ThreadsTable,
 }
 
 #[derive(TypedBuilder, Getters)]

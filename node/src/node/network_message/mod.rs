@@ -20,6 +20,7 @@ use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
 use crate::node::associated_types::SyncFinalizedData;
+use crate::node::associated_types::SyncFinalizedWithHeightData;
 use crate::node::NodeIdentifier;
 use crate::protocol::authority_switch::network_message::AuthoritySwitch;
 use crate::types::bp_selector::ProducerSelector;
@@ -117,6 +118,7 @@ pub enum NetworkMessage {
     // SyncFinalized was intended to be used in case of a disaster to restart (continue) the network
     // SyncFinalized is broadcasted when network is not running.
     SyncFinalized((Envelope<SyncFinalizedData>, ThreadIdentifier)),
+    SyncFinalizedWithHeight((Envelope<SyncFinalizedWithHeightData>, ThreadIdentifier)),
     // Also, SyncFrom is redundant due to the authority switch mechanism.
     // However, keeping it for the review. (less security risk)
     SyncFrom((BlockSeqNo, ThreadIdentifier)),
@@ -164,6 +166,7 @@ impl Debug for NetworkMessage {
                 BlockRequest { .. } => f.write_str("BlockRequest"),
 
                 SyncFinalized(_) => f.write_str("SyncFinalized"),
+                SyncFinalizedWithHeight(_) => f.write_str("SyncFinalizedWithHeight"),
                 SyncFrom(_) => f.write_str("SyncFrom"),
                 AuthoritySwitchProtocol(AuthoritySwitch::Request(_)) => {
                     f.write_str("AuthoritySwitch::Request")
@@ -204,6 +207,7 @@ impl Debug for NetworkMessage {
                 BlockRequest { .. } => "BlockRequest",
 
                 SyncFinalized(_) => "SyncFinalized",
+                SyncFinalizedWithHeight(_) => "SyncFinalizedWithHeight",
                 SyncFrom(_) => "SyncFrom",
                 AuthoritySwitchProtocol(AuthoritySwitch::Request(_)) => "AuthoritySwitch::Request",
                 AuthoritySwitchProtocol(AuthoritySwitch::Reject(_)) => "AuthoritySwitch::Reject",
