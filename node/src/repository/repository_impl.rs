@@ -2225,8 +2225,8 @@ impl RepositoryImpl {
         const RETAIN: bool = true;
         const REMOVE: bool = false;
         let mut other_thread_states = 0;
-        let before_count = self.optimistic_state.guarded(|s| s.len());
-        self.optimistic_state.guarded_mut(|states| {
+        let (before_count, after_count) = self.optimistic_state.guarded_mut(|states| {
+            let before_count = states.len();
             states.retain(|_, e| {
                 if e.get_thread_id() != thread_id {
                     other_thread_states += 1;
@@ -2236,13 +2236,14 @@ impl RepositoryImpl {
                     return RETAIN;
                 }
                 REMOVE
-            })
+            });
+            let after_count = states.len();
+            (before_count, after_count)
         });
-        let after_count = self.optimistic_state.guarded(|s| s.len());
         tracing::info!(
             target: "mem",
             "clear_optimistic_states: thread={thread_id:?} finalized_seq={last_finalized_seq_no:?} before={before_count} after={after_count} removed={} other_thread_states={other_thread_states}",
-            before_count - after_count,
+            before_count.saturating_sub(after_count),
         );
 
         self.saved_states.guarded_mut(|all_states| {

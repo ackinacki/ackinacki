@@ -9,11 +9,14 @@ use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::Write;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 
 use critical_thread::SpawnCritical;
+use lru::LruCache;
 use multi_map::node::Node as MultiMapNode;
 use multi_map::MultiMap;
 use node_types::AccountHash;
@@ -24,6 +27,7 @@ use node_types::DAppIdentifier;
 use node_types::DAppIdentifierPath;
 use node_types::ThreadAccountsHash;
 use node_types::ThreadIdentifier;
+use parking_lot::Mutex;
 use serde::Deserialize;
 use serde::Serialize;
 use tvm_block::Serializable;
@@ -258,6 +262,70 @@ use crate::thread_accounts::durable::maps::ThreadAccountMap;
 use crate::thread_accounts::kv_store::aerospike::AerospikeAccountsCacheStat;
 
 const DEFAULT_ACCUMULATED_UPDATE_BLOCK_LIMIT: usize = 2000;
+// TODO: move cache capacities into account-state/archive configuration if tuning is needed.
+const ACCOUNT_READ_CACHE_L1_CAPACITY: usize = 1_500;
+const ACCOUNT_READ_CACHE_L2_CAPACITY: usize = 1_500;
+const ACCOUNT_READ_CACHE_L1_THRESHOLD: Duration = Duration::from_millis(15);
+const ACCOUNT_READ_CACHE_L2_THRESHOLD: Duration = Duration::from_millis(3);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CacheLevel {
+    L1,
+    L2,
+}
+
+struct AccountReadCache {
+    l1: Mutex<LruCache<AccountHash, Arc<ThreadAccount>>>,
+    l2: Mutex<LruCache<AccountHash, Arc<ThreadAccount>>>,
+}
+
+impl AccountReadCache {
+    fn new() -> Self {
+        Self {
+            l1: Mutex::new(LruCache::new(
+                NonZeroUsize::new(ACCOUNT_READ_CACHE_L1_CAPACITY)
+                    .expect("L1 account read cache capacity must be non-zero"),
+            )),
+            l2: Mutex::new(LruCache::new(
+                NonZeroUsize::new(ACCOUNT_READ_CACHE_L2_CAPACITY)
+                    .expect("L2 account read cache capacity must be non-zero"),
+            )),
+        }
+    }
+
+    fn get(&self, hash: &AccountHash) -> Option<(CacheLevel, Arc<ThreadAccount>)> {
+        if let Some(account) = self.l1.lock().get(hash).cloned() {
+            return Some((CacheLevel::L1, account));
+        }
+        self.l2.lock().get(hash).cloned().map(|account| (CacheLevel::L2, account))
+    }
+
+    fn insert_by_elapsed(
+        &self,
+        hash: AccountHash,
+        account: &ThreadAccount,
+        elapsed: Duration,
+    ) -> Option<CacheLevel> {
+        if elapsed > ACCOUNT_READ_CACHE_L1_THRESHOLD {
+            self.insert_l1(hash, Arc::new(account.clone()));
+            return Some(CacheLevel::L1);
+        }
+        if elapsed > ACCOUNT_READ_CACHE_L2_THRESHOLD {
+            self.insert_l2(hash, Arc::new(account.clone()));
+            return Some(CacheLevel::L2);
+        }
+        None
+    }
+
+    fn insert_l1(&self, hash: AccountHash, account: Arc<ThreadAccount>) {
+        self.l1.lock().put(hash, account);
+        self.l2.lock().pop(&hash);
+    }
+
+    fn insert_l2(&self, hash: AccountHash, account: Arc<ThreadAccount>) {
+        self.l2.lock().put(hash, account);
+    }
+}
 
 #[derive(Clone)]
 pub struct DurableThreadAccountsRepository {
@@ -265,6 +333,7 @@ pub struct DurableThreadAccountsRepository {
     map_repo: ThreadAccountMapRepository,
     archive: ArchiveStateStore,
     accumulator: Arc<ArchiveUpdateAccumulator>,
+    account_read_cache: Arc<AccountReadCache>,
     update_thread: Arc<parking_lot::Mutex<Option<std::thread::JoinHandle<()>>>>,
     metrics: Option<StateAccountsMetrics>,
 }
@@ -290,6 +359,7 @@ impl DurableThreadAccountsRepository {
             map_repo,
             archive,
             accumulator,
+            account_read_cache: Arc::new(AccountReadCache::new()),
             update_thread: Arc::new(parking_lot::Mutex::new(None)),
             metrics,
         })
@@ -473,10 +543,41 @@ impl DurableThreadAccountsRepository {
                         ArchiveOperation::Remove => return Ok(None),
                     }
                 }
+                // 3. Content-addressed read cache by expected hash.
+                if let Some((level, account)) = self.account_read_cache.get(&vm_hash) {
+                    tracing::trace!(
+                        target: "mem",
+                        routing = %routing,
+                        hash = %vm_hash.to_hex_string(),
+                        level = ?level,
+                        "account read cache hit",
+                    );
+                    return Ok(Some(Arc::unwrap_or_clone(account)));
+                }
+                tracing::trace!(
+                    target: "mem",
+                    routing = %routing,
+                    hash = %vm_hash.to_hex_string(),
+                    "account read cache miss",
+                );
                 // 3. Archive lookup by routing — verify hash
+                let started = Instant::now();
                 if let Some(account) = self.archive.read_account_operation(routing)? {
+                    let elapsed = started.elapsed();
                     let account_hash = account.vm_account()?.hash();
                     if account_hash == vm_hash {
+                        if let Some(level) =
+                            self.account_read_cache.insert_by_elapsed(vm_hash, &account, elapsed)
+                        {
+                            tracing::trace!(
+                                target: "mem",
+                                routing = %routing,
+                                hash = %vm_hash.to_hex_string(),
+                                level = ?level,
+                                elapsed_ms = elapsed.as_millis(),
+                                "account read cache insert",
+                            );
+                        }
                         return Ok(Some(account));
                     }
                 }
@@ -1328,8 +1429,10 @@ enum AccountUpdate {
 mod tests {
     use std::io::Cursor;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::time::Duration;
 
+    use node_types::AccountHash;
     use node_types::AccountIdentifier;
     use node_types::AccountRouting;
     use node_types::BlockIdentifier;
@@ -1342,7 +1445,14 @@ mod tests {
     use super::read_snapshot_account_entry;
     use super::validate_snapshot_account_bytes;
     use super::write_snapshot_account_entry;
+    use super::AccountReadCache;
+    use super::CacheLevel;
+    use crate::thread_accounts::durable::archive::update::AccumulatedUpdate;
     use crate::thread_accounts::durable::AccountInfo;
+    use crate::ArchiveOperation;
+    use crate::ArchiveStateStore;
+    use crate::DurableThreadAccountsRepository;
+    use crate::DurableThreadAccountsState;
     use crate::ThreadAccount;
     use crate::ThreadAccountsRepository;
     use crate::UpdatePhase;
@@ -1372,6 +1482,22 @@ mod tests {
         (routing, acc)
     }
 
+    fn account_hash(account: &ThreadAccount) -> AccountHash {
+        account.vm_account().unwrap().hash()
+    }
+
+    fn state_with_account_hash(
+        repo: &DurableThreadAccountsRepository,
+        routing: AccountRouting,
+        hash: AccountHash,
+    ) -> DurableThreadAccountsState {
+        let map = repo.map_repo().map_update(
+            &DurableThreadAccountsRepository::new_state().0.map,
+            &[(routing, Some(AccountInfo::VmAccountHash(hash)))],
+        );
+        DurableThreadAccountsState::with_map(map)
+    }
+
     fn setup_repo() -> (ThreadAccountsRepository, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let repo = ThreadAccountsRepository::builder(PathBuf::from(dir.path()))
@@ -1389,6 +1515,113 @@ mod tests {
             repo.flush_pending_and_wait_for_drain(Duration::from_secs(5)),
             "archive accumulator did not drain"
         );
+    }
+
+    #[test]
+    fn account_read_cache_inserts_into_l1_when_elapsed_exceeds_15ms() {
+        let cache = AccountReadCache::new();
+        let (_, account) = new_acc(200);
+        let hash = account_hash(&account);
+
+        let level = cache.insert_by_elapsed(hash, &account, Duration::from_millis(16)).unwrap();
+
+        assert_eq!(level, CacheLevel::L1);
+        assert_eq!(
+            cache.get(&hash).map(|(level, account)| (level, account.as_ref().clone())),
+            Some((CacheLevel::L1, account))
+        );
+    }
+
+    #[test]
+    fn account_read_cache_inserts_into_l2_when_elapsed_is_between_thresholds() {
+        let cache = AccountReadCache::new();
+        let (_, account) = new_acc(201);
+        let hash = account_hash(&account);
+
+        let level = cache.insert_by_elapsed(hash, &account, Duration::from_millis(4)).unwrap();
+
+        assert_eq!(level, CacheLevel::L2);
+        assert_eq!(
+            cache.get(&hash).map(|(level, account)| (level, account.as_ref().clone())),
+            Some((CacheLevel::L2, account))
+        );
+    }
+
+    #[test]
+    fn account_read_cache_does_not_insert_when_elapsed_is_at_or_below_3ms() {
+        let cache = AccountReadCache::new();
+        let (_, account) = new_acc(202);
+        let hash = account_hash(&account);
+
+        assert!(cache.insert_by_elapsed(hash, &account, Duration::from_millis(3)).is_none());
+        assert!(cache.get(&hash).is_none());
+    }
+
+    #[test]
+    fn account_read_cache_checks_l1_before_l2() {
+        let cache = AccountReadCache::new();
+        let (_, l1_account) = new_acc(203);
+        let (_, l2_account) = new_acc(204);
+        let hash = AccountHash::new(new_u256("cache_hash", 1));
+
+        cache.insert_l2(hash, Arc::new(l2_account));
+        cache.insert_l1(hash, Arc::new(l1_account.clone()));
+
+        assert_eq!(
+            cache.get(&hash).map(|(level, account)| (level, account.as_ref().clone())),
+            Some((CacheLevel::L1, l1_account))
+        );
+    }
+
+    #[test]
+    fn hash_mismatch_from_archive_is_not_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = ArchiveStateStore::in_memory();
+        let repo =
+            DurableThreadAccountsRepository::new(PathBuf::from(dir.path()), archive, None).unwrap();
+        let thread_id = ThreadIdentifier::default();
+        let block_0 = BlockIdentifier::default();
+        let block_1 = BlockIdentifier::new(new_u256("mismatch_block", 1));
+
+        repo.ensure_thread(&thread_id, &block_0, true).unwrap();
+
+        let (routing, expected_account) = new_acc(205);
+        let (_, archived_account) = new_acc(206);
+        let expected_hash = account_hash(&expected_account);
+        let state = state_with_account_hash(&repo, routing, expected_hash);
+
+        let mut update = AccumulatedUpdate::new();
+        update.transition_thread(thread_id, block_0, block_1);
+        update.insert(routing, ArchiveOperation::UpdateOrInsert(archived_account));
+        repo.archive.apply_update(&update).unwrap();
+
+        let err = repo
+            .find_account_with_info(&state, &routing, AccountInfo::VmAccountHash(expected_hash))
+            .unwrap_err();
+
+        assert!(err.downcast_ref::<super::AccountHashMismatchError>().is_some());
+        assert!(repo.account_read_cache.get(&expected_hash).is_none());
+    }
+
+    #[test]
+    fn repository_lookup_returns_account_from_hash_cache_without_archive_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = ArchiveStateStore::in_memory();
+        let repo =
+            DurableThreadAccountsRepository::new(PathBuf::from(dir.path()), archive, None).unwrap();
+
+        let (routing, account) = new_acc(207);
+        let hash = account_hash(&account);
+        let state = state_with_account_hash(&repo, routing, hash);
+        repo.account_read_cache.insert_l1(hash, Arc::new(account.clone()));
+
+        let resolved = repo
+            .find_account_with_info(&state, &routing, AccountInfo::VmAccountHash(hash))
+            .unwrap()
+            .expect("cache hit should return account");
+
+        assert_eq!(resolved, account);
+        assert!(repo.archive.read_account_operation(&routing).unwrap().is_none());
     }
 
     #[test]

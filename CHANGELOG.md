@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.1] – 2026-05-20
+
+### Fixes
+- Fixed block production slowdowns on large accounts by caching slow durable archive account reads by VM account hash and reusing cached account bodies only for the expected state-map hash
+- Fixed an underflow panic in optimistic-state cleanup logging when the cache size changed between cleanup and the removed-count calculation
+
+---
+
 ## [0.16.0] – 2026-05-13
 
 ### New / Improvements

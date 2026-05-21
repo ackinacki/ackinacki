@@ -16,6 +16,7 @@ critical-thread.workspace = true
 crossbeam-channel = "0.5.15"
 derive-getters = "0.5.0"
 derive_setters = { path = "../derive-setters" }
+lru = "0.12.3"
 multi-map.workspace = true
 node-types.workspace = true
 opentelemetry.workspace = true

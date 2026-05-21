@@ -699,10 +699,21 @@ impl BlockBuilder {
         &mut self,
         acc_routing: &AccountRouting,
     ) -> anyhow::Result<Option<ThreadAccount>> {
-        self.accounts_builder.account(acc_routing).map_err(|e| {
+        let started_at = std::time::Instant::now();
+        tracing::info!(target: "builder", routing = ?acc_routing, "get_account: start");
+        let result = self.accounts_builder.account(acc_routing).map_err(|e| {
             tracing::error!(target: "builder", "Failed to get account: {e}");
             e
-        })
+        });
+        tracing::info!(
+            target: "builder",
+            routing = ?acc_routing,
+            found = result.as_ref().map(|acc| acc.is_some()).unwrap_or(false),
+            ok = result.is_ok(),
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "get_account: finish",
+        );
+        result
     }
 
     fn resolve_account(&mut self, dst: &ExtMessageDst) -> anyhow::Result<Option<ThreadAccount>> {
@@ -1065,7 +1076,7 @@ impl BlockBuilder {
         mv_config: MVConfig,
     ) -> anyhow::Result<(bool, bool)> {
         let mut verify_block_contains_missing_messages_from_prev_state = false;
-        tracing::debug!(target: "builder", "Executing internal messages: {:?}", message_queue);
+        tracing::info!(target: "builder", "Executing internal messages: {}", message_queue.length());
         let (block_unixtime, block_lt) = self.at_and_lt();
         // let out_queue = self.out_queue_info.out_queue().clone();
         // let msg_count = out_queue
@@ -1417,7 +1428,7 @@ impl BlockBuilder {
 
         let mut mvconfig = MVConfig::default();
         let acc_id = AccountIdentifier::from_str(MV_CONFIG_CONTRACT_ADDR)
-            .map_err(|e| anyhow::format_err!("Failed to calc mvconfig address: {e}"))?;
+            .map_err(|e| anyhow::format_err!("Failed to calc mv config address: {e}"))?;
         if let Some(acc) = self.get_account_from_original_state(&acc_id)? {
             if !acc.is_redirect() {
                 if let Ok(config) = decode_mv_config_data(&acc.vm_account()?) {
@@ -1427,6 +1438,7 @@ impl BlockBuilder {
                 tracing::trace!(target: "builder", "MVConfig is redirect, set default");
             }
         }
+        tracing::info!(target: "builder", "mv config successfully read");
 
         let (mut block_full, verify_block_contains_missing_messages_from_prev_state) = self
             .execute_all_internal_messages(
@@ -2546,7 +2558,9 @@ impl BlockBuilder {
         >,
         verify_block_contains_missing_messages_from_prev_state: &mut bool,
     ) -> anyhow::Result<Option<(Message, MessageIdentifier)>> {
-        Ok::<_, anyhow::Error>(loop {
+        let started_at = std::time::Instant::now();
+        tracing::info!(target: "builder", "get_next_int_message: start");
+        let result = Ok::<_, anyhow::Error>(loop {
             {
                 if let Some(checker) = check_messages_map.as_ref() {
                     if checker.is_empty() {
@@ -2711,7 +2725,15 @@ impl BlockBuilder {
                     break None;
                 }
             }
-        })
+        });
+        tracing::info!(
+            target: "builder",
+            has_message = result.as_ref().map(|msg| msg.is_some()).unwrap_or(false),
+            ok = result.is_ok(),
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "get_next_int_message: finish",
+        );
+        result
     }
 }
 
