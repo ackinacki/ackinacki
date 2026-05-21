@@ -1830,6 +1830,10 @@ fn test_redirect_stub_removed_when_account_removed() -> anyhow::Result<()> {
         repo.state_account(&state2, &default_routing)?.is_none(),
         "Redirect stub should also be removed"
     );
+    assert!(
+        repo.durable_map_repo().archive_account_for_test(&default_routing)?.is_none(),
+        "Redirect archive entry should also be removed"
+    );
 
     Ok(())
 }

@@ -325,6 +325,12 @@ impl AccountReadCache {
     fn insert_l2(&self, hash: AccountHash, account: Arc<ThreadAccount>) {
         self.l2.lock().put(hash, account);
     }
+
+    fn remove(&self, hash: &AccountHash) -> bool {
+        let removed_l1 = self.l1.lock().pop(hash).is_some();
+        let removed_l2 = self.l2.lock().pop(hash).is_some();
+        removed_l1 || removed_l2
+    }
 }
 
 #[derive(Clone)]
@@ -587,6 +593,23 @@ impl DurableThreadAccountsRepository {
         }
     }
 
+    fn invalidate_account_read_cache_for_operation(&self, operation: &ArchiveOperation) {
+        let ArchiveOperation::UpdateOrInsert(account) = operation else {
+            return;
+        };
+        let Ok(vm_account) = account.vm_account() else {
+            return;
+        };
+        let hash = vm_account.hash();
+        if self.account_read_cache.remove(&hash) {
+            tracing::trace!(
+                target: "mem",
+                hash = %hash.to_hex_string(),
+                "account read cache invalidated for written account",
+            );
+        }
+    }
+
     pub fn state_split(
         &self,
         state: &DurableThreadAccountsState,
@@ -620,6 +643,9 @@ impl DurableThreadAccountsRepository {
         tracing::trace!(target: "monit", "Update accounts in durable state: prepare update: {}", accounts.len());
         let (account_updates, map_updates) =
             self.prepare_updates(old_tvm_accounts, state, accounts)?;
+        for operation in account_updates.values() {
+            self.invalidate_account_read_cache_for_operation(operation);
+        }
 
         self.accumulator.unfinalized_pool_insert(*thread_id, block_height, &account_updates);
         tracing::trace!(target: "monit", "Update accounts in durable maps: {}", account_updates.len());
@@ -660,6 +686,9 @@ impl DurableThreadAccountsRepository {
             target: "mem",
             "finalize_thread_transition T:{thread_id} B:{block_id} ops={operations_len} ops_data_bytes={ops_data_bytes}",
         );
+        for operation in account_operations.values() {
+            self.invalidate_account_read_cache_for_operation(operation);
+        }
         self.accumulator.push_transition(
             *thread_id,
             *block_id,
@@ -682,6 +711,9 @@ impl DurableThreadAccountsRepository {
         state: &DurableThreadAccountsState,
         account_operations: HashMap<AccountRouting, ArchiveOperation>,
     ) -> anyhow::Result<()> {
+        for operation in account_operations.values() {
+            self.invalidate_account_read_cache_for_operation(operation);
+        }
         self.accumulator.push_emerge(
             *thread_id,
             *initial_block_id,
@@ -890,6 +922,12 @@ impl DurableThreadAccountsRepository {
     )> {
         let mut account_updates = HashMap::new();
         let mut map_updates = Vec::new();
+        let protected_routings: HashSet<AccountRouting> = accounts
+            .iter()
+            .filter_map(|(routing, operation)| {
+                (!matches!(operation, BlockAccountOperation::Remove)).then_some(*routing)
+            })
+            .collect();
         for (routing, state_account) in accounts {
             tracing::trace!(target: "builder", "Update account in durable state: {}", routing);
             match self.get_account_update(routing, state_account, state, old_tvm_accounts)? {
@@ -910,6 +948,16 @@ impl DurableThreadAccountsRepository {
                 AccountUpdate::Remove => {
                     account_updates.insert(*routing, ArchiveOperation::Remove);
                     map_updates.push((*routing, None));
+                    if let Some(redirect_routing) =
+                        self.derived_redirect_remove_routing(routing, state)?
+                    {
+                        if !protected_routings.contains(&redirect_routing) {
+                            account_updates
+                                .entry(redirect_routing)
+                                .or_insert(ArchiveOperation::Remove);
+                            map_updates.push((redirect_routing, None));
+                        }
+                    }
                 }
                 AccountUpdate::Skip => {}
             }
@@ -1002,6 +1050,27 @@ impl DurableThreadAccountsRepository {
         );
 
         Self::state_account_update(routing, &new_state_account)
+    }
+
+    fn derived_redirect_remove_routing(
+        &self,
+        routing: &AccountRouting,
+        state: &DurableThreadAccountsState,
+    ) -> anyhow::Result<Option<AccountRouting>> {
+        let redirect_routing = routing.account_id().redirect();
+        if *routing == redirect_routing {
+            return Ok(None);
+        }
+
+        match self.map_repo.map_get(&state.0.map, &redirect_routing) {
+            Some(AccountInfo::Redirect(_)) => Ok(Some(redirect_routing)),
+            Some(AccountInfo::VmAccountHash(_)) => anyhow::bail!(
+                "Expected redirect stub at default routing {}, found a real account while removing {}",
+                redirect_routing,
+                routing
+            ),
+            None => Ok(None),
+        }
     }
 
     fn state_account_update(
@@ -1427,6 +1496,7 @@ enum AccountUpdate {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::io::Cursor;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -1476,6 +1546,25 @@ mod tests {
             new_u256("trans", seed).into(),
             seed as u64,
             Some(routing.dapp_id().as_array().into()),
+        )
+        .unwrap();
+        let acc = ThreadAccount::from(tvm_shard_acc);
+        (routing, acc)
+    }
+
+    fn new_acc_with_dapp(seed: usize, dapp_seed: usize) -> (AccountRouting, ThreadAccount) {
+        let id = AccountIdentifier::new(new_u256("acc", seed));
+        let dapp_id = DAppIdentifier::new(new_u256("dapp", dapp_seed));
+        let routing = id.routing(dapp_id);
+        let tvm_acc = tvm_block::Account::with_address(
+            MsgAddressInt::with_standart(None, 0, AccountId::from_raw(id.as_slice().to_vec(), 256))
+                .unwrap(),
+        );
+        let tvm_shard_acc = ShardAccount::with_params(
+            &tvm_acc,
+            new_u256("trans", seed).into(),
+            seed as u64,
+            Some(dapp_id.as_array().into()),
         )
         .unwrap();
         let acc = ThreadAccount::from(tvm_shard_acc);
@@ -1574,6 +1663,38 @@ mod tests {
     }
 
     #[test]
+    fn account_read_cache_remove_deletes_from_l1() {
+        let cache = AccountReadCache::new();
+        let (_, account) = new_acc(208);
+        let hash = account_hash(&account);
+
+        cache.insert_l1(hash, Arc::new(account));
+
+        assert!(cache.remove(&hash));
+        assert!(cache.get(&hash).is_none());
+    }
+
+    #[test]
+    fn account_read_cache_remove_deletes_from_l2() {
+        let cache = AccountReadCache::new();
+        let (_, account) = new_acc(209);
+        let hash = account_hash(&account);
+
+        cache.insert_l2(hash, Arc::new(account));
+
+        assert!(cache.remove(&hash));
+        assert!(cache.get(&hash).is_none());
+    }
+
+    #[test]
+    fn account_read_cache_remove_returns_false_for_missing_hash() {
+        let cache = AccountReadCache::new();
+        let hash = AccountHash::new(new_u256("missing_cache_hash", 1));
+
+        assert!(!cache.remove(&hash));
+    }
+
+    #[test]
     fn hash_mismatch_from_archive_is_not_cached() {
         let dir = tempfile::tempdir().unwrap();
         let archive = ArchiveStateStore::in_memory();
@@ -1622,6 +1743,149 @@ mod tests {
 
         assert_eq!(resolved, account);
         assert!(repo.archive.read_account_operation(&routing).unwrap().is_none());
+    }
+
+    #[test]
+    fn state_update_invalidates_written_account_hash_from_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = ArchiveStateStore::in_memory();
+        let repo =
+            DurableThreadAccountsRepository::new(PathBuf::from(dir.path()), archive, None).unwrap();
+
+        let thread_id = ThreadIdentifier::default();
+        let state = DurableThreadAccountsRepository::new_state();
+        let old_tvm_accounts = tvm_block::ShardAccounts::default();
+        let (routing, account) = new_acc(210);
+        let hash = account_hash(&account);
+        let mut accounts = HashMap::new();
+
+        repo.account_read_cache.insert_l1(hash, Arc::new(account.clone()));
+        accounts.insert(routing, super::BlockAccountOperation::UpdateOrInsert(account));
+
+        repo.state_update(&thread_id, 0, &old_tvm_accounts, &state, &accounts).unwrap();
+
+        assert!(repo.account_read_cache.get(&hash).is_none());
+    }
+
+    #[test]
+    fn state_update_remove_cleans_up_redirect_entries_for_real_routing() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = ArchiveStateStore::in_memory();
+        let repo =
+            DurableThreadAccountsRepository::new(PathBuf::from(dir.path()), archive, None).unwrap();
+
+        let thread_id = ThreadIdentifier::default();
+        let old_tvm_accounts = tvm_block::ShardAccounts::default();
+        let state0 = DurableThreadAccountsRepository::new_state();
+        let (routing, account) = new_acc_with_dapp(300, 301);
+        let redirect_routing = routing.account_id().redirect();
+
+        let mut insert_batch = HashMap::new();
+        insert_batch.insert(routing, super::BlockAccountOperation::UpdateOrInsert(account.clone()));
+        insert_batch.insert(
+            redirect_routing,
+            super::BlockAccountOperation::UpdateOrInsert(account.with_redirect().unwrap()),
+        );
+
+        let (state1, insert_ops) =
+            repo.state_update(&thread_id, 0, &old_tvm_accounts, &state0, &insert_batch).unwrap();
+        assert!(matches!(
+            insert_ops.get(&redirect_routing),
+            Some(ArchiveOperation::UpdateOrInsert(redirect)) if redirect.is_redirect()
+        ));
+
+        let mut remove_batch = HashMap::new();
+        remove_batch.insert(routing, super::BlockAccountOperation::Remove);
+        let (state2, remove_ops) =
+            repo.state_update(&thread_id, 1, &old_tvm_accounts, &state1, &remove_batch).unwrap();
+
+        assert_eq!(repo.map_repo.map_get(state2.map(), &routing), None);
+        assert_eq!(repo.map_repo.map_get(state2.map(), &redirect_routing), None);
+        assert!(matches!(remove_ops.get(&routing), Some(ArchiveOperation::Remove)));
+        assert!(matches!(remove_ops.get(&redirect_routing), Some(ArchiveOperation::Remove)));
+    }
+
+    #[test]
+    fn state_update_remove_does_not_override_redirect_upsert_in_same_batch() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = ArchiveStateStore::in_memory();
+        let repo =
+            DurableThreadAccountsRepository::new(PathBuf::from(dir.path()), archive, None).unwrap();
+
+        let thread_id = ThreadIdentifier::default();
+        let old_tvm_accounts = tvm_block::ShardAccounts::default();
+        let state0 = DurableThreadAccountsRepository::new_state();
+        let id = AccountIdentifier::new(new_u256("acc", 310));
+        let dapp_id_1 = DAppIdentifier::new(new_u256("dapp", 311));
+        let dapp_id_2 = DAppIdentifier::new(new_u256("dapp", 312));
+        let routing_1 = id.routing(dapp_id_1);
+        let routing_2 = id.routing(dapp_id_2);
+        let redirect_routing = id.redirect();
+        let (_, account_1) = new_acc_with_dapp(310, 311);
+        let (_, account_2) = new_acc_with_dapp(310, 312);
+
+        let mut insert_batch = HashMap::new();
+        insert_batch
+            .insert(routing_1, super::BlockAccountOperation::UpdateOrInsert(account_1.clone()));
+        insert_batch.insert(
+            redirect_routing,
+            super::BlockAccountOperation::UpdateOrInsert(account_1.with_redirect().unwrap()),
+        );
+        let (state1, _) =
+            repo.state_update(&thread_id, 0, &old_tvm_accounts, &state0, &insert_batch).unwrap();
+
+        let mut move_batch = HashMap::new();
+        move_batch.insert(routing_1, super::BlockAccountOperation::Remove);
+        move_batch
+            .insert(routing_2, super::BlockAccountOperation::UpdateOrInsert(account_2.clone()));
+        move_batch.insert(
+            redirect_routing,
+            super::BlockAccountOperation::UpdateOrInsert(account_2.with_redirect().unwrap()),
+        );
+        let (state2, move_ops) =
+            repo.state_update(&thread_id, 1, &old_tvm_accounts, &state1, &move_batch).unwrap();
+
+        assert_eq!(repo.map_repo.map_get(state2.map(), &routing_1), None);
+        assert!(matches!(
+            repo.map_repo.map_get(state2.map(), &routing_2),
+            Some(AccountInfo::VmAccountHash(_))
+        ));
+        assert_eq!(
+            repo.map_repo.map_get(state2.map(), &redirect_routing),
+            Some(AccountInfo::Redirect(dapp_id_2))
+        );
+        assert!(matches!(
+            move_ops.get(&redirect_routing),
+            Some(ArchiveOperation::UpdateOrInsert(redirect))
+                if redirect.is_redirect() && redirect.get_dapp_id() == Some(dapp_id_2)
+        ));
+    }
+
+    #[test]
+    fn state_update_remove_does_not_add_extra_redirect_remove_for_default_routing() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = ArchiveStateStore::in_memory();
+        let repo =
+            DurableThreadAccountsRepository::new(PathBuf::from(dir.path()), archive, None).unwrap();
+
+        let thread_id = ThreadIdentifier::default();
+        let old_tvm_accounts = tvm_block::ShardAccounts::default();
+        let state0 = DurableThreadAccountsRepository::new_state();
+        let (routing, account) = new_acc(320);
+
+        let mut insert_batch = HashMap::new();
+        insert_batch.insert(routing, super::BlockAccountOperation::UpdateOrInsert(account));
+        let (state1, _) =
+            repo.state_update(&thread_id, 0, &old_tvm_accounts, &state0, &insert_batch).unwrap();
+
+        let mut remove_batch = HashMap::new();
+        remove_batch.insert(routing, super::BlockAccountOperation::Remove);
+        let (state2, remove_ops) =
+            repo.state_update(&thread_id, 1, &old_tvm_accounts, &state1, &remove_batch).unwrap();
+
+        assert_eq!(repo.map_repo.map_get(state2.map(), &routing), None);
+        assert_eq!(remove_ops.len(), 1);
+        assert!(matches!(remove_ops.get(&routing), Some(ArchiveOperation::Remove)));
     }
 
     #[test]

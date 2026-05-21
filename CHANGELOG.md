@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.2] – 2026-05-21
+
+### Fixes
+- Fixed stale durable-account state after writes and removals by invalidating cached account bodies on writes and removing archived redirect stubs when deleting real DApp routings
+
+---
+
 ## [0.16.1] – 2026-05-20
 
 ### Fixes
