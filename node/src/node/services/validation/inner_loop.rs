@@ -239,14 +239,19 @@ pub(super) fn inner_loop(
                 let has_bad_block_accusers = state.guarded(|e| !e.bad_block_accusers().is_empty());
                 let is_finalized = state.guarded(|e| e.is_finalized());
                 match (verify_res, has_bad_block_accusers, is_finalized) {
+                    (_, _, true) => {
+                        // TODO: remove after verification rework
+                        tracing::warn!(
+                            "Verification failed: Block has been finalized already. Skip NACK"
+                        );
+                    }
                     (VerificationResult::TooComplexExecution, false, _) => {
                         // TODO: send Nack here
                         tracing::warn!("Verification failed: TooComplexExecution. Skip NACK");
                     }
-                    (VerificationResult::AccountHashMismatch, false, true) => {
-                        // TODO: send Nack here
-                        tracing::warn!("Verification failed: AccountHashMismatch. Skip NACK");
-                    }
+                    // (VerificationResult::AccountHashMismatch, false, true) => {
+                    //     tracing::warn!("Verification failed: AccountHashMismatch. Skip NACK");
+                    // }
                     (VerificationResult::BadBlock, _, _)
                     | (VerificationResult::AccountHashMismatch, _, _)
                     | (VerificationResult::TooComplexExecution, true, _) => {

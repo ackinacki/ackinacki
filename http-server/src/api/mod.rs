@@ -7,6 +7,7 @@ mod boc_by_address;
 mod default_thread_seqno;
 pub(crate) mod ext_messages;
 pub(crate) mod storage_latest;
+pub(crate) mod validation;
 
 pub use bk_set_summary::BkSetSummary;
 pub use bk_set_summary::BkSetSummaryHandler;

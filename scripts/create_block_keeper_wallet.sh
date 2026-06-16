@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 
 set -eu
 
@@ -70,9 +70,9 @@ MAX_LICENSES_PER_WALLET=20
 
 ABI=../contracts/0.79.3_compiled/bksystem/BlockKeeperContractRoot.abi.json
 WALLET_ABI=../contracts/0.79.3_compiled/bksystem/AckiNackiBlockKeeperNodeWallet.abi.json
-ROOT=0:7777777777777777777777777777777777777777777777777777777777777777
+ROOT=0000000000000000000000000000000000000000000000000000000000000000::7777777777777777777777777777777777777777777777777777777777777777
 LICENSE_ROOT_ABI=../contracts/0.79.3_compiled/bksystem/LicenseRoot.abi.json
-LICENSE_ROOT_ADDR=0:4444444444444444444444444444444444444444444444444444444444444444
+LICENSE_ROOT_ADDR=0000000000000000000000000000000000000000000000000000000000000000::4444444444444444444444444444444444444444444444444444444444444444
 LICENSE_ABI=../contracts/0.79.3_compiled/bksystem/License.abi.json
 
 WALLET_INIT=1000000000
@@ -111,11 +111,13 @@ echo Deploying wallet...
 tvm-cli -j callx --addr $ROOT --abi $ABI --method deployAckiNackiBlockKeeperNodeWallet "$NODE_OWNER_PUB_KEY_LICENSE"
 
 WALLET_ADDR=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeperNodeWalletAddress "$NODE_OWNER_PUB_KEY" | jq -r '.wallet')
+WALLET_ADDR="0000000000000000000000000000000000000000000000000000000000000000::${WALLET_ADDR:2}"
 
 echo "Wallet $WALLET_ADDR is deployed."
 
 IFS="," ; for license in $LICENSE_NUMBERS; do
   LICENSE_ADDR=$(tvm-cli -j runx --abi $LICENSE_ROOT_ABI --addr $LICENSE_ROOT_ADDR -m getLicenseAddress "{\"num\": $license}" | jq -r '.license_address')
+  LICENSE_ADDR="0000000000000000000000000000000000000000000000000000000000000000::${LICENSE_ADDR:2}"
   echo License number $license and license address is $LICENSE_ADDR
 done
 
@@ -138,6 +140,6 @@ sleep 3
 WALLET_DETAILS=$(tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails)
 echo "$WALLET_DETAILS"
 echo "$WALLET_DETAILS" | jq -r '.balance' | xargs printf "Current wallet balance: %d\n"
-echo "$WALLET_ADDR" | cut -d ':' -f2 | xargs printf "Node ID: %s\n"
+echo "$WALLET_ADDR" | sed 's/.*:://' | xargs printf "Node ID: %s\n"
 
 printf "Initial steps have been done. Save your node id\n"

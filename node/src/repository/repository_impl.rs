@@ -368,6 +368,10 @@ pub struct ThreadSnapshot {
 }
 
 impl ThreadSnapshot {
+    pub fn set_finalizes_blocks(&mut self, finalizes_blocks: BTreeSet<BlockIndex>) {
+        self.finalizes_blocks = finalizes_blocks;
+    }
+
     pub fn set_bk_set(&mut self, bk_set: BlockKeeperSet) {
         self.bk_set = bk_set;
     }
@@ -382,6 +386,10 @@ impl ThreadSnapshot {
 
     pub fn set_prefinalization_proof(&mut self, proof: Envelope<AttestationData>) {
         self.prefinalization_proof = proof;
+    }
+
+    pub fn set_finalization_chain(&mut self, chain: Vec<Envelope<AckiNackiBlock>>) {
+        self.finalization_chain = chain;
     }
 
     pub fn set_ancestor_blocks_finalization_checkpoints(
@@ -427,7 +435,6 @@ pub enum SnapshotCompression {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SnapshotFormat {
-    Legacy,
     Streamed { durable_bytes: Vec<u8> },
 }
 
@@ -506,7 +513,7 @@ struct StreamedThreadSnapshot {
 }
 
 impl StreamedThreadSnapshot {
-    fn from_legacy(snapshot: &ThreadSnapshot, durable_len: u64) -> Self {
+    fn from_snapshot(snapshot: &ThreadSnapshot, durable_len: u64) -> Self {
         Self {
             optimistic_state: snapshot.optimistic_state.clone(),
             ancestor_blocks_data: snapshot.ancestor_blocks_data.clone(),
@@ -539,7 +546,7 @@ impl StreamedThreadSnapshot {
         }
     }
 
-    fn into_legacy(self) -> ThreadSnapshot {
+    fn into_snapshot(self) -> ThreadSnapshot {
         let builder = ThreadSnapshot::builder()
             .optimistic_state(self.optimistic_state)
             .ancestor_blocks_data(self.ancestor_blocks_data)
@@ -572,70 +579,65 @@ fn read_thread_snapshot_from_payload(
     payload: &[u8],
     compression: SnapshotCompression,
 ) -> anyhow::Result<SnapshotFile> {
-    if payload.starts_with(STREAMED_THREAD_SNAPSHOT_MAGIC) {
-        let mut reader = Cursor::new(&payload[STREAMED_THREAD_SNAPSHOT_MAGIC.len()..]);
-        let header: StreamedThreadSnapshotHeader =
-            bincode::deserialize_from(&mut reader).map_err(|e| {
-                anyhow::format_err!("Failed to deserialize streamed snapshot header: {e}")
-            })?;
-        let prefix_len = usize::try_from(header.prefix_len).map_err(|_| {
-            anyhow::format_err!("Streamed snapshot prefix is too large: {}", header.prefix_len)
-        })?;
-        let header_len = usize::try_from(reader.position())
-            .map_err(|_| anyhow::format_err!("Streamed snapshot header offset is too large"))?;
-        let prefix_start = STREAMED_THREAD_SNAPSHOT_MAGIC
-            .len()
-            .checked_add(header_len)
-            .ok_or_else(|| anyhow::format_err!("Streamed snapshot prefix offset overflow"))?;
-        let prefix_end = prefix_start
-            .checked_add(prefix_len)
-            .ok_or_else(|| anyhow::format_err!("Streamed snapshot prefix length overflow"))?;
+    anyhow::ensure!(
+        payload.starts_with(STREAMED_THREAD_SNAPSHOT_MAGIC),
+        "Unsupported thread snapshot format: missing streamed snapshot magic",
+    );
+    let mut reader = Cursor::new(&payload[STREAMED_THREAD_SNAPSHOT_MAGIC.len()..]);
+    let header: StreamedThreadSnapshotHeader = bincode::deserialize_from(&mut reader)
+        .map_err(|e| anyhow::format_err!("Failed to deserialize streamed snapshot header: {e}"))?;
+    let prefix_len = usize::try_from(header.prefix_len).map_err(|_| {
+        anyhow::format_err!("Streamed snapshot prefix is too large: {}", header.prefix_len)
+    })?;
+    let header_len = usize::try_from(reader.position())
+        .map_err(|_| anyhow::format_err!("Streamed snapshot header offset is too large"))?;
+    let prefix_start = STREAMED_THREAD_SNAPSHOT_MAGIC
+        .len()
+        .checked_add(header_len)
+        .ok_or_else(|| anyhow::format_err!("Streamed snapshot prefix offset overflow"))?;
+    let prefix_end = prefix_start
+        .checked_add(prefix_len)
+        .ok_or_else(|| anyhow::format_err!("Streamed snapshot prefix length overflow"))?;
+    anyhow::ensure!(
+        prefix_end <= payload.len(),
+        "Streamed snapshot prefix exceeds payload bounds: prefix_end={} payload_len={}",
+        prefix_end,
+        payload.len()
+    );
+
+    let prefix_bytes = &payload[prefix_start..prefix_end];
+    let prefix: StreamedThreadSnapshot = bincode::deserialize(prefix_bytes)
+        .map_err(|e| anyhow::format_err!("Failed to deserialize streamed snapshot prefix: {e}"))?;
+
+    let durable_tag = prefix.durable_snapshot_header.tag;
+    let durable_len = prefix.durable_snapshot_header.len;
+    if durable_tag == 0 {
         anyhow::ensure!(
-            prefix_end <= payload.len(),
-            "Streamed snapshot prefix exceeds payload bounds: prefix_end={} payload_len={}",
-            prefix_end,
-            payload.len()
+            durable_len == 0,
+            "Invalid streamed durable snapshot header: tag={durable_tag}, len={durable_len}"
         );
-
-        let prefix_bytes = &payload[prefix_start..prefix_end];
-        let prefix: StreamedThreadSnapshot = bincode::deserialize(prefix_bytes).map_err(|e| {
-            anyhow::format_err!("Failed to deserialize streamed snapshot prefix: {e}")
-        })?;
-
-        let durable_tag = prefix.durable_snapshot_header.tag;
-        let durable_len = prefix.durable_snapshot_header.len;
-        if durable_tag == 0 {
-            anyhow::ensure!(
-                durable_len == 0,
-                "Invalid streamed durable snapshot header: tag={durable_tag}, len={durable_len}"
-            );
-        } else {
-            anyhow::ensure!(
-                durable_len > 0,
-                "Invalid streamed durable snapshot header: tag={durable_tag}, len={durable_len}"
-            );
-        }
-
-        let durable_len = usize::try_from(durable_len).map_err(|_| {
-            anyhow::format_err!("Streamed durable snapshot is too large: {durable_len}")
-        })?;
-        let durable_bytes = payload[prefix_end..].to_vec();
+    } else {
         anyhow::ensure!(
-            durable_bytes.len() == durable_len,
-            "Streamed durable snapshot length mismatch: expected {durable_len}, got {}",
-            durable_bytes.len()
+            durable_len > 0,
+            "Invalid streamed durable snapshot header: tag={durable_tag}, len={durable_len}"
         );
-
-        return Ok(SnapshotFile {
-            snapshot: prefix.into_legacy(),
-            format: SnapshotFormat::Streamed { durable_bytes },
-            compression,
-        });
     }
 
-    let snapshot: ThreadSnapshot = bincode::deserialize(payload)
-        .map_err(|e| anyhow::format_err!("Failed to deserialize legacy snapshot: {e}"))?;
-    Ok(SnapshotFile { snapshot, format: SnapshotFormat::Legacy, compression })
+    let durable_len = usize::try_from(durable_len).map_err(|_| {
+        anyhow::format_err!("Streamed durable snapshot is too large: {durable_len}")
+    })?;
+    let durable_bytes = payload[prefix_end..].to_vec();
+    anyhow::ensure!(
+        durable_bytes.len() == durable_len,
+        "Streamed durable snapshot length mismatch: expected {durable_len}, got {}",
+        durable_bytes.len()
+    );
+
+    Ok(SnapshotFile {
+        snapshot: prefix.into_snapshot(),
+        format: SnapshotFormat::Streamed { durable_bytes },
+        compression,
+    })
 }
 
 fn write_streamed_thread_snapshot_prefix_to_writer<W: Write + ?Sized>(
@@ -643,7 +645,7 @@ fn write_streamed_thread_snapshot_prefix_to_writer<W: Write + ?Sized>(
     durable_len: u64,
     writer: &mut W,
 ) -> anyhow::Result<()> {
-    let prefix = StreamedThreadSnapshot::from_legacy(snapshot, durable_len);
+    let prefix = StreamedThreadSnapshot::from_snapshot(snapshot, durable_len);
     let prefix_bytes = bincode::serialize(&prefix)
         .map_err(|e| anyhow::format_err!("Failed to serialize streamed snapshot prefix: {e}"))?;
 
@@ -674,9 +676,6 @@ fn write_snapshot_payload_to_writer<W: Write + ?Sized>(
     writer: &mut W,
 ) -> anyhow::Result<()> {
     match snapshot_file.format() {
-        SnapshotFormat::Legacy => {
-            write_legacy_thread_snapshot_to_writer(snapshot_file.snapshot(), writer)
-        }
         SnapshotFormat::Streamed { durable_bytes } => {
             write_streamed_thread_snapshot_bytes_to_writer(
                 snapshot_file.snapshot(),
@@ -710,8 +709,8 @@ pub fn read_snapshot_file(path: &Path) -> anyhow::Result<SnapshotFile> {
         .with_context(|| format!("Failed to parse snapshot file: {}", path.display()))
 }
 
-/// Writes a snapshot helper file back using the preserved on-disk format
-/// and compression envelope.
+/// Writes a snapshot helper file back using the streamed on-disk format
+/// and preserved compression envelope.
 pub fn write_snapshot_file(path: &Path, snapshot_file: &SnapshotFile) -> anyhow::Result<()> {
     let parent_dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut temp = NamedTempFile::new_in(parent_dir).with_context(|| {
@@ -749,7 +748,7 @@ pub fn write_snapshot_file(path: &Path, snapshot_file: &SnapshotFile) -> anyhow:
 }
 
 /// Reads a snapshot file, applies a mutation to the logical ThreadSnapshot,
-/// then writes it back preserving the original format and compression.
+/// then writes it back preserving the compression envelope.
 pub fn rewrite_snapshot_file<F>(input: &Path, output: &Path, f: F) -> anyhow::Result<()>
 where
     F: FnOnce(&mut ThreadSnapshot) -> anyhow::Result<()>,
@@ -774,14 +773,6 @@ pub(crate) fn write_streamed_thread_snapshot_to_writer<W: Write + ?Sized>(
         std::io::copy(&mut durable_file, writer)?;
     }
     Ok(())
-}
-
-pub(crate) fn write_legacy_thread_snapshot_to_writer<W: Write + ?Sized>(
-    snapshot: &ThreadSnapshot,
-    writer: &mut W,
-) -> anyhow::Result<()> {
-    bincode::serialize_into(writer, snapshot)
-        .map_err(|e| anyhow::format_err!("Failed to serialize legacy snapshot: {e}"))
 }
 
 fn copy_snapshot_segment_to_writer<R: Read, W: Write>(
@@ -857,6 +848,7 @@ impl RepositoryImpl {
         skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
     ) -> anyhow::Result<()> {
         tracing::debug!(target: "monit", "set_state_from_snapshot_reader");
+        let snapshot_import_start = Instant::now();
         let mut probe = Vec::with_capacity(STREAMED_THREAD_SNAPSHOT_MAGIC.len());
         let mut byte = [0u8; 1];
         while probe.len() < STREAMED_THREAD_SNAPSHOT_MAGIC.len() {
@@ -866,23 +858,23 @@ impl RepositoryImpl {
             }
         }
 
-        if probe.as_slice() == STREAMED_THREAD_SNAPSHOT_MAGIC {
-            tracing::debug!("set_state_from_streamed_snapshot_reader");
-            return self.set_state_from_streamed_snapshot_reader(
-                reader,
-                cur_thread_id,
-                skipped_attestation_ids,
-            );
-        }
-
-        let mut legacy_bytes = probe;
-        reader.read_to_end(&mut legacy_bytes)?;
-        tracing::debug!("set_state_from_legacy_snapshot_bytes");
-        self.set_state_from_legacy_snapshot_bytes(
-            legacy_bytes,
+        anyhow::ensure!(
+            probe.as_slice() == STREAMED_THREAD_SNAPSHOT_MAGIC,
+            "Unsupported thread snapshot format: missing streamed snapshot magic",
+        );
+        tracing::debug!("set_state_from_streamed_snapshot_reader");
+        self.set_state_from_streamed_snapshot_reader(
+            reader,
             cur_thread_id,
             skipped_attestation_ids,
-        )
+        )?;
+        if let Some(metrics) = self.metrics.as_ref() {
+            metrics.report_snapshot_import_time(
+                snapshot_import_start.elapsed().as_millis() as u64,
+                cur_thread_id,
+            );
+        }
+        Ok(())
     }
 
     fn set_state_from_streamed_snapshot_reader<R: Read>(
@@ -1005,42 +997,11 @@ impl RepositoryImpl {
         }
 
         self.apply_thread_snapshot(
-            prefix.into_legacy(),
+            prefix.into_snapshot(),
             state,
             cur_thread_id,
             skipped_attestation_ids,
         )
-    }
-
-    fn set_state_from_legacy_snapshot_bytes(
-        &mut self,
-        snapshot_bytes: Vec<u8>,
-        cur_thread_id: &ThreadIdentifier,
-        skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
-    ) -> anyhow::Result<()> {
-        let thread_snapshot: ThreadSnapshot =
-            bincode::deserialize(&snapshot_bytes).map_err(|e| {
-                tracing::error!(target: "monit", "Failed to deserialize legacy snapshot: {e}");
-                anyhow::format_err!("Failed to deserialize legacy snapshot: {e}")
-            })?;
-        tracing::debug!(target: "monit", "Deserialized ThreadSnapshot");
-        let state = <Self as Repository>::OptimisticState::deserialize_from_buf(
-            thread_snapshot.optimistic_state.as_slice(),
-        )
-        .map_err(|e| {
-            tracing::error!(target: "monit", "Failed to deserialize legacy snapshot state: {e}");
-            anyhow::format_err!("Failed to deserialize state: {e}")
-        })?;
-
-        tracing::debug!(target: "monit", "Deserialized OptimisticState");
-
-        if let Some(durable_bytes) = thread_snapshot.durable_state_snapshot.as_ref() {
-            tracing::debug!(target: "monit", "Checking legacy durable snapshot emptiness");
-            account_state::ensure_legacy_durable_snapshot_is_empty(durable_bytes)?;
-        }
-
-        tracing::debug!(target: "monit", "Applying thread snapshot");
-        self.apply_thread_snapshot(thread_snapshot, state, cur_thread_id, skipped_attestation_ids)
     }
 
     fn apply_thread_snapshot(
@@ -1359,42 +1320,29 @@ fn read_snapshot_header_from_reader<R: Read>(
         }
     }
 
-    if probe.as_slice() == STREAMED_THREAD_SNAPSHOT_MAGIC {
-        let header: StreamedThreadSnapshotHeader = bincode::deserialize_from(&mut *reader)
-            .map_err(|e| {
-                anyhow::format_err!("Failed to deserialize streamed snapshot header: {e}")
-            })?;
-        let mut prefix_bytes = vec![0u8; header.prefix_len as usize];
-        reader.read_exact(&mut prefix_bytes)?;
-        let snapshot: StreamedThreadSnapshot =
-            bincode::deserialize(&prefix_bytes).map_err(|e| {
-                anyhow::format_err!("Failed to deserialize streamed snapshot prefix: {e}")
-            })?;
-        return Ok(Some(ThreadSnapshotHeader {
-            block_id: snapshot.finalized_block.data().identifier(),
-            thread_id: *snapshot.finalized_block.data().common_section().thread_id(),
-            seq_no: snapshot.finalized_block.data().seq_no(),
-            round: *snapshot.finalized_block.data().common_section().round(),
-        }));
-    }
-
-    let mut legacy_bytes = probe;
-    reader.read_to_end(&mut legacy_bytes)?;
-    let snapshot: ThreadSnapshot = bincode::deserialize(&legacy_bytes)
-        .map_err(|e| anyhow::format_err!("Failed to deserialize legacy snapshot: {e}"))?;
+    anyhow::ensure!(
+        probe.as_slice() == STREAMED_THREAD_SNAPSHOT_MAGIC,
+        "Unsupported thread snapshot format: missing streamed snapshot magic",
+    );
+    let header: StreamedThreadSnapshotHeader = bincode::deserialize_from(&mut *reader)
+        .map_err(|e| anyhow::format_err!("Failed to deserialize streamed snapshot header: {e}"))?;
+    let mut prefix_bytes = vec![0u8; header.prefix_len as usize];
+    reader.read_exact(&mut prefix_bytes)?;
+    let snapshot: StreamedThreadSnapshot = bincode::deserialize(&prefix_bytes)
+        .map_err(|e| anyhow::format_err!("Failed to deserialize streamed snapshot prefix: {e}"))?;
     Ok(Some(ThreadSnapshotHeader {
-        block_id: snapshot.finalized_block().data().identifier(),
-        thread_id: *snapshot.finalized_block().data().common_section().thread_id(),
-        seq_no: snapshot.finalized_block().data().seq_no(),
-        round: *snapshot.finalized_block().data().common_section().round(),
+        block_id: snapshot.finalized_block.data().identifier(),
+        thread_id: *snapshot.finalized_block.data().common_section().thread_id(),
+        seq_no: snapshot.finalized_block.data().seq_no(),
+        round: *snapshot.finalized_block.data().common_section().round(),
     }))
 }
 
 /// Scans `snapshot_dir` for `*.header` sidecar files and returns
 /// all headers that could be parsed successfully.
-/// For snapshot files that have no `.header` sidecar yet (legacy snapshots saved before
-/// this feature was introduced), falls back to full deserialization of the snapshot body
-/// in order to extract the header fields, and writes the `.header` file for future runs.
+/// For snapshot files that have no `.header` sidecar yet, falls back to full
+/// deserialization of the streamed snapshot body in order to extract the header
+/// fields, and writes the `.header` file for future runs.
 /// Missing or corrupt files are logged and skipped.
 pub fn scan_snapshot_headers(snapshot_dir: &Path) -> Vec<(PathBuf, ThreadSnapshotHeader)> {
     let mut result = Vec::new();
@@ -1692,6 +1640,18 @@ impl RepositoryImpl {
                     .get_optimistic_state(&metadata.last_finalized_block_id, thread_id, None)
                     .expect("Failed to get last finalized state")
                     .expect("Failed to load last finalized state");
+                let durable_state_hash = repo_impl
+                    .thread_accounts_repository
+                    .durable_state_hash(&finalized_optimistic_state.get_shard_state())
+                    .to_hex_string();
+                tracing::info!(
+                    target: "monit",
+                    "Startup finalized durable state: thread_id={:?}, block_id={:?}, seq_no={:?}, durable_state_hash={}",
+                    thread_id,
+                    metadata.last_finalized_block_id,
+                    metadata.last_finalized_block_seq_no,
+                    durable_state_hash,
+                );
                 // let finalized_block_state = block_state_repository
                 //     .get(&metadata.last_finalized_block_id)
                 //     .expect("Failed to load finalized block state");
@@ -2581,7 +2541,7 @@ impl RepositoryImpl {
         // miss the final partial batch that never reached the send limit.
         // This still relies on the caller using `start_shutdown()` first,
         // because `flush_pending_and_wait_for_drain` does not block new sends.
-        let drain_timeout = Duration::from_secs(60);
+        let drain_timeout = Duration::from_secs(60 * 60);
         if !self.thread_accounts_repository.flush_pending_and_wait_for_drain(drain_timeout) {
             tracing::error!(
                 "dump_state: timed out after {drain_timeout:?} waiting for durable account \
@@ -3328,19 +3288,11 @@ impl Repository for RepositoryImpl {
         skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
     ) -> anyhow::Result<()> {
         tracing::debug!("set_state_from_snapshot");
-        if snapshot.starts_with(STREAMED_THREAD_SNAPSHOT_MAGIC) {
-            self.set_state_from_snapshot_reader(
-                &mut Cursor::new(snapshot),
-                cur_thread_id,
-                skipped_attestation_ids,
-            )
-        } else {
-            self.set_state_from_legacy_snapshot_bytes(
-                snapshot,
-                cur_thread_id,
-                skipped_attestation_ids,
-            )
-        }
+        self.set_state_from_snapshot_reader(
+            &mut Cursor::new(snapshot),
+            cur_thread_id,
+            skipped_attestation_ids,
+        )
     }
 
     fn is_block_suspicious(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>> {
@@ -4508,7 +4460,6 @@ pub mod tests {
         let mut snapshot_file = read_snapshot_file(&input_path)?;
         assert_eq!(snapshot_file.compression(), SnapshotCompression::Plain);
         match snapshot_file.format() {
-            SnapshotFormat::Legacy => panic!("expected streamed snapshot"),
             SnapshotFormat::Streamed { durable_bytes: preserved } => {
                 assert_eq!(preserved, &durable_bytes);
             }
@@ -4525,36 +4476,10 @@ pub mod tests {
         let reparsed = read_snapshot_file(&output_path)?;
         assert!(reparsed.snapshot().descendant_bk_set().is_empty());
         match reparsed.format() {
-            SnapshotFormat::Legacy => panic!("expected streamed snapshot"),
             SnapshotFormat::Streamed { durable_bytes: preserved } => {
                 assert_eq!(preserved, &durable_bytes);
             }
         }
-        Ok(())
-    }
-
-    #[test]
-    fn snapshot_file_legacy_roundtrip_preserves_legacy_format() -> anyhow::Result<()> {
-        let tempdir = tempfile::tempdir()?;
-        let input_path = tempdir.path().join("legacy.snapshot");
-        let output_path = tempdir.path().join("legacy-out.snapshot");
-        let snapshot = make_test_snapshot();
-        let durable_state_snapshot = snapshot.durable_state_snapshot().clone();
-        std::fs::write(&input_path, bincode::serialize(&snapshot)?)?;
-
-        let mut snapshot_file = read_snapshot_file(&input_path)?;
-        assert_eq!(snapshot_file.compression(), SnapshotCompression::Plain);
-        assert!(matches!(snapshot_file.format(), SnapshotFormat::Legacy));
-        snapshot_file.snapshot_mut().set_descendant_bk_set(BlockKeeperSet::new());
-        write_snapshot_file(&output_path, &snapshot_file)?;
-
-        let output_bytes = std::fs::read(&output_path)?;
-        assert!(!output_bytes.starts_with(STREAMED_THREAD_SNAPSHOT_MAGIC));
-
-        let reparsed = read_snapshot_file(&output_path)?;
-        assert!(matches!(reparsed.format(), SnapshotFormat::Legacy));
-        assert!(reparsed.snapshot().descendant_bk_set().is_empty());
-        assert_eq!(reparsed.snapshot().durable_state_snapshot(), &durable_state_snapshot);
         Ok(())
     }
 
@@ -4588,7 +4513,6 @@ pub mod tests {
         let reparsed = read_snapshot_file(&output_path)?;
         assert_eq!(reparsed.compression(), SnapshotCompression::ZstdWithMagic);
         match reparsed.format() {
-            SnapshotFormat::Legacy => panic!("expected streamed snapshot"),
             SnapshotFormat::Streamed { durable_bytes: preserved } => {
                 assert_eq!(preserved, &durable_bytes);
             }

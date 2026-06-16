@@ -158,13 +158,29 @@ pub struct Block {
     after_split: Option<Boolean>,
     aggregated_signature: Vec<u8>,
     before_split: Option<Boolean>,
-    /// Serialized bag of cells of this block encoded with base64.
-    boc: Option<String>,
     /// Collection-unique field for pagination and sorting. This field is
     /// designed to retain logical order.
     pub chain_order: Option<String>,
     /// Public key of the collator who produced this block.
     created_by: Option<String>,
+    /// Base64-encoded payload of the `AckiNackiBlock`. Replaces the legacy
+    /// `boc` field that used to store the raw TVM block BOC.
+    ///
+    /// The bytes returned here come straight out of SQLite without any
+    /// server-side decompression. The block manager normally writes a
+    /// zstd-compressed payload, but it falls back to the raw bytes when
+    /// compression fails so that no block is ever lost, and pre-compression
+    /// legacy rows may also exist. **Clients must therefore tolerate both
+    /// shapes**:
+    ///
+    /// 1. attempt `zstd::decode_all` on the bytes that come out of base64;
+    /// 2. on success, the result is the bincode-serialized `AckiNackiBlock`;
+    /// 3. on failure (invalid zstd frame), use the bytes as-is — they are
+    ///    already the raw bincode-serialized `AckiNackiBlock`.
+    ///
+    /// Reference writer:
+    /// `database::sqlite::sqlite_helper::zstd_compress`.
+    data: String,
     directives: Directives,
     #[graphql(skip)]
     end_lt: Option<String>,
@@ -236,7 +252,7 @@ pub struct Block {
 
 impl From<db::Block> for Block {
     fn from(block: db::Block) -> Self {
-        let boc = block.boc.map(tvm_types::base64_encode);
+        let data = tvm_types::base64_encode(block.data.as_deref().unwrap_or_default());
         let prev_alt_ref = if block.prev_alt_ref_root_hash.is_some() {
             Some(ExtBlkRef {
                 end_lt: block.prev_alt_ref_end_lt.map(|v| decode_u64_string(&v).to_string()),
@@ -258,9 +274,9 @@ impl From<db::Block> for Block {
             after_split: block.after_split.to_bool(),
             aggregated_signature: block.aggregated_signature.unwrap_or_default(),
             before_split: block.before_split.to_bool(),
-            boc,
             chain_order: block.chain_order,
             created_by: None,
+            data,
             directives: Directives {
                 share_state_resource_address: block.share_state_resource_address,
             },
@@ -367,7 +383,8 @@ impl Block {
         ctx: &Context<'_>,
     ) -> async_graphql::Result<Vec<BlockAttestation>> {
         let db_connector = ctx.data::<Arc<DBConnector>>()?;
-        let rows = db::attestation::Attestation::by_block_id(db_connector, &self.id)
+        let projection = db::attestation::Attestation::graphql_attestation_projection();
+        let rows = db::attestation::Attestation::by_block_id(db_connector, &projection, &self.id)
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         rows.into_iter()

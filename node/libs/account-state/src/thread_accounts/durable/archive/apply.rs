@@ -156,7 +156,8 @@ pub(crate) fn apply_update_impl(
     // Steps 5-8 wrapped so we can deregister on error
     let result = (|| -> Result<(), ArchiveStateError> {
         // Step 5: Write Copy A
-        let (put_records, delete_keys) = prepare_data_records(&update.operations, data_epoch);
+        let (put_records, delete_keys) =
+            prepare_data_records(&update.operations, data_epoch, store);
         write_copy(kv, &store.set_accounts_a(), put_records.clone(), &delete_keys)?;
 
         // Step 6: Promote all threads to WritingCopyB (no CAS — we own via mutex)
@@ -397,15 +398,32 @@ fn update_registry(
 fn prepare_data_records(
     operations: &HashMap<AccountRouting, ArchiveOperation>,
     data_epoch: u64,
+    store: &ArchiveStateStore,
 ) -> (Vec<KVRecord>, Vec<Vec<u8>>) {
     let mut put_records = Vec::new();
     let mut delete_keys = Vec::new();
+    let account_written_cache = store.account_written_cache();
 
     for (routing, operation) in operations {
         let key = routing_to_key(routing);
         match operation {
             ArchiveOperation::UpdateOrInsert(account) => {
                 let data = bincode::serialize(account).expect("Failed to serialize account");
+                if let Ok(vm_account) = account.vm_account() {
+                    let hash = vm_account.hash();
+                    if let Some(level) =
+                        account_written_cache.insert_by_serialized_len(hash, account, data.len())
+                    {
+                        tracing::trace!(
+                            target: "mem",
+                            routing = %routing,
+                            hash = %hash.to_hex_string(),
+                            level = ?level,
+                            serialized_size = data.len(),
+                            "account written cache insert",
+                        );
+                    }
+                }
                 tracing::trace!(
                     target: "monit",
                     "prepare_data_records: routing={routing}, serialized_size={}, key_len={}",

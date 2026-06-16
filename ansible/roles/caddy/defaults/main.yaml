@@ -1,17 +1,21 @@
 ---
-CADDY_NAME: bk-caddy
+CADDY_NAME: bm-caddy
 CADDY_DIR: "{{ ROOT_DIR }}/caddy"
 HOST_NAME: "{{ inventory_hostname }}"
 EXTRA_HOSTS: ""
 
-# keep in sync with roles/block-keeper/defaults/main.yaml !!!
-NGINX_IP:   "private"
-NGINX_PORT: 8080
+# Caddy reaches BM via docker-network service discovery on `ackinacki-net`.
+# These are the service names in roles/block-manager/templates/compose.j2.
+BM_SERVICE:         "block_manager"
+NGINX_SERVICE:      "nginx_bm"
+NGINX_SERVICE_PORT: 80
 
 USE_CADDY: yes
 
-EXTERNAL_NET: no
-# Hack to get working HTTPs on BM
+# Join the existing `ackinacki-net` network created by BM deployment
+# instead of letting caddy compose create a separate one.
+EXTERNAL_NET: yes
+# BM REST API port (must match block_manager group's BM_REST_API_PORT).
 BM_REST_API_PORT: 8610
 
 # TLS section

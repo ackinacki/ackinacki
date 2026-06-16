@@ -4,11 +4,9 @@
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::path::Path;
-use std::path::PathBuf;
 
+use tempfile::NamedTempFile;
 use thiserror::Error;
-
-use crate::helper::get_temp_file_path;
 
 const CONNECT_TIMEOUT: Option<std::time::Duration> = Some(std::time::Duration::from_secs(3));
 
@@ -19,7 +17,7 @@ pub enum DownloadError {
 }
 
 pub fn download_blob(
-    share_full_path: &PathBuf,
+    share_full_path: &std::path::PathBuf,
     tmp_dir_path: &Path,
     urls: &[url::Url],
     max_tries: u8,
@@ -45,7 +43,7 @@ fn reset_download_file(file: &mut std::fs::File) -> anyhow::Result<()> {
 }
 
 fn download_blob_with_attempt<F>(
-    share_full_path: &PathBuf,
+    share_full_path: &std::path::PathBuf,
     tmp_dir_path: &Path,
     urls: &[url::Url],
     max_tries: u8,
@@ -75,34 +73,31 @@ where
     // quickly on transient HTTP failures.
     let max_tries: u32 = max_tries.max(1) as u32;
     tracing::trace!("downloading blob: max_tries={max_tries}, retry_timeout={retry_timeout:?}, deadline={deadline:?}");
-    let tmp_file_path = get_temp_file_path(tmp_dir_path);
-    tracing::trace!("download_blob: trying to create file: {tmp_file_path:?}");
-    if let Some(parent) = tmp_file_path.parent() {
-        if !parent.exists() {
-            tracing::trace!("download_blob: trying create to parent dir: {parent:?}");
-            std::fs::create_dir_all(parent).expect("Failed to create dir for shared state");
-        }
+    if !tmp_dir_path.exists() {
+        tracing::trace!("download_blob: trying create to parent dir: {tmp_dir_path:?}");
+        std::fs::create_dir_all(tmp_dir_path).expect("Failed to create dir for shared state");
     }
-    let mut file = std::fs::File::create(tmp_file_path.clone())?;
+    let mut temp = NamedTempFile::new_in(tmp_dir_path)?;
+    tracing::trace!("download_blob: created temp file: {:?}", temp.path());
     let mut is_downloaded = false;
     for _ in 0..max_tries {
         for url in urls.iter() {
-            reset_download_file(&mut file)?;
+            reset_download_file(temp.as_file_mut())?;
             if let Some(deadline) = deadline {
                 if deadline <= std::time::Instant::now() {
                     anyhow::bail!("Failed to download a blob: deadline.");
                 }
             }
-            match attempt_download(url, &mut file, deadline) {
+            match attempt_download(url, temp.as_file_mut(), deadline) {
                 Ok(()) => {
-                    let downloaded_len = file.metadata()?.len();
+                    let downloaded_len = temp.as_file().metadata()?.len();
                     anyhow::ensure!(downloaded_len > 0, "Failed to download a blob: empty file");
                     is_downloaded = true;
                     break;
                 }
                 Err(e) => {
                     tracing::error!("Download failed: {}", e);
-                    reset_download_file(&mut file)?;
+                    reset_download_file(temp.as_file_mut())?;
                 }
             }
         }
@@ -116,8 +111,8 @@ where
     if !is_downloaded {
         anyhow::bail!(DownloadError::MaxTriesExceeded);
     }
-    tracing::trace!("download_blob: rename file: {tmp_file_path:?} -> {share_full_path:?}");
-    std::fs::rename(tmp_file_path, share_full_path)?;
+    tracing::trace!("download_blob: rename file: {:?} -> {share_full_path:?}", temp.path());
+    temp.persist(share_full_path)?;
     Ok(())
 }
 
@@ -192,6 +187,34 @@ mod tests {
         )?;
 
         assert_eq!(std::fs::read(&share_full_path)?, b"complete-snapshot");
+        Ok(())
+    }
+
+    #[test]
+    fn failed_download_removes_temp_file() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let share_full_path = dir.path().join("snapshot");
+        let url = url::Url::parse("http://example.invalid/snapshot")?;
+
+        let err = download_blob_with_attempt(
+            &share_full_path,
+            dir.path(),
+            &[url],
+            1,
+            None,
+            None,
+            |_url, file, _deadline| {
+                use std::io::Write;
+                file.write_all(b"partial")?;
+                anyhow::bail!("synthetic failure")
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("Max tries exceeded"));
+        assert!(!share_full_path.exists());
+        let leftovers = std::fs::read_dir(dir.path())?.collect::<Result<Vec<_>, _>>()?;
+        assert!(leftovers.is_empty(), "unexpected temp files left after failed download");
         Ok(())
     }
 }

@@ -27,6 +27,9 @@ lazy_static::lazy_static!(
     static ref LICENSE_ADDRESS: Option<String> = std::env::var("LICENSE_ADDRESS").ok();
 );
 
+const VALID_ACCOUNT_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const VALID_DAPP_ID: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
 async fn actix_ext_messages_handler(
     node_requests: web::Json<serde_json::Value>,
     message_router: Arc<MessageRouter>,
@@ -76,6 +79,8 @@ fn mock_block_producer_server() -> HostPort {
                         "producers": ["127.0.0.1:11002"],
                         "current_time": "1746544513335",
                         "thread_id": "00000000000000000000000000000000000000000000000000000000000000000000",
+                        "account_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                        "dapp_id": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
                     },
                     "error": null
                 }))
@@ -120,7 +125,9 @@ async fn test_process_ext_messages_no_bp() {
         .uri(DEFAULT_BM_API_MESSAGES_PATH)
         .set_json(json!([{
             "id": "aGVsbG8=",
-            "body": "test"
+            "body": "test",
+            "account_id": VALID_ACCOUNT_ID,
+            "dapp_id": VALID_DAPP_ID,
         }]))
         .to_request();
 
@@ -196,7 +203,9 @@ async fn test_process_ext_messages_redirection_failed() {
         .uri(DEFAULT_BM_API_MESSAGES_PATH)
         .set_json(json!([{
             "id": "aGVsbG8=",
-            "body": "test"
+            "body": "test",
+            "account_id": VALID_ACCOUNT_ID,
+            "dapp_id": VALID_DAPP_ID,
         }]))
         .to_request();
 
@@ -205,10 +214,18 @@ async fn test_process_ext_messages_redirection_failed() {
     assert_eq!(resp["error"]["code"], "INTERNAL_ERROR");
     assert_eq!(
         get_keys(&resp["error"]["data"]),
-        ["current_time", "exit_code", "message_hash", "producers", "thread_id"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
+        [
+            "account_id",
+            "current_time",
+            "dapp_id",
+            "exit_code",
+            "message_hash",
+            "producers",
+            "thread_id"
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
     );
     assert!(resp["error"]["message"]
         .as_str()
@@ -246,7 +263,9 @@ async fn test_process_ext_messages_successful_forward() {
         .uri(DEFAULT_BM_API_MESSAGES_PATH)
         .set_json(json!([{
             "id": "aGVsbG8=",
-            "body": "test body"
+            "body": "test body",
+            "account_id": VALID_ACCOUNT_ID,
+            "dapp_id": VALID_DAPP_ID,
         }]))
         .to_request();
 
@@ -256,8 +275,10 @@ async fn test_process_ext_messages_successful_forward() {
         get_keys(&resp["result"]),
         [
             "aborted",
+            "account_id",
             "block_hash",
             "current_time",
+            "dapp_id",
             "exit_code",
             "ext_out_msgs",
             "message_hash",
@@ -269,9 +290,78 @@ async fn test_process_ext_messages_successful_forward() {
         .map(|s| s.to_string())
         .collect()
     );
+    assert_eq!(resp["result"]["account_id"], VALID_ACCOUNT_ID);
+    assert_eq!(resp["result"]["dapp_id"], VALID_DAPP_ID);
     assert_eq!(
         get_keys(&resp["ext_message_token"]),
         ["issuer", "unsigned", "signature"].iter().map(|s| s.to_string()).collect()
     );
     assert_eq!(resp["ext_message_token"]["issuer"], json!({ "bm": owner_wallet_pubkey }));
+}
+
+#[actix_rt::test]
+async fn test_process_ext_messages_missing_account_id() {
+    let mock = MockBPResolver::new();
+    let resolver = Arc::new(Mutex::new(mock));
+
+    let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
+    let message_router = MessageRouter {
+        bind,
+        owner_wallet_pubkey: None,
+        signing_keys: None,
+        bp_resolver: resolver,
+    };
+
+    let app = test::init_service(
+        App::new().configure(|cfg| message_router_config(cfg, Arc::new(message_router))),
+    )
+    .await;
+
+    let req = test::TestRequest::post()
+        .uri(DEFAULT_BM_API_MESSAGES_PATH)
+        .set_json(json!([{
+            "id": "aGVsbG8=",
+            "body": "test",
+            "dapp_id": VALID_DAPP_ID,
+        }]))
+        .to_request();
+
+    let resp: serde_json::Value = test::call_and_read_body_json(&app, req).await;
+    assert_eq!(resp["result"], Value::Null);
+    assert_eq!(resp["error"]["code"], "BAD_REQUEST");
+    assert!(resp["error"]["message"].as_str().unwrap().contains("account_id"));
+}
+
+#[actix_rt::test]
+async fn test_process_ext_messages_invalid_dapp_id_format() {
+    let mock = MockBPResolver::new();
+    let resolver = Arc::new(Mutex::new(mock));
+
+    let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
+    let message_router = MessageRouter {
+        bind,
+        owner_wallet_pubkey: None,
+        signing_keys: None,
+        bp_resolver: resolver,
+    };
+
+    let app = test::init_service(
+        App::new().configure(|cfg| message_router_config(cfg, Arc::new(message_router))),
+    )
+    .await;
+
+    let req = test::TestRequest::post()
+        .uri(DEFAULT_BM_API_MESSAGES_PATH)
+        .set_json(json!([{
+            "id": "aGVsbG8=",
+            "body": "test",
+            "account_id": VALID_ACCOUNT_ID,
+            "dapp_id": "0xnothex",
+        }]))
+        .to_request();
+
+    let resp: serde_json::Value = test::call_and_read_body_json(&app, req).await;
+    assert_eq!(resp["result"], Value::Null);
+    assert_eq!(resp["error"]["code"], "BAD_REQUEST");
+    assert!(resp["error"]["message"].as_str().unwrap().contains("dapp_id"));
 }

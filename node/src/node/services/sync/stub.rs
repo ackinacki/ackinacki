@@ -14,7 +14,6 @@ use crate::node::services::sync::SyncSnapshotLoaded;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::types::BlockHeight;
-use crate::types::BlockSeqNo;
 
 pub struct StateSyncServiceStub {}
 
@@ -38,16 +37,6 @@ impl StateSyncService for StateSyncServiceStub {
         todo!()
     }
 
-    fn add_load_state_task(
-        &mut self,
-        _resource_address: BTreeMap<ThreadIdentifier, BlockIdentifier>,
-        _block_seq_no: BlockSeqNo,
-        _repository: RepositoryImpl,
-        _output: InstrumentedSender<anyhow::Result<SyncSnapshotLoaded>>,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
     fn add_load_state_task_with_height(
         &mut self,
         _resource_address: BTreeMap<ThreadIdentifier, BlockIdentifier>,
@@ -60,6 +49,14 @@ impl StateSyncService for StateSyncServiceStub {
 
     fn flush(&self) -> anyhow::Result<()> {
         todo!()
+    }
+
+    fn shutdown_snapshot_workers(&self, _timeout: std::time::Duration) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn wait_snapshot_workers(&self) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 impl Default for StateSyncServiceStub {

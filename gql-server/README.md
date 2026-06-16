@@ -94,3 +94,11 @@ Queries exceeding `sqlite_query_timeout_secs` are interrupted via SQLite's progr
   }]
 }
 ```
+
+## SQL projections
+
+GraphQL resolvers build explicit SQLite `SELECT` lists from the requested
+GraphQL fields. Queries include the selected response fields plus technical
+columns needed for cursors, ordering, deduplication, nested relation loading,
+and type conversion. This avoids reading every column for large archive rows
+when the client only requests a small subset of fields.

@@ -57,12 +57,16 @@ impl BlockchainBkSetUpdate {
         ctx: &Context<'_>,
     ) -> async_graphql::Result<Vec<BlockAttestation>> {
         let db_connector = ctx.data::<Arc<DBConnector>>()?;
+        let projection =
+            crate::schema::db::attestation::Attestation::graphql_attestation_projection();
         let rows = crate::schema::db::attestation::Attestation::by_source_block_id(
             db_connector,
+            &projection,
             &self.block_id,
         )
         .await
-        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        .map_err(|e| async_graphql::Error::new(e.to_string()))
+        .map_err(crate::schema::db::connector::map_db_error)?;
 
         rows.into_iter()
             .map(BlockAttestation::try_from_db)

@@ -9,7 +9,6 @@ use salvo::prelude::*;
 use salvo::Listener;
 use salvo::Router;
 use salvo::Server;
-use tvm_types::AccountId;
 
 use crate::application::usecases;
 use crate::domain::models::AppState;
@@ -91,16 +90,34 @@ async fn boc_by_address(req: &mut Request, depot: &mut Depot, res: &mut Response
         render_error(res, StatusCode::INTERNAL_SERVER_ERROR, "Internal error");
         return;
     };
-    let address = match req.query::<String>("address") {
-        Some(addr) if !addr.trim().is_empty() => addr.trim_start_matches("0:").to_string(),
+    let raw_account_id = match req.query::<String>("account_id") {
+        Some(s) if !s.trim().is_empty() => s.trim().to_owned(),
         _ => {
-            return render_error(res, StatusCode::BAD_REQUEST, "Address parameter required");
+            tracing::warn!("account_id parameter required");
+            return render_error(res, StatusCode::BAD_REQUEST, "account_id parameter required");
         }
     };
-    // Check if address is valid
-    if AccountId::from_string(&address).is_err() {
-        return render_error(res, StatusCode::BAD_REQUEST, "Invalid address");
-    }
+    let raw_dapp_id = match req.query::<String>("dapp_id") {
+        Some(s) if !s.trim().is_empty() => s.trim().to_owned(),
+        _ => {
+            tracing::warn!("dapp_id parameter required");
+            return render_error(res, StatusCode::BAD_REQUEST, "dapp_id parameter required");
+        }
+    };
+    let account_id = match message_router::validation::parse_hex32(&raw_account_id, "account_id") {
+        Ok(v) => v,
+        Err(msg) => {
+            tracing::warn!(account_id = %raw_account_id, "{msg}");
+            return render_error(res, StatusCode::BAD_REQUEST, &msg);
+        }
+    };
+    let dapp_id = match message_router::validation::parse_hex32(&raw_dapp_id, "dapp_id") {
+        Ok(v) => v,
+        Err(msg) => {
+            tracing::warn!(dapp_id = %raw_dapp_id, "{msg}");
+            return render_error(res, StatusCode::BAD_REQUEST, &msg);
+        }
+    };
 
     // Try endpoints with failover
     let endpoints = state.bk_api_pool.endpoints_to_try();
@@ -113,7 +130,7 @@ async fn boc_by_address(req: &mut Request, depot: &mut Depot, res: &mut Response
     let mut last_error = None;
 
     for endpoint in &endpoints {
-        let url = format!("http://{endpoint}/v2/account?address={address}");
+        let url = format!("http://{endpoint}/v2/account?account_id={account_id}&dapp_id={dapp_id}");
         let resp = client.get(&url).bearer_auth(&state.bk_api_token).send().await;
 
         match resp {

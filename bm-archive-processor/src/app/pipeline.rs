@@ -157,6 +157,7 @@ impl App {
 
         tracing::debug!("app cfg: {}", self.cfg);
         // Step 3: Move processed files
+        let mut processed_source_paths = Vec::with_capacity(source_paths.len());
         for src_path in &source_paths {
             let processed = fs_client.move_processed(
                 src_path,
@@ -165,6 +166,7 @@ impl App {
                 false,
             )?;
             tracing::info!("File processed: {}", processed.display());
+            processed_source_paths.push(processed);
         }
 
         // Step 4: Move processed daily DB
@@ -181,6 +183,9 @@ impl App {
             let s3_key = paths::s3_key_from_path(&processed);
             let etag = uploader.upload(&self.cfg.bucket, &s3_key, &processed).await?;
             tracing::info!(etag = %etag, key=%s3_key, "Upload completed");
+            if self.cfg.post_upload == PostUploadAction::Delete {
+                self.remove_processed_sources(&processed_source_paths, fs_client);
+            }
             self.apply_post_upload(&processed);
         }
 
@@ -315,6 +320,35 @@ impl App {
                 }
             }
         }
+    }
+
+    fn remove_processed_sources(
+        &self,
+        processed_source_paths: &[PathBuf],
+        fs_client: &impl FileSystemClient,
+    ) {
+        tracing::info!(
+            files_count = processed_source_paths.len(),
+            "Deleting processed source files after successful daily archive upload"
+        );
+
+        let mut deleted_count = 0;
+        let mut failed_count = 0;
+        for path in processed_source_paths {
+            if let Err(err) = fs_client.remove_file(path) {
+                failed_count += 1;
+                tracing::error!(
+                    path = %path.display(),
+                    error = %err,
+                    "Failed to delete processed source file"
+                );
+            } else {
+                deleted_count += 1;
+                tracing::info!(path = %path.display(), "Deleted processed source file");
+            }
+        }
+
+        tracing::info!(deleted_count, failed_count, "Processed source file cleanup completed");
     }
 }
 

@@ -15,6 +15,7 @@ use crate::thread_accounts::archive::apply::routing_to_key;
 use crate::thread_accounts::archive::update::AccumulatedUpdate;
 use crate::thread_accounts::durable::kv_store::KVRecord;
 use crate::thread_accounts::durable::kv_store::KVStore;
+use crate::thread_accounts::durable::repository::AccountWrittenCache;
 use crate::ArchiveOperation;
 use crate::ThreadAccount;
 
@@ -49,6 +50,8 @@ struct ArchiveStateStoreInner {
 
     /// In-flight AccumulatedUpdates. Read path checks these before KVStore.
     active_updates: RwLock<Vec<Arc<AccumulatedUpdate>>>,
+
+    account_written_cache: Arc<AccountWrittenCache>,
 }
 
 /// Multi-thread archive state store.
@@ -140,6 +143,7 @@ impl ArchiveStateStore {
                 data_epoch: RwLock::new(system.data_epoch),
                 thread_write_locks: RwLock::new(thread_write_locks),
                 active_updates: RwLock::new(Vec::new()),
+                account_written_cache: Arc::new(AccountWrittenCache::new()),
             }),
         })
     }
@@ -237,6 +241,10 @@ impl ArchiveStateStore {
     /// Access in-flight active updates.
     pub(crate) fn active_updates(&self) -> &RwLock<Vec<Arc<AccumulatedUpdate>>> {
         &self.inner.active_updates
+    }
+
+    pub(crate) fn account_written_cache(&self) -> Arc<AccountWrittenCache> {
+        Arc::clone(&self.inner.account_written_cache)
     }
 
     /// Prefixed set name for accounts Copy A at the *current* data_epoch.

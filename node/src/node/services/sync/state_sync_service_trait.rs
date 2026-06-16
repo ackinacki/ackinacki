@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use node_types::BlockIdentifier;
 use node_types::ThreadIdentifier;
@@ -12,7 +13,6 @@ use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::BlockHeight;
-use crate::types::BlockSeqNo;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SaveStateForSharingStatus {
@@ -23,14 +23,12 @@ pub enum SaveStateForSharingStatus {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum SyncSnapshotAnchor {
     Height(BlockHeight),
-    SeqNo(BlockSeqNo),
 }
 
 impl SyncSnapshotAnchor {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Height(_) => "height",
-            Self::SeqNo(_) => "seq_no",
         }
     }
 }
@@ -72,14 +70,6 @@ pub trait StateSyncService {
         finalizing_block_id: BlockIdentifier,
     ) -> anyhow::Result<SaveStateForSharingStatus>;
 
-    fn add_load_state_task(
-        &mut self,
-        resource_address: BTreeMap<ThreadIdentifier, BlockIdentifier>,
-        block_seq_no: BlockSeqNo,
-        repository: RepositoryImpl,
-        output: InstrumentedSender<anyhow::Result<SyncSnapshotLoaded>>,
-    ) -> anyhow::Result<()>;
-
     fn add_load_state_task_with_height(
         &mut self,
         resource_address: BTreeMap<ThreadIdentifier, BlockIdentifier>,
@@ -93,4 +83,8 @@ pub trait StateSyncService {
     fn clear_load_state_tasks(&mut self);
 
     fn flush(&self) -> anyhow::Result<()>;
+
+    fn shutdown_snapshot_workers(&self, timeout: Duration) -> anyhow::Result<()>;
+
+    fn wait_snapshot_workers(&self) -> anyhow::Result<()>;
 }

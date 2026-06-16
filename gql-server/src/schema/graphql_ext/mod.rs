@@ -49,6 +49,7 @@ use self::message::Message;
 use self::message::MessageFilter;
 use super::db;
 use crate::helpers::query_order_by_str;
+use crate::schema::db::projection::normalize_graphql_field_name;
 use crate::schema::db::DBConnector;
 use crate::schema::graphql::account::Account;
 use crate::schema::graphql::account::AccountFilter;
@@ -92,6 +93,66 @@ pub struct QueryOrderBy {
 
 pub struct QueryRoot;
 
+fn selected_current_fields(ctx: &Context<'_>) -> Vec<String> {
+    selected_current_fields_at(ctx, &[])
+}
+
+fn selected_current_fields_with_order_by(
+    ctx: &Context<'_>,
+    order_by: &Option<Vec<Option<QueryOrderBy>>>,
+) -> Vec<String> {
+    let mut fields = selected_current_fields(ctx);
+    for field in order_by_projection_fields(order_by) {
+        if !fields.contains(&field) {
+            fields.push(field);
+        }
+    }
+    fields
+}
+
+pub(crate) fn selected_current_fields_at(ctx: &Context<'_>, path: &[&str]) -> Vec<String> {
+    let mut lookahead = ctx.look_ahead();
+    for segment in path {
+        lookahead = lookahead.field(segment);
+    }
+
+    let mut fields = Vec::new();
+    for field in lookahead.selection_fields() {
+        for selected in field.selection_set() {
+            let name = selected.name();
+            if name.starts_with("__") {
+                continue;
+            }
+            let normalized = normalize_graphql_field_name(name);
+            if !fields.contains(&normalized) {
+                fields.push(normalized);
+            }
+        }
+    }
+    fields
+}
+
+fn order_by_projection_fields(order_by: &Option<Vec<Option<QueryOrderBy>>>) -> Vec<String> {
+    let mut fields = Vec::new();
+    let Some(order_by) = order_by else {
+        return fields;
+    };
+
+    for item in order_by.iter().flatten() {
+        let Some(path) = item.path.as_deref() else {
+            continue;
+        };
+        let Some(field) = path.split('.').next() else {
+            continue;
+        };
+        let field = normalize_graphql_field_name(field);
+        if !fields.contains(&field) {
+            fields.push(field);
+        }
+    }
+    fields
+}
+
 #[Object]
 impl QueryRoot {
     async fn info(&self, ctx: &Context<'_>) -> FieldResult<Option<Info>> {
@@ -99,7 +160,8 @@ impl QueryRoot {
         let db_connector = ctx.data::<Arc<DBConnector>>()?;
 
         let gen_utime = if ctx.look_ahead().field("lastBlockTime").exists() {
-            let block = db::Block::latest_block(db_connector).await?;
+            let projection = db::Block::projection_for_fields(["gen_utime"]);
+            let block = db::Block::latest_block(db_connector, &projection).await?;
             match block {
                 Some(db::Block { gen_utime, .. }) => gen_utime,
                 None => None,
@@ -137,9 +199,15 @@ impl QueryRoot {
             Some(f) => BlockFilter::to_where(&f).unwrap_or("".to_string()),
             None => "".to_string(),
         };
+        let selected_fields = selected_current_fields_with_order_by(ctx, &order_by);
         let order_by_clause = query_order_by_str(order_by);
+        let mut projection = db::Block::projection_for_fields(selected_fields.clone());
+        if selected_fields.iter().any(|field| field == "in_msg_descr") {
+            projection.add("id");
+            projection.add("out_msgs");
+        }
         let db_blocks: Vec<db::Block> =
-            db::Block::list(db_connector, filter, order_by_clause, limit).await?;
+            db::Block::list(db_connector, &projection, filter, order_by_clause, limit).await?;
         let mut blocks = db_blocks
             .into_iter()
             .map(|b| Some(Into::<Block>::into(b)))
@@ -185,9 +253,12 @@ impl QueryRoot {
             Some(f) => AccountFilter::to_where(&f).unwrap_or("".to_string()),
             None => "".to_string(),
         };
+        let projection = db::Account::projection_for_fields(selected_current_fields_with_order_by(
+            ctx, &order_by,
+        ));
         let order_by_clause = query_order_by_str(order_by);
         let db_accounts: Vec<db::Account> =
-            db::Account::list(db_connector, filter, order_by_clause, limit).await?;
+            db::Account::list(db_connector, &projection, filter, order_by_clause, limit).await?;
         let accounts: Vec<Option<Account>> =
             db_accounts.into_iter().map(|b| Some(b.into())).collect();
 
@@ -212,9 +283,12 @@ impl QueryRoot {
             Some(f) => MessageFilter::to_where(&f).unwrap_or("".to_string()),
             None => "".to_string(),
         };
+        let projection = db::Message::projection_for_fields(selected_current_fields_with_order_by(
+            ctx, &order_by,
+        ));
         let order_by_clause = query_order_by_str(order_by);
         let db_messages: Vec<db::Message> =
-            db::Message::list(db_connector, filter, order_by_clause, limit).await?;
+            db::Message::list(db_connector, &projection, filter, order_by_clause, limit).await?;
         let mut messages: Vec<Option<Message>> =
             db_messages.into_iter().map(|b| Some(b.into())).collect();
 
@@ -232,10 +306,15 @@ impl QueryRoot {
         }
         if ctx.look_ahead().field("dst_transaction").exists() {
             for message in messages.iter_mut().flatten() {
-                let dst_transaction =
-                    db::transaction::Transaction::by_in_message(db_connector, &message.id, None)
-                        .await
-                        .expect("Failed to load transaction by inbound message");
+                let projection = db::transaction::Transaction::projection_for_fields(["id"]);
+                let dst_transaction = db::transaction::Transaction::by_in_message(
+                    db_connector,
+                    &projection,
+                    &message.id,
+                    None,
+                )
+                .await
+                .expect("Failed to load transaction by inbound message");
 
                 if let Some(transaction) = dst_transaction {
                     message.dst_transaction = transaction_loader
@@ -270,9 +349,13 @@ impl QueryRoot {
             Some(f) => TransactionFilter::to_where(&f).unwrap_or("".to_string()),
             None => "".to_string(),
         };
+        let projection = db::Transaction::projection_for_fields(
+            selected_current_fields_with_order_by(ctx, &order_by),
+        );
         let order_by_clause = query_order_by_str(order_by);
         let db_transactions: Vec<db::Transaction> =
-            db::Transaction::list(db_connector, filter, order_by_clause, limit).await?;
+            db::Transaction::list(db_connector, &projection, filter, order_by_clause, limit)
+                .await?;
         let mut transactions: Vec<Option<Transaction>> =
             db_transactions.into_iter().map(|b| Some(b.into())).collect();
 
@@ -298,5 +381,32 @@ impl QueryRoot {
         ctx: &'ctx Context<'ctx>,
     ) -> FieldResult<Option<BlockchainQuery<'ctx>>> {
         Ok(Some(BlockchainQuery { ctx }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::order_by_projection_fields;
+    use super::QueryOrderBy;
+    use super::QueryOrderByDirection;
+
+    #[test]
+    fn order_by_projection_fields_adds_unselected_sort_fields() {
+        let fields = order_by_projection_fields(&Some(vec![Some(QueryOrderBy {
+            path: Some("chain_order".to_string()),
+            direction: Some(QueryOrderByDirection::DESC),
+        })]));
+
+        assert_eq!(fields, ["chain_order"]);
+    }
+
+    #[test]
+    fn order_by_projection_fields_uses_top_level_field_for_nested_paths() {
+        let fields = order_by_projection_fields(&Some(vec![Some(QueryOrderBy {
+            path: Some("compute.exit_code".to_string()),
+            direction: Some(QueryOrderByDirection::ASC),
+        })]));
+
+        assert_eq!(fields, ["compute"]);
     }
 }

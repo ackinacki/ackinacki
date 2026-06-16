@@ -33,6 +33,10 @@ pub struct ExtMsgRunResult {
     pub current_time: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
+    #[serde(default)]
+    pub account_id: String,
+    #[serde(default)]
+    pub dapp_id: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -49,6 +53,10 @@ pub struct ExtMsgRunErrorData {
     pub exit_code: Option<i32>,
     pub current_time: String,
     pub thread_id: Option<String>,
+    #[serde(default)]
+    pub account_id: String,
+    #[serde(default)]
+    pub dapp_id: String,
 }
 
 use crate::decode_msg_id;
@@ -141,6 +149,55 @@ pub async fn run(
         };
         return Ok(error);
     };
+    // Validate the new wire fields before any network work. This mirrors the BK
+    // middleware so that an invalid client request is rejected without a round
+    // trip to a Block Producer.
+    let (validated_account_id, validated_dapp_id) = match nrs.first() {
+        Some(first) => {
+            let raw_account = first.get("account_id").and_then(|v| v.as_str()).unwrap_or("");
+            let raw_dapp = first.get("dapp_id").and_then(|v| v.as_str()).unwrap_or("");
+            let account_id = match crate::validation::parse_hex32(raw_account, "account_id") {
+                Ok(v) => v,
+                Err(msg) => {
+                    return Ok(ExtMsgRunResponse {
+                        result: None,
+                        error: Some(ExtMsgRunError {
+                            code: "BAD_REQUEST".to_string(),
+                            message: msg,
+                            data: None,
+                        }),
+                        ext_message_token: None,
+                    });
+                }
+            };
+            let dapp_id = match crate::validation::parse_hex32(raw_dapp, "dapp_id") {
+                Ok(v) => v,
+                Err(msg) => {
+                    return Ok(ExtMsgRunResponse {
+                        result: None,
+                        error: Some(ExtMsgRunError {
+                            code: "BAD_REQUEST".to_string(),
+                            message: msg,
+                            data: None,
+                        }),
+                        ext_message_token: None,
+                    });
+                }
+            };
+            (account_id, dapp_id)
+        }
+        None => {
+            return Ok(ExtMsgRunResponse {
+                result: None,
+                error: Some(ExtMsgRunError {
+                    code: "BAD_REQUEST".to_string(),
+                    message: "Empty request".to_string(),
+                    data: None,
+                }),
+                ext_message_token: None,
+            });
+        }
+    };
     let thread_id = nrs
         .first()
         .and_then(|f| f.get("thread_id"))
@@ -206,6 +263,8 @@ pub async fn run(
                                 exit_code: None,
                                 current_time: now_ms().to_string(),
                                 thread_id: Some(thread_id.clone()),
+                                account_id: validated_account_id.clone(),
+                                dapp_id: validated_dapp_id.clone(),
                             };
                             ExtMsgRunResponse {
                                 result: None,
@@ -224,6 +283,16 @@ pub async fn run(
                             let mut response_struct: ExtMsgRunResponse =
                                 serde_json::from_str(&body_str)?;
 
+                            if let Some(result) = response_struct.result.as_mut() {
+                                result.account_id = validated_account_id.clone();
+                                result.dapp_id = validated_dapp_id.clone();
+                            }
+                            if let Some(data) =
+                                response_struct.error.as_mut().and_then(|error| error.data.as_mut())
+                            {
+                                data.account_id = validated_account_id.clone();
+                                data.dapp_id = validated_dapp_id.clone();
+                            }
                             response_struct.ext_message_token =
                                 Some(json!(message_router.issue_token()));
                             tracing::trace!(target: "message_router", "add token to response: {:?}", response_struct.ext_message_token);
@@ -238,6 +307,8 @@ pub async fn run(
                             exit_code: None,
                             current_time: now_ms().to_string(),
                             thread_id: Some(thread_id.clone()),
+                            account_id: validated_account_id.clone(),
+                            dapp_id: validated_dapp_id.clone(),
                         };
                         ExtMsgRunResponse {
                             result: None,
@@ -273,6 +344,8 @@ pub async fn run(
                     exit_code: None,
                     current_time: now_ms().to_string(),
                     thread_id: Some(thread_id.clone()),
+                    account_id: validated_account_id.clone(),
+                    dapp_id: validated_dapp_id.clone(),
                 };
                 ExtMsgRunResponse {
                     result: None,
@@ -362,12 +435,155 @@ mod tests {
         (format!("http://127.0.0.1:{}", addr.port()), counter)
     }
 
+    async fn start_mock_bp_server(status: u16, body: &str) -> HostPort {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = HostPort::from(listener.local_addr().unwrap());
+        let body = body.to_string();
+
+        tokio::spawn(async move {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 8192];
+            let _ = stream.read(&mut buf).await;
+            let status_text = match status {
+                200 => "OK",
+                400 => "Bad Request",
+                500 => "Internal Server Error",
+                _ => "Unknown",
+            };
+            let response = format!(
+                "HTTP/1.1 {status} {status_text}\r\n\
+                 Content-Length: {}\r\n\
+                 Content-Type: application/json\r\n\
+                 Connection: close\r\n\r\n\
+                 {body}",
+                body.len(),
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+        });
+
+        addr
+    }
+
     fn test_client() -> reqwest::Client {
         reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap()
     }
 
     fn test_nrs() -> Vec<serde_json::Value> {
         vec![serde_json::json!({"id": "test"})]
+    }
+
+    fn nrs_with_fields(account_id: &str, dapp_id: &str) -> serde_json::Value {
+        serde_json::json!([
+            {
+                "id": "aGVsbG8=",
+                "body": "AAAA",
+                "thread_id": null,
+                "account_id": account_id,
+                "dapp_id": dapp_id,
+            }
+        ])
+    }
+
+    fn make_router() -> Arc<crate::message_router::MessageRouter> {
+        use std::net::IpAddr;
+        use std::net::Ipv4Addr;
+        use std::net::SocketAddr;
+
+        use parking_lot::Mutex;
+
+        let mut mock = crate::MockBPResolver::new();
+        // The validator should reject before we ever consult the resolver. Mark it as
+        // never-called so the test fails loudly if validation regresses.
+        mock.expect_resolve().never();
+        let resolver = Arc::new(Mutex::new(mock));
+        Arc::new(crate::message_router::MessageRouter {
+            bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            owner_wallet_pubkey: None,
+            signing_keys: None,
+            bp_resolver: resolver,
+        })
+    }
+
+    fn make_router_with_recipient(
+        recipient: HostPort,
+    ) -> Arc<crate::message_router::MessageRouter> {
+        use std::net::IpAddr;
+        use std::net::Ipv4Addr;
+        use std::net::SocketAddr;
+
+        use parking_lot::Mutex;
+
+        let mut mock = crate::MockBPResolver::new();
+        mock.expect_resolve().return_const(vec![recipient]);
+        let resolver = Arc::new(Mutex::new(mock));
+        Arc::new(crate::message_router::MessageRouter {
+            bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            owner_wallet_pubkey: None,
+            signing_keys: None,
+            bp_resolver: resolver,
+        })
+    }
+
+    const VALID_HEX: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[tokio::test]
+    async fn run_rejects_missing_account_id_before_proxying() {
+        let nrs = serde_json::json!([{"id":"aGVsbG8=", "body":"AAAA", "dapp_id": VALID_HEX}]);
+        let resp = run(nrs, make_router()).await.unwrap();
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("account_id"));
+    }
+
+    #[tokio::test]
+    async fn run_rejects_invalid_dapp_id_format() {
+        let nrs = nrs_with_fields(VALID_HEX, "not-a-hex");
+        let resp = run(nrs, make_router()).await.unwrap();
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("dapp_id"));
+    }
+
+    #[tokio::test]
+    async fn run_rejects_empty_request() {
+        let resp = run(serde_json::json!([]), make_router()).await.unwrap();
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert_eq!(err.message, "Empty request");
+    }
+
+    #[tokio::test]
+    async fn run_injects_validated_ids_into_success_response() {
+        let recipient = start_mock_bp_server(
+            200,
+            r#"{
+                "result": {
+                    "message_hash": "hash",
+                    "block_hash": "block",
+                    "tx_hash": "tx",
+                    "ext_out_msgs": [],
+                    "aborted": false,
+                    "exit_code": 0,
+                    "producers": [],
+                    "current_time": "1"
+                },
+                "error": null
+            }"#,
+        )
+        .await;
+        let resp =
+            run(nrs_with_fields(VALID_HEX, VALID_HEX), make_router_with_recipient(recipient))
+                .await
+                .unwrap();
+
+        let result = resp.result.expect("success result expected");
+        assert_eq!(result.account_id, VALID_HEX);
+        assert_eq!(result.dapp_id, VALID_HEX);
     }
 
     #[tokio::test]

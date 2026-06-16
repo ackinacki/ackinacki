@@ -6,9 +6,11 @@ use std::collections::HashSet;
 use sqlx::prelude::FromRow;
 use sqlx::QueryBuilder;
 
+use crate::schema::db::projection::SqlProjection;
 use crate::schema::db::DBConnector;
 
-#[derive(Clone, Debug, FromRow)]
+#[derive(Clone, Debug, Default, FromRow)]
+#[sqlx(default)]
 pub struct Attestation {
     pub block_id: String,
     pub parent_block_id: String,
@@ -19,22 +21,68 @@ pub struct Attestation {
 }
 
 impl Attestation {
+    const DIRECT_COLUMNS: &'static [&'static str] = &[
+        "aggregated_signature",
+        "block_id",
+        "envelope_hash",
+        "parent_block_id",
+        "signature_occurrences",
+        "target_type",
+    ];
+
+    fn direct_column(field: &str) -> Option<&'static str> {
+        Self::DIRECT_COLUMNS.iter().copied().find(|column| *column == field)
+    }
+
+    pub fn projection_for_fields<I>(fields: I) -> SqlProjection
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let mut projection = SqlProjection::new();
+        for field in fields {
+            let field = field.as_ref();
+            match field {
+                "signatures" => {
+                    projection.extend(["aggregated_signature", "signature_occurrences"]);
+                }
+                _ if let Some(column) = Self::direct_column(field) => projection.add(column),
+                _ => panic!("Unsupported SQL projection field: attestation.{field}"),
+            }
+        }
+        projection.ensure_minimum(["block_id"]);
+        projection
+    }
+
+    pub fn graphql_attestation_projection() -> SqlProjection {
+        let mut projection = SqlProjection::new();
+        for column in Self::DIRECT_COLUMNS {
+            projection.add(column);
+        }
+        projection
+    }
+
     pub async fn by_block_id(
         db_connector: &DBConnector,
+        projection: &SqlProjection,
         block_id: &str,
     ) -> anyhow::Result<Vec<Attestation>> {
-        Self::list_by(db_connector, "block_id", block_id).await
+        let mut rows = Self::list_by(db_connector, projection, "block_id", block_id).await?;
+        rows.sort_by_key(|x| x.target_type);
+        Ok(rows)
     }
 
     pub async fn by_source_block_id(
         db_connector: &DBConnector,
+        projection: &SqlProjection,
         block_id: &str,
     ) -> anyhow::Result<Vec<Attestation>> {
-        Self::list_by(db_connector, "source_block_id", block_id).await
+        Self::list_by(db_connector, projection, "source_block_id", block_id).await
     }
 
     async fn list_by(
         db_connector: &DBConnector,
+        projection: &SqlProjection,
         field: &str,
         value: &str,
     ) -> anyhow::Result<Vec<Attestation>> {
@@ -45,13 +93,23 @@ impl Attestation {
             return Ok(Vec::new());
         }
 
+        let mut projection = projection.clone();
+        projection.extend(["block_id", "target_type", "source_chain_order"]);
+        match field {
+            "block_id" => projection.add("block_id"),
+            "source_block_id" => projection.add("source_block_id"),
+            _ => panic!("Unsupported SQL projection filter field: attestation.{field}"),
+        }
+        let select = projection.select_list();
         let union_sql = db_names
             .into_iter()
-            .map(|name| format!("SELECT * FROM \"{name}\".attestations WHERE {field}={value:?}"))
+            .map(|name| {
+                format!("SELECT {select} FROM \"{name}\".attestations WHERE {field}={value:?}")
+            })
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
         let sql = format!(
-            "SELECT * FROM ({union_sql}) ORDER BY source_chain_order DESC, target_type ASC"
+            "SELECT {select} FROM ({union_sql}) ORDER BY source_chain_order DESC, target_type ASC"
         );
         tracing::trace!(target: "blockchain_api", "SQL: {sql}");
 
@@ -70,7 +128,6 @@ impl Attestation {
             }
         }
 
-        dedup.sort_by_key(|x| x.target_type);
         Ok(dedup)
     }
 }
@@ -92,6 +149,27 @@ mod tests {
     use crate::defaults;
     use crate::schema::db::DBConnector;
     use crate::web;
+
+    #[test]
+    fn attestation_projection_maps_api_fields() {
+        let projection = Attestation::projection_for_fields(["block_id", "signatures"]);
+        assert!(projection.columns().contains(&"block_id"));
+        assert!(projection.columns().contains(&"aggregated_signature"));
+        assert!(projection.columns().contains(&"signature_occurrences"));
+        assert!(!projection.columns().contains(&"signatures"));
+    }
+
+    #[test]
+    fn attestation_projection_empty_adds_minimum_identity_column() {
+        let projection = Attestation::projection_for_fields(std::iter::empty::<&str>());
+        assert_eq!(projection.columns(), &["block_id"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Unsupported SQL projection field: attestation.unknown_field")]
+    fn attestation_projection_unknown_field_panics() {
+        Attestation::projection_for_fields(["unknown_field"]);
+    }
 
     fn create_attestations_table(conn: &Connection) {
         conn.execute_batch(
@@ -183,8 +261,10 @@ mod tests {
     #[tokio::test]
     async fn by_block_id_deduplicates_per_target_type_and_keeps_newest() {
         let db_connector = setup_db_connector().await;
-        let rows =
-            Attestation::by_block_id(&db_connector, "block-A").await.expect("query attestations");
+        let projection = Attestation::graphql_attestation_projection();
+        let rows = Attestation::by_block_id(&db_connector, &projection, "block-A")
+            .await
+            .expect("query attestations");
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].target_type, 0);
@@ -195,10 +275,15 @@ mod tests {
     #[tokio::test]
     async fn by_source_block_id_returns_all_attestations_for_source() {
         let db_connector = setup_db_connector().await;
-        let rows = Attestation::by_source_block_id(&db_connector, "source-A")
+        let projection = Attestation::graphql_attestation_projection();
+        let rows = Attestation::by_source_block_id(&db_connector, &projection, "source-A")
             .await
             .expect("query attestations by source");
 
         assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].target_type, 1);
+        assert_eq!(rows[0].aggregated_signature, vec![8, 8]);
+        assert_eq!(rows[1].target_type, 0);
+        assert_eq!(rows[1].aggregated_signature, vec![9, 9]);
     }
 }

@@ -32,13 +32,15 @@ impl Loader<String> for MessageLoader {
             return Ok(HashMap::new());
         }
 
+        let projection = db::Message::graphql_message_projection();
+        let select = projection.select_list();
         let union_sql = db_names
             .into_iter()
-            .map(|name| format!("SELECT * FROM \"{name}\".messages WHERE id IN ({ids})"))
+            .map(|name| format!("SELECT {select} FROM \"{name}\".messages WHERE id IN ({ids})"))
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
 
-        let sql = format!("SELECT * FROM ({union_sql})");
+        let sql = format!("SELECT {select} FROM ({union_sql})");
 
         tracing::trace!(target: "data_loader",  "SQL: {sql}");
         let mut conn = self.db_connector.get_connection().await?;

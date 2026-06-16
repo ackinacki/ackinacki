@@ -7,6 +7,7 @@ use std::fmt::Formatter;
 use anyhow::anyhow;
 
 pub(crate) const BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK: u8 = 1;
+pub(crate) const BLOCK_HAS_MESSAGES_WITH_EQUAL_HASH: u8 = 2;
 
 #[derive(Debug)]
 pub(crate) struct VerifyError {
@@ -33,6 +34,6 @@ impl VerifyError {
     }
 }
 
-pub(crate) fn _verify_error(code: u8) -> anyhow::Error {
+pub(crate) fn verify_error(code: u8) -> anyhow::Error {
     anyhow!(VerifyError::_new(code))
 }

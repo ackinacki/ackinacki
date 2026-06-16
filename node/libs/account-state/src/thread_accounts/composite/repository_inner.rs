@@ -122,6 +122,7 @@ impl ThreadAccountsRepositoryInner {
         state: &ThreadAccountsState,
         routing: &AccountRouting,
     ) -> anyhow::Result<Option<ThreadAccount>> {
+        let durable_state_hash = self.durable.state_hash(&state.durable).to_hex_string();
         if let Some(durable) = self.durable.state_account(&state.durable, routing)? {
             // If this is a durable redirect stub, follow it to the real account
             if durable.is_redirect() {
@@ -132,7 +133,12 @@ impl ThreadAccountsRepositoryInner {
                     {
                         tracing::trace!(
                             target: "monit", "{}",
-                            found_info("durable (via redirect)", &real_routing, &real_account)
+                            found_info(
+                                "durable (via redirect)",
+                                &real_routing,
+                                &real_account,
+                                &durable_state_hash,
+                            )
                         );
                         return Ok(Some(real_account));
                     }
@@ -140,20 +146,34 @@ impl ThreadAccountsRepositoryInner {
                 // Could not follow redirect — return it as-is for the caller to handle
                 tracing::trace!(
                     target: "monit",
-                    "Durable redirect stub at {} could not be followed",
-                    routing_info(routing)
+                    "Durable redirect stub at {} could not be followed durable_state_hash={}",
+                    routing_info(routing),
+                    durable_state_hash,
                 );
                 return Ok(Some(durable));
             }
-            tracing::trace!(target: "monit", "{}", found_info("durable", routing, &durable));
+            tracing::trace!(
+                target: "monit",
+                "{}",
+                found_info("durable", routing, &durable, &durable_state_hash)
+            );
             Ok(Some(durable))
         } else {
             let tvm = state.tvm.account(routing)?;
             if let Some(tvm) = tvm.as_ref() {
-                tracing::trace!(target: "monit", "{}", found_info("TVM", routing, tvm));
+                tracing::trace!(
+                    target: "monit",
+                    "{}",
+                    found_info("TVM", routing, tvm, &durable_state_hash)
+                );
             } else {
                 // Note: we ended up being here
-                tracing::trace!(target: "monit", "Account not found: {}", routing_info(routing));
+                tracing::trace!(
+                    target: "monit",
+                    "Account not found: {} durable_state_hash={}",
+                    routing_info(routing),
+                    durable_state_hash,
+                );
             }
             Ok(tvm)
         }
@@ -211,6 +231,24 @@ impl ThreadAccountsRepositoryInner {
         timeout: std::time::Duration,
     ) -> Option<crate::thread_accounts::PinHandle> {
         self.durable.acquire_snapshot_pin(expected_thread, expected_block, timeout)
+    }
+
+    pub fn acquire_snapshot_pin_cancellable<F>(
+        &self,
+        expected_thread: node_types::ThreadIdentifier,
+        expected_block: node_types::BlockIdentifier,
+        timeout: std::time::Duration,
+        should_cancel: F,
+    ) -> Option<crate::thread_accounts::PinHandle>
+    where
+        F: Fn() -> bool,
+    {
+        self.durable.acquire_snapshot_pin_cancellable(
+            expected_thread,
+            expected_block,
+            timeout,
+            should_cancel,
+        )
     }
 
     pub fn get_archive_thread_control_states(&self) -> anyhow::Result<Vec<ThreadControlState>> {
@@ -274,7 +312,12 @@ fn routing_info(routing: &AccountRouting) -> String {
     }
 }
 
-fn found_info(state: &str, routing: &AccountRouting, state_account: &ThreadAccount) -> String {
+fn found_info(
+    state: &str,
+    routing: &AccountRouting,
+    state_account: &ThreadAccount,
+    durable_state_hash: &str,
+) -> String {
     let hash_str = if state_account.is_redirect() {
         format!("redirect -> {:?}", state_account.get_dapp_id())
     } else {
@@ -283,8 +326,10 @@ fn found_info(state: &str, routing: &AccountRouting, state_account: &ThreadAccou
             .map(|a| a.hash().to_hex_string())
             .unwrap_or_else(|_| "<error>".to_string())
     };
-    let info =
-        format!("Account found in {state} state: {} hash: {hash_str}", routing_info(routing),);
+    let info = format!(
+        "Account found in {state} state: {} hash: {hash_str} durable_state_hash={durable_state_hash}",
+        routing_info(routing),
+    );
     let dapp_id = state_account.get_dapp_id();
     if dapp_id == Some(*routing.dapp_id()) {
         info

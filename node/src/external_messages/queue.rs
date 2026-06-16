@@ -24,8 +24,7 @@ enum Status {
     Included, // External messages already included in block in undergoing validation
 }
 
-#[allow(clippy::derived_hash_with_manual_eq)]
-#[derive(Default, Clone, Copy, Debug, Hash)]
+#[derive(Default, Clone, Copy, Debug)]
 pub struct ExtMessageDst {
     pub account_id: AccountIdentifier,
     pub dapp_id: Option<DAppIdentifier>,
@@ -34,6 +33,10 @@ pub struct ExtMessageDst {
 // Note: this fix is necessary for current state impl, (ACC_ID, None) and (ACC_ID, Some(DAPP)) are
 // the same destinations and can't be processed in parallel but in state v2 DAPP will be mandatory
 // and this impl should be removed.
+//
+// `Hash` must stay consistent with `PartialEq` (equal values must hash equally), so it ignores
+// `dapp_id` as well. Otherwise HashMap/HashSet keyed by `ExtMessageDst` would split equal
+// destinations across buckets and treat them as distinct.
 impl PartialEq for ExtMessageDst {
     fn eq(&self, other: &Self) -> bool {
         self.account_id == other.account_id
@@ -41,6 +44,12 @@ impl PartialEq for ExtMessageDst {
 }
 
 impl Eq for ExtMessageDst {}
+
+impl std::hash::Hash for ExtMessageDst {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.account_id, state);
+    }
+}
 
 impl ExtMessageDst {
     pub fn new(account_id: AccountIdentifier, dapp_id: Option<DAppIdentifier>) -> Self {
@@ -83,7 +92,7 @@ impl QueuedExtMessage {
     }
 
     pub fn try_from_incoming(ext_message: NotQueuedExtMessage) -> anyhow::Result<Self> {
-        Self::try_new(Status::Pending, ext_message.dst_dapp_id(), ext_message.into_tvm_message())
+        Self::try_new(Status::Pending, Some(ext_message.dapp_id()), ext_message.into_tvm_message())
     }
 
     pub fn try_from_block(tvm_message: Message) -> anyhow::Result<Self> {
@@ -104,6 +113,16 @@ impl QueuedExtMessage {
 
     pub fn dst(&self) -> &ExtMessageDst {
         &self.dst
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(dst: ExtMessageDst) -> Self {
+        Self {
+            _status: Status::Pending,
+            tvm_message: Message::default(),
+            hash: UInt256::default(),
+            dst,
+        }
     }
 }
 
@@ -155,5 +174,58 @@ impl ExternalMessagesQueue {
         }
 
         grouped_by_acc
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::hash_map::DefaultHasher;
+    use std::collections::HashMap;
+    use std::hash::Hash;
+    use std::hash::Hasher;
+    use std::str::FromStr;
+
+    use node_types::AccountIdentifier;
+    use node_types::DAppIdentifier;
+
+    use super::ExtMessageDst;
+
+    fn hash_of(dst: &ExtMessageDst) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        dst.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    // (ACC, None), (ACC, Some(D1)) and (ACC, Some(D2)) are the same destination, so they must be
+    // equal AND hash equally. A derived `Hash` would include `dapp_id` and break this contract,
+    // splitting equal destinations across HashMap buckets.
+    #[test]
+    fn eq_and_hash_ignore_dapp_id() {
+        let account = AccountIdentifier::from_str(&"ab".repeat(32)).unwrap();
+        let dapp1 = DAppIdentifier::from_str(&"11".repeat(32)).unwrap();
+        let dapp2 = DAppIdentifier::from_str(&"22".repeat(32)).unwrap();
+
+        let none = ExtMessageDst::new(account, None);
+        let some1 = ExtMessageDst::new(account, Some(dapp1));
+        let some2 = ExtMessageDst::new(account, Some(dapp2));
+
+        assert_eq!(none, some1);
+        assert_eq!(some1, some2);
+
+        assert_eq!(hash_of(&none), hash_of(&some1));
+        assert_eq!(hash_of(&some1), hash_of(&some2));
+    }
+
+    #[test]
+    fn hashmap_groups_same_account_across_dapps() {
+        let account = AccountIdentifier::from_str(&"cd".repeat(32)).unwrap();
+        let dapp = DAppIdentifier::from_str(&"33".repeat(32)).unwrap();
+
+        let mut map: HashMap<ExtMessageDst, u32> = HashMap::new();
+        *map.entry(ExtMessageDst::new(account, Some(dapp))).or_default() += 1;
+        *map.entry(ExtMessageDst::new(account, None)).or_default() += 1;
+
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.values().next(), Some(&2));
     }
 }

@@ -5,21 +5,15 @@ services:
     ports:
       - "${HOST_PUBLIC_IP}:80:80"
       - "${HOST_PUBLIC_IP}:443:443"
-      - "${HOST_PRIVATE_IP}:80:80"
-      - "${HOST_PRIVATE_IP}:443:443"
       - "${HOST_PUBLIC_IP}:8600:8600"
-      - "${HOST_PRIVATE_IP}:8600:8600"
     volumes:
       - ./caddy:/etc/caddy
       - ./data:/data
     environment:
       - HOST_NAME=${HOST_NAME}
       - HOST_PUBLIC_IP=${HOST_PUBLIC_IP}
-      - HOST_PRIVATE_IP=${HOST_PRIVATE_IP}
       - EXTRA_HOSTS=${EXTRA_HOSTS}
       - CADDY_EMAIL=${CADDY_EMAIL}
-      - NGINX_HOST=${NGINX_HOST}
-      - NGINX_PORT=${NGINX_PORT}
     restart: unless-stopped
     networks:
       - ackinacki-net

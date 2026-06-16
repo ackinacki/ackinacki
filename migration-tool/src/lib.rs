@@ -255,4 +255,30 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn bm_archive_v6_migration_up_and_down_creates_and_drops_new_indexes() -> anyhow::Result<()> {
+        let root = testdir!();
+        let db = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &root);
+        let opts = DbMaintenanceOptions { silent: true };
+
+        db.migrate(MigrateTo::Version(5), opts.clone())?;
+        let conn = Connection::open(&db.path)?;
+        assert!(!object_exists(&conn, "index", "index_attestations_source_block_id")?);
+        assert!(!object_exists(&conn, "index", "index_blocks_thread_chain_order")?);
+        drop(conn);
+
+        db.migrate(MigrateTo::Version(6), opts.clone())?;
+        let conn = Connection::open(&db.path)?;
+        assert!(object_exists(&conn, "index", "index_attestations_source_block_id")?);
+        assert!(object_exists(&conn, "index", "index_blocks_thread_chain_order")?);
+        drop(conn);
+
+        db.migrate(MigrateTo::Version(5), opts)?;
+        let conn = Connection::open(&db.path)?;
+        assert!(!object_exists(&conn, "index", "index_attestations_source_block_id")?);
+        assert!(!object_exists(&conn, "index", "index_blocks_thread_chain_order")?);
+
+        Ok(())
+    }
 }

@@ -2,6 +2,9 @@ services:
   nginx_bm:
     image: {{ NGINX_IMAGE }}
     restart: unless-stopped
+    depends_on:
+      - q_server_bm
+      - block_manager
     networks:
       - ackinacki-net
     environment:

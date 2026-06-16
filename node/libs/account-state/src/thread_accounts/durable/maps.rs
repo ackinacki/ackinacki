@@ -172,6 +172,19 @@ impl ThreadAccountMapRepository {
         self.l1.write_map(map, writer)
     }
 
+    pub fn map_write_checked<W, F>(
+        &self,
+        map: &ThreadAccountMap,
+        writer: &mut W,
+        should_cancel: &F,
+    ) -> anyhow::Result<()>
+    where
+        W: Write,
+        F: Fn() -> bool,
+    {
+        self.l1.write_map_checked(map, writer, should_cancel)
+    }
+
     /// Deserialize a state map from a reader (hashes stored in stream).
     pub fn map_read<R: std::io::Read>(&self, reader: &mut R) -> anyhow::Result<ThreadAccountMap> {
         self.l1.read_map(reader)

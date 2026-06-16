@@ -19,6 +19,7 @@ use crate::domain::traits::FileSystemClient;
 pub struct MockFileSystemClient {
     files: BTreeMap<String, Vec<ArchiveFile>>,
     move_processed_calls: Arc<Mutex<Vec<(PathBuf, PathBuf)>>>,
+    remove_file_calls: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 impl MockFileSystemClient {
@@ -26,6 +27,7 @@ impl MockFileSystemClient {
         MockFileSystemClient {
             files: BTreeMap::new(),
             move_processed_calls: Arc::new(Mutex::new(Vec::new())),
+            remove_file_calls: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -38,6 +40,11 @@ impl MockFileSystemClient {
     #[cfg(test)]
     pub fn move_processed_calls(&self) -> Vec<(PathBuf, PathBuf)> {
         self.move_processed_calls.lock().unwrap().clone()
+    }
+
+    #[cfg(test)]
+    pub fn remove_file_calls(&self) -> Vec<PathBuf> {
+        self.remove_file_calls.lock().unwrap().clone()
     }
 }
 
@@ -63,5 +70,10 @@ impl FileSystemClient for MockFileSystemClient {
         let dest = processed_root.as_ref().join(src.file_name().unwrap());
         self.move_processed_calls.lock().unwrap().push((src.clone(), dest.clone()));
         Ok(dest)
+    }
+
+    fn remove_file(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
+        self.remove_file_calls.lock().unwrap().push(path.as_ref().to_path_buf());
+        Ok(())
     }
 }

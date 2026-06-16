@@ -44,17 +44,21 @@ impl Loader<(String, u64)> for BlockLoader {
             .collect::<Vec<_>>()
             .join(",");
 
+        let mut projection = db::Block::graphql_block_projection();
+        projection.extend(["thread_id", "height"]);
+        let select = projection.select_list();
+
         let union_sql = db_names
             .into_iter()
             .map(|name| {
                 format!(
-                    "SELECT * FROM \"{name}\".blocks WHERE (thread_id, height) IN ({tuples_sql})"
+                    "SELECT {select} FROM \"{name}\".blocks WHERE (thread_id, height) IN ({tuples_sql})"
                 )
             })
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
 
-        let sql = format!("SELECT * FROM ({union_sql})");
+        let sql = format!("SELECT {select} FROM ({union_sql})");
         tracing::trace!(target: "data_loader", "SQL: {sql}");
         let mut conn = self.db_connector.get_connection().await?;
         conn.set_sql(&sql);
@@ -99,13 +103,17 @@ impl Loader<String> for BlockLoader {
             return Ok(HashMap::new());
         }
 
+        let mut projection = db::Block::graphql_block_projection();
+        projection.extend(["thread_id", "height"]);
+        let select = projection.select_list();
+
         let union_sql = db_names
             .into_iter()
-            .map(|name| format!("SELECT * FROM \"{name}\".blocks WHERE id IN ({ids})"))
+            .map(|name| format!("SELECT {select} FROM \"{name}\".blocks WHERE id IN ({ids})"))
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
 
-        let sql = format!("SELECT * FROM ({union_sql})");
+        let sql = format!("SELECT {select} FROM ({union_sql})");
         tracing::trace!(target: "data_loader", "SQL: {sql}");
         let mut conn = self.db_connector.get_connection().await?;
         conn.set_sql(&sql);
@@ -154,7 +162,6 @@ mod tests {
                 thread_id TEXT,
                 gen_utime INTEGER,
                 chain_order TEXT,
-                boc BLOB,
                 aggregated_signature BLOB,
                 signature_occurrences BLOB,
                 share_state_resource_address TEXT,

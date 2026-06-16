@@ -31,4 +31,4 @@
 - name: Stop node container if the process still lingering
   ansible.builtin.shell:
     chdir: "{{ BK_DIR }}"
-    cmd: docker compose stop "node{{ NODE_ID }}" -t 5
+    cmd: docker compose stop "node{{ NODE_ID }}" -t 5 || docker compose rm -f "node{{ NODE_ID }}"

@@ -418,7 +418,7 @@ mod tests {
 
         {
             let mut conn = connector.get_connection().await.expect("get conn");
-            let _ = sqlx::query("SELECT * FROM messages").fetch_all(&mut *conn).await;
+            let _ = sqlx::query("SELECT id FROM messages").fetch_all(&mut *conn).await;
             // conn dropped here — timeout_active set to false
         }
 

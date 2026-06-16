@@ -68,6 +68,8 @@ where
                 );
             }
         };
+        let echo_account_id = message.account_id().to_hex_string();
+        let echo_dapp_id = message.dapp_id().to_hex_string();
 
         let authorized_by_bearer_token =
             depot.get::<bool>(crate::AUTHORIZED_BY_BK_KEY).copied().unwrap_or(false);
@@ -197,6 +199,8 @@ where
                     // Debug / Display add prefixes ("ThreadIdentifier<..>",
                     // "<T:..>") that break hex::decode on retry.
                     Some(format!("{:x}", message.thread_id())),
+                    echo_account_id.clone(),
+                    echo_dapp_id.clone(),
                 )),
                 bk_auth_token,
             );
@@ -259,6 +263,7 @@ where
 
                 let mut result: ExtMsgResponse = feedback.into();
                 result.set_producers(producers);
+                result.set_account_and_dapp(echo_account_id.clone(), echo_dapp_id.clone());
                 tracing::trace!(target: "http_server", "Response message: {:?}", result);
 
                 res.status_code(StatusCode::OK);

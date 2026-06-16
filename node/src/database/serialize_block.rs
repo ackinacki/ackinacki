@@ -309,14 +309,9 @@ pub fn reflect_block_in_db(
 
     // Block
     let now = std::time::Instant::now();
-    let item = prepare_block_archive_struct(
-        envelope,
-        &block_root,
-        &raw_block.unwrap_or_default(),
-        &file_hash,
-        block_index.clone(),
-    )
-    .map_err(|e| anyhow::format_err!("{e}"))?;
+    let _ = raw_block;
+    let item = prepare_block_archive_struct(envelope, &block_root, &file_hash, block_index.clone())
+        .map_err(|e| anyhow::format_err!("{e}"))?;
     archive.lock().put_block(item).map_err(|e| anyhow::format_err!("{e}"))?;
     tracing::debug!(target: "database", "TIME: block({}) {}ms;", block_id_hex, now.elapsed().as_millis());
     tracing::debug!(target: "database",
@@ -572,7 +567,6 @@ pub(crate) fn prepare_deleted_account_archive_struct(
 pub(crate) fn prepare_block_archive_struct(
     envelope: Envelope<AckiNackiBlock>,
     block_root: &Cell,
-    boc: &[u8],
     file_hash: &UInt256,
     block_order: String,
 ) -> anyhow::Result<ArchBlock> {
@@ -581,8 +575,7 @@ pub(crate) fn prepare_block_archive_struct(
         block: block.clone(),
         id: block_root.repr_hash(),
         status: BlockProcessingStatus::Finalized,
-        boc: boc.to_vec(),
-        file_hash: Some(file_hash.clone()),
+        file_hash: file_hash.clone(),
     };
 
     let mut set: ArchBlock = set.into();
@@ -643,7 +636,7 @@ pub(crate) fn prepare_block_archive_struct(
     set.tr_count = Some(total_tr_count as i64);
 
     let data = bincode::serialize(&envelope.data())?;
-    set.data = Some(data);
+    set.data = data;
 
     Ok(set)
 }

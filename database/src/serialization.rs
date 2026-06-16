@@ -30,8 +30,7 @@ pub struct BlockSerializationSetFH {
     pub block: Block,
     pub id: BlockId,
     pub status: BlockProcessingStatus,
-    pub boc: Vec<u8>,
-    pub file_hash: Option<UInt256>,
+    pub file_hash: UInt256,
 }
 
 #[derive(Default)]

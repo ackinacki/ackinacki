@@ -38,6 +38,9 @@ pub trait FileSystemClient {
         compression: CompressionMode,
         dry_run: bool,
     ) -> anyhow::Result<PathBuf>;
+
+    /// Removes processed source files after their daily archive has been uploaded.
+    fn remove_file(&self, path: impl AsRef<Path>) -> anyhow::Result<()>;
 }
 
 #[async_trait]

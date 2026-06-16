@@ -1505,59 +1505,158 @@ tail -f $MNT_DATA/logs-block-manager/block-manager.log
 
 ### Deploy Caddy Reverse Proxy for Block Manager
 
-Caddy acts as a reverse proxy in front of the Block Manager, handling TLS termination and routing. It runs as a Docker container using the `caddy:2.8.4` image.
+Caddy fronts the Block Manager on the same host: terminates TLS, exposes the
+REST API on `:443` and `:8600`, and proxies UI / GraphQL to BM's Nginx. Runs
+as `caddy:2.8.4` container, configured by the `caddy` role.
 
-#### Inventory Preparation
+#### Port layout
 
-Add a `caddy` host group to your Ansible inventory. Each host requires the following variables:
+```
+external client ── HTTPS :443 ──► caddy ──► Nginx :8080   (UI, /graphql)
+                                  │   └──► BM    :8610   (/v2/* REST)
+                ── HTTP  :8600 ─► caddy ──► BM    :8610   (/v2/* REST)
+```
+
+Caddy talks to BM and Nginx by their docker-compose **service names**
+(`block_manager`, `nginx_bm`) on the shared `ackinacki-net` network — no
+host IP is needed for the backend. Host port `:8600` belongs to Caddy;
+BM listens internally on `:8610` — see
+[Port 8600 vs 8610](#port-8600-vs-8610).
+
+#### Inventory — pick one TLS mode
+
+**Mode A — Pre-loaded certificate**. Drop `.crt`/`.key` into
+`ansible/files/`:
 
 ```yaml
 caddy:
   vars:
-    HOST_NAME: "your.bm.host.org"             # public domain name for TLS certificate
-    HOST_PUBLIC_IP: "HOST_PUBLIC_IP"          # public IP
-    HOST_PRIVATE_IP: "HOST_PRIVATE_IP"        # private IP (used for internal proxying)
-    LOAD_CERT: false
-    ENABLE_GEN_CERT: true
-    ZEROSSL_EXCLUSIVE: yes
-    CADDY_EMAIL: "<your email for possible certificate notifications>"
-    CADDY_EAB: "<your kid> <your hmac key>" # <<<<< <<<<< Replace with actual values! <<<<< <<<<<
+    CADDY_EMAIL: ops@example.org
+    CERT_FILE: my-bm.example.org.crt
+    CERT_KEY_FILE: my-bm.example.org.key
   hosts:
-    caddy1_bm:
-      ansible_host: ansible_host_ip
+    my-bm.example.org:
+      ansible_host: 1.2.3.4
 ```
 
-#### Key Variables
+**Mode B — ACME via ZeroSSL.** Requires public DNS + ports 80/443 reachable
+from the internet. Get `<kid> <hmac>` from your ZeroSSL account:
 
-| Variable | Default | Description |
+```yaml
+caddy:
+  vars:
+    CADDY_EMAIL: ops@example.org
+    LOAD_CERT: false
+    ENABLE_GEN_CERT: true
+    CADDY_EAB: "<kid> <hmac>"
+  hosts:
+    my-bm.example.org:
+      ansible_host: 1.2.3.4
+```
+
+#### Required variables
+
+| Variable | Mode A | Mode B | Notes |
+|---|---|---|---|
+| `CADDY_EMAIL` | ✓ | ✓ | mandatory |
+| `CERT_FILE` / `CERT_KEY_FILE` | ✓ | — | filenames in `ansible/files/` |
+| `LOAD_CERT: false` | — | ✓ | overrides default `true` |
+| `ENABLE_GEN_CERT: true` | — | ✓ | overrides default `false` |
+| `CADDY_EAB` | — | ✓ | `"<kid> <hmac>"` |
+
+#### Optional fine-tuning
+
+Defaults come from `roles/caddy/defaults/main.yaml`. Override only when needed.
+
+| Variable | Default | When to override |
 |---|---|---|
-| `HOST_NAME` | `{{ inventory_hostname }}` | Public domain name, used for TLS certificate |
-| `HOST_PUBLIC_IP` | — | Public IP address of the host |
-| `HOST_PRIVATE_IP` | `HOST_PUBLIC_IP` | Private IP, used for reverse proxying to BM and NGINX |
-| `BM_REST_API_PORT` | `8610` | Block Manager REST API port |
-| `CADDY_EMAIL` | — | Email for ACME certificate registration (required) |
-| `LOAD_CERT` | `true` | Load TLS certificate from files |
-| `ENABLE_GEN_CERT` | `false` | Let Caddy auto-generate certificates via ACME |
-| `CERT_FILE` | `test.ackinacki.org.crt` | TLS certificate filename |
-| `CERT_KEY_FILE` | `test.ackinacki.org.key` | TLS key filename |
-| `CADDY_EAB` | — | ZeroSSL EAB credentials: `"<kid> <hmac>"` |
-| `ZEROSSL_EXCLUSIVE` | `yes` | When enabled with `CADDY_EAB`, use ZeroSSL as the only ACME provider instead of Let's Encrypt |
+| `HOST_NAME` | `{{ inventory_hostname }}` | inventory hostname ≠ public domain |
+| `HOST_PUBLIC_IP` | `{{ ansible_host }}` (via `all.vars`) | usually unchanged |
+| `BM_REST_API_PORT` | `8610` | keep in sync with `block_manager` group |
+| `BM_SERVICE` / `NGINX_SERVICE` | `block_manager` / `nginx_bm` | only if BM compose renames services |
+| `EXTRA_HOSTS` | `""` | additional SANs on the cert (comma-separated) |
+| `BK_ON_BM` | unset | `true` only when a BK is colocated on BM host |
+| `EXTERNAL_NET` | `yes` | unchanged; join the existing `ackinacki-net` |
+| `ZEROSSL_EXCLUSIVE` | `yes` | unchanged; takes effect only with `CADDY_EAB` |
 
-#### TLS Certificates
+#### Port 8600 vs 8610
 
-Two modes are supported:
+BM's default REST port is `8600`. With Caddy on the same host, that port
+goes to Caddy; BM must move to `:8610`:
 
-1. **Pre-loaded certificates** (default): set `LOAD_CERT: true`, place certificate and key files in `ansible/files/`. They will be copied to the Caddy container.
+```yaml
+block_manager:
+  vars:
+    BM_REST_API_PORT: 8610   # required when Caddy is in front
+```
 
-2. **ACME auto-generation**: set `ENABLE_GEN_CERT: true`, `LOAD_CERT: false`. Caddy will obtain certificates automatically. For ZeroSSL, provide `CADDY_EAB`.
+Without this, BM startup fails with `bind: address already in use`.
+
+#### Removing IPs
+
+When public DNS resolves to host IPs, `ansible_host` becomes optional:
+
+```yaml
+caddy:
+  hosts:
+    my-bm.example.org: {}   # uses DNS
+```
+
+Backend addressing (Caddy → BM, Caddy → Nginx) goes through docker service
+names — no host IPs involved. Keep explicit `ansible_host: <IP>` only when
+DNS isn't set up yet (bootstrap, private network without internal DNS).
+
+> `HOST_PUBLIC_IP` and `HOST_PRIVATE_IP` are still consumed by the Block
+> Manager role for `q_server_bm` / `nginx_bm` port bindings — keep them
+> set at the `all.vars` level (typically both `"{{ ansible_host }}"`).
 
 #### Deploy
+
+> Deploy Block Manager first — it creates the `ackinacki-net` Docker
+> network that Caddy joins as `external: true`. Running `deploy-caddy.yml`
+> before `deploy-bm.yml` fails with `network ackinacki-net not found`.
 
 ```bash
 ansible-playbook -i your-inventory.yaml ansible/deploy-caddy.yml
 ```
 
-The playbook targets the `caddy` host group, creates the configuration directory, renders the Caddyfile and docker-compose templates, and starts the container. If only the Caddyfile changes on a subsequent run, Caddy is restarted without recreating the container.
+The playbook renders Caddyfile + compose, copies TLS files (Mode A), and
+starts the container. Caddyfile-only changes trigger a hot restart on
+re-runs.
+
+#### Verify
+
+```bash
+# HTTPS UI / GraphQL
+curl -fsS https://my-bm.example.org/graphql -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"{info{lastBlockTime}}"}' | jq
+
+# HTTPS REST
+curl -fsS https://my-bm.example.org/v2/bk_set_update | head
+
+# Plaintext REST on :8600
+curl -fsS http://my-bm.example.org:8600/v2/bk_set_update | head
+
+# Certificate info
+openssl s_client -connect my-bm.example.org:443 -servername my-bm.example.org </dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+```
+
+#### Operational notes
+
+- Hot-reload Caddyfile: `docker exec bk-caddy caddy reload --config /etc/caddy/Caddyfile`.
+- ACME certs renew automatically.
+- Mode A renewal: replace `.crt`/`.key` in `ansible/files/`, re-run the playbook.
+
+#### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `bind: address already in use` on `:8600` | set `BM_REST_API_PORT: 8610` in `block_manager` group |
+| `TLS handshake failure` / CN mismatch (Mode A) | `HOST_NAME` must match the certificate's CN/SAN |
+| `could not open file` (cert load) | sync `CERT_FILE`/`CERT_KEY_FILE` names with files in `ansible/files/` |
+| `502 Bad Gateway` on `/v2/*` | check BM REST on the host: `curl http://127.0.0.1:8610/v2/bk_set_update` |
 
 ## Update the Whitelist and Delegate the License
 
@@ -1870,3 +1969,4 @@ ansible-playbook -i your-inventory.yaml ansible/proxy-deployment.yaml
 # This will stop, update compose and config, and restart Proxy WITHOUT regenerating keys
 ansible-playbook -i your-inventory.yaml ansible/proxy-upgrade.yaml
 ```
+

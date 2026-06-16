@@ -7,6 +7,7 @@ pub mod bk_set_update;
 pub mod block;
 pub mod connector;
 pub mod message;
+pub mod projection;
 pub(crate) mod transaction;
 
 pub use account::Account;

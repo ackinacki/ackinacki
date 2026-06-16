@@ -220,7 +220,6 @@ pub fn query_order_by_str(order_by: Option<Vec<Option<QueryOrderBy>>>) -> String
             let v = v.as_ref()?;
             let path = v.path.as_deref()?;
 
-            let path = if path == "id" { "block_id" } else { path };
             Some(format!("{} {}", path, v.direction.unwrap()))
         })
         .collect::<Vec<_>>()
@@ -264,14 +263,60 @@ pub fn sql_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+/// zstd-decode a BLOB produced by
+/// `database::sqlite::sqlite_helper::zstd_compress`. Empty inputs round-trip
+/// as empty; any decode failure is logged and the raw input is returned so
+/// the request still completes. Falling back to raw is intentional — the
+/// writer falls back to raw on compression errors, and pre-compression
+/// legacy rows may also exist.
+pub fn decompress_blob(bytes: Vec<u8>) -> Vec<u8> {
+    if bytes.is_empty() {
+        return bytes;
+    }
+    match zstd::decode_all(bytes.as_slice()) {
+        Ok(decoded) => decoded,
+        Err(err) => {
+            tracing::warn!("failed to zstd-decode blob, returning raw: {err}");
+            bytes
+        }
+    }
+}
+
+#[cfg(test)]
+mod compression_tests {
+    use super::decompress_blob;
+
+    #[test]
+    fn decompress_blob_round_trips_zstd_frame() {
+        let payload = b"this is a fairly compressible payload xxxxxxxxxxxxxxxxxxxxxxxx".to_vec();
+        let compressed = zstd::encode_all(payload.as_slice(), 3).expect("zstd encode");
+        assert_ne!(compressed, payload);
+        assert_eq!(decompress_blob(compressed), payload);
+    }
+
+    #[test]
+    fn decompress_blob_returns_raw_on_invalid_zstd() {
+        let raw = b"not a zstd frame".to_vec();
+        assert_eq!(decompress_blob(raw.clone()), raw);
+    }
+
+    #[test]
+    fn decompress_blob_passes_empty_through() {
+        assert!(decompress_blob(Vec::new()).is_empty());
+    }
+}
+
 #[cfg(test)]
 pub mod tests {
     use crate::defaults::THREAD_ID_LENGTH;
     use crate::helpers::decode_u64_string;
     use crate::helpers::format_big_int;
     use crate::helpers::pad_thread_id;
+    use crate::helpers::query_order_by_str;
     use crate::helpers::u64_to_hexed_blob_literal;
     use crate::helpers::u64_to_string;
+    use crate::schema::graphql_ext::QueryOrderBy;
+    use crate::schema::graphql_ext::QueryOrderByDirection;
 
     #[test]
     fn test_format_big_int() {
@@ -323,5 +368,15 @@ pub mod tests {
         assert_eq!(u64_to_hexed_blob_literal(0), "X'0000000000000000'");
         assert_eq!(u64_to_hexed_blob_literal(1), "X'0000000000000001'");
         assert_eq!(u64_to_hexed_blob_literal(u64::MAX), "X'ffffffffffffffff'");
+    }
+
+    #[test]
+    fn query_order_by_str_keeps_id_as_id() {
+        let order_by = Some(vec![Some(QueryOrderBy {
+            path: Some("id".to_string()),
+            direction: Some(QueryOrderByDirection::DESC),
+        })]);
+
+        assert_eq!(query_order_by_str(order_by), " ORDER BY id DESC ");
     }
 }

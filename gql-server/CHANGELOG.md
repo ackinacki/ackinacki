@@ -2,11 +2,41 @@
 
 All notable changes to `gql-server` are documented in this file.
 
-## [Unreleased]
+## [1.0.0]
+
+### Breaking Changes
+- The `blockchain.account(...)` query now requires two arguments, `account_id` and
+  `dapp_id` (both non-null `String`), and no longer accepts the previous single
+  `address` argument. Accounts are now addressed by their dApp ID and account ID.
+- The deprecated root-level `account(address)` query is retained for compatibility
+  but resolves account BOCs through the legacy all-zero dApp ID path.
+- Removed the `boc` field from the `blockchain.block` type and replaced it with a
+  `data` field returning the (zstd-compressed) block body; clients reading `boc`
+  must switch to `data` and decompress.
+
+### Changed
+- Block and transaction bodies are now read transparently from zstd-compressed
+  `blocks.data` / `transactions.boc` archive BLOBs, falling back to raw bytes when
+  the stored payload is not compressed.
+
+### Fixed
+- `blockchain.bkSetUpdates` queries now map database errors through the shared DB
+  error mapper instead of surfacing raw error strings.
+
+## [0.9.0]
+
+### Changed
+- Reduced SQLite query load by selecting only GraphQL-requested columns plus the
+  technical columns required for pagination, ordering, deduplication, nested
+  relation loading, and GraphQL conversion.
+
+## [0.8.0]
 
 ### Added
 - Added `blockchain.events` query for paginating all outgoing external messages with source
   address and source dApp ID metadata.
+- Fixed `blockchain.blocks(..., thread_id)` queries timing out on large archives by adding
+  a matching BM archive index for thread-filtered block pagination.
 
 ## [0.7.0] - 2026-04-07
 

@@ -17,6 +17,7 @@ use async_graphql::Object;
 use async_graphql::OutputType;
 use tvm_client::ClientContext;
 
+use super::selected_node_fields_at;
 use super::transactions::BlockchainTransaction;
 use crate::schema::db;
 use crate::schema::db::transaction::AccountTransactionsQueryArgs;
@@ -99,31 +100,45 @@ impl ConnectionNameType for BlockchainAccountsConnection {
 #[derive(Clone)]
 pub struct BlockchainAccountQuery<'a> {
     pub ctx: &'a Context<'a>,
-    pub address: String,
+    pub account_id: String,
+    pub dapp_id: String,
+    pub archive_address: String,
     pub preloaded: Option<db::Account>,
+}
+
+pub(super) fn archive_address_from_account_id(account_id: &str) -> String {
+    format!("0:{account_id}")
+}
+
+pub(super) fn account_id_from_archive_address(address: &str) -> String {
+    address.split_once(':').map(|(_, account_id)| account_id).unwrap_or(address).to_string()
 }
 
 #[Object]
 impl BlockchainAccountQuery<'_> {
     /// Account information (e.g. boc).
-    pub async fn info(
+    pub(crate) async fn info(
         &self,
         #[graphql(
             desc = "Optional block hash. If byBlock is specified then the account info will be returned from the shard state defined by the specified block. Otherwise the account info will be returned from the last known shard state.",
             default
         )]
         _by_block: Option<String>,
-    ) -> Option<BlockchainAccount> {
+    ) -> async_graphql::Result<Option<BlockchainAccount>> {
         if let Some(preloaded) = &self.preloaded {
-            return Some(preloaded.clone().into());
+            return Ok(Some(preloaded.clone().into()));
         }
-        let db_connector = self.ctx.data::<Arc<DBConnector>>().unwrap();
-        let client = self.ctx.data::<Arc<ClientContext>>().unwrap();
+        let db_connector = self.ctx.data::<Arc<DBConnector>>()?;
+        let client = self.ctx.data::<Arc<ClientContext>>()?;
 
-        db::Account::by_address(db_connector, client, Some(self.address.clone()))
-            .await
-            .unwrap()
-            .map(|db_account| db_account.into())
+        Ok(db::Account::by_account_id(
+            db_connector,
+            client,
+            self.account_id.clone(),
+            self.dapp_id.clone(),
+        )
+        .await?
+        .map(|db_account| db_account.into()))
     }
 
     /// This node could be used for a cursor-based pagination of account
@@ -159,9 +174,14 @@ impl BlockchainAccountQuery<'_> {
                 );
 
                 let pagination = PaginationArgs { first, after, last, before };
+                let projection = db::Message::event_projection_for_fields(selected_node_fields_at(
+                    self.ctx,
+                    &["account", "events"],
+                ));
                 let mut messages = db::Message::account_events(
                     ctx.data::<Arc<DBConnector>>().unwrap(),
-                    self.address.clone(),
+                    &projection,
+                    self.archive_address.clone(),
                     dst,
                     &pagination,
                 )
@@ -285,9 +305,15 @@ impl BlockchainAccountQuery<'_> {
                     min_value,
                     PaginationArgs { first, after, last, before },
                 );
+                let selected_fields = selected_node_fields_at(self.ctx, &["account", "messages"]);
+                let projection = db::Message::connection_projection_for_fields(
+                    selected_fields.clone(),
+                    &args.cursor_field(),
+                );
                 let mut messages = db::Message::account_messages(
                     self.ctx.data::<Arc<DBConnector>>().unwrap(),
-                    self.address.clone(),
+                    &projection,
+                    self.archive_address.clone(),
                     &args,
                 )
                 .await?;
@@ -311,22 +337,19 @@ impl BlockchainAccountQuery<'_> {
 
                 args.pagination.shrink_portion(&mut messages);
 
-                let selection_set = self
-                    .ctx
-                    .look_ahead()
-                    .field("account")
-                    .field("messages")
-                    .field("edges")
-                    .field("node");
-                let is_parent_transaction = selection_set.field("src_transaction").exists();
-                let is_child_transaction = selection_set.field("dst_transaction").exists();
+                let is_parent_transaction =
+                    selected_fields.iter().any(|field| field == "src_transaction");
+                let is_child_transaction =
+                    selected_fields.iter().any(|field| field == "dst_transaction");
                 let transaction_loader = self.ctx.data_unchecked::<DataLoader<TransactionLoader>>();
 
                 // Batch-fetch dst transactions by inbound message IDs (single query).
                 let dst_transactions = if is_child_transaction {
                     let msg_ids: Vec<&str> = messages.iter().map(|m| m.id.as_str()).collect();
+                    let projection = db::transaction::Transaction::projection_for_fields(["id"]);
                     db::transaction::Transaction::by_in_messages(
                         self.ctx.data::<Arc<DBConnector>>().unwrap(),
+                        &projection,
                         &msg_ids,
                     )
                     .await?
@@ -464,9 +487,13 @@ impl BlockchainAccountQuery<'_> {
                     PaginationArgs { first, after, last, before },
                 );
 
+                let projection = db::Transaction::connection_projection_for_fields(
+                    selected_node_fields_at(self.ctx, &["account", "transactions"]),
+                );
                 let mut transactions: Vec<db::Transaction> = db::Transaction::account_transactions(
                     self.ctx.data::<Arc<DBConnector>>().unwrap(),
-                    self.address.clone(),
+                    &projection,
+                    self.archive_address.clone(),
                     &args,
                 )
                 .await?;

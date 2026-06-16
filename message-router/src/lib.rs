@@ -4,6 +4,7 @@ pub mod bp_resolver;
 mod defaults;
 pub mod message_router;
 pub mod process_ext_messages;
+pub mod validation;
 
 pub use bp_resolver::MockBPResolver;
 pub use defaults::DEFAULT_BK_API_MESSAGES_PATH;

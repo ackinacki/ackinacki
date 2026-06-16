@@ -88,6 +88,7 @@ use node::node::services::statistics::median_descendants_chain_length_to_meet_th
 use node::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BLOCK_STATISTICS_INITIAL_WINDOW_SIZE;
 use node::node::services::sync::ExternalFileSharesBased;
 use node::node::services::sync::FileSavingService;
+use node::node::services::sync::StateSyncService;
 use node::node::services::validation::feedback::AckiNackiSend;
 use node::node::services::validation::service::ValidationService;
 use node::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
@@ -105,6 +106,7 @@ use node::repository::Repository;
 use node::services::blob_sync;
 use node::services::cross_thread_ref_data_availability_synchronization::CrossThreadRefDataAvailabilitySynchronizationService;
 use node::signals::init_signals_join_handle;
+use node::signals::ShutdownMode;
 use node::storage::ActionLockStorage;
 use node::storage::AerospikeStore;
 use node::storage::CachedStore;
@@ -1111,6 +1113,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let blk_req_join_handles = Arc::new(RwLock::new(vec![]));
     let blk_req_join_handles_clone = blk_req_join_handles.clone();
     let optimistic_save_tx_clone = optimistic_save_tx.clone();
+    let state_sync_services = Arc::new(Mutex::new(Vec::<ExternalFileSharesBased>::new()));
+    let state_sync_services_clone = state_sync_services.clone();
     let (routing, _inner_service_thread) = RoutingService::start(
         (routing, routing_rx),
         metrics.as_ref().map(|m| m.node.clone()),
@@ -1219,6 +1223,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     .checked_mul(config.network.shared_state_max_download_tries as u64)
                     .unwrap_or(10 * 60 * 1000),
             );
+            state_sync_services_clone.lock().push(sync_state_service.clone());
             let production_process = {
                 let builder = TVMBlockProducerProcess::builder()
                     .metrics(node_metrics.clone())
@@ -1537,14 +1542,26 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let result = tokio::select! {
         res = wrapped_signals_join_handle => {
              match res {
-                Ok(_) => {
-                    tracing::info!(target: "monit", "Start shutdown");
+                Ok(Ok(shutdown_mode)) => {
+                    tracing::info!(target: "monit", "Start {shutdown_mode:?} shutdown");
                     start_shutdown();
                     let _ = state_save_tx.send(StateSaveCommand::Shutdown);
                     let _ = optimistic_save_tx_clone.send(OptimisticStateSaveCommand::Shutdown);
                     let _ = raw_block_sender_clone.send(RawBlockSaveCommand::Shutdown);
                     let _ = heartbeat_channel_tx_clone.send(HeartbeatCommand::Shutdown);
                     shutdown_tx.send_replace(true);
+                    for service in state_sync_services.lock().iter() {
+                        let shutdown_result = match shutdown_mode {
+                            ShutdownMode::Fast => service.shutdown_snapshot_workers(Duration::from_secs(10)),
+                            ShutdownMode::Full => service.wait_snapshot_workers(),
+                        };
+                        if let Err(e) = shutdown_result {
+                            tracing::warn!(
+                                target: "monit",
+                                "failed to shutdown snapshot workers before dump_state: {e}",
+                            );
+                        }
+                    }
                     repository.dump_state();
 
                     // Note: vec of rx can be locked because we don't expect new threads to start
@@ -1571,6 +1588,9 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     }
                     tracing::info!(target: "monit", "Shutdown finished");
                     Ok(())
+                }
+                Ok(Err(error)) => {
+                    anyhow::bail!("signal handler thread panicked: {:?}", error);
                 }
                 Err(error) => {
                     anyhow::bail!("sigint handler thread failed with error: {error}");
@@ -2737,6 +2757,7 @@ async fn test_execute() -> anyhow::Result<()> {
         })
         .unwrap();
 
+    let sync_state_service_for_shutdown = sync_state_service.clone();
     let mut node = Node::new(
         node_shared_services.clone(),
         sync_state_service,
@@ -2825,6 +2846,7 @@ async fn test_execute() -> anyhow::Result<()> {
 
     start_shutdown();
 
+    sync_state_service_for_shutdown.shutdown_snapshot_workers(Duration::from_secs(10))?;
     repository.dump_state();
 
     // Note: vec of rx can be locked because we don't expect new threads to start

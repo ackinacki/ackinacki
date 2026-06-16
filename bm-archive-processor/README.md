@@ -141,7 +141,7 @@ cargo run -- --compression xz
 Behavior after successful S3 upload is controlled by `--post-upload`:
 
 - `move` (default): move the uploaded file to `uploaded/` directory.
-- `delete`: delete the uploaded file.
+- `delete`: delete the uploaded file and, after a successful daily archive upload, delete the source files moved to `processed/`.
 - `keep`: leave the file in place.
 
 Example:

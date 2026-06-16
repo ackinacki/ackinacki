@@ -15,13 +15,27 @@ use crate::config::Config;
 use crate::helper::key_handling::key_pairs_from_file;
 use crate::types;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShutdownMode {
+    Fast,
+    Full,
+}
+
+pub fn shutdown_mode_for_signal(sig: i32) -> Option<ShutdownMode> {
+    match sig {
+        SIGTERM => Some(ShutdownMode::Fast),
+        SIGINT => Some(ShutdownMode::Full),
+        _ => None,
+    }
+}
+
 /// Initialize and spawn the signals join handle.
 pub fn init_signals_join_handle(
     blk_key_path: String,
     config_path: PathBuf,
     config_tx: tokio::sync::watch::Sender<Config>,
     bls_keys_map_clone: Arc<Mutex<HashMap<gosh_bls::PubKey, (gosh_bls::Secret, types::RndSeed)>>>,
-) -> std::io::Result<std::thread::JoinHandle<()>> {
+) -> std::io::Result<std::thread::JoinHandle<ShutdownMode>> {
     let blk_key_path_str = blk_key_path;
     let config_path_buf = config_path;
     let config_tx = config_tx.clone();
@@ -54,10 +68,30 @@ pub fn init_signals_join_handle(
                     }
                 }
                 SIGTERM | SIGINT => {
-                    break;
+                    let mode = shutdown_mode_for_signal(sig).expect("shutdown signal must map");
+                    tracing::info!(target: "monit", "Signal requested {mode:?} shutdown");
+                    return mode;
                 }
                 _ => {}
             }
         }
+        ShutdownMode::Fast
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use signal_hook::consts::SIGHUP;
+    use signal_hook::consts::SIGINT;
+    use signal_hook::consts::SIGTERM;
+
+    use super::shutdown_mode_for_signal;
+    use super::ShutdownMode;
+
+    #[test]
+    fn maps_shutdown_signals_to_shutdown_modes() {
+        assert_eq!(shutdown_mode_for_signal(SIGTERM), Some(ShutdownMode::Fast));
+        assert_eq!(shutdown_mode_for_signal(SIGINT), Some(ShutdownMode::Full));
+        assert_eq!(shutdown_mode_for_signal(SIGHUP), None);
+    }
 }

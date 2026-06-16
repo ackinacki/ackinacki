@@ -122,6 +122,11 @@ impl FileSystemClient for FileSystemClientImpl {
 
         Ok(dest_path)
     }
+
+    fn remove_file(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
+        let path = path.as_ref();
+        fs::remove_file(path).with_context(|| format!("failed to remove file: {}", path.display()))
+    }
 }
 
 // Compresses a file with gzip and moves it to the destination.

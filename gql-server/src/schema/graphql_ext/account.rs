@@ -19,6 +19,7 @@ use crate::schema::db;
 use crate::schema::db::DBConnector;
 use crate::schema::graphql::query::PaginationArgs;
 use crate::schema::graphql_ext::events::Event;
+use crate::schema::graphql_ext::selected_current_fields_at;
 
 pub struct AccountEventEdge;
 
@@ -61,18 +62,20 @@ pub struct AccountQuery {
 #[Object]
 impl AccountQuery {
     /// Account information.
-    pub async fn info(&self, ctx: &Context<'_>) -> Option<SingleAccount> {
+    pub(crate) async fn info(
+        &self,
+        ctx: &Context<'_>,
+    ) -> async_graphql::Result<Option<SingleAccount>> {
         if let Some(preloaded) = &self.preloaded {
-            return Some(preloaded.clone().into());
+            return Ok(Some(preloaded.clone().into()));
         }
 
-        let db_connector = ctx.data::<Arc<DBConnector>>().unwrap();
-        let client = ctx.data::<Arc<ClientContext>>().unwrap();
+        let db_connector = ctx.data::<Arc<DBConnector>>()?;
+        let client = ctx.data::<Arc<ClientContext>>()?;
 
-        db::Account::by_address(db_connector, client, Some(self.address.clone()))
-            .await
-            .unwrap()
-            .map(|db_account| db_account.into())
+        Ok(db::Account::by_address(db_connector, client, Some(self.address.clone()))
+            .await?
+            .map(|db_account| db_account.into()))
     }
 
     /// This node could be used for a cursor-based pagination of account
@@ -108,8 +111,12 @@ impl AccountQuery {
                 );
 
                 let pagination = PaginationArgs { first, after, last, before };
+                let projection = db::Message::event_projection_for_fields(
+                    selected_current_fields_at(ctx, &["edges", "node"]),
+                );
                 let mut messages = db::Message::account_events(
                     ctx.data::<Arc<DBConnector>>().unwrap(),
+                    &projection,
                     self.address.clone(),
                     dst,
                     &pagination,

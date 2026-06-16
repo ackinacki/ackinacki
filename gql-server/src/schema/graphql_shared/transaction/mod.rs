@@ -9,6 +9,7 @@ use super::account::AccountStatusChangeEnum;
 use super::account::AccountStatusEnum;
 use super::message::Message;
 use crate::helpers::decode_u64_string;
+use crate::helpers::decompress_blob;
 use crate::helpers::format_big_int;
 use crate::schema::db;
 use crate::schema::graphql_shared::formats::BigIntFormat;
@@ -197,6 +198,9 @@ pub struct Transaction {
     // Sum(out_msg.fwd_fee[]). ? balance_delta_other: [OtherCurrency]
     // ! block: Block,
     block_id: String,
+    /// Base64-encoded TVM bag of cells of the transaction. Stored
+    /// zstd-compressed in SQLite by the block manager but decompressed
+    /// transparently by this server before being returned.
     boc: String,
     bounce: Option<TransactionBounce>,
     /// Collection-unique field for pagination and sorting.
@@ -349,7 +353,7 @@ impl From<u8> for TransactionTypeEnum {
 
 impl From<db::Transaction> for Transaction {
     fn from(trx: db::Transaction) -> Self {
-        let boc = tvm_types::base64_encode(trx.boc);
+        let boc = tvm_types::base64_encode(decompress_blob(trx.boc));
         let action = TransactionAction {
             action_list_hash: trx.action_list_hash,
             msgs_created: Some(trx.action_msgs_created),
@@ -390,7 +394,7 @@ impl From<db::Transaction> for Transaction {
             trx.credit.map(|credit| TransactionCredit { credit: Some(credit), dummy: None });
         let storage = TransactionStorage {
             status_change: trx.storage_status_change,
-            status_change_name: Some(trx.storage_status_change.unwrap().into()),
+            status_change_name: trx.storage_status_change.map(Into::into),
             storage_fees_collected: trx.storage_fees_collected,
             storage_fees_due: None,
         };
@@ -578,5 +582,20 @@ impl Transaction {
     /// Sum(out_msg.fwd_fee[])
     async fn total_fees(&self, format: Option<BigIntFormat>) -> Option<String> {
         format_big_int(self.total_fees.clone(), format)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Transaction;
+    use crate::schema::db;
+
+    #[test]
+    fn transaction_conversion_allows_missing_storage_status_change() {
+        let db_transaction = db::Transaction { storage_status_change: None, ..Default::default() };
+
+        let transaction: Transaction = db_transaction.into();
+
+        assert!(transaction.storage.status_change_name.is_none());
     }
 }

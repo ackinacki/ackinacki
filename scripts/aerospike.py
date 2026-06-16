@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -233,6 +235,88 @@ def list_sets(tools_image: str, network: str, cluster_args: list[str], namespace
     return sets
 
 
+def set_info(
+    tools_image: str,
+    network: str,
+    cluster_args: list[str],
+    namespace: str,
+    set_name: str,
+) -> str:
+    result = run_tools_raw(
+        tools_image,
+        network,
+        ["asinfo", *cluster_args, "-v", f"sets/{namespace}/{set_name}"],
+        capture=True,
+    )
+    return result.stdout.strip()
+
+
+def parse_set_info(raw: str) -> dict[str, str]:
+    stats: dict[str, str] = {}
+    for entry in raw.split(";"):
+        for part in entry.split(":"):
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            if key:
+                stats[key] = value
+    return stats
+
+
+def is_truncate_complete(raw: str) -> bool:
+    if not raw:
+        return True
+
+    stats = parse_set_info(raw)
+    if not stats:
+        return True
+
+    objects = stats.get("objects")
+    truncating = stats.get("truncating", "false").lower()
+    return objects == "0" and truncating == "false"
+
+
+def wait_for_truncate_complete(
+    tools_image: str,
+    network: str,
+    cluster_args: list[str],
+    namespace: str,
+    set_name: str,
+    timeout_secs: float,
+    interval_secs: float,
+) -> None:
+    started = time.monotonic()
+    last_info = ""
+    next_log_at = started
+
+    while True:
+        try:
+            last_info = set_info(tools_image, network, cluster_args, namespace, set_name)
+        except subprocess.CalledProcessError as error:
+            last_info = (error.stdout or "").strip()
+            if not last_info:
+                last_info = (error.stderr or "").strip()
+
+        if is_truncate_complete(last_info):
+            elapsed = time.monotonic() - started
+            print(f"Truncate complete: set={set_name} elapsed={elapsed:.1f}s stats={last_info or '(absent)'}")
+            return
+
+        now = time.monotonic()
+        if now - started >= timeout_secs:
+            die(
+                f"Timed out after {timeout_secs:.1f}s waiting for truncate completion "
+                f"for set '{set_name}'. Last stats: {last_info or '(empty)'}"
+            )
+
+        if now >= next_log_at:
+            elapsed = now - started
+            print(f"Waiting for truncate: set={set_name} elapsed={elapsed:.1f}s stats={last_info}")
+            next_log_at = now + max(10.0, interval_secs)
+
+        time.sleep(interval_secs)
+
+
 def print_dry_run(cmd: list[str]) -> None:
     rendered = " ".join(subprocess.list2cmdline([part]) for part in cmd)
     print(f"[dry-run] {rendered}")
@@ -385,6 +469,10 @@ def cmd_restore(args: argparse.Namespace) -> None:
 
 def cmd_truncate_prefix(args: argparse.Namespace) -> None:
     require_docker()
+    if args.wait_timeout_secs <= 0:
+        die("--wait-timeout-secs must be positive")
+    if args.wait_interval_secs <= 0:
+        die("--wait-interval-secs must be positive")
 
     container = detect_aerospike_container(args.container)
     network = detect_network(container, args.network)
@@ -398,6 +486,10 @@ def cmd_truncate_prefix(args: argparse.Namespace) -> None:
     print(f"Using port:      {port}")
     print(f"Using namespace: {args.namespace}")
     print(f"Using prefix:    {args.prefix}")
+    print(f"Wait enabled:    {not args.no_wait}")
+    if not args.no_wait:
+        print(f"Wait timeout:    {args.wait_timeout_secs}s")
+        print(f"Wait interval:   {args.wait_interval_secs}s")
 
     matched_sets = [
         set_name
@@ -422,6 +514,55 @@ def cmd_truncate_prefix(args: argparse.Namespace) -> None:
             f"truncate:namespace={args.namespace};set={set_name}",
         ]
         run_tools(args, network, truncate_args)
+        if not args.no_wait and not args.dry_run:
+            wait_for_truncate_complete(
+                args.tools_image,
+                network,
+                cluster_args,
+                args.namespace,
+                set_name,
+                args.wait_timeout_secs,
+                args.wait_interval_secs,
+            )
+
+
+def cmd_digest_prefix(args: argparse.Namespace) -> None:
+    require_docker()
+
+    container = detect_aerospike_container(args.container)
+    network = detect_network(container, args.network)
+    host = detect_host(container, network, args.host)
+    port = detect_port(args.tools_image, network, host, args.port)
+    cluster_args = build_cluster_args(args, host, port)
+
+    print(f"Using container: {container}")
+    print(f"Using network:   {network}")
+    print(f"Using host:      {host}")
+    print(f"Using port:      {port}")
+    print(f"Using namespace: {args.namespace}")
+    print(f"Using prefix:    {args.prefix}")
+
+    matched_sets = [
+        set_name
+        for set_name in list_sets(args.tools_image, network, cluster_args, args.namespace)
+        if set_name.startswith(args.prefix)
+    ]
+
+    print("Sets to digest:")
+    for set_name in matched_sets:
+        print(f"  {set_name}")
+    if not matched_sets:
+        print("  (none)")
+        empty_digest = hashlib.sha256().hexdigest()
+        print(f"OVERALL prefix={args.prefix} records=0 digest={empty_digest}")
+        return
+
+    worker_args = ["__digest_worker", "--namespace", args.namespace, "--prefix", args.prefix]
+    add_worker_connection_args(worker_args, args, host, port)
+    for set_name in matched_sets:
+        worker_args += ["--set", set_name]
+
+    run_worker(args, network, Path.cwd(), worker_args)
 
 
 def build_python_config(args: argparse.Namespace) -> dict[str, object]:
@@ -463,7 +604,10 @@ def encode_value(value: object) -> object:
     if isinstance(value, dict):
         return {
             "t": "map",
-            "v": [[encode_value(key), encode_value(item)] for key, item in value.items()],
+            "v": [
+                [encode_value(key), encode_value(item)]
+                for key, item in sorted(value.items(), key=lambda item: repr(item[0]))
+            ],
         }
     raise TypeError(f"Unsupported value type: {type(value).__name__}")
 
@@ -497,6 +641,33 @@ def connect_client(args: argparse.Namespace):
     return client.connect()
 
 
+def record_payload(namespace: str, set_name: str, key: tuple[str, str, object], bins: dict[str, object]) -> dict[str, object]:
+    user_key = key[2]
+    if user_key is None:
+        if len(key) < 4 or key[3] is None:
+            raise RuntimeError(f"Missing stored user key and digest for {namespace}/{set_name}")
+        key_payload = {
+            "kind": "digest",
+            "digest": encode_value(bytes(key[3])),
+        }
+    else:
+        key_payload = {
+            "kind": "user_key",
+            "value": encode_value(user_key),
+        }
+    return {
+        "namespace": namespace,
+        "set": set_name,
+        "key": key_payload,
+        "bins": {name: encode_value(bins[name]) for name in sorted(bins)},
+    }
+
+
+def canonical_record_bytes(namespace: str, set_name: str, key: tuple[str, str, object], bins: dict[str, object]) -> bytes:
+    payload = record_payload(namespace, set_name, key, bins)
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
 def cmd_backup_worker(args: argparse.Namespace) -> None:
     client = connect_client(args)
     output_file = Path(args.output_file)
@@ -513,26 +684,9 @@ def cmd_backup_worker(args: argparse.Namespace) -> None:
                     nonlocal digest_only_count
 
                     key, _meta, bins = record
-                    user_key = key[2]
-                    if user_key is None:
-                        if len(key) < 4 or key[3] is None:
-                            raise RuntimeError(f"Missing stored user key and digest for {args.namespace}/{set_name}")
-                        key_payload = {
-                            "kind": "digest",
-                            "digest": encode_value(bytes(key[3])),
-                        }
+                    if key[2] is None:
                         digest_only_count += 1
-                    else:
-                        key_payload = {
-                            "kind": "user_key",
-                            "value": encode_value(user_key),
-                        }
-                    line = {
-                        "namespace": args.namespace,
-                        "set": set_name,
-                        "key": key_payload,
-                        "bins": {name: encode_value(value) for name, value in bins.items()},
-                    }
+                    line = record_payload(args.namespace, set_name, key, bins)
                     fh.write(json.dumps(line, separators=(",", ":")))
                     fh.write("\n")
                     record_count += 1
@@ -542,6 +696,40 @@ def cmd_backup_worker(args: argparse.Namespace) -> None:
         client.close()
 
     print(f"Backed up {record_count} records into {output_file} (digest_only={digest_only_count})")
+
+
+def cmd_digest_worker(args: argparse.Namespace) -> None:
+    client = connect_client(args)
+    overall_record_digests: list[bytes] = []
+
+    try:
+        for set_name in sorted(args.sets):
+            set_record_digests: list[bytes] = []
+            scan = client.scan(args.namespace, set_name)
+
+            def on_record(record: tuple[tuple[str, str, object], dict[str, object], dict[str, object]]) -> None:
+                key, _meta, bins = record
+                set_record_digests.append(
+                    hashlib.sha256(canonical_record_bytes(args.namespace, set_name, key, bins)).digest()
+                )
+
+            scan.foreach(on_record)
+            set_record_digests.sort()
+
+            set_hasher = hashlib.sha256()
+            for record_digest in set_record_digests:
+                set_hasher.update(record_digest)
+            set_digest = set_hasher.hexdigest()
+            overall_record_digests.extend(set_record_digests)
+            print(f"SET set={set_name} records={len(set_record_digests)} digest={set_digest}")
+    finally:
+        client.close()
+
+    overall_record_digests.sort()
+    overall_hasher = hashlib.sha256()
+    for record_digest in overall_record_digests:
+        overall_hasher.update(record_digest)
+    print(f"OVERALL prefix={args.prefix} records={len(overall_record_digests)} digest={overall_hasher.hexdigest()}")
 
 
 def cmd_restore_worker(args: argparse.Namespace) -> None:
@@ -641,8 +829,17 @@ def build_parser() -> argparse.ArgumentParser:
     truncate = subparsers.add_parser("truncate-prefix", help="Truncate all sets in a namespace matching a prefix")
     truncate.add_argument("--namespace", default="node")
     truncate.add_argument("--prefix", required=True)
+    truncate.add_argument("--wait-timeout-secs", type=float, default=1200.0)
+    truncate.add_argument("--wait-interval-secs", type=float, default=1.0)
+    truncate.add_argument("--no-wait", action="store_true")
     add_common(truncate)
     truncate.set_defaults(func=cmd_truncate_prefix)
+
+    digest = subparsers.add_parser("digest-prefix", help="Compute order-independent digests for all sets matching a prefix")
+    digest.add_argument("--namespace", default="node")
+    digest.add_argument("--prefix", required=True)
+    add_common(digest)
+    digest.set_defaults(func=cmd_digest_prefix)
 
     worker_backup = subparsers.add_parser("__backup_worker", help=argparse.SUPPRESS)
     worker_backup.add_argument("--host", required=True)
@@ -660,6 +857,22 @@ def build_parser() -> argparse.ArgumentParser:
     worker_backup.add_argument("--set", dest="sets", action="append", required=True)
     worker_backup.add_argument("--fail-on-missing-key", action="store_true")
     worker_backup.set_defaults(func=cmd_backup_worker)
+
+    worker_digest = subparsers.add_parser("__digest_worker", help=argparse.SUPPRESS)
+    worker_digest.add_argument("--host", required=True)
+    worker_digest.add_argument("--port", required=True)
+    worker_digest.add_argument("--user")
+    worker_digest.add_argument("--password")
+    worker_digest.add_argument("--auth")
+    worker_digest.add_argument("--services-alternate", action="store_true")
+    worker_digest.add_argument("--tls-enable", action="store_true")
+    worker_digest.add_argument("--tls-name")
+    worker_digest.add_argument("--tls-cafile")
+    worker_digest.add_argument("--tls-capath")
+    worker_digest.add_argument("--namespace", required=True)
+    worker_digest.add_argument("--prefix", required=True)
+    worker_digest.add_argument("--set", dest="sets", action="append", required=True)
+    worker_digest.set_defaults(func=cmd_digest_worker)
 
     worker_restore = subparsers.add_parser("__restore_worker", help=argparse.SUPPRESS)
     worker_restore.add_argument("--host", required=True)

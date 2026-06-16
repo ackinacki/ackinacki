@@ -10,12 +10,14 @@ use sqlx::QueryBuilder;
 use crate::defaults;
 use crate::helpers::sql_quote;
 use crate::helpers::u64_to_string;
+use crate::schema::db::projection::SqlProjection;
 use crate::schema::db::DBConnector;
 use crate::schema::graphql::query::PaginateDirection;
 use crate::schema::graphql_ext::blockchain_api::blocks::BlockchainBlocksQueryArgs;
 
 #[allow(dead_code)]
-#[derive(Clone, FromRow)]
+#[derive(Clone, Default, FromRow)]
+#[sqlx(default)]
 pub struct Block {
     #[sqlx(skip)]
     pub rowid: i64, // id INTEGER PRIMARY KEY,
@@ -24,7 +26,6 @@ pub struct Block {
     pub after_split: Option<i64>,              // after_split INTEGER,
     pub aggregated_signature: Option<Vec<u8>>, // aggregated_signature BLOB,
     pub before_split: Option<i64>,             // before_split INTEGER,
-    pub boc: Option<Vec<u8>>,
     pub chain_order: Option<String>,
     pub end_lt: Option<String>, // end_lt TEXT,
     pub file_hash: Option<String>,
@@ -86,30 +87,10 @@ impl fmt::Debug for HexBytesOpt<'_> {
     }
 }
 
-struct BocPreview<'a>(Option<&'a [u8]>);
-
-impl fmt::Debug for BocPreview<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            None => f.write_str("None"),
-            Some(bytes) => {
-                let len = bytes.len();
-                let head_len = len.min(10);
-                write!(f, "Some(len={len}, head=0x")?;
-                for byte in &bytes[..head_len] {
-                    write!(f, "{:02x}", byte)?;
-                }
-                f.write_str(")")
-            }
-        }
-    }
-}
-
 impl fmt::Debug for Block {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Block")
             .field("id", &self.id)
-            .field("boc", &BocPreview(self.boc.as_deref()))
             .field("seq_no", &self.seq_no)
             .field("thread_id", &self.thread_id)
             .field("height", &HexBytesOpt(self.height.as_deref()))
@@ -119,8 +100,119 @@ impl fmt::Debug for Block {
 }
 
 impl Block {
+    const DIRECT_COLUMNS: &'static [&'static str] = &[
+        "after_merge",
+        "after_split",
+        "aggregated_signature",
+        "before_split",
+        "chain_order",
+        "data",
+        "end_lt",
+        "envelope_hash",
+        "file_hash",
+        "flags",
+        "gen_catchain_seqno",
+        "gen_software_capabilities",
+        "gen_software_version",
+        "gen_utime",
+        "gen_utime_ms_part",
+        "gen_validator_list_hash_short",
+        "global_id",
+        "height",
+        "in_msgs",
+        "key_block",
+        "min_ref_mc_seqno",
+        "parent",
+        "prev_alt_ref_seq_no",
+        "prev_alt_ref_end_lt",
+        "prev_alt_ref_file_hash",
+        "prev_alt_ref_root_hash",
+        "prev_key_block_seqno",
+        "prev_ref_seq_no",
+        "prev_ref_end_lt",
+        "prev_ref_file_hash",
+        "prev_ref_root_hash",
+        "producer_id",
+        "root_hash",
+        "seq_no",
+        "shard",
+        "share_state_resource_address",
+        "signature_occurrences",
+        "start_lt",
+        "thread_id",
+        "tr_count",
+        "version",
+        "want_merge",
+        "want_split",
+        "workchain_id",
+    ];
+
+    fn direct_column(field: &str) -> Option<&'static str> {
+        Self::DIRECT_COLUMNS.iter().copied().find(|column| *column == field)
+    }
+
+    pub fn projection_for_fields<I>(fields: I) -> SqlProjection
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let mut projection = SqlProjection::new();
+        for field in fields {
+            let field = field.as_ref();
+            match field {
+                "id" | "hash" => projection.add("id"),
+                "status" | "status_name" => projection.add("status"),
+                "prev_ref" => projection.extend([
+                    "prev_ref_seq_no",
+                    "prev_ref_end_lt",
+                    "prev_ref_file_hash",
+                    "prev_ref_root_hash",
+                ]),
+                "prev_alt_ref" => projection.extend([
+                    "prev_alt_ref_seq_no",
+                    "prev_alt_ref_end_lt",
+                    "prev_alt_ref_file_hash",
+                    "prev_alt_ref_root_hash",
+                ]),
+                "out_msg_descr" | "out_msgs" => projection.add("out_msgs"),
+                "in_msg_descr" => projection.add("in_msgs"),
+                "gen_utime_string" => projection.add("gen_utime"),
+                "directives" => projection.add("share_state_resource_address"),
+                "attestations" => projection.add("id"),
+                "account_blocks" | "created_by" | "master" | "master_ref" | "master_seq_no"
+                | "prev_vert_alt_ref" | "prev_vert_ref" | "rand_seed" | "value_flow"
+                | "vert_seq_no" => {}
+                _ if let Some(column) = Self::direct_column(field) => projection.add(column),
+                _ => panic!("Unsupported SQL projection field: block.{field}"),
+            }
+        }
+        projection.ensure_minimum(["id"]);
+        projection
+    }
+
+    pub fn connection_projection_for_fields<I>(fields: I) -> SqlProjection
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let mut projection = Self::projection_for_fields(fields);
+        projection.add("chain_order");
+        projection
+    }
+
+    pub fn graphql_block_projection() -> SqlProjection {
+        let mut projection = SqlProjection::new();
+        projection.add("id");
+        for column in Self::DIRECT_COLUMNS {
+            projection.add(column);
+        }
+        projection.add("status");
+        projection
+    }
+
     pub async fn list(
         db_connector: &DBConnector,
+        projection: &SqlProjection,
         where_clause: String,
         order_by: String,
         limit: Option<i32>,
@@ -137,13 +229,14 @@ impl Block {
             return Ok(Vec::new());
         }
 
+        let select = projection.select_list();
         let union_sql = db_names
             .into_iter()
-            .map(|name| format!("SELECT * FROM \"{name}\".blocks {where_clause}"))
+            .map(|name| format!("SELECT {select} FROM \"{name}\".blocks {where_clause}"))
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
 
-        let sql = format!("SELECT * FROM ({union_sql}) {order_by} LIMIT {limit}");
+        let sql = format!("SELECT {select} FROM ({union_sql}) {order_by} LIMIT {limit}");
         tracing::debug!("SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
@@ -160,18 +253,23 @@ impl Block {
         Ok(blocks)
     }
 
-    pub async fn latest_block(db_connector: &DBConnector) -> anyhow::Result<Option<Block>> {
-        let sql = "SELECT * FROM blocks ORDER BY chain_order DESC LIMIT 1";
+    pub async fn latest_block(
+        db_connector: &DBConnector,
+        projection: &SqlProjection,
+    ) -> anyhow::Result<Option<Block>> {
+        let select = projection.select_list();
+        let sql = format!("SELECT {select} FROM blocks ORDER BY chain_order DESC LIMIT 1");
         tracing::debug!("SQL: {sql}");
         let mut conn = db_connector.get_connection().await?;
-        conn.set_sql(sql);
-        let block = sqlx::query_as(sql).fetch_optional(&mut *conn).await?;
+        conn.set_sql(&sql);
+        let block = QueryBuilder::new(sql).build_query_as().fetch_optional(&mut *conn).await?;
 
         Ok(block)
     }
 
     pub async fn blockchain_blocks(
         db_connector: &DBConnector,
+        projection: &SqlProjection,
         args: &BlockchainBlocksQueryArgs,
     ) -> anyhow::Result<Vec<Block>> {
         let direction = args.pagination.get_direction();
@@ -231,16 +329,17 @@ impl Block {
             return Ok(Vec::new());
         }
 
+        let select = projection.select_list();
         let filter = where_clause;
         let order_by = format!("ORDER BY chain_order {order_by}");
 
         let union_sql = db_names
             .into_iter()
-            .map(|name| format!("SELECT * FROM \"{name}\".blocks {filter}"))
+            .map(|name| format!("SELECT {select} FROM \"{name}\".blocks {filter}"))
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
 
-        let sql = format!("SELECT * FROM ({union_sql}) {order_by} LIMIT {limit}");
+        let sql = format!("SELECT {select} FROM ({union_sql}) {order_by} LIMIT {limit}");
 
         tracing::trace!(target: "blockchain_api", "SQL: {sql}");
 
@@ -270,7 +369,7 @@ impl Block {
     // pub async fn by_seq_no(db_connector: &DBConnector, seq_no: i64) ->
     // anyhow::Result<Option<Block>> {     let block =
     // sqlx::query_as_unchecked!(         Block,
-    //         "SELECT * FROM blocks WHERE seq_no = ?",
+    //         "SELECT id FROM blocks WHERE seq_no = ?",
     //         seq_no
     //     )
     //     .fetch_optional(pool)
@@ -278,4 +377,69 @@ impl Block {
 
     //     Ok(block)
     // }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Block;
+
+    #[test]
+    fn block_projection_maps_direct_and_derived_fields() {
+        let projection = Block::projection_for_fields(["id", "hash", "status_name", "height"]);
+        assert_eq!(projection.columns(), &["id", "status", "height"]);
+    }
+
+    #[test]
+    fn block_projection_maps_grouped_prev_ref() {
+        let projection = Block::projection_for_fields(["prev_ref"]);
+        assert_eq!(
+            projection.columns(),
+            &["prev_ref_seq_no", "prev_ref_end_lt", "prev_ref_file_hash", "prev_ref_root_hash"]
+        );
+    }
+
+    #[test]
+    fn block_connection_projection_adds_cursor_columns() {
+        let projection = Block::connection_projection_for_fields(["id"]);
+        assert_eq!(projection.columns(), &["id", "chain_order"]);
+    }
+
+    #[test]
+    fn block_projection_maps_directives() {
+        let projection = Block::projection_for_fields(["directives"]);
+        assert_eq!(projection.columns(), &["share_state_resource_address"]);
+    }
+
+    #[test]
+    fn block_projection_supports_computed_attestations() {
+        let projection = Block::projection_for_fields(["attestations"]);
+        assert_eq!(projection.columns(), &["id"]);
+    }
+
+    #[test]
+    fn block_projection_adds_id_for_attestations_with_other_fields() {
+        let projection = Block::projection_for_fields(["chain_order", "attestations"]);
+        assert_eq!(projection.columns(), &["chain_order", "id"]);
+    }
+
+    #[test]
+    fn block_projection_empty_fields_uses_minimum_id() {
+        let projection = Block::projection_for_fields(std::iter::empty::<&str>());
+        assert_eq!(projection.columns(), &["id"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Unsupported SQL projection field: block.unknown_field")]
+    fn block_projection_unknown_field_panics_with_context() {
+        Block::projection_for_fields(["unknown_field"]);
+    }
+
+    #[test]
+    fn block_projection_full_graphql_projection_includes_order_only_columns() {
+        let projection = Block::graphql_block_projection();
+
+        assert!(projection.columns().contains(&"root_hash"));
+        assert!(projection.columns().contains(&"data"));
+        assert!(projection.columns().contains(&"in_msgs"));
+    }
 }

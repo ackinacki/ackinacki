@@ -130,6 +130,7 @@ struct BlockProductionMetricsInner {
     bkset_epoch_protocol_versions: Gauge<u64>,
 
     snapshot_creation_time: Gauge<u64>,
+    snapshot_import_time: Gauge<u64>,
 }
 
 pub const BK_SET_UPDATE_CHANNEL: &str = "bk_set_update";
@@ -461,6 +462,7 @@ impl BlockProductionMetrics {
                 .u64_gauge("node_bkset_epoch_protocol_versions")
                 .build(),
             snapshot_creation_time: meter.u64_gauge("node_snapshot_creation_time").build(),
+            snapshot_import_time: meter.u64_gauge("node_snapshot_import_time").build(),
         }))
     }
 
@@ -769,6 +771,10 @@ impl BlockProductionMetrics {
 
     pub fn report_snapshot_creation_time(&self, duration_ms: u64, thread_id: &ThreadIdentifier) {
         self.0.snapshot_creation_time.record(duration_ms, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_snapshot_import_time(&self, duration_ms: u64, thread_id: &ThreadIdentifier) {
+        self.0.snapshot_import_time.record(duration_ms, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_broadcast_join(&self, thread_id: &ThreadIdentifier) {

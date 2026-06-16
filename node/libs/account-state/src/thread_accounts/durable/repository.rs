@@ -11,7 +11,10 @@ use std::io::SeekFrom;
 use std::io::Write;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -46,6 +49,13 @@ use crate::thread_accounts::ArchiveOperation;
 use crate::StateAccountsMetrics;
 use crate::ThreadAccount;
 use crate::ThreadAccountMapRepository;
+
+const SNAPSHOT_WRITTEN_HASH_BATCH_SIZE: usize = 10_000;
+const SNAPSHOT_WRITTEN_HASH_QUEUE_BATCHES: usize = 4;
+const SNAPSHOT_WRITTEN_HASH_MAX_WORKERS: usize = 8;
+const SNAPSHOT_EXPORT_VALIDATION_BATCH_SIZE: usize = 1_000;
+const SNAPSHOT_EXPORT_VALIDATION_QUEUE_BATCHES: usize = 4;
+const SNAPSHOT_EXPORT_VALIDATION_DEFAULT_WORKERS: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AccountHashMismatchError {
@@ -123,6 +133,16 @@ fn write_snapshot_account_entry<W: Write>(
     Ok(())
 }
 
+fn check_snapshot_cancelled<F>(should_cancel: &F) -> anyhow::Result<()>
+where
+    F: Fn() -> bool,
+{
+    if should_cancel() {
+        anyhow::bail!("snapshot save cancelled");
+    }
+    Ok(())
+}
+
 fn read_snapshot_account_entry<R: Read>(
     reader: &mut R,
 ) -> anyhow::Result<(AccountRouting, Vec<u8>)> {
@@ -163,6 +183,280 @@ fn validate_snapshot_account_bytes(
             .unwrap_or(false),
     };
     Ok(matches.then_some(account_bytes))
+}
+
+type SnapshotHashBatch = Vec<(AccountRouting, Vec<u8>)>;
+type SnapshotHashBatchResult = anyhow::Result<Vec<SnapshotWrittenAccountInfo>>;
+type SnapshotExportValidationBatch = Vec<(AccountRouting, AccountInfo, Vec<u8>)>;
+type SnapshotExportValidationBatchResult = anyhow::Result<Vec<(AccountRouting, Vec<u8>)>>;
+
+#[derive(Clone, Copy)]
+struct SnapshotWrittenAccountInfo {
+    routing: AccountRouting,
+    hash: AccountHash,
+}
+
+struct WrittenHashPipeline {
+    input_tx: Option<crossbeam_channel::Sender<SnapshotHashBatch>>,
+    result_rx: crossbeam_channel::Receiver<SnapshotHashBatchResult>,
+    workers: Vec<JoinHandle<()>>,
+    submitted_batches: usize,
+}
+
+impl WrittenHashPipeline {
+    fn new() -> anyhow::Result<Self> {
+        let worker_count = snapshot_written_hash_worker_count();
+        let queue_batches = snapshot_written_hash_queue_batches();
+        let (input_tx, input_rx) = crossbeam_channel::bounded::<SnapshotHashBatch>(queue_batches);
+        let (result_tx, result_rx) = crossbeam_channel::unbounded::<SnapshotHashBatchResult>();
+
+        let mut workers = Vec::with_capacity(worker_count);
+        for index in 0..worker_count {
+            let input_rx = input_rx.clone();
+            let result_tx = result_tx.clone();
+            workers.push(
+                std::thread::Builder::new()
+                    .name(format!("snapshot-written-hash-{index}"))
+                    .spawn(move || {
+                        for batch in input_rx {
+                            let result = process_snapshot_hash_batch(batch);
+                            if result_tx.send(result).is_err() {
+                                break;
+                            }
+                        }
+                    })
+                    .map_err(|e| anyhow::anyhow!("Failed to spawn written hash worker: {e}"))?,
+            );
+        }
+        drop(result_tx);
+
+        Ok(Self { input_tx: Some(input_tx), result_rx, workers, submitted_batches: 0 })
+    }
+
+    fn submit(&mut self, batch: SnapshotHashBatch) -> anyhow::Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let sender = self
+            .input_tx
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Written hash pipeline is already closed"))?;
+        sender.send(batch).map_err(|_| anyhow::anyhow!("Written hash pipeline workers stopped"))?;
+        self.submitted_batches += 1;
+        Ok(())
+    }
+
+    fn finish(mut self) -> anyhow::Result<Vec<SnapshotWrittenAccountInfo>> {
+        drop(self.input_tx.take());
+        let mut written = Vec::new();
+        for _ in 0..self.submitted_batches {
+            let result = self
+                .result_rx
+                .recv()
+                .map_err(|_| anyhow::anyhow!("Written hash pipeline stopped before finishing"))??;
+            written.extend(result);
+        }
+        for worker in self.workers.drain(..) {
+            worker.join().map_err(|_| anyhow::anyhow!("Written hash pipeline worker panicked"))?;
+        }
+        Ok(written)
+    }
+}
+
+impl Drop for WrittenHashPipeline {
+    fn drop(&mut self) {
+        drop(self.input_tx.take());
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn process_snapshot_hash_batch(batch: SnapshotHashBatch) -> SnapshotHashBatchResult {
+    batch
+        .into_iter()
+        .map(|(routing, bytes)| {
+            let account = ThreadAccount::read_bytes(&bytes)?;
+            let hash = if account.is_redirect() {
+                AccountHash::default()
+            } else {
+                account.vm_account()?.hash()
+            };
+            Ok(SnapshotWrittenAccountInfo { routing, hash })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()
+}
+
+fn snapshot_written_hash_worker_count() -> usize {
+    std::env::var("SNAPSHOT_WRITTEN_HASH_WORKERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(NonZeroUsize::get)
+                .unwrap_or(1)
+                .min(SNAPSHOT_WRITTEN_HASH_MAX_WORKERS)
+        })
+}
+
+fn snapshot_written_hash_queue_batches() -> usize {
+    std::env::var("SNAPSHOT_WRITTEN_HASH_QUEUE_BATCHES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(SNAPSHOT_WRITTEN_HASH_QUEUE_BATCHES)
+}
+
+struct ExportValidationPipeline {
+    input_tx: Option<crossbeam_channel::Sender<SnapshotExportValidationBatch>>,
+    workers: Vec<JoinHandle<()>>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl ExportValidationPipeline {
+    fn new(
+        result_tx: crossbeam_channel::Sender<SnapshotExportValidationBatchResult>,
+    ) -> anyhow::Result<Self> {
+        let worker_count = snapshot_export_validation_worker_count();
+        let queue_batches = snapshot_export_validation_queue_batches();
+        let (input_tx, input_rx) =
+            crossbeam_channel::bounded::<SnapshotExportValidationBatch>(queue_batches);
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        let mut workers = Vec::with_capacity(worker_count);
+        for index in 0..worker_count {
+            let input_rx = input_rx.clone();
+            let result_tx = result_tx.clone();
+            let cancelled = cancelled.clone();
+            workers.push(
+                std::thread::Builder::new()
+                    .name(format!("snapshot-export-validate-{index}"))
+                    .spawn(move || {
+                        for batch in input_rx {
+                            let result =
+                                process_snapshot_export_validation_batch(batch, &cancelled);
+                            if result.is_err() {
+                                cancelled.store(true, Ordering::Relaxed);
+                            }
+                            if result_tx.send(result).is_err() {
+                                break;
+                            }
+                            if cancelled.load(Ordering::Relaxed) {
+                                break;
+                            }
+                        }
+                    })
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to spawn export validation worker: {e}")
+                    })?,
+            );
+        }
+        Ok(Self { input_tx: Some(input_tx), workers, cancelled })
+    }
+
+    fn submit(&mut self, batch: SnapshotExportValidationBatch) -> anyhow::Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        if self.cancelled.load(Ordering::Relaxed) {
+            anyhow::bail!("Export validation pipeline cancelled");
+        }
+        let sender = self
+            .input_tx
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Export validation pipeline is already closed"))?;
+        sender
+            .send(batch)
+            .map_err(|_| anyhow::anyhow!("Export validation pipeline workers stopped"))?;
+        Ok(())
+    }
+
+    fn finish(mut self) -> anyhow::Result<()> {
+        drop(self.input_tx.take());
+        for worker in self.workers.drain(..) {
+            worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("Export validation pipeline worker panicked"))?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ExportValidationPipeline {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+        drop(self.input_tx.take());
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn write_validated_export_batch<W: Write>(
+    batch: Vec<(AccountRouting, Vec<u8>)>,
+    writer: &mut W,
+    written: &mut HashSet<AccountRouting>,
+    accounts_count: &mut u64,
+) -> anyhow::Result<()> {
+    for (routing, account_bytes) in batch {
+        if written.insert(routing) {
+            write_snapshot_account_entry(writer, &routing, &account_bytes)?;
+            *accounts_count += 1;
+        }
+    }
+    Ok(())
+}
+
+fn write_export_validation_results<W: Write>(
+    mut writer: W,
+    result_rx: crossbeam_channel::Receiver<SnapshotExportValidationBatchResult>,
+) -> anyhow::Result<(W, HashSet<AccountRouting>, u64)> {
+    let mut written = HashSet::new();
+    let mut accounts_count = 0u64;
+    for result in result_rx {
+        write_validated_export_batch(result?, &mut writer, &mut written, &mut accounts_count)?;
+    }
+    Ok((writer, written, accounts_count))
+}
+
+fn process_snapshot_export_validation_batch(
+    batch: SnapshotExportValidationBatch,
+    cancelled: &AtomicBool,
+) -> SnapshotExportValidationBatchResult {
+    let mut validated = Vec::with_capacity(batch.len());
+    for (routing, info, archive_data) in batch {
+        if cancelled.load(Ordering::Relaxed) {
+            anyhow::bail!("Export validation pipeline cancelled");
+        }
+        let account_bytes =
+            validate_snapshot_account_bytes(&archive_data, &info).map_err(|err| {
+                anyhow::anyhow!(
+                    "snapshot export: failed to validate enumerated archive record \
+                 routing={routing:?}: {err}",
+                )
+            })?;
+        if let Some(account_bytes) = account_bytes {
+            validated.push((routing, account_bytes));
+        }
+    }
+    Ok(validated)
+}
+
+fn snapshot_export_validation_worker_count() -> usize {
+    std::env::var("SNAPSHOT_EXPORT_VALIDATION_WORKERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(SNAPSHOT_EXPORT_VALIDATION_DEFAULT_WORKERS)
+}
+
+fn snapshot_export_validation_queue_batches() -> usize {
+    std::env::var("SNAPSHOT_EXPORT_VALIDATION_QUEUE_BATCHES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(SNAPSHOT_EXPORT_VALIDATION_QUEUE_BATCHES)
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,9 +561,11 @@ const ACCOUNT_READ_CACHE_L1_CAPACITY: usize = 1_500;
 const ACCOUNT_READ_CACHE_L2_CAPACITY: usize = 1_500;
 const ACCOUNT_READ_CACHE_L1_THRESHOLD: Duration = Duration::from_millis(15);
 const ACCOUNT_READ_CACHE_L2_THRESHOLD: Duration = Duration::from_millis(3);
+const ACCOUNT_WRITTEN_CACHE_L1_THRESHOLD_BYTES: usize = 1024 * 1024;
+const ACCOUNT_WRITTEN_CACHE_L2_THRESHOLD_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CacheLevel {
+pub(crate) enum CacheLevel {
     L1,
     L2,
 }
@@ -330,6 +626,59 @@ impl AccountReadCache {
         let removed_l1 = self.l1.lock().pop(hash).is_some();
         let removed_l2 = self.l2.lock().pop(hash).is_some();
         removed_l1 || removed_l2
+    }
+}
+
+pub(crate) struct AccountWrittenCache {
+    l1: Mutex<LruCache<AccountHash, Arc<ThreadAccount>>>,
+    l2: Mutex<LruCache<AccountHash, Arc<ThreadAccount>>>,
+}
+
+impl AccountWrittenCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            l1: Mutex::new(LruCache::new(
+                NonZeroUsize::new(ACCOUNT_READ_CACHE_L1_CAPACITY)
+                    .expect("L1 account written cache capacity must be non-zero"),
+            )),
+            l2: Mutex::new(LruCache::new(
+                NonZeroUsize::new(ACCOUNT_READ_CACHE_L2_CAPACITY)
+                    .expect("L2 account written cache capacity must be non-zero"),
+            )),
+        }
+    }
+
+    pub(crate) fn get(&self, hash: &AccountHash) -> Option<(CacheLevel, Arc<ThreadAccount>)> {
+        if let Some(account) = self.l1.lock().get(hash).cloned() {
+            return Some((CacheLevel::L1, account));
+        }
+        self.l2.lock().get(hash).cloned().map(|account| (CacheLevel::L2, account))
+    }
+
+    pub(crate) fn insert_by_serialized_len(
+        &self,
+        hash: AccountHash,
+        account: &ThreadAccount,
+        serialized_len: usize,
+    ) -> Option<CacheLevel> {
+        if serialized_len > ACCOUNT_WRITTEN_CACHE_L1_THRESHOLD_BYTES {
+            self.insert_l1(hash, Arc::new(account.clone()));
+            return Some(CacheLevel::L1);
+        }
+        if serialized_len > ACCOUNT_WRITTEN_CACHE_L2_THRESHOLD_BYTES {
+            self.insert_l2(hash, Arc::new(account.clone()));
+            return Some(CacheLevel::L2);
+        }
+        None
+    }
+
+    fn insert_l1(&self, hash: AccountHash, account: Arc<ThreadAccount>) {
+        self.l1.lock().put(hash, account);
+        self.l2.lock().pop(&hash);
+    }
+
+    fn insert_l2(&self, hash: AccountHash, account: Arc<ThreadAccount>) {
+        self.l2.lock().put(hash, account);
     }
 }
 
@@ -560,11 +909,21 @@ impl DurableThreadAccountsRepository {
                     );
                     return Ok(Some(Arc::unwrap_or_clone(account)));
                 }
+                if let Some((level, account)) = self.archive.account_written_cache().get(&vm_hash) {
+                    tracing::trace!(
+                        target: "mem",
+                        routing = %routing,
+                        hash = %vm_hash.to_hex_string(),
+                        level = ?level,
+                        "account written cache hit",
+                    );
+                    return Ok(Some(Arc::unwrap_or_clone(account)));
+                }
                 tracing::trace!(
                     target: "mem",
                     routing = %routing,
                     hash = %vm_hash.to_hex_string(),
-                    "account read cache miss",
+                    "account read/write cache miss",
                 );
                 // 3. Archive lookup by routing — verify hash
                 let started = Instant::now();
@@ -803,6 +1162,29 @@ impl DurableThreadAccountsRepository {
     ) -> Option<super::PinHandle> {
         let pin =
             self.accumulator.acquire_snapshot_pin(expected_thread, expected_block, timeout)?;
+        self.check_snapshot_pin_reachability(pin)
+    }
+
+    pub fn acquire_snapshot_pin_cancellable<F>(
+        &self,
+        expected_thread: node_types::ThreadIdentifier,
+        expected_block: node_types::BlockIdentifier,
+        timeout: std::time::Duration,
+        should_cancel: F,
+    ) -> Option<super::PinHandle>
+    where
+        F: Fn() -> bool,
+    {
+        let pin = self.accumulator.acquire_snapshot_pin_cancellable(
+            expected_thread,
+            expected_block,
+            timeout,
+            should_cancel,
+        )?;
+        self.check_snapshot_pin_reachability(pin)
+    }
+
+    fn check_snapshot_pin_reachability(&self, pin: super::PinHandle) -> Option<super::PinHandle> {
         // Reachability check at the repository layer (this is where
         // we have the per-block maps and the resolution chain).
         let pin_set = pin.pin_set();
@@ -1137,11 +1519,25 @@ impl DurableThreadAccountsRepository {
         )
     }
 
-    pub fn export_durable_snapshot_to_writer<W: Write + Seek>(
+    pub fn export_durable_snapshot_to_writer<W: Write + Seek + Send>(
         &self,
         state: &DurableThreadAccountsState,
         writer: &mut W,
     ) -> anyhow::Result<()> {
+        self.export_durable_snapshot_to_writer_checked(state, writer, &|| false)
+    }
+
+    pub fn export_durable_snapshot_to_writer_checked<W, F>(
+        &self,
+        state: &DurableThreadAccountsState,
+        writer: &mut W,
+        should_cancel: &F,
+    ) -> anyhow::Result<()>
+    where
+        W: Write + Seek + Send,
+        F: Fn() -> bool,
+    {
+        check_snapshot_cancelled(should_cancel)?;
         let mut buffered_writer =
             BufWriter::with_capacity(Self::SNAPSHOT_COPY_BUFFER_CAPACITY, writer);
 
@@ -1158,51 +1554,66 @@ impl DurableThreadAccountsRepository {
         let maps_len_pos = buffered_writer.stream_position()?;
         buffered_writer.write_all(&0u64.to_le_bytes())?;
         let maps_start_pos = buffered_writer.stream_position()?;
-        self.map_repo.map_write(&state.0.map, &mut buffered_writer)?;
+        self.map_repo.map_write_checked(&state.0.map, &mut buffered_writer, should_cancel)?;
         let maps_end_pos = buffered_writer.stream_position()?;
         let maps_len = maps_end_pos - maps_start_pos;
 
+        check_snapshot_cancelled(should_cancel)?;
         let expected: HashMap<_, _> =
             self.map_repo.map_iter(&state.0.map).map(|(routing, info)| (routing, *info)).collect();
         let expected_len = expected.len();
 
         let accounts_count_pos = buffered_writer.stream_position()?;
         buffered_writer.write_all(&0u64.to_le_bytes())?;
-        let mut accounts_count = 0u64;
-        let mut written = HashSet::new();
+        let (mut buffered_writer, mut written, mut accounts_count) =
+            std::thread::scope(|scope| -> anyhow::Result<_> {
+                let queue_batches = snapshot_export_validation_queue_batches();
+                let (result_tx, result_rx) = crossbeam_channel::bounded::<
+                    SnapshotExportValidationBatchResult,
+                >(queue_batches);
+                let mut export_validation = ExportValidationPipeline::new(result_tx)?;
+                let writer_handle = scope
+                    .spawn(move || write_export_validation_results(buffered_writer, result_rx));
+                let mut validation_batch =
+                    Vec::with_capacity(SNAPSHOT_EXPORT_VALIDATION_BATCH_SIZE);
 
-        // Fast path: enumerate the logical archive records and accept each
-        // payload only if it validates against the snapshot map. Enumeration
-        // is a source of candidate bytes; the map remains authoritative.
-        self.archive.store().enumerate(
-            &self.archive.set_accounts_a(),
-            &mut |record| -> anyhow::Result<()> {
-                let routing = key_to_routing(&record.key)?;
-                let Some(info) = expected.get(&routing).copied() else {
-                    return Ok(());
-                };
-                let Some(account_bytes) = validate_snapshot_account_bytes(&record.data, &info)
-                    .map_err(|err| {
-                        anyhow::anyhow!(
-                            "snapshot export: failed to validate enumerated archive record \
-                             routing={routing:?}: {err}",
-                        )
-                    })?
-                else {
-                    return Ok(());
-                };
-                if written.insert(routing) {
-                    write_snapshot_account_entry(&mut buffered_writer, &routing, &account_bytes)?;
-                    accounts_count += 1;
+                // Fast path: enumerate the logical archive records and accept each
+                // payload only if it validates against the snapshot map. Enumeration
+                // is a source of candidate bytes; the map remains authoritative.
+                self.archive.store().enumerate_checked(
+                    &self.archive.set_accounts_a(),
+                    should_cancel,
+                    &mut |record| -> anyhow::Result<()> {
+                        check_snapshot_cancelled(should_cancel)?;
+                        let routing = key_to_routing(&record.key)?;
+                        let Some(info) = expected.get(&routing).copied() else {
+                            return Ok(());
+                        };
+                        validation_batch.push((routing, info, record.data));
+                        if validation_batch.len() >= SNAPSHOT_EXPORT_VALIDATION_BATCH_SIZE {
+                            let batch = std::mem::replace(
+                                &mut validation_batch,
+                                Vec::with_capacity(SNAPSHOT_EXPORT_VALIDATION_BATCH_SIZE),
+                            );
+                            export_validation.submit(batch)?;
+                        }
+                        Ok(())
+                    },
+                )?;
+                if !validation_batch.is_empty() {
+                    export_validation.submit(validation_batch)?;
                 }
-                Ok(())
-            },
-        )?;
+                export_validation.finish()?;
+                writer_handle
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("Export validation writer panicked"))?
+            })?;
 
         // Fallback path: any map entry not satisfied by archive enumeration
         // must still be exported from an exact hash-matching source, or the
         // snapshot is skipped by returning an error.
         for (routing, info) in expected {
+            check_snapshot_cancelled(should_cancel)?;
             if written.contains(&routing) {
                 continue;
             }
@@ -1271,6 +1682,7 @@ impl DurableThreadAccountsRepository {
             serialized_account_count, expected_len,
         );
 
+        check_snapshot_cancelled(should_cancel)?;
         buffered_writer.flush()?;
         buffered_writer.seek(SeekFrom::Start(maps_len_pos))?;
         buffered_writer.write_all(&maps_len.to_le_bytes())?;
@@ -1361,17 +1773,32 @@ impl DurableThreadAccountsRepository {
         );
 
         let mut remaining = accounts_len;
-        // Track every routing the snapshot's accounts section actually
-        // wrote, so we can cross-check it against the snapshot's map.
-        let mut written: HashSet<AccountRouting> = HashSet::with_capacity(accounts_len as usize);
+        // Track hashes while streaming bodies into the archive. Hash extraction is
+        // done in a bounded side pipeline: Aerospike import remains on this main
+        // path, but slow hash workers naturally backpressure snapshot reading.
+        let mut written_pipeline = WrittenHashPipeline::new()?;
+        let mut written_hash_batch =
+            Vec::<(AccountRouting, Vec<u8>)>::with_capacity(SNAPSHOT_WRITTEN_HASH_BATCH_SIZE);
         let raw_account_entries = std::iter::from_fn(|| {
             if remaining == 0 {
+                if !written_hash_batch.is_empty() {
+                    let batch = std::mem::take(&mut written_hash_batch);
+                    if let Err(err) = written_pipeline.submit(batch) {
+                        return Some(Err(err));
+                    }
+                }
                 return None;
             }
             remaining -= 1;
             match read_snapshot_account_entry(&mut reader) {
                 Ok((routing, bytes)) => {
-                    written.insert(routing);
+                    written_hash_batch.push((routing, bytes.clone()));
+                    if written_hash_batch.len() >= SNAPSHOT_WRITTEN_HASH_BATCH_SIZE {
+                        let batch = std::mem::take(&mut written_hash_batch);
+                        if let Err(err) = written_pipeline.submit(batch) {
+                            return Some(Err(err));
+                        }
+                    }
                     Some(Ok((routing, bytes)))
                 }
                 Err(err) => Some(Err(err)),
@@ -1379,39 +1806,35 @@ impl DurableThreadAccountsRepository {
         });
         self.archive.thread_init_from_raw_entries(thread_id, *block_id, raw_account_entries)?;
         self.accumulator.set_expected_block(*thread_id, *block_id, true);
+        let written_infos = written_pipeline.finish()?;
+        let written: HashMap<AccountRouting, AccountHash> =
+            HashMap::from_iter(written_infos.into_iter().map(|entry| (entry.routing, entry.hash)));
 
         // Defense-in-depth: do the work that block verification would
         // later do, but eagerly during import while we're still in the
-        // import call frame and can bail cleanly. Walk the imported
-        // map; for each entry, run the same resolution that
-        // `find_account_with_info` runs during a future verify, and
-        // assert it succeeds with a body whose hash matches the map's
-        // expected hash. This catches three distinct producer-side bugs
-        // *on the consumer*, regardless of which build the producer ran:
+        // import call frame and can bail cleanly. Walk the imported map;
+        // for each VM entry, first compare against the hash captured from
+        // the snapshot body stream. If the stream did not provide a hash
+        // for that routing, fall back to the old archive resolution path.
+        // This keeps the compatibility/safety net without making the
+        // normal path read every imported body back from durable storage.
+        //
+        // This catches three distinct producer-side bugs *on the consumer*,
+        // regardless of which build the producer ran:
         //
         //   1. **Missing body**: the snapshot's map references a routing
-        //      whose body was never written to the snapshot. Detected
-        //      because `read_account_operation` returns None for that
-        //      routing. (Also separately tracked via `written`.)
+        //      whose body was never written to the snapshot. Detected first
+        //      because the routing is absent from `written`, then confirmed
+        //      through the archive fallback.
         //
-        //   2. **Wrong-hash body**: a body was written but read-back
-        //      produces an account whose hash doesn't match the map's
-        //      expected hash. This is the BOC round-trip case — the
-        //      producer's `validate_snapshot_account_bytes` succeeded
-        //      pre-write, so the bytes-as-written hash to the expected
-        //      value, but `ShardAccount::construct_from_bytes` on the
-        //      consumer somehow produces a different cell tree. Catches
-        //      it now rather than 3 minutes later inside the verifier
-        //      with the cryptic "exists in map but no matching version
-        //      found" panic.
+        //   2. **Wrong-hash body**: a body was written but its decoded
+        //      account hash doesn't match the map's expected hash.
         //
         //   3. **Map-iter divergence**: producer's `map_iter` undercounted
         //      vs `map_write`, so the deserialized map has more leaves
         //      than the bodies. Caught by the count check below.
         //
-        // We use a *fresh* state here (no map_get fallback through pool /
-        // accumulator — those are empty after `reset_accumulator`) so the
-        // resolution is purely "archive must produce the expected body".
+        // The fresh state is used only for fallback misses from `written`.
         let import_state = DurableThreadAccountsState::with_map(map.clone());
         let mut missing_bodies: Vec<AccountRouting> = Vec::new();
         let mut wrong_hashes: Vec<(AccountRouting, AccountHash, AccountHash)> = Vec::new();
@@ -1425,30 +1848,28 @@ impl DurableThreadAccountsRepository {
                     // and that target routing (if it has VmAccountHash)
                     // is checked elsewhere in this loop.
                 }
-                AccountInfo::VmAccountHash(expected_hash) => {
-                    match self.find_account_with_info(&import_state, &routing, *info) {
-                        Ok(Some(account)) => {
-                            // find_account_with_info already verifies
-                            // hash internally, but recompute here to
-                            // surface a precise mismatch in the error.
-                            match account.vm_account() {
-                                Ok(vm_account) => {
-                                    let actual = vm_account.hash();
-                                    if actual != *expected_hash {
-                                        wrong_hashes.push((routing, *expected_hash, actual));
-                                    }
-                                }
-                                Err(_) => wrong_hashes.push((
-                                    routing,
-                                    *expected_hash,
-                                    AccountHash::default(),
-                                )),
-                            }
+                AccountInfo::VmAccountHash(expected_hash) => match written.get(&routing) {
+                    Some(actual) => {
+                        if actual != expected_hash {
+                            wrong_hashes.push((routing, *expected_hash, *actual));
                         }
+                    }
+                    None => match self.find_account_with_info(&import_state, &routing, *info) {
+                        Ok(Some(account)) => match account.vm_account() {
+                            Ok(vm_account) => {
+                                let actual = vm_account.hash();
+                                if actual != *expected_hash {
+                                    wrong_hashes.push((routing, *expected_hash, actual));
+                                }
+                            }
+                            Err(_) => {
+                                wrong_hashes.push((routing, *expected_hash, AccountHash::default()))
+                            }
+                        },
                         Ok(None) => missing_bodies.push(routing),
                         Err(_) => missing_bodies.push(routing),
-                    }
-                }
+                    },
+                },
             }
         }
         let serialized_count = count_serialized_map_leaves(&map);
@@ -1468,7 +1889,7 @@ impl DurableThreadAccountsRepository {
             anyhow::bail!(
                 "Imported snapshot is internally inconsistent and would cause block-verification \
                  panics. Stats: map has {total_in_map} routings, trie-walk counted {serialized_count} \
-                 leaves, accounts section wrote bodies for {} routings, {} routings have NO body, \
+                 leaves, accounts section tracked VM bodies for {} routings, {} routings have NO body, \
                  {} routings have a body whose hash does NOT match the map. \
                  First missing (up to 5): {missing_preview:?}. \
                  First wrong-hash (up to 5): {wrong_preview:?}. \
@@ -1516,6 +1937,7 @@ mod tests {
     use super::validate_snapshot_account_bytes;
     use super::write_snapshot_account_entry;
     use super::AccountReadCache;
+    use super::AccountWrittenCache;
     use super::CacheLevel;
     use crate::thread_accounts::durable::archive::update::AccumulatedUpdate;
     use crate::thread_accounts::durable::AccountInfo;
@@ -1606,6 +2028,27 @@ mod tests {
         );
     }
 
+    fn durable_snapshot_bytes_with_entries(
+        repo: &ThreadAccountsRepository,
+        state: &DurableThreadAccountsState,
+        entries: &[(AccountRouting, Vec<u8>)],
+    ) -> Vec<u8> {
+        let mut snapshot = Cursor::new(Vec::new());
+        std::io::Write::write_all(&mut snapshot, &0u64.to_le_bytes()).unwrap();
+        let maps_start = snapshot.position();
+        repo.durable_map_repo().map_repo().map_write(&state.0.map, &mut snapshot).unwrap();
+        let maps_end = snapshot.position();
+        std::io::Write::write_all(&mut snapshot, &(entries.len() as u64).to_le_bytes()).unwrap();
+        for (routing, account_bytes) in entries {
+            write_snapshot_account_entry(&mut snapshot, routing, account_bytes).unwrap();
+        }
+        let end = snapshot.position();
+        snapshot.set_position(0);
+        std::io::Write::write_all(&mut snapshot, &(maps_end - maps_start).to_le_bytes()).unwrap();
+        snapshot.set_position(end);
+        snapshot.into_inner()
+    }
+
     #[test]
     fn account_read_cache_inserts_into_l1_when_elapsed_exceeds_15ms() {
         let cache = AccountReadCache::new();
@@ -1652,6 +2095,80 @@ mod tests {
         let (_, l1_account) = new_acc(203);
         let (_, l2_account) = new_acc(204);
         let hash = AccountHash::new(new_u256("cache_hash", 1));
+
+        cache.insert_l2(hash, Arc::new(l2_account));
+        cache.insert_l1(hash, Arc::new(l1_account.clone()));
+
+        assert_eq!(
+            cache.get(&hash).map(|(level, account)| (level, account.as_ref().clone())),
+            Some((CacheLevel::L1, l1_account))
+        );
+    }
+
+    #[test]
+    fn account_written_cache_inserts_into_l1_when_serialized_size_exceeds_1mib() {
+        let cache = AccountWrittenCache::new();
+        let (_, account) = new_acc(211);
+        let hash = account_hash(&account);
+
+        let level = cache
+            .insert_by_serialized_len(
+                hash,
+                &account,
+                super::ACCOUNT_WRITTEN_CACHE_L1_THRESHOLD_BYTES + 1,
+            )
+            .unwrap();
+
+        assert_eq!(level, CacheLevel::L1);
+        assert_eq!(
+            cache.get(&hash).map(|(level, account)| (level, account.as_ref().clone())),
+            Some((CacheLevel::L1, account))
+        );
+    }
+
+    #[test]
+    fn account_written_cache_inserts_into_l2_when_serialized_size_exceeds_256kib() {
+        let cache = AccountWrittenCache::new();
+        let (_, account) = new_acc(212);
+        let hash = account_hash(&account);
+
+        let level = cache
+            .insert_by_serialized_len(
+                hash,
+                &account,
+                super::ACCOUNT_WRITTEN_CACHE_L2_THRESHOLD_BYTES + 1,
+            )
+            .unwrap();
+
+        assert_eq!(level, CacheLevel::L2);
+        assert_eq!(
+            cache.get(&hash).map(|(level, account)| (level, account.as_ref().clone())),
+            Some((CacheLevel::L2, account))
+        );
+    }
+
+    #[test]
+    fn account_written_cache_does_not_insert_at_or_below_256kib() {
+        let cache = AccountWrittenCache::new();
+        let (_, account) = new_acc(213);
+        let hash = account_hash(&account);
+
+        assert!(cache
+            .insert_by_serialized_len(
+                hash,
+                &account,
+                super::ACCOUNT_WRITTEN_CACHE_L2_THRESHOLD_BYTES
+            )
+            .is_none());
+        assert!(cache.get(&hash).is_none());
+    }
+
+    #[test]
+    fn account_written_cache_checks_l1_before_l2() {
+        let cache = AccountWrittenCache::new();
+        let (_, l1_account) = new_acc(214);
+        let (_, l2_account) = new_acc(215);
+        let hash = AccountHash::new(new_u256("written_cache_hash", 1));
 
         cache.insert_l2(hash, Arc::new(l2_account));
         cache.insert_l1(hash, Arc::new(l1_account.clone()));
@@ -1743,6 +2260,68 @@ mod tests {
 
         assert_eq!(resolved, account);
         assert!(repo.archive.read_account_operation(&routing).unwrap().is_none());
+    }
+
+    #[test]
+    fn repository_lookup_returns_account_from_written_cache_after_read_cache_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = ArchiveStateStore::in_memory();
+        let repo =
+            DurableThreadAccountsRepository::new(PathBuf::from(dir.path()), archive, None).unwrap();
+
+        let (routing, account) = new_acc(216);
+        let hash = account_hash(&account);
+        let state = state_with_account_hash(&repo, routing, hash);
+        repo.archive.account_written_cache().insert_l1(hash, Arc::new(account.clone()));
+
+        let resolved = repo
+            .find_account_with_info(&state, &routing, AccountInfo::VmAccountHash(hash))
+            .unwrap()
+            .expect("written cache hit should return account");
+
+        assert_eq!(resolved, account);
+        assert!(repo.archive.read_account_operation(&routing).unwrap().is_none());
+    }
+
+    #[test]
+    fn repository_lookup_prefers_read_cache_over_written_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = ArchiveStateStore::in_memory();
+        let repo =
+            DurableThreadAccountsRepository::new(PathBuf::from(dir.path()), archive, None).unwrap();
+
+        let (routing, read_account) = new_acc(217);
+        let (_, written_account) = new_acc(218);
+        let hash = AccountHash::new(new_u256("shared_cache_key", 1));
+        let state = state_with_account_hash(&repo, routing, hash);
+        repo.account_read_cache.insert_l1(hash, Arc::new(read_account.clone()));
+        repo.archive.account_written_cache().insert_l1(hash, Arc::new(written_account));
+
+        let resolved = repo
+            .find_account_with_info(&state, &routing, AccountInfo::VmAccountHash(hash))
+            .unwrap()
+            .expect("read cache hit should return account");
+
+        assert_eq!(resolved, read_account);
+    }
+
+    #[test]
+    fn archive_write_does_not_cache_small_written_account() {
+        let archive = ArchiveStateStore::in_memory();
+        let thread_id = ThreadIdentifier::default();
+        let block_0 = BlockIdentifier::default();
+        let block_1 = BlockIdentifier::new(new_u256("small_written_block", 1));
+        archive.ensure_thread(&thread_id, &block_0).unwrap();
+
+        let (routing, account) = new_acc(219);
+        let hash = account_hash(&account);
+        let mut update = AccumulatedUpdate::new();
+        update.transition_thread(thread_id, block_0, block_1);
+        update.insert(routing, ArchiveOperation::UpdateOrInsert(account));
+
+        archive.apply_update(&update).unwrap();
+
+        assert!(archive.account_written_cache().get(&hash).is_none());
     }
 
     #[test]
@@ -2101,5 +2680,38 @@ mod tests {
             .archive_account_for_test(&routing)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn import_durable_snapshot_from_reader_rejects_streamed_body_hash_mismatch() {
+        let thread_id = ThreadIdentifier::default();
+        let block_id = BlockIdentifier::new(new_u256("block", 2));
+
+        let (repo, _dir) = setup_repo();
+        let (routing, account) = new_acc(21);
+        let (_, other_account) = new_acc(22);
+        let state =
+            state_with_account_hash(repo.durable_map_repo(), routing, account_hash(&other_account));
+        let snapshot_bytes = durable_snapshot_bytes_with_entries(
+            &repo,
+            &state,
+            &[(routing, account.write_bytes().unwrap())],
+        );
+
+        let (import_repo, _import_dir) = setup_repo();
+        import_repo.reset_archive().unwrap();
+
+        let err = import_repo
+            .import_durable_snapshot_from_reader(
+                &mut Cursor::new(snapshot_bytes),
+                &thread_id,
+                &block_id,
+            )
+            .unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("wrong-hash") || err_msg.contains("does NOT match the map"),
+            "unexpected error: {err_msg}",
+        );
     }
 }

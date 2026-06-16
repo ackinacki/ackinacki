@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.3] – 2026-06-16
+
+### Breaking Changes
+- Reworked the account and external-message HTTP APIs to use separate strict `account_id` and `dapp_id` fields: `GET /v2/account` now requires `account_id` and `dapp_id` (both 64-char unprefixed, lowercase-normalized hex) and rejects the legacy prefixed `address=0:...` parameter, while `POST /v2/messages` requests must include both `account_id` and `dapp_id` (the old optional `dst_dapp_id` is gone) and reject any message whose `account_id` does not match the BOC's destination
+- Removed the `boc` field from the GraphQL `blockchain.block` type, replacing it with a `data` field that returns the zstd-compressed block body (clients reading `boc` must switch to `data` and decompress)
+
+### New / Improvements
+- Added zstd level-3 compression for persisted `blocks.data` and `transactions.boc` BLOBs in the SQLite archive (with raw-bytes fallback on compression/decompression failure) and dropped the redundant `blocks.boc` column via migration `007-drop_blocks_boc`, reducing Block Manager archive storage
+- Reduced gql-server SQLite query load by building field-based `SELECT` projections that fetch only the GraphQL-requested columns plus the technical columns needed for pagination, ordering, deduplication, nested relation loading, and type conversion, instead of reading every column
+- Added an optional `CREATE_NET` flag to the Block Keeper TLS proxy Ansible role that creates the `ackinacki-net` Docker network before composing the proxy up
+- Parallelized snapshot import/export account-hash validation in the durable account repository across a configurable worker-thread pipeline (tunable via `SNAPSHOT_WRITTEN_HASH_WORKERS`/`SNAPSHOT_WRITTEN_HASH_QUEUE_BATCHES`), and added a `node_snapshot_import_time` gauge reporting per-thread snapshot import duration
+- Added differentiated node shutdown modes driven by the received signal — `SIGTERM` triggers a Fast shutdown that gives in-flight snapshot workers up to 10s to finish before dumping state, while `SIGINT` triggers a Full shutdown that waits for all snapshot workers to complete — and made snapshot save/share cancellable via a cancel token checked during streaming writes
+- Added a composite BM archive index `index_blocks_thread_chain_order` on `blocks(thread_id, chain_order)` (migration `006`) to speed up thread-filtered `blockchain.blocks(..., thread_id)` GraphQL pagination on large archives
+- Removed the legacy `SyncFinalized` / `SyncFrom` and seq-no-anchored snapshot synchronization paths, keeping only height-anchored snapshot sync (incoming legacy `SyncFinalized` messages are now ignored, but the wire variant is retained for compatibility with older nodes)
+- `bm-archive-processor` with `--post-upload delete` now also deletes the source files in `processed/` after a successful daily archive upload, reducing local disk growth
+- Reworked the Caddy role to reach the Block Manager and its nginx over Docker service-discovery names on the shared `ackinacki-net` network (`block_manager`/`nginx_bm`) instead of host private-IP ports, removing the `HOST_PRIVATE_IP`/`NGINX_HOST`/`NGINX_PORT` env wiring and dropping the private-IP `80`/`443`/`8600` port bindings
+- Refactored the live nginx config to use named `keepalive`-enabled upstreams (`block_manager`, `node_api`, `q_server`) with static `proxy_pass` targets instead of per-location Docker DNS resolver lookups, eliminating GraphQL/API restarts triggered by upstream re-resolution
+- Added `depends_on` ordering so the Block Manager `nginx_bm` (and the docker test-gossip/test-proxy nginx services) start only after their `q_server`/`block_manager` upstreams, preventing nginx startup failures
+
+---
+
+### Fixes
+- Fixed an underflow panic in optimistic-state cleanup logging by computing before/after counts under a single lock and using saturating subtraction for the removed-count log
+- Fixed post-sync block validation to skip emitting NACKs for blocks that are already finalized, and to fail block building with a `BLOCK_HAS_MESSAGES_WITH_EQUAL_HASH` verify error (instead of an assertion panic) when an inbound message with a duplicate hash is encountered; also handles `AccountWasMoved` reroute/ignore cases when removing new messages
+- Fixed `blockchain.bkSetUpdates` attestation queries to map database errors through the shared DB error mapper instead of surfacing raw error strings, and added the supporting `index_attestations_source_block_id` index
+- Removed the `Upgrade`/`Connection: upgrade` proxy headers from live nginx locations so backend keepalive connections are no longer broken by spurious WebSocket-style connection upgrades
+- Fixed Block Keeper graceful shutdown to force-remove the node container with `docker compose rm -f` when `docker compose stop` fails to terminate a lingering process
+- Added a pre-task to the Ansible `deep-cleanup` play that probes root-filesystem health via `/var/tmp` and performs an emergency raw `rm -rf` of the data directories over SSH when the disk is full, so the module-based cleanup tasks can subsequently run
+
+---
+
 ## [0.16.2] – 2026-05-21
 
 ### Fixes

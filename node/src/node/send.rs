@@ -15,7 +15,6 @@ use crate::bls::try_seal::TrySeal;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::NodeAssociatedTypes;
-use crate::node::associated_types::SyncFinalizedData;
 use crate::node::associated_types::SyncFinalizedWithHeightData;
 use crate::node::network_message::NodeJoiningWithLastFinalizedData;
 use crate::node::services::sync::StateSyncService;
@@ -137,40 +136,6 @@ where
         )
     }
 
-    fn prepare_sync_finalized(
-        &self,
-        block_identifier: BlockIdentifier,
-        block_seq_no: BlockSeqNo,
-        shared_res_address: HashMap<ThreadIdentifier, BlockIdentifier>,
-    ) -> anyhow::Result<Option<Envelope<SyncFinalizedData>>> {
-        let shared_res_address = BTreeMap::from_iter(shared_res_address);
-        let data = SyncFinalizedData::builder()
-            .block_identifier(block_identifier)
-            .block_seq_no(block_seq_no)
-            .thread_refs(shared_res_address)
-            .build();
-        let Ok(block_state) = self.block_state_repository.get(&block_identifier) else {
-            tracing::trace!("Failed to load block state. Skip broadcasting");
-            return Ok(None);
-        };
-        let (Some(bk_set), Some(block_version)) =
-            block_state.guarded(|e| (e.bk_set().clone(), e.block_version_state().clone()))
-        else {
-            tracing::trace!("Failed to get bk_set from block state. Skip broadcasting");
-            return Ok(None);
-        };
-
-        let secrets = self.bls_keys_map.guarded(|map| map.clone());
-
-        Ok(match data.try_seal(&self.node_credentials, &bk_set, &secrets, block_version.to_use()) {
-            Ok(envelope) => Some(envelope),
-            Err(e) => {
-                tracing::trace!("Failed to sign SyncFinalized envelope: {e}. Skip broadcasting");
-                None
-            }
-        })
-    }
-
     fn prepare_sync_finalized_with_height(
         &self,
         block_identifier: BlockIdentifier,
@@ -222,30 +187,12 @@ where
             shared_res_address
         );
 
-        let maybe_legacy_envelope = self.prepare_sync_finalized(
-            block_identifier,
-            block_seq_no,
-            shared_res_address.clone(),
-        )?;
         let maybe_height_envelope = self.prepare_sync_finalized_with_height(
             block_identifier,
             block_height,
             shared_res_address,
         )?;
 
-        if let Some(envelope) = maybe_legacy_envelope {
-            match self
-                .network_broadcast_tx
-                .send(NetworkMessage::SyncFinalized((envelope, self.thread_id)))
-            {
-                Ok(_) => {}
-                Err(e) => {
-                    if SHUTDOWN_FLAG.get() != Some(&true) {
-                        anyhow::bail!("Failed to broadcast sync finalized: {e}");
-                    }
-                }
-            }
-        }
         if let Some(envelope) = maybe_height_envelope {
             match self
                 .network_broadcast_tx
@@ -279,30 +226,12 @@ where
             destination,
         );
 
-        let maybe_legacy_envelope = self.prepare_sync_finalized(
-            block_identifier,
-            block_seq_no,
-            shared_res_address.clone(),
-        )?;
         let maybe_height_envelope = self.prepare_sync_finalized_with_height(
             block_identifier,
             block_height,
             shared_res_address,
         )?;
 
-        if let Some(envelope) = maybe_legacy_envelope {
-            match self.network_direct_tx.send((
-                destination.clone().into(),
-                NetworkMessage::SyncFinalized((envelope, self.thread_id)),
-            )) {
-                Ok(_) => {}
-                Err(e) => {
-                    if SHUTDOWN_FLAG.get() != Some(&true) {
-                        anyhow::bail!("Failed to send sync finalized: {e}");
-                    }
-                }
-            }
-        }
         if let Some(envelope) = maybe_height_envelope {
             match self.network_direct_tx.send((
                 destination.into(),

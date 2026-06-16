@@ -2,10 +2,13 @@ use std::io::Write;
 use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::Duration;
+use std::time::Instant;
 
 use node_types::BlockIdentifier;
 use node_types::ThreadIdentifier;
@@ -24,7 +27,6 @@ use crate::node::services::sync::state_sync_service_trait::SaveStateForSharingSt
 use crate::node::shared_services::SharedServices;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::get_process_rss_bytes;
-use crate::repository::repository_impl::write_legacy_thread_snapshot_to_writer;
 use crate::repository::repository_impl::write_streamed_thread_snapshot_to_writer;
 use crate::repository::repository_impl::AncestorBlockData;
 use crate::repository::repository_impl::RepositoryImpl;
@@ -40,7 +42,6 @@ use crate::types::thread_message_queue::account_messages_iterator::AccountMessag
 use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
-use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
 
 impl AllowGuardedMut for Vec<JoinHandle<anyhow::Result<()>>> {}
 
@@ -48,6 +49,59 @@ impl AllowGuardedMut for Vec<JoinHandle<anyhow::Result<()>>> {}
 /// Set to 1 so only one snapshot runs at a time — if a snapshot is already
 /// in progress when `save_object` is called, it's skipped.
 const MAX_CONCURRENT_SAVE_THREADS: usize = 1;
+const SNAPSHOT_CANCEL_CHECK_BYTES: usize = 1024 * 1024;
+
+#[derive(Clone)]
+struct SnapshotCancelToken(Arc<AtomicBool>);
+
+impl SnapshotCancelToken {
+    fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
+    fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    fn check(&self) -> anyhow::Result<()> {
+        if self.is_cancelled() {
+            anyhow::bail!("snapshot save cancelled");
+        }
+        Ok(())
+    }
+}
+
+struct CancelCheckedWriter<W> {
+    inner: W,
+    cancel: SnapshotCancelToken,
+    bytes_until_check: usize,
+}
+
+impl<W> CancelCheckedWriter<W> {
+    fn new(inner: W, cancel: SnapshotCancelToken) -> Self {
+        Self { inner, cancel, bytes_until_check: SNAPSHOT_CANCEL_CHECK_BYTES }
+    }
+}
+
+impl<W: Write> Write for CancelCheckedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.cancel.check().map_err(|e| std::io::Error::new(std::io::ErrorKind::Interrupted, e))?;
+        let written = self.inner.write(buf)?;
+        self.bytes_until_check = self.bytes_until_check.saturating_sub(written);
+        if self.bytes_until_check == 0 {
+            self.cancel
+                .check()
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Interrupted, e))?;
+            self.bytes_until_check = SNAPSHOT_CANCEL_CHECK_BYTES;
+        }
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.cancel.check().map_err(|e| std::io::Error::new(std::io::ErrorKind::Interrupted, e))?;
+        self.inner.flush()
+    }
+}
 
 /// RAII guard that decrements an atomic counter on drop.
 struct ActiveThreadGuard(Arc<AtomicUsize>);
@@ -64,6 +118,8 @@ pub struct FileSavingService {
     threads: Arc<Mutex<Vec<JoinHandle<anyhow::Result<()>>>>>,
     #[builder(default = Arc::new(AtomicUsize::new(0)))]
     active_thread_count: Arc<AtomicUsize>,
+    #[builder(default = SnapshotCancelToken(Arc::new(AtomicBool::new(false))))]
+    cancel_token: SnapshotCancelToken,
     repository: RepositoryImpl,
     block_state_repository: BlockStateRepository,
     shared_services: SharedServices,
@@ -133,16 +189,8 @@ fn get_ancestor_blocks_data(
     Ok(history)
 }
 
-fn should_write_legacy_snapshot(
-    config_read: &crate::config::config_read::ConfigRead,
-    block_protocol_version_state: &BlockProtocolVersionState,
-) -> bool {
-    config_read.is_retired(block_protocol_version_state.to_use())
-}
-
 enum SnapshotPinAcquireOutcome<P> {
     Acquired(P),
-    LegacyReleased,
     SkipSnapshot,
 }
 
@@ -158,18 +206,26 @@ fn acquire_snapshot_pin_for_worker<P, F>(
     thread_id: ThreadIdentifier,
     block_id: BlockIdentifier,
     timeout: std::time::Duration,
-    write_legacy_snapshot: bool,
+    cancel: &SnapshotCancelToken,
     acquire_pin: F,
 ) -> SnapshotPinAcquireOutcome<P>
 where
-    F: FnOnce(ThreadIdentifier, BlockIdentifier, std::time::Duration) -> Option<P>,
+    F: Fn(ThreadIdentifier, BlockIdentifier, std::time::Duration) -> Option<P>,
 {
     tracing::info!(
         target: "monit",
         "snapshot[{block_id:?}]: pin was requested earlier; waiting for boundary up to {:?}",
         timeout,
     );
-    let Some(pin) = acquire_pin(thread_id, block_id, timeout) else {
+    if cancel.is_cancelled() {
+        tracing::info!(
+            target: "monit",
+            "snapshot[{block_id:?}]: pin acquire cancelled; skipping atomically",
+        );
+        return SnapshotPinAcquireOutcome::SkipSnapshot;
+    }
+    let pin = acquire_pin(thread_id, block_id, timeout);
+    let Some(pin) = pin else {
         tracing::warn!(
             target: "monit",
             "snapshot[{block_id:?}]: pin not acquired (anchor mismatch or timeout); skipping atomically",
@@ -177,18 +233,10 @@ where
         return SnapshotPinAcquireOutcome::SkipSnapshot;
     };
     tracing::info!(target: "monit", "snapshot[{block_id:?}]: pin acquired");
-    if write_legacy_snapshot {
-        tracing::info!(
-            target: "monit",
-            "snapshot[{block_id:?}]: legacy path releasing pin without durable export",
-        );
-        drop(pin);
-        SnapshotPinAcquireOutcome::LegacyReleased
-    } else {
-        SnapshotPinAcquireOutcome::Acquired(pin)
-    }
+    SnapshotPinAcquireOutcome::Acquired(pin)
 }
 
+#[cfg(test)]
 fn write_snapshot_file<F>(
     snapshot_path: &Path,
     parent_dir: &Path,
@@ -220,6 +268,59 @@ where
 
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp_file_path);
+    }
+
+    result
+}
+
+fn write_snapshot_file_checked<F>(
+    snapshot_path: &Path,
+    parent_dir: &Path,
+    header: &ThreadSnapshotHeader,
+    cancel: &SnapshotCancelToken,
+    write_snapshot: F,
+) -> anyhow::Result<()>
+where
+    F: FnOnce(&mut dyn Write) -> anyhow::Result<()>,
+{
+    let tmp_file_path = get_temp_file_path(parent_dir);
+    let mut tmp_header_path = None;
+    let result = (|| -> anyhow::Result<()> {
+        cancel.check()?;
+        let mut tmp_file = std::fs::File::create(&tmp_file_path)?;
+        tmp_file.write_all(COMPRESSED_SNAPSHOT_MAGIC)?;
+        let mut encoder = zstd::Encoder::new(tmp_file, ZSTD_COMPRESSION_LEVEL)?;
+        {
+            let mut checked = CancelCheckedWriter::new(&mut encoder, cancel.clone());
+            write_snapshot(&mut checked)?;
+            checked.flush()?;
+        }
+        cancel.check()?;
+        let tmp_file = encoder.finish()?;
+        cancel.check()?;
+        tmp_file.sync_all()?;
+        cancel.check()?;
+        std::fs::rename(&tmp_file_path, snapshot_path)?;
+
+        let header_path = RepositoryImpl::snapshot_header_path(snapshot_path);
+        if !std::fs::exists(&header_path)? {
+            cancel.check()?;
+            let header_bytes = bincode::serialize(header)?;
+            let header_tmp = get_temp_file_path(parent_dir);
+            tmp_header_path = Some(header_tmp.clone());
+            std::fs::write(&header_tmp, header_bytes)?;
+            cancel.check()?;
+            std::fs::rename(&header_tmp, &header_path)?;
+            tmp_header_path = None;
+        }
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_file_path);
+        if let Some(tmp_header_path) = tmp_header_path {
+            let _ = std::fs::remove_file(tmp_header_path);
+        }
     }
 
     result
@@ -284,6 +385,41 @@ impl FileSavingService {
         Ok(())
     }
 
+    pub fn shutdown_snapshot_workers(&self, timeout: Duration) -> anyhow::Result<()> {
+        self.cancel_token.cancel();
+        let deadline = Instant::now() + timeout;
+        loop {
+            self.flush()?;
+            let active = self.active_thread_count.load(Ordering::Acquire);
+            if active == 0 {
+                tracing::info!(target: "monit", "snapshot workers stopped");
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                let handles = self.threads.guarded(|threads| threads.len());
+                tracing::warn!(
+                    target: "monit",
+                    "timed out waiting for snapshot workers to stop: active={active}, handles={handles}",
+                );
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    pub fn wait_snapshot_workers(&self) -> anyhow::Result<()> {
+        tracing::info!(target: "monit", "waiting for snapshot workers to finish");
+        loop {
+            self.flush()?;
+            let active = self.active_thread_count.load(Ordering::Acquire);
+            if active == 0 {
+                tracing::info!(target: "monit", "snapshot workers finished");
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     pub fn save_object(
         &self,
         block_id: &BlockIdentifier,
@@ -293,6 +429,14 @@ impl FileSavingService {
         path: PathBuf,
         finalizing_block_id: BlockIdentifier,
     ) -> anyhow::Result<SaveStateForSharingStatus> {
+        if self.cancel_token.is_cancelled() {
+            tracing::trace!(
+                target: "monit",
+                "Snapshot shutdown requested, skipping save for {}",
+                path.display(),
+            );
+            return Ok(SaveStateForSharingStatus::SkippedBusy);
+        }
         // Atomically claim a slot. If another snapshot is in progress, skip.
         // Using compare_exchange to avoid TOCTOU races.
         let mut current = self.active_thread_count.load(Ordering::Acquire);
@@ -357,6 +501,7 @@ impl FileSavingService {
         // claimed by the compare_exchange above; we forget slot_guard on
         // successful spawn so ownership passes to the thread's ActiveThreadGuard.
         let active_count = Arc::clone(&self.active_thread_count);
+        let cancel = self.cancel_token.clone();
         let thread_result = spawn_named_worker(
             format!("Saving state: {}", path.display()),
             |builder, worker| builder.spawn(worker),
@@ -364,6 +509,7 @@ impl FileSavingService {
                 let _guard = ActiveThreadGuard(active_count);
                 let mut pin_request_guard = pin_request_guard;
                 tracing::trace!(target: "node", "Saving state to {}", path.display());
+                cancel.check()?;
                 if std::fs::exists(&path)? {
                     tracing::trace!(target: "node", "File {} already exists, skip saving.", path.display());
                     return Ok(());
@@ -373,6 +519,7 @@ impl FileSavingService {
                 let rss_start = get_process_rss_bytes();
                 tracing::info!(target: "mem", "snapshot[{block_id:?}]: START rss_mb={:.1}", mb(rss_start));
 
+                cancel.check()?;
                 let finalized_block = repository
                     .get_finalized_block(&block_id)?
                     .ok_or_else(|| anyhow::format_err!("Failed to get block: {:?}", block_id))?;
@@ -393,6 +540,7 @@ impl FileSavingService {
 
                 // Use the no-cache variant so we don't pollute the optimistic_state
                 // cache with entries that are only needed for serialization.
+                cancel.check()?;
                 let state = repository
                     .get_full_optimistic_state_no_cache(&block_id, &thread_id, min_state)?
                     .ok_or(anyhow::format_err!("Failed to get full optimistic state"))?;
@@ -412,6 +560,7 @@ impl FileSavingService {
                     target: "mem",
                     "snapshot[{block_id:?}]: unwrapped state Arc, prev_strong_count={state_arc_count}",
                 );
+                cancel.check()?;
                 let db_messages = state
                     .messages
                     .iter(&message_db)
@@ -426,130 +575,90 @@ impl FileSavingService {
                 );
 
                 let block_state = block_state_repository.get(&block_id)?;
-                let Some(block_protocol_version_state) =
-                    block_state.guarded(|e| e.block_version_state().clone())
-                else {
-                    anyhow::bail!("Failed to get block protocol version state for sync");
-                };
-                let write_legacy_snapshot = should_write_legacy_snapshot(
-                    &repository.config_read(),
-                    &block_protocol_version_state,
-                );
                 const SLOW_PATH_PIN_TIMEOUT: std::time::Duration =
                     std::time::Duration::from_secs(15 * 60);
-                let durable_state_snapshot = if write_legacy_snapshot {
-                    match acquire_snapshot_pin_for_worker(
-                        thread_id,
-                        block_id,
-                        SLOW_PATH_PIN_TIMEOUT,
-                        true,
-                        |thread_id, block_id, timeout| {
-                            repository
-                                .thread_accounts_repository()
-                                .acquire_snapshot_pin(thread_id, block_id, timeout)
-                        },
-                    ) {
-                        SnapshotPinAcquireOutcome::SkipSnapshot => return Ok(()),
-                        SnapshotPinAcquireOutcome::LegacyReleased => {
-                            pin_request_guard.disarm();
-                            tracing::info!(
-                                target: "mem",
-                                "snapshot[{block_id:?}]: legacy snapshot released pin rss_mb={:.1}",
-                                mb(get_process_rss_bytes()),
-                            );
-                            tracing::info!(
-                                target: "mem",
-                                "snapshot[{block_id:?}]: SKIP durable export for legacy snapshot rss_mb={:.1}",
-                                mb(get_process_rss_bytes()),
-                            );
-                            None
-                        }
-                        SnapshotPinAcquireOutcome::Acquired(_pin) => {
-                            tracing::warn!(
-                                target: "monit",
-                                "snapshot[{block_id:?}]: legacy path unexpectedly retained durable pin; releasing",
-                            );
-                            drop(_pin);
-                            None
-                        }
+                // Acquire the snapshot pin on this worker thread.
+                // `request_snapshot_pin` was called on the accumulator
+                // in `mark_block_as_finalized` (synchronously with
+                // the alignment-hook'd `push_transition` that ships
+                // the boundary batch), so the accumulator is in
+                // `Requested` when we get here — modulo update-loop
+                // backlog. We wait long enough to span the worst-
+                // observed update-loop batch apply time (~9 min per
+                // batch); if the boundary still isn't reached after
+                // this window, skip atomically.
+                let _pin = match acquire_snapshot_pin_for_worker(
+                    thread_id,
+                    block_id,
+                    SLOW_PATH_PIN_TIMEOUT,
+                    &cancel,
+                    |thread_id, block_id, timeout| {
+                        repository.thread_accounts_repository().acquire_snapshot_pin_cancellable(
+                            thread_id,
+                            block_id,
+                            timeout,
+                            || cancel.is_cancelled(),
+                        )
+                    },
+                ) {
+                    SnapshotPinAcquireOutcome::Acquired(pin) => {
+                        pin_request_guard.disarm();
+                        tracing::info!(
+                            target: "mem",
+                            "snapshot[{block_id:?}]: pin acquired rss_mb={:.1}",
+                            mb(get_process_rss_bytes()),
+                        );
+                        pin
                     }
-                } else {
-                    // Acquire the snapshot pin on this worker thread.
-                    // `request_snapshot_pin` was called on the accumulator
-                    // in `mark_block_as_finalized` (synchronously with
-                    // the alignment-hook'd `push_transition` that ships
-                    // the boundary batch), so the accumulator is in
-                    // `Requested` when we get here — modulo update-loop
-                    // backlog. We wait long enough to span the worst-
-                    // observed update-loop batch apply time (~9 min per
-                    // batch); if the boundary still isn't reached after
-                    // this window, skip atomically.
-                    let _pin = match acquire_snapshot_pin_for_worker(
-                        thread_id,
-                        block_id,
-                        SLOW_PATH_PIN_TIMEOUT,
-                        false,
-                        |thread_id, block_id, timeout| {
-                            repository
-                                .thread_accounts_repository()
-                                .acquire_snapshot_pin(thread_id, block_id, timeout)
-                        },
-                    ) {
-                        SnapshotPinAcquireOutcome::Acquired(pin) => {
-                            pin_request_guard.disarm();
-                            tracing::info!(
-                                target: "mem",
-                                "snapshot[{block_id:?}]: pin acquired rss_mb={:.1}",
-                                mb(get_process_rss_bytes()),
-                            );
-                            pin
-                        }
-                        SnapshotPinAcquireOutcome::SkipSnapshot => return Ok(()),
-                        SnapshotPinAcquireOutcome::LegacyReleased => {
-                            unreachable!("streamed snapshot path cannot release a pin as legacy")
-                        }
-                    };
-                    let mut temp = NamedTempFile::new_in(&parent_dir).map_err(|e| {
-                        tracing::error!(
-                            target: "node",
+                    SnapshotPinAcquireOutcome::SkipSnapshot => return Ok(()),
+                };
+                cancel.check()?;
+                let mut temp = NamedTempFile::new_in(&parent_dir).map_err(|e| {
+                    tracing::error!(
+                        target: "node",
+                        ?block_id,
+                        ?thread_id,
+                        path = %path.display(),
+                        "Failed to create temp durable snapshot file: {e}",
+                    );
+                    anyhow::anyhow!("Failed to create temp durable snapshot file: {e}")
+                })?;
+                // Atomic skip: if the export's resolution chain
+                // fails on any routing, it returns Err and the temp
+                // file is dropped (NamedTempFile cleans up on
+                // drop). The final snapshot path is never touched.
+                repository
+                    .thread_accounts_repository()
+                    .export_durable_snapshot_to_writer_checked(
+                        &state.shard_state.0,
+                        temp.as_file_mut(),
+                        &|| cancel.is_cancelled(),
+                    )
+                    .map_err(|e| {
+                        tracing::warn!(
+                            target: "monit",
                             ?block_id,
                             ?thread_id,
-                            path = %path.display(),
-                            "Failed to create temp durable snapshot file: {e}",
+                            "snapshot export aborted (atomic skip): {e}",
                         );
-                        anyhow::anyhow!("Failed to create temp durable snapshot file: {e}")
+                        anyhow::anyhow!("Failed to export durable snapshot: {e}")
                     })?;
-                    // Atomic skip: if the export's resolution chain
-                    // fails on any routing, it returns Err and the temp
-                    // file is dropped (NamedTempFile cleans up on
-                    // drop). The final snapshot path is never touched.
-                    repository
-                        .thread_accounts_repository()
-                        .export_durable_snapshot_to_writer(&state.shard_state.0, temp.as_file_mut())
-                        .map_err(|e| {
-                            tracing::warn!(
-                                target: "monit",
-                                ?block_id,
-                                ?thread_id,
-                                "snapshot export aborted (atomic skip): {e}",
-                            );
-                            anyhow::anyhow!("Failed to export durable snapshot: {e}")
-                        })?;
-                    temp.as_file_mut().sync_all()?;
-                    let rss_after_export = get_process_rss_bytes();
-                    tracing::info!(
-                        target: "mem",
-                        "snapshot[{block_id:?}]: AFTER export_durable_snapshot rss_mb={:.1}",
-                        mb(rss_after_export),
-                    );
-                    drop(_pin);
-                    tracing::info!(
-                        target: "mem",
-                        "snapshot[{block_id:?}]: streamed path released pin after durable export rss_mb={:.1}",
-                        mb(get_process_rss_bytes()),
-                    );
-                    Some(temp)
-                };
+                let rss_after_export = get_process_rss_bytes();
+                tracing::info!(
+                    target: "mem",
+                    "snapshot[{block_id:?}]: AFTER export_durable_snapshot rss_mb={:.1}",
+                    mb(rss_after_export),
+                );
+                drop(_pin);
+                tracing::info!(
+                    target: "mem",
+                    "snapshot[{block_id:?}]: snapshot released pin after durable export rss_mb={:.1}",
+                    mb(get_process_rss_bytes()),
+                );
+                cancel.check()?;
+                temp.as_file_mut().sync_all()?;
+                let durable_state_snapshot = Some(temp);
+                cancel.check()?;
                 let serialized_state = bincode::serialize(&state)?;
                 let serialized_state_bytes = serialized_state.len();
                 // Drop the heavy optimistic state now that it's serialized.
@@ -561,6 +670,7 @@ impl FileSavingService {
                     mb(rss_after_serialize_state),
                 );
 
+                cancel.check()?;
                 let ancestor_blocks_data = get_ancestor_blocks_data(
                     &block_id,
                     &block_state_repository,
@@ -579,6 +689,7 @@ impl FileSavingService {
                     Some(ancestor_blocks_finalization_checkpoints),
                     Some(finalizes_blocks),
                     Some(parent_id),
+                    Some(block_protocol_version_state),
                 ) = block_state.guarded(|e| {
                     (
                         e.bk_set().clone(),
@@ -593,6 +704,7 @@ impl FileSavingService {
                         e.ancestor_blocks_finalization_checkpoints().clone(),
                         e.finalizes_blocks().clone(),
                         *e.parent_block_identifier(),
+                        e.block_version_state().clone(),
                     )
                 })
                 else {
@@ -651,23 +763,19 @@ impl FileSavingService {
                     round: *shared_thread_state.finalized_block().data().common_section().round(),
                 };
 
-                write_snapshot_file(&path, &parent_dir, &header, |writer| {
-                    if write_legacy_snapshot {
-                        write_legacy_thread_snapshot_to_writer(&shared_thread_state, &mut *writer)
-                    } else {
-                        write_streamed_thread_snapshot_to_writer(
-                            &shared_thread_state,
-                            durable_state_snapshot.as_ref().map(|temp| temp.path()),
-                            &mut *writer,
-                        )
-                    }
+                cancel.check()?;
+                write_snapshot_file_checked(&path, &parent_dir, &header, &cancel, |writer| {
+                    write_streamed_thread_snapshot_to_writer(
+                        &shared_thread_state,
+                        durable_state_snapshot.as_ref().map(|temp| temp.path()),
+                        &mut *writer,
+                    )
                 })?;
                 drop(shared_thread_state);
                 let rss_after_write = get_process_rss_bytes();
                 tracing::info!(
                     target: "mem",
-                    "snapshot[{block_id:?}]: AFTER {} snapshot write rss_mb={:.1}",
-                    if write_legacy_snapshot { "legacy" } else { "streamed" },
+                    "snapshot[{block_id:?}]: AFTER streamed snapshot write rss_mb={:.1}",
                     mb(rss_after_write),
                 );
                 let snapshot_creation_elapsed =
@@ -690,7 +798,16 @@ impl FileSavingService {
                 // We've dropped all snapshot-local allocations by this point.
                 for delay_ms in [0u64, 1000, 5000, 15000] {
                     if delay_ms > 0 {
-                        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                        let until = Instant::now() + Duration::from_millis(delay_ms);
+                        while Instant::now() < until {
+                            if cancel.is_cancelled() {
+                                return Ok(());
+                            }
+                            std::thread::sleep(
+                                Duration::from_millis(100)
+                                    .min(until.saturating_duration_since(Instant::now())),
+                            );
+                        }
                     }
                     let rss = get_process_rss_bytes();
                     tracing::info!(
@@ -773,6 +890,7 @@ impl FileSavingService {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
@@ -782,15 +900,11 @@ mod tests {
 
     use super::acquire_snapshot_pin_for_worker;
     use super::export_durable_and_write_snapshot;
-    use super::should_write_legacy_snapshot;
     use super::spawn_named_worker;
+    use super::SnapshotCancelToken;
     use super::SnapshotPinAcquireOutcome;
     use super::ThreadSnapshotHeader;
-    use crate::config::config_read::ConfigRead;
-    use crate::config::GlobalConfig;
     use crate::repository::repository_impl::RepositoryImpl;
-    use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
-    use crate::versioning::ProtocolVersion;
 
     struct TestPinGuard(Arc<AtomicUsize>);
 
@@ -798,41 +912,6 @@ mod tests {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
-    }
-
-    #[test]
-    fn test_should_write_legacy_snapshot_for_retired_block_version() -> anyhow::Result<()> {
-        let retired = ProtocolVersion::parse("retired")?;
-        let current = ProtocolVersion::parse("current")?;
-        let config_read = ConfigRead::new(
-            current.clone(),
-            GlobalConfig::default(),
-            Some(retired.clone()),
-            Some(GlobalConfig::default()),
-        );
-
-        assert!(should_write_legacy_snapshot(
-            &config_read,
-            &BlockProtocolVersionState::Current(retired.clone())
-        ));
-        assert!(should_write_legacy_snapshot(
-            &config_read,
-            &BlockProtocolVersionState::TransitionLocked {
-                from: retired.clone(),
-                to: current.clone(),
-                milestone: Default::default(),
-            }
-        ));
-        assert!(should_write_legacy_snapshot(
-            &config_read,
-            &BlockProtocolVersionState::CompleteTransition { from: retired, to: current.clone() }
-        ));
-        assert!(!should_write_legacy_snapshot(
-            &config_read,
-            &BlockProtocolVersionState::Current(current)
-        ));
-
-        Ok(())
     }
 
     #[test]
@@ -867,25 +946,31 @@ mod tests {
     }
 
     #[test]
-    fn legacy_snapshot_path_acquires_and_releases_pin() {
+    fn acquire_snapshot_pin_returns_guard_and_releases_on_drop() {
         let acquire_calls = Arc::new(AtomicUsize::new(0));
         let drop_calls = Arc::new(AtomicUsize::new(0));
         let acquire_calls_clone = Arc::clone(&acquire_calls);
         let drop_calls_clone = Arc::clone(&drop_calls);
+        let cancel = SnapshotCancelToken(Arc::new(AtomicBool::new(false)));
 
         let outcome = acquire_snapshot_pin_for_worker(
             ThreadIdentifier::default(),
             BlockIdentifier::default(),
             std::time::Duration::from_secs(1),
-            true,
+            &cancel,
             move |_thread_id, _block_id, _timeout| {
                 acquire_calls_clone.fetch_add(1, Ordering::Relaxed);
-                Some(TestPinGuard(drop_calls_clone))
+                Some(TestPinGuard(Arc::clone(&drop_calls_clone)))
             },
         );
 
-        assert!(matches!(outcome, SnapshotPinAcquireOutcome::LegacyReleased));
+        let guard = match outcome {
+            SnapshotPinAcquireOutcome::Acquired(guard) => guard,
+            SnapshotPinAcquireOutcome::SkipSnapshot => panic!("expected pin acquisition"),
+        };
         assert_eq!(acquire_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(drop_calls.load(Ordering::Relaxed), 0);
+        drop(guard);
         assert_eq!(drop_calls.load(Ordering::Relaxed), 1);
     }
 
@@ -893,20 +978,20 @@ mod tests {
     fn streamed_snapshot_path_keeps_pin_until_guard_drop() {
         let drop_calls = Arc::new(AtomicUsize::new(0));
         let drop_calls_clone = Arc::clone(&drop_calls);
+        let cancel = SnapshotCancelToken(Arc::new(AtomicBool::new(false)));
 
         let outcome = acquire_snapshot_pin_for_worker(
             ThreadIdentifier::default(),
             BlockIdentifier::default(),
             std::time::Duration::from_secs(1),
-            false,
-            move |_thread_id, _block_id, _timeout| Some(TestPinGuard(drop_calls_clone)),
+            &cancel,
+            move |_thread_id, _block_id, _timeout| {
+                Some(TestPinGuard(Arc::clone(&drop_calls_clone)))
+            },
         );
 
         let guard = match outcome {
             SnapshotPinAcquireOutcome::Acquired(guard) => guard,
-            SnapshotPinAcquireOutcome::LegacyReleased => {
-                panic!("streamed snapshot path released pin too early")
-            }
             SnapshotPinAcquireOutcome::SkipSnapshot => panic!("streamed snapshot path skipped pin"),
         };
         assert_eq!(drop_calls.load(Ordering::Relaxed), 0);
@@ -918,12 +1003,13 @@ mod tests {
     fn snapshot_pin_timeout_skips_atomically() {
         let acquire_calls = Arc::new(AtomicUsize::new(0));
         let acquire_calls_clone = Arc::clone(&acquire_calls);
+        let cancel = SnapshotCancelToken(Arc::new(AtomicBool::new(false)));
 
         let outcome = acquire_snapshot_pin_for_worker(
             ThreadIdentifier::default(),
             BlockIdentifier::default(),
-            std::time::Duration::from_secs(1),
-            true,
+            std::time::Duration::from_millis(1),
+            &cancel,
             move |_thread_id, _block_id, _timeout| {
                 acquire_calls_clone.fetch_add(1, Ordering::Relaxed);
                 None::<TestPinGuard>

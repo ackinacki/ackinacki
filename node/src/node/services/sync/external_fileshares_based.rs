@@ -40,13 +40,12 @@ use crate::services::blob_sync::external_fileshares_based::DownloadError;
 use crate::services::blob_sync::external_fileshares_based::ServiceInterface;
 use crate::services::blob_sync::BlobSyncService;
 use crate::types::BlockHeight;
-use crate::types::BlockSeqNo;
 use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::thread_spawn_critical::SpawnCritical;
 
 /// Maximum number of pending state-sync candidates kept in memory. New
-/// candidates from incoming `SyncFinalized` messages are pushed to the
+/// candidates from incoming height-aware sync messages are pushed to the
 /// front; once the deque is at capacity, the oldest is evicted.
 const LOAD_CANDIDATES_CAPACITY: usize = 5;
 const COMPLETED_CANDIDATES_CAPACITY: usize = 32;
@@ -89,8 +88,7 @@ impl From<&SyncSnapshotRequest> for CandidateKey {
 }
 
 /// State machine for state-sync candidates. Candidates are keyed by snapshot
-/// resource address; height-aware anchors upgrade legacy anchors for the same
-/// address instead of creating another download/apply task.
+/// resource address.
 struct LoadCandidates {
     inner: RwLock<LoadCandidatesInner>,
 }
@@ -119,7 +117,6 @@ enum PruneDecision {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LoadCandidatePushResult {
     Pushed,
-    Upgraded,
     Duplicate,
     InProgress,
     Completed,
@@ -131,7 +128,6 @@ impl LoadCandidatePushResult {
     fn as_str(self) -> &'static str {
         match self {
             Self::Pushed => "pushed",
-            Self::Upgraded => "upgraded",
             Self::Duplicate => "duplicate",
             Self::InProgress => "in progress",
             Self::Completed => "completed",
@@ -181,14 +177,6 @@ impl LoadCandidates {
             return LoadCandidatePushResult::FailedBackoff;
         }
         if let Some(in_progress) = q.in_progress.get_mut(&key) {
-            if upgrade_anchor(&mut in_progress.anchor, request.anchor) {
-                tracing::info!(
-                    target: "node",
-                    "snapshot candidate upgraded from seq_no to height while in progress: address={:?}",
-                    in_progress.address,
-                );
-                return LoadCandidatePushResult::Upgraded;
-            }
             tracing::debug!(
                 target: "node",
                 "snapshot candidate ignored: already in progress, anchor_kind={}, address={:?}",
@@ -200,14 +188,6 @@ impl LoadCandidates {
         if let Some(pending) =
             q.pending.iter_mut().find(|candidate| CandidateKey::from(&**candidate) == key)
         {
-            if upgrade_anchor(&mut pending.anchor, request.anchor) {
-                tracing::info!(
-                    target: "node",
-                    "snapshot candidate upgraded from seq_no to height: address={:?}",
-                    pending.address,
-                );
-                return LoadCandidatePushResult::Upgraded;
-            }
             tracing::debug!(
                 target: "node",
                 "duplicate snapshot candidate ignored: anchor_kind={}, address={:?}",
@@ -216,22 +196,25 @@ impl LoadCandidates {
             );
             return LoadCandidatePushResult::Duplicate;
         }
-        if let Some(latest_height) = q.pending.iter().find_map(|candidate| match candidate.anchor {
-            SyncSnapshotAnchor::Height(height) => Some(height),
-            SyncSnapshotAnchor::SeqNo(_) => None,
-        }) {
-            if let SyncSnapshotAnchor::Height(height) = request.anchor {
-                let is_newer = latest_height
-                    .signed_distance_to(&height)
-                    .map(|distance| distance > 0)
-                    .unwrap_or(false);
-                if !is_newer {
-                    tracing::debug!(
-                        target: "node",
-                        "stale snapshot candidate dropped: height={height:?}, latest={latest_height:?}",
-                    );
-                    return LoadCandidatePushResult::StaleHeight;
-                }
+        if let Some(latest_height) = q
+            .pending
+            .iter()
+            .map(|candidate| match candidate.anchor {
+                SyncSnapshotAnchor::Height(height) => height,
+            })
+            .next()
+        {
+            let SyncSnapshotAnchor::Height(height) = request.anchor;
+            let is_newer = latest_height
+                .signed_distance_to(&height)
+                .map(|distance| distance > 0)
+                .unwrap_or(false);
+            if !is_newer {
+                tracing::debug!(
+                    target: "node",
+                    "stale snapshot candidate dropped: height={height:?}, latest={latest_height:?}",
+                );
+                return LoadCandidatePushResult::StaleHeight;
             }
         }
         q.pending.push_front(request);
@@ -373,24 +356,8 @@ impl LoadCandidates {
     }
 
     #[cfg(test)]
-    fn in_progress_len(&self) -> usize {
-        self.inner.read().in_progress.len()
-    }
-
-    #[cfg(test)]
     fn completed_len(&self) -> usize {
         self.inner.read().completed.len()
-    }
-}
-
-fn upgrade_anchor(current: &mut SyncSnapshotAnchor, incoming: SyncSnapshotAnchor) -> bool {
-    if matches!(current, SyncSnapshotAnchor::SeqNo(_))
-        && matches!(incoming, SyncSnapshotAnchor::Height(_))
-    {
-        *current = incoming;
-        true
-    } else {
-        false
     }
 }
 
@@ -399,11 +366,6 @@ fn is_older_than(candidate: SyncSnapshotAnchor, anchor: SyncSnapshotAnchor) -> b
         (SyncSnapshotAnchor::Height(candidate), SyncSnapshotAnchor::Height(anchor)) => {
             candidate.signed_distance_to(&anchor).map(|distance| distance > 0).unwrap_or(false)
         }
-        (SyncSnapshotAnchor::SeqNo(candidate), SyncSnapshotAnchor::SeqNo(anchor)) => {
-            candidate < anchor
-        }
-        (SyncSnapshotAnchor::SeqNo(_), SyncSnapshotAnchor::Height(_)) => true,
-        (SyncSnapshotAnchor::Height(_), SyncSnapshotAnchor::SeqNo(_)) => false,
     }
 }
 
@@ -415,7 +377,7 @@ pub struct ExternalFileSharesBased {
     pub download_deadline_timeout: std::time::Duration,
     blob_sync: ServiceInterface,
     file_saving_service: FileSavingService,
-    /// Bounded queue of state-sync candidates received via `SyncFinalized`.
+    /// Bounded queue of state-sync candidates received via sync finalized messages.
     /// Shared with the long-lived worker.
     candidates: Arc<LoadCandidates>,
     /// Long-lived load worker. Spawned lazily on first
@@ -517,28 +479,6 @@ impl StateSyncService for ExternalFileSharesBased {
         )
     }
 
-    fn add_load_state_task(
-        &mut self,
-        resource_address: BTreeMap<ThreadIdentifier, BlockIdentifier>,
-        block_seq_no: BlockSeqNo,
-        repository: RepositoryImpl,
-        output: InstrumentedSender<anyhow::Result<SyncSnapshotLoaded>>,
-    ) -> anyhow::Result<()> {
-        let request = SyncSnapshotRequest {
-            address: resource_address,
-            anchor: SyncSnapshotAnchor::SeqNo(block_seq_no),
-        };
-        let push_result = self.candidates.push_or_upgrade(request);
-        tracing::trace!(
-            target: "node",
-            "add_load_state_task: {} legacy candidate (queue size = {})",
-            push_result.as_str(),
-            self.candidates.len(),
-        );
-        self.ensure_worker_running(repository, output)?;
-        Ok(())
-    }
-
     fn add_load_state_task_with_height(
         &mut self,
         resource_address: BTreeMap<ThreadIdentifier, BlockIdentifier>,
@@ -585,6 +525,14 @@ impl StateSyncService for ExternalFileSharesBased {
 
     fn flush(&self) -> anyhow::Result<()> {
         self.file_saving_service.flush()
+    }
+
+    fn shutdown_snapshot_workers(&self, timeout: std::time::Duration) -> anyhow::Result<()> {
+        self.file_saving_service.shutdown_snapshot_workers(timeout)
+    }
+
+    fn wait_snapshot_workers(&self) -> anyhow::Result<()> {
+        self.file_saving_service.wait_snapshot_workers()
     }
 }
 
@@ -698,25 +646,6 @@ fn prune_unfinalized_before_snapshot(repository: &RepositoryImpl, candidate: &Sy
             tracing::info!(
                 target: "node",
                 "unfinalized blocks pruned before snapshot download: pruned={pruned}, anchor_kind=height, thread_id={thread_id:?}, height={height:?}",
-            );
-        }
-        SyncSnapshotAnchor::SeqNo(seq_no) => {
-            let pruned = collections.guarded(|map| {
-                candidate
-                    .address
-                    .keys()
-                    .map(|thread_id| {
-                        map.get(thread_id)
-                            .map(|collection| {
-                                collection.prune_before_snapshot(UnfinalizedCutoff::SeqNo(seq_no))
-                            })
-                            .unwrap_or_default()
-                    })
-                    .sum::<usize>()
-            });
-            tracing::info!(
-                target: "node",
-                "unfinalized blocks pruned before snapshot download: pruned={pruned}, anchor_kind=seq_no, seq_no={seq_no:?}",
             );
         }
     }
@@ -873,7 +802,6 @@ mod tests {
     use crate::node::services::sync::SyncSnapshotAnchor;
     use crate::node::services::sync::SyncSnapshotRequest;
     use crate::types::BlockHeight;
-    use crate::types::BlockSeqNo;
 
     fn block_id(seed: u8) -> BlockIdentifier {
         BlockIdentifier::new([seed; 32])
@@ -881,14 +809,6 @@ mod tests {
 
     fn thread_id() -> ThreadIdentifier {
         ThreadIdentifier::new(&block_id(u8::MAX), 7)
-    }
-
-    fn legacy_candidate(address_seed: u8, seq_no: u32) -> SyncSnapshotRequest {
-        let thread_identifier = thread_id();
-        SyncSnapshotRequest {
-            address: BTreeMap::from([(thread_identifier, block_id(address_seed))]),
-            anchor: SyncSnapshotAnchor::SeqNo(BlockSeqNo::from(seq_no)),
-        }
     }
 
     fn candidate_with_height(address_seed: u8, height: u64) -> SyncSnapshotRequest {
@@ -980,48 +900,14 @@ mod tests {
 
         let mut heights = vec![];
         while let Some(candidate) = candidates.claim_next() {
-            if let SyncSnapshotAnchor::Height(height) = candidate.request.anchor {
-                heights.push(*height.height());
-            }
+            let SyncSnapshotAnchor::Height(height) = candidate.request.anchor;
+            heights.push(*height.height());
         }
         let expected_heights: Vec<u64> =
             (2..=(LOAD_CANDIDATES_CAPACITY as u64 + 1)).rev().collect();
 
         assert_eq!(heights.len(), LOAD_CANDIDATES_CAPACITY);
         assert_eq!(heights, expected_heights);
-    }
-
-    #[test]
-    fn push_legacy_skips_address_already_present_in_height_queue() {
-        let candidates = LoadCandidates::new();
-
-        assert_eq!(
-            candidates.push_or_upgrade(candidate_with_height(1, 10)),
-            LoadCandidatePushResult::Pushed
-        );
-        assert_eq!(
-            candidates.push_or_upgrade(legacy_candidate(1, 10)),
-            LoadCandidatePushResult::Duplicate
-        );
-        assert_eq!(candidates.pending_len(), 1);
-        assert_eq!(candidates.in_progress_len(), 0);
-    }
-
-    #[test]
-    fn push_with_height_replaces_same_address_from_legacy_queue() {
-        let candidates = LoadCandidates::new();
-
-        assert_eq!(
-            candidates.push_or_upgrade(legacy_candidate(1, 9)),
-            LoadCandidatePushResult::Pushed
-        );
-        assert_eq!(
-            candidates.push_or_upgrade(candidate_with_height(1, 10)),
-            LoadCandidatePushResult::Upgraded
-        );
-        assert_eq!(candidates.pending_len(), 1);
-        let claimed = candidates.claim_next().unwrap();
-        assert!(matches!(claimed.request.anchor, SyncSnapshotAnchor::Height(_)));
     }
 
     #[test]

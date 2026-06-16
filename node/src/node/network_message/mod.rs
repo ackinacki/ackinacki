@@ -114,9 +114,7 @@ pub enum NetworkMessage {
         at_least_n_blocks: Option<usize>,
     },
 
-    // Note:
-    // SyncFinalized was intended to be used in case of a disaster to restart (continue) the network
-    // SyncFinalized is broadcasted when network is not running.
+    // Legacy message kept for wire compatibility with older nodes.
     SyncFinalized((Envelope<SyncFinalizedData>, ThreadIdentifier)),
     SyncFinalizedWithHeight((Envelope<SyncFinalizedWithHeightData>, ThreadIdentifier)),
     // Also, SyncFrom is redundant due to the authority switch mechanism.

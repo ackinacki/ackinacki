@@ -194,12 +194,29 @@ impl ThreadAccountsRepository {
         self.0.durable.import_durable_snapshot(snapshot, thread_id, block_id)
     }
 
-    pub fn export_durable_snapshot_to_writer<W: Write + Seek>(
+    pub fn export_durable_snapshot_to_writer<W: Write + Seek + Send>(
         &self,
         state: &ThreadAccountsState,
         writer: &mut W,
     ) -> anyhow::Result<()> {
         self.0.durable.export_durable_snapshot_to_writer(&state.durable, writer)
+    }
+
+    pub fn export_durable_snapshot_to_writer_checked<W, F>(
+        &self,
+        state: &ThreadAccountsState,
+        writer: &mut W,
+        should_cancel: &F,
+    ) -> anyhow::Result<()>
+    where
+        W: Write + Seek + Send,
+        F: Fn() -> bool,
+    {
+        self.0.durable.export_durable_snapshot_to_writer_checked(
+            &state.durable,
+            writer,
+            should_cancel,
+        )
     }
 
     pub fn import_durable_snapshot_from_reader<R: Read>(
@@ -318,6 +335,24 @@ impl ThreadAccountsRepository {
         self.0.acquire_snapshot_pin(expected_thread, expected_block, timeout)
     }
 
+    pub fn acquire_snapshot_pin_cancellable<F>(
+        &self,
+        expected_thread: ThreadIdentifier,
+        expected_block: BlockIdentifier,
+        timeout: std::time::Duration,
+        should_cancel: F,
+    ) -> Option<crate::thread_accounts::PinHandle>
+    where
+        F: Fn() -> bool,
+    {
+        self.0.acquire_snapshot_pin_cancellable(
+            expected_thread,
+            expected_block,
+            timeout,
+            should_cancel,
+        )
+    }
+
     pub fn get_archive_thread_control_states(&self) -> anyhow::Result<Vec<ThreadControlState>> {
         self.0.get_archive_thread_control_states()
     }
@@ -375,6 +410,10 @@ impl ThreadAccountsRepository {
 
     pub fn state_hash(&self, state: &ThreadAccountsState) -> ThreadAccountsHash {
         state.tvm.hash()
+    }
+
+    pub fn durable_state_hash(&self, state: &ThreadAccountsState) -> ThreadAccountsHash {
+        self.0.durable.state_hash(&state.durable)
     }
 
     pub fn state_seq_no(&self, state: &ThreadAccountsState) -> u32 {

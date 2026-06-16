@@ -3,6 +3,7 @@ mod tests {
     use std::collections::HashMap;
     use std::collections::HashSet;
     use std::collections::VecDeque;
+    use std::str::FromStr;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
     use std::thread;
@@ -13,6 +14,7 @@ mod tests {
     use http_server::NotQueuedExtMessage;
     use indexset::BTreeMap;
     use node_types::AccountIdentifier;
+    use node_types::DAppIdentifier;
     use node_types::ThreadIdentifier;
     use serde_json::json;
     use telemetry_utils::mpsc::instrumented_channel;
@@ -44,6 +46,7 @@ mod tests {
 
     pub static TEST_CONTRACT_ABI: &str =
         include_str!("../../../../../contracts/test_contracts/contract.abi.json");
+    const TEST_DAPP_ID: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
     fn make_test_ext_message(
         account_suffix: u8,
@@ -54,6 +57,7 @@ mod tests {
             account_suffix
         ))
         .unwrap();
+        let account_id = account.to_hex_string();
         let message = tvm_sdk::Contract::construct_call_ext_in_message_json(
             MsgAddressInt::AddrStd(MsgAddrStd::with_address(None, 0, account)),
             MsgAddressExt::AddrNone,
@@ -72,12 +76,19 @@ mod tests {
         let message_bytes = tvm_types::write_boc(&message_cell)
             .map_err(|e| anyhow::format_err!("Failed to write boc: {e}"))?;
         let message_base64 = tvm_types::base64_encode(&message_bytes);
-        let ext_message =
-            NotQueuedExtMessage::try_new("cafe911", &message_base64, None, None, None)
-                .map_err(|e| anyhow::format_err!("Failed to create ext message: {e}"))?;
+        let ext_message = NotQueuedExtMessage::try_new(
+            "cafe911",
+            &message_base64,
+            None,
+            None,
+            TEST_DAPP_ID.to_string(),
+            account_id,
+        )
+        .map_err(|e| anyhow::format_err!("Failed to create ext message: {e}"))?;
         let queued_ext_message = QueuedExtMessage::try_from_incoming(ext_message)?;
         let now = Utc::now();
-        let dst = ExtMessageDst::from_message(&message, None)?;
+        let dst =
+            ExtMessageDst::from_message(&message, Some(DAppIdentifier::from_str(TEST_DAPP_ID)?))?;
         Ok((dst, (Stamp { index: 1, timestamp: now }, queued_ext_message)))
     }
 
@@ -103,6 +114,7 @@ mod tests {
                 i + 1
             ))
             .unwrap();
+            let account_id = account.to_hex_string();
             let message = tvm_sdk::Contract::construct_call_ext_in_message_json(
                 MsgAddressInt::AddrStd(MsgAddrStd::with_address(None, 0, account)),
                 MsgAddressExt::AddrNone,
@@ -124,13 +136,24 @@ mod tests {
                 .map_err(|e| anyhow::format_err!("Failed to write boc: {e}"))?;
             let message_base64 = tvm_types::base64_encode(&message_bytes);
 
-            let ext_message =
-                NotQueuedExtMessage::try_new("cafe911", &message_base64, None, None, None).unwrap();
+            let ext_message = NotQueuedExtMessage::try_new(
+                "cafe911",
+                &message_base64,
+                None,
+                None,
+                TEST_DAPP_ID.to_string(),
+                account_id,
+            )
+            .unwrap();
 
             let queued_ext_message = QueuedExtMessage::try_from_incoming(ext_message).unwrap();
             let mut guard = EXTRA_EXTERNAL_MSG.lock();
             let now = Utc::now();
-            let dst = ExtMessageDst::from_message(&message, None).unwrap();
+            let dst = ExtMessageDst::from_message(
+                &message,
+                Some(DAppIdentifier::from_str(TEST_DAPP_ID).unwrap()),
+            )
+            .unwrap();
             guard.push((dst, (Stamp { index: i, timestamp: now }, queued_ext_message.clone())));
             ext_messages
                 .push((dst, (Stamp { index: i, timestamp: now }, queued_ext_message.clone())));

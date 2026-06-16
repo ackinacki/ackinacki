@@ -20,6 +20,20 @@ mod integration_tests {
     use crate::infra::test_doubles::mock_file_system_client::MockFileSystemClient;
     use crate::App;
 
+    struct FailingS3Client;
+
+    #[async_trait::async_trait]
+    impl S3Client for FailingS3Client {
+        async fn upload(
+            &self,
+            _bucket: &str,
+            _key: &str,
+            _file_path: &std::path::Path,
+        ) -> anyhow::Result<String> {
+            anyhow::bail!("simulated upload failure")
+        }
+    }
+
     /// Helper to create test filesystem with archive files from multiple servers
     fn create_test_filesystem(num_servers: usize, timestamps: Vec<i64>) -> MockFileSystemClient {
         let mut files: BTreeMap<String, Vec<ArchiveFile>> = BTreeMap::new();
@@ -77,6 +91,7 @@ mod integration_tests {
         // Verify file was processed
         let move_calls = fs_client.move_processed_calls();
         assert_eq!(move_calls.len(), 2);
+        assert_eq!(fs_client.remove_file_calls().len(), 0);
     }
 
     #[tokio::test]
@@ -127,6 +142,45 @@ mod integration_tests {
 
         let move_calls = fs_client.move_processed_calls();
         assert_eq!(move_calls.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_post_upload_delete_removes_processed_sources_after_upload() {
+        let mut config = create_test_config();
+        config.post_upload = PostUploadAction::Delete;
+        let app = App::new(config, None);
+
+        let db_client = MockDbClient::new();
+        let s3_client = DryRunS3Client;
+        let fs_client = create_test_filesystem(2, vec![1000]);
+
+        let result = app.run(db_client, Some(s3_client), fs_client.clone()).await;
+
+        assert!(result.is_ok());
+
+        let move_calls = fs_client.move_processed_calls();
+        assert_eq!(move_calls.len(), 3);
+
+        let removed = fs_client.remove_file_calls();
+        let expected_removed: Vec<PathBuf> =
+            move_calls.iter().take(2).map(|(_, dest)| dest.clone()).collect();
+        assert_eq!(removed, expected_removed);
+    }
+
+    #[tokio::test]
+    async fn test_post_upload_delete_keeps_processed_sources_when_upload_fails() {
+        let mut config = create_test_config();
+        config.post_upload = PostUploadAction::Delete;
+        let app = App::new(config, None);
+
+        let db_client = MockDbClient::new();
+        let fs_client = create_test_filesystem(1, vec![1000]);
+
+        let result = app.run(db_client, Some(FailingS3Client), fs_client.clone()).await;
+
+        assert!(result.is_ok());
+        assert_eq!(fs_client.move_processed_calls().len(), 2);
+        assert_eq!(fs_client.remove_file_calls().len(), 0);
     }
 
     #[tokio::test]

@@ -4,7 +4,7 @@ set -euo pipefail
 
 BM_ABI=../contracts/0.79.3_compiled/bksystem/AckiNackiBlockManagerNodeWallet.abi.json
 ABI=../contracts/0.79.3_compiled/bksystem/BlockManagerContractRoot.abi.json
-ROOT=0:6666666666666666666666666666666666666666666666666666666666666666
+ROOT=0000000000000000000000000000000000000000000000000000000000000000::6666666666666666666666666666666666666666666666666666666666666666
 
 log() {
   echo "[$(date -Is)]" "$@"
@@ -45,6 +45,7 @@ BM_WALLET=$(tvm-cli -j runx --abi "$ABI" --addr "$ROOT" \
     log "Error: Failed to get BM wallet address" >&2
     exit 1
   })
+BM_WALLET="0000000000000000000000000000000000000000000000000000000000000000::${BM_WALLET:2}"
 
 log "Block Manager Wallet: $BM_WALLET"
 

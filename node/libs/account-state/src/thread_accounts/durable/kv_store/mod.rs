@@ -79,9 +79,18 @@ impl KVStore {
         set: &str,
         on_record: &mut dyn FnMut(KVRecord) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
+        self.enumerate_checked(set, &|| false, on_record)
+    }
+
+    pub fn enumerate_checked(
+        &self,
+        set: &str,
+        should_cancel: &dyn Fn() -> bool,
+        on_record: &mut dyn FnMut(KVRecord) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
         match self {
-            Self::Aerospike(s) => s.enumerate(set, on_record),
-            Self::InMemory(s) => s.enumerate(set, on_record),
+            Self::Aerospike(s) => s.enumerate_checked(set, should_cancel, on_record),
+            Self::InMemory(s) => s.enumerate_checked(set, should_cancel, on_record),
         }
     }
 }

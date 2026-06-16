@@ -18,12 +18,14 @@ use tvm_types::base64_decode;
 use tvm_types::write_boc;
 
 use crate::defaults;
+use crate::schema::db::projection::SqlProjection;
 use crate::schema::db::DBConnector;
 use crate::schema::graphql::query::PaginateDirection;
 use crate::schema::graphql::query::PaginationArgs;
 
 #[allow(dead_code)]
-#[derive(Clone, FromRow)]
+#[derive(Clone, Default, FromRow)]
+#[sqlx(default)]
 pub struct Account {
     #[sqlx(skip)]
     pub rowid: i64, // id INTEGER PRIMARY KEY,
@@ -59,9 +61,87 @@ pub struct BlockchainAccountsQueryArgs {
     pub pagination: PaginationArgs,
 }
 
+const LEGACY_DAPP_ID: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+fn account_id_from_address(address: &str) -> &str {
+    address.split_once(':').map(|(_, account_id)| account_id).unwrap_or(address)
+}
+
 impl Account {
+    const DIRECT_COLUMNS: &'static [&'static str] = &[
+        "acc_type",
+        "balance",
+        "balance_other",
+        "bits",
+        "boc",
+        "cells",
+        "code",
+        "code_hash",
+        "data",
+        "data_hash",
+        "dapp_id",
+        "due_payment",
+        "id",
+        "init_code_hash",
+        "last_paid",
+        "last_trans_chain_order",
+        "last_trans_hash",
+        "last_trans_lt",
+        "prev_code_hash",
+        "proof",
+        "public_cells",
+        "split_depth",
+        "state_hash",
+        "workchain_id",
+    ];
+
+    fn direct_column(field: &str) -> Option<&'static str> {
+        Self::DIRECT_COLUMNS.iter().copied().find(|column| *column == field)
+    }
+
+    pub fn projection_for_fields<I>(fields: I) -> SqlProjection
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let mut projection = SqlProjection::new();
+        for field in fields {
+            let field = field.as_ref();
+            match field {
+                "id" | "address" => projection.add("id"),
+                "acc_type_name" => projection.add("acc_type"),
+                "last_trans_hash" => projection.add("last_trans_hash"),
+                "last_trans_lt" => projection.add("last_trans_lt"),
+                "library" | "library_hash" | "tick" | "tock" => {}
+                _ if let Some(column) = Self::direct_column(field) => projection.add(column),
+                _ => panic!("Unsupported SQL projection field: account.{field}"),
+            }
+        }
+        projection.ensure_minimum(["id"]);
+        projection
+    }
+
+    pub fn connection_projection_for_fields<I>(fields: I) -> SqlProjection
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let mut projection = Self::projection_for_fields(fields);
+        projection.add("rowid");
+        projection
+    }
+
+    pub fn graphql_account_projection() -> SqlProjection {
+        let mut projection = SqlProjection::new();
+        for column in Self::DIRECT_COLUMNS {
+            projection.add(column);
+        }
+        projection
+    }
+
     pub async fn list(
         db_connector: &DBConnector,
+        projection: &SqlProjection,
         where_clause: String,
         order_by: String,
         limit: Option<i32>,
@@ -71,7 +151,8 @@ impl Account {
             None => defaults::QUERY_BATCH_SIZE,
         };
 
-        let sql = format!("SELECT * FROM accounts {where_clause} {order_by} LIMIT {limit}");
+        let select = projection.select_list();
+        let sql = format!("SELECT {select} FROM accounts {where_clause} {order_by} LIMIT {limit}");
         tracing::debug!("SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
@@ -88,20 +169,35 @@ impl Account {
     }
 
     pub async fn by_address(
-        _db_connector: &Arc<DBConnector>,
+        db_connector: &Arc<DBConnector>,
         client: &Arc<ClientContext>,
         address: Option<String>,
     ) -> anyhow::Result<Option<Account>> {
-        if address.is_none() {
+        let Some(address) = address else {
             return Ok(None);
-        }
+        };
+        let account_id = account_id_from_address(&address).to_string();
+        let account =
+            Self::by_account_id(db_connector, client, account_id, LEGACY_DAPP_ID.to_string())
+                .await?;
+        Ok(account.map(|mut account| {
+            account.id = address;
+            account
+        }))
+    }
 
-        let Some(address) = address else { bail!("Address required!") };
-
-        let params = ParamsOfGetAccount { address: address.clone() };
+    pub async fn by_account_id(
+        _db_connector: &Arc<DBConnector>,
+        client: &Arc<ClientContext>,
+        account_id: String,
+        dapp_id: String,
+    ) -> anyhow::Result<Option<Account>> {
+        let params = ParamsOfGetAccount { account_id: account_id.clone(), dapp_id };
 
         match get_account(client.clone(), params).await {
             Ok(got_acc) => {
+                let account_id = got_acc.account_id;
+                let dapp_id = got_acc.dapp_id;
                 let boc_base64 = got_acc.boc;
 
                 let tvm_acc = tvm_block::Account::construct_from_base64(&boc_base64)
@@ -144,7 +240,7 @@ impl Account {
                 };
 
                 let account = Account {
-                    id: address,
+                    id: account_id,
                     acc_type: serialize_account_status(&tvm_acc.status()),
                     balance,
                     balance_other,
@@ -152,7 +248,7 @@ impl Account {
                     code,
                     code_hash,
                     data,
-                    dapp_id: got_acc.dapp_id,
+                    dapp_id: Some(dapp_id),
                     last_paid: tvm_acc.last_paid() as u64,
                     last_trans_lt: tvm_acc
                         .last_tr_time()
@@ -180,13 +276,14 @@ impl Account {
                 if err.code() == ErrorCode::NotFound as u32 {
                     return Ok(None);
                 }
-                bail!("failed to get account {address}: {err}");
+                bail!("failed to get account {account_id}: {err}");
             }
         }
     }
 
     pub(crate) async fn blockchain_accounts(
         db_connector: &DBConnector,
+        projection: &SqlProjection,
         args: &BlockchainAccountsQueryArgs,
     ) -> anyhow::Result<Vec<Account>> {
         let mut with_selects = Vec::new();
@@ -197,7 +294,8 @@ impl Account {
         if let Some(after) = &args.pagination.after {
             if !after.is_empty() {
                 with_selects.push(
-                    "WITH after_accounts AS (SELECT rowid AS after_rowid FROM accounts WHERE id = ?)".to_string(),
+                    "after_accounts AS (SELECT rowid AS after_rowid FROM accounts WHERE id = ?)"
+                        .to_string(),
                 );
                 where_ops.push("rowid > after_rowid".to_string());
                 from_clause.push_str(", after_accounts");
@@ -209,7 +307,8 @@ impl Account {
         if let Some(before) = &args.pagination.before {
             if !before.is_empty() {
                 with_selects.push(
-                    "WITH before_accounts AS (SELECT rowid AS before_rowid FROM accounts WHERE id = ?)".to_string(),
+                    "before_accounts AS (SELECT rowid AS before_rowid FROM accounts WHERE id = ?)"
+                        .to_string(),
                 );
                 from_clause.push_str(", before_accounts");
                 where_ops.push("rowid < before_rowid".to_string());
@@ -236,9 +335,14 @@ impl Account {
             "".to_string()
         };
 
+        let select = projection.select_list();
+        let with_clause = if with_selects.is_empty() {
+            String::new()
+        } else {
+            format!("WITH {} ", with_selects.join(", "))
+        };
         let sql = format!(
-            "{} SELECT * FROM {from_clause} {where_clause} ORDER BY rowid {order_by} LIMIT {}",
-            with_selects.join(", "),
+            "{with_clause}SELECT {select} FROM {from_clause} {where_clause} ORDER BY rowid {order_by} LIMIT {}",
             args.pagination.get_limit(),
         );
 
@@ -283,5 +387,114 @@ fn serialize_account_status(status: &AccountStatus) -> u8 {
         AccountStatus::AccStateFrozen => 0b10,
         AccountStatus::AccStateActive => 0b01,
         AccountStatus::AccStateNonexist => 0b11,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
+    use rusqlite::params;
+    use rusqlite::Connection;
+    use testdir::testdir;
+
+    use super::Account;
+    use crate::defaults;
+    use crate::schema::db::DBConnector;
+    use crate::schema::graphql::query::PaginationArgs;
+    use crate::web;
+
+    #[test]
+    fn account_connection_projection_adds_id_cursor() {
+        let projection = Account::connection_projection_for_fields(["id", "balance"]);
+        assert_eq!(projection.columns(), &["id", "balance", "rowid"]);
+    }
+
+    #[test]
+    fn account_projection_empty_adds_minimum_identity_column() {
+        let projection = Account::projection_for_fields(std::iter::empty::<&str>());
+        assert_eq!(projection.columns(), &["id"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Unsupported SQL projection field: account.unknown_field")]
+    fn account_projection_unknown_field_panics() {
+        Account::projection_for_fields(["unknown_field"]);
+    }
+
+    fn create_accounts_table(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS accounts (
+                id TEXT NOT NULL UNIQUE,
+                code_hash TEXT
+            );",
+        )
+        .expect("create accounts");
+    }
+
+    fn unique_suffix() -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        format!("{}-{nanos}", std::process::id())
+    }
+
+    fn insert_account(db_path: &Path, id: &str) {
+        let conn = Connection::open(db_path).expect("open db");
+        create_accounts_table(&conn);
+        conn.execute(
+            "INSERT INTO accounts (id, code_hash) VALUES (?1, ?2)",
+            params![id, "code-hash"],
+        )
+        .expect("insert account");
+    }
+
+    async fn setup_db_connector() -> Arc<DBConnector> {
+        let root = testdir!();
+        let db_path = root.join(format!("accounts-{}.db", unique_suffix()));
+
+        insert_account(&db_path, "acc-1");
+        insert_account(&db_path, "acc-2");
+        insert_account(&db_path, "acc-3");
+        insert_account(&db_path, "acc-4");
+
+        let pool = web::open_db(
+            PathBuf::from(&db_path),
+            15,
+            std::time::Duration::from_secs(defaults::DEFAULT_ACQUIRE_TIMEOUT_SECS),
+            crate::schema::db::build_read_pragmas(
+                defaults::DEFAULT_SQLITE_MMAP_SIZE,
+                defaults::DEFAULT_SQLITE_CACHE_SIZE,
+            ),
+        )
+        .await
+        .expect("open accounts db");
+        DBConnector::new(pool, db_path, defaults::MAX_POOL_CONNECTIONS)
+    }
+
+    #[tokio::test]
+    async fn account_projection_blockchain_accounts_accepts_after_and_before_cursors() {
+        let db_connector = setup_db_connector().await;
+        let projection = Account::connection_projection_for_fields(["id"]);
+        let args = super::BlockchainAccountsQueryArgs {
+            code_hash: None,
+            pagination: PaginationArgs {
+                first: Some(10),
+                after: Some("acc-1".to_string()),
+                last: None,
+                before: Some("acc-4".to_string()),
+            },
+        };
+
+        let rows = Account::blockchain_accounts(&db_connector, &projection, &args)
+            .await
+            .expect("query accounts with both cursors");
+
+        assert_eq!(rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["acc-2", "acc-3"]);
     }
 }

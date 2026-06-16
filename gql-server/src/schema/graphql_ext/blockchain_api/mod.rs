@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use account::account_id_from_archive_address;
+use account::archive_address_from_account_id;
 use account::BlockchainAccountQuery;
 use account::BlockchainMasterSeqNoFilter;
 use async_graphql::connection::query;
@@ -30,6 +32,7 @@ use super::message::MessageLoader;
 use crate::helpers::pad_thread_id;
 use crate::schema::db;
 use crate::schema::db::account::BlockchainAccountsQueryArgs;
+use crate::schema::db::projection::normalize_graphql_field_name;
 use crate::schema::db::DBConnector;
 use crate::schema::graphql;
 use crate::schema::graphql::block::BlockLoader;
@@ -50,6 +53,52 @@ pub mod bk_set_updates;
 pub mod blocks;
 pub mod transactions;
 
+pub(super) fn selected_node_fields(ctx: &Context<'_>, root: &str) -> Vec<String> {
+    selected_node_fields_at(ctx, &[root])
+}
+
+pub(super) fn selected_single_fields(ctx: &Context<'_>, root: &str) -> Vec<String> {
+    selected_fields_at(ctx, &[root])
+}
+
+pub(super) fn selected_node_fields_at(ctx: &Context<'_>, path: &[&str]) -> Vec<String> {
+    let mut node_path = Vec::with_capacity(path.len() + 2);
+    node_path.extend_from_slice(path);
+    node_path.extend_from_slice(&["edges", "node"]);
+    selected_fields_at(ctx, &node_path)
+}
+
+pub(super) fn selected_fields_at(ctx: &Context<'_>, path: &[&str]) -> Vec<String> {
+    let mut lookahead = ctx.look_ahead();
+    for segment in path {
+        lookahead = lookahead.field(segment);
+    }
+
+    let mut fields = Vec::new();
+    for field in lookahead.selection_fields() {
+        for selected in field.selection_set() {
+            let name = selected.name();
+            if name.starts_with("__") {
+                continue;
+            }
+            let normalized = normalize_graphql_field_name(name);
+            if !fields.contains(&normalized) {
+                fields.push(normalized);
+            }
+        }
+    }
+    fields
+}
+
+fn parse_hex32(value: &str, field_name: &str) -> async_graphql::Result<String> {
+    if value.len() != 64 || !value.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(async_graphql::Error::new(format!(
+            "Invalid {field_name}: expected 64 hex characters without prefix"
+        )));
+    }
+    Ok(value.to_ascii_lowercase())
+}
+
 /// Blockchain-related information (blocks, transactions, etc.).
 pub struct BlockchainQuery<'a> {
     pub ctx: &'a Context<'a>,
@@ -59,8 +108,21 @@ pub struct BlockchainQuery<'a> {
 impl BlockchainQuery<'_> {
     #[graphql(name = "account")]
     /// Account-related information.
-    async fn account(&self, address: String) -> Option<BlockchainAccountQuery<'_>> {
-        Some(BlockchainAccountQuery { ctx: self.ctx, address, preloaded: None })
+    async fn account(
+        &self,
+        #[graphql(name = "account_id")] account_id: String,
+        #[graphql(name = "dapp_id")] dapp_id: String,
+    ) -> async_graphql::Result<Option<BlockchainAccountQuery<'_>>> {
+        let account_id = parse_hex32(&account_id, "account_id")?;
+        let dapp_id = parse_hex32(&dapp_id, "dapp_id")?;
+        let archive_address = archive_address_from_account_id(&account_id);
+        Ok(Some(BlockchainAccountQuery {
+            ctx: self.ctx,
+            account_id,
+            dapp_id,
+            archive_address,
+            preloaded: None,
+        }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -92,8 +154,13 @@ impl BlockchainQuery<'_> {
                 code_hash: code_hash.clone(),
                 pagination: PaginationArgs { first, after, last, before },
             };
+            let projection = db::Account::connection_projection_for_fields(selected_fields_at(
+                self.ctx,
+                &["accounts", "edges", "node", "info"],
+            ));
             let mut accounts: Vec<db::Account> = db::account::Account::blockchain_accounts(
                 self.ctx.data::<Arc<DBConnector>>()?,
+                &projection,
                 &query_args,
             )
             .await?;
@@ -114,9 +181,16 @@ impl BlockchainQuery<'_> {
 
             connection.edges.extend(accounts.into_iter().map(|account| {
                 let cursor = account.id.clone();
-                let address = account.id.clone();
-                let account =
-                    BlockchainAccountQuery { address, ctx: self.ctx, preloaded: Some(account) };
+                let archive_address = account.id.clone();
+                let account_id = account_id_from_archive_address(&archive_address);
+                let dapp_id = account.dapp_id.clone().unwrap_or_default();
+                let account = BlockchainAccountQuery {
+                    ctx: self.ctx,
+                    account_id,
+                    dapp_id,
+                    archive_address,
+                    preloaded: Some(account),
+                };
                 let edge: Edge<String, BlockchainAccountQuery, EmptyFields, BlockchainAccountEdge> =
                     Edge::with_additional_fields(cursor, account, EmptyFields);
                 edge
@@ -138,6 +212,9 @@ impl BlockchainQuery<'_> {
     async fn block(&self, hash: String) -> Option<BlockchainBlock> {
         let block_loader = self.ctx.data_unchecked::<DataLoader<BlockLoader>>();
         let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
+        // Shared DataLoaders eagerly convert DB rows into GraphQL objects, so
+        // keep their compatibility projections and use lookahead only for
+        // optional nested loads here.
         let block = block_loader.load_one(hash).await.expect("Failed to load block");
 
         let block = block?;
@@ -148,7 +225,8 @@ impl BlockchainQuery<'_> {
         // load in_message");     block.in_message = in_message;
         // }
 
-        if self.ctx.look_ahead().field("block").field("out_messages").exists() {
+        let selected_fields = selected_single_fields(self.ctx, "block");
+        if selected_fields.iter().any(|field| field == "out_messages") {
             let out_msg_ids = block.out_msgs.clone();
             let _out_messages =
                 message_loader.load_many(out_msg_ids).await.expect("Failed to load out_messages");
@@ -191,8 +269,12 @@ impl BlockchainQuery<'_> {
                 );
 
                 let pagination = PaginationArgs { first, after, last, before };
+                let projection = db::Message::event_projection_for_fields(selected_node_fields(
+                    self.ctx, "events",
+                ));
                 let mut messages = db::Message::blockchain_events(
                     self.ctx.data::<Arc<DBConnector>>()?,
+                    &projection,
                     &pagination,
                 )
                 .await?;
@@ -251,11 +333,15 @@ impl BlockchainQuery<'_> {
         let block_loader = self.ctx.data_unchecked::<DataLoader<BlockLoader>>();
         let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
         let thread_id = pad_thread_id(thread_id);
+        // Shared DataLoaders eagerly convert DB rows into GraphQL objects, so
+        // keep their compatibility projections and use lookahead only for
+        // optional nested loads here.
         let block = block_loader.load_one((thread_id, height)).await.expect("Failed to load block");
 
         let block = block?;
 
-        if self.ctx.look_ahead().field("block").field("out_messages").exists() {
+        let selected_fields = selected_single_fields(self.ctx, "block_by_height");
+        if selected_fields.iter().any(|field| field == "out_messages") {
             let out_msg_ids = block.out_msgs.clone();
             let _out_messages =
                 message_loader.load_many(out_msg_ids).await.expect("Failed to load out_messages");
@@ -313,11 +399,15 @@ impl BlockchainQuery<'_> {
                     block_seq_no_range,
                     min_tr_count,
                     max_tr_count,
-                    thread_id,
+                    thread_id: thread_id.map(pad_thread_id),
                     pagination: PaginationArgs { first, after, last, before },
                 };
+                let projection = db::block::Block::connection_projection_for_fields(
+                    selected_node_fields(self.ctx, "blocks"),
+                );
                 let mut blocks: Vec<db::Block> = db::block::Block::blockchain_blocks(
                     self.ctx.data::<Arc<DBConnector>>()?,
+                    &projection,
                     &args,
                 )
                 .await?;
@@ -396,9 +486,13 @@ impl BlockchainQuery<'_> {
                     height_start,
                     height_end,
                 };
+                let projection = db::BkSetUpdate::connection_projection_for_fields(
+                    selected_node_fields(self.ctx, "bkSetUpdates"),
+                );
                 let mut updates: Vec<db::BkSetUpdate> =
                     db::bk_set_update::BkSetUpdate::blockchain_bk_set_updates(
                         self.ctx.data::<Arc<DBConnector>>()?,
+                        &projection,
                         &args,
                     )
                     .await?;
@@ -452,9 +546,13 @@ impl BlockchainQuery<'_> {
         let transaction_loader = self.ctx.data_unchecked::<DataLoader<TransactionLoader>>();
         let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
 
+        // Shared DataLoaders eagerly convert DB rows into GraphQL objects, so
+        // keep their compatibility projections and use lookahead only for
+        // optional nested loads here.
         let message = message_loader.load_one(hash).await.expect("Failed to load message");
         let mut message = message?;
-        if self.ctx.look_ahead().field("message").field("src_transaction").exists() {
+        let selected_fields = selected_single_fields(self.ctx, "message");
+        if selected_fields.iter().any(|field| field == "src_transaction") {
             if let Some(transaction_id) = message.transaction_id.clone() {
                 message.src_transaction = transaction_loader
                     .load_one(transaction_id.clone())
@@ -464,9 +562,11 @@ impl BlockchainQuery<'_> {
             }
         }
 
-        if self.ctx.look_ahead().field("message").field("dst_transaction").exists() {
+        if selected_fields.iter().any(|field| field == "dst_transaction") {
+            let projection = db::transaction::Transaction::projection_for_fields(["id", "in_msg"]);
             let dst_transaction = db::transaction::Transaction::by_in_message(
                 self.ctx.data::<Arc<DBConnector>>().unwrap(),
+                &projection,
                 &message.id,
                 None,
             )
@@ -488,12 +588,16 @@ impl BlockchainQuery<'_> {
     async fn transaction(&self, hash: String) -> Option<BlockchainTransaction> {
         let transaction_loader = self.ctx.data_unchecked::<DataLoader<TransactionLoader>>();
         let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
+        // Shared DataLoaders eagerly convert DB rows into GraphQL objects, so
+        // keep their compatibility projections and use lookahead only for
+        // optional nested loads here.
         let transaction =
             transaction_loader.load_one(hash).await.expect("Failed to load transaction");
 
         let mut transaction = transaction?;
 
-        if self.ctx.look_ahead().field("transaction").field("in_message").exists() {
+        let selected_fields = selected_single_fields(self.ctx, "transaction");
+        if selected_fields.iter().any(|field| field == "in_message") {
             let in_message = message_loader
                 .load_one(transaction.in_msg.clone())
                 .await
@@ -501,7 +605,7 @@ impl BlockchainQuery<'_> {
             transaction.in_message = in_message;
         }
 
-        if self.ctx.look_ahead().field("transaction").field("out_messages").exists() {
+        if selected_fields.iter().any(|field| field == "out_messages") {
             let out_msg_ids = transaction.out_msgs.clone();
             let out_messages =
                 message_loader.load_many(out_msg_ids).await.expect("Failed to load out_messages");
@@ -566,8 +670,13 @@ impl BlockchainQuery<'_> {
                         pagination: PaginationArgs { first, after, last, before },
                     };
                     let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
+                    let selected_fields = selected_node_fields(self.ctx, "transactions");
+                    let projection = db::transaction::Transaction::connection_projection_for_fields(
+                        selected_fields.clone(),
+                    );
                     let mut transactions = db::transaction::Transaction::blockchain_transactions(
                         self.ctx.data::<Arc<DBConnector>>()?,
+                        &projection,
                         &args,
                     )
                     .await?;
@@ -593,17 +702,15 @@ impl BlockchainQuery<'_> {
 
                     args.pagination.shrink_portion(&mut transactions);
 
-                    let selection_set =
-                        self.ctx.look_ahead().field("transactions").field("edges").field("node");
-
                     // Convert db transactions to GraphQL type first.
                     let transactions: Vec<BlockchainTransaction> =
                         transactions.into_iter().map(Into::into).collect();
 
                     // Batch-fetch all messages in a single load_many call
                     // instead of per-transaction load_many inside the loop.
-                    let want_in_message = selection_set.field("in_message").exists();
-                    let want_out_messages = selection_set.field("out_messages").exists();
+                    let want_in_message = selected_fields.iter().any(|field| field == "in_message");
+                    let want_out_messages =
+                        selected_fields.iter().any(|field| field == "out_messages");
 
                     let mut all_msg_ids: Vec<String> = Vec::new();
                     if want_in_message {

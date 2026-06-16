@@ -914,12 +914,17 @@ impl ArchiveUpdateAccumulator {
     ///
     /// While the returned handle is alive, the update loop will not
     /// advance the archive past the pinned block.
-    pub fn acquire_snapshot_pin(
+    fn acquire_snapshot_pin_impl<F>(
         self: &Arc<Self>,
         expected_thread: ThreadIdentifier,
         expected_block: BlockIdentifier,
         timeout: Duration,
-    ) -> Option<PinHandle> {
+        should_cancel: F,
+        max_wait_slice: Option<Duration>,
+    ) -> Option<PinHandle>
+    where
+        F: Fn() -> bool,
+    {
         let deadline = Instant::now() + timeout;
         let anchor_matches = |a: &AnchorBlockRef| {
             a.anchor_thread_id == expected_thread && a.anchor_block_id == expected_block
@@ -927,6 +932,12 @@ impl ArchiveUpdateAccumulator {
 
         let mut state = self.pin_state.lock();
         loop {
+            if should_cancel() {
+                if self.cancel_snapshot_pin_locked(&mut state, expected_thread, expected_block) {
+                    self.pin_released.notify_all();
+                }
+                return None;
+            }
             match &*state {
                 SnapshotPinState::Idle => {
                     // No request was made for any anchor; specifically
@@ -1000,8 +1011,9 @@ impl ArchiveUpdateAccumulator {
                 }
                 return None;
             }
-            let res = self.pin_acquirable.wait_for(&mut state, remaining);
-            if res.timed_out() {
+            let wait_for = max_wait_slice.map(|slice| remaining.min(slice)).unwrap_or(remaining);
+            let res = self.pin_acquirable.wait_for(&mut state, wait_for);
+            if res.timed_out() && wait_for == remaining {
                 if self.cancel_snapshot_pin_locked(&mut state, expected_thread, expected_block) {
                     self.pin_released.notify_all();
                 }
@@ -1059,6 +1071,34 @@ impl ArchiveUpdateAccumulator {
         };
         *state = SnapshotPinState::Pinned { active: active.clone(), next };
         Some(PinHandle { accumulator: Arc::clone(self), anchor: active })
+    }
+
+    pub fn acquire_snapshot_pin(
+        self: &Arc<Self>,
+        expected_thread: ThreadIdentifier,
+        expected_block: BlockIdentifier,
+        timeout: Duration,
+    ) -> Option<PinHandle> {
+        self.acquire_snapshot_pin_impl(expected_thread, expected_block, timeout, || false, None)
+    }
+
+    pub fn acquire_snapshot_pin_cancellable<F>(
+        self: &Arc<Self>,
+        expected_thread: ThreadIdentifier,
+        expected_block: BlockIdentifier,
+        timeout: Duration,
+        should_cancel: F,
+    ) -> Option<PinHandle>
+    where
+        F: Fn() -> bool,
+    {
+        self.acquire_snapshot_pin_impl(
+            expected_thread,
+            expected_block,
+            timeout,
+            should_cancel,
+            Some(Duration::from_secs(1)),
+        )
     }
 
     /// Called by `PinHandle::drop`. Transitions Pinned → Releasing and
@@ -1746,5 +1786,36 @@ mod tests {
         ));
         accumulator.finish_release();
         assert!(matches!(*accumulator.pin_state.lock(), SnapshotPinState::Idle));
+    }
+
+    #[test]
+    fn cancellable_acquire_does_not_cancel_on_poll_slice_timeout() {
+        let accumulator = Arc::new(ArchiveUpdateAccumulator::new(1, &[], None));
+        let anchor = anchor(8);
+        let guard = accumulator.request_snapshot_pin(anchor.clone());
+        std::mem::forget(guard);
+
+        let worker_accumulator = Arc::clone(&accumulator);
+        let worker_anchor = anchor.clone();
+        let worker = std_thread::Builder::new()
+            .name("test".to_string())
+            .spawn(move || {
+                worker_accumulator.acquire_snapshot_pin_cancellable(
+                    worker_anchor.anchor_thread_id,
+                    worker_anchor.anchor_block_id,
+                    Duration::from_millis(1300),
+                    || false,
+                )
+            })
+            .expect("failed to spawn worker thread");
+
+        std_thread::sleep(Duration::from_millis(1050));
+        assert!(matches!(*accumulator.pin_state.lock(), SnapshotPinState::Requested(_)));
+
+        assert!(worker.join().unwrap().is_none());
+        assert!(matches!(
+            *accumulator.pin_state.lock(),
+            SnapshotPinState::Releasing { next: None }
+        ));
     }
 }

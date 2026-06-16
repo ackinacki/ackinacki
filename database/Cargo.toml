@@ -18,6 +18,7 @@ serde_with.workspace = true
 tracing.workspace = true
 tvm_block.workspace = true
 tvm_types.workspace = true
+zstd.workspace = true
 
 [features]
 default = []

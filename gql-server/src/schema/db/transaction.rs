@@ -7,6 +7,7 @@ use sqlx::QueryBuilder;
 
 use crate::defaults;
 use crate::helpers::u64_to_string;
+use crate::schema::db::projection::SqlProjection;
 use crate::schema::db::DBConnector;
 use crate::schema::graphql::query::PaginateDirection;
 use crate::schema::graphql::query::PaginationArgs;
@@ -46,6 +47,7 @@ impl AccountTransactionsQueryArgs {
 
 #[allow(dead_code)]
 #[derive(Clone, FromRow, Debug)]
+#[sqlx(default)]
 pub struct Transaction {
     #[sqlx(skip)]
     pub rowid: i64, // id INTEGER PRIMARY KEY,
@@ -105,9 +107,189 @@ pub struct Transaction {
     pub workchain_id: i32,                      // workchain_id INTEGER NOT NULL,
 }
 
+impl Default for Transaction {
+    fn default() -> Self {
+        Self {
+            rowid: 0,
+            id: String::new(),
+            aborted: false,
+            account_addr: String::new(),
+            action_success: false,
+            action_valid: false,
+            action_no_funds: false,
+            action_status_change: 0,
+            action_result_code: 0,
+            action_tot_actions: 0,
+            action_spec_actions: 0,
+            action_skipped_actions: 0,
+            action_msgs_created: 0,
+            action_list_hash: String::new(),
+            action_tot_msg_size_cells: 0.0,
+            action_tot_msg_size_bits: 0.0,
+            balance_delta: String::new(),
+            block_id: String::new(),
+            boc: Vec::new(),
+            chain_order: String::new(),
+            credit: None,
+            credit_first: false,
+            compute_account_activated: false,
+            compute_exit_code: 0,
+            compute_gas_fees: String::new(),
+            compute_gas_used: 0.0,
+            compute_gas_limit: 0.0,
+            compute_mode: 0,
+            compute_msg_state_used: false,
+            compute_success: false,
+            compute_type: 0,
+            compute_vm_final_state_hash: String::new(),
+            compute_vm_init_state_hash: String::new(),
+            compute_vm_steps: 0,
+            destroyed: false,
+            end_status: 0,
+            in_msg: String::new(),
+            lt: String::new(),
+            new_hash: String::new(),
+            now: 0,
+            old_hash: String::new(),
+            orig_status: 0,
+            out_msgs: String::new(),
+            outmsg_cnt: 0,
+            prev_trans_hash: String::new(),
+            prev_trans_lt: String::new(),
+            proof: None,
+            status: 0,
+            storage_fees_collected: None,
+            storage_status_change: Some(0),
+            total_fees: String::new(),
+            tr_type: 0,
+            workchain_id: 0,
+        }
+    }
+}
+
 impl Transaction {
+    const ACTION_COLUMNS: [&'static str; 12] = [
+        "action_list_hash",
+        "action_msgs_created",
+        "action_no_funds",
+        "action_result_code",
+        "action_skipped_actions",
+        "action_spec_actions",
+        "action_status_change",
+        "action_success",
+        "action_tot_actions",
+        "action_tot_msg_size_bits",
+        "action_tot_msg_size_cells",
+        "action_valid",
+    ];
+    const COMPUTE_COLUMNS: [&'static str; 12] = [
+        "compute_account_activated",
+        "compute_type",
+        "compute_exit_code",
+        "compute_gas_fees",
+        "compute_gas_limit",
+        "compute_gas_used",
+        "compute_mode",
+        "compute_msg_state_used",
+        "compute_success",
+        "compute_vm_final_state_hash",
+        "compute_vm_init_state_hash",
+        "compute_vm_steps",
+    ];
+    const DIRECT_COLUMNS: [&'static str; 23] = [
+        "aborted",
+        "account_addr",
+        "balance_delta",
+        "block_id",
+        "boc",
+        "chain_order",
+        "credit_first",
+        "destroyed",
+        "id",
+        "lt",
+        "new_hash",
+        "now",
+        "old_hash",
+        "outmsg_cnt",
+        "prev_trans_hash",
+        "prev_trans_lt",
+        "proof",
+        "status",
+        "total_fees",
+        "workchain_id",
+        "in_msg",
+        "out_msgs",
+        "credit",
+    ];
+
+    fn direct_column(field: &str) -> Option<&'static str> {
+        Self::DIRECT_COLUMNS.iter().copied().find(|column| *column == field)
+    }
+
+    pub fn projection_for_fields<I>(fields: I) -> SqlProjection
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let mut projection = SqlProjection::new();
+        for field in fields {
+            let field = field.as_ref();
+            match field {
+                "action" => projection.extend(Self::ACTION_COLUMNS),
+                "compute" => projection.extend(Self::COMPUTE_COLUMNS),
+                "end_status" | "end_status_name" => projection.add("end_status"),
+                "orig_status" | "orig_status_name" => projection.add("orig_status"),
+                "status_name" => projection.add("status"),
+                "storage" => projection.extend(["storage_fees_collected", "storage_status_change"]),
+                "tr_type" | "tr_type_name" => projection.add("tr_type"),
+                "in_message" => projection.add("in_msg"),
+                "out_messages" => projection.add("out_msgs"),
+                "bounce"
+                | "code_hash"
+                | "ext_in_msg_fee"
+                | "installed"
+                | "master_seq_no"
+                | "now_string"
+                | "prepare_transaction"
+                | "split_info"
+                | "tt" => {}
+                _ if let Some(column) = Self::direct_column(field) => projection.add(column),
+                _ => panic!("Unsupported SQL projection field: transaction.{field}"),
+            }
+        }
+        projection.ensure_minimum(["id"]);
+        projection
+    }
+
+    pub fn connection_projection_for_fields<I>(fields: I) -> SqlProjection
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let mut projection = Self::projection_for_fields(fields);
+        projection.add("chain_order");
+        projection
+    }
+
+    pub fn graphql_transaction_projection() -> SqlProjection {
+        let mut projection = SqlProjection::new();
+        projection.add("id");
+        projection.extend(Self::DIRECT_COLUMNS);
+        projection.extend(Self::ACTION_COLUMNS);
+        projection.extend(Self::COMPUTE_COLUMNS);
+        projection.extend([
+            "end_status",
+            "orig_status",
+            "storage_fees_collected",
+            "storage_status_change",
+            "tr_type",
+        ]);
+        projection
+    }
+
     pub async fn list(
         db_connector: &DBConnector,
+        projection: &SqlProjection,
         filter: String,
         order_by: String,
         limit: Option<i32>,
@@ -124,13 +306,16 @@ impl Transaction {
             return Ok(Vec::new());
         }
 
+        let mut projection = projection.clone();
+        projection.add("rowid");
+        let select = projection.select_list();
         let union_sql = db_names
             .into_iter()
-            .map(|name| format!("SELECT * FROM \"{name}\".transactions {filter}"))
+            .map(|name| format!("SELECT {select} FROM \"{name}\".transactions {filter}"))
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
 
-        let sql = format!("SELECT * FROM ({union_sql}) {order_by} LIMIT {limit}");
+        let sql = format!("SELECT {select} FROM ({union_sql}) {order_by} LIMIT {limit}");
         tracing::debug!("SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
@@ -148,6 +333,7 @@ impl Transaction {
 
     pub async fn blockchain_transactions(
         db_connector: &DBConnector,
+        projection: &SqlProjection,
         args: &BlockchainTransactionsQueryArgs,
     ) -> anyhow::Result<Vec<Transaction>> {
         let direction = args.pagination.get_direction();
@@ -200,13 +386,16 @@ impl Transaction {
         let filter = where_clause;
         let order_by = format!("ORDER BY chain_order {order_by}");
 
+        let mut projection = projection.clone();
+        projection.add("chain_order");
+        let select = projection.select_list();
         let union_sql = db_names
             .into_iter()
-            .map(|name| format!("SELECT * FROM \"{name}\".transactions {filter}"))
+            .map(|name| format!("SELECT {select} FROM \"{name}\".transactions {filter}"))
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
 
-        let sql = format!("SELECT * FROM ({union_sql}) {order_by} LIMIT {limit}");
+        let sql = format!("SELECT {select} FROM ({union_sql}) {order_by} LIMIT {limit}");
 
         tracing::trace!(target: "blockchain_api", "SQL: {sql}");
 
@@ -238,6 +427,7 @@ impl Transaction {
 
     pub async fn account_transactions(
         db_connector: &DBConnector,
+        projection: &SqlProjection,
         account: String,
         args: &AccountTransactionsQueryArgs,
     ) -> anyhow::Result<Vec<Self>> {
@@ -301,13 +491,16 @@ impl Transaction {
         let order_by = format!("ORDER BY chain_order {order_by}");
         let limit = args.pagination.get_limit();
 
+        let mut projection = projection.clone();
+        projection.add("chain_order");
+        let select = projection.select_list();
         let union_sql = db_names
             .into_iter()
-            .map(|name| format!("SELECT * FROM \"{name}\".transactions {filter}"))
+            .map(|name| format!("SELECT {select} FROM \"{name}\".transactions {filter}"))
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
 
-        let sql = format!("SELECT * FROM ({union_sql}) {order_by} LIMIT {limit}");
+        let sql = format!("SELECT {select} FROM ({union_sql}) {order_by} LIMIT {limit}");
 
         tracing::trace!(target: "blockchain_api.account.transactions", "SQL: {sql}");
 
@@ -340,10 +533,11 @@ impl Transaction {
 
     pub async fn by_in_message(
         db_connector: &DBConnector,
+        projection: &SqlProjection,
         msg_id: &str,
         _fields: Option<Vec<String>>,
     ) -> anyhow::Result<Option<Transaction>> {
-        let mut result = Self::by_in_messages(db_connector, &[msg_id]).await?;
+        let mut result = Self::by_in_messages(db_connector, projection, &[msg_id]).await?;
         let key = msg_id.strip_prefix("message/").unwrap_or(msg_id);
         Ok(result.remove(key))
     }
@@ -352,6 +546,7 @@ impl Transaction {
     /// Returns a map from stripped msg_id (without `message/` prefix) to Transaction.
     pub async fn by_in_messages(
         db_connector: &DBConnector,
+        projection: &SqlProjection,
         msg_ids: &[&str],
     ) -> anyhow::Result<std::collections::HashMap<String, Transaction>> {
         use std::collections::HashMap;
@@ -366,15 +561,18 @@ impl Transaction {
 
         let in_list = stripped.iter().map(|id| format!("{id:?}")).collect::<Vec<_>>().join(",");
 
+        let mut projection = projection.clone();
+        projection.add("in_msg");
+        let select = projection.select_list();
         let union_sql = db_names
             .into_iter()
             .map(|name| {
-                format!("SELECT * FROM \"{name}\".transactions WHERE in_msg IN ({in_list})")
+                format!("SELECT {select} FROM \"{name}\".transactions WHERE in_msg IN ({in_list})")
             })
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
 
-        let sql = format!("SELECT * FROM ({union_sql})");
+        let sql = format!("SELECT {select} FROM ({union_sql})");
         tracing::debug!("SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
@@ -479,9 +677,11 @@ mod tests {
     #[tokio::test]
     async fn by_in_messages_returns_matching_transactions() {
         let connector = setup_connector_with_transactions().await;
+        let projection = Transaction::projection_for_fields(["id"]);
 
-        let result =
-            Transaction::by_in_messages(&connector, &["msg-aaa", "msg-ccc"]).await.expect("batch");
+        let result = Transaction::by_in_messages(&connector, &projection, &["msg-aaa", "msg-ccc"])
+            .await
+            .expect("batch");
 
         assert_eq!(result.len(), 2);
         assert_eq!(result.get("msg-aaa").unwrap().id, "trx-1");
@@ -492,8 +692,9 @@ mod tests {
     #[tokio::test]
     async fn by_in_messages_strips_message_prefix() {
         let connector = setup_connector_with_transactions().await;
+        let projection = Transaction::projection_for_fields(["id"]);
 
-        let result = Transaction::by_in_messages(&connector, &["message/msg-aaa"])
+        let result = Transaction::by_in_messages(&connector, &projection, &["message/msg-aaa"])
             .await
             .expect("batch with prefix");
 
@@ -504,20 +705,65 @@ mod tests {
     #[tokio::test]
     async fn by_in_messages_empty_input() {
         let connector = setup_connector_with_transactions().await;
+        let projection = Transaction::projection_for_fields(["id"]);
 
-        let result = Transaction::by_in_messages(&connector, &[]).await.expect("empty");
+        let result =
+            Transaction::by_in_messages(&connector, &projection, &[]).await.expect("empty");
         assert!(result.is_empty());
     }
 
     #[tokio::test]
     async fn by_in_message_delegates_to_batch() {
         let connector = setup_connector_with_transactions().await;
+        let projection = Transaction::projection_for_fields(["id"]);
 
-        let result = Transaction::by_in_message(&connector, "msg-bbb", None).await.expect("single");
+        let result = Transaction::by_in_message(&connector, &projection, "msg-bbb", None)
+            .await
+            .expect("single");
         assert_eq!(result.unwrap().id, "trx-2");
 
-        let missing =
-            Transaction::by_in_message(&connector, "msg-zzz", None).await.expect("missing");
+        let missing = Transaction::by_in_message(&connector, &projection, "msg-zzz", None)
+            .await
+            .expect("missing");
         assert!(missing.is_none());
+    }
+
+    #[test]
+    fn transaction_projection_maps_compute_group() {
+        let projection = Transaction::projection_for_fields(["id", "compute"]);
+        assert!(projection.columns().contains(&"compute_gas_used"));
+        assert!(projection.columns().contains(&"compute_success"));
+    }
+
+    #[test]
+    fn transaction_projection_adds_nested_message_keys() {
+        let projection = Transaction::projection_for_fields(["id", "in_message", "out_messages"]);
+        assert_eq!(projection.columns(), &["id", "in_msg", "out_msgs"]);
+    }
+
+    #[test]
+    fn transaction_connection_projection_adds_chain_order() {
+        let projection = Transaction::connection_projection_for_fields(["id"]);
+        assert_eq!(projection.columns(), &["id", "chain_order"]);
+    }
+
+    #[test]
+    fn transaction_projection_empty_uses_id_minimum() {
+        let projection = Transaction::projection_for_fields(std::iter::empty::<&str>());
+        assert_eq!(projection.columns(), &["id"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Unsupported SQL projection field: transaction.unknown_field")]
+    fn transaction_projection_unknown_field_panics() {
+        Transaction::projection_for_fields(["unknown_field"]);
+    }
+
+    #[test]
+    fn transaction_projection_full_graphql_projection_includes_order_and_nested_columns() {
+        let projection = Transaction::graphql_transaction_projection();
+        assert!(projection.columns().contains(&"chain_order"));
+        assert!(projection.columns().contains(&"in_msg"));
+        assert!(projection.columns().contains(&"out_msgs"));
     }
 }

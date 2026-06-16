@@ -301,12 +301,24 @@ impl AerospikeKVStore {
         set: &str,
         on_record: &mut dyn FnMut(KVRecord) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
+        self.enumerate_checked(set, &|| false, on_record)
+    }
+
+    pub fn enumerate_checked(
+        &self,
+        set: &str,
+        should_cancel: &dyn Fn() -> bool,
+        on_record: &mut dyn FnMut(KVRecord) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
         self.backend.enumerate(set, &mut |head| {
+            if should_cancel() {
+                anyhow::bail!("snapshot save cancelled");
+            }
             if parse_chunk_key(&head.key).is_some() {
                 return Ok(());
             }
             let key = head.key.clone();
-            on_record(self.assemble_logical_record(set, &key, head)?)
+            on_record(self.assemble_logical_record_checked(set, &key, head, should_cancel)?)
         })
     }
 
@@ -316,6 +328,16 @@ impl AerospikeKVStore {
         key: &[u8],
         head: AerospikeRecord,
     ) -> anyhow::Result<KVRecord> {
+        self.assemble_logical_record_checked(set, key, head, &|| false)
+    }
+
+    fn assemble_logical_record_checked(
+        &self,
+        set: &str,
+        key: &[u8],
+        head: AerospikeRecord,
+        should_cancel: &dyn Fn() -> bool,
+    ) -> anyhow::Result<KVRecord> {
         let chunk_count = head.chunk_count.unwrap_or(1);
         anyhow::ensure!(chunk_count > 0, "Chunk count must be positive");
         let mut data = head.data;
@@ -324,6 +346,9 @@ impl AerospikeKVStore {
                 (1..chunk_count).map(|idx| chunk_key_bytes(key, idx)).collect::<Vec<_>>();
             let chunks = self.backend.get(set, &chunk_keys)?;
             for (idx, chunk) in chunks.into_iter().enumerate() {
+                if should_cancel() {
+                    anyhow::bail!("snapshot save cancelled");
+                }
                 let chunk = chunk.ok_or_else(|| {
                     anyhow::anyhow!(
                         "Missing Aerospike chunk: set={set}, key={}, chunk_index={}, chunk_count={}",

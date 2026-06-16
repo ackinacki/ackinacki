@@ -44,7 +44,7 @@
 
 http://{$HOST_NAME}/v2/*, http://{$HOST_PUBLIC_IP}/v2/* {
   import cors {header.origin}
-  reverse_proxy {{ HOST_PRIVATE_IP }}:{{ BM_REST_API_PORT }} {
+  reverse_proxy {{ BM_SERVICE }}:{{ BM_REST_API_PORT }} {
     header_up X-Real-IP {http.request.remote.host}
     header_up X-Forwarded-Port {http.request.port}
     header_up X-Forwarded-Proto {http.request.scheme}
@@ -53,7 +53,7 @@ http://{$HOST_NAME}/v2/*, http://{$HOST_PUBLIC_IP}/v2/* {
 
 http://{$HOST_NAME}:8600/v2/*, http://{$HOST_PUBLIC_IP}:8600/v2/* {
   import cors {header.origin}
-  reverse_proxy {{ HOST_PRIVATE_IP }}:{{ BM_REST_API_PORT }} {
+  reverse_proxy {{ BM_SERVICE }}:{{ BM_REST_API_PORT }} {
     header_up X-Real-IP {http.request.remote.host}
     header_up X-Forwarded-Port {http.request.port}
     header_up X-Forwarded-Proto {http.request.scheme}
@@ -62,7 +62,7 @@ http://{$HOST_NAME}:8600/v2/*, http://{$HOST_PUBLIC_IP}:8600/v2/* {
 
 http://{$HOST_NAME}, http://{$HOST_PUBLIC_IP} {
   import cors {header.origin}
-  reverse_proxy {$NGINX_HOST}:{$NGINX_PORT} {
+  reverse_proxy {{ NGINX_SERVICE }}:{{ NGINX_SERVICE_PORT }} {
     header_up X-Real-IP {http.request.remote.host}
     header_up X-Forwarded-Port {http.request.port}
     header_up X-Forwarded-Proto {http.request.scheme}
@@ -74,7 +74,7 @@ https://{$HOST_NAME}, https://{$HOST_NAME}{$EXTRA_HOSTS} {
   tls /etc/caddy/{{ CERT_FILE | mandatory }} /etc/caddy/{{ CERT_KEY_FILE | mandatory }}
 {% endif %}
   import cors {header.origin}
-  reverse_proxy {$NGINX_HOST}:{$NGINX_PORT} {
+  reverse_proxy {{ NGINX_SERVICE }}:{{ NGINX_SERVICE_PORT }} {
     header_up X-Real-IP {http.request.remote.host}
     header_up X-Forwarded-Port {http.request.port}
     header_up X-Forwarded-Proto {http.request.scheme}
@@ -86,7 +86,7 @@ https://{$HOST_NAME}/v2/* {
   tls /etc/caddy/{{ CERT_FILE | mandatory }} /etc/caddy/{{ CERT_KEY_FILE | mandatory }}
 {% endif %}
   import cors {header.origin}
-  reverse_proxy {{ HOST_PRIVATE_IP }}:{{ BM_REST_API_PORT }} {
+  reverse_proxy {{ BM_SERVICE }}:{{ BM_REST_API_PORT }} {
     header_up X-Real-IP {http.request.remote.host}
     header_up X-Forwarded-Port {http.request.port}
     header_up X-Forwarded-Proto {http.request.scheme}

@@ -46,6 +46,22 @@ impl ExtMsgResponse {
             self.error = Some(error);
         }
     }
+
+    pub(crate) fn set_account_and_dapp(&mut self, account_id: String, dapp_id: String) {
+        if let Some(mut result) = self.result.take() {
+            result.account_id = account_id.clone();
+            result.dapp_id = dapp_id.clone();
+            self.result = Some(result);
+        }
+        if let Some(mut error) = self.error.take() {
+            if let Some(mut data) = error.data.take() {
+                data.account_id = account_id;
+                data.dapp_id = dapp_id;
+                error.data = Some(data);
+            }
+            self.error = Some(error);
+        }
+    }
 }
 
 impl From<ExtMsgFeedback> for ExtMsgResponse {
@@ -75,6 +91,8 @@ impl From<ExtMsgFeedback> for ExtMsgResponse {
                     exit_code: 0,
                     producers: vec![],
                     thread_id: feedback.thread_id.map(hex::encode),
+                    account_id: String::new(),
+                    dapp_id: String::new(),
                 }),
                 ..Default::default()
             }
@@ -89,6 +107,8 @@ impl From<ExtMsgFeedback> for ExtMsgResponse {
                         feedback.message_hash,
                         Some(feedback.exit_code),
                         feedback.thread_id.map(hex::encode),
+                        String::new(),
+                        String::new(),
                     )),
                 }),
                 ..Default::default()
@@ -109,6 +129,8 @@ pub struct ExtMsgResult {
     producers: Vec<HostPort>, // ip of block producers, [0] - active one
     current_time: String,
     thread_id: Option<String>,
+    account_id: String,
+    dapp_id: String,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -118,6 +140,8 @@ pub struct ExtMsgErrorData {
     exit_code: Option<i32>,
     current_time: String,
     thread_id: Option<String>,
+    account_id: String,
+    dapp_id: String,
 }
 
 impl ExtMsgErrorData {
@@ -126,6 +150,8 @@ impl ExtMsgErrorData {
         message_hash: String,
         exit_code: Option<i32>,
         thread_id: Option<String>,
+        account_id: String,
+        dapp_id: String,
     ) -> Self {
         Self {
             producers,
@@ -133,6 +159,8 @@ impl ExtMsgErrorData {
             exit_code,
             current_time: current_time_millis(None).to_string(),
             thread_id,
+            account_id,
+            dapp_id,
         }
     }
 }

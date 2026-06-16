@@ -5,7 +5,6 @@
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::with_prefix;
-use tvm_types::UInt256;
 
 use crate::helpers::u64_to_string;
 use crate::serialization::BlockSerializationSetFH;
@@ -59,7 +58,6 @@ pub struct ArchBlock {
     pub prev_key_block_seqno: Option<i64>,            // prev_key_block_seqno INTEGER,
     pub gen_software_version: Option<i64>,            // gen_software_version INTEGER,
     pub gen_software_capabilities: Option<String>,    // gen_software_capabilities TEXT,
-    pub boc: Option<Vec<u8>>,
     pub file_hash: Option<String>,
     pub root_hash: Option<String>,
     // #[serde(flatten, with = "prefix_prev_ref")]
@@ -68,7 +66,7 @@ pub struct ArchBlock {
     pub prev_alt_ref: Option<ExtBlkRef>,
     pub in_msgs: Option<String>,
     pub out_msgs: Option<String>,
-    pub data: Option<Vec<u8>>,
+    pub data: Vec<u8>,
     pub chain_order: Option<String>,
     pub tr_count: Option<i64>,
     pub value_flow: Option<BlockValueFlow>,
@@ -83,10 +81,7 @@ with_prefix!(prefix_prev_alt_ref "prev_alt_ref_");
 
 impl From<BlockSerializationSetFH> for ArchBlock {
     fn from(blk: BlockSerializationSetFH) -> Self {
-        let file_hash = match blk.file_hash {
-            Some(file_hash) => file_hash,
-            None => UInt256::calc_file_hash(&blk.boc),
-        };
+        let file_hash = blk.file_hash;
 
         let block_info = blk.block.read_info().expect("Failed to read info from block");
         let prev_block_ref = block_info.read_prev_ref().expect("Failed to read prev ref");
@@ -96,7 +91,6 @@ impl From<BlockSerializationSetFH> for ArchBlock {
             after_merge: block_info.after_merge().into(),
             after_split: block_info.after_split().into(),
             before_split: block_info.before_split().into(),
-            boc: Some(blk.boc),
             end_lt: Some(block_info.end_lt().to_string()),
             file_hash: Some(file_hash.to_hex_string()),
             gen_catchain_seqno: Some(block_info.gen_catchain_seqno().into()),
@@ -221,12 +215,14 @@ pub mod tests {
                 "file_hash": "47a5b87b2c0851926703f5d6bbdc57d6c293c62aec6051086fa5382298858ab5"
             },
             "height": [0,0,0,0,0,0,0,87],
-            "envelope_hash": vec![0u8; 32]
+            "envelope_hash": vec![0u8; 32],
+            "data": vec![0u8; 32],
         });
 
         let block = serde_json::from_value::<ArchBlock>(item)?;
 
         assert_ne!(block.prev_ref, None);
+        assert_eq!(block.data, vec![0u8; 32]);
         Ok(())
     }
 }

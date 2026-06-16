@@ -56,7 +56,7 @@ use crate::zerostate::ZeroState;
 const DURABLE_BENCH_CONTAINER: &str = "durable-snapshot-bench-aerospike";
 const DURABLE_BENCH_DEFAULT_PORT: &str = "4000";
 const DURABLE_BENCH_DEFAULT_SNAPSHOT_PATH: &str =
-    "/Volumes/x5/testnet/21d6f8dcf80422e074e48ce127f1cdcb84573776005a4d095b481fccd0f04344_basic";
+    "/Volumes/x5/logs/testnet/169719b1a9d0dae48750b55d0fc235f4ad5f08a50ceed8c9053ce84990b818ee";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BenchSnapshotFormat {
@@ -201,9 +201,9 @@ fn wait_for_aerospike(env: &DurableBenchEnv) -> anyhow::Result<()> {
 
 fn write_bench_aerospike_config(env: &DurableBenchEnv) -> anyhow::Result<()> {
     std::fs::create_dir_all(&env.aerospike_config_dir)?;
-    std::fs::write(
-        env.aerospike_config_dir.join("aerospike.conf"),
-        r#"# Aerospike database configuration file
+    let filesize =
+        std::env::var("DURABLE_BENCH_AEROSPIKE_FILESIZE").unwrap_or_else(|_| "150G".to_string());
+    let config = r#"# Aerospike database configuration file
 service {
 	cluster-name acki-nacki-node
 }
@@ -239,12 +239,13 @@ namespace node {
 	replication-factor 1
 	storage-engine device {
 		file /opt/aerospike/data/node.dat
-		filesize 100G
+		filesize __FILESIZE__
 		read-page-cache true
 	}
 }
-"#,
-    )?;
+"#
+    .replace("__FILESIZE__", &filesize);
+    std::fs::write(env.aerospike_config_dir.join("aerospike.conf"), config)?;
     Ok(())
 }
 

@@ -14,6 +14,16 @@ use crate::MapKey;
 use crate::MapKeyPath;
 use crate::MultiMapValue;
 
+fn check_cancelled<F>(should_cancel: &F) -> anyhow::Result<()>
+where
+    F: Fn() -> bool,
+{
+    if should_cancel() {
+        anyhow::bail!("snapshot save cancelled");
+    }
+    Ok(())
+}
+
 /// A reference to a MultiMap — holds the root node and prefix path.
 /// Clone is cheap (Arc reference count bump). NOT Copy.
 #[derive(Clone)]
@@ -56,6 +66,23 @@ impl<V: MultiMapValue> MultiMapRepository<V> {
         writer.write_all(&[map.root_path.len])?;
         writer.write_all(&map.root_path.prefix.0)?;
         Self::write_node(&map.root, writer)
+    }
+
+    /// Serialize a map to a writer, checking `should_cancel` between nodes.
+    pub fn write_map_checked<W, F>(
+        &self,
+        map: &MultiMap<V>,
+        writer: &mut W,
+        should_cancel: &F,
+    ) -> anyhow::Result<()>
+    where
+        W: IoWrite,
+        F: Fn() -> bool,
+    {
+        check_cancelled(should_cancel)?;
+        writer.write_all(&[map.root_path.len])?;
+        writer.write_all(&map.root_path.prefix.0)?;
+        Self::write_node_checked(&map.root, writer, should_cancel)
     }
 
     /// Serialize a map without hashes — smaller output, faster write.
@@ -117,6 +144,38 @@ impl<V: MultiMapValue> MultiMapRepository<V> {
                 w.write_all(&[data.nibble_count])?;
                 w.write_all(&data.nibbles[..data.nibble_count as usize])?;
                 Self::write_node(&data.child, w)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn write_node_checked<W, F>(node: &Node<V>, w: &mut W, should_cancel: &F) -> anyhow::Result<()>
+    where
+        W: IoWrite,
+        F: Fn() -> bool,
+    {
+        check_cancelled(should_cancel)?;
+        match node {
+            Node::Empty => w.write_all(&[0x00])?,
+            Node::Leaf(data) => {
+                w.write_all(&[0x01])?;
+                w.write_all(&data.hash)?;
+                data.value.write_value(w)?
+            }
+            Node::Branch(data) => {
+                w.write_all(&[0x02])?;
+                w.write_all(&data.hash)?;
+                w.write_all(&data.bitmap.to_le_bytes())?;
+                for child in data.children.iter() {
+                    Self::write_node_checked(child, w, should_cancel)?;
+                }
+            }
+            Node::Ext(data) => {
+                w.write_all(&[0x03])?;
+                w.write_all(&data.hash)?;
+                w.write_all(&[data.nibble_count])?;
+                w.write_all(&data.nibbles[..data.nibble_count as usize])?;
+                Self::write_node_checked(&data.child, w, should_cancel)?;
             }
         }
         Ok(())

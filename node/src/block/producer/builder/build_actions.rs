@@ -79,6 +79,8 @@ use super::ThreadResult;
 use crate::block::postprocessing::postprocess;
 use crate::block::producer::builder::engine_version::get_engine_version;
 use crate::block::producer::builder::trace::simple_trace_callback;
+use crate::block::producer::errors::verify_error;
+use crate::block::producer::errors::BLOCK_HAS_MESSAGES_WITH_EQUAL_HASH;
 use crate::block::producer::execution_time::ExecutionTimeLimits;
 use crate::block::producer::wasm::WasmNodeCache;
 use crate::block_keeper_system::epoch::decode_epoch_data;
@@ -1237,7 +1239,7 @@ impl BlockBuilder {
                             );
                             if let Err(error) = &first_thread {
                                 if let Some(error) = error.downcast_ref::<ExecuteError>() {
-                                    tracing::trace!("ExecuteError: {error}");
+                                    tracing::error!("ExecuteError: {error}");
                                     if let ExecuteError::WrongDestinationThread(_account_routing, _) = error {
                                         started_accounts.remove(&first_acc_id);
                                     }
@@ -1278,7 +1280,7 @@ impl BlockBuilder {
                                     );
                                     if let Err(error) = &thread {
                                         if let Some(error) = error.downcast_ref::<ExecuteError>() {
-                                            tracing::trace!("ExecuteError: {error}");
+                                            tracing::error!("ExecuteError: {error}");
                                             if let ExecuteError::WrongDestinationThread(_account_routing, _) = error {
                                                 started_accounts.remove(&acc_id);
                                             }
@@ -1523,22 +1525,33 @@ impl BlockBuilder {
                         if let Err(error) = &thread {
                             if let Some(error) = error.downcast_ref::<ExecuteError>() {
                                 tracing::trace!("ExecuteError: {error}");
-                                if let ExecuteError::WrongDestinationThread(account_routing, _) = error {
-                                    tracing::trace!(target: "builder", "remove new message: {}", index);
-                                    self.new_messages.remove(&index);
-                                    tracing::trace!(target: "builder",
-                                        "New message for another thread: {:?}",
-                                        message.hash().map(|h| h.to_hex_string())
-                                    );
-                                    let wrapped_message = WrappedMessage { message: message.clone() };
-                                    let entry = self
-                                        .produced_internal_messages_to_other_threads
-                                        .entry(*account_routing)
-                                        .or_default();
-                                    entry.push((
-                                        MessageIdentifier::from(&wrapped_message),
-                                        Arc::new(wrapped_message),
-                                    ));
+                                match error {
+                                    ExecuteError::WrongDestinationThread(account_routing, _) => {
+                                        tracing::trace!(target: "builder", "remove new message: {}", index);
+                                        self.new_messages.remove(&index);
+                                        tracing::trace!(target: "builder",
+                                            "New message for another thread: {:?}",
+                                            message.hash().map(|h| h.to_hex_string())
+                                        );
+                                        let wrapped_message = WrappedMessage { message: message.clone() };
+                                        let entry = self
+                                            .produced_internal_messages_to_other_threads
+                                            .entry(*account_routing)
+                                            .or_default();
+                                        entry.push((
+                                            MessageIdentifier::from(&wrapped_message),
+                                            Arc::new(wrapped_message),
+                                        ));
+                                    }
+                                    ExecuteError::AccountWasMovedRerouteInternalMessage => {
+                                        tracing::trace!(
+                                            target: "builder",
+                                            "remove rerouted new message: {}",
+                                            index
+                                        );
+                                        self.new_messages.remove(&index);
+                                    }
+                                    ExecuteError::AccountWasMovedIgnoreExternalMessage => {}
                                 }
                                 continue;
                             }
@@ -1683,17 +1696,18 @@ impl BlockBuilder {
         };
 
         tracing::debug!(target: "builder", "Add in message to in_msg_descr: {}", msg_cell.repr_hash().to_hex_string());
-        ensure!(
-            self.in_msg_descr
-                .set_return_prev(
-                    &msg_cell.repr_hash(),
-                    &in_msg,
-                    &in_msg.aug().map_err(|e| anyhow::format_err!("Failed to get msg aug: {e}"))?,
-                )
-                .map_err(|e| anyhow::format_err!("Failed to add in msg descr: {e}"))?
-                .is_none(),
-            "State had messages with equal hash"
-        );
+        if self
+            .in_msg_descr
+            .set_return_prev(
+                &msg_cell.repr_hash(),
+                &in_msg,
+                &in_msg.aug().map_err(|e| anyhow::format_err!("Failed to get msg aug: {e}"))?,
+            )
+            .map_err(|e| anyhow::format_err!("Failed to add in msg descr: {e}"))?
+            .is_some()
+        {
+            return Err(verify_error(BLOCK_HAS_MESSAGES_WITH_EQUAL_HASH));
+        }
         Ok(())
     }
 
@@ -2290,26 +2304,32 @@ impl BlockBuilder {
             if active_destinations.contains(&dst) {
                 continue;
             }
-            let potential_thread = self.get_potential_thread(&dst).map_err(|e| {
-                tracing::error!(target: "builder", "Failed to get potential thread: {e}");
-                e
-            })?;
 
-            if !potential_thread.map(|thread| thread == self.thread_id).unwrap_or(false) {
-                if let Some(mut q) = ext_messages_queue.remove(&dst) {
-                    // If message destination doesn't belong to the current thread, remove it from the queue
-                    let acc_thread = self.get_potential_thread(&dst).map_err(|e| {
-                        tracing::error!(target: "builder", "Failed to get potential thread: {e}");
-                        e
-                    })?;
-                    tracing::debug!(target: "ext_messages", "thread mismatch for <dst:{}>. skipped, acc_thread={acc_thread:?}", dst.account_id.to_hex_string());
+            while let Some(front_dst) = front_ext_message_dst(ext_messages_queue, &dst) {
+                let potential_thread = self.get_potential_thread(&front_dst).map_err(|e| {
+                    tracing::error!(target: "builder", "Failed to get potential thread: {e}");
+                    e
+                })?;
+                if potential_thread.map(|thread| thread == self.thread_id).unwrap_or(false) {
+                    break;
+                }
 
-                    while let Some((stamp, msg)) = q.pop_front() {
+                if let Some(q) = ext_messages_queue.get_mut(&dst) {
+                    if let Some((stamp, msg)) = q.pop_front() {
+                        tracing::debug!(target: "ext_messages", "thread mismatch for <dst:{}>. skipped, acc_thread={potential_thread:?}", front_dst.account_id.to_hex_string());
                         processed_stamps.push(stamp);
                         ext_message_feedbacks
-                            .push(create_thread_mismatch_feedback(msg, acc_thread)?);
+                            .push(create_thread_mismatch_feedback(msg, potential_thread)?);
+                    }
+
+                    if q.is_empty() {
+                        ext_messages_queue.remove(&dst);
+                        break;
                     }
                 }
+            }
+
+            if front_ext_message_dst(ext_messages_queue, &dst).is_none() {
                 continue;
             }
 
@@ -2871,9 +2891,52 @@ fn queue_len(map: &HashMap<ExtMessageDst, VecDeque<(Stamp, QueuedExtMessage)>>) 
     map.values().map(|queue| queue.len()).sum()
 }
 
+fn front_ext_message_dst(
+    map: &HashMap<ExtMessageDst, VecDeque<(Stamp, QueuedExtMessage)>>,
+    dst: &ExtMessageDst,
+) -> Option<ExtMessageDst> {
+    map.get(dst).and_then(|queue| queue.front()).map(|(_stamp, message)| *message.dst())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_dst(account: &str, dapp: Option<&str>) -> ExtMessageDst {
+        ExtMessageDst::new(
+            AccountIdentifier::from_str(account).expect("valid account id"),
+            dapp.map(|dapp| DAppIdentifier::from_str(dapp).expect("valid dapp id")),
+        )
+    }
+
+    fn queued_message_for_dst(dst: ExtMessageDst) -> QueuedExtMessage {
+        QueuedExtMessage::new_for_test(dst)
+    }
+
+    fn test_stamp(index: u64) -> Stamp {
+        Stamp { index, timestamp: chrono::Utc::now() }
+    }
+
+    #[test]
+    fn ext_message_queue_front_dst_uses_front_message_not_group_key() {
+        let account = "ab".repeat(32);
+        let first_dapp = "11".repeat(32);
+        let second_dapp = "22".repeat(32);
+        let first_dst = test_dst(&account, Some(&first_dapp));
+        let second_dst = test_dst(&account, Some(&second_dapp));
+
+        let mut q = VecDeque::new();
+        q.push_back((test_stamp(1), queued_message_for_dst(first_dst)));
+        q.push_back((test_stamp(2), queued_message_for_dst(second_dst)));
+
+        let mut ext_messages_queue = HashMap::new();
+        ext_messages_queue.insert(first_dst, q);
+
+        let group_key = *ext_messages_queue.keys().next().expect("group key exists");
+        ext_messages_queue.get_mut(&group_key).expect("queue exists").pop_front();
+
+        assert_eq!(front_ext_message_dst(&ext_messages_queue, &group_key), Some(second_dst));
+    }
 
     fn make_transaction(description: TransactionDescrOrdinary, now: u32) -> Transaction {
         let mut tx = Transaction::default();

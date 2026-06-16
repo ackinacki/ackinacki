@@ -315,14 +315,14 @@ impl SqliteHelper {
                         share_state_resource_address,global_id,version,after_merge,before_split,after_split,
                         want_split,want_merge,key_block,flags,shard,workchain_id,gen_utime,gen_utime_ms_part,
                         start_lt,end_lt,gen_validator_list_hash_short,gen_catchain_seqno,min_ref_mc_seqno,
-                        prev_key_block_seqno,gen_software_version,gen_software_capabilities,boc,file_hash,
+                        prev_key_block_seqno,gen_software_version,gen_software_capabilities,file_hash,
                         root_hash,prev_ref_seq_no,prev_ref_end_lt,prev_ref_file_hash,prev_ref_root_hash,
                         prev_alt_ref_seq_no,prev_alt_ref_end_lt,prev_alt_ref_file_hash,prev_alt_ref_root_hash,
                         in_msgs,out_msgs,data,chain_order,tr_count,thread_id,producer_id,height,envelope_hash
                     ) VALUES (
                         ?1,?2,?3,?4,?5,?6,   ?7,?8,?9,   ?10,?11,?12,?13,?14,?15,
-                        ?16,?17,?18,?19,?20,?21,?22,   ?23,?24,?25,   ?26,?27,?28,   ?29,?30,?31,
-                        ?32,?33,?34,?35,   ?36,?37,?38,?39,   ?40,?41,?42,?43,?44,?45,?46,  ?47,?48
+                        ?16,?17,?18,?19,?20,?21,?22,   ?23,?24,?25,   ?26,?27,?28,   ?29,?30,
+                        ?31,?32,?33,?34,   ?35,?36,?37,?38,   ?39,?40,?41,?42,?43,?44,?45,  ?46,?47
                     )
                     ON CONFLICT(id) DO UPDATE SET
                         aggregated_signature=excluded.aggregated_signature,
@@ -332,6 +332,7 @@ impl SqliteHelper {
 
                 let prev_ref = block.prev_ref.unwrap_or_default();
                 let prev_alt_ref = block.prev_alt_ref.unwrap_or_default();
+                let block_data = zstd_compress(&block.data);
                 let params = rusqlite::params![
                     block.id,
                     block.status,
@@ -361,7 +362,6 @@ impl SqliteHelper {
                     block.prev_key_block_seqno,
                     block.gen_software_version,
                     block.gen_software_capabilities,
-                    block.boc,
                     block.file_hash,
                     block.root_hash,
                     prev_ref.seq_no,
@@ -374,7 +374,7 @@ impl SqliteHelper {
                     prev_alt_ref.root_hash,
                     block.in_msgs,
                     block.out_msgs,
-                    block.data,
+                    block_data,
                     block.chain_order,
                     block.tr_count,
                     block.thread_id,
@@ -387,9 +387,9 @@ impl SqliteHelper {
             } else {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO blocks (
-                        id,status,seq_no,parent,producer_id,thread_id,height,gen_utime,chain_order,envelope_hash,boc
+                        id,status,seq_no,parent,producer_id,thread_id,height,gen_utime,chain_order,envelope_hash
                     ) VALUES (
-                        ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11
+                        ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10
                     )",
                 )?;
 
@@ -404,7 +404,6 @@ impl SqliteHelper {
                     block.gen_utime,
                     block.chain_order,
                     block.envelope_hash,
-                    block.boc,
                 ];
 
                 stmt.execute(params)
@@ -686,10 +685,11 @@ impl SqliteHelper {
             for trx in
                 transactions.into_iter().map(<ArchTransaction as Into<FlatTransaction>>::into)
             {
+                let trx_boc = zstd_compress(&trx.boc);
                 let params = rusqlite::params![
                     trx.id,
                     trx.block_id,
-                    trx.boc,
+                    trx_boc,
                     trx.status,
                     trx.storage_fees_collected,
                     trx.storage_status_change,
@@ -828,6 +828,30 @@ impl DocumentsDb for SqliteHelper {
 
     fn has_delivery_problems(&self) -> bool {
         false
+    }
+}
+
+/// zstd-compress a BLOB before persisting it. Used for `blocks.data` and
+/// `transactions.boc`; readers (e.g. `gql-server`) must zstd-decode.
+///
+/// Compression must never lose a block. If zstd fails for any reason we log
+/// the error and fall back to the original bytes so the row still lands in
+/// SQLite. Readers tolerate this — the matching `decompress_blob` returns
+/// raw bytes when zstd decode fails.
+fn zstd_compress(bytes: &[u8]) -> Vec<u8> {
+    if bytes.is_empty() {
+        return Vec::new();
+    }
+    match zstd::encode_all(bytes, 3) {
+        Ok(compressed) => compressed,
+        Err(err) => {
+            tracing::error!(
+                target: "sqlite",
+                "zstd compression failed ({} bytes), storing raw: {err}",
+                bytes.len()
+            );
+            bytes.to_vec()
+        }
     }
 }
 

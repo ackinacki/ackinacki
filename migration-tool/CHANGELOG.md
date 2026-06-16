@@ -2,9 +2,11 @@
 
 All notable changes to `migration-tool` are documented in this file.
 
-## Unreleased
+## [0.5.0]
 
 ### Added
+- Added `index_blocks_thread_chain_order` to BM archive migration `006-attestations_source_block_id_index`:
+  - creates composite index `index_blocks_thread_chain_order` on `blocks(thread_id, chain_order)` for faster `blockchain.blocks(..., thread_id)` pagination.
 - Added BM archive migration `005-events_msg_chain_order_index`:
   - creates partial index `index_messages_ext_out_msg_chain_order` on `messages(msg_chain_order)` for rows where `msg_type = 2`
 

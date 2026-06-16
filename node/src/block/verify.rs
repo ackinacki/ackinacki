@@ -297,7 +297,7 @@ mod tests {
 
     use super::classify_verify_block_generation_error;
     use super::VerificationResult;
-    use crate::block::producer::errors::_verify_error;
+    use crate::block::producer::errors::verify_error;
     use crate::block::producer::errors::BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK;
 
     #[test]
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn classify_verify_block_generation_error_keeps_verify_error_handling() {
-        let error = _verify_error(BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK);
+        let error = verify_error(BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK);
 
         assert!(matches!(
             classify_verify_block_generation_error(&error),

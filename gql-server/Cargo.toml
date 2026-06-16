@@ -1,6 +1,6 @@
 [package]
 name = "gql-server"
-version = "0.8.0"
+version = "1.0.0"
 edition = "2021"
 rust-version.workspace = true
 license-file.workspace = true
@@ -29,10 +29,11 @@ telemetry_utils.workspace = true
 tokio = { version = "1", features = ["full", "rt"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tvm_block.workspace = true
-tvm_client.workspace = true
-tvm_types.workspace = true
+tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.2.an' }
+tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.2.an', default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
+tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.2.an' }
 warp = { version = "0.3.7", features = ["tls"] }
+zstd.workspace = true
 
 [dev-dependencies]
 migration-tool.workspace = true

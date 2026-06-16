@@ -35,7 +35,6 @@ use crate::utilities::guarded::Guarded;
 
 #[derive(Clone, Copy)]
 enum InitialStateMarker {
-    SeqNo(BlockSeqNo),
     Height(BlockHeight),
 }
 
@@ -82,10 +81,6 @@ fn loaded_anchor_can_be_used_before_active(
         (SyncSnapshotAnchor::Height(loaded), SyncSnapshotAnchor::Height(active)) => {
             loaded.signed_distance_to(&active).map(|distance| distance >= 0).unwrap_or(false)
         }
-        (SyncSnapshotAnchor::SeqNo(loaded), SyncSnapshotAnchor::SeqNo(active)) => loaded <= active,
-        // Mixed anchors do not provide a reliable ordering on their own.
-        (SyncSnapshotAnchor::SeqNo(_), SyncSnapshotAnchor::Height(_))
-        | (SyncSnapshotAnchor::Height(_), SyncSnapshotAnchor::SeqNo(_)) => true,
     }
 }
 
@@ -97,18 +92,12 @@ fn should_accept_sync_snapshot_target(
         return true;
     };
     if current.address == new.address {
-        return matches!(
-            (current.anchor, new.anchor),
-            (SyncSnapshotAnchor::SeqNo(_), SyncSnapshotAnchor::Height(_))
-        );
+        return false;
     }
     match (current.anchor, new.anchor) {
         (SyncSnapshotAnchor::Height(current), SyncSnapshotAnchor::Height(new)) => {
             current.signed_distance_to(&new).map(|distance| distance > 0).unwrap_or(false)
         }
-        (SyncSnapshotAnchor::SeqNo(current), SyncSnapshotAnchor::SeqNo(new)) => new > current,
-        (SyncSnapshotAnchor::SeqNo(_), SyncSnapshotAnchor::Height(_)) => true,
-        (SyncSnapshotAnchor::Height(_), SyncSnapshotAnchor::SeqNo(_)) => false,
     }
 }
 
@@ -241,7 +230,7 @@ where
             // load thread is currently running — the new
             // `add_load_state_task` semantics (bounded LIFO of
             // candidates) make it safe to keep advertising for state
-            // even while a download is in progress. New `SyncFinalized`
+            // even while a download is in progress. New sync-finalized
             // responses just push into the candidate queue (with dedup
             // and capacity-bounded eviction); the worker iterates
             // newest-first on each pass.
@@ -344,16 +333,6 @@ where
 
                         if let Some((block_id, initial_state_marker)) = initial_state {
                             match initial_state_marker {
-                                InitialStateMarker::SeqNo(seq_no) => {
-                                    tracing::debug!(
-                                        "[synchronizing] initial_state block: {}, seqno: {}",
-                                        block_id.clone(),
-                                        seq_no,
-                                    );
-                                    if net_block.seq_no < seq_no {
-                                        continue;
-                                    }
-                                }
                                 InitialStateMarker::Height(initial_block_height) => {
                                     tracing::debug!(
                                         "[synchronizing] initial_state block: {}, block_height: {:?}",
@@ -566,56 +545,12 @@ where
                         recieved_sync_from = Some(seq_no_from);
                     }
                     NetworkMessage::SyncFinalized((sync_finalized, _thread_identifier)) => {
-                        let duration_since_last_finalization =
-                            self.shared_services.duration_since_last_finalization();
-                        if duration_since_last_finalization
-                            < self.global_config.time_to_enable_sync_finalized
-                        {
-                            continue;
-                        }
-                        let identifier = *sync_finalized.data().block_identifier();
-                        let seq_no = *sync_finalized.data().block_seq_no();
-                        let address = sync_finalized.data().thread_refs().clone();
                         tracing::debug!(
-                            "[synchronizing] Received SyncFinalized: {:?} {:?} {:?}",
-                            seq_no,
-                            identifier,
-                            address
+                            "[synchronizing] Received legacy SyncFinalized, ignoring: {:?} {:?} {:?}",
+                            sync_finalized.data().block_seq_no(),
+                            sync_finalized.data().block_identifier(),
+                            sync_finalized.data().thread_refs()
                         );
-                        if address.get(&self.thread_id) != Some(&identifier) {
-                            tracing::trace!("Incoming SyncFinalized is broken, skip it");
-                            continue;
-                        }
-                        let last_finalized_block_seq_no = self
-                            .repository
-                            .select_thread_last_finalized_block(&self.thread_id)?
-                            .map(|(_, seq_no)| seq_no)
-                            .unwrap_or_default();
-                        if last_finalized_block_seq_no >= seq_no {
-                            tracing::debug!("[synchronizing] Received SyncFinalized seq_no({seq_no:?} is less or equal to local last finalized seq_no ({last_finalized_block_seq_no:?}), skip it");
-                            continue;
-                        }
-                        let request = SyncSnapshotRequest {
-                            address: address.clone(),
-                            anchor: SyncSnapshotAnchor::SeqNo(seq_no),
-                        };
-                        if should_accept_sync_snapshot_target(
-                            active_sync_snapshot.as_ref(),
-                            &request,
-                        ) {
-                            tracing::trace!(
-                                "[synchronizing] start loading shared state anchor_kind=seq_no"
-                            );
-                            active_sync_snapshot = Some(request);
-                            last_node_join_message_time = Instant::now();
-                            initial_state = Some((identifier, InitialStateMarker::SeqNo(seq_no)));
-                            self.state_sync_service.add_load_state_task(
-                                address,
-                                seq_no,
-                                self.repository.clone(),
-                                synchronization_tx.clone(),
-                            )?;
-                        }
                     }
                     NetworkMessage::SyncFinalizedWithHeight((
                         sync_finalized,
@@ -638,13 +573,15 @@ where
                             address
                         );
                         if address.get(&self.thread_id) != Some(&identifier) {
-                            tracing::trace!("Incoming SyncFinalized is broken, skip it");
+                            tracing::trace!("Incoming SyncFinalizedWithHeight is broken, skip it");
                             continue;
                         }
                         let Some((last_finalized_block_id, _last_finalized_block_seq_no)) =
                             self.repository.select_thread_last_finalized_block(&self.thread_id)?
                         else {
-                            tracing::trace!("Last finalized block is missing, skip SyncFinalized");
+                            tracing::trace!(
+                                "Last finalized block is missing, skip SyncFinalizedWithHeight"
+                            );
                             continue;
                         };
                         let Some(last_finalized_block_height) = self
@@ -789,14 +726,13 @@ mod tests {
     use super::loaded_anchor_can_be_used_before_active;
     use super::SyncSnapshotAnchor;
     use crate::types::BlockHeight;
-    use crate::types::BlockSeqNo;
 
     fn block_id(seed: u8) -> node_types::BlockIdentifier {
         node_types::BlockIdentifier::new([seed; 32])
     }
 
     #[test]
-    fn loaded_anchor_order_height_and_seq() {
+    fn loaded_anchor_order_height() {
         let thread_id = node_types::ThreadIdentifier::default();
         let h10 = BlockHeight::builder().thread_identifier(thread_id).height(10).build();
         let h15 = BlockHeight::builder().thread_identifier(thread_id).height(15).build();
@@ -807,18 +743,6 @@ mod tests {
         assert!(!loaded_anchor_can_be_used_before_active(
             SyncSnapshotAnchor::Height(h15),
             SyncSnapshotAnchor::Height(h10)
-        ));
-        assert!(loaded_anchor_can_be_used_before_active(
-            SyncSnapshotAnchor::SeqNo(BlockSeqNo::from(10)),
-            SyncSnapshotAnchor::SeqNo(BlockSeqNo::from(15))
-        ));
-        assert!(!loaded_anchor_can_be_used_before_active(
-            SyncSnapshotAnchor::SeqNo(BlockSeqNo::from(15)),
-            SyncSnapshotAnchor::SeqNo(BlockSeqNo::from(10))
-        ));
-        assert!(loaded_anchor_can_be_used_before_active(
-            SyncSnapshotAnchor::SeqNo(BlockSeqNo::from(10)),
-            SyncSnapshotAnchor::Height(h15)
         ));
     }
 

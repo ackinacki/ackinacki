@@ -9,6 +9,7 @@ use sqlx::QueryBuilder;
 
 use crate::defaults;
 use crate::helpers::u64_to_string;
+use crate::schema::db::projection::SqlProjection;
 use crate::schema::db::DBConnector;
 use crate::schema::graphql::query::PaginateDirection;
 use crate::schema::graphql::query::PaginationArgs;
@@ -129,8 +130,120 @@ pub struct Message {
 }
 
 impl Message {
+    const DIRECT_COLUMNS: &'static [&'static str] = &[
+        "boc",
+        "body",
+        "body_hash",
+        "bounce",
+        "bounced",
+        "code",
+        "code_hash",
+        "created_at",
+        "created_lt",
+        "data",
+        "data_hash",
+        "dst",
+        "dst_chain_order",
+        "dst_workchain_id",
+        "fwd_fee",
+        "id",
+        "msg_chain_order",
+        "msg_type",
+        "proof",
+        "src",
+        "src_chain_order",
+        "src_dapp_id",
+        "src_workchain_id",
+        "status",
+        "transaction_id",
+        "value",
+        "value_other",
+    ];
+
+    fn direct_column(field: &str) -> Option<&'static str> {
+        Self::DIRECT_COLUMNS.iter().copied().find(|column| *column == field)
+    }
+
+    pub fn projection_for_fields<I>(fields: I) -> SqlProjection
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let mut projection = SqlProjection::new();
+        for field in fields {
+            let field = field.as_ref();
+            match field {
+                "id" | "msg_id" => projection.add("id"),
+                "src_transaction" | "src_transaction_id" | "transaction_id" => {
+                    projection.add("transaction_id");
+                }
+                "dst_transaction" => projection.add("id"),
+                "status_name" => projection.add("status"),
+                "msg_type_name" => projection.add("msg_type"),
+                "block_id" | "ihr_disabled" | "ihr_fee" | "library" | "library_hash" | "tick"
+                | "tock" => {}
+                _ if let Some(column) = Self::direct_column(field) => projection.add(column),
+                _ => panic!("Unsupported SQL projection field: message.{field}"),
+            }
+        }
+        projection.ensure_minimum(["id"]);
+        projection
+    }
+
+    pub fn connection_projection_for_fields<I>(
+        fields: I,
+        cursor_field: &MessageCursorField,
+    ) -> SqlProjection
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let mut projection = Self::projection_for_fields(fields);
+        match cursor_field {
+            MessageCursorField::Dst => projection.extend(["dst_chain_order", "src_chain_order"]),
+            MessageCursorField::Src => projection.extend(["src_chain_order", "dst_chain_order"]),
+            MessageCursorField::Coalesced => {
+                projection.extend(["dst_chain_order", "src_chain_order"])
+            }
+        }
+        projection
+    }
+
+    pub fn event_projection_for_fields<I>(fields: I) -> SqlProjection
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let mut projection = SqlProjection::new();
+        for field in fields {
+            let field = field.as_ref();
+            match field {
+                "msg_id" | "id" => projection.add("id"),
+                "body" => projection.add("body"),
+                "created_at" => projection.add("created_at"),
+                "dst" => projection.add("dst"),
+                "src" => projection.add("src"),
+                "src_dapp_id" => projection.add("src_dapp_id"),
+                "msg_chain_order" => projection.add("msg_chain_order"),
+                _ => panic!("Unsupported SQL projection field: event.{field}"),
+            }
+        }
+        projection.ensure_minimum(["id"]);
+        projection.add("msg_chain_order");
+        projection
+    }
+
+    pub fn graphql_message_projection() -> SqlProjection {
+        let mut projection = SqlProjection::new();
+        for column in Self::DIRECT_COLUMNS {
+            projection.add(column);
+        }
+        projection
+    }
+
     pub async fn list(
         db_connector: &DBConnector,
+        projection: &SqlProjection,
         filter: String,
         order_by: String,
         limit: Option<i32>,
@@ -147,13 +260,16 @@ impl Message {
             return Ok(Vec::new());
         }
 
+        let mut projection = projection.clone();
+        projection.add("rowid");
+        let select = projection.select_list();
         let union_sql = db_names
             .into_iter()
-            .map(|name| format!("SELECT * FROM \"{name}\".messages {filter}"))
+            .map(|name| format!("SELECT {select} FROM \"{name}\".messages {filter}"))
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
 
-        let sql = format!("SELECT * FROM ({union_sql}) {order_by} LIMIT {limit}");
+        let sql = format!("SELECT {select} FROM ({union_sql}) {order_by} LIMIT {limit}");
         tracing::debug!("SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
@@ -194,7 +310,9 @@ impl Message {
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
 
-        let sql = format!("SELECT * FROM ({union_sql}) GROUP BY transaction_id, msg_id");
+        let sql = format!(
+            "SELECT transaction_id, msg_id FROM ({union_sql}) GROUP BY transaction_id, msg_id"
+        );
         tracing::debug!("SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
@@ -216,6 +334,7 @@ impl Message {
 
     pub async fn account_messages(
         db_connector: &DBConnector,
+        projection: &SqlProjection,
         account: String,
         args: &AccountMessagesQueryArgs,
     ) -> anyhow::Result<Vec<Message>> {
@@ -290,13 +409,22 @@ impl Message {
         let filter = format!("WHERE {}", where_ops.join(" AND "));
         let order_by = format!("ORDER BY {cursor_field} {order_by_sort}");
 
+        let mut projection = projection.clone();
+        match args.cursor_field() {
+            MessageCursorField::Dst => projection.extend(["dst_chain_order", "src_chain_order"]),
+            MessageCursorField::Src => projection.extend(["src_chain_order", "dst_chain_order"]),
+            MessageCursorField::Coalesced => {
+                projection.extend(["dst_chain_order", "src_chain_order"])
+            }
+        }
+        let select = projection.select_list();
         let union_sql = db_names
             .into_iter()
-            .map(|name| format!("SELECT * FROM \"{name}\".messages {filter}"))
+            .map(|name| format!("SELECT {select} FROM \"{name}\".messages {filter}"))
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
 
-        let sql = format!("SELECT * FROM ({union_sql}) {order_by} LIMIT {limit}");
+        let sql = format!("SELECT {select} FROM ({union_sql}) {order_by} LIMIT {limit}");
         tracing::debug!("account_messages: SQL: {sql}");
 
         let mut conn = db_connector.get_connection().await?;
@@ -324,6 +452,7 @@ impl Message {
 
     pub async fn account_events(
         db_connector: &DBConnector,
+        projection: &SqlProjection,
         account: String,
         dst: Option<String>,
         pagination: &PaginationArgs,
@@ -366,13 +495,16 @@ impl Message {
         let filter = format!("WHERE {}", where_ops.join(" AND "));
         let order_by = format!("ORDER BY {cursor_field} {order_by_sort}");
 
+        let mut projection = projection.clone();
+        projection.add("msg_chain_order");
+        let select = projection.select_list();
         let union_sql = db_names
             .into_iter()
-            .map(|name| format!("SELECT * FROM \"{name}\".messages {filter}"))
+            .map(|name| format!("SELECT {select} FROM \"{name}\".messages {filter}"))
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
 
-        let sql = format!("SELECT * FROM ({union_sql}) {order_by} LIMIT {limit}");
+        let sql = format!("SELECT {select} FROM ({union_sql}) {order_by} LIMIT {limit}");
 
         tracing::debug!("account_events: SQL: {sql}");
 
@@ -391,6 +523,7 @@ impl Message {
 
     pub async fn blockchain_events(
         db_connector: &DBConnector,
+        projection: &SqlProjection,
         pagination: &PaginationArgs,
     ) -> anyhow::Result<Vec<Message>> {
         let limit = pagination.get_limit();
@@ -426,13 +559,16 @@ impl Message {
         let filter = format!("WHERE {}", where_ops.join(" AND "));
         let order_by = format!("ORDER BY {cursor_field} {order_by_sort}");
 
+        let mut projection = projection.clone();
+        projection.add("msg_chain_order");
+        let select = projection.select_list();
         let union_sql = db_names
             .into_iter()
-            .map(|name| format!("SELECT * FROM \"{name}\".messages {filter}"))
+            .map(|name| format!("SELECT {select} FROM \"{name}\".messages {filter}"))
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
 
-        let sql = format!("SELECT * FROM ({union_sql}) {order_by} LIMIT {limit}");
+        let sql = format!("SELECT {select} FROM ({union_sql}) {order_by} LIMIT {limit}");
 
         tracing::debug!("blockchain_events: SQL: {sql}");
 
@@ -498,9 +634,11 @@ mod tests {
     async fn list_deduplicates_by_id_across_attached_dbs() {
         // crate::helpers::init_tracing();
         let db_connector = setup_db_connector().await;
+        let projection = Message::graphql_message_projection();
 
         let list = Message::list(
             &db_connector,
+            &projection,
             "".to_string(),
             " ORDER BY rowid ASC ".to_string(),
             Some(30),
@@ -514,8 +652,16 @@ mod tests {
     #[tokio::test]
     async fn blockchain_events_query_works_with_attached_archive() {
         let db_connector = setup_db_connector().await;
+        let projection = Message::event_projection_for_fields([
+            "msg_id",
+            "body",
+            "created_at",
+            "dst",
+            "src",
+            "src_dapp_id",
+        ]);
 
-        Message::blockchain_events(&db_connector, &default_pagination())
+        Message::blockchain_events(&db_connector, &projection, &default_pagination())
             .await
             .expect("blockchain events query should work with attached archive DB");
     }
@@ -557,5 +703,46 @@ mod tests {
     fn cursor_field_none_msg_type_returns_coalesced() {
         let args = make_args(None);
         assert!(matches!(args.cursor_field(), MessageCursorField::Coalesced));
+    }
+
+    #[test]
+    fn message_projection_maps_payload_fields() {
+        let projection = Message::projection_for_fields(["id", "body", "value", "value_other"]);
+        assert_eq!(projection.columns(), &["id", "body", "value", "value_other"]);
+    }
+
+    #[test]
+    fn message_projection_maps_transaction_fields() {
+        let projection = Message::projection_for_fields([
+            "id",
+            "src_transaction",
+            "dst_transaction",
+            "src_transaction_id",
+        ]);
+        assert_eq!(projection.columns(), &["id", "transaction_id"]);
+    }
+
+    #[test]
+    fn event_projection_adds_cursor_column() {
+        let projection = Message::event_projection_for_fields(["msg_id", "body"]);
+        assert_eq!(projection.columns(), &["id", "body", "msg_chain_order"]);
+    }
+
+    #[test]
+    fn message_projection_empty_uses_id_minimum() {
+        let projection = Message::projection_for_fields(std::iter::empty::<&str>());
+        assert_eq!(projection.columns(), &["id"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Unsupported SQL projection field: message.unknown_field")]
+    fn message_projection_unknown_field_panics() {
+        Message::projection_for_fields(["unknown_field"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Unsupported SQL projection field: event.unknown_field")]
+    fn event_projection_unknown_field_panics() {
+        Message::event_projection_for_fields(["unknown_field"]);
     }
 }

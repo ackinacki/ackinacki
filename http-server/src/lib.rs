@@ -299,7 +299,8 @@ async fn validate_ext_message(
         body: String,
         thread_id: Option<String>,
         ext_message_token: Option<Token>,
-        dst_dapp_id: Option<String>,
+        dapp_id: String,
+        account_id: String,
     }
 
     let Ok(incomings) = req.parse_json::<Vec<IncomingMessage>>().await else {
@@ -313,14 +314,16 @@ async fn validate_ext_message(
     };
     drop(iter);
 
-    let IncomingMessage { id, body, thread_id, ext_message_token, dst_dapp_id } = &first_message;
+    let IncomingMessage { id, body, thread_id, ext_message_token, dapp_id, account_id } =
+        &first_message;
 
     let ext_msg = match NotQueuedExtMessage::try_new(
         id,
         body,
         thread_id.clone(),
         ext_message_token.clone(),
-        dst_dapp_id.clone(),
+        dapp_id.clone(),
+        account_id.clone(),
     ) {
         Ok(ext_message) => ext_message,
         Err(err) => {

@@ -92,12 +92,24 @@ impl InMemoryKVStore {
         set: &str,
         on_record: &mut dyn FnMut(KVRecord) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
+        self.enumerate_checked(set, &|| false, on_record)
+    }
+
+    pub fn enumerate_checked(
+        &self,
+        set: &str,
+        should_cancel: &dyn Fn() -> bool,
+        on_record: &mut dyn FnMut(KVRecord) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
         let sets = self.sets.read();
         let Some(set_map) = sets.get(set) else {
             return Ok(());
         };
 
         for (key, stored) in set_map.iter() {
+            if should_cancel() {
+                anyhow::bail!("snapshot save cancelled");
+            }
             on_record(KVRecord {
                 key: key.clone(),
                 generation: stored.generation,

@@ -84,6 +84,12 @@
     - "{{ CERT_KEY_FILE }}"
   when: ENABLE_GEN_CERT is false and LOAD_CERT is true
 
+- name: Create ackinacki-net manually
+  ansible.builtin.shell:
+    cmd: docker network create ackinacki-net
+  ignore_errors: true
+  when: CREATE_NET | default(false)
+
 - name: Compose up
   ansible.builtin.shell:
     chdir: "{{ TLS_PROXY_DIR }}"

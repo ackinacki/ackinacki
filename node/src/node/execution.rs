@@ -404,47 +404,12 @@ where
                         }
                     }
                     NetworkMessage::SyncFinalized((sync_finalized, _)) => {
-                        let duration_since_last_finalization =
-                            self.shared_services.duration_since_last_finalization();
-                        if duration_since_last_finalization
-                            < self.global_config.time_to_enable_sync_finalized
-                        {
-                            tracing::trace!("duration_since_last_finalization({} ms) is too low to start synchronization", duration_since_last_finalization.as_millis());
-                            continue;
-                        }
-                        let identifier = *sync_finalized.data().block_identifier();
-                        let seq_no = *sync_finalized.data().block_seq_no();
-                        let address = sync_finalized.data().thread_refs().clone();
-                        // TODO: we'd better check that this node is up to date and does not need to sync
                         tracing::debug!(
-                            "Received SyncFinalized: {:?} {:?} {:?}",
-                            seq_no,
-                            identifier,
-                            address
+                            "Received legacy SyncFinalized, ignoring: {:?} {:?} {:?}",
+                            sync_finalized.data().block_seq_no(),
+                            sync_finalized.data().block_identifier(),
+                            sync_finalized.data().thread_refs()
                         );
-                        if address.get(&self.thread_id) != Some(&identifier) {
-                            tracing::trace!("Incoming SyncFinalized is broken, skip it");
-                            continue;
-                        }
-                        let (_last_finalized_id, last_finalized_seq_no) = self
-                            .repository
-                            .select_thread_last_finalized_block(&thread_id)?
-                            .expect("Must be known here");
-
-                        let blocks_were_requested = self
-                            .block_processor_service
-                            .missing_blocks_were_requested
-                            .load(Ordering::Relaxed);
-                        let elapsed = last_state_sync_executed.guarded(|e| e.elapsed());
-                        if elapsed > self.global_config.min_time_between_state_publish_directives
-                            && (blocks_were_requested
-                                || seq_no
-                                    > last_finalized_seq_no.add(
-                                        self.global_config.need_synchronization_block_diff as u32,
-                                    ))
-                        {
-                            return Ok(ExecutionResult::SynchronizationRequired);
-                        }
                     }
                     NetworkMessage::SyncFinalizedWithHeight((sync_finalized, _)) => {
                         let duration_since_last_finalization =

@@ -6,7 +6,7 @@ WALLET_ABI=../contracts/0.79.3_compiled/bksystem/AckiNackiBlockKeeperNodeWallet.
 ABI=../contracts/0.79.3_compiled/bksystem/BlockKeeperContractRoot.abi.json
 PRE_EPOCH_ABI=../contracts/0.79.3_compiled/bksystem/BlockKeeperPreEpochContract.abi.json
 COOLER_ABI=../contracts/0.79.3_compiled/bksystem/BlockKeeperCoolerContract.abi.json
-ROOT=0:7777777777777777777777777777777777777777777777777777777777777777
+ROOT=0000000000000000000000000000000000000000000000000000000000000000::7777777777777777777777777777777777777777777777777777777777777777
 EPOCH_ABI=../contracts/0.79.3_compiled/bksystem/BlockKeeperEpochContract.abi.json
 METRICS_PROTO=opentelemetry/proto/collector/metrics/v1/metrics_service.proto
 
@@ -128,6 +128,7 @@ trigger_stopping_staking () {
   fi
   EPOCH_PARAMS=$(cat $NODE_OWNER_KEY | jq -e -r '.public' || { log "Error with reading node owner public key. Returning..." >&2 ; return ;})
   EPOCH_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperEpochAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$OLD_SEQ\"}" | jq -r -e '.epochAddress' || { log "Can't get epoch address. Probably epoch has been touched. Exiting..." >&2 ; exit 0 ;})
+  EPOCH_ADDRESS="0000000000000000000000000000000000000000000000000000000000000000::${EPOCH_ADDRESS:2}"
   EPOCH_DETAILS=$(tvm-cli -j runx --abi $EPOCH_ABI --addr $EPOCH_ADDRESS -m getDetails || { log "Can't get epoch $EPOCH_ADDRESS details. Probably epoch $EPOCH_ADDRESS has been touched. Exiting..." >&2 ; exit 0 ;})
   EPOCH_FINISH=$(echo $EPOCH_DETAILS | jq -r '.seqNoFinish')
   log "Current epoch address $EPOCH_ADDRESS and epoch seqNo finish $EPOCH_FINISH"
@@ -160,6 +161,7 @@ trigger_stopping_continue_staking () {
   fi
   EPOCH_PARAMS=$(cat $NODE_OWNER_KEY | jq -e -r '.public' || { log "Error with reading node owner public key. Returning..." >&2 ; return ;})
   EPOCH_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperEpochAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$OLD_SEQ\"}" | jq -r -e '.epochAddress' || { log "Can't get epoch address. Exiting..." >&2 ; exit 1 ;})
+  EPOCH_ADDRESS="0000000000000000000000000000000000000000000000000000000000000000::${EPOCH_ADDRESS:2}"
   EPOCH_DETAILS=$(tvm-cli -j runx --abi $EPOCH_ABI --addr $EPOCH_ADDRESS -m getDetails || { log "Can't get epoch $EPOCH_ADDRESS details. Exiting..." >&2 ; exit 1 ;})
   IS_EPOCH_CONTINUE=$(echo $EPOCH_DETAILS | jq -r '.isContinue')
   if [ "$IS_EPOCH_CONTINUE" = false ]; then
@@ -255,7 +257,7 @@ while ! tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeperNodeWa
 done
 
 WALLET_ADDR=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getAckiNackiBlockKeeperNodeWalletAddress "$NODE_OWNER_PUB_KEY" | jq -e -r '.wallet' || { log "Error with getting wallet address" >&2 ; exit 1 ;})
-
+WALLET_ADDR="0000000000000000000000000000000000000000000000000000000000000000::${WALLET_ADDR:2}"
 while ! tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails > /dev/null 2>&1; do
   log "Can't get wallet details. Trying again..."
   sleep 5
@@ -368,6 +370,7 @@ place_stake () {
     local SIGNER_INDEX_TEMP=$(($RANDOM%(60000-1+1)+1))
     log "Trying signer index: $SIGNER_INDEX_TEMP"
     SIGNER_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getSignerIndexAddress "{\"index\": $SIGNER_INDEX_TEMP}" | jq -r -e '.signerIndex' || { log "Error with getting signer address" >&2 ; return ;})
+    SIGNER_ADDRESS="0000000000000000000000000000000000000000000000000000000000000000::${SIGNER_ADDRESS:2}"
     ADDRESS_DETAILS=$(tvm-cli -j account $SIGNER_ADDRESS || /bin/true)
     #ADDRESS_DETAILS_LEN=$(echo $ADDRESS_DETAILS | jq '. | length')
     ADDRESS_DETAILS_TYPE=$(echo $ADDRESS_DETAILS | jq -r '.acc_type')
@@ -488,6 +491,7 @@ place_continue_stake () {
     local SIGNER_INDEX_TEMP=$(($RANDOM%(60000-1+1)+1))
     log "Trying signer index: $SIGNER_INDEX_TEMP"
     SIGNER_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getSignerIndexAddress "{\"index\": $SIGNER_INDEX_TEMP}" | jq -r -e '.signerIndex' || { log "Error with getting signer address to continue" >&2 ; return ;})
+    SIGNER_ADDRESS="0000000000000000000000000000000000000000000000000000000000000000::${SIGNER_ADDRESS:2}"
     ADDRESS_DETAILS=$(tvm-cli -j account $SIGNER_ADDRESS || /bin/true)
     # ADDRESS_DETAILS_LEN=$(echo $ADDRESS_DETAILS | jq '. | length')
     ADDRESS_DETAILS_TYPE=$(echo $ADDRESS_DETAILS | jq -r '.acc_type')
@@ -585,6 +589,7 @@ process_epoch () {
         log "Pre Epoch - $k"
         CUR_BLOCK_SEQ=$(curl -s -X POST "$GQL_ENDPOINT" -H 'Content-Type: application/json' -d '{"query":"{ blockchain { blocks(last:1) { edges { node { height } } } } }"}' | jq -e -r '.data.blockchain.blocks.edges[0].node.height | select(. != null)' || { log "Error with getting current block seqNo" >&2 ; return ;})
         PRE_EPOCH_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperPreEpochAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$ACTIVE_STAKES_SEQ\"}" | jq -r -e '.preEpochAddress' || { log "Error with getting pre-epoch address" >&2 ; return ;})
+        PRE_EPOCH_ADDRESS="0000000000000000000000000000000000000000000000000000000000000000::${PRE_EPOCH_ADDRESS:2}"
         log "PreEpoch contract address \"$PRE_EPOCH_ADDRESS\" and sequence start is \"$ACTIVE_STAKES_SEQ\" and current sequence is \"$CUR_BLOCK_SEQ\""
         IS_EPOCH_ACTIVE=false
         while [ "$(echo "$ACTIVE_STAKES_SEQ < $CUR_BLOCK_SEQ" | bc)" -ne 1 ]; do
@@ -599,6 +604,7 @@ process_epoch () {
       1)
         log "Epoch in progress - $k"
         EPOCH_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperEpochAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$ACTIVE_STAKES_SEQ\"}" | jq -r -e '.epochAddress' || { log "Error with getting epoch address" >&2 ; return ;})
+        EPOCH_ADDRESS="0000000000000000000000000000000000000000000000000000000000000000::${EPOCH_ADDRESS:2}"
         EPOCH_DETAILS=$(tvm-cli -j runx --abi $EPOCH_ABI --addr $EPOCH_ADDRESS -m getDetails || { log "Error with getting epoch $EPOCH_ADDRESS details" >&2 ; return ;})
         log "There is active stake with epoch address \"$EPOCH_ADDRESS\""
         IS_EPOCH_ACTIVE=true
@@ -627,6 +633,7 @@ process_epoch () {
       2)
         log "Cooler Epoch - $k"
         COOLER_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperCoolerAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$ACTIVE_STAKES_SEQ\"}" | jq -r -e '.value0' || { log "Error with getting cooler address" >&2 ; return ;})
+        COOLER_ADDRESS="0000000000000000000000000000000000000000000000000000000000000000::${COOLER_ADDRESS:2}"
         log "Cooler address - $COOLER_ADDRESS"
         process_cooler_epoch $COOLER_ADDRESS $ACTIVE_STAKES_STAKE
         ;;
