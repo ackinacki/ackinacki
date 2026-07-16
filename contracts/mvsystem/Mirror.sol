@@ -212,6 +212,9 @@ contract Mirror is Modifiers {
         if (index == m_Miner) {
             new_addr = VerifiersLib.calculateMinerGameAddress(_code[m_Miner], msg.sender);
         }
+        if (index == m_RootPN) {
+            new_addr = ROOT_PN_ADDRESS;
+        }
         if (new_addr.hasValue()) {
             Multifactor(msg.sender).setWhiteList{value: 0.1 vmshell, flag: 1}(new_addr.get(), _index);
         }
@@ -256,10 +259,9 @@ contract Mirror is Modifiers {
         onCodeUpgrade(cell);
     }
 
-    function onCodeUpgrade(TvmCell cell) private {
+    function onCodeUpgrade(TvmCell cell) private pure {
         cell;
         tvm.accept();
-        tvm.resetStorage();
     }
 
     //Getters

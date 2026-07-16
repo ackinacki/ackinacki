@@ -4,6 +4,7 @@
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::mem;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -63,7 +64,9 @@ use crate::repository::optimistic_state::OptimisticStateSaveCommand;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
-use crate::types::history_proof::make_check_history_proof_hash_callback;
+use crate::types::history_proof::make_check_history_proof_hash_callback_from_cursor;
+use crate::types::history_proof::make_check_history_proof_hash_callback_from_cursor_with_flag;
+use crate::types::history_proof::HistoryLayerData;
 use crate::types::next_seq_no;
 use crate::types::BlockIndex;
 use crate::types::BlockRound;
@@ -118,6 +121,39 @@ pub enum ProduceNextResult {
 }
 
 impl TVMBlockProducerProcess {
+    fn history_cursor_for_parent(
+        parent_ref: &ParentRef,
+        block_state_repo: &BlockStateRepository,
+    ) -> anyhow::Result<HistoryLayerData> {
+        match parent_ref {
+            ParentRef::Block(parent_id) => {
+                let parent_state = block_state_repo.get(parent_id)?;
+                if let Some(cursor) = parent_state.guarded(|e| e.history_cursor().clone()) {
+                    return Ok(cursor);
+                }
+            }
+            ParentRef::Temporary(_) => return Ok(HistoryLayerData::default()),
+        }
+
+        anyhow::bail!("Missing history cursor for real parent block: {parent_ref:?}")
+    }
+
+    fn is_parent_of_retired_version(
+        parent_ref: &ParentRef,
+        block_state_repo: &BlockStateRepository,
+        node_config_read: &ConfigRead,
+    ) -> anyhow::Result<bool> {
+        let ParentRef::Block(parent_id) = parent_ref else {
+            return Ok(false);
+        };
+        let parent_state = block_state_repo.get(parent_id)?;
+        let Some(parent_block_version) = parent_state.guarded(|e| e.block_version_state().clone())
+        else {
+            anyhow::bail!("Missing block version for real parent block: {parent_ref:?}");
+        };
+        Ok(node_config_read.is_retired(parent_block_version.to_use()))
+    }
+
     fn report_produced_blocks_size(&self, size: usize, thread_id: &ThreadIdentifier) {
         if let Some(metrics) = &self.metrics {
             metrics.report_produced_blocks_queue_size(size as u64, thread_id);
@@ -199,8 +235,24 @@ impl TVMBlockProducerProcess {
                 ))
             })?;
 
+        let history_proof_hash_callback_called = Arc::new(AtomicBool::new(false));
+        let is_parent_of_retired_version =
+            Self::is_parent_of_retired_version(&parent_ref, &block_state_repo, &node_config_read)?;
         let check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>> =
-            Some(make_check_history_proof_hash_callback(repository.get_history_proof_data()));
+            if is_parent_of_retired_version {
+                None
+            } else {
+                let parent_history_cursor =
+                    Self::history_cursor_for_parent(&parent_ref, &block_state_repo)?;
+                Some(if matches!(parent_ref, ParentRef::Temporary(_)) {
+                    make_check_history_proof_hash_callback_from_cursor_with_flag(
+                        parent_history_cursor,
+                        history_proof_hash_callback_called.clone(),
+                    )
+                } else {
+                    make_check_history_proof_hash_callback_from_cursor(parent_history_cursor)
+                })
+            };
 
         let producer = TVMBlockProducer::builder()
             .node_config_read(node_config_read)
@@ -399,7 +451,7 @@ impl TVMBlockProducerProcess {
         let metrics_for_computation = metrics.clone();
 
         let thread: JoinHandle<anyhow::Result<()>> = std::thread::Builder::new()
-            .name(format!("Produce block {}", &thread_id_clone))
+            .name(format!("Produce block {}", thread_id_clone))
             .stack_size(16 * 1024 * 1024)
             .spawn(move || {
                 let _current_span_scope = current_span.enter();
@@ -570,9 +622,11 @@ impl TVMBlockProducerProcess {
         common_section.set_acks(aggregated_acks);
         common_section.set_nacks(aggregated_nacks.clone());
         block.set_common_section(common_section, false)?;
-        if !processed_stamps.is_empty() {
-            external_messages_queue.erase_processed(&processed_stamps);
-        }
+        let processed_ext_messages = if !processed_stamps.is_empty() {
+            external_messages_queue.erase_processed(&processed_stamps)
+        } else {
+            vec![]
+        };
 
         if tracing::level_filters::STATIC_MAX_LEVEL >= tracing::Level::TRACE {
             if let Ok(info) = block.tvm_block().info.read_struct() {
@@ -668,6 +722,10 @@ impl TVMBlockProducerProcess {
                 .metrics_memento_init_time(None)
                 .assumptions(assumptions)
                 .cross_thread_ref_data(cross_thread_ref_data)
+                .processed_ext_messages(processed_ext_messages)
+                .must_reproduce_with_real_parent(
+                    history_proof_hash_callback_called.load(Ordering::Acquire),
+                )
                 .build();
             blocks.push(produced_data);
             metrics.as_ref().inspect(|m| {
@@ -769,7 +827,7 @@ impl TVMBlockProducerProcess {
                 } else {
                     anyhow::bail!(
                         "Failed to find optimistic in repository for block {:?}",
-                        &prev_block_id
+                        prev_block_id
                     );
                 }
             }
@@ -913,22 +971,22 @@ impl TVMBlockProducerProcess {
         let bp_production_count = self.bp_production_count.clone();
         #[cfg(not(feature = "fail-fast"))]
         let handler = std::thread::Builder::new()
-            .name(format!("Production {}", &thread_id_clone))
+            .name(format!("Production {}", thread_id_clone))
             .spawn(|| {
-                bp_production_count.fetch_add(1, Ordering::Relaxed);
-                let res = produce();
-                bp_production_count.fetch_sub(1, Ordering::Relaxed);
-                res
-            })?;
+            bp_production_count.fetch_add(1, Ordering::Relaxed);
+            let res = produce();
+            bp_production_count.fetch_sub(1, Ordering::Relaxed);
+            res
+        })?;
         #[cfg(feature = "fail-fast")]
         let handler = std::thread::Builder::new()
-            .name(format!("Production {}", &thread_id_clone))
+            .name(format!("Production {}", thread_id_clone))
             .spawn_critical(move || {
-                bp_production_count.fetch_add(1, Ordering::Relaxed);
-                let res = produce();
-                bp_production_count.fetch_sub(1, Ordering::Relaxed);
-                res
-            })?;
+            bp_production_count.fetch_add(1, Ordering::Relaxed);
+            let res = produce();
+            bp_production_count.fetch_sub(1, Ordering::Relaxed);
+            res
+        })?;
         self.active_producer_thread = Some((handler, control_tx));
         self.epoch_block_keeper_data_senders = Some(epoch_block_keeper_data_tx);
         Ok(())

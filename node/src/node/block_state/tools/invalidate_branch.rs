@@ -29,13 +29,13 @@ pub fn invalidate_branch(
                 return (children, HashSet::new());
             }
             e.set_invalidated().unwrap();
-            for (_key, hashset) in e.known_children.iter() {
+            for hashset in e.known_children.values() {
                 children = children.union(hashset).cloned().collect();
             }
 
             // Collect incomplete children for temporary subtree invalidation
             let mut incomplete = HashSet::new();
-            for (_key, temp_ids) in e.known_children_incomplete.iter() {
+            for temp_ids in e.known_children_incomplete.values() {
                 incomplete.extend(temp_ids.iter().copied());
             }
 

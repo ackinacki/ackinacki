@@ -181,7 +181,7 @@ impl BlockBuilder {
         is_verifier: bool,
         apply_transition_dapp_id_migrations: bool,
         _is_block_of_retired_version: bool,
-        _check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>>,
+        check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>>,
     ) -> anyhow::Result<Self> {
         let (initial_accounts, usage_tree) =
             initial_optimistic_state.get_shard_state().with_tvm_usage_tree()?;
@@ -242,11 +242,11 @@ impl BlockBuilder {
             .is_stop_requested(false)
             .wasm_cache(wasm_cache)
             .is_verifier(is_verifier)
+            .check_history_proof_hash(check_history_proof_hash)
             .apply_transition_dapp_id_migrations(apply_transition_dapp_id_migrations);
 
         #[cfg(feature = "monitor-accounts-number")]
         let builder = builder.accounts_number_diff(0);
-        // let builder = builder.check_history_proof_hash(check_history_proof_hash);
         Ok(builder.build())
     }
 
@@ -1133,7 +1133,7 @@ impl BlockBuilder {
                 wasm_component_cache: self.wasm_cache.wasm_component_cache.clone(),
                 mvconfig: mv_config,
                 engine_version: get_engine_version(self.block_info.seq_no()),
-                // check_history_proof_hash: self.check_history_proof_hash.clone(),
+                check_history_proof_hash: self.check_history_proof_hash.clone(),
                 ..Default::default() // TODO: remove default
             }
         } else {
@@ -1159,7 +1159,7 @@ impl BlockBuilder {
                 wasm_component_cache: self.wasm_cache.wasm_component_cache.clone(),
                 mvconfig: mv_config,
                 engine_version: get_engine_version(self.block_info.seq_no()),
-                // check_history_proof_hash: self.check_history_proof_hash.clone(),
+                check_history_proof_hash: self.check_history_proof_hash.clone(),
                 ..Default::default() // TODO: remove default
             }
         };
@@ -2102,7 +2102,7 @@ impl BlockBuilder {
                     .values()
                     .map(|v| v.last().unwrap().clone()), //
             );
-        for (routing, _) in accounts_that_changed_their_dapp_id.iter() {
+        for routing in accounts_that_changed_their_dapp_id.keys() {
             tracing::trace!(target: "node", "set_dapp_id_changed_for_account for {routing:?}");
             self.account_blocks
                 .set_dapp_id_changed_for_account(&routing.account_id().into())
@@ -3052,7 +3052,7 @@ fn create_feedback(
         let mut ext_out_msgs = vec![];
         let _ = t.out_msgs.iterate(|out_msg| {
             let header = out_msg.as_ref().header().clone();
-            if let CommonMsgInfo::ExtOutMsgInfo(_) = header {
+            if let CommonMsgInfo::ExtOutMsgInfo(_) | CommonMsgInfo::ExtOutMsgInfoV2(_) = header {
                 if let Some(body) = out_msg.as_ref().body() {
                     ext_out_msgs.push(body);
                 }

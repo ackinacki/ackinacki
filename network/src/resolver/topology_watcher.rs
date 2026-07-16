@@ -134,7 +134,7 @@ where
         .map(|(id, peers)| {
             format!(
                 "{}: {}",
-                &id.to_string().chars().take(6).collect::<String>(),
+                id.to_string().chars().take(6).collect::<String>(),
                 addrs_to_string(peers.iter().map(|x| &x.addr))
             )
         })

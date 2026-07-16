@@ -162,22 +162,20 @@ impl Aerospike1Backend {
 
         if errors.is_empty() {
             Ok(())
+        } else if errors.len() > 10 {
+            Err(anyhow::anyhow!(
+                "Failed to write {} records to {}: {:?} ...",
+                errors.len(),
+                set,
+                errors.into_iter().take(10).collect::<Vec<_>>()
+            ))
         } else {
-            if errors.len() > 10 {
-                Err(anyhow::anyhow!(
-                    "Failed to write {} records to {}: {:?} ...",
-                    errors.len(),
-                    set,
-                    errors.into_iter().take(10).collect::<Vec<_>>()
-                ))
-            } else {
-                Err(anyhow::anyhow!(
-                    "Failed to write {} records to {}: {:?}",
-                    errors.len(),
-                    set,
-                    errors,
-                ))
-            }
+            Err(anyhow::anyhow!(
+                "Failed to write {} records to {}: {:?}",
+                errors.len(),
+                set,
+                errors,
+            ))
         }
     }
 

@@ -151,15 +151,39 @@ impl ExternalMessagesThreadState {
         Ok(())
     }
 
-    pub fn erase_processed(&self, processed: &[Stamp]) {
+    pub fn erase_processed(&self, processed: &[Stamp]) -> Vec<(Stamp, QueuedExtMessage)> {
         tracing::trace!("erase_processed ext messages: {}", processed.len());
 
-        let report_len = self.queue.guarded_mut(|q| {
-            q.erase_processed(processed);
-            q.messages().len()
+        let (report_len, removed) = self.queue.guarded_mut(|q| {
+            let removed = q.erase_processed(processed);
+            (q.messages().len(), removed)
         });
 
         tracing::trace!(target: "ext_messages", "on erase: queue_size={}", report_len);
+
+        if let Some(metrics) = &self.report_metrics {
+            metrics.report_ext_msg_queue_size(report_len, &self.thread_id);
+        }
+
+        removed
+    }
+
+    pub fn restore_processed(&self, processed: &[(Stamp, QueuedExtMessage)]) {
+        if processed.is_empty() {
+            return;
+        }
+
+        let report_len = self.queue.guarded_mut(|q| {
+            q.restore_processed(processed);
+            q.messages().len()
+        });
+
+        tracing::trace!(
+            target: "ext_messages",
+            "restored {} ext messages after production restart, queue_size={}",
+            processed.len(),
+            report_len
+        );
 
         if let Some(metrics) = &self.report_metrics {
             metrics.report_ext_msg_queue_size(report_len, &self.thread_id);

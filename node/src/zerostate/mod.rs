@@ -94,7 +94,7 @@ impl ZeroState {
     }
 
     pub fn set_threads_table(&mut self, threads_table: ThreadsTable) {
-        for (_, state) in self.states.iter_mut() {
+        for state in self.states.values_mut() {
             state.threads_table = threads_table.clone();
         }
     }

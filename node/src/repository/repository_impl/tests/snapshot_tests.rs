@@ -841,6 +841,7 @@ fn test_repository_impl_export_durable_snapshot_archive() -> anyhow::Result<()> 
         )
         .block_protocol_version_state(block_protocol_version_state)
         .history_data_snapshot(Default::default())
+        .history_cursor(Default::default())
         .durable_state_snapshot(None)
         .finalization_chain(vec![])
         .build();

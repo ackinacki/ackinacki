@@ -782,6 +782,7 @@ impl FileSavingService {
                     Some(finalizes_blocks),
                     Some(parent_id),
                     Some(block_protocol_version_state),
+                    Some(history_cursor),
                 ) = block_state.guarded(|e| {
                     (
                         e.bk_set().clone(),
@@ -797,6 +798,7 @@ impl FileSavingService {
                         e.finalizes_blocks().clone(),
                         *e.parent_block_identifier(),
                         e.block_version_state().clone(),
+                        e.history_cursor().clone(),
                     )
                 })
                 else {
@@ -836,7 +838,8 @@ impl FileSavingService {
                         finalization_chain_arcs.iter().map(|b| b.as_ref().clone()).collect(),
                     );
                 drop(finalization_chain_arcs);
-                let builder = builder.history_data_snapshot(history_snapshot);
+                let builder =
+                    builder.history_data_snapshot(history_snapshot).history_cursor(history_cursor);
                 let shared_thread_state = builder.build();
                 // Drop the Arc<Envelope> now that its data has been cloned into the snapshot.
                 drop(finalized_block);

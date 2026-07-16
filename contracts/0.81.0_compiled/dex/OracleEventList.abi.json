@@ -1,0 +1,183 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"pmpSaltedCodeHash","type":"uint256"},
+				{"name":"pmpSaltedCodeDepth","type":"uint16"},
+				{"name":"description","type":"string"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setDescription",
+			"inputs": [
+				{"name":"description","type":"string"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "addEvent",
+			"inputs": [
+				{"name":"eventName","type":"string"},
+				{"name":"oracleFee","type":"uint128"},
+				{"name":"deadline","type":"uint64"},
+				{"name":"describe","type":"string"},
+				{"name":"outcomeNames","type":"map(uint32,string)"},
+				{"name":"trustAddr","type":"optional(uint256)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "addRangeEvent",
+			"inputs": [
+				{"name":"eventName","type":"string"},
+				{"name":"oracleFee","type":"uint128"},
+				{"name":"deadline","type":"uint64"},
+				{"name":"describe","type":"string"},
+				{"name":"bounds","type":"uint256[]"},
+				{"name":"outcomeNames","type":"map(uint32,string)"},
+				{"name":"ob","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "confirmEvent",
+			"inputs": [
+				{"name":"eventId","type":"uint256"},
+				{"name":"oracleListHash","type":"uint256"},
+				{"name":"tokenType","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "resolveRange",
+			"inputs": [
+				{"name":"eventId","type":"uint256"},
+				{"name":"oracleListHash","type":"uint256"},
+				{"name":"tokenType","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "onWeeklyMedian",
+			"inputs": [
+				{"name":"eventId","type":"uint256"},
+				{"name":"oracleListHash","type":"uint256"},
+				{"name":"tokenType","type":"uint32"},
+				{"name":"price","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getRangeData",
+			"inputs": [
+				{"name":"eventId","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"bounds","type":"uint256[]"},
+				{"name":"ob","type":"address"},
+				{"name":"exists","type":"bool"}
+			]
+		},
+		{
+			"name": "cancelEvent",
+			"inputs": [
+				{"name":"eventId","type":"uint256"},
+				{"name":"oracleListHash","type":"uint256"},
+				{"name":"tokenType","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deleteEvent",
+			"inputs": [
+				{"name":"eventId","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		},
+		{
+			"name": "_events",
+			"inputs": [
+			],
+			"outputs": [
+				{"components":[{"name":"eventName","type":"string"},{"name":"oracleFee","type":"uint128"},{"name":"deadline","type":"uint64"},{"name":"describe","type":"string"},{"name":"outcomeNames","type":"map(uint32,string)"},{"name":"count","type":"uint128"},{"name":"trustAddr","type":"optional(uint256)"}],"name":"_events","type":"map(uint256,tuple)"}
+			]
+		}
+	],
+	"events": [
+		{
+			"name": "EventAdded",
+			"inputs": [
+				{"name":"eventId","type":"uint256"},
+				{"name":"eventName","type":"string"},
+				{"name":"oracleFee","type":"uint128"},
+				{"name":"deadline","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "EventConfirmed",
+			"inputs": [
+				{"name":"eventId","type":"uint256"},
+				{"name":"pmpAddress","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "RangeEventAdded",
+			"inputs": [
+				{"name":"eventId","type":"uint256"},
+				{"name":"ob","type":"address"},
+				{"name":"bounds","type":"uint256[]"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "DescriptionUpdated",
+			"inputs": [
+				{"name":"description","type":"string"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"components":[{"name":"bounds","type":"uint256[]"},{"name":"ob","type":"address"},{"name":"exists","type":"bool"}],"init":false,"name":"_rangeData","type":"map(uint256,tuple)"},
+		{"init":true,"name":"_oracle","type":"address"},
+		{"init":true,"name":"_index","type":"uint128"},
+		{"init":false,"name":"_oraclePubkey","type":"uint256"},
+		{"init":false,"name":"_pmpSaltedCodeHash","type":"uint256"},
+		{"init":false,"name":"_pmpSaltedCodeDepth","type":"uint16"},
+		{"init":false,"name":"_description","type":"string"},
+		{"components":[{"name":"eventName","type":"string"},{"name":"oracleFee","type":"uint128"},{"name":"deadline","type":"uint64"},{"name":"describe","type":"string"},{"name":"outcomeNames","type":"map(uint32,string)"},{"name":"count","type":"uint128"},{"name":"trustAddr","type":"optional(uint256)"}],"init":false,"name":"_events","type":"map(uint256,tuple)"}
+	]
+}

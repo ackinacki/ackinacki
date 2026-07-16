@@ -137,9 +137,25 @@ impl ExternalMessagesQueue {
         Self { messages: BTreeMap::new(), last_index: 0 }
     }
 
-    pub(super) fn erase_processed(&mut self, processed: &[Stamp]) {
+    pub(super) fn erase_processed(
+        &mut self,
+        processed: &[Stamp],
+    ) -> Vec<(Stamp, QueuedExtMessage)> {
         let to_remove: BTreeSet<_> = processed.iter().cloned().collect();
+        let removed = self
+            .messages
+            .iter()
+            .filter(|(stamp, _)| to_remove.contains(*stamp))
+            .map(|(stamp, message)| (stamp.clone(), message.clone()))
+            .collect();
         self.messages.retain(|stamp, _| !to_remove.contains(stamp));
+        removed
+    }
+
+    pub(super) fn restore_processed(&mut self, processed: &[(Stamp, QueuedExtMessage)]) {
+        for (stamp, message) in processed {
+            self.messages.entry(stamp.clone()).or_insert_with(|| message.clone());
+        }
     }
 
     pub(super) fn push_external_messages(
@@ -189,6 +205,9 @@ mod tests {
     use node_types::DAppIdentifier;
 
     use super::ExtMessageDst;
+    use super::ExternalMessagesQueue;
+    use super::QueuedExtMessage;
+    use crate::external_messages::Stamp;
 
     fn hash_of(dst: &ExtMessageDst) -> u64 {
         let mut hasher = DefaultHasher::new();
@@ -227,5 +246,26 @@ mod tests {
 
         assert_eq!(map.len(), 1);
         assert_eq!(map.values().next(), Some(&2));
+    }
+
+    #[test]
+    fn erase_processed_can_be_restored_for_production_restart() {
+        let account = AccountIdentifier::from_str(&"ef".repeat(32)).unwrap();
+        let dst = ExtMessageDst::new(account, None);
+        let msg = QueuedExtMessage::new_for_test(dst);
+        let timestamp = chrono::Utc::now();
+        let stamp = Stamp { index: 1, timestamp };
+
+        let mut queue = ExternalMessagesQueue::empty();
+        queue.messages.insert(stamp.clone(), msg);
+
+        let removed = queue.erase_processed(std::slice::from_ref(&stamp));
+        assert!(queue.messages.is_empty());
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].0, stamp);
+
+        queue.restore_processed(&removed);
+        assert_eq!(queue.messages.len(), 1);
+        assert!(queue.messages.contains_key(&stamp));
     }
 }

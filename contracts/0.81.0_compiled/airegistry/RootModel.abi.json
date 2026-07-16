@@ -1,0 +1,76 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"tokenContractCode","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "registerTokenContract",
+			"inputs": [
+				{"name":"sellerPubkey","type":"uint256"},
+				{"name":"nonce","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getTokenContractAddress",
+			"inputs": [
+				{"name":"sellerPubkey","type":"uint256"},
+				{"name":"nonce","type":"uint64"}
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
+			"name": "getOwnerPubkey",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"uint256"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+		{
+			"name": "ContractDeployed",
+			"inputs": [
+				{"name":"self","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "TokenContractRegistered",
+			"inputs": [
+				{"name":"tokenContractAddress","type":"address"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":true,"name":"_ownerPubkey","type":"uint256"},
+		{"init":true,"name":"_superRootAddress","type":"address"}
+	]
+}

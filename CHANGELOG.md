@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.0] – 2026-07-16
+
+### New / Improvements
+- Added a full on-chain DEX contract suite — `RootOracle`, `Oracle`, `OracleEventList`, `OrderBook`, `PMP`, `PrivateNote`, `Nullifier`, and `RootPN` — implementing Poseidon-based private notes, order books, oracle event lists, and voucher (claim) flows
+- Added an AI inference market / model registry contract suite — `SuperRoot`, `RootModel`, `ModelRegistry`, `InferenceOrderBook`, and `TokenContract` — and enabled `SuperRoot` by default in the zerostate
+- Renamed `TokenBridge` to `USDCBridge` throughout, finalized the ETH-deposit circuit (VKBLOB v2) verified on-chain, and required `tokenId == USDC_ECC_ID` in `initiateWithdrawal`/`finalizeDeposit`; `MVConfig` is now deployed under `MV_DAPP_ID` in the zerostate
+- Reworked history-proof verification from a global layer scan into a per-block **history cursor** that is derived from the parent block and advanced as each block is applied, so blocks are now verified against their parent's cursor instead of shared global history data
+- Implemented proof refs / L7 referenced-block commitment and wired the `CHKHISTPROOF` executor callback to the per-block history cursor
+- Added the archive column `tracked_ext_out_messages_root`, stored it from `CommonSection` during block archive serialization, and exposed it on the GraphQL `Block` type
+- Added support for the v2 external-outbound message header (`msg_type=4`): the SQLite archive stores it and GraphQL ext-out queries now match both v1 (`msg_type=2`) and v2 (`msg_type=4`)
+- Restored in-flight external messages on production restart so messages erased on a producer restart can be re-queued instead of being lost
+- Optimized the internal message queue processing in block production (#2267)
+- Replaced `monotree` with a dense binary Merkle tree in heap layout for history/state hashing (#1927), and switched BK set commitment hashing to spec-compliant Poseidon (#2097)
+- Added prebuilt bridge prover tooling — `bridge-event-halo2-prover`, `bridge-event-witness-builder`, `bridge-event-private-witness-export`, `bridge-prover-daemon`, `dex_data_exporter`, `sk-commit-tool`, and the `halo2-proover` binary — the `params/kzg_bn254_19.srs` trusted setup, and a `scripts/rebuild-bridge-bins.sh` reproducible-build script
+- Reorganized the compiled contract artifacts into versioned folders (`contracts/0.79.3_compiled`, `0.80.0_compiled`, `0.81.0_compiled`) and updated all consumers (tests, `generate_zerostate.py`, `proof_helper`) to the new paths
+- Added end-to-end DEX (`dexdo`) test infrastructure — Ansible playbooks, a Docker Compose stack, and CI test jobs for the DEX and the USDC bridge
+- Updated the TVM SDK to `v3.0.4.an` and refreshed the bundled DEX/inference contracts and zerostate
+
+### Fixes
+- Fixed `message-router` to avoid a panic on an undecodable external-message id when block production fails (#2285)
+- Fixed the attestations GraphQL API (#2243) and history/proof handling during version transition and node sync
+- Fixed `proof_helper` to read higher-layer markers from the correct boundary block and replaced the deprecated GraphQL API queries with the new ones (#2117)
+- Fixed `giver` compilation by removing a duplicate `getDataForAuthService`, and fixed private-note and DEX audit issues
+- Pinned `axiom-eth` by rev and patched `poseidon-primitives` to the gosh-sh fork to stop `snark-verifier` stable-Rust drift; clarified the unlicensed `halo2_kzg_srs` git dependency as `MIT OR Apache-2.0` in `deny.toml` so `cargo deny check licenses` passes
+- Resolved all `cargo clippy --workspace --all-targets -- -D warnings` findings (`for_kv_map`, `useless_borrows_in_formatting`, `collapsible_else_if`, `dead_code`)
+
+---
+
 ## [0.17.0] – 2026-07-07
 
 ### New / Improvements

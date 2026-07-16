@@ -40,6 +40,6 @@ build-contracts: $(TVC_FILES)
 # Pattern rule to compile .sol to .tvc and .abi.json
 ./%.tvc ./%.abi.json: ./%.sol
 	@echo "Compiling $<..."
-	$(SOLD) --tvm-version $(TVM_VERSION) $< -o . || { echo "Compilation failed for $<"; exit 1; }
+	$(SOLD) --tvm-version $(TVM_VERSION) --base-path .. $< -o . || { echo "Compilation failed for $<"; exit 1; }
 	rm -f ./$*.debug.json ./$*.code
 	@echo "Compiled $< successfully."

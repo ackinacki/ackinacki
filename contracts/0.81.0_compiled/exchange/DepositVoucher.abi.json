@@ -1,0 +1,36 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"depositId","type":"uint256"},
+				{"name":"contractAddr","type":"uint256"},
+				{"name":"dappId","type":"uint256"},
+				{"name":"amount","type":"uint128"},
+				{"name":"anAccount","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":true,"name":"_depositHash","type":"uint256"}
+	]
+}

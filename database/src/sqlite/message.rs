@@ -134,6 +134,24 @@ impl From<MessageSerializationSet> for ArchMessage {
                 created_lt: Some(header.created_lt.to_string()),
                 ..Default::default()
             },
+            CommonMsgInfo::ExtOutMsgInfoV2(header) => Self {
+                id,
+                transaction_id,
+                boc,
+                body,
+                status,
+                proof,
+                code,
+                code_hash,
+                data,
+                data_hash,
+                msg_type: Some(4),
+                src: Some(header.src.to_string()),
+                dst: Some(header.dst.to_string()),
+                created_at: Some(header.created_at.as_u32()),
+                created_lt: Some(header.created_lt.to_string()),
+                ..Default::default()
+            },
         };
 
         arch_msg

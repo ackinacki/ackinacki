@@ -1,0 +1,338 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"depositHash","type":"uint256"},
+				{"name":"modelName","type":"string"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "processHead",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "placeSellOffer",
+			"inputs": [
+				{"name":"pricePerTick","type":"uint128"},
+				{"name":"maxTicks","type":"uint128"},
+				{"name":"flags","type":"uint8"},
+				{"name":"sellerPubkey","type":"uint256"},
+				{"name":"nonce","type":"uint64"},
+				{"name":"ownerNote","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "placeBuyOrder",
+			"inputs": [
+				{"name":"maxPricePerTick","type":"uint128"},
+				{"name":"ticks","type":"uint128"},
+				{"name":"flags","type":"uint8"},
+				{"name":"deadline","type":"uint64"},
+				{"name":"buyerPubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "cancelOrder",
+			"inputs": [
+				{"name":"orderId","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "cancelAllOrders",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "placeSubscription",
+			"inputs": [
+				{"name":"maxPricePerTick","type":"uint128"},
+				{"name":"ticks","type":"uint128"},
+				{"name":"autoRenew","type":"bool"},
+				{"name":"buyerPubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "pokeSubscription",
+			"inputs": [
+				{"name":"orderId","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "claimForfeit",
+			"inputs": [
+				{"name":"orderId","type":"uint128"},
+				{"name":"cycle","type":"uint8"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getWeeklyMedianPrice",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"uint256"}
+			]
+		},
+		{
+			"name": "requestWeeklyMedian",
+			"inputs": [
+				{"name":"eventId","type":"uint256"},
+				{"name":"oracleListHash","type":"uint256"},
+				{"name":"tokenType","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getOrder",
+			"inputs": [
+				{"name":"id","type":"uint128"}
+			],
+			"outputs": [
+				{"name":"note","type":"address"},
+				{"name":"tokenContract","type":"address"},
+				{"name":"price","type":"uint256"},
+				{"name":"amount","type":"uint128"},
+				{"name":"escrow","type":"uint128"},
+				{"name":"deadline","type":"uint64"},
+				{"name":"flags","type":"uint8"},
+				{"name":"isBuy","type":"bool"},
+				{"name":"ts","type":"uint64"}
+			]
+		},
+		{
+			"name": "getBestBidAsk",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"hasBid","type":"bool"},
+				{"name":"bid","type":"uint256"},
+				{"name":"hasAsk","type":"bool"},
+				{"name":"ask","type":"uint256"}
+			]
+		},
+		{
+			"name": "getStats",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"nextOrderId","type":"uint128"},
+				{"name":"orderCount","type":"uint128"},
+				{"name":"executedNotional","type":"uint128"},
+				{"name":"executedTicks","type":"uint128"}
+			]
+		},
+		{
+			"name": "getQueueSize",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"uint8"}
+			]
+		},
+		{
+			"name": "getSubscription",
+			"inputs": [
+				{"name":"orderId","type":"uint128"}
+			],
+			"outputs": [
+				{"name":"exists","type":"bool"},
+				{"name":"periodStart","type":"uint64"},
+				{"name":"curCycle","type":"uint8"},
+				{"name":"cycleBudget","type":"uint128"},
+				{"name":"cycleSpent","type":"uint128"},
+				{"name":"autoRenew","type":"bool"}
+			]
+		},
+		{
+			"name": "getForfeit",
+			"inputs": [
+				{"name":"orderId","type":"uint128"},
+				{"name":"cycle","type":"uint8"}
+			],
+			"outputs": [
+				{"name":"pool","type":"uint128"},
+				{"name":"fundedTicks","type":"uint128"}
+			]
+		},
+		{
+			"name": "getParams",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"modelHash","type":"uint256"},
+				{"name":"platformFeeBps","type":"uint16"}
+			]
+		},
+		{
+			"name": "getModelName",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+		{
+			"name": "InferenceOrderPlaced",
+			"inputs": [
+				{"name":"orderId","type":"uint128"},
+				{"name":"isBuy","type":"bool"},
+				{"name":"price","type":"uint256"},
+				{"name":"ticks","type":"uint128"},
+				{"name":"note","type":"address"},
+				{"name":"tokenContract","type":"address"},
+				{"name":"deadline","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "InferenceOrderCancelled",
+			"inputs": [
+				{"name":"orderId","type":"uint128"},
+				{"name":"refunded","type":"uint128"},
+				{"name":"note","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "InferenceFilled",
+			"inputs": [
+				{"name":"makerId","type":"uint128"},
+				{"name":"takerId","type":"uint128"},
+				{"name":"ticks","type":"uint128"},
+				{"name":"clearingPrice","type":"uint256"},
+				{"name":"sellerTC","type":"address"},
+				{"name":"buyerNote","type":"address"},
+				{"name":"sellerNote","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "InferenceExecuted",
+			"inputs": [
+				{"name":"ticks","type":"uint128"},
+				{"name":"clearingPrice","type":"uint256"},
+				{"name":"cost","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "InferenceRefunded",
+			"inputs": [
+				{"name":"note","type":"address"},
+				{"name":"amount","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "InferenceSubscriptionPlaced",
+			"inputs": [
+				{"name":"orderId","type":"uint128"},
+				{"name":"buyerNote","type":"address"},
+				{"name":"maxPrice","type":"uint128"},
+				{"name":"ticks","type":"uint128"},
+				{"name":"cycleBudget","type":"uint128"},
+				{"name":"autoRenew","type":"bool"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "InferenceCycleForfeited",
+			"inputs": [
+				{"name":"orderId","type":"uint128"},
+				{"name":"cycle","type":"uint8"},
+				{"name":"forfeited","type":"uint128"},
+				{"name":"fundedTicks","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "InferenceForfeitClaimed",
+			"inputs": [
+				{"name":"orderId","type":"uint128"},
+				{"name":"cycle","type":"uint8"},
+				{"name":"sellerNote","type":"address"},
+				{"name":"amount","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "InferenceOrderBookDeployed",
+			"inputs": [
+				{"name":"note","type":"address"},
+				{"name":"modelHash","type":"uint256"},
+				{"name":"modelName","type":"string"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":true,"name":"_modelHash","type":"uint256"},
+		{"init":false,"name":"_modelName","type":"string"},
+		{"components":[{"name":"note","type":"address"},{"name":"buyerPubkey","type":"uint256"},{"name":"tokenContract","type":"address"},{"name":"price","type":"uint256"},{"name":"amount","type":"uint128"},{"name":"initialAmount","type":"uint128"},{"name":"filledAccum","type":"uint128"},{"name":"escrow","type":"uint128"},{"name":"deadline","type":"uint64"},{"name":"ts","type":"uint64"},{"name":"flags","type":"uint8"},{"name":"isBuy","type":"bool"},{"name":"nextAtPrice","type":"uint128"},{"name":"prevAtPrice","type":"uint128"},{"name":"nextInOwner","type":"uint128"},{"name":"prevInOwner","type":"uint128"}],"init":false,"name":"_orders","type":"map(uint128,tuple)"},
+		{"init":false,"name":"_nextOrderId","type":"uint128"},
+		{"init":false,"name":"_orderCount","type":"uint128"},
+		{"init":false,"name":"_levels","type":"optional(cell)"},
+		{"init":false,"name":"_ownerHead","type":"map(address,uint128)"},
+		{"init":false,"name":"_ownerTail","type":"map(address,uint128)"},
+		{"init":false,"name":"_executedNotional","type":"uint128"},
+		{"init":false,"name":"_executedTicks","type":"uint128"},
+		{"init":false,"name":"_matchSeq","type":"uint64"},
+		{"components":[{"name":"entryType","type":"uint8"},{"name":"owner","type":"address"},{"name":"buyerPubkey","type":"uint256"},{"name":"isBuy","type":"bool"},{"name":"flags","type":"uint8"},{"name":"price","type":"uint256"},{"name":"amount","type":"uint128"},{"name":"escrow","type":"uint128"},{"name":"tokenContract","type":"address"},{"name":"deadline","type":"uint64"},{"name":"targetOrderId","type":"uint128"},{"name":"contOrderId","type":"uint128"},{"name":"contRemaining","type":"uint128"},{"name":"contLeftover","type":"uint128"},{"name":"contScanOrder","type":"uint128"}],"init":false,"name":"_queue","type":"map(uint8,tuple)"},
+		{"init":false,"name":"_queueHead","type":"uint8"},
+		{"init":false,"name":"_queueTail","type":"uint8"},
+		{"init":false,"name":"_queueSize","type":"uint8"},
+		{"components":[{"name":"day","type":"uint64"},{"name":"priceVolSum","type":"uint256"},{"name":"volSum","type":"uint256"}],"init":false,"name":"_daily","type":"map(uint8,tuple)"},
+		{"init":false,"name":"_curSlot","type":"uint8"},
+		{"components":[{"name":"periodStart","type":"uint64"},{"name":"curCycle","type":"uint8"},{"name":"cycleBudget","type":"uint128"},{"name":"cycleSpent","type":"uint128"},{"name":"autoRenew","type":"bool"},{"name":"exists","type":"bool"}],"init":false,"name":"_subs","type":"map(uint128,tuple)"},
+		{"init":false,"name":"_forfeitPool","type":"map(uint128,map(uint8,uint128))"},
+		{"init":false,"name":"_cycleFundedTicks","type":"map(uint128,map(uint8,uint128))"},
+		{"init":false,"name":"_cycleSellerTicks","type":"map(uint128,map(uint8,map(address,uint128)))"},
+		{"init":false,"name":"_deployerNote","type":"address"}
+	]
+}

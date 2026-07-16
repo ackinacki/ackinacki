@@ -21,12 +21,69 @@ abstract contract Upgradable {
 contract GiverV3 is Upgradable {
 
     uint8 constant MAX_CLEANUP_MSGS = 30;
-    mapping(uint256 => uint32) m_messages;
+
+    // Per-call upper bounds on faucet payouts. A send that requests more than
+    // these caps is clamped down to them rather than rejected.
+    varuint16 constant MAX_SEND_VALUE = 10000000 vmshell;
+    varuint32 constant MAX_SEND_ECC = 10000000000000000;
+    // Replay-protection storage. Outer key = expireAt so iteration is sorted by
+    // expiry — gc() can stop at the first non-expired bucket.
+    mapping(uint32 => mapping(uint256 => bool)) m_messages;
+
+    struct MessageInfo {
+        uint256 messageHash;
+        uint32 expireAt;
+    }
+    MessageInfo m_lastMsg;
 
     modifier acceptOnlyOwner {
         require(msg.pubkey() == tvm.pubkey(), 101);
         tvm.accept();
         _;
+    }
+
+    modifier accept() {
+        tvm.accept();
+        _;
+    }
+
+    modifier saveMsg() {
+        _saveMsg();
+        tvm.commit();
+        _;
+    }
+
+    function _saveMsg() inline internal {
+        gc();
+        m_messages[m_lastMsg.expireAt][m_lastMsg.messageHash] = true;
+    }
+
+    // Replaces default replay protection. Called by the framework after the
+    // signature is verified, before the message body is dispatched.
+    function afterSignatureCheck(TvmSlice body, TvmCell message) private inline returns (TvmSlice) {
+        body.load(uint64); // 64-bit timestamp header (unused for dedup)
+        uint32 expireAt = body.load(uint32);
+        require(expireAt > block.timestamp, 102);              // expired
+        require(expireAt < block.timestamp + 5 minutes, 103);  // expireAt too far
+        uint256 messageHash = tvm.hash(message);
+        optional(mapping(uint256 => bool)) m = m_messages.fetch(expireAt);
+        require(!m.hasValue() || !m.get()[messageHash], 104);  // duplicate
+        m_lastMsg = MessageInfo({messageHash: messageHash, expireAt: expireAt});
+        return body;
+    }
+
+    function gc() private {
+        uint counter = 0;
+        for ((uint32 expireAt, mapping(uint256 => bool) m) : m_messages) {
+            m;
+            if (counter >= MAX_CLEANUP_MSGS) { break; }
+            counter++;
+            if (expireAt <= block.timestamp) {
+                delete m_messages[expireAt];
+            } else {
+                break;
+            }
+        }
     }
 
     event SentCurrency(address dst, varuint16 value, mapping(uint32 => varuint32));
@@ -42,13 +99,19 @@ contract GiverV3 is Upgradable {
     receive() external {}
 
     /// @notice Transfers grams to other contracts.
-    function sendTransaction(address dest, varuint16 value, bool bounce) public pure {
-        tvm.accept();
+    function sendTransaction(address dest, varuint16 value, bool bounce) public accept saveMsg {
         dest.transfer(value, bounce, 3);
     }
 
-    function sendCurrency(address dest, varuint16 value, mapping(uint32 => varuint32) ecc) public pure {
-        tvm.accept();
+    function sendCurrency(address dest, varuint16 value, mapping(uint32 => varuint32) ecc) public accept saveMsg {
+        if (value > MAX_SEND_VALUE) {
+            value = MAX_SEND_VALUE;
+        }
+        for (uint32 id = 1; id <= 3; id++) {
+            if (ecc.exists(id) && ecc[id] > MAX_SEND_ECC) {
+                ecc[id] = MAX_SEND_ECC;
+            }
+        }
         _mintEccIfNeeded(ecc);
         if (address(this).balance <= value + 1000 vmshell) {
             gosh.mintshellq(uint64(value + 1000 vmshell - address(this).balance));
@@ -57,7 +120,7 @@ contract GiverV3 is Upgradable {
         emit SentCurrency(dest, value, ecc);
     }
 
-    function sendWithBody(address dest, varuint16 value, bool bounce, uint8 flag, TvmCell body) public acceptOnlyOwner {
+    function sendWithBody(address dest, varuint16 value, bool bounce, uint8 flag, TvmCell body) public acceptOnlyOwner saveMsg {
         if (address(this).balance <= value + 1000 vmshell) {
             gosh.mintshellq(uint64(value + 1000 vmshell - address(this).balance));
         }
@@ -74,8 +137,15 @@ contract GiverV3 is Upgradable {
         }
     }
 
-    function sendCurrencyWithFlag(address dest, varuint16 value, mapping(uint32 => varuint32) ecc, uint8 flag) public pure {
-        tvm.accept();
+    function sendCurrencyWithFlag(address dest, varuint16 value, mapping(uint32 => varuint32) ecc, uint8 flag) public accept saveMsg {
+        if (value > MAX_SEND_VALUE) {
+            value = MAX_SEND_VALUE;
+        }
+        for (uint32 id = 1; id <= 3; id++) {
+            if (ecc.exists(id) && ecc[id] > MAX_SEND_ECC) {
+                ecc[id] = MAX_SEND_ECC;
+            }
+        }
         _mintEccIfNeeded(ecc);
         if (address(this).balance <= value + 1000 vmshell) {
             gosh.mintshellq(uint64(value + 1000 vmshell - address(this).balance));
@@ -84,8 +154,15 @@ contract GiverV3 is Upgradable {
         emit SentCurrencyWithFlag(dest, value, ecc, flag);
     }
 
-    function sendCurrencyWithBody(address dest, varuint16 value, mapping(uint32 => varuint32) ecc, uint8 flag, TvmCell body) public pure {
-        tvm.accept();
+    function sendCurrencyWithBody(address dest, varuint16 value, mapping(uint32 => varuint32) ecc, uint8 flag, TvmCell body) public accept saveMsg {
+        if (value > MAX_SEND_VALUE) {
+            value = MAX_SEND_VALUE;
+        }
+        for (uint32 id = 1; id <= 3; id++) {
+            if (ecc.exists(id) && ecc[id] > MAX_SEND_ECC) {
+                ecc[id] = MAX_SEND_ECC;
+            }
+        }
         _mintEccIfNeeded(ecc);
         if (address(this).balance <= value + 1000 vmshell) {
             gosh.mintshellq(uint64(value + 1000 vmshell - address(this).balance));
@@ -93,8 +170,7 @@ contract GiverV3 is Upgradable {
         dest.transfer({value: value, bounce: false, flag: flag, currencies: ecc, body: body});
     }
 
-    function sendFreeToken(address dest) public pure {
-        tvm.accept();
+    function sendFreeToken(address dest) public accept saveMsg {
         varuint32 drop = 50 vmshell;
         uint64 value = 10 vmshell;
         mapping(uint32 => varuint32) data_cur;
@@ -114,8 +190,11 @@ contract GiverV3 is Upgradable {
         uint32 expireAt;
     }
     function getMessages() public view returns (Message[] messages) {
-        for ((uint256 msgHash, uint32 expireAt) : m_messages) {
-            messages.push(Message(msgHash, expireAt));
+        for ((uint32 expireAt, mapping(uint256 => bool) bucket) : m_messages) {
+            for ((uint256 msgHash, bool _exists) : bucket) {
+                _exists;
+                messages.push(Message(msgHash, expireAt));
+            }
         }
     }
 
@@ -129,6 +208,29 @@ contract GiverV3 is Upgradable {
 
     function getExchangeData(uint256 pubkey, address usdcWallet, uint128 totalMinted, uint64 mintNonce, uint64 mintAccumulatorNonce) public view returns (TvmCell) {
         return abi.encode(pubkey, usdcWallet, totalMinted, mintNonce, mintAccumulatorNonce);
+    }
+
+    function getUSDCBridgeData(
+        uint256 pubkey, address usdcWallet,
+        uint128 totalMinted, uint64 mintNonce, uint64 mintAccumulatorNonce,
+        uint32[] mintedKeys, uint128[] mintedValues,
+        uint32[] burnedKeys, uint128[] burnedValues,
+        TvmCell depositVoucherCode
+    ) public pure returns (TvmCell) {
+        mapping(uint32 => uint128) totalMintedBridgeByToken;
+        mapping(uint32 => uint128) totalBurnedBridgeByToken;
+        for (uint i = 0; i < mintedKeys.length; i++) {
+            totalMintedBridgeByToken[mintedKeys[i]] = mintedValues[i];
+        }
+        for (uint i = 0; i < burnedKeys.length; i++) {
+            totalBurnedBridgeByToken[burnedKeys[i]] = burnedValues[i];
+        }
+        // 9th field mirrors USDCBridge.updateCode's `userCell` passthrough so
+        // onCodeUpgrade decodes one shape on both paths. Empty here: the
+        // zerostate carries the voucher code in `depositVoucherCode`.
+        TvmCell userCell;
+        return abi.encode(pubkey, usdcWallet, totalMinted, mintNonce, mintAccumulatorNonce,
+                          totalMintedBridgeByToken, totalBurnedBridgeByToken, depositVoucherCode, userCell);
     }
 
     function getDataForAuthService(TvmCell profileCode, uint256 pubkey) public view returns (TvmCell) {

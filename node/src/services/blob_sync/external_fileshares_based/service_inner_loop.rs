@@ -47,7 +47,7 @@ pub(super) fn service_inner_loop(
             }
             Ok(Command::Share(resource_id, stream, on_complete)) => {
                 std::thread::Builder::new()
-                    .name(format!("share-{}", &resource_id))
+                    .name(format!("share-{}", resource_id))
                     .spawn_scoped(s, move || {
                         tracing::trace!("share_blob: sharing {:?}", &resource_id);
                         let share_full_path = local_storage_share_base_path.join(resource_id);
@@ -67,7 +67,7 @@ pub(super) fn service_inner_loop(
                 on_error,
             )) => {
                 std::thread::Builder::new()
-                    .name(format!("load-{}", &resource_id))
+                    .name(format!("load-{}", resource_id))
                     .spawn_scoped(s, move || {
                         #[cfg(feature = "test_rotate_after_sync")]
                         std::thread::sleep(std::time::Duration::from_secs(100));

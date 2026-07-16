@@ -1,0 +1,219 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"usdcWallet","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "onTransferReceived",
+			"inputs": [
+				{"name":"from","type":"address"},
+				{"name":"value1","type":"address"},
+				{"name":"value","type":"uint128"},
+				{"name":"value3","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "mintAndSend",
+			"inputs": [
+				{"name":"recipient","type":"address"},
+				{"name":"value","type":"uint128"},
+				{"name":"nonce","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "mintAndSendAccumulator",
+			"inputs": [
+				{"name":"buyer","type":"address"},
+				{"name":"value","type":"uint128"},
+				{"name":"nonce","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "initiateWithdrawal",
+			"inputs": [
+				{"name":"dstChainId","type":"uint256"},
+				{"name":"recipient","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "finalizeDeposit",
+			"inputs": [
+				{"name":"proof","type":"bytes"},
+				{"name":"publicInputs","type":"bytes"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "confirmDeposit",
+			"inputs": [
+				{"name":"depositId","type":"uint256"},
+				{"name":"contractAddr","type":"uint256"},
+				{"name":"dappId","type":"uint256"},
+				{"name":"amount","type":"uint128"},
+				{"name":"anAccount","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setPubkey",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "triggerTransaction",
+			"inputs": [
+				{"name":"txAddr","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"},
+				{"name":"userCell","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getUsdcWallet",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
+			"name": "getOwnerPubkey",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"uint256"}
+			]
+		},
+		{
+			"name": "getTotalMinted",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"uint128"}
+			]
+		},
+		{
+			"name": "getTotalBridged",
+			"inputs": [
+				{"name":"tokenId","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"minted","type":"uint128"},
+				{"name":"burned","type":"uint128"}
+			]
+		},
+		{
+			"name": "getDepositVoucherCodeHash",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"uint256"}
+			]
+		},
+		{
+			"name": "getNonces",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"mintNonce","type":"uint64"},
+				{"name":"mintAccumulatorNonce","type":"uint64"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+		{
+			"name": "UsdcMigrated",
+			"inputs": [
+				{"name":"from","type":"address"},
+				{"name":"value","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "UsdcMinted",
+			"inputs": [
+				{"name":"recipient","type":"address"},
+				{"name":"value","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "WithdrawalInitiated",
+			"inputs": [
+				{"name":"dstChainId","type":"uint256"},
+				{"name":"recipient","type":"bytes"},
+				{"name":"amount","type":"uint128"},
+				{"name":"tokenId","type":"uint32"},
+				{"name":"sender","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "DepositFinalized",
+			"inputs": [
+				{"name":"depositId","type":"uint256"},
+				{"name":"contractAddr","type":"uint256"},
+				{"name":"dappId","type":"uint256"},
+				{"name":"amount","type":"uint128"},
+				{"name":"anAccount","type":"uint256"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_ownerPubkey","type":"uint256"},
+		{"init":false,"name":"_usdcWallet","type":"address"},
+		{"init":false,"name":"_totalMinted","type":"uint128"},
+		{"init":false,"name":"_mintNonce","type":"uint64"},
+		{"init":false,"name":"_mintAccumulatorNonce","type":"uint64"},
+		{"init":false,"name":"_totalMintedBridgeByToken","type":"map(uint32,uint128)"},
+		{"init":false,"name":"_totalBurnedBridgeByToken","type":"map(uint32,uint128)"},
+		{"init":false,"name":"_depositVoucherCode","type":"cell"}
+	]
+}

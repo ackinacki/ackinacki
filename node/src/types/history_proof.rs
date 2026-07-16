@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::fmt::Formatter;
+use std::ops::Div;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use anyhow::ensure;
@@ -66,7 +69,9 @@ pub fn unpack_history_data_snapshot(snapshot: GlobalHistoryDataSnapshot) -> Glob
     Arc::new(RwLock::new(normalize_history_layer_data(snapshot)))
 }
 
-fn normalize_history_layer_data(snapshot: GlobalHistoryDataSnapshot) -> GlobalHistoryDataSnapshot {
+pub fn normalize_history_layer_data(
+    snapshot: GlobalHistoryDataSnapshot,
+) -> GlobalHistoryDataSnapshot {
     let history_thread_id = history_proof_thread_id();
     let mut normalized = HistoryLayerData::new();
 
@@ -87,30 +92,184 @@ fn normalize_history_layer_data(snapshot: GlobalHistoryDataSnapshot) -> GlobalHi
     normalized
 }
 
-pub fn contains_history_proof_hash(history_data: &GlobalHistoryData, hash_bytes: [u8; 32]) -> bool {
-    let history_read = history_data.read();
-    for (_layer, layer_data) in history_read.iter() {
-        for hash in layer_data.data().iter().take(*layer_data.data_len()) {
-            if *hash == hash_bytes {
-                return true;
+pub fn contains_history_proof_hash_in_cursor_layer(
+    history_data: &HistoryLayerData,
+    layer_number: LayerNumber,
+    hash_bytes: [u8; 32],
+) -> bool {
+    let Some(layer_data) = history_data.get(&layer_number) else {
+        return false;
+    };
+    layer_data.data().iter().take(*layer_data.data_len()).any(|hash| *hash == hash_bytes)
+}
+
+pub fn make_check_history_proof_hash_callback_from_cursor(
+    history_data: HistoryLayerData,
+) -> Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool> {
+    Arc::new(move |layer_number: u8, hash_bytes: [u8; 32]| -> bool {
+        contains_history_proof_hash_in_cursor_layer(&history_data, layer_number, hash_bytes)
+    })
+}
+
+pub fn make_check_history_proof_hash_callback_from_cursor_with_flag(
+    history_data: HistoryLayerData,
+    was_called: Arc<AtomicBool>,
+) -> Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool> {
+    Arc::new(move |layer_number: u8, hash_bytes: [u8; 32]| -> bool {
+        was_called.store(true, Ordering::Release);
+        contains_history_proof_hash_in_cursor_layer(&history_data, layer_number, hash_bytes)
+    })
+}
+
+pub fn initial_history_cursor() -> HistoryLayerData {
+    let mut base_layer_data = HistoryBlockData::new();
+    base_layer_data
+        .update_from_pure_data(
+            [0u8; 32],
+            BlockHeight::builder().height(0).thread_identifier(history_proof_thread_id()).build(),
+        )
+        .expect("initial history cursor must be valid");
+    BTreeMap::from_iter([(0 as LayerNumber, base_layer_data)])
+}
+
+pub fn history_cursor_layer_hashes(
+    history_data: &HistoryLayerData,
+) -> BTreeMap<LayerNumber, (BlockHeight, [u8; 32])> {
+    let mut res = BTreeMap::new();
+
+    for (layer, data) in history_data.iter() {
+        if data.last_processed_block_height().height() != &0 {
+            if data.data_len() != &0 {
+                res.insert(
+                    *layer,
+                    (*data.last_processed_block_height(), data.data()[*data.data_len() - 1]),
+                );
+            } else {
+                res.insert(
+                    *layer,
+                    (
+                        *data.last_processed_block_height(),
+                        data.data()[HISTORY_PROOF_WINDOW_SIZE - 1],
+                    ),
+                );
             }
         }
     }
 
-    false
+    res
 }
 
-pub fn make_check_history_proof_hash_callback(
-    history_data: GlobalHistoryData,
-) -> Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool> {
-    Arc::new(move |_layer_number: u8, hash_bytes: [u8; 32]| -> bool {
-        // layer_number is intentionally ignored: history proof storage is global
-        // and CHKHISTPROOF checks the whole zero-thread proof set.
-        contains_history_proof_hash(&history_data, hash_bytes)
-    })
+pub fn calculate_expected_history_proofs_from_cursor(
+    parent_cursor: &HistoryLayerData,
+    block_height: BlockHeight,
+    parent_block_height: BlockHeight,
+    parent_block_id: BlockIdentifier,
+) -> anyhow::Result<BTreeMap<LayerNumber, ProofLayerRootHash>> {
+    let mut proofs = BTreeMap::new();
+    if block_height.thread_identifier() != &history_proof_thread_id()
+        || *block_height.height() == 0
+        || *block_height.height() % HISTORY_PROOF_WINDOW_SIZE as u64 != 0
+    {
+        return Ok(proofs);
+    }
+
+    let Some(base_layer_data) = parent_cursor.get(&(0 as LayerNumber)).cloned() else {
+        anyhow::bail!(
+            "Thread history can't be empty when block with non zero height is being produced"
+        );
+    };
+    let latest_layer_root = |layer: LayerNumber| {
+        parent_cursor
+            .get(&layer)
+            .filter(|data| *data.data_len() > 0)
+            .and_then(|data| data.data().get(*data.data_len() - 1).cloned())
+    };
+
+    let root_hash =
+        base_layer_data.calculate_root_hash(latest_layer_root(1), latest_layer_root(2))?;
+    proofs.insert(
+        1 as LayerNumber,
+        ProofLayerRootHash::builder()
+            .layer(1)
+            .root_hash(root_hash)
+            .block_height(parent_block_height)
+            .block_id(parent_block_id)
+            .build(),
+    );
+
+    let additional_layers =
+        block_height.height().ilog(HISTORY_PROOF_WINDOW_SIZE as u64).saturating_sub(1);
+    let mut height_cursor = *block_height.height();
+    for i in 0..additional_layers {
+        let layer = (i + 1) as LayerNumber;
+        height_cursor = height_cursor.div(HISTORY_PROOF_WINDOW_SIZE as u64);
+        if height_cursor % HISTORY_PROOF_WINDOW_SIZE as u64 != 0 || height_cursor == 0 {
+            break;
+        }
+        let Some(mut layer_data) = parent_cursor.get(&layer).cloned() else {
+            anyhow::bail!(
+                "Thread history can't be empty when block with non zero height is being produced"
+            );
+        };
+        let previous_root = *proofs
+            .get(&layer)
+            .ok_or(anyhow::format_err!("Failed to get previous layer data"))?
+            .root_hash();
+        layer_data.update_from_pure_data(previous_root, parent_block_height)?;
+        assert!(layer_data.is_full(), "Wrong history data buffer length");
+
+        let output_layer = layer + 1;
+        let root_hash = layer_data.calculate_root_hash(
+            latest_layer_root(output_layer),
+            latest_layer_root(output_layer + 1),
+        )?;
+        proofs.insert(
+            layer + 1,
+            ProofLayerRootHash::builder()
+                .layer(layer + 1)
+                .root_hash(root_hash)
+                .block_height(parent_block_height)
+                .block_id(parent_block_id)
+                .build(),
+        );
+    }
+
+    Ok(proofs)
 }
 
-#[derive(Clone, Getters)]
+pub fn advance_history_cursor(
+    parent_cursor: &HistoryLayerData,
+    block_leaf_hash: [u8; 32],
+    block_height: BlockHeight,
+    parent_block_height: BlockHeight,
+    parent_block_id: BlockIdentifier,
+) -> anyhow::Result<(HistoryLayerData, BTreeMap<LayerNumber, ProofLayerRootHash>)> {
+    if block_height.thread_identifier() != &history_proof_thread_id() {
+        return Ok((HistoryLayerData::default(), BTreeMap::new()));
+    }
+
+    let expected_proofs = calculate_expected_history_proofs_from_cursor(
+        parent_cursor,
+        block_height,
+        parent_block_height,
+        parent_block_id,
+    )?;
+    let mut cursor = parent_cursor.clone();
+    cursor
+        .entry(0 as LayerNumber)
+        .or_default()
+        .update_from_pure_data(block_leaf_hash, block_height)?;
+    for (layer, proof) in &expected_proofs {
+        cursor
+            .entry(*layer)
+            .or_default()
+            .update_from_pure_data(*proof.root_hash(), *proof.block_height())?;
+    }
+
+    Ok((cursor, expected_proofs))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Getters)]
 pub struct HistoryBlockData {
     thread_id: ThreadIdentifier,
     last_processed_block_height: BlockHeight,
@@ -246,92 +405,15 @@ impl HistoryBlockData {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::sync::Arc;
 
     use node_types::AccountIdentifier;
     use node_types::DAppIdentifier;
-    use node_types::ThreadIdentifier;
-    use parking_lot::RwLock;
 
     use super::compute_block_leaf_hash;
     use super::compute_ext_out_messages_root;
-    use super::contains_history_proof_hash;
-    use super::make_check_history_proof_hash_callback;
-    use super::unpack_history_data_snapshot;
-    use super::GlobalHistoryData;
-    use super::HistoryBlockData;
-    use super::HistoryLayerData;
-    use super::LayerNumber;
-    use crate::types::BlockHeight;
 
     fn routing(dapp: u8, account: u8) -> node_types::AccountRouting {
         AccountIdentifier::new([account; 32]).routing(DAppIdentifier::new([dapp; 32]))
-    }
-
-    fn block_height(height: u64) -> BlockHeight {
-        BlockHeight::builder().height(height).thread_identifier(ThreadIdentifier::default()).build()
-    }
-
-    fn history_data_with_layers(layers: HistoryLayerData) -> GlobalHistoryData {
-        Arc::new(RwLock::new(layers))
-    }
-
-    #[test]
-    fn check_history_proof_callback_searches_zero_thread() -> anyhow::Result<()> {
-        let hash = [7u8; 32];
-        let mut layer_data = HistoryBlockData::new();
-        layer_data.update_from_pure_data(hash, block_height(1))?;
-        let history_data = history_data_with_layers(BTreeMap::from_iter([(0, layer_data)]));
-
-        let callback = make_check_history_proof_hash_callback(history_data);
-
-        assert!(callback(99, hash));
-        Ok(())
-    }
-
-    #[test]
-    fn check_history_proof_callback_searches_all_layers() -> anyhow::Result<()> {
-        let hash = [8u8; 32];
-        let mut layer_data = HistoryBlockData::new();
-        layer_data.update_from_pure_data(hash, block_height(1))?;
-        let history_data = history_data_with_layers(BTreeMap::from_iter([(2, layer_data)]));
-
-        let callback = make_check_history_proof_hash_callback(history_data);
-
-        assert!(callback(0, hash));
-        Ok(())
-    }
-
-    #[test]
-    fn check_history_proof_does_not_match_unfilled_zero_entries() {
-        let layer_data = HistoryBlockData::new();
-        let history_data = history_data_with_layers(BTreeMap::from_iter([(0, layer_data)]));
-
-        assert!(!contains_history_proof_hash(&history_data, [0u8; 32]));
-    }
-
-    #[test]
-    fn check_history_proof_uses_direct_default_thread_storage() -> anyhow::Result<()> {
-        let hash = [9u8; 32];
-        let mut layer_data = HistoryBlockData::new();
-        layer_data.update_from_pure_data(hash, block_height(1))?;
-        let history_data = history_data_with_layers(BTreeMap::from_iter([(0, layer_data)]));
-
-        assert!(contains_history_proof_hash(&history_data, hash));
-        Ok(())
-    }
-
-    #[test]
-    fn unpack_history_snapshot_uses_direct_layer_storage() -> anyhow::Result<()> {
-        let hash = [11u8; 32];
-        let mut layer_data = HistoryBlockData::new();
-        layer_data.update_from_pure_data(hash, block_height(1))?;
-
-        let history_data =
-            unpack_history_data_snapshot(BTreeMap::from_iter([(0 as LayerNumber, layer_data)]));
-
-        assert!(contains_history_proof_hash(&history_data, hash));
-        Ok(())
     }
 
     #[test]

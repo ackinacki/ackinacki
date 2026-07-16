@@ -21,6 +21,7 @@ use typed_builder::TypedBuilder;
 use super::attestation_target_checkpoints::AncestorBlocksFinalizationCheckpoints;
 use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperSet;
+use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::BLSSignatureScheme;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::live_metrics::LiveBlockStateCounter;
@@ -34,6 +35,9 @@ use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
 use crate::types::bp_selector::ProducerSelector;
 use crate::types::envelope_hash::AckiNackiEnvelopeHash;
+use crate::types::history_proof::compute_block_leaf_hash;
+use crate::types::history_proof::initial_history_cursor;
+use crate::types::history_proof::HistoryLayerData;
 use crate::types::notification::Notification;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockHeight;
@@ -274,6 +278,9 @@ pub struct AckiNackiBlockState {
     known_attestation_interested_parties: HashSet<NodeIdentifier>,
 
     envelope_hash: Option<AckiNackiEnvelopeHash>,
+    #[setters(skip)]
+    history_cursor: Option<HistoryLayerData>,
+    history_block_leaf_hash: Option<[u8; 32]>,
 
     // block_processing service marker
     #[setters(bool, assert_none = false)]
@@ -543,7 +550,13 @@ has_cross_thread_ref_data_prepared={:?}\
             return Ok(());
         }
         self.stored = Some(true);
-        self.envelope_hash = Some(crate::types::envelope_hash::envelope_hash(block));
+        let envelope_hash = crate::types::envelope_hash::envelope_hash(block);
+        self.history_block_leaf_hash = Some(compute_block_leaf_hash(
+            block.data().identifier().as_array(),
+            &envelope_hash.0,
+            block.data().common_section().tracked_ext_out_messages_root(),
+        ));
+        self.envelope_hash = Some(envelope_hash);
         tracing::trace!("{:?} Call setter: set_envelope_hash={:?}", &self, self.envelope_hash);
         self.notify_changed()
     }
@@ -569,6 +582,23 @@ has_cross_thread_ref_data_prepared={:?}\
         }
         self.stored = Some(true);
         self.envelope_hash = Some(AckiNackiEnvelopeHash([0; 32]));
+        self.history_block_leaf_hash = Some([0; 32]);
+        self.history_cursor = Some(initial_history_cursor());
+        self.notify_changed()
+    }
+
+    pub fn set_history_cursor(&mut self, cursor: HistoryLayerData) -> anyhow::Result<()> {
+        tracing::trace!("{:?} Call setter: set_history_cursor", &self);
+        if let Some(existing) = &self.history_cursor {
+            anyhow::ensure!(existing == &cursor, "history cursor mismatch");
+            return Ok(());
+        }
+        self.set_history_cursor_unchecked(cursor)
+    }
+
+    pub fn set_history_cursor_unchecked(&mut self, cursor: HistoryLayerData) -> anyhow::Result<()> {
+        tracing::trace!("{:?} Call setter: set_history_cursor_unchecked", &self);
+        self.history_cursor = Some(cursor);
         self.notify_changed()
     }
 

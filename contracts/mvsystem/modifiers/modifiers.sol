@@ -22,6 +22,7 @@ abstract contract Modifiers is Errors {
     uint8 constant m_Boost = 7;
     uint8 constant m_Miner = 8;
     uint8 constant m_Mirror = 9;
+    uint8 constant m_RootPN = 10;
 
     //Deploy constants
     uint64 constant FEE_DEPLOY_POPIT_GAME_WALLET = 51 vmshell;
@@ -96,6 +97,8 @@ abstract contract Modifiers is Errors {
     uint64 constant MinerTapDelay = 262000;
 
     uint64 constant IntervalRadius = 20;
+
+    address constant ROOT_PN_ADDRESS = address.makeAddrStd(0, 0x1010101010101010101010101010101010101010101010101010101010101010);
 
     modifier onlyOwnerPubkey(uint256 rootpubkey) {
         require(msg.pubkey() == rootpubkey, ERR_NOT_OWNER);

@@ -22,6 +22,7 @@ pub struct MockFileSystemClient {
     remove_file_calls: Arc<Mutex<Vec<PathBuf>>>,
 }
 
+#[allow(dead_code)]
 impl MockFileSystemClient {
     pub fn new() -> Self {
         MockFileSystemClient {

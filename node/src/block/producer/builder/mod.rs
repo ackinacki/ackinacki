@@ -192,8 +192,8 @@ pub struct BlockBuilder {
     pub(crate) tracked_ext_out_messages: BTreeMap<AccountRouting, Vec<[u8; 32]>>,
 
     is_verifier: bool,
-    // #[builder(default)]
-    // pub(crate) check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>>,
+    #[builder(default)]
+    pub(crate) check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>>,
 }
 
 impl BlockBuilder {

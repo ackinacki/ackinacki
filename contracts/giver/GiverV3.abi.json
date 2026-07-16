@@ -121,6 +121,24 @@
 			]
 		},
 		{
+			"name": "getUSDCBridgeData",
+			"inputs": [
+				{"name":"pubkey","type":"uint256"},
+				{"name":"usdcWallet","type":"address"},
+				{"name":"totalMinted","type":"uint128"},
+				{"name":"mintNonce","type":"uint64"},
+				{"name":"mintAccumulatorNonce","type":"uint64"},
+				{"name":"mintedKeys","type":"uint32[]"},
+				{"name":"mintedValues","type":"uint128[]"},
+				{"name":"burnedKeys","type":"uint32[]"},
+				{"name":"burnedValues","type":"uint128[]"},
+				{"name":"depositVoucherCode","type":"cell"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
 			"name": "getDataForAuthService",
 			"inputs": [
 				{"name":"profileCode","type":"cell"},
@@ -217,8 +235,8 @@
 	],
 	"fields": [
 		{"init":true,"name":"_pubkey","type":"uint256"},
-		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
-		{"init":false,"name":"m_messages","type":"map(uint256,uint32)"}
+		{"init":false,"name":"m_messages","type":"map(uint32,map(uint256,bool))"},
+		{"components":[{"name":"messageHash","type":"uint256"},{"name":"expireAt","type":"uint32"}],"init":false,"name":"m_lastMsg","type":"tuple"}
 	]
 }

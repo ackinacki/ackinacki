@@ -7,6 +7,8 @@ use http_server::ExtMsgFeedbackList;
 use node_types::TemporaryBlockId;
 use typed_builder::TypedBuilder;
 
+use crate::external_messages::QueuedExtMessage;
+use crate::external_messages::Stamp;
 use crate::node::SignerIndex;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
@@ -52,6 +54,9 @@ pub struct ProducedBlock {
     temporary_block_id: TemporaryBlockId,
     metrics_memento_init_time: Option<Instant>,
     cross_thread_ref_data: CrossThreadRefData,
+    processed_ext_messages: Vec<(Stamp, QueuedExtMessage)>,
+    #[builder(default)]
+    must_reproduce_with_real_parent: bool,
 }
 
 impl ProducedBlock {

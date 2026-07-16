@@ -110,7 +110,7 @@ pub fn promote_temporary_to_block_state(
     })?;
 
     // ── Step 3: Update parent_ref on all temporary children ──
-    for (_thread, child_temp_ids) in snapshot.known_children_incomplete.iter() {
+    for child_temp_ids in snapshot.known_children_incomplete.values() {
         for child_temp_id in child_temp_ids {
             if let Some(child_temp_arc) = block_state_repository.get_temporary(child_temp_id) {
                 let mut child_temp = child_temp_arc.write();

@@ -333,7 +333,7 @@ impl RoutingService {
                                 )
                                 .expect("Must be able to create node instances");
                                 let node_thread = std::thread::Builder::new()
-                                    .name(format!("node_{}", &thread_identifier))
+                                    .name(format!("node_{}", thread_identifier))
                                     .spawn_scoped_critical(s, move || {
                                         tracing::trace!("Starting thread: {}", &thread_identifier);
                                         node.execute()
@@ -362,7 +362,7 @@ impl RoutingService {
                                 .expect("Must be able to create node instances");
                                 node.is_spawned_from_node_sync = true;
                                 let node_thread = std::thread::Builder::new()
-                                    .name(format!("node_{}", &thread_identifier))
+                                    .name(format!("node_{}", thread_identifier))
                                     .spawn_scoped_critical(s, move || {
                                         tracing::trace!("Starting thread: {}", &thread_identifier);
                                         node.execute()

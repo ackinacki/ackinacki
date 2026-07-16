@@ -760,7 +760,7 @@ impl AttestationSendService {
         &mut self,
         candidates: &UnfinalizedBlocksSnapshot,
     ) {
-        for (_, (candidate, _)) in candidates.blocks().iter() {
+        for (candidate, _) in candidates.blocks().values() {
             let attested_block_to_producer = self.collect_attested_blocks_to_receiver(candidate);
 
             if !attested_block_to_producer.is_empty() {

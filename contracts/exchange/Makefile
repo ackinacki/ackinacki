@@ -1,4 +1,4 @@
-TVCS := Exchange
+TVCS := USDCBridge DepositVoucher
 
 # Override compilation rule BEFORE include to add --base-path for cross-directory imports
 ./%.tvc ./%.abi.json: ./%.sol

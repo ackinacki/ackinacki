@@ -50,7 +50,7 @@ where
         }
         panic!(
             "This should never happen. Somehow the bitmask table did not have a defult rule that matches all or the default rule did not match the value. Mask: {:?}, value: {:?}",
-            &self,
+            self,
             bits
         );
     }

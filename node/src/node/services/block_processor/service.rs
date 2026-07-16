@@ -52,6 +52,11 @@ use crate::repository::Repository;
 use crate::repository::RepositoryError;
 use crate::services::cross_thread_ref_data_availability_synchronization::CrossThreadRefDataAvailabilitySynchronizationServiceInterface;
 use crate::types::bp_selector::BlockGap;
+use crate::types::envelope_hash::envelope_hash;
+use crate::types::history_proof::advance_history_cursor;
+use crate::types::history_proof::compute_block_leaf_hash;
+use crate::types::history_proof::history_proof_thread_id;
+use crate::types::history_proof::HistoryLayerData;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockHeight;
 use crate::types::BlockIndex;
@@ -895,6 +900,24 @@ fn process_candidate_block(
                 );
             });
 
+            if !store_history_cursor_for_applied_block(
+                block_state,
+                &parent_block_state,
+                repository,
+                candidate_block,
+            )? {
+                tracing::trace!(
+                    target: "monit",
+                    "{block_state:?} history proofs verification failed after apply"
+                );
+                invalidate_branch(block_state.clone(), block_state_repository, filter_prehistoric);
+                let _ = send.send_nack(
+                    block_state.clone(),
+                    NackReason::BadBlock { envelope: candidate_block.clone() },
+                );
+                return Ok(ProcessingIterationResult::Continue);
+            }
+
             let common_section = candidate_block.data().common_section().clone();
             let parent_seq_no = parent_block_state.guarded(|e| *e.block_seq_no());
             let must_save_state = *common_section.directives().share_state_resources()
@@ -937,6 +960,85 @@ fn process_candidate_block(
     }
 
     Ok(ProcessingIterationResult::Continue)
+}
+
+fn store_history_cursor_for_applied_block(
+    block_state: &BlockState,
+    parent_block_state: &BlockState,
+    repository: &RepositoryImpl,
+    candidate_block: &Envelope<AckiNackiBlock>,
+) -> anyhow::Result<bool> {
+    let Some(block_version_state) = block_state.guarded(|e| e.block_version_state().clone()) else {
+        anyhow::bail!(
+            "Missing block version state while updating history cursor for {:?}",
+            block_state.block_identifier(),
+        );
+    };
+    if repository.config_read().is_retired(block_version_state.to_use()) {
+        return Ok(true);
+    }
+
+    let Some(parent_block_height) = parent_block_state.guarded(|e| *e.block_height()) else {
+        anyhow::bail!(
+            "Missing parent block height while updating history cursor for {:?}",
+            block_state.block_identifier(),
+        );
+    };
+    let block = candidate_block.data();
+    let parent_history_cursor =
+        if let Some(cursor) = parent_block_state.guarded(|e| e.history_cursor().clone()) {
+            cursor
+        } else {
+            let Some(parent_block_version) =
+                parent_block_state.guarded(|e| e.block_version_state().clone())
+            else {
+                anyhow::bail!(
+                    "Missing parent block version while updating history cursor for {:?}",
+                    block_state.block_identifier(),
+                );
+            };
+            if !repository.config_read().is_retired(parent_block_version.to_use()) {
+                anyhow::bail!(
+                    "Missing history cursor for real parent block: {:?}",
+                    parent_block_state.block_identifier()
+                );
+            }
+            let cursor = if block.common_section().block_height().thread_identifier()
+                == &history_proof_thread_id()
+            {
+                repository.init_history_proof_data(parent_block_height)?;
+                let history_data = repository.get_history_proof_data();
+                let cursor = history_data.read().clone();
+                cursor
+            } else {
+                HistoryLayerData::default()
+            };
+            parent_block_state.guarded_mut(|e| e.set_history_cursor(cursor.clone()))?;
+            cursor
+        };
+    let envelope_hash = envelope_hash(candidate_block);
+    let history_block_leaf_hash = compute_block_leaf_hash(
+        block.identifier().as_array(),
+        &envelope_hash.0,
+        block.common_section().tracked_ext_out_messages_root(),
+    );
+    let (history_cursor, expected_history_proofs) = advance_history_cursor(
+        &parent_history_cursor,
+        history_block_leaf_hash,
+        *block.common_section().block_height(),
+        parent_block_height,
+        *parent_block_state.block_identifier(),
+    )?;
+    if &expected_history_proofs != block.common_section().history_proofs() {
+        tracing::trace!(
+            target: "monit",
+            "Applied block history proofs mismatch: expected={expected_history_proofs:?} actual={:?}",
+            block.common_section().history_proofs(),
+        );
+        return Ok(false);
+    }
+    block_state.guarded_mut(|e| e.set_history_cursor(history_cursor))?;
+    Ok(true)
 }
 
 // Function verifies block signatures and attestation signatures from common section

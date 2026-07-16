@@ -1,0 +1,98 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setModel",
+			"inputs": [
+				{"name":"canonicalName","type":"string"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setModels",
+			"inputs": [
+				{"name":"names","type":"string[]"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "removeModel",
+			"inputs": [
+				{"name":"canonicalName","type":"string"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "orderBookOf",
+			"inputs": [
+				{"name":"canonicalName","type":"string"}
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
+			"name": "has",
+			"inputs": [
+				{"name":"canonicalName","type":"string"}
+			],
+			"outputs": [
+				{"name":"value0","type":"bool"}
+			]
+		},
+		{
+			"name": "modelHashOf",
+			"inputs": [
+				{"name":"canonicalName","type":"string"}
+			],
+			"outputs": [
+				{"name":"value0","type":"uint256"}
+			]
+		},
+		{
+			"name": "count",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"n","type":"uint32"}
+			]
+		},
+		{
+			"name": "inferenceOrderBookCode",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"codeHash","type":"uint256"},
+				{"name":"codeDepth","type":"uint16"}
+			]
+		}
+	],
+	"events": [
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_models","type":"map(uint256,bool)"}
+	]
+}

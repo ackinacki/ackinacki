@@ -131,6 +131,7 @@ pub fn tvm_call_msg(
         CommonMsgInfo::IntMsgInfo(_) => tvm_vm::int!(0),
         CommonMsgInfo::ExtInMsgInfo(_) => tvm_vm::int!(-1),
         CommonMsgInfo::ExtOutMsgInfo(_) => return Err(anyhow::anyhow!("invalid message type")),
+        CommonMsgInfo::ExtOutMsgInfoV2(_) => return Err(anyhow::anyhow!("invalid message type")),
     };
     stack
         .push(tvm_vm::int!(balance)) // token balance of contract

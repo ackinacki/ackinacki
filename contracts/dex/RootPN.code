@@ -1,0 +1,6501 @@
+.fragment DexLib__extractDataCell_37d491e3, {
+	.loc dex/libraries/DexLib.sol, 189
+	CTOS
+	.loc dex/libraries/DexLib.sol, 190
+	PUSHINT 5
+	SDSKIPFIRST
+	.loc dex/libraries/DexLib.sol, 191
+	LDREF
+	NIP
+	.loc dex/libraries/DexLib.sol, 192
+	PLDREF
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_buildInferenceOrderBookStateInit_8a587b83, {
+	.loc dex/libraries/DexLib.sol, 171
+	PUSHSLICE x2_
+	NULL
+	BLKPUSH 3, 0
+	PUSHINT 0
+	NULL
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	DUP
+	NULL
+	PUSHREF {
+	}
+	PUSHINT 21
+	ROLLX
+	NEWC
+	PUSHINT 321
+	STZEROES
+	STU 256
+	STREF
+	STDICT
+	STU 128
+	STU 128
+	STDICT
+	ROLLREV 16
+	NEWC
+	STDICT
+	STDICT
+	STU 128
+	STU 128
+	STU 64
+	STDICT
+	STU 8
+	STU 8
+	STU 8
+	ROLLREV 7
+	NEWC
+	STDICT
+	STU 8
+	STDICT
+	STDICT
+	ROLLREV 3
+	NEWC
+	STDICT
+	STDICT
+	STSLICE
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	SWAP
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_buildOracleEventListStateInit_3183dbfe, {
+	.loc dex/libraries/DexLib.sol, 118
+	NULL
+	PUSHREF {
+	}
+	PUSHINT 0
+	XC2PU S3, S2, S2
+	PUXC2 S0, S2, S5
+	NEWC
+	PUSHINT 322
+	STZEROES
+	STSLICE
+	ROLLREV 6
+	NEWC
+	STU 128
+	STU 256
+	STU 256
+	STU 16
+	STREF
+	STDICT
+	STBREFR
+	ENDC
+	SWAP
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_buildOracleStateInit_5c54517d, {
+	.loc dex/libraries/DexLib.sol, 95
+	PUSHINT 0
+	DUP
+	PUSHREF {
+	}
+	NEWC
+	PUSHINT 577
+	STZEROES
+	STREF
+	STU 256
+	STU 16
+	STREF
+	ENDC
+	SWAP
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_buildOrderBookCode_9d6a92db, {
+	.loc dex/libraries/DexLib.sol, 158
+	SWAP
+	NEWC
+	STREF
+	ENDC
+	.loc dex/libraries/DexLib.sol, 159
+	SWAP
+	CTOS
+	SWAP
+	
+	CALLREF {
+		PUSH S1
+		PUSHSLICE x8adb35
+		SDEQ
+		PUSHREFCONT {
+			SWAP      ; salt sliceCode
+			LDREF
+			LDREF
+			DROP         ; salt selfCallCode usualSelector
+			XCHG S1, S2  ; selfCallCode salt usualSelector
+			CTOS         ; selfCallCode salt usualSelector
+			CALLREF {
+				
+				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
+				LDU 10
+				NIP
+				DUP
+				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
+				PUSHCONT {
+					LDREF
+				}
+				PUSHCONT {
+					PUSHREF {
+					}
+					SWAP
+				}
+				IFELSE
+							; selfCallCode salt restUsualSelector dict version intSelector
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+				DROP
+							; selfCallCode salt restUsualSelector dict version
+				SWAP        ; selfCallCode salt restUsualSelector version dict
+				NEWC        ; selfCallCode salt restUsualSelector version dict builder
+				STSLICECONST xF4A4_ ; DICTPUSHCONST
+				STDICT
+				PUSHINT 32
+				STUR 10
+				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
+				STREF       ; selfCallCode salt restUsualSelector builder
+				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
+				STREF       ; selfCallCode restUsualSelector builder
+				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
+				STBREF      ; selfCallCode restUsualSelector usualBuilder
+				STSLICE     ; selfCallCode usualBuilder
+	
+			}
+			NEWC        ; selfCallCode usualBuilder mainBuilder
+			STSLICECONST x8adb35
+			XCHG S1, S2 ; usualBuilder selfCallCode mainBuilder
+			STREF
+			STBREF
+			ENDC
+		}
+		PUSHREFCONT {
+			SWAP
+			CALLREF {
+				
+				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
+				LDU 10
+				NIP
+				DUP
+				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
+				PUSHCONT {
+					LDREF
+				}
+				PUSHCONT {
+					PUSHREF {
+					}
+					SWAP
+				}
+				IFELSE
+							; selfCallCode salt restUsualSelector dict version intSelector
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+				DROP
+							; selfCallCode salt restUsualSelector dict version
+				SWAP        ; selfCallCode salt restUsualSelector version dict
+				NEWC        ; selfCallCode salt restUsualSelector version dict builder
+				STSLICECONST xF4A4_ ; DICTPUSHCONST
+				STDICT
+				PUSHINT 32
+				STUR 10
+				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
+				STREF       ; selfCallCode salt restUsualSelector builder
+				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
+				STREF       ; selfCallCode restUsualSelector builder
+				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
+				STBREF      ; selfCallCode restUsualSelector usualBuilder
+				STSLICE     ; selfCallCode usualBuilder
+	
+			}
+			ENDC
+		}
+		IFELSE
+	}
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_buildOrderBookStateInit_755a92d0, {
+	.loc dex/libraries/DexLib.sol, 145
+	BLKSWAP 2, 3
+	CALLREF {
+		.inline DexLib_buildOrderBookCode_9d6a92db
+	}
+	.loc dex/libraries/DexLib.sol, 146
+	PUSHINT 0
+	BLKPUSH 3, 0
+	NULL
+	PUSHINT 0
+	BLKPUSH 7, 0
+	NULL
+	BLKPUSH 3, 0
+	PUSHINT 0
+	DUP
+	PUSHSLICE x2_
+	PUSHINT 0
+	DUP
+	PUSHINT 3
+	PUSHINT 23
+	BLKSWX
+	XCHG S2
+	NEWC
+	PUSHINT 321
+	STZEROES
+	STU 256
+	STU 256
+	STU 32
+	PUSHINT 22
+	ROLLREVX
+	NEWC
+	STU 256
+	STU 16
+	STSLICE
+	STU 64
+	STU 32
+	STDICT
+	STDICT
+	STDICT
+	ROLLREV 14
+	NEWC
+	STDICT
+	STU 128
+	STU 32
+	STI 1
+	STI 1
+	STU 128
+	STU 128
+	STU 128
+	STU 64
+	STDICT
+	STU 8
+	STU 8
+	STU 8
+	STU 32
+	STBREFR
+	STBREFR
+	ENDC
+	SWAP
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_buildPMPCode_c2a229cb, {
+	.loc dex/libraries/DexLib.sol, 77
+	SWAP
+	NEWC
+	STREF
+	ENDC
+	.loc dex/libraries/DexLib.sol, 78
+	SWAP
+	CTOS
+	SWAP
+	
+	CALLREF {
+		PUSH S1
+		PUSHSLICE x8adb35
+		SDEQ
+		PUSHREFCONT {
+			SWAP      ; salt sliceCode
+			LDREF
+			LDREF
+			DROP         ; salt selfCallCode usualSelector
+			XCHG S1, S2  ; selfCallCode salt usualSelector
+			CTOS         ; selfCallCode salt usualSelector
+			CALLREF {
+				
+				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
+				LDU 10
+				NIP
+				DUP
+				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
+				PUSHCONT {
+					LDREF
+				}
+				PUSHCONT {
+					PUSHREF {
+					}
+					SWAP
+				}
+				IFELSE
+							; selfCallCode salt restUsualSelector dict version intSelector
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+				DROP
+							; selfCallCode salt restUsualSelector dict version
+				SWAP        ; selfCallCode salt restUsualSelector version dict
+				NEWC        ; selfCallCode salt restUsualSelector version dict builder
+				STSLICECONST xF4A4_ ; DICTPUSHCONST
+				STDICT
+				PUSHINT 32
+				STUR 10
+				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
+				STREF       ; selfCallCode salt restUsualSelector builder
+				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
+				STREF       ; selfCallCode restUsualSelector builder
+				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
+				STBREF      ; selfCallCode restUsualSelector usualBuilder
+				STSLICE     ; selfCallCode usualBuilder
+	
+			}
+			NEWC        ; selfCallCode usualBuilder mainBuilder
+			STSLICECONST x8adb35
+			XCHG S1, S2 ; usualBuilder selfCallCode mainBuilder
+			STREF
+			STBREF
+			ENDC
+		}
+		PUSHREFCONT {
+			SWAP
+			CALLREF {
+				
+				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
+				LDU 10
+				NIP
+				DUP
+				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
+				PUSHCONT {
+					LDREF
+				}
+				PUSHCONT {
+					PUSHREF {
+					}
+					SWAP
+				}
+				IFELSE
+							; selfCallCode salt restUsualSelector dict version intSelector
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+				DROP
+							; selfCallCode salt restUsualSelector dict version
+				SWAP        ; selfCallCode salt restUsualSelector version dict
+				NEWC        ; selfCallCode salt restUsualSelector version dict builder
+				STSLICECONST xF4A4_ ; DICTPUSHCONST
+				STDICT
+				PUSHINT 32
+				STUR 10
+				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
+				STREF       ; selfCallCode salt restUsualSelector builder
+				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
+				STREF       ; selfCallCode restUsualSelector builder
+				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
+				STBREF      ; selfCallCode restUsualSelector usualBuilder
+				STSLICE     ; selfCallCode usualBuilder
+	
+			}
+			ENDC
+		}
+		IFELSE
+	}
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_buildPMPStateInit_7238fd70, {
+	.loc dex/libraries/DexLib.sol, 64
+	BLKSWAP 2, 3
+	CALLREF {
+		.inline DexLib_buildPMPCode_c2a229cb
+	}
+	.loc dex/libraries/DexLib.sol, 65
+	PUSHINT 0
+	DUP
+	PUSHSLICE x2_
+	PUSHINT 0
+	PUSHREF {
+	}
+	NULL
+	PUSHINT 0
+	BLKPUSH 3, 0
+	NULL
+	PUSHINT 0
+	BLKPUSH 3, 0
+	NULL
+	PAIR
+	PUSHINT 0
+	NULL
+	BLKPUSH 4, 0
+	PUSHINT 0
+	DUP
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	PUSHINT 0
+	DUP
+	NULL
+	PUSHINT 0
+	BLKPUSH 10, 0
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	PUSHREF {
+	}
+	PUSHSLICE x2_
+	PUSHINT 2
+	PUSHINT 52
+	BLKSWX
+	SWAP
+	PUSHINT 53
+	ROLLX
+	PUSHREF {
+	}
+	DUP
+	NEWC
+	PUSHINT 321
+	STZEROES
+	STREF
+	STREF
+	STU 32
+	STU 256
+	STU 256
+	PUSHINT 50
+	ROLLREVX
+	NEWC
+	STSLICE
+	STREF
+	STU 128
+	STDICT
+	STDICT
+	PUSHINT 45
+	ROLLREVX
+	NEWC
+	STDICT
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	PUSHINT 37
+	ROLLREVX
+	NEWC
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		STU 32
+	}
+	IFELSE
+	STI 1
+	STU 32
+	STDICT
+	STU 64
+	STU 64
+	STI 1
+	STDICT
+	STDICT
+	PUSHINT 24
+	ROLLREVX
+	NEWC
+	STDICT
+	STU 128
+	STU 128
+	STDICT
+	STDICT
+	PUSHINT 19
+	ROLLREVX
+	NEWC
+	STDICT
+	STDICT
+	STDICT
+	STU 128
+	ROLLREV 15
+	NEWC
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 32
+	STDICT
+	STI 1
+	STI 1
+	STU 128
+	STDICT
+	STU 128
+	STI 1
+	STU 128
+	STU 128
+	STDICT
+	ROLLREV 5
+	NEWC
+	STREF
+	STI 1
+	STSLICE
+	STI 1
+	STU 128
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	SWAP
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_buildPrivateNoteInitData_6041c348, {
+	.loc dex/libraries/DexLib.sol, 37
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	DUP
+	PUSHINT 0
+	BLKPUSH 5, 0
+	NULL
+	PUSHINT 0
+	NULL
+	PAIR
+	PUSHINT 0
+	BLKPUSH 6, 0
+	NULL
+	DUP
+	PUSHINT 0
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	NULL
+	PAIR
+	PUSHINT 0
+	BLKPUSH 5, 0
+	NULL
+	DUP
+	PUSHREF {
+	}
+	DUP
+	PUSHINT 0
+	BLKPUSH 7, 0
+	PUSHREF {
+	}
+	DUP
+	PUSHINT 0
+	PUSHINT 48
+	ROLLX
+	PUSHINT 0
+	DUP
+	PAIR
+	NEWC
+	PUSHINT 258
+	STZEROES
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 256
+	STU 32
+	STU 256
+	PUSHINT 48
+	ROLLREVX
+	NEWC
+	STU 256
+	STREF
+	STREF
+	STU 256
+	STU 16
+	STU 256
+	STU 16
+	PUSHINT 41
+	ROLLREVX
+	NEWC
+	STU 256
+	STU 16
+	STU 256
+	STU 16
+	STREF
+	STREF
+	STDICT
+	PUSHINT 34
+	ROLLREVX
+	NEWC
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		STSLICE
+	}
+	IFELSE
+	STU 256
+	STU 128
+	STU 32
+	PUSHINT 30
+	ROLLREVX
+	NEWC
+	STU 128
+	STU 32
+	STU 128
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 32
+	STDICT
+	STDICT
+	STDICT
+	PUSHINT 24
+	ROLLREVX
+	NEWC
+	STDICT
+	STU 32
+	STDICT
+	STDICT
+	STU 64
+	STU 64
+	STI 1
+	STU 128
+	STU 32
+	STU 256
+	STI 1
+	ROLLREV 13
+	NEWC
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 32
+	STDICT
+	STDICT
+	STU 128
+	STU 32
+	STI 1
+	STI 1
+	STU 128
+	STU 32
+	STDICT
+	STDICT
+	STU 32
+	STU 32
+	STU 64
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	SWAP
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_computeCanonicalNoteAddressFromHash_87a459ea, {
+	.loc dex/libraries/DexLib.sol, 270
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	DUP
+	PUSHINT 0
+	BLKPUSH 5, 0
+	NULL
+	PUSHINT 0
+	NULL
+	PAIR
+	PUSHINT 0
+	BLKPUSH 6, 0
+	NULL
+	DUP
+	PUSHINT 0
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	NULL
+	PAIR
+	PUSHINT 0
+	BLKPUSH 5, 0
+	NULL
+	DUP
+	PUSHREF {
+	}
+	DUP
+	PUSHINT 0
+	BLKPUSH 7, 0
+	PUSHREF {
+	}
+	DUP
+	PUSHINT 0
+	PUSHINT 48
+	ROLLX
+	PUSHINT 0
+	DUP
+	PAIR
+	NEWC
+	PUSHINT 258
+	STZEROES
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 256
+	STU 32
+	STU 256
+	PUSHINT 48
+	ROLLREVX
+	NEWC
+	STU 256
+	STREF
+	STREF
+	STU 256
+	STU 16
+	STU 256
+	STU 16
+	PUSHINT 41
+	ROLLREVX
+	NEWC
+	STU 256
+	STU 16
+	STU 256
+	STU 16
+	STREF
+	STREF
+	STDICT
+	PUSHINT 34
+	ROLLREVX
+	NEWC
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		STSLICE
+	}
+	IFELSE
+	STU 256
+	STU 128
+	STU 32
+	PUSHINT 30
+	ROLLREVX
+	NEWC
+	STU 128
+	STU 32
+	STU 128
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 32
+	STDICT
+	STDICT
+	STDICT
+	PUSHINT 24
+	ROLLREVX
+	NEWC
+	STDICT
+	STU 32
+	STDICT
+	STDICT
+	STU 64
+	STU 64
+	STI 1
+	STU 128
+	STU 32
+	STU 256
+	STI 1
+	ROLLREV 13
+	NEWC
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 32
+	STDICT
+	STDICT
+	STU 128
+	STU 32
+	STI 1
+	STI 1
+	STU 128
+	STU 32
+	STDICT
+	STDICT
+	STU 32
+	STU 32
+	STU 64
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 274
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 275
+	XC2PU S0, S2, S1
+	HASHCU
+	SWAP2
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_computeRootModelAddressFromHash_64f8cd4f, {
+	.loc dex/libraries/DexLib.sol, 206
+	TUCK
+	PUSHINT 0
+	ROLL 3
+	NEWC
+	STU 256
+	STU 64
+	STZERO
+	STU 256
+	SWAP
+	NEWC
+	STSLICE
+	STBREFR
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 210
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 211
+	XC2PU S0, S2, S1
+	HASHCU
+	SWAP2
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_computeCanonicalTokenContractAddress_a57c2655, {
+	.loc dex/libraries/DexLib.sol, 226
+	BLKSWAP 2, 5
+	ROLL 4
+	PUSH S4
+	CALLREF {
+		.inline DexLib_computeRootModelAddressFromHash_64f8cd4f
+	}
+	.loc dex/libraries/DexLib.sol, 228
+	PUSHINT 0
+	BLKPUSH 15, 0
+	BLKPUSH 4, 0
+	PUSHREF {
+	}
+	PUSHSLICE x2_
+	PUSHINT 0
+	PUSHSLICE x2_
+	PUSHINT 0
+	PUSHSLICE x2_
+	PUSHINT 0
+	BLKPUSH 2, 0
+	PUSHREF {
+	}
+	PUSHSLICE x2_
+	PUSHINT 0
+	BLKPUSH 4, 0
+	PUSHINT 37
+	ROLLX
+	PUSH S37
+	PUSH S39
+	PUSHINT 0
+	PUSHINT 41
+	ROLLX
+	NEWC
+	STU 256
+	STU 64
+	STZERO
+	STU 256
+	PUSHINT 38
+	ROLLREVX
+	NEWC
+	STSLICE
+	STU 64
+	STU 256
+	STU 16
+	STI 1
+	STI 1
+	STI 1
+	PUSHINT 31
+	ROLLREVX
+	NEWC
+	STSLICE
+	STREF
+	STU 256
+	STU 128
+	PUSHINT 27
+	ROLLREVX
+	NEWC
+	STU 128
+	STSLICE
+	STU 256
+	PUSHINT 24
+	ROLLREVX
+	NEWC
+	STSLICE
+	STU 256
+	PUSHINT 22
+	ROLLREVX
+	NEWC
+	STSLICE
+	STREF
+	STI 1
+	STI 1
+	STI 1
+	STI 1
+	STI 1
+	STI 1
+	STU 128
+	STU 128
+	STU 128
+	ROLLREV 11
+	NEWC
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STI 1
+	STU 64
+	STU 64
+	STU 64
+	STU 64
+	STU 64
+	STU 64
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 232
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 233
+	ROLL 3
+	OVER
+	HASHCU
+	SWAP2
+	XCHG S1, S4
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_computeInferenceOrderBookAddressFromHash_0665685b, {
+	.loc dex/libraries/DexLib.sol, 249
+	PUSHSLICE x2_
+	NULL
+	BLKPUSH 3, 0
+	PUSHINT 0
+	NULL
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	DUP
+	NULL
+	PUSHREF {
+	}
+	PUSHINT 21
+	ROLLX
+	NEWC
+	PUSHINT 321
+	STZEROES
+	STU 256
+	STREF
+	STDICT
+	STU 128
+	STU 128
+	STDICT
+	ROLLREV 16
+	NEWC
+	STDICT
+	STDICT
+	STU 128
+	STU 128
+	STU 64
+	STDICT
+	STU 8
+	STU 8
+	STU 8
+	ROLLREV 7
+	NEWC
+	STDICT
+	STU 8
+	STDICT
+	STDICT
+	ROLLREV 3
+	NEWC
+	STDICT
+	STDICT
+	STSLICE
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 253
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 254
+	XC2PU S0, S2, S1
+	HASHCU
+	SWAP2
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_computeInferenceOrderBookAddress_d520bb53, {
+	.loc dex/libraries/DexLib.sol, 179
+	CALLREF {
+		.inline DexLib_buildInferenceOrderBookStateInit_8a587b83
+	}
+	.loc dex/libraries/DexLib.sol, 180
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_computeOracleAddressFromHash_5919e9f4, {
+	.loc dex/libraries/DexLib.sol, 323
+	PUSHINT 0
+	DUP
+	PUSHREF {
+	}
+	NEWC
+	PUSHINT 577
+	STZEROES
+	STREF
+	STU 256
+	STU 16
+	STREF
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 327
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 328
+	XC2PU S0, S2, S1
+	HASHCU
+	SWAP2
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_computeOracleAddress_a885f3a9, {
+	.loc dex/libraries/DexLib.sol, 86
+	CALLREF {
+		.inline DexLib_buildOracleStateInit_5c54517d
+	}
+	.loc dex/libraries/DexLib.sol, 87
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_computeOracleEventListAddressFromHash_aabe6e85, {
+	.loc dex/libraries/DexLib.sol, 339
+	NULL
+	PUSHREF {
+	}
+	PUSHINT 0
+	XC2PU S3, S2, S2
+	PUXC2 S0, S2, S5
+	NEWC
+	PUSHINT 322
+	STZEROES
+	STSLICE
+	ROLLREV 6
+	NEWC
+	STU 128
+	STU 256
+	STU 256
+	STU 16
+	STREF
+	STDICT
+	STBREFR
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 343
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 344
+	XC2PU S0, S2, S1
+	HASHCU
+	SWAP2
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_computeOracleEventListAddress_99ff4f9b, {
+	.loc dex/libraries/DexLib.sol, 108
+	CALLREF {
+		.inline DexLib_buildOracleEventListStateInit_3183dbfe
+	}
+	.loc dex/libraries/DexLib.sol, 109
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_computeOrderBookAddressFromHash_150526fc, {
+	.loc dex/libraries/DexLib.sol, 359
+	PUSHINT 0
+	BLKPUSH 3, 0
+	NULL
+	PUSHINT 0
+	BLKPUSH 7, 0
+	NULL
+	BLKPUSH 3, 0
+	PUSHINT 0
+	DUP
+	PUSHSLICE x2_
+	PUSHINT 0
+	DUP
+	PUSHINT 3
+	PUSHINT 22
+	BLKSWX
+	XCHG S2
+	NEWC
+	PUSHINT 321
+	STZEROES
+	STU 256
+	STU 256
+	STU 32
+	PUSHINT 22
+	ROLLREVX
+	NEWC
+	STU 256
+	STU 16
+	STSLICE
+	STU 64
+	STU 32
+	STDICT
+	STDICT
+	STDICT
+	ROLLREV 14
+	NEWC
+	STDICT
+	STU 128
+	STU 32
+	STI 1
+	STI 1
+	STU 128
+	STU 128
+	STU 128
+	STU 64
+	STDICT
+	STU 8
+	STU 8
+	STU 8
+	STU 32
+	STBREFR
+	STBREFR
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 363
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 364
+	XC2PU S0, S2, S1
+	HASHCU
+	SWAP2
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_computeOrderBookAddress_efcbc57a, {
+	.loc dex/libraries/DexLib.sol, 133
+	CALLREF {
+		.inline DexLib_buildOrderBookStateInit_755a92d0
+	}
+	.loc dex/libraries/DexLib.sol, 134
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_computePMPAddressFromHash_03fa3afd, {
+	.loc dex/libraries/DexLib.sol, 290
+	PUSHINT 0
+	DUP
+	PUSHSLICE x2_
+	PUSHINT 0
+	PUSHREF {
+	}
+	NULL
+	PUSHINT 0
+	BLKPUSH 3, 0
+	NULL
+	PUSHINT 0
+	BLKPUSH 3, 0
+	NULL
+	PAIR
+	PUSHINT 0
+	NULL
+	BLKPUSH 4, 0
+	PUSHINT 0
+	DUP
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	PUSHINT 0
+	DUP
+	NULL
+	PUSHINT 0
+	BLKPUSH 10, 0
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	PUSHREF {
+	}
+	PUSHSLICE x2_
+	PUSHINT 2
+	PUSHINT 51
+	BLKSWX
+	SWAP
+	PUSHINT 52
+	ROLLX
+	PUSHREF {
+	}
+	DUP
+	NEWC
+	PUSHINT 321
+	STZEROES
+	STREF
+	STREF
+	STU 32
+	STU 256
+	STU 256
+	PUSHINT 50
+	ROLLREVX
+	NEWC
+	STSLICE
+	STREF
+	STU 128
+	STDICT
+	STDICT
+	PUSHINT 45
+	ROLLREVX
+	NEWC
+	STDICT
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	PUSHINT 37
+	ROLLREVX
+	NEWC
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		STU 32
+	}
+	IFELSE
+	STI 1
+	STU 32
+	STDICT
+	STU 64
+	STU 64
+	STI 1
+	STDICT
+	STDICT
+	PUSHINT 24
+	ROLLREVX
+	NEWC
+	STDICT
+	STU 128
+	STU 128
+	STDICT
+	STDICT
+	PUSHINT 19
+	ROLLREVX
+	NEWC
+	STDICT
+	STDICT
+	STDICT
+	STU 128
+	ROLLREV 15
+	NEWC
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 32
+	STDICT
+	STI 1
+	STI 1
+	STU 128
+	STDICT
+	STU 128
+	STI 1
+	STU 128
+	STU 128
+	STDICT
+	ROLLREV 5
+	NEWC
+	STREF
+	STI 1
+	STSLICE
+	STI 1
+	STU 128
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 294
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 295
+	XC2PU S0, S2, S1
+	HASHCU
+	SWAP2
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_computePMPAddress_7cb7fc4d, {
+	.loc dex/libraries/DexLib.sol, 52
+	CALLREF {
+		.inline DexLib_buildPMPStateInit_7238fd70
+	}
+	.loc dex/libraries/DexLib.sol, 53
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_computePrivateNoteAddressFromHash_673b557a, {
+	.loc dex/libraries/DexLib.sol, 308
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	DUP
+	PUSHINT 0
+	BLKPUSH 5, 0
+	NULL
+	PUSHINT 0
+	NULL
+	PAIR
+	PUSHINT 0
+	BLKPUSH 6, 0
+	NULL
+	DUP
+	PUSHINT 0
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	NULL
+	PAIR
+	PUSHINT 0
+	BLKPUSH 5, 0
+	NULL
+	DUP
+	PUSHREF {
+	}
+	DUP
+	PUSHINT 0
+	BLKPUSH 7, 0
+	PUSHREF {
+	}
+	DUP
+	PUSHINT 0
+	PUSHINT 48
+	ROLLX
+	PUSHINT 0
+	DUP
+	PAIR
+	NEWC
+	PUSHINT 258
+	STZEROES
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 256
+	STU 32
+	STU 256
+	PUSHINT 48
+	ROLLREVX
+	NEWC
+	STU 256
+	STREF
+	STREF
+	STU 256
+	STU 16
+	STU 256
+	STU 16
+	PUSHINT 41
+	ROLLREVX
+	NEWC
+	STU 256
+	STU 16
+	STU 256
+	STU 16
+	STREF
+	STREF
+	STDICT
+	PUSHINT 34
+	ROLLREVX
+	NEWC
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		STSLICE
+	}
+	IFELSE
+	STU 256
+	STU 128
+	STU 32
+	PUSHINT 30
+	ROLLREVX
+	NEWC
+	STU 128
+	STU 32
+	STU 128
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 32
+	STDICT
+	STDICT
+	STDICT
+	PUSHINT 24
+	ROLLREVX
+	NEWC
+	STDICT
+	STU 32
+	STDICT
+	STDICT
+	STU 64
+	STU 64
+	STI 1
+	STU 128
+	STU 32
+	STU 256
+	STI 1
+	ROLLREV 13
+	NEWC
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 32
+	STDICT
+	STDICT
+	STU 128
+	STU 32
+	STI 1
+	STI 1
+	STU 128
+	STU 32
+	STDICT
+	STDICT
+	STU 32
+	STU 32
+	STU 64
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 312
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 313
+	XC2PU S0, S2, S1
+	HASHCU
+	SWAP2
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_computePrivateNoteAddress_1d80259b, {
+	.loc dex/libraries/DexLib.sol, 28
+	CALLREF {
+		.inline DexLib_buildPrivateNoteInitData_6041c348
+	}
+	.loc dex/libraries/DexLib.sol, 29
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_buildOrderBookStateInit_755a92d0, {
+	.loc dex/libraries/DexLib.sol, 145
+	PUSH S4
+	ROLL 4
+	CALLREF {
+		.inline DexLib_buildOrderBookCode_9d6a92db
+	}
+	.loc dex/libraries/DexLib.sol, 146
+	PUSHINT 0
+	BLKPUSH 3, 0
+	NULL
+	PUSHINT 0
+	BLKPUSH 7, 0
+	NULL
+	BLKPUSH 3, 0
+	PUSHINT 0
+	DUP
+	PUSHSLICE x2_
+	PUSHINT 0
+	DUP
+	PUSHINT 3
+	PUSHINT 23
+	BLKSWX
+	XCHG S2
+	NEWC
+	PUSHINT 321
+	STZEROES
+	STU 256
+	STU 256
+	STU 32
+	PUSHINT 22
+	ROLLREVX
+	NEWC
+	STU 256
+	STU 16
+	STSLICE
+	STU 64
+	STU 32
+	STDICT
+	STDICT
+	STDICT
+	ROLLREV 14
+	NEWC
+	STDICT
+	STU 128
+	STU 32
+	STI 1
+	STI 1
+	STU 128
+	STU 128
+	STU 128
+	STU 64
+	STDICT
+	STU 8
+	STU 8
+	STU 8
+	STU 32
+	STBREFR
+	STBREFR
+	ENDC
+	SWAP
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_buildPMPStateInit_7238fd70, {
+	.loc dex/libraries/DexLib.sol, 64
+	PUSH S4
+	ROLL 4
+	CALLREF {
+		.inline DexLib_buildPMPCode_c2a229cb
+	}
+	.loc dex/libraries/DexLib.sol, 65
+	PUSHINT 0
+	DUP
+	PUSHSLICE x2_
+	PUSHINT 0
+	PUSHREF {
+	}
+	NULL
+	PUSHINT 0
+	BLKPUSH 3, 0
+	NULL
+	PUSHINT 0
+	BLKPUSH 3, 0
+	NULL
+	PAIR
+	PUSHINT 0
+	NULL
+	BLKPUSH 4, 0
+	PUSHINT 0
+	DUP
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	PUSHINT 0
+	DUP
+	NULL
+	PUSHINT 0
+	BLKPUSH 10, 0
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	PUSHREF {
+	}
+	PUSHSLICE x2_
+	PUSHINT 2
+	PUSHINT 52
+	BLKSWX
+	SWAP
+	PUSHINT 53
+	ROLLX
+	PUSHREF {
+	}
+	DUP
+	NEWC
+	PUSHINT 321
+	STZEROES
+	STREF
+	STREF
+	STU 32
+	STU 256
+	STU 256
+	PUSHINT 50
+	ROLLREVX
+	NEWC
+	STSLICE
+	STREF
+	STU 128
+	STDICT
+	STDICT
+	PUSHINT 45
+	ROLLREVX
+	NEWC
+	STDICT
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	PUSHINT 37
+	ROLLREVX
+	NEWC
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		STU 32
+	}
+	IFELSE
+	STI 1
+	STU 32
+	STDICT
+	STU 64
+	STU 64
+	STI 1
+	STDICT
+	STDICT
+	PUSHINT 24
+	ROLLREVX
+	NEWC
+	STDICT
+	STU 128
+	STU 128
+	STDICT
+	STDICT
+	PUSHINT 19
+	ROLLREVX
+	NEWC
+	STDICT
+	STDICT
+	STDICT
+	STU 128
+	ROLLREV 15
+	NEWC
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 32
+	STDICT
+	STI 1
+	STI 1
+	STU 128
+	STDICT
+	STU 128
+	STI 1
+	STU 128
+	STU 128
+	STDICT
+	ROLLREV 5
+	NEWC
+	STREF
+	STI 1
+	STSLICE
+	STI 1
+	STU 128
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	SWAP
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_computeCanonicalNoteAddressFromHash_87a459ea, {
+	.loc dex/libraries/DexLib.sol, 270
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	DUP
+	PUSHINT 0
+	BLKPUSH 5, 0
+	NULL
+	PUSHINT 0
+	NULL
+	PAIR
+	PUSHINT 0
+	BLKPUSH 6, 0
+	NULL
+	DUP
+	PUSHINT 0
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	NULL
+	PAIR
+	PUSHINT 0
+	BLKPUSH 5, 0
+	NULL
+	DUP
+	PUSHREF {
+	}
+	DUP
+	PUSHINT 0
+	BLKPUSH 7, 0
+	PUSHREF {
+	}
+	DUP
+	PUSHINT 0
+	PUSHINT 48
+	ROLLX
+	PUSHINT 0
+	DUP
+	PAIR
+	NEWC
+	PUSHINT 258
+	STZEROES
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 256
+	STU 32
+	STU 256
+	PUSHINT 48
+	ROLLREVX
+	NEWC
+	STU 256
+	STREF
+	STREF
+	STU 256
+	STU 16
+	STU 256
+	STU 16
+	PUSHINT 41
+	ROLLREVX
+	NEWC
+	STU 256
+	STU 16
+	STU 256
+	STU 16
+	STREF
+	STREF
+	STDICT
+	PUSHINT 34
+	ROLLREVX
+	NEWC
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		STSLICE
+	}
+	IFELSE
+	STU 256
+	STU 128
+	STU 32
+	PUSHINT 30
+	ROLLREVX
+	NEWC
+	STU 128
+	STU 32
+	STU 128
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 32
+	STDICT
+	STDICT
+	STDICT
+	PUSHINT 24
+	ROLLREVX
+	NEWC
+	STDICT
+	STU 32
+	STDICT
+	STDICT
+	STU 64
+	STU 64
+	STI 1
+	STU 128
+	STU 32
+	STU 256
+	STI 1
+	ROLLREV 13
+	NEWC
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 32
+	STDICT
+	STDICT
+	STU 128
+	STU 32
+	STI 1
+	STI 1
+	STU 128
+	STU 32
+	STDICT
+	STDICT
+	STU 32
+	STU 32
+	STU 64
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 274
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 275
+	PUSH2 S2, S0
+	HASHCU
+	SWAP2
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_computeCanonicalTokenContractAddress_a57c2655, {
+	.loc dex/libraries/DexLib.sol, 226
+	XCHG3 S0, S3, S4
+	PUXC2 S6, S5, S4
+	PUSH S4
+	CALLREF {
+		.inline DexLib_computeRootModelAddressFromHash_64f8cd4f
+	}
+	.loc dex/libraries/DexLib.sol, 228
+	PUSHINT 0
+	BLKPUSH 15, 0
+	BLKPUSH 4, 0
+	PUSHREF {
+	}
+	PUSHSLICE x2_
+	PUSHINT 0
+	PUSHSLICE x2_
+	PUSHINT 0
+	PUSHSLICE x2_
+	PUSHINT 0
+	BLKPUSH 2, 0
+	PUSHREF {
+	}
+	PUSHSLICE x2_
+	PUSHINT 0
+	BLKPUSH 4, 0
+	PUSHINT 37
+	ROLLX
+	PUSH S37
+	PUSH S39
+	PUSHINT 0
+	PUSHINT 41
+	ROLLX
+	NEWC
+	STU 256
+	STU 64
+	STZERO
+	STU 256
+	PUSHINT 38
+	ROLLREVX
+	NEWC
+	STSLICE
+	STU 64
+	STU 256
+	STU 16
+	STI 1
+	STI 1
+	STI 1
+	PUSHINT 31
+	ROLLREVX
+	NEWC
+	STSLICE
+	STREF
+	STU 256
+	STU 128
+	PUSHINT 27
+	ROLLREVX
+	NEWC
+	STU 128
+	STSLICE
+	STU 256
+	PUSHINT 24
+	ROLLREVX
+	NEWC
+	STSLICE
+	STU 256
+	PUSHINT 22
+	ROLLREVX
+	NEWC
+	STSLICE
+	STREF
+	STI 1
+	STI 1
+	STI 1
+	STI 1
+	STI 1
+	STI 1
+	STU 128
+	STU 128
+	STU 128
+	ROLLREV 11
+	NEWC
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STI 1
+	STU 64
+	STU 64
+	STU 64
+	STU 64
+	STU 64
+	STU 64
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 232
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 233
+	ROLL 3
+	OVER
+	HASHCU
+	SWAP2
+	XCHG S1, S4
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_computeInferenceOrderBookAddressFromHash_0665685b, {
+	.loc dex/libraries/DexLib.sol, 249
+	PUSHSLICE x2_
+	NULL
+	BLKPUSH 3, 0
+	PUSHINT 0
+	NULL
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	DUP
+	NULL
+	PUSHREF {
+	}
+	PUSHINT 21
+	ROLLX
+	NEWC
+	PUSHINT 321
+	STZEROES
+	STU 256
+	STREF
+	STDICT
+	STU 128
+	STU 128
+	STDICT
+	ROLLREV 16
+	NEWC
+	STDICT
+	STDICT
+	STU 128
+	STU 128
+	STU 64
+	STDICT
+	STU 8
+	STU 8
+	STU 8
+	ROLLREV 7
+	NEWC
+	STDICT
+	STU 8
+	STDICT
+	STDICT
+	ROLLREV 3
+	NEWC
+	STDICT
+	STDICT
+	STSLICE
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 253
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 254
+	PUSH2 S2, S0
+	HASHCU
+	SWAP2
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_computeInferenceOrderBookAddress_d520bb53, {
+	.loc dex/libraries/DexLib.sol, 179
+	PUXC S1, S-1
+	CALLREF {
+		.inline DexLib_buildInferenceOrderBookStateInit_8a587b83
+	}
+	.loc dex/libraries/DexLib.sol, 180
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_computeOracleAddressFromHash_5919e9f4, {
+	.loc dex/libraries/DexLib.sol, 323
+	PUSHINT 0
+	DUP
+	PUSHREF {
+	}
+	NEWC
+	PUSHINT 577
+	STZEROES
+	STREF
+	STU 256
+	STU 16
+	STREF
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 327
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 328
+	PUSH2 S2, S0
+	HASHCU
+	SWAP2
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_computeOracleAddress_a885f3a9, {
+	.loc dex/libraries/DexLib.sol, 86
+	PUXC S1, S-1
+	CALLREF {
+		.inline DexLib_buildOracleStateInit_5c54517d
+	}
+	.loc dex/libraries/DexLib.sol, 87
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_computeOracleEventListAddressFromHash_aabe6e85, {
+	.loc dex/libraries/DexLib.sol, 339
+	NULL
+	PUSHREF {
+	}
+	PUSHINT 0
+	XC2PU S3, S2, S2
+	PUXC2 S0, S2, S5
+	NEWC
+	PUSHINT 322
+	STZEROES
+	STSLICE
+	ROLLREV 6
+	NEWC
+	STU 128
+	STU 256
+	STU 256
+	STU 16
+	STREF
+	STDICT
+	STBREFR
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 343
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 344
+	PUSH2 S2, S0
+	HASHCU
+	SWAP2
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_computeOracleEventListAddress_99ff4f9b, {
+	.loc dex/libraries/DexLib.sol, 108
+	PUXC2 S2, S-1, S-1
+	CALLREF {
+		.inline DexLib_buildOracleEventListStateInit_3183dbfe
+	}
+	.loc dex/libraries/DexLib.sol, 109
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_computeOrderBookAddressFromHash_150526fc, {
+	.loc dex/libraries/DexLib.sol, 359
+	PUSHINT 0
+	BLKPUSH 3, 0
+	NULL
+	PUSHINT 0
+	BLKPUSH 7, 0
+	NULL
+	BLKPUSH 3, 0
+	PUSHINT 0
+	DUP
+	PUSHSLICE x2_
+	PUSHINT 0
+	DUP
+	PUSHINT 3
+	PUSHINT 22
+	BLKSWX
+	XCHG S2
+	NEWC
+	PUSHINT 321
+	STZEROES
+	STU 256
+	STU 256
+	STU 32
+	PUSHINT 22
+	ROLLREVX
+	NEWC
+	STU 256
+	STU 16
+	STSLICE
+	STU 64
+	STU 32
+	STDICT
+	STDICT
+	STDICT
+	ROLLREV 14
+	NEWC
+	STDICT
+	STU 128
+	STU 32
+	STI 1
+	STI 1
+	STU 128
+	STU 128
+	STU 128
+	STU 64
+	STDICT
+	STU 8
+	STU 8
+	STU 8
+	STU 32
+	STBREFR
+	STBREFR
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 363
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 364
+	PUSH2 S2, S0
+	HASHCU
+	SWAP2
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_computeOrderBookAddress_efcbc57a, {
+	.loc dex/libraries/DexLib.sol, 133
+	PUSH S4
+	ROLLREV 4
+	CALLREF {
+		.inline DexLib_buildOrderBookStateInit_755a92d0
+	}
+	.loc dex/libraries/DexLib.sol, 134
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_computePMPAddressFromHash_03fa3afd, {
+	.loc dex/libraries/DexLib.sol, 290
+	PUSHINT 0
+	DUP
+	PUSHSLICE x2_
+	PUSHINT 0
+	PUSHREF {
+	}
+	NULL
+	PUSHINT 0
+	BLKPUSH 3, 0
+	NULL
+	PUSHINT 0
+	BLKPUSH 3, 0
+	NULL
+	PAIR
+	PUSHINT 0
+	NULL
+	BLKPUSH 4, 0
+	PUSHINT 0
+	DUP
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	PUSHINT 0
+	DUP
+	NULL
+	PUSHINT 0
+	BLKPUSH 10, 0
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	PUSHREF {
+	}
+	PUSHSLICE x2_
+	PUSHINT 2
+	PUSHINT 51
+	BLKSWX
+	SWAP
+	PUSHINT 52
+	ROLLX
+	PUSHREF {
+	}
+	DUP
+	NEWC
+	PUSHINT 321
+	STZEROES
+	STREF
+	STREF
+	STU 32
+	STU 256
+	STU 256
+	PUSHINT 50
+	ROLLREVX
+	NEWC
+	STSLICE
+	STREF
+	STU 128
+	STDICT
+	STDICT
+	PUSHINT 45
+	ROLLREVX
+	NEWC
+	STDICT
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	PUSHINT 37
+	ROLLREVX
+	NEWC
+	STU 128
+	STU 128
+	STU 128
+	STU 128
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		STU 32
+	}
+	IFELSE
+	STI 1
+	STU 32
+	STDICT
+	STU 64
+	STU 64
+	STI 1
+	STDICT
+	STDICT
+	PUSHINT 24
+	ROLLREVX
+	NEWC
+	STDICT
+	STU 128
+	STU 128
+	STDICT
+	STDICT
+	PUSHINT 19
+	ROLLREVX
+	NEWC
+	STDICT
+	STDICT
+	STDICT
+	STU 128
+	ROLLREV 15
+	NEWC
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 32
+	STDICT
+	STI 1
+	STI 1
+	STU 128
+	STDICT
+	STU 128
+	STI 1
+	STU 128
+	STU 128
+	STDICT
+	ROLLREV 5
+	NEWC
+	STREF
+	STI 1
+	STSLICE
+	STI 1
+	STU 128
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 294
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 295
+	PUSH2 S2, S0
+	HASHCU
+	SWAP2
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_computePMPAddress_7cb7fc4d, {
+	.loc dex/libraries/DexLib.sol, 52
+	PUSH S4
+	ROLLREV 4
+	CALLREF {
+		.inline DexLib_buildPMPStateInit_7238fd70
+	}
+	.loc dex/libraries/DexLib.sol, 53
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_computePrivateNoteAddressFromHash_673b557a, {
+	.loc dex/libraries/DexLib.sol, 308
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	DUP
+	PUSHINT 0
+	BLKPUSH 5, 0
+	NULL
+	PUSHINT 0
+	NULL
+	PAIR
+	PUSHINT 0
+	BLKPUSH 6, 0
+	NULL
+	DUP
+	PUSHINT 0
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	NULL
+	PAIR
+	PUSHINT 0
+	BLKPUSH 5, 0
+	NULL
+	DUP
+	PUSHREF {
+	}
+	DUP
+	PUSHINT 0
+	BLKPUSH 7, 0
+	PUSHREF {
+	}
+	DUP
+	PUSHINT 0
+	PUSHINT 48
+	ROLLX
+	PUSHINT 0
+	DUP
+	PAIR
+	NEWC
+	PUSHINT 258
+	STZEROES
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 256
+	STU 32
+	STU 256
+	PUSHINT 48
+	ROLLREVX
+	NEWC
+	STU 256
+	STREF
+	STREF
+	STU 256
+	STU 16
+	STU 256
+	STU 16
+	PUSHINT 41
+	ROLLREVX
+	NEWC
+	STU 256
+	STU 16
+	STU 256
+	STU 16
+	STREF
+	STREF
+	STDICT
+	PUSHINT 34
+	ROLLREVX
+	NEWC
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		STSLICE
+	}
+	IFELSE
+	STU 256
+	STU 128
+	STU 32
+	PUSHINT 30
+	ROLLREVX
+	NEWC
+	STU 128
+	STU 32
+	STU 128
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 32
+	STDICT
+	STDICT
+	STDICT
+	PUSHINT 24
+	ROLLREVX
+	NEWC
+	STDICT
+	STU 32
+	STDICT
+	STDICT
+	STU 64
+	STU 64
+	STI 1
+	STU 128
+	STU 32
+	STU 256
+	STI 1
+	ROLLREV 13
+	NEWC
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 32
+	STDICT
+	STDICT
+	STU 128
+	STU 32
+	STI 1
+	STI 1
+	STU 128
+	STU 32
+	STDICT
+	STDICT
+	STU 32
+	STU 32
+	STU 64
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 312
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 313
+	PUSH2 S2, S0
+	HASHCU
+	SWAP2
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_computePrivateNoteAddress_1d80259b, {
+	.loc dex/libraries/DexLib.sol, 28
+	PUXC S1, S-1
+	CALLREF {
+		.inline DexLib_buildPrivateNoteInitData_6041c348
+	}
+	.loc dex/libraries/DexLib.sol, 29
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_computeRootModelAddressFromHash_64f8cd4f, {
+	.loc dex/libraries/DexLib.sol, 206
+	TUCK
+	PUSHINT 0
+	ROLL 3
+	NEWC
+	STU 256
+	STU 64
+	STZERO
+	STU 256
+	SWAP
+	NEWC
+	STSLICE
+	STBREFR
+	ENDC
+	PUSHREF {
+	}
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 210
+	CALLREF {
+		.inline DexLib__extractDataCell_37d491e3
+	}
+	.loc dex/libraries/DexLib.sol, 211
+	PUSH2 S2, S0
+	HASHCU
+	SWAP2
+	CDEPTH
+	CALLREF {
+		.inline __stateInitHash
+	}
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment _u256ToFr_493f063e_internal, {
+	.loc dex/RootPN.sol, 109
+	PUSHINT 21888242871839275222246405745257275088548364400416034343698204186575808495617
+	MOD
+	.loc dex/RootPN.sol, 110
+	PUSHINT 0
+	DUP
+	.loc dex/RootPN.sol, 112
+	PUSHCONT {
+		DUP
+		LESSINT 32
+	}
+	PUSHCONT {
+		.loc dex/RootPN.sol, 113
+		OVER
+		LSHIFT 8
+		PUSH S3
+		MODPOW2 8
+		OR
+		POP S2
+		.loc dex/RootPN.sol, 114
+		PUSH S2
+		RSHIFT 8
+		POP S3
+		.loc dex/RootPN.sol, 112
+		INC
+		UFITS 8
+		.loc dex/RootPN.sol, 0
+	}
+	WHILE
+	DROP
+	.loc dex/RootPN.sol, 116
+	NIP
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment _u32ToFr_03c0be62_internal, {
+	.loc dex/RootPN.sol, 85
+	DUP
+	RSHIFT 24
+	MODPOW2 8
+	OVER
+	RSHIFT 16
+	MODPOW2 8
+	LSHIFT 8
+	UFITS 32
+	OR
+	OVER
+	RSHIFT 8
+	MODPOW2 8
+	LSHIFT 16
+	UFITS 32
+	OR
+	SWAP
+	MODPOW2 8
+	LSHIFT 24
+	UFITS 32
+	OR
+	.loc dex/RootPN.sol, 90
+	LSHIFT 224
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment _u64ToFr_62560c3c_internal, {
+	.loc dex/RootPN.sol, 70
+	DUP
+	RSHIFT 56
+	MODPOW2 8
+	OVER
+	RSHIFT 48
+	MODPOW2 8
+	LSHIFT 8
+	UFITS 64
+	OR
+	OVER
+	RSHIFT 40
+	MODPOW2 8
+	LSHIFT 16
+	UFITS 64
+	OR
+	OVER
+	RSHIFT 32
+	MODPOW2 8
+	LSHIFT 24
+	UFITS 64
+	OR
+	OVER
+	RSHIFT 24
+	MODPOW2 8
+	LSHIFT 32
+	UFITS 64
+	OR
+	OVER
+	RSHIFT 16
+	MODPOW2 8
+	LSHIFT 40
+	UFITS 64
+	OR
+	OVER
+	RSHIFT 8
+	MODPOW2 8
+	LSHIFT 48
+	UFITS 64
+	OR
+	SWAP
+	MODPOW2 8
+	LSHIFT 56
+	UFITS 64
+	OR
+	.loc dex/RootPN.sol, 79
+	LSHIFT 192
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment c4_to_c7, {
+	PUSHROOT
+	CTOS
+	LDU 256 ; pubkey c4
+	LDU 64 ; pubkey timestamp c4
+	LDU 1 ; ctor flag
+	LDREF
+	LDREF
+	LDREF
+	LDREF
+	ENDS
+	CTOS
+	LDREF
+	LDREF
+	LDREF
+	LDREF
+	ENDS
+	CTOS
+	LDREF
+	LDU 256
+	LDDICT
+	LDDICT
+	ENDS
+	SETGLOB 19
+	SETGLOB 18
+	SETGLOB 17
+	SETGLOB 16
+	SETGLOB 15
+	SETGLOB 14
+	SETGLOB 13
+	SETGLOB 12
+	SETGLOB 11
+	SETGLOB 10
+	SETGLOB 6
+	SETGLOB 3
+	SETGLOB 2
+}
+
+.fragment c7_to_c4, {
+	GETGLOB 19
+	GETGLOB 18
+	GETGLOB 17
+	GETGLOB 16
+	GETGLOB 15
+	GETGLOB 14
+	GETGLOB 13
+	GETGLOB 12
+	GETGLOB 11
+	GETGLOB 10
+	GETGLOB 3
+	GETGLOB 2
+	NEWC
+	STU 256
+	STU 64
+	STONE
+	STREF
+	STREF
+	STREF
+	ROLLREV 7
+	NEWC
+	STREF
+	STREF
+	STREF
+	ROLLREV 4
+	NEWC
+	STREF
+	STU 256
+	STDICT
+	STDICT
+	STBREFR
+	STBREFR
+	ENDC
+	POPROOT
+}
+
+.fragment ensureBalance_90188926_internal, {
+	.loc dex/RootPN.sol, 164
+	GETPARAM 7
+	FIRST
+	PUSHINT 100000000000
+	GREATER
+	IFRET
+	.loc dex/RootPN.sol, 165
+	PUSHINT 100000000000
+	MINTSHELLQ
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment collectProtocolFee_201a8649_internal, {
+	.loc dex/RootPN.sol, 563
+	GETGLOB 10
+	GETGLOB 15
+	BLKSWAP 2, 4
+	PUSH S5
+	CALLREF {
+		.inline DexLib_computeOrderBookAddress_efcbc57a
+	}
+	.loc dex/modifiers/modifiers.sol, 338
+	GETGLOB 9
+	SDEQ
+	THROWIFNOT 101
+	.loc dex/modifiers/modifiers.sol, 331
+	ACCEPT
+	.loc dex/RootPN.sol, 568
+	CALLREF {
+		.inline ensureBalance_90188926_internal
+	}
+	.loc dex/RootPN.sol, 569
+	PUSH2 S0, S1
+	GETGLOB 19
+	DUP2
+	PUSHINT 32
+	DICTUGET
+	ZEROSWAPIFNOT
+	PUSHCONT {
+		PLDU 128
+	}
+	IF
+	ROLL 3
+	ADD
+	UFITS 128
+	NEWC
+	STU 128
+	ROTREV
+	PUSHINT 32
+	DICTUSETB
+	SETGLOB 19
+	.loc dex/RootPN.sol, 571
+	SWAP
+	PUSHSLICE xd8600000000000000000000000000000000000000000000000000000000000000013600000000000000000000000013d0cbc8a_
+	NEWC
+	STSLICE
+	STU 32
+	STU 128
+	ENDC
+	PUSHINT 0
+	SENDRAWMSG
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment collectProtocolFee, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc dex/RootPN.sol, 563
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	LDU 256
+	LDU 32
+	LDU 128
+	ENDS
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline collectProtocolFee_201a8649_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment constructor, {
+	DROP
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 6
+	THROWIF 51
+	ENDS
+	.loc dex/RootPN.sol, 159
+	ACCEPT
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment deployPrivateNote_f14b6962_internal, {
+	.loc dex/modifiers/modifiers.sol, 331
+	ACCEPT
+	.loc dex/RootPN.sol, 318
+	CALLREF {
+		.inline ensureBalance_90188926_internal
+	}
+	.loc dex/RootPN.sol, 320
+	PUXC S6, S-1
+	CHKHISTPROOF
+	THROWIFNOT 403
+	.loc dex/RootPN.sol, 328
+	OVER
+	CALLREF {
+		.inline _u64ToFr_62560c3c_internal
+	}
+	PUSH S5
+	EQUAL
+	THROWIFNOT 137
+	.loc dex/RootPN.sol, 329
+	DUP
+	CALLREF {
+		.inline _u32ToFr_03c0be62_internal
+	}
+	PUSH S4
+	EQUAL
+	THROWIFNOT 137
+	.loc dex/RootPN.sol, 332
+	PUSH S2
+	THROWIFNOT 129
+	.loc dex/RootPN.sol, 336
+	DUP
+	PUSHINT 300
+	NEQ
+	THROWIFNOT 129
+	.loc dex/RootPN.sol, 351
+	PUSHREF {
+	}
+	.loc dex/RootPN.sol, 352
+	PUSH S7
+	NEWC
+	STU 256
+	ENDC
+	CALLREF {
+		.inline __concatenateStrings
+	}
+	.loc dex/RootPN.sol, 353
+	ROLL 6
+	NEWC
+	STU 256
+	ENDC
+	CALLREF {
+		.inline __concatenateStrings
+	}
+	.loc dex/RootPN.sol, 354
+	ROLL 5
+	NEWC
+	STU 256
+	ENDC
+	CALLREF {
+		.inline __concatenateStrings
+	}
+	.loc dex/RootPN.sol, 355
+	ROLL 4
+	NEWC
+	STU 256
+	ENDC
+	CALLREF {
+		.inline __concatenateStrings
+	}
+	.loc dex/RootPN.sol, 356
+	PUSH S3
+	CALLREF {
+		.inline _u256ToFr_493f063e_internal
+	}
+	NEWC
+	STU 256
+	ENDC
+	CALLREF {
+		.inline __concatenateStrings
+	}
+	.loc dex/RootPN.sol, 358
+	ROLL 5
+	ZKHALO2VERIFY
+	THROWIFNOT 137
+	.loc dex/RootPN.sol, 359
+	GETGLOB 10
+	ROLL 4
+	CALLREF {
+		.inline DexLib_buildPrivateNoteInitData_6041c348
+	}
+	.loc dex/RootPN.sol, 361
+	PUSHINT 8
+	PUSHINT 83464333752337827252042332053723236838259627629694774612008844502971187596776
+	PUSHINT 10
+	PUSHINT 1183338953455911765383537918668323014632489175429976902047252386613960491584
+	GETGLOB 14
+	CDEPTH
+	GETGLOB 14
+	HASHCU
+	GETGLOB 13
+	CDEPTH
+	GETGLOB 13
+	HASHCU
+	GETGLOB 16
+	GETGLOB 15
+	GETGLOB 11
+	ROLL 12
+	BLKSWAP 3, 12
+	DUP
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	NEWC
+	STSLICECONST x62_
+	STB
+	PUSHSLICE x50ba43b74000000000000000000000000000007_
+	STSLICER
+	OVER
+	CALLREF {
+		CTOS
+		LDI 1
+		SWAP
+		PUSHCONT {
+			LDI 5
+			NIP
+		}
+		IF
+		LDI 1
+		SWAP
+		PUSHCONT {
+			LDI 2
+			NIP
+		}
+		IF
+		LDDICT
+		LDDICT
+		LDDICT
+		ENDS
+		BLKDROP 3
+	}
+	STREF
+	STONE
+	ROLLREV 14
+	NEWC
+	STSLICECONST x00000001
+	STU 128
+	STU 256
+	STU 32
+	STREF
+	STREF
+	STREF
+	STU 256
+	STU 16
+	STU 256
+	STU 16
+	ROLLREV 4
+	NEWC
+	STU 256
+	STU 16
+	STU 256
+	STU 16
+	STBREFR
+	STBREFR
+	ENDC
+	PUSHINT 1
+	SENDRAWMSG
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment upd_only_time_in_c4, {
+	PUSHROOT
+	CTOS
+	LDU 256
+	LDU 64
+	NIP
+	GETGLOB 3
+	ROT
+	NEWC
+	STU 256
+	STU 64
+	STSLICE
+	ENDC
+	POPROOT
+}
+
+.fragment deployPrivateNote, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc dex/RootPN.sol, 307
+	OVER
+	PUSHCONT {
+		LDREF
+		LDREF
+		ENDS
+		CTOS
+	}
+	PUSHCONT {
+		LDREF
+	}
+	IFELSE
+	LDU 256
+	LDU 256
+	LDU 256
+	LDREF
+	ENDS
+	CTOS
+	LDU 256
+	LDU 256
+	LDU 64
+	LDU 32
+	LDU 8
+	ENDS
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline deployPrivateNote_f14b6962_internal
+	}
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment inline_array_line_273_column_42_ast_id_14189, {
+	PUSHINT 1000000
+	PUSHINT 100000
+	PUSHINT 10000
+	PUSHINT 1000
+	PUSHINT 100
+	PUSHINT 0
+	NULL
+	PUSHINT 5
+	PUSHCONT {
+		ROT
+		NEWC
+		STU 128
+		PUSH S2
+		INC
+		XCHG3 S1, S3, S3
+		PUSHINT 32
+		DICTUSETB
+	}
+	REPEAT
+	NIP
+}
+
+.fragment tokenDecimals_c865992b_internal, {
+	.loc dex/modifiers/modifiers.sol, 286
+	EQINT 3
+	PUSHCONT {
+		PUSHINT 1000000
+	}
+	IFJMP
+	.loc dex/modifiers/modifiers.sol, 287
+	PUSHINT 1000000000
+	.loc dex/modifiers/modifiers.sol, 0
+}
+
+.fragment isAllowedNominal_53a9bc35_internal, {
+	.loc dex/RootPN.sol, 466
+	CALLREF {
+		.inline tokenDecimals_c865992b_internal
+	}
+	.loc dex/RootPN.sol, 467
+	PUSHINT 0
+	FALSE ; decl return flag
+	PUSHCONT {
+		OVER
+		PUSHINT 5
+		PUSHREF { 
+			.inline-computed-cell inline_array_line_273_column_42_ast_id_14189, 0
+		}
+		PAIR
+		FIRST
+		LESS
+	}
+	PUSHCONT {
+		.loc dex/RootPN.sol, 468
+		OVER
+		PUSHINT 5
+		PUSHREF { 
+			.inline-computed-cell inline_array_line_273_column_42_ast_id_14189, 0
+		}
+		PAIR
+		SECOND
+		PUSHINT 32
+		DICTUGET
+		THROWIFNOT 50
+		PLDU 128
+		PUSH S3
+		MUL
+		UFITS 128
+		PUSH S4
+		EQUAL
+		PUSHCONT {
+			.loc dex/RootPN.sol, 469
+			BLKDROP 4
+			TRUE
+			PUSHINT 4
+			RETALT
+			.loc dex/RootPN.sol, 0
+		}
+		IFJMP
+		.loc dex/RootPN.sol, 467
+		OVER
+		INC
+		POP S2
+		.loc dex/RootPN.sol, 0
+	}
+	WHILEBRK
+	IFRET
+	BLKDROP 3
+	.loc dex/RootPN.sol, 472
+	FALSE
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment generateVoucher_2925f2a2_internal, {
+	.loc dex/RootPN.sol, 478
+	DEPTH
+	ADDCONST -5
+	PICK
+	THROWIF 72
+	.loc dex/RootPN.sol, 479
+	PUSHINT 0
+	NULL
+	PAIR
+	CALLREF {
+		DEPTH
+		ADDCONST -5
+		PICK
+		PUSHCONT {
+			NULL
+		}
+		PUSHCONT {
+			DEPTH
+			ADDCONST -3
+			PICK
+			CTOS
+			LDU 4
+			LDMSGADDR
+			LDMSGADDR
+			LDGRAMS
+			PLDDICT
+			BLKDROP2 4, 1
+		}
+		IFELSE
+	}
+	DUP
+	PUSHINT 32
+	DICTUMIN
+	NULLSWAPIFNOT
+	PUSHCONT {
+		SWAP
+		LDVARUINT32
+		DROP
+		PAIR
+	}
+	IF
+	PUSHCONT {
+		DUP
+		ISNULL
+		NOT
+	}
+	PUSHCONT {
+		PUSH2 S2, S0
+		FIRST
+		NEWC
+		STU 32
+		SWAP
+		UNPAIR
+		OVER
+		INC
+		ROLLREV 3
+		PUSHINT 32
+		DICTUSETB
+		PAIR
+		POP S3
+		FIRST
+		OVER
+		PUSHINT 32
+		DICTUGETNEXT
+		NULLSWAPIFNOT
+		PUSHCONT {
+			SWAP
+			LDVARUINT32
+			DROP
+			PAIR
+		}
+		IF
+	}
+	WHILE
+	DROP2
+	FIRST
+	EQINT 1
+	THROWIFNOT 300
+	.loc dex/RootPN.sol, 480
+	PUSHINT 0
+	DUP
+	NULL
+	PAIR
+	CALLREF {
+		DEPTH
+		ADDCONST -5
+		PICK
+		PUSHCONT {
+			NULL
+		}
+		PUSHCONT {
+			DEPTH
+			ADDCONST -3
+			PICK
+			CTOS
+			LDU 4
+			LDMSGADDR
+			LDMSGADDR
+			LDGRAMS
+			PLDDICT
+			BLKDROP2 4, 1
+		}
+		IFELSE
+	}
+	DUP
+	PUSHINT 32
+	DICTUMIN
+	NULLSWAPIFNOT
+	PUSHCONT {
+		SWAP
+		LDVARUINT32
+		DROP
+		PAIR
+	}
+	IF
+	PUSHCONT {
+		DUP
+		ISNULL
+		NOT
+	}
+	PUSHCONT {
+		PUSH2 S2, S0
+		FIRST
+		NEWC
+		STU 32
+		SWAP
+		UNPAIR
+		OVER
+		INC
+		ROLLREV 3
+		PUSHINT 32
+		DICTUSETB
+		PAIR
+		POP S3
+		FIRST
+		OVER
+		PUSHINT 32
+		DICTUGETNEXT
+		NULLSWAPIFNOT
+		PUSHCONT {
+			SWAP
+			LDVARUINT32
+			DROP
+			PAIR
+		}
+		IF
+	}
+	WHILE
+	DROP2
+	SECOND
+	PUSHINT 32
+	DICTUGET
+	THROWIFNOT 50
+	PLDU 32
+	.loc dex/RootPN.sol, 481
+	DUP
+	CALLREF {
+		DEPTH
+		ADDCONST -5
+		PICK
+		PUSHCONT {
+			NULL
+		}
+		PUSHCONT {
+			DEPTH
+			ADDCONST -3
+			PICK
+			CTOS
+			LDU 4
+			LDMSGADDR
+			LDMSGADDR
+			LDGRAMS
+			PLDDICT
+			BLKDROP2 4, 1
+		}
+		IFELSE
+	}
+	PUSHINT 32
+	DICTUGET
+	ZEROSWAPIFNOT
+	PUSHCONT {
+		LDVARUINT32
+		DROP
+	}
+	IF
+	GTINT 0
+	THROWIFNOT 303
+	.loc dex/RootPN.sol, 482
+	ACCEPT
+	.loc dex/RootPN.sol, 483
+	CALLREF {
+		.inline ensureBalance_90188926_internal
+	}
+	.loc dex/RootPN.sol, 485
+	DUP
+	CALLREF {
+		DEPTH
+		ADDCONST -5
+		PICK
+		PUSHCONT {
+			NULL
+		}
+		PUSHCONT {
+			DEPTH
+			ADDCONST -3
+			PICK
+			CTOS
+			LDU 4
+			LDMSGADDR
+			LDMSGADDR
+			LDGRAMS
+			PLDDICT
+			BLKDROP2 4, 1
+		}
+		IFELSE
+	}
+	PUSHINT 32
+	DICTUGET
+	ZEROSWAPIFNOT
+	PUSHCONT {
+		LDVARUINT32
+		DROP
+	}
+	IF
+	.loc dex/RootPN.sol, 486
+	DUP
+	UFITS 128
+	PUSH S2
+	CALLREF {
+		.inline isAllowedNominal_53a9bc35_internal
+	}
+	THROWIFNOT 141
+	.loc dex/RootPN.sol, 488
+	OVER
+	EQINT 2
+	ROLL 3
+	AND
+	PUSHCONT {
+		.loc dex/RootPN.sol, 489
+		PUSHINT 300
+		POP S2
+		.loc dex/RootPN.sol, 0
+	}
+	IF
+	.loc dex/RootPN.sol, 493
+	ROT
+	PUSHSLICE xd8600000000000000000000000000000000000000000000000000000000000000010e0000000000000000000000006_
+	NEWC
+	STSLICE
+	ROLLREV 3
+	NEWC
+	STSLICECONST x79e3031c
+	STU 256
+	STU 256
+	STU 32
+	STBREFR
+	ENDC
+	PUSHINT 0
+	SENDRAWMSG
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment generateVoucher, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc dex/RootPN.sol, 478
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	LDI 1
+	ENDS
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline generateVoucher_2925f2a2_internal
+	}
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment getDetails_fbbf93a0_internal, {
+	.loc dex/RootPN.sol, 616
+	GETGLOB 11
+	HASHCU
+	GETGLOB 10
+	HASHCU
+	GETGLOB 17
+	GETPARAM 7
+	FIRST
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment getDetails, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc dex/RootPN.sol, 610
+	ENDS
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline getDetails_fbbf93a0_internal
+	}
+	PUSH S4
+	PUSHCONT {
+		PUSH S6
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xd8
+		STSLICE
+		PUSHINT 1
+		STUR 99
+		REVERSE 5, 0
+		NEWC
+		STSLICECONST xd99442b3
+		STU 256
+		STU 256
+		STU 256
+		STU 128
+		STBREFR
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		BLKDROP 4
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment getPMPAddress_f9dba8f3_internal, {
+	.loc dex/RootPN.sol, 449
+	NULL
+	.loc dex/RootPN.sol, 450
+	PUSH S2
+	FIRST
+	.loc dex/RootPN.sol, 452
+	PUSHINT 0
+	PUSHCONT {
+		PUSH2 S0, S1
+		LESS
+	}
+	PUSHCONT {
+		.loc dex/RootPN.sol, 453
+		PUSH3 S2, S0, S4
+		SECOND
+		PUSHINT 32
+		DICTUGETREF
+		THROWIFNOT 50
+		HASHCU
+		SWAP
+		NEWC
+		STONE
+		ROTREV
+		PUSHPOW2 8
+		DICTUSETB
+		POP S3
+		.loc dex/RootPN.sol, 452
+		INC
+		UFITS 32
+		.loc dex/RootPN.sol, 0
+	}
+	WHILE
+	DROP2
+	.loc dex/RootPN.sol, 455
+	NEWC
+	STDICT
+	ENDC
+	HASHCU
+	.loc dex/RootPN.sol, 456
+	GETGLOB 10
+	GETGLOB 11
+	BLKSWAP 3, 3
+	XCHG S1, S5
+	CALLREF {
+		.inline DexLib_computePMPAddress_7cb7fc4d
+	}
+	NIP
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment getPMPAddress, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc dex/RootPN.sol, 448
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	LDU 32
+	LDDICT
+	ROTREV
+	PAIR
+	SWAP
+	LDU 32
+	ENDS
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline getPMPAddress_f9dba8f3_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xd8
+		STSLICE
+		PUSHINT 1
+		STUR 99
+		SWAP
+		NEWC
+		STSLICECONST xee6df2d4
+		STSLICE
+		STBREFR
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment getPrivateNoteAddress_94e02303_internal, {
+	.loc dex/RootPN.sol, 440
+	GETGLOB 10
+	SWAP
+	CALLREF {
+		.inline DexLib_computePrivateNoteAddress_1d80259b
+	}
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment getPrivateNoteAddress, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc dex/RootPN.sol, 439
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	ENDS
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline getPrivateNoteAddress_94e02303_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xd8
+		STSLICE
+		PUSHINT 1
+		STUR 99
+		SWAP
+		NEWC
+		STSLICECONST xb8be9eb0
+		STSLICE
+		STBREFR
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment getPrivateNoteCode_5451071b_internal, {
+	.loc dex/RootPN.sol, 431
+	GETGLOB 10
+	NEWC
+	STREF
+	ENDC
+	.loc dex/RootPN.sol, 432
+	GETGLOB 10
+	CTOS
+	SWAP
+	
+	CALLREF {
+		PUSH S1
+		PUSHSLICE x8adb35
+		SDEQ
+		PUSHREFCONT {
+			SWAP      ; salt sliceCode
+			LDREF
+			LDREF
+			DROP         ; salt selfCallCode usualSelector
+			XCHG S1, S2  ; selfCallCode salt usualSelector
+			CTOS         ; selfCallCode salt usualSelector
+			CALLREF {
+				
+				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
+				LDU 10
+				NIP
+				DUP
+				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
+				PUSHCONT {
+					LDREF
+				}
+				PUSHCONT {
+					PUSHREF {
+					}
+					SWAP
+				}
+				IFELSE
+							; selfCallCode salt restUsualSelector dict version intSelector
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+				DROP
+							; selfCallCode salt restUsualSelector dict version
+				SWAP        ; selfCallCode salt restUsualSelector version dict
+				NEWC        ; selfCallCode salt restUsualSelector version dict builder
+				STSLICECONST xF4A4_ ; DICTPUSHCONST
+				STDICT
+				PUSHINT 32
+				STUR 10
+				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
+				STREF       ; selfCallCode salt restUsualSelector builder
+				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
+				STREF       ; selfCallCode restUsualSelector builder
+				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
+				STBREF      ; selfCallCode restUsualSelector usualBuilder
+				STSLICE     ; selfCallCode usualBuilder
+	
+			}
+			NEWC        ; selfCallCode usualBuilder mainBuilder
+			STSLICECONST x8adb35
+			XCHG S1, S2 ; usualBuilder selfCallCode mainBuilder
+			STREF
+			STBREF
+			ENDC
+		}
+		PUSHREFCONT {
+			SWAP
+			CALLREF {
+				
+				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
+				LDU 10
+				NIP
+				DUP
+				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
+				PUSHCONT {
+					LDREF
+				}
+				PUSHCONT {
+					PUSHREF {
+					}
+					SWAP
+				}
+				IFELSE
+							; selfCallCode salt restUsualSelector dict version intSelector
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+				DROP
+							; selfCallCode salt restUsualSelector dict version
+				SWAP        ; selfCallCode salt restUsualSelector version dict
+				NEWC        ; selfCallCode salt restUsualSelector version dict builder
+				STSLICECONST xF4A4_ ; DICTPUSHCONST
+				STDICT
+				PUSHINT 32
+				STUR 10
+				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
+				STREF       ; selfCallCode salt restUsualSelector builder
+				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
+				STREF       ; selfCallCode restUsualSelector builder
+				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
+				STBREF      ; selfCallCode restUsualSelector usualBuilder
+				STSLICE     ; selfCallCode usualBuilder
+	
+			}
+			ENDC
+		}
+		IFELSE
+	}
+	.loc dex/RootPN.sol, 433
+	DUP
+	HASHCU
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment getPrivateNoteCode, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc dex/RootPN.sol, 430
+	ENDS
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline getPrivateNoteCode_5451071b_internal
+	}
+	PUSH S2
+	PUSHCONT {
+		PUSH S4
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xd8
+		STSLICE
+		PUSHINT 99
+		STZEROES
+		XCHG S1, S2
+		STSLICECONST x9c55f71f
+		STREF
+		STU 256
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP2
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment getProtocolFee_16e748c9_internal, {
+	.loc dex/RootPN.sol, 602
+	GETGLOB 19
+	PUSHINT 32
+	DICTUGET
+	ZEROSWAPIFNOT
+	PUSHCONT {
+		PLDU 128
+	}
+	IF
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment getProtocolFee, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc dex/RootPN.sol, 601
+	LDU 32
+	ENDS
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline getProtocolFee_16e748c9_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xd8
+		STSLICE
+		PUSHINT 2605720914
+		STUR 131
+		STU 128
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment getVersion_0d8e6e2c_internal, {
+	.loc dex/RootPN.sol, 628
+	PUSHREF {
+		.blob x342e302e3237
+	}
+	PUSHREF {
+		.blob x526f6f74504e
+	}
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment getVersion, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	.loc dex/RootPN.sol, 627
+	ENDS
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline getVersion_0d8e6e2c_internal
+	}
+	PUSH S2
+	PUSHCONT {
+		PUSH S4
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xd8
+		STSLICE
+		PUSHINT 99
+		STZEROES
+		XCHG S1, S2
+		STSLICECONST xbfd85655
+		STREF
+		STREF
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP2
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment privateNoteDeployed_40718497_internal, {
+	.loc dex/RootPN.sol, 374
+	GETGLOB 10
+	PUSH S3
+	CALLREF {
+		.inline DexLib_buildPrivateNoteInitData_6041c348
+	}
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/modifiers/modifiers.sol, 338
+	GETGLOB 9
+	SDEQ
+	THROWIFNOT 101
+	.loc dex/modifiers/modifiers.sol, 331
+	ACCEPT
+	.loc dex/RootPN.sol, 375
+	DUP
+	GETGLOB 18
+	XCHG S1, S3
+	DUP2
+	PUSHINT 32
+	DICTUGET
+	ZEROSWAPIFNOT
+	PUSHCONT {
+		PLDU 128
+	}
+	IF
+	ROLL 3
+	ADD
+	UFITS 128
+	NEWC
+	STU 128
+	ROTREV
+	PUSHINT 32
+	DICTUSETB
+	SETGLOB 18
+	.loc dex/RootPN.sol, 377
+	GETGLOB 9
+	ROT
+	PUSHSLICE xd860000000000000000000000000000000000000000000000000000000000000000ca0000000000000000000000006_
+	NEWC
+	STSLICE
+	ROLLREV 3
+	NEWC
+	STSLICECONST x5e283e6e
+	STU 256
+	STSLICE
+	STU 128
+	STBREFR
+	ENDC
+	PUSHINT 0
+	SENDRAWMSG
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment privateNoteDeployed, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc dex/RootPN.sol, 374
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+	}
+	IF
+	LDU 256
+	LDU 32
+	LDU 128
+	ENDS
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline privateNoteDeployed_40718497_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment sendEccShellToPrivateNote_18235117_internal, {
+	.loc dex/RootPN.sol, 220
+	ACCEPT
+	.loc dex/RootPN.sol, 221
+	CALLREF {
+		.inline ensureBalance_90188926_internal
+	}
+	.loc dex/RootPN.sol, 227
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	OVER
+	EQUAL
+	THROWIFNOT 101
+	.loc dex/RootPN.sol, 228
+	DUP
+	THROWIFNOT 129
+	.loc dex/RootPN.sol, 230
+	PUXC S5, S1
+	CHKHISTPROOF
+	THROWIFNOT 403
+	.loc dex/RootPN.sol, 237
+	OVER
+	CALLREF {
+		.inline _u64ToFr_62560c3c_internal
+	}
+	PUSH S4
+	EQUAL
+	THROWIFNOT 137
+	.loc dex/RootPN.sol, 240
+	PUSHINT 300
+	CALLREF {
+		.inline _u32ToFr_03c0be62_internal
+	}
+	PUSH S3
+	EQUAL
+	THROWIFNOT 137
+	.loc dex/RootPN.sol, 253
+	PUSHREF {
+	}
+	.loc dex/RootPN.sol, 254
+	PUSH S7
+	NEWC
+	STU 256
+	ENDC
+	CALLREF {
+		.inline __concatenateStrings
+	}
+	.loc dex/RootPN.sol, 255
+	ROLL 5
+	NEWC
+	STU 256
+	ENDC
+	CALLREF {
+		.inline __concatenateStrings
+	}
+	.loc dex/RootPN.sol, 256
+	ROLL 4
+	NEWC
+	STU 256
+	ENDC
+	CALLREF {
+		.inline __concatenateStrings
+	}
+	.loc dex/RootPN.sol, 257
+	ROLL 3
+	NEWC
+	STU 256
+	ENDC
+	CALLREF {
+		.inline __concatenateStrings
+	}
+	.loc dex/RootPN.sol, 258
+	SWAP
+	CALLREF {
+		.inline _u256ToFr_493f063e_internal
+	}
+	NEWC
+	STU 256
+	ENDC
+	CALLREF {
+		.inline __concatenateStrings
+	}
+	.loc dex/RootPN.sol, 260
+	ROLL 4
+	ZKHALO2VERIFY
+	THROWIFNOT 137
+	.loc dex/RootPN.sol, 263
+	PUSHINT 2
+	NULL
+	NEWC
+	PUSH S3
+	STVARUINT32
+	ROTREV
+	PUSHINT 32
+	DICTUSETB
+	.loc dex/RootPN.sol, 265
+	ROLL 3
+	NEWC
+	PUSHINT 321
+	STZEROES
+	STU 256
+	ENDC
+	GETGLOB 12
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/RootPN.sol, 273
+	GETGLOB 10
+	ROLL 4
+	CALLREF {
+		.inline DexLib_buildPrivateNoteInitData_6041c348
+	}
+	.loc dex/RootPN.sol, 274
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/RootPN.sol, 276
+	OVER
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	ENDC
+	CTOS
+	.loc dex/RootPN.sol, 278
+	XCPU S2, S0
+	HASHCU
+	NEWC
+	STSLICECONST x801_
+	STU 256
+	XCHG S1, S3
+	REVERSE 4, 1
+	NEWC
+	STSLICECONST x62_
+	STB
+	STSLICECONST x502540be400
+	STDICT
+	PUSHINT 3
+	STUR 110
+	OVER
+	CALLREF {
+		CTOS
+		LDI 1
+		SWAP
+		PUSHCONT {
+			LDI 5
+			NIP
+		}
+		IF
+		LDI 1
+		SWAP
+		PUSHCONT {
+			LDI 2
+			NIP
+		}
+		IF
+		LDDICT
+		LDDICT
+		LDDICT
+		ENDS
+		BLKDROP 3
+	}
+	STREF
+	STONE
+	SWAP
+	NEWC
+	STSLICECONST x00000001
+	STSLICE
+	STBREFR
+	ENDC
+	PUSHINT 1
+	SENDRAWMSG
+	.loc dex/RootPN.sol, 286
+	PUSHSLICE xd860000000000000000000000000000000000000000000000000000000000000000cc0000000000000000000000006_
+	NEWC
+	STSLICE
+	ROTREV
+	NEWC
+	STSLICECONST x72b254c1
+	STSLICE
+	STU 64
+	STBREFR
+	ENDC
+	PUSHINT 0
+	SENDRAWMSG
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment sendEccShellToPrivateNote, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc dex/RootPN.sol, 209
+	OVER
+	PUSHCONT {
+		LDREF
+		LDREF
+		ENDS
+		CTOS
+	}
+	PUSHCONT {
+		LDREF
+	}
+	IFELSE
+	LDU 256
+	LDU 256
+	LDU 256
+	LDREF
+	ENDS
+	CTOS
+	LDU 256
+	LDU 256
+	LDU 64
+	LDU 8
+	LDU 256
+	ENDS
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline sendEccShellToPrivateNote_18235117_internal
+	}
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment setInferenceOrderBookCode_cec6b35b_internal, {
+	.loc dex/modifiers/modifiers.sol, 325
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 17
+	EQUAL
+	THROWIFNOT 101
+	.loc dex/modifiers/modifiers.sol, 331
+	ACCEPT
+	.loc dex/RootPN.sol, 407
+	CALLREF {
+		.inline ensureBalance_90188926_internal
+	}
+	.loc dex/RootPN.sol, 408
+	SETGLOB 16
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment setInferenceOrderBookCode, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc dex/RootPN.sol, 406
+	LDREF
+	ENDS
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline setInferenceOrderBookCode_cec6b35b_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment setPrivateNoteCode_cc51056a_internal, {
+	.loc dex/modifiers/modifiers.sol, 325
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 17
+	EQUAL
+	THROWIFNOT 101
+	.loc dex/modifiers/modifiers.sol, 331
+	ACCEPT
+	.loc dex/RootPN.sol, 423
+	CALLREF {
+		.inline ensureBalance_90188926_internal
+	}
+	.loc dex/RootPN.sol, 424
+	SETGLOB 10
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment setPrivateNoteCode, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc dex/RootPN.sol, 422
+	LDREF
+	ENDS
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline setPrivateNoteCode_cc51056a_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment updateCode_10aae4d5_internal, {
+	.loc dex/modifiers/modifiers.sol, 325
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 17
+	EQUAL
+	THROWIFNOT 101
+	.loc dex/modifiers/modifiers.sol, 331
+	ACCEPT
+	.loc dex/RootPN.sol, 384
+	CALLREF {
+		.inline ensureBalance_90188926_internal
+	}
+	.loc dex/RootPN.sol, 385
+	OVER
+	SETCODE
+	.loc dex/RootPN.sol, 386
+	SWAP
+	CTOS
+	DUP
+	PUSHSLICE x8adb35
+	SDEQ
+	PUSHCONT {
+		PLDREFIDX 1
+		CTOS
+	}
+	IF
+	LDREFRTOS
+	NIP
+	BLESS
+	POP C3
+	.loc dex/RootPN.sol, 387
+	PUSHINT 2083461128
+	PUSH C3
+	CALLX
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment updateCode, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc dex/RootPN.sol, 383
+	LDREF
+	LDREF
+	ENDS
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline updateCode_10aae4d5_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment withdrawProtocolFees_b65e2c4c_internal, {
+	.loc dex/modifiers/modifiers.sol, 325
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 17
+	EQUAL
+	THROWIFNOT 101
+	.loc dex/modifiers/modifiers.sol, 331
+	ACCEPT
+	.loc dex/RootPN.sol, 583
+	CALLREF {
+		.inline ensureBalance_90188926_internal
+	}
+	.loc dex/RootPN.sol, 584
+	DUP
+	GTINT 0
+	DUP
+	PUSHCONT {
+		DROP
+		PUSH2 S0, S1
+		GETGLOB 19
+		PUSHINT 32
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			PLDU 128
+		}
+		IF
+		LEQ
+	}
+	IF
+	THROWIFNOT 129
+	.loc dex/RootPN.sol, 585
+	OVER
+	GETPARAM 7
+	SECOND
+	PUSHINT 32
+	DICTUGET
+	ZEROSWAPIFNOT
+	PUSHCONT {
+		LDVARUINT32
+		DROP
+	}
+	IF
+	OVER
+	GEQ
+	DUP
+	PUSHCONT {
+		DROP
+		OVER
+		GETGLOB 18
+		PUSHINT 32
+		DICTUGET
+		ZEROSWAPIFNOT
+		PUSHCONT {
+			PLDU 128
+		}
+		IF
+		OVER
+		GEQ
+	}
+	IF
+	THROWIFNOT 129
+	.loc dex/RootPN.sol, 589
+	PUSH2 S0, S1
+	GETGLOB 19
+	DUP2
+	PUSHINT 32
+	DICTUGET
+	ZEROSWAPIFNOT
+	PUSHCONT {
+		PLDU 128
+	}
+	IF
+	ROLL 3
+	SUB
+	UFITS 128
+	NEWC
+	STU 128
+	ROTREV
+	PUSHINT 32
+	DICTUSETB
+	SETGLOB 19
+	.loc dex/RootPN.sol, 590
+	PUSH2 S0, S1
+	GETGLOB 18
+	DUP2
+	PUSHINT 32
+	DICTUGET
+	ZEROSWAPIFNOT
+	PUSHCONT {
+		PLDU 128
+	}
+	IF
+	ROLL 3
+	SUB
+	UFITS 128
+	NEWC
+	STU 128
+	ROTREV
+	PUSHINT 32
+	DICTUSETB
+	SETGLOB 18
+	.loc dex/RootPN.sol, 593
+	OVER
+	NULL
+	NEWC
+	PUSH S3
+	STVARUINT32
+	ROTREV
+	PUSHINT 32
+	DICTUSETB
+	.loc dex/RootPN.sol, 594
+	PUXCPU S3, S-1, S4
+	NEWC
+	STSLICECONST x42_
+	STSLICE
+	STSLICECONST x405f5e100
+	STDICT
+	PUSHINT 105
+	STZEROES
+	SWAP
+	NEWC
+	STU 256
+	STBREFR
+	STONE
+	STSLICECONST x0
+	ENDC
+	PUSHINT 1
+	SENDRAWMSG
+	.loc dex/RootPN.sol, 597
+	REVERSE 4, 0
+	PUSHSLICE xd860000000000000000000000000000000000000000000000000000000000000001380000000000000000000000006_
+	NEWC
+	STSLICE
+	ROLLREV 4
+	NEWC
+	STSLICECONST x3bd38cd6
+	STSLICE
+	STU 256
+	STU 32
+	SWAP
+	NEWC
+	STU 128
+	STBREFR
+	STBREFR
+	ENDC
+	PUSHINT 0
+	SENDRAWMSG
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment withdrawProtocolFees, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc dex/RootPN.sol, 580
+	OVER
+	PUSHCONT {
+		LDREF
+		ENDS
+		CTOS
+		LDMSGADDR
+		LDU 256
+		LDU 32
+	}
+	PUSHCONT {
+		LDMSGADDR
+		LDU 256
+		LDU 32
+		LDREF
+		ENDS
+		CTOS
+	}
+	IFELSE
+	LDU 128
+	ENDS
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline withdrawProtocolFees_b65e2c4c_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment withdrawTokens_126525f8_internal, {
+	.loc dex/RootPN.sol, 505
+	GETGLOB 10
+	PUSH S2
+	CALLREF {
+		.inline DexLib_computePrivateNoteAddress_1d80259b
+	}
+	.loc dex/modifiers/modifiers.sol, 338
+	GETGLOB 9
+	OVER
+	SDEQ
+	THROWIFNOT 101
+	.loc dex/modifiers/modifiers.sol, 331
+	ACCEPT
+	.loc dex/modifiers/modifiers.sol, 332
+	ROLLREV 4
+	PUSHCONT {
+		.loc dex/RootPN.sol, 513
+		CALLREF {
+			.inline ensureBalance_90188926_internal
+		}
+		.loc dex/RootPN.sol, 518
+		PUSH2 S3, S3
+		PUSHINT 32
+		DICTUMIN
+		PUSHCONT {
+			PUXC S0, S1
+			PLDU 128
+		}
+		PUSHCONT {
+			NULL
+			BLKPUSH 2, 0
+		}
+		IFELSE
+		FALSE ; decl return flag
+		PUSHCONT {
+			PUSH S3
+			ISNULL
+			NOT
+		}
+		PUSHCONT {
+			.loc dex/RootPN.sol, 519
+			OVER
+			GTINT 0
+			DUP
+			PUSHCONT {
+				DROP
+				PUSH S2
+				GETPARAM 7
+				SECOND
+				PUSHINT 32
+				DICTUGET
+				ZEROSWAPIFNOT
+				PUSHCONT {
+					LDVARUINT32
+					DROP
+				}
+				IF
+				PUSH S2
+				LESS
+				DUP
+				PUSHCONT {
+					DROP
+					PUSH S2
+					GETGLOB 18
+					PUSHINT 32
+					DICTUGET
+					ZEROSWAPIFNOT
+					PUSHCONT {
+						PLDU 128
+					}
+					IF
+					PUSH S2
+					LESS
+				}
+				IFNOT
+			}
+			IF
+			PUSHCONT {
+				.loc dex/RootPN.sol, 523
+				ROLL 8
+				PUSHINT 4
+				CALLREF {
+					DEPTH
+					ADDCONST -5
+					PICK
+					PUSHCONT {
+						NULL
+					}
+					PUSHCONT {
+						DEPTH
+						ADDCONST -3
+						PICK
+						CTOS
+						LDU 4
+						LDMSGADDR
+						LDMSGADDR
+						LDGRAMS
+						PLDDICT
+						BLKDROP2 4, 1
+					}
+					IFELSE
+				}
+				GETGLOB 9
+				NEWC
+				STSLICECONST x62_
+				STSLICE
+				STSLICECONST x405f5e100
+				STDICT
+				PUSHINT 105
+				STZEROES
+				SWAP
+				NEWC
+				STU 256
+				STBREFR
+				STONE
+				STSLICECONST x0069fb8cc
+				STDICT
+				ENDC
+				PUSHINT 1
+				SENDRAWMSG
+				.loc dex/RootPN.sol, 526
+				BLKDROP 8
+				PUSHINT 4
+				RETALT
+				.loc dex/RootPN.sol, 0
+			}
+			IFJMP
+			.loc dex/RootPN.sol, 0
+			ROLL 3
+			PUSH S4
+			PUSHINT 32
+			DICTUGETNEXT
+			PUSHCONT {
+				PUXC S0, S1
+				PLDU 128
+			}
+			PUSHCONT {
+				NULL
+				BLKPUSH 2, 0
+			}
+			IFELSE
+			PUSH S3
+			BLKDROP2 3, 4
+		}
+		WHILEBRK
+		IFRET
+		BLKDROP 4
+		.loc dex/RootPN.sol, 531
+		NULL
+		.loc dex/RootPN.sol, 532
+		PUSH2 S4, S4
+		PUSHINT 32
+		DICTUMIN
+		PUSHCONT {
+			PUXC S0, S1
+			PLDU 128
+		}
+		PUSHCONT {
+			NULL
+			BLKPUSH 2, 0
+		}
+		IFELSE
+		PUSHCONT {
+			PUSH S2
+			ISNULL
+			NOT
+		}
+		PUSHCONT {
+			.loc dex/RootPN.sol, 533
+			DUP
+			GTINT 0
+			PUSHCONT {
+				.loc dex/RootPN.sol, 534
+				PUSH2 S1, S4
+				NEWC
+				PUSH S3
+				STVARUINT32
+				ROTREV
+				PUSHINT 32
+				DICTUSETB
+				POP S5
+				PUSH2 S0, S1
+				.loc dex/RootPN.sol, 535
+				GETGLOB 18
+				DUP2
+				PUSHINT 32
+				DICTUGET
+				ZEROSWAPIFNOT
+				PUSHCONT {
+					PLDU 128
+				}
+				IF
+				ROLL 3
+				SUB
+				UFITS 128
+				NEWC
+				STU 128
+				ROTREV
+				PUSHINT 32
+				DICTUSETB
+				SETGLOB 18
+				.loc dex/RootPN.sol, 0
+			}
+			IF
+			.loc dex/RootPN.sol, 0
+			XC2PU S0, S2, S3
+			PUSHINT 32
+			DICTUGETNEXT
+			PUSHCONT {
+				PUXC S0, S1
+				PLDU 128
+			}
+			PUSHCONT {
+				NULL
+				BLKPUSH 2, 0
+			}
+			IFELSE
+			BLKDROP2 2, 3
+		}
+		WHILE
+		BLKDROP 4
+		.loc dex/RootPN.sol, 541
+		CALLREF {
+			DEPTH
+			ADDCONST -5
+			PICK
+			PUSHCONT {
+				NULL
+			}
+			PUSHCONT {
+				DEPTH
+				ADDCONST -3
+				PICK
+				CTOS
+				LDU 4
+				LDMSGADDR
+				LDMSGADDR
+				LDGRAMS
+				PLDDICT
+				BLKDROP2 4, 1
+			}
+			IFELSE
+		}
+		DUP
+		PUSHINT 32
+		DICTUMIN
+		PUSHCONT {
+			PUXC S0, S1
+			LDVARUINT32
+			DROP
+		}
+		PUSHCONT {
+			NULL
+			BLKPUSH 2, 0
+		}
+		IFELSE
+		PUSHCONT {
+			PUSH S2
+			ISNULL
+			NOT
+		}
+		PUSHCONT {
+			.loc dex/RootPN.sol, 542
+			XCPU S1, S4
+			DUP2
+			PUSHINT 32
+			DICTUGET
+			ZEROSWAPIFNOT
+			PUSHCONT {
+				LDVARUINT32
+				DROP
+			}
+			IF
+			ROLL 3
+			ADD
+			UFITS 248
+			NEWC
+			SWAP
+			STVARUINT32
+			ROTREV
+			PUSHINT 32
+			DICTUSETB
+			POP S3
+			.loc dex/RootPN.sol, 0
+			OVER
+			PUSHINT 32
+			DICTUGETNEXT
+			PUSHCONT {
+				PUXC S0, S1
+				LDVARUINT32
+				DROP
+			}
+			PUSHCONT {
+				NULL
+				BLKPUSH 2, 0
+			}
+			IFELSE
+		}
+		WHILE
+		BLKDROP 4
+		.loc dex/RootPN.sol, 546
+		PUSH S3
+		NEWC
+		STSLICECONST x42_
+		STSLICE
+		STSLICECONST x405f5e100
+		STDICT
+		PUSHINT 110
+		STZEROES
+		ENDC
+		PUSHINT 1
+		SENDRAWMSG
+		.loc dex/RootPN.sol, 551
+		ROT
+		GETGLOB 9
+		ROLL 4
+		PUSHSLICE xd860000000000000000000000000000000000000000000000000000000000000001340000000000000000000000006_
+		NEWC
+		STSLICE
+		ROLLREV 4
+		NEWC
+		STSLICECONST x247b8a94
+		STDICT
+		STSLICE
+		ROTREV
+		NEWC
+		STSLICE
+		STU 256
+		STBREFR
+		STBREFR
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+		DROP
+		.loc dex/RootPN.sol, 505
+	}
+	CALLX
+	.loc dex/modifiers/modifiers.sol, 0
+	DROP
+	.loc dex/RootPN.sol, 0
+}
+
+.fragment withdrawTokens, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc dex/RootPN.sol, 505
+	OVER
+	PUSHCONT {
+		LDDICT
+		LDREF
+		ENDS
+		CTOS
+	}
+	PUSHCONT {
+		LDDICT
+	}
+	IFELSE
+	LDMSGADDR
+	LDU 256
+	LDREF
+	ENDS
+	CTOS
+	LDU 256
+	ENDS
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline withdrawTokens_126525f8_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment public_function_selector, {
+	DUP
+	PUSHINT 822740877
+	LEQ
+	IFJMPREF {
+		DUP
+		PUSHINT 366846269
+		LEQ
+		IFJMPREF {
+			DUP
+			EQINT 1
+			IFJMPREF {
+				.inline constructor
+			}
+			DUP
+			PUSHINT 98052085
+			EQUAL
+			IFJMPREF {
+				.inline deployPrivateNote
+			}
+			DUP
+			PUSHINT 366846269
+			EQUAL
+			IFJMPREF {
+				.inline setPrivateNoteCode
+			}
+		}
+		DUP
+		PUSHINT 458237266
+		LEQ
+		IFJMPREF {
+			DUP
+			PUSHINT 431964064
+			EQUAL
+			IFJMPREF {
+				.inline withdrawProtocolFees
+			}
+			DUP
+			PUSHINT 458237266
+			EQUAL
+			IFJMPREF {
+				.inline getProtocolFee
+			}
+		}
+		DUP
+		PUSHINT 475395871
+		EQUAL
+		IFJMPREF {
+			.inline getPrivateNoteCode
+		}
+		DUP
+		PUSHINT 822740877
+		EQUAL
+		IFJMPREF {
+			.inline collectProtocolFee
+		}
+	}
+	DUP
+	PUSHINT 1502888627
+	LEQ
+	IFJMPREF {
+		DUP
+		PUSHINT 952016560
+		LEQ
+		IFJMPREF {
+			DUP
+			PUSHINT 897384892
+			EQUAL
+			IFJMPREF {
+				.inline privateNoteDeployed
+			}
+			DUP
+			PUSHINT 952016560
+			EQUAL
+			IFJMPREF {
+				.inline getPrivateNoteAddress
+			}
+		}
+		DUP
+		PUSHINT 1071142485
+		EQUAL
+		IFJMPREF {
+			.inline getVersion
+		}
+		DUP
+		PUSHINT 1360503809
+		EQUAL
+		IFJMPREF {
+			.inline sendEccShellToPrivateNote
+		}
+		DUP
+		PUSHINT 1502888627
+		EQUAL
+		IFJMPREF {
+			.inline getDetails
+		}
+	}
+	DUP
+	PUSHINT 1962015662
+	LEQ
+	IFJMPREF {
+		DUP
+		PUSHINT 1837810320
+		EQUAL
+		IFJMPREF {
+			.inline setInferenceOrderBookCode
+		}
+		DUP
+		PUSHINT 1852699348
+		EQUAL
+		IFJMPREF {
+			.inline getPMPAddress
+		}
+		DUP
+		PUSHINT 1962015662
+		EQUAL
+		IFJMPREF {
+			.inline withdrawTokens
+		}
+	}
+	DUP
+	PUSHINT 2095978802
+	LEQ
+	IFJMPREF {
+		DUP
+		PUSHINT 2017864555
+		EQUAL
+		IFJMPREF {
+			.inline generateVoucher
+		}
+		DUP
+		PUSHINT 2095978802
+		EQUAL
+		IFJMPREF {
+			.inline updateCode
+		}
+	}
+}
+
+.fragment main_external, {
+	PUSHSLICE x8000000000000000000000000000000000000000000000000000000000000000001_
+	SETGLOB 9
+	OVER
+	CALLREF {
+		.inline c4_to_c7
+	}
+	LDU 1 ; haveSign msgSlice
+	SWAP
+	PUSHCONT {
+		PUSHPOW2 9
+		LDSLICEX
+		DUP
+		MYADDR
+		NEWC
+		STSLICE
+		STSLICE
+		ENDC
+		HASHCU
+		SWAP
+		LDU 1 ; signatureSlice hashMsgSlice hasPubkey msgSlice
+		SWAP
+		PUSHCONT {
+			LDU 256 ; signatureSlice hashMsgSlice pubkey msgSlice
+			XCHG2 S3, S3
+		}
+		PUSHCONT {
+			XCHG S2
+			GETGLOB 2
+		}
+		IFELSE
+		DUP
+		SETGLOB 5
+		CHKSIGNU
+		THROWIFNOT 40
+	}
+	PUSHCONT {
+		LDU 1 ; hasPubkey msgSlice
+		SWAP
+		THROWIF 58
+	}
+	IFELSE
+	LDU 64 ; timestamp msgSlice
+	SWAP
+	.inline __replayProtection
+	LDU 32 ; expireAt msgSlice
+	SWAP
+	NOW ; msgSlice expireAt now
+	GREATER ; msgSlice expireAt>now
+	THROWIFNOT 57
+	LDU 32 ; funcId body
+	SWAP
+	CALLREF {
+		.inline public_function_selector
+	}
+	THROW 60
+}
+
+.fragment main_internal, {
+	PUSHROOT
+	CTOS
+	PUSHINT 320
+	SDSKIPFIRST
+	PLDI 1
+	SETGLOB 6
+	PUSH S2
+	CTOS
+	LDU 4 ; bounced tail
+	LDMSGADDR ; bounced src tail
+	DROP
+	SETGLOB 9
+	MODPOW2 1
+	IFRET
+	OVER
+	SEMPTY ; isEmpty
+	IFJMPREF {
+		GETGLOB 6
+		THROWIFNOT 76
+	}
+	OVER
+	LDUQ 32  ; [funcId] body' ok
+	THROWIFNOT 60
+	OVER
+	IFNOTJMPREF {
+		GETGLOB 6
+		THROWIFNOT 76
+	}
+	SWAP
+	CALLREF {
+		.inline public_function_selector
+	}
+	THROW 60
+}
+
+.fragment onCodeUpgrade_0e89a1b9_internal, {
+	.loc dex/RootPN.sol, 393
+	ACCEPT
+	.loc dex/RootPN.sol, 394
+	CALLREF {
+		.inline ensureBalance_90188926_internal
+	}
+	.loc dex/RootPN.sol, 395
+	PUSHREF {
+	}
+	BLKPUSH 6, 0
+	PUSHINT 0
+	NULL
+	DUP
+	SETGLOB 19
+	SETGLOB 18
+	SETGLOB 17
+	SETGLOB 16
+	SETGLOB 15
+	SETGLOB 14
+	SETGLOB 13
+	SETGLOB 12
+	SETGLOB 11
+	SETGLOB 10
+	.loc dex/RootPN.sol, 399
+	CTOS
+	LDREF
+	LDREF
+	LDREF
+	LDREF
+	ENDS
+	CTOS
+	LDREF
+	LDREF
+	LDREF
+	LDU 256
+	ENDS
+	REVERSE 7, 0
+	SETGLOB 11
+	SETGLOB 10
+	SETGLOB 12
+	SETGLOB 13
+	SETGLOB 14
+	SETGLOB 15
+	SETGLOB 17
+	.loc dex/RootPN.sol, 0
+	CALLREF {
+		.inline c7_to_c4
+	}
+	COMMIT
+	THROW 0
+}
+
+.fragment minStakeValue_331a42d4_internal, {
+	.loc dex/modifiers/modifiers.sol, 303
+	DUP
+	EQINT 2
+	PUSHCONT {
+		DROP
+		PUSHINT 10000000
+	}
+	IFJMP
+	.loc dex/modifiers/modifiers.sol, 304
+	EQINT 3
+	PUSHCONT {
+		PUSHINT 10000
+	}
+	IFJMP
+	.loc dex/modifiers/modifiers.sol, 305
+	PUSHINT 10000000
+	.loc dex/modifiers/modifiers.sol, 0
+}
+
+.fragment minOrderNotional_059b8926_internal, {
+	.loc dex/modifiers/modifiers.sol, 310
+	DUP
+	EQINT 2
+	PUSHCONT {
+		DROP
+		PUSHINT 100000000000
+	}
+	IFJMP
+	.loc dex/modifiers/modifiers.sol, 311
+	EQINT 3
+	PUSHCONT {
+		PUSHINT 1000000
+	}
+	IFJMP
+	.loc dex/modifiers/modifiers.sol, 312
+	PUSHINT 10000000000
+	.loc dex/modifiers/modifiers.sol, 0
+}
+
+.fragment lotSize_fab0b6b5_internal, {
+	.loc dex/modifiers/modifiers.sol, 317
+	DUP
+	EQINT 2
+	PUSHCONT {
+		DROP
+		PUSHINT 10000000
+	}
+	IFJMP
+	.loc dex/modifiers/modifiers.sol, 318
+	EQINT 3
+	PUSHCONT {
+		PUSHINT 10000
+	}
+	IFJMP
+	.loc dex/modifiers/modifiers.sol, 319
+	PUSHINT 10000000
+	.loc dex/modifiers/modifiers.sol, 0
+}
+
+.fragment default_data_cell, {
+	NULL
+	DUP
+	PUSHINT 0
+	PUSHREF {
+	}
+	BLKPUSH 6, 0
+	NEWC
+	PUSHINT 321
+	STZEROES
+	STREF
+	STREF
+	STREF
+	ROLLREV 7
+	NEWC
+	STREF
+	STREF
+	STREF
+	ROLLREV 4
+	NEWC
+	STREF
+	STU 256
+	STDICT
+	STDICT
+	STBREFR
+	STBREFR
+	ENDC
+}
+
+.fragment DexLib_with_obj_buildPrivateNoteInitData_6041c348, {
+	.loc dex/libraries/DexLib.sol, 37
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	DUP
+	PUSHINT 0
+	BLKPUSH 5, 0
+	NULL
+	PUSHINT 0
+	NULL
+	PAIR
+	PUSHINT 0
+	BLKPUSH 6, 0
+	NULL
+	DUP
+	PUSHINT 0
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	NULL
+	PAIR
+	PUSHINT 0
+	BLKPUSH 5, 0
+	NULL
+	DUP
+	PUSHREF {
+	}
+	DUP
+	PUSHINT 0
+	BLKPUSH 7, 0
+	PUSHREF {
+	}
+	DUP
+	PUSHINT 0
+	PUSHINT 48
+	ROLLX
+	PUSHINT 0
+	DUP
+	PAIR
+	NEWC
+	PUSHINT 258
+	STZEROES
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 256
+	STU 32
+	STU 256
+	PUSHINT 48
+	ROLLREVX
+	NEWC
+	STU 256
+	STREF
+	STREF
+	STU 256
+	STU 16
+	STU 256
+	STU 16
+	PUSHINT 41
+	ROLLREVX
+	NEWC
+	STU 256
+	STU 16
+	STU 256
+	STU 16
+	STREF
+	STREF
+	STDICT
+	PUSHINT 34
+	ROLLREVX
+	NEWC
+	XCPU S1, S0
+	ISNULL
+	PUSHCONT {
+		DROP
+		STZERO
+	}
+	PUSHCONT {
+		SWAP
+		STONE
+		STSLICE
+	}
+	IFELSE
+	STU 256
+	STU 128
+	STU 32
+	PUSHINT 30
+	ROLLREVX
+	NEWC
+	STU 128
+	STU 32
+	STU 128
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 32
+	STDICT
+	STDICT
+	STDICT
+	PUSHINT 24
+	ROLLREVX
+	NEWC
+	STDICT
+	STU 32
+	STDICT
+	STDICT
+	STU 64
+	STU 64
+	STI 1
+	STU 128
+	STU 32
+	STU 256
+	STI 1
+	ROLLREV 13
+	NEWC
+	SWAP
+	UNPAIR
+	XCHG S2
+	STU 32
+	STDICT
+	STDICT
+	STU 128
+	STU 32
+	STI 1
+	STI 1
+	STU 128
+	STU 32
+	STDICT
+	STDICT
+	STU 32
+	STU 32
+	STU 64
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	OVER
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_buildPMPCode_c2a229cb, {
+	.loc dex/libraries/DexLib.sol, 77
+	OVER
+	NEWC
+	STREF
+	ENDC
+	.loc dex/libraries/DexLib.sol, 78
+	SWAP
+	CTOS
+	SWAP
+	
+	CALLREF {
+		PUSH S1
+		PUSHSLICE x8adb35
+		SDEQ
+		PUSHREFCONT {
+			SWAP      ; salt sliceCode
+			LDREF
+			LDREF
+			DROP         ; salt selfCallCode usualSelector
+			XCHG S1, S2  ; selfCallCode salt usualSelector
+			CTOS         ; selfCallCode salt usualSelector
+			CALLREF {
+				
+				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
+				LDU 10
+				NIP
+				DUP
+				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
+				PUSHCONT {
+					LDREF
+				}
+				PUSHCONT {
+					PUSHREF {
+					}
+					SWAP
+				}
+				IFELSE
+							; selfCallCode salt restUsualSelector dict version intSelector
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+				DROP
+							; selfCallCode salt restUsualSelector dict version
+				SWAP        ; selfCallCode salt restUsualSelector version dict
+				NEWC        ; selfCallCode salt restUsualSelector version dict builder
+				STSLICECONST xF4A4_ ; DICTPUSHCONST
+				STDICT
+				PUSHINT 32
+				STUR 10
+				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
+				STREF       ; selfCallCode salt restUsualSelector builder
+				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
+				STREF       ; selfCallCode restUsualSelector builder
+				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
+				STBREF      ; selfCallCode restUsualSelector usualBuilder
+				STSLICE     ; selfCallCode usualBuilder
+	
+			}
+			NEWC        ; selfCallCode usualBuilder mainBuilder
+			STSLICECONST x8adb35
+			XCHG S1, S2 ; usualBuilder selfCallCode mainBuilder
+			STREF
+			STBREF
+			ENDC
+		}
+		PUSHREFCONT {
+			SWAP
+			CALLREF {
+				
+				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
+				LDU 10
+				NIP
+				DUP
+				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
+				PUSHCONT {
+					LDREF
+				}
+				PUSHCONT {
+					PUSHREF {
+					}
+					SWAP
+				}
+				IFELSE
+							; selfCallCode salt restUsualSelector dict version intSelector
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+				DROP
+							; selfCallCode salt restUsualSelector dict version
+				SWAP        ; selfCallCode salt restUsualSelector version dict
+				NEWC        ; selfCallCode salt restUsualSelector version dict builder
+				STSLICECONST xF4A4_ ; DICTPUSHCONST
+				STDICT
+				PUSHINT 32
+				STUR 10
+				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
+				STREF       ; selfCallCode salt restUsualSelector builder
+				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
+				STREF       ; selfCallCode restUsualSelector builder
+				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
+				STBREF      ; selfCallCode restUsualSelector usualBuilder
+				STSLICE     ; selfCallCode usualBuilder
+	
+			}
+			ENDC
+		}
+		IFELSE
+	}
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_buildOracleStateInit_5c54517d, {
+	.loc dex/libraries/DexLib.sol, 95
+	PUSHINT 0
+	DUP
+	PUSHREF {
+	}
+	NEWC
+	PUSHINT 577
+	STZEROES
+	STREF
+	STU 256
+	STU 16
+	STREF
+	ENDC
+	OVER
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_buildOracleEventListStateInit_3183dbfe, {
+	.loc dex/libraries/DexLib.sol, 118
+	NULL
+	PUSHREF {
+	}
+	PUSHINT 0
+	XC2PU S3, S2, S2
+	PUXC2 S0, S2, S5
+	NEWC
+	PUSHINT 322
+	STZEROES
+	STSLICE
+	ROLLREV 6
+	NEWC
+	STU 128
+	STU 256
+	STU 256
+	STU 16
+	STREF
+	STDICT
+	STBREFR
+	ENDC
+	OVER
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_buildOrderBookCode_9d6a92db, {
+	.loc dex/libraries/DexLib.sol, 158
+	OVER
+	NEWC
+	STREF
+	ENDC
+	.loc dex/libraries/DexLib.sol, 159
+	SWAP
+	CTOS
+	SWAP
+	
+	CALLREF {
+		PUSH S1
+		PUSHSLICE x8adb35
+		SDEQ
+		PUSHREFCONT {
+			SWAP      ; salt sliceCode
+			LDREF
+			LDREF
+			DROP         ; salt selfCallCode usualSelector
+			XCHG S1, S2  ; selfCallCode salt usualSelector
+			CTOS         ; selfCallCode salt usualSelector
+			CALLREF {
+				
+				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
+				LDU 10
+				NIP
+				DUP
+				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
+				PUSHCONT {
+					LDREF
+				}
+				PUSHCONT {
+					PUSHREF {
+					}
+					SWAP
+				}
+				IFELSE
+							; selfCallCode salt restUsualSelector dict version intSelector
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+				DROP
+							; selfCallCode salt restUsualSelector dict version
+				SWAP        ; selfCallCode salt restUsualSelector version dict
+				NEWC        ; selfCallCode salt restUsualSelector version dict builder
+				STSLICECONST xF4A4_ ; DICTPUSHCONST
+				STDICT
+				PUSHINT 32
+				STUR 10
+				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
+				STREF       ; selfCallCode salt restUsualSelector builder
+				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
+				STREF       ; selfCallCode restUsualSelector builder
+				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
+				STBREF      ; selfCallCode restUsualSelector usualBuilder
+				STSLICE     ; selfCallCode usualBuilder
+	
+			}
+			NEWC        ; selfCallCode usualBuilder mainBuilder
+			STSLICECONST x8adb35
+			XCHG S1, S2 ; usualBuilder selfCallCode mainBuilder
+			STREF
+			STBREF
+			ENDC
+		}
+		PUSHREFCONT {
+			SWAP
+			CALLREF {
+				
+				LDREFRTOS  ; selfCallCode salt restUsualSelector intSelector
+	
+				PUSHSLICE xF4A4_
+				SDBEGINSX
+				LDDICT     ; selfCallCode salt restUsualSelector dict intSelector
+				LDU 10
+				NIP
+				DUP
+				SREFS      ; selfCallCode salt restUsualSelector dict intSelector refs
+				PUSHCONT {
+					LDREF
+				}
+				PUSHCONT {
+					PUSHREF {
+					}
+					SWAP
+				}
+				IFELSE
+							; selfCallCode salt restUsualSelector dict version intSelector
+				PUSHSLICE xF4BDF2C04E
+				SDBEGINSX
+				DROP
+							; selfCallCode salt restUsualSelector dict version
+				SWAP        ; selfCallCode salt restUsualSelector version dict
+				NEWC        ; selfCallCode salt restUsualSelector version dict builder
+				STSLICECONST xF4A4_ ; DICTPUSHCONST
+				STDICT
+				PUSHINT 32
+				STUR 10
+				STSLICECONST xF4BDF2C04E ; DICTUGETJMPZ THROW 78
+				STREF       ; selfCallCode salt restUsualSelector builder
+				XCHG S1, S2 ; selfCallCode restUsualSelector salt builder
+				STREF       ; selfCallCode restUsualSelector builder
+				NEWC        ; selfCallCode restUsualSelector builder usualBuilder
+				STBREF      ; selfCallCode restUsualSelector usualBuilder
+				STSLICE     ; selfCallCode usualBuilder
+	
+			}
+			ENDC
+		}
+		IFELSE
+	}
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj_buildInferenceOrderBookStateInit_8a587b83, {
+	.loc dex/libraries/DexLib.sol, 171
+	PUSHSLICE x2_
+	NULL
+	BLKPUSH 3, 0
+	PUSHINT 0
+	NULL
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	PUSHINT 0
+	BLKPUSH 2, 0
+	NULL
+	BLKPUSH 2, 0
+	PUSHINT 0
+	DUP
+	NULL
+	PUSHREF {
+	}
+	PUSHINT 21
+	ROLLX
+	NEWC
+	PUSHINT 321
+	STZEROES
+	STU 256
+	STREF
+	STDICT
+	STU 128
+	STU 128
+	STDICT
+	ROLLREV 16
+	NEWC
+	STDICT
+	STDICT
+	STU 128
+	STU 128
+	STU 64
+	STDICT
+	STU 8
+	STU 8
+	STU 8
+	ROLLREV 7
+	NEWC
+	STDICT
+	STU 8
+	STDICT
+	STDICT
+	ROLLREV 3
+	NEWC
+	STDICT
+	STDICT
+	STSLICE
+	STBREFR
+	STBREFR
+	STBREFR
+	ENDC
+	OVER
+	NEWC
+	STSLICECONST x2_
+	STDICT
+	STDICT
+	STZERO
+	ENDC
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment DexLib_with_obj__extractDataCell_37d491e3, {
+	.loc dex/libraries/DexLib.sol, 189
+	DUP
+	CTOS
+	.loc dex/libraries/DexLib.sol, 190
+	PUSHINT 5
+	SDSKIPFIRST
+	.loc dex/libraries/DexLib.sol, 191
+	LDREF
+	NIP
+	.loc dex/libraries/DexLib.sol, 192
+	PLDREF
+	.loc dex/libraries/DexLib.sol, 0
+}
+
+.fragment onTickTock, {
+}
+
+; The code below forms a value of the StateInit type.
+.blob x4_ ; split_depth = nothing
+.blob x4_ ; special = nothing
+.blob xc_ ; code = just
+.cell { ; code cell
+	PUSHREFCONT {
+		DICTPUSHCONST 32
+		DICTUGETJMPZ
+		THROW 78
+		.code-dict-cell 32, {
+			x7c2f1808 = onCodeUpgrade_0e89a1b9_internal,
+		}
+		.cell { ; version
+			.blob x736f6c20302e37392e33 ; sol 0.79.3
+		}
+	}
+	POPCTR c3
+	DUP
+	IFNOTJMPREF {
+		.inline main_internal
+	}
+	DUP
+	EQINT -1
+	IFJMPREF {
+		.inline main_external
+	}
+	DUP
+	EQINT -2
+	IFJMPREF {
+		.inline onTickTock
+	}
+	THROW 11
+}
+.blob xc_ ; data = just
+.cell { 
+	.inline-computed-cell default_data_cell, 0
+}
+.blob x4_ ; library = hme_empty

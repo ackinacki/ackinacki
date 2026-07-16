@@ -366,7 +366,12 @@ impl Message {
             if !msg_types.is_empty() {
                 let u8ed = msg_types
                     .iter()
-                    .map(|t| (<BlockchainMessageTypeFilterEnum as Into<u8>>::into(*t)).to_string())
+                    .flat_map(|t| match *t {
+                        // ExtOut spans v1 (msg_type=2) and v2 (msg_type=4) ext-out headers.
+                        BlockchainMessageTypeFilterEnum::ExtOut => vec![2u8, 4u8],
+                        other => vec![u8::from(other)],
+                    })
+                    .map(|v| v.to_string())
                     .collect::<Vec<String>>();
                 where_ops.push(format!("msg_type IN ({})", u8ed.join(",")));
             }
@@ -465,7 +470,7 @@ impl Message {
             PaginateDirection::Backward => "DESC",
         };
 
-        let mut where_ops = vec![format!("src={account:?}"), "msg_type=2".to_string()];
+        let mut where_ops = vec![format!("src={account:?}"), "msg_type IN (2,4)".to_string()];
 
         if let Some(ref dst_addr) = dst {
             where_ops.push(format!("dst={dst_addr:?}"));
@@ -535,7 +540,7 @@ impl Message {
         };
 
         let cursor_field = "msg_chain_order";
-        let mut where_ops = vec!["msg_type=2".to_string()];
+        let mut where_ops = vec!["msg_type IN (2,4)".to_string()];
 
         if let Some(after) = &pagination.after {
             if !after.is_empty() {

@@ -195,7 +195,7 @@ impl LoadBalancingService {
             e.append_from(block, block_state, &self.metrics);
         } else {
             // TODO: This must be a serious error, yet the node can continue in a release build
-            panic!("DEBUG: thread must be ready: {:?}", &self.thread_load_map);
+            panic!("DEBUG: thread must be ready: {:?}", self.thread_load_map);
         }
     }
 

@@ -36,7 +36,7 @@ members = [
     "tvm_contracts",
 ]
 
-package.version = "0.17.0"
+package.version = "0.18.0"
 package.edition = "2021"
 package.rust-version = "1.86.0"
 package.license = "LicenseRef-Acki-Nacki-Node-License"
@@ -110,14 +110,14 @@ url = { version = "2.5.0", features = ["serde"] }
 wasmtime = "36.0.2"
 zstd = { version = "0.13.3" }
 
-tvm_abi = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.3.an' }
-tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.3.an' }
-tvm_block_json = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.3.an' }
-tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.3.an', default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
-tvm_executor = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.3.an', features = ['signature_with_id'] }
-tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.3.an' }
-tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.3.an' }
-tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.3.an', features = ['gosh'] }
+tvm_abi = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.4.an' }
+tvm_block = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.4.an' }
+tvm_block_json = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.4.an' }
+tvm_client = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.4.an', default-features = false, features = ["std", 'rustls-tls-webpki-roots'] }
+tvm_executor = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.4.an', features = ['signature_with_id'] }
+tvm_sdk = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.4.an' }
+tvm_types = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.4.an' }
+tvm_vm = { git = 'https://github.com/tvmlabs/tvm-sdk.git', tag = 'v3.0.4.an', features = ['gosh'] }
 
 account-state = { path = "node/libs/account-state" }
 chitchat = { path = "chitchat" }
@@ -142,3 +142,15 @@ versioned_struct = { path = "node/libs/versioned_struct" }
 
 [patch.crates-io]
 libsqlite3-sys = { path = "libsqlite3-sys" }
+
+halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", rev = "026e176de8aff8269ab3bbb7f7192b247adab965" }
+halo2-axiom = { git = "https://github.com/gosh-sh/halo2-axiom", rev = "1f28ded628dbf5be7d0478d46cbda0cb0b158a29" }
+poseidon-primitives = { git = "https://github.com/gosh-sh/poseidon-primitives", rev = "fb1450059deb4ae52b0dfdddcb9fdd6767ae1293" }
+
+[patch."https://github.com/axiom-crypto/halo2-lib.git"]
+halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", rev = "026e176de8aff8269ab3bbb7f7192b247adab965" }
+halo2-ecc = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", rev = "026e176de8aff8269ab3bbb7f7192b247adab965" }
+zkevm-hashes = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", rev = "026e176de8aff8269ab3bbb7f7192b247adab965" }
+
+[patch."https://github.com/axiom-crypto/axiom-eth"]
+axiom-eth = { git = "https://github.com/gosh-sh/axiom-eth", rev = "1d61be00a63ec73b3f709d74eb9e6b09b754b911" }

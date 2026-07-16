@@ -123,7 +123,7 @@ fn peers_info<PeerId: Display>(peers: &HashMap<PeerId, Vec<NetPeer<PeerId>>>) ->
         .values()
         .flatten()
         .map(|peer| {
-            format!("{}: {}", &peer.id.to_string().chars().take(6).collect::<String>(), peer.addr)
+            format!("{}: {}", peer.id.to_string().chars().take(6).collect::<String>(), peer.addr)
         })
         .join(",")
 }

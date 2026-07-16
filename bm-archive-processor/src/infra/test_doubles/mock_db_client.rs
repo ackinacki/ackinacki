@@ -19,6 +19,7 @@ pub struct MockDbClient {
     merge_calls: Arc<Mutex<Vec<(PathBuf, PathBuf)>>>,
 }
 
+#[allow(dead_code)]
 impl MockDbClient {
     pub fn new() -> Self {
         MockDbClient {

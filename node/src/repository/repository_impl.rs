@@ -92,11 +92,14 @@ use crate::types::bp_selector::ProducerSelector;
 use crate::types::envelope_hash::AckiNackiEnvelopeHash;
 use crate::types::history_proof::compute_block_leaf_hash;
 use crate::types::history_proof::history_proof_thread_id;
+use crate::types::history_proof::initial_history_cursor;
+use crate::types::history_proof::normalize_history_layer_data;
 use crate::types::history_proof::take_history_data_snapshot;
 use crate::types::history_proof::unpack_history_data_snapshot;
 use crate::types::history_proof::GlobalHistoryData;
 use crate::types::history_proof::GlobalHistoryDataSnapshot;
 use crate::types::history_proof::HistoryBlockData;
+use crate::types::history_proof::HistoryLayerData;
 use crate::types::history_proof::LayerNumber;
 use crate::types::history_proof::HISTORY_PROOF_WINDOW_SIZE;
 #[cfg(all(feature = "messages_db", not(feature = "disable_db_for_messages")))]
@@ -396,6 +399,8 @@ pub struct ThreadSnapshot {
     block_protocol_version_state: BlockProtocolVersionState,
     #[future]
     history_data_snapshot: GlobalHistoryDataSnapshot,
+    #[future]
+    history_cursor: HistoryLayerData,
     durable_state_snapshot: Option<Vec<u8>>,
     finalization_chain: Vec<Envelope<AckiNackiBlock>>,
 }
@@ -424,6 +429,7 @@ impl Transitioning for ThreadSnapshot {
                 .parent_ancestor_blocks_finalization_checkpoints,
             block_protocol_version_state: old.block_protocol_version_state,
             history_data_snapshot: GlobalHistoryDataSnapshot::default(),
+            history_cursor: HistoryLayerData::default(),
             durable_state_snapshot: old.durable_state_snapshot,
             finalization_chain: old.finalization_chain,
         }
@@ -526,6 +532,24 @@ fn derive_snapshot_ancestor_block_heights(
     heights
 }
 
+fn history_cursor_from_snapshot(snapshot: &ThreadSnapshot) -> Option<HistoryLayerData> {
+    let cursor = normalize_history_layer_data(snapshot.history_cursor.clone());
+    if !cursor.is_empty() {
+        return Some(cursor);
+    }
+
+    let cursor = normalize_history_layer_data(snapshot.history_data_snapshot.clone());
+    if !cursor.is_empty() {
+        return Some(cursor);
+    }
+
+    if *snapshot.block_height.height() == 0 {
+        return Some(initial_history_cursor());
+    }
+
+    None
+}
+
 /// Lightweight header extracted from a saved ThreadSnapshot file
 /// without deserializing the heavy state data.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -618,6 +642,8 @@ struct StreamedThreadSnapshot {
     block_protocol_version_state: BlockProtocolVersionState,
     #[future]
     history_data_snapshot: GlobalHistoryDataSnapshot,
+    #[future]
+    history_cursor: HistoryLayerData,
     durable_snapshot_header: DurableSnapshotHeader,
     finalization_chain: Vec<Envelope<AckiNackiBlock>>,
 }
@@ -654,6 +680,7 @@ impl Transitioning for StreamedThreadSnapshot {
                 .parent_ancestor_blocks_finalization_checkpoints,
             block_protocol_version_state: old.block_protocol_version_state,
             history_data_snapshot: GlobalHistoryDataSnapshot::default(),
+            history_cursor: HistoryLayerData::default(),
             durable_snapshot_header: old.durable_snapshot_header,
             finalization_chain: old.finalization_chain,
         }
@@ -685,6 +712,7 @@ impl StreamedThreadSnapshot {
                 .clone(),
             block_protocol_version_state: snapshot.block_protocol_version_state.clone(),
             history_data_snapshot: snapshot.history_data_snapshot.clone(),
+            history_cursor: snapshot.history_cursor.clone(),
             durable_snapshot_header: DurableSnapshotHeader {
                 tag: u8::from(durable_len > 0),
                 len: durable_len,
@@ -716,7 +744,9 @@ impl StreamedThreadSnapshot {
             .block_protocol_version_state(self.block_protocol_version_state)
             .durable_state_snapshot(None)
             .finalization_chain(self.finalization_chain);
-        let builder = builder.history_data_snapshot(self.history_data_snapshot);
+        let builder = builder
+            .history_data_snapshot(self.history_data_snapshot)
+            .history_cursor(self.history_cursor);
         builder.build()
     }
 }
@@ -1312,6 +1342,7 @@ impl RepositoryImpl {
                 block_state_repo_clone.get(&thread_snapshot.finalized_block.data().identifier())?;
             let parent =
                 block_state_repo_clone.get(&thread_snapshot.finalized_block.data().parent())?;
+            let history_cursor = history_cursor_from_snapshot(&thread_snapshot);
             block_state.guarded_mut(|state| {
                 if state.thread_identifier().is_none() {
                     state.set_thread_identifier(
@@ -1362,6 +1393,9 @@ impl RepositoryImpl {
                     state.set_block_version_state(
                         thread_snapshot.block_protocol_version_state.clone(),
                     )?;
+                    if let Some(history_cursor) = history_cursor.clone() {
+                        state.set_history_cursor(history_cursor)?;
+                    }
                     // Populate ancestors from ancestor_blocks_data so the
                     // ancestor-propagation chain is not broken after snapshot restore.
                     // ancestor_blocks_data[0] is the finalized block itself; skip it.
@@ -3112,13 +3146,13 @@ impl RepositoryImpl {
         let res = Self::save_history_data(&self.data_dir, self.history_proof_data.clone());
         tracing::trace!("dump_state: save_history_data res: {:?}", res);
 
-        for (_, finalized_state) in self.thread_last_finalized_state.guarded(|e| e.clone()).iter() {
+        for finalized_state in self.thread_last_finalized_state.guarded(|e| e.clone()).values() {
             let res = self.store_optimistic(finalized_state.clone());
             tracing::trace!("dump_state: Store optimistic state res: {:?}", res);
         }
 
         let root_path = self.get_blocks_dir_path();
-        for (_thread, blocks) in self.finalized_blocks.guarded(|e| e.buffer.clone()).iter() {
+        for blocks in self.finalized_blocks.guarded(|e| e.buffer.clone()).values() {
             for (block_id, (block_state, block)) in blocks.blocks() {
                 let res = RepositoryImpl::save_block(&root_path, block.as_ref());
                 tracing::trace!("dump_state: save finalized block res: {block_id:?} {:?}", res);
@@ -4242,6 +4276,7 @@ pub mod tests {
     use crate::types::envelope_hash::envelope_hash as compute_envelope_hash;
     use crate::types::envelope_hash::AckiNackiEnvelopeHash;
     use crate::types::history_proof::history_proof_thread_id;
+    use crate::types::history_proof::HistoryBlockData;
     use crate::types::history_proof::LayerNumber;
     use crate::types::history_proof::ProofLayerRootHash;
     use crate::types::AckiNackiBlock;
@@ -4428,7 +4463,7 @@ pub mod tests {
         )?;
         let history = repository.history_proof_data.read();
         test_height += 1; // make plus 1 to include 0 height
-        for (_k, v) in history.iter() {
+        for v in history.values() {
             let (d, r) = test_height.div_rem_euclid(&(HISTORY_PROOF_WINDOW_SIZE as u64));
             assert_eq!(r, *v.data_len() as u64);
             test_height = d;
@@ -4474,6 +4509,7 @@ pub mod tests {
             .parent_ancestor_blocks_finalization_checkpoints(make_empty_checkpoints())
             .block_protocol_version_state(BlockProtocolVersionState::none())
             .history_data_snapshot(Default::default())
+            .history_cursor(Default::default())
             .durable_state_snapshot(Some(vec![0xAA, 0xBB, 0xCC]))
             .finalization_chain(vec![finalized_block])
             .build()
@@ -4891,6 +4927,28 @@ pub mod tests {
         assert_eq!(heights.get(&finalized_id).unwrap().height(), &7);
         assert_eq!(heights.get(&parent_id).unwrap().height(), &6);
         assert_eq!(heights.get(&grandparent_id).unwrap().height(), &5);
+    }
+
+    #[test]
+    fn snapshot_history_cursor_is_restored_from_snapshot_payload() -> anyhow::Result<()> {
+        let mut snapshot = make_test_snapshot();
+        let block_height = *snapshot.block_height();
+        let mut base_layer = HistoryBlockData::new();
+        base_layer.update_from_pure_data([0x42; 32], block_height)?;
+        snapshot.history_cursor = BTreeMap::from_iter([(0 as LayerNumber, base_layer.clone())]);
+
+        let cursor = super::history_cursor_from_snapshot(&snapshot)
+            .expect("snapshot with history data must restore cursor");
+
+        assert_eq!(cursor.get(&(0 as LayerNumber)), Some(&base_layer));
+        Ok(())
+    }
+
+    #[test]
+    fn non_genesis_legacy_snapshot_without_history_cursor_stays_empty() {
+        let snapshot = make_test_snapshot();
+
+        assert!(super::history_cursor_from_snapshot(&snapshot).is_none());
     }
 
     #[test]
