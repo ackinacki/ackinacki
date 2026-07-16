@@ -8,6 +8,7 @@ use parking_lot::Mutex;
 
 use super::control::*;
 use super::error::ArchiveStateError;
+use super::store::ActiveArchiveUpdate;
 use super::store::ArchiveStateStore;
 use super::update::AccumulatedUpdate;
 use crate::thread_accounts::durable::kv_store::KVRecord;
@@ -120,7 +121,6 @@ pub(crate) fn apply_update_impl(
 ) -> Result<(), ArchiveStateError> {
     let kv = store.store();
     let meta = store.set_meta();
-    let data_epoch = store.data_epoch();
 
     tracing::trace!(target: "monit", "Applying update: {:?}", update);
 
@@ -129,28 +129,32 @@ pub(crate) fn apply_update_impl(
         return Ok(());
     }
 
+    let pinned_account_sets = store.pin_current_account_sets();
+    let data_epoch = pinned_account_sets.epoch();
+
     // Step 1: Acquire per-thread mutexes in sorted order
     let _locks = acquire_sorted_locks(store, &all_thread_ids);
 
-    // Step 2: Validate all threads
+    // Steps 2-4: validate and claim control records under the control guard.
+    let control_guard = store.lock_control();
+    pinned_account_sets.ensure_same_epoch(control_guard.epoch())?;
     let validated = validate_all_threads(kv, meta, update)?;
 
     // Shortcut: no data to write and no emerging threads
     if update.operations.is_empty() && update.emerging_threads.is_empty() {
-        return finalize_no_data(kv, meta, store, update);
+        return finalize_no_data(kv, meta, store, update, control_guard.epoch());
     }
 
-    // Step 3: Write Uninitialized control records for emerging threads
     for thread_id in update.emerging_threads.keys() {
         let uninit = ThreadControlState::new_uninitialized(*thread_id);
         write_thread_control(kv, meta, &uninit, None).map_err(ArchiveStateError::from)?;
     }
 
-    // Step 4: Claim all threads as WritingCopyA (CAS on initial claim)
     set_all_phases(kv, meta, update, &validated, UpdatePhase::WritingCopyA, true)?;
+    drop(control_guard);
 
     // Register active update for read path
-    let update_arc = Arc::new(update.clone());
+    let update_arc = Arc::new(ActiveArchiveUpdate::new(data_epoch, update.clone()));
     store.active_updates().write().push(update_arc.clone());
 
     // Steps 5-8 wrapped so we can deregister on error
@@ -158,16 +162,26 @@ pub(crate) fn apply_update_impl(
         // Step 5: Write Copy A
         let (put_records, delete_keys) =
             prepare_data_records(&update.operations, data_epoch, store);
-        write_copy(kv, &store.set_accounts_a(), put_records.clone(), &delete_keys)?;
+        write_copy(
+            kv,
+            &store.set_accounts_a_for_epoch(data_epoch),
+            put_records.clone(),
+            &delete_keys,
+        )?;
 
-        // Step 6: Promote all threads to WritingCopyB (no CAS — we own via mutex)
+        // Step 6: Promote all threads to WritingCopyB (no CAS — we own via mutex).
+        let control_guard = store.lock_control();
+        pinned_account_sets.ensure_same_epoch(control_guard.epoch())?;
         set_all_phases(kv, meta, update, &validated, UpdatePhase::WritingCopyB, false)?;
+        drop(control_guard);
 
         // Step 7: Write Copy B
-        write_copy(kv, &store.set_accounts_b(), put_records, &delete_keys)?;
+        write_copy(kv, &store.set_accounts_b_for_epoch(data_epoch), put_records, &delete_keys)?;
 
         // Step 8: Finalize all threads
-        finalize_all(kv, meta, store, update)?;
+        let control_guard = store.lock_control();
+        pinned_account_sets.ensure_same_epoch(control_guard.epoch())?;
+        finalize_all(kv, meta, store, update, control_guard.epoch())?;
 
         Ok(())
     })();
@@ -201,7 +215,14 @@ fn set_all_phases(
         };
         let cas_gen = if use_cas { Some(vt.generation) } else { None };
         write_thread_control(kv, meta_set, &state, cas_gen)
-            .map_err(|_| ArchiveStateError::ConcurrentModification(*thread_id))?;
+            .map_err(ArchiveStateError::from)
+            .map_err(|err| {
+                if matches!(err, ArchiveStateError::EpochChanged { .. }) {
+                    err
+                } else {
+                    ArchiveStateError::ConcurrentModification(*thread_id)
+                }
+            })?;
     }
     for thread_id in update.emerging_threads.keys() {
         let state =
@@ -294,6 +315,7 @@ fn finalize_all(
     meta_set: &str,
     store: &ArchiveStateStore,
     update: &AccumulatedUpdate,
+    control_epoch: u64,
 ) -> Result<(), ArchiveStateError> {
     // Finalize transitioning threads (skip those also emerging — handled below)
     for (thread_id, transition) in &update.thread_transitions {
@@ -324,7 +346,7 @@ fn finalize_all(
     }
 
     // Update System Record FIRST (crash safety for collapse)
-    update_registry(kv, meta_set, store, update)?;
+    update_registry(kv, meta_set, store, update, control_epoch)?;
 
     for thread_id in &update.collapsing_threads {
         let collapsed = ThreadControlState::new_collapsed(*thread_id);
@@ -340,6 +362,7 @@ fn finalize_no_data(
     meta_set: &str,
     store: &ArchiveStateStore,
     update: &AccumulatedUpdate,
+    control_epoch: u64,
 ) -> Result<(), ArchiveStateError> {
     for (thread_id, transition) in &update.thread_transitions {
         let advanced = ThreadControlState {
@@ -350,7 +373,7 @@ fn finalize_no_data(
         write_thread_control(kv, meta_set, &advanced, None).map_err(ArchiveStateError::from)?;
     }
 
-    update_registry(kv, meta_set, store, update)?;
+    update_registry(kv, meta_set, store, update, control_epoch)?;
 
     for thread_id in &update.collapsing_threads {
         let collapsed = ThreadControlState::new_collapsed(*thread_id);
@@ -366,6 +389,7 @@ fn update_registry(
     meta_set: &str,
     store: &ArchiveStateStore,
     update: &AccumulatedUpdate,
+    control_epoch: u64,
 ) -> Result<(), ArchiveStateError> {
     if update.emerging_threads.is_empty() && update.collapsing_threads.is_empty() {
         return Ok(());
@@ -379,7 +403,7 @@ fn update_registry(
         for thread_id in &update.collapsing_threads {
             registry.remove(thread_id);
         }
-        let system = SystemState { threads: registry.clone(), data_epoch: store.data_epoch() };
+        let system = SystemState { threads: registry.clone(), data_epoch: control_epoch };
         write_system_record(kv, meta_set, &system).map_err(ArchiveStateError::from)?;
     }
 

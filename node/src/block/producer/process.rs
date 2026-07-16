@@ -63,6 +63,7 @@ use crate::repository::optimistic_state::OptimisticStateSaveCommand;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::CrossThreadRefData;
 use crate::repository::Repository;
+use crate::types::history_proof::make_check_history_proof_hash_callback;
 use crate::types::next_seq_no;
 use crate::types::BlockIndex;
 use crate::types::BlockRound;
@@ -198,6 +199,9 @@ impl TVMBlockProducerProcess {
                 ))
             })?;
 
+        let check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>> =
+            Some(make_check_history_proof_hash_callback(repository.get_history_proof_data()));
+
         let producer = TVMBlockProducer::builder()
             .node_config_read(node_config_read)
             .active_threads(mem::take(active_block_producer_threads))
@@ -215,7 +219,8 @@ impl TVMBlockProducerProcess {
             .thread_accounts_repository(repository.thread_accounts_repository().clone())
             .metrics(metrics.clone())
             .wasm_cache(wasm_cache)
-            .best_recommended_cut(best_recommended_cut);
+            .best_recommended_cut(best_recommended_cut)
+            .check_history_proof_hash(check_history_proof_hash);
         let producer = producer.build();
         let (control_tx, control_rx) =
             instrumented_channel(metrics.clone(), crate::helper::metrics::ROUTING_COMMAND_CHANNEL);
@@ -525,7 +530,7 @@ impl TVMBlockProducerProcess {
 
         // Build monitoring reports using per-routing transaction counts.
         let mut monitoring_updates = vec![];
-        let overall_load = thread_load_balance::Score(*block.tx_cnt() as u32);
+        let overall_load = thread_load_balance::Score(block.tx_cnt() as u32);
         for monitored_path in monitored_paths.iter() {
             let path = monitored_path.target();
             let path_len = thread_load_balance::AsPath::len(path);
@@ -984,9 +989,8 @@ impl TVMBlockProducerProcess {
         }
         blocks.sort_by_key(|a| a.block().seq_no());
         let thread_id = blocks.last().map(|block| block.block().common_section().thread_id());
-        if let Some(thread_id) = thread_id
-            .cloned()
-            .or_else(|| blocks.first().map(|block| block.optimistic_state().thread_id))
+        if let Some(thread_id) =
+            thread_id.or_else(|| blocks.first().map(|block| block.optimistic_state().thread_id))
         {
             self.report_produced_blocks_size(0, &thread_id);
         }

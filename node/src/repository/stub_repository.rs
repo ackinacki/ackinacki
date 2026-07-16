@@ -9,7 +9,6 @@ use std::sync::Arc;
 use account_state::ArchiveOperation;
 use account_state::ThreadAccountsRepository;
 use account_state::ThreadAccountsState;
-use node_types::AccountIdentifier;
 use node_types::AccountRouting;
 use node_types::BlockIdentifier;
 use node_types::ThreadIdentifier;
@@ -97,7 +96,7 @@ impl OptimisticState for OptimisticStateStub {
         _config_read: crate::config::config_read::ConfigRead,
     ) -> anyhow::Result<(
         CrossThreadRefData,
-        HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+        HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     )> {
         todo!()
     }
@@ -257,6 +256,7 @@ impl Repository for RepositoryStub {
         _block_state: BlockState,
         _state_sync_service: Option<Arc<impl StateSyncService<Repository = RepositoryImpl>>>,
         _finalizing_block_id: BlockIdentifier,
+        _update_history_data: bool,
     ) -> anyhow::Result<()> {
         Ok(())
     }

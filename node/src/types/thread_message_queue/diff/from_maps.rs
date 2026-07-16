@@ -1,12 +1,13 @@
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use account_inbox::iter::iterator::MessagesRangeIterator;
-use account_inbox::range::MessagesRange;
 use account_inbox::storage::DurableStorageRead;
-use node_types::AccountIdentifier;
+use node_types::AccountRouting;
+use node_types::DAppIdentifier;
 use tracing::instrument;
 use tracing::trace_span;
 use typed_builder::TypedBuilder;
@@ -26,18 +27,44 @@ use crate::types::AccountInbox;
 )]
 pub struct ThreadMessageQueueStateDiff {
     initial_state: ThreadMessageQueueState,
-    consumed_messages: HashMap<AccountIdentifier, HashSet<MessageIdentifier>>,
+    consumed_messages: HashMap<AccountRouting, HashSet<MessageIdentifier>>,
     #[builder(setter(into))]
-    removed_accounts: Vec<AccountIdentifier>,
-    added_accounts: std::collections::BTreeMap<AccountIdentifier, AccountInbox>,
-    produced_messages: HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+    removed_accounts: Vec<AccountRouting>,
+    added_accounts: BTreeMap<AccountRouting, AccountInbox>,
+    produced_messages: HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     db: MessageDurableStorage,
+}
+
+fn resolve_consumed_routing(
+    state: &ThreadMessageQueueState,
+    routing: &AccountRouting,
+) -> Option<AccountRouting> {
+    if state
+        .messages
+        .get(routing.dapp_id())
+        .and_then(|dapp_queue| dapp_queue.messages.get(routing))
+        .is_some()
+    {
+        return Some(*routing);
+    }
+
+    let mut fallback = None;
+    for dapp_queue in state.messages.values() {
+        for candidate in dapp_queue.messages.keys() {
+            if candidate.account_id() != routing.account_id() {
+                continue;
+            }
+            if fallback.replace(*candidate).is_some() {
+                return None;
+            }
+        }
+    }
+    fallback
 }
 
 impl std::convert::From<ThreadMessageQueueStateDiff> for anyhow::Result<ThreadMessageQueueState> {
     #[instrument(skip_all)]
     fn from(val: ThreadMessageQueueStateDiff) -> Self {
-        // tracing::trace!("from ThreadMessageQueueStateDiff start");
         tracing::trace!(
             target: "builder",
             "from ThreadMessageQueueStateDiff consumed_messages: {:?}",
@@ -48,25 +75,20 @@ impl std::convert::From<ThreadMessageQueueStateDiff> for anyhow::Result<ThreadMe
             "from ThreadMessageQueueStateDiff produced_messages: {:?}",
             val.produced_messages
         );
-        let state = val.initial_state;
-        // TODO: fix this:
-        // Note: dirty solution
-        let mut state_messages = state.messages.clone();
-        let mut state_order = state.order_set.clone();
-        let state_cursor = state.cursor;
+
+        let mut state = val.initial_state;
+        let mut consumed_accounts_by_dapp: HashMap<DAppIdentifier, usize> = HashMap::new();
 
         trace_span!("add accounts").in_scope(|| {
-            for (account_id, inbox) in val.added_accounts.into_iter() {
-                let prev = state_messages.insert(account_id, inbox);
-                #[cfg(feature = "fail-fast")]
-                assert!(prev.is_none(), "dirty state detected");
-                if !state_order.contains(&account_id) {
-                    state_order.insert(account_id);
-                }
+            for (routing, inbox) in val.added_accounts.into_iter() {
+                state
+                    .dapp_queue_mut_or_insert_empty(*routing.dapp_id())
+                    .insert_inbox(routing, inbox);
             }
         });
 
-        // Check if a produced message can be consumed as well
+        // MessageIdentifier is derived from the message itself and is expected to be globally
+        // unique, so produced/consumed intersection remains global rather than per routing.
         let produced_ids: HashSet<&MessageIdentifier> =
             val.produced_messages.values().flat_map(|vec| vec.iter().map(|(id, _)| id)).collect();
 
@@ -78,88 +100,82 @@ impl std::convert::From<ThreadMessageQueueStateDiff> for anyhow::Result<ThreadMe
             .cloned()
             .collect();
 
-        // tracing::info!("Intersection size {}", intersection.len());
-        // tracing::trace!("produced_messages {:?}", val.produced_messages);
-        // tracing::trace!("consumed_messages {:?}", val.consumed_messages);
-        trace_span!("add messages", addresses_count = val.produced_messages.len(),).in_scope(
-            || {
-                for (account_id, mut messages) in val.produced_messages.into_iter() {
-                    messages.retain(|(message_id, _message)| !intersection.contains(message_id));
-                    if messages.is_empty() {
-                        continue;
-                    }
-                    let entry: &mut MessagesRange<MessageIdentifier, Arc<WrappedMessage>> =
-                        state_messages.entry(account_id).or_insert(MessagesRange::empty());
-
-                    let mut tail = entry.tail_sequence().clone();
-                    let mut range_ref = entry.compacted_history().clone();
-
-                    if !state_order.contains(&account_id) && !messages.is_empty() {
-                        state_order.insert(account_id);
-                    }
-                    // Extend the tail with new messages
-                    tail.extend(
-                        messages
-                            .iter()
-                            .map(|(message, message_key)| (message.clone(), message_key.clone())),
-                    );
-                    if let Some((message_id, _)) = tail.front() {
-                        // search the entire tail in the DB
-                        if let Ok(db_messages) = val.db.remaining_messages(message_id, tail.len()) {
-                            if !db_messages.is_empty() {
-                                // adjust the range
-                                if let Some(ref mut range) = range_ref {
-                                    *range = RangeInclusive::new(
-                                        range.start().clone(),
-                                        MessageIdentifier::from(
-                                            db_messages.last().unwrap().clone(),
-                                        ),
-                                    )
-                                } else {
-                                    range_ref = Some(RangeInclusive::new(
-                                        MessageIdentifier::from(
-                                            db_messages.first().unwrap().clone(),
-                                        ),
-                                        MessageIdentifier::from(
-                                            db_messages.last().unwrap().clone(),
-                                        ),
-                                    ));
-                                }
-                            }
-
-                            // all records returned from the DB search
-                            let db_set: HashSet<MessageIdentifier> = HashSet::from_iter(
-                                db_messages.into_iter().map(MessageIdentifier::from),
-                            );
-                            let mut tail_clone = tail.clone();
-                            tail = tail_clone.split_off(db_set.len());
-
-                            // The cut-off head of the tail
-                            let tail_set =
-                                HashSet::from_iter(tail_clone.into_iter().map(|(id, _)| id));
-
-                            // they must be identical
-                            assert_eq!(tail_set, db_set);
-                        }
-                    }
-                    entry.set_tail_sequence(tail);
-                    entry.set_compacted_history(range_ref);
-                    // tracing::trace!("addr entry {:?} {:?}", addr, entry);
+        trace_span!("add messages", addresses_count = val.produced_messages.len()).in_scope(|| {
+            for (routing, mut messages) in val.produced_messages.into_iter() {
+                messages.retain(|(message_id, _message)| !intersection.contains(message_id));
+                if messages.is_empty() {
+                    continue;
                 }
-            },
-        );
+
+                let entry = state
+                    .dapp_queue_mut_or_insert_empty(*routing.dapp_id())
+                    .inbox_mut_or_insert_empty(routing);
+
+                let mut tail = entry.tail_sequence().clone();
+                let mut range_ref = entry.compacted_history().clone();
+
+                tail.extend(
+                    messages
+                        .iter()
+                        .map(|(message, message_key)| (message.clone(), message_key.clone())),
+                );
+                if let Some((message_id, _)) = tail.front() {
+                    if let Ok(db_messages) = val.db.remaining_messages(message_id, tail.len()) {
+                        if !db_messages.is_empty() {
+                            if let Some(ref mut range) = range_ref {
+                                *range = RangeInclusive::new(
+                                    range.start().clone(),
+                                    MessageIdentifier::from(db_messages.last().unwrap().clone()),
+                                )
+                            } else {
+                                range_ref = Some(RangeInclusive::new(
+                                    MessageIdentifier::from(db_messages.first().unwrap().clone()),
+                                    MessageIdentifier::from(db_messages.last().unwrap().clone()),
+                                ));
+                            }
+                        }
+
+                        let db_set: HashSet<MessageIdentifier> = HashSet::from_iter(
+                            db_messages.into_iter().map(MessageIdentifier::from),
+                        );
+                        let mut tail_clone = tail.clone();
+                        tail = tail_clone.split_off(db_set.len());
+                        let tail_set = HashSet::from_iter(tail_clone.into_iter().map(|(id, _)| id));
+
+                        assert_eq!(tail_set, db_set);
+                    }
+                }
+                entry.set_tail_sequence(tail);
+                entry.set_compacted_history(range_ref);
+            }
+        });
+
         trace_span!("remove messages").in_scope(|| {
-            for (addr, mut messages) in val.consumed_messages.into_iter() {
+            for (routing, mut messages) in val.consumed_messages.into_iter() {
                 messages.retain(|message_id| !intersection.contains(message_id));
                 if messages.is_empty() {
                     continue;
                 }
-                let Some(entry) = state_messages.get_mut(&addr) else {
-                    anyhow::bail!("Unexpected consumed message: {addr:?}");
+                let actual_routing = resolve_consumed_routing(&state, &routing)
+                    .ok_or_else(|| anyhow::anyhow!("Unexpected consumed message: {routing:?}"))?;
+                if actual_routing != routing {
+                    tracing::warn!(
+                        target: "builder",
+                        consumed_routing = ?routing,
+                        matched_routing = ?actual_routing,
+                        "Consumed message routing mismatched queue routing; falling back to account_id match"
+                    );
+                }
+                let dapp_id = *actual_routing.dapp_id();
+                let Some(dapp_queue) = state.messages.get_mut(&dapp_id) else {
+                    anyhow::bail!("Unexpected consumed message: {routing:?}");
                 };
+                let dapp_queue = Arc::make_mut(dapp_queue);
+                let Some(entry) = dapp_queue.messages.get_mut(&actual_routing) else {
+                    anyhow::bail!("Unexpected consumed message: {routing:?}");
+                };
+                let entry = Arc::make_mut(entry);
 
-                // tracing::trace!("entry {:?}", entry);
-                // Create MessagesRangeIterator from Account Inbox
                 let mut it = MessagesRangeIterator::new(&val.db, entry.clone());
                 let iterator_set = HashSet::from_iter(
                     it.next_range(messages.len())
@@ -170,30 +186,33 @@ impl std::convert::From<ThreadMessageQueueStateDiff> for anyhow::Result<ThreadMe
                 assert_eq!(messages, iterator_set, "dirty state detected: mismatch in sets");
                 *entry = it.remaining().clone();
 
+                *consumed_accounts_by_dapp.entry(dapp_id).or_default() += 1;
                 if entry.is_empty() {
-                    state_messages.remove(&addr);
-                    state_order.remove(&addr);
+                    dapp_queue.remove_account(&actual_routing);
+                }
+                if dapp_queue.is_empty() {
+                    state.messages.remove(&dapp_id);
+                    state.order_set.remove(&dapp_id);
                 }
             }
             Ok::<_, anyhow::Error>(())
         })?;
 
         trace_span!("remove accounts").in_scope(|| {
-            for addr in val.removed_accounts.into_iter() {
-                state_messages.remove(&addr);
-                state_order.remove(&addr);
+            for routing in val.removed_accounts.into_iter() {
+                state.remove_routing(&routing);
             }
         });
-        let new_cursor =
-            if !state_messages.is_empty() { state_cursor % state_messages.len() } else { 0 };
 
-        let new_state = ThreadMessageQueueState {
-            messages: state_messages,
-            order_set: state_order,
-            cursor: new_cursor,
-        };
-        // tracing::trace!("from ThreadMessageQueueStateDiff finish");
-        Ok(new_state)
+        for (dapp_id, consumed_accounts) in &consumed_accounts_by_dapp {
+            if let Some(dapp_queue) = state.messages.get_mut(dapp_id) {
+                Arc::make_mut(dapp_queue).advance_cursor(*consumed_accounts);
+            }
+        }
+        state.advance_cursor(consumed_accounts_by_dapp.len());
+        state.normalize_cursor();
+
+        Ok(state)
     }
 }
 
@@ -204,19 +223,29 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;
 
+    use account_inbox::range::MessagesRange;
     use node_types::AccountIdentifier;
+    use node_types::DAppIdentifier;
     use tvm_block::InternalMessageHeader;
     use tvm_block::Message;
 
     use super::*;
     use crate::message::identifier::MessageIdentifier;
     use crate::message::WrappedMessage;
-    use crate::types::thread_message_queue::order_set::OrderSet;
+    use crate::types::thread_message_queue::DAppMessageQueueState;
     use crate::types::thread_message_queue::ThreadMessageQueueState;
     use crate::types::AccountInbox;
 
-    fn create_empty_state() -> ThreadMessageQueueState {
-        ThreadMessageQueueState { messages: BTreeMap::new(), order_set: OrderSet::new(), cursor: 0 }
+    fn dapp(seed: u8) -> DAppIdentifier {
+        DAppIdentifier::new([seed; 32])
+    }
+
+    fn account(seed: u8) -> AccountIdentifier {
+        AccountIdentifier::new([seed; 32])
+    }
+
+    fn routing(dapp_seed: u8, account_seed: u8) -> AccountRouting {
+        account(account_seed).routing(dapp(dapp_seed))
     }
 
     fn create_empty_message() -> (MessageIdentifier, Arc<WrappedMessage>) {
@@ -226,131 +255,278 @@ mod tests {
         (message_id, wrapped_message)
     }
 
+    fn inbox_with(message: (MessageIdentifier, Arc<WrappedMessage>)) -> AccountInbox {
+        let mut inbox: AccountInbox = MessagesRange::empty();
+        inbox.add_messages(vec![message]);
+        inbox
+    }
+
+    fn build_state(
+        produced_messages: HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+    ) -> ThreadMessageQueueState {
+        ThreadMessageQueueState::build_next()
+            .with_initial_state(ThreadMessageQueueState::empty())
+            .with_consumed_messages(HashMap::new())
+            .with_removed_accounts(vec![])
+            .with_added_accounts(BTreeMap::new())
+            .with_produced_messages(produced_messages)
+            .with_db(MessageDurableStorage::mem())
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_add_messages_in_two_dapps() {
+        let route_a = routing(1, 10);
+        let route_b = routing(2, 20);
+        let mut produced = HashMap::new();
+        produced.insert(route_a, vec![create_empty_message()]);
+        produced.insert(route_b, vec![create_empty_message()]);
+
+        let state = build_state(produced);
+
+        assert_eq!(state.messages.len(), 2);
+        assert!(state.account_inbox_by_routing(&route_a).is_some());
+        assert!(state.account_inbox_by_routing(&route_b).is_some());
+        assert_eq!(state.length(), 2);
+    }
+
+    #[test]
+    fn test_add_two_accounts_inside_one_dapp() {
+        let route_a = routing(1, 10);
+        let route_b = routing(1, 20);
+        let mut produced = HashMap::new();
+        produced.insert(route_a, vec![create_empty_message()]);
+        produced.insert(route_b, vec![create_empty_message()]);
+
+        let state = build_state(produced);
+        let dapp_queue = state.messages.get(route_a.dapp_id()).unwrap();
+
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(dapp_queue.messages.len(), 2);
+        assert_eq!(state.length(), 2);
+    }
+
+    #[test]
+    fn test_consume_one_account_keeps_other_dapp_queue_shared() {
+        let route_a = routing(1, 10);
+        let route_b = routing(2, 20);
+        let msg_a = create_empty_message();
+        let msg_b = create_empty_message();
+        let mut produced = HashMap::new();
+        produced.insert(route_a, vec![msg_a.clone()]);
+        produced.insert(route_b, vec![msg_b]);
+        let state = build_state(produced);
+        let cloned = state.clone();
+        let other_dapp_before = Arc::clone(cloned.messages.get(route_b.dapp_id()).unwrap());
+
+        let mut consumed = HashMap::new();
+        consumed.insert(route_a, HashSet::from([msg_a.0]));
+        let new_state = ThreadMessageQueueState::build_next()
+            .with_initial_state(state)
+            .with_consumed_messages(consumed)
+            .with_removed_accounts(vec![])
+            .with_added_accounts(BTreeMap::new())
+            .with_produced_messages(HashMap::new())
+            .with_db(MessageDurableStorage::mem())
+            .build()
+            .unwrap();
+
+        assert!(new_state.account_inbox_by_routing(&route_a).is_none());
+        assert!(new_state.account_inbox_by_routing(&route_b).is_some());
+        assert!(Arc::ptr_eq(
+            &other_dapp_before,
+            new_state.messages.get(route_b.dapp_id()).unwrap()
+        ));
+        assert!(cloned.account_inbox_by_routing(&route_a).is_some());
+    }
+
+    #[test]
+    fn test_remove_last_account_removes_dapp() {
+        let route = routing(1, 10);
+        let mut produced = HashMap::new();
+        produced.insert(route, vec![create_empty_message()]);
+        let state = build_state(produced);
+
+        let new_state = ThreadMessageQueueState::build_next()
+            .with_initial_state(state)
+            .with_consumed_messages(HashMap::new())
+            .with_removed_accounts(vec![route])
+            .with_added_accounts(BTreeMap::new())
+            .with_produced_messages(HashMap::new())
+            .with_db(MessageDurableStorage::mem())
+            .build()
+            .unwrap();
+
+        assert!(new_state.messages.is_empty());
+        assert_eq!(new_state.cursor(), 0);
+    }
+
+    #[test]
+    fn test_remove_accounts_cleans_empty_dapps() {
+        let route_a = routing(1, 10);
+        let route_b = routing(2, 20);
+        let mut produced = HashMap::new();
+        produced.insert(route_a, vec![create_empty_message()]);
+        produced.insert(route_b, vec![create_empty_message()]);
+        let mut state = build_state(produced);
+
+        state.remove_accounts([route_a]);
+
+        assert!(state.account_inbox_by_routing(&route_a).is_none());
+        assert!(state.account_inbox_by_routing(&route_b).is_some());
+        assert_eq!(state.messages.len(), 1);
+    }
+
+    #[test]
+    fn test_produced_consumed_intersection_is_preserved() {
+        let route = routing(1, 10);
+        let message = create_empty_message();
+        let mut consumed = HashMap::new();
+        consumed.insert(route, HashSet::from([message.0.clone()]));
+        let mut produced = HashMap::new();
+        produced.insert(route, vec![message]);
+
+        let state = ThreadMessageQueueState::build_next()
+            .with_initial_state(ThreadMessageQueueState::empty())
+            .with_consumed_messages(consumed)
+            .with_removed_accounts(vec![])
+            .with_added_accounts(BTreeMap::new())
+            .with_produced_messages(produced)
+            .with_db(MessageDurableStorage::mem())
+            .build()
+            .unwrap();
+
+        assert!(state.is_empty());
+    }
+
+    #[test]
+    fn test_serde_roundtrip() {
+        let route = routing(1, 10);
+        let mut produced = HashMap::new();
+        produced.insert(route, vec![create_empty_message()]);
+        let state = build_state(produced);
+
+        let bytes = bincode::serialize(&state).unwrap();
+        let decoded: ThreadMessageQueueState = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(decoded.length(), 1);
+        assert!(decoded.account_inbox_by_routing(&route).is_some());
+    }
+
+    #[test]
+    fn test_copy_on_write_one_inbox() {
+        let route_a = routing(1, 10);
+        let route_b = routing(1, 20);
+        let mut produced = HashMap::new();
+        produced.insert(route_a, vec![create_empty_message()]);
+        produced.insert(route_b, vec![create_empty_message()]);
+        let state = build_state(produced);
+        let mut changed = state.clone();
+        let unchanged_dapp = Arc::clone(state.messages.get(route_a.dapp_id()).unwrap());
+        let unchanged_inbox_b = Arc::clone(
+            state.messages.get(route_b.dapp_id()).unwrap().messages.get(&route_b).unwrap(),
+        );
+
+        changed.remove_accounts([route_a]);
+
+        assert!(state.account_inbox_by_routing(&route_a).is_some());
+        assert!(changed.account_inbox_by_routing(&route_a).is_none());
+        assert!(!Arc::ptr_eq(&unchanged_dapp, changed.messages.get(route_b.dapp_id()).unwrap()));
+        assert!(Arc::ptr_eq(
+            &unchanged_inbox_b,
+            changed.messages.get(route_b.dapp_id()).unwrap().messages.get(&route_b).unwrap()
+        ));
+    }
+
     #[test]
     fn test_add_account() {
-        let initial_state = create_empty_state();
-        let account_address = AccountIdentifier::default();
+        let route = routing(1, 10);
         let mut added_accounts = BTreeMap::new();
-        let account_inbox: AccountInbox = MessagesRange::empty();
-        added_accounts.insert(account_address, account_inbox);
-        let storage = MessageDurableStorage::mem();
-        let state_diff = ThreadMessageQueueStateDiff {
-            initial_state,
-            consumed_messages: HashMap::new(),
-            removed_accounts: Vec::new(),
-            added_accounts,
-            produced_messages: HashMap::new(),
-            db: storage,
-        };
-        let new_state_res: anyhow::Result<ThreadMessageQueueState> = state_diff.into();
-        let new_state = new_state_res.unwrap();
-        assert!(new_state.messages.contains_key(&account_address));
+        added_accounts.insert(route, AccountInbox::empty());
+
+        let new_state = ThreadMessageQueueState::build_next()
+            .with_initial_state(ThreadMessageQueueState::empty())
+            .with_consumed_messages(HashMap::new())
+            .with_removed_accounts(vec![])
+            .with_added_accounts(added_accounts)
+            .with_produced_messages(HashMap::new())
+            .with_db(MessageDurableStorage::mem())
+            .build()
+            .unwrap();
+
+        assert!(new_state.account_inbox_by_routing(&route).is_some());
     }
 
     #[test]
-    fn test_remove_account() {
-        let account_address = AccountIdentifier::default();
-        let mut initial_state = create_empty_state();
-        initial_state.messages.insert(account_address, MessagesRange::empty());
-        let storage = MessageDurableStorage::mem();
-        let state_diff = ThreadMessageQueueStateDiff {
-            initial_state,
-            consumed_messages: HashMap::new(),
-            removed_accounts: vec![account_address],
-            added_accounts: BTreeMap::new(),
-            produced_messages: HashMap::new(),
-            db: storage,
-        };
+    fn test_consumed_messages_advance_cursor() {
+        let route_a = routing(1, 1);
+        let route_b = routing(1, 2);
+        let route_c = routing(1, 3);
+        let msg_a = create_empty_message();
+        let msg_b = create_empty_message();
+        let msg_c = create_empty_message();
 
-        let new_state_res: anyhow::Result<ThreadMessageQueueState> = state_diff.into();
-        let new_state = new_state_res.unwrap();
-        assert!(!new_state.messages.contains_key(&account_address));
+        let mut dapp_queue = DAppMessageQueueState::empty();
+        dapp_queue.insert_inbox(route_a, inbox_with(msg_a.clone()));
+        dapp_queue.insert_inbox(route_b, inbox_with(msg_b));
+        dapp_queue.insert_inbox(route_c, inbox_with(msg_c));
+        let mut initial_state = ThreadMessageQueueState::empty();
+        initial_state.messages.insert(*route_a.dapp_id(), Arc::new(dapp_queue));
+        initial_state.order_set.insert(*route_a.dapp_id());
+
+        let mut consumed = HashMap::new();
+        consumed.insert(route_a, HashSet::from([msg_a.0]));
+
+        let new_state = ThreadMessageQueueState::build_next()
+            .with_initial_state(initial_state)
+            .with_consumed_messages(consumed)
+            .with_removed_accounts(vec![])
+            .with_added_accounts(BTreeMap::new())
+            .with_produced_messages(HashMap::new())
+            .with_db(MessageDurableStorage::mem())
+            .build()
+            .unwrap();
+
+        assert_eq!(new_state.cursor(), 0);
+        assert_eq!(new_state.messages.get(route_b.dapp_id()).unwrap().cursor(), 1);
     }
 
-    // #[test]
-    // #[cfg(feature = "messages_db")]
-    // fn test_produced_messages_with_db_write() {
-    //     let account_address = AccountAddress::default();
-    //     let (message_id, wrapped_message) = create_empty_message();
-    //     let mut produced_messages = HashMap::new();
-    //     produced_messages
-    //         .insert(account_address.clone(), vec![(message_id.clone(), wrapped_message.clone())]);
-    //     let db_path = tempfile::tempdir().unwrap().path().join("test_simple_3.db");
-    //     let storage = MessageDurableStorage::new(db_path.clone()).expect("Failed to create DB");
-    //     let message_blob =
-    //         bincode::serialize(&wrapped_message).expect("Failed to serialize message");
-    //     storage
-    //         .write_message(
-    //             &account_address.0.to_hex_string(),
-    //             &message_blob,
-    //             &message_id.inner().hash.to_hex_string(),
-    //         )
-    //         .expect("Failed to write message to DB");
-    //     let db_rowid = storage
-    //         .get_rowid_by_hash(&message_id.inner().hash.to_hex_string())
-    //         .expect("DB query failed");
-    //     assert!(db_rowid.is_some(), "Message was not found in DB after insertion");
-    //     let state_diff = ThreadMessageQueueStateDiff {
-    //         initial_state: create_empty_state(),
-    //         consumed_messages: HashMap::new(),
-    //         removed_accounts: vec![],
-    //         added_accounts: BTreeMap::new(),
-    //         produced_messages,
-    //         db: storage,
-    //     };
-    //     let new_state_res: anyhow::Result<ThreadMessageQueueState> = state_diff.into();
-    //     let new_state = new_state_res.unwrap();
-    //     let account_messages = new_state.messages.get(&account_address);
-    //     assert!(account_messages.is_some(), "Account was not found in state.messages");
-    //     let account_range = account_messages.unwrap().compacted_history();
-    //     assert!(account_range.clone().is_some(), "Message range was not updated correctly");
-    //     let range = account_range.clone().unwrap();
-    //     assert_eq!(range.start(), &message_id, "Start of range is incorrect");
-    //     assert_eq!(range.end(), &message_id, "End of range is incorrect");
-    // }
     #[test]
-    fn test_consumed_messages() {
-        let account_address = AccountIdentifier::default();
-        let (message_id, wrapped_message) = create_empty_message();
-        let mut initial_state = create_empty_state();
-        let mut inbox: AccountInbox = MessagesRange::empty();
-        let add_message = vec![(message_id.clone(), wrapped_message)];
-        inbox.add_messages(add_message);
-        initial_state.messages.insert(account_address, inbox);
+    fn test_consumed_messages_fallback_to_matching_account_id() {
+        let queued_route = routing(1, 10);
+        let consumed_route = routing(2, 10);
+        let message = create_empty_message();
 
-        let mut consumed_messages = HashMap::new();
-        consumed_messages.insert(account_address, HashSet::from([message_id]));
-        let storage = MessageDurableStorage::mem();
-        let state_diff = ThreadMessageQueueStateDiff {
-            initial_state,
-            consumed_messages,
-            removed_accounts: vec![],
-            added_accounts: BTreeMap::new(),
-            produced_messages: HashMap::new(),
-            db: storage,
-        };
-        let new_state_res: anyhow::Result<ThreadMessageQueueState> = state_diff.into();
-        let new_state = new_state_res.unwrap();
-        assert!(!new_state.messages.contains_key(&account_address));
+        let mut produced = HashMap::new();
+        produced.insert(queued_route, vec![message.clone()]);
+        let state = build_state(produced);
+
+        let mut consumed = HashMap::new();
+        consumed.insert(consumed_route, HashSet::from([message.0]));
+
+        let new_state = ThreadMessageQueueState::build_next()
+            .with_initial_state(state)
+            .with_consumed_messages(consumed)
+            .with_removed_accounts(vec![])
+            .with_added_accounts(BTreeMap::new())
+            .with_produced_messages(HashMap::new())
+            .with_db(MessageDurableStorage::mem())
+            .build()
+            .unwrap();
+
+        assert!(new_state.is_empty());
     }
 
     #[test]
     #[ignore]
     #[should_panic]
     fn test_produced_messages_out_of_order() {
-        let account_id = AccountIdentifier::default();
+        let route = routing(1, 10);
         let messages = (0..5).map(|_| create_empty_message()).collect::<Vec<_>>();
-
-        let initial_state = create_empty_state();
-        let mut inbox: AccountInbox = MessagesRange::empty();
-        let mut add_message = Vec::new();
-        for (id, msg) in &messages {
-            add_message.push((id.clone(), msg.clone()));
-        }
-        inbox.add_messages(add_message);
         let mut produced_messages = HashMap::new();
         produced_messages.insert(
-            account_id,
+            route,
             vec![
                 messages[0].clone(),
                 messages[1].clone(),
@@ -361,18 +537,17 @@ mod tests {
         );
         let mut consumed_messages = HashMap::new();
         consumed_messages.insert(
-            account_id,
+            route,
             messages.iter().take(4).map(|(id, _)| id.clone()).collect::<HashSet<_>>(),
         );
-        let storage = MessageDurableStorage::mem();
-        let state_diff = ThreadMessageQueueStateDiff {
-            initial_state,
-            consumed_messages,
-            removed_accounts: vec![],
-            added_accounts: BTreeMap::new(),
-            produced_messages,
-            db: storage,
-        };
-        let _new_state_res: anyhow::Result<ThreadMessageQueueState> = state_diff.into();
+
+        let _ = ThreadMessageQueueState::build_next()
+            .with_initial_state(ThreadMessageQueueState::empty())
+            .with_consumed_messages(consumed_messages)
+            .with_removed_accounts(vec![])
+            .with_added_accounts(BTreeMap::new())
+            .with_produced_messages(produced_messages)
+            .with_db(MessageDurableStorage::mem())
+            .build();
     }
 }

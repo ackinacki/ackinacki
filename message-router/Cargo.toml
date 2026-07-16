@@ -27,3 +27,4 @@ mockall = "0.13.1"
 
 [dev-dependencies]
 actix-rt = "2.10.0"
+tracing-subscriber = { workspace = true }

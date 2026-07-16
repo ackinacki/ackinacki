@@ -5,7 +5,10 @@
 mod tests {
     use std::net::SocketAddr;
     use std::path::PathBuf;
+    use std::str::FromStr;
     use std::time::Duration;
+
+    use node_types::AccountRouting;
 
     use crate::config::Config;
     use crate::config::GlobalConfig;
@@ -85,7 +88,62 @@ mod tests {
         assert_eq!(config.time_to_produce_block_millis, 330);
         assert_eq!(config.need_synchronization_block_diff, 20);
         assert_eq!(config.min_time_between_state_publish_directives, Duration::from_secs(600));
+        assert!(config
+            .tracked_ext_out_account_routings
+            .contains(&AccountRouting::from_str("0000000000000000000000000000000000000000000000000000000000000004::1010101010101010101010101010101010101010101010101010101010101010")?));
+        assert!(config
+            .tracked_ext_out_account_routings
+            .contains(&AccountRouting::from_str("0000000000000000000000000000000000000000000000000000000000000000::1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a")?));
 
+        Ok(())
+    }
+
+    #[test]
+    fn global_config_deserializes_without_tracked_routings_field_using_default(
+    ) -> anyhow::Result<()> {
+        let mut value = serde_json::to_value(GlobalConfig::default())?;
+        value
+            .as_object_mut()
+            .expect("global config json object")
+            .remove("tracked_ext_out_account_routings");
+
+        let parsed: GlobalConfig = serde_json::from_value(value)?;
+        assert!(parsed
+            .tracked_ext_out_account_routings
+            .contains(&AccountRouting::from_str("0000000000000000000000000000000000000000000000000000000000000004::1010101010101010101010101010101010101010101010101010101010101010")?));
+        assert!(parsed
+            .tracked_ext_out_account_routings
+            .contains(&AccountRouting::from_str("0000000000000000000000000000000000000000000000000000000000000000::1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a")?));
+        Ok(())
+    }
+
+    #[test]
+    fn global_config_deserializes_custom_tracked_routings() -> anyhow::Result<()> {
+        let custom = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let mut value = serde_json::to_value(GlobalConfig::default())?;
+        value
+            .as_object_mut()
+            .expect("global config json object")
+            .insert("tracked_ext_out_account_routings".to_string(), serde_json::json!([custom]));
+
+        let parsed: GlobalConfig = serde_json::from_value(value)?;
+        assert_eq!(parsed.tracked_ext_out_account_routings.len(), 1);
+        assert!(parsed
+            .tracked_ext_out_account_routings
+            .contains(&AccountRouting::from_str(custom)?));
+        Ok(())
+    }
+
+    #[test]
+    fn global_config_deserialization_fails_for_invalid_tracked_routing() -> anyhow::Result<()> {
+        let mut value = serde_json::to_value(GlobalConfig::default())?;
+        value.as_object_mut().expect("global config json object").insert(
+            "tracked_ext_out_account_routings".to_string(),
+            serde_json::json!(["invalid-routing"]),
+        );
+
+        let err = serde_json::from_value::<GlobalConfig>(value).expect_err("must fail");
+        assert!(err.to_string().contains("invalid account routing"));
         Ok(())
     }
 }

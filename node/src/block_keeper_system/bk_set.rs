@@ -3,10 +3,10 @@ use std::sync::Arc;
 
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::block_keeper_system::BlockKeeperSetChange;
-use crate::types::AckiNackiBlock;
+use crate::types::AckiNackiBlockVersioned;
 
 pub(crate) fn update_block_keeper_set_from_common_section(
-    block: &AckiNackiBlock,
+    block: &AckiNackiBlockVersioned,
     current_bk_set: Arc<BlockKeeperSet>,
     current_future_bk_set: Arc<BlockKeeperSet>,
 ) -> anyhow::Result<Option<(Arc<BlockKeeperSet>, Arc<BlockKeeperSet>)>> {
@@ -18,8 +18,8 @@ pub(crate) fn update_block_keeper_set_from_common_section(
     let mut new_bk_set = current_bk_set.deref().clone();
     let mut new_future_bk_set = current_future_bk_set.deref().clone();
     tracing::trace!(
-        "update_block_keeper_set_from_common_section block_id:{} {:?}",
-        block.identifier(),
+        "update_block_keeper_set_from_common_section block_seq_no:{} {:?}",
+        block.seq_no(),
         bk_set_changes
     );
 
@@ -80,8 +80,8 @@ pub(crate) fn update_block_keeper_set_from_common_section(
         }
     }
     tracing::trace!(
-        "update_block_keeper_set_from_common_section block_id:{} final_bk_set: {:?}, final_future_bk_set: {:?}",
-        block.identifier(),
+        "update_block_keeper_set_from_common_section block_seq_no:{} final_bk_set: {:?}, final_future_bk_set: {:?}",
+        block.seq_no(),
         new_bk_set,
         new_future_bk_set,
     );

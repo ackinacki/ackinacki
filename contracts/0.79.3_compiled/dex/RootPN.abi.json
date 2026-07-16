@@ -1,0 +1,170 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "sendEccShellToPrivateNote",
+			"inputs": [
+				{"name":"proof","type":"bytes"},
+				{"name":"nullifier_hash","type":"uint256"},
+				{"name":"deposit_identifier_hash","type":"uint256"},
+				{"name":"value","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployPrivateNote",
+			"inputs": [
+				{"name":"zkproof","type":"bytes"},
+				{"name":"deposit_identifier_hash","type":"uint256"},
+				{"name":"ephemeral_pubkey","type":"uint256"},
+				{"name":"value","type":"uint64"},
+				{"name":"token_type","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "privateNoteDeployed",
+			"inputs": [
+				{"name":"deposit_identifier_hash","type":"uint256"},
+				{"name":"token_type","type":"uint32"},
+				{"name":"deployed_value","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "updateCode",
+			"inputs": [
+				{"name":"newcode","type":"cell"},
+				{"name":"cell","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getPrivateNoteCode",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"privateNoteCode","type":"cell"},
+				{"name":"privateNoteHash","type":"uint256"}
+			]
+		},
+		{
+			"name": "getPrivateNoteAddress",
+			"inputs": [
+				{"name":"deposit_identifier_hash","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"privateNoteAddress","type":"address"}
+			]
+		},
+		{
+			"name": "getPMPAddress",
+			"inputs": [
+				{"name":"event_id","type":"uint256"},
+				{"name":"names","type":"string[]"},
+				{"name":"token_type","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"pmpAddress","type":"address"}
+			]
+		},
+		{
+			"name": "generatevoucher",
+			"inputs": [
+				{"name":"sk_u_commit","type":"uint256"},
+				{"name":"isFee","type":"bool"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "withdrawTokens",
+			"inputs": [
+				{"name":"withdrawed_value","type":"uint128"},
+				{"name":"token_type","type":"uint32"},
+				{"name":"flags","type":"uint8"},
+				{"name":"wallet_addr","type":"address"},
+				{"name":"initial_data_hash","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"pmpCodeHash","type":"uint256"},
+				{"name":"privateNoteCodeHash","type":"uint256"},
+				{"name":"ownerPubkey","type":"uint256"},
+				{"name":"balance","type":"uint128"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+		{
+			"name": "voucherGenerated",
+			"inputs": [
+				{"name":"sk_u_commit","type":"uint256"},
+				{"name":"voucher_nominal","type":"uint256"},
+				{"name":"token_type","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "PrivateNoteDeployed",
+			"inputs": [
+				{"name":"depositIdentifierHash","type":"uint256"},
+				{"name":"noteAddress","type":"address"},
+				{"name":"initialBalance","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "NullifierDeployed",
+			"inputs": [
+				{"name":"nullifierAddress","type":"address"},
+				{"name":"value","type":"uint64"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_PrivateNoteCode","type":"cell"},
+		{"init":false,"name":"_pmpCode","type":"cell"},
+		{"init":false,"name":"_nullifierCode","type":"cell"},
+		{"init":false,"name":"_oracleCode","type":"cell"},
+		{"init":false,"name":"_oracleEventListCode","type":"cell"},
+		{"init":false,"name":"_orderBookCode","type":"cell"},
+		{"init":false,"name":"_ownerPubkey","type":"uint256"},
+		{"init":false,"name":"_deployedValues","type":"map(uint32,uint128)"}
+	]
+}

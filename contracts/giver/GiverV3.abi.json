@@ -131,6 +131,59 @@
 			]
 		},
 		{
+			"name": "getDataForPMP",
+			"inputs": [
+				{"name":"PMPCode","type":"cell"},
+				{"name":"PMPWalletCode","type":"cell"},
+				{"name":"NullifierCode","type":"cell"},
+				{"name":"OracleCode","type":"cell"},
+				{"name":"OracleEventListCode","type":"cell"},
+				{"name":"OrderBookCode","type":"cell"},
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
+			"name": "getDataForOracle",
+			"inputs": [
+				{"name":"PMPCode","type":"cell"},
+				{"name":"PMPWalletCode","type":"cell"},
+				{"name":"OracleCode","type":"cell"},
+				{"name":"OracleEventListCode","type":"cell"},
+				{"name":"pubkey","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
+			"name": "getDataForVault",
+			"inputs": [
+				{"name":"PMPWalletCode","type":"cell"},
+				{"name":"pubkey","type":"uint256"},
+				{"name":"root","type":"address"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
+			"name": "getDataForBoost",
+			"inputs": [
+				{"name":"wallet","type":"address"},
+				{"name":"popitGame","type":"address"},
+				{"name":"root","type":"address"},
+				{"name":"mbiCur","type":"uint64"},
+				{"name":"rootPubkey","type":"uint256"},
+				{"name":"miner","type":"address"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
 			"name": "upgrade",
 			"inputs": [
 				{"name":"newcode","type":"cell"}

@@ -19,6 +19,9 @@ serde.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
 telemetry_utils.workspace = true
+# Not used directly here — this activates the workspace-wide pin that holds the
+# transitive `time` crate at a cookie-compatible version (see root Cargo.toml).
+time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 transport-layer.workspace = true

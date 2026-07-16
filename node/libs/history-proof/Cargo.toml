@@ -1,0 +1,12 @@
+[package]
+name = "history-proof"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[lib]
+
+[dependencies]
+node-types.workspace = true
+tvm_vm.workspace = true

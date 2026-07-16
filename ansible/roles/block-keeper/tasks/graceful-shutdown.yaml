@@ -22,6 +22,12 @@
   until: container_check is success
   retries: "{{ GS_WAIT | default(WAIT_FOR_NODE_STOP_SECS) }}"
   delay: 1
+  ignore_errors: "{{ (GRACEFUL_SHUTDOWN_MIN_SUCCESS_PERCENT | default(100) | int) < 100 }}"
+  when: GS_WAIT is not defined or GS_WAIT
+
+- name: Record graceful shutdown result
+  ansible.builtin.set_fact:
+    node_graceful_shutdown_ok: "{{ container_check is success }}"
   when: GS_WAIT is not defined or GS_WAIT
 
 - name: Delay for 3 seconds for process to properly stop

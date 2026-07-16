@@ -485,6 +485,7 @@ impl BlockProductionMetrics {
         self.0
             .block_production_time_correction
             .record(correction_time, &[thread_id_attr(thread_id)]);
+        tracing::trace!(target: "monit", "block_production_time_correction: {correction_time}");
     }
 
     pub fn report_block_computation_time(

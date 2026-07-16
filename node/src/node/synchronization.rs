@@ -23,6 +23,7 @@ use crate::node::services::sync::StateSyncService;
 use crate::node::services::sync::SyncSnapshotAnchor;
 use crate::node::services::sync::SyncSnapshotLoaded;
 use crate::node::services::sync::SyncSnapshotRequest;
+use crate::node::services::sync::SyncSnapshotSkipped;
 use crate::node::NetworkMessage;
 use crate::node::Node;
 use crate::repository::repository_impl::RepositoryImpl;
@@ -204,10 +205,11 @@ where
         &mut self,
     ) -> anyhow::Result<SynchronizationResult<(NetworkMessage, SocketAddr)>> {
         tracing::trace!(target: "monit", "Start synchronization");
-        let (synchronization_tx, synchronization_rx) = instrumented_channel(
-            self.metrics.clone(),
-            crate::helper::metrics::STATE_LOAD_RESULT_CHANNEL,
-        );
+        let (synchronization_tx, synchronization_rx) =
+            instrumented_channel::<anyhow::Result<SyncSnapshotLoaded>>(
+                self.metrics.clone(),
+                crate::helper::metrics::STATE_LOAD_RESULT_CHANNEL,
+            );
         let mut initial_state: Option<(BlockIdentifier, InitialStateMarker)> = None;
         let mut active_sync_snapshot: Option<SyncSnapshotRequest> = None;
         let mut last_node_join_message_time = Instant::now();
@@ -279,9 +281,13 @@ where
                     }
                     Ok(Err(e)) => {
                         active_sync_snapshot = None;
-                        // Note: State download failed.
-                        // Nothing can be done at this moment. Should be investigated.
-                        tracing::error!("Synchronization error: {}", e);
+                        if let Some(skipped) = e.downcast_ref::<SyncSnapshotSkipped>() {
+                            tracing::info!("Synchronization snapshot skipped: {}", skipped);
+                        } else {
+                            // Note: State download failed.
+                            // Nothing can be done at this moment. Should be investigated.
+                            tracing::error!("Synchronization error: {}", e);
+                        }
                     }
                     Err(TryRecvError::Disconnected) => {
                         // TODO: we have to fix channel and move it entirely so this event may

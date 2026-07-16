@@ -316,6 +316,7 @@ pub fn on_block_finalized(
             block_state_repository.get(&block_id)?,
             Some(state_sync_service),
             finalizing_block_id,
+            true,
         )?;
         tracing::debug!("Block marked as finalized: {:?} {:?} {:?}", block_seq_no, block_id, thread_id);
         let producer_id = block.data().common_section().producer_id().clone();

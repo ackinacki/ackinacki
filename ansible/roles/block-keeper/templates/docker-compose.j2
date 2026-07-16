@@ -211,7 +211,8 @@ services:
         --keys-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
         --block-keeper-seed-path=/bk-configs/block_keeper{{ NODE_ID }}_bls.keys.json
         --signing-keys=/bk-configs/{{ NODE_OWNER_KEY | basename }}
-        --engine-version 1.0.3
+        --engine-version 1.0.4
+        --blockchain-config-hash c3da505b313a96fec3a53025030fbf5ad4f7c20bf4372d446e47c215231cc835
 {% if HAS_BK_SET_FILE is not defined or HAS_BK_SET_FILE is false %}
         --zerostate-path=/bk-configs/zerostate
 {% endif %}

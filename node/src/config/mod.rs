@@ -8,8 +8,10 @@ mod serde_config;
 mod test;
 mod validations;
 
+use std::collections::BTreeSet;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Duration;
 
 pub use blockchain_config::*;
@@ -22,6 +24,7 @@ use network::resolver::WatchGossipConfig;
 use network::topology::NetEndpoint;
 use network::topology::NetPeer;
 pub use network_config::NetworkConfig;
+use node_types::AccountRouting;
 use serde::Deserialize;
 use serde::Serialize;
 pub use serde_config::load_config_from_file;
@@ -32,8 +35,23 @@ use typed_builder::TypedBuilder;
 use crate::node::NodeIdentifier;
 use crate::types::BlockSeqNo;
 
-const DEFAULT_ENGINE_VERSION: &str = "1.0.4";
+const DEFAULT_ENGINE_VERSION: &str = "1.0.5";
 const DEFAULT_GOSSIP_VERSION: &str = "0";
+/// RootPN (DEX)
+const DEFAULT_TRACKED_ROOT_PN_ROUTING: &str =
+    "0000000000000000000000000000000000000000000000000000000000000004::1010101010101010101010101010101010101010101010101010101010101010";
+/// Exchange
+const DEFAULT_TRACKED_EXCHANGE_ROUTING: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000::1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a";
+
+fn default_tracked_ext_out_account_routings() -> BTreeSet<AccountRouting> {
+    BTreeSet::from([
+        AccountRouting::from_str(DEFAULT_TRACKED_ROOT_PN_ROUTING)
+            .expect("default tracked RootPN routing must be valid"),
+        AccountRouting::from_str(DEFAULT_TRACKED_EXCHANGE_ROUTING)
+            .expect("default tracked Exchange routing must be valid"),
+    ])
+}
 
 // TODO: These settings should be moved onchain.
 /// Global node config, including block producer and synchronization settings.
@@ -128,6 +146,10 @@ pub struct GlobalConfig {
 
     /// Blockchain config hash
     pub blockchain_config_hash: String,
+
+    /// Account routings for which outbound external messages are tracked.
+    #[serde(default = "default_tracked_ext_out_account_routings", with = "serde_account_routings")]
+    pub tracked_ext_out_account_routings: BTreeSet<AccountRouting>,
 }
 
 /// Node interaction settings
@@ -239,7 +261,46 @@ impl Default for GlobalConfig {
             engine_version: DEFAULT_ENGINE_VERSION.parse().unwrap(),
             gossip_version: DEFAULT_GOSSIP_VERSION.parse().unwrap(),
             blockchain_config_hash: hex::encode(DEFAULT_BLOCKCAHIN_CONFIG_HASH.0.as_slice()),
+            tracked_ext_out_account_routings: default_tracked_ext_out_account_routings(),
         }
+    }
+}
+
+mod serde_account_routings {
+    use std::collections::BTreeSet;
+    use std::str::FromStr;
+
+    use node_types::AccountRouting;
+    use serde::Deserialize;
+    use serde::Deserializer;
+    use serde::Serialize;
+    use serde::Serializer;
+
+    pub fn serialize<S>(
+        routings: &BTreeSet<AccountRouting>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut routing_strings = routings.iter().map(ToString::to_string).collect::<Vec<_>>();
+        routing_strings.sort_unstable();
+        routing_strings.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<BTreeSet<AccountRouting>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let strings = Vec::<String>::deserialize(deserializer)?;
+        let mut routings = BTreeSet::new();
+        for s in strings {
+            let routing = AccountRouting::from_str(&s).map_err(|e| {
+                serde::de::Error::custom(format!("invalid account routing '{s}': {e}"))
+            })?;
+            routings.insert(routing);
+        }
+        Ok(routings)
     }
 }
 

@@ -4,12 +4,11 @@ use std::sync::Arc;
 
 use account_inbox::iter::iterator::MessagesRangeIterator;
 use account_inbox::range::MessagesRange;
-use node_types::AccountIdentifier;
+use node_types::AccountRouting;
 
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::storage::MessageDurableStorage;
-use crate::types::thread_message_queue::order_set::OrderSet;
 use crate::types::thread_message_queue::ThreadMessageQueueState;
 
 const MAX_MESSAGES: usize = 100;
@@ -18,17 +17,12 @@ impl ThreadMessageQueueState {
     pub fn load_state(
         db: &MessageDurableStorage,
         state_messages: &BTreeMap<
-            AccountIdentifier,
+            AccountRouting,
             MessagesRange<MessageIdentifier, Arc<WrappedMessage>>,
         >,
     ) -> anyhow::Result<Self> {
-        let mut state_order = OrderSet::new();
-        let state_cursor = 0;
-        let mut new_state_messages: BTreeMap<
-            AccountIdentifier,
-            MessagesRange<MessageIdentifier, Arc<WrappedMessage>>,
-        > = BTreeMap::new();
-        for (account_id, range) in state_messages {
+        let mut state = ThreadMessageQueueState::empty();
+        for (routing, range) in state_messages {
             let mut tail = VecDeque::new();
             let mut it = MessagesRangeIterator::new(db, range.clone());
             let start_message_id = it
@@ -48,7 +42,7 @@ impl ThreadMessageQueueState {
                 }
             }
             let mut db_iter =
-                db.next_simple(&account_id.to_hex_string(), db_cursor, MAX_MESSAGES)?.0.into_iter();
+                db.next_simple(&routing.to_hex_string(), db_cursor, MAX_MESSAGES)?.0.into_iter();
             for db_message in db_iter.by_ref() {
                 let message_id = MessageIdentifier::from(&db_message);
                 if let Some(Ok((_, key))) = it.next() {
@@ -64,7 +58,7 @@ impl ThreadMessageQueueState {
             db_cursor += MAX_MESSAGES as i64;
             loop {
                 let (new_messages, _) =
-                    db.next_simple(&account_id.to_hex_string(), db_cursor, MAX_MESSAGES)?;
+                    db.next_simple(&routing.to_hex_string(), db_cursor, MAX_MESSAGES)?;
                 if new_messages.is_empty() {
                     break;
                 }
@@ -77,15 +71,12 @@ impl ThreadMessageQueueState {
             }
             let mut new_range = range.clone();
             new_range.set_tail_sequence(tail);
-            new_state_messages.insert(*account_id, new_range);
-            state_order.insert(*account_id);
+            state
+                .dapp_queue_mut_or_insert_empty(*routing.dapp_id())
+                .insert_inbox(*routing, new_range);
         }
 
-        Ok(ThreadMessageQueueState {
-            messages: new_state_messages,
-            order_set: state_order,
-            cursor: state_cursor,
-        })
+        Ok(state)
     }
 }
 

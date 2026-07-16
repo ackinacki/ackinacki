@@ -39,6 +39,7 @@ use crate::thread_accounts::ThreadAccountsStateSplit;
 use crate::DurableStateSnapshot;
 use crate::DurableThreadAccountsIter;
 use crate::DurableThreadAccountsRepository;
+use crate::StagedArchiveEpoch;
 use crate::StateAccountsMetrics;
 use crate::ThreadAccount;
 use crate::ThreadAccountsStateTransition;
@@ -226,6 +227,35 @@ impl ThreadAccountsRepository {
         block_id: &BlockIdentifier,
     ) -> anyhow::Result<DurableThreadAccountsState> {
         self.0.durable.import_durable_snapshot_from_reader(reader, thread_id, block_id)
+    }
+
+    pub fn begin_staged_import_after_current_epoch(&self) -> StagedArchiveEpoch {
+        self.0.durable.begin_staged_import_after_current_epoch()
+    }
+
+    pub fn import_durable_snapshot_from_reader_staged<R: Read>(
+        &self,
+        reader: &mut R,
+        thread_id: &ThreadIdentifier,
+        block_id: &BlockIdentifier,
+        staged: StagedArchiveEpoch,
+    ) -> anyhow::Result<DurableThreadAccountsState> {
+        self.0
+            .durable
+            .import_durable_snapshot_from_reader_staged(reader, thread_id, block_id, staged)
+    }
+
+    pub fn commit_staged_import(
+        &self,
+        staged: StagedArchiveEpoch,
+        thread_id: &ThreadIdentifier,
+        block_id: &BlockIdentifier,
+    ) -> anyhow::Result<()> {
+        self.0.durable.commit_staged_import(staged, thread_id, block_id)
+    }
+
+    pub fn abort_staged_import(&self, staged: StagedArchiveEpoch) {
+        self.0.durable.abort_staged_import(staged)
     }
 
     pub fn new_state() -> ThreadAccountsState {

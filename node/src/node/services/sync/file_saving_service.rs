@@ -10,6 +10,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
 
+use account_state::PinHandle;
+use account_state::PinRequestGuard;
 use node_types::BlockIdentifier;
 use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
@@ -36,14 +38,11 @@ use crate::repository::CrossThreadRefData;
 use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
 use crate::storage::MessageDurableStorage;
-#[cfg(feature = "history_proofs")]
 use crate::types::history_proof::take_history_data_snapshot;
 use crate::types::thread_message_queue::account_messages_iterator::AccountMessagesIterator;
 use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
-
-impl AllowGuardedMut for Vec<JoinHandle<anyhow::Result<()>>> {}
 
 /// Maximum number of concurrent file-saving threads.
 /// Set to 1 so only one snapshot runs at a time — if a snapshot is already
@@ -111,11 +110,85 @@ impl Drop for ActiveThreadGuard {
     }
 }
 
+enum WorkerSnapshotPin {
+    Empty,
+    Requested(PinRequestGuard),
+    Acquired(PinHandle),
+    Abandoned,
+}
+
+impl WorkerSnapshotPin {
+    fn set_requested(&mut self, guard: PinRequestGuard) {
+        *self = Self::Requested(guard);
+    }
+
+    fn clear(&mut self) {
+        *self = Self::Empty;
+    }
+
+    fn abandon(&mut self) {
+        *self = Self::Abandoned;
+    }
+
+    fn store_acquired(&mut self, pin: PinHandle) -> bool {
+        match std::mem::replace(self, Self::Empty) {
+            Self::Requested(mut guard) => {
+                guard.disarm();
+                *self = Self::Acquired(pin);
+                true
+            }
+            Self::Abandoned => {
+                *self = Self::Abandoned;
+                drop(pin);
+                false
+            }
+            other => {
+                tracing::warn!(
+                    target: "monit",
+                    "snapshot worker acquired pin while slot was not Requested"
+                );
+                *self = other;
+                drop(pin);
+                false
+            }
+        }
+    }
+
+    fn release_acquired(&mut self) {
+        match std::mem::replace(self, Self::Empty) {
+            Self::Acquired(pin) => drop(pin),
+            Self::Abandoned => {
+                *self = Self::Abandoned;
+            }
+            other => {
+                *self = other;
+            }
+        }
+    }
+}
+
+struct SnapshotWorker {
+    handle: JoinHandle<anyhow::Result<()>>,
+    pin: Arc<Mutex<WorkerSnapshotPin>>,
+}
+
+impl AllowGuardedMut for Vec<SnapshotWorker> {}
+
+struct WorkerPinCleanup {
+    pin: Arc<Mutex<WorkerSnapshotPin>>,
+}
+
+impl Drop for WorkerPinCleanup {
+    fn drop(&mut self) {
+        self.pin.lock().clear();
+    }
+}
+
 #[derive(Clone, TypedBuilder)]
 pub struct FileSavingService {
     root_path: PathBuf,
     #[builder(default = Arc::new(Mutex::new(Vec::new())))]
-    threads: Arc<Mutex<Vec<JoinHandle<anyhow::Result<()>>>>>,
+    threads: Arc<Mutex<Vec<SnapshotWorker>>>,
     #[builder(default = Arc::new(AtomicUsize::new(0)))]
     active_thread_count: Arc<AtomicUsize>,
     #[builder(default = SnapshotCancelToken(Arc::new(AtomicBool::new(false))))]
@@ -350,9 +423,11 @@ impl Drop for FileSavingService {
         let Some(threads_mutex) = Arc::get_mut(&mut self.threads) else {
             return;
         };
+        self.cancel_token.cancel();
         let threads = threads_mutex.get_mut();
-        while let Some(handle) = threads.pop() {
-            if let Err(e) = handle.join() {
+        while let Some(worker) = threads.pop() {
+            worker.pin.lock().abandon();
+            if let Err(e) = worker.handle.join() {
                 tracing::error!(target: "node", "File saving thread panicked on drop: {:?}", e);
             }
         }
@@ -364,9 +439,10 @@ impl FileSavingService {
         self.threads.guarded_mut(|threads| {
             let mut i = 0;
             while i < threads.len() {
-                if threads[i].is_finished() {
-                    let handle = threads.swap_remove(i);
-                    match handle
+                if threads[i].handle.is_finished() {
+                    let worker = threads.swap_remove(i);
+                    match worker
+                        .handle
                         .join()
                         .map_err(|e| anyhow::format_err!("Thread panicked: {:?}", e))
                         .and_then(|r| r)
@@ -376,6 +452,7 @@ impl FileSavingService {
                             tracing::error!(target: "node", "File saving thread failed: {:?}", e)
                         }
                     }
+                    worker.pin.lock().clear();
                     // Don't increment i: swap_remove placed the last element at position i
                 } else {
                     i += 1;
@@ -387,6 +464,11 @@ impl FileSavingService {
 
     pub fn shutdown_snapshot_workers(&self, timeout: Duration) -> anyhow::Result<()> {
         self.cancel_token.cancel();
+        self.threads.guarded_mut(|threads| {
+            for worker in threads.iter() {
+                worker.pin.lock().abandon();
+            }
+        });
         let deadline = Instant::now() + timeout;
         loop {
             self.flush()?;
@@ -468,8 +550,10 @@ impl FileSavingService {
         self.flush()?;
         // Request pin only after slot reservation succeeds so skipped saves
         // cannot leave a stale Requested/BoundaryReached pin behind.
+        let pin_slot = Arc::new(Mutex::new(WorkerSnapshotPin::Empty));
         let pin_request_guard =
             self.repository.thread_accounts_repository().request_snapshot_pin(anchor);
+        pin_slot.lock().set_requested(pin_request_guard);
 
         let path = self.root_path.join(path);
         let parent_dir = self.root_path.clone();
@@ -495,19 +579,19 @@ impl FileSavingService {
         tracing::trace!(
             "save_object: block_id={block_id:?}, finalizing_block_id={finalizing_block_id:?}"
         );
-        #[cfg(feature = "history_proofs")]
         let history_proof_data = self.repository.get_history_proof_data();
         // Transfer slot ownership to the spawned thread. The slot was already
         // claimed by the compare_exchange above; we forget slot_guard on
         // successful spawn so ownership passes to the thread's ActiveThreadGuard.
         let active_count = Arc::clone(&self.active_thread_count);
         let cancel = self.cancel_token.clone();
+        let worker_pin_slot = Arc::clone(&pin_slot);
         let thread_result = spawn_named_worker(
             format!("Saving state: {}", path.display()),
             |builder, worker| builder.spawn(worker),
             move || {
                 let _guard = ActiveThreadGuard(active_count);
-                let mut pin_request_guard = pin_request_guard;
+                let _pin_cleanup = WorkerPinCleanup { pin: Arc::clone(&worker_pin_slot) };
                 tracing::trace!(target: "node", "Saving state to {}", path.display());
                 cancel.check()?;
                 if std::fs::exists(&path)? {
@@ -587,7 +671,7 @@ impl FileSavingService {
                 // observed update-loop batch apply time (~9 min per
                 // batch); if the boundary still isn't reached after
                 // this window, skip atomically.
-                let _pin = match acquire_snapshot_pin_for_worker(
+                match acquire_snapshot_pin_for_worker(
                     thread_id,
                     block_id,
                     SLOW_PATH_PIN_TIMEOUT,
@@ -602,15 +686,23 @@ impl FileSavingService {
                     },
                 ) {
                     SnapshotPinAcquireOutcome::Acquired(pin) => {
-                        pin_request_guard.disarm();
+                        if !worker_pin_slot.lock().store_acquired(pin) {
+                            tracing::info!(
+                                target: "monit",
+                                "snapshot[{block_id:?}]: pin acquired after shutdown abandon; skipping snapshot",
+                            );
+                            return Ok(());
+                        }
                         tracing::info!(
                             target: "mem",
                             "snapshot[{block_id:?}]: pin acquired rss_mb={:.1}",
                             mb(get_process_rss_bytes()),
                         );
-                        pin
                     }
-                    SnapshotPinAcquireOutcome::SkipSnapshot => return Ok(()),
+                    SnapshotPinAcquireOutcome::SkipSnapshot => {
+                        worker_pin_slot.lock().clear();
+                        return Ok(());
+                    }
                 };
                 cancel.check()?;
                 let mut temp = NamedTempFile::new_in(&parent_dir).map_err(|e| {
@@ -649,7 +741,7 @@ impl FileSavingService {
                     "snapshot[{block_id:?}]: AFTER export_durable_snapshot rss_mb={:.1}",
                     mb(rss_after_export),
                 );
-                drop(_pin);
+                worker_pin_slot.lock().release_acquired();
                 tracing::info!(
                     target: "mem",
                     "snapshot[{block_id:?}]: snapshot released pin after durable export rss_mb={:.1}",
@@ -716,7 +808,6 @@ impl FileSavingService {
                 else {
                     anyhow::bail!("Failed to get parent block data for sync");
                 };
-                #[cfg(feature = "history_proofs")]
                 let history_snapshot = take_history_data_snapshot(history_proof_data);
                 let builder = ThreadSnapshot::builder()
                     .optimistic_state(serialized_state)
@@ -745,7 +836,6 @@ impl FileSavingService {
                         finalization_chain_arcs.iter().map(|b| b.as_ref().clone()).collect(),
                     );
                 drop(finalization_chain_arcs);
-                #[cfg(feature = "history_proofs")]
                 let builder = builder.history_data_snapshot(history_snapshot);
                 let shared_thread_state = builder.build();
                 // Drop the Arc<Envelope> now that its data has been cloned into the snapshot.
@@ -825,12 +915,13 @@ impl FileSavingService {
                 // Thread has taken ownership of the slot via its own ActiveThreadGuard.
                 std::mem::forget(slot_guard);
                 self.threads.guarded_mut(|threads| {
-                    threads.push(handle);
+                    threads.push(SnapshotWorker { handle, pin: pin_slot });
                 });
                 Ok(SaveStateForSharingStatus::Spawned)
             }
             Err(e) => {
                 // Thread failed to spawn — slot_guard will release the slot on drop.
+                pin_slot.lock().clear();
                 drop(slot_guard);
                 Err(anyhow::anyhow!("Failed to spawn save thread: {e}"))
             }

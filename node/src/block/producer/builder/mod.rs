@@ -2,6 +2,7 @@
 //
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -70,6 +71,8 @@ pub struct PreparedBlock {
     #[cfg(feature = "monitor-accounts-number")]
     pub accounts_number_diff: i64,
     pub durable_state_update: DurableThreadAccountsStateDiff,
+    pub tracked_ext_out_messages: BTreeMap<AccountRouting, Vec<[u8; 32]>>,
+    pub tracked_ext_out_messages_root: [u8; 32],
 }
 
 pub struct ThreadResult {
@@ -164,17 +167,19 @@ pub struct BlockBuilder {
 
     // part used to update local state
     #[builder(default)]
-    pub(crate) consumed_internal_messages: HashMap<AccountIdentifier, HashSet<MessageIdentifier>>,
+    pub(crate) consumed_internal_messages: HashMap<AccountRouting, HashSet<MessageIdentifier>>,
     #[builder(default)]
     pub(crate) produced_internal_messages_to_the_current_thread:
-        HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+        HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
 
     // part to create cross thread ref data
     pub(crate) produced_internal_messages_to_other_threads:
         HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+    pub(crate) tracked_ext_out_account_routings: BTreeSet<AccountRouting>,
     #[builder(default)]
     pub(crate) accounts_that_changed_their_dapp_id:
         HashMap<AccountIdentifier, Vec<(AccountRouting, Option<WrappedAccount>)>>,
+    pub(crate) apply_transition_dapp_id_migrations: bool,
     metrics: Option<BlockProductionMetrics>,
 
     // cached resources used for wasm execution
@@ -183,9 +188,12 @@ pub struct BlockBuilder {
     #[cfg(feature = "monitor-accounts-number")]
     pub(crate) accounts_number_diff: i64,
 
-    pub(crate) is_block_of_retired_version: bool,
+    #[builder(default)]
+    pub(crate) tracked_ext_out_messages: BTreeMap<AccountRouting, Vec<[u8; 32]>>,
 
     is_verifier: bool,
+    // #[builder(default)]
+    // pub(crate) check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>>,
 }
 
 impl BlockBuilder {

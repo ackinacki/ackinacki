@@ -19,6 +19,8 @@ pub enum ArchiveStateError {
 
     ConcurrentModification(ThreadIdentifier),
 
+    EpochChanged { expected: u64, actual: u64 },
+
     InconsistentUpdate,
 
     CorruptedControlRecord(ThreadIdentifier, String),
@@ -47,6 +49,9 @@ impl fmt::Display for ArchiveStateError {
             Self::Collapsed(tid) => write!(f, "Thread {tid} is collapsed"),
             Self::ConcurrentModification(tid) => {
                 write!(f, "Concurrent modification detected for thread {tid}")
+            }
+            Self::EpochChanged { expected, actual } => {
+                write!(f, "Archive epoch changed: expected {expected}, actual {actual}")
             }
             Self::InconsistentUpdate => {
                 write!(f, "Inconsistent update: routing not covered by any thread declaration")

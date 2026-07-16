@@ -5,6 +5,7 @@ pub use state_sync_service_trait::StateSyncService;
 pub use state_sync_service_trait::SyncSnapshotAnchor;
 pub use state_sync_service_trait::SyncSnapshotLoaded;
 pub use state_sync_service_trait::SyncSnapshotRequest;
+pub use state_sync_service_trait::SyncSnapshotSkipped;
 
 mod external_fileshares_based;
 pub use external_fileshares_based::ExternalFileSharesBased;

@@ -198,6 +198,7 @@ pub(super) fn inner_loop(
             let verify_res = verify_block(
                 &next_block,
                 blockchain_config.clone(),
+                node_global_config_read.clone(),
                 &mut prev_state,
                 node_config.clone(),
                 node_global_config,
@@ -211,6 +212,7 @@ pub(super) fn inner_loop(
                 wasm_cache.clone(),
                 message_db.clone(),
                 node_global_config_read.is_retired(&protocol_version),
+                repository.get_history_proof_data(),
             )
             .unwrap_or_else(|error| {
                 panic!(

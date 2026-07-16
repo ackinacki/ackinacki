@@ -1,13 +1,10 @@
 // 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
-
-#[cfg(feature = "history_proofs")]
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::SocketAddr;
-#[cfg(feature = "history_proofs")]
 use std::ops::Div;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -34,6 +31,7 @@ use crate::block::producer::producer_service::memento::BlockProducerMemento;
 use crate::block_keeper_system::bk_set::update_block_keeper_set_from_common_section;
 use crate::block_keeper_system::BlockKeeperSetChange::BlockKeeperAdded;
 use crate::block_keeper_system::BlockKeeperSetChange::BlockKeeperRemoved;
+use crate::block_keeper_system::BlockKeeperSetTransitionHashes;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::gosh_bls::PubKey;
@@ -74,14 +72,15 @@ use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
 use crate::types::as_signatures_map::AsSignaturesMap;
 use crate::types::bp_selector::ProducerSelector;
+use crate::types::common_section::BlockKeeperSetChangeProofData;
 use crate::types::common_section::Directives;
-#[cfg(feature = "history_proofs")]
+use crate::types::history_proof::compute_block_leaf_hash;
+use crate::types::history_proof::history_proof_thread_id;
 use crate::types::history_proof::LayerNumber;
-#[cfg(feature = "history_proofs")]
 use crate::types::history_proof::ProofLayerRootHash;
-#[cfg(feature = "history_proofs")]
 use crate::types::history_proof::HISTORY_PROOF_WINDOW_SIZE;
 use crate::types::AckiNackiBlock;
+use crate::types::AckiNackiBlockVersioned;
 use crate::types::AggregateFilter;
 use crate::types::AggregatedAttestationsCache;
 use crate::types::AttestationCacheKey;
@@ -156,6 +155,8 @@ pub struct BlockProducer {
 
 enum UpdateCommonSectionResult {
     Success {
+        /// Block state created/updated while updating the common section.
+        block_state: BlockState,
         /// Parent's block version state — used to compute the child's state
         /// once the final block identifier is known.
         parent_block_version: BlockProtocolVersionState,
@@ -173,6 +174,13 @@ enum UpdateCommonSectionResult {
 }
 
 impl BlockProducer {
+    fn required_block_version(parent_block_version: &BlockProtocolVersionState) -> ProtocolVersion {
+        match parent_block_version {
+            BlockProtocolVersionState::CompleteTransition { to, .. } => to.clone(),
+            other => other.to_use().clone(),
+        }
+    }
+
     fn mark_production_started(&mut self) {
         self.producing_status = true;
         self.is_producing.store(true, Ordering::Release);
@@ -252,12 +260,56 @@ impl BlockProducer {
         self.producing_status = false;
     }
 
-    /// Stop the production thread and clean up any promoted temporary states.
+    /// Stop the production thread. Temporary states are retained because produced
+    /// blocks and mementos can still depend on their parent refs.
     fn stop_and_cleanup(&mut self) -> anyhow::Result<()> {
         self.mark_production_stopped();
-        let result = self.production_process.stop_thread_production(&self.thread_id);
-        self.block_state_repository.cleanup_temporaries();
-        result
+        self.production_process.stop_thread_production(&self.thread_id)
+    }
+
+    fn wait_for_resolved_parent_block_id(
+        &self,
+        temp_id: &TemporaryBlockId,
+    ) -> anyhow::Result<BlockIdentifier> {
+        let temp_arc = self
+            .block_state_repository
+            .get_temporary(temp_id)
+            .ok_or(anyhow::format_err!("Temporary state {temp_id:?} not found"))?;
+        loop {
+            if SHUTDOWN_FLAG.get() == Some(&true) {
+                anyhow::bail!(
+                    "Shutdown while waiting for temporary parent promotion for child {temp_id:?}"
+                );
+            }
+
+            let parent_ref = temp_arc.read().parent_ref().clone();
+            match parent_ref {
+                ParentRef::Block(id) => return Ok(id),
+                ParentRef::Temporary(parent_temp_id) => {
+                    let Some(parent_temp_arc) =
+                        self.block_state_repository.get_temporary(&parent_temp_id)
+                    else {
+                        anyhow::bail!(
+                            "Parent temporary {parent_temp_id:?} not found for child {temp_id:?}"
+                        );
+                    };
+                    let parent_temp = parent_temp_arc.read();
+                    if let Some(promoted_id) = parent_temp.promoted_block_id() {
+                        let id = *promoted_id;
+                        drop(parent_temp);
+                        temp_arc.write().set_parent_ref(ParentRef::Block(id));
+                        tracing::trace!(
+                            "Resolved temporary parent {parent_temp_id:?} for child {temp_id:?}: {id:?}"
+                        );
+                        return Ok(id);
+                    }
+                    tracing::trace!(
+                        "Waiting for temporary parent promotion outside production deadline: parent={parent_temp_id:?}, child={temp_id:?}"
+                    );
+                }
+            }
+            sleep(LOOP_PAUSE_DURATION);
+        }
     }
 
     pub fn main_loop(&mut self) -> anyhow::Result<()> {
@@ -375,7 +427,7 @@ impl BlockProducer {
                 );
                 return Ok(producer_tails);
             };
-            let block_version = parent_block_version.to_use().clone();
+            let block_version = Self::required_block_version(&parent_block_version);
             match self.production_process.start_thread_production(
                 &self.thread_id,
                 &block_id_to_continue,
@@ -580,46 +632,8 @@ impl BlockProducer {
             let mut block = produced_block.block().clone();
             let temp_id = *produced_block.temporary_block_id();
 
-            // Resolve parent from TemporaryBlockState and update block's parent_block_id
-            {
-                let temp_arc = self
-                    .block_state_repository
-                    .get_temporary(&temp_id)
-                    .ok_or(anyhow::format_err!("Temporary state {temp_id:?} not found"))?;
-                let parent_ref = temp_arc.read().parent_ref().clone();
-                let parent_block_id = match parent_ref {
-                    ParentRef::Block(id) => id,
-                    ParentRef::Temporary(parent_temp_id) => {
-                        // The parent temporary may have been promoted after this
-                        // block was produced but before this block's parent_ref
-                        // was updated (race between the production loop
-                        // registering children and the main thread promoting
-                        // the parent). Check if the parent temp was promoted
-                        // and use its final block ID.
-                        let parent_temp_arc = self
-                            .block_state_repository
-                            .get_temporary(&parent_temp_id)
-                            .ok_or(anyhow::format_err!(
-                                "Parent temporary {parent_temp_id:?} not found for child {temp_id:?}"
-                            ))?;
-                        let parent_temp = parent_temp_arc.read();
-                        match parent_temp.promoted_block_id() {
-                            Some(promoted_id) => {
-                                let id = *promoted_id;
-                                drop(parent_temp);
-                                temp_arc.write().set_parent_ref(ParentRef::Block(id));
-                                id
-                            }
-                            None => {
-                                anyhow::bail!(
-                                    "Parent {parent_temp_id:?} is not yet promoted for child {temp_id:?}"
-                                );
-                            }
-                        }
-                    }
-                };
-                block.update_parent_block_id(parent_block_id);
-            }
+            let parent_block_id = self.wait_for_resolved_parent_block_id(&temp_id)?;
+            block.update_parent_block_id(parent_block_id);
             tracing::info!(
                 "Got block from producer. temp_id: {}; seq_no: {:?}, parent: {:?}",
                 temp_id,
@@ -650,6 +664,7 @@ impl BlockProducer {
                 self.update_candidate_common_section(&mut block, should_share_state, &temp_id);
             #[allow(unused_assignments)]
             let mut success_block_version_data: Option<(
+                BlockState,
                 BlockProtocolVersionState,
                 Option<ProtocolVersionSupport>,
                 Vec<BlockIdentifier>,
@@ -693,27 +708,24 @@ impl BlockProducer {
                     return Ok((false, Some(produced_data)));
                 }
                 Ok(UpdateCommonSectionResult::Success {
+                    block_state,
                     parent_block_version,
                     all_bk_same_version,
                     passed_checkpoints,
                 }) => {
                     // Derive the protocol version without the block identifier.
                     // `next().to_use()` never depends on block_id.
-                    let actual_required_version = match &parent_block_version {
-                        BlockProtocolVersionState::CompleteTransition { to, .. } => to.clone(),
-                        other => other.to_use().clone(),
-                    };
+                    let actual_required_version =
+                        Self::required_block_version(&parent_block_version);
                     let mut producer_is_in_bk_set = true;
-                    for change in produced_block.block().common_section().block_keeper_set_changes()
-                    {
+                    for change in block.common_section().block_keeper_set_changes() {
                         if let BlockKeeperRemoved((_, removed)) = change {
                             if removed.node_id() == *self.node_credentials.node_id() {
                                 producer_is_in_bk_set = false;
                             }
                         }
                     }
-                    for change in produced_block.block().common_section().block_keeper_set_changes()
-                    {
+                    for change in block.common_section().block_keeper_set_changes() {
                         if let BlockKeeperAdded((_, added)) = change {
                             if added.node_id() == *self.node_credentials.node_id() {
                                 producer_is_in_bk_set = true;
@@ -736,8 +748,7 @@ impl BlockProducer {
                     }
 
                     let parent_crtd = self.shared_services.exec(|e| {
-                        e.cross_thread_ref_data_service
-                            .get_cross_thread_ref_data(&produced_block.block().parent())
+                        e.cross_thread_ref_data_service.get_cross_thread_ref_data(&block.parent())
                     })?;
                     let actual_assumptions = Assumptions::builder()
                         .new_to_bk_set(
@@ -756,8 +767,12 @@ impl BlockProducer {
                                 self.is_state_sync_requested.guarded_mut(|e| *e = None);
                             }
                         }
-                        success_block_version_data =
-                            Some((parent_block_version, all_bk_same_version, passed_checkpoints));
+                        success_block_version_data = Some((
+                            block_state,
+                            parent_block_version,
+                            all_bk_same_version,
+                            passed_checkpoints,
+                        ));
                         produced_data.produced_blocks_mut().remove(0)
                     } else {
                         tracing::trace!(
@@ -784,8 +799,6 @@ impl BlockProducer {
                             tracing::trace!("Assumptions were not met, stop production");
                             self.stop_and_cleanup()?;
                         }
-
-                        #[cfg(feature = "history_proofs")]
                         if !self.config_read.is_retired(&actual_required_version) {
                             if let Some(parent_block_height) = self
                                 .block_state_repository
@@ -815,7 +828,7 @@ impl BlockProducer {
             // Now that the final block_id is known, compute the actual
             // BlockProtocolVersionState (the milestone in TransitionLocked
             // must reference the real Merkle hash, not an intermediate one).
-            let (parent_bvs, all_bk_same, checkpoints) = success_block_version_data
+            let (block_state, parent_bvs, all_bk_same, checkpoints) = success_block_version_data
                 .expect("success_block_version_data must be set on Success path");
             let success_block_version_state =
                 parent_bvs.next(final_block_id, all_bk_same, &checkpoints);
@@ -824,6 +837,7 @@ impl BlockProducer {
             let produced_block_state = promote_temporary_to_block_state(
                 &temp_id,
                 final_block_id,
+                block_state,
                 &self.block_state_repository,
             )?;
             let final_parent_block_id = block.parent();
@@ -964,7 +978,7 @@ impl BlockProducer {
             let envelope = envelope?;
 
             let block_serialization_started_at = std::time::Instant::now();
-            let net_block_result = NetBlock::with_envelope(&envelope);
+            let net_block_result = NetBlock::with_versioned(&envelope);
             self.shared_services.metrics.as_ref().inspect(|m| {
                 m.report_block_serialization_time(
                     block_serialization_started_at.elapsed().as_millis(),
@@ -1099,7 +1113,7 @@ impl BlockProducer {
 
     fn update_candidate_common_section(
         &mut self,
-        candidate_block: &mut AckiNackiBlock,
+        candidate_block: &mut AckiNackiBlockVersioned,
         should_share_state: bool,
         temp_id: &TemporaryBlockId,
     ) -> anyhow::Result<UpdateCommonSectionResult> {
@@ -1175,7 +1189,7 @@ impl BlockProducer {
         let trace_attestations_required = format!("{attestations_required:?}");
         let aggregated_attestations = received_attestations.aggregate(&attestations_required)?;
 
-        let proposed_attestations = aggregated_attestations.as_signatures_map();
+        let mut proposed_attestations = aggregated_attestations.as_signatures_map();
         tracing::trace!(
             "update_candidate_common_section ({}):  waiting for finalization: {}, proposed_attestations: {:?}",
             temp_id,
@@ -1232,16 +1246,51 @@ impl BlockProducer {
             let directives = Directives::builder().share_state_resources(true).build();
             common_section.set_directives(directives);
         }
-        #[cfg(feature = "history_proofs")]
-        let Some(parent_block_height) = parent_block_state.guarded(|state| *state.block_height()) else {
+        let Some(parent_block_height) = parent_block_state.guarded(|state| *state.block_height())
+        else {
             tracing::trace!("update_candidate_common_section: parent block height is missing");
             return Ok(UpdateCommonSectionResult::AncestorIsNotReadyYet);
         };
 
+        let (descendant_bk_set, _descendant_future_bk_set) =
+            update_block_keeper_set_from_common_section(
+                candidate_block,
+                bk_set.clone(),
+                future_bk_set.clone(),
+            )?
+            .unwrap_or((bk_set.clone(), future_bk_set.clone()));
+
+        // Always compute BK set Poseidon commitments for the envelope hash Merkle tree.
+        // L2 = old BK set, L3 = new BK set (== old when no changes).
+        let old_bk_set_hash: [u8; 32] = bk_set.poseidon_commitment()?;
+        let (new_bk_set_hash, history_proof_layer_hashes) =
+            if !common_section.block_keeper_set_changes().is_empty() {
+                let new_hash = descendant_bk_set.poseidon_commitment()?;
+                let layer_hashes = if self.thread_id == history_proof_thread_id() {
+                    self.repository
+                        .get_history_proof_layer_hashes_for_bk_set_transition(&self.thread_id)
+                } else {
+                    BTreeMap::new()
+                };
+                (new_hash, layer_hashes)
+            } else {
+                (old_bk_set_hash, std::collections::BTreeMap::new())
+            };
+        common_section.set_block_keeper_set_change_proof_data(Some(
+            BlockKeeperSetChangeProofData::builder()
+                .transition_hashes(
+                    BlockKeeperSetTransitionHashes::builder()
+                        .new_bk_set_hash(new_bk_set_hash)
+                        .old_bk_set_hash(old_bk_set_hash)
+                        .build(),
+                )
+                .history_proof_layer_hashes(history_proof_layer_hashes)
+                .build(),
+        ));
+
         candidate_block.set_common_section(common_section.clone(), true)?;
 
         //
-        let mut proposed_attestations = proposed_attestations;
         let mut res = self
             .attestations_target_service
             .evaluate_if_next_block_ancestors_required_attestations_will_be_met(
@@ -1302,24 +1351,9 @@ impl BlockProducer {
                 // why?
                 // assert!(!candidate_block.common_section().block_keeper_set_changes.is_empty());
 
-                let (descendant_bk_set, _descendant_future_bk_set) =
-                    update_block_keeper_set_from_common_section(
-                        candidate_block,
-                        bk_set.clone(),
-                        future_bk_set.clone(),
-                    )?
-                    .unwrap_or((bk_set.clone(), future_bk_set.clone()));
-
-                // Pre-compute the BK-set version agreement.  The actual
-                // BlockProtocolVersionState is computed later (in on_production_timeout)
-                // once the final block identifier is known.
-                let all_bk_same_version: Option<ProtocolVersionSupport> = descendant_bk_set
-                    .iter()
-                    .map(|e| e.protocol_support.clone())
-                    .all_elements_same();
-
-                #[cfg(feature = "history_proofs")]
-                if *candidate_block.common_section().block_height() % HISTORY_PROOF_WINDOW_SIZE == 0
+                if self.thread_id == history_proof_thread_id()
+                    && *candidate_block.common_section().block_height() % HISTORY_PROOF_WINDOW_SIZE
+                        == 0
                     && *candidate_block.common_section().block_height().height() != 0
                     && !self.config_read.is_retired(match &parent_block_version {
                         BlockProtocolVersionState::CompleteTransition { to, .. } => to,
@@ -1328,12 +1362,7 @@ impl BlockProducer {
                 {
                     let mut common_section = candidate_block.common_section().clone();
                     let history_proof_data = self.repository.get_history_proof_data();
-                    let data_lock = history_proof_data.read();
-                    let Some(thread_history) = data_lock.get(&self.thread_id).cloned() else {
-                        anyhow::bail!("Thread history can't be empty when block with non zero height is is being produced");
-                    };
-                    drop(data_lock);
-                    let history_lock = thread_history.read();
+                    let history_lock = history_proof_data.read();
                     let Some(mut base_layer_data) = history_lock.get(&(0 as LayerNumber)).cloned()
                     else {
                         anyhow::bail!("Thread history can't be empty when block with non zero height is is being produced");
@@ -1353,29 +1382,26 @@ impl BlockProducer {
                             cursor = self.block_state_repository.get(&parent)?;
                         }
                         for (block_id, envelope_hash, block_height) in data.iter().rev() {
-                            base_layer_data.update_from_pure_data(
-                                block_id.into(),
-                                envelope_hash.into(),
-                                *block_height,
-                            )?;
+                            let block = self
+                                .repository
+                                .get_block_from_repo_or_archive(block_id, &self.thread_id)?;
+                            let leaf_hash = compute_block_leaf_hash(
+                                block_id.as_array(),
+                                &envelope_hash.0,
+                                block.data().common_section().tracked_ext_out_messages_root(),
+                            );
+                            base_layer_data.update_from_pure_data(leaf_hash, *block_height)?;
                         }
                     }
-                    let mut prev_layer_root_hash = None;
-                    let mut prev_layer_block_height = None;
-                    for (layer_num, data) in history_lock.iter() {
-                        if *layer_num > 0 {
-                            if let Some(height) = prev_layer_block_height.as_ref() {
-                                if height > data.last_processed_block_height().height() {
-                                    break;
-                                }
-                            }
-                            prev_layer_block_height =
-                                Some(*data.last_processed_block_height().height());
-                            prev_layer_root_hash = data.data().get(*data.data_len() - 1).cloned();
-                        }
-                    }
+                    let latest_layer_root = |layer: LayerNumber| {
+                        history_lock
+                            .get(&layer)
+                            .filter(|data| *data.data_len() > 0)
+                            .and_then(|data| data.data().get(*data.data_len() - 1).cloned())
+                    };
 
-                    let root_hash = base_layer_data.calculate_root_hash(prev_layer_root_hash)?;
+                    let root_hash = base_layer_data
+                        .calculate_root_hash(latest_layer_root(1), latest_layer_root(2))?;
                     let mut proofs = BTreeMap::new();
                     let data = ProofLayerRootHash::builder()
                         .layer(1)
@@ -1405,28 +1431,14 @@ impl BlockProducer {
                                 .get(&layer)
                                 .ok_or(anyhow::format_err!("Failed to get previous layer data"))?
                                 .root_hash();
-                            layer_data.update_from_pure_data(
-                                previous_root,
-                                previous_root,
-                                parent_block_height,
-                            )?;
-                            let mut prev_layer_root_hash = None;
-                            let mut prev_layer_block_height = None;
-                            for (layer_num, data) in history_lock.iter() {
-                                if *layer_num > layer {
-                                    if let Some(height) = prev_layer_block_height.as_ref() {
-                                        if height > data.last_processed_block_height().height() {
-                                            break;
-                                        }
-                                    }
-                                    prev_layer_block_height =
-                                        Some(*data.last_processed_block_height().height());
-                                    prev_layer_root_hash =
-                                        data.data().get(*data.data_len() - 1).cloned();
-                                }
-                            }
+                            layer_data.update_from_pure_data(previous_root, parent_block_height)?;
+                            assert!(layer_data.is_full(), "Wrong history data buffer length");
 
-                            let root_hash = layer_data.calculate_root_hash(prev_layer_root_hash)?;
+                            let output_layer = layer + 1;
+                            let root_hash = layer_data.calculate_root_hash(
+                                latest_layer_root(output_layer),
+                                latest_layer_root(output_layer + 1),
+                            )?;
                             let data = ProofLayerRootHash::builder()
                                 .layer(layer + 1)
                                 .root_hash(root_hash)
@@ -1442,6 +1454,46 @@ impl BlockProducer {
                     common_section.set_history_proofs(proofs);
                     candidate_block.set_common_section(common_section, true)?;
                 }
+
+                let attestations = candidate_block.common_section().block_attestations();
+                let candidate_block_identifier = candidate_block.identifier();
+                let block_state = self.block_state_repository.get(&candidate_block_identifier)?;
+                let _block_version_state = block_state.guarded_mut(|e| {
+                    for attestation in attestations {
+                        e.add_verified_attestations_for(
+                            attestation.data(),
+                            HashSet::from_iter(
+                                attestation.clone_signature_occurrences().keys().cloned(),
+                            ),
+                        )?;
+                    }
+                    let block_version_state = parent_block_version.next(
+                        candidate_block_identifier,
+                        descendant_bk_set
+                            .iter()
+                            .map(|e| e.protocol_support.clone())
+                            .all_elements_same(),
+                        &passed_checkpoints,
+                    );
+                    e.set_block_version_state(block_version_state.clone())?;
+                    Ok::<_, anyhow::Error>(block_version_state)
+                })?;
+                let (descendant_bk_set, _descendant_future_bk_set) =
+                    update_block_keeper_set_from_common_section(
+                        candidate_block,
+                        bk_set.clone(),
+                        future_bk_set.clone(),
+                    )?
+                    .unwrap_or((bk_set.clone(), future_bk_set.clone()));
+
+                // Pre-compute the BK-set version agreement.  The actual
+                // BlockProtocolVersionState is computed later (in on_production_timeout)
+                // once the final block identifier is known.
+                let all_bk_same_version: Option<ProtocolVersionSupport> = descendant_bk_set
+                    .iter()
+                    .map(|e| e.protocol_support.clone())
+                    .all_elements_same();
+
                 // if let Some((last_dependant_block_seq_no, last_dependant_block_id)) =
                 //     dependent_ancestor_blocks
                 //         .dependent_ancestor_blocks()
@@ -1463,6 +1515,7 @@ impl BlockProducer {
                 //     )?;
                 // }
                 Ok(UpdateCommonSectionResult::Success {
+                    block_state,
                     parent_block_version,
                     all_bk_same_version,
                     passed_checkpoints,

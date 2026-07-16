@@ -394,6 +394,8 @@ mod tests {
             #[cfg(feature = "protocol_version_hash_in_block")]
             Default::default(),
             DurableThreadAccountsStateDiff::default(),
+            Default::default(),
+            Default::default(),
         );
         let mut common_section = block.common_section().clone();
         common_section.set_producer_selector(Some(make_selector(parent_block_id)));

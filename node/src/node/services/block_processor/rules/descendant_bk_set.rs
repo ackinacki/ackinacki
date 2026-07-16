@@ -3,6 +3,7 @@ use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::node::block_state::repository::BlockState;
 use crate::types::AckiNackiBlock;
+use crate::types::AckiNackiBlockVersioned;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
@@ -26,8 +27,11 @@ pub fn set_descendant_bk_set(block_state: &BlockState, candidate_block: &Envelop
     }
     let block = candidate_block.data();
 
-    match update_block_keeper_set_from_common_section(block, bk_set.clone(), future_bk_set.clone())
-    {
+    match update_block_keeper_set_from_common_section(
+        &AckiNackiBlockVersioned::New(block.clone()),
+        bk_set.clone(),
+        future_bk_set.clone(),
+    ) {
         Err(e) => {
             tracing::trace!(
                 "Failed to update block keeper set from the common section: {}; {}, {:?}",

@@ -2,13 +2,15 @@
 CADDY_NAME: bm-caddy
 CADDY_DIR: "{{ ROOT_DIR }}/caddy"
 HOST_NAME: "{{ inventory_hostname }}"
-EXTRA_HOSTS: ""
+EXTRA_HOSTS: ""    # NO TRAILING SLASH!!!
+EXTRA_HOSTS_V2: "" # MUST END WITH /v2/* !!!
 
 # Caddy reaches BM via docker-network service discovery on `ackinacki-net`.
 # These are the service names in roles/block-manager/templates/compose.j2.
 BM_SERVICE:         "block_manager"
 NGINX_SERVICE:      "nginx_bm"
 NGINX_SERVICE_PORT: 80
+NGINX_UPSTREAM:     "{{ NGINX_SERVICE }}:{{ NGINX_SERVICE_PORT }}"
 
 USE_CADDY: yes
 
@@ -17,6 +19,9 @@ USE_CADDY: yes
 EXTERNAL_NET: yes
 # BM REST API port (must match block_manager group's BM_REST_API_PORT).
 BM_REST_API_PORT: 8610
+
+# Expose port 8600 listener (HTTP /v2/* on :8600)
+CADDY_LISTEN_8600: true
 
 # TLS section
 ENABLE_GEN_CERT: false
@@ -31,3 +36,14 @@ CERT_KEY_FILE_BK_ON_BM: testbk.ackinacki.org.key
 
 # Use ONLY ZeroSSL if the CADDY_EAB variable is set (to avoid strict LE rate limits)
 ZEROSSL_EXCLUSIVE: yes
+
+# Authentication (leave CADDY_AUTH_MODE unset or "none" for open access)
+# CADDY_AUTH_MODE: "basic"   — require HTTP Basic Auth
+#   CADDY_AUTH_USER: "admin"
+#   CADDY_AUTH_PASSWORD: "secret"
+# CADDY_AUTH_MODE: "bearer"  — require Authorization: Bearer <token>
+#   CADDY_AUTH_BEARER_TOKEN: "your-secret-token"
+# CADDY_AUTH_MODE: "either"  — accept valid Bearer token, otherwise fall back to Basic Auth
+#   CADDY_AUTH_BEARER_TOKEN: "your-secret-token"
+#   CADDY_AUTH_USER: "admin"
+#   CADDY_AUTH_PASSWORD: "secret"

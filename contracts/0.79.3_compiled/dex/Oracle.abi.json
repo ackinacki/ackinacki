@@ -1,0 +1,83 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"oraclePubkey","type":"uint256"},
+				{"name":"oracleEventListCode","type":"cell"},
+				{"name":"PrivateNoteCode","type":"cell"},
+				{"name":"pmpCode","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployEventList",
+			"inputs": [
+				{"name":"index","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "withdrawFees",
+			"inputs": [
+				{"name":"to","type":"address"},
+				{"name":"amount","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getEventListAddress",
+			"inputs": [
+				{"name":"index","type":"uint128"}
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+		{
+			"name": "OracleEventListDeployed",
+			"inputs": [
+				{"name":"eventListAddress","type":"address"},
+				{"name":"index","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "EventPublished",
+			"inputs": [
+				{"name":"event_id","type":"uint256"},
+				{"name":"event_name","type":"string"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_oraclePubkey","type":"uint256"},
+		{"init":false,"name":"_oracleEventListCode","type":"cell"},
+		{"init":false,"name":"_pmpSaltedCodeHash","type":"uint256"},
+		{"init":false,"name":"_pmpSaltedCodeDepth","type":"uint16"},
+		{"init":true,"name":"_name","type":"string"}
+	]
+}

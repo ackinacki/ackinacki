@@ -200,7 +200,12 @@ mod tests {
                 shard TEXT,
                 tr_count INTEGER,
                 height BLOB CHECK (length(height) = 8),
-                envelope_hash BLOB CHECK (length(envelope_hash) = 32)
+                envelope_hash BLOB CHECK (length(envelope_hash) = 32),
+                tracked_ext_out_messages_root BLOB CHECK (tracked_ext_out_messages_root IS NULL OR length(tracked_ext_out_messages_root) = 32),
+                tracked_ext_out_message_hashes BLOB,
+                block_merkle_leaves BLOB CHECK (block_merkle_leaves IS NULL OR length(block_merkle_leaves) = 512),
+                history_proofs BLOB CHECK (history_proofs IS NULL OR (length(history_proofs) >= 1 AND length(history_proofs) <= 331 AND ((length(history_proofs) - 1) % 33) = 0)),
+                proof_block_refs BLOB
             );",
         )
         .expect("create blocks table");

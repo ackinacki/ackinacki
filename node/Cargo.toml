@@ -1,6 +1,6 @@
 [package]
 name = "node"
-version = "0.16.2"
+version = "0.17.0"
 edition.workspace = true
 rust-version.workspace = true
 build = 'build.rs'
@@ -20,6 +20,7 @@ gossip.workspace = true
 governor.workspace = true
 hex.workspace = true
 hex-literal.workspace = true
+history-proof.workspace = true
 http-server.workspace = true
 lazy_static.workspace = true
 message-router.workspace = true
@@ -81,6 +82,7 @@ tempfile.workspace = true
 thiserror = "2.0.3"
 thread-load-balance = { path = "./libs/thread-load-balance" }
 thread-reference-state = { path = "./libs/thread-reference-state" }
+time.workspace = true
 tracing-test = "0.1"
 versioned_struct = { path = "./libs/versioned_struct" }
 weak-table = "0.3.2"
@@ -111,6 +113,7 @@ default = [
     "messages_db",
     "monitor-accounts-number",
     "disable_db_for_messages",
+    #    "tvm_tracing",
 ]
 
 # Use automocks in binaries
@@ -149,9 +152,6 @@ store_events_only = []
 
 # Add protocol version hash to block common section
 protocol_version_hash_in_block = []
-
-# History proofs in block common section
-history_proofs = []
 
 # Features for tests
 test_nack = []

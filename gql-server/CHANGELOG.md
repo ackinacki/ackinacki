@@ -2,6 +2,31 @@
 
 All notable changes to `gql-server` are documented in this file.
 
+## [1.1.0]
+
+### Added
+- Added `block_id` field to the `Block` GraphQL type — the Acki Nacki block
+  identifier (SHA-256 root of the 16-leaf Poseidon/SHA Merkle tree).
+- Added `block_merkle_tree_leaves` field exposing all 16 ordered Merkle leaf
+  hashes that compose `block_id`.
+- Added `proof_block_refs` field with ordered block references committed by
+  Merkle leaf L7 (parent block ID followed by `CommonSection.refs`).
+- Added `history_proofs` field with layer-hash roots from the block's
+  `CommonSection.history_proofs` map (non-empty on key blocks only).
+- Added `tracked_ext_out_messages_root` field — root hash of tracked external
+  outbound messages from the block common section.
+- Added `tracked_ext_out_message_hashes` field with canonically ordered tracked
+  external outbound message hashes grouped by routing (`dapp_id || account_id`).
+- Added `HistoryProofEntry` and `TrackedExtOutMessageHashesEntry` GraphQL types.
+- Added five new archive columns (`block_merkle_leaves`, `history_proofs`,
+  `proof_block_refs`, `tracked_ext_out_messages_root`,
+  `tracked_ext_out_message_hashes`) to the DB block model with field-based
+  projection support.
+
+### Changed
+- Bumped `tvm_block` / `tvm_client` / `tvm_types` dependencies from
+  `v3.0.2.an` to `v3.0.3.an`.
+
 ## [1.0.0]
 
 ### Breaking Changes

@@ -16,3 +16,6 @@ worktrees/
 # just in case we add more tests which will polute docker context
 **/target
 .codex*
+
+./debug
+

@@ -10,7 +10,7 @@ use typed_builder::TypedBuilder;
 use crate::node::SignerIndex;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
-use crate::types::AckiNackiBlock;
+use crate::types::AckiNackiBlockVersioned;
 use crate::types::ThreadsTable;
 use crate::versioning::ProtocolVersion;
 
@@ -46,7 +46,7 @@ impl BlockProducerMemento {
 #[derive(TypedBuilder, Getters)]
 pub struct ProducedBlock {
     assumptions: Assumptions,
-    block: AckiNackiBlock,
+    block: AckiNackiBlockVersioned,
     optimistic_state: Arc<OptimisticStateImpl>,
     feedbacks: ExtMsgFeedbackList,
     temporary_block_id: TemporaryBlockId,

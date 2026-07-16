@@ -2,6 +2,13 @@
 
 All notable changes to `block-manager` are documented in this file.
 
+## [0.8.1]
+
+### Fixed
+- Improved error handling in the message router for external messages with
+  malformed ids — such messages are now gracefully skipped with a warning
+  instead of interrupting request processing.
+
 ## [0.8.0] - 2026-06-16
 
 ### Breaking Changes

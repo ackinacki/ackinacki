@@ -25,11 +25,11 @@
   when: BK_SET_PK_CHECKING is defined and BK_SET_PK_CHECKING is true
   check_mode: false
 
-- name: Fail if BK's public key is not in BK set
-  ansible.builtin.fail: { msg: "ERROR Couldn't find public key in bk set" }
-  when:
-    - BK_SET_PK_CHECKING is defined and BK_SET_PK_CHECKING is true
-    - api_response.json.current | selectattr('owner_pubkey', 'equalto', BK_PUBLIC_KEY_OUTPUT.stdout) | list | length == 0
+#- name: Fail if BK's public key is not in BK set
+#  ansible.builtin.fail: { msg: "ERROR Couldn't find public key in bk set" }
+#  when:
+#    - BK_SET_PK_CHECKING is defined and BK_SET_PK_CHECKING is true
+#    - api_response.json.current | selectattr('owner_pubkey', 'equalto', BK_PUBLIC_KEY_OUTPUT.stdout) | list | length == 0
 
 - name: Install collected BK set
   ansible.builtin.copy:

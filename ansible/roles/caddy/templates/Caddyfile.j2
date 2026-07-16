@@ -32,6 +32,51 @@
   }
 }
 
+{% if CADDY_AUTH_MODE is defined and CADDY_AUTH_MODE == 'basic' %}
+(auth) {
+    route {
+        @wrong_auth {
+            header Authorization *
+            not header Authorization "Basic {{ (CADDY_AUTH_USER ~ ':' ~ CADDY_AUTH_PASSWORD) | b64encode }}"
+        }
+        request_header @wrong_auth -Authorization
+        @unauthorized {
+            not method OPTIONS
+            not header Authorization *
+        }
+        header @unauthorized WWW-Authenticate `Basic realm="restricted"`
+        respond @unauthorized "Unauthorized" 401
+        request_header -Authorization
+    }
+}
+{% elif CADDY_AUTH_MODE is defined and CADDY_AUTH_MODE == 'bearer' %}
+(auth) {
+    @bearer_unauthorized {
+        not method OPTIONS
+        not header Authorization "Bearer {{ CADDY_AUTH_BEARER_TOKEN }}"
+    }
+    respond @bearer_unauthorized "Unauthorized" 401
+}
+{% elif CADDY_AUTH_MODE is defined and CADDY_AUTH_MODE == 'either' %}
+(auth) {
+    route {
+        @wrong_auth {
+            header Authorization *
+            not header Authorization "Basic {{ (CADDY_AUTH_USER ~ ':' ~ CADDY_AUTH_PASSWORD) | b64encode }}"
+            not header Authorization "Bearer {{ CADDY_AUTH_BEARER_TOKEN }}"
+        }
+        request_header @wrong_auth -Authorization
+        @unauthorized {
+            not method OPTIONS
+            not header Authorization *
+        }
+        header @unauthorized WWW-Authenticate `Basic realm="restricted"`
+        respond @unauthorized "Unauthorized" 401
+        request_header -Authorization
+    }
+}
+{% endif %}
+
 {% if BK_ON_BM is defined and BK_ON_BM is true -%}
 (reverse_proxy) {
   reverse_proxy {args[0]}:{args[1]} {
@@ -44,6 +89,9 @@
 
 http://{$HOST_NAME}/v2/*, http://{$HOST_PUBLIC_IP}/v2/* {
   import cors {header.origin}
+{% if CADDY_AUTH_MODE is defined and CADDY_AUTH_MODE in ['basic', 'bearer', 'either'] %}
+  import auth
+{% endif %}
   reverse_proxy {{ BM_SERVICE }}:{{ BM_REST_API_PORT }} {
     header_up X-Real-IP {http.request.remote.host}
     header_up X-Forwarded-Port {http.request.port}
@@ -51,41 +99,55 @@ http://{$HOST_NAME}/v2/*, http://{$HOST_PUBLIC_IP}/v2/* {
   }
 }
 
+{% if CADDY_LISTEN_8600 | default(true) %}
 http://{$HOST_NAME}:8600/v2/*, http://{$HOST_PUBLIC_IP}:8600/v2/* {
   import cors {header.origin}
+{% if CADDY_AUTH_MODE is defined and CADDY_AUTH_MODE in ['basic', 'bearer', 'either'] %}
+  import auth
+{% endif %}
   reverse_proxy {{ BM_SERVICE }}:{{ BM_REST_API_PORT }} {
     header_up X-Real-IP {http.request.remote.host}
     header_up X-Forwarded-Port {http.request.port}
     header_up X-Forwarded-Proto {http.request.scheme}
   }
 }
+{% endif %}
 
 http://{$HOST_NAME}, http://{$HOST_PUBLIC_IP} {
   import cors {header.origin}
-  reverse_proxy {{ NGINX_SERVICE }}:{{ NGINX_SERVICE_PORT }} {
+{% if CADDY_AUTH_MODE is defined and CADDY_AUTH_MODE in ['basic', 'bearer', 'either'] %}
+  import auth
+{% endif %}
+  reverse_proxy {{ NGINX_UPSTREAM }} {
     header_up X-Real-IP {http.request.remote.host}
     header_up X-Forwarded-Port {http.request.port}
     header_up X-Forwarded-Proto {http.request.scheme}
   }
 }
 
-https://{$HOST_NAME}, https://{$HOST_NAME}{$EXTRA_HOSTS} {
+https://{$HOST_NAME}{$EXTRA_HOSTS} {
 {% if (LOAD_CERT is defined and LOAD_CERT is true) and (ENABLE_GEN_CERT is not defined or ENABLE_GEN_CERT is false) -%}
   tls /etc/caddy/{{ CERT_FILE | mandatory }} /etc/caddy/{{ CERT_KEY_FILE | mandatory }}
 {% endif %}
   import cors {header.origin}
-  reverse_proxy {{ NGINX_SERVICE }}:{{ NGINX_SERVICE_PORT }} {
+{% if CADDY_AUTH_MODE is defined and CADDY_AUTH_MODE in ['basic', 'bearer', 'either'] %}
+  import auth
+{% endif %}
+  reverse_proxy {{ NGINX_UPSTREAM }} {
     header_up X-Real-IP {http.request.remote.host}
     header_up X-Forwarded-Port {http.request.port}
     header_up X-Forwarded-Proto {http.request.scheme}
   }
 }
 
-https://{$HOST_NAME}/v2/* {
+https://{$HOST_NAME}/v2/*{$EXTRA_HOSTS_V2} {
 {% if (LOAD_CERT is defined and LOAD_CERT is true) and (ENABLE_GEN_CERT is not defined or ENABLE_GEN_CERT is false) -%}
   tls /etc/caddy/{{ CERT_FILE | mandatory }} /etc/caddy/{{ CERT_KEY_FILE | mandatory }}
 {% endif %}
   import cors {header.origin}
+{% if CADDY_AUTH_MODE is defined and CADDY_AUTH_MODE in ['basic', 'bearer', 'either'] %}
+  import auth
+{% endif %}
   reverse_proxy {{ BM_SERVICE }}:{{ BM_REST_API_PORT }} {
     header_up X-Real-IP {http.request.remote.host}
     header_up X-Forwarded-Port {http.request.port}
@@ -102,10 +164,16 @@ https://{{ host }} {
   tls /etc/caddy/{{ CERT_FILE_BK_ON_BM | mandatory }} /etc/caddy/{{ CERT_KEY_FILE_BK_ON_BM | mandatory }}
 {% endif %}
   import cors {header.origin}
+{% if CADDY_AUTH_MODE is defined and CADDY_AUTH_MODE in ['basic', 'bearer', 'either'] %}
+  import auth
+{% endif %}
   import reverse_proxy "{{ ansible_host }}" "{{ block_keeper[host].BK_PORT }}"
 }
 http://{{ host }}:8600 {
   import cors {header.origin}
+{% if CADDY_AUTH_MODE is defined and CADDY_AUTH_MODE in ['basic', 'bearer', 'either'] %}
+  import auth
+{% endif %}
   import reverse_proxy "{{ ansible_host }}" "{{ block_keeper[host].BK_PORT }}"
 }
 {% endfor -%}

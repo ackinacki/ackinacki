@@ -47,7 +47,7 @@ pub(crate) fn crop_shard_state_based_on_threads_table<F>(
     // TODO: remove
     _block_id: BlockIdentifier,
     optimization_skip_shard_accounts_crop: bool,
-    removed_tvm_accounts_buffer: &mut Vec<AccountIdentifier>,
+    removed_tvm_accounts_buffer: &mut Vec<AccountRouting>,
     mut on_tvm_account_callback: F,
     _apply_to_durable: bool,
 ) -> anyhow::Result<ThreadAccountsState>
@@ -69,6 +69,7 @@ where
         // Prepare a buffer for account keys that will be removed from the shard state
 
         let mut tvm_account_ids_to_remove_from_tvm_state = vec![];
+        let mut tvm_account_routings_to_remove_from_message_queue = vec![];
         thread_accounts_repository
             .state_iterate_tvm_accounts(&shard_state, |account_id, shard_account| {
                 // Calculate current account routing
@@ -78,12 +79,13 @@ where
                 // If account routing matches thread leave it in the state
                 if !threads_table.is_match(&account_routing, thread_id) {
                     tvm_account_ids_to_remove_from_tvm_state.push(*account_id);
+                    tvm_account_routings_to_remove_from_message_queue.push(account_routing);
                 }
                 Ok(true)
             })
             .map_err(|e| anyhow::format_err!("Failed to iterate and split accounts: {e}"))?;
 
-        removed_tvm_accounts_buffer.extend(&tvm_account_ids_to_remove_from_tvm_state);
+        removed_tvm_accounts_buffer.extend(&tvm_account_routings_to_remove_from_message_queue);
 
         let (cropped_tvm_state, cropped_tvm_accounts) = crop_tvm_state(
             threads_table,

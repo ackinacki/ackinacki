@@ -8,6 +8,7 @@ use merkle_hash::Algorithm;
 use merkle_hash::MerkleTree;
 
 fn main() {
+    println!("cargo:rerun-if-changed=migrations");
     let tree = MerkleTree::builder("migrations")
         .algorithm(Algorithm::Blake3)
         .hash_names(true)

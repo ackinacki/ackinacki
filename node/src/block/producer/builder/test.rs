@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::collections::HashMap;
     use std::collections::HashSet;
     use std::collections::VecDeque;
@@ -173,10 +174,13 @@ mod tests {
             String::new(),
             1,
             HashMap::new(),
+            BTreeSet::new(),
             None,
             WasmNodeCache::new()?,
             false,
             false,
+            false,
+            None,
         )?;
 
         let (block, _, _) = bp_builder.build_block(
@@ -236,10 +240,13 @@ mod tests {
             String::new(),
             1,
             HashMap::new(),
+            BTreeSet::new(),
             None,
             WasmNodeCache::new()?,
             true,
             false,
+            false,
+            None,
         )?;
 
         let data = ext_messages.remove(4);
@@ -297,10 +304,13 @@ mod tests {
             String::new(),
             1,
             HashMap::new(),
+            BTreeSet::new(),
             None,
             WasmNodeCache::new()?,
             false,
             false,
+            false,
+            None,
         )?;
 
         let (_block, processed_stamps, _feedbacks) = builder.build_block(

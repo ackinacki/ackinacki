@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.0] – 2026-07-07
+
+### New / Improvements
+- Replaced the legacy block identifier with a Poseidon/SHA-256 Merkle-tree-based Acki Nacki block ID computed over 16 canonical leaves, and switched block serialization, verification, and history-proof flows to the new identifier scheme
+- Updated TVM SDK from `v3.0.2.an` to `v3.0.3.an`
+- Added new GraphQL `Block` fields: `block_id`, `block_merkle_tree_leaves`, `proof_block_refs`, `history_proofs`, `tracked_ext_out_messages_root`, and `tracked_ext_out_message_hashes` exposing Poseidon Merkle tree data and tracked external outbound messages
+- Implemented strict ordering guarantees in the durable accumulator — deferred batches now drain in FIFO order and later batches queue behind any pending deferred work, preventing out-of-order state updates
+- Hardened node shutdown: snapshot workers are cancelled via a token on shutdown, final flush is refused while deferred batches or snapshot pins remain, and the commit loop records fatal errors so drain-wait fails fast
+- Implemented safer snapshot import with pre-download candidate checks (ImportNeeded / AlreadyCovered / TooClose / Invalidated), staged archive epochs for safe import, and epoch-pinned account sets to prevent races between import/export and truncation
+- Improved internal message queue processing performance in block production
+- Added Caddy authorization capabilities with configurable basic-auth and IP-allowlist matchers for BK API and node API endpoints
+- Updated the bundled Explorer to support `dapp_id::account_id` addressing and removed the deprecated `boc` block field
+- Made `mem.log.*` tracing targets opt-in through explicit `RUST_LOG` configuration instead of emitting them by default
+
+---
+
+### Fixes
+- Fixed block production failure during durable account update when a redirect account had no DApp ID — redirect creation now uses the routing context as the source of truth instead of copying from the account body
+- Fixed parent block ID resolution in the block producer
+- Fixed Caddy port mapping to correctly expose BM and BK API ports
+- Fixed a transitive dependency conflict where `cookie` crates pulled an incompatible `time` version, breaking fresh checkouts and CI builds
+- Improved error handling in the message router for external messages with malformed ids
+
+---
+
 ## [0.16.3] – 2026-06-16
 
 ### Breaking Changes

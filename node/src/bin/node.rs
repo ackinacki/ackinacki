@@ -34,6 +34,7 @@ use clap::Parser;
 use ext_messages_auth::auth::AccountRequest;
 use gossip::run_gossip_with_reload;
 use gossip::GossipReloadConfig;
+use history_proof::HISTORY_PROOF_WINDOW_SIZE;
 use http_server::ApiBkSet;
 use http_server::ResolvingResult;
 use network::config::NetworkConfig;
@@ -368,11 +369,78 @@ fn verify_zerostate(
     Ok(())
 }
 
+struct NodeProtocolVersionState {
+    zero_block_version: BlockProtocolVersionState,
+    node_protocol_version_support: node::versioning::ProtocolVersionSupport,
+    config_read: ConfigRead,
+}
+
+fn resolve_node_protocol_version_state(
+    global_config: &GlobalConfig,
+    retired_global_config: Option<&GlobalConfig>,
+) -> NodeProtocolVersionState {
+    let preferred_protocol_version = node::versioning::ProtocolVersion::builder()
+        .canonical_config_hash(global_config)
+        .tvm_engine_version(global_config.engine_version.clone())
+        .gossip_version(global_config.gossip_version)
+        // .node_software_version(semver::SemVer::new(
+        // u64::from_str(env!("CARGO_PKG_VERSION_MAJOR")).unwrap(),
+        // u64::from_str(env!("CARGO_PKG_VERSION_MINOR")).unwrap(),
+        // u64::from_str(env!("CARGO_PKG_VERSION_PATCH")).unwrap(),
+        // )
+        .build();
+
+    if let Some(old_config) = retired_global_config {
+        let retired_version = node::versioning::ProtocolVersion::builder()
+            .canonical_config_hash(CanonicalConfigHash::from_old_config(old_config))
+            .tvm_engine_version(old_config.engine_version.clone())
+            .gossip_version(old_config.gossip_version)
+            .build();
+        tracing::info!("RETIRED_VERSION={}", retired_version);
+
+        NodeProtocolVersionState {
+            zero_block_version: BlockProtocolVersionState::Current(retired_version.clone()),
+            node_protocol_version_support: node::versioning::ProtocolVersionSupport::new(
+                retired_version.clone(),
+            )
+            .transitioning_to(preferred_protocol_version.clone()),
+            config_read: ConfigRead::new(
+                preferred_protocol_version,
+                global_config.clone(),
+                Some(retired_version),
+                retired_global_config.cloned(),
+            ),
+        }
+    } else {
+        NodeProtocolVersionState {
+            zero_block_version: BlockProtocolVersionState::Current(
+                preferred_protocol_version.clone(),
+            ),
+            node_protocol_version_support: node::versioning::ProtocolVersionSupport::new(
+                preferred_protocol_version.clone(),
+            ),
+            config_read: ConfigRead::new(
+                preferred_protocol_version,
+                global_config.clone(),
+                None,
+                None,
+            ),
+        }
+    }
+}
+
 #[allow(clippy::await_holding_lock)]
 async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     tracing::info!("Starting network");
 
     tracing::info!("Loading config");
+
+    const {
+        assert!(
+            HISTORY_PROOF_WINDOW_SIZE > MAX_ATTESTATION_TARGET_BETA,
+            "HISTORY_PROOF_WINDOW_SIZE must be greater than MAX_ATTESTATION_TARGET_BETA"
+        );
+    }
     let config =
         load_config_from_file::<Config>(&args.config_path)?.ensure_min_cpu(MINIMUM_NUMBER_OF_CORES);
     let keys_map = key_pairs_from_file::<GoshBLS>(&config.local.key_path);
@@ -408,42 +476,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         }
     }
 
-    let preferred_protocol_version = node::versioning::ProtocolVersion::builder()
-        .canonical_config_hash(&global_config)
-        .tvm_engine_version(global_config.engine_version.clone())
-        .gossip_version(global_config.gossip_version)
-        // .node_software_version(semver::SemVer::new(
-        // u64::from_str(env!("CARGO_PKG_VERSION_MAJOR")).unwrap(),
-        // u64::from_str(env!("CARGO_PKG_VERSION_MINOR")).unwrap(),
-        // u64::from_str(env!("CARGO_PKG_VERSION_PATCH")).unwrap(),
-        // )
-        .build();
-    let (zero_block_version, node_protocol_version_support, config_read) =
-        if let Some(old_config) = retired_global_config.as_ref() {
-            let retired_version = node::versioning::ProtocolVersion::builder()
-                .canonical_config_hash(CanonicalConfigHash::from(old_config))
-                .tvm_engine_version(old_config.engine_version.clone())
-                .gossip_version(old_config.gossip_version)
-                .build();
-            tracing::info!("RETIRED_VERSION={}", retired_version);
-            (
-                BlockProtocolVersionState::Current(retired_version.clone()),
-                node::versioning::ProtocolVersionSupport::new(retired_version.clone())
-                    .transitioning_to(preferred_protocol_version.clone()),
-                ConfigRead::new(
-                    preferred_protocol_version,
-                    global_config.clone(),
-                    Some(retired_version),
-                    retired_global_config,
-                ),
-            )
-        } else {
-            (
-                BlockProtocolVersionState::Current(preferred_protocol_version.clone()),
-                node::versioning::ProtocolVersionSupport::new(preferred_protocol_version.clone()),
-                ConfigRead::new(preferred_protocol_version, global_config.clone(), None, None),
-            )
-        };
+    let NodeProtocolVersionState { zero_block_version, node_protocol_version_support, config_read } =
+        resolve_node_protocol_version_state(&global_config, retired_global_config.as_ref());
 
     // Note: For first version in rolling update force node to use None version
     // let (zero_block_version, node_protocol_version_support) = (
@@ -1722,9 +1756,6 @@ fn debug_used_features() {
     if cfg!(feature = "disable_db_for_messages") {
         eprintln!("  disable_db_for_messages");
     }
-    if cfg!(feature = "history_proofs") {
-        eprintln!("  history_proofs");
-    }
     if std::env::var("NODE_VERBOSE").is_ok() {
         eprintln!("  NODE_VERBOSE");
     }
@@ -1943,34 +1974,13 @@ fn clear_missing_block_locks(
 fn print_node_protocol_version_support(args: Args) -> anyhow::Result<()> {
     let global_config =
         load_config_from_file::<GlobalConfig>(&args.global_config_path)?.ensure_min_sync_gap();
-    let preferred_protocol_version = node::versioning::ProtocolVersion::builder()
-        .canonical_config_hash(&global_config)
-        .tvm_engine_version(global_config.engine_version.clone())
-        .gossip_version(global_config.gossip_version)
-        .build();
     let retired_global_config = args
         .retired_global_config_path
         .as_ref()
         .map(load_config_from_file::<GlobalConfig>)
         .transpose()?;
-    let (_zero_block_version, node_protocol_version_support) =
-        if let Some(old_config) = retired_global_config.as_ref() {
-            let retired_version = node::versioning::ProtocolVersion::builder()
-                .canonical_config_hash(CanonicalConfigHash::from(old_config))
-                .tvm_engine_version(old_config.engine_version.clone())
-                .gossip_version(old_config.gossip_version)
-                .build();
-            (
-                BlockProtocolVersionState::Current(retired_version.clone()),
-                node::versioning::ProtocolVersionSupport::new(retired_version)
-                    .transitioning_to(preferred_protocol_version.clone()),
-            )
-        } else {
-            (
-                BlockProtocolVersionState::Current(preferred_protocol_version.clone()),
-                node::versioning::ProtocolVersionSupport::new(preferred_protocol_version),
-            )
-        };
+    let NodeProtocolVersionState { node_protocol_version_support, .. } =
+        resolve_node_protocol_version_state(&global_config, retired_global_config.as_ref());
 
     // // Note: For first version in rolling update force node to use None version
     // let (_zero_block_version, node_protocol_version_support) = (

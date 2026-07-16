@@ -29,6 +29,7 @@ use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperSlashData;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
+use crate::config::config_read::ConfigRead;
 use crate::config::BlockchainConfigRead;
 use crate::config::Config;
 use crate::config::GlobalConfig;
@@ -47,6 +48,8 @@ use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
 use crate::types::AckiNackiBlock;
+use crate::utilities::guarded::Guarded;
+use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
 
 // Note: produces single verification block.
 pub trait BlockVerifier {
@@ -69,6 +72,7 @@ pub trait BlockVerifier {
 #[allow(dead_code)]
 pub struct TVMBlockVerifier {
     blockchain_config: BlockchainConfigRead,
+    node_config_read: ConfigRead,
     node_config: Config,
     node_global_config: GlobalConfig,
     // TODO: need to fill this data for verifier
@@ -81,6 +85,8 @@ pub struct TVMBlockVerifier {
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
     is_block_of_retired_version: bool,
+    #[builder(default)]
+    check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>>,
 }
 
 impl TVMBlockVerifier {
@@ -113,6 +119,17 @@ impl BlockVerifier for TVMBlockVerifier {
         CrossThreadRefData: 'a,
     {
         let thread_identifier = *block.common_section().thread_id();
+        let parent_block_id = *block.common_section().parent_block_id().expect_block_id();
+        let parent_block_version_state =
+            self.block_state_repository.get(&parent_block_id)?.guarded(|e| {
+                e.block_version_state()
+                    .clone()
+                    .ok_or(anyhow::format_err!("Parent block does not have version state set"))
+            })?;
+        let apply_transition_dapp_id_migrations = matches!(
+            parent_block_version_state,
+            BlockProtocolVersionState::CompleteTransition { .. }
+        );
         let mut time_limits = ExecutionTimeLimits::verification(&self.node_global_config);
         let mut wrapped_slash_messages = vec![];
         let mut white_list_of_slashing_messages_hashes = HashSet::new();
@@ -145,7 +162,7 @@ impl BlockVerifier for TVMBlockVerifier {
                 message_db.clone(),
                 self.metrics.clone(),
                 &self.thread_accounts_repository,
-                !self.is_block_of_retired_version,
+                true,
             )
         })?;
         let mut ref_ids = vec![];
@@ -225,8 +242,9 @@ impl BlockVerifier for TVMBlockVerifier {
                 .push_back((stamp, QueuedExtMessage::try_from_block(msg)?));
         }
 
-        let blockchain_config =
-            self.blockchain_config.get(&self.node_global_config.blockchain_config_hash.into())?;
+        let blockchain_config = self
+            .blockchain_config
+            .get(&self.node_global_config.blockchain_config_hash.clone().into())?;
         let block_gas_limit = blockchain_config.get_gas_config(false).block_gas_limit;
 
         tracing::debug!(target: "node", "PARENT block: {:?}", preprocessing_result.state.get_block_info());
@@ -244,10 +262,13 @@ impl BlockVerifier for TVMBlockVerifier {
             self.node_global_config.block_keeper_preepoch_code_hash.clone(),
             self.node_config.local.parallelization_level,
             preprocessing_result.redirected_messages,
+            self.node_global_config.tracked_ext_out_account_routings.clone(),
             self.metrics,
             self.wasm_cache,
             true,
+            apply_transition_dapp_id_migrations,
             self.is_block_of_retired_version,
+            self.check_history_proof_hash.clone(),
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (verify_block, _, _) = producer.build_block(
@@ -266,7 +287,7 @@ impl BlockVerifier for TVMBlockVerifier {
         let mut new_state = verify_block.state;
 
         let an_block = AckiNackiBlock::new(
-            *block.common_section().parent_block_id(),
+            *block.common_section().parent_block_id().expect_block_id(),
             // TODO: fix single thread implementation
             new_state.thread_id,
             //
@@ -285,6 +306,8 @@ impl BlockVerifier for TVMBlockVerifier {
             #[cfg(feature = "protocol_version_hash_in_block")]
             block.common_section().protocol_version_hash().clone(),
             verify_block.durable_state_update,
+            verify_block.tracked_ext_out_messages,
+            verify_block.tracked_ext_out_messages_root,
         );
 
         // Resolve the prefab using the *original* block's identifier.

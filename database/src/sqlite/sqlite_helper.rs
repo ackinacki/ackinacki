@@ -26,6 +26,9 @@ use crate::documents_db::DocumentsDb;
 pub const SQLITE_DATA_DIR: &str = "./data";
 pub const SQLITE_EMPTY_DB: &str = "bm-schema.db";
 pub const SQLITE_NEXT_DB: &str = "bm-archive-next.db";
+const BLOCK_MERKLE_LEAF_COUNT: usize = 16;
+const BLOCK_MERKLE_HASH_SIZE: usize = 32;
+const BLOCK_MERKLE_LEAVES_SIZE: usize = BLOCK_MERKLE_LEAF_COUNT * BLOCK_MERKLE_HASH_SIZE;
 
 fn default_db_file() -> PathBuf {
     "bm-archive.db".into()
@@ -318,11 +321,13 @@ impl SqliteHelper {
                         prev_key_block_seqno,gen_software_version,gen_software_capabilities,file_hash,
                         root_hash,prev_ref_seq_no,prev_ref_end_lt,prev_ref_file_hash,prev_ref_root_hash,
                         prev_alt_ref_seq_no,prev_alt_ref_end_lt,prev_alt_ref_file_hash,prev_alt_ref_root_hash,
-                        in_msgs,out_msgs,data,chain_order,tr_count,thread_id,producer_id,height,envelope_hash
+                        in_msgs,out_msgs,data,chain_order,tr_count,thread_id,producer_id,height,envelope_hash,
+                        tracked_ext_out_messages_root,tracked_ext_out_message_hashes,block_merkle_leaves,history_proofs,proof_block_refs
                     ) VALUES (
                         ?1,?2,?3,?4,?5,?6,   ?7,?8,?9,   ?10,?11,?12,?13,?14,?15,
                         ?16,?17,?18,?19,?20,?21,?22,   ?23,?24,?25,   ?26,?27,?28,   ?29,?30,
-                        ?31,?32,?33,?34,   ?35,?36,?37,?38,   ?39,?40,?41,?42,?43,?44,?45,  ?46,?47
+                        ?31,?32,?33,?34,   ?35,?36,?37,?38,   ?39,?40,?41,?42,?43,?44,?45,  ?46,?47,
+                        ?48,?49,?50,?51,?52
                     )
                     ON CONFLICT(id) DO UPDATE SET
                         aggregated_signature=excluded.aggregated_signature,
@@ -333,6 +338,16 @@ impl SqliteHelper {
                 let prev_ref = block.prev_ref.unwrap_or_default();
                 let prev_alt_ref = block.prev_alt_ref.unwrap_or_default();
                 let block_data = zstd_compress(&block.data);
+                let block_merkle_leaves = (block.block_merkle_leaves.len()
+                    == BLOCK_MERKLE_LEAVES_SIZE)
+                    .then_some(block.block_merkle_leaves.as_slice());
+                let history_proofs =
+                    (!block.history_proofs.is_empty()).then_some(block.history_proofs.as_slice());
+                let tracked_ext_out_message_hashes =
+                    (!block.tracked_ext_out_message_hashes.is_empty())
+                        .then_some(block.tracked_ext_out_message_hashes.as_slice());
+                let proof_block_refs = (!block.proof_block_refs.is_empty())
+                    .then_some(block.proof_block_refs.as_slice());
                 let params = rusqlite::params![
                     block.id,
                     block.status,
@@ -381,6 +396,11 @@ impl SqliteHelper {
                     block.producer_id,
                     block.height,
                     block.envelope_hash,
+                    block.tracked_ext_out_messages_root,
+                    tracked_ext_out_message_hashes,
+                    block_merkle_leaves,
+                    history_proofs,
+                    proof_block_refs,
                 ];
 
                 stmt.execute(params)
@@ -947,10 +967,25 @@ pub fn print_sqlite_info(conn: &rusqlite::Connection) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod test {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use migration_tool::DbInfo;
+    use migration_tool::DbMaintenance;
+    use migration_tool::DbMaintenanceOptions;
+    use migration_tool::MigrateTo;
+    use parking_lot::Mutex;
     use rusqlite::Connection;
     use rusqlite::OpenFlags;
+    use testdir::testdir;
 
+    use super::SqliteHelper;
+    use super::SqliteHelperConfig;
+    use super::SqliteHelperContext;
+    use super::BLOCK_MERKLE_LEAVES_SIZE;
+    use crate::sqlite::block::ExtBlkRef;
     use crate::sqlite::sqlite_helper::print_sqlite_info;
+    use crate::sqlite::ArchBlock;
 
     #[test]
     fn test_sqlite_features() -> anyhow::Result<()> {
@@ -982,6 +1017,117 @@ mod test {
         assert_eq!((id, name), (1, expected_name.to_string()));
 
         print_sqlite_info(&conn)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn store_block_insert_matches_columns_and_params() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let db_maintenance = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &db_dir);
+        db_maintenance.migrate(MigrateTo::Latest, DbMaintenanceOptions { silent: true })?;
+        let conn = Connection::open(&db_maintenance.path)?;
+
+        let conn = Arc::new(Mutex::new(Some(conn)));
+        let mut context = SqliteHelperContext {
+            config: SqliteHelperConfig::new(PathBuf::new(), None),
+            conn: conn.clone(),
+        };
+
+        let block_merkle_leaves = vec![0x50; BLOCK_MERKLE_LEAVES_SIZE];
+        let mut history_proofs = vec![0x01, 0x07];
+        history_proofs.extend_from_slice(&[0x62; 32]);
+        let proof_block_refs = vec![0x00, 0x00, 0x00, 0x01, 0x77];
+        let tracked_ext_out_messages_root = [0x31; 32];
+        let tracked_ext_out_message_hashes = vec![0x41, 0x42, 0x43];
+        let envelope_hash = [0x21; 32];
+        let height = 123_u64.to_be_bytes();
+
+        let block = ArchBlock {
+            id: "block-1".to_string(),
+            status: 2,
+            seq_no: 42,
+            parent: "parent-block".to_string(),
+            file_hash: Some("file-hash".to_string()),
+            root_hash: Some("root-hash".to_string()),
+            prev_ref: Some(ExtBlkRef {
+                seq_no: Some(41),
+                end_lt: Some("100".to_string()),
+                file_hash: Some("prev-file".to_string()),
+                root_hash: Some("prev-root".to_string()),
+            }),
+            prev_alt_ref: Some(ExtBlkRef {
+                seq_no: Some(40),
+                end_lt: Some("90".to_string()),
+                file_hash: Some("prev-alt-file".to_string()),
+                root_hash: Some("prev-alt-root".to_string()),
+            }),
+            data: vec![0x01, 0x02],
+            chain_order: Some("chain-order".to_string()),
+            tr_count: Some(7),
+            thread_id: Some("thread-id".to_string()),
+            producer_id: Some("producer-id".to_string()),
+            height,
+            envelope_hash,
+            tracked_ext_out_messages_root,
+            tracked_ext_out_message_hashes: tracked_ext_out_message_hashes.clone(),
+            block_merkle_leaves: block_merkle_leaves.clone(),
+            history_proofs: history_proofs.clone(),
+            proof_block_refs: proof_block_refs.clone(),
+            ..Default::default()
+        };
+
+        SqliteHelper::store_block(&mut context, Box::new(block))?;
+
+        let guard = conn.lock();
+        let db = guard.as_ref().expect("connection is present");
+        let row = db.query_row(
+            "SELECT id, status, seq_no, parent, prev_ref_seq_no, prev_ref_file_hash,
+                    chain_order, tr_count, thread_id, producer_id, height, envelope_hash,
+                    tracked_ext_out_messages_root, tracked_ext_out_message_hashes,
+                    block_merkle_leaves, history_proofs, proof_block_refs
+             FROM blocks WHERE id = 'block-1'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u8>(1)?,
+                    row.get::<_, u32>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, Vec<u8>>(10)?,
+                    row.get::<_, Vec<u8>>(11)?,
+                    row.get::<_, Vec<u8>>(12)?,
+                    row.get::<_, Vec<u8>>(13)?,
+                    row.get::<_, Vec<u8>>(14)?,
+                    row.get::<_, Vec<u8>>(15)?,
+                    row.get::<_, Vec<u8>>(16)?,
+                ))
+            },
+        )?;
+
+        assert_eq!(row.0, "block-1");
+        assert_eq!(row.1, 2);
+        assert_eq!(row.2, 42);
+        assert_eq!(row.3, "parent-block");
+        assert_eq!(row.4, 41);
+        assert_eq!(row.5, "prev-file");
+        assert_eq!(row.6, "chain-order");
+        assert_eq!(row.7, 7);
+        assert_eq!(row.8, "thread-id");
+        assert_eq!(row.9, "producer-id");
+        assert_eq!(row.10, height);
+        assert_eq!(row.11, envelope_hash);
+        assert_eq!(row.12, tracked_ext_out_messages_root);
+        assert_eq!(row.13, tracked_ext_out_message_hashes);
+        assert_eq!(row.14, block_merkle_leaves);
+        assert_eq!(row.15, history_proofs);
+        assert_eq!(row.16, proof_block_refs);
 
         Ok(())
     }

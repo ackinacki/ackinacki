@@ -25,3 +25,7 @@ default = []
 
 # Enable the extraction and storage of raw blocks and external out messages (events) only
 store_events_only = []
+
+[dev-dependencies]
+migration-tool.workspace = true
+testdir.workspace = true

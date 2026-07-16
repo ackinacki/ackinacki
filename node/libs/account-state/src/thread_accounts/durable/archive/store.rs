@@ -5,6 +5,7 @@ use std::sync::Arc;
 use node_types::BlockIdentifier;
 use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
+use parking_lot::MutexGuard;
 use parking_lot::RwLock;
 
 use super::config::ArchiveStoreConfig;
@@ -45,11 +46,18 @@ struct ArchiveStateStoreInner {
     /// In-memory mirror of the System Record's current data_epoch.
     data_epoch: RwLock<u64>,
 
+    /// Serializes epoch-bound archive updates with epoch switches.
+    control_lock: Mutex<()>,
+
+    /// Process-local pins for epoch-suffixed account sets currently used by long-running readers.
+    /// Non-current account sets are truncated only after their pin count reaches zero.
+    pinned_account_sets: Mutex<HashMap<u64, usize>>,
+
     /// Per-thread OS mutexes for serializing concurrent apply_update calls.
     thread_write_locks: RwLock<HashMap<ThreadIdentifier, Arc<Mutex<()>>>>,
 
     /// In-flight AccumulatedUpdates. Read path checks these before KVStore.
-    active_updates: RwLock<Vec<Arc<AccumulatedUpdate>>>,
+    active_updates: RwLock<Vec<Arc<ActiveArchiveUpdate>>>,
 
     account_written_cache: Arc<AccountWrittenCache>,
 }
@@ -59,6 +67,69 @@ struct ArchiveStateStoreInner {
 #[derive(Clone)]
 pub struct ArchiveStateStore {
     inner: Arc<ArchiveStateStoreInner>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StagedArchiveEpoch {
+    pub(crate) previous_epoch: u64,
+    pub(crate) epoch: u64,
+}
+
+pub struct PinnedAccountSets {
+    archive: ArchiveStateStore,
+    epoch: u64,
+}
+
+impl PinnedAccountSets {
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub(crate) fn ensure_same_epoch(&self, control_epoch: u64) -> Result<(), ArchiveStateError> {
+        if self.epoch != control_epoch {
+            return Err(ArchiveStateError::EpochChanged {
+                expected: self.epoch,
+                actual: control_epoch,
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PinnedAccountSets {
+    fn drop(&mut self) {
+        self.archive.release_account_sets_pin(self.epoch);
+    }
+}
+
+pub(crate) struct ArchiveControlGuard<'a> {
+    epoch: u64,
+    _guard: MutexGuard<'a, ()>,
+}
+
+impl ArchiveControlGuard<'_> {
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch
+    }
+}
+
+pub(crate) struct ActiveArchiveUpdate {
+    epoch: u64,
+    update: AccumulatedUpdate,
+}
+
+impl ActiveArchiveUpdate {
+    pub(crate) fn new(epoch: u64, update: AccumulatedUpdate) -> Self {
+        Self { epoch, update }
+    }
+
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub(crate) fn update(&self) -> &AccumulatedUpdate {
+        &self.update
+    }
 }
 
 impl ArchiveStateStore {
@@ -141,6 +212,8 @@ impl ArchiveStateStore {
                 set_meta,
                 thread_registry: RwLock::new(system.threads),
                 data_epoch: RwLock::new(system.data_epoch),
+                control_lock: Mutex::new(()),
+                pinned_account_sets: Mutex::new(HashMap::new()),
                 thread_write_locks: RwLock::new(thread_write_locks),
                 active_updates: RwLock::new(Vec::new()),
                 account_written_cache: Arc::new(AccountWrittenCache::new()),
@@ -233,13 +306,19 @@ impl ArchiveStateStore {
         *self.inner.data_epoch.read()
     }
 
+    pub(crate) fn lock_control(&self) -> ArchiveControlGuard<'_> {
+        let guard = self.inner.control_lock.lock();
+        let epoch = self.data_epoch();
+        ArchiveControlGuard { epoch, _guard: guard }
+    }
+
     /// Access per-thread write locks.
     pub(crate) fn thread_write_locks(&self) -> &RwLock<HashMap<ThreadIdentifier, Arc<Mutex<()>>>> {
         &self.inner.thread_write_locks
     }
 
     /// Access in-flight active updates.
-    pub(crate) fn active_updates(&self) -> &RwLock<Vec<Arc<AccumulatedUpdate>>> {
+    pub(crate) fn active_updates(&self) -> &RwLock<Vec<Arc<ActiveArchiveUpdate>>> {
         &self.inner.active_updates
     }
 
@@ -257,6 +336,7 @@ impl ArchiveStateStore {
 
     /// Prefixed set name for accounts Copy B at the *current* data_epoch.
     /// See `set_accounts_a` for naming semantics.
+    #[cfg(test)]
     pub(crate) fn set_accounts_b(&self) -> String {
         Self::format_set_name(&self.inner.set_accounts_base_b, self.data_epoch())
     }
@@ -266,6 +346,14 @@ impl ArchiveStateStore {
     /// cleanup in `reset()`.
     fn format_set_name(base: &str, epoch: u64) -> String {
         format!("{base}_e{epoch}")
+    }
+
+    pub(crate) fn set_accounts_a_for_epoch(&self, epoch: u64) -> String {
+        Self::format_set_name(&self.inner.set_accounts_base_a, epoch)
+    }
+
+    pub(crate) fn set_accounts_b_for_epoch(&self, epoch: u64) -> String {
+        Self::format_set_name(&self.inner.set_accounts_base_b, epoch)
     }
 
     /// Prefixed set name for metadata.
@@ -290,16 +378,15 @@ impl ArchiveStateStore {
 
         let kv = &self.inner.store;
         let meta = &self.inner.set_meta;
+        let control_guard = self.lock_control();
 
         // Check if control record exists (from a previous run)
         if read_thread_control(kv, meta, thread_id).map_err(ArchiveStateError::from)?.is_some() {
             // Control record exists but not in registry — add to registry
             let mut registry = self.inner.thread_registry.write();
             registry.insert(*thread_id);
-            let system = SystemState {
-                threads: registry.clone(),
-                data_epoch: *self.inner.data_epoch.read(),
-            };
+            let system =
+                SystemState { threads: registry.clone(), data_epoch: control_guard.epoch() };
             write_system_record(kv, meta, &system).map_err(ArchiveStateError::from)?;
             self.inner.thread_write_locks.write().insert(*thread_id, Arc::new(Mutex::new(())));
             return Ok(());
@@ -311,12 +398,115 @@ impl ArchiveStateStore {
 
         let mut registry = self.inner.thread_registry.write();
         registry.insert(*thread_id);
-        let system =
-            SystemState { threads: registry.clone(), data_epoch: *self.inner.data_epoch.read() };
+        let system = SystemState { threads: registry.clone(), data_epoch: control_guard.epoch() };
         write_system_record(kv, meta, &system).map_err(ArchiveStateError::from)?;
 
         self.inner.thread_write_locks.write().insert(*thread_id, Arc::new(Mutex::new(())));
 
+        Ok(())
+    }
+
+    pub fn pin_current_account_sets(&self) -> PinnedAccountSets {
+        let control_guard = self.lock_control();
+        self.pin_account_sets_locked(control_guard.epoch())
+    }
+
+    fn pin_account_sets_locked(&self, epoch: u64) -> PinnedAccountSets {
+        *self.inner.pinned_account_sets.lock().entry(epoch).or_insert(0) += 1;
+        PinnedAccountSets { archive: self.clone(), epoch }
+    }
+
+    fn release_account_sets_pin(&self, epoch: u64) {
+        let should_cleanup = {
+            let mut pinned = self.inner.pinned_account_sets.lock();
+            if let Some(count) = pinned.get_mut(&epoch) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    pinned.remove(&epoch);
+                    epoch != self.data_epoch()
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+        if should_cleanup {
+            self.cleanup_epoch_if_unpinned(epoch);
+        }
+    }
+
+    pub(crate) fn cleanup_epoch_if_unpinned(&self, epoch: u64) {
+        if epoch == self.data_epoch() || self.inner.pinned_account_sets.lock().contains_key(&epoch)
+        {
+            return;
+        }
+        self.truncate_epoch_best_effort(epoch);
+    }
+
+    pub(crate) fn truncate_epoch_best_effort(&self, epoch: u64) {
+        let set_a = self.set_accounts_a_for_epoch(epoch);
+        let set_b = self.set_accounts_b_for_epoch(epoch);
+        if let Err(err) = self.inner.store.truncate_set(&set_a) {
+            tracing::warn!(
+                target: "monit",
+                "archive: failed to truncate epoch set {set_a} (non-fatal): {err}",
+            );
+        }
+        if let Err(err) = self.inner.store.truncate_set(&set_b) {
+            tracing::warn!(
+                target: "monit",
+                "archive: failed to truncate epoch set {set_b} (non-fatal): {err}",
+            );
+        }
+    }
+
+    pub(crate) fn begin_staged_epoch_after_current(&self) -> StagedArchiveEpoch {
+        // Streamed snapshot imports are serialized by the state-load worker
+        // and repository lock. The staged epoch is therefore a private target
+        // for the single in-progress import, not a globally reserved slot.
+        let previous_epoch = self.data_epoch();
+        let epoch = previous_epoch.saturating_add(1);
+        self.truncate_epoch_best_effort(epoch);
+        StagedArchiveEpoch { previous_epoch, epoch }
+    }
+
+    pub(crate) fn commit_staged_epoch(
+        &self,
+        staged: StagedArchiveEpoch,
+        initialized_thread: &ThreadIdentifier,
+        initialized_block: &BlockIdentifier,
+    ) -> Result<(), ArchiveStateError> {
+        let control_guard = self.lock_control();
+        let kv = &self.inner.store;
+        let meta = &self.inner.set_meta;
+        if control_guard.epoch() != staged.previous_epoch {
+            return Err(ArchiveStateError::EpochChanged {
+                expected: staged.previous_epoch,
+                actual: control_guard.epoch(),
+            });
+        }
+        let old_epoch = control_guard.epoch();
+        let _previous_account_sets_pin = self.pin_account_sets_locked(old_epoch);
+        let mut threads = self.inner.thread_registry.write();
+        threads.insert(*initialized_thread);
+        let new_system = SystemState { threads: threads.clone(), data_epoch: staged.epoch };
+        write_system_record(kv, meta, &new_system).map_err(ArchiveStateError::from)?;
+        for thread_id in threads.iter() {
+            let state = if thread_id == initialized_thread {
+                ThreadControlState::new_idle(*thread_id, *initialized_block)
+            } else {
+                ThreadControlState::new_uninitialized(*thread_id)
+            };
+            write_thread_control(kv, meta, &state, None).map_err(ArchiveStateError::from)?;
+        }
+        self.inner
+            .thread_write_locks
+            .write()
+            .entry(*initialized_thread)
+            .or_insert_with(|| Arc::new(Mutex::new(())));
+        *self.inner.data_epoch.write() = staged.epoch;
+        drop(threads);
         Ok(())
     }
 
@@ -336,8 +526,12 @@ impl ArchiveStateStore {
     ) -> Result<Option<ThreadAccount>, ArchiveStateError> {
         // Check active updates first — serves in-flight data during writes
         {
+            let current_epoch = self.data_epoch();
             for update in self.active_updates().read().iter() {
-                if let Some(operation) = update.operations.get(routing) {
+                if update.epoch() != current_epoch {
+                    continue;
+                }
+                if let Some(operation) = update.update().operations.get(routing) {
                     return Ok(match operation {
                         ArchiveOperation::UpdateOrInsert(account) => Some(account.clone()),
                         ArchiveOperation::Remove => None,
@@ -353,6 +547,27 @@ impl ArchiveStateStore {
         let kv = self.store();
         let key = routing_to_key(routing);
         let results = kv.get(&self.set_accounts_a(), &[key]).map_err(ArchiveStateError::from)?;
+
+        match results.into_iter().next().flatten() {
+            Some(record) if !record.data.is_empty() => {
+                let account: ThreadAccount = bincode::deserialize(&record.data).map_err(|e| {
+                    ArchiveStateError::Store(anyhow::anyhow!("Deserialize error: {e}"))
+                })?;
+                Ok(Some(account))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub(crate) fn read_account_operation_at_epoch(
+        &self,
+        routing: &node_types::AccountRouting,
+        epoch: u64,
+    ) -> Result<Option<ThreadAccount>, ArchiveStateError> {
+        let kv = self.store();
+        let key = routing_to_key(routing);
+        let set = self.set_accounts_a_for_epoch(epoch);
+        let results = kv.get(&set, &[key]).map_err(ArchiveStateError::from)?;
 
         match results.into_iter().next().flatten() {
             Some(record) if !record.data.is_empty() => {
@@ -446,29 +661,63 @@ impl ArchiveStateStore {
     where
         I: IntoIterator<Item = anyhow::Result<(node_types::AccountRouting, Vec<u8>)>>,
     {
+        let data_epoch = self.data_epoch();
+        self.thread_init_from_raw_entries_at_epoch(
+            thread_id,
+            initial_block_id,
+            entries,
+            data_epoch,
+            true,
+        )
+    }
+
+    pub(crate) fn thread_init_from_raw_entries_at_epoch<I>(
+        &self,
+        thread_id: &ThreadIdentifier,
+        initial_block_id: BlockIdentifier,
+        entries: I,
+        data_epoch: u64,
+        update_control: bool,
+    ) -> Result<(), ArchiveStateError>
+    where
+        I: IntoIterator<Item = anyhow::Result<(node_types::AccountRouting, Vec<u8>)>>,
+    {
+        let _control_guard = if update_control {
+            let guard = self.lock_control();
+            if data_epoch != guard.epoch() {
+                return Err(ArchiveStateError::EpochChanged {
+                    expected: data_epoch,
+                    actual: guard.epoch(),
+                });
+            }
+            Some(guard)
+        } else {
+            None
+        };
         let kv = &self.inner.store;
         let meta = &self.inner.set_meta;
-        let data_epoch = self.data_epoch();
         // Resolve epoch-suffixed set names once. We don't expect a
         // concurrent `reset()` here (the caller holds the snapshot pin),
         // but binding the names locally guarantees every batch in this
         // import targets the same set even if `data_epoch()` were to
         // change mid-flight.
-        let set_a = self.set_accounts_a();
-        let set_b = self.set_accounts_b();
+        let set_a = self.set_accounts_a_for_epoch(data_epoch);
+        let set_b = self.set_accounts_b_for_epoch(data_epoch);
 
-        // Validate: must be Uninitialized
-        let (ctrl, _generation) = read_thread_control(kv, meta, thread_id)
-            .map_err(ArchiveStateError::from)?
-            .ok_or_else(|| {
-                ArchiveStateError::CorruptedControlRecord(
-                    *thread_id,
-                    "thread_init: missing control record".to_string(),
-                )
-            })?;
+        if update_control {
+            // Validate: must be Uninitialized
+            let (ctrl, _generation) = read_thread_control(kv, meta, thread_id)
+                .map_err(ArchiveStateError::from)?
+                .ok_or_else(|| {
+                    ArchiveStateError::CorruptedControlRecord(
+                        *thread_id,
+                        "thread_init: missing control record".to_string(),
+                    )
+                })?;
 
-        if ctrl.update_phase != UpdatePhase::Uninitialized {
-            return Err(ArchiveStateError::NotUninitialized(*thread_id));
+            if ctrl.update_phase != UpdatePhase::Uninitialized {
+                return Err(ArchiveStateError::NotUninitialized(*thread_id));
+            }
         }
 
         let mut batch = Vec::with_capacity(THREAD_INIT_BATCH_SIZE);
@@ -515,9 +764,11 @@ impl ArchiveStateStore {
         }
 
         tracing::debug!(target: "monit", "thread_init writing thread control: total_records={total_records}");
-        // Mark thread Idle
-        let idle = ThreadControlState::new_idle(*thread_id, initial_block_id);
-        write_thread_control(kv, meta, &idle, None).map_err(ArchiveStateError::from)?;
+        if update_control {
+            // Mark thread Idle
+            let idle = ThreadControlState::new_idle(*thread_id, initial_block_id);
+            write_thread_control(kv, meta, &idle, None).map_err(ArchiveStateError::from)?;
+        }
         tracing::debug!(target: "monit", "thread_init done");
 
         Ok(())
@@ -527,6 +778,7 @@ impl ArchiveStateStore {
     /// All threads must be Idle. After reset, each thread must be populated
     /// via `thread_init` before reads or updates.
     pub fn reset(&self) -> Result<(), ArchiveStateError> {
+        let control_guard = self.lock_control();
         let kv = &self.inner.store;
         let meta = &self.inner.set_meta;
 
@@ -535,6 +787,12 @@ impl ArchiveStateStore {
             read_system_record(kv, meta).map_err(ArchiveStateError::from)?.ok_or_else(|| {
                 ArchiveStateError::Store(anyhow::anyhow!("System record not found during reset"))
             })?;
+        if system.data_epoch != control_guard.epoch() {
+            return Err(ArchiveStateError::EpochChanged {
+                expected: system.data_epoch,
+                actual: control_guard.epoch(),
+            });
+        }
 
         // Acquire all per-thread mutexes in sorted order
         let mut sorted_ids: Vec<ThreadIdentifier> = system.threads.iter().copied().collect();
@@ -565,15 +823,6 @@ impl ArchiveStateStore {
             }
         }
 
-        // Capture the OLD epoch's set names before we bump. After the
-        // epoch increment, `set_accounts_a()` / `set_accounts_b()` will
-        // resolve to the new (empty) sets — the old ones become
-        // garbage-only. Truncating them frees server-side storage but is
-        // not load-bearing for correctness: no read path queries the old
-        // names once `data_epoch` advances.
-        let old_set_a = Self::format_set_name(&self.inner.set_accounts_base_a, system.data_epoch);
-        let old_set_b = Self::format_set_name(&self.inner.set_accounts_base_b, system.data_epoch);
-
         // Write new System Record with incremented data_epoch
         let new_epoch = system.data_epoch + 1;
         let new_system = SystemState { threads: system.threads.clone(), data_epoch: new_epoch };
@@ -590,22 +839,7 @@ impl ArchiveStateStore {
         // unreferenced; subsequent truncates are pure cleanup.
         *self.inner.data_epoch.write() = new_epoch;
 
-        // Cleanup of the prior epoch's sets. Failures here do not affect
-        // correctness (the new epoch's sets are isolated by name); we
-        // log and continue rather than returning Err. The next reset on
-        // top of the same epoch base would just truncate an empty set.
-        if let Err(err) = kv.truncate_set(&old_set_a) {
-            tracing::warn!(
-                target: "monit",
-                "archive.reset: truncate of old set_accounts_a={old_set_a} failed (non-fatal): {err}",
-            );
-        }
-        if let Err(err) = kv.truncate_set(&old_set_b) {
-            tracing::warn!(
-                target: "monit",
-                "archive.reset: truncate of old set_accounts_b={old_set_b} failed (non-fatal): {err}",
-            );
-        }
+        self.cleanup_epoch_if_unpinned(system.data_epoch);
 
         Ok(())
     }
@@ -1005,5 +1239,77 @@ mod tests {
 
         let ctrl = store.get_thread_control_state(&tid).unwrap().unwrap();
         assert_eq!(ctrl.last_block_id, Some(block_1));
+    }
+
+    #[test]
+    fn test_reset_does_not_truncate_pinned_previous_epoch() {
+        let kv = test_kv();
+        let tid = ThreadIdentifier::default();
+        let block_0 = make_block(0);
+
+        let sys = SystemState { threads: HashSet::from([tid]), data_epoch: 0 };
+        write_system_record(&kv, META_SET, &sys).unwrap();
+        write_thread_control(&kv, META_SET, &ThreadControlState::new_uninitialized(tid), None)
+            .unwrap();
+
+        let store = ArchiveStateStore::new(kv, test_config()).unwrap();
+        let routing = make_routing(1);
+        let mut snapshot = ThreadSnapshot::new();
+        snapshot.insert(routing, crate::ThreadAccount::default());
+        store.thread_init(&tid, block_0, &snapshot).unwrap();
+
+        let pinned_account_sets = store.pin_current_account_sets();
+        let key = routing_to_key(&routing);
+
+        store.reset().unwrap();
+
+        let pinned_results = store
+            .store()
+            .get(
+                &store.set_accounts_a_for_epoch(pinned_account_sets.epoch()),
+                std::slice::from_ref(&key),
+            )
+            .unwrap();
+        assert!(pinned_results[0].is_some());
+
+        drop(pinned_account_sets);
+
+        let released_results =
+            store.store().get(&store.set_accounts_a_for_epoch(0), &[key]).unwrap();
+        assert!(released_results[0].is_none());
+    }
+
+    #[test]
+    fn test_active_update_from_previous_epoch_is_ignored() {
+        let kv = test_kv();
+        let tid = ThreadIdentifier::default();
+        let block_0 = make_block(0);
+
+        let sys = SystemState { threads: HashSet::from([tid]), data_epoch: 0 };
+        write_system_record(&kv, META_SET, &sys).unwrap();
+        write_thread_control(&kv, META_SET, &ThreadControlState::new_idle(tid, block_0), None)
+            .unwrap();
+
+        let store = ArchiveStateStore::new(kv, test_config()).unwrap();
+        let routing = make_routing(1);
+        let mut update = AccumulatedUpdate::new();
+        update.insert(routing, ArchiveOperation::UpdateOrInsert(crate::ThreadAccount::default()));
+        store.active_updates().write().push(Arc::new(ActiveArchiveUpdate::new(0, update)));
+
+        store.reset().unwrap();
+
+        assert!(store.read_account_operation(&routing).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_staged_commit_rejects_changed_base_epoch() {
+        let store = ArchiveStateStore::in_memory();
+        let staged = store.begin_staged_epoch_after_current();
+
+        store.reset().unwrap();
+
+        let tid = ThreadIdentifier::default();
+        let result = store.commit_staged_epoch(staged, &tid, &make_block(1));
+        assert!(matches!(result, Err(ArchiveStateError::EpochChanged { expected: 0, actual: 1 })));
     }
 }

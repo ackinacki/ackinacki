@@ -40,6 +40,7 @@ impl Eq for BlockStateInner {}
 
 #[cfg(feature = "fail_on_long_lock")]
 const MAX_LOCK_TIME_MS: u64 = 20;
+const TRACE_LONG_BLOCK_STATE_LOCK_MS: u128 = 50;
 
 impl Guarded<AckiNackiBlockState> for Arc<BlockStateInner> {
     #[track_caller]
@@ -47,11 +48,26 @@ impl Guarded<AckiNackiBlockState> for Arc<BlockStateInner> {
     where
         F: FnOnce(&AckiNackiBlockState) -> T,
     {
+        let wait_started_at = std::time::Instant::now();
         let guard = self.shared_access.read();
+        let wait_elapsed = wait_started_at.elapsed();
         #[cfg(feature = "fail_on_long_lock")]
         let start = std::time::Instant::now();
+        let hold_started_at = std::time::Instant::now();
         let result = action(&guard);
         drop(guard);
+        let hold_elapsed = hold_started_at.elapsed();
+        if wait_elapsed.as_millis() > TRACE_LONG_BLOCK_STATE_LOCK_MS
+            || hold_elapsed.as_millis() > TRACE_LONG_BLOCK_STATE_LOCK_MS
+        {
+            tracing::trace!(
+                "block_state_lock timing: kind=read block_id={:?} wait_ms={} hold_ms={} caller={}",
+                self.block_identifier,
+                wait_elapsed.as_millis(),
+                hold_elapsed.as_millis(),
+                std::panic::Location::caller(),
+            );
+        }
         #[cfg(feature = "fail_on_long_lock")]
         if start.elapsed() > std::time::Duration::from_millis(MAX_LOCK_TIME_MS) {
             eprintln!("{:?}", std::backtrace::Backtrace::force_capture());
@@ -68,11 +84,26 @@ impl GuardedMut<AckiNackiBlockState> for Arc<BlockStateInner> {
     where
         F: FnOnce(&mut AckiNackiBlockState) -> T,
     {
+        let wait_started_at = std::time::Instant::now();
         let mut guard = self.shared_access.write();
+        let wait_elapsed = wait_started_at.elapsed();
         #[cfg(feature = "fail_on_long_lock")]
         let start = std::time::Instant::now();
+        let hold_started_at = std::time::Instant::now();
         let result = guard.inner_guarded_mut(action);
         drop(guard);
+        let hold_elapsed = hold_started_at.elapsed();
+        if wait_elapsed.as_millis() > TRACE_LONG_BLOCK_STATE_LOCK_MS
+            || hold_elapsed.as_millis() > TRACE_LONG_BLOCK_STATE_LOCK_MS
+        {
+            tracing::trace!(
+                "block_state_lock timing: kind=write block_id={:?} wait_ms={} hold_ms={} caller={}",
+                self.block_identifier,
+                wait_elapsed.as_millis(),
+                hold_elapsed.as_millis(),
+                std::panic::Location::caller(),
+            );
+        }
         #[cfg(feature = "fail_on_long_lock")]
         if start.elapsed() > std::time::Duration::from_millis(MAX_LOCK_TIME_MS) {
             eprintln!("{:?}", std::backtrace::Backtrace::force_capture());

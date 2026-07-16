@@ -31,10 +31,13 @@ use crate::node::services::sync::StateSyncService;
 use crate::node::services::sync::SyncSnapshotAnchor;
 use crate::node::services::sync::SyncSnapshotLoaded;
 use crate::node::services::sync::SyncSnapshotRequest;
+use crate::node::services::sync::SyncSnapshotSkipped;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCutoff;
 use crate::node::NodeIdentifier;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::RepositoryImpl;
+use crate::repository::repository_impl::SnapshotImportDecision;
+use crate::repository::repository_impl::SnapshotImportStatus;
 use crate::repository::Repository;
 use crate::services::blob_sync::external_fileshares_based::DownloadError;
 use crate::services::blob_sync::external_fileshares_based::ServiceInterface;
@@ -71,6 +74,60 @@ const PER_CANDIDATE_DEADLINE: Duration = Duration::from_secs(60 * 60);
 /// candidate failed in the previous pass.
 const WORKER_IDLE_SLEEP: Duration = Duration::from_millis(500);
 const WORKER_RETRY_SLEEP: Duration = Duration::from_secs(2);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SnapshotDownloadStatus {
+    Imported,
+    Skipped(SnapshotImportDecision),
+}
+
+#[derive(Default)]
+struct SnapshotCandidateProgress {
+    imported_threads: usize,
+    skipped_threads: usize,
+    last_skip: Option<SnapshotImportDecision>,
+    terminal_skip: Option<SnapshotImportDecision>,
+}
+
+impl SnapshotCandidateProgress {
+    fn record_thread_status(
+        &mut self,
+        checker: &mut BTreeMap<ThreadIdentifier, BlockIdentifier>,
+        anchor_thread: ThreadIdentifier,
+        thread_id: ThreadIdentifier,
+        status: SnapshotImportStatus,
+    ) {
+        match status {
+            SnapshotImportStatus::Imported => {
+                self.imported_threads += 1;
+                checker.remove(&thread_id);
+            }
+            SnapshotImportStatus::Skipped(decision) => {
+                self.skipped_threads += 1;
+                self.last_skip = Some(decision);
+                if thread_id == anchor_thread {
+                    self.terminal_skip = Some(decision);
+                    checker.clear();
+                } else {
+                    checker.remove(&thread_id);
+                }
+            }
+        }
+    }
+
+    fn finish_status(&self) -> SnapshotDownloadStatus {
+        if let Some(decision) = self.terminal_skip {
+            return SnapshotDownloadStatus::Skipped(decision);
+        }
+        if self.imported_threads > 0 {
+            return SnapshotDownloadStatus::Imported;
+        }
+        if let Some(decision) = self.last_skip {
+            return SnapshotDownloadStatus::Skipped(decision);
+        }
+        SnapshotDownloadStatus::Imported
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct CandidateKey(BTreeMap<ThreadIdentifier, BlockIdentifier>);
@@ -564,6 +621,57 @@ fn run_load_worker(
             return;
         }
         let candidate = claimed.request;
+        match decide_snapshot_import_for_request(&repository, &candidate) {
+            Ok(SnapshotImportDecision::ImportNeeded { distance_from_last_finalized }) => {
+                tracing::debug!(
+                    target: "monit",
+                    ?candidate,
+                    ?distance_from_last_finalized,
+                    "Snapshot candidate requires import",
+                );
+            }
+            Ok(SnapshotImportDecision::AlreadyCovered { distance_from_last_finalized }) => {
+                tracing::info!(
+                    target: "node",
+                    ?candidate,
+                    distance_from_last_finalized,
+                    "Skipping snapshot download because local finalized state already covers it",
+                );
+                finish_skipped_candidate(
+                    &candidates,
+                    &output,
+                    &candidate,
+                    SnapshotImportDecision::AlreadyCovered { distance_from_last_finalized },
+                );
+                return;
+            }
+            Ok(SnapshotImportDecision::TooClose { distance_from_last_finalized }) => {
+                tracing::info!(
+                    target: "node",
+                    ?candidate,
+                    distance_from_last_finalized,
+                    "Skipping snapshot download because candidate is too close to local finalized state",
+                );
+                finish_skipped_candidate(
+                    &candidates,
+                    &output,
+                    &candidate,
+                    SnapshotImportDecision::TooClose { distance_from_last_finalized },
+                );
+                return;
+            }
+            Ok(SnapshotImportDecision::Invalidated) => {
+                let error = anyhow::anyhow!("snapshot candidate is invalidated: {candidate:?}");
+                candidates.mark_failure(&candidate, &error);
+                std::thread::sleep(WORKER_RETRY_SLEEP);
+                continue;
+            }
+            Err(error) => {
+                candidates.mark_failure(&candidate, &error);
+                std::thread::sleep(WORKER_RETRY_SLEEP);
+                continue;
+            }
+        }
         match claimed.prune_decision {
             PruneDecision::PruneNow => {
                 tracing::info!(
@@ -591,13 +699,13 @@ fn run_load_worker(
             urls.len(),
         );
         match try_download_candidate(
-            &candidate.address,
+            &candidate,
             &mut blob_sync,
             &repository,
             urls,
             metrics.as_ref(),
         ) {
-            Ok(()) => {
+            Ok(SnapshotDownloadStatus::Imported) => {
                 candidates.mark_success(&candidate);
                 tracing::info!(
                     target: "node",
@@ -610,6 +718,16 @@ fn run_load_worker(
                     address: candidate.address.clone(),
                     anchor: candidate.anchor,
                 }));
+                return;
+            }
+            Ok(SnapshotDownloadStatus::Skipped(decision)) => {
+                tracing::info!(
+                    target: "node",
+                    ?candidate,
+                    ?decision,
+                    "Snapshot download completed but import was skipped",
+                );
+                finish_skipped_candidate(&candidates, &output, &candidate, decision);
                 return;
             }
             Err(e) => {
@@ -627,6 +745,37 @@ fn run_load_worker(
                 }
                 std::thread::sleep(WORKER_RETRY_SLEEP);
             }
+        }
+    }
+}
+
+fn finish_skipped_candidate(
+    candidates: &LoadCandidates,
+    output: &InstrumentedSender<anyhow::Result<SyncSnapshotLoaded>>,
+    candidate: &SyncSnapshotRequest,
+    decision: SnapshotImportDecision,
+) {
+    candidates.mark_success(candidate);
+    let _ = output.send(Err(SyncSnapshotSkipped {
+        request: candidate.clone(),
+        reason: format!("decision={decision:?}"),
+    }
+    .into()));
+}
+
+fn decide_snapshot_import_for_request(
+    repository: &RepositoryImpl,
+    candidate: &SyncSnapshotRequest,
+) -> anyhow::Result<SnapshotImportDecision> {
+    match candidate.anchor {
+        SyncSnapshotAnchor::Height(block_height) => {
+            let thread_id = *block_height.thread_identifier();
+            let block_id = candidate.address.get(&thread_id).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "snapshot candidate address is missing anchor thread {thread_id:?}: {candidate:?}"
+                )
+            })?;
+            repository.decide_snapshot_import(&thread_id, block_id, &block_height)
         }
     }
 }
@@ -679,19 +828,23 @@ fn resolve_urls_for_attempt(
 
 /// Synchronously try one candidate. Dispatches `load_blob` for every
 /// `(thread_id, block_id)` in the candidate's address and waits until
-/// they all complete (success) or any one fails (atomic skip for this
-/// candidate). Uses short retry budgets so the worker can move to the
-/// next candidate quickly on persistent 404s.
+/// they all complete or any one fails. A skipped non-anchor thread is
+/// treated as completed for this candidate; the anchor thread decides whether
+/// the whole candidate can be skipped. Uses short retry budgets so the worker
+/// can move to the next candidate quickly on persistent 404s.
 fn try_download_candidate(
-    candidate_address: &BTreeMap<ThreadIdentifier, BlockIdentifier>,
+    candidate: &SyncSnapshotRequest,
     blob_sync: &mut ServiceInterface,
     repository: &RepositoryImpl,
     external_blob_share_services: Vec<Url>,
     metrics: Option<&crate::helper::metrics::BlockProductionMetrics>,
-) -> anyhow::Result<()> {
-    let address = candidate_address.clone();
+) -> anyhow::Result<SnapshotDownloadStatus> {
+    let address = candidate.address.clone();
+    let SyncSnapshotAnchor::Height(anchor_height) = candidate.anchor;
+    let anchor_thread = *anchor_height.thread_identifier();
     let checker = Arc::new(Mutex::new(address.clone()));
     let last_error = Arc::new(Mutex::new(None::<anyhow::Error>));
+    let progress = Arc::new(Mutex::new(SnapshotCandidateProgress::default()));
     let repo = Arc::new(Mutex::new(repository.clone()));
 
     if let Some(m) = metrics {
@@ -702,6 +855,7 @@ fn try_download_candidate(
         let checker_clone = checker.clone();
         let checker_clone2 = checker.clone();
         let last_error_clone = last_error.clone();
+        let progress_clone = progress.clone();
         let repo_clone = repo.clone();
         let metrics_on_error = metrics.cloned();
         let urls = external_blob_share_services.clone();
@@ -724,7 +878,7 @@ fn try_download_candidate(
                             );
                             match zstd::Decoder::new(e) {
                                 Ok(mut decoder) => {
-                                    repo_clone.lock().set_state_from_snapshot_reader(
+                                    repo_clone.lock().set_state_from_snapshot_reader_checked(
                                         &mut decoder,
                                         &thread_id_copy,
                                         Arc::new(Mutex::new(HashSet::new())),
@@ -737,7 +891,7 @@ fn try_download_candidate(
                                 "load worker: read non-compressed snapshot for {thread_id_copy:?}",
                             );
                             let mut reader = std::io::Cursor::new(header).chain(e);
-                            repo_clone.lock().set_state_from_snapshot_reader(
+                            repo_clone.lock().set_state_from_snapshot_reader_checked(
                                 &mut reader,
                                 &thread_id_copy,
                                 Arc::new(Mutex::new(HashSet::new())),
@@ -746,11 +900,28 @@ fn try_download_candidate(
                         tracing::trace!(
                             "load worker: for {thread_id_copy:?} res={res:?}",
                         );
-                        res?;
-                        tracing::trace!(
-                            "load worker: done for {thread_id_copy:?} (block={block_id_copy:?})",
+                        let status = res?;
+                        match status {
+                            SnapshotImportStatus::Imported => {
+                                tracing::trace!(
+                                    "load worker: done for {thread_id_copy:?} (block={block_id_copy:?})",
+                                );
+                            }
+                            SnapshotImportStatus::Skipped(decision) => {
+                                tracing::info!(
+                                    target: "node",
+                                    ?decision,
+                                    "load worker: snapshot import skipped for {thread_id_copy:?} (block={block_id_copy:?})",
+                                );
+                            }
+                        }
+                        let mut checker = checker_clone.lock();
+                        progress_clone.lock().record_thread_status(
+                            &mut checker,
+                            anchor_thread,
+                            thread_id_copy,
+                            status,
                         );
-                        checker_clone.lock().remove(&thread_id_copy);
                         Ok(())
                     }
                     Err(e) => Err(e.into()),
@@ -782,7 +953,7 @@ fn try_download_candidate(
             if let Some(err) = last_error.lock().take() {
                 return Err(err);
             }
-            return Ok(());
+            return Ok(progress.lock().finish_status());
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -798,9 +969,13 @@ mod tests {
     use super::LoadCandidatePushResult;
     use super::LoadCandidates;
     use super::PruneDecision;
+    use super::SnapshotCandidateProgress;
+    use super::SnapshotDownloadStatus;
     use super::LOAD_CANDIDATES_CAPACITY;
     use crate::node::services::sync::SyncSnapshotAnchor;
     use crate::node::services::sync::SyncSnapshotRequest;
+    use crate::repository::repository_impl::SnapshotImportDecision;
+    use crate::repository::repository_impl::SnapshotImportStatus;
     use crate::types::BlockHeight;
 
     fn block_id(seed: u8) -> BlockIdentifier {
@@ -819,6 +994,78 @@ mod tests {
                 BlockHeight::builder().thread_identifier(thread_identifier).height(height).build(),
             ),
         }
+    }
+
+    fn import_needed() -> SnapshotImportDecision {
+        SnapshotImportDecision::ImportNeeded { distance_from_last_finalized: Some(10) }
+    }
+
+    #[test]
+    fn non_anchor_skip_does_not_skip_candidate_if_anchor_imports() {
+        let anchor_thread = thread_id();
+        let other_thread = ThreadIdentifier::new(&block_id(42), 3);
+        let mut checker =
+            BTreeMap::from([(anchor_thread, block_id(1)), (other_thread, block_id(2))]);
+        let mut progress = SnapshotCandidateProgress::default();
+
+        progress.record_thread_status(
+            &mut checker,
+            anchor_thread,
+            other_thread,
+            SnapshotImportStatus::Skipped(import_needed()),
+        );
+
+        assert!(checker.contains_key(&anchor_thread));
+        assert!(!checker.contains_key(&other_thread));
+
+        progress.record_thread_status(
+            &mut checker,
+            anchor_thread,
+            anchor_thread,
+            SnapshotImportStatus::Imported,
+        );
+
+        assert!(checker.is_empty());
+        assert_eq!(progress.finish_status(), SnapshotDownloadStatus::Imported);
+    }
+
+    #[test]
+    fn anchor_skip_skips_candidate() {
+        let anchor_thread = thread_id();
+        let other_thread = ThreadIdentifier::new(&block_id(42), 3);
+        let mut checker =
+            BTreeMap::from([(anchor_thread, block_id(1)), (other_thread, block_id(2))]);
+        let mut progress = SnapshotCandidateProgress::default();
+        let decision = SnapshotImportDecision::TooClose { distance_from_last_finalized: 2 };
+
+        progress.record_thread_status(
+            &mut checker,
+            anchor_thread,
+            anchor_thread,
+            SnapshotImportStatus::Skipped(decision),
+        );
+
+        assert!(checker.is_empty());
+        assert_eq!(progress.finish_status(), SnapshotDownloadStatus::Skipped(decision));
+    }
+
+    #[test]
+    fn all_skipped_without_import_returns_skipped() {
+        let anchor_thread = thread_id();
+        let other_thread = ThreadIdentifier::new(&block_id(42), 3);
+        let mut checker = BTreeMap::from([(other_thread, block_id(2))]);
+        let mut progress = SnapshotCandidateProgress::default();
+        let decision = SnapshotImportDecision::AlreadyCovered { distance_from_last_finalized: 0 };
+
+        progress.record_thread_status(
+            &mut checker,
+            anchor_thread,
+            other_thread,
+            SnapshotImportStatus::Skipped(decision),
+        );
+
+        assert!(checker.is_empty());
+        assert_eq!(progress.finish_status(), SnapshotDownloadStatus::Skipped(decision));
     }
 
     #[test]

@@ -209,7 +209,19 @@ pub async fn run(
 
     let ids: HashMap<serde_json::Value, String> = nrs
         .iter()
-        .filter_map(|nr| decode_msg_id(&nr["id"]).ok().map(|id| (nr["id"].clone(), id)))
+        .filter_map(|nr| match decode_msg_id(&nr["id"]) {
+            Ok(id) => Some((nr["id"].clone(), id)),
+            Err(err) => {
+                // The id is dropped from the map here; log the raw value so an
+                // operator can identify the offending request without DEBUG logs.
+                tracing::warn!(
+                    target: "message_router",
+                    "skipping ext message with undecodable id={}: {err}",
+                    nr["id"]
+                );
+                None
+            }
+        })
         .collect();
 
     tracing::debug!(target: "message_router", "Ext messages received: {:?}", nrs.iter().map(|nr| format!("{}", nr["id"])));
@@ -237,6 +249,12 @@ pub async fn run(
         nr["ext_message_token"] = ext_message_token.clone();
     }
 
+    // Message hash of the first request, used to annotate error responses. `ids`
+    // only holds entries whose id decoded successfully, so fall back to an empty
+    // hash instead of panicking when the client sent an undecodable id.
+    let first_message_hash =
+        nrs.first().and_then(|nr| ids.get(&nr["id"])).cloned().unwrap_or_default();
+
     let client =
         reqwest::Client::builder().timeout(Duration::from_secs(DEFAULT_BK_API_TIMEOUT)).build()?;
 
@@ -259,7 +277,7 @@ pub async fn run(
                             );
                             let err_data = ExtMsgRunErrorData {
                                 producers: vec![recipient.clone()],
-                                message_hash: ids.get(&nrs[0]["id"]).unwrap().to_string(),
+                                message_hash: first_message_hash.clone(),
                                 exit_code: None,
                                 current_time: now_ms().to_string(),
                                 thread_id: Some(thread_id.clone()),
@@ -303,7 +321,7 @@ pub async fn run(
                         tracing::error!(target: "message_router", "redirection to {url} failed: failed to parse the response from the BP: {err}");
                         let err_data = ExtMsgRunErrorData {
                             producers: vec![recipient.clone()],
-                            message_hash: ids.get(&nrs[0]["id"]).unwrap().to_string(),
+                            message_hash: first_message_hash.clone(),
                             exit_code: None,
                             current_time: now_ms().to_string(),
                             thread_id: Some(thread_id.clone()),
@@ -340,7 +358,7 @@ pub async fn run(
                 );
                 let err_data = ExtMsgRunErrorData {
                     producers: vec![recipient.clone()],
-                    message_hash: ids.get(&nrs[0]["id"]).unwrap().to_string(),
+                    message_hash: first_message_hash.clone(),
                     exit_code: None,
                     current_time: now_ms().to_string(),
                     thread_id: Some(thread_id.clone()),
@@ -528,6 +546,30 @@ mod tests {
 
     const VALID_HEX: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
+    /// A `tracing` writer that appends every log line into a shared buffer so a
+    /// test can assert on emitted records.
+    #[derive(Clone)]
+    struct SharedBuf(Arc<parking_lot::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl tracing_subscriber::fmt::MakeWriter<'_> for SharedBuf {
+        type Writer = SharedBuf;
+
+        fn make_writer(&self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
     #[tokio::test]
     async fn run_rejects_missing_account_id_before_proxying() {
         let nrs = serde_json::json!([{"id":"aGVsbG8=", "body":"AAAA", "dapp_id": VALID_HEX}]);
@@ -584,6 +626,51 @@ mod tests {
         let result = resp.result.expect("success result expected");
         assert_eq!(result.account_id, VALID_HEX);
         assert_eq!(result.dapp_id, VALID_HEX);
+    }
+
+    #[tokio::test]
+    async fn run_does_not_panic_when_first_id_undecodable_and_bp_fails() {
+        // Regression: a first message whose `id` cannot be decoded is dropped from
+        // the `ids` map. When the BP round-trip then fails, the error path used to
+        // `ids.get(..).unwrap()` and panic, crashing the whole process. It must
+        // instead return a structured error and log the offending raw id.
+        let recipient = start_mock_bp_server(400, r#"{"error":"bad"}"#).await;
+        let nrs = serde_json::json!([
+            {
+                "id": "!!!not-decodable!!!",
+                "body": "AAAA",
+                "thread_id": null,
+                "account_id": VALID_HEX,
+                "dapp_id": VALID_HEX,
+            }
+        ]);
+
+        // Capture WARN+ records so we can assert the undecodable id is logged.
+        let buf = Arc::new(parking_lot::Mutex::new(Vec::<u8>::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(SharedBuf(buf.clone()))
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .without_time()
+            .finish();
+
+        let guard = tracing::subscriber::set_default(subscriber);
+        let resp = run(nrs, make_router_with_recipient(recipient)).await.unwrap();
+        drop(guard);
+
+        assert!(resp.result.is_none());
+        let err = resp.error.expect("error expected");
+        assert_eq!(err.code, "INTERNAL_ERROR");
+        // The message hash is unknown (id did not decode), so it degrades to empty.
+        assert_eq!(err.data.expect("error data expected").message_hash, "");
+
+        // The raw, undecodable id must be surfaced at WARN level for operators.
+        let logs = String::from_utf8_lossy(&buf.lock().clone()).into_owned();
+        assert!(logs.contains("undecodable id"), "expected warn about undecodable id, got: {logs}");
+        assert!(
+            logs.contains("!!!not-decodable!!!"),
+            "warn should include the raw id, got: {logs}"
+        );
     }
 
     #[tokio::test]

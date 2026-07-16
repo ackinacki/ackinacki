@@ -63,6 +63,13 @@ impl ConfigRead {
         }
         false
     }
+
+    pub fn get_by_retired_status(&self, is_retired: bool) -> Option<Arc<GlobalConfig>> {
+        if is_retired {
+            return self.retired_node_config.as_ref().map(|config| config.config.clone());
+        }
+        Some(self.node_config.config.clone())
+    }
 }
 
 impl Debug for ConfigRead {

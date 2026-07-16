@@ -6,7 +6,7 @@ use aerospike::as_key;
 use aerospike::Bins;
 use aerospike::Key;
 use aerospike::Value;
-use node_types::AccountIdentifier;
+use node_types::AccountRouting;
 use parking_lot::Mutex;
 use telemetry_utils::now_ms;
 use tvm_block::GetRepresentationHash;
@@ -62,14 +62,14 @@ impl MessageDurableStorage {
     // 2.  {PKey: address+seqno, value: message_hash}  - kind of reverse index
     pub fn write_messages(
         &self,
-        messages: HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+        messages: HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     ) -> anyhow::Result<()> {
         if !cfg!(feature = "messages_db") || cfg!(feature = "disable_db_for_messages") {
             return Ok(());
         }
 
-        for (addr, messages) in messages {
-            let dest = addr.to_hex_string();
+        for (routing, messages) in messages {
+            let dest = routing.to_hex_string();
             for message in messages {
                 let hash =
                     message.1.message.hash().expect("message must have hash").to_hex_string();

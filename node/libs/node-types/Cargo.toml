@@ -11,7 +11,6 @@ license-file.workspace = true
 anyhow.workspace = true
 blake3 = { version = "1.8.2" }
 hex.workspace = true
-monotree.workspace = true
 serde.workspace = true
 serde_with.workspace = true
 tvm_block.workspace = true

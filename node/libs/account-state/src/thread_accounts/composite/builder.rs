@@ -74,8 +74,10 @@ impl ThreadAccountsStateBuilder {
 
     pub fn replace_with_redirect(&mut self, routing: &AccountRouting) -> anyhow::Result<()> {
         if let Some(account) = self.account(routing)? {
-            self.changed_accounts
-                .insert(*routing, BlockAccountOperation::UpdateOrInsert(account.with_redirect()?));
+            self.changed_accounts.insert(
+                *routing,
+                BlockAccountOperation::UpdateOrInsert(account.with_redirect(*routing.dapp_id())?),
+            );
         }
         Ok(())
     }
@@ -265,7 +267,8 @@ impl ThreadAccountsStateBuilder {
                     if needs_redirect {
                         let redirect_entry = match &account_update {
                             BlockAccountOperation::UpdateOrInsert(state_account) => {
-                                let redirect = state_account.with_redirect()?;
+                                let redirect =
+                                    state_account.with_redirect(*effective_routing.dapp_id())?;
                                 Some(BlockAccountOperation::UpdateOrInsert(redirect))
                             }
                             BlockAccountOperation::MoveFromTvm => {
@@ -276,7 +279,8 @@ impl ThreadAccountsStateBuilder {
                                     .account(&routing.account_id().into())
                                 {
                                     let state_acc = ThreadAccount::from(tvm_acc);
-                                    let redirect = state_acc.with_redirect()?;
+                                    let redirect =
+                                        state_acc.with_redirect(*effective_routing.dapp_id())?;
                                     Some(BlockAccountOperation::UpdateOrInsert(redirect))
                                 } else {
                                     None

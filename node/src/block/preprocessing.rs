@@ -7,6 +7,7 @@ use anyhow::Context;
 use node_types::AccountIdentifier;
 use node_types::AccountRouting;
 use node_types::BlockIdentifier;
+use node_types::DAppIdentifier;
 use node_types::ThreadIdentifier;
 use tracing::instrument;
 use tracing::trace_span;
@@ -32,7 +33,7 @@ pub struct PreprocessingResult {
     pub state: State,
     pub threads_table: ThreadsTable,
     pub redirected_messages: HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
-    pub settled_messages: HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+    pub settled_messages: HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
 }
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all)]
@@ -49,7 +50,7 @@ pub fn preprocess<'a, I, TRepo>(
     message_db: MessageDurableStorage,
     metrics: Option<BlockProductionMetrics>,
     thread_accounts_repository: &ThreadAccountsRepository,
-    apply_to_durable: bool,
+    _apply_to_durable: bool,
 ) -> anyhow::Result<PreprocessingResult>
 where
     I: std::iter::Iterator<Item = &'a CrossThreadRefData>,
@@ -148,7 +149,7 @@ where
         &in_table,
         message_db.clone(),
         thread_accounts_repository,
-        apply_to_durable,
+        true,
     )?;
 
     let mut preprocessed_state = trace_span!("").in_scope(|| {
@@ -168,7 +169,7 @@ where
     // Import messages and either settle them or move back to the outbox with the renewed route
 
     let mut settled_messages: HashMap<
-        AccountIdentifier,
+        AccountRouting,
         Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
     > = HashMap::new();
     let redirected_messages: HashMap<
@@ -182,7 +183,6 @@ where
                     continue;
                 }
                 // It is possible that this message should be forwarded with the updated route.
-                let account_id: AccountIdentifier = *route.account_id();
                 // let actual_route = preprocessed_state.get_account_routing(&account_address, None);
                 // if &actual_route != route {
                 //     // Forward with the new route
@@ -193,7 +193,7 @@ where
                 // } else {
                 // Settle
                 settled_messages
-                    .entry(account_id)
+                    .entry(*route)
                     .and_modify(|e| e.extend_from_slice(messages))
                     .or_insert(messages.clone());
                 // }
@@ -244,17 +244,22 @@ where
 
 pub fn convert_slashing_messages(
     slashing_messages: Vec<Arc<WrappedMessage>>,
-) -> anyhow::Result<HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>> {
+) -> anyhow::Result<HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>> {
     let mut slashing_messages_map: HashMap<
-        AccountIdentifier,
+        AccountRouting,
         Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
     > = HashMap::new();
     for message in slashing_messages.into_iter() {
         let msg = message.message.clone();
         let info = msg.int_header().unwrap();
-        let dst = info.dst.address();
+        let dst = AccountIdentifier::from(info.dst.address());
+        let dst_dapp_id = info
+            .dest_dapp_id
+            .as_ref()
+            .map(DAppIdentifier::from)
+            .unwrap_or_else(|| dst.redirect_dapp_id());
         slashing_messages_map
-            .entry(dst.into())
+            .entry(dst.routing(dst_dapp_id))
             .or_default()
             .push((MessageIdentifier::from(&*message), message));
     }
@@ -262,10 +267,7 @@ pub fn convert_slashing_messages(
 }
 
 pub fn convert_epoch_messages(
-    high_priority_map: &mut HashMap<
-        AccountIdentifier,
-        Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
-    >,
+    high_priority_map: &mut HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     epoch_message: Vec<BlockKeeperData>,
 ) -> anyhow::Result<()> {
     let now = std::time::SystemTime::now();
@@ -277,9 +279,14 @@ pub fn convert_epoch_messages(
         let wrapped_message = WrappedMessage { message: msg.clone() };
         let info =
             msg.int_header().ok_or_else(|| anyhow::Error::msg("Failed to get message header"))?;
-        let dst = info.dst.address();
+        let dst = AccountIdentifier::from(info.dst.address());
+        let dst_dapp_id = info
+            .dest_dapp_id
+            .as_ref()
+            .map(DAppIdentifier::from)
+            .unwrap_or_else(|| dst.redirect_dapp_id());
         high_priority_map
-            .entry(dst.into())
+            .entry(dst.routing(dst_dapp_id))
             .or_default()
             .push((MessageIdentifier::from(&wrapped_message), Arc::new(wrapped_message)));
     }
@@ -299,7 +306,7 @@ fn import_migrating_accounts_with_their_inboxes(
 ) -> anyhow::Result<State> {
     tracing::trace!(target: "node", "preprocess: {:?} {:?}", state.block_id, state.thread_id);
     let mut migrated_accounts = vec![];
-    let mut migrated_inboxes: BTreeMap<AccountIdentifier, AccountInbox> = BTreeMap::new();
+    let mut migrated_inboxes: BTreeMap<AccountRouting, AccountInbox> = BTreeMap::new();
     let mut outbound_accounts_number = 0;
     let mut removed_accounts = vec![];
     for block_referenced in all_referenced_blocks.iter() {
@@ -337,7 +344,7 @@ fn import_migrating_accounts_with_their_inboxes(
                 migrated_accounts.push(account.clone());
             }
             if let Some(inbox) = inbox {
-                migrated_inboxes.insert(account_id, inbox.clone());
+                migrated_inboxes.insert(actual_route, inbox.clone());
             }
             outbound_accounts_number += 1;
         }

@@ -211,7 +211,14 @@ impl ZeroState {
 
         {
             let optimistic_state = self.state_mut(thread_identifier)?;
-            let dest = message.int_dst_account_id().map(From::from).unwrap();
+            let header = message
+                .int_header()
+                .ok_or_else(|| anyhow::format_err!("Expected internal message"))?;
+            let dest: AccountIdentifier = message.int_dst_account_id().map(From::from).unwrap();
+            let dest_dapp_id =
+                header.dest_dapp_id.as_ref().map(DAppIdentifier::from).unwrap_or_else(|| {
+                    header.src_dapp_id().clone().map(DAppIdentifier::from).unwrap()
+                });
             let message = WrappedMessage { message };
             let message_key = MessageIdentifier::from(&message);
             let message_db = MessageDurableStorage::mem();
@@ -219,7 +226,7 @@ impl ZeroState {
                 .with_initial_state(optimistic_state.messages.clone())
                 .with_consumed_messages(HashMap::new())
                 .with_produced_messages(HashMap::from([(
-                    dest,
+                    dest.routing(dest_dapp_id),
                     vec![(message_key, Arc::new(message))],
                 )]))
                 .with_removed_accounts(vec![])

@@ -18,7 +18,6 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
 
-use critical_thread::SpawnCritical;
 use lru::LruCache;
 use multi_map::node::Node as MultiMapNode;
 use multi_map::MultiMap;
@@ -36,13 +35,13 @@ use serde::Serialize;
 use tvm_block::Serializable;
 use tvm_block::ShardAccount;
 
-use crate::thread_accounts::accumulator;
 use crate::thread_accounts::accumulator::ArchiveUpdateAccumulator;
 use crate::thread_accounts::accumulator::MerkleMapStore;
 use crate::thread_accounts::archive::update::ThreadSnapshot;
 use crate::thread_accounts::durable::archive::apply::key_to_routing;
 use crate::thread_accounts::durable::archive::control::ThreadControlState;
 use crate::thread_accounts::durable::archive::store::ArchiveStateStore;
+use crate::thread_accounts::durable::archive::store::StagedArchiveEpoch;
 use crate::thread_accounts::durable::AccountInfo;
 use crate::thread_accounts::durable::DurableStateSnapshot;
 use crate::thread_accounts::ArchiveOperation;
@@ -725,21 +724,9 @@ impl DurableThreadAccountsRepository {
         if update_thread_guard.is_some() {
             return Ok(());
         }
-        let thread_archive = self.archive.clone();
-        let thread_accumulator = self.accumulator.clone();
         let maps_store =
             MerkleMapStore::new(&self.durable_path, self.map_repo.clone(), self.metrics.clone());
-        let update_thread = std::thread::Builder::new()
-            .name("accounts-commit-loop".to_string())
-            .spawn_critical(move || {
-                let result =
-                    accumulator::update_loop(thread_accumulator, thread_archive, maps_store);
-                if let Err(e) = &result {
-                    tracing::error!("Archive update loop failed: {e}");
-                }
-                result
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to spawn commit loop: {e}"))?;
+        let update_thread = self.accumulator.start_update_loop(self.archive.clone(), maps_store)?;
         *update_thread_guard = Some(update_thread);
         Ok(())
     }
@@ -1538,6 +1525,9 @@ impl DurableThreadAccountsRepository {
         F: Fn() -> bool,
     {
         check_snapshot_cancelled(should_cancel)?;
+        let pinned_account_sets = self.archive.pin_current_account_sets();
+        let pinned_epoch_id = pinned_account_sets.epoch();
+        let pinned_accounts_set = self.archive.set_accounts_a_for_epoch(pinned_epoch_id);
         let mut buffered_writer =
             BufWriter::with_capacity(Self::SNAPSHOT_COPY_BUFFER_CAPACITY, writer);
 
@@ -1581,7 +1571,7 @@ impl DurableThreadAccountsRepository {
                 // payload only if it validates against the snapshot map. Enumeration
                 // is a source of candidate bytes; the map remains authoritative.
                 self.archive.store().enumerate_checked(
-                    &self.archive.set_accounts_a(),
+                    &pinned_accounts_set,
                     should_cancel,
                     &mut |record| -> anyhow::Result<()> {
                         check_snapshot_cancelled(should_cancel)?;
@@ -1617,14 +1607,16 @@ impl DurableThreadAccountsRepository {
             if written.contains(&routing) {
                 continue;
             }
-            let body = self.resolve_body_for_export_with_info(&routing, info).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "snapshot export: routing {routing:?} info {info:?} not found in \
+            let body = self
+                .resolve_body_for_export_with_info_at_epoch(&routing, info, pinned_epoch_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "snapshot export: routing {routing:?} info {info:?} not found in \
                      archive enumeration, pool, accumulator, or archive (or bytes/hash \
                      mismatched). Snapshot must be skipped — caller should drop the pin \
                      and not produce a snapshot file.",
-                )
-            })?;
+                    )
+                })?;
             let body_bytes = body.write_bytes()?;
             write_snapshot_account_entry(&mut buffered_writer, &routing, &body_bytes)?;
             written.insert(routing);
@@ -1694,27 +1686,25 @@ impl DurableThreadAccountsRepository {
     }
 
     /// Same fallback chain as `find_account_with_info`'s `VmAccountHash`
-    /// branch, returning the resolved account body. None if the body
-    /// can't be produced — caller treats this as an unrecoverable
-    /// snapshot failure (atomic skip).
-    fn resolve_body_for_export(
+    /// branch, returning the resolved account body from the pinned archive
+    /// epoch. None if the body can't be produced — caller treats this as an
+    /// unrecoverable snapshot failure (atomic skip).
+    fn resolve_body_for_export_at_epoch(
         &self,
         routing: &AccountRouting,
         expected_hash: AccountHash,
+        epoch: u64,
     ) -> Option<ThreadAccount> {
         if let Some(account) = self.accumulator.unfinalized_pool_get(&expected_hash) {
             return Some(account);
         }
         if let Some(operation) = self.accumulator.find_account_operation(routing, &expected_hash) {
             if let crate::thread_accounts::ArchiveOperation::UpdateOrInsert(account) = operation {
-                return Some(account);
+                return Some(account.clone());
             }
-            // Remove operation in the accumulator means the routing was
-            // deleted; but the map still records VmAccountHash, which
-            // is inconsistent. Treat as unrecoverable.
             return None;
         }
-        if let Ok(Some(account)) = self.archive.read_account_operation(routing) {
+        if let Ok(Some(account)) = self.archive.read_account_operation_at_epoch(routing, epoch) {
             if let Ok(vm_account) = account.vm_account() {
                 if vm_account.hash() == expected_hash {
                     return Some(account);
@@ -1724,15 +1714,16 @@ impl DurableThreadAccountsRepository {
         None
     }
 
-    fn resolve_body_for_export_with_info(
+    fn resolve_body_for_export_with_info_at_epoch(
         &self,
         routing: &AccountRouting,
         info: AccountInfo,
+        epoch: u64,
     ) -> Option<ThreadAccount> {
         match info {
             AccountInfo::Redirect(dapp_id) => Some(ThreadAccount::redirect(dapp_id)),
             AccountInfo::VmAccountHash(expected_hash) => {
-                self.resolve_body_for_export(routing, expected_hash)
+                self.resolve_body_for_export_at_epoch(routing, expected_hash, epoch)
             }
         }
     }
@@ -1742,6 +1733,46 @@ impl DurableThreadAccountsRepository {
         reader: &mut R,
         thread_id: &ThreadIdentifier,
         block_id: &BlockIdentifier,
+    ) -> anyhow::Result<DurableThreadAccountsState> {
+        self.import_durable_snapshot_from_reader_inner(reader, thread_id, block_id, None)
+    }
+
+    pub fn begin_staged_import_after_current_epoch(&self) -> StagedArchiveEpoch {
+        self.archive.begin_staged_epoch_after_current()
+    }
+
+    pub fn abort_staged_import(&self, staged: StagedArchiveEpoch) {
+        self.archive.truncate_epoch_best_effort(staged.epoch);
+    }
+
+    pub fn commit_staged_import(
+        &self,
+        staged: StagedArchiveEpoch,
+        thread_id: &ThreadIdentifier,
+        block_id: &BlockIdentifier,
+    ) -> anyhow::Result<()> {
+        self.archive.commit_staged_epoch(staged, thread_id, block_id)?;
+        let control_states = self.archive.get_all_thread_control_states()?;
+        self.accumulator.reset(&control_states);
+        Ok(())
+    }
+
+    pub fn import_durable_snapshot_from_reader_staged<R: Read>(
+        &self,
+        reader: &mut R,
+        thread_id: &ThreadIdentifier,
+        block_id: &BlockIdentifier,
+        staged: StagedArchiveEpoch,
+    ) -> anyhow::Result<DurableThreadAccountsState> {
+        self.import_durable_snapshot_from_reader_inner(reader, thread_id, block_id, Some(staged))
+    }
+
+    fn import_durable_snapshot_from_reader_inner<R: Read>(
+        &self,
+        reader: &mut R,
+        thread_id: &ThreadIdentifier,
+        block_id: &BlockIdentifier,
+        staged: Option<StagedArchiveEpoch>,
     ) -> anyhow::Result<DurableThreadAccountsState> {
         tracing::debug!("import_durable_snapshot_from_reader");
 
@@ -1804,8 +1835,18 @@ impl DurableThreadAccountsRepository {
                 Err(err) => Some(Err(err)),
             }
         });
-        self.archive.thread_init_from_raw_entries(thread_id, *block_id, raw_account_entries)?;
-        self.accumulator.set_expected_block(*thread_id, *block_id, true);
+        if let Some(staged) = staged {
+            self.archive.thread_init_from_raw_entries_at_epoch(
+                thread_id,
+                *block_id,
+                raw_account_entries,
+                staged.epoch,
+                false,
+            )?;
+        } else {
+            self.archive.thread_init_from_raw_entries(thread_id, *block_id, raw_account_entries)?;
+            self.accumulator.set_expected_block(*thread_id, *block_id, true);
+        }
         let written_infos = written_pipeline.finish()?;
         let written: HashMap<AccountRouting, AccountHash> =
             HashMap::from_iter(written_infos.into_iter().map(|entry| (entry.routing, entry.hash)));
@@ -1854,7 +1895,13 @@ impl DurableThreadAccountsRepository {
                             wrong_hashes.push((routing, *expected_hash, *actual));
                         }
                     }
-                    None => match self.find_account_with_info(&import_state, &routing, *info) {
+                    None => match if let Some(staged) = staged {
+                        self.archive
+                            .read_account_operation_at_epoch(&routing, staged.epoch)
+                            .map_err(anyhow::Error::from)
+                    } else {
+                        self.find_account_with_info(&import_state, &routing, *info)
+                    } {
                         Ok(Some(account)) => match account.vm_account() {
                             Ok(vm_account) => {
                                 let actual = vm_account.hash();
@@ -2363,7 +2410,9 @@ mod tests {
         insert_batch.insert(routing, super::BlockAccountOperation::UpdateOrInsert(account.clone()));
         insert_batch.insert(
             redirect_routing,
-            super::BlockAccountOperation::UpdateOrInsert(account.with_redirect().unwrap()),
+            super::BlockAccountOperation::UpdateOrInsert(
+                account.with_redirect(*routing.dapp_id()).unwrap(),
+            ),
         );
 
         let (state1, insert_ops) =
@@ -2408,7 +2457,9 @@ mod tests {
             .insert(routing_1, super::BlockAccountOperation::UpdateOrInsert(account_1.clone()));
         insert_batch.insert(
             redirect_routing,
-            super::BlockAccountOperation::UpdateOrInsert(account_1.with_redirect().unwrap()),
+            super::BlockAccountOperation::UpdateOrInsert(
+                account_1.with_redirect(*routing_1.dapp_id()).unwrap(),
+            ),
         );
         let (state1, _) =
             repo.state_update(&thread_id, 0, &old_tvm_accounts, &state0, &insert_batch).unwrap();
@@ -2419,7 +2470,9 @@ mod tests {
             .insert(routing_2, super::BlockAccountOperation::UpdateOrInsert(account_2.clone()));
         move_batch.insert(
             redirect_routing,
-            super::BlockAccountOperation::UpdateOrInsert(account_2.with_redirect().unwrap()),
+            super::BlockAccountOperation::UpdateOrInsert(
+                account_2.with_redirect(*routing_2.dapp_id()).unwrap(),
+            ),
         );
         let (state2, move_ops) =
             repo.state_update(&thread_id, 1, &old_tvm_accounts, &state1, &move_batch).unwrap();

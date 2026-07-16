@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use critical_thread::SpawnCritical;
 pub use map_store::MerkleMapStore;
 use node_types::AccountHash;
 use node_types::AccountRouting;
@@ -15,6 +16,8 @@ use node_types::BlockIdentifier;
 use node_types::ThreadIdentifier;
 pub use snapshot_pin::AnchorBlockRef;
 use snapshot_pin::SnapshotPinState;
+
+struct BatchReceiver(crossbeam_channel::Receiver<Arc<PendingUpdate>>);
 
 /// Snapshot of the apply-gate decision the update loop needs per batch.
 /// Returned by `apply_decision_anchor` so the loop doesn't hold the
@@ -244,7 +247,10 @@ pub struct ArchiveUpdateAccumulator {
     unfinalized_pool: parking_lot::RwLock<UnfinalizedAccountsPool>,
     /// Channel to send completed batches to the update loop.
     batch_tx: crossbeam_channel::Sender<Arc<PendingUpdate>>,
-    batch_rx: crossbeam_channel::Receiver<Arc<PendingUpdate>>,
+    /// Launch-only receiver slot. The repository takes this exactly once
+    /// when spawning the commit loop, so the receiver lifetime is bound to
+    /// the commit-loop thread and not to the accumulator.
+    batch_rx: parking_lot::Mutex<Option<BatchReceiver>>,
     /// In-flight batches: sent to update loop but not yet processed.
     /// Kept for read access by `find_account_operation`.
     in_flight: parking_lot::RwLock<Vec<Arc<PendingUpdate>>>,
@@ -269,6 +275,10 @@ pub struct ArchiveUpdateAccumulator {
     /// we transition Requested → BoundaryReached directly without
     /// waiting for the update loop to process a (non-existent) batch.
     applied_per_thread: parking_lot::Mutex<HashMap<ThreadIdentifier, BlockIdentifier>>,
+    /// First fatal error seen by the commit loop. Drain waiters use this
+    /// to fail fast instead of waiting for in-flight batches that can no
+    /// longer be completed.
+    commit_loop_error: parking_lot::Mutex<Option<String>>,
     metrics: Option<StateAccountsMetrics>,
 }
 
@@ -323,7 +333,7 @@ impl ArchiveUpdateAccumulator {
         );
     }
 
-    pub fn new(
+    pub(super) fn new(
         block_limit: usize,
         control_states: &[ThreadControlState],
         metrics: Option<StateAccountsMetrics>,
@@ -342,7 +352,7 @@ impl ArchiveUpdateAccumulator {
             send_blocked: AtomicBool::new(false),
             unfinalized_pool: parking_lot::RwLock::new(UnfinalizedAccountsPool::new()),
             batch_tx,
-            batch_rx,
+            batch_rx: parking_lot::Mutex::new(Some(BatchReceiver(batch_rx))),
             in_flight: parking_lot::RwLock::new(Vec::new()),
             drained: parking_lot::Condvar::new(),
             drained_mutex: parking_lot::Mutex::new(()),
@@ -350,10 +360,56 @@ impl ArchiveUpdateAccumulator {
             pin_acquirable: parking_lot::Condvar::new(),
             pin_released: parking_lot::Condvar::new(),
             applied_per_thread: parking_lot::Mutex::new(applied_per_thread),
+            commit_loop_error: parking_lot::Mutex::new(None),
             metrics,
         };
         set_unfinalized_pool_sizes(0, 0);
         accumulator
+    }
+
+    fn take_batch_receiver(&self) -> anyhow::Result<BatchReceiver> {
+        self.batch_rx
+            .lock()
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("durable account commit loop receiver is missing"))
+    }
+
+    fn restore_batch_receiver(&self, batch_rx: BatchReceiver) {
+        let mut slot = self.batch_rx.lock();
+        debug_assert!(slot.is_none(), "durable account commit loop receiver slot is occupied");
+        *slot = Some(batch_rx);
+    }
+
+    pub(super) fn start_update_loop(
+        self: &Arc<Self>,
+        archive: ArchiveStateStore,
+        maps_store: MerkleMapStore,
+    ) -> anyhow::Result<std::thread::JoinHandle<()>> {
+        let batch_rx = Arc::new(parking_lot::Mutex::new(Some(self.take_batch_receiver()?)));
+        let thread_batch_rx = batch_rx.clone();
+        let accumulator = Arc::clone(self);
+        let update_thread_result = std::thread::Builder::new()
+            .name("accounts-commit-loop".to_string())
+            .spawn_critical(move || {
+                let batch_rx = thread_batch_rx
+                    .lock()
+                    .take()
+                    .expect("batch receiver must be present in commit-loop closure");
+                let result = update_loop(accumulator, batch_rx, archive, maps_store);
+                if let Err(e) = &result {
+                    tracing::error!("Archive update loop failed: {e}");
+                }
+                result
+            });
+        match update_thread_result {
+            Ok(update_thread) => Ok(update_thread),
+            Err(error) => {
+                if let Some(batch_rx) = batch_rx.lock().take() {
+                    self.restore_batch_receiver(batch_rx);
+                }
+                Err(anyhow::anyhow!("Failed to spawn commit loop: {error}"))
+            }
+        }
     }
 
     fn report_queue_size(&self, blocks: usize) {
@@ -368,6 +424,19 @@ impl ArchiveUpdateAccumulator {
         }
     }
 
+    fn record_commit_loop_error(&self, error: String) {
+        let mut stored_error = self.commit_loop_error.lock();
+        if stored_error.is_none() {
+            *stored_error = Some(error);
+        }
+        drop(stored_error);
+        self.drained.notify_all();
+    }
+
+    fn commit_loop_failed(&self) -> bool {
+        self.commit_loop_error.lock().is_some()
+    }
+
     fn is_full(&self, pending: &PendingUpdate) -> bool {
         pending.blocks_accumulated >= self.accumulated_block_limit
     }
@@ -376,6 +445,9 @@ impl ArchiveUpdateAccumulator {
     /// and register in in_flight for reads. Must be called with pending lock held.
     /// Returns the new (empty) pending.
     fn send_batch(&self, pending: &mut PendingUpdate) {
+        if self.commit_loop_failed() {
+            return;
+        }
         // If a FlushGuard is active, producers just keep accumulating.
         // The guard holder will send any pending batch when dropped.
         if self.send_blocked.load(Ordering::Acquire) {
@@ -400,8 +472,12 @@ impl ArchiveUpdateAccumulator {
         //     "[{}] send_batch: SENDING blocks={blocks} ops={ops} in_flight={in_flight_len} channel={channel_len}",
         //     thread_name(),
         // );
-        // bounded channel — this blocks if update_loop is behind
-        let _ = self.batch_tx.send(batch);
+        if let Err(error) = self.batch_tx.send(Arc::clone(&batch)) {
+            self.record_commit_loop_error(format!(
+                "failed to send durable account batch to commit loop: {error}",
+            ));
+            self.complete_batch(&batch);
+        }
         // tracing::trace!(target: "lock", "[{}] send_batch: SENT", thread_name());
     }
 
@@ -678,7 +754,7 @@ impl ArchiveUpdateAccumulator {
     pub fn signal_stop(&self) {
         // tracing::trace!(target: "lock", "[{}] signal_stop: setting stop=true", thread_name());
         self.stop.store(true, Ordering::Relaxed);
-        // Send whatever is pending, then drop the sender to unblock the receiver.
+        // Send whatever is pending; the update loop also polls `stop` while waiting.
         // tracing::trace!(target: "lock", "[{}] ACQUIRING pending.lock @ signal_stop", thread_name());
         let mut pending = self.pending.lock();
         // tracing::trace!(target: "lock", "[{}] ACQUIRED pending.lock @ signal_stop", thread_name());
@@ -1228,15 +1304,20 @@ impl ArchiveUpdateAccumulator {
         let deadline = Instant::now() + timeout;
         let mut guard = self.drained_mutex.lock();
         while !self.in_flight.read().is_empty() || !self.batch_tx.is_empty() {
+            if self.commit_loop_failed() {
+                return false;
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return false;
             }
             if self.drained.wait_for(&mut guard, remaining).timed_out() {
-                return self.in_flight.read().is_empty() && self.batch_tx.is_empty();
+                return !self.commit_loop_failed()
+                    && self.in_flight.read().is_empty()
+                    && self.batch_tx.is_empty();
             }
         }
-        true
+        !self.commit_loop_failed()
     }
 
     /// Send the current pending batch, then wait until all sent and
@@ -1279,11 +1360,20 @@ impl ArchiveUpdateAccumulator {
         {
             // tracing::trace!(target: "lock", "[{}] flush: waiting for drain (in_flight={} channel={})", thread_name(), self.in_flight.read().len(), self.batch_tx.len());
             let mut lock = self.drained_mutex.lock();
-            while !self.in_flight.read().is_empty() || !self.batch_tx.is_empty() {
+            while (!self.in_flight.read().is_empty() || !self.batch_tx.is_empty())
+                && !self.commit_loop_failed()
+            {
                 // tracing::trace!(target: "lock", "[{}] flush: WAITING drained (in_flight={} channel={})", thread_name(), self.in_flight.read().len(), self.batch_tx.len());
                 self.drained.wait(&mut lock);
                 // tracing::trace!(target: "lock", "[{}] flush: WOKE drained (in_flight={} channel={})", thread_name(), self.in_flight.read().len(), self.batch_tx.len());
             }
+        }
+        if self.commit_loop_failed() {
+            tracing::error!(
+                target: "monit",
+                "flush: durable account commit loop failed before accumulator drained; \
+                 returning deprecated FlushGuard with send blocked",
+            );
         }
 
         // tracing::trace!(target: "lock", "[{}] flush: drained, returning FlushGuard", thread_name());
@@ -1362,6 +1452,94 @@ fn apply_pending_update(
     Ok(())
 }
 
+fn track_applied_threads(accumulator: &ArchiveUpdateAccumulator, pending: &PendingUpdate) {
+    let mut applied = accumulator.applied_per_thread.lock();
+    for (thread_id, initial_block_id) in &pending.archive_update.emerging_threads {
+        applied.insert(*thread_id, *initial_block_id);
+    }
+    for (thread_id, transition) in &pending.archive_update.thread_transitions {
+        applied.insert(*thread_id, transition.new_block_id);
+    }
+    for thread_id in &pending.archive_update.collapsing_threads {
+        applied.remove(thread_id);
+    }
+}
+
+fn apply_batch_and_track(
+    accumulator: &ArchiveUpdateAccumulator,
+    pending: &PendingUpdate,
+    archive: &ArchiveStateStore,
+    merkle_map_store: &mut MerkleMapStore,
+) -> anyhow::Result<()> {
+    apply_pending_update(pending, archive, merkle_map_store)?;
+    track_applied_threads(accumulator, pending);
+    Ok(())
+}
+
+fn drain_deferred_batches(
+    accumulator: &ArchiveUpdateAccumulator,
+    deferred: &mut std::collections::VecDeque<Arc<PendingUpdate>>,
+    archive: &ArchiveStateStore,
+    merkle_map_store: &mut MerkleMapStore,
+) -> anyhow::Result<()> {
+    while let Some(batch) = deferred.pop_front() {
+        accumulator.report_deferred_len(deferred.len());
+        let result = apply_batch_and_track(accumulator, &batch, archive, merkle_map_store);
+        if let Err(error) = result {
+            tracing::error!("update_loop deferred batch error: {:?}", error);
+            accumulator.record_commit_loop_error(format!("{error:#}"));
+            accumulator.complete_batch(&batch);
+            return Err(error);
+        }
+        accumulator.complete_batch(&batch);
+    }
+    Ok(())
+}
+
+fn drain_deferred_if_releasing(
+    accumulator: &ArchiveUpdateAccumulator,
+    deferred: &mut std::collections::VecDeque<Arc<PendingUpdate>>,
+    archive: &ArchiveStateStore,
+    merkle_map_store: &mut MerkleMapStore,
+) -> anyhow::Result<()> {
+    if !accumulator.is_releasing() {
+        return Ok(());
+    }
+    drain_deferred_batches(accumulator, deferred, archive, merkle_map_store)?;
+    accumulator.finish_release();
+    accumulator.report_deferred_len(deferred.len());
+    Ok(())
+}
+
+fn ensure_no_deferred_batches_before_final_flush(
+    deferred: &std::collections::VecDeque<Arc<PendingUpdate>>,
+) -> anyhow::Result<()> {
+    if deferred.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "update_loop stopped with {} deferred durable account batches; \
+         refusing final flush because later channel batches must not overtake deferred batches",
+        deferred.len(),
+    );
+}
+
+fn ensure_no_snapshot_gate_before_final_flush(
+    accumulator: &ArchiveUpdateAccumulator,
+) -> anyhow::Result<()> {
+    let Some(decision) = accumulator.apply_decision_anchor() else {
+        return Ok(());
+    };
+    anyhow::bail!(
+        "update_loop stopped with active snapshot gate \
+         anchor_thread={} anchor_block={} defer_past_anchor={}; \
+         refusing final flush because pending batches must not bypass snapshot pin ordering",
+        decision.anchor_thread,
+        decision.anchor_block,
+        decision.defer_past_anchor,
+    );
+}
+
 /// RAII handle for an active snapshot pin. While alive, holds the pin in
 /// the `Pinned` state. Dropping it transitions to `Releasing`, which
 /// signals the update loop to drain its deferred queue.
@@ -1431,8 +1609,22 @@ fn batch_ends_thread_at(
 }
 
 /// Update loop — runs in a background thread.
-pub fn update_loop(
+fn update_loop(
     accumulator: Arc<ArchiveUpdateAccumulator>,
+    batch_rx: BatchReceiver,
+    archive: ArchiveStateStore,
+    maps_store: MerkleMapStore,
+) -> anyhow::Result<()> {
+    let result = update_loop_inner(Arc::clone(&accumulator), batch_rx, archive, maps_store);
+    if let Err(error) = &result {
+        accumulator.record_commit_loop_error(format!("{error:#}"));
+    }
+    result
+}
+
+fn update_loop_inner(
+    accumulator: Arc<ArchiveUpdateAccumulator>,
+    batch_rx: BatchReceiver,
     archive: ArchiveStateStore,
     mut maps_store: MerkleMapStore,
 ) -> anyhow::Result<()> {
@@ -1454,41 +1646,13 @@ pub fn update_loop(
     loop {
         // Phase 1: drain deferred queue if a pin was just released.
         // Drain runs to completion before we resume normal apply.
-        if accumulator.is_releasing() {
-            // tracing::trace!(
-            //     target: "lock",
-            //     "[{}] update_loop: draining {} deferred batches @ Releasing",
-            //     thread_name(),
-            //     deferred.len(),
-            // );
-            while let Some(batch) = deferred.pop_front() {
-                accumulator.report_deferred_len(deferred.len());
-                if !batch.archive_update.is_empty() {
-                    apply_pending_update(&batch, &archive, &mut maps_store)?;
-                    let mut applied = accumulator.applied_per_thread.lock();
-                    for (thread_id, transition) in &batch.archive_update.thread_transitions {
-                        applied.insert(*thread_id, transition.new_block_id);
-                    }
-                    for (thread_id, initial_block_id) in &batch.archive_update.emerging_threads {
-                        applied.insert(*thread_id, *initial_block_id);
-                    }
-                    for thread_id in &batch.archive_update.collapsing_threads {
-                        applied.remove(thread_id);
-                    }
-                }
-                accumulator.complete_batch(&batch);
-            }
-            accumulator.finish_release();
-            accumulator.report_deferred_len(deferred.len());
-            // After finish_release the slot may now be Requested(next).
-            // Loop continues; the next iteration will pick it up.
-        }
+        drain_deferred_if_releasing(&accumulator, &mut deferred, &archive, &mut maps_store)?;
 
         // Receive next batch, with timeout to check stop flag
-        // tracing::trace!(target: "lock", "[{}] update_loop: WAITING batch_rx (channel={})", thread_name(), accumulator.batch_rx.len());
-        let batch = match accumulator.batch_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+        // tracing::trace!(target: "lock", "[{}] update_loop: WAITING batch_rx (channel={})", thread_name(), batch_rx.0.len());
+        let batch = match batch_rx.0.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(batch) => {
-                // tracing::trace!(target: "lock", "[{}] update_loop: RECEIVED batch (channel={})", thread_name(), accumulator.batch_rx.len());
+                // tracing::trace!(target: "lock", "[{}] update_loop: RECEIVED batch (channel={})", thread_name(), batch_rx.0.len());
                 batch
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
@@ -1503,6 +1667,16 @@ pub fn update_loop(
                 break;
             }
         };
+
+        if !deferred.is_empty() || accumulator.is_releasing() {
+            tracing::trace!(
+                target: "monit",
+                "update_loop: queueing received batch behind deferred barrier",
+            );
+            deferred.push_back(batch);
+            accumulator.report_deferred_len(deferred.len());
+            continue;
+        }
 
         if batch.archive_update.is_empty() {
             // tracing::trace!(target: "lock", "[{}] update_loop: empty batch, completing without apply", thread_name());
@@ -1546,24 +1720,13 @@ pub fn update_loop(
         accumulator.report_mem_stats("before_apply");
 
         // tracing::trace!(target: "lock", "[{}] update_loop: APPLYING batch", thread_name());
-        let result = apply_pending_update(&batch, &archive, &mut maps_store);
+        let result = apply_batch_and_track(&accumulator, &batch, &archive, &mut maps_store);
         // tracing::trace!(target: "lock", "[{}] update_loop: APPLIED batch, result={:?}", thread_name(), result.is_ok());
-        if result.is_err() {
-            tracing::error!("update_loop error: {:?}", result);
-        } else {
-            // Track the latest applied block per thread so the
-            // stale-network shortcut in `request_snapshot_pin` can
-            // verify that the archive is at the requested anchor.
-            let mut applied = accumulator.applied_per_thread.lock();
-            for (thread_id, transition) in &batch.archive_update.thread_transitions {
-                applied.insert(*thread_id, transition.new_block_id);
-            }
-            for (thread_id, initial_block_id) in &batch.archive_update.emerging_threads {
-                applied.insert(*thread_id, *initial_block_id);
-            }
-            for thread_id in &batch.archive_update.collapsing_threads {
-                applied.remove(thread_id);
-            }
+        if let Err(error) = result {
+            tracing::error!("update_loop error: {:?}", error);
+            accumulator.record_commit_loop_error(format!("{error:#}"));
+            accumulator.complete_batch(&batch);
+            return Err(error);
         }
 
         accumulator.complete_batch(&batch);
@@ -1575,22 +1738,51 @@ pub fn update_loop(
     }
 
     // Final flush: process remaining batches in channel
-    // tracing::trace!(target: "lock", "[{}] update_loop: final flush (channel={})", thread_name(), accumulator.batch_rx.len());
-    while let Ok(batch) = accumulator.batch_rx.try_recv() {
-        if !batch.archive_update.is_empty() {
-            apply_pending_update(&batch, &archive, &mut maps_store)?;
+    // tracing::trace!(target: "lock", "[{}] update_loop: final flush (channel={})", thread_name(), batch_rx.0.len());
+    drain_deferred_if_releasing(&accumulator, &mut deferred, &archive, &mut maps_store)?;
+    ensure_no_deferred_batches_before_final_flush(&deferred)?;
+    ensure_no_snapshot_gate_before_final_flush(&accumulator)?;
+    while let Ok(batch) = batch_rx.0.try_recv() {
+        let result = if !batch.archive_update.is_empty() {
+            apply_batch_and_track(&accumulator, &batch, &archive, &mut maps_store)
+        } else {
+            Ok(())
+        };
+        if let Err(error) = result {
+            tracing::error!("update_loop final flush error: {:?}", error);
+            accumulator.record_commit_loop_error(format!("{error:#}"));
+            accumulator.complete_batch(&batch);
+            return Err(error);
         }
         accumulator.complete_batch(&batch);
     }
 
     // Process any unsent pending data
     {
+        ensure_no_snapshot_gate_before_final_flush(&accumulator)?;
         // tracing::trace!(target: "lock", "[{}] ACQUIRING pending.lock @ update_loop/final_unsent", thread_name());
-        let mut pending = accumulator.pending.lock();
-        // tracing::trace!(target: "lock", "[{}] ACQUIRED pending.lock @ update_loop/final_unsent, blocks_accumulated={}", thread_name(), pending.blocks_accumulated);
-        let remaining = std::mem::replace(&mut *pending, PendingUpdate::new(&[]));
-        if !remaining.archive_update.is_empty() {
-            apply_pending_update(&remaining, &archive, &mut maps_store)?;
+        let batch = {
+            let _drain_guard = accumulator.drained_mutex.lock();
+            let mut pending = accumulator.pending.lock();
+            // tracing::trace!(target: "lock", "[{}] ACQUIRED pending.lock @ update_loop/final_unsent, blocks_accumulated={}", thread_name(), pending.blocks_accumulated);
+            let remaining = std::mem::replace(&mut *pending, PendingUpdate::new(&[]));
+            if remaining.archive_update.is_empty() {
+                None
+            } else {
+                let batch = Arc::new(remaining);
+                accumulator.in_flight.write().push(Arc::clone(&batch));
+                Some(batch)
+            }
+        };
+        if let Some(batch) = batch {
+            let result = apply_batch_and_track(&accumulator, &batch, &archive, &mut maps_store);
+            if let Err(error) = result {
+                tracing::error!("update_loop final pending batch error: {:?}", error);
+                accumulator.record_commit_loop_error(format!("{error:#}"));
+                accumulator.complete_batch(&batch);
+                return Err(error);
+            }
+            accumulator.complete_batch(&batch);
         }
         // tracing::trace!(target: "lock", "[{}] RELEASING pending.lock @ update_loop/final_unsent", thread_name());
     }
@@ -1629,6 +1821,82 @@ mod tests {
             anchor_thread_id: thread(seed),
             cross_thread_refs: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn final_flush_rejects_unreleased_deferred_batches() {
+        let deferred = std::collections::VecDeque::from([Arc::new(PendingUpdate::new(&[]))]);
+
+        let error = ensure_no_deferred_batches_before_final_flush(&deferred)
+            .expect_err("final flush must not overtake deferred batches");
+
+        assert!(error.to_string().contains("deferred durable account batches"));
+    }
+
+    #[test]
+    fn final_flush_rejects_requested_snapshot_gate() {
+        let accumulator = ArchiveUpdateAccumulator::new(1, &[], None);
+        let anchor = anchor(3);
+        *accumulator.pin_state.lock() = SnapshotPinState::Requested(anchor);
+
+        let error = ensure_no_snapshot_gate_before_final_flush(&accumulator)
+            .expect_err("final flush must not bypass requested snapshot gate");
+
+        assert!(error.to_string().contains("active snapshot gate"));
+    }
+
+    #[test]
+    fn final_flush_rejects_pinned_snapshot_gate() {
+        let accumulator = ArchiveUpdateAccumulator::new(1, &[], None);
+        let anchor = anchor(4);
+        *accumulator.pin_state.lock() = SnapshotPinState::Pinned { active: anchor, next: None };
+
+        let error = ensure_no_snapshot_gate_before_final_flush(&accumulator)
+            .expect_err("final flush must not bypass pinned snapshot gate");
+
+        assert!(error.to_string().contains("defer_past_anchor=true"));
+    }
+
+    #[test]
+    fn wait_for_drain_fails_fast_on_commit_loop_error() {
+        let accumulator = ArchiveUpdateAccumulator::new(1, &[], None);
+        accumulator.in_flight.write().push(Arc::new(PendingUpdate::new(&[])));
+        accumulator.record_commit_loop_error("commit loop failed".to_string());
+
+        assert!(!accumulator.wait_for_drain(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn wait_for_drain_times_out_when_sent_batch_is_not_consumed() {
+        let thread_id = thread(1);
+        let block_0 = BlockIdentifier::new([0; 32]);
+        let block_1 = BlockIdentifier::new([1; 32]);
+        let control = ThreadControlState::new_idle(thread_id, block_0);
+        let accumulator = ArchiveUpdateAccumulator::new(1, &[control], None);
+
+        {
+            let mut pending = accumulator.pending.lock();
+            pending.archive_update.transition_thread(thread_id, block_0, block_1);
+            pending.blocks_accumulated = 1;
+            accumulator.send_batch(&mut pending);
+        }
+
+        assert!(!accumulator.wait_for_drain(Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn send_batch_fails_fast_when_commit_loop_receiver_is_dropped() {
+        let accumulator = ArchiveUpdateAccumulator::new(1, &[], None);
+        let batch_rx = accumulator.take_batch_receiver().unwrap();
+        drop(batch_rx);
+
+        let mut pending = PendingUpdate::new(&[]);
+        pending.blocks_accumulated = 1;
+        accumulator.send_batch(&mut pending);
+
+        assert!(accumulator.commit_loop_failed());
+        assert!(accumulator.in_flight.read().is_empty());
+        assert!(!accumulator.wait_for_drain(Duration::from_secs(60)));
     }
 
     #[test]
@@ -1721,7 +1989,8 @@ mod tests {
 
     #[test]
     fn pin_request_guard_drop_cancels_requested_pin() {
-        let accumulator = Arc::new(ArchiveUpdateAccumulator::new(1, &[], None));
+        let accumulator = ArchiveUpdateAccumulator::new(1, &[], None);
+        let accumulator = Arc::new(accumulator);
         let anchor = anchor(9);
 
         let guard = accumulator.request_snapshot_pin(anchor.clone());
@@ -1737,7 +2006,8 @@ mod tests {
 
     #[test]
     fn cancel_snapshot_pin_preserves_non_matching_request() {
-        let accumulator = Arc::new(ArchiveUpdateAccumulator::new(1, &[], None));
+        let accumulator = ArchiveUpdateAccumulator::new(1, &[], None);
+        let accumulator = Arc::new(accumulator);
         let active = anchor(1);
         let other = anchor(2);
 
@@ -1756,7 +2026,8 @@ mod tests {
 
     #[test]
     fn acquire_timeout_cancels_boundary_reached_pin() {
-        let accumulator = Arc::new(ArchiveUpdateAccumulator::new(1, &[], None));
+        let accumulator = ArchiveUpdateAccumulator::new(1, &[], None);
+        let accumulator = Arc::new(accumulator);
         let anchor = anchor(7);
         let guard = accumulator.request_snapshot_pin(anchor.clone());
         std::mem::forget(guard);
@@ -1790,7 +2061,8 @@ mod tests {
 
     #[test]
     fn cancellable_acquire_does_not_cancel_on_poll_slice_timeout() {
-        let accumulator = Arc::new(ArchiveUpdateAccumulator::new(1, &[], None));
+        let accumulator = ArchiveUpdateAccumulator::new(1, &[], None);
+        let accumulator = Arc::new(accumulator);
         let anchor = anchor(8);
         let guard = accumulator.request_snapshot_pin(anchor.clone());
         std::mem::forget(guard);

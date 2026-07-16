@@ -1,0 +1,327 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"deposit_identifier_hash","type":"uint256"},
+				{"name":"token_type","type":"uint32"},
+				{"name":"oracle_event_lists","type":"address[]"},
+				{"name":"oracle_fees","type":"uint128[]"},
+				{"name":"initialStakes","type":"uint128[]"},
+				{"name":"orderBookCode","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "rejectEvent",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "approveEvent",
+			"inputs": [
+				{"name":"oracle_pubkey","type":"uint256"},
+				{"name":"outcomeNames","type":"map(uint32,string)"},
+				{"name":"describe","type":"string"},
+				{"name":"name","type":"string"},
+				{"name":"trustAddr","type":"optional(uint256)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "acceptStake",
+			"inputs": [
+				{"name":"outcomeId","type":"uint32"},
+				{"name":"stakeAmount","type":"uint128"},
+				{"name":"deposit_identifier_hash","type":"uint256"},
+				{"name":"bet_type","type":"uint8"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "cancelStake",
+			"inputs": [
+				{"name":"stakeAmount","type":"uint128[]"},
+				{"name":"debtAmount","type":"uint128[]"},
+				{"name":"couponsAmount","type":"uint128[]"},
+				{"name":"deposit_identifier_hash","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "splitFullSet",
+			"inputs": [
+				{"name":"collateral","type":"uint128"},
+				{"name":"deposit_identifier_hash","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "mergeFullSet",
+			"inputs": [
+				{"name":"amount","type":"uint128[]"},
+				{"name":"deposit_identifier_hash","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "claim",
+			"inputs": [
+				{"name":"stakeAmount","type":"uint128[]"},
+				{"name":"debtAmount","type":"uint128[]"},
+				{"name":"couponsAmount","type":"uint128[]"},
+				{"name":"deposit_identifier_hash","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "submitSetTimings",
+			"inputs": [
+				{"name":"resultStart","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "submitResolve",
+			"inputs": [
+				{"name":"outcomeId","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "submitCancelEvent",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"name","type":"string"},
+				{"name":"token_type","type":"uint32"},
+				{"name":"event_id","type":"uint256"},
+				{"name":"oracle_list_hash","type":"uint256"},
+				{"name":"deployer","type":"address"},
+				{"name":"privateNoteCodeHash","type":"uint256"},
+				{"name":"totalPool","type":"uint128"},
+				{"name":"approved","type":"bool"},
+				{"name":"numOutcomes","type":"uint32"},
+				{"name":"resolvedOutcome","type":"optional(uint32)"},
+				{"name":"stakeStart","type":"uint64"},
+				{"name":"stakeEnd","type":"uint64"},
+				{"name":"resultStart","type":"uint64"},
+				{"name":"resultEnd","type":"uint64"},
+				{"name":"isCancelled","type":"bool"},
+				{"name":"numberOfOracleEvents","type":"uint128"},
+				{"name":"approvedOracleEvents","type":"uint128"},
+				{"name":"typedOutcomePools","type":"map(uint32,map(uint8,uint128))"},
+				{"name":"outcomeNames","type":"map(uint32,string)"},
+				{"name":"creatorFee","type":"uint128"},
+				{"name":"frozen","type":"bool"},
+				{"name":"baseTotalPool","type":"uint128"},
+				{"name":"profitToClean","type":"uint128"}
+			]
+		},
+		{
+			"name": "getOrderBookAddress",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"orderBookAddress","type":"address"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
+		}
+	],
+	"events": [
+		{
+			"name": "StakeAccepted",
+			"inputs": [
+				{"name":"note","type":"address"},
+				{"name":"outcomeId","type":"uint32"},
+				{"name":"amount","type":"uint128"},
+				{"name":"bet_type","type":"uint8"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "ApprovedByOracle",
+			"inputs": [
+				{"name":"oracleEventList","type":"address"},
+				{"name":"oraclePubkey","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "Resolved",
+			"inputs": [
+				{"name":"outcomeId","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "ClaimProcessed",
+			"inputs": [
+				{"name":"note","type":"address"},
+				{"name":"payout","type":"uint128"},
+				{"name":"win","type":"bool"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "NetworkFeeBurned",
+			"inputs": [
+				{"name":"amount","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "TimingsSet",
+			"inputs": [
+				{"name":"stakeStart","type":"uint64"},
+				{"name":"stakeEnd","type":"uint64"},
+				{"name":"resultStart","type":"uint64"},
+				{"name":"resultEnd","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "NumOutcomesSet",
+			"inputs": [
+				{"name":"numOutcomes","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "EventCancelled",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "PMPCancelled",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "CreatorFeeCollected",
+			"inputs": [
+				{"name":"fee","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "PoolsFrozen",
+			"inputs": [
+				{"name":"baseTotalPool","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "SplitProcessed",
+			"inputs": [
+				{"name":"note","type":"address"},
+				{"name":"collateral","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "MergeProcessed",
+			"inputs": [
+				{"name":"note","type":"address"},
+				{"name":"collateral","type":"uint128"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"fields": [
+		{"init":true,"name":"_pubkey","type":"uint256"},
+		{"init":false,"name":"_timestamp","type":"uint64"},
+		{"init":false,"name":"_constructorFlag","type":"bool"},
+		{"init":false,"name":"_name","type":"string"},
+		{"init":false,"name":"_describe","type":"string"},
+		{"init":true,"name":"_token_type","type":"uint32"},
+		{"init":true,"name":"_event_id","type":"uint256"},
+		{"init":true,"name":"_oracle_list_hash","type":"uint256"},
+		{"init":false,"name":"_deployer","type":"address"},
+		{"init":false,"name":"_PrivateNoteCode","type":"cell"},
+		{"init":false,"name":"_totalPool","type":"uint128"},
+		{"init":false,"name":"_typedOutcomePools","type":"map(uint32,map(uint8,uint128))"},
+		{"init":false,"name":"_typedOutcomeCounts","type":"map(uint32,map(uint8,uint128))"},
+		{"init":false,"name":"_totalCouponPool","type":"uint128"},
+		{"init":false,"name":"_totalCleanPool","type":"uint128"},
+		{"init":false,"name":"_totalDebtPool","type":"uint128"},
+		{"init":false,"name":"_couponWinCoef","type":"uint128"},
+		{"init":false,"name":"_debtWinCoef","type":"uint128"},
+		{"init":false,"name":"_totalWinPool","type":"uint128"},
+		{"init":false,"name":"_profitToClean","type":"uint128"},
+		{"init":false,"name":"_creatorFee","type":"uint128"},
+		{"init":false,"name":"_resolvedOutcome","type":"optional(uint32)"},
+		{"init":false,"name":"_approved","type":"bool"},
+		{"init":false,"name":"_numOutcomes","type":"uint32"},
+		{"init":false,"name":"_outcomeNames","type":"map(uint32,string)"},
+		{"init":false,"name":"_stakeStart","type":"uint64"},
+		{"init":false,"name":"_resultStart","type":"uint64"},
+		{"init":false,"name":"_isCancelled","type":"bool"},
+		{"init":false,"name":"_oracleEventsConfirmed","type":"map(uint256,bool)"},
+		{"init":false,"name":"_oracleEventsPubkeys","type":"map(uint256,bool)"},
+		{"init":false,"name":"_oracleEventsAddress","type":"map(uint256,uint256)"},
+		{"init":false,"name":"_numberOfOracleEvents","type":"uint128"},
+		{"init":false,"name":"_approvedOracleEvents","type":"uint128"},
+		{"init":false,"name":"_timingsOracleHash","type":"map(uint256,uint256)"},
+		{"init":false,"name":"_timingsHashCount","type":"map(uint256,uint128)"},
+		{"init":false,"name":"_resolveOracleHash","type":"map(uint256,uint256)"},
+		{"init":false,"name":"_resolveHashCount","type":"map(uint256,uint128)"},
+		{"init":false,"name":"_cancelOracleVoted","type":"map(uint256,bool)"},
+		{"init":false,"name":"_cancelVoteCount","type":"uint128"},
+		{"init":false,"name":"_initialStakes","type":"uint128[]"},
+		{"init":false,"name":"_frozen","type":"bool"},
+		{"init":false,"name":"_baseTotalPool","type":"uint128"},
+		{"init":false,"name":"_frozenCleanPools","type":"map(uint32,uint128)"},
+		{"init":false,"name":"_frozenDebtPools","type":"map(uint32,uint128)"},
+		{"init":false,"name":"_frozenCouponWinCoef","type":"map(uint32,uint128)"},
+		{"init":false,"name":"_frozenDebtWinCoef","type":"map(uint32,uint128)"},
+		{"init":false,"name":"_frozenProfitToClean","type":"map(uint32,uint128)"},
+		{"init":false,"name":"_frozenCreatorFee","type":"map(uint32,uint128)"},
+		{"init":false,"name":"_maxFixedObligation","type":"uint128"},
+		{"init":false,"name":"_orderBookCode","type":"cell"}
+	]
+}

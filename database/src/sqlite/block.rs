@@ -74,6 +74,34 @@ pub struct ArchBlock {
     pub producer_id: Option<String>,
     pub height: [u8; 8],
     pub envelope_hash: [u8; 32],
+    /// Root of tracked external outbound messages committed by block Merkle
+    /// leaf L8 and by the Acki Nacki block leaf hash used by historical proofs.
+    #[serde(default)]
+    pub tracked_ext_out_messages_root: [u8; 32],
+    /// Canonically ordered tracked external outbound message hashes committed
+    /// by `tracked_ext_out_messages_root`.
+    ///
+    /// Format: `entry_count: u32_be`, then for each entry:
+    /// `routing: [u8; 64]` (`dapp_id || account_id`),
+    /// `message_count: u32_be`, then `message_count * [u8; 32]`.
+    #[serde(default)]
+    pub tracked_ext_out_message_hashes: Vec<u8>,
+    /// Acki Nacki block-ID Merkle leaves, packed as `L0 || ... || L15`
+    /// (16 * 32 bytes = 512 B total).
+    #[serde(default)]
+    pub block_merkle_leaves: Vec<u8>,
+    /// Encoded `CommonSection.history_proofs` map.
+    /// Format: `n: u8` then `n * (layer: u8, root_hash: [u8; 32])`.
+    /// `n` is the number of present layers (0 on non-key blocks). Total
+    /// length = 1 + 33 * n bytes; always ≤ 331.
+    #[serde(default)]
+    pub history_proofs: Vec<u8>,
+    /// Ordered block references committed by Merkle leaf L7.
+    ///
+    /// Format: `ref_count: u32_be || ref_count * [u8; 32]`.
+    /// Entry 0 is the mandatory parent block ID, entries 1.. are `CommonSection.refs`.
+    #[serde(default)]
+    pub proof_block_refs: Vec<u8>,
 }
 
 with_prefix!(prefix_prev_ref "prev_ref_");

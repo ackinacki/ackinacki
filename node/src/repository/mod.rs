@@ -114,6 +114,7 @@ pub trait Repository {
         block_state: BlockState,
         state_sync_service: Option<Arc<impl StateSyncService<Repository = RepositoryImpl>>>,
         finalizing_block_id: BlockIdentifier,
+        update_history_data: bool,
     ) -> anyhow::Result<()>;
 
     //    fn is_block_finalized(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>>;

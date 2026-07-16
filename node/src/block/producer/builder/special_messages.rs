@@ -76,7 +76,7 @@ impl BlockBuilder {
                     // If message destination matches current thread, save it in cache to possibly execute in the current block
                     let entry = self
                         .produced_internal_messages_to_the_current_thread
-                        .entry(dst_addr)
+                        .entry(destination_routing)
                         .or_default();
                     entry.push((
                         MessageIdentifier::from(&wrapped_message),

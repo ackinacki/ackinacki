@@ -68,6 +68,28 @@ pub struct Block {
     pub thread_id: Option<String>,
     pub height: Option<Vec<u8>>,
     pub envelope_hash: Option<Vec<u8>>,
+    /// CommonSection.tracked_ext_out_messages_root (32 bytes).
+    /// NULL on legacy rows produced before the archive column was added.
+    pub tracked_ext_out_messages_root: Option<Vec<u8>>,
+    /// Encoded canonically ordered tracked external outbound message hashes committed by
+    /// `tracked_ext_out_messages_root`.
+    ///
+    /// Format: `entry_count: u32_be`, then for each entry:
+    /// `routing: [u8; 64]` (`dapp_id || account_id`),
+    /// `message_count: u32_be`, then `message_count * [u8; 32]`.
+    /// NULL on legacy rows produced before the archive column was added.
+    pub tracked_ext_out_message_hashes: Option<Vec<u8>>,
+    /// Acki Nacki block-ID Merkle leaves packed as `L0 || ... || L15` (512 bytes total).
+    /// NULL on legacy rows produced before migration `008-block_id`.
+    pub block_merkle_leaves: Option<Vec<u8>>,
+    /// Encoded `CommonSection.history_proofs`:
+    ///   `n: u8 || n * (layer: u8, root_hash: [u8; 32])`.
+    /// NULL on legacy rows. Empty payload (`[0u8]`) on non-key blocks.
+    pub history_proofs: Option<Vec<u8>>,
+    /// Ordered block references committed by block Merkle leaf L7.
+    /// Format: `ref_count: u32_be || ref_count * [u8; 32]`.
+    /// NULL on legacy rows.
+    pub proof_block_refs: Option<Vec<u8>>,
 }
 
 struct HexBytesOpt<'a>(Option<&'a [u8]>);
@@ -105,6 +127,7 @@ impl Block {
         "after_split",
         "aggregated_signature",
         "before_split",
+        "block_merkle_leaves",
         "chain_order",
         "data",
         "end_lt",
@@ -119,10 +142,12 @@ impl Block {
         "gen_validator_list_hash_short",
         "global_id",
         "height",
+        "history_proofs",
         "in_msgs",
         "key_block",
         "min_ref_mc_seqno",
         "parent",
+        "proof_block_refs",
         "prev_alt_ref_seq_no",
         "prev_alt_ref_end_lt",
         "prev_alt_ref_file_hash",
@@ -140,6 +165,8 @@ impl Block {
         "signature_occurrences",
         "start_lt",
         "thread_id",
+        "tracked_ext_out_message_hashes",
+        "tracked_ext_out_messages_root",
         "tr_count",
         "version",
         "want_merge",
@@ -160,7 +187,7 @@ impl Block {
         for field in fields {
             let field = field.as_ref();
             match field {
-                "id" | "hash" => projection.add("id"),
+                "id" | "hash" | "block_id" => projection.add("id"),
                 "status" | "status_name" => projection.add("status"),
                 "prev_ref" => projection.extend([
                     "prev_ref_seq_no",
@@ -179,6 +206,7 @@ impl Block {
                 "gen_utime_string" => projection.add("gen_utime"),
                 "directives" => projection.add("share_state_resource_address"),
                 "attestations" => projection.add("id"),
+                "block_merkle_tree_leaves" => projection.add("block_merkle_leaves"),
                 "account_blocks" | "created_by" | "master" | "master_ref" | "master_seq_no"
                 | "prev_vert_alt_ref" | "prev_vert_ref" | "rand_seed" | "value_flow"
                 | "vert_seq_no" => {}
@@ -417,6 +445,29 @@ mod tests {
     }
 
     #[test]
+    fn block_projection_maps_merkle_and_history_fields() {
+        let projection = Block::projection_for_fields([
+            "block_id",
+            "block_merkle_tree_leaves",
+            "history_proofs",
+            "proof_block_refs",
+            "tracked_ext_out_messages_root",
+            "tracked_ext_out_message_hashes",
+        ]);
+        assert_eq!(
+            projection.columns(),
+            &[
+                "id",
+                "block_merkle_leaves",
+                "history_proofs",
+                "proof_block_refs",
+                "tracked_ext_out_messages_root",
+                "tracked_ext_out_message_hashes",
+            ]
+        );
+    }
+
+    #[test]
     fn block_projection_adds_id_for_attestations_with_other_fields() {
         let projection = Block::projection_for_fields(["chain_order", "attestations"]);
         assert_eq!(projection.columns(), &["chain_order", "id"]);
@@ -441,5 +492,11 @@ mod tests {
         assert!(projection.columns().contains(&"root_hash"));
         assert!(projection.columns().contains(&"data"));
         assert!(projection.columns().contains(&"in_msgs"));
+        assert!(projection.columns().contains(&"id"));
+        assert!(projection.columns().contains(&"block_merkle_leaves"));
+        assert!(projection.columns().contains(&"history_proofs"));
+        assert!(projection.columns().contains(&"proof_block_refs"));
+        assert!(projection.columns().contains(&"tracked_ext_out_messages_root"));
+        assert!(projection.columns().contains(&"tracked_ext_out_message_hashes"));
     }
 }

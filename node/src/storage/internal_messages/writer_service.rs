@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-use node_types::AccountIdentifier;
+use node_types::AccountRouting;
 
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::identifier::MessageIdentifier;
@@ -13,7 +13,7 @@ use crate::storage::MessageDurableStorage;
 #[derive(Clone)]
 pub struct MessageDBWriterService {
     sender: std::sync::mpsc::Sender<
-        HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+        HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     >,
     handler: Arc<JoinHandle<anyhow::Result<()>>>,
 }
@@ -88,7 +88,7 @@ impl MessageDBWriterService {
 
     pub fn write(
         &self,
-        messages: HashMap<AccountIdentifier, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+        messages: HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(!self.handler.is_finished(), "Message storage writer should not stop");
         self.sender.send(messages)?;

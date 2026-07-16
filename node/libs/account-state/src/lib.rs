@@ -40,6 +40,8 @@ pub use thread_accounts::DurableThreadAccountsStateDiffSerDe;
 pub use thread_accounts::KVRecord;
 pub use thread_accounts::KVStore;
 pub use thread_accounts::PinHandle;
+pub use thread_accounts::PinRequestGuard;
+pub use thread_accounts::StagedArchiveEpoch;
 pub use thread_accounts::ThreadAccountMap;
 pub use thread_accounts::ThreadAccountMapRepository;
 pub use thread_accounts::ThreadAccountsApplyTimings;

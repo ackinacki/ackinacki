@@ -199,6 +199,7 @@ impl std::fmt::Debug for TemporaryBlockState {
             .field("temporary_id", &self.temporary_id)
             .field("thread_identifier", &self.thread_identifier)
             .field("block_seq_no", &self.block_seq_no)
+            .field("promoted_block_id", &self.promoted_block_id)
             .finish()
     }
 }

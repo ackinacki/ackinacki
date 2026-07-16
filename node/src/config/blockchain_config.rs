@@ -11,6 +11,7 @@ use tvm_block::GetRepresentationHash;
 use tvm_executor::BlockchainConfig;
 
 pub static BLOCKCHAIN_CONFIG: &str = include_str!("../../blockchain.conf.json");
+pub static OLD_BLOCKCHAIN_CONFIG: &str = include_str!("../../blockchain.conf.json.old");
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize, Hash)]
 #[serde(transparent)]
@@ -54,6 +55,9 @@ lazy_static::lazy_static!(
     pub static ref DEFAULT_BLOCKCAHIN_CONFIG_HASH: BlockchainConfigHash = {
         generate_config_hash(BLOCKCHAIN_CONFIG)
     };
+    pub static ref OLD_BLOCKCAHIN_CONFIG_HASH: BlockchainConfigHash = {
+        generate_config_hash(OLD_BLOCKCHAIN_CONFIG)
+    };
 );
 
 #[derive(Clone)]
@@ -77,7 +81,16 @@ pub fn load_blockchain_config() -> anyhow::Result<BlockchainConfigRead> {
     let new = BlockchainConfig::with_config(config_params)
         .map_err(|e| anyhow::format_err!("Failed to create blockchain config: {e}"))?;
 
+    let old_map = serde_json::from_str::<serde_json::Map<String, Value>>(OLD_BLOCKCHAIN_CONFIG)?;
+    let old_config_params = tvm_block_json::parse_config(&old_map)
+        .expect("Failed to parse old blockchain config params");
+    let old = BlockchainConfig::with_config(old_config_params)
+        .map_err(|e| anyhow::format_err!("Failed to create old blockchain config: {e}"))?;
+
     Ok(BlockchainConfigRead {
-        bc_configs: HashMap::from_iter([(DEFAULT_BLOCKCAHIN_CONFIG_HASH.clone(), Arc::new(new))]),
+        bc_configs: HashMap::from_iter([
+            (DEFAULT_BLOCKCAHIN_CONFIG_HASH.clone(), Arc::new(new)),
+            (OLD_BLOCKCAHIN_CONFIG_HASH.clone(), Arc::new(old)),
+        ]),
     })
 }

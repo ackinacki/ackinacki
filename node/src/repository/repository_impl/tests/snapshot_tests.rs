@@ -20,6 +20,7 @@ use anyhow::Context;
 use node_types::BlockIdentifier;
 use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
+use versioned_struct::Transitioning;
 
 use super::super::AncestorBlockData;
 use super::super::BlockStateRepository;
@@ -522,13 +523,13 @@ fn read_snapshot_finalized_block(
             bincode::deserialize_from(&mut *reader)?;
         let mut prefix_bytes = vec![0u8; header.prefix_len as usize];
         reader.read_exact(&mut prefix_bytes)?;
-        let snapshot: super::super::StreamedThreadSnapshot = bincode::deserialize(&prefix_bytes)?;
+        let snapshot = super::super::deserialize_streamed_thread_snapshot_prefix(&prefix_bytes)?;
         return Ok(Some(snapshot.finalized_block));
     }
 
     let mut legacy_bytes = probe;
     reader.read_to_end(&mut legacy_bytes)?;
-    let snapshot: ThreadSnapshot = bincode::deserialize(&legacy_bytes)?;
+    let snapshot = ThreadSnapshot::deserialize_data_compat(&legacy_bytes)?.0;
     Ok(Some(snapshot.finalized_block().clone()))
 }
 
@@ -839,6 +840,7 @@ fn test_repository_impl_export_durable_snapshot_archive() -> anyhow::Result<()> 
             parent_ancestor_blocks_finalization_checkpoints,
         )
         .block_protocol_version_state(block_protocol_version_state)
+        .history_data_snapshot(Default::default())
         .durable_state_snapshot(None)
         .finalization_chain(vec![])
         .build();

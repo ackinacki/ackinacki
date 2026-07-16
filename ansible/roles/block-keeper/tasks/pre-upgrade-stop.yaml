@@ -10,6 +10,20 @@
 - name: Node graceful shutdown step 1
   include_tasks: graceful-shutdown.yaml
 
+- name: Verify graceful shutdown threshold
+  ansible.builtin.assert:
+    that:
+      - graceful_shutdown_success_count | int >= graceful_shutdown_required_count | int
+    success_msg: "Graceful shutdown threshold passed: {{ graceful_shutdown_success_count }}/{{ ansible_play_batch | length }} hosts, required {{ graceful_shutdown_required_count }}."
+    fail_msg: "Graceful shutdown threshold failed: {{ graceful_shutdown_success_count }}/{{ ansible_play_batch | length }} hosts, required {{ graceful_shutdown_required_count }}."
+  vars:
+    graceful_shutdown_success_count: "{{ ansible_play_batch | map('extract', hostvars, 'node_graceful_shutdown_ok') | select('equalto', true) | list | length }}"
+    graceful_shutdown_required_count: "{{ (((ansible_play_batch | length) * (GRACEFUL_SHUTDOWN_MIN_SUCCESS_PERCENT | int) + 99) // 100) | int }}"
+  run_once: true
+  when:
+    - (GRACEFUL_SHUTDOWN_MIN_SUCCESS_PERCENT | default(100) | int) < 100
+    - GS_WAIT is not defined or GS_WAIT
+
 - name: Node graceful shutdown step 2 (for compose upgrade)
   ansible.builtin.shell:
     chdir: "{{ BK_DIR }}"

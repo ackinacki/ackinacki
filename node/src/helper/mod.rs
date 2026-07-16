@@ -27,6 +27,7 @@ use opentelemetry_sdk::Resource;
 use telemetry_utils::get_metrics_endpoint;
 use telemetry_utils::init_meter_provider;
 use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::filter::FilterExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::Layer;
@@ -61,8 +62,35 @@ fn verbose_filter() -> tracing_subscriber::EnvFilter {
             transport_layer=info,\
             monit=trace,\
             ext_messages=trace,\
-            mem=info"
+            mem=off"
     ))
+}
+
+fn rust_log_enables_mem() -> bool {
+    let Ok(rust_log) = std::env::var("RUST_LOG") else {
+        return false;
+    };
+    rust_log_directives_enable_mem(&rust_log)
+}
+
+// Extracted to avoid mutating RUST_LOG in tests.
+fn rust_log_directives_enable_mem(rust_log: &str) -> bool {
+    let mut explicit_mem = None;
+    for directive in rust_log.split(',').map(str::trim).filter(|directive| !directive.is_empty()) {
+        if directive == "mem" {
+            explicit_mem = Some(true);
+            continue;
+        }
+
+        if let Some((target, level)) = directive.rsplit_once('=') {
+            if target.trim() == "mem" {
+                explicit_mem = Some(!level.trim().eq_ignore_ascii_case("off"));
+            }
+            continue;
+        }
+    }
+
+    explicit_mem.unwrap_or(false)
 }
 
 pub fn init_tracing() -> (Option<Metrics>, Vec<WorkerGuard>) {
@@ -71,7 +99,8 @@ pub fn init_tracing() -> (Option<Metrics>, Vec<WorkerGuard>) {
     // } else {
     // EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("error,monit=trace"))
     // };
-    let filter = verbose_filter();
+    let filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| verbose_filter());
 
     // According to OpenTelemetry Specification:
     // The following environment variables configure the OTLP exporter:
@@ -96,19 +125,32 @@ pub fn init_tracing() -> (Option<Metrics>, Vec<WorkerGuard>) {
         .with_thread_ids(true)
         .with_ansi(false)
         .with_writer(non_blocking)
-        .with_filter(filter);
+        .with_filter(
+            filter.and(tracing_subscriber::filter::filter_fn(|meta| meta.target() != "mem")),
+        );
 
-    // Memory tracking layer — writes target "mem" to a dedicated file
-    let mem_appender = tracing_appender::rolling::daily(".", "mem.log");
-    let (mem_non_blocking, mem_guard) = tracing_appender::non_blocking(mem_appender);
-    guards.push(mem_guard);
+    // Memory tracking layer — writes target "mem" to a dedicated file when
+    // explicitly enabled by RUST_LOG.
+    let mem_layer = if rust_log_enables_mem() {
+        let mem_appender = tracing_appender::rolling::daily(".", "mem.log");
+        let (mem_non_blocking, mem_guard) = tracing_appender::non_blocking(mem_appender);
+        guards.push(mem_guard);
 
-    let mem_layer = tracing_subscriber::fmt::layer()
-        .compact()
-        .with_thread_ids(true)
-        .with_ansi(false)
-        .with_writer(mem_non_blocking)
-        .with_filter(tracing_subscriber::filter::filter_fn(|meta| meta.target() == "mem"));
+        Some(
+            tracing_subscriber::fmt::layer()
+                .compact()
+                .with_thread_ids(true)
+                .with_ansi(false)
+                .with_writer(mem_non_blocking)
+                .with_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| verbose_filter())
+                        .and(tracing_subscriber::filter::filter_fn(|meta| meta.target() == "mem")),
+                ),
+        )
+    } else {
+        None
+    };
 
     let registry = tracing_subscriber::registry().with(fmt_layer).with(mem_layer);
 
@@ -238,4 +280,31 @@ pub fn calc_file_hash<P: AsRef<Path>>(path: P) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     Ok(hex::encode(hasher.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rust_log_directives_enable_mem;
+
+    #[test]
+    fn rust_log_mem_file_disabled_without_mem_or_global_level() {
+        assert!(!rust_log_directives_enable_mem(""));
+        assert!(!rust_log_directives_enable_mem("none,node=trace"));
+        assert!(!rust_log_directives_enable_mem("node=trace,gossip=debug"));
+    }
+
+    #[test]
+    fn rust_log_mem_file_enabled_only_by_mem_target() {
+        assert!(rust_log_directives_enable_mem("mem"));
+        assert!(rust_log_directives_enable_mem("none,node=trace,mem=info"));
+        assert!(rust_log_directives_enable_mem("mem=trace"));
+    }
+
+    #[test]
+    fn rust_log_mem_file_disabled_by_explicit_mem_off() {
+        assert!(!rust_log_directives_enable_mem("trace"));
+        assert!(!rust_log_directives_enable_mem("info,node=trace"));
+        assert!(!rust_log_directives_enable_mem("trace,mem=off"));
+        assert!(!rust_log_directives_enable_mem("mem=OFF,node=trace"));
+    }
 }

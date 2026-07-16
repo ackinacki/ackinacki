@@ -197,6 +197,35 @@ mod tests {
         )
     }
 
+    fn column_exists(
+        conn: &Connection,
+        table_name: &str,
+        column_name: &str,
+    ) -> rusqlite::Result<bool> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table_name})"))?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let name: String = row.get(1)?;
+            if name == column_name {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn insert_test_block(
+        conn: &Connection,
+        id: &str,
+        block_merkle_leaves_len: usize,
+    ) -> rusqlite::Result<usize> {
+        let block_merkle_leaves = vec![0u8; block_merkle_leaves_len];
+        conn.execute(
+            "INSERT INTO blocks (id, status, seq_no, parent, block_merkle_leaves)
+             VALUES (?1, 2, 1, 'parent', ?2)",
+            (id, block_merkle_leaves),
+        )
+    }
+
     #[test]
     fn bm_archive_v3_migration_up_and_down_creates_and_drops_new_objects() -> anyhow::Result<()> {
         let root = testdir!();
@@ -278,6 +307,50 @@ mod tests {
         let conn = Connection::open(&db.path)?;
         assert!(!object_exists(&conn, "index", "index_attestations_source_block_id")?);
         assert!(!object_exists(&conn, "index", "index_blocks_thread_chain_order")?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn bm_archive_v8_migration_adds_final_poseidon_columns() -> anyhow::Result<()> {
+        let root = testdir!();
+        let db = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &root);
+        let opts = DbMaintenanceOptions { silent: true };
+
+        db.migrate(MigrateTo::Version(7), opts.clone())?;
+        let conn = Connection::open(&db.path)?;
+        assert!(!column_exists(&conn, "blocks", "block_merkle_leaves")?);
+        assert!(!column_exists(&conn, "blocks", "history_proofs")?);
+        assert!(!column_exists(&conn, "blocks", "tracked_ext_out_messages_root")?);
+        assert!(!column_exists(&conn, "blocks", "tracked_ext_out_message_hashes")?);
+        assert!(!column_exists(&conn, "blocks", "proof_block_refs")?);
+        drop(conn);
+
+        db.migrate(MigrateTo::Version(8), opts.clone())?;
+        let conn = Connection::open(&db.path)?;
+        assert!(column_exists(&conn, "blocks", "block_merkle_leaves")?);
+        assert!(column_exists(&conn, "blocks", "history_proofs")?);
+        assert!(column_exists(&conn, "blocks", "tracked_ext_out_messages_root")?);
+        assert!(column_exists(&conn, "blocks", "tracked_ext_out_message_hashes")?);
+        assert!(column_exists(&conn, "blocks", "proof_block_refs")?);
+        insert_test_block(&conn, "new-512", 512)?;
+        assert!(insert_test_block(&conn, "too-old-256", 256).is_err());
+        drop(conn);
+
+        db.migrate(MigrateTo::Version(7), opts.clone())?;
+        let conn = Connection::open(&db.path)?;
+        assert!(!column_exists(&conn, "blocks", "block_merkle_leaves")?);
+        assert!(!column_exists(&conn, "blocks", "history_proofs")?);
+        assert!(!column_exists(&conn, "blocks", "tracked_ext_out_messages_root")?);
+        assert!(!column_exists(&conn, "blocks", "tracked_ext_out_message_hashes")?);
+        assert!(!column_exists(&conn, "blocks", "proof_block_refs")?);
+        drop(conn);
+
+        db.migrate(MigrateTo::Latest, opts)?;
+        let conn = Connection::open(&db.path)?;
+        let current_version: u32 =
+            conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        assert_eq!(current_version, 8);
 
         Ok(())
     }

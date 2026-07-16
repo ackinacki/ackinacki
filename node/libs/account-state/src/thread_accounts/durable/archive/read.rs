@@ -9,6 +9,7 @@ mod tests {
 
     use crate::thread_accounts::durable::archive::config::ArchiveStoreConfig;
     use crate::thread_accounts::durable::archive::control::*;
+    use crate::thread_accounts::durable::archive::store::ActiveArchiveUpdate;
     use crate::thread_accounts::durable::archive::update::AccumulatedUpdate;
     use crate::thread_accounts::durable::kv_store::in_memory::InMemoryKVStore;
     use crate::thread_accounts::durable::kv_store::KVStore;
@@ -98,7 +99,7 @@ mod tests {
         let mut update = AccumulatedUpdate::new();
         update.transition_thread(tid, block_0, block_1);
         update.insert(routing, ArchiveOperation::UpdateOrInsert(ThreadAccount::default()));
-        let update_arc = Arc::new(update);
+        let update_arc = Arc::new(ActiveArchiveUpdate::new(0, update));
         store.active_updates().write().push(update_arc.clone());
 
         // Read should see the active update's value
@@ -132,7 +133,7 @@ mod tests {
         let mut u2 = AccumulatedUpdate::new();
         u2.transition_thread(tid, block_1, block_2);
         u2.insert(routing, ArchiveOperation::Remove);
-        let update_arc = Arc::new(u2);
+        let update_arc = Arc::new(ActiveArchiveUpdate::new(0, u2));
         store.active_updates().write().push(update_arc.clone());
 
         // Read should see the delete (None)

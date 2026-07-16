@@ -97,12 +97,6 @@ impl BlockIdentifier {
     }
 }
 
-impl From<&BlockIdentifier> for monotree::Hash {
-    fn from(block_id: &BlockIdentifier) -> Self {
-        block_id.0
-    }
-}
-
 #[derive(
     Copy, Debug, Clone, Hash, PartialEq, Eq, Ord, PartialOrd, Default, Serialize, Deserialize,
 )]
@@ -151,6 +145,10 @@ impl AccountRouting {
             self.account_id.set_bit(index - 256);
         }
     }
+
+    pub fn unpack_for_hash(&self) -> ([u8; 32], [u8; 32]) {
+        (self.dapp_id.0, self.account_id.0)
+    }
 }
 
 impl AccountRouting {
@@ -161,7 +159,7 @@ impl AccountRouting {
 
 impl std::fmt::Display for AccountRouting {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.dapp_id.to_hex_string(), self.account_id.to_hex_string())
+        write!(f, "{}::{}", self.dapp_id.to_hex_string(), self.account_id.to_hex_string())
     }
 }
 

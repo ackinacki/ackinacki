@@ -22,6 +22,7 @@ use crate::utilities::guarded::GuardedMut;
 pub fn promote_temporary_to_block_state(
     temp_id: &TemporaryBlockId,
     block_id: BlockIdentifier,
+    block_state: BlockState,
     block_state_repository: &BlockStateRepository,
 ) -> anyhow::Result<BlockState> {
     // ── Step 0: Extract data from temporary (read lock) ──
@@ -70,7 +71,11 @@ pub fn promote_temporary_to_block_state(
         .guarded_mut(|e| e.promote_incomplete_child(snapshot.thread_id, temp_id, block_id))?;
 
     // ── Step 2: Create/fill the real block state ──
-    let block_state = block_state_repository.get(&block_id)?;
+    anyhow::ensure!(
+        block_state.block_identifier() == &block_id,
+        "Promoted block state id mismatch: state={:?}, block={block_id:?}, temp_id={temp_id}",
+        block_state.block_identifier()
+    );
     block_state.guarded_mut(|state| {
         state.set_parent_block_identifier(real_parent_id)?;
         state.set_thread_identifier(snapshot.thread_id)?;

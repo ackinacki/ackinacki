@@ -35,6 +35,10 @@ type Boolean = bool;
 type Int = i32;
 type Float = f64;
 
+const BLOCK_MERKLE_LEAF_COUNT: usize = 16;
+const BLOCK_MERKLE_HASH_SIZE: usize = 32;
+const BLOCK_MERKLE_LEAVES_SIZE: usize = BLOCK_MERKLE_LEAF_COUNT * BLOCK_MERKLE_HASH_SIZE;
+
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
 pub enum BlockProcessingStatusEnum {
     Unknown,
@@ -149,6 +153,28 @@ pub struct BlockAccountBlocks {
     transactions: Option<Vec<BlockAccountBlocksTransactions>>,
 }
 
+/// One entry in `Block.history_proofs`. Produced from the block's
+/// `CommonSection.history_proofs` map.
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(rename_fields = "snake_case")]
+pub struct HistoryProofEntry {
+    /// 1-based layer number (1..=10), strictly contiguous starting at 1.
+    pub layer: Int,
+    /// 32-byte layer root hash, lowercase hex, no `0x` prefix, length 64.
+    pub root_hash: String,
+}
+
+/// One canonically ordered tracked external outbound message-hash group committed by
+/// `Block.tracked_ext_out_messages_root`.
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(rename_fields = "snake_case")]
+pub struct TrackedExtOutMessageHashesEntry {
+    /// 128 lowercase hex chars: `dapp_id || account_id`.
+    pub routing: String,
+    /// Ordered 32-byte external outbound message hashes, lowercase hex.
+    pub message_hashes: Vec<String>,
+}
+
 #[derive(SimpleObject, Clone, Debug)]
 #[graphql(complex, rename_fields = "snake_case")]
 pub struct Block {
@@ -185,6 +211,20 @@ pub struct Block {
     #[graphql(skip)]
     end_lt: Option<String>,
     envelope_hash: Option<String>,
+    /// Root of tracked external outbound messages from the block common section.
+    /// This is one of the three public inputs used to recompute the historical
+    /// block leaf together with `block_id` and `envelope_hash`.
+    tracked_ext_out_messages_root: Option<String>,
+    /// Canonically ordered tracked external outbound message hashes committed by
+    /// `tracked_ext_out_messages_root`.
+    ///
+    /// This field contains message hashes only, not full message BOCs. Use the
+    /// existing message API to fetch message content by hash if needed.
+    ///
+    /// Entries are sorted by `routing`. Each `routing` is `dapp_id || account_id`
+    /// encoded as 128 lowercase hex chars. NULL on legacy rows or malformed
+    /// stored payloads.
+    tracked_ext_out_message_hashes: Option<Vec<TrackedExtOutMessageHashesEntry>>,
     /// Shard block file hash.
     file_hash: String,
     flags: Option<Int>,
@@ -248,6 +288,41 @@ pub struct Block {
     want_split: Option<Boolean>,
     /// int64 workchain identifier.
     workchain_id: Option<i64>,
+    /// Acki Nacki block ID = SHA-256 root of the 16-leaf Merkle tree
+    /// (`AckiNackiBlock::identifier()` / `merkle_block_id`).
+    /// Alias of `id`, exposed as the Acki Nacki block ID.
+    /// Hex string, length 64.
+    block_id: String,
+    /// Ordered Acki Nacki block Merkle leaf hashes.
+    ///
+    /// This field is not the Merkle root. The Merkle root is exposed
+    /// separately as `block_id`.
+    ///
+    /// The database stores the leaves as `L0 || L1 || ... || L15`, but GQL
+    /// returns them as sixteen ordered 32-byte lowercase hex strings:
+    /// - index 0: Poseidon(layer history proof preimage)
+    /// - index 1: SHA-256(bincode(CommonSection))
+    /// - index 2: Poseidon(old BK set commitment)
+    /// - index 3: Poseidon(new BK set commitment)
+    /// - index 4: TVM block representation hash
+    /// - index 5: SHA-256(bincode(durable_state_update))
+    /// - index 6: SHA-256(tx_cnt.to_be_bytes())
+    /// - index 7: Poseidon Merkle root of `proof_block_refs`
+    /// - index 8: `tracked_ext_out_messages_root`
+    /// - indexes 9..15: zero padding
+    ///
+    /// NULL on legacy rows or malformed stored payloads.
+    block_merkle_tree_leaves: Option<Vec<String>>,
+    /// Ordered block references committed by `block_merkle_tree_leaves[7]`.
+    ///
+    /// Entry 0 is the mandatory parent block ID. Entries 1.. are
+    /// `CommonSection.refs` in canonical block order. Empty on legacy rows or
+    /// malformed stored payloads.
+    proof_block_refs: Vec<String>,
+    /// Layer-hash roots from the block's `CommonSection.history_proofs` map.
+    /// Empty array on non-key blocks. On key blocks, layer numbers are
+    /// strictly contiguous starting at 1 (the resolver enforces this).
+    history_proofs: Vec<HistoryProofEntry>,
 }
 
 impl From<db::Block> for Block {
@@ -282,6 +357,13 @@ impl From<db::Block> for Block {
             },
             end_lt: None,
             envelope_hash: block.envelope_hash.as_deref().map(hex_string),
+            tracked_ext_out_messages_root: block
+                .tracked_ext_out_messages_root
+                .as_deref()
+                .map(hex_string),
+            tracked_ext_out_message_hashes: decode_tracked_ext_out_message_hashes(
+                block.tracked_ext_out_message_hashes.as_deref(),
+            ),
             file_hash: "".to_string(),
             flags: block.flags.to_int(),
             gen_catchain_seqno: block.gen_catchain_seqno.to_float(),
@@ -294,7 +376,7 @@ impl From<db::Block> for Block {
                 .map(|dt| dt.format("%Y-%m-%d %H:%M:%S.%z").to_string()),
             gen_validator_list_hash_short: block.gen_validator_list_hash_short.to_float(),
             global_id: block.global_id.to_int(),
-            hash: Some(block.id),
+            hash: Some(block.id.clone()),
             height,
             in_msg_descr: Some(vec![]),
             key_block: block.key_block.to_bool(),
@@ -330,7 +412,218 @@ impl From<db::Block> for Block {
             want_merge: block.want_merge.to_bool(),
             want_split: block.want_split.to_bool(),
             workchain_id: block.workchain_id,
+            block_id: block.id,
+            block_merkle_tree_leaves: decode_block_merkle_tree_leaves(
+                block.block_merkle_leaves.as_deref(),
+            ),
+            proof_block_refs: decode_proof_block_refs(block.proof_block_refs.as_deref()),
+            history_proofs: decode_history_proofs(block.history_proofs.as_deref()),
         }
+    }
+}
+
+fn decode_block_merkle_tree_leaves(leaves: Option<&[u8]>) -> Option<Vec<String>> {
+    let leaves = leaves.filter(|b| b.len() == BLOCK_MERKLE_LEAVES_SIZE)?;
+    Some(leaves.chunks_exact(BLOCK_MERKLE_HASH_SIZE).map(hex_string).collect())
+}
+
+fn decode_proof_block_refs(raw: Option<&[u8]>) -> Vec<String> {
+    decode_proof_block_refs_inner(raw).unwrap_or_default()
+}
+
+fn decode_proof_block_refs_inner(raw: Option<&[u8]>) -> Option<Vec<String>> {
+    let mut cursor = raw?;
+    let ref_count = read_u32_be(&mut cursor)? as usize;
+    if ref_count == 0 {
+        return None;
+    }
+    let mut refs = Vec::with_capacity(ref_count);
+    for _ in 0..ref_count {
+        refs.push(hex_string(take_exact(&mut cursor, 32)?));
+    }
+    cursor.is_empty().then_some(refs)
+}
+
+fn decode_tracked_ext_out_message_hashes(
+    raw: Option<&[u8]>,
+) -> Option<Vec<TrackedExtOutMessageHashesEntry>> {
+    let raw = raw?;
+    let mut cursor = raw;
+    let entry_count = read_u32_be(&mut cursor)? as usize;
+    let mut entries = Vec::with_capacity(entry_count);
+    for _ in 0..entry_count {
+        let routing = take_exact(&mut cursor, 64)?;
+        let message_count = read_u32_be(&mut cursor)? as usize;
+        let mut message_hashes = Vec::with_capacity(message_count);
+        for _ in 0..message_count {
+            message_hashes.push(hex_string(take_exact(&mut cursor, 32)?));
+        }
+        entries
+            .push(TrackedExtOutMessageHashesEntry { routing: hex_string(routing), message_hashes });
+    }
+    cursor.is_empty().then_some(entries)
+}
+
+fn read_u32_be(cursor: &mut &[u8]) -> Option<u32> {
+    let bytes = take_exact(cursor, 4)?;
+    Some(u32::from_be_bytes(bytes.try_into().ok()?))
+}
+
+fn take_exact<'a>(cursor: &mut &'a [u8], len: usize) -> Option<&'a [u8]> {
+    if cursor.len() < len {
+        return None;
+    }
+    let (head, tail) = cursor.split_at(len);
+    *cursor = tail;
+    Some(head)
+}
+
+/// Decode the history_proofs blob format (`n: u8 || n * (layer: u8, hash: [u8; 32])`)
+/// produced by `node/src/database/serialize_block.rs`.
+///
+/// Returns an empty vector on NULL, malformed input, or non-contiguous layer
+/// numbers (the resolver-side check that complements the circuit-side
+/// constraint at `circuit.rs:182–185`).
+fn decode_history_proofs(raw: Option<&[u8]>) -> Vec<HistoryProofEntry> {
+    let Some(raw) = raw else { return Vec::new() };
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    let n = raw[0] as usize;
+    if n > 10 || raw.len() != 1 + n * 33 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let off = 1 + i * 33;
+        let layer = raw[off];
+        // Enforce contiguous 1..=n
+        if layer as usize != i + 1 {
+            return Vec::new();
+        }
+        let hash = &raw[off + 1..off + 33];
+        out.push(HistoryProofEntry { layer: layer as Int, root_hash: hex_string(hash) });
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_block_merkle_tree_leaves() {
+        let mut leaves = Vec::with_capacity(BLOCK_MERKLE_LEAVES_SIZE);
+        for i in 0..BLOCK_MERKLE_LEAF_COUNT as u8 {
+            leaves.extend_from_slice(&[i; BLOCK_MERKLE_HASH_SIZE]);
+        }
+
+        let tree = decode_block_merkle_tree_leaves(Some(&leaves)).expect("tree");
+        assert_eq!(
+            tree,
+            vec![
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "0101010101010101010101010101010101010101010101010101010101010101",
+                "0202020202020202020202020202020202020202020202020202020202020202",
+                "0303030303030303030303030303030303030303030303030303030303030303",
+                "0404040404040404040404040404040404040404040404040404040404040404",
+                "0505050505050505050505050505050505050505050505050505050505050505",
+                "0606060606060606060606060606060606060606060606060606060606060606",
+                "0707070707070707070707070707070707070707070707070707070707070707",
+                "0808080808080808080808080808080808080808080808080808080808080808",
+                "0909090909090909090909090909090909090909090909090909090909090909",
+                "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+                "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+                "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+                "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+                "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e",
+                "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+            ]
+        );
+    }
+
+    #[test]
+    fn ignores_malformed_block_merkle_parts() {
+        assert!(decode_block_merkle_tree_leaves(None).is_none());
+
+        let malformed_leaves = [0xcdu8; 511];
+        assert!(decode_block_merkle_tree_leaves(Some(&malformed_leaves)).is_none());
+    }
+
+    #[test]
+    fn decodes_proof_block_refs() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&3u32.to_be_bytes());
+        raw.extend_from_slice(&[0x11; 32]);
+        raw.extend_from_slice(&[0x22; 32]);
+        raw.extend_from_slice(&[0x33; 32]);
+
+        assert_eq!(
+            decode_proof_block_refs(Some(&raw)),
+            vec!["11".repeat(32), "22".repeat(32), "33".repeat(32)]
+        );
+    }
+
+    #[test]
+    fn ignores_malformed_proof_block_refs() {
+        assert!(decode_proof_block_refs(None).is_empty());
+        assert!(decode_proof_block_refs(Some(&[])).is_empty());
+
+        let zero_count = 0u32.to_be_bytes();
+        assert!(decode_proof_block_refs(Some(&zero_count)).is_empty());
+
+        let mut trailing = Vec::new();
+        trailing.extend_from_slice(&1u32.to_be_bytes());
+        trailing.extend_from_slice(&[0x11; 32]);
+        trailing.push(0xff);
+        assert!(decode_proof_block_refs(Some(&trailing)).is_empty());
+    }
+
+    #[test]
+    fn decodes_tracked_ext_out_message_hashes() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&2u32.to_be_bytes());
+
+        raw.extend_from_slice(&[0x11; 32]);
+        raw.extend_from_slice(&[0x22; 32]);
+        raw.extend_from_slice(&2u32.to_be_bytes());
+        raw.extend_from_slice(&[0x33; 32]);
+        raw.extend_from_slice(&[0x44; 32]);
+
+        raw.extend_from_slice(&[0x55; 32]);
+        raw.extend_from_slice(&[0x66; 32]);
+        raw.extend_from_slice(&1u32.to_be_bytes());
+        raw.extend_from_slice(&[0x77; 32]);
+
+        let entries = decode_tracked_ext_out_message_hashes(Some(&raw)).expect("entries");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].routing, format!("{}{}", "11".repeat(32), "22".repeat(32)));
+        assert_eq!(entries[0].message_hashes, vec!["33".repeat(32), "44".repeat(32)]);
+        assert_eq!(entries[1].routing, format!("{}{}", "55".repeat(32), "66".repeat(32)));
+        assert_eq!(entries[1].message_hashes, vec!["77".repeat(32)]);
+    }
+
+    #[test]
+    fn decodes_empty_tracked_ext_out_message_hashes() {
+        let raw = 0u32.to_be_bytes();
+        let entries = decode_tracked_ext_out_message_hashes(Some(&raw)).expect("entries");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn rejects_malformed_tracked_ext_out_message_hashes() {
+        assert!(decode_tracked_ext_out_message_hashes(None).is_none());
+        assert!(decode_tracked_ext_out_message_hashes(Some(&[])).is_none());
+
+        let mut truncated = Vec::new();
+        truncated.extend_from_slice(&1u32.to_be_bytes());
+        truncated.extend_from_slice(&[0x11; 63]);
+        assert!(decode_tracked_ext_out_message_hashes(Some(&truncated)).is_none());
+
+        let mut trailing = Vec::new();
+        trailing.extend_from_slice(&0u32.to_be_bytes());
+        trailing.push(0xff);
+        assert!(decode_tracked_ext_out_message_hashes(Some(&trailing)).is_none());
     }
 }
 

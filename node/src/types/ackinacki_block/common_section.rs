@@ -1,23 +1,29 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-#[cfg(feature = "history_proofs")]
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Formatter;
 
 use derive_getters::Getters;
 use derive_setters::Setters;
+use node_types::AccountRouting;
 use node_types::BlockIdentifier;
+use node_types::TemporaryBlockId;
 use node_types::ThreadIdentifier;
+use serde::ser::Error as SerError;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 use typed_builder::TypedBuilder;
+use versioned_struct::versioned;
+use versioned_struct::Transitioning;
 
 use crate::block_keeper_system::BlockKeeperSetChange;
+use crate::block_keeper_system::BlockKeeperSetTransitionHashes;
 use crate::bls::envelope::Envelope;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
@@ -25,9 +31,7 @@ use crate::node::associated_types::NackData;
 use crate::node::NodeIdentifier;
 use crate::node::SignerIndex;
 use crate::types::bp_selector::ProducerSelector;
-#[cfg(feature = "history_proofs")]
 use crate::types::history_proof::LayerNumber;
-#[cfg(feature = "history_proofs")]
 use crate::types::history_proof::ProofLayerRootHash;
 use crate::types::BlockHeight;
 use crate::types::BlockRound;
@@ -46,12 +50,20 @@ impl Debug for Directives {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Getters, TypedBuilder, Setters, Serialize, Deserialize)]
+#[setters(prefix = "set_", borrow_self)]
+pub struct BlockKeeperSetChangeProofData {
+    transition_hashes: BlockKeeperSetTransitionHashes,
+    history_proof_layer_hashes: BTreeMap<LayerNumber, (BlockHeight, [u8; 32])>,
+}
+
+#[versioned]
 #[derive(Clone, PartialEq, Eq, Getters, TypedBuilder, Setters)]
 #[setters(prefix = "set_", borrow_self)]
 pub struct CommonSection {
     // Parent Block ID (Merkle hash). Stored here so that Block ID can be computed
     // from stable data only, without relying on TVM block's prev_ref.
-    parent_block_id: BlockIdentifier,
+    parent_block_id: ParentBlockId,
     block_height: BlockHeight,
     directives: Directives,
     // TODO: we assume that all attestations are aggregated and there are no duplicates on (block_id, attestation_target_type)
@@ -62,11 +74,6 @@ pub struct CommonSection {
     thread_id: ThreadIdentifier,
     threads_table: Option<ThreadsTablePrefab>,
     /// Extra references this block depends on.
-    /// This can be any combination of:
-    /// - sources of internal messages from another thread
-    /// - source of an update of the threads state
-    /// - source of updates for account migrations due to a new dapp set.
-    /// - (?)
     refs: Vec<BlockIdentifier>,
     block_keeper_set_changes: Vec<BlockKeeperSetChange>,
     // Dynamic parameter: an expected number of Acki-Nacki for this block
@@ -85,8 +92,83 @@ pub struct CommonSection {
     // Mapping of Layer root hashes
     // root mapping key <K> is number of layer [1-N]
     // child mapping value is root hash #L<K>()
-    #[cfg(feature = "history_proofs")]
+    #[future]
     history_proofs: BTreeMap<LayerNumber, ProofLayerRootHash>,
+
+    /// Merkle root of outbound external messages from the tracked address in this block.
+    /// Zero if there were no such messages.
+    #[future]
+    #[builder(default)]
+    tracked_ext_out_messages_root: [u8; 32],
+
+    /// Serialized hashes of outbound external messages from tracked addresses in this block.
+    /// Account routings are canonically ordered; message order within a routing is preserved.
+    #[future]
+    #[builder(default)]
+    tracked_ext_out_messages: BTreeMap<AccountRouting, Vec<[u8; 32]>>,
+
+    #[future]
+    #[builder(default)]
+    block_keeper_set_change_proof_data: Option<BlockKeeperSetChangeProofData>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParentBlockId {
+    Block(BlockIdentifier),
+    Unresolved(TemporaryBlockId),
+}
+
+impl ParentBlockId {
+    pub fn block_id(&self) -> Option<&BlockIdentifier> {
+        match self {
+            Self::Block(block_id) => Some(block_id),
+            Self::Unresolved(_) => None,
+        }
+    }
+
+    pub fn expect_block_id(&self) -> &BlockIdentifier {
+        self.block_id().expect("Parent block ID must be resolved before use")
+    }
+
+    fn serialize_block_id(&self) -> Result<BlockIdentifier, String> {
+        match self {
+            Self::Block(block_id) => Ok(*block_id),
+            Self::Unresolved(temp_id) => Err(format!(
+                "Cannot serialize common section with unresolved parent block ID: {temp_id:?}"
+            )),
+        }
+    }
+}
+
+impl Transitioning for CommonSection {
+    type Old = CommonSectionOld;
+
+    fn from(old: Self::Old) -> Self {
+        Self {
+            parent_block_id: old.parent_block_id,
+            block_height: old.block_height,
+            directives: old.directives,
+            block_attestations: old.block_attestations,
+            round: old.round,
+            producer_id: old.producer_id,
+            thread_id: old.thread_id,
+            threads_table: old.threads_table,
+            refs: old.refs,
+            block_keeper_set_changes: old.block_keeper_set_changes,
+            verify_complexity: old.verify_complexity,
+            acks: old.acks,
+            nacks: old.nacks,
+            producer_selector: old.producer_selector,
+            #[cfg(feature = "monitor-accounts-number")]
+            accounts_number_diff: old.accounts_number_diff,
+            #[cfg(feature = "protocol_version_hash_in_block")]
+            protocol_version_hash: old.protocol_version_hash,
+            history_proofs: Default::default(),
+            tracked_ext_out_messages_root: Default::default(),
+            tracked_ext_out_messages: Default::default(),
+            block_keeper_set_change_proof_data: None,
+        }
+    }
 }
 
 impl CommonSection {
@@ -104,6 +186,44 @@ impl CommonSection {
         #[cfg(feature = "monitor-accounts-number")] accounts_number_diff: i64,
         #[cfg(feature = "protocol_version_hash_in_block")]
         protocol_version_hash: ProtocolVersionHash,
+        tracked_ext_out_messages: BTreeMap<AccountRouting, Vec<[u8; 32]>>,
+        tracked_ext_out_messages_root: [u8; 32],
+    ) -> Self {
+        Self::new_with_parent_block_id(
+            ParentBlockId::Block(parent_block_id),
+            thread_id,
+            round,
+            producer_id,
+            block_keeper_set_changes,
+            verify_complexity,
+            refs,
+            threads_table,
+            block_height,
+            #[cfg(feature = "monitor-accounts-number")]
+            accounts_number_diff,
+            #[cfg(feature = "protocol_version_hash_in_block")]
+            protocol_version_hash,
+            tracked_ext_out_messages,
+            tracked_ext_out_messages_root,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_parent_block_id(
+        parent_block_id: ParentBlockId,
+        thread_id: ThreadIdentifier,
+        round: BlockRound,
+        producer_id: NodeIdentifier,
+        block_keeper_set_changes: Vec<BlockKeeperSetChange>,
+        verify_complexity: SignerIndex,
+        refs: Vec<BlockIdentifier>,
+        threads_table: Option<ThreadsTablePrefab>,
+        block_height: BlockHeight,
+        #[cfg(feature = "monitor-accounts-number")] accounts_number_diff: i64,
+        #[cfg(feature = "protocol_version_hash_in_block")]
+        protocol_version_hash: ProtocolVersionHash,
+        tracked_ext_out_messages: BTreeMap<AccountRouting, Vec<[u8; 32]>>,
+        tracked_ext_out_messages_root: [u8; 32],
     ) -> Self {
         CommonSection {
             parent_block_id,
@@ -124,12 +244,14 @@ impl CommonSection {
             accounts_number_diff,
             #[cfg(feature = "protocol_version_hash_in_block")]
             protocol_version_hash,
-            #[cfg(feature = "history_proofs")]
             history_proofs: BTreeMap::new(),
+            tracked_ext_out_messages_root,
+            tracked_ext_out_messages,
+            block_keeper_set_change_proof_data: None,
         }
     }
 
-    fn wrap_serialize(&self) -> WrappedCommonSection {
+    fn wrap_serialize(&self) -> Result<WrappedCommonSection, String> {
         let block_attestations_data = bincode::serialize(&self.block_attestations)
             .expect("Failed to serialize last finalized blocks");
         let acks_data =
@@ -138,7 +260,7 @@ impl CommonSection {
             bincode::serialize(&self.nacks).expect("Failed to serialize last finalized blocks");
 
         let builder = WrappedCommonSection::builder()
-            .parent_block_id(self.parent_block_id)
+            .parent_block_id(self.parent_block_id.serialize_block_id()?)
             .round(self.round)
             .directives(self.directives.clone())
             .block_attestations(block_attestations_data)
@@ -155,9 +277,11 @@ impl CommonSection {
             .thread_identifier(self.thread_id)
             .refs(self.refs.clone())
             .threads_table(self.threads_table.clone())
-            .block_height(self.block_height);
-        #[cfg(feature = "history_proofs")]
-        let builder = builder.history_proofs(self.history_proofs.clone());
+            .block_height(self.block_height)
+            .history_proofs(self.history_proofs.clone())
+            .tracked_ext_out_messages_root(self.tracked_ext_out_messages_root)
+            .tracked_ext_out_messages(self.tracked_ext_out_messages.clone())
+            .block_keeper_set_change_proof_data(self.block_keeper_set_change_proof_data.clone());
 
         #[cfg(feature = "monitor-accounts-number")]
         let builder = builder.accounts_number_diff(self.accounts_number_diff);
@@ -165,7 +289,7 @@ impl CommonSection {
         #[cfg(feature = "protocol_version_hash_in_block")]
         let builder = builder.protocol_version_hash(self.protocol_version_hash.clone());
 
-        builder.build()
+        Ok(builder.build())
     }
 
     fn wrap_deserialize(data: WrappedCommonSection) -> Self {
@@ -178,7 +302,7 @@ impl CommonSection {
             bincode::deserialize(&data.nacks).expect("Failed to deserialize nacks");
 
         let builder = Self::builder()
-            .parent_block_id(data.parent_block_id)
+            .parent_block_id(ParentBlockId::Block(data.parent_block_id))
             .round(data.round)
             .directives(data.directives)
             .block_attestations(block_attestations)
@@ -191,10 +315,11 @@ impl CommonSection {
             .refs(data.refs)
             .thread_id(data.thread_identifier)
             .threads_table(data.threads_table)
-            .block_height(data.block_height);
-
-        #[cfg(feature = "history_proofs")]
-        let builder = builder.history_proofs(data.history_proofs);
+            .block_height(data.block_height)
+            .history_proofs(data.history_proofs)
+            .tracked_ext_out_messages_root(data.tracked_ext_out_messages_root)
+            .tracked_ext_out_messages(data.tracked_ext_out_messages)
+            .block_keeper_set_change_proof_data(data.block_keeper_set_change_proof_data);
 
         #[cfg(feature = "monitor-accounts-number")]
         let builder = builder.accounts_number_diff(data.accounts_number_diff);
@@ -206,11 +331,39 @@ impl CommonSection {
     }
 
     pub fn full_hash_data(&self) -> Vec<u8> {
-        let data = self.wrap_serialize();
-        bincode::serialize(&data).expect("AllFieldsCommonSection must serialize")
+        let data = self
+            .wrap_serialize()
+            .expect("Parent block ID must be resolved before hash calculation");
+        bincode::serialize(&data).expect("CommonSection must serialize")
+    }
+
+    pub(crate) fn full_hash_data_legacy(&self) -> Vec<u8> {
+        let data = CommonSectionOld {
+            parent_block_id: ParentBlockId::Block(*self.parent_block_id.expect_block_id()),
+            block_height: self.block_height,
+            directives: self.directives.clone(),
+            block_attestations: self.block_attestations.clone(),
+            round: self.round,
+            producer_id: self.producer_id.clone(),
+            thread_id: self.thread_id,
+            threads_table: self.threads_table.clone(),
+            refs: self.refs.clone(),
+            block_keeper_set_changes: self.block_keeper_set_changes.clone(),
+            verify_complexity: self.verify_complexity,
+            acks: self.acks.clone(),
+            nacks: self.nacks.clone(),
+            producer_selector: self.producer_selector.clone(),
+            #[cfg(feature = "monitor-accounts-number")]
+            accounts_number_diff: self.accounts_number_diff,
+            #[cfg(feature = "protocol_version_hash_in_block")]
+            protocol_version_hash: self.protocol_version_hash.clone(),
+        }
+        .wrap_serialize();
+        bincode::serialize(&data).expect("CommonSectionOld must serialize")
     }
 }
 
+#[versioned]
 #[derive(TypedBuilder, Serialize, Deserialize)]
 struct WrappedCommonSection {
     pub parent_block_id: BlockIdentifier,
@@ -231,8 +384,14 @@ struct WrappedCommonSection {
     pub accounts_number_diff: i64,
     #[cfg(feature = "protocol_version_hash_in_block")]
     pub protocol_version_hash: ProtocolVersionHash,
-    #[cfg(feature = "history_proofs")]
+    #[future]
     pub history_proofs: BTreeMap<LayerNumber, ProofLayerRootHash>,
+    #[future]
+    pub tracked_ext_out_messages_root: [u8; 32],
+    #[future]
+    pub tracked_ext_out_messages: BTreeMap<AccountRouting, Vec<[u8; 32]>>,
+    #[future]
+    pub block_keeper_set_change_proof_data: Option<BlockKeeperSetChangeProofData>,
 }
 
 impl Serialize for CommonSection {
@@ -240,7 +399,7 @@ impl Serialize for CommonSection {
     where
         S: Serializer,
     {
-        self.wrap_serialize().serialize(serializer)
+        self.wrap_serialize().map_err(S::Error::custom)?.serialize(serializer)
     }
 }
 
@@ -251,6 +410,16 @@ impl<'de> Deserialize<'de> for CommonSection {
     {
         let wrapped_data = WrappedCommonSection::deserialize(deserializer)?;
         Ok(CommonSection::wrap_deserialize(wrapped_data))
+    }
+}
+
+impl<'de> Deserialize<'de> for CommonSectionOld {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wrapped_data = WrappedCommonSectionOld::deserialize(deserializer)?;
+        Ok(CommonSectionOld::wrap_deserialize(wrapped_data))
     }
 }
 
@@ -271,10 +440,21 @@ impl Debug for CommonSection {
             .field("producer_selector", &self.producer_selector)
             .field("refs", &self.refs)
             .field("threads_table", &self.threads_table)
-            .field("block_height", &self.block_height.height());
-
-        #[cfg(feature = "history_proofs")]
-        fmt.field("history_proofs", &self.history_proofs);
+            .field("block_height", &self.block_height.height())
+            .field("history_proofs", &self.history_proofs)
+            .field(
+                "tracked_ext_out_messages_root",
+                &hex::encode(self.tracked_ext_out_messages_root),
+            )
+            .field(
+                "tracked_ext_out_messages",
+                &self
+                    .tracked_ext_out_messages
+                    .clone()
+                    .into_iter()
+                    .map(|(a, b)| (a, b.into_iter().map(hex::encode).collect::<Vec<_>>()))
+                    .collect::<HashMap<_, _>>(),
+            );
 
         #[cfg(feature = "monitor-accounts-number")]
         fmt.field("accounts_number_diff", &self.accounts_number_diff);
@@ -285,8 +465,125 @@ impl Debug for CommonSection {
     }
 }
 
+impl CommonSectionOld {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        parent_block_id: BlockIdentifier,
+        thread_id: ThreadIdentifier,
+        round: BlockRound,
+        producer_id: NodeIdentifier,
+        block_keeper_set_changes: Vec<BlockKeeperSetChange>,
+        verify_complexity: SignerIndex,
+        refs: Vec<BlockIdentifier>,
+        threads_table: Option<ThreadsTablePrefab>,
+        block_height: BlockHeight,
+        #[cfg(feature = "monitor-accounts-number")] accounts_number_diff: i64,
+        #[cfg(feature = "protocol_version_hash_in_block")]
+        protocol_version_hash: ProtocolVersionHash,
+    ) -> Self {
+        CommonSectionOld {
+            parent_block_id: ParentBlockId::Block(parent_block_id),
+            block_height,
+            round,
+            block_attestations: vec![],
+            directives: Directives::default(),
+            thread_id,
+            threads_table,
+            refs,
+            producer_id,
+            block_keeper_set_changes,
+            verify_complexity,
+            acks: vec![],
+            nacks: vec![],
+            producer_selector: None,
+            #[cfg(feature = "monitor-accounts-number")]
+            accounts_number_diff,
+            #[cfg(feature = "protocol_version_hash_in_block")]
+            protocol_version_hash,
+        }
+    }
+
+    fn wrap_serialize(&self) -> WrappedCommonSectionOld {
+        let block_attestations_data = bincode::serialize(&self.block_attestations)
+            .expect("Failed to serialize last finalized blocks");
+        let acks_data =
+            bincode::serialize(&self.acks).expect("Failed to serialize last finalized blocks");
+        let nacks_data =
+            bincode::serialize(&self.nacks).expect("Failed to serialize last finalized blocks");
+
+        let builder = WrappedCommonSectionOld::builder()
+            .round(self.round)
+            .directives(self.directives.clone())
+            .block_attestations(block_attestations_data)
+            .producer_id(self.producer_id.clone())
+            .block_keeper_set_changes(self.block_keeper_set_changes.clone())
+            .verify_complexity(self.verify_complexity)
+            .acks(acks_data)
+            .nacks(nacks_data)
+            .producer_selector(
+                self.producer_selector
+                    .clone()
+                    .expect("Producer selector must be set before serialization"),
+            )
+            .thread_identifier(self.thread_id)
+            .refs(self.refs.clone())
+            .threads_table(self.threads_table.clone())
+            .block_height(self.block_height)
+            .parent_block_id(*self.parent_block_id.expect_block_id());
+
+        #[cfg(feature = "monitor-accounts-number")]
+        let builder = builder.accounts_number_diff(self.accounts_number_diff);
+
+        #[cfg(feature = "protocol_version_hash_in_block")]
+        let builder = builder.protocol_version_hash(self.protocol_version_hash.clone());
+
+        builder.build()
+    }
+
+    fn wrap_deserialize(data: WrappedCommonSectionOld) -> Self {
+        let block_attestations: Vec<Envelope<AttestationData>> =
+            bincode::deserialize(&data.block_attestations)
+                .expect("Failed to deserialize block attestations");
+        let acks: Vec<Envelope<AckData>> =
+            bincode::deserialize(&data.acks).expect("Failed to deserialize acks");
+        let nacks: Vec<Envelope<NackData>> =
+            bincode::deserialize(&data.nacks).expect("Failed to deserialize nacks");
+
+        let builder = Self::builder()
+            .round(data.round)
+            .directives(data.directives)
+            .block_attestations(block_attestations)
+            .producer_id(data.producer_id)
+            .block_keeper_set_changes(data.block_keeper_set_changes)
+            .verify_complexity(data.verify_complexity)
+            .acks(acks)
+            .nacks(nacks)
+            .producer_selector(Some(data.producer_selector))
+            .refs(data.refs)
+            .thread_id(data.thread_identifier)
+            .threads_table(data.threads_table)
+            .block_height(data.block_height)
+            .parent_block_id(ParentBlockId::Block(data.parent_block_id));
+
+        #[cfg(feature = "monitor-accounts-number")]
+        let builder = builder.accounts_number_diff(data.accounts_number_diff);
+
+        builder.build()
+    }
+
+    pub fn full_hash_data(&self) -> Vec<u8> {
+        let data = self.wrap_serialize();
+        bincode::serialize(&data).expect("AllFieldsCommonSection must serialize")
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use node_types::AccountIdentifier;
+    use node_types::DAppIdentifier;
+
     use super::*;
 
     fn make_block_height() -> BlockHeight {
@@ -295,6 +592,35 @@ mod tests {
 
     fn make_selector(parent_block_id: BlockIdentifier) -> ProducerSelector {
         ProducerSelector::builder().rng_seed_block_id(parent_block_id).index(0).build()
+    }
+
+    fn make_routing(dapp: u8, account: u8) -> AccountRouting {
+        AccountIdentifier::new([account; 32]).routing(DAppIdentifier::new([dapp; 32]))
+    }
+
+    fn make_common_section(
+        tracked_ext_out_messages: BTreeMap<AccountRouting, Vec<[u8; 32]>>,
+    ) -> CommonSection {
+        let parent_block_id = BlockIdentifier::default();
+        let mut common_section = CommonSection::new(
+            parent_block_id,
+            ThreadIdentifier::default(),
+            BlockRound::default(),
+            NodeIdentifier::some_id(),
+            vec![],
+            SignerIndex::default(),
+            vec![],
+            None,
+            make_block_height(),
+            #[cfg(feature = "monitor-accounts-number")]
+            0,
+            #[cfg(feature = "protocol_version_hash_in_block")]
+            Default::default(),
+            tracked_ext_out_messages,
+            Default::default(),
+        );
+        common_section.set_producer_selector(Some(make_selector(parent_block_id)));
+        common_section
     }
 
     #[test]
@@ -314,13 +640,36 @@ mod tests {
             0,
             #[cfg(feature = "protocol_version_hash_in_block")]
             Default::default(),
+            Default::default(),
+            Default::default(),
         );
         common_section.set_producer_selector(Some(make_selector(parent_block_id)));
 
         let encoded = bincode::serialize(&common_section).unwrap();
         let decoded: CommonSection = bincode::deserialize(&encoded).unwrap();
 
-        assert_eq!(decoded.parent_block_id(), &parent_block_id);
+        assert_eq!(decoded.parent_block_id().block_id(), Some(&parent_block_id));
+    }
+
+    #[test]
+    fn transitioned_common_section_uses_explicit_default_parent() {
+        let transitioned = <CommonSection as Transitioning>::from(CommonSectionOld::new(
+            BlockIdentifier::default(),
+            ThreadIdentifier::default(),
+            BlockRound::default(),
+            NodeIdentifier::some_id(),
+            vec![],
+            SignerIndex::default(),
+            vec![],
+            None,
+            make_block_height(),
+            #[cfg(feature = "monitor-accounts-number")]
+            0,
+            #[cfg(feature = "protocol_version_hash_in_block")]
+            Default::default(),
+        ));
+
+        assert_eq!(*transitioned.parent_block_id().expect_block_id(), BlockIdentifier::default());
     }
 
     #[test]
@@ -340,12 +689,249 @@ mod tests {
             0,
             #[cfg(feature = "protocol_version_hash_in_block")]
             Default::default(),
+            Default::default(),
+            Default::default(),
         );
         common_section.set_producer_selector(Some(make_selector(parent_block_id)));
 
         let encoded = bincode::serialize(&common_section).unwrap();
         let decoded: CommonSection = bincode::deserialize(&encoded).unwrap();
 
-        assert_eq!(*decoded.parent_block_id(), BlockIdentifier::default());
+        assert_eq!(*decoded.parent_block_id().expect_block_id(), BlockIdentifier::default());
+    }
+
+    #[test]
+    fn unresolved_parent_block_id_cannot_serialize() {
+        let mut common_section = CommonSection::new_with_parent_block_id(
+            ParentBlockId::Unresolved(TemporaryBlockId::generate()),
+            ThreadIdentifier::default(),
+            BlockRound::default(),
+            NodeIdentifier::some_id(),
+            vec![],
+            SignerIndex::default(),
+            vec![],
+            None,
+            make_block_height(),
+            #[cfg(feature = "monitor-accounts-number")]
+            0,
+            #[cfg(feature = "protocol_version_hash_in_block")]
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        common_section.set_producer_selector(Some(make_selector(BlockIdentifier::default())));
+
+        let err = bincode::serialize(&common_section).unwrap_err();
+        assert!(err.to_string().contains("unresolved parent block ID"));
+    }
+
+    #[test]
+    fn common_section_hash_data_is_stable_for_tracked_message_insertion_order() {
+        let first = make_routing(1, 1);
+        let second = make_routing(2, 2);
+
+        let mut forward = BTreeMap::new();
+        forward.insert(first, vec![[0x11; 32], [0x12; 32]]);
+        forward.insert(second, vec![[0x21; 32]]);
+
+        let mut reverse = BTreeMap::new();
+        reverse.insert(second, vec![[0x21; 32]]);
+        reverse.insert(first, vec![[0x11; 32], [0x12; 32]]);
+
+        assert_eq!(
+            make_common_section(forward).full_hash_data(),
+            make_common_section(reverse).full_hash_data()
+        );
+    }
+}
+
+impl Serialize for CommonSectionOld {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.wrap_serialize().serialize(serializer)
+    }
+}
+
+impl Debug for CommonSectionOld {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut fmt = f.debug_struct("");
+
+        fmt.field("thread_id", &self.thread_id)
+            .field("round", &self.round)
+            .field("producer_id", &self.producer_id)
+            .field("directives", &self.directives)
+            .field("block_attestations", &self.block_attestations)
+            .field("block_keeper_set_changes", &self.block_keeper_set_changes)
+            .field("verify_complexity", &self.verify_complexity)
+            .field("acks", &self.acks)
+            .field("nacks", &self.nacks)
+            .field("producer_selector", &self.producer_selector)
+            .field("refs", &self.refs)
+            .field("threads_table", &self.threads_table)
+            .field("block_height", &self.block_height.height());
+
+        #[cfg(feature = "monitor-accounts-number")]
+        fmt.field("accounts_number_diff", &self.accounts_number_diff);
+        #[cfg(feature = "protocol_version_hash_in_block")]
+        fmt.field("protocol_version_hash", &self.protocol_version_hash);
+
+        fmt.finish()
+    }
+}
+
+#[derive(Clone)]
+pub enum CommonSectionVersioned {
+    New(CommonSection),
+    Old(CommonSectionOld),
+}
+
+impl CommonSectionVersioned {
+    pub fn set_block_keeper_set_change_proof_data(
+        &mut self,
+        data: Option<BlockKeeperSetChangeProofData>,
+    ) {
+        match self {
+            CommonSectionVersioned::New(new) => {
+                new.set_block_keeper_set_change_proof_data(data);
+            }
+            CommonSectionVersioned::Old(_old) => {}
+        }
+    }
+
+    pub fn block_keeper_set_changes(&self) -> &Vec<BlockKeeperSetChange> {
+        match self {
+            CommonSectionVersioned::New(common_section) => {
+                common_section.block_keeper_set_changes()
+            }
+            CommonSectionVersioned::Old(common_section) => {
+                common_section.block_keeper_set_changes()
+            }
+        }
+    }
+
+    pub fn set_acks(&mut self, acks: Vec<Envelope<AckData>>) {
+        match self {
+            CommonSectionVersioned::New(common_section) => {
+                common_section.acks = acks;
+            }
+            CommonSectionVersioned::Old(common_section) => {
+                common_section.acks = acks;
+            }
+        }
+    }
+
+    pub fn set_nacks(&mut self, nacks: Vec<Envelope<NackData>>) {
+        match self {
+            CommonSectionVersioned::New(common_section) => {
+                common_section.nacks = nacks;
+            }
+            CommonSectionVersioned::Old(common_section) => {
+                common_section.nacks = nacks;
+            }
+        }
+    }
+
+    pub fn set_block_attestations(&mut self, block_attestations: Vec<Envelope<AttestationData>>) {
+        match self {
+            CommonSectionVersioned::New(common_section) => {
+                common_section.block_attestations = block_attestations;
+            }
+            CommonSectionVersioned::Old(common_section) => {
+                common_section.block_attestations = block_attestations;
+            }
+        }
+    }
+
+    pub fn set_producer_selector(&mut self, producer_selector: Option<ProducerSelector>) {
+        match self {
+            CommonSectionVersioned::New(common_section) => {
+                common_section.producer_selector = producer_selector;
+            }
+            CommonSectionVersioned::Old(common_section) => {
+                common_section.producer_selector = producer_selector;
+            }
+        }
+    }
+
+    pub fn set_directives(&mut self, directives: Directives) {
+        match self {
+            CommonSectionVersioned::New(common_section) => {
+                common_section.directives = directives;
+            }
+            CommonSectionVersioned::Old(common_section) => {
+                common_section.directives = directives;
+            }
+        }
+    }
+
+    pub fn set_history_proofs(
+        &mut self,
+        history_proofs: BTreeMap<LayerNumber, ProofLayerRootHash>,
+    ) {
+        if let CommonSectionVersioned::New(common_section) = self {
+            common_section.history_proofs = history_proofs;
+        }
+    }
+
+    pub fn round(&self) -> &u64 {
+        match self {
+            CommonSectionVersioned::New(common_section) => &common_section.round,
+            CommonSectionVersioned::Old(common_section) => &common_section.round,
+        }
+    }
+
+    pub fn producer_selector(&self) -> Option<ProducerSelector> {
+        match self {
+            CommonSectionVersioned::New(common_section) => common_section.producer_selector.clone(),
+            CommonSectionVersioned::Old(common_section) => common_section.producer_selector.clone(),
+        }
+    }
+
+    pub fn block_attestations(&self) -> Vec<Envelope<AttestationData>> {
+        match self {
+            CommonSectionVersioned::New(common_section) => {
+                common_section.block_attestations.clone()
+            }
+            CommonSectionVersioned::Old(common_section) => {
+                common_section.block_attestations.clone()
+            }
+        }
+    }
+
+    pub fn producer_id(&self) -> NodeIdentifier {
+        match self {
+            CommonSectionVersioned::New(common_section) => common_section.producer_id.clone(),
+            CommonSectionVersioned::Old(common_section) => common_section.producer_id.clone(),
+        }
+    }
+
+    pub fn thread_id(&self) -> ThreadIdentifier {
+        match self {
+            CommonSectionVersioned::New(common_section) => common_section.thread_id,
+            CommonSectionVersioned::Old(common_section) => common_section.thread_id,
+        }
+    }
+
+    pub fn directives(&self) -> Directives {
+        match self {
+            CommonSectionVersioned::New(common_section) => common_section.directives.clone(),
+            CommonSectionVersioned::Old(common_section) => common_section.directives.clone(),
+        }
+    }
+
+    pub fn block_height(&self) -> &BlockHeight {
+        match self {
+            CommonSectionVersioned::New(common_section) => &common_section.block_height,
+            CommonSectionVersioned::Old(common_section) => &common_section.block_height,
+        }
+    }
+
+    pub fn threads_table(&self) -> &Option<ThreadsTablePrefab> {
+        match self {
+            CommonSectionVersioned::New(common_section) => &common_section.threads_table,
+            CommonSectionVersioned::Old(common_section) => &common_section.threads_table,
+        }
     }
 }

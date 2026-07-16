@@ -471,7 +471,7 @@ fn test_builder_skips_merkle_update_for_redirect_account() -> anyhow::Result<()>
     assert_drained(&repo);
     repo.state_save(&block_id_1, &state1)?;
 
-    let redirect_acc = large_acc.with_redirect()?;
+    let redirect_acc = large_acc.with_redirect(*routing.dapp_id())?;
     let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &state1);
     builder2.insert_account(&routing, &redirect_acc);
     let transition2 = builder2.build(None)?;
@@ -1692,6 +1692,64 @@ fn test_redirect_stub_created_for_dapp_account() -> anyhow::Result<()> {
         acc.vm_account()?.hash(),
         "Followed account data should match original"
     );
+
+    Ok(())
+}
+
+#[test]
+fn test_redirect_account_without_body_dapp_id_uses_routing_dapp_id() -> anyhow::Result<()> {
+    let (repo, _dir) = setup_repo(true);
+    let state0 = new_state();
+    let block_id = BlockIdentifier::new(new_u256("block", 10_010));
+
+    let id = AccountIdentifier::new(new_u256("acc", 10_010));
+    let dapp_id = DAppIdentifier::new(new_u256("dapp", 10_011));
+    let routing = id.routing(dapp_id);
+    let redirect_routing = id.redirect();
+    assert_ne!(
+        *routing.dapp_id(),
+        routing.account_id().redirect_dapp_id(),
+        "test requires explicit dapp routing"
+    );
+
+    let mut tvm_acc = tvm_block::Account::with_address(
+        MsgAddressInt::with_standart(None, 0, AccountId::from_raw(id.as_slice().to_vec(), 256))
+            .unwrap(),
+    );
+    tvm_acc.set_balance(tvm_block::CurrencyCollection::with_grams(10_010));
+    let shard_acc =
+        ShardAccount::with_params(&tvm_acc, new_u256("trans", 10_010).into(), 10_010, None)
+            .unwrap();
+    let account_without_dapp = ThreadAccount::from(shard_acc);
+    assert_eq!(account_without_dapp.get_dapp_id(), None);
+
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
+    builder.insert_account(&routing, &account_without_dapp);
+    let transition = builder.build(None)?;
+    let state1 = transition.new_state;
+    repo.finalize_thread_transition(
+        &block_id,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition.account_operations,
+    )?;
+    assert_drained(&repo);
+
+    let archived_redirect =
+        repo.durable_map_repo().archive_account_for_test(&redirect_routing)?.unwrap();
+    assert!(archived_redirect.is_redirect(), "redirect route must be materialized");
+    assert_eq!(
+        archived_redirect.get_dapp_id(),
+        Some(dapp_id),
+        "redirect must point to the routing dapp id"
+    );
+
+    let followed = repo.state_account(&state1, &redirect_routing)?;
+    assert!(followed.is_some(), "redirect routing should resolve to the real account");
+    let followed = followed.unwrap();
+    assert!(!followed.is_redirect(), "resolved account should be the real account");
+    assert_eq!(followed.vm_account()?.hash(), account_without_dapp.vm_account()?.hash());
 
     Ok(())
 }

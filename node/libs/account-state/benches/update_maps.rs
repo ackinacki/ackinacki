@@ -186,7 +186,9 @@ fn make_insert_updates(
             let routing = make_routing(di as u64, seed_offset + ai as u64);
             let acc = make_state_account(&routing, seed_offset + ai as u64);
             let update = if redirect {
-                BlockAccountOperation::UpdateOrInsert(acc.with_redirect().unwrap())
+                BlockAccountOperation::UpdateOrInsert(
+                    acc.with_redirect(*routing.dapp_id()).unwrap(),
+                )
             } else {
                 BlockAccountOperation::UpdateOrInsert(acc)
             };
@@ -237,7 +239,9 @@ fn make_payload_updates(
             let routing = make_routing(di as u64, ai as u64);
             let acc = make_state_account(&routing, ai as u64);
             let update = if ai < redirect_per_dapp {
-                BlockAccountOperation::UpdateOrInsert(acc.with_redirect().unwrap())
+                BlockAccountOperation::UpdateOrInsert(
+                    acc.with_redirect(*routing.dapp_id()).unwrap(),
+                )
             } else {
                 BlockAccountOperation::UpdateOrInsert(acc)
             };

@@ -57,6 +57,7 @@ use crate::node::associated_types::AttestationTargetType;
 use crate::types::envelope_hash::envelope_hash;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockHeight;
+use crate::types::BLOCK_MERKLE_LEAF_COUNT;
 
 lazy_static::lazy_static!(
     static ref ACCOUNT_NONE_HASH: AccountHash = VmAccount::default().hash();
@@ -80,7 +81,8 @@ pub fn reflect_block_in_db(
     let serialized_block = tvm_types::write_boc(&block_root).unwrap();
 
     let add_proof = false;
-    let block_id = &block_root.repr_hash();
+    let block_id = envelope.data().identifier();
+    let archive_block_id = tvm_types::UInt256::from(block_id);
     let block_id_hex = block_id.to_hex_string();
     tracing::debug!(target: "database", "reflect_block_in_db block_id: {}", block_id_hex);
     let file_hash = UInt256::calc_file_hash(&serialized_block);
@@ -169,7 +171,7 @@ pub fn reflect_block_in_db(
 
         prepare_messages_from_transaction(
             &transaction,
-            block_id.clone(),
+            archive_block_id.clone(),
             cell.repr_hash(),
             &transaction_index,
             add_proof.then_some(&block_root),
@@ -184,7 +186,7 @@ pub fn reflect_block_in_db(
             cell,
             transaction,
             &block_root,
-            block_id.clone(),
+            archive_block_id.clone(),
             workchain_id,
             add_proof,
             trace,
@@ -310,8 +312,14 @@ pub fn reflect_block_in_db(
     // Block
     let now = std::time::Instant::now();
     let _ = raw_block;
-    let item = prepare_block_archive_struct(envelope, &block_root, &file_hash, block_index.clone())
-        .map_err(|e| anyhow::format_err!("{e}"))?;
+    let item = prepare_block_archive_struct(
+        envelope,
+        &block_root,
+        &archive_block_id,
+        &file_hash,
+        block_index.clone(),
+    )
+    .map_err(|e| anyhow::format_err!("{e}"))?;
     archive.lock().put_block(item).map_err(|e| anyhow::format_err!("{e}"))?;
     tracing::debug!(target: "database", "TIME: block({}) {}ms;", block_id_hex, now.elapsed().as_millis());
     tracing::debug!(target: "database",
@@ -567,13 +575,14 @@ pub(crate) fn prepare_deleted_account_archive_struct(
 pub(crate) fn prepare_block_archive_struct(
     envelope: Envelope<AckiNackiBlock>,
     block_root: &Cell,
+    block_id: &UInt256,
     file_hash: &UInt256,
     block_order: String,
 ) -> anyhow::Result<ArchBlock> {
     let block = envelope.data().tvm_block();
     let set = BlockSerializationSetFH {
         block: block.clone(),
-        id: block_root.repr_hash(),
+        id: block_id.clone(),
         status: BlockProcessingStatus::Finalized,
         file_hash: file_hash.clone(),
     };
@@ -594,6 +603,33 @@ pub(crate) fn prepare_block_archive_struct(
     set.thread_id = Some(hex::encode(common_section.thread_id()));
     set.height = common_section.block_height().height().to_be_bytes();
     set.envelope_hash = envelope_hash(&envelope).0;
+    set.tracked_ext_out_messages_root = *common_section.tracked_ext_out_messages_root();
+    set.tracked_ext_out_message_hashes =
+        encode_tracked_ext_out_message_hashes(common_section.tracked_ext_out_messages());
+    let parent = envelope.data().parent();
+    set.proof_block_refs = encode_proof_block_refs(&parent, common_section.refs());
+    {
+        let (_, leaves) = envelope.data().block_id_with_merkle_leaves();
+        let packed_leaves_len = BLOCK_MERKLE_LEAF_COUNT * 32;
+        let mut packed_leaves = Vec::with_capacity(packed_leaves_len);
+        for leaf in leaves {
+            packed_leaves.extend_from_slice(&leaf);
+        }
+        debug_assert_eq!(packed_leaves.len(), packed_leaves_len);
+        set.block_merkle_leaves = packed_leaves;
+
+        // Encode CommonSection.history_proofs: `n: u8 || n * (layer: u8, hash: [u8; 32])`.
+        let history_proofs = common_section.history_proofs();
+        let n = history_proofs.len();
+        debug_assert!(n <= 10);
+        let mut buf = Vec::with_capacity(1 + n * 33);
+        buf.push(n as u8);
+        for (layer, proof) in history_proofs.iter() {
+            buf.push(*layer);
+            buf.extend_from_slice(proof.root_hash());
+        }
+        set.history_proofs = buf;
+    }
 
     let block_info = block.read_info().map_err(|e| anyhow::format_err!("{e}"))?;
     set.flags = Some(block_info.flags() as i64);
@@ -639,6 +675,39 @@ pub(crate) fn prepare_block_archive_struct(
     set.data = data;
 
     Ok(set)
+}
+
+fn encode_tracked_ext_out_message_hashes(
+    tracked_ext_out_messages: &std::collections::BTreeMap<
+        node_types::AccountRouting,
+        Vec<[u8; 32]>,
+    >,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&(tracked_ext_out_messages.len() as u32).to_be_bytes());
+    for (routing, message_hashes) in tracked_ext_out_messages {
+        let (dapp_id, account_id) = routing.unpack_for_hash();
+        buf.extend_from_slice(&dapp_id);
+        buf.extend_from_slice(&account_id);
+        buf.extend_from_slice(&(message_hashes.len() as u32).to_be_bytes());
+        for message_hash in message_hashes {
+            buf.extend_from_slice(message_hash);
+        }
+    }
+    buf
+}
+
+fn encode_proof_block_refs(
+    parent: &node_types::BlockIdentifier,
+    refs: &[node_types::BlockIdentifier],
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(4 + (1 + refs.len()) * 32);
+    buf.extend_from_slice(&((1 + refs.len()) as u32).to_be_bytes());
+    buf.extend_from_slice(parent.as_array());
+    for block_ref in refs {
+        buf.extend_from_slice(block_ref.as_array());
+    }
+    buf
 }
 
 // block-index = block-timestamp-in-seconds + placeholder-for-future-purposes + thread_id + height

@@ -45,6 +45,20 @@ pub struct SyncSnapshotLoaded {
     pub anchor: SyncSnapshotAnchor,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SyncSnapshotSkipped {
+    pub request: SyncSnapshotRequest,
+    pub reason: String,
+}
+
+impl std::fmt::Display for SyncSnapshotSkipped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "snapshot candidate skipped: {}; request={:?}", self.reason, self.request)
+    }
+}
+
+impl std::error::Error for SyncSnapshotSkipped {}
+
 pub trait StateSyncService {
     type Repository: Repository;
     // An assumption here:

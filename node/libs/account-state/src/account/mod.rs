@@ -166,17 +166,27 @@ impl ThreadAccount {
         }
     }
 
-    pub fn with_redirect(&self) -> anyhow::Result<Self> {
+    pub fn with_redirect(&self, redirect_dapp_id: DAppIdentifier) -> anyhow::Result<Self> {
         match self {
             Self::Avm(_, _) => Ok(self.clone()),
-            Self::Tvm(shard_account, _) => Ok(Self::from_tvm(
-                ShardAccount::with_redirect(
-                    shard_account.last_trans_hash().clone(),
-                    shard_account.last_trans_lt(),
-                    shard_account.get_dapp_id().cloned(),
-                )
-                .map_err(|err| anyhow::anyhow!("{err}"))?,
-            )),
+            Self::Tvm(shard_account, _) => {
+                if let Some(account_dapp_id) = self.get_dapp_id() {
+                    if account_dapp_id != redirect_dapp_id {
+                        tracing::error!(
+                            target: "node",
+                            "Redirect dapp id mismatch: account={account_dapp_id:?}, requested={redirect_dapp_id:?}"
+                        );
+                    }
+                }
+                Ok(Self::from_tvm(
+                    ShardAccount::with_redirect(
+                        shard_account.last_trans_hash().clone(),
+                        shard_account.last_trans_lt(),
+                        Some(redirect_dapp_id.into()),
+                    )
+                    .map_err(|err| anyhow::anyhow!("{err}"))?,
+                ))
+            }
         }
     }
 

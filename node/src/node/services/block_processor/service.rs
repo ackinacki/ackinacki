@@ -159,29 +159,79 @@ impl BlockProcessorService {
                     .build();
                 let _ = chain_pulse.pulse(&chain_pulse_last_finalized_block);
                 loop {
+                    let iteration_started_at = Instant::now();
                     tracing::trace!("Start processing iteration");
                     if SHUTDOWN_FLAG.get() == Some(&true) {
                         return Ok(());
                     }
+                    let step_started_at = Instant::now();
                     unprocessed_blocks_cache.remove_finalized_and_invalidated_blocks();
+                    tracing::trace!(
+                        "block_processor timing: step=remove_finalized_and_invalidated_blocks elapsed_ms={}",
+                        step_started_at.elapsed().as_millis(),
+                    );
+                    let step_started_at = Instant::now();
                     share_service.flush()?;
+                    tracing::trace!(
+                        "block_processor timing: step=share_service_flush elapsed_ms={}",
+                        step_started_at.elapsed().as_millis(),
+                    );
+                    let step_started_at = Instant::now();
                     let saved_notification: u32 = unprocessed_blocks_cache.notifications().stamp();
+                    tracing::trace!(
+                        "block_processor timing: step=notification_stamp elapsed_ms={} stamp={saved_notification}",
+                        step_started_at.elapsed().as_millis(),
+                    );
                     // Await for signal that smth has changes and blocks can be checked again
-                    if let Some((last_finalized_block_id, last_finalized_seq_no)) = repository.select_thread_last_finalized_block(&thread_identifier)? {
-
+                    let step_started_at = Instant::now();
+                    let last_finalized_block_info =
+                        repository.select_thread_last_finalized_block(&thread_identifier)?;
+                    tracing::trace!(
+                        "block_processor timing: step=select_thread_last_finalized_block elapsed_ms={}",
+                        step_started_at.elapsed().as_millis(),
+                    );
+                    if let Some((last_finalized_block_id, last_finalized_seq_no)) =
+                        last_finalized_block_info
+                    {
+                        let step_started_at = Instant::now();
                         let last_finalized_block = block_state_repository.get(&last_finalized_block_id)?;
+                        tracing::trace!(
+                            "block_processor timing: step=block_state_repository_get_last_finalized elapsed_ms={} block_id={last_finalized_block_id:?} seq_no={last_finalized_seq_no:?}",
+                            step_started_at.elapsed().as_millis(),
+                        );
+                        let step_started_at = Instant::now();
                         chain_pulse.pulse(&last_finalized_block)?;
+                        tracing::trace!(
+                            "block_processor timing: step=chain_pulse_pulse elapsed_ms={}",
+                            step_started_at.elapsed().as_millis(),
+                        );
 
+                        let step_started_at = Instant::now();
                         unprocessed_blocks_cache.remove_old_blocks(&last_finalized_seq_no);
+                        tracing::trace!(
+                            "block_processor timing: step=remove_old_blocks elapsed_ms={}",
+                            step_started_at.elapsed().as_millis(),
+                        );
+                        let step_started_at = Instant::now();
                         #[allow(clippy::mutable_key_type)]
                         let (blocks_to_process, filter) =
                             unprocessed_blocks_cache.clone_queue();
+                        tracing::trace!(
+                            "block_processor timing: step=clone_queue elapsed_ms={} blocks={}",
+                            step_started_at.elapsed().as_millis(),
+                            blocks_to_process.blocks().len(),
+                        );
 
                         shared_services.metrics.as_ref().inspect(|m| {
                             m.report_unfinalized_blocks_queue(blocks_to_process.blocks().len() as u64, &thread_identifier);
                         });
 
+                        let step_started_at = Instant::now();
                         let _ = chain_pulse.evaluate(&blocks_to_process, &block_state_repository, &repository);
+                        tracing::trace!(
+                            "block_processor timing: step=chain_pulse_evaluate elapsed_ms={}",
+                            step_started_at.elapsed().as_millis(),
+                        );
                         let mut first_unsuccessfully_processed_block_height: Option<BlockHeight> = None;
                         for (block_state, block) in blocks_to_process.blocks().values() {
                             {
@@ -250,7 +300,16 @@ impl BlockProcessorService {
                             }
                         }
                     }
+                    tracing::trace!(
+                        "block_processor timing: step=iteration_before_wait elapsed_ms={}",
+                        iteration_started_at.elapsed().as_millis(),
+                    );
+                    let step_started_at = Instant::now();
                     unprocessed_blocks_cache.notifications().clone().wait_for_updates(saved_notification);
+                    tracing::trace!(
+                        "block_processor timing: step=wait_for_updates elapsed_ms={} stamp={saved_notification}",
+                        step_started_at.elapsed().as_millis(),
+                    );
                 }
             })
             .expect("Failed to spawn block_processor thread");
@@ -377,6 +436,7 @@ fn process_candidate_block(
             &parent_block_state,
             time_to_produce_block,
             block_state,
+            repository,
         )? {
             let thread_id = block_state.guarded_mut(|e| {
                 e.set_common_checks_passed()?;
@@ -1029,6 +1089,7 @@ fn check_common_block_params(
     parent_block_state: &BlockState,
     _time_to_produce_block: &Duration,
     block_state: &BlockState,
+    repository: &RepositoryImpl,
 ) -> anyhow::Result<bool> {
     let (Some(_parent_time), Some(parent_seq_no), Some(parent_height)) =
         parent_block_state.guarded(|e| (*e.block_time_ms(), *e.block_seq_no(), *e.block_height()))
@@ -1051,6 +1112,23 @@ fn check_common_block_params(
             "Invalid block height: candidate_height: {:?}, parent_height: {parent_height:?}",
             candidate_block.data().common_section().block_height()
         );
+        return Ok(false);
+    }
+
+    let Some(parent_protocol_version) =
+        parent_block_state.guarded(|e| e.block_version_state().clone())
+    else {
+        anyhow::bail!("Failed to get parent protocol version to perform common check");
+    };
+
+    let is_retired = repository.config_read().is_retired(parent_protocol_version.to_use());
+    tracing::trace!("block version is_retired: {:?}", is_retired);
+
+    if !repository.config_read().is_retired(parent_protocol_version.to_use())
+        && !candidate_block.data().common_section().block_keeper_set_changes().is_empty()
+        && candidate_block.data().common_section().block_keeper_set_change_proof_data().is_none()
+    {
+        tracing::trace!("BK set hash must be set if common section contains bk set changes");
         return Ok(false);
     }
 

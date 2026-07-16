@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use account_state::AccountHashMismatchError;
 use account_state::ThreadAccountsRepository;
 use tvm_block::BlkPrevInfo;
@@ -13,6 +15,7 @@ use crate::block::producer::wasm::WasmNodeCache;
 use crate::block::producer::BlockVerifier;
 use crate::block::producer::TVMBlockVerifier;
 use crate::bls::envelope::Envelope;
+use crate::config::config_read::ConfigRead;
 use crate::config::BlockchainConfigRead;
 use crate::config::Config;
 use crate::config::GlobalConfig;
@@ -24,6 +27,8 @@ use crate::repository::accounts::AccountsRepository;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
+use crate::types::history_proof::make_check_history_proof_hash_callback;
+use crate::types::history_proof::GlobalHistoryData;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockInfo;
 
@@ -67,6 +72,7 @@ fn classify_verify_block_generation_error(error: &anyhow::Error) -> Option<Verif
 pub fn verify_block(
     block_candidate: &AckiNackiBlock,
     blockchain_config: BlockchainConfigRead,
+    node_config_read: ConfigRead,
     prev_block_optimistic_state: &mut OptimisticStateImpl,
     node_config: Config,
     node_global_config: GlobalConfig,
@@ -80,6 +86,7 @@ pub fn verify_block(
     wasm_cache: WasmNodeCache,
     message_db: MessageDurableStorage,
     is_block_of_retired_version: bool,
+    history_proof_data: GlobalHistoryData,
 ) -> anyhow::Result<VerificationResult> {
     #[cfg(feature = "timing")]
     let start = std::time::Instant::now();
@@ -89,8 +96,12 @@ pub fn verify_block(
         block_candidate.seq_no()
     );
 
+    let check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>> =
+        Some(make_check_history_proof_hash_callback(history_proof_data.clone()));
+
     let builder = TVMBlockVerifier::builder()
         .blockchain_config(blockchain_config)
+        .node_config_read(node_config_read)
         .node_config(node_config.clone())
         .shared_services(shared_services)
         .epoch_block_keeper_data(vec![])
@@ -101,7 +112,8 @@ pub fn verify_block(
         .metrics(metrics)
         .wasm_cache(wasm_cache)
         .node_global_config(node_global_config.clone())
-        .is_block_of_retired_version(is_block_of_retired_version);
+        .is_block_of_retired_version(is_block_of_retired_version)
+        .check_history_proof_hash(check_history_proof_hash);
     let producer = builder.build();
 
     // TODO: need to refactor this point to reuse generated verify block
@@ -122,6 +134,20 @@ pub fn verify_block(
     }
 
     let (verify_block, mut verify_state) = verification_block_production_result?;
+
+    {
+        let verify_root = verify_block.common_section().tracked_ext_out_messages_root();
+        let candidate_root = block_candidate.common_section().tracked_ext_out_messages_root();
+        if verify_root != candidate_root {
+            tracing::trace!(target: "monit",
+                "Unequal tracked_ext_out_messages_root: verify={:?} candidate={:?}",
+                verify_root,
+                candidate_root,
+            );
+            return Ok(VerificationResult::BadBlock);
+        }
+    }
+
     // TODO: validate common section
     let mut res = verify_block.tvm_block() == block_candidate.tvm_block();
     if !res {

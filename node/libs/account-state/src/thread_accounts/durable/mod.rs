@@ -15,6 +15,7 @@ pub use archive::config::ArchiveStoreConfig;
 pub use archive::control::ThreadControlState;
 pub use archive::control::UpdatePhase;
 pub use archive::store::ArchiveStateStore;
+pub use archive::store::StagedArchiveEpoch;
 pub use archive::update::ThreadSnapshot;
 pub use kv_store::KVRecord;
 pub use kv_store::KVStore;
