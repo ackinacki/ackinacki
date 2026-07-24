@@ -1,5 +1,11 @@
 {
     email {$CADDY_EMAIL}
+{% if OTEL_COLLECTOR is defined and OTEL_COLLECTOR %}
+    servers {
+        metrics
+    }
+    admin 0.0.0.0:2019
+{% endif %}
 {% if CADDY_EAB is defined and CADDY_EAB %}
 {% if ZEROSSL_EXCLUSIVE is defined and ZEROSSL_EXCLUSIVE %}
     acme_ca https://acme.zerossl.com/v2/DV90

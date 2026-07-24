@@ -474,6 +474,8 @@ block_keeper_tls_proxy:
 
 `NODE_GROUP_ID`, `OTEL_COLLECTOR`, and `OTEL_SERVICE_NAME` are optional and related to node metrics integration.
 They can be used to send metrics to a specified collector server.
+`BK_TLS_PROXY_OTEL_SERVICE_NAME` overrides `service.name` only for the BK TLS
+proxy metrics and otherwise falls back to `OTEL_SERVICE_NAME` or `caddy-tls-proxy`.
 
 `AUTH_TOKEN`: This token is used to authorize access to the BK API. You can specify any arbitrary string.
 
@@ -1566,7 +1568,7 @@ caddy:
 
 #### Optional fine-tuning
 
-Defaults come from `roles/caddy/defaults/main.yaml`. Override only when needed.
+Defaults come from `roles/caddy/defaults/main/main.yaml`. Override only when needed.
 
 | Variable | Default | When to override |
 |---|---|---|
@@ -1578,6 +1580,15 @@ Defaults come from `roles/caddy/defaults/main.yaml`. Override only when needed.
 | `BK_ON_BM` | unset | `true` only when a BK is colocated on BM host |
 | `EXTERNAL_NET` | `yes` | unchanged; join the existing `ackinacki-net` |
 | `ZEROSSL_EXCLUSIVE` | `yes` | unchanged; takes effect only with `CADDY_EAB` |
+| `OTEL_COLLECTOR` | deployment-specific private default | set an OTLP endpoint to enable metrics; use an empty value to disable |
+| `OTEL_COLLECTOR_PROTO` | `grpc` | use the OTLP protocol accepted by your collector |
+| `CADDY_OTEL_SERVICE_NAME` | `OTEL_SERVICE_NAME` or `caddy` | override only the service name attached to Caddy metrics |
+| `OTEL_COLLECTOR_IMAGE` | `otel/opentelemetry-collector-contrib:0.115.1` | pin a different collector sidecar image |
+
+When `OTEL_COLLECTOR` is set, the role enables Caddy's Prometheus metrics,
+starts an OpenTelemetry Collector sidecar, and exports the metrics over OTLP.
+`NETWORK_NAME` is used as `service.namespace`; `BM_ID` (or `HOST_NAME` when
+`BM_ID` is absent) is used as `service.instance.id`.
 
 #### Port 8600 vs 8610
 
@@ -1969,4 +1980,3 @@ ansible-playbook -i your-inventory.yaml ansible/proxy-deployment.yaml
 # This will stop, update compose and config, and restart Proxy WITHOUT regenerating keys
 ansible-playbook -i your-inventory.yaml ansible/proxy-upgrade.yaml
 ```
-

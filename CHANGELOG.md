@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.1] – 2026-07-24
+
+### New / Improvements
+- Removed a long lock that stalled block finalization by moving repository metadata persistence off the finalization path into a dedicated background thread
+- Reduced node log spam by moving verbose per-message tracing to dedicated, opt-in targets and emitting periodic aggregated summaries on hot paths instead of a line per event
+
+### Fixes
+- Fixed an attestation-aggregation race during finalization so aggregation targets the desired signature threshold and no longer drops locally produced block states before they are finalized
+- Filter stale acks older than the finalization window before including them in a produced block
+- Fixed block-producer broadcast timing and fallback-transition handling
+
 ## [0.18.0] – 2026-07-16
 
 ### New / Improvements

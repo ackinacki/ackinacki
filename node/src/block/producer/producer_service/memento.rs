@@ -12,7 +12,7 @@ use crate::external_messages::Stamp;
 use crate::node::SignerIndex;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
-use crate::types::AckiNackiBlockVersioned;
+use crate::types::AckiNackiBlock;
 use crate::types::ThreadsTable;
 use crate::versioning::ProtocolVersion;
 
@@ -35,6 +35,12 @@ pub struct BlockProducerMemento {
     last_attestation_notification: Option<u32>,
 }
 
+#[derive(PartialEq)]
+pub enum DidBroadcastSmth {
+    Broadcast,
+    Skip,
+}
+
 impl BlockProducerMemento {
     pub fn produced_blocks_mut(&mut self) -> &mut Vec<ProducedBlock> {
         &mut self.produced_blocks
@@ -48,7 +54,7 @@ impl BlockProducerMemento {
 #[derive(TypedBuilder, Getters)]
 pub struct ProducedBlock {
     assumptions: Assumptions,
-    block: AckiNackiBlockVersioned,
+    block: AckiNackiBlock,
     optimistic_state: Arc<OptimisticStateImpl>,
     feedbacks: ExtMsgFeedbackList,
     temporary_block_id: TemporaryBlockId,

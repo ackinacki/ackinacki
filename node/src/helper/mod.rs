@@ -37,19 +37,24 @@ use crate::helper::metrics::Metrics;
 use crate::node::NodeIdentifier;
 
 pub const TIMING_TARGET: &str = "timing";
+pub const ATTESTATION_SEND_DETAILED_TARGET: &str = "attestation_send_detailed";
+pub const NODE_EXECUTION_DETAILED_TARGET: &str = "node_execution_detailed";
+const EXECUTION_VERBOSE_ENV: &str = "EXECUTION_VERBOSE";
 
 pub static SHUTDOWN_FINALIZATION_FLAG: OnceLock<bool> = OnceLock::new();
 pub static FINALIZATION_LOOPS_COUNTER: AtomicU32 = AtomicU32::new(0);
 pub static SHUTDOWN_FLAG: OnceLock<bool> = OnceLock::new();
 
-fn verbose_filter() -> tracing_subscriber::EnvFilter {
+fn verbose_filter_directives() -> String {
     let (tvm_trace_level, builder_trace_level) =
         if cfg!(feature = "tvm_tracing") { ("trace", "trace") } else { ("off", "info") };
-    tracing_subscriber::EnvFilter::new(format!(
+    format!(
         "gossip=trace,\
+            network_slow_delivery=debug,\
             http_server=trace,\
             block_manager=trace,\
             node=trace,\
+            block_state_save=trace,\
             poem=debug,\
             lock=trace,\
             executor={tvm_trace_level},\
@@ -63,7 +68,47 @@ fn verbose_filter() -> tracing_subscriber::EnvFilter {
             monit=trace,\
             ext_messages=trace,\
             mem=off"
-    ))
+    )
+}
+
+fn verbose_filter() -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::new(verbose_filter_directives())
+}
+
+fn add_execution_verbose_directives(directives: &mut String) {
+    add_trace_directive(directives, ATTESTATION_SEND_DETAILED_TARGET);
+    add_trace_directive(directives, NODE_EXECUTION_DETAILED_TARGET);
+    add_trace_directive(directives, network::NETWORK_DELIVERY_DETAILED_TARGET);
+}
+
+fn add_trace_directive(directives: &mut String, target: &str) {
+    if !directives.trim().is_empty() && !directives.ends_with(',') {
+        directives.push(',');
+    }
+    directives.push_str(target);
+    directives.push_str("=trace");
+}
+
+fn execution_verbose_enabled() -> bool {
+    std::env::var(EXECUTION_VERBOSE_ENV)
+        .map(|value| {
+            matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn node_log_filter() -> tracing_subscriber::EnvFilter {
+    let mut directives = std::env::var("RUST_LOG").unwrap_or_else(|_| verbose_filter_directives());
+    if execution_verbose_enabled() {
+        add_execution_verbose_directives(&mut directives);
+    }
+    tracing_subscriber::EnvFilter::try_new(directives).unwrap_or_else(|_| {
+        let mut directives = verbose_filter_directives();
+        if execution_verbose_enabled() {
+            add_execution_verbose_directives(&mut directives);
+        }
+        tracing_subscriber::EnvFilter::new(directives)
+    })
 }
 
 fn rust_log_enables_mem() -> bool {
@@ -99,8 +144,7 @@ pub fn init_tracing() -> (Option<Metrics>, Vec<WorkerGuard>) {
     // } else {
     // EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("error,monit=trace"))
     // };
-    let filter =
-        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| verbose_filter());
+    let filter = node_log_filter();
 
     // According to OpenTelemetry Specification:
     // The following environment variables configure the OTLP exporter:

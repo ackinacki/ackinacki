@@ -274,3 +274,53 @@ pub fn inherit_ancestor_blocks_finalization_distances(
 
     Ok(InheritedAncestorBlocksFinalizationCheckpoints(next))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn checkpoint(
+        required_attestation_count: usize,
+        attestation_target_type: AttestationTargetType,
+    ) -> AttestationTargetCheckpoint {
+        AttestationTargetCheckpoint::builder()
+            .current_distance(0)
+            .deadline(15)
+            .required_attestation_count(required_attestation_count)
+            .attestation_target_type(attestation_target_type)
+            .build()
+    }
+
+    #[test]
+    fn primary_above_fallback_pre_threshold_below_primary_quorum_does_not_finalize() {
+        let block_id = BlockIdentifier::new([1; 32]);
+        let checkpoints = AncestorBlocksFinalizationCheckpoints {
+            primary: HashMap::from([(block_id, checkpoint(170, AttestationTargetType::Primary))]),
+            fallback: HashMap::from([(
+                block_id,
+                vec![
+                    checkpoint(128, AttestationTargetType::Primary),
+                    checkpoint(128, AttestationTargetType::Fallback),
+                ],
+            )]),
+        };
+
+        let result = InheritedAncestorBlocksFinalizationCheckpoints(checkpoints)
+            .into_builder()
+            .update(HashMap::from([
+                ((block_id, AttestationTargetType::Primary), 169),
+                ((block_id, AttestationTargetType::Fallback), 127),
+            ]));
+
+        assert!(result.passed_primary.is_empty());
+        assert!(result.passed_fallback.is_empty());
+        assert_eq!(result.passed_fallback_preattestation_checkpoint, vec![block_id]);
+        assert!(result.remaining_checkpoints.primary().contains_key(&block_id));
+        let fallback_checkpoints = result.remaining_checkpoints.fallback().get(&block_id).unwrap();
+        assert_eq!(fallback_checkpoints.len(), 1);
+        assert_eq!(
+            fallback_checkpoints[0].attestation_target_type(),
+            &AttestationTargetType::Fallback
+        );
+    }
+}

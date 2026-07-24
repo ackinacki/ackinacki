@@ -151,9 +151,20 @@ pub enum AggregateActionOnConditionMissed {
 pub struct AggregateFilter {
     attestation_type: AttestationTargetType,
     min_signatures_inclusive: usize,
+    desired_signatures_inclusive: usize,
 
     #[builder(default)]
     action_on_condition_missed: AggregateActionOnConditionMissed,
+}
+
+impl AggregateFilter {
+    pub fn merge_checkpoint(&mut self, checkpoint: &AttestationTargetCheckpoint) {
+        debug_assert_eq!(self.attestation_type, *checkpoint.attestation_target_type());
+        self.min_signatures_inclusive =
+            self.min_signatures_inclusive.min(*checkpoint.required_attestation_count());
+        self.desired_signatures_inclusive =
+            self.desired_signatures_inclusive.max(*checkpoint.required_attestation_count());
+    }
 }
 
 impl From<&AttestationTargetCheckpoint> for AggregateFilter {
@@ -161,6 +172,7 @@ impl From<&AttestationTargetCheckpoint> for AggregateFilter {
         Self {
             attestation_type: *checkpoint.attestation_target_type(),
             min_signatures_inclusive: *checkpoint.required_attestation_count(),
+            desired_signatures_inclusive: *checkpoint.required_attestation_count(),
             action_on_condition_missed: Default::default(),
         }
     }
@@ -276,22 +288,34 @@ impl CollectedAttestations {
                     block_state.guarded(|e| e.fallback_finalization_proof().clone())
                 }
             };
-            if let Some(stored) = check_stored_in_state {
-                if stored.signatures_count() >= aggregate_filter.min_signatures_inclusive {
+            if let Some(stored) = &check_stored_in_state {
+                if stored.signatures_count() >= aggregate_filter.desired_signatures_inclusive {
                     result.push(stored.clone());
                     continue;
                 }
             }
+            let stored_acceptable = check_stored_in_state
+                .as_ref()
+                .filter(|e| e.signatures_count() >= aggregate_filter.min_signatures_inclusive)
+                .cloned();
 
             // Check if already folded is good enough
             let block_identifier = *block_state.block_identifier();
             let Some(block_seq_no) = block_state.guarded(|e| *e.block_seq_no()) else {
+                if let Some(stored_acceptable) = stored_acceptable {
+                    result.push(stored_acceptable);
+                    continue;
+                }
                 tracing::trace!("CollectedAttestations: aggregate: failed to get block_seq_no. Block id: {block_identifier}");
                 anyhow::bail!("BlockSeqNo is missing");
             };
             let Some(parent_block_identifier) =
                 block_state.guarded(|e| *e.parent_block_identifier())
             else {
+                if let Some(stored_acceptable) = stored_acceptable {
+                    result.push(stored_acceptable);
+                    continue;
+                }
                 tracing::trace!("CollectedAttestations: aggregate: failed to get parent_block_identifier. Block id: {block_identifier}");
                 anyhow::bail!("Parent block id is missing");
             };
@@ -305,33 +329,55 @@ impl CollectedAttestations {
                 .block_identifier(block_identifier)
                 .attestation_target_type(*aggregate_filter.attestation_type())
                 .build();
-            let folded_attestation = self.folded_attestations.get(&key);
-            if let Some(folded_attestation) = folded_attestation {
+            let folded_attestation = self.folded_attestations.get(&key).cloned();
+            if let Some(folded_attestation) = &folded_attestation {
                 if folded_attestation.signatures_count()
-                    >= aggregate_filter.min_signatures_inclusive
+                    >= aggregate_filter.desired_signatures_inclusive
                 {
                     result.push(folded_attestation.clone());
                     continue;
                 }
             }
+            let base_attestation =
+                match (folded_attestation.as_ref(), check_stored_in_state.as_ref()) {
+                    (Some(folded), Some(stored))
+                        if stored.signatures_count() > folded.signatures_count() =>
+                    {
+                        Some(stored)
+                    }
+                    (Some(folded), _) => Some(folded),
+                    (None, Some(stored)) => Some(stored),
+                    (None, None) => None,
+                };
+            let acceptable_attestation = base_attestation
+                .filter(|e| e.signatures_count() >= aggregate_filter.min_signatures_inclusive)
+                .cloned();
 
             // Check if it will be enough if we combine folded and unverified.
             tracing::trace!(?block_identifier, "CollectedAttestations: aggregate");
             let Some(bk_set) = block_state.guarded(|e| e.bk_set().clone()) else {
+                if let Some(acceptable_attestation) = acceptable_attestation.clone() {
+                    result.push(acceptable_attestation);
+                    continue;
+                }
                 tracing::trace!("CollectedAttestations: aggregate: Can't verify block attestations. Missing bk set. Block id: {block_identifier}");
                 anyhow::bail!("Missing bk set");
             };
             let Some(envelope_hash) = block_state.guarded(|e| e.envelope_hash().clone()) else {
+                if let Some(acceptable_attestation) = acceptable_attestation.clone() {
+                    result.push(acceptable_attestation);
+                    continue;
+                }
                 tracing::trace!("CollectedAttestations: aggregate: failed to get an envelope hash. Block id: {block_identifier}");
                 anyhow::bail!("Envelope hash is missing");
             };
-            let folded_attestation_signers: HashSet<SignerIndex> = folded_attestation
+            let folded_attestation_signers: HashSet<SignerIndex> = base_attestation
                 .map_or(Default::default(), |e: &Envelope<AttestationData>| {
                     e.signers().cloned().collect()
                 });
             let mut combined_signers = folded_attestation_signers;
             let mut to_combine = vec![];
-            if let Some(folded_attestation) = folded_attestation {
+            if let Some(folded_attestation) = base_attestation {
                 to_combine.push((
                     folded_attestation.clone_signature_occurrences(),
                     folded_attestation.aggregated_signature().clone(),
@@ -364,6 +410,10 @@ impl CollectedAttestations {
                     .build();
                 let fold_result = try_fold(attestation_data, to_combine, &bk_set);
                 let Some(new_fold) = fold_result.folded else {
+                    if let Some(acceptable_attestation) = acceptable_attestation {
+                        result.push(acceptable_attestation);
+                        continue;
+                    }
                     match aggregate_filter.action_on_condition_missed {
                         AggregateActionOnConditionMissed::Skip => {
                             tracing::trace!("Failed to fold any attestation. Count missed {block_identifier}. Using skip action");
@@ -382,9 +432,15 @@ impl CollectedAttestations {
                     continue;
                 }
             }
+            if let Some(acceptable_attestation) = acceptable_attestation {
+                result.push(acceptable_attestation);
+                continue;
+            }
             match aggregate_filter.action_on_condition_missed {
                 AggregateActionOnConditionMissed::Skip => {
                     tracing::trace!(
+                        min = aggregate_filter.min_signatures_inclusive,
+                        desired = aggregate_filter.desired_signatures_inclusive,
                         "Attestations count missed {block_identifier}. Using skip action"
                     );
                     continue;
@@ -470,12 +526,20 @@ impl CollectedAttestations {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use node_types::BlockIdentifier;
 
     use super::*;
+    use crate::block_keeper_system::BlockKeeperData;
+    use crate::block_keeper_system::BlockKeeperSet;
+    use crate::bls::gosh_bls::PubKey;
+    use crate::bls::gosh_bls::Secret;
     use crate::bls::gosh_bls::Signature;
+    use crate::bls::BLSSignatureScheme;
+    use crate::node::block_state::repository::BlockStateRepository;
     use crate::types::envelope_hash::AckiNackiEnvelopeHash;
+    use crate::utilities::guarded::GuardedMut;
 
     fn test_attestation(
         parent_block_id: BlockIdentifier,
@@ -497,6 +561,44 @@ mod tests {
                 .target_type(target_type)
                 .build(),
         )
+    }
+
+    fn signed_test_attestation(
+        parent_block_id: BlockIdentifier,
+        block_id: BlockIdentifier,
+        block_seq_no: BlockSeqNo,
+        envelope_hash: AckiNackiEnvelopeHash,
+        target_type: AttestationTargetType,
+        signer_indices: impl IntoIterator<Item = SignerIndex>,
+    ) -> Envelope<AttestationData> {
+        let data = AttestationData::builder()
+            .parent_block_id(parent_block_id)
+            .block_id(block_id)
+            .block_seq_no(block_seq_no)
+            .envelope_hash(envelope_hash)
+            .target_type(target_type)
+            .build();
+        let signer_indices = signer_indices.into_iter().collect::<Vec<_>>();
+        let signatures = signer_indices
+            .iter()
+            .map(|_| GoshBLS::sign(&Secret::default(), &data).unwrap())
+            .collect::<Vec<_>>();
+        let aggregated_signature = GoshBLS::merge_all(&signatures).unwrap();
+        Envelope::create(
+            aggregated_signature,
+            HashMap::from_iter(signer_indices.into_iter().map(|signer_index| (signer_index, 1))),
+            data,
+        )
+    }
+
+    fn test_bk_set(signers: impl IntoIterator<Item = SignerIndex>) -> BlockKeeperSet {
+        let mut bk_set = BlockKeeperSet::new();
+        for signer_index in signers {
+            let data =
+                BlockKeeperData { pubkey: PubKey::default(), signer_index, ..Default::default() };
+            bk_set.insert(signer_index, data);
+        }
+        bk_set
     }
 
     #[test]
@@ -572,5 +674,71 @@ mod tests {
         assert_eq!(cached.signatures_count(), 1);
         assert!(cached.has_signer_index(1));
         assert!(!cached.has_signer_index(2));
+    }
+
+    #[test]
+    fn aggregate_does_not_stop_at_min_when_desired_is_available() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let block_state_repository = BlockStateRepository::test(tmp_dir.path().to_owned());
+        let block_state = block_state_repository.get(&BlockIdentifier::default()).unwrap();
+        block_state
+            .guarded_mut(|e| {
+                e.set_block_seq_no(BlockSeqNo::from(1))?;
+                e.set_stored_zero_state()?;
+                e.set_bk_set(Arc::new(test_bk_set(0..200)))?;
+                Ok::<(), anyhow::Error>(())
+            })
+            .unwrap();
+
+        let parent_block_id = BlockIdentifier::default();
+        let block_id = BlockIdentifier::default();
+        let block_seq_no = BlockSeqNo::from(1);
+        let envelope_hash = AckiNackiEnvelopeHash([0; 32]);
+        let key = CompactedMapKey::builder()
+            .block_seq_no(block_seq_no)
+            .block_identifier(block_id)
+            .attestation_target_type(AttestationTargetType::Primary)
+            .build();
+        let mut collected = CollectedAttestations::default();
+        collected.folded_attestations.insert(
+            key,
+            signed_test_attestation(
+                parent_block_id,
+                block_id,
+                block_seq_no,
+                envelope_hash.clone(),
+                AttestationTargetType::Primary,
+                0..128,
+            ),
+        );
+        for signer_index in 128..170 {
+            collected
+                .add(
+                    signed_test_attestation(
+                        parent_block_id,
+                        block_id,
+                        block_seq_no,
+                        envelope_hash.clone(),
+                        AttestationTargetType::Primary,
+                        [signer_index],
+                    ),
+                    false,
+                )
+                .unwrap();
+        }
+
+        let aggregated = collected
+            .aggregate(&[(
+                block_state,
+                AggregateFilter::builder()
+                    .attestation_type(AttestationTargetType::Primary)
+                    .min_signatures_inclusive(128)
+                    .desired_signatures_inclusive(170)
+                    .build(),
+            )])
+            .unwrap();
+
+        assert_eq!(aggregated.len(), 1);
+        assert_eq!(aggregated[0].signatures_count(), 170);
     }
 }

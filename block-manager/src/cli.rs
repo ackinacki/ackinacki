@@ -17,6 +17,9 @@ use url::Url;
 use crate::domain::models::AppConfig;
 use crate::domain::models::DEFAULT_BP_PORT;
 
+const DEFAULT_READINESS_MAX_BLOCK_AGE_SECS: u64 = 30;
+const MAX_READINESS_MAX_BLOCK_AGE_SECS: u64 = 60;
+
 pub static LONG_VERSION: LazyLock<String> = LazyLock::new(|| {
     format!(
         "
@@ -52,6 +55,15 @@ pub struct Args {
     /// File path for sqlite
     #[arg(long, env, default_value_t = database::sqlite::sqlite_helper::SQLITE_DATA_DIR.to_string())]
     pub sqlite_path: String,
+
+    /// Maximum finalized block age before the readiness endpoint returns 503
+    #[arg(
+        long,
+        env = "READINESS_MAX_BLOCK_AGE_SECS",
+        default_value_t = DEFAULT_READINESS_MAX_BLOCK_AGE_SECS,
+        value_parser = clap::value_parser!(u64).range(1..=MAX_READINESS_MAX_BLOCK_AGE_SECS)
+    )]
+    pub readiness_max_block_age_secs: u64,
 
     /// ClickHouse URL for wallet activity export (e.g. http://localhost:8123)
     /// If not set, ClickHouse export is disabled
@@ -153,6 +165,7 @@ pub fn config_from_args(args: Args) -> anyhow::Result<AppConfig> {
         rest_api: args.rest_api,
         subscribe_sockets,
         sqlite_path: args.sqlite_path,
+        readiness_max_block_age_secs: args.readiness_max_block_age_secs,
         bk_api_token,
         owner_wallet_pubkey: std::env::var("BM_OWNER_WALLET_PUBKEY").ok(),
         signing_keys: std::env::var("BM_ISSUER_KEYS_FILE")
@@ -177,7 +190,38 @@ fn parse_socket_address(hostname: &str, port: u16) -> std::io::Result<SocketAddr
 mod tests {
     use std::io::Write;
 
+    use clap::Parser;
+
     use super::*;
+
+    #[test]
+    fn test_readiness_max_block_age() {
+        let default_args = Args::try_parse_from(["block-manager"]).unwrap();
+        assert_eq!(default_args.readiness_max_block_age_secs, DEFAULT_READINESS_MAX_BLOCK_AGE_SECS);
+
+        let overridden_args =
+            Args::try_parse_from(["block-manager", "--readiness-max-block-age-secs", "45"])
+                .unwrap();
+        assert_eq!(overridden_args.readiness_max_block_age_secs, 45);
+
+        let max_args = Args::try_parse_from([
+            "block-manager",
+            "--readiness-max-block-age-secs",
+            &MAX_READINESS_MAX_BLOCK_AGE_SECS.to_string(),
+        ])
+        .unwrap();
+        assert_eq!(max_args.readiness_max_block_age_secs, MAX_READINESS_MAX_BLOCK_AGE_SECS);
+
+        assert!(
+            Args::try_parse_from(["block-manager", "--readiness-max-block-age-secs", "0"]).is_err()
+        );
+        assert!(Args::try_parse_from([
+            "block-manager",
+            "--readiness-max-block-age-secs",
+            &(MAX_READINESS_MAX_BLOCK_AGE_SECS + 1).to_string(),
+        ])
+        .is_err());
+    }
 
     #[test]
     fn test_parse_config_file() {

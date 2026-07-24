@@ -21,6 +21,7 @@ pub struct MockDbClient {
 
 #[allow(dead_code)]
 impl MockDbClient {
+    #[cfg(test)]
     pub fn new() -> Self {
         MockDbClient {
             create_daily_calls: Arc::new(Mutex::new(Vec::new())),
@@ -39,6 +40,7 @@ impl MockDbClient {
     }
 }
 
+#[cfg(test)]
 impl Default for MockDbClient {
     fn default() -> Self {
         Self::new()

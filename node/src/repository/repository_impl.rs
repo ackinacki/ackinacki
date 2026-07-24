@@ -18,7 +18,9 @@ use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::mpsc;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -44,8 +46,6 @@ use telemetry_utils::now_ms;
 use tempfile::NamedTempFile;
 use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
-use versioned_struct::versioned;
-use versioned_struct::Transitioning;
 
 use super::accounts::AccountsRepository;
 use crate::block_keeper_system::epoch::decode_epoch_data;
@@ -126,6 +126,19 @@ const MAX_BLOCK_CNT_THAT_CAN_BE_LOADED_TO_PREPARE_STATE: usize = 400;
 pub type RepositoryMetadata =
     Arc<Mutex<HashMap<ThreadIdentifier, Arc<Mutex<Metadata<BlockIdentifier, BlockSeqNo>>>>>>;
 pub type RepositoryLastExtMessageIndex = Arc<Mutex<HashMap<ThreadIdentifier, u32>>>;
+type RepositoryMetadataSnapshot = HashMap<ThreadIdentifier, Metadata<BlockIdentifier, BlockSeqNo>>;
+type MetadataSaveResult = Result<(), String>;
+
+enum MetadataSaveCommand {
+    SaveThread {
+        thread_id: ThreadIdentifier,
+        metadata: Metadata<BlockIdentifier, BlockSeqNo>,
+    },
+    SaveSnapshot {
+        metadata: RepositoryMetadataSnapshot,
+        completion_tx: Option<mpsc::Sender<MetadataSaveResult>>,
+    },
+}
 
 impl AllowGuardedMut for HashMap<ThreadIdentifier, BTreeMap<BlockSeqNo, BlockIdentifier>> {}
 impl AllowGuardedMut for HashMap<ThreadIdentifier, Arc<OptimisticStateImpl>> {}
@@ -321,7 +334,7 @@ pub struct RepositoryImpl {
     /// Allows independent AN-thread finalizers to run concurrently while
     /// snapshot import commit takes the exclusive side to freeze finalization.
     finalization_import_gate: Arc<RwLock<()>>,
-    metadata_save_lock: Arc<Mutex<()>>,
+    metadata_save_tx: mpsc::Sender<MetadataSaveCommand>,
     config_read: ConfigRead,
     history_proof_data: GlobalHistoryData,
 }
@@ -377,7 +390,6 @@ pub struct AncestorBlockData {
     block_version_state: BlockProtocolVersionState,
 }
 
-#[versioned]
 #[derive(TypedBuilder, Serialize, Deserialize, Getters)]
 pub struct ThreadSnapshot {
     optimistic_state: Vec<u8>,
@@ -397,43 +409,10 @@ pub struct ThreadSnapshot {
     finalizes_blocks: BTreeSet<BlockIndex>,
     parent_ancestor_blocks_finalization_checkpoints: AncestorBlocksFinalizationCheckpoints,
     block_protocol_version_state: BlockProtocolVersionState,
-    #[future]
     history_data_snapshot: GlobalHistoryDataSnapshot,
-    #[future]
     history_cursor: HistoryLayerData,
     durable_state_snapshot: Option<Vec<u8>>,
     finalization_chain: Vec<Envelope<AckiNackiBlock>>,
-}
-
-impl Transitioning for ThreadSnapshot {
-    type Old = ThreadSnapshotOld;
-
-    fn from(old: Self::Old) -> Self {
-        Self {
-            optimistic_state: old.optimistic_state,
-            ancestor_blocks_data: old.ancestor_blocks_data,
-            db_messages: old.db_messages,
-            finalized_block: old.finalized_block,
-            bk_set: old.bk_set,
-            descendant_bk_set: old.descendant_bk_set,
-            future_bk_set: old.future_bk_set,
-            descendant_future_bk_set: old.descendant_future_bk_set,
-            finalized_block_stats: old.finalized_block_stats,
-            attestation_target: old.attestation_target,
-            producer_selector: old.producer_selector,
-            block_height: old.block_height,
-            prefinalization_proof: old.prefinalization_proof,
-            ancestor_blocks_finalization_checkpoints: old.ancestor_blocks_finalization_checkpoints,
-            finalizes_blocks: old.finalizes_blocks,
-            parent_ancestor_blocks_finalization_checkpoints: old
-                .parent_ancestor_blocks_finalization_checkpoints,
-            block_protocol_version_state: old.block_protocol_version_state,
-            history_data_snapshot: GlobalHistoryDataSnapshot::default(),
-            history_cursor: HistoryLayerData::default(),
-            durable_state_snapshot: old.durable_state_snapshot,
-            finalization_chain: old.finalization_chain,
-        }
-    }
 }
 
 impl ThreadSnapshot {
@@ -620,7 +599,6 @@ struct StreamedThreadSnapshotHeader {
     prefix_len: u64,
 }
 
-#[versioned]
 #[derive(Clone, Serialize, Deserialize)]
 struct StreamedThreadSnapshot {
     optimistic_state: Vec<u8>,
@@ -640,9 +618,7 @@ struct StreamedThreadSnapshot {
     finalizes_blocks: BTreeSet<BlockIndex>,
     parent_ancestor_blocks_finalization_checkpoints: AncestorBlocksFinalizationCheckpoints,
     block_protocol_version_state: BlockProtocolVersionState,
-    #[future]
     history_data_snapshot: GlobalHistoryDataSnapshot,
-    #[future]
     history_cursor: HistoryLayerData,
     durable_snapshot_header: DurableSnapshotHeader,
     finalization_chain: Vec<Envelope<AckiNackiBlock>>,
@@ -654,37 +630,6 @@ struct SnapshotImportRecovery {
     snapshot_thread_id: ThreadIdentifier,
     snapshot_block_id: BlockIdentifier,
     prefix: StreamedThreadSnapshot,
-}
-
-impl Transitioning for StreamedThreadSnapshot {
-    type Old = StreamedThreadSnapshotOld;
-
-    fn from(old: Self::Old) -> Self {
-        Self {
-            optimistic_state: old.optimistic_state,
-            ancestor_blocks_data: old.ancestor_blocks_data,
-            db_messages: old.db_messages,
-            finalized_block: old.finalized_block,
-            bk_set: old.bk_set,
-            descendant_bk_set: old.descendant_bk_set,
-            future_bk_set: old.future_bk_set,
-            descendant_future_bk_set: old.descendant_future_bk_set,
-            finalized_block_stats: old.finalized_block_stats,
-            attestation_target: old.attestation_target,
-            producer_selector: old.producer_selector,
-            block_height: old.block_height,
-            prefinalization_proof: old.prefinalization_proof,
-            ancestor_blocks_finalization_checkpoints: old.ancestor_blocks_finalization_checkpoints,
-            finalizes_blocks: old.finalizes_blocks,
-            parent_ancestor_blocks_finalization_checkpoints: old
-                .parent_ancestor_blocks_finalization_checkpoints,
-            block_protocol_version_state: old.block_protocol_version_state,
-            history_data_snapshot: GlobalHistoryDataSnapshot::default(),
-            history_cursor: HistoryLayerData::default(),
-            durable_snapshot_header: old.durable_snapshot_header,
-            finalization_chain: old.finalization_chain,
-        }
-    }
 }
 
 impl StreamedThreadSnapshot {
@@ -754,7 +699,7 @@ impl StreamedThreadSnapshot {
 fn deserialize_streamed_thread_snapshot_prefix(
     prefix_bytes: &[u8],
 ) -> bincode::Result<StreamedThreadSnapshot> {
-    StreamedThreadSnapshot::deserialize_data_compat(prefix_bytes).map(|(snapshot, _)| snapshot)
+    bincode::deserialize(prefix_bytes)
 }
 
 fn read_thread_snapshot_from_payload(
@@ -1850,7 +1795,7 @@ impl Clone for RepositoryImpl {
             unfinalized_blocks: self.unfinalized_blocks.clone(),
             last_message_for_acc: self.last_message_for_acc.clone(),
             finalization_import_gate: self.finalization_import_gate.clone(),
-            metadata_save_lock: self.metadata_save_lock.clone(),
+            metadata_save_tx: self.metadata_save_tx.clone(),
             config_read: self.config_read.clone(),
             history_proof_data: self.history_proof_data.clone(),
         }
@@ -2010,6 +1955,10 @@ impl RepositoryImpl {
         }
         let history_proof_data: GlobalHistoryData = Self::load_history_data(&data_dir)
             .expect("Must be able to create or load repository history data");
+        let metadata_save_tx = Self::start_metadata_save_service(
+            data_dir.clone(),
+            Self::clone_metadata_snapshot(metadata.clone()),
+        )?;
 
         let mut repo_impl = Self {
             data_dir: data_dir.clone(),
@@ -2033,7 +1982,7 @@ impl RepositoryImpl {
             unfinalized_blocks: Arc::new(Mutex::new(HashMap::new())),
             last_message_for_acc: Arc::new(Mutex::new(HashMap::new())),
             finalization_import_gate: Arc::new(RwLock::new(())),
-            metadata_save_lock: Arc::new(Mutex::new(())),
+            metadata_save_tx,
             config_read,
             history_proof_data,
         };
@@ -2571,7 +2520,19 @@ impl RepositoryImpl {
         Ok(result)
     }
 
-    fn save_metadata(data_dir: &Path, metadatas: RepositoryMetadata) -> anyhow::Result<()> {
+    fn clone_metadata_snapshot(metadatas: RepositoryMetadata) -> RepositoryMetadataSnapshot {
+        metadatas
+            .lock()
+            .clone()
+            .into_iter()
+            .map(|(thread_id, metadata)| (thread_id, metadata.lock().clone()))
+            .collect()
+    }
+
+    fn save_metadata_snapshot(
+        data_dir: &Path,
+        metadatas: &RepositoryMetadataSnapshot,
+    ) -> anyhow::Result<()> {
         let path = Self::get_metadata_path();
         let path = PathBuf::from(format!(
             "{}/{}/{}",
@@ -2579,15 +2540,113 @@ impl RepositoryImpl {
             path,
             DEFAULT_OID.to_owned()
         ));
-        let metadatas: HashMap<ThreadIdentifier, Metadata<BlockIdentifier, BlockSeqNo>> =
-            { metadatas.lock().clone().into_iter().map(|(k, v)| (k, v.lock().clone())).collect() };
         save_to_file(&path, &metadatas, true)?;
         Ok(())
     }
 
+    fn start_metadata_save_service(
+        data_dir: PathBuf,
+        initial_metadata: RepositoryMetadataSnapshot,
+    ) -> anyhow::Result<mpsc::Sender<MetadataSaveCommand>> {
+        let (tx, rx) = mpsc::channel();
+        thread::Builder::new().name("metadata-save-service".to_owned()).spawn(move || {
+            Self::run_metadata_save_service(data_dir, rx, initial_metadata);
+        })?;
+        Ok(tx)
+    }
+
+    fn update_pending_metadata(
+        pending: &mut RepositoryMetadataSnapshot,
+        thread_id: ThreadIdentifier,
+        metadata: Metadata<BlockIdentifier, BlockSeqNo>,
+    ) {
+        let should_update = pending
+            .get(&thread_id)
+            .map(|prev| prev.last_finalized_block_seq_no <= metadata.last_finalized_block_seq_no)
+            .unwrap_or(true);
+        if should_update {
+            pending.insert(thread_id, metadata);
+        } else {
+            tracing::trace!(
+                "metadata save service skipped stale queued metadata: thread={:?} seq_no={:?} pending_seq_no={:?}",
+                thread_id,
+                metadata.last_finalized_block_seq_no,
+                pending.get(&thread_id).map(|m| m.last_finalized_block_seq_no),
+            );
+        }
+    }
+
+    fn run_metadata_save_service(
+        data_dir: PathBuf,
+        rx: mpsc::Receiver<MetadataSaveCommand>,
+        mut latest_metadata: RepositoryMetadataSnapshot,
+    ) {
+        loop {
+            let Ok(command) = rx.recv() else {
+                tracing::trace!("metadata save service shutting down: channel disconnected");
+                return;
+            };
+            let mut pending = RepositoryMetadataSnapshot::new();
+            let mut completion_txs = vec![];
+            match command {
+                MetadataSaveCommand::SaveThread { thread_id, metadata } => {
+                    Self::update_pending_metadata(&mut pending, thread_id, metadata);
+                }
+                MetadataSaveCommand::SaveSnapshot { metadata, completion_tx } => {
+                    latest_metadata = metadata;
+                    if let Some(completion_tx) = completion_tx {
+                        completion_txs.push(completion_tx);
+                    }
+                }
+            }
+            while let Ok(command) = rx.try_recv() {
+                match command {
+                    MetadataSaveCommand::SaveThread { thread_id, metadata } => {
+                        Self::update_pending_metadata(&mut pending, thread_id, metadata);
+                    }
+                    MetadataSaveCommand::SaveSnapshot { metadata, completion_tx } => {
+                        latest_metadata = metadata;
+                        pending.clear();
+                        if let Some(completion_tx) = completion_tx {
+                            completion_txs.push(completion_tx);
+                        }
+                    }
+                }
+            }
+            for (thread_id, metadata) in pending {
+                Self::update_pending_metadata(&mut latest_metadata, thread_id, metadata);
+            }
+            let save_result = Self::save_metadata_snapshot(&data_dir, &latest_metadata)
+                .map_err(|e| e.to_string());
+            if let Err(err) = &save_result {
+                tracing::error!("metadata save service failed to save metadata: {err}");
+            }
+            for completion_tx in completion_txs {
+                let _ = completion_tx.send(save_result.clone());
+            }
+        }
+    }
+
     fn save_metadata_guarded(&self) -> anyhow::Result<()> {
-        let _guard = self.metadata_save_lock.lock();
-        Self::save_metadata(&self.data_dir, self.metadatas.clone())
+        let metadata = Self::clone_metadata_snapshot(self.metadatas.clone());
+        let (completion_tx, completion_rx) = mpsc::channel();
+        self.metadata_save_tx.send(MetadataSaveCommand::SaveSnapshot {
+            metadata,
+            completion_tx: Some(completion_tx),
+        })?;
+        completion_rx
+            .recv()
+            .map_err(anyhow::Error::from)
+            .and_then(|result| result.map_err(anyhow::Error::msg))
+    }
+
+    fn enqueue_thread_metadata_save(
+        &self,
+        thread_id: ThreadIdentifier,
+        metadata: Metadata<BlockIdentifier, BlockSeqNo>,
+    ) -> anyhow::Result<()> {
+        self.metadata_save_tx.send(MetadataSaveCommand::SaveThread { thread_id, metadata })?;
+        Ok(())
     }
 
     pub fn load_history_data(data_dir: &Path) -> anyhow::Result<GlobalHistoryData> {
@@ -2884,6 +2943,12 @@ impl RepositoryImpl {
             metrics::BK_SET_UPDATE_CHANNEL,
         );
         let history_proof_data: GlobalHistoryData = Self::empty_history_data();
+        let metadatas = Arc::new(Mutex::new(metadatas));
+        let metadata_save_tx = Self::start_metadata_save_service(
+            data_dir.clone(),
+            Self::clone_metadata_snapshot(metadatas.clone()),
+        )
+        .unwrap();
         Self {
             accounts: AccountsRepository::new(data_dir.clone(), None, 1),
             thread_accounts_repository: ThreadAccountsRepository::builder(data_dir.clone())
@@ -2891,7 +2956,7 @@ impl RepositoryImpl {
                 .unwrap(),
             data_dir,
             zerostate_path: None,
-            metadatas: Arc::new(Mutex::new(metadatas)),
+            metadatas,
             saved_states: Arc::new(Mutex::new(HashMap::new())),
             thread_last_finalized_state: Arc::new(Mutex::new(HashMap::new())),
             shared_services: SharedServices::test_start(RoutingService::stub().0, u32::MAX),
@@ -2908,7 +2973,7 @@ impl RepositoryImpl {
             unfinalized_blocks: Arc::new(Mutex::new(HashMap::new())),
             last_message_for_acc: Arc::new(Mutex::new(HashMap::new())),
             finalization_import_gate: Arc::new(RwLock::new(())),
-            metadata_save_lock: Arc::new(Mutex::new(())),
+            metadata_save_tx,
             config_read: ConfigRead::new(
                 ProtocolVersion::parse("None").unwrap(),
                 GlobalConfig::default(),
@@ -3165,52 +3230,6 @@ impl RepositoryImpl {
         }
     }
 
-    pub fn init_history_proof_data(&self, block_height: BlockHeight) -> anyhow::Result<()> {
-        if *block_height.height() == 0 {
-            return Ok(());
-        }
-        let history_thread_id = history_proof_thread_id();
-        if block_height.thread_identifier() != &history_thread_id {
-            return Ok(());
-        }
-        let mut history_lock = self.history_proof_data.write();
-        if history_lock.is_empty()
-            || history_lock
-                .get(&0)
-                .map(|v| *v.last_processed_block_height().height() == 0)
-                .unwrap_or(true)
-        {
-            let height = *block_height.height();
-            tracing::trace!("Initialize history proof data with height {}", height);
-            let max_level = height.ilog(HISTORY_PROOF_WINDOW_SIZE as u64);
-            for i in 0..=max_level {
-                let modulus = HISTORY_PROOF_WINDOW_SIZE.pow(i + 1) as u64;
-                let step = HISTORY_PROOF_WINDOW_SIZE.pow(i) as u64;
-                let mut start = (height / modulus) * modulus;
-                let cnt = if i == 0 {
-                    (height % modulus) / step + 1
-                } else {
-                    let cnt = (height - start) / step;
-                    start += step - 1;
-                    cnt
-                };
-                let mut history_data = HistoryBlockData::new();
-                for _ in 0..cnt {
-                    history_data.update_from_pure_data(
-                        [0u8; 32],
-                        BlockHeight::builder()
-                            .height(start)
-                            .thread_identifier(history_thread_id)
-                            .build(),
-                    )?;
-                    start += step;
-                }
-                history_lock.insert(i as LayerNumber, history_data.clone());
-            }
-        }
-        Ok(())
-    }
-
     pub fn get_history_proof_data(&self) -> GlobalHistoryData {
         self.history_proof_data.clone()
     }
@@ -3242,26 +3261,12 @@ impl RepositoryImpl {
         if block.common_section().thread_id() != &history_thread_id {
             return Ok(());
         }
-        let block_version = block_state
-            .guarded(|e| e.block_version_state().clone().expect("Must be set for finalized block"));
-        if self.config_read.is_retired(block_version.to_use()) {
-            tracing::trace!(
-                "Skip add_finalized_block_history_data for retired block: {:?}",
-                block_state.block_identifier()
-            );
-            return Ok(());
-        }
-        let (acki_nacki_envelope_hash, block_height, parent_id) = block_state.guarded(|e| {
+        let (acki_nacki_envelope_hash, block_height) = block_state.guarded(|e| {
             (
                 e.envelope_hash().clone().expect("Must be set for finalized block"),
                 (*e.block_height()).expect("Must be set for finalized block"),
-                (*e.parent_block_identifier()).expect("Must be set for finalized block"),
             )
         });
-        let parent_block_state = self.block_state_repository.get(&parent_id)?;
-        let parent_block_height = parent_block_state
-            .guarded(|e| (*e.block_height()).expect("Must be set for finalized block"));
-        self.init_history_proof_data(parent_block_height)?;
         let block_id = *block_state.block_identifier();
         let mut history_lock = self.history_proof_data.write();
         let base_layer_data = history_lock.entry(0 as LayerNumber).or_default();
@@ -3459,6 +3464,7 @@ impl RepositoryImpl {
             "mark_block_as_finalized: thread={thread_id:?} block_seq={block_seq_no:?} prev_finalized={prev_finalized:?} new_finalized={:?}",
             metadata.last_finalized_block_seq_no,
         );
+        let metadata_to_save = metadata.clone();
         drop(metadata);
 
         if let Some(received_ms) = received_ms {
@@ -3467,8 +3473,8 @@ impl RepositoryImpl {
             }
         }
 
-        if let Err(e) = self.save_metadata_guarded() {
-            tracing::error!("Failed to save metadata: {}", e);
+        if let Err(e) = self.enqueue_thread_metadata_save(thread_id, metadata_to_save) {
+            tracing::error!("Failed to enqueue metadata save: {}", e);
             return Err(e);
         }
         // After sync, we mark the incoming block as finalized and this check works
@@ -4215,11 +4221,9 @@ pub mod tests {
     use account_state::ThreadAccount;
     use account_state::ThreadAccountsRepository;
     use anyhow::ensure;
-    use history_proof::HISTORY_PROOF_WINDOW_SIZE;
     use node_types::AccountIdentifier;
     use node_types::BlockIdentifier;
     use node_types::ThreadIdentifier;
-    use num_traits::Euclid;
     use parking_lot::Mutex;
     use telemetry_utils::mpsc::instrumented_channel;
     use telemetry_utils::mpsc::InstrumentedSender;
@@ -4231,7 +4235,6 @@ pub mod tests {
     use tvm_block::ShardAccount;
     use tvm_block::ValueFlow;
     use tvm_types::AccountId;
-    use versioned_struct::Transitioning;
 
     use super::read_snapshot_file;
     use super::rewrite_snapshot_file;
@@ -4278,7 +4281,6 @@ pub mod tests {
     use crate::types::history_proof::history_proof_thread_id;
     use crate::types::history_proof::HistoryBlockData;
     use crate::types::history_proof::LayerNumber;
-    use crate::types::history_proof::ProofLayerRootHash;
     use crate::types::AckiNackiBlock;
     use crate::types::BlockHeight;
     use crate::types::BlockRound;
@@ -4448,27 +4450,6 @@ pub mod tests {
             ),
         )?;
         Ok((repository, block_state_repository))
-    }
-
-    #[test]
-    fn test_init_history() -> anyhow::Result<()> {
-        let tmp = tempfile::tempdir()?;
-        let mut test_height = 65356886;
-        let (repository, _block_state_repository) = make_test_repository(&tmp)?;
-        repository.init_history_proof_data(
-            BlockHeight::builder()
-                .height(test_height)
-                .thread_identifier(ThreadIdentifier::default())
-                .build(),
-        )?;
-        let history = repository.history_proof_data.read();
-        test_height += 1; // make plus 1 to include 0 height
-        for v in history.values() {
-            let (d, r) = test_height.div_rem_euclid(&(HISTORY_PROOF_WINDOW_SIZE as u64));
-            assert_eq!(r, *v.data_len() as u64);
-            test_height = d;
-        }
-        Ok(())
     }
 
     fn make_test_snapshot() -> ThreadSnapshot {
@@ -4873,36 +4854,6 @@ pub mod tests {
     }
 
     #[test]
-    fn init_history_proof_data_ignores_non_default_block_thread() -> anyhow::Result<()> {
-        let tmp = tempfile::tempdir()?;
-        let (repository, _block_state_repository) = make_test_repository(&tmp)?;
-
-        let non_zero_thread = ThreadIdentifier::new(&BlockIdentifier::new([42; 32]), 7);
-        repository.init_history_proof_data(
-            BlockHeight::builder().height(17).thread_identifier(non_zero_thread).build(),
-        )?;
-
-        let history_data = repository.get_history_proof_data();
-        let history_read = history_data.read();
-        assert_eq!(history_read.len(), 1);
-        assert!(history_read.values().all(|data| data.thread_id() == &history_proof_thread_id()));
-        assert!(history_read
-            .values()
-            .all(|data| data.last_processed_block_height().thread_identifier()
-                == &history_proof_thread_id()));
-        assert_eq!(
-            history_read
-                .get(&(0 as LayerNumber))
-                .expect("base history layer must exist")
-                .last_processed_block_height()
-                .height(),
-            &0
-        );
-
-        Ok(())
-    }
-
-    #[test]
     fn snapshot_ancestor_heights_are_derived_from_finalized_block_height() {
         let mut snapshot = make_test_snapshot();
         let finalized_id = snapshot.finalized_block.data().identifier();
@@ -4996,80 +4947,6 @@ pub mod tests {
             &history_thread_id
         );
         assert_eq!(base_layer.last_processed_block_height().height(), &0);
-
-        Ok(())
-    }
-
-    #[test]
-    fn finalized_block_skips_stale_history_proof_layers() -> anyhow::Result<()> {
-        let tmp = tempfile::tempdir()?;
-        let (repository, block_state_repository) = make_test_repository(&tmp)?;
-        let history_thread_id = history_proof_thread_id();
-        let parent_block_id = BlockIdentifier::new([11; 32]);
-        let block_height =
-            BlockHeight::builder().height(17).thread_identifier(history_thread_id).build();
-        let block = make_finalized_block_for_thread_with_seq_no(
-            parent_block_id,
-            history_thread_id,
-            block_height,
-            1,
-        );
-        let block_id = block.data().identifier();
-
-        let parent_state = block_state_repository.get(&parent_block_id)?;
-        parent_state.guarded_mut(|state| {
-            state.set_block_height(
-                BlockHeight::builder().height(16).thread_identifier(history_thread_id).build(),
-            )
-        })?;
-
-        repository.init_history_proof_data(
-            BlockHeight::builder().height(16).thread_identifier(history_thread_id).build(),
-        )?;
-        {
-            let history_data = repository.get_history_proof_data();
-            let mut history_write = history_data.write();
-            let layer = history_write.entry(1).or_default();
-            layer.update_from_pure_data(
-                [1; 32],
-                BlockHeight::builder().height(16).thread_identifier(history_thread_id).build(),
-            )?;
-        }
-
-        let mut block_data = block.data().clone();
-        let mut common_section = block_data.common_section().clone();
-        let mut proofs = BTreeMap::new();
-        proofs.insert(
-            1,
-            ProofLayerRootHash::builder()
-                .layer(1)
-                .root_hash([2; 32])
-                .block_height(
-                    BlockHeight::builder().height(15).thread_identifier(history_thread_id).build(),
-                )
-                .block_id(block_id)
-                .build(),
-        );
-        common_section.set_history_proofs(proofs);
-        block_data.set_common_section(common_section, true)?;
-        let block = Envelope::create(Default::default(), HashMap::new(), block_data);
-
-        let block_state = block_state_repository.get(&block_id)?;
-        block_state.guarded_mut(|state| {
-            state.set_thread_identifier(history_thread_id)?;
-            state.set_block_height(block_height)?;
-            state.set_block_version_state(BlockProtocolVersionState::none())?;
-            state.set_stored(&block)
-        })?;
-        connect!(parent = parent_state, child = block_state, &block_state_repository);
-
-        repository.add_finalized_block_history_data(&block_state, block.data())?;
-
-        let history_data = repository.get_history_proof_data();
-        let history_read = history_data.read();
-        let layer = history_read.get(&1).expect("history layer must exist");
-        assert_eq!(layer.last_processed_block_height().height(), &16);
-        assert_eq!(layer.data()[*layer.data_len() - 1], [1; 32]);
 
         Ok(())
     }
@@ -5315,87 +5192,6 @@ pub mod tests {
     }
 
     #[test]
-    #[ignore = "uses a hardcoded local snapshot file"]
-    fn test_read_hardcoded_snapshot_into_legacy_thread_snapshot() -> anyhow::Result<()> {
-        use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
-
-        fn read_legacy_thread_snapshot_from_reader<R: Read>(
-            reader: &mut R,
-        ) -> anyhow::Result<ThreadSnapshot> {
-            let mut probe = Vec::with_capacity(STREAMED_THREAD_SNAPSHOT_MAGIC.len());
-            let mut byte = [0u8; 1];
-            while probe.len() < STREAMED_THREAD_SNAPSHOT_MAGIC.len() {
-                match reader.read(&mut byte)? {
-                    0 => break,
-                    _ => probe.push(byte[0]),
-                }
-            }
-
-            ensure!(
-                probe.as_slice() != STREAMED_THREAD_SNAPSHOT_MAGIC,
-                "Snapshot is in streamed format and cannot be read directly as legacy ThreadSnapshot"
-            );
-
-            let mut legacy_bytes = probe;
-            reader.read_to_end(&mut legacy_bytes)?;
-            ThreadSnapshot::deserialize_data_compat(&legacy_bytes)
-                .map(|(snapshot, _)| snapshot)
-                .map_err(|e| anyhow::format_err!("Failed to deserialize legacy snapshot: {e}"))
-        }
-
-        let snapshot_path = PathBuf::from(
-            "/Volumes/x5/logs/testnet/858c149732b1334352b59f548425233aeba16a4e03e0a0edb0e9e568887b81f7",
-        );
-        ensure!(
-            snapshot_path.is_file(),
-            "Snapshot file does not exist: {}",
-            snapshot_path.display()
-        );
-        let durable_cache_path = snapshot_path.with_extension("durable-cache");
-        let durable_bytes = if durable_cache_path.is_file() {
-            println!("Using durable snapshot cache: {}", durable_cache_path.display());
-            std::fs::read(&durable_cache_path)?
-        } else {
-            let mut snapshot_file = File::open(&snapshot_path)?;
-            let mut magic = [0u8; COMPRESSED_SNAPSHOT_MAGIC.len()];
-
-            let snapshot = match snapshot_file.read_exact(&mut magic) {
-                Ok(()) if &magic == COMPRESSED_SNAPSHOT_MAGIC => {
-                    let mut decoder = zstd::Decoder::new(snapshot_file)?;
-                    read_legacy_thread_snapshot_from_reader(&mut decoder)
-                }
-                Ok(()) => {
-                    let mut reader = Cursor::new(magic.to_vec()).chain(snapshot_file);
-                    read_legacy_thread_snapshot_from_reader(&mut reader)
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    anyhow::bail!("Snapshot file is too short: {}", snapshot_path.display());
-                }
-                Err(err) => Err(err.into()),
-            }?;
-
-            ensure!(
-                !snapshot.optimistic_state().is_empty(),
-                "Legacy snapshot has empty optimistic_state"
-            );
-            let _ = snapshot.finalized_block().data().identifier();
-            let _ = snapshot.db_messages().len();
-            let _ = snapshot.finalization_chain().len();
-
-            let durable_bytes = snapshot.durable_state_snapshot().clone().unwrap_or_default();
-            println!("durable_state_snapshot bytes: {}", durable_bytes.len());
-            std::fs::write(&durable_cache_path, &durable_bytes)?;
-            println!("Saved durable snapshot cache: {}", durable_cache_path.display());
-            durable_bytes
-        };
-
-        account_state::ensure_legacy_durable_snapshot_is_empty(&durable_bytes)?;
-        println!("legacy durable snapshot is logically empty");
-
-        Ok(())
-    }
-
-    #[test]
     #[ignore = "uses local snapshot files from LOCAL_SNAPSHOT_DIR or /Volumes/x5/_"]
     fn test_set_state_from_local_snapshots_via_streamed_reader() -> anyhow::Result<()> {
         use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
@@ -5594,70 +5390,6 @@ pub mod tests {
     }
 
     #[test]
-    fn snapshot_file_reads_legacy_streamed_prefix_without_history_data() -> anyhow::Result<()> {
-        let tempdir = tempfile::tempdir()?;
-        let snapshot = make_test_snapshot();
-
-        for (index, durable_bytes) in
-            [Vec::<u8>::new(), vec![0x10, 0x20, 0x30]].into_iter().enumerate()
-        {
-            let input_path = tempdir.path().join(format!("legacy-streamed-{index}.snapshot"));
-            let old_prefix = super::StreamedThreadSnapshotOld {
-                optimistic_state: snapshot.optimistic_state().clone(),
-                ancestor_blocks_data: snapshot.ancestor_blocks_data().clone(),
-                db_messages: snapshot.db_messages().clone(),
-                finalized_block: snapshot.finalized_block().clone(),
-                bk_set: snapshot.bk_set().clone(),
-                descendant_bk_set: snapshot.descendant_bk_set().clone(),
-                future_bk_set: snapshot.future_bk_set().clone(),
-                descendant_future_bk_set: snapshot.descendant_future_bk_set().clone(),
-                finalized_block_stats: snapshot.finalized_block_stats().clone(),
-                attestation_target: *snapshot.attestation_target(),
-                producer_selector: snapshot.producer_selector().clone(),
-                block_height: *snapshot.block_height(),
-                prefinalization_proof: snapshot.prefinalization_proof().clone(),
-                ancestor_blocks_finalization_checkpoints: snapshot
-                    .ancestor_blocks_finalization_checkpoints()
-                    .clone(),
-                finalizes_blocks: snapshot.finalizes_blocks().clone(),
-                parent_ancestor_blocks_finalization_checkpoints: snapshot
-                    .parent_ancestor_blocks_finalization_checkpoints()
-                    .clone(),
-                block_protocol_version_state: snapshot.block_protocol_version_state().clone(),
-                durable_snapshot_header: super::DurableSnapshotHeader {
-                    tag: u8::from(!durable_bytes.is_empty()),
-                    len: durable_bytes.len() as u64,
-                },
-                finalization_chain: snapshot.finalization_chain().clone(),
-            };
-
-            let prefix_bytes = bincode::serialize(&old_prefix)?;
-            let mut payload = Vec::new();
-            payload.extend_from_slice(STREAMED_THREAD_SNAPSHOT_MAGIC);
-            bincode::serialize_into(
-                &mut payload,
-                &super::StreamedThreadSnapshotHeader { prefix_len: prefix_bytes.len() as u64 },
-            )?;
-            payload.extend_from_slice(&prefix_bytes);
-            payload.extend_from_slice(&durable_bytes);
-            std::fs::write(&input_path, payload)?;
-
-            let parsed = read_snapshot_file(&input_path)?;
-            assert!(parsed.snapshot().history_data_snapshot().is_empty());
-            assert_eq!(
-                parsed.snapshot().finalized_block().data().identifier(),
-                snapshot.finalized_block().data().identifier()
-            );
-            match parsed.format() {
-                SnapshotFormat::Streamed { durable_bytes: preserved } => {
-                    assert_eq!(preserved, &durable_bytes);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
     fn snapshot_file_compressed_roundtrip_preserves_compression() -> anyhow::Result<()> {
         use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
 
@@ -5718,36 +5450,6 @@ pub mod tests {
         Ok(())
     }
 
-    // /// Test that Transitioning::from produces None for durable_state_snapshot
-    // /// when converting from ThreadSnapshotOld (which lacks durable_state_snapshot).
-    // /// This verifies backward compatibility: old snapshots get None durable state.
-    // #[test]
-    // fn test_thread_snapshot_backward_compatibility() {
-    //     use versioned_struct::Transitioning;
-    //
-    //     // Verify the Transitioning impl sets durable_state_snapshot = None
-    //     // We construct a ThreadSnapshotOld by deserializing a ThreadSnapshot
-    //     // serialized without extra future fields.
-    //     //
-    //     // Create a ThreadSnapshot with durable_state_snapshot = None, serialize it.
-    //     // Then deserialize as ThreadSnapshotOld (drops future fields).
-    //     // Then convert via Transitioning::from and check defaults.
-    //
-    //     // Use CompositeDurableStateSnapshot for a simpler integration test:
-    //     // just verify the type relationship between Old and New structs.
-    //     let old_fields_count = std::mem::size_of::<ThreadSnapshotOld>();
-    //     let new_fields_count = std::mem::size_of::<ThreadSnapshot>();
-    //     // New struct should be >= old because it has additional fields
-    //     assert!(
-    //         new_fields_count >= old_fields_count,
-    //         "ThreadSnapshot should be at least as large as ThreadSnapshotOld"
-    //     );
-    //
-    //     // Verify the Transitioning impl is implemented
-    //     fn _assert_transitioning<T: Transitioning>() {}
-    //     _assert_transitioning::<ThreadSnapshot>();
-    // }
-    //
     /// Test that the durable_state_snapshot field type (Option<Vec<u8>>) survives
     /// bincode roundtrip, both Some and None variants.
     #[test]
@@ -5786,30 +5488,4 @@ pub mod tests {
         assert!(err.to_string().contains("expected 4 bytes, received 3"));
         assert_eq!(writer, vec![1u8, 2, 3]);
     }
-
-    // /// Test that durable_state_snapshot field exists in ThreadSnapshot
-    // /// and can be accessed correctly.
-    // #[test]
-    // fn test_thread_snapshot_has_durable_state_field() {
-    //     // Verify that ThreadSnapshot has the durable_state_snapshot field
-    //     // by checking that the Transitioning::from impl sets it to None
-    //     use versioned_struct::Transitioning;
-    //
-    //     // The Transitioning impl at line 353 explicitly sets:
-    //     //   durable_state_snapshot: None,
-    //     //   history_data_snapshot: HashMap::default(),
-    //     // This test verifies at compile-time that ThreadSnapshot has these fields
-    //     // and that the Old struct doesn't have them.
-    //
-    //     // Verify at compile-time: ThreadSnapshot has durable_state_snapshot getter
-    //     fn _check_field(s: &ThreadSnapshot) -> &Option<Vec<u8>> {
-    //         s.durable_state_snapshot()
-    //     }
-    //
-    //     // Verify at compile-time: Transitioning is implemented
-    //     fn _check_transitioning() {
-    //         let _: fn(ThreadSnapshotOld) -> ThreadSnapshot =
-    //             <ThreadSnapshot as Transitioning>::from;
-    //     }
-    // }
 }

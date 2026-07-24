@@ -73,6 +73,7 @@ services:
         TOKEN_TTL: {{ BM_TOKEN_TTL }}
         BK_API_TOKEN: {{ BK_API_TOKEN }}
         REST_API: 0.0.0.0:{{ BM_REST_API_PORT }}
+        READINESS_MAX_BLOCK_AGE_SECS: {{ BM_READINESS_MAX_BLOCK_AGE_SECS }}
 {% set otel_node_id = BM_ID | default(0) | string %}{% if NODE_GROUP_ID is defined and NODE_GROUP_ID %}{% set otel_node_id = NODE_GROUP_ID ~ '-' ~ otel_node_id %}{% endif %}
         OTEL_RESOURCE_ATTRIBUTES: service.namespace={{ NETWORK_NAME }},service.instance.id={{ otel_node_id }},host.name={{ OTEL_MY_HOST_NAME | default(ansible_host) }}
 {% if OTEL_COLLECTOR is defined and OTEL_COLLECTOR %}

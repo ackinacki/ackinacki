@@ -31,8 +31,6 @@ use tvm_types::ByteOrderRead;
 use tvm_types::Cell;
 use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
-use versioned_struct::versioned;
-use versioned_struct::Transitioning;
 
 use super::optimistic_shard_state::OptimisticShardState;
 use crate::block::postprocessing::postprocess;
@@ -53,7 +51,6 @@ use crate::repository::CrossThreadRefData;
 use crate::repository::CrossThreadRefDataRead;
 use crate::storage::MessageDurableStorage;
 use crate::types::thread_message_queue::ThreadMessageQueueState;
-use crate::types::thread_message_queue::ThreadMessageQueueStateOld;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockInfo;
 use crate::types::BlockSeqNo;
@@ -124,7 +121,6 @@ pub enum OptimisticStateSaveCommand {
 
 /// Optimistic state is a thread state built
 /// from the previous state after applying a block
-#[versioned]
 #[serde_as]
 #[derive(Clone, TypedBuilder, Serialize, Deserialize)]
 pub struct OptimisticStateImpl {
@@ -134,14 +130,7 @@ pub struct OptimisticStateImpl {
     // Thread state (merkle root)
     #[builder(setter(into))]
     pub(crate) shard_state: OptimisticShardState,
-
-    #[legacy]
-    pub(crate) messages: ThreadMessageQueueStateOld,
-    #[future]
     pub(crate) messages: ThreadMessageQueueState,
-    #[legacy]
-    pub(crate) high_priority_messages: ThreadMessageQueueStateOld,
-    #[future]
     pub(crate) high_priority_messages: ThreadMessageQueueState,
 
     #[builder(setter(into))]
@@ -161,29 +150,6 @@ pub struct OptimisticStateImpl {
     #[serde(skip, default)]
     #[builder(default)]
     _live_counter: LiveOptimisticStateImplCounter,
-}
-
-impl Transitioning for OptimisticStateImpl {
-    type Old = OptimisticStateImplOld;
-
-    fn from(old: Self::Old) -> Self {
-        Self {
-            block_seq_no: old.block_seq_no,
-            block_id: old.block_id,
-            shard_state: old.shard_state,
-            messages: old.messages.into(),
-            high_priority_messages: old.high_priority_messages.into(),
-            block_info: old.block_info,
-            threads_table: old.threads_table,
-            thread_id: old.thread_id,
-            thread_refs_state: old.thread_refs_state,
-            cropped: old.cropped,
-            account_operations: old.account_operations,
-            #[cfg(feature = "monitor-accounts-number")]
-            accounts_number: old.accounts_number,
-            _live_counter: LiveOptimisticStateImplCounter::new(),
-        }
-    }
 }
 
 impl Debug for OptimisticStateImpl {
@@ -213,7 +179,7 @@ impl OptimisticStateImpl {
     }
 
     pub fn deserialize_from_buf(data: &[u8]) -> anyhow::Result<Self> {
-        Ok(Self::deserialize_data_compat(data)?.0)
+        Ok(bincode::deserialize::<Self>(data)?)
     }
 
     pub fn zero() -> Self {
@@ -301,7 +267,7 @@ impl OptimisticStateImpl {
         let mut data = vec![];
         file.read_to_end(&mut data)?;
         let (metadata_bytes, shard_state_bytes) = data.split_at(metadata_len as usize);
-        let trimmed_state = TrimmedOptimisticStateImpl::deserialize_data_compat(metadata_bytes)?.0;
+        let trimmed_state = bincode::deserialize::<TrimmedOptimisticStateImpl>(metadata_bytes)?;
         let shard_state_cell = tvm_types::read_single_root_boc(shard_state_bytes)
             .map_err(|e| anyhow::format_err!("Failed to deser shard state cell: {e}"))?;
         let shard_state = ShardStateUnsplit::construct_from_cell(shard_state_cell)
@@ -714,19 +680,12 @@ impl OptimisticState for OptimisticStateImpl {
     }
 }
 
-#[versioned]
 #[serde_as]
 #[derive(Clone, TypedBuilder, Serialize, Deserialize)]
 struct TrimmedOptimisticStateImpl {
     block_seq_no: BlockSeqNo,
     block_id: BlockIdentifier,
-    #[legacy]
-    messages: ThreadMessageQueueStateOld,
-    #[future]
     messages: ThreadMessageQueueState,
-    #[legacy]
-    high_priority_messages: ThreadMessageQueueStateOld,
-    #[future]
     high_priority_messages: ThreadMessageQueueState,
     block_info: BlockInfo,
     threads_table: ThreadsTable,
@@ -735,26 +694,6 @@ struct TrimmedOptimisticStateImpl {
     cropped: Option<(ThreadIdentifier, ThreadsTable)>,
     #[cfg(feature = "monitor-accounts-number")]
     accounts_number: u64,
-}
-
-impl Transitioning for TrimmedOptimisticStateImpl {
-    type Old = TrimmedOptimisticStateImplOld;
-
-    fn from(old: Self::Old) -> Self {
-        Self {
-            block_seq_no: old.block_seq_no,
-            block_id: old.block_id,
-            messages: old.messages.into(),
-            high_priority_messages: old.high_priority_messages.into(),
-            block_info: old.block_info,
-            threads_table: old.threads_table,
-            thread_id: old.thread_id,
-            thread_refs_state: old.thread_refs_state,
-            cropped: old.cropped,
-            #[cfg(feature = "monitor-accounts-number")]
-            accounts_number: old.accounts_number,
-        }
-    }
 }
 
 impl From<OptimisticStateImpl> for TrimmedOptimisticStateImpl {
@@ -796,79 +735,4 @@ fn state_from_trimmed(
     let builder = builder.accounts_number(trimmed.accounts_number);
 
     builder.build()
-}
-
-#[cfg(test)]
-mod tests {
-    use node_types::AccountIdentifier;
-
-    use super::*;
-    use crate::types::AccountInbox;
-
-    fn default_thread_refs_state() -> ThreadReferencesState {
-        ThreadReferencesState::builder()
-            .all_thread_refs(HashMap::from_iter(vec![(
-                ThreadIdentifier::default(),
-                (ThreadIdentifier::default(), BlockIdentifier::default(), BlockSeqNo::default())
-                    .into(),
-            )]))
-            .build()
-    }
-
-    #[test]
-    fn optimistic_state_deserialize_from_buf_reads_legacy_queue_format() {
-        let account_id = AccountIdentifier::new([7; 32]);
-        let old = OptimisticStateImplOld {
-            block_seq_no: BlockSeqNo::default(),
-            block_id: BlockIdentifier::default(),
-            shard_state: OptimisticShardState::default(),
-            messages: ThreadMessageQueueStateOld::from_accounts(
-                [(account_id, AccountInbox::empty())],
-                0,
-            ),
-            high_priority_messages: ThreadMessageQueueStateOld::from_accounts([], 0),
-            block_info: BlockInfo::default(),
-            threads_table: ThreadsTable::default(),
-            thread_id: ThreadIdentifier::default(),
-            thread_refs_state: default_thread_refs_state(),
-            cropped: None,
-            account_operations: HashMap::new(),
-            #[cfg(feature = "monitor-accounts-number")]
-            accounts_number: 0,
-            _live_counter: LiveOptimisticStateImplCounter::new(),
-        };
-
-        let bytes = bincode::serialize(&old).unwrap();
-        let state = OptimisticStateImpl::deserialize_from_buf(&bytes).unwrap();
-
-        assert!(state.messages().account_inbox_by_routing(&account_id.redirect()).is_some());
-    }
-
-    #[test]
-    fn trimmed_metadata_compat_reads_legacy_queue_format() {
-        let account_id = AccountIdentifier::new([9; 32]);
-        let old = TrimmedOptimisticStateImplOld {
-            block_seq_no: BlockSeqNo::default(),
-            block_id: BlockIdentifier::default(),
-            messages: ThreadMessageQueueStateOld::from_accounts(
-                [(account_id, AccountInbox::empty())],
-                0,
-            ),
-            high_priority_messages: ThreadMessageQueueStateOld::from_accounts([], 0),
-            block_info: BlockInfo::default(),
-            threads_table: ThreadsTable::default(),
-            thread_id: ThreadIdentifier::default(),
-            thread_refs_state: default_thread_refs_state(),
-            cropped: None,
-            #[cfg(feature = "monitor-accounts-number")]
-            accounts_number: 0,
-        };
-
-        let bytes = bincode::serialize(&old).unwrap();
-        let (trimmed, used_new_format) =
-            TrimmedOptimisticStateImpl::deserialize_data_compat(&bytes).unwrap();
-
-        assert!(!used_new_format);
-        assert!(trimmed.messages.account_inbox_by_routing(&account_id.redirect()).is_some());
-    }
 }

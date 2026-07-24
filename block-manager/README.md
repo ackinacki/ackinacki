@@ -18,6 +18,7 @@ Either `--config` or `--stream-src-url` must be provided.
 | `--stream-src-url <URL>` | `STREAM_SRC_URL` | — | Single BK stream endpoint (legacy mode) |
 | `--rest-api <ADDR>` | `REST_API` | `0.0.0.0:8001` | REST API listen address |
 | `--sqlite-path <PATH>` | `SQLITE_PATH` | `./data` | SQLite database directory |
+| `--readiness-max-block-age-secs <SECONDS>` | `READINESS_MAX_BLOCK_AGE_SECS` | `30` | Maximum finalized block age before readiness returns 503 (allowed range: 1–60) |
 | `--clickhouse-url <URL>` | `CLICKHOUSE_URL` | — | ClickHouse URL for transaction activity export |
 | `--clickhouse-user <USER>` | `CLICKHOUSE_USER` | — | ClickHouse user (required when clickhouse-url is set) |
 | `--clickhouse-password <PASS>` | `CLICKHOUSE_PASSWORD` | — | ClickHouse password (required when clickhouse-url is set) |

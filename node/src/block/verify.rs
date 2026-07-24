@@ -87,7 +87,6 @@ pub fn verify_block(
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
     message_db: MessageDurableStorage,
-    is_block_of_retired_version: bool,
     _history_proof_data: GlobalHistoryData,
 ) -> anyhow::Result<VerificationResult> {
     #[cfg(feature = "timing")]
@@ -102,35 +101,19 @@ pub fn verify_block(
     let parent_block_height = parent_state_for_history
         .as_ref()
         .and_then(|parent_state| parent_state.guarded(|e| *e.block_height()));
-    let is_parent_of_retired_version = match parent_state_for_history
+
+    let Some(parent_history_cursor) = parent_state_for_history
         .as_ref()
-        .and_then(|parent_state| parent_state.guarded(|e| e.block_version_state().clone()))
-    {
-        Some(parent_block_version) => node_config_read.is_retired(parent_block_version.to_use()),
-        None => {
-            tracing::trace!(
-                "Block verification failed: missing block version for parent {:?}",
-                block_candidate.parent(),
-            );
-            return Ok(VerificationResult::BadBlock);
-        }
+        .and_then(|parent_state| parent_state.guarded(|e| e.history_cursor().clone()))
+    else {
+        tracing::trace!(
+            "Block verification failed: missing history cursor for parent {:?}",
+            block_candidate.parent(),
+        );
+        return Ok(VerificationResult::BadBlock);
     };
     let check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>> =
-        if is_parent_of_retired_version {
-            None
-        } else {
-            let Some(parent_history_cursor) = parent_state_for_history
-                .as_ref()
-                .and_then(|parent_state| parent_state.guarded(|e| e.history_cursor().clone()))
-            else {
-                tracing::trace!(
-                    "Block verification failed: missing history cursor for parent {:?}",
-                    block_candidate.parent(),
-                );
-                return Ok(VerificationResult::BadBlock);
-            };
-            Some(make_check_history_proof_hash_callback_from_cursor(parent_history_cursor))
-        };
+        Some(make_check_history_proof_hash_callback_from_cursor(parent_history_cursor));
 
     let builder = TVMBlockVerifier::builder()
         .blockchain_config(blockchain_config)
@@ -145,7 +128,6 @@ pub fn verify_block(
         .metrics(metrics)
         .wasm_cache(wasm_cache)
         .node_global_config(node_global_config.clone())
-        .is_block_of_retired_version(is_block_of_retired_version)
         .check_history_proof_hash(check_history_proof_hash);
     let producer = builder.build();
 
@@ -168,38 +150,34 @@ pub fn verify_block(
 
     let (verify_block, mut verify_state) = verification_block_production_result?;
 
-    if !is_block_of_retired_version && !is_parent_of_retired_version {
-        let Some(parent_block_height) = parent_block_height else {
-            tracing::trace!(
-                "Block history proof verification skipped: parent block height is missing"
-            );
-            return Ok(VerificationResult::BadBlock);
-        };
-        let Some(parent_history_cursor) = parent_state_for_history
-            .as_ref()
-            .and_then(|parent_state| parent_state.guarded(|e| e.history_cursor().clone()))
-        else {
-            tracing::trace!(
-                "Block history proof verification failed: missing history cursor for parent {:?}",
-                block_candidate.parent(),
-            );
-            return Ok(VerificationResult::BadBlock);
-        };
-        let expected_history_proofs = calculate_expected_history_proofs_from_cursor(
-            &parent_history_cursor,
-            *block_candidate.common_section().block_height(),
-            parent_block_height,
+    let Some(parent_block_height) = parent_block_height else {
+        tracing::trace!("Block history proof verification skipped: parent block height is missing");
+        return Ok(VerificationResult::BadBlock);
+    };
+    let Some(parent_history_cursor) = parent_state_for_history
+        .as_ref()
+        .and_then(|parent_state| parent_state.guarded(|e| e.history_cursor().clone()))
+    else {
+        tracing::trace!(
+            "Block history proof verification failed: missing history cursor for parent {:?}",
             block_candidate.parent(),
-        )?;
-        if &expected_history_proofs != block_candidate.common_section().history_proofs() {
-            tracing::trace!(
-                target: "monit",
-                "Unequal history_proofs: expected={:?} candidate={:?}",
-                expected_history_proofs,
-                block_candidate.common_section().history_proofs(),
-            );
-            return Ok(VerificationResult::BadBlock);
-        }
+        );
+        return Ok(VerificationResult::BadBlock);
+    };
+    let expected_history_proofs = calculate_expected_history_proofs_from_cursor(
+        &parent_history_cursor,
+        *block_candidate.common_section().block_height(),
+        parent_block_height,
+        block_candidate.parent(),
+    )?;
+    if &expected_history_proofs != block_candidate.common_section().history_proofs() {
+        tracing::trace!(
+            target: "monit",
+            "Unequal history_proofs: expected={:?} candidate={:?}",
+            expected_history_proofs,
+            block_candidate.common_section().history_proofs(),
+        );
+        return Ok(VerificationResult::BadBlock);
     }
 
     {

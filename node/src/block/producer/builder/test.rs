@@ -178,8 +178,6 @@ mod tests {
             None,
             WasmNodeCache::new()?,
             false,
-            false,
-            false,
             None,
         )?;
 
@@ -244,8 +242,6 @@ mod tests {
             None,
             WasmNodeCache::new()?,
             true,
-            false,
-            false,
             None,
         )?;
 
@@ -307,8 +303,6 @@ mod tests {
             BTreeSet::new(),
             None,
             WasmNodeCache::new()?,
-            false,
-            false,
             false,
             None,
         )?;

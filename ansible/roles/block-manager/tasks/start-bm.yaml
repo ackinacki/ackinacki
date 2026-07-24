@@ -16,6 +16,7 @@
     src: templates/compose.j2
     dest: "{{ BM_DIR }}/compose.yaml"
     mode: "0644"
+  register: bm_compose
 
 - name: Create conf directory
   ansible.builtin.file:
@@ -68,6 +69,21 @@
   ansible.builtin.shell:
     chdir: "{{ BM_DIR }}"
     cmd: docker compose up -d
+  register: bm_compose_up
+
+# nginx caches the upstream IPs (q_server_bm, block_manager) at startup. When
+# `compose up` recreates those containers they may get new IPs, leaving nginx
+# proxying to a stale address (502). Reload nginx so its workers re-resolve the
+# upstream names. Reload is graceful and keeps the keepalive pools.
+- name: Reload nginx to re-resolve recreated backends
+  ansible.builtin.shell:
+    chdir: "{{ BM_DIR }}"
+    cmd: docker compose exec -T nginx_bm nginx -s reload
+  when: >
+    bm_compose.changed
+    or ('Recreat' in bm_compose_up.stdout) or ('Recreat' in bm_compose_up.stderr)
+    or ('Started' in bm_compose_up.stdout) or ('Started' in bm_compose_up.stderr)
+  ignore_errors: true
 
 - name: Compose restart logrotate
   ansible.builtin.shell:

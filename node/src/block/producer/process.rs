@@ -138,22 +138,6 @@ impl TVMBlockProducerProcess {
         anyhow::bail!("Missing history cursor for real parent block: {parent_ref:?}")
     }
 
-    fn is_parent_of_retired_version(
-        parent_ref: &ParentRef,
-        block_state_repo: &BlockStateRepository,
-        node_config_read: &ConfigRead,
-    ) -> anyhow::Result<bool> {
-        let ParentRef::Block(parent_id) = parent_ref else {
-            return Ok(false);
-        };
-        let parent_state = block_state_repo.get(parent_id)?;
-        let Some(parent_block_version) = parent_state.guarded(|e| e.block_version_state().clone())
-        else {
-            anyhow::bail!("Missing block version for real parent block: {parent_ref:?}");
-        };
-        Ok(node_config_read.is_retired(parent_block_version.to_use()))
-    }
-
     fn report_produced_blocks_size(&self, size: usize, thread_id: &ThreadIdentifier) {
         if let Some(metrics) = &self.metrics {
             metrics.report_produced_blocks_queue_size(size as u64, thread_id);
@@ -203,6 +187,7 @@ impl TVMBlockProducerProcess {
         tracing::trace!("Start block production process iteration");
         let start_time = std::time::SystemTime::now();
         let production_time = Instant::now();
+        let current_block_seq_no = next_seq_no(initial_state.block_seq_no);
         let (message_queue, epoch_block_keeper_data, block_nack, aggregated_acks, aggregated_nacks) =
             trace_span!("read messages").in_scope(|| {
                 let message_queue = external_messages_queue.get_remaining_external_messages();
@@ -211,6 +196,8 @@ impl TVMBlockProducerProcess {
                 let received_acks_copy = received_acks_in.clone();
                 received_acks_in.clear();
                 drop(received_acks_in);
+                let received_acks_copy =
+                    filter_stale_acks_for_block(current_block_seq_no, received_acks_copy);
                 // TODO: filter that nacks are not older than last finalized block
                 let mut received_nacks_in = received_nacks.lock();
                 let received_nacks_copy = received_nacks_in.clone();
@@ -236,23 +223,18 @@ impl TVMBlockProducerProcess {
             })?;
 
         let history_proof_hash_callback_called = Arc::new(AtomicBool::new(false));
-        let is_parent_of_retired_version =
-            Self::is_parent_of_retired_version(&parent_ref, &block_state_repo, &node_config_read)?;
+
+        let parent_history_cursor =
+            Self::history_cursor_for_parent(&parent_ref, &block_state_repo)?;
         let check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>> =
-            if is_parent_of_retired_version {
-                None
+            Some(if matches!(parent_ref, ParentRef::Temporary(_)) {
+                make_check_history_proof_hash_callback_from_cursor_with_flag(
+                    parent_history_cursor,
+                    history_proof_hash_callback_called.clone(),
+                )
             } else {
-                let parent_history_cursor =
-                    Self::history_cursor_for_parent(&parent_ref, &block_state_repo)?;
-                Some(if matches!(parent_ref, ParentRef::Temporary(_)) {
-                    make_check_history_proof_hash_callback_from_cursor_with_flag(
-                        parent_history_cursor,
-                        history_proof_hash_callback_called.clone(),
-                    )
-                } else {
-                    make_check_history_proof_hash_callback_from_cursor(parent_history_cursor)
-                })
-            };
+                make_check_history_proof_hash_callback_from_cursor(parent_history_cursor)
+            });
 
         let producer = TVMBlockProducer::builder()
             .node_config_read(node_config_read)
@@ -582,7 +564,7 @@ impl TVMBlockProducerProcess {
 
         // Build monitoring reports using per-routing transaction counts.
         let mut monitoring_updates = vec![];
-        let overall_load = thread_load_balance::Score(block.tx_cnt() as u32);
+        let overall_load = thread_load_balance::Score(*block.tx_cnt() as u32);
         for monitored_path in monitored_paths.iter() {
             let path = monitored_path.target();
             let path_len = thread_load_balance::AsPath::len(path);
@@ -1046,13 +1028,17 @@ impl TVMBlockProducerProcess {
             block.set_memento_init_time(now);
         }
         blocks.sort_by_key(|a| a.block().seq_no());
-        let thread_id = blocks.last().map(|block| block.block().common_section().thread_id());
+        let thread_id = blocks.last().map(|block| *block.block().common_section().thread_id());
         if let Some(thread_id) =
             thread_id.or_else(|| blocks.first().map(|block| block.optimistic_state().thread_id))
         {
             self.report_produced_blocks_size(0, &thread_id);
         }
         blocks
+    }
+
+    pub fn has_active_producer_thread(&self) -> bool {
+        self.active_producer_thread.is_some()
     }
 
     pub fn send_epoch_message(&self, data: BlockKeeperData) {
@@ -1101,6 +1087,36 @@ fn aggregate_acks(
     tracing::trace!("Aggregate acks result len: {:?}", aggregated_acks.len());
     received_acks.clear();
     Ok(aggregated_acks.values().cloned().collect())
+}
+
+fn filter_stale_acks_for_block(
+    current_block_seq_no: BlockSeqNo,
+    received_acks: Vec<Envelope<AckData>>,
+) -> Vec<Envelope<AckData>> {
+    let min_ack_seq_no =
+        current_block_seq_no.saturating_sub((MAX_ATTESTATION_TARGET_BETA + 1) as u32);
+    let initial_len = received_acks.len();
+    let filtered_acks: Vec<_> = received_acks
+        .into_iter()
+        .filter(|ack| {
+            let ack_seq_no = ack.data().block_seq_no;
+            let keep = ack_seq_no >= min_ack_seq_no;
+            if !keep {
+                tracing::trace!(
+                    "Drop stale ack from block candidate: current_block_seq_no={current_block_seq_no:?} min_ack_seq_no={min_ack_seq_no:?} ack_block_seq_no={ack_seq_no:?} ack_block_id={:?}",
+                    ack.data().block_id,
+                );
+            }
+            keep
+        })
+        .collect();
+    tracing::trace!(
+        "Filtered stale acks for block candidate: current_block_seq_no={current_block_seq_no:?} min_ack_seq_no={min_ack_seq_no:?} initial_len={} filtered_len={} dropped={}",
+        initial_len,
+        filtered_acks.len(),
+        initial_len.saturating_sub(filtered_acks.len()),
+    );
+    filtered_acks
 }
 
 // TODO: fix this function nacks can't be aggregated based on block id

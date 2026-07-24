@@ -211,7 +211,6 @@ pub(super) fn inner_loop(
                 metrics.clone(),
                 wasm_cache.clone(),
                 message_db.clone(),
-                node_global_config_read.is_retired(&protocol_version),
                 repository.get_history_proof_data(),
             )
             .unwrap_or_else(|error| {
@@ -223,6 +222,11 @@ pub(super) fn inner_loop(
                     next_block.is_thread_splitting(),
                 )
             });
+            if verify_res == VerificationResult::BadBlock {
+                metrics.as_ref().inspect(|m| {
+                    m.report_block_verification_bad_block(next_block.common_section().thread_id());
+                });
+            }
             if !verify_res.is_valid() {
                 tracing::warn!("Block verification failed: {:?}", block_identifier);
             }

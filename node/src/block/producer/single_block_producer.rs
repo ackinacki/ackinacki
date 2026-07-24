@@ -54,16 +54,13 @@ use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
 use crate::types::AckiNackiBlock;
-use crate::types::AckiNackiBlockOld;
-use crate::types::AckiNackiBlockVersioned;
 use crate::types::BlockRound;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
-use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
 use crate::versioning::ProtocolVersion;
 
 pub const DEFAULT_VERIFY_COMPLEXITY: SignerIndex = (u16::MAX >> 5) + 1;
-pub type Block = AckiNackiBlockVersioned;
+pub type Block = AckiNackiBlock;
 
 // Note: produces single block.
 pub trait BlockProducer {
@@ -165,17 +162,14 @@ impl BlockProducer for TVMBlockProducer {
         I: std::iter::Iterator<Item = &'a CrossThreadRefData> + Clone,
         CrossThreadRefData: 'a,
     {
-        let (parent_block_height, parent_block_version_state) = match &parent_ref {
+        let parent_block_height = match &parent_ref {
             ParentRef::Block(id) => {
                 let parent_bs = self.block_state_repository.get(id)?;
                 parent_bs.guarded(|e| {
                     let height = e.block_height().ok_or(anyhow::format_err!(
                         "Parent block does not have block height set"
                     ))?;
-                    let version = e.block_version_state().clone().ok_or(anyhow::format_err!(
-                        "Parent block does not have version state set"
-                    ))?;
-                    Ok::<_, anyhow::Error>((height, version))
+                    Ok::<_, anyhow::Error>(height)
                 })?
             }
             ParentRef::Temporary(temp_id) => {
@@ -192,12 +186,9 @@ impl BlockProducer for TVMBlockProducer {
                 let parent_height = temp_state.block_height().cloned().ok_or(
                     anyhow::format_err!("Temporary parent does not have block height set"),
                 )?;
-                let parent_version = BlockProtocolVersionState::Current(protocol_version.clone());
-                (parent_height, parent_version)
+                parent_height
             }
         };
-        let apply_transition_dapp_id_migrations =
-            parent_block_version_state.to_use() != &protocol_version;
         let block_height = parent_block_height.next(&thread_identifier);
 
         let (initial_state, _in_table, white_list_of_slashing_messages_hashes, forwarded_messages) =
@@ -265,7 +256,6 @@ impl BlockProducer for TVMBlockProducer {
         let ref_ids: Vec<BlockIdentifier> =
             refs.into_iter().map(|ref_data| *ref_data.block_identifier()).collect();
         let active_threads = self.active_threads;
-        let is_block_of_retired_version = self.node_config_read.is_retired(&protocol_version);
         let block_global_config = self.node_config_read.get(&protocol_version).ok_or(
             anyhow::format_err!("Failed to load config for block version: {}", protocol_version),
         )?;
@@ -296,8 +286,6 @@ impl BlockProducer for TVMBlockProducer {
             self.metrics.clone(),
             self.wasm_cache,
             false,
-            apply_transition_dapp_id_migrations,
-            is_block_of_retired_version,
             self.check_history_proof_hash.clone(),
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
@@ -382,66 +370,8 @@ impl BlockProducer for TVMBlockProducer {
             let block_height = parent_block_height.next(&thread_identifier);
 
             let producer_node_id = self.producer_node_id;
-            let an_block = if !self.node_config_read.is_retired(&protocol_version) {
-                tracing::trace!("Generate new block");
-
-                let block = match parent_ref {
-                    ParentRef::Block(parent_block_id) => AckiNackiBlock::new(
-                        parent_block_id,
-                        thread_identifier,
-                        prepared_block.block,
-                        producer_node_id.clone(),
-                        prepared_block.tx_cnt,
-                        prepared_block.block_keeper_set_changes,
-                        DEFAULT_VERIFY_COMPLEXITY,
-                        ref_ids,
-                        forward_prefab.clone(),
-                        block_round,
-                        block_height,
-                        #[cfg(feature = "monitor-accounts-number")]
-                        prepared_block.accounts_number_diff,
-                        #[cfg(feature = "protocol_version_hash_in_block")]
-                        protocol_version.hash(),
-                        prepared_block.durable_state_update,
-                        tracked_ext_out_messages,
-                        tracked_ext_out_messages_root,
-                    ),
-                    ParentRef::Temporary(parent_temp_id) => {
-                        AckiNackiBlock::new_with_unresolved_parent(
-                            parent_temp_id,
-                            thread_identifier,
-                            prepared_block.block,
-                            producer_node_id.clone(),
-                            prepared_block.tx_cnt,
-                            prepared_block.block_keeper_set_changes,
-                            DEFAULT_VERIFY_COMPLEXITY,
-                            ref_ids,
-                            forward_prefab.clone(),
-                            block_round,
-                            block_height,
-                            #[cfg(feature = "monitor-accounts-number")]
-                            prepared_block.accounts_number_diff,
-                            #[cfg(feature = "protocol_version_hash_in_block")]
-                            protocol_version.hash(),
-                            prepared_block.durable_state_update,
-                            tracked_ext_out_messages,
-                            tracked_ext_out_messages_root,
-                        )
-                    }
-                };
-                AckiNackiBlockVersioned::New(block)
-            } else {
-                tracing::trace!("Generate old block");
-                let parent_block_id = match parent_ref {
-                    ParentRef::Block(parent_block_id) => parent_block_id,
-                    ParentRef::Temporary(parent_temp_id) => {
-                        tracing::trace!(
-                            "Generate old block with placeholder parent; deferred parent resolution for temp_id={parent_temp_id:?}"
-                        );
-                        BlockIdentifier::default()
-                    }
-                };
-                AckiNackiBlockVersioned::Old(AckiNackiBlockOld::new(
+            let an_block = match parent_ref {
+                ParentRef::Block(parent_block_id) => AckiNackiBlock::new(
                     parent_block_id,
                     thread_identifier,
                     prepared_block.block,
@@ -458,7 +388,29 @@ impl BlockProducer for TVMBlockProducer {
                     #[cfg(feature = "protocol_version_hash_in_block")]
                     protocol_version.hash(),
                     prepared_block.durable_state_update,
-                ))
+                    tracked_ext_out_messages,
+                    tracked_ext_out_messages_root,
+                ),
+                ParentRef::Temporary(parent_temp_id) => AckiNackiBlock::new_with_unresolved_parent(
+                    parent_temp_id,
+                    thread_identifier,
+                    prepared_block.block,
+                    producer_node_id.clone(),
+                    prepared_block.tx_cnt,
+                    prepared_block.block_keeper_set_changes,
+                    DEFAULT_VERIFY_COMPLEXITY,
+                    ref_ids,
+                    forward_prefab.clone(),
+                    block_round,
+                    block_height,
+                    #[cfg(feature = "monitor-accounts-number")]
+                    prepared_block.accounts_number_diff,
+                    #[cfg(feature = "protocol_version_hash_in_block")]
+                    protocol_version.hash(),
+                    prepared_block.durable_state_update,
+                    tracked_ext_out_messages,
+                    tracked_ext_out_messages_root,
+                ),
             };
 
             let new_state = prepared_block.state;

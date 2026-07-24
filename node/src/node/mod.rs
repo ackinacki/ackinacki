@@ -208,7 +208,7 @@ where
     ) -> Self {
         tracing::trace!("Start node for thread: {thread_id:?}");
         if let Some(metrics) = &metrics {
-            metrics.report_thread_count();
+            metrics.report_thread_spawned();
         }
 
         let (block_producer_control_tx, block_producer_control_rx) = std::sync::mpsc::channel();

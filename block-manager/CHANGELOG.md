@@ -2,6 +2,21 @@
 
 All notable changes to `block-manager` are documented in this file.
 
+## [0.9.1]
+
+### Added
+- The maximum finalized block age that the readiness endpoint tolerates is now
+  configurable via `--readiness-max-block-age-secs` /
+  `READINESS_MAX_BLOCK_AGE_SECS` (allowed range: 1–60 seconds). The readiness
+  response body now also reports the configured threshold alongside the measured
+  block age, so a 503 can be diagnosed without inspecting the deployment config.
+
+### Changed
+- Raised the default readiness block-age threshold from 5 to 30 seconds, so
+  normal block-production jitter no longer causes spurious 503 responses.
+  Deployments that relied on the previous 5-second behaviour must set
+  `READINESS_MAX_BLOCK_AGE_SECS=5` explicitly.
+
 ## [0.8.1]
 
 ### Fixed

@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::hash::Hash;
@@ -25,6 +27,80 @@ use crate::topology::NetEndpoint;
 use crate::topology::NetTopology;
 use crate::DeliveryPhase;
 use crate::SendMode;
+use crate::NETWORK_DELIVERY_DETAILED_TARGET;
+
+const SLOW_INCOMING_DELIVERY_LOG_THRESHOLD_MS: u64 = 100;
+const INCOMING_DELIVERY_SUMMARY_FLUSH_COUNT: usize = 1000;
+const INCOMING_DELIVERY_SUMMARY_FLUSH_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(10);
+
+#[derive(Hash, Eq, PartialEq)]
+struct IncomingDeliveryLogKey {
+    msg_type: String,
+    peer: String,
+    broadcast: bool,
+}
+
+struct IncomingDeliveryLogStats {
+    first_seen: Instant,
+    count: usize,
+    bytes: u64,
+    durations_ms: Vec<u64>,
+}
+
+impl Default for IncomingDeliveryLogStats {
+    fn default() -> Self {
+        Self { first_seen: Instant::now(), count: 0, bytes: 0, durations_ms: Vec::new() }
+    }
+}
+
+thread_local! {
+    static INCOMING_DELIVERY_LOG_STATS: RefCell<HashMap<IncomingDeliveryLogKey, IncomingDeliveryLogStats>> =
+        RefCell::new(HashMap::new());
+}
+
+fn record_incoming_delivery_summary(
+    msg_type: &str,
+    peer: &str,
+    broadcast: bool,
+    bytes: u64,
+    duration_ms: u64,
+) {
+    INCOMING_DELIVERY_LOG_STATS.with_borrow_mut(|stats| {
+        let key = IncomingDeliveryLogKey {
+            msg_type: msg_type.to_string(),
+            peer: peer.to_string(),
+            broadcast,
+        };
+        let item = stats.entry(key).or_default();
+        item.count += 1;
+        item.bytes += bytes;
+        item.durations_ms.push(duration_ms);
+
+        if item.count < INCOMING_DELIVERY_SUMMARY_FLUSH_COUNT
+            && item.first_seen.elapsed() < INCOMING_DELIVERY_SUMMARY_FLUSH_INTERVAL
+        {
+            return;
+        }
+
+        let mut durations_ms = std::mem::take(&mut item.durations_ms);
+        durations_ms.sort_unstable();
+        let p95_index = ((durations_ms.len() * 95).div_ceil(100)).saturating_sub(1);
+        let p95_duration_ms = durations_ms.get(p95_index).copied().unwrap_or_default();
+        let max_duration_ms = durations_ms.last().copied().unwrap_or_default();
+        tracing::debug!(
+            "Incoming delivery summary msg_type={} peer={} broadcast={} count={} bytes={} p95_duration_ms={} max_duration_ms={}",
+            msg_type,
+            peer,
+            broadcast,
+            item.count,
+            item.bytes,
+            p95_duration_ms,
+            max_duration_ms,
+        );
+        *item = IncomingDeliveryLogStats::default();
+    });
+}
 
 #[derive(Debug, Copy, Clone)]
 pub enum ConnectionRole {
@@ -322,7 +398,8 @@ impl<PeerId: Debug + Clone + Display> IncomingMessage<PeerId> {
                 self.duration_after_transfer.elapsed(),
             );
         });
-        tracing::debug!(
+        tracing::trace!(
+            target: NETWORK_DELIVERY_DETAILED_TARGET,
             host_id = self.connection_info.remote_cert_hash_prefix,
             addr = self.connection_info.remote_addr.to_string(),
             msg_id = self.message.id,
@@ -350,12 +427,31 @@ impl<PeerId: Debug + Clone + Display> IncomingMessage<PeerId> {
         };
         match self.message.delivery_duration_ms() {
             Ok(delivery_duration_ms) => {
-                tracing::debug!(
-                    "Received incoming {}, peer {}, duration {}",
-                    self.message.label,
-                    self.connection_info.remote_info(),
-                    delivery_duration_ms
+                let peer = self.connection_info.remote_info();
+                record_incoming_delivery_summary(
+                    &self.message.label,
+                    &peer,
+                    self.connection_info.is_broadcast(),
+                    self.message.data.len() as u64,
+                    delivery_duration_ms,
                 );
+                if delivery_duration_ms >= SLOW_INCOMING_DELIVERY_LOG_THRESHOLD_MS {
+                    tracing::debug!(
+                        target: "network_slow_delivery",
+                        "Received slow incoming {}, peer {}, duration {}",
+                        self.message.label,
+                        peer,
+                        delivery_duration_ms
+                    );
+                } else {
+                    tracing::trace!(
+                        target: NETWORK_DELIVERY_DETAILED_TARGET,
+                        "Received incoming {}, peer {}, duration {}",
+                        self.message.label,
+                        peer,
+                        delivery_duration_ms
+                    );
+                }
                 let _ = metrics.as_ref().inspect(|m| {
                     m.report_incoming_message_delivery_duration(
                         delivery_duration_ms,
@@ -375,7 +471,8 @@ impl<PeerId: Debug + Clone + Display> IncomingMessage<PeerId> {
                 );
             }
         }
-        tracing::debug!(
+        tracing::trace!(
+            target: NETWORK_DELIVERY_DETAILED_TARGET,
             host_id = self.connection_info.remote_cert_hash_prefix,
             addr = self.connection_info.remote_addr.to_string(),
             msg_id = self.message.id,

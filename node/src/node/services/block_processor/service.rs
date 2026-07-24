@@ -55,8 +55,6 @@ use crate::types::bp_selector::BlockGap;
 use crate::types::envelope_hash::envelope_hash;
 use crate::types::history_proof::advance_history_cursor;
 use crate::types::history_proof::compute_block_leaf_hash;
-use crate::types::history_proof::history_proof_thread_id;
-use crate::types::history_proof::HistoryLayerData;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockHeight;
 use crate::types::BlockIndex;
@@ -215,6 +213,15 @@ impl BlockProcessorService {
                         unprocessed_blocks_cache.remove_old_blocks(&last_finalized_seq_no);
                         tracing::trace!(
                             "block_processor timing: step=remove_old_blocks elapsed_ms={}",
+                            step_started_at.elapsed().as_millis(),
+                        );
+                        let step_started_at = Instant::now();
+                        block_state_repository.remove_retained_local_produced_up_to(
+                            &thread_identifier,
+                            &last_finalized_seq_no,
+                        );
+                        tracing::trace!(
+                            "block_processor timing: step=remove_retained_local_produced_block_states elapsed_ms={}",
                             step_started_at.elapsed().as_millis(),
                         );
                         let step_started_at = Instant::now();
@@ -441,7 +448,6 @@ fn process_candidate_block(
             &parent_block_state,
             time_to_produce_block,
             block_state,
-            repository,
         )? {
             let thread_id = block_state.guarded_mut(|e| {
                 e.set_common_checks_passed()?;
@@ -903,7 +909,6 @@ fn process_candidate_block(
             if !store_history_cursor_for_applied_block(
                 block_state,
                 &parent_block_state,
-                repository,
                 candidate_block,
             )? {
                 tracing::trace!(
@@ -944,6 +949,13 @@ fn process_candidate_block(
                 Ok::<_, anyhow::Error>(())
             })?;
 
+            // Send zeroes for non producers to clear metrics
+            repository.get_metrics().inspect(|m| {
+                m.report_thread_load(0, &thread_id);
+                m.report_block_production_time_and_correction(0, 0, &thread_id);
+                m.report_ext_msg_queue_size(0, &thread_id);
+            });
+
             let _ = chain_pulse_monitor
                 .send(ChainPulseEvent::block_applied(thread_id, Some(block_height)));
 
@@ -965,19 +977,8 @@ fn process_candidate_block(
 fn store_history_cursor_for_applied_block(
     block_state: &BlockState,
     parent_block_state: &BlockState,
-    repository: &RepositoryImpl,
     candidate_block: &Envelope<AckiNackiBlock>,
 ) -> anyhow::Result<bool> {
-    let Some(block_version_state) = block_state.guarded(|e| e.block_version_state().clone()) else {
-        anyhow::bail!(
-            "Missing block version state while updating history cursor for {:?}",
-            block_state.block_identifier(),
-        );
-    };
-    if repository.config_read().is_retired(block_version_state.to_use()) {
-        return Ok(true);
-    }
-
     let Some(parent_block_height) = parent_block_state.guarded(|e| *e.block_height()) else {
         anyhow::bail!(
             "Missing parent block height while updating history cursor for {:?}",
@@ -989,32 +990,10 @@ fn store_history_cursor_for_applied_block(
         if let Some(cursor) = parent_block_state.guarded(|e| e.history_cursor().clone()) {
             cursor
         } else {
-            let Some(parent_block_version) =
-                parent_block_state.guarded(|e| e.block_version_state().clone())
-            else {
-                anyhow::bail!(
-                    "Missing parent block version while updating history cursor for {:?}",
-                    block_state.block_identifier(),
-                );
-            };
-            if !repository.config_read().is_retired(parent_block_version.to_use()) {
-                anyhow::bail!(
-                    "Missing history cursor for real parent block: {:?}",
-                    parent_block_state.block_identifier()
-                );
-            }
-            let cursor = if block.common_section().block_height().thread_identifier()
-                == &history_proof_thread_id()
-            {
-                repository.init_history_proof_data(parent_block_height)?;
-                let history_data = repository.get_history_proof_data();
-                let cursor = history_data.read().clone();
-                cursor
-            } else {
-                HistoryLayerData::default()
-            };
-            parent_block_state.guarded_mut(|e| e.set_history_cursor(cursor.clone()))?;
-            cursor
+            anyhow::bail!(
+                "Missing history cursor for real parent block: {:?}",
+                parent_block_state.block_identifier()
+            );
         };
     let envelope_hash = envelope_hash(candidate_block);
     let history_block_leaf_hash = compute_block_leaf_hash(
@@ -1191,7 +1170,6 @@ fn check_common_block_params(
     parent_block_state: &BlockState,
     _time_to_produce_block: &Duration,
     block_state: &BlockState,
-    repository: &RepositoryImpl,
 ) -> anyhow::Result<bool> {
     let (Some(_parent_time), Some(parent_seq_no), Some(parent_height)) =
         parent_block_state.guarded(|e| (*e.block_time_ms(), *e.block_seq_no(), *e.block_height()))
@@ -1217,17 +1195,7 @@ fn check_common_block_params(
         return Ok(false);
     }
 
-    let Some(parent_protocol_version) =
-        parent_block_state.guarded(|e| e.block_version_state().clone())
-    else {
-        anyhow::bail!("Failed to get parent protocol version to perform common check");
-    };
-
-    let is_retired = repository.config_read().is_retired(parent_protocol_version.to_use());
-    tracing::trace!("block version is_retired: {:?}", is_retired);
-
-    if !repository.config_read().is_retired(parent_protocol_version.to_use())
-        && !candidate_block.data().common_section().block_keeper_set_changes().is_empty()
+    if !candidate_block.data().common_section().block_keeper_set_changes().is_empty()
         && candidate_block.data().common_section().block_keeper_set_change_proof_data().is_none()
     {
         tracing::trace!("BK set hash must be set if common section contains bk set changes");
@@ -1435,9 +1403,11 @@ fn process_block_attestations(
             });
         }
     }
+    let mut transitioned_to_fallback_count = 0;
     for block_id in transitioned_to_fallback {
         let ancestor_block_state = block_state_repository.get(&block_id).unwrap();
-        ancestor_block_state.guarded_mut(|e| {
+        let transitioned = ancestor_block_state.guarded_mut(|e| {
+            let transitioned = e.requires_fallback_attestation() != &Some(true);
             if e.must_be_validated().is_none() {
                 // Recalculate if must be validated.
                 if e.must_be_validated_in_fallback_case() == &Some(true) {
@@ -1447,6 +1417,18 @@ fn process_block_attestations(
             }
             e.set_requires_fallback_attestation()
                 .expect("Failed to set requires_fallback_attestation");
+            transitioned
+        });
+        if transitioned {
+            transitioned_to_fallback_count += 1;
+        }
+    }
+    if transitioned_to_fallback_count > 0 {
+        shared_services.metrics.as_ref().inspect(|m| {
+            m.report_blocks_transitioned_to_fallback_by_attestations(
+                transitioned_to_fallback_count,
+                &thread_id,
+            );
         });
     }
     for block_id in passed_fallback.iter() {

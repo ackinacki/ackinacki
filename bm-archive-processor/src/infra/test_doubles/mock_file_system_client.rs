@@ -24,6 +24,7 @@ pub struct MockFileSystemClient {
 
 #[allow(dead_code)]
 impl MockFileSystemClient {
+    #[cfg(test)]
     pub fn new() -> Self {
         MockFileSystemClient {
             files: BTreeMap::new(),
@@ -49,6 +50,7 @@ impl MockFileSystemClient {
     }
 }
 
+#[cfg(test)]
 impl Default for MockFileSystemClient {
     fn default() -> Self {
         Self::new()

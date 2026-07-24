@@ -22,6 +22,7 @@ use crate::bls::gosh_bls::Secret;
 use crate::bls::BLSSignatureScheme;
 use crate::helper::block_flow_trace;
 use crate::helper::metrics::BlockProductionMetrics;
+use crate::helper::ATTESTATION_SEND_DETAILED_TARGET;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::AttestationTargetType;
 use crate::node::associated_types::NodeCredentials;
@@ -58,6 +59,90 @@ enum AttestationAction {
     //     attestation: Envelope<GoshBLS, AttestationData>,
     //     resend_candidate: bool,
     // },
+}
+
+#[derive(Clone, Copy, Debug, thiserror::Error)]
+enum AttestationSkipReason {
+    #[error("does not have attestation to send")]
+    NoAttestation,
+    #[error("no destinations were found")]
+    NoDestinations,
+    #[error("earliest_to_send_attestation > now")]
+    FutureDeadline,
+    #[error("has not sent attestations for parent and it is not prefinalized")]
+    MissingParentAttestation,
+    #[error("missing block applied timestamp")]
+    MissingBlockAppliedTimestamp,
+    #[error("missing bk_set or parent block id or producer")]
+    MissingBkSetOrParentBlockIdOrProducer,
+    #[error("missing parent block state")]
+    MissingParentBlockState,
+    #[error("missing parent block producer selector")]
+    MissingParentBlockProducerSelector,
+    #[error("missing distance to bp")]
+    MissingDistanceToBp,
+    #[error("Required a fallback attestation but failed to create one")]
+    RequiredFallbackAttestationCreationFailed,
+    #[error("has retracted attestation")]
+    RetractedAttestation,
+    #[error("some other block locked")]
+    LockRejected,
+}
+
+#[derive(Default)]
+struct AttestationPulseLogStats {
+    checked_blocks: usize,
+    queued_actions: usize,
+    sent_actions: usize,
+    sent_destinations: usize,
+    loopback_destinations: usize,
+    skipped_no_attestation: usize,
+    skipped_no_destinations: usize,
+    skipped_future_deadline: usize,
+    skipped_missing_parent_attestation: usize,
+    skipped_missing_state: usize,
+    skipped_retracted: usize,
+    skipped_lock_rejected: usize,
+    skipped_other: usize,
+}
+
+impl AttestationPulseLogStats {
+    fn record_skip(&mut self, reason: AttestationSkipReason) {
+        match reason {
+            AttestationSkipReason::NoAttestation => self.skipped_no_attestation += 1,
+            AttestationSkipReason::NoDestinations => self.skipped_no_destinations += 1,
+            AttestationSkipReason::FutureDeadline => self.skipped_future_deadline += 1,
+            AttestationSkipReason::MissingParentAttestation => {
+                self.skipped_missing_parent_attestation += 1;
+            }
+            AttestationSkipReason::MissingBlockAppliedTimestamp
+            | AttestationSkipReason::MissingBkSetOrParentBlockIdOrProducer
+            | AttestationSkipReason::MissingParentBlockState
+            | AttestationSkipReason::MissingParentBlockProducerSelector
+            | AttestationSkipReason::MissingDistanceToBp
+            | AttestationSkipReason::RequiredFallbackAttestationCreationFailed => {
+                self.skipped_missing_state += 1;
+            }
+            AttestationSkipReason::RetractedAttestation => self.skipped_retracted += 1,
+            AttestationSkipReason::LockRejected => self.skipped_lock_rejected += 1,
+        }
+    }
+
+    fn has_activity(&self) -> bool {
+        self.checked_blocks > 0
+            || self.queued_actions > 0
+            || self.sent_actions > 0
+            || self.sent_destinations > 0
+            || self.loopback_destinations > 0
+            || self.skipped_no_attestation > 0
+            || self.skipped_no_destinations > 0
+            || self.skipped_future_deadline > 0
+            || self.skipped_missing_parent_attestation > 0
+            || self.skipped_missing_state > 0
+            || self.skipped_retracted > 0
+            || self.skipped_lock_rejected > 0
+            || self.skipped_other > 0
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -260,10 +345,15 @@ impl AttestationSendService {
         let mut next_deadline = std::time::Instant::now() + PULSE_IDLE_TIMEOUT * 2;
         let mut tracking = self.tracking.clone();
         let mut first_unsuccessfully_processed_block_height: Option<BlockHeight> = None;
+        let mut pulse_log_stats = AttestationPulseLogStats::default();
         for (_block_id, state) in tracking.iter_mut() {
-            // tracing::trace!("AttestationSendService: process: {_block_id:?}");
-            let trace_skip = |reason: &str| {
-                tracing::trace!("skip send attestation: {reason}");
+            pulse_log_stats.checked_blocks += 1;
+            let mut trace_skip = |reason: AttestationSkipReason| {
+                pulse_log_stats.record_skip(reason);
+                tracing::trace!(
+                    target: ATTESTATION_SEND_DETAILED_TARGET,
+                    "skip send attestation: {reason}"
+                );
                 block_flow_trace(
                     format!("skip send attestation: {reason}"),
                     _block_id.block_identifier(),
@@ -272,7 +362,7 @@ impl AttestationSendService {
                 );
             };
             // let Some(attestation) = state.attestation() else {
-            //     trace_skip("does not have attestation to send");
+            //     trace_skip(AttestationSkipReason::NoAttestation);
             //     continue;
             // };
             let try_get_attn_res = self.try_get_attestation(state);
@@ -280,7 +370,7 @@ impl AttestationSendService {
             let attestation = match try_get_attn_res {
                 Ok(attn) => attn,
                 Err(_e) => {
-                    trace_skip("does not have attestation to send");
+                    trace_skip(AttestationSkipReason::NoAttestation);
                     // Note: node iterates over blocks in order of their seq no and if it can't
                     // generate attestation for a block, it won't be able to generate attestation
                     // for the next one.
@@ -319,7 +409,9 @@ impl AttestationSendService {
             let fallback_attestation = {
                 if state.block_state.guarded(|e| e.requires_fallback_attestation() == &Some(true)) {
                     let Ok(attestation) = self.try_get_fallback_attestation(state) else {
-                        trace_skip("Required a fallback attestation but failed to create one");
+                        trace_skip(
+                            AttestationSkipReason::RequiredFallbackAttestationCreationFailed,
+                        );
                         continue;
                     };
                     Some(attestation)
@@ -337,7 +429,7 @@ impl AttestationSendService {
                 }
                 *e.applied_start_timestamp()
             }) else {
-                trace_skip("missing block applied timestamp");
+                trace_skip(AttestationSkipReason::MissingBlockAppliedTimestamp);
                 continue;
             };
             let (Some(bk_set), Some(parent_block_identifier), Some(producer), Some(thread_id)) =
@@ -350,18 +442,18 @@ impl AttestationSendService {
                     )
                 })
             else {
-                trace_skip("missing bk_set or parent block id or producer");
+                trace_skip(AttestationSkipReason::MissingBkSetOrParentBlockIdOrProducer);
                 continue;
             };
             let Ok(parent_block_state) = self.block_state_repository.get(&parent_block_identifier)
             else {
-                trace_skip("missing parent block state");
+                trace_skip(AttestationSkipReason::MissingParentBlockState);
                 continue;
             };
             let Some(parent_block_producer_selector) =
                 parent_block_state.guarded(|e| e.producer_selector_data().clone())
             else {
-                trace_skip("missing parent block producer selector");
+                trace_skip(AttestationSkipReason::MissingParentBlockProducerSelector);
                 continue;
             };
 
@@ -374,7 +466,7 @@ impl AttestationSendService {
                 let Some(distance_to_producer) =
                     parent_block_producer_selector.get_distance_from_bp(&bk_set, &producer)
                 else {
-                    trace_skip("missing distance to bp");
+                    trace_skip(AttestationSkipReason::MissingDistanceToBp);
                     continue;
                 };
                 distance_to_producer
@@ -413,9 +505,7 @@ impl AttestationSendService {
                         };
                         block_applied_timestamp - correction
                     } else {
-                        trace_skip(
-                            "has not sent attestations for parent and it is not prefinalized",
-                        );
+                        trace_skip(AttestationSkipReason::MissingParentAttestation);
                         continue;
                     };
 
@@ -425,7 +515,9 @@ impl AttestationSendService {
             };
             let now = std::time::Instant::now();
             if earliest_to_send_attestation > now {
+                pulse_log_stats.record_skip(AttestationSkipReason::FutureDeadline);
                 tracing::trace!(
+                    target: ATTESTATION_SEND_DETAILED_TARGET,
                     "AttestationSendService: pulse: earliest_to_send_attestation - now = {}",
                     earliest_to_send_attestation.duration_since(now).as_millis()
                 );
@@ -438,8 +530,9 @@ impl AttestationSendService {
                 let parent_sent_first_attestation =
                     time_info(first_sent.get(parent_block_state.block_identifier()).copied());
                 let distance_to_producer = distance_to_producer.to_string();
+                let reason = AttestationSkipReason::FutureDeadline.to_string();
                 block_flow_trace(
-                    "skip send attestation: earliest_to_send_attestation > now",
+                    format!("skip send attestation: {reason}"),
                     _block_id.block_identifier(),
                     &trace_node_id,
                     [
@@ -452,7 +545,10 @@ impl AttestationSendService {
                 next_deadline = next_deadline.min(earliest_to_send_attestation);
                 continue;
             }
-            tracing::trace!("AttestationSendService: time to send attn: {_block_id:?}");
+            tracing::trace!(
+                target: ATTESTATION_SEND_DETAILED_TARGET,
+                "AttestationSendService: time to send attn: {_block_id:?}"
+            );
             let last_sent_time = state.last_send_timestamp().unwrap_or_else(|| self.start_time);
             let last_destinations = state.last_send_destinations().clone().unwrap_or_default();
             let attestation_interested_parties: HashSet<(NodeIdentifier, AttestationTargetType)> =
@@ -482,15 +578,16 @@ impl AttestationSendService {
                 }
             };
             if awaiting_destinations.is_empty() && fallback_attestation.is_none() {
-                trace_skip("no destinations were found");
+                trace_skip(AttestationSkipReason::NoDestinations);
                 continue;
             }
             if state.block_state().guarded(|e| e.retracted_attestation().is_some()) {
                 tracing::trace!(
+                    target: ATTESTATION_SEND_DETAILED_TARGET,
                     "AttestationSendService: pulse: has retracted attestation: {:?}",
                     _block_id
                 );
-                trace_skip("has retracted attestation");
+                trace_skip(AttestationSkipReason::RetractedAttestation);
                 continue;
             }
             let block_ref = BlockRef::try_from(state.block_state()).unwrap();
@@ -528,13 +625,14 @@ impl AttestationSendService {
                     });
                 }
                 ActionLockResult::Rejected => {
-                    trace_skip("some other block locked");
+                    trace_skip(AttestationSkipReason::LockRejected);
                     continue;
                 }
             }
 
             // Find child that was attestated and attestation was not revoked
             tracing::trace!(
+                target: ATTESTATION_SEND_DETAILED_TARGET,
                 "AttestationSendService: pulse: add attestation to send: {:?}",
                 attestation
             );
@@ -551,8 +649,10 @@ impl AttestationSendService {
                 }
             }
             to_send.push((primary_destinations, AttestationAction::ThisBlock(attestation)));
+            pulse_log_stats.queued_actions += 1;
             if let Some(attestation) = fallback_attestation {
                 to_send.push((fallback_destinations, AttestationAction::ThisBlock(attestation)));
+                pulse_log_stats.queued_actions += 1;
             }
 
             if state.first_send_timestamp().is_none() {
@@ -564,10 +664,13 @@ impl AttestationSendService {
         self.tracking = tracking;
         for (awaiting_destinations, attestation) in to_send.into_iter() {
             tracing::trace!(
+                target: ATTESTATION_SEND_DETAILED_TARGET,
                 "AttestationSendService: pulse: send attestation: {:?} {:?}",
                 attestation,
                 awaiting_destinations
             );
+            pulse_log_stats.sent_actions += 1;
+            pulse_log_stats.sent_destinations += awaiting_destinations.len();
             for destination in &awaiting_destinations {
                 if destination != self.node_credentials.node_id() {
                     let _ = self.send_block_attestation(destination.clone(), attestation.clone());
@@ -575,9 +678,11 @@ impl AttestationSendService {
                     match attestation {
                         AttestationAction::ThisBlock(ref attestation) => {
                             tracing::trace!(
+                                target: ATTESTATION_SEND_DETAILED_TARGET,
                                 "AttestationSendService: pulse: add loopback: {:?}",
                                 attestation
                             );
+                            pulse_log_stats.loopback_destinations += 1;
                             loopback_attestations
                                 .guarded_mut(|e| e.add(attestation.clone(), true))
                                 .expect("Failed to add attestation");
@@ -606,6 +711,25 @@ impl AttestationSendService {
                     }
                 }
             }
+        }
+        if pulse_log_stats.has_activity() {
+            tracing::trace!(
+                "AttestationSendService: pulse summary thread={:?} checked={} queued={} sent_actions={} sent_destinations={} loopback={} skipped_no_attestation={} skipped_no_destinations={} skipped_future_deadline={} skipped_missing_parent_attestation={} skipped_missing_state={} skipped_retracted={} skipped_lock_rejected={} skipped_other={}",
+                self.thread_id,
+                pulse_log_stats.checked_blocks,
+                pulse_log_stats.queued_actions,
+                pulse_log_stats.sent_actions,
+                pulse_log_stats.sent_destinations,
+                pulse_log_stats.loopback_destinations,
+                pulse_log_stats.skipped_no_attestation,
+                pulse_log_stats.skipped_no_destinations,
+                pulse_log_stats.skipped_future_deadline,
+                pulse_log_stats.skipped_missing_parent_attestation,
+                pulse_log_stats.skipped_missing_state,
+                pulse_log_stats.skipped_retracted,
+                pulse_log_stats.skipped_lock_rejected,
+                pulse_log_stats.skipped_other,
+            );
         }
         next_deadline
     }
@@ -807,6 +931,7 @@ impl AttestationSendService {
         for (block_id, producer) in attested_blocks_to_parties {
             if let Some(tracked_state) = self.tracking.get_mut(&block_id) {
                 tracing::trace!(
+                    target: ATTESTATION_SEND_DETAILED_TARGET,
                     "AttestationSendService: update interested_parties_received_blocks {:?} {:?}",
                     block_id,
                     producer

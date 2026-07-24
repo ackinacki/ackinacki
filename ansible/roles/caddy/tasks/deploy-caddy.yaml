@@ -29,6 +29,16 @@
   register: caddyfile
   when: USE_CADDY
 
+- name: Copy otel-collector config
+  ansible.builtin.template:
+    src: templates/otel-collector-config.j2
+    dest: "{{ CADDY_DIR }}/otel-collector-config.yaml"
+    mode: "0644"
+  register: otelcfg
+  when:
+    - USE_CADDY
+    - (OTEL_COLLECTOR | default('')) is truthy(convert_bool=True)
+
 - name: Ensure .env
   copy:
     dest: "{{ CADDY_DIR }}/.env"
@@ -68,11 +78,20 @@
     cmd: docker compose up -d --build --remove-orphans
   when: USE_CADDY
 
-- name: Compose restart
+- name: Restart caddy
   ansible.builtin.shell:
     chdir: "{{ CADDY_DIR }}"
-    cmd: docker compose restart
+    cmd: docker compose restart caddy
   when:
     - USE_CADDY
     - caddyfile.changed
     - not compose.changed
+
+- name: Restart otel-collector
+  ansible.builtin.shell:
+    chdir: "{{ CADDY_DIR }}"
+    cmd: docker compose restart otel-collector
+  when:
+    - USE_CADDY
+    - otelcfg is defined
+    - otelcfg.changed

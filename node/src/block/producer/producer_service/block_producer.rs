@@ -27,6 +27,7 @@ use crate::block::producer::process::TVMBlockProducerProcess;
 use crate::block::producer::process::FORCE_SYNC_STATE_BLOCK_FREQUENCY;
 use crate::block::producer::producer_service::memento::Assumptions;
 use crate::block::producer::producer_service::memento::BlockProducerMemento;
+use crate::block::producer::producer_service::memento::DidBroadcastSmth;
 use crate::block_keeper_system::bk_set::update_block_keeper_set_from_common_section;
 use crate::block_keeper_system::BlockKeeperSetChange::BlockKeeperAdded;
 use crate::block_keeper_system::BlockKeeperSetChange::BlockKeeperRemoved;
@@ -49,6 +50,7 @@ use crate::node::associated_types::AttestationTargetType;
 use crate::node::associated_types::NackData;
 use crate::node::associated_types::NodeCredentials;
 use crate::node::associated_types::SynchronizationResult;
+use crate::node::block_state::attestation_target_checkpoints::AncestorBlocksFinalizationCheckpoints;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::block_state::tools::promote_temporary_to_block_state;
@@ -81,11 +83,9 @@ use crate::types::history_proof::history_proof_thread_id;
 use crate::types::history_proof::HistoryLayerData;
 use crate::types::history_proof::HISTORY_PROOF_WINDOW_SIZE;
 use crate::types::AckiNackiBlock;
-use crate::types::AckiNackiBlockVersioned;
 use crate::types::AggregateFilter;
 use crate::types::AggregatedAttestationsCache;
 use crate::types::AttestationCacheKey;
-use crate::types::BlockHeight;
 use crate::types::BlockRound;
 use crate::types::BlockSeqNo;
 use crate::types::CollectedAttestations;
@@ -175,6 +175,34 @@ enum UpdateCommonSectionResult {
     AbortNotInBKSet,
 }
 
+fn build_attestations_required(
+    ancestor_blocks_finalization_checkpoints: &AncestorBlocksFinalizationCheckpoints,
+    mut load_block_state: impl FnMut(&BlockIdentifier) -> anyhow::Result<BlockState>,
+) -> anyhow::Result<Vec<(BlockState, AggregateFilter)>> {
+    let mut filters: HashMap<(BlockIdentifier, AttestationTargetType), AggregateFilter> =
+        HashMap::new();
+
+    for (ancestor_id, checkpoint) in ancestor_blocks_finalization_checkpoints.primary().iter() {
+        filters.insert(
+            (*ancestor_id, *checkpoint.attestation_target_type()),
+            AggregateFilter::from(checkpoint),
+        );
+    }
+    for (ancestor_id, checkpoints) in ancestor_blocks_finalization_checkpoints.fallback().iter() {
+        for checkpoint in checkpoints.iter() {
+            filters
+                .entry((*ancestor_id, *checkpoint.attestation_target_type()))
+                .and_modify(|filter| filter.merge_checkpoint(checkpoint))
+                .or_insert_with(|| AggregateFilter::from(checkpoint));
+        }
+    }
+
+    filters
+        .into_iter()
+        .map(|((ancestor_id, _), filter)| Ok((load_block_state(&ancestor_id)?, filter)))
+        .collect()
+}
+
 impl BlockProducer {
     fn history_cursor_for_parent_state(
         &self,
@@ -186,51 +214,6 @@ impl BlockProducer {
                 parent_block_state.block_identifier()
             )
         })
-    }
-
-    fn history_cursor_for_parent_state_or_init_for_first_current_block(
-        &self,
-        parent_block_state: &BlockState,
-        block_height: &BlockHeight,
-        protocol_version: &ProtocolVersion,
-    ) -> anyhow::Result<HistoryLayerData> {
-        if let Some(cursor) = parent_block_state.guarded(|e| e.history_cursor().clone()) {
-            return Ok(cursor);
-        }
-        let Some(parent_block_version) =
-            parent_block_state.guarded(|e| e.block_version_state().clone())
-        else {
-            anyhow::bail!(
-                "Missing block version for real parent block: {:?}",
-                parent_block_state.block_identifier()
-            );
-        };
-        let is_first_current_block = self.config_read.is_retired(parent_block_version.to_use())
-            && !self.config_read.is_retired(protocol_version);
-        if !is_first_current_block {
-            anyhow::bail!(
-                "Missing history cursor for real parent block: {:?}",
-                parent_block_state.block_identifier()
-            );
-        }
-
-        let cursor = if block_height.thread_identifier() == &history_proof_thread_id() {
-            let Some(parent_block_height) = parent_block_state.guarded(|e| *e.block_height())
-            else {
-                anyhow::bail!(
-                    "Missing parent block height while initializing history cursor for {:?}",
-                    parent_block_state.block_identifier()
-                );
-            };
-            self.repository.init_history_proof_data(parent_block_height)?;
-            let history_data = self.repository.get_history_proof_data();
-            let cursor = history_data.read().clone();
-            cursor
-        } else {
-            HistoryLayerData::default()
-        };
-        parent_block_state.guarded_mut(|e| e.set_history_cursor(cursor.clone()))?;
-        Ok(cursor)
     }
 
     fn required_block_version(parent_block_version: &BlockProtocolVersionState) -> ProtocolVersion {
@@ -423,33 +406,39 @@ impl BlockProducer {
                 }
             }
             self.block_state_repository.touch();
-            let (broadcasted, cleared_memento, post_production_timestamp) =
-                if in_flight_productions.is_some() || memento.is_some() {
-                    tracing::debug!("Cut off block producer");
+            let mut postprocess_elapsed = Duration::ZERO;
+            let broadcasted = if in_flight_productions.is_some() || memento.is_some() {
+                tracing::debug!("Cut off block producer");
 
-                    // Cut off block producer. Send whatever it has
-                    let post_production_timestamp = std::time::Instant::now();
-                    let had_memento = memento.is_some();
-                    let (broadcasted, next_memento) =
-                        self.on_production_timeout(&mut in_flight_productions, memento)?;
-                    let cleared_memento = next_memento.is_none() && had_memento;
-                    memento = next_memento;
-                    (broadcasted, cleared_memento, Some(post_production_timestamp))
-                } else {
-                    (false, false, None)
-                };
-
-            let pause_duration = if broadcasted && cleared_memento {
-                // Note: if node successfully broadcasted block and cleared memento, it has sent
-                // memento and has production process stopped. So need to start production right
-                // now
-                Duration::default()
-            } else if broadcasted || (in_flight_productions.is_none() && memento.is_none()) {
-                let mut duration = self.production_timeout;
-                if let Some(timestamp) = post_production_timestamp {
-                    duration = duration.saturating_sub(timestamp.elapsed());
+                // Cut off block producer. Send whatever it has
+                let postprocess_started_at = std::time::Instant::now();
+                let (broadcasted, next_memento) =
+                    self.on_production_timeout(&mut in_flight_productions, memento)?;
+                postprocess_elapsed = postprocess_started_at.elapsed();
+                memento = next_memento;
+                if memento.is_none()
+                    && in_flight_productions.is_some()
+                    && !self.production_process.has_active_producer_thread()
+                {
+                    tracing::trace!(
+                        "Produced blocks buffer drained while producer process is stopped; restart production if this node is still the producer"
+                    );
+                    in_flight_productions = None;
                 }
-                duration
+                broadcasted
+            } else {
+                DidBroadcastSmth::Skip
+            };
+
+            let long_pause_duration = self.production_timeout.mul_f32(0.9);
+            let pause_duration = if broadcasted == DidBroadcastSmth::Broadcast {
+                let corrected_pause = long_pause_duration.saturating_sub(postprocess_elapsed);
+                tracing::trace!(
+                    "Block producer postprocess elapsed={postprocess_elapsed:?}; corrected pause={corrected_pause:?}"
+                );
+                corrected_pause
+            } else if in_flight_productions.is_none() && memento.is_none() {
+                long_pause_duration
             } else {
                 LOOP_PAUSE_DURATION
             };
@@ -656,7 +645,7 @@ impl BlockProducer {
         &mut self,
         producer_tails: &mut Option<(BlockIdentifier, BlockSeqNo)>,
         mut memento: Option<BlockProducerMemento>,
-    ) -> anyhow::Result<(bool, Option<BlockProducerMemento>)> {
+    ) -> anyhow::Result<(DidBroadcastSmth, Option<BlockProducerMemento>)> {
         tracing::trace!("on_production_timeout start");
         if let Some(memento_ref) = memento.as_ref() {
             if let Some(saved_notification) = memento_ref.last_attestation_notification() {
@@ -670,7 +659,7 @@ impl BlockProducer {
             }
         }
 
-        let mut did_broadcast_something = false;
+        let mut did_broadcast_something = DidBroadcastSmth::Skip;
 
         let mut produced_data = memento.take().unwrap_or_else(|| {
             BlockProducerMemento::builder()
@@ -687,7 +676,7 @@ impl BlockProducer {
             .unwrap_or_default()
             .1;
         tracing::trace!("on_production_timeout: minimal_seq_no_that_can_be_accepted_from_producer_process = {minimal_seq_no_that_can_be_accepted_from_producer_process:?}");
-        while let Some(produced_block) = produced_data.produced_blocks().first() {
+        if let Some(produced_block) = produced_data.produced_blocks().first() {
             let mut block = produced_block.block().clone();
             let temp_id = *produced_block.temporary_block_id();
 
@@ -721,14 +710,14 @@ impl BlockProducer {
                 produced_data.produced_blocks_mut().clear();
                 *producer_tails =
                     self.restart_production(parent_block_id, block_round, required_block_version)?;
-                return Ok((false, None));
+                return Ok((DidBroadcastSmth::Skip, None));
             }
 
             if block.seq_no() <= minimal_seq_no_that_can_be_accepted_from_producer_process {
                 tracing::trace!("Produced block is older than last finalized block. Stop production for thread: {:?}", self.thread_id);
                 self.stop_and_cleanup()?;
                 *producer_tails = None;
-                return Ok((false, None));
+                return Ok((DidBroadcastSmth::Skip, None));
             }
             let share_resulting_state = self.is_state_sync_requested.guarded(|e| *e);
             let should_share_state = share_resulting_state == Some(block.seq_no())
@@ -757,7 +746,7 @@ impl BlockProducer {
                     tracing::trace!("Failed to update common section and our block seems to be invalidated, stop production");
                     self.stop_and_cleanup()?;
                     *producer_tails = None;
-                    return Ok((false, None));
+                    return Ok((DidBroadcastSmth::Skip, None));
                 }
                 Err(e) => {
                     tracing::trace!("Update common section error {e:?}");
@@ -768,7 +757,7 @@ impl BlockProducer {
                         OptimisticStateSaveCommand::Save(produced_block.optimistic_state().clone()),
                     );
                     *producer_tails = None;
-                    return Ok((false, Some(produced_data)));
+                    return Ok((DidBroadcastSmth::Skip, Some(produced_data)));
                 }
                 Ok(UpdateCommonSectionResult::AncestorIsNotReadyYet) => {
                     // Memento
@@ -778,7 +767,7 @@ impl BlockProducer {
                     // *producer_tails = None;
                     produced_data
                         .set_last_attestation_notification(attestations_notifications_stamp + 1);
-                    return Ok((false, Some(produced_data)));
+                    return Ok((DidBroadcastSmth::Skip, Some(produced_data)));
                 }
                 Ok(UpdateCommonSectionResult::NotReadyYet) => {
                     // Memento
@@ -788,7 +777,7 @@ impl BlockProducer {
                     // *producer_tails = None;
                     produced_data
                         .set_last_attestation_notification(attestations_notifications_stamp);
-                    return Ok((false, Some(produced_data)));
+                    return Ok((DidBroadcastSmth::Skip, Some(produced_data)));
                 }
                 Ok(UpdateCommonSectionResult::Success {
                     block_state,
@@ -885,23 +874,14 @@ impl BlockProducer {
                             tracing::trace!("Assumptions were not met, stop production");
                             self.stop_and_cleanup()?;
                         }
-                        if !self.config_read.is_retired(&actual_required_version) {
-                            if let Some(parent_block_height) = self
-                                .block_state_repository
-                                .get(&parent_block_id)?
-                                .guarded(|e| *e.block_height())
-                            {
-                                self.repository.init_history_proof_data(parent_block_height)?;
-                            }
-                        }
-                        return Ok((false, None));
+                        return Ok((DidBroadcastSmth::Skip, None));
                     }
                 }
                 Ok(UpdateCommonSectionResult::AbortNotInBKSet) => {
                     tracing::trace!("Stop production: not in bk set");
                     self.stop_and_cleanup()?;
                     *producer_tails = None;
-                    return Ok((false, None));
+                    return Ok((DidBroadcastSmth::Skip, None));
                 }
             };
             // --- Finalize block ID dependent data ---
@@ -1006,7 +986,7 @@ impl BlockProducer {
                     if <u32>::from(seq_no.clone()) + 100 == <u32>::from(block.seq_no().clone()) {
                         self.stop_and_cleanup()?;
                         *producer_tails = None;
-                        return Ok((false, None));
+                        return Ok((DidBroadcastSmth::Skip, None));
                     }
                 }
             }
@@ -1040,7 +1020,7 @@ impl BlockProducer {
                     // Stop production in this case
                     tracing::trace!("parent block state was invalidated");
                     self.stop_and_cleanup()?;
-                    return Ok((false, None));
+                    return Ok((DidBroadcastSmth::Skip, None));
                 }
                 notifications.wait_for_updates(stamp);
             }
@@ -1059,12 +1039,12 @@ impl BlockProducer {
             );
             if let Err(e) = &envelope {
                 tracing::error!("Failed to sign block: {e}");
-                return Ok((false, None));
+                return Ok((DidBroadcastSmth::Skip, None));
             };
             let envelope = envelope?;
 
             let block_serialization_started_at = std::time::Instant::now();
-            let net_block_result = NetBlock::with_versioned(&envelope);
+            let net_block_result = NetBlock::with_envelope(&envelope);
             self.shared_services.metrics.as_ref().inspect(|m| {
                 m.report_block_serialization_time(
                     block_serialization_started_at.elapsed().as_millis(),
@@ -1079,7 +1059,7 @@ impl BlockProducer {
             // if self.does_block_have_a_valid_sibling(&envelope)? {
             // tracing::trace!("Don't accept produced block because this node has already signed a block of the same height");
             // self.production_process.stop_thread_production(&self.thread_id)?;
-            // return Ok((false, None));
+            // return Ok((DidBroadcastSmth::Skip, None));
             // }
 
             let producer_selector =
@@ -1088,45 +1068,38 @@ impl BlockProducer {
                 .guarded(|e| *e.block_height())
                 .expect("Parent block height must be set");
             let block_height = parent_height.next(&self.thread_id);
-            let history_cursor = match envelope.data() {
-                AckiNackiBlockVersioned::New(block_data) => {
-                    let parent_history_cursor = self
-                        .history_cursor_for_parent_state_or_init_for_first_current_block(
-                            &parent_state,
-                            block_data.common_section().block_height(),
-                            &protocol_version,
-                        )?;
-                    let canonical_envelope = Envelope::<AckiNackiBlock>::create(
-                        envelope.aggregated_signature().clone(),
-                        envelope.clone_signature_occurrences(),
-                        block_data.clone(),
-                    );
-                    let envelope_hash =
-                        crate::types::envelope_hash::envelope_hash(&canonical_envelope);
-                    let history_block_leaf_hash = compute_block_leaf_hash(
-                        envelope.data().identifier().as_array(),
-                        &envelope_hash.0,
-                        block_data.common_section().tracked_ext_out_messages_root(),
-                    );
-                    let (history_cursor, expected_history_proofs) = advance_history_cursor(
-                        &parent_history_cursor,
-                        history_block_leaf_hash,
-                        block_height,
-                        parent_height,
-                        *parent_state.block_identifier(),
-                    )?;
-                    if !self.config_read.is_retired(&protocol_version)
-                        && &expected_history_proofs != block_data.common_section().history_proofs()
-                    {
-                        anyhow::bail!(
+            let block_data = envelope.data();
+
+            let Some(parent_history_cursor) = parent_state.guarded(|e| e.history_cursor().clone())
+            else {
+                anyhow::bail!("Failed to read parent history cursor");
+            };
+            let canonical_envelope = Envelope::<AckiNackiBlock>::create(
+                envelope.aggregated_signature().clone(),
+                envelope.clone_signature_occurrences(),
+                block_data.clone(),
+            );
+            let envelope_hash = crate::types::envelope_hash::envelope_hash(&canonical_envelope);
+            let history_block_leaf_hash = compute_block_leaf_hash(
+                envelope.data().identifier().as_array(),
+                &envelope_hash.0,
+                block_data.common_section().tracked_ext_out_messages_root(),
+            );
+            let (history_cursor, expected_history_proofs) = advance_history_cursor(
+                &parent_history_cursor,
+                history_block_leaf_hash,
+                block_height,
+                parent_height,
+                *parent_state.block_identifier(),
+            )?;
+            if &expected_history_proofs != block_data.common_section().history_proofs() {
+                anyhow::bail!(
                             "Produced block history proofs mismatch: expected={expected_history_proofs:?} actual={:?}",
                             block_data.common_section().history_proofs()
                         );
-                    }
-                    Some(history_cursor)
-                }
-                AckiNackiBlockVersioned::Old(_) => None,
-            };
+            }
+            let history_cursor = Some(history_cursor);
+
             produced_block_state.guarded_mut(|e| {
                 e.set_validated(true)?;
                 e.set_producer_selector_data(producer_selector)?;
@@ -1135,6 +1108,8 @@ impl BlockProducer {
                 }
                 e.set_block_height(block_height)
             })?;
+            self.block_state_repository
+                .retain_local_produced_until_finalized(produced_block_state.clone());
 
             let (send_res, net_message) = {
                 if production_status.last_produced.is_none()
@@ -1219,10 +1194,11 @@ impl BlockProducer {
                 produced_block.feedbacks().clone(),
             )?;
             self.repository.store_optimistic_in_cache(produced_block.optimistic_state().clone())?;
-            did_broadcast_something = true;
+            did_broadcast_something = DidBroadcastSmth::Broadcast;
         }
-
-        Ok((did_broadcast_something, None))
+        let memento =
+            if produced_data.produced_blocks().is_empty() { None } else { Some(produced_data) };
+        Ok((did_broadcast_something, memento))
     }
 
     pub(crate) fn _does_block_have_a_valid_sibling(
@@ -1242,7 +1218,7 @@ impl BlockProducer {
 
     fn update_candidate_common_section(
         &mut self,
-        candidate_block: &mut AckiNackiBlockVersioned,
+        candidate_block: &mut AckiNackiBlock,
         should_share_state: bool,
         temp_id: &TemporaryBlockId,
     ) -> anyhow::Result<UpdateCommonSectionResult> {
@@ -1271,34 +1247,10 @@ impl BlockProducer {
             return Ok(UpdateCommonSectionResult::AncestorIsNotReadyYet);
         };
 
-        let attestations_required: Vec<(BlockState, AggregateFilter)> = {
-            let mut buffer = vec![];
-            let primary_only: Vec<BlockIdentifier> = {
-                ancestor_blocks_finalization_checkpoints
-                    .primary()
-                    .keys()
-                    .filter(|e| {
-                        !ancestor_blocks_finalization_checkpoints.fallback().contains_key(*e)
-                    })
-                    .cloned()
-                    .collect()
-            };
-            for ancestor_id in primary_only.into_iter() {
-                let checkpoint =
-                    ancestor_blocks_finalization_checkpoints.primary().get(&ancestor_id).unwrap();
-                let ancestor = self.block_state_repository.get(&ancestor_id)?;
-                buffer.push((ancestor, AggregateFilter::from(checkpoint)));
-            }
-            for (ancestor_id, checkpoints) in
-                ancestor_blocks_finalization_checkpoints.fallback().iter()
-            {
-                let ancestor = self.block_state_repository.get(ancestor_id)?;
-                for checkpoint in checkpoints.iter() {
-                    buffer.push((ancestor.clone(), AggregateFilter::from(checkpoint)));
-                }
-            }
-            buffer
-        };
+        let attestations_required = build_attestations_required(
+            &ancestor_blocks_finalization_checkpoints,
+            |ancestor_id| self.block_state_repository.get(ancestor_id),
+        )?;
         let (Some(_parent_statistics), Some(bk_set), Some(future_bk_set)) = parent_block_state
             .guarded(|e| {
                 (
@@ -1391,37 +1343,34 @@ impl BlockProducer {
 
         // Always compute BK set Poseidon commitments for the envelope hash Merkle tree.
         // L2 = old BK set, L3 = new BK set (== old when no changes).
-        if !self.config_read.is_retired(match &parent_block_version {
-            BlockProtocolVersionState::CompleteTransition { to, .. } => to,
-            other => other.to_use(),
-        }) {
-            let old_bk_set_hash: [u8; 32] = bk_set.poseidon_commitment()?;
-            let (new_bk_set_hash, history_proof_layer_hashes) =
-                if !common_section.block_keeper_set_changes().is_empty() {
-                    let new_hash = descendant_bk_set.poseidon_commitment()?;
-                    let layer_hashes = if self.thread_id == history_proof_thread_id() {
-                        let parent_cursor =
-                            self.history_cursor_for_parent_state(&parent_block_state)?;
-                        history_cursor_layer_hashes(&parent_cursor)
-                    } else {
-                        BTreeMap::new()
-                    };
-                    (new_hash, layer_hashes)
+
+        let old_bk_set_hash: [u8; 32] = bk_set.poseidon_commitment()?;
+        let (new_bk_set_hash, history_proof_layer_hashes) =
+            if !common_section.block_keeper_set_changes().is_empty() {
+                let new_hash = descendant_bk_set.poseidon_commitment()?;
+                let layer_hashes = if self.thread_id == history_proof_thread_id() {
+                    let parent_cursor =
+                        self.history_cursor_for_parent_state(&parent_block_state)?;
+                    history_cursor_layer_hashes(&parent_cursor)
                 } else {
-                    (old_bk_set_hash, std::collections::BTreeMap::new())
+                    BTreeMap::new()
                 };
-            common_section.set_block_keeper_set_change_proof_data(Some(
-                BlockKeeperSetChangeProofData::builder()
-                    .transition_hashes(
-                        BlockKeeperSetTransitionHashes::builder()
-                            .new_bk_set_hash(new_bk_set_hash)
-                            .old_bk_set_hash(old_bk_set_hash)
-                            .build(),
-                    )
-                    .history_proof_layer_hashes(history_proof_layer_hashes)
-                    .build(),
-            ));
-        }
+                (new_hash, layer_hashes)
+            } else {
+                (old_bk_set_hash, std::collections::BTreeMap::new())
+            };
+        common_section.set_block_keeper_set_change_proof_data(Some(
+            BlockKeeperSetChangeProofData::builder()
+                .transition_hashes(
+                    BlockKeeperSetTransitionHashes::builder()
+                        .new_bk_set_hash(new_bk_set_hash)
+                        .old_bk_set_hash(old_bk_set_hash)
+                        .build(),
+                )
+                .history_proof_layer_hashes(history_proof_layer_hashes)
+                .build(),
+        ));
+
         candidate_block.set_common_section(common_section.clone(), true)?;
 
         //
@@ -1489,10 +1438,6 @@ impl BlockProducer {
                     && *candidate_block.common_section().block_height() % HISTORY_PROOF_WINDOW_SIZE
                         == 0
                     && *candidate_block.common_section().block_height().height() != 0
-                    && !self.config_read.is_retired(match &parent_block_version {
-                        BlockProtocolVersionState::CompleteTransition { to, .. } => to,
-                        other => other.to_use(),
-                    })
                 {
                     let mut common_section = candidate_block.common_section().clone();
                     let parent_cursor =
@@ -1711,5 +1656,61 @@ impl BlockProducer {
         // ));
         //
         // Ok(SynchronizationResult::Ok)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::node::block_state::attestation_target_checkpoints::AttestationTargetCheckpoint;
+
+    fn checkpoint(
+        required_attestation_count: usize,
+        attestation_target_type: AttestationTargetType,
+    ) -> AttestationTargetCheckpoint {
+        AttestationTargetCheckpoint::builder()
+            .current_distance(0)
+            .deadline(15)
+            .required_attestation_count(required_attestation_count)
+            .attestation_target_type(attestation_target_type)
+            .build()
+    }
+
+    #[test]
+    fn build_attestations_required_merges_primary_min_and_desired_thresholds() {
+        let block_id = BlockIdentifier::new([1; 32]);
+        let checkpoints = AncestorBlocksFinalizationCheckpoints::builder()
+            .primary(HashMap::from([(block_id, checkpoint(170, AttestationTargetType::Primary))]))
+            .fallback(HashMap::from([(
+                block_id,
+                vec![
+                    checkpoint(128, AttestationTargetType::Primary),
+                    checkpoint(128, AttestationTargetType::Fallback),
+                ],
+            )]))
+            .build();
+
+        let mut required =
+            build_attestations_required(&checkpoints, |_| Ok(BlockState::test())).unwrap();
+        required.sort_by_key(|(_, filter)| *filter.attestation_type() as u8);
+
+        assert_eq!(required.len(), 2);
+        let primary = &required
+            .iter()
+            .find(|(_, filter)| filter.attestation_type() == &AttestationTargetType::Primary)
+            .unwrap()
+            .1;
+        assert_eq!(*primary.min_signatures_inclusive(), 128);
+        assert_eq!(*primary.desired_signatures_inclusive(), 170);
+
+        let fallback = &required
+            .iter()
+            .find(|(_, filter)| filter.attestation_type() == &AttestationTargetType::Fallback)
+            .unwrap()
+            .1;
+        assert_eq!(*fallback.min_signatures_inclusive(), 128);
+        assert_eq!(*fallback.desired_signatures_inclusive(), 128);
     }
 }

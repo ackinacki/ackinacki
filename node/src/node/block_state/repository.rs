@@ -25,6 +25,81 @@ use crate::node::block_state::block_state_inner::StateSaveCommand;
 use crate::node::block_state::start_state_save_service;
 use crate::node::services::block_processor::service::MAX_ATTESTATION_TARGET_BETA;
 use crate::types::notification::Notification;
+use crate::types::BlockSeqNo;
+use crate::utilities::guarded::Guarded;
+
+const LOCAL_PRODUCED_BLOCK_STATE_RETENTION_LIMIT: usize = MAX_ATTESTATION_TARGET_BETA * 4;
+
+type LocalProducedRetentionEntry = (ThreadIdentifier, BlockSeqNo, BlockIdentifier, BlockState);
+
+struct RingBuffer<T> {
+    items: Vec<Option<T>>,
+    head: usize,
+    len: usize,
+}
+
+impl<T> RingBuffer<T> {
+    fn with_capacity(capacity: usize) -> Self {
+        let mut items = Vec::with_capacity(capacity);
+        items.resize_with(capacity, || None);
+        Self { items, head: 0, len: 0 }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn capacity(&self) -> usize {
+        self.items.len()
+    }
+
+    fn push_back(&mut self, item: T) -> Option<T> {
+        match self.capacity() {
+            0 => Some(item),
+            capacity if self.len == capacity => {
+                let evicted = self.items[self.head].replace(item);
+                self.head = (self.head + 1) % capacity;
+                evicted
+            }
+            capacity => {
+                let index = (self.head + self.len) % capacity;
+                self.items[index] = Some(item);
+                self.len += 1;
+                None
+            }
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &T> {
+        let capacity = self.capacity();
+        (0..self.len).filter_map(move |offset| {
+            let index = (self.head + offset) % capacity;
+            self.items[index].as_ref()
+        })
+    }
+
+    fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&T) -> bool,
+    {
+        let capacity = self.capacity();
+        let mut retained = Vec::with_capacity(self.len);
+        for offset in 0..self.len {
+            let index = (self.head + offset) % capacity;
+            if let Some(item) = self.items[index].take() {
+                if f(&item) {
+                    retained.push(item);
+                }
+            }
+        }
+
+        self.head = 0;
+        self.len = retained.len();
+        for (index, item) in retained.into_iter().enumerate() {
+            self.items[index] = Some(item);
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct BlockState {
@@ -97,6 +172,11 @@ pub struct BlockStateRepository {
     // In-memory storage for temporary block states.
     // Not persisted to disk — temporary states live only while the producer is active.
     temporary_map: Arc<RwLock<VecDeque<(TemporaryBlockId, Arc<RwLock<TemporaryBlockState>>)>>>,
+
+    // Strong refs for locally produced blocks. The main map intentionally stores
+    // weak refs, so locally produced states need an explicit holder until they
+    // are finalized and can be saved/dropped normally.
+    local_produced_retention: Arc<RwLock<RingBuffer<LocalProducedRetentionEntry>>>,
 }
 
 impl PartialEq for BlockState {
@@ -134,6 +214,9 @@ impl BlockStateRepository {
             save_service_sender,
             metrics,
             temporary_map: Default::default(),
+            local_produced_retention: Arc::new(RwLock::new(RingBuffer::with_capacity(
+                LOCAL_PRODUCED_BLOCK_STATE_RETENTION_LIMIT,
+            ))),
         };
         repository.report_temporary_map_size(0);
         repository
@@ -155,6 +238,9 @@ impl BlockStateRepository {
             save_service_sender: Arc::new(state_save_tx),
             metrics: None,
             temporary_map: Default::default(),
+            local_produced_retention: Arc::new(RwLock::new(RingBuffer::with_capacity(
+                LOCAL_PRODUCED_BLOCK_STATE_RETENTION_LIMIT,
+            ))),
         }
     }
 
@@ -233,6 +319,60 @@ impl BlockStateRepository {
     fn report_temporary_map_size(&self, size: usize) {
         if let Some(metrics) = &self.metrics {
             metrics.report_temporary_block_states_size(size as u64);
+        }
+    }
+
+    pub fn retain_local_produced_until_finalized(&self, block_state: BlockState) {
+        let Some(block_seq_no) = block_state.guarded(|e| *e.block_seq_no()) else {
+            tracing::trace!(
+                "Skip local produced block state retention: missing seq_no block_id={:?}",
+                block_state.block_identifier(),
+            );
+            return;
+        };
+        let Some(thread_identifier) = block_state.guarded(|e| *e.thread_identifier()) else {
+            tracing::trace!(
+                "Skip local produced block state retention: missing thread_id block_id={:?}",
+                block_state.block_identifier(),
+            );
+            return;
+        };
+
+        let block_identifier = *block_state.block_identifier();
+        let mut retained = self.local_produced_retention.write();
+        if retained.iter().any(|(_, _, id, _)| id == &block_identifier) {
+            return;
+        }
+
+        if let Some((thread_id, seq_no, id, _)) =
+            retained.push_back((thread_identifier, block_seq_no, block_identifier, block_state))
+        {
+            tracing::trace!(
+                "Drop local produced block state from retention by capacity: thread_id={thread_id:?} seq_no={seq_no:?} block_id={id:?}"
+            );
+        }
+        tracing::trace!(
+            "Retain local produced block state until finalized: thread_id={thread_identifier:?} seq_no={block_seq_no:?} block_id={block_identifier:?} retained={}",
+            retained.len(),
+        );
+    }
+
+    pub fn remove_retained_local_produced_up_to(
+        &self,
+        thread_identifier: &ThreadIdentifier,
+        last_finalized_seq_no: &BlockSeqNo,
+    ) {
+        let mut retained = self.local_produced_retention.write();
+        let old_len = retained.len();
+        retained.retain(|(thread_id, seq_no, _, _)| {
+            thread_id != thread_identifier || seq_no > last_finalized_seq_no
+        });
+        let removed = old_len - retained.len();
+        if removed > 0 {
+            tracing::trace!(
+                "Removed finalized local produced block states from retention: thread_id={thread_identifier:?} removed={removed} retained={} last_finalized_seq_no={last_finalized_seq_no:?}",
+                retained.len(),
+            );
         }
     }
 

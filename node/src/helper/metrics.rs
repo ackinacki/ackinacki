@@ -49,6 +49,8 @@ struct BlockProductionMetricsInner {
     ext_msg_queue_size: Gauge<u64>,
     int_msg_queue_size: Gauge<u64>,
     block_finalized: Counter<u64>,
+    block_invalidated: Counter<u64>,
+    block_verification_bad_block: Counter<u64>,
     tx_finalized: Counter<u64>,
     tx_aborted: Counter<u64>,
     ext_tx_aborted: Counter<u64>,
@@ -63,6 +65,7 @@ struct BlockProductionMetricsInner {
     attestation_send_pulse_interval: Histogram<u64>,
     forks_count: Counter<u64>,
     parent_first_attestation_none: Counter<u64>,
+    blocks_transitioned_to_fallback_by_attestations: Counter<u64>,
     resend: Counter<u64>,
     query_gaps: Counter<u64>,
     verify_all_block_signatures: Histogram<u64>,
@@ -259,6 +262,10 @@ impl BlockProductionMetrics {
             ext_msg_queue_size: meter.u64_gauge("node_ext_msg_queue_size").build(),
             int_msg_queue_size: meter.u64_gauge("node_int_msg_queue_size").build(),
             block_finalized: meter.u64_counter("node_block_finalized").build(),
+            block_invalidated: meter.u64_counter("node_block_invalidated").build(),
+            block_verification_bad_block: meter
+                .u64_counter("node_block_verification_bad_block")
+                .build(),
             tx_finalized: meter.u64_counter("node_tx_finalized").build(),
             tx_aborted: meter.u64_counter("node_tx_aborted").build(),
             ext_tx_aborted: meter.u64_counter("node_ext_tx_aborted").build(),
@@ -298,6 +305,9 @@ impl BlockProductionMetrics {
             forks_count: meter.u64_counter("node_forks_count").build(),
             parent_first_attestation_none: meter
                 .u64_counter("node_parent_first_attestation_none")
+                .build(),
+            blocks_transitioned_to_fallback_by_attestations: meter
+                .u64_counter("node_blocks_transitioned_to_fallback_by_attestations")
                 .build(),
             resend: meter.u64_counter("node_resend").build(),
             query_gaps: meter.u64_counter("node_query_gaps").build(),
@@ -567,6 +577,14 @@ impl BlockProductionMetrics {
         self.0.tx_finalized.add(tx_count as u64, &[thread_id_attr(thread_id)]);
     }
 
+    pub fn report_block_invalidated(&self, thread_id: Option<&ThreadIdentifier>) {
+        self.0.block_invalidated.add(1, &thread_id_attrs_or_unknown(thread_id));
+    }
+
+    pub fn report_block_verification_bad_block(&self, thread_id: &ThreadIdentifier) {
+        self.0.block_verification_bad_block.add(1, &[thread_id_attr(thread_id)]);
+    }
+
     #[cfg(feature = "monitor-accounts-number")]
     pub fn report_accounts_number(&self, accounts_number: u64, thread_id: &ThreadIdentifier) {
         self.0.accounts_number.record(accounts_number, &[thread_id_attr(thread_id)]);
@@ -598,8 +616,12 @@ impl BlockProductionMetrics {
         );
     }
 
-    pub fn report_thread_count(&self) {
+    pub fn report_thread_spawned(&self) {
         self.0.thread_count.add(1, &[]);
+    }
+
+    pub fn report_thread_collapsed(&self) {
+        self.0.thread_count.add(-1, &[]);
     }
 
     pub fn report_thread_load(&self, value: usize, thread_id: &ThreadIdentifier) {
@@ -648,6 +670,16 @@ impl BlockProductionMetrics {
 
     pub fn report_parent_first_attestation_none(&self, thread_id: &ThreadIdentifier) {
         self.0.parent_first_attestation_none.add(1, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_blocks_transitioned_to_fallback_by_attestations(
+        &self,
+        value: u64,
+        thread_id: &ThreadIdentifier,
+    ) {
+        self.0
+            .blocks_transitioned_to_fallback_by_attestations
+            .add(value, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_resend(&self, thread_id: &ThreadIdentifier) {
@@ -911,4 +943,13 @@ impl XInstrumentedChannelMetrics for BlockProductionMetrics {
 }
 fn thread_id_attr(thread_id: &ThreadIdentifier) -> KeyValue {
     KeyValue::new("thread", BlockProductionMetrics::thread_label(thread_id))
+}
+
+fn thread_id_attrs_or_unknown(thread_id: Option<&ThreadIdentifier>) -> Vec<KeyValue> {
+    vec![KeyValue::new(
+        "thread",
+        thread_id
+            .map(BlockProductionMetrics::thread_label)
+            .unwrap_or_else(|| "unknown".to_string()),
+    )]
 }

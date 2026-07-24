@@ -48,8 +48,6 @@ use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::CrossThreadRefData;
 use crate::storage::MessageDurableStorage;
 use crate::types::AckiNackiBlock;
-use crate::utilities::guarded::Guarded;
-use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
 
 // Note: produces single verification block.
 pub trait BlockVerifier {
@@ -84,7 +82,6 @@ pub struct TVMBlockVerifier {
     thread_accounts_repository: ThreadAccountsRepository,
     metrics: Option<BlockProductionMetrics>,
     wasm_cache: WasmNodeCache,
-    is_block_of_retired_version: bool,
     #[builder(default)]
     check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>>,
 }
@@ -119,17 +116,6 @@ impl BlockVerifier for TVMBlockVerifier {
         CrossThreadRefData: 'a,
     {
         let thread_identifier = *block.common_section().thread_id();
-        let parent_block_id = *block.common_section().parent_block_id().expect_block_id();
-        let parent_block_version_state =
-            self.block_state_repository.get(&parent_block_id)?.guarded(|e| {
-                e.block_version_state()
-                    .clone()
-                    .ok_or(anyhow::format_err!("Parent block does not have version state set"))
-            })?;
-        let apply_transition_dapp_id_migrations = matches!(
-            parent_block_version_state,
-            BlockProtocolVersionState::CompleteTransition { .. }
-        );
         let mut time_limits = ExecutionTimeLimits::verification(&self.node_global_config);
         let mut wrapped_slash_messages = vec![];
         let mut white_list_of_slashing_messages_hashes = HashSet::new();
@@ -266,8 +252,6 @@ impl BlockVerifier for TVMBlockVerifier {
             self.metrics,
             self.wasm_cache,
             true,
-            apply_transition_dapp_id_migrations,
-            self.is_block_of_retired_version,
             self.check_history_proof_hash.clone(),
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;

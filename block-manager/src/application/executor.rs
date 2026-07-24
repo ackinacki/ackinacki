@@ -47,6 +47,7 @@ pub async fn run(
     let app_state = Arc::new(AppState {
         message_router,
         last_block_gen_utime: AtomicU64::new(0),
+        readiness_max_block_age_secs: config.readiness_max_block_age_secs,
         bk_api_token: config.bk_api_token,
         bk_api_pool,
     });

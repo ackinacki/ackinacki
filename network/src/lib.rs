@@ -34,6 +34,7 @@ const ACKI_NACKI_DIRECT_PROTOCOL: &str = "acki-nacki-direct";
 const ACKI_NACKI_SUBSCRIPTION_FROM_NODE_PROTOCOL: &str = "acki-nacki-subscription-from-node";
 const ACKI_NACKI_SUBSCRIPTION_FROM_PROXY_PROTOCOL: &str = "acki-nacki-subscription-from-proxy";
 const DEFAULT_PUBLISHER_PORT: u16 = 8500;
+pub const NETWORK_DELIVERY_DETAILED_TARGET: &str = "network_delivery_detailed";
 
 #[derive(Copy, Clone)]
 pub enum DeliveryPhase {

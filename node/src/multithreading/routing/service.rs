@@ -332,11 +332,20 @@ impl RoutingService {
                                     metrics.clone(),
                                 )
                                 .expect("Must be able to create node instances");
+                                let metrics_clone = metrics.clone();
                                 let node_thread = std::thread::Builder::new()
                                     .name(format!("node_{}", thread_identifier))
                                     .spawn_scoped_critical(s, move || {
                                         tracing::trace!("Starting thread: {}", &thread_identifier);
-                                        node.execute()
+                                        let res = node.execute();
+                                        let shutdown_in_process =
+                                            *SHUTDOWN_FLAG.get().unwrap_or(&false);
+                                        if !shutdown_in_process && res.is_ok() {
+                                            metrics_clone
+                                                .as_ref()
+                                                .inspect(|m| m.report_thread_collapsed());
+                                        }
+                                        res
                                     })
                                     .unwrap();
                                 node_handlers.push(node_thread);
@@ -361,11 +370,20 @@ impl RoutingService {
                                 )
                                 .expect("Must be able to create node instances");
                                 node.is_spawned_from_node_sync = true;
+                                let metrics_clone = metrics.clone();
                                 let node_thread = std::thread::Builder::new()
                                     .name(format!("node_{}", thread_identifier))
                                     .spawn_scoped_critical(s, move || {
                                         tracing::trace!("Starting thread: {}", &thread_identifier);
-                                        node.execute()
+                                        let res = node.execute();
+                                        let shutdown_in_process =
+                                            *SHUTDOWN_FLAG.get().unwrap_or(&false);
+                                        if !shutdown_in_process && res.is_ok() {
+                                            metrics_clone
+                                                .as_ref()
+                                                .inspect(|m| m.report_thread_collapsed());
+                                        }
+                                        res
                                     })
                                     .unwrap();
                                 node_handlers.push(node_thread);

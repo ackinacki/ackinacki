@@ -11,10 +11,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::helper::block_flow_trace;
+use crate::helper::NODE_EXECUTION_DETAILED_TARGET;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::associated_types::ExecutionResult;
 use crate::node::associated_types::SynchronizationResult;
@@ -33,6 +35,105 @@ use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
 pub const LOOP_PAUSE_DURATION: Duration = Duration::from_millis(10);
+
+struct ExecutionMessageLogStats {
+    last_flush: Instant,
+    total: usize,
+    timeouts: usize,
+    disconnected: usize,
+    candidates: usize,
+    attestations: usize,
+    acks: usize,
+    nacks: usize,
+    block_requests: usize,
+    sync_messages: usize,
+    node_joining: usize,
+    authority_switch: usize,
+    inner_commands: usize,
+    external_messages: usize,
+}
+
+impl Default for ExecutionMessageLogStats {
+    fn default() -> Self {
+        Self {
+            last_flush: Instant::now(),
+            total: 0,
+            timeouts: 0,
+            disconnected: 0,
+            candidates: 0,
+            attestations: 0,
+            acks: 0,
+            nacks: 0,
+            block_requests: 0,
+            sync_messages: 0,
+            node_joining: 0,
+            authority_switch: 0,
+            inner_commands: 0,
+            external_messages: 0,
+        }
+    }
+}
+
+impl ExecutionMessageLogStats {
+    fn record_result(&mut self, result: &Result<(NetworkMessage, SocketAddr), RecvTimeoutError>) {
+        self.total += 1;
+        match result {
+            Err(RecvTimeoutError::Timeout) => self.timeouts += 1,
+            Err(RecvTimeoutError::Disconnected) => self.disconnected += 1,
+            Ok((NetworkMessage::Candidate(_) | NetworkMessage::ResentCandidate(_), _)) => {
+                self.candidates += 1;
+            }
+            Ok((NetworkMessage::BlockAttestation(_), _)) => self.attestations += 1,
+            Ok((NetworkMessage::Ack(_), _)) => self.acks += 1,
+            Ok((NetworkMessage::Nack(_), _)) => self.nacks += 1,
+            Ok((NetworkMessage::BlockRequest { .. }, _)) => self.block_requests += 1,
+            Ok((
+                NetworkMessage::SyncFinalized(_)
+                | NetworkMessage::SyncFinalizedWithHeight(_)
+                | NetworkMessage::SyncFrom(_),
+                _,
+            )) => self.sync_messages += 1,
+            Ok((
+                NetworkMessage::NodeJoining(_) | NetworkMessage::NodeJoiningWithLastFinalized(_),
+                _,
+            )) => self.node_joining += 1,
+            Ok((NetworkMessage::AuthoritySwitchProtocol(_), _)) => self.authority_switch += 1,
+            Ok((NetworkMessage::InnerCommand(_), _)) => self.inner_commands += 1,
+            Ok((NetworkMessage::ExternalMessage(_), _)) => self.external_messages += 1,
+        }
+    }
+
+    fn flush_if_needed(&mut self, thread_id: &ThreadIdentifier) {
+        if self.total < 1000 && self.last_flush.elapsed() < Duration::from_secs(10) {
+            return;
+        }
+        self.flush(thread_id);
+    }
+
+    fn flush(&mut self, thread_id: &ThreadIdentifier) {
+        if self.total == 0 {
+            return;
+        }
+        tracing::trace!(
+            "Execution message summary thread={:?} total={} timeouts={} disconnected={} candidates={} attestations={} acks={} nacks={} block_requests={} sync_messages={} node_joining={} authority_switch={} inner_commands={} external_messages={}",
+            thread_id,
+            self.total,
+            self.timeouts,
+            self.disconnected,
+            self.candidates,
+            self.attestations,
+            self.acks,
+            self.nacks,
+            self.block_requests,
+            self.sync_messages,
+            self.node_joining,
+            self.authority_switch,
+            self.inner_commands,
+            self.external_messages,
+        );
+        *self = Self::default();
+    }
+}
 
 impl<TStateSyncService, TRandomGenerator> Node<TStateSyncService, TRandomGenerator>
 where
@@ -127,8 +228,9 @@ where
         &mut self,
         mut next_message: Option<(NetworkMessage, SocketAddr)>,
     ) -> anyhow::Result<ExecutionResult> {
-        tracing::trace!("Start execute_normal_forwarded: {next_message:?}");
+        tracing::trace!(target: NODE_EXECUTION_DETAILED_TARGET, "Start execute_normal_forwarded: {next_message:?}");
         let mut is_stop_signal_received = false;
+        let mut message_log_stats = ExecutionMessageLogStats::default();
         // let mut in_flight_productions = self.start_block_production()?;
 
         let last_state_sync_executed = Arc::new(parking_lot::Mutex::new(
@@ -146,8 +248,8 @@ where
         let sync_delay: Option<std::time::Instant> = None;
         // let mut memento = None;
         while !is_stop_signal_received {
-            tracing::debug!("Execution iteration start on node for thread: {:?}", self.thread_id);
             tracing::trace!(
+                target: NODE_EXECUTION_DETAILED_TARGET,
                 "Elapsed from last producer cut off: {:?}ms",
                 iteration_start.elapsed().as_millis()
             );
@@ -197,7 +299,7 @@ where
 
             let recv_timeout =
                 Duration::from_millis(self.global_config.time_to_produce_block_millis);
-            tracing::trace!("recv_timeout: {recv_timeout:?}");
+            tracing::trace!(target: NODE_EXECUTION_DETAILED_TARGET, "recv_timeout: {recv_timeout:?}");
 
             let next = {
                 if next_message.is_some() {
@@ -205,11 +307,11 @@ where
                 } else if recv_timeout.is_zero() {
                     Err(RecvTimeoutError::Timeout)
                 } else {
-                    tracing::trace!("trying to receive messages from other nodes");
                     self.network_rx.recv_timeout(recv_timeout)
                 }
             };
-            tracing::trace!("Node message receive result: {:?}", next);
+            message_log_stats.record_result(&next);
+            message_log_stats.flush_if_needed(&self.thread_id);
             match next {
                 Err(RecvTimeoutError::Disconnected) => {
                     tracing::debug!("Disconnect signal received");
@@ -287,7 +389,8 @@ where
                         panic!("This module should not receive ext messages");
                     }
                     NetworkMessage::BlockAttestation((attestation, _)) => {
-                        tracing::debug!(
+                        tracing::trace!(
+                            target: NODE_EXECUTION_DETAILED_TARGET,
                             "Received block attestation for thread {:?} {attestation:?}",
                             self.thread_id
                         );
@@ -304,7 +407,10 @@ where
                         loop {
                             match self.network_rx.try_recv() {
                                 Ok((NetworkMessage::BlockAttestation((attestation, _)), _)) => {
-                                    tracing::debug!(
+                                    message_log_stats.attestations += 1;
+                                    message_log_stats.total += 1;
+                                    tracing::trace!(
+                                        target: NODE_EXECUTION_DETAILED_TARGET,
                                         "Received block attestation for thread {:?} {attestation:?}",
                                         self.thread_id
                                     );
@@ -464,6 +570,7 @@ where
                 },
             }
         }
+        message_log_stats.flush(&self.thread_id);
         Ok(ExecutionResult::Disconnected)
     }
 

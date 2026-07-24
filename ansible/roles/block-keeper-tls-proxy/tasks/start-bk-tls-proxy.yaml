@@ -65,7 +65,7 @@
     dest: "{{ TLS_PROXY_DIR }}/otel-collector-config.yaml"
     mode: "0644"
   register: otelcfg
-  when: OTEL_COLLECTOR is defined and OTEL_COLLECTOR | length > 0
+  when: (OTEL_COLLECTOR | default('')) is truthy(convert_bool=True)
 
 - name: Ensure .env
   ansible.builtin.copy:

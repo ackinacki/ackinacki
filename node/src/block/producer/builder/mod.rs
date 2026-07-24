@@ -179,7 +179,6 @@ pub struct BlockBuilder {
     #[builder(default)]
     pub(crate) accounts_that_changed_their_dapp_id:
         HashMap<AccountIdentifier, Vec<(AccountRouting, Option<WrappedAccount>)>>,
-    pub(crate) apply_transition_dapp_id_migrations: bool,
     metrics: Option<BlockProductionMetrics>,
 
     // cached resources used for wasm execution

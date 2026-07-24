@@ -20,7 +20,6 @@ use anyhow::Context;
 use node_types::BlockIdentifier;
 use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
-use versioned_struct::Transitioning;
 
 use super::super::AncestorBlockData;
 use super::super::BlockStateRepository;
@@ -529,7 +528,7 @@ fn read_snapshot_finalized_block(
 
     let mut legacy_bytes = probe;
     reader.read_to_end(&mut legacy_bytes)?;
-    let snapshot = ThreadSnapshot::deserialize_data_compat(&legacy_bytes)?.0;
+    let snapshot = bincode::deserialize::<ThreadSnapshot>(&legacy_bytes)?;
     Ok(Some(snapshot.finalized_block().clone()))
 }
 

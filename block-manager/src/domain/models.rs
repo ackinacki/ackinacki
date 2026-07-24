@@ -28,6 +28,7 @@ pub struct AppConfig {
     pub rest_api: SocketAddr,
     pub subscribe_sockets: Vec<SocketAddr>,
     pub sqlite_path: String,
+    pub readiness_max_block_age_secs: u64,
     pub owner_wallet_pubkey: Option<String>,
     pub signing_keys: Option<KeyPair>,
     pub bk_api_token: String,
@@ -45,6 +46,7 @@ pub struct AppState {
     pub bk_api_token: String,
     pub message_router: Arc<MessageRouter>,
     pub last_block_gen_utime: AtomicU64,
+    pub readiness_max_block_age_secs: u64,
 }
 
 /// Pool of BK API endpoints with failover support.
