@@ -188,10 +188,8 @@ impl TVMBlockProducerProcess {
         let start_time = std::time::SystemTime::now();
         let production_time = Instant::now();
         let current_block_seq_no = next_seq_no(initial_state.block_seq_no);
-        let (message_queue, epoch_block_keeper_data, block_nack, aggregated_acks, aggregated_nacks) =
+        let (epoch_block_keeper_data, block_nack, aggregated_acks, aggregated_nacks) =
             trace_span!("read messages").in_scope(|| {
-                let message_queue = external_messages_queue.get_remaining_external_messages();
-
                 let mut received_acks_in = received_acks.lock();
                 let received_acks_copy = received_acks_in.clone();
                 received_acks_in.clear();
@@ -212,9 +210,8 @@ impl TVMBlockProducerProcess {
                     epoch_block_keeper_data.push(data);
                 }
 
-                tracing::Span::current().record("messages.len", message_queue.len());
+                tracing::Span::current().record("messages.len", external_messages_queue.len());
                 Ok::<_, anyhow::Error>((
-                    message_queue,
                     epoch_block_keeper_data,
                     block_nack,
                     aggregated_acks,
@@ -240,7 +237,9 @@ impl TVMBlockProducerProcess {
             .node_config_read(node_config_read)
             .active_threads(mem::take(active_block_producer_threads))
             .blockchain_config(blockchain_config.clone())
-            .message_queue(message_queue)
+            .ext_messages_source(inbound_external_messages::shared_scheduler(
+                external_messages_queue.queue_handle(),
+            ))
             .producer_node_id(producer_node_id.clone())
             .thread_count_soft_limit(node_config.thread_count_soft_limit)
             .parallelization_level(parallelization_level)
@@ -1301,7 +1300,11 @@ mod tests {
             ExternalMessagesThreadState::builder()
                 .with_report_metrics(None)
                 .with_thread_id(thread_id)
-                .with_cache_size(1)
+                .with_limits(crate::external_messages::ExtMessagesLimits {
+                    total: 1,
+                    per_dapp: 1,
+                    per_account: 1,
+                })
                 .with_feedback_sender(feedback_sender)
                 .with_is_producing(Arc::new(AtomicBool::new(false)))
                 .build()?,

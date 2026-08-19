@@ -95,4 +95,47 @@ mod tests {
         assert_eq!(new.f, 55);
         assert_eq!(new.ff, "Hello");
     }
+
+    #[versioned]
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    enum Event {
+        Created(u8),
+        #[legacy]
+        Removed,
+        #[future]
+        Updated(u16),
+    }
+
+    impl Transitioning for Event {
+        type Old = EventOld;
+
+        fn from(old: Self::Old) -> Self {
+            match old {
+                EventOld::Created(value) => Self::Created(value),
+                EventOld::Removed => Self::Created(0),
+            }
+        }
+    }
+
+    #[test]
+    fn versioned_enum_has_old_and_new_variants() {
+        let old = EventOld::Removed;
+        let bytes = bincode::serialize(&old).expect("serialize old enum");
+        let (new, is_new) = Event::deserialize_data_compat(&bytes).expect("deserialize old enum");
+
+        assert_eq!(new, Event::Created(0));
+        assert!(!is_new);
+
+        let old = EventOld::Created(42);
+        let bytes = bincode::serialize(&old).expect("serialize common enum");
+        let (new, is_new) =
+            Event::deserialize_data_compat(&bytes).expect("deserialize common enum");
+        assert_eq!(new, Event::Created(42));
+        assert!(is_new);
+
+        let bytes = bincode::serialize(&Event::Updated(7)).expect("serialize new enum");
+        let (new, is_new) = Event::deserialize_data_compat(&bytes).expect("deserialize new enum");
+        assert_eq!(new, Event::Updated(7));
+        assert!(is_new);
+    }
 }

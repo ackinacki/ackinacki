@@ -26,6 +26,7 @@ use crate::node::SignerIndex;
 
 const BLS_PUBKEY_TOKEN_KEY: &str = "_bls_pubkey";
 const EPOCH_FINISH_TOKEN_KEY: &str = "_seqNoFinish";
+const PREEPOCH_FINISH_TOKEN_KEY: &str = "_seqNoDestruct";
 const WAIT_STEP_TOKEN_KEY: &str = "_waitStep";
 const STAKE_TOKEN_KEY: &str = "_stake";
 const OWNER_TOKEN_KEY: &str = "_owner_address";
@@ -35,6 +36,8 @@ const OWNER_PUBKEY_KEY: &str = "_owner_pubkey";
 const NODE_PROTOCOL_SUPPORT_SWITCH_SOURCE: &str = "_isContinue";
 const NODE_CONTINUATION_PROTOCOL_SUPPORT_DECLARATION: &str = "_nodeVersionContinue";
 const NODE_BEGINNING_PROTOCOL_SUPPORT_DECLARATION: &str = "_nodeVersion";
+
+pub const DESTROY_FUNCTION_NAME: &str = "destroy";
 
 fn get_epoch_abi() -> tvm_client::abi::Abi {
     tvm_client::abi::Abi::Json(EPOCH_ABI.to_string())
@@ -251,6 +254,7 @@ pub fn decode_preepoch_data(
         let mut owner_pubkey = None;
         let mut block_keeper_wait_step = None;
         let mut protocol_support = None;
+        let mut block_keeper_epoch_finish = None;
         tracing::trace!("decoded preepoch data: {decoded_data:?}");
         for token in decoded_data {
             match token.name.as_str() {
@@ -313,6 +317,16 @@ pub fn decode_preepoch_data(
                         protocol_support = Some(flag);
                     }
                 }
+                PREEPOCH_FINISH_TOKEN_KEY => {
+                    if let TokenValue::Uint(epoch_finish) = token.value {
+                        tracing::trace!("decoded epoch finish: {epoch_finish:?}");
+                        block_keeper_epoch_finish = Some(if epoch_finish.number.is_zero() {
+                            0
+                        } else {
+                            epoch_finish.number.to_u64_digits()[0]
+                        });
+                    }
+                }
                 _ => {
                     // continue
                 }
@@ -330,7 +344,7 @@ pub fn decode_preepoch_data(
         else {
             return Ok(None);
         };
-        tracing::trace!("decoded preepoch data: {block_keeper_bls_key:?} {block_keeper_stake:?} {wallet_address:?} {signer_index:?} {owner_pubkey:?}");
+        tracing::trace!("decoded preepoch data: {block_keeper_bls_key:?} {block_keeper_stake:?} {wallet_address:?} {signer_index:?} {owner_pubkey:?} {block_keeper_epoch_finish:?}");
         if let (
             Some(block_keeper_bls_key),
             Some(block_keeper_stake),
@@ -350,7 +364,7 @@ pub fn decode_preepoch_data(
                 signer_index,
                 BlockKeeperData {
                     pubkey: block_keeper_bls_key,
-                    epoch_finish_seq_no: None,
+                    epoch_finish_seq_no: block_keeper_epoch_finish,
                     wait_step: block_keeper_wait_step,
                     status: BlockKeeperStatus::PreEpoch,
                     // TODO: better fix pure unwrap for address
@@ -398,6 +412,20 @@ pub fn decode_epoch_call_message(message: &Message) -> anyhow::Result<Option<Dec
     let abi = get_epoch_abi()
         .abi()
         .map_err(|e| anyhow::format_err!("Failed to get epoch AbiContract: {e}"))?;
+    decode_call_message(message, abi)
+}
+
+pub fn decode_preepoch_call_message(message: &Message) -> anyhow::Result<Option<DecodedMessage>> {
+    let abi = get_preepoch_abi()
+        .abi()
+        .map_err(|e| anyhow::format_err!("Failed to get epoch AbiContract: {e}"))?;
+    decode_call_message(message, abi)
+}
+
+pub fn decode_call_message(
+    message: &Message,
+    abi: tvm_abi::Contract,
+) -> anyhow::Result<Option<DecodedMessage>> {
     let Some(body_slice) = message.body() else {
         tracing::trace!("failed to decode_epoch_call_message: body is missing");
         return Ok(None);

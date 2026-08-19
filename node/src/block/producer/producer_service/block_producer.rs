@@ -1117,6 +1117,9 @@ impl BlockProducer {
                 {
                     let block_height =
                         produced_block_state.guarded(|e| (*e.block_height()).unwrap());
+                    // The authority service collected this certificate before
+                    // starting production; forward it unchanged to receivers.
+                    let quorum_proof = production_status.init_params.proof_of_valid_start().clone();
                     let message =
                         NetworkMessage::AuthoritySwitchProtocol(AuthoritySwitch::Switched(
                             NextRoundSuccess::builder()
@@ -1125,14 +1128,14 @@ impl BlockProducer {
                                 .block_height(block_height)
                                 .proposed_block(net_block)
                                 .attestations_aggregated(None)
-                                // TODO: Must include a proof!
-                                .requests_aggregated(vec![])
-                                .build().try_seal(
-                                &self.node_credentials,
-                                &bk_set,
-                                &secrets,
-                                &protocol_version,
-                            )
+                                .requests_aggregated(quorum_proof)
+                                .build()
+                                .try_seal(
+                                    &self.node_credentials,
+                                    &bk_set,
+                                    &secrets,
+                                    &protocol_version,
+                                )
                                 .expect("must work"),
                         ));
                     (

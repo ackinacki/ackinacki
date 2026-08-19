@@ -36,6 +36,12 @@ pub struct GqlServerConfig {
     /// Enable deprecated API fields at runtime.
     #[serde(default)]
     pub deprecated_api: Option<bool>,
+
+    /// Enable cold-storage mode at runtime. When enabled, fields whose data is
+    /// not stored on cold-storage servers are hidden from the schema and rejected
+    /// when queried.
+    #[serde(default)]
+    pub cold_storage: Option<bool>,
 }
 
 impl GqlServerConfig {

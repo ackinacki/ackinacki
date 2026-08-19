@@ -79,6 +79,16 @@ pub(crate) fn update_block_keeper_set_from_common_section(
             print_future_bk_set = true;
         }
     }
+    for block_keeper_change in &bk_set_changes {
+        if let BlockKeeperSetChange::FutureBlockKeeperRemoved((signer_index, block_keeper_data)) =
+            block_keeper_change
+        {
+            tracing::trace!("remove future block keeper key: {signer_index} {block_keeper_data}");
+            let removed = new_future_bk_set.remove_signer(signer_index);
+            tracing::trace!("Removed future block keeper key: {:?}", removed);
+            print_future_bk_set = true;
+        }
+    }
     tracing::trace!(
         "update_block_keeper_set_from_common_section block_seq_no:{} final_bk_set: {:?}, final_future_bk_set: {:?}",
         block.seq_no(),

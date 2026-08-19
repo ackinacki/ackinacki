@@ -31,7 +31,9 @@ use crate::schema::graphql_ext::account::AccountEventsConnection;
 use crate::schema::graphql_ext::blockchain_api::transactions::BlockchainTransactionsConnection;
 use crate::schema::graphql_ext::blockchain_api::transactions::BlockchainTransactionsEdge;
 use crate::schema::graphql_ext::events::Event;
+use crate::schema::graphql_ext::is_cold_storage_enabled;
 use crate::schema::graphql_ext::message::Message;
+use crate::schema::graphql_ext::strip_cold_pruned_transaction_fields;
 
 type BlockchainAccount = Account;
 type BlockchainMessage = Message;
@@ -41,8 +43,11 @@ type BlockchainMessage = Message;
 pub enum BlockchainMessageTypeFilterEnum {
     /// External inbound
     ExtIn,
-    /// External outbound
+    /// External outbound — any version: `ExtOut` (msg_type 2) and
+    /// `ExtOutMsgInfoV2` (msg_type 4)
     ExtOut,
+    /// External outbound v2 only (`ExtOutMsgInfoV2`, msg_type 4)
+    ExtOutV2,
     /// Internal inbound
     IntIn,
     /// Internal outbound
@@ -54,6 +59,7 @@ impl From<BlockchainMessageTypeFilterEnum> for u8 {
         match value {
             BlockchainMessageTypeFilterEnum::ExtIn => 1,
             BlockchainMessageTypeFilterEnum::ExtOut => 2,
+            BlockchainMessageTypeFilterEnum::ExtOutV2 => 4,
             BlockchainMessageTypeFilterEnum::IntIn | BlockchainMessageTypeFilterEnum::IntOut => 0,
         }
     }
@@ -272,13 +278,37 @@ impl BlockchainAccountQuery<'_> {
         >,
     > {
         if let Some(ref msg_types) = msg_type {
-            if msg_types.contains(&BlockchainMessageTypeFilterEnum::ExtOut) {
+            let has_external_outbound = msg_types
+                .contains(&BlockchainMessageTypeFilterEnum::ExtOut)
+                || msg_types.contains(&BlockchainMessageTypeFilterEnum::ExtOutV2);
+            if has_external_outbound {
                 if let Some(ref cps) = counterparties {
                     if !cps.is_empty() {
                         return Err(async_graphql::Error::new(
-                            "Invalid input: `counterparties` parameter must be null when `msg_type` includes `ExtOut`."
+                            "Invalid input: `counterparties` parameter must be null when `msg_type` includes an external outbound type (`ExtOut`/`ExtOutV2`)."
                         ));
                     }
+                }
+            }
+        }
+
+        // On cold-storage servers only external outbound messages are stored: `ExtOut`
+        // (msg_type 2) and `ExtOutV2` (msg_type 3). Any filter for inbound or internal
+        // messages cannot be satisfied and is rejected rather than silently returning
+        // nothing.
+        if is_cold_storage_enabled(self.ctx) {
+            if let Some(ref msg_types) = msg_type {
+                let has_unavailable = msg_types.iter().any(|t| {
+                    !matches!(
+                        t,
+                        BlockchainMessageTypeFilterEnum::ExtOut
+                            | BlockchainMessageTypeFilterEnum::ExtOutV2
+                    )
+                });
+                if has_unavailable {
+                    return Err(async_graphql::Error::new(
+                        "Only external outbound messages are available on cold-storage servers.",
+                    ));
                 }
             }
         }
@@ -488,7 +518,10 @@ impl BlockchainAccountQuery<'_> {
                 );
 
                 let projection = db::Transaction::connection_projection_for_fields(
-                    selected_node_fields_at(self.ctx, &["account", "transactions"]),
+                    strip_cold_pruned_transaction_fields(
+                        self.ctx,
+                        selected_node_fields_at(self.ctx, &["account", "transactions"]),
+                    ),
                 );
                 let mut transactions: Vec<db::Transaction> = db::Transaction::account_transactions(
                     self.ctx.data::<Arc<DBConnector>>().unwrap(),

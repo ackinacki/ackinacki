@@ -7,9 +7,14 @@
 
 mod queue;
 mod stamp;
+mod state;
 mod thread_state;
 
 pub use queue::ExtMessageDst;
 pub use queue::QueuedExtMessage;
 pub use stamp::Stamp;
+pub use state::ExtMessages;
+pub use state::ExtMessagesLimits;
+pub use state::ExtMessagesSelectionCursor;
+pub use state::ExtMessagesSource;
 pub use thread_state::ExternalMessagesThreadState;

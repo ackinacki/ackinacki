@@ -213,11 +213,15 @@ impl AerospikeKVStore {
         Ok(())
     }
 
-    /// Snapshot-import fast path: write fresh records into a set known to be
-    /// empty for these keys. Skips the pre-write GET (used to detect old
-    /// chunk counts) and the post-write stale-chunk cleanup, since neither
-    /// applies on first-time population. Always writes with cas=false.
-    pub fn bulk_put_no_overwrite(&self, set: &str, records: Vec<KVRecord>) -> anyhow::Result<()> {
+    /// Fast non-CAS logical-record write path. This intentionally skips the
+    /// old-head read and stale chunk cleanup done by `put`; if a large record
+    /// shrinks, old extra chunks can remain physically present, but logical
+    /// reads follow the current head's chunk count and do not observe them.
+    pub fn fast_put_without_cas_and_stale_chunk_cleanup(
+        &self,
+        set: &str,
+        records: Vec<KVRecord>,
+    ) -> anyhow::Result<()> {
         if records.is_empty() {
             return Ok(());
         }
@@ -241,7 +245,7 @@ impl AerospikeKVStore {
         let max_chunk_bytes = chunk_records.iter().map(|r| r.data.len()).max().unwrap_or(0);
         tracing::debug!(
             target: "monit",
-            "bulk_put_no_overwrite set={set} logical={records_len} chunks={chunks_len}/{chunks_bytes}B(max {max_chunk_bytes}) heads={heads_len}/{heads_bytes}B(max {max_head_bytes})",
+            "fast_put_without_cas_and_stale_chunk_cleanup set={set} logical={records_len} chunks={chunks_len}/{chunks_bytes}B(max {max_chunk_bytes}) heads={heads_len}/{heads_bytes}B(max {max_head_bytes})",
         );
 
         if !chunk_records.is_empty() {
@@ -249,7 +253,7 @@ impl AerospikeKVStore {
             self.backend.put(set, chunk_records, false)?;
             tracing::debug!(
                 target: "monit",
-                "bulk_put_no_overwrite set={set} chunks PUT done in {} ms",
+                "fast_put_without_cas_and_stale_chunk_cleanup set={set} chunks PUT done in {} ms",
                 t.elapsed().as_secs_f64() * 1000.0,
             );
         }
@@ -257,13 +261,13 @@ impl AerospikeKVStore {
         self.backend.put(set, head_records, false)?;
         tracing::debug!(
             target: "monit",
-            "bulk_put_no_overwrite set={set} heads PUT done in {} ms",
+            "fast_put_without_cas_and_stale_chunk_cleanup set={set} heads PUT done in {} ms",
             t.elapsed().as_secs_f64() * 1000.0,
         );
 
         tracing::debug!(
             target: "monit",
-            "Aerospike bulk_put_no_overwrite wrote {} logical records to {} in {} ms",
+            "Aerospike fast_put_without_cas_and_stale_chunk_cleanup wrote {} logical records to {} in {} ms",
             records_len,
             set,
             started.elapsed().as_secs_f64() * 1000.0,
@@ -522,6 +526,32 @@ mod tests {
             .unwrap();
         }
         assert_eq!(physical_count, 1);
+    }
+
+    #[test]
+    fn mock_backend_fast_overwrite_large_to_small_keeps_stale_chunks_but_reads_new_value() {
+        let store = AerospikeKVStore::new_mock();
+        let set = "mock-fast-overwrite";
+        let large = record(17, CHUNK_DATA_LIMIT * 2 + 11);
+        store.put(set, vec![large.clone()], false).unwrap();
+        assert_eq!(physical_record_count(&store, set), 3);
+
+        let small = record(17, 32);
+        store.fast_put_without_cas_and_stale_chunk_cleanup(set, vec![small.clone()]).unwrap();
+
+        let loaded = store.get(set, std::slice::from_ref(&small.key)).unwrap().remove(0).unwrap();
+        assert_record_body_eq(&loaded, &small);
+        assert_eq!(physical_record_count(&store, set), 3);
+
+        let mut enumerated = HashMap::new();
+        store
+            .enumerate(set, &mut |record| {
+                enumerated.insert(record.key.clone(), record);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(enumerated.len(), 1);
+        assert_record_body_eq(enumerated.get(&small.key).unwrap(), &small);
     }
 
     #[test]

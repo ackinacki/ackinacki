@@ -333,6 +333,42 @@ async fn test_process_ext_messages_missing_account_id() {
 }
 
 #[actix_rt::test]
+async fn test_process_ext_messages_missing_destination_dapp() {
+    let mock = MockBPResolver::new();
+    let resolver = Arc::new(Mutex::new(mock));
+
+    let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
+    let message_router = MessageRouter {
+        bind,
+        owner_wallet_pubkey: None,
+        signing_keys: None,
+        bp_resolver: resolver,
+    };
+
+    let app = test::init_service(
+        App::new().configure(|cfg| message_router_config(cfg, Arc::new(message_router))),
+    )
+    .await;
+
+    let req = test::TestRequest::post()
+        .uri(DEFAULT_BM_API_MESSAGES_PATH)
+        .set_json(json!([{
+            "id": "aGVsbG8=",
+            "body": "test",
+            "account_id": VALID_ACCOUNT_ID,
+        }]))
+        .to_request();
+
+    let resp: serde_json::Value = test::call_and_read_body_json(&app, req).await;
+    assert_eq!(resp["result"], Value::Null);
+    assert_eq!(resp["error"]["code"], "BAD_REQUEST");
+    assert!(resp["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("destination dapp is not specified"));
+}
+
+#[actix_rt::test]
 async fn test_process_ext_messages_invalid_dapp_id_format() {
     let mock = MockBPResolver::new();
     let resolver = Arc::new(Mutex::new(mock));

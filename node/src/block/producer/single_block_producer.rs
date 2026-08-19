@@ -2,9 +2,7 @@
 //
 
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
 use std::sync::Arc;
 
 use account_state::ThreadAccountsRepository;
@@ -36,8 +34,7 @@ use crate::bls::envelope::Envelope;
 use crate::config::config_read::ConfigRead;
 use crate::config::BlockchainConfigHash;
 use crate::config::BlockchainConfigRead;
-use crate::external_messages::ExtMessageDst;
-use crate::external_messages::QueuedExtMessage;
+use crate::external_messages::ExtMessagesSource;
 use crate::external_messages::Stamp;
 use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::Message;
@@ -100,7 +97,7 @@ pub struct TVMBlockProducer {
     active_threads: Vec<(Cell, ActiveThread)>,
     node_config_read: ConfigRead,
     blockchain_config: BlockchainConfigRead,
-    message_queue: HashMap<ExtMessageDst, VecDeque<(Stamp, QueuedExtMessage)>>,
+    ext_messages_source: ExtMessagesSource,
     producer_node_id: NodeIdentifier,
     thread_count_soft_limit: usize,
     parallelization_level: usize,
@@ -290,7 +287,7 @@ impl BlockProducer for TVMBlockProducer {
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (mut prepared_block, processed_stamps, ext_message_feedbacks) = producer.build_block(
-            std::mem::take(&mut self.message_queue),
+            self.ext_messages_source,
             &blockchain_config,
             active_threads,
             None,

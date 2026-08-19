@@ -35,7 +35,7 @@ use typed_builder::TypedBuilder;
 use crate::node::NodeIdentifier;
 use crate::types::BlockSeqNo;
 
-const DEFAULT_ENGINE_VERSION: &str = "1.0.5";
+const DEFAULT_ENGINE_VERSION: &str = "1.0.6";
 const DEFAULT_GOSSIP_VERSION: &str = "0";
 /// RootPN (DEX)
 const DEFAULT_TRACKED_ROOT_PN_ROUTING: &str =
@@ -51,6 +51,18 @@ fn default_tracked_ext_out_account_routings() -> BTreeSet<AccountRouting> {
         AccountRouting::from_str(DEFAULT_TRACKED_EXCHANGE_ROUTING)
             .expect("default tracked Exchange routing must be valid"),
     ])
+}
+
+fn default_ext_messages_total_limit() -> usize {
+    2000
+}
+
+fn default_ext_messages_dapp_limit() -> usize {
+    1000
+}
+
+fn default_ext_messages_account_limit() -> usize {
+    100
 }
 
 // TODO: These settings should be moved onchain.
@@ -204,9 +216,20 @@ pub struct NodeConfig {
     #[builder(default = u32::MAX)]
     pub rate_limit_on_incoming_block_req: u32,
 
-    /// Ext messages cache size
+    /// Total ext messages queue limit.
+    #[builder(default = 2000)]
+    #[serde(default = "default_ext_messages_total_limit")]
+    pub ext_messages_total_limit: usize,
+
+    /// Ext messages queue limit per dapp.
     #[builder(default = 1000)]
-    pub ext_messages_cache_size: usize,
+    #[serde(default = "default_ext_messages_dapp_limit")]
+    pub ext_messages_dapp_limit: usize,
+
+    /// Ext messages queue limit per account.
+    #[builder(default = 100)]
+    #[serde(default = "default_ext_messages_account_limit")]
+    pub ext_messages_account_limit: usize,
 
     /// BlockKeeper node owner wallet pubkey
     #[builder(default = "".to_string())]
@@ -406,7 +429,9 @@ impl Default for NodeConfig {
             state_cache_size: 10,
             unload_after: None,
             rate_limit_on_incoming_block_req: u32::MAX,
-            ext_messages_cache_size: 200,
+            ext_messages_total_limit: 200,
+            ext_messages_dapp_limit: 200,
+            ext_messages_account_limit: 200,
             node_wallet_pubkey: "some_public_key".to_string(),
             signing_keys: None,
         }

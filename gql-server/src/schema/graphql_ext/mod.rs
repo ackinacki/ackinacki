@@ -44,6 +44,57 @@ pub(crate) fn is_deprecated_api_visible(ctx: &Context<'_>) -> bool {
     ctx.data::<DeprecatedApiEnabled>().map(|d| d.0.load(Ordering::Relaxed)).unwrap_or(false)
 }
 
+/// Shared toggle for cold-storage mode, stored in schema context data.
+///
+/// When enabled, the server runs against a cold-storage database that no longer
+/// contains certain data: `transaction.boc` and all inbound messages. The
+/// corresponding fields are hidden from introspection and rejected when queried
+/// directly.
+pub struct ColdStorageEnabled(pub Arc<AtomicBool>);
+
+/// Whether cold-storage mode is currently enabled.
+pub(crate) fn is_cold_storage_enabled(ctx: &Context<'_>) -> bool {
+    ctx.data::<ColdStorageEnabled>().map(|d| d.0.load(Ordering::Relaxed)).unwrap_or(false)
+}
+
+/// Guard that rejects fields whose data is absent on cold-storage servers.
+pub(crate) struct ColdStorageGuard;
+
+impl Guard for ColdStorageGuard {
+    async fn check(&self, ctx: &Context<'_>) -> async_graphql::Result<()> {
+        if is_cold_storage_enabled(ctx) {
+            Err("Field is unavailable on cold-storage servers".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Visibility function: hides cold-storage-gated fields from introspection when
+/// cold-storage mode is enabled.
+pub(crate) fn is_cold_storage_field_visible(ctx: &Context<'_>) -> bool {
+    !is_cold_storage_enabled(ctx)
+}
+
+/// Removes the `boc` field from a transaction field selection when cold-storage
+/// mode is enabled.
+///
+/// `boc` is only hidden from introspection, not un-queryable, so a hardcoded
+/// `transaction { boc }` selection would otherwise make list/connection parent
+/// resolvers build a SQL projection that selects the pruned `transactions.boc`
+/// column (NULL or dropped on a cold DB) and fail before the field-level
+/// `ColdStorageGuard` runs. Dropping it here lets the row load with an empty
+/// `boc` that stays hidden behind the guard.
+pub(crate) fn strip_cold_pruned_transaction_fields(
+    ctx: &Context<'_>,
+    mut fields: Vec<String>,
+) -> Vec<String> {
+    if is_cold_storage_enabled(ctx) {
+        fields.retain(|field| field != "boc");
+    }
+    fields
+}
+
 use self::blockchain_api::BlockchainQuery;
 use self::message::Message;
 use self::message::MessageFilter;
@@ -344,14 +395,24 @@ impl QueryRoot {
         limit: Option<i32>,
         _timeout: Option<f64>,
     ) -> FieldResult<Option<Vec<Option<Transaction>>>> {
+        // `boc` is pruned on cold-storage servers, so it is neither selected nor
+        // available to sort on. Reject an order_by that references it rather than
+        // emitting `ORDER BY boc` against a subquery that no longer projects it.
+        if is_cold_storage_enabled(ctx)
+            && order_by_projection_fields(&order_by).iter().any(|field| field == "boc")
+        {
+            return Err("Ordering by `boc` is unavailable on cold-storage servers.".into());
+        }
         let db_connector = ctx.data::<Arc<DBConnector>>()?;
         let filter = match filter {
             Some(f) => TransactionFilter::to_where(&f).unwrap_or("".to_string()),
             None => "".to_string(),
         };
-        let projection = db::Transaction::projection_for_fields(
-            selected_current_fields_with_order_by(ctx, &order_by),
-        );
+        let projection =
+            db::Transaction::projection_for_fields(strip_cold_pruned_transaction_fields(
+                ctx,
+                selected_current_fields_with_order_by(ctx, &order_by),
+            ));
         let order_by_clause = query_order_by_str(order_by);
         let db_transactions: Vec<db::Transaction> =
             db::Transaction::list(db_connector, &projection, filter, order_by_clause, limit)

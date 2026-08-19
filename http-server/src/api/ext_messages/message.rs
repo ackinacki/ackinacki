@@ -65,6 +65,10 @@ impl NotQueuedExtMessage {
             }
         };
 
+        if dapp_id.trim().is_empty() {
+            bail!("destination dapp is not specified");
+        }
+
         let dapp_id_normalized =
             parse_hex32(&dapp_id, "dapp_id").map_err(|e| anyhow::anyhow!(e))?;
         let account_id_normalized =
@@ -198,5 +202,19 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("account_id does not match message destination"));
+    }
+
+    #[test]
+    fn try_new_rejects_missing_destination_dapp() {
+        let err = NotQueuedExtMessage::try_new(
+            "id",
+            &boc_base64_of_inbound_external(VALID_HEX).unwrap(),
+            None,
+            None,
+            "".to_string(),
+            VALID_HEX.to_string(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("destination dapp is not specified"));
     }
 }

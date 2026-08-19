@@ -2,6 +2,8 @@
 //
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use async_graphql::dataloader::Loader;
@@ -14,6 +16,10 @@ use crate::schema::db::DBConnector;
 
 pub struct TransactionLoader {
     pub db_connector: Arc<DBConnector>,
+    /// Cold-storage toggle. When enabled, the `boc` column is omitted from the
+    /// projection because it is not stored on cold-storage servers and selecting
+    /// it would fail before the field-level guard runs.
+    pub cold_storage: Arc<AtomicBool>,
 }
 
 impl Loader<String> for TransactionLoader {
@@ -32,7 +38,8 @@ impl Loader<String> for TransactionLoader {
             return Ok(HashMap::new());
         }
 
-        let mut projection = db::Transaction::graphql_transaction_projection();
+        let include_boc = !self.cold_storage.load(Ordering::Relaxed);
+        let mut projection = db::Transaction::graphql_transaction_projection(include_boc);
         projection.add("id");
         let select = projection.select_list();
         let union_sql = db_names

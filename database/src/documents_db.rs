@@ -48,7 +48,7 @@ pub struct TxActivitySummary {
     pub timestamp: u32,
     pub tr_type: u8,
     pub aborted: bool,
-    /// 0 = Internal, 1 = ExtIn, 2 = ExtOut, 3 = CrossDapp
+    /// 0 = Internal, 1 = ExtIn, 2 = ExtOut, 3 = CrossDapp, 4 = ExtOutMsgInfoV2
     pub in_msg_type: Option<u8>,
     pub bounced: bool,
     pub total_fees: String,

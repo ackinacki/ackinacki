@@ -46,12 +46,18 @@ impl KVStore {
         }
     }
 
-    /// Snapshot-import fast path: write fresh records assuming the keys do
-    /// not exist yet. Skips the pre-write GET and stale-chunk cleanup that
-    /// `put` performs. Always cas=false.
-    pub fn bulk_put_no_overwrite(&self, set: &str, records: Vec<KVRecord>) -> anyhow::Result<()> {
+    /// Fast non-CAS logical-record write path for archive account bodies.
+    /// Skips the old-head read and stale chunk cleanup performed by `put`.
+    /// Reads remain correct because the current head record's chunk count
+    /// controls which chunk keys are loaded; old extra chunks may remain until
+    /// later epoch/set cleanup.
+    pub fn fast_put_without_cas_and_stale_chunk_cleanup(
+        &self,
+        set: &str,
+        records: Vec<KVRecord>,
+    ) -> anyhow::Result<()> {
         match self {
-            Self::Aerospike(s) => s.bulk_put_no_overwrite(set, records),
+            Self::Aerospike(s) => s.fast_put_without_cas_and_stale_chunk_cleanup(set, records),
             Self::InMemory(s) => s.put(set, records, false),
         }
     }

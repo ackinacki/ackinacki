@@ -12,16 +12,31 @@ use node_types::ThreadIdentifier;
 use serde::Deserialize;
 use serde::Serialize;
 use tvm_types::UsageTree;
+use versioned_struct::versioned;
+use versioned_struct::Transitioning;
 
 use crate::block_keeper_system::BlockKeeperSet;
 use crate::repository::optimistic_state::OptimisticState;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::types::ThreadsTable;
 
+pub const DEFAULT_EXPIRY_OFFSET_SECS: u64 = 100 * 365 * 24 * 3600 + 25 * 24 * 3600;
+
+#[versioned]
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ZeroState {
+    #[future]
+    expires_at: u64,
     states: HashMap<ThreadIdentifier, OptimisticStateImpl>,
     block_keeper_set: HashMap<ThreadIdentifier, BlockKeeperSet>,
+}
+
+impl Transitioning for ZeroState {
+    type Old = ZeroStateOld;
+
+    fn from(old: Self::Old) -> Self {
+        ZeroState { expires_at: 0, states: old.states, block_keeper_set: old.block_keeper_set }
+    }
 }
 
 impl ZeroState {
@@ -101,5 +116,17 @@ impl ZeroState {
 
     pub fn list_threads(&self) -> impl Iterator<Item = &'_ ThreadIdentifier> {
         self.states.keys()
+    }
+
+    pub fn expires_at(&self) -> u64 {
+        self.expires_at
+    }
+
+    pub fn set_expires_at(&mut self, expires_at: u64) {
+        self.expires_at = expires_at;
+    }
+
+    pub fn is_expired(&self, now: u64) -> bool {
+        self.expires_at != 0 && now >= self.expires_at
     }
 }

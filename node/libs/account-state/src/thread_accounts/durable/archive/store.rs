@@ -743,9 +743,10 @@ impl ArchiveStateStore {
                     "thread_init batch={batch_index} starting A: records={} max_data={} total_data={}",
                     batch.len(), max_data, total_data,
                 );
-                kv.bulk_put_no_overwrite(&set_a, batch.clone()).map_err(ArchiveStateError::from)?;
+                kv.fast_put_without_cas_and_stale_chunk_cleanup(&set_a, batch.clone())
+                    .map_err(ArchiveStateError::from)?;
                 tracing::debug!(target: "monit", "thread_init batch={batch_index} A done, starting B");
-                kv.bulk_put_no_overwrite(&set_b, std::mem::take(&mut batch))
+                kv.fast_put_without_cas_and_stale_chunk_cleanup(&set_b, std::mem::take(&mut batch))
                     .map_err(ArchiveStateError::from)?;
                 tracing::debug!(target: "monit", "thread_init batch={batch_index} B done, total_records={total_records}");
                 batch_index += 1;
@@ -757,9 +758,11 @@ impl ArchiveStateStore {
                 target: "monit",
                 "thread_init final batch={batch_index} starting A: records={}", batch.len(),
             );
-            kv.bulk_put_no_overwrite(&set_a, batch.clone()).map_err(ArchiveStateError::from)?;
+            kv.fast_put_without_cas_and_stale_chunk_cleanup(&set_a, batch.clone())
+                .map_err(ArchiveStateError::from)?;
             tracing::debug!(target: "monit", "thread_init final batch={batch_index} A done, starting B");
-            kv.bulk_put_no_overwrite(&set_b, batch).map_err(ArchiveStateError::from)?;
+            kv.fast_put_without_cas_and_stale_chunk_cleanup(&set_b, batch)
+                .map_err(ArchiveStateError::from)?;
             tracing::debug!(target: "monit", "thread_init final batch={batch_index} B done, total_records={total_records}");
         }
 

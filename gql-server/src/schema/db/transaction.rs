@@ -271,10 +271,22 @@ impl Transaction {
         projection
     }
 
-    pub fn graphql_transaction_projection() -> SqlProjection {
+    /// Full projection used by [`TransactionLoader`] for single/nested
+    /// transaction loads. When `include_boc` is false the `boc` column is
+    /// omitted: cold-storage servers no longer store it, so selecting it
+    /// would fail at the SQL/decode level (the column is NULL or dropped)
+    /// before the field-level guard runs. Omitting it lets the row load
+    /// with an empty `boc` (via `#[sqlx(default)]`), which stays hidden
+    /// behind the guard.
+    pub fn graphql_transaction_projection(include_boc: bool) -> SqlProjection {
         let mut projection = SqlProjection::new();
         projection.add("id");
-        projection.extend(Self::DIRECT_COLUMNS);
+        for column in Self::DIRECT_COLUMNS {
+            if column == "boc" && !include_boc {
+                continue;
+            }
+            projection.add(column);
+        }
         projection.extend(Self::ACTION_COLUMNS);
         projection.extend(Self::COMPUTE_COLUMNS);
         projection.extend([
@@ -351,10 +363,6 @@ impl Transaction {
             if !before.is_empty() {
                 where_ops.push(format!("chain_order < {before:?}"));
             }
-        }
-
-        if let Some(code_hash) = &args.code_hash {
-            where_ops.push(format!("code_hash = {code_hash:?}"));
         }
 
         if let Some(min_balance_delta) = &args.min_balance_delta {
@@ -761,9 +769,19 @@ mod tests {
 
     #[test]
     fn transaction_projection_full_graphql_projection_includes_order_and_nested_columns() {
-        let projection = Transaction::graphql_transaction_projection();
+        let projection = Transaction::graphql_transaction_projection(true);
         assert!(projection.columns().contains(&"chain_order"));
         assert!(projection.columns().contains(&"in_msg"));
         assert!(projection.columns().contains(&"out_msgs"));
+        assert!(projection.columns().contains(&"boc"));
+    }
+
+    #[test]
+    fn transaction_projection_omits_boc_for_cold_storage() {
+        let projection = Transaction::graphql_transaction_projection(false);
+        assert!(!projection.columns().contains(&"boc"));
+        // Other columns are still present.
+        assert!(projection.columns().contains(&"id"));
+        assert!(projection.columns().contains(&"chain_order"));
     }
 }

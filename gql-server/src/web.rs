@@ -34,6 +34,7 @@ use crate::schema::graphql::block::BlockLoader;
 use crate::schema::graphql::message::MessageLoader;
 use crate::schema::graphql::transaction::TransactionLoader;
 use crate::schema::graphql_ext;
+use crate::schema::graphql_ext::ColdStorageEnabled;
 use crate::schema::graphql_ext::DeprecatedApiEnabled;
 
 pub async fn open_db(
@@ -74,6 +75,7 @@ pub async fn start(
     sdk_client: Arc<ClientContext>,
     metrics: Option<GqlServerMetrics>,
     deprecated_api: Arc<AtomicBool>,
+    cold_storage: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let socket_addr = bind_to.parse::<SocketAddr>()?;
 
@@ -97,6 +99,7 @@ pub async fn start(
         .data(Arc::clone(&db_connector))
         .data(sdk_client)
         .data(DeprecatedApiEnabled(Arc::clone(&deprecated_api)))
+        .data(ColdStorageEnabled(Arc::clone(&cold_storage)))
         .data(DataLoader::new(
             BlockLoader { db_connector: Arc::clone(&db_connector) },
             tokio::spawn,
@@ -106,7 +109,10 @@ pub async fn start(
             tokio::spawn,
         ))
         .data(DataLoader::new(
-            TransactionLoader { db_connector: Arc::clone(&db_connector) },
+            TransactionLoader {
+                db_connector: Arc::clone(&db_connector),
+                cold_storage: Arc::clone(&cold_storage),
+            },
             tokio::spawn,
         ))
         .with_sorted_fields()

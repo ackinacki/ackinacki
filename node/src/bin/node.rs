@@ -56,6 +56,7 @@ use node::config::GlobalConfig;
 use node::creditconfig::abi::DAPP_CONFIG_TVC;
 use node::creditconfig::dappconfig::calculate_dapp_config_account_id;
 use node::creditconfig::dappconfig::decode_dapp_config_data;
+use node::external_messages::ExtMessagesLimits;
 use node::external_messages::ExternalMessagesThreadState;
 use node::external_messages::QueuedExtMessage;
 use node::helper::account_boc_loader::get_account_from_shard_state;
@@ -128,7 +129,6 @@ use node::utilities::guarded::GuardedMut;
 use node::utilities::thread_spawn_critical::SpawnCritical;
 use node::utilities::FixedSizeHashSet;
 use node::versioning::block_protocol_version_state::BlockProtocolVersionState;
-use node::versioning::canonical_config_hash::CanonicalConfigHash;
 use node::zerostate::ZeroState;
 use node_types::BlockIdentifier;
 use node_types::DAppIdentifier;
@@ -202,6 +202,14 @@ fn init_rayon() {
 pub enum HeartbeatCommand {
     SendHeartbeat(Arc<Mutex<CollectedAttestations>>),
     Shutdown,
+}
+
+fn ext_messages_limits(config: &Config) -> ExtMessagesLimits {
+    ExtMessagesLimits {
+        total: config.local.ext_messages_total_limit,
+        per_dapp: config.local.ext_messages_dapp_limit,
+        per_account: config.local.ext_messages_account_limit,
+    }
 }
 
 fn main() -> ExitCode {
@@ -392,7 +400,7 @@ fn resolve_node_protocol_version_state(
 
     if let Some(old_config) = retired_global_config {
         let retired_version = node::versioning::ProtocolVersion::builder()
-            .canonical_config_hash(CanonicalConfigHash::from_old_config(old_config))
+            .canonical_config_hash(old_config)
             .tvm_engine_version(old_config.engine_version.clone())
             .gossip_version(old_config.gossip_version)
             .build();
@@ -549,6 +557,16 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
         let zerostate_hash = calc_file_hash(zs_path).expect("Failed to calculate zerostate hash");
         tracing::info!(target: "monit", "zerostate hash: {zerostate_hash}");
+
+        let expires_at = zerostate.expires_at();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("System time before UNIX_EPOCH")
+            .as_secs();
+        if zerostate.is_expired(now) {
+            anyhow::bail!("Zerostate expired: expires_at = {expires_at}, now = {now}");
+        }
+        tracing::info!(target: "monit", "zerostate expires_at: {expires_at}");
 
         if args.check_zerostate_validity {
             verify_zerostate(&zerostate, &message_db, &thread_accounts_repository)?;
@@ -1196,7 +1214,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             let external_messages = ExternalMessagesThreadState::builder()
                 .with_thread_id(*thread_id)
                 .with_report_metrics(node_metrics.clone())
-                .with_cache_size(config.local.ext_messages_cache_size)
+                .with_limits(ext_messages_limits(&config))
                 .with_feedback_sender(feedback_sender.clone())
                 .with_is_producing(is_producing.clone())
                 .build()?;
@@ -2585,7 +2603,7 @@ async fn test_execute() -> anyhow::Result<()> {
     let external_messages = ExternalMessagesThreadState::builder()
         .with_thread_id(*thread_id)
         .with_report_metrics(node_metrics.clone())
-        .with_cache_size(config.local.ext_messages_cache_size)
+        .with_limits(ext_messages_limits(&config))
         .with_feedback_sender(feedback_sender.clone())
         .with_is_producing(is_producing.clone())
         .build()?;

@@ -299,6 +299,7 @@ async fn validate_ext_message(
         body: String,
         thread_id: Option<String>,
         ext_message_token: Option<Token>,
+        #[serde(default)]
         dapp_id: String,
         account_id: String,
     }

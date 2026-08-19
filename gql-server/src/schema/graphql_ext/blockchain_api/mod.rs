@@ -45,6 +45,7 @@ use crate::schema::graphql_ext::events::BlockchainEventEdge;
 use crate::schema::graphql_ext::events::BlockchainEventsConnection;
 use crate::schema::graphql_ext::events::Event;
 use crate::schema::graphql_ext::is_deprecated_api_visible;
+use crate::schema::graphql_ext::strip_cold_pruned_transaction_fields;
 use crate::schema::graphql_ext::DeprecatedApiGuard;
 
 pub mod account;
@@ -635,11 +636,6 @@ impl BlockchainQuery<'_> {
             desc = "Optional filter by max balance_delta (unoptimized, query could be dropped by timeout)."
         )]
         max_balance_delta: Option<String>,
-        #[graphql(
-            name = "code_hash",
-            desc = "Optional filter by code hash of the account before execution."
-        )]
-        code_hash: Option<String>,
         #[graphql(desc = "This field is mutually exclusive with 'last'.")] first: Option<i32>,
         after: Option<String>,
         #[graphql(desc = "This field is mutually exclusive with 'first'.")] last: Option<i32>,
@@ -666,13 +662,12 @@ impl BlockchainQuery<'_> {
                     let args = BlockchainTransactionsQueryArgs {
                         min_balance_delta,
                         max_balance_delta,
-                        code_hash,
                         pagination: PaginationArgs { first, after, last, before },
                     };
                     let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
                     let selected_fields = selected_node_fields(self.ctx, "transactions");
                     let projection = db::transaction::Transaction::connection_projection_for_fields(
-                        selected_fields.clone(),
+                        strip_cold_pruned_transaction_fields(self.ctx, selected_fields.clone()),
                     );
                     let mut transactions = db::transaction::Transaction::blockchain_transactions(
                         self.ctx.data::<Arc<DBConnector>>()?,

@@ -12,6 +12,8 @@ use crate::helpers::decode_u64_string;
 use crate::helpers::decompress_blob;
 use crate::helpers::format_big_int;
 use crate::schema::db;
+use crate::schema::graphql_ext::is_cold_storage_field_visible;
+use crate::schema::graphql_ext::ColdStorageGuard;
 use crate::schema::graphql_shared::formats::BigIntFormat;
 // use super::message::Message;
 
@@ -201,6 +203,10 @@ pub struct Transaction {
     /// Base64-encoded TVM bag of cells of the transaction. Stored
     /// zstd-compressed in SQLite by the block manager but decompressed
     /// transparently by this server before being returned.
+    ///
+    /// Not stored on cold-storage servers: hidden from introspection and rejected
+    /// when queried in cold-storage mode.
+    #[graphql(guard = "ColdStorageGuard", visible = "is_cold_storage_field_visible")]
     boc: String,
     bounce: Option<TransactionBounce>,
     /// Collection-unique field for pagination and sorting.
@@ -228,6 +234,10 @@ pub struct Transaction {
     end_status_name: AccountStatusEnum,
     #[graphql(skip)]
     ext_in_msg_fee: Option<String>,
+    /// The inbound message that triggered this transaction. Inbound messages are
+    /// not stored on cold-storage servers: hidden from introspection and rejected
+    /// when queried in cold-storage mode.
+    #[graphql(guard = "ColdStorageGuard", visible = "is_cold_storage_field_visible")]
     pub in_message: Option<Message>,
     pub in_msg: String,
     installed: Option<bool>,

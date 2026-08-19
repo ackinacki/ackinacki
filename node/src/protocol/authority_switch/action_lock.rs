@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -26,6 +27,7 @@ use typed_builder::TypedBuilder;
 use super::find_last_prefinalized::find_last_prefinalized;
 use super::find_last_prefinalized::find_next_prefinalized;
 use super::round_time::RoundTime;
+use crate::block_keeper_system::BlockKeeperSet;
 use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::bls::gosh_bls::PubKey;
@@ -71,6 +73,106 @@ use crate::utilities::guarded::GuardedMut;
 
 // Note: std::time::Instant is not serializable
 pub type Timeout = std::time::SystemTime;
+
+// NextRound requests are individual votes. Accepting an aggregated envelope here
+// would make duplicate-voter accounting ambiguous.
+fn exactly_one_signer<T>(envelope: &Envelope<T>) -> anyhow::Result<SignerIndex>
+where
+    T: Serialize + for<'de> Deserialize<'de> + Clone + Send + Sync + 'static,
+{
+    let occurrences = envelope.clone_signature_occurrences();
+    anyhow::ensure!(occurrences.len() == 1, "lock must have exactly one signer");
+    let (signer, count) = occurrences.iter().next().expect("length was checked");
+    anyhow::ensure!(*count == 1, "lock signer must occur exactly once");
+    Ok(*signer)
+}
+
+/// Validates that the supplied locks form a strict-majority certificate for
+/// the exact authority-switch round described by `NextRoundSuccess`.
+pub(crate) fn validate_next_round_quorum(
+    proof: &[Envelope<Lock>],
+    expected_parent: &BlockIdentifier,
+    expected_height: &BlockHeight,
+    expected_round: &BlockRound,
+    expected_producer: &NodeIdentifier,
+    bk_set: &BlockKeeperSet,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(!proof.is_empty(), "NextRoundSuccess has no quorum proof");
+    anyhow::ensure!(!bk_set.is_empty(), "parent block has an empty descendant BK set");
+
+    // Count identities rather than envelopes so replaying a valid lock cannot
+    // increase the voting weight of its signer.
+    let mut signers = HashSet::new();
+    let mut expected_nacks = None;
+    for request in proof {
+        let signer = exactly_one_signer(request)?;
+        anyhow::ensure!(bk_set.contains_signer(&signer), "quorum signer is not in the BK set");
+        anyhow::ensure!(signers.insert(signer), "duplicate quorum signer");
+        anyhow::ensure!(
+            request.verify_signatures(bk_set.get_pubkeys_by_signers())?,
+            "invalid quorum lock signature"
+        );
+
+        let lock = request.data();
+        anyhow::ensure!(
+            lock.parent_block() == expected_parent,
+            "quorum lock has a different parent"
+        );
+        anyhow::ensure!(lock.height() == expected_height, "quorum lock has a different height");
+        anyhow::ensure!(lock.locked_round() == expected_round, "quorum lock has a different round");
+        anyhow::ensure!(
+            lock.next_auth_node_id() == expected_producer,
+            "quorum lock targets a different producer"
+        );
+        // A quorum is meaningful only when all voters authorize the same view
+        // of invalid blocks.
+        if let Some(nacks) = &expected_nacks {
+            anyhow::ensure!(nacks == lock.nack_bad_block(), "quorum locks disagree on NACK set");
+        } else {
+            expected_nacks = Some(lock.nack_bad_block().clone());
+        }
+    }
+
+    let votes_target = (bk_set.len() + 1).div_ceil(2);
+    anyhow::ensure!(signers.len() >= votes_target, "quorum has insufficient unique signers");
+    Ok(())
+}
+
+fn canonicalize_next_round_requests(requests: Vec<NextRound>) -> Vec<NextRound> {
+    let mut requests_by_signer = BTreeMap::new();
+    let mut equivocating_signers = HashSet::new();
+
+    for request in requests {
+        let Ok(signer) = exactly_one_signer(request.lock()) else {
+            continue;
+        };
+        if equivocating_signers.contains(&signer) {
+            continue;
+        }
+
+        match requests_by_signer.entry(signer) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(request);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                if entry.get().lock().data() != request.lock().data() {
+                    // A signer that authorizes different locks in one round
+                    // must not contribute voting weight to either request.
+                    entry.remove();
+                    equivocating_signers.insert(signer);
+                } else if entry.get().locked_block_attestation().is_none()
+                    && request.locked_block_attestation().is_some()
+                {
+                    // Retransmissions may add the optional block attestation;
+                    // retain that copy while counting the signed lock once.
+                    entry.insert(request);
+                }
+            }
+        }
+    }
+
+    requests_by_signer.into_values().collect()
+}
 
 #[derive(Serialize, Deserialize, Getters, TypedBuilder, Clone, PartialEq, Eq, Debug)]
 pub struct BlockRef {
@@ -1429,7 +1531,7 @@ impl ThreadAuthority {
                 CollectedAuthoritySwitchRoundRequests { _round_timeout: timeout, requests }
             })
             .clone();
-        let mut collected_requests = collected_requests.requests;
+        let mut collected_requests = canonicalize_next_round_requests(collected_requests.requests);
         let Some(bk_set) = parent_state.guarded(|e| e.descendant_bk_set().clone()) else {
             tracing::trace!("on_next_round_incoming_request: bk_set is not set");
             return OnNextRoundIncomingRequestResult::DoNothing;
@@ -1516,8 +1618,15 @@ impl ThreadAuthority {
         }
 
         let max_locked_block = max_locked_block.map(Arc::unwrap_or_clone);
-        // TODO:
-        let proof_of_valid_round = vec![];
+        // Preserve the canonical signed Lock envelopes as the certificate.
+        let proof_of_valid_round =
+            collected_requests.iter().map(|request| request.lock().clone()).collect::<Vec<_>>();
+        if proof_of_valid_round.len() < votes_target {
+            tracing::trace!(
+                "on_next_round_incoming_request: collected requests do not form a valid quorum proof"
+            );
+            return OnNextRoundIncomingRequestResult::DoNothing;
+        }
 
         tracing::trace!("on_next_round_incoming_request: max_locked_block: {max_locked_block:?}");
 
@@ -1847,6 +1956,7 @@ mod tests {
     use super::*;
     use crate::block_keeper_system::BlockKeeperData;
     use crate::block_keeper_system::BlockKeeperSet;
+    use crate::bls::create_signed::CreateSealed;
     use crate::node::associated_types::NodeIdentifier;
     use crate::versioning::ProtocolVersionSupport;
 
@@ -1863,6 +1973,210 @@ mod tests {
             bk_set.insert(idx as SignerIndex, data);
         }
         bk_set
+    }
+
+    fn make_quorum_lock(
+        signer: SignerIndex,
+        parent: BlockIdentifier,
+        height: BlockHeight,
+        round: BlockRound,
+        producer: &NodeIdentifier,
+        nacks: HashSet<BlockIdentifier>,
+    ) -> Envelope<Lock> {
+        Envelope::sealed(
+            Lock::builder()
+                .parent_block(parent)
+                .height(height)
+                .next_auth_node_id(producer.clone())
+                .locked_round(round)
+                .locked_block(None)
+                .nack_bad_block(nacks)
+                .build(),
+            &Secret::default(),
+            signer,
+        )
+        .unwrap()
+    }
+
+    fn quorum_test_data(
+    ) -> (BlockKeeperSet, BlockIdentifier, BlockHeight, BlockRound, NodeIdentifier) {
+        let producer = NodeIdentifier::test(1);
+        let bk_set = make_bk_set(&[
+            producer.clone(),
+            NodeIdentifier::test(2),
+            NodeIdentifier::test(3),
+            NodeIdentifier::test(4),
+            NodeIdentifier::test(5),
+        ]);
+        let parent = BlockIdentifier::new([9; 32]);
+        let height =
+            BlockHeight::builder().thread_identifier(ThreadIdentifier::default()).height(1).build();
+        (bk_set, parent, height, 1, producer)
+    }
+
+    fn make_next_round_request(lock: Envelope<Lock>) -> NextRound {
+        NextRound::builder()
+            .lock(lock)
+            .locked_block_attestation(None)
+            .attestations_for_ancestors(vec![])
+            .build()
+    }
+
+    #[test]
+    fn identical_next_round_retransmissions_count_once() {
+        let (_, parent, height, round, producer) = quorum_test_data();
+        let lock = make_quorum_lock(0, parent, height, round, &producer, HashSet::new());
+        let requests = canonicalize_next_round_requests(vec![
+            make_next_round_request(lock.clone()),
+            make_next_round_request(lock),
+        ]);
+
+        assert_eq!(requests.len(), 1);
+        assert_eq!(exactly_one_signer(requests[0].lock()).unwrap(), 0);
+    }
+
+    #[test]
+    fn equivocating_next_round_signer_is_removed() {
+        let (_, parent, height, round, producer) = quorum_test_data();
+        let requests = canonicalize_next_round_requests(vec![
+            make_next_round_request(make_quorum_lock(
+                0,
+                parent,
+                height,
+                round,
+                &producer,
+                HashSet::new(),
+            )),
+            make_next_round_request(make_quorum_lock(
+                0,
+                parent,
+                height,
+                round,
+                &producer,
+                HashSet::from([BlockIdentifier::new([7; 32])]),
+            )),
+            make_next_round_request(make_quorum_lock(
+                1,
+                parent,
+                height,
+                round,
+                &producer,
+                HashSet::new(),
+            )),
+        ]);
+
+        assert_eq!(requests.len(), 1);
+        assert_eq!(exactly_one_signer(requests[0].lock()).unwrap(), 1);
+    }
+
+    #[test]
+    fn next_round_quorum_accepts_valid_majority() {
+        let (bk_set, parent, height, round, producer) = quorum_test_data();
+        let proof = (0..3)
+            .map(|signer| {
+                make_quorum_lock(signer, parent, height, round, &producer, HashSet::new())
+            })
+            .collect::<Vec<_>>();
+
+        validate_next_round_quorum(&proof, &parent, &height, &round, &producer, &bk_set).unwrap();
+    }
+
+    #[test]
+    fn next_round_quorum_rejects_insufficient_or_duplicate_signers() {
+        let (bk_set, parent, height, round, producer) = quorum_test_data();
+        assert!(
+            validate_next_round_quorum(&[], &parent, &height, &round, &producer, &bk_set,).is_err()
+        );
+
+        let request = make_quorum_lock(0, parent, height, round, &producer, HashSet::new());
+        let insufficient = vec![
+            request.clone(),
+            make_quorum_lock(1, parent, height, round, &producer, HashSet::new()),
+        ];
+        assert!(validate_next_round_quorum(
+            &insufficient,
+            &parent,
+            &height,
+            &round,
+            &producer,
+            &bk_set,
+        )
+        .is_err());
+
+        let duplicate = vec![request.clone(), request.clone(), request];
+        assert!(validate_next_round_quorum(
+            &duplicate, &parent, &height, &round, &producer, &bk_set,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn next_round_quorum_rejects_invalid_signature() {
+        let (bk_set, parent, height, round, producer) = quorum_test_data();
+        let valid = make_quorum_lock(0, parent, height, round, &producer, HashSet::new());
+        let changed_data = Lock::builder()
+            .parent_block(parent)
+            .height(height)
+            .next_auth_node_id(producer.clone())
+            .locked_round(round + 1)
+            .locked_block(None)
+            .nack_bad_block(HashSet::new())
+            .build();
+        let invalid = Envelope::create(
+            valid.aggregated_signature().clone(),
+            valid.clone_signature_occurrences(),
+            changed_data,
+        );
+        let proof = vec![
+            invalid,
+            make_quorum_lock(1, parent, height, round, &producer, HashSet::new()),
+            make_quorum_lock(2, parent, height, round, &producer, HashSet::new()),
+        ];
+
+        assert!(validate_next_round_quorum(&proof, &parent, &height, &round, &producer, &bk_set,)
+            .is_err());
+    }
+
+    #[test]
+    fn next_round_quorum_rejects_inconsistent_fields() {
+        let (bk_set, parent, height, round, producer) = quorum_test_data();
+        let other_height = BlockHeight::builder()
+            .thread_identifier(*height.thread_identifier())
+            .height(height.height() + 1)
+            .build();
+        let mismatches = [
+            make_quorum_lock(
+                2,
+                BlockIdentifier::new([8; 32]),
+                height,
+                round,
+                &producer,
+                HashSet::new(),
+            ),
+            make_quorum_lock(2, parent, other_height, round, &producer, HashSet::new()),
+            make_quorum_lock(2, parent, height, round + 1, &producer, HashSet::new()),
+            make_quorum_lock(2, parent, height, round, &NodeIdentifier::test(5), HashSet::new()),
+            make_quorum_lock(
+                2,
+                parent,
+                height,
+                round,
+                &producer,
+                HashSet::from([BlockIdentifier::new([7; 32])]),
+            ),
+        ];
+
+        for mismatch in mismatches {
+            let proof = vec![
+                make_quorum_lock(0, parent, height, round, &producer, HashSet::new()),
+                make_quorum_lock(1, parent, height, round, &producer, HashSet::new()),
+                mismatch,
+            ];
+            assert!(validate_next_round_quorum(
+                &proof, &parent, &height, &round, &producer, &bk_set,
+            )
+            .is_err());
+        }
     }
 
     #[test]

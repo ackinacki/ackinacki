@@ -478,7 +478,8 @@ fn write_copy(
     delete_keys: &[Vec<u8>],
 ) -> Result<(), ArchiveStateError> {
     if !put_records.is_empty() {
-        kv.put(set, put_records, false).map_err(ArchiveStateError::from)?;
+        kv.fast_put_without_cas_and_stale_chunk_cleanup(set, put_records)
+            .map_err(ArchiveStateError::from)?;
     }
     if !delete_keys.is_empty() {
         kv.delete(set, delete_keys).map_err(ArchiveStateError::from)?;

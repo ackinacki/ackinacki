@@ -27,6 +27,7 @@ use crate::node::AuthoritySwitch;
 use crate::node::NetworkMessage;
 use crate::node::NetworkMessage::BlockRequest;
 use crate::node::NodeIdentifier;
+use crate::protocol::authority_switch::action_lock::validate_next_round_quorum;
 use crate::protocol::authority_switch::action_lock::OnNextRoundIncomingRequestResult;
 use crate::protocol::authority_switch::action_lock::OnNextRoundSuccessOnUnableToProcessAction;
 use crate::protocol::authority_switch::action_lock::OnNextRoundSuccessResult;
@@ -458,6 +459,28 @@ impl AuthoritySwitchService {
                 return Ok(());
             }
         };
+        let parent_id = block.data().parent();
+        let parent_state = self.block_state_repository.get(&parent_id)?;
+        // Validate the round certificate before forwarding the proposed block
+        // or applying any authority-switch side effects.
+        let Some(bk_set) = parent_state.guarded(|state| state.descendant_bk_set().clone()) else {
+            tracing::warn!(
+                target: "monit",
+                "Rejecting NextRoundSuccess: parent block has no descendant BK set"
+            );
+            return Ok(());
+        };
+        if let Err(error) = validate_next_round_quorum(
+            next_round_success.requests_aggregated(),
+            &parent_id,
+            next_round_success.block_height(),
+            next_round_success.round(),
+            next_round_success.node_identifier(),
+            &bk_set,
+        ) {
+            tracing::warn!(target: "monit", "Rejecting invalid NextRoundSuccess quorum: {error:#}");
+            return Ok(());
+        }
 
         // let resend_node_id = Some(next_round_success.node_identifier().clone());
         // self.on_incoming_candidate_block(&proposed_block, resend_node_id)?;

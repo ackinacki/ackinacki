@@ -22,6 +22,7 @@ members = [
     "node/libs/aerospike2",
     "node/libs/critical-thread",
     "node/libs/history-proof",
+    "node/libs/inbound-external-messages",
     "node/libs/multi-map",
     "node/libs/node-types",
     "node/libs/thread-load-balance",
@@ -36,7 +37,7 @@ members = [
     "tvm_contracts",
 ]
 
-package.version = "0.18.1"
+package.version = "0.19.0"
 package.edition = "2021"
 package.rust-version = "1.86.0"
 package.license = "LicenseRef-Acki-Nacki-Node-License"
@@ -127,6 +128,7 @@ ext-messages-auth = { path = "shared/ext-messages-auth" }
 gossip = { path = "gossip" }
 history-proof = { path = "node/libs/history-proof" }
 http-server = { path = "http-server" }
+inbound-external-messages = { path = "node/libs/inbound-external-messages" }
 message-router = { path = "message-router" }
 migration-tool = { path = "migration-tool" }
 multi-map = { path = "node/libs/multi-map" }

@@ -36,6 +36,13 @@ max_attached_db: 9
 # Can also be enabled via --deprecated-api CLI flag or GQL_DEPRECATED_API env var.
 # deprecated_api: false
 
+# Run in cold-storage mode. On cold-storage servers the database no longer
+# contains the transaction BOC and inbound messages, so the corresponding
+# fields (transaction.boc, transaction.in_message, message.dst_transaction) are
+# hidden and rejected when queried.
+# Can also be enabled via --cold-storage CLI flag or GQL_COLD_STORAGE env var.
+# cold_storage: false
+
 # Histogram bucket boundaries for the gql_query_duration metric (milliseconds).
 # Measures end-to-end GraphQL query execution time.
 # Changes require a restart to take effect.

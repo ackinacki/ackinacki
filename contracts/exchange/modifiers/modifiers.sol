@@ -2,7 +2,7 @@ pragma gosh-solidity >=0.76.1;
 
 import "./errors.sol";
 
-abstract contract USDCBridgeModifiers is USDCBridgeErrors {
+abstract contract eccUSDCBridgeModifiers is eccUSDCBridgeErrors {
     uint64 constant MIN_BALANCE = 100 vmshell;
 
     uint32 constant USDC_ECC_ID = 3;

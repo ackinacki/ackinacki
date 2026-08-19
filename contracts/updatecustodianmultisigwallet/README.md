@@ -1,3 +1,9 @@
+> **⚠️ DEPRECATED VERSION — DO NOT USE ⚠️**
+>
+> **This is an outdated version of the multisig wallet and is no longer recommended for use.**
+>
+> **Please use the latest version instead: [`../updatecustodianmultisigwallet_v2`](../updatecustodianmultisigwallet_v2).**
+
 **UpdateCustodianMultisigWallet** – A multisignature wallet with support for upgrade and SHELL exchange features.
 
 - **Code Hash (sha256)**: `22dd0159fcdc7c0b1cc8b5bb2ebd18f44ed243a1d04f54b762d17be5d10957eb` (compiled with `sold` vsold 0.79.2 (commit.ac412858))

@@ -19,8 +19,11 @@ use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 use typed_builder::TypedBuilder;
+use versioned_struct::versioned;
+use versioned_struct::Transitioning;
 
 use crate::block_keeper_system::BlockKeeperSetChange;
+use crate::block_keeper_system::BlockKeeperSetChangeOld;
 use crate::block_keeper_system::BlockKeeperSetTransitionHashes;
 use crate::bls::envelope::Envelope;
 use crate::node::associated_types::AckData;
@@ -55,6 +58,7 @@ pub struct BlockKeeperSetChangeProofData {
     history_proof_layer_hashes: BTreeMap<LayerNumber, (BlockHeight, [u8; 32])>,
 }
 
+#[versioned]
 #[derive(Clone, PartialEq, Eq, Getters, TypedBuilder, Setters)]
 #[setters(prefix = "set_", borrow_self)]
 pub struct CommonSection {
@@ -72,7 +76,10 @@ pub struct CommonSection {
     threads_table: Option<ThreadsTablePrefab>,
     /// Extra references this block depends on.
     refs: Vec<BlockIdentifier>,
+    #[future]
     block_keeper_set_changes: Vec<BlockKeeperSetChange>,
+    #[legacy]
+    block_keeper_set_changes: Vec<BlockKeeperSetChangeOld>,
     // Dynamic parameter: an expected number of Acki-Nacki for this block
     verify_complexity: SignerIndex,
     acks: Vec<Envelope<AckData>>,
@@ -103,6 +110,39 @@ pub struct CommonSection {
 
     #[builder(default)]
     block_keeper_set_change_proof_data: Option<BlockKeeperSetChangeProofData>,
+}
+
+impl Transitioning for CommonSection {
+    type Old = CommonSectionOld;
+
+    fn from(old: Self::Old) -> Self {
+        let block_keeper_set_changes = old
+            .block_keeper_set_changes
+            .into_iter()
+            .map(<BlockKeeperSetChange as Transitioning>::from)
+            .collect();
+        Self {
+            parent_block_id: old.parent_block_id,
+            block_height: old.block_height,
+            directives: old.directives,
+            block_attestations: old.block_attestations,
+            round: old.round,
+            producer_id: old.producer_id,
+            thread_id: old.thread_id,
+            threads_table: old.threads_table,
+            refs: old.refs,
+            block_keeper_set_changes,
+            verify_complexity: old.verify_complexity,
+            acks: old.acks,
+            nacks: old.nacks,
+            producer_selector: old.producer_selector,
+            accounts_number_diff: old.accounts_number_diff,
+            history_proofs: old.history_proofs,
+            tracked_ext_out_messages_root: old.tracked_ext_out_messages_root,
+            tracked_ext_out_messages: old.tracked_ext_out_messages,
+            block_keeper_set_change_proof_data: old.block_keeper_set_change_proof_data,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -300,6 +340,88 @@ impl CommonSection {
     }
 }
 
+impl CommonSectionOld {
+    fn wrap_serialize(&self) -> Result<WrappedCommonSectionOld, String> {
+        let block_attestations_data = bincode::serialize(&self.block_attestations)
+            .expect("Failed to serialize last finalized blocks");
+        let acks_data =
+            bincode::serialize(&self.acks).expect("Failed to serialize last finalized blocks");
+        let nacks_data =
+            bincode::serialize(&self.nacks).expect("Failed to serialize last finalized blocks");
+
+        let builder = WrappedCommonSectionOld::builder()
+            .parent_block_id(self.parent_block_id.serialize_block_id()?)
+            .round(self.round)
+            .directives(self.directives.clone())
+            .block_attestations(block_attestations_data)
+            .producer_id(self.producer_id.clone())
+            .block_keeper_set_changes(self.block_keeper_set_changes.clone())
+            .verify_complexity(self.verify_complexity)
+            .acks(acks_data)
+            .nacks(nacks_data)
+            .producer_selector(
+                self.producer_selector
+                    .clone()
+                    .expect("Producer selector must be set before serialization"),
+            )
+            .thread_identifier(self.thread_id)
+            .refs(self.refs.clone())
+            .threads_table(self.threads_table.clone())
+            .block_height(self.block_height)
+            .history_proofs(self.history_proofs.clone())
+            .tracked_ext_out_messages_root(self.tracked_ext_out_messages_root)
+            .tracked_ext_out_messages(self.tracked_ext_out_messages.clone())
+            .block_keeper_set_change_proof_data(self.block_keeper_set_change_proof_data.clone());
+
+        #[cfg(feature = "monitor-accounts-number")]
+        let builder = builder.accounts_number_diff(self.accounts_number_diff);
+
+        #[cfg(feature = "protocol_version_hash_in_block")]
+        let builder = builder.protocol_version_hash(self.protocol_version_hash.clone());
+
+        Ok(builder.build())
+    }
+
+    fn wrap_deserialize(data: WrappedCommonSectionOld) -> Self {
+        let block_attestations: Vec<Envelope<AttestationData>> =
+            bincode::deserialize(&data.block_attestations)
+                .expect("Failed to deserialize block attestations");
+        let acks: Vec<Envelope<AckData>> =
+            bincode::deserialize(&data.acks).expect("Failed to deserialize acks");
+        let nacks: Vec<Envelope<NackData>> =
+            bincode::deserialize(&data.nacks).expect("Failed to deserialize nacks");
+
+        let builder = Self::builder()
+            .parent_block_id(ParentBlockId::Block(data.parent_block_id))
+            .round(data.round)
+            .directives(data.directives)
+            .block_attestations(block_attestations)
+            .producer_id(data.producer_id)
+            .block_keeper_set_changes(data.block_keeper_set_changes)
+            .verify_complexity(data.verify_complexity)
+            .acks(acks)
+            .nacks(nacks)
+            .producer_selector(Some(data.producer_selector))
+            .refs(data.refs)
+            .thread_id(data.thread_identifier)
+            .threads_table(data.threads_table)
+            .block_height(data.block_height)
+            .history_proofs(data.history_proofs)
+            .tracked_ext_out_messages_root(data.tracked_ext_out_messages_root)
+            .tracked_ext_out_messages(data.tracked_ext_out_messages)
+            .block_keeper_set_change_proof_data(data.block_keeper_set_change_proof_data);
+
+        #[cfg(feature = "monitor-accounts-number")]
+        let builder = builder.accounts_number_diff(data.accounts_number_diff);
+
+        #[cfg(feature = "protocol_version_hash_in_block")]
+        let builder = builder.protocol_version_hash(data.protocol_version_hash);
+
+        builder.build()
+    }
+}
+
+#[versioned]
 #[derive(TypedBuilder, Serialize, Deserialize)]
 struct WrappedCommonSection {
     pub parent_block_id: BlockIdentifier,
@@ -307,7 +429,10 @@ struct WrappedCommonSection {
     pub directives: Directives,
     pub block_attestations: Vec<u8>,
     pub producer_id: NodeIdentifier,
+    #[future]
     pub block_keeper_set_changes: Vec<BlockKeeperSetChange>,
+    #[legacy]
+    pub block_keeper_set_changes: Vec<BlockKeeperSetChangeOld>,
     pub verify_complexity: SignerIndex,
     pub acks: Vec<u8>,
     pub nacks: Vec<u8>,
@@ -326,6 +451,39 @@ struct WrappedCommonSection {
     pub block_keeper_set_change_proof_data: Option<BlockKeeperSetChangeProofData>,
 }
 
+impl Transitioning for WrappedCommonSection {
+    type Old = WrappedCommonSectionOld;
+
+    fn from(old: Self::Old) -> Self {
+        let changes = old
+            .block_keeper_set_changes
+            .into_iter()
+            .map(<BlockKeeperSetChange as Transitioning>::from)
+            .collect();
+        Self {
+            parent_block_id: old.parent_block_id,
+            round: old.round,
+            directives: old.directives,
+            block_attestations: old.block_attestations,
+            producer_id: old.producer_id,
+            block_keeper_set_changes: changes,
+            verify_complexity: old.verify_complexity,
+            acks: old.acks,
+            nacks: old.nacks,
+            producer_selector: old.producer_selector,
+            thread_identifier: old.thread_identifier,
+            refs: old.refs,
+            threads_table: old.threads_table,
+            block_height: old.block_height,
+            accounts_number_diff: old.accounts_number_diff,
+            history_proofs: old.history_proofs,
+            tracked_ext_out_messages_root: old.tracked_ext_out_messages_root,
+            tracked_ext_out_messages: old.tracked_ext_out_messages,
+            block_keeper_set_change_proof_data: old.block_keeper_set_change_proof_data,
+        }
+    }
+}
+
 impl Serialize for CommonSection {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -342,6 +500,25 @@ impl<'de> Deserialize<'de> for CommonSection {
     {
         let wrapped_data = WrappedCommonSection::deserialize(deserializer)?;
         Ok(CommonSection::wrap_deserialize(wrapped_data))
+    }
+}
+
+impl Serialize for CommonSectionOld {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.wrap_serialize().map_err(S::Error::custom)?.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for CommonSectionOld {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wrapped_data = WrappedCommonSectionOld::deserialize(deserializer)?;
+        Ok(CommonSectionOld::wrap_deserialize(wrapped_data))
     }
 }
 

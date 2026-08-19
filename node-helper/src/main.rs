@@ -256,6 +256,18 @@ struct Config {
     #[arg(long)]
     pub state_cache_size: Option<usize>,
 
+    /// Total ext messages queue limit
+    #[arg(long, env)]
+    pub ext_messages_total_limit: Option<usize>,
+
+    /// Ext messages queue limit per dapp
+    #[arg(long, env)]
+    pub ext_messages_dapp_limit: Option<usize>,
+
+    /// Ext messages queue limit per account
+    #[arg(long, env)]
+    pub ext_messages_account_limit: Option<usize>,
+
     /// Path to the local message durable storage
     #[arg(long)]
     pub message_storage_path: Option<PathBuf>,
@@ -584,6 +596,18 @@ fn main() -> anyhow::Result<()> {
 
             if let Some(state_cache_size) = config_cmd.state_cache_size {
                 config.local.state_cache_size = state_cache_size;
+            }
+
+            if let Some(limit) = config_cmd.ext_messages_total_limit {
+                config.local.ext_messages_total_limit = limit;
+            }
+
+            if let Some(limit) = config_cmd.ext_messages_dapp_limit {
+                config.local.ext_messages_dapp_limit = limit;
+            }
+
+            if let Some(limit) = config_cmd.ext_messages_account_limit {
+                config.local.ext_messages_account_limit = limit;
             }
 
             if !config_cmd.network_my_ed_secret.is_empty() {

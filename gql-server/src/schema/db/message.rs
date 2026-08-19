@@ -16,6 +16,10 @@ use crate::schema::graphql::query::PaginationArgs;
 use crate::schema::graphql_ext::blockchain_api::account::BlockchainMasterSeqNoFilter;
 use crate::schema::graphql_ext::blockchain_api::account::BlockchainMessageTypeFilterEnum;
 
+/// SQL predicate selecting external outbound "event" messages: `ExtOut`
+/// (msg_type 2) and `ExtOutV2` / `ExtOutMsgInfoV2` (msg_type 4).
+const EVENT_MSG_TYPE_FILTER: &str = "msg_type IN (2,4)";
+
 pub enum MessageCursorField {
     Dst,
     Src,
@@ -74,6 +78,10 @@ impl AccountMessagesQueryArgs {
         self.has_msg_type(BlockchainMessageTypeFilterEnum::ExtOut)
     }
 
+    fn has_ext_out_v2(&self) -> bool {
+        self.has_msg_type(BlockchainMessageTypeFilterEnum::ExtOutV2)
+    }
+
     fn has_int_in(&self) -> bool {
         self.has_msg_type(BlockchainMessageTypeFilterEnum::IntIn)
     }
@@ -84,7 +92,7 @@ impl AccountMessagesQueryArgs {
 
     pub fn cursor_field(&self) -> MessageCursorField {
         let has_inbound = self.has_ext_in() || self.has_int_in();
-        let has_outbound = self.has_ext_out() || self.has_int_out();
+        let has_outbound = self.has_ext_out() || self.has_ext_out_v2() || self.has_int_out();
         match (has_inbound, has_outbound) {
             (true, false) => MessageCursorField::Dst,
             (false, true) => MessageCursorField::Src,
@@ -339,7 +347,7 @@ impl Message {
         args: &AccountMessagesQueryArgs,
     ) -> anyhow::Result<Vec<Message>> {
         let has_inbound = args.has_ext_in() || args.has_int_in();
-        let has_outbound = args.has_ext_out() || args.has_int_out();
+        let has_outbound = args.has_ext_out() || args.has_ext_out_v2() || args.has_int_out();
         let limit = args.pagination.get_limit();
         let direction = args.pagination.get_direction();
 
@@ -470,7 +478,7 @@ impl Message {
             PaginateDirection::Backward => "DESC",
         };
 
-        let mut where_ops = vec![format!("src={account:?}"), "msg_type IN (2,4)".to_string()];
+        let mut where_ops = vec![format!("src={account:?}"), EVENT_MSG_TYPE_FILTER.to_string()];
 
         if let Some(ref dst_addr) = dst {
             where_ops.push(format!("dst={dst_addr:?}"));
@@ -540,7 +548,7 @@ impl Message {
         };
 
         let cursor_field = "msg_chain_order";
-        let mut where_ops = vec!["msg_type IN (2,4)".to_string()];
+        let mut where_ops = vec![EVENT_MSG_TYPE_FILTER.to_string()];
 
         if let Some(after) = &pagination.after {
             if !after.is_empty() {

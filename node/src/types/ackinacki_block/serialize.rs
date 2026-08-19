@@ -12,6 +12,7 @@ use tvm_block::Deserializable;
 use tvm_block::Serializable;
 use tvm_types::read_single_root_boc;
 use tvm_types::write_boc;
+use versioned_struct::Transitioning;
 
 use crate::live_metrics::LiveAckiNackiBlockCounter;
 use crate::types::common_section::CommonSection;
@@ -73,8 +74,10 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
                 .map_err(|_| D::Error::custom("Failed to deserialize common section len"))?,
         );
         let (common_section_data, rest) = rest.split_at(common_section_len);
-        let common_section: CommonSection = bincode::deserialize(common_section_data)
-            .map_err(|_| D::Error::custom("Failed to deserialize common section"))?;
+        let common_section: CommonSection =
+            <CommonSection as Transitioning>::deserialize_data_compat(common_section_data)
+                .map_err(|_| D::Error::custom("Failed to deserialize common section"))?
+                .0;
         let (block_len_data, rest) = rest.split_at(8);
         let block_len = usize::from_be_bytes(
             block_len_data

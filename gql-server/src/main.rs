@@ -49,6 +49,13 @@ struct Args {
     /// transactions at the query root and blockchain.accounts).
     #[arg(long = "deprecated-api", env = "GQL_DEPRECATED_API", default_value_t = false)]
     deprecated_api: bool,
+
+    /// Run in cold-storage mode. On cold-storage servers the database no longer
+    /// contains certain data: `transaction.boc` and inbound messages. When
+    /// enabled, the corresponding fields are hidden from the schema and rejected
+    /// when queried.
+    #[arg(long = "cold-storage", env = "GQL_COLD_STORAGE", default_value_t = false)]
+    cold_storage: bool,
 }
 
 #[tokio::main]
@@ -135,6 +142,15 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Deprecated API is disabled (use --deprecated-api to enable)");
     }
 
+    let cold_storage_initial =
+        args.cold_storage || initial_config.as_ref().and_then(|c| c.cold_storage).unwrap_or(false);
+    let cold_storage = Arc::new(AtomicBool::new(cold_storage_initial));
+    if cold_storage_initial {
+        tracing::info!("Cold-storage mode is enabled");
+    } else {
+        tracing::info!("Cold-storage mode is disabled (use --cold-storage to enable)");
+    }
+
     resolve_archives(db_connector.as_ref(), &db_fs_path).await?;
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<signals::WorkerCommand>();
@@ -147,10 +163,12 @@ async fn main() -> anyhow::Result<()> {
         cmd_rx,
         Arc::clone(&deprecated_api),
         args.deprecated_api,
+        Arc::clone(&cold_storage),
+        args.cold_storage,
     );
 
     tokio::select! {
-        result = web::start(listen, db_connector, sdk_client, metrics.map(|m| m.gql), deprecated_api) => result,
+        result = web::start(listen, db_connector, sdk_client, metrics.map(|m| m.gql), deprecated_api, cold_storage) => result,
         result = signals_handle => match result {
             Ok(Ok(())) => anyhow::bail!("signal handler exited unexpectedly"),
             Ok(Err(err)) => anyhow::bail!("signal handler error: {err:?}"),
@@ -176,6 +194,7 @@ fn apply_config(db_connector: &DBConnector, cfg: &config::GqlServerConfig) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_command_worker(
     db_connector: Arc<schema::db::DBConnector>,
     db_fs_path: PathBuf,
@@ -183,6 +202,8 @@ fn spawn_command_worker(
     cmd_rx: mpsc::Receiver<signals::WorkerCommand>,
     deprecated_api: Arc<AtomicBool>,
     cli_deprecated_api: bool,
+    cold_storage: Arc<AtomicBool>,
+    cli_cold_storage: bool,
 ) -> tokio::task::JoinHandle<Result<(), anyhow::Error>> {
     tokio::task::spawn_blocking(move || {
         let handle = tokio::runtime::Handle::current();
@@ -206,6 +227,14 @@ fn spawn_command_worker(
                                 let prev = deprecated_api.swap(enabled, Ordering::Relaxed);
                                 if prev != enabled {
                                     tracing::info!("deprecated_api changed: {prev} -> {enabled}");
+                                }
+                                let cold_enabled =
+                                    cli_cold_storage || cfg.cold_storage.unwrap_or(false);
+                                let cold_prev = cold_storage.swap(cold_enabled, Ordering::Relaxed);
+                                if cold_prev != cold_enabled {
+                                    tracing::info!(
+                                        "cold_storage changed: {cold_prev} -> {cold_enabled}"
+                                    );
                                 }
                                 if let Err(err) = handle.block_on(
                                     db_connector.set_max_connections(cfg.max_pool_connections),

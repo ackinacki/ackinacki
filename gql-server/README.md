@@ -19,6 +19,7 @@ gql-server \
 | `--bm_api_socket` | `BM_API_SOCKET` | Block Manager API endpoint (required) |
 | `--config` | `GQL_CONFIG_FILE` | Path to YAML config for runtime-tunable parameters |
 | `--deprecated-api` | `GQL_DEPRECATED_API` | Enable deprecated API fields |
+| `--cold-storage` | `GQL_COLD_STORAGE` | Run in cold-storage mode (hide fields whose data is not stored on cold-storage servers) |
 
 ## Configuration
 
@@ -40,6 +41,7 @@ kill -SIGUSR1 $(pidof gql-server)
 | `query_duration_boundaries` | startup only | Histogram buckets for GraphQL query duration |
 | `sqlite_query_boundaries` | startup only | Histogram buckets for SQLite query duration |
 | `deprecated_api` | yes | Enable/disable deprecated API fields |
+| `cold_storage` | yes | Enable/disable cold-storage mode |
 
 ### Signals
 
@@ -71,6 +73,30 @@ environment variable, or the `deprecated_api: true` option in the YAML config fi
 gql-server --deprecated-api
 # or
 GQL_DEPRECATED_API=true gql-server
+```
+
+## Cold storage
+
+Cold-storage servers run against a database that no longer contains data pruned
+to save space: the `transaction.boc` blob and all messages except external
+outbound ones (external outbound = `ExtOut` and `ExtOutV2` message types).
+
+Enable cold-storage mode with the `--cold-storage` CLI flag, the
+`GQL_COLD_STORAGE=true` environment variable, or the `cold_storage: true` option
+in the YAML config file. When enabled:
+
+- `Transaction.boc`, `Transaction.in_message` and `Message.dst_transaction` are
+  hidden from introspection and return an error if queried directly.
+- `blockchain.account.messages` rejects `msg_type` filters other than external
+  outbound (`ExtOut` / `ExtOutV2`), since inbound and internal messages are not
+  stored.
+
+The mode is disabled by default and supports hot-reload via `SIGUSR1`.
+
+```bash
+gql-server --cold-storage
+# or
+GQL_COLD_STORAGE=true gql-server
 ```
 
 ## GraphQL endpoints

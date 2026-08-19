@@ -16,7 +16,6 @@ pub(crate) type BlockchainTransaction = Transaction;
 pub struct BlockchainTransactionsQueryArgs {
     pub min_balance_delta: Option<String>,
     pub max_balance_delta: Option<String>,
-    pub code_hash: Option<String>,
     pub pagination: PaginationArgs,
 }
 

@@ -13,6 +13,8 @@ use crate::helpers::ToInt;
 use crate::helpers::ToOptU64;
 use crate::schema::db::message::InBlockMessage;
 use crate::schema::db::{self};
+use crate::schema::graphql_ext::is_cold_storage_field_visible;
+use crate::schema::graphql_ext::ColdStorageGuard;
 use crate::schema::graphql_shared::currency::OtherCurrency;
 use crate::schema::graphql_shared::formats::BigIntFormat;
 
@@ -20,6 +22,27 @@ mod filter;
 mod resolver;
 pub use filter::MessageFilter;
 pub use resolver::MessageLoader;
+
+/// An archive value that this build has no GraphQL enum variant for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnknownEnumValue;
+
+/// Reports an unrecognised archive value and turns it into [`UnknownEnumValue`].
+///
+/// The archive is written by the node and can be newer than the GraphQL server
+/// reading it, so an unknown value is an operational reality rather than an
+/// impossibility. Every caller maps the error to a `null` name, which keeps the
+/// rest of the response intact — panicking here would instead unwind through
+/// the connection task and drop the whole request, taking every unrelated row
+/// in the same response with it.
+fn unknown_enum_value(enum_name: &str, value: impl std::fmt::Display) -> UnknownEnumValue {
+    tracing::warn!(
+        enum_name,
+        value = %value,
+        "unknown enum value in archive data, reporting the name as null"
+    );
+    UnknownEnumValue
+}
 
 #[derive(Enum, Clone, Copy, PartialEq, Eq, Debug)]
 #[graphql(rename_items = "PascalCase")]
@@ -33,9 +56,11 @@ pub enum InMsgTypeEnum {
     DiscardedTransit,
 }
 
-impl From<Option<i64>> for InMsgTypeEnum {
-    fn from(val: Option<i64>) -> Self {
-        match val.unwrap_or(0) {
+impl TryFrom<i64> for InMsgTypeEnum {
+    type Error = UnknownEnumValue;
+
+    fn try_from(val: i64) -> Result<Self, Self::Error> {
+        Ok(match val {
             0 => InMsgTypeEnum::External,
             1 => InMsgTypeEnum::Ihr,
             2 => InMsgTypeEnum::Immediately,
@@ -43,8 +68,8 @@ impl From<Option<i64>> for InMsgTypeEnum {
             4 => InMsgTypeEnum::Transit,
             5 => InMsgTypeEnum::DiscardedFinal,
             6 => InMsgTypeEnum::DiscardedTransit,
-            _ => todo!(),
-        }
+            unknown => return Err(unknown_enum_value("InMsgType", unknown)),
+        })
     }
 }
 
@@ -54,16 +79,23 @@ pub enum MessageTypeEnum {
     Internal,
     ExtIn,
     ExtOut,
+    CrossDapp,
+    /// External outbound message v2 (`ExtOutMsgInfoV2`).
+    ExtOutV2,
 }
 
-impl From<i64> for MessageTypeEnum {
-    fn from(val: i64) -> Self {
-        match val {
+impl TryFrom<i64> for MessageTypeEnum {
+    type Error = UnknownEnumValue;
+
+    fn try_from(val: i64) -> Result<Self, Self::Error> {
+        Ok(match val {
             0 => MessageTypeEnum::Internal,
             1 => MessageTypeEnum::ExtIn,
             2 => MessageTypeEnum::ExtOut,
-            _ => unreachable!(),
-        }
+            3 => MessageTypeEnum::CrossDapp,
+            4 => MessageTypeEnum::ExtOutV2,
+            unknown => return Err(unknown_enum_value("MessageType", unknown)),
+        })
     }
 }
 
@@ -80,9 +112,11 @@ pub enum MessageProcessingStatusEnum {
     Transiting,
 }
 
-impl From<Option<i64>> for MessageProcessingStatusEnum {
-    fn from(val: Option<i64>) -> Self {
-        match val.unwrap_or(0) {
+impl TryFrom<i64> for MessageProcessingStatusEnum {
+    type Error = UnknownEnumValue;
+
+    fn try_from(val: i64) -> Result<Self, Self::Error> {
+        Ok(match val {
             0 => MessageProcessingStatusEnum::Unknown,
             1 => MessageProcessingStatusEnum::Queued,
             2 => MessageProcessingStatusEnum::Processing,
@@ -91,8 +125,8 @@ impl From<Option<i64>> for MessageProcessingStatusEnum {
             5 => MessageProcessingStatusEnum::Finalized,
             6 => MessageProcessingStatusEnum::Refused,
             7 => MessageProcessingStatusEnum::Transiting,
-            _ => unreachable!(),
-        }
+            unknown => return Err(unknown_enum_value("MessageProcessingStatus", unknown)),
+        })
     }
 }
 
@@ -110,9 +144,11 @@ enum OutMsgTypeEnum {
     None,
 }
 
-impl From<i32> for OutMsgTypeEnum {
-    fn from(val: i32) -> Self {
-        match val {
+impl TryFrom<i32> for OutMsgTypeEnum {
+    type Error = UnknownEnumValue;
+
+    fn try_from(val: i32) -> Result<Self, Self::Error> {
+        Ok(match val {
             -1 => OutMsgTypeEnum::None,
             0 => OutMsgTypeEnum::External,
             1 => OutMsgTypeEnum::Immediately,
@@ -122,8 +158,8 @@ impl From<i32> for OutMsgTypeEnum {
             5 => OutMsgTypeEnum::Dequeue,
             6 => OutMsgTypeEnum::TransitRequired,
             7 => OutMsgTypeEnum::DequeueShort,
-            _ => todo!(),
-        }
+            unknown => return Err(unknown_enum_value("OutMsgType", unknown)),
+        })
     }
 }
 
@@ -161,24 +197,6 @@ impl InMsg {
     #[graphql(name = "transit_fee")]
     async fn transit_fee(&self, format: Option<BigIntFormat>) -> Option<String> {
         format_big_int(self.transit_fee.clone(), format)
-    }
-}
-
-impl From<db::Message> for InMsg {
-    fn from(msg: db::Message) -> Self {
-        Self {
-            fwd_fee: msg.fwd_fee,
-            ihr_fee: None,
-            in_msg: None,
-            msg_id: Some(msg.id),
-            msg_type: msg.msg_type.to_int(),
-            msg_type_name: Some(msg.msg_type.into()),
-            out_msg: None,
-            proof_created: Some("".to_string()),
-            proof_delivered: Some("".to_string()),
-            transaction_id: msg.transaction_id,
-            transit_fee: None,
-        }
     }
 }
 
@@ -254,7 +272,10 @@ pub struct Message {
     data_hash: Option<String>,
     /// Returns destination address string.
     dst: Option<String>,
-    /// Acki Nacki transaction
+    /// Acki Nacki transaction that consumed this message as its inbound message.
+    /// Inbound-message links are not available on cold-storage servers: hidden
+    /// from introspection and rejected when queried in cold-storage mode.
+    #[graphql(guard = "ColdStorageGuard", visible = "is_cold_storage_field_visible")]
     pub dst_transaction: Option<Box<Transaction>>,
     /// Collection-unique field for pagination and sorting. This field is
     /// designed to retain logical output order (for logical input order use
@@ -276,6 +297,8 @@ pub struct Message {
     /// - 0 – internal
     /// - 1 – extIn
     /// - 2 – extOut
+    /// - 3 – crossDapp
+    /// - 4 – extOutV2
     msg_type: Option<i32>,
     msg_type_name: Option<MessageTypeEnum>,
     /// Merkle proof that message is a part of a block it cut from. It is a
@@ -350,7 +373,7 @@ impl From<db::Message> for Message {
             library: None,
             library_hash: None,
             msg_type: msg.msg_type.to_int(),
-            msg_type_name: msg.msg_type.map(|msg_type| msg_type.into()),
+            msg_type_name: msg.msg_type.and_then(|msg_type| msg_type.try_into().ok()),
             proof,
             src: msg.src,
             src_chain_order: msg.src_chain_order,
@@ -358,7 +381,7 @@ impl From<db::Message> for Message {
             src_transaction: None,
             src_workchain_id: msg.src_workchain_id.to_int(),
             status: msg.status.to_int(),
-            status_name: Some(msg.status.into()),
+            status_name: msg.status.unwrap_or(0).try_into().ok(),
             tick: None,
             tock: None,
             transaction_id: msg.transaction_id.clone(),

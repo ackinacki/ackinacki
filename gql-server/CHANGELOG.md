@@ -22,10 +22,45 @@ All notable changes to `gql-server` are documented in this file.
   `proof_block_refs`, `tracked_ext_out_messages_root`,
   `tracked_ext_out_message_hashes`) to the DB block model with field-based
   projection support.
+- Added a cold-storage mode, enabled with the `--cold-storage` CLI flag, the
+  `GQL_COLD_STORAGE` environment variable, or the `cold_storage` YAML config
+  option (default off, hot-reloadable via `SIGUSR1`). On cold-storage servers
+  the database no longer stores the transaction BOC and inbound messages, so
+  `transaction.boc`, `transaction.in_message` and `message.dst_transaction` are
+  hidden from introspection and rejected when queried, and
+  `blockchain.account.messages` rejects `msg_type` filters other than external
+  outbound.
+- Added the `CrossDapp` (`msg_type = 3`) and `ExtOutV2` (`ExtOutMsgInfoV2`,
+  `msg_type = 4`) values to the `MessageType` enum. `ExtOutV2` is also selectable
+  in the `blockchain.account.messages` `msg_type` filter, where it narrows the
+  selection down to external outbound v2 messages only.
 
 ### Changed
+- The `blockchain.events` and `blockchain.account.events` queries now include
+  external outbound v2 (`ExtOutMsgInfoV2`, `msg_type = 4`) messages in addition
+  to `ExtOut` (`msg_type = 2`).
+- The `ExtOut` value of the `blockchain.account.messages` `msg_type` filter now
+  selects every external outbound message — both `ExtOut` (`msg_type = 2`) and
+  `ExtOutMsgInfoV2` (`msg_type = 4`). Existing queries filtering by `ExtOut`
+  therefore keep returning all external outbound messages as contracts migrate
+  to v2 headers; use the new `ExtOutV2` value to select v2 messages only.
 - Bumped `tvm_block` / `tvm_client` / `tvm_types` dependencies from
   `v3.0.2.an` to `v3.0.3.an`.
+
+### Fixed
+- Fixed a server panic when returning a message with the `CrossDapp`
+  (`msg_type = 3`) or `ExtOutMsgInfoV2` (`msg_type = 4`) message type.
+- Fixed a server failure when a message carried a type or processing status the
+  server did not recognise at all. Such a message aborted the whole request
+  without a GraphQL error, so every unrelated message in the same response was
+  lost too. Unrecognised values are now reported as a `null` `msg_type_name` /
+  `status_name` — the numeric `msg_type` and `status` fields still carry the raw
+  value — and the rest of the response is returned normally.
+
+### Removed
+- Removed the `code_hash` argument from the `blockchain.transactions` query.
+  It never worked: the archive `transactions` table has no `code_hash` column,
+  so any query using the filter failed with a SQL error.
 
 ## [1.0.0]
 

@@ -256,7 +256,7 @@ impl BlockVerifier for TVMBlockVerifier {
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (verify_block, _, _) = producer.build_block(
-            grouped_ext_messages,
+            inbound_external_messages::grouped_scheduler(grouped_ext_messages),
             &blockchain_config,
             vec![],
             Some(check_messages_map),

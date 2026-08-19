@@ -22,6 +22,9 @@
 - name: Check public key in backup file
   shell: "grep '{{ new_public_key.stdout }}' {{ BK_DIR }}/bk-configs/backup_block_keeper{{ NODE_ID }}_bls.keys.json"
   register: key_check
+  # grep exits 1 when the new pubkey is not in the backup — an expected
+  # "nothing to restore" outcome, not a failure. Record rc, don't abort.
+  failed_when: false
 
 - name: Restore BLS key file from backup if public key is found
   copy:

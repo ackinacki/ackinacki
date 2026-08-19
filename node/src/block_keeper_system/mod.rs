@@ -17,6 +17,8 @@ use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 use typed_builder::TypedBuilder;
+use versioned_struct::versioned;
+use versioned_struct::Transitioning;
 
 use crate::bls::gosh_bls::PubKey;
 use crate::node::NodeIdentifier;
@@ -28,13 +30,34 @@ pub mod epoch;
 pub mod from_api_bk;
 pub mod wallet_config;
 
+#[versioned]
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum BlockKeeperSetChange {
     BlockKeeperAdded((SignerIndex, BlockKeeperData)),
     BlockKeeperRemoved((SignerIndex, BlockKeeperData)),
     FutureBlockKeeperAdded((SignerIndex, BlockKeeperData)),
+    #[future]
+    FutureBlockKeeperRemoved((SignerIndex, BlockKeeperData)),
     #[cfg(feature = "protocol_version_hash_in_block")]
     BlockKeeperChangedVersion((SignerIndex, BlockKeeperData)),
+}
+
+impl Transitioning for BlockKeeperSetChange {
+    type Old = BlockKeeperSetChangeOld;
+
+    fn from(old: Self::Old) -> Self {
+        match old {
+            BlockKeeperSetChangeOld::BlockKeeperAdded((si, data)) => {
+                BlockKeeperSetChange::BlockKeeperAdded((si, data))
+            }
+            BlockKeeperSetChangeOld::BlockKeeperRemoved((si, data)) => {
+                BlockKeeperSetChange::BlockKeeperRemoved((si, data))
+            }
+            BlockKeeperSetChangeOld::FutureBlockKeeperAdded((si, data)) => {
+                BlockKeeperSetChange::FutureBlockKeeperAdded((si, data))
+            }
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]

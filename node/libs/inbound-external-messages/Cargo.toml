@@ -1,0 +1,13 @@
+[package]
+name = "inbound-external-messages"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[dependencies]
+chrono = { version = "0.4.38", features = ["serde"] }
+derive-getters = "0.5.0"
+indexset = "0.10.3"
+parking_lot.workspace = true
+serde.workspace = true

@@ -170,6 +170,17 @@ pub async fn run(
                     });
                 }
             };
+            if raw_dapp.trim().is_empty() {
+                return Ok(ExtMsgRunResponse {
+                    result: None,
+                    error: Some(ExtMsgRunError {
+                        code: "BAD_REQUEST".to_string(),
+                        message: "destination dapp is not specified".to_string(),
+                        data: None,
+                    }),
+                    ext_message_token: None,
+                });
+            }
             let dapp_id = match crate::validation::parse_hex32(raw_dapp, "dapp_id") {
                 Ok(v) => v,
                 Err(msg) => {
@@ -588,6 +599,16 @@ mod tests {
         let err = resp.error.unwrap();
         assert_eq!(err.code, "BAD_REQUEST");
         assert!(err.message.contains("dapp_id"));
+    }
+
+    #[tokio::test]
+    async fn run_rejects_missing_destination_dapp() {
+        let nrs = serde_json::json!([{"id":"aGVsbG8=", "body":"AAAA", "account_id": VALID_HEX}]);
+        let resp = run(nrs, make_router()).await.unwrap();
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert_eq!(err.message, "destination dapp is not specified");
     }
 
     #[tokio::test]

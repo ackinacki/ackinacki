@@ -1,8 +1,8 @@
 // 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::HashMap;
-use std::collections::VecDeque;
+use std::collections::BTreeSet as StdBTreeSet;
+use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -17,7 +17,9 @@ use typed_builder::TypedBuilder;
 use crate::block::producer::builder::build_actions::create_not_block_producer_feedback;
 use crate::block::producer::builder::build_actions::create_queue_overflow_feedback;
 use crate::external_messages::queue::ExtMessageDst;
-use crate::external_messages::queue::ExternalMessagesQueue;
+use crate::external_messages::ExtMessages;
+use crate::external_messages::ExtMessagesLimits;
+use crate::external_messages::ExtMessagesSelectionCursor;
 use crate::external_messages::QueuedExtMessage;
 use crate::external_messages::Stamp;
 use crate::helper::metrics::BlockProductionMetrics;
@@ -25,7 +27,7 @@ use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
-impl AllowGuardedMut for ExternalMessagesQueue {}
+impl AllowGuardedMut for ExtMessages {}
 
 #[derive(TypedBuilder)]
 #[builder(
@@ -37,19 +39,18 @@ impl AllowGuardedMut for ExternalMessagesQueue {}
 pub struct ExternalMessagesThreadStateConfig {
     report_metrics: Option<BlockProductionMetrics>,
     thread_id: ThreadIdentifier,
-    cache_size: usize,
+    limits: ExtMessagesLimits,
     feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
     is_producing: Arc<AtomicBool>,
 }
 
 impl From<ExternalMessagesThreadStateConfig> for anyhow::Result<ExternalMessagesThreadState> {
     fn from(config: ExternalMessagesThreadStateConfig) -> Self {
-        tracing::trace!(target: "ext_messages", "configured cache_size: {}", config.cache_size);
+        tracing::trace!(target: "ext_messages", "configured limits: {:?}", config.limits);
         Ok(ExternalMessagesThreadState {
-            queue: Arc::new(Mutex::new(ExternalMessagesQueue::empty())),
+            queue: Arc::new(Mutex::new(ExtMessages::empty(config.limits))),
             report_metrics: config.report_metrics,
             thread_id: config.thread_id,
-            cache_size: config.cache_size,
             feedback_sender: config.feedback_sender,
             is_producing: config.is_producing,
         })
@@ -58,11 +59,10 @@ impl From<ExternalMessagesThreadStateConfig> for anyhow::Result<ExternalMessages
 
 #[derive(Clone)]
 pub struct ExternalMessagesThreadState {
-    queue: Arc<Mutex<ExternalMessagesQueue>>,
+    queue: Arc<Mutex<ExtMessages>>,
     report_metrics: Option<BlockProductionMetrics>,
     // For reporting only.
     thread_id: ThreadIdentifier,
-    cache_size: usize,
     feedback_sender: InstrumentedSender<ExtMsgFeedbackList>,
     is_producing: Arc<AtomicBool>,
 }
@@ -70,6 +70,29 @@ pub struct ExternalMessagesThreadState {
 impl ExternalMessagesThreadState {
     pub fn builder() -> ExternalMessagesThreadStateBuilder {
         ExternalMessagesThreadStateConfig::builder()
+    }
+
+    pub fn queue_handle(&self) -> Arc<Mutex<ExtMessages>> {
+        self.queue.clone()
+    }
+
+    fn report_queue_state(
+        &self,
+        queue_len: usize,
+        dapp_queue_sizes: &[(node_types::DAppIdentifier, usize)],
+    ) {
+        let by_dapp = dapp_queue_sizes
+            .iter()
+            .map(|(dapp_id, len)| format!("{}={}", dapp_id.to_hex_string(), len))
+            .collect::<Vec<_>>()
+            .join(",");
+
+        tracing::info!(
+            target: "ext_messages",
+            "ext_messages_queue_by_dapp: total={}, by_dapp={}",
+            queue_len,
+            by_dapp
+        );
     }
 
     pub fn push_external_messages(&self, ext_messages: &[QueuedExtMessage]) -> anyhow::Result<()> {
@@ -92,14 +115,12 @@ impl ExternalMessagesThreadState {
 
         let now = Utc::now();
 
-        let (report_len, unused) = self.queue.guarded_mut(|q| {
-            let remaining = self.cache_size.saturating_sub(q.messages().len());
-
-            let (to_push, unused) = ext_messages.split_at(remaining.min(ext_messages.len()));
-
-            q.push_external_messages(to_push, now);
-            (q.messages().len(), unused.to_vec())
+        let (report_len, dapp_queue_sizes, unused) = self.queue.guarded_mut(|q| {
+            let unused = q.push_external_messages(ext_messages, now);
+            (q.len(), q.dapp_queue_sizes(), unused)
         });
+
+        self.report_queue_state(report_len, &dapp_queue_sizes);
 
         if !unused.is_empty() {
             let overflow_feedbacks: Vec<_> = unused
@@ -136,7 +157,8 @@ impl ExternalMessagesThreadState {
         );
 
         let feedbacks: Vec<_> = drained
-            .into_values()
+            .into_iter()
+            .map(|(_, msg)| msg)
             .map(|msg| create_not_block_producer_feedback(msg, &self.thread_id))
             .collect::<Result<_, _>>()?;
 
@@ -154,12 +176,13 @@ impl ExternalMessagesThreadState {
     pub fn erase_processed(&self, processed: &[Stamp]) -> Vec<(Stamp, QueuedExtMessage)> {
         tracing::trace!("erase_processed ext messages: {}", processed.len());
 
-        let (report_len, removed) = self.queue.guarded_mut(|q| {
+        let (report_len, dapp_queue_sizes, removed) = self.queue.guarded_mut(|q| {
             let removed = q.erase_processed(processed);
-            (q.messages().len(), removed)
+            (q.len(), q.dapp_queue_sizes(), removed)
         });
 
         tracing::trace!(target: "ext_messages", "on erase: queue_size={}", report_len);
+        self.report_queue_state(report_len, &dapp_queue_sizes);
 
         if let Some(metrics) = &self.report_metrics {
             metrics.report_ext_msg_queue_size(report_len, &self.thread_id);
@@ -173,9 +196,9 @@ impl ExternalMessagesThreadState {
             return;
         }
 
-        let report_len = self.queue.guarded_mut(|q| {
+        let (report_len, dapp_queue_sizes) = self.queue.guarded_mut(|q| {
             q.restore_processed(processed);
-            q.messages().len()
+            (q.len(), q.dapp_queue_sizes())
         });
 
         tracing::trace!(
@@ -184,16 +207,28 @@ impl ExternalMessagesThreadState {
             processed.len(),
             report_len
         );
+        self.report_queue_state(report_len, &dapp_queue_sizes);
 
         if let Some(metrics) = &self.report_metrics {
             metrics.report_ext_msg_queue_size(report_len, &self.thread_id);
         }
     }
 
-    pub fn get_remaining_external_messages(
+    pub fn len(&self) -> usize {
+        self.queue.guarded(|q| q.len())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn next_message(
         &self,
-    ) -> HashMap<ExtMessageDst, VecDeque<(Stamp, QueuedExtMessage)>> {
-        tracing::trace!("get_remaining_externals");
-        self.queue.guarded(|q| q.unprocessed_messages())
+        active_destinations: &HashSet<ExtMessageDst>,
+        requested_stamps: &StdBTreeSet<Stamp>,
+        selection_cursor: &mut ExtMessagesSelectionCursor,
+    ) -> Option<(Stamp, QueuedExtMessage)> {
+        self.queue
+            .guarded(|q| q.next_message(active_destinations, requested_stamps, selection_cursor))
     }
 }

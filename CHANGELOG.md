@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.0] – 2026-08-18
+
+### Breaking Changes
+- Replaced the `ext_messages_cache_size` node setting with three external-message queue limits — `ext_messages_total_limit`, `ext_messages_dapp_limit` and `ext_messages_account_limit` (also available as `node-helper config` flags and `EXT_MESSAGES_*_LIMIT` environment variables). A config still carrying the old setting keeps loading, but its value is silently ignored, so it has to be carried over by hand
+- Bumped the default TVM engine version from `1.0.5` to `1.0.6`, changing the protocol version of the network
+- Renamed the bridge contract `USDCBridge` to `eccUSDCBridge` (v1.3.0) and bound deposits to their source chain: the L1 `chainId` is now part of the deposit proof and of the `DepositVoucher` (v1.1.0) identity, and the verification key was rotated — proofs produced for the previous circuit are no longer accepted
+- Removed the `code_hash` argument of the GraphQL `blockchain.transactions` query; it never worked and any query using it failed with a database error
+- Dropped the transition path for the pre-0.18 protocol-version scheme, so an upgrade from a node older than 0.18 has to go through 0.18 first
+
+### New / Improvements
+- Made the external-message queue fair: messages are now tracked per DApp and per account and served in round-robin order under the three new limits, so one spamming DApp or account can no longer crowd everyone else out of the queue. Queue occupancy per DApp is reported in the node log
+- Reported a missing destination DApp id (required since 0.16.3) as an explicit `BAD_REQUEST` / `destination dapp is not specified` in both the node API and the message-router, instead of a generic request-parsing or hex-format error
+- Added a cold-storage mode to gql-server (`--cold-storage`, `GQL_COLD_STORAGE` or the `cold_storage` config option, off by default). On cold-storage servers the data that is no longer kept — `transaction.boc`, `transaction.in_message`, `message.dst_transaction` — is hidden from the schema and rejected when queried, and `blockchain.account.messages` serves external-outbound messages only
+- Added the `CrossDapp` (`msg_type = 3`) and `ExtOutV2` (`msg_type = 4`) values to the GraphQL `MessageType` enum: events queries now include v2 external-outbound messages, the `ExtOut` filter covers both v1 and v2, and `ExtOutV2` selects v2 only
+- Handled destruction of a pre-epoch contract: the Block Keeper leaving before its epoch starts is now published in the block as a block-keeper set change, so the set stays in sync with the BK system contracts
+- Attached a quorum proof to an authority switch: the signed locks that formed the switch majority now travel with it and are verified by the receiving node, repeated requests from one signer count once, and a signer sending conflicting locks for the same round is discarded
+- Added an expiration date to the zerostate — the node refuses to start on an expired one — and a `zerostate-helper state expires-at` command to set it
+- Added an evaluation deployment kit (`ansible/eval-kit`) for standing up a network from scratch: deployment-kit generator, deploy playbooks, inventory template, sync-status check, an EVM migration guide and a WASM contract example
+- Added an owner-managed allowlist of trusted L1 bridges to the bridge contract, so a deposit is accepted only from a known chain and contract and an L1 bridge can be rotated without downtime; deposits from an unknown source are rejected with a dedicated error, and a freshly generated zerostate is seeded with the current Sepolia bridge
+- Added `UpdateCustodianMultisigWallet_v2` (v2.4.0), replacing the deprecated multisig wallet: multisig-confirmed code upgrades, lifecycle events for every transfer, custodian and code change, and getters over each request queue
+- Gave the multisig wallet self-managed gas: it converts SHELL to keep its balance between the configured minimum and target, with the config changed under multisig and surviving a custodian change
+- Sped up account writes to the archive on the accumulated-update path
+- Restored the no-wipe testnet upgrade path and added a node restart/resync check after the upgrade
+- Pinned the node, gql-server and block-manager images of the DEX end-to-end network to the build that generated its zerostate
+- Updated the bundled Explorer for `dapp_id::account_id` addressing
+
+### Fixes
+- Fixed a gql-server crash when a message of the cross-DApp or v2 external-outbound type was returned
+- Fixed a gql-server failure on a message with an unknown type or status, which used to abort the whole request and lose every other message in the response; such values are now returned as `null` names alongside their raw numeric value
+- Fixed the Block Keeper BLS key restore step, which aborted the playbook when there was nothing to restore
+
 ## [0.18.1] – 2026-07-24
 
 ### New / Improvements
